@@ -167,6 +167,18 @@ pub fn rowContextWindow(id: []const u8) ?u32 {
     return row.context_window;
 }
 
+pub fn rowMaxContextWindow(id: []const u8) ?u32 {
+    const row = provider(id) orelse return null;
+    return row.max_context_window;
+}
+
+pub fn modelMaxContextWindow(id: []const u8, model_id: []const u8) ?u32 {
+    if (declaredModel(id, model_id)) |model| {
+        if (model.max_context_window) |window| return window;
+    }
+    return rowMaxContextWindow(id);
+}
+
 pub fn rowMaxTokens(id: []const u8) ?u32 {
     const row = provider(id) orelse return null;
     return row.max_tokens;
@@ -643,6 +655,41 @@ test "a models listing is an absolute path appended to a base that does not end 
                 }
             }
             try std.testing.expect(versions <= 1);
+        }
+    }
+}
+
+test "a row records the largest context window its models can be given, and only the rows that state one do" {
+    const with_ceiling = [_][]const u8{ "openai", "openai-codex" };
+    for (all) |row| {
+        var expected = false;
+        for (with_ceiling) |id| {
+            if (std.mem.eql(u8, row.id, id)) expected = true;
+        }
+        try std.testing.expectEqual(expected, rowMaxContextWindow(row.id) != null);
+    }
+    try std.testing.expectEqual(@as(?u32, 1_000_000), rowMaxContextWindow("openai"));
+    try std.testing.expectEqual(@as(?u32, 1_000_000), rowMaxContextWindow("openai-codex"));
+    try std.testing.expectEqual(@as(?u32, 1_000_000), modelMaxContextWindow("openai", "gpt-5-codex"));
+    try std.testing.expectEqual(@as(?u32, null), rowMaxContextWindow("no-such-provider"));
+    try std.testing.expectEqual(@as(?u32, null), modelMaxContextWindow("no-such-provider", "gpt-5-codex"));
+}
+
+test "a row that serves a window states no ceiling for it, because the window is not the ceiling" {
+    try std.testing.expectEqual(@as(?u32, 262_144), rowContextWindow("kimi"));
+    try std.testing.expectEqual(@as(?u32, null), modelMaxContextWindow("kimi", "kimi-k2.7-code"));
+    try std.testing.expectEqual(@as(?u32, null), modelMaxContextWindow("anthropic", "claude-sonnet-4-5"));
+}
+
+test "no row or model records a context window above the ceiling it states" {
+    for (all) |row| {
+        if (row.context_window) |window| {
+            if (rowMaxContextWindow(row.id)) |ceiling| try std.testing.expect(window <= ceiling);
+        }
+        for (row.models) |model| {
+            if (model.context_window) |window| {
+                if (modelMaxContextWindow(row.id, model.id)) |ceiling| try std.testing.expect(window <= ceiling);
+            }
         }
     }
 }

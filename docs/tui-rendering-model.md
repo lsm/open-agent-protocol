@@ -189,9 +189,24 @@ code paths; add a transcript row instead.
   priority (turns, thinking, cost, the hint, `ask` permission, queue, drops, model,
   backpressure, context) behind one trailing `…`; the state segment — and `bypass` or
   `pending` — are never dropped, and the row is clipped with `…` if even they do not
-  fit. A second row under it shows the working directory, right-aligned and muted,
-  collapsed to `~` under the home directory and left-truncated with `…`; it hides on
-  terminals shorter than 12 rows.
+  fit. A second row under it shows the working directory on the left, muted, collapsed
+  to `~` under the home directory and left-truncated with `…`, and the git branch at
+  the right end; the row hides on terminals shorter than 12 rows. The branch is read
+  from the repository rather than from a `git` process: the working directory and each
+  of its ancestors are probed for `.git/HEAD` until one is found, nearest first, so a
+  subdirectory of a repository resolves the way `git` resolves it. A `.git` that is a
+  `gitdir:` pointer file — a linked worktree or a submodule — is followed, with a
+  relative target resolved against the directory holding the pointer, and that
+  directory's `HEAD` is read instead. A `ref: refs/heads/` line gives the branch name
+  and any other line gives the first seven characters of the commit id for a detached
+  HEAD. The nearest `.git` decides the row and nothing above it is consulted, so each of
+  these leaves the right end empty rather than falling through to an enclosing
+  repository — which is what `git` does when it errors on the repository it finds: no
+  repository above the working directory, a `.git` it cannot inspect, a `.git/HEAD` it
+  cannot read, and a `.git` pointer file that does not parse. The read happens when the
+  working directory changes and on a slow tick — every 100th tick, five seconds — so a
+  `git checkout` shows up without a `git` process per render. When the row is too narrow
+  for both, the branch is dropped and the path takes the full width.
 
 ## Credentials and the model catalog
 
@@ -271,6 +286,33 @@ In the model, login and permission pickers, typing filters the list: every
 space-separated term must appear, case-insensitively, in an item's label or detail.
 `Backspace` edits the filter, `Up/Down` and `PgUp/PgDn` move, `Enter` selects and `Esc`
 closes; reopening a picker clears its filter.
+
+## Automatic compaction
+
+`/autocompact <percent>` sets the share of the context window at which the session compacts
+itself, `/autocompact off` turns that off, and `/autocompact` with no argument reports the
+share in effect. `off` is what a session starts with, so nothing compacts on its own until
+it is asked to. A percent sign is optional (`80` and `80%` are the same request) and the
+share must be between 1 and 100: `0`, `101`, a sign, a decimal and anything that is not
+digits are refused. `/status` carries the share on its own line, so the value is visible
+without a second command.
+
+The share measures the same figure the context gauge shows — the prompt estimate the
+provider was last sent — plus the message about to be sent, against the window in effect.
+It fires before a turn is submitted rather than during one, because a turn that has already
+overflowed is the failure this avoids. A message typed while a turn is streaming or a
+compaction is running takes the normal path, and the next submit is the one that measures
+again.
+
+When it fires, the transcript says so, the compaction runs exactly as `/compact` runs it
+(down to the transcript it writes), and the held message is sent when the compaction ends —
+including when it was cancelled or failed, because a message the user typed is not something
+to drop quietly; that case says the history is unchanged. A message the queue resumes while
+the compaction finishes is steered rather than submitted, so waiting for a turn never blocks
+the tick thread. A `/resume` that lands before the compaction ends drops the held message
+with a note saying so, at the top of the resume, so it cannot be sent into the session that
+replaced it. A session whose history is already a summary, or empty, is not compacted
+again, and one automatic compaction runs at a time.
 
 ## Compaction
 

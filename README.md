@@ -723,7 +723,12 @@ version segment takes `/models`, not `/v1/models`. `status` is where a row sits 
 for the providers it names first (OpenAI, Anthropic, OpenCode, OpenRouter,
 DeepSeek, Z.AI, Kimi), `supported` for the rest, `withheld` for a row the list
 records but does not offer — and the list is ordered so every `current` row
-precedes every other. Every
+precedes every other. `max_context_window` is the largest window a model of the
+row can be given: a caller may lower the window a listing reported and raise it
+up to that figure, and the two OpenAI rows state 1000000 on the owner's word
+that every GPT model holds a 1M-token window. A row that states no ceiling does
+not have a large one — the window the listing or the catalog reports for a model
+is the ceiling in its place. Every
 member is optional, because an absent member records that the fact is unknown
 rather than that it is empty, and no credential is ever catalogued. A row with no
 `status` is `supported`, and a `withheld` row keeps its id reserved, so a

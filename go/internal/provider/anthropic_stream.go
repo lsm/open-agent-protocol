@@ -42,7 +42,7 @@ type anthropicEvent struct {
 	toolID    string
 	toolName  string
 	usage     Usage
-	stop      string
+	stop      StopReason
 	errMsg    string
 }
 
@@ -158,11 +158,11 @@ func parseAnthropicEvent(data string) anthropicEvent {
 			if reason, ok := delta["stop_reason"].(string); ok {
 				switch reason {
 				case "max_tokens":
-					event.stop = "length"
+					event.stop = StopLength
 				case "tool_use":
-					event.stop = "tool_use"
+					event.stop = StopToolUse
 				default:
-					event.stop = "stop"
+					event.stop = StopStop
 				}
 			}
 		}
@@ -197,7 +197,7 @@ type anthropicState struct {
 	model       Model
 	clock       *streamClock
 	usage       Usage
-	stopReason  string
+	stopReason  StopReason
 	blocks      map[int]blockInfo
 	completed   []AssistantBlock
 	currentText string
@@ -210,7 +210,7 @@ func newAnthropicState(model Model) *anthropicState {
 	return &anthropicState{
 		model:      model,
 		clock:      &streamClock{},
-		stopReason: "stop",
+		stopReason: StopStop,
 		blocks:     map[int]blockInfo{},
 		tracker:    newToolTracker(),
 	}
@@ -332,7 +332,7 @@ func (s *anthropicState) emitStart(sink *EventSink) {
 		Kind: EventStart,
 		Partial: PartialMessage{
 			API: s.model.API, Provider: s.model.Provider, Model: s.model.ID,
-			StopReason: "stop", Timestamp: s.clock.millis(),
+			StopReason: StopStop, Timestamp: s.clock.millis(),
 		},
 	})
 }

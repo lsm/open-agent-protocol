@@ -61,13 +61,7 @@ func NeedsNoCredential(catalog Catalog, id string) bool {
 	return AcceptsAuth(catalog, id, "none")
 }
 
-func LookupCredential(catalog Catalog, env []EnvironmentValue, stored *StoredCredential, id string) (Credential, bool) {
-	if _, known := findProvider(catalog, id); !known {
-		return Credential{}, false
-	}
-	if credential, ok := APIKeyForProvider(catalog, env, id); ok {
-		return credential, true
-	}
+func storedCredential(catalog Catalog, stored *StoredCredential, id string) (Credential, bool) {
 	if stored == nil {
 		return Credential{}, false
 	}
@@ -88,6 +82,19 @@ func LookupCredential(catalog Catalog, env []EnvironmentValue, stored *StoredCre
 			return Credential{}, false
 		}
 		return Credential{Key: *stored.OAuthAccess, Source: SourceOAuth, Name: id}, true
+	}
+	return Credential{}, false
+}
+
+func LookupCredential(catalog Catalog, env []EnvironmentValue, stored *StoredCredential, id string) (Credential, bool) {
+	if _, known := findProvider(catalog, id); !known {
+		return Credential{}, false
+	}
+	if credential, ok := APIKeyForProvider(catalog, env, id); ok {
+		return credential, true
+	}
+	if credential, ok := storedCredential(catalog, stored, id); ok {
+		return credential, true
 	}
 	return Credential{}, false
 }

@@ -1,6 +1,10 @@
 package providercatalog
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/lsm/open-agent-protocol/providers"
+)
 
 func env(names ...string) []EnvironmentValue {
 	held := make([]EnvironmentValue, 0, len(names))
@@ -189,5 +193,59 @@ func TestEveryRowThatNamesAVariableResolvesIt(t *testing.T) {
 		if credential.Name != names[0] {
 			t.Errorf("%s answered %q, want its first variable %q", provider.ID, credential.Name, names[0])
 		}
+	}
+}
+
+func realCatalog(t *testing.T) Catalog {
+	t.Helper()
+	catalog, err := Load(providers.Files)
+	if err != nil {
+		t.Fatalf("load the real catalog: %v", err)
+	}
+	return catalog
+}
+
+func storedKey(value string) *StoredCredential {
+	return &StoredCredential{APIKey: &value}
+}
+
+func TestTheSecondSourceIsTriedWhenTheFirstIsEmpty(t *testing.T) {
+	catalog := realCatalog(t)
+
+	empty := ""
+	cases := []struct {
+		name   string
+		held   []EnvironmentValue
+		stored *StoredCredential
+		id     string
+		want   Source
+	}{
+		{"kimi falls through to the environment when nothing is stored", []EnvironmentValue{{Name: "KIMI_API_KEY", Value: "from-the-environment"}}, nil, "kimi", SourceEnvironment},
+		{"kimi falls through to the environment when the stored key is empty", []EnvironmentValue{{Name: "KIMI_API_KEY", Value: "from-the-environment"}}, storedKey(empty), "kimi", SourceEnvironment},
+		{"a default row falls through to stored when the environment holds nothing", nil, storedKey("from-a-login"), "openai", SourceStored},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			credential, ok := LookupCredential(catalog, c.held, c.stored, c.id)
+			if !ok {
+				t.Fatalf("no credential found, want one from %q", c.want)
+			}
+			if credential.Source != c.want {
+				t.Errorf("credential = %+v, want source %q", credential, c.want)
+			}
+		})
+	}
+}
+
+func TestAnEmptyEnvironmentValueIsNotACredential(t *testing.T) {
+	catalog := realCatalog(t)
+	held := []EnvironmentValue{{Name: "KIMI_API_KEY", Value: ""}}
+	if credential, ok := LookupCredential(catalog, held, nil, "kimi"); ok {
+		t.Errorf("credential = %+v, want none: a variable that is set to nothing is not a key", credential)
+	}
+	if credential, ok := LookupCredential(catalog, held, storedKey("from-a-login"), "kimi"); !ok {
+		t.Error("kimi still finds the stored key it prefers when the environment holds an empty value")
+	} else if credential.Source != SourceStored {
+		t.Errorf("credential = %+v, want the stored one", credential)
 	}
 }

@@ -18,8 +18,12 @@ const (
 type StopReason string
 
 const (
-	StopAborted StopReason = "aborted"
-	StopError   StopReason = "error"
+	StopStop          StopReason = "stop"
+	StopLength        StopReason = "length"
+	StopToolUse       StopReason = "tool_use"
+	StopContentFilter StopReason = "content_filter"
+	StopAborted       StopReason = "aborted"
+	StopError         StopReason = "error"
 )
 
 const (
