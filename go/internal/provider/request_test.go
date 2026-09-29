@@ -279,29 +279,55 @@ func TestAnAbortedOrErroredAssistantIsSkipped(t *testing.T) {
 	}
 }
 
-func TestAnOrphanedToolResultIsDroppedButAnEmptyOneIsNot(t *testing.T) {
-	caller := Context{Messages: []Message{
-		{Assistant: &AssistantContent{Parts: []ContentPart{{ToolCall: &ToolCall{ID: "call-1", Name: "read", Arguments: "{}"}}}}},
-		{ToolResult: &ToolResult{ToolCallID: "call-1", Parts: []ContentPart{{Text: &TextPart{Text: "contents"}}}}},
-		{ToolResult: &ToolResult{ToolCallID: "call-9", Parts: []ContentPart{{Text: &TextPart{Text: "orphan"}}}}},
-	}}
-	got := messages(t, BuildRequestBody(loopbackModel(), caller, StreamOptions{}))
-	sawOrphan := false
-	toolMessages := 0
-	for _, m := range got {
+func toolResultIDs(t *testing.T, ctx Context) []string {
+	t.Helper()
+	var ids []string
+	for _, m := range messages(t, BuildRequestBody(loopbackModel(), ctx, StreamOptions{})) {
 		if m.(map[string]any)["role"] == "tool" {
-			toolMessages++
-			if m.(map[string]any)["tool_call_id"] == "call-9" {
-				sawOrphan = true
-			}
+			ids = append(ids, m.(map[string]any)["tool_call_id"].(string))
 		}
 	}
-	if toolMessages != 2 || !sawOrphan {
-		t.Errorf("got %d tool messages (orphan present=%v), want both: zig's run loop at :514 consumes consecutive results without rechecking the orphan rule, and the port matches it", toolMessages, sawOrphan)
+	return ids
+}
+
+func TestAnOrphanedToolResultIsDroppedWhereverItFallsInARun(t *testing.T) {
+	caller := Context{Messages: []Message{
+		{Assistant: &AssistantContent{Parts: []ContentPart{
+			{ToolCall: &ToolCall{ID: "call-1", Name: "read", Arguments: "{}"}},
+			{ToolCall: &ToolCall{ID: "call-2", Name: "read", Arguments: "{}"}},
+		}}},
+		{ToolResult: &ToolResult{ToolCallID: "call-1", Parts: []ContentPart{{Text: &TextPart{Text: "contents"}}}}},
+		{ToolResult: &ToolResult{ToolCallID: "call-9", Parts: []ContentPart{{Text: &TextPart{Text: "orphan"}}}}},
+		{ToolResult: &ToolResult{ToolCallID: "call-2", Parts: []ContentPart{{Text: &TextPart{Text: "more"}}}}},
+	}}
+	got := toolResultIDs(t, caller)
+	if len(got) != 2 || got[0] != "call-1" || got[1] != "call-2" {
+		t.Errorf("got %v, want [call-1 call-2]: the run loop writes one tool message per result, so an orphan in the middle is just a message that is not written", got)
 	}
-	none := Context{Messages: []Message{{ToolResult: &ToolResult{ToolCallID: "call-1", Parts: []ContentPart{{Text: &TextPart{Text: "x"}}}}}}}
-	if got := messages(t, BuildRequestBody(loopbackModel(), none, StreamOptions{})); len(got) != 1 {
-		t.Errorf("with no tool calls anywhere the result is kept, got %d messages", len(got))
+}
+
+func TestARunOfOnlyOrphansWritesNoToolMessage(t *testing.T) {
+	caller := Context{Messages: []Message{
+		{Assistant: &AssistantContent{Parts: []ContentPart{
+			{ToolCall: &ToolCall{ID: "call-1", Name: "read", Arguments: "{}"}},
+		}}},
+		{ToolResult: &ToolResult{ToolCallID: "call-1", Parts: []ContentPart{{Text: &TextPart{Text: "answered"}}}}},
+		{User: &UserContent{Text: "carry on", HasText: true}},
+		{ToolResult: &ToolResult{ToolCallID: "call-8", Parts: []ContentPart{{Text: &TextPart{Text: "orphan"}}}}},
+		{ToolResult: &ToolResult{ToolCallID: "call-9", Parts: []ContentPart{{Text: &TextPart{Text: "orphan"}}}}},
+	}}
+	got := toolResultIDs(t, caller)
+	if len(got) != 1 || got[0] != "call-1" {
+		t.Errorf("got %v, want only the answered one: the second run is entirely orphans, and the call it could have been standing in for is already answered so no synthetic result is grown for it", got)
+	}
+}
+
+func TestARunWithNoToolCallAnywhereKeepsEveryResult(t *testing.T) {
+	none := Context{Messages: []Message{
+		{ToolResult: &ToolResult{ToolCallID: "call-1", Parts: []ContentPart{{Text: &TextPart{Text: "x"}}}}},
+	}}
+	if got := toolResultIDs(t, none); len(got) != 1 {
+		t.Errorf("got %v, want the one result kept: with no tool call to match against the guard stands down", got)
 	}
 }
 
@@ -369,7 +395,10 @@ func TestAToolResultWithOnlyImagesSaysSo(t *testing.T) {
 
 func TestAnEmptyAssistantIsWrittenAroundToolResultsOnlyWhenAsked(t *testing.T) {
 	ctx := Context{Messages: []Message{
-		{Assistant: &AssistantContent{Parts: []ContentPart{{ToolCall: &ToolCall{ID: "c1", Name: "read", Arguments: "{}"}}}}},
+		{Assistant: &AssistantContent{Parts: []ContentPart{
+			{ToolCall: &ToolCall{ID: "c1", Name: "read", Arguments: "{}"}},
+			{ToolCall: &ToolCall{ID: "c2", Name: "read", Arguments: "{}"}},
+		}}},
 		{ToolResult: &ToolResult{ToolCallID: "c1", Parts: []ContentPart{{Text: &TextPart{Text: "a"}}}}},
 		{ToolResult: &ToolResult{ToolCallID: "c2", Parts: []ContentPart{{Text: &TextPart{Text: "b"}}}}},
 	}}

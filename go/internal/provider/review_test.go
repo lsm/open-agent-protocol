@@ -173,14 +173,76 @@ func TestTheBodyTruncatesALongToolIDForAnOpenAIHost(t *testing.T) {
 	}
 }
 
-func TestAnAnsweredCallStillGrowsASyntheticResultOnceItsIDIsNormalized(t *testing.T) {
-	model := loopbackModel()
-	model.BaseURL = "https://api.mistral.ai"
+func TestAnAnsweredCallWhoseIDIsRewrittenGrowsNoSecondResult(t *testing.T) {
 	messages := []Message{
 		{Assistant: &AssistantContent{API: "openai-completions", Provider: "local", Model: "local-model", StopReason: "tool_use", Parts: []ContentPart{
 			{ToolCall: &ToolCall{ID: "call_original", Name: "bash", Arguments: "{}"}},
 		}}},
 		{ToolResult: &ToolResult{ToolCallID: "call_original", Parts: []ContentPart{{Text: &TextPart{Text: "ok"}}}}},
+		{User: &UserContent{Text: "next", HasText: true}},
+	}
+
+	rewritten := func(name string, config TransformConfig, wantIDs int) {
+		t.Helper()
+		out := PreTransform(messages, config)
+		results := 0
+		var id string
+		for _, m := range out {
+			if m.ToolResult != nil {
+				results++
+				id = m.ToolResult.ToolCallID
+			}
+		}
+		if results != wantIDs {
+			t.Errorf("%s: got %d tool results, want %d: the answered set is keyed the way the pending set is, so an answered call is answered once", name, results, wantIDs)
+		}
+		if wantIDs == 1 && id == "call_original" {
+			t.Errorf("%s: the result's id = %q, want the rewritten one", name, id)
+		}
+	}
+
+	rewritten("a mistral id", TransformConfig{
+		TargetAPI: "openai-completions", TargetProvider: "local", TargetModelID: "local-model",
+		MistralToolIDs: true, InsertSyntheticResult: true,
+	}, 1)
+}
+
+func TestAnAnsweredCallWhoseIDIsTruncatedGrowsNoSecondResult(t *testing.T) {
+	const long = "abcdefghijklmnopqrstuvwxyz1234567890ABCDEFGHIJ"
+	messages := []Message{
+		{Assistant: &AssistantContent{API: "openai-completions", Provider: "local", Model: "local-model", StopReason: "tool_use", Parts: []ContentPart{
+			{ToolCall: &ToolCall{ID: long, Name: "bash", Arguments: "{}"}},
+		}}},
+		{ToolResult: &ToolResult{ToolCallID: long, Parts: []ContentPart{{Text: &TextPart{Text: "ok"}}}}},
+		{User: &UserContent{Text: "next", HasText: true}},
+	}
+	out := PreTransform(messages, TransformConfig{
+		TargetAPI: "openai-completions", TargetProvider: "local", TargetModelID: "local-model",
+		MaxToolIDLen: 40, InsertSyntheticResult: true,
+	})
+	results := 0
+	for _, m := range out {
+		if m.ToolResult == nil {
+			continue
+		}
+		results++
+		if m.ToolResult.ToolCallID == long {
+			t.Errorf("the result's id = %q, want the truncated one", m.ToolResult.ToolCallID)
+		}
+		if len(m.ToolResult.ToolCallID) != 40 {
+			t.Errorf("the result's id is %d bytes, want the 40 a normalized one is", len(m.ToolResult.ToolCallID))
+		}
+	}
+	if results != 1 {
+		t.Errorf("got %d tool results, want 1: an answered call is answered once", results)
+	}
+}
+
+func TestAnUnansweredCallWhoseIDIsRewrittenStillGrowsOneResult(t *testing.T) {
+	messages := []Message{
+		{Assistant: &AssistantContent{API: "openai-completions", Provider: "local", Model: "local-model", StopReason: "tool_use", Parts: []ContentPart{
+			{ToolCall: &ToolCall{ID: "call_original", Name: "bash", Arguments: "{}"}},
+		}}},
 		{User: &UserContent{Text: "next", HasText: true}},
 	}
 	out := PreTransform(messages, TransformConfig{
@@ -189,35 +251,19 @@ func TestAnAnsweredCallStillGrowsASyntheticResultOnceItsIDIsNormalized(t *testin
 	})
 	results := 0
 	for _, m := range out {
-		if m.ToolResult != nil {
-			results++
+		if m.ToolResult == nil {
+			continue
 		}
-	}
-	if results != 2 {
-		t.Errorf("got %d tool results, want 2: zig keys the answered set by the original id and the pending set by the normalized one, so an answered call still grows a synthetic result", results)
-	}
-}
-
-func TestAnAnsweredCallWithAnUnchangedIDGrowsNoSyntheticResult(t *testing.T) {
-	messages := []Message{
-		{Assistant: &AssistantContent{API: "openai-completions", Provider: "local", Model: "local-model", StopReason: "tool_use", Parts: []ContentPart{
-			{ToolCall: &ToolCall{ID: "call_1", Name: "bash", Arguments: "{}"}},
-		}}},
-		{ToolResult: &ToolResult{ToolCallID: "call_1", Parts: []ContentPart{{Text: &TextPart{Text: "ok"}}}}},
-		{User: &UserContent{Text: "next", HasText: true}},
-	}
-	out := PreTransform(messages, TransformConfig{
-		TargetAPI: "openai-completions", TargetProvider: "local", TargetModelID: "local-model",
-		InsertSyntheticResult: true,
-	})
-	results := 0
-	for _, m := range out {
-		if m.ToolResult != nil {
-			results++
+		results++
+		if !m.ToolResult.IsError {
+			t.Error("the grown result is the error standing in for the missing one")
+		}
+		if m.ToolResult.ToolCallID == "call_original" {
+			t.Error("the grown result carries the rewritten id, so it names the call it stands in for on the wire")
 		}
 	}
 	if results != 1 {
-		t.Errorf("got %d tool results, want 1: an id that normalization leaves alone lines the two sets up", results)
+		t.Errorf("got %d tool results, want exactly 1", results)
 	}
 }
 
