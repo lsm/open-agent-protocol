@@ -10,6 +10,7 @@ const register_builtins = @import("register_builtins");
 const agent = @import("agent");
 const event_stream = @import("event_stream");
 const tui_runtime = @import("tui_runtime");
+const tui_auto_continue = @import("tui_auto_continue");
 const tui_state = @import("tui_state");
 const tui_commands = @import("tui_commands");
 const tui_login = @import("tui_login");
@@ -36,6 +37,7 @@ extern "c" fn unsetenv(name: [*:0]const u8) c_int;
 
 pub const TuiRuntime = tui_runtime.TuiRuntime;
 pub const TuiRuntimeOptions = tui_runtime.TuiRuntimeOptions;
+pub const parseContextWindow = tui_runtime.parseContextWindow;
 
 const max_session_event_jsonl_bytes = 8 * 1024 * 1024;
 const max_session_event_payload_bytes = max_session_event_jsonl_bytes / 2;
@@ -233,6 +235,271 @@ test "App cwd display neutralises control bytes in the working directory" {
     try std.testing.expect(std.mem.indexOf(u8, app.state.cwd_display, "\x1b") == null);
     try std.testing.expect(std.mem.indexOf(u8, app.state.cwd_display, "\x07") == null);
     try std.testing.expect(std.mem.indexOf(u8, app.state.cwd_display, "/tmp/evil?[2J?]0;pwned?dir") != null);
+}
+
+fn branchRepoBase(allocator: std.mem.Allocator, tmp: *const std.testing.TmpDir) ![]u8 {
+    const cwd = try currentPathOwned(allocator);
+    defer allocator.free(cwd);
+    return std.fs.path.join(allocator, &.{ cwd, ".zig-cache", "tmp", &tmp.sub_path });
+}
+
+const BranchRepo = struct {
+    tmp: std.testing.TmpDir,
+    repo: []u8,
+    git: []u8,
+
+    fn init(allocator: std.mem.Allocator) !BranchRepo {
+        var self: BranchRepo = .{ .tmp = std.testing.tmpDir(.{}), .repo = &.{}, .git = &.{} };
+        errdefer self.tmp.cleanup();
+        const base = try branchRepoBase(allocator, &self.tmp);
+        self.repo = std.fs.path.join(allocator, &.{ base, "work" }) catch |err| {
+            allocator.free(base);
+            return err;
+        };
+        allocator.free(base);
+        errdefer allocator.free(self.repo);
+        self.git = try std.fs.path.join(allocator, &.{ self.repo, ".git" });
+        errdefer allocator.free(self.git);
+        try compat.fs.createDir(compat.fs.getCwd(), self.git);
+        return self;
+    }
+
+    fn deinit(self: *BranchRepo, allocator: std.mem.Allocator) void {
+        allocator.free(self.git);
+        allocator.free(self.repo);
+        self.tmp.cleanup();
+    }
+
+    fn writeHead(self: BranchRepo, allocator: std.mem.Allocator, contents: []const u8) !void {
+        const head = try std.fs.path.join(allocator, &.{ self.git, "HEAD" });
+        defer allocator.free(head);
+        try compat.fs.writeFile(compat.fs.getCwd(), head, contents);
+    }
+
+    fn makeDotGitAFile(self: BranchRepo, allocator: std.mem.Allocator, contents: []const u8) !void {
+        const head = try std.fs.path.join(allocator, &.{ self.git, "HEAD" });
+        defer allocator.free(head);
+        compat.fs.removeFile(head);
+        compat.fs.removeDir(self.git);
+        try compat.fs.writeFile(compat.fs.getCwd(), self.git, contents);
+    }
+};
+
+test "App git branch reads the branch name from the repository HEAD" {
+    var repo = try BranchRepo.init(std.testing.allocator);
+    defer repo.deinit(std.testing.allocator);
+    try repo.writeHead(std.testing.allocator, "ref: refs/heads/tui-status\n");
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, repo.repo);
+    try app.refreshCwdDisplay();
+
+    try std.testing.expectEqualStrings("tui-status", app.state.git_branch);
+}
+
+test "App git branch shows the abbreviated commit id on a detached HEAD" {
+    var repo = try BranchRepo.init(std.testing.allocator);
+    defer repo.deinit(std.testing.allocator);
+    try repo.writeHead(std.testing.allocator, "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0\n");
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, repo.repo);
+    try app.refreshCwdDisplay();
+
+    try std.testing.expectEqualStrings("a1b2c3d", app.state.git_branch);
+}
+
+test "App git branch follows a worktree gitdir file to the real HEAD" {
+    var repo = try BranchRepo.init(std.testing.allocator);
+    defer repo.deinit(std.testing.allocator);
+    const base = try branchRepoBase(std.testing.allocator, &repo.tmp);
+    defer std.testing.allocator.free(base);
+    const real_git = try std.fs.path.join(std.testing.allocator, &.{ base, "real-git" });
+    defer std.testing.allocator.free(real_git);
+    try compat.fs.createDir(compat.fs.getCwd(), real_git);
+    const real_head = try std.fs.path.join(std.testing.allocator, &.{ real_git, "HEAD" });
+    defer std.testing.allocator.free(real_head);
+    try compat.fs.writeFile(compat.fs.getCwd(), real_head, "ref: refs/heads/worktree-branch\n");
+    const pointer = try std.fmt.allocPrint(std.testing.allocator, "gitdir: {s}\n", .{real_git});
+    defer std.testing.allocator.free(pointer);
+    try repo.makeDotGitAFile(std.testing.allocator, pointer);
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, repo.repo);
+    try app.refreshCwdDisplay();
+
+    try std.testing.expectEqualStrings("worktree-branch", app.state.git_branch);
+}
+
+test "App git branch follows a relative gitdir pointer against the working directory" {
+    var repo = try BranchRepo.init(std.testing.allocator);
+    defer repo.deinit(std.testing.allocator);
+    const real_git = try std.fs.path.join(std.testing.allocator, &.{ repo.repo, "..", "modules", "sub" });
+    defer std.testing.allocator.free(real_git);
+    try compat.fs.createDir(compat.fs.getCwd(), real_git);
+    const real_head = try std.fs.path.join(std.testing.allocator, &.{ real_git, "HEAD" });
+    defer std.testing.allocator.free(real_head);
+    try compat.fs.writeFile(compat.fs.getCwd(), real_head, "ref: refs/heads/submodule\n");
+    const pointer = try std.fmt.allocPrint(std.testing.allocator, "gitdir: ../modules/sub\n", .{});
+    defer std.testing.allocator.free(pointer);
+    try repo.makeDotGitAFile(std.testing.allocator, pointer);
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, repo.repo);
+    try app.refreshCwdDisplay();
+
+    try std.testing.expectEqualStrings("submodule", app.state.git_branch);
+}
+
+test "App git branch walks up to the enclosing repository" {
+    var repo = try BranchRepo.init(std.testing.allocator);
+    defer repo.deinit(std.testing.allocator);
+    try repo.writeHead(std.testing.allocator, "ref: refs/heads/enclosing\n");
+    const nested = try std.fs.path.join(std.testing.allocator, &.{ repo.repo, "src", "deep" });
+    defer std.testing.allocator.free(nested);
+    try compat.fs.createDir(compat.fs.getCwd(), nested);
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, nested);
+    try app.refreshCwdDisplay();
+
+    try std.testing.expectEqualStrings("enclosing", app.state.git_branch);
+}
+
+test "App git branch stops at a repository it cannot inspect" {
+    var repo = try BranchRepo.init(std.testing.allocator);
+    defer repo.deinit(std.testing.allocator);
+    try repo.writeHead(std.testing.allocator, "ref: refs/heads/outer\n");
+    const broken = try std.fs.path.join(std.testing.allocator, &.{ repo.repo, "locked" });
+    defer std.testing.allocator.free(broken);
+    try compat.fs.createDir(compat.fs.getCwd(), broken);
+    const broken_git = try std.fs.path.join(std.testing.allocator, &.{ broken, ".git" });
+    defer std.testing.allocator.free(broken_git);
+    try compat.fs.symLink(compat.fs.getCwd(), "/nonexistent-oap-git-target", broken_git);
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, broken);
+    try app.refreshCwdDisplay();
+
+    try std.testing.expectEqualStrings("", app.state.git_branch);
+}
+
+test "App git branch stops at a repository whose gitdir pointer is unparseable" {
+    var repo = try BranchRepo.init(std.testing.allocator);
+    defer repo.deinit(std.testing.allocator);
+    try repo.writeHead(std.testing.allocator, "ref: refs/heads/outer\n");
+    try repo.makeDotGitAFile(std.testing.allocator, "not a pointer at all");
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, repo.repo);
+    try app.refreshCwdDisplay();
+
+    try std.testing.expectEqualStrings("", app.state.git_branch);
+}
+
+test "App git branch stops at a repository whose HEAD is unreadable" {
+    var repo = try BranchRepo.init(std.testing.allocator);
+    defer repo.deinit(std.testing.allocator);
+    try repo.writeHead(std.testing.allocator, "ref: refs/heads/outer\n");
+    const inner = try std.fs.path.join(std.testing.allocator, &.{ repo.repo, "inner" });
+    defer std.testing.allocator.free(inner);
+    const inner_git = try std.fs.path.join(std.testing.allocator, &.{ inner, ".git" });
+    defer std.testing.allocator.free(inner_git);
+    try compat.fs.createDir(compat.fs.getCwd(), inner_git);
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, inner);
+    try app.refreshCwdDisplay();
+
+    try std.testing.expectEqualStrings("", app.state.git_branch);
+}
+
+test "App git branch takes the nearest repository rather than an enclosing one" {
+    var repo = try BranchRepo.init(std.testing.allocator);
+    defer repo.deinit(std.testing.allocator);
+    try repo.writeHead(std.testing.allocator, "ref: refs/heads/outer\n");
+    const inner = try std.fs.path.join(std.testing.allocator, &.{ repo.repo, "inner" });
+    defer std.testing.allocator.free(inner);
+    const inner_git = try std.fs.path.join(std.testing.allocator, &.{ inner, ".git" });
+    defer std.testing.allocator.free(inner_git);
+    try compat.fs.createDir(compat.fs.getCwd(), inner_git);
+    const inner_head = try std.fs.path.join(std.testing.allocator, &.{ inner_git, "HEAD" });
+    defer std.testing.allocator.free(inner_head);
+    try compat.fs.writeFile(compat.fs.getCwd(), inner_head, "ref: refs/heads/inner\n");
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, inner);
+    try app.refreshCwdDisplay();
+
+    try std.testing.expectEqualStrings("inner", app.state.git_branch);
+}
+
+test "App git branch neutralises control bytes read from HEAD" {
+    var repo = try BranchRepo.init(std.testing.allocator);
+    defer repo.deinit(std.testing.allocator);
+    try repo.writeHead(std.testing.allocator, "ref: refs/heads/evil\x1b[2J\x07\n");
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, repo.repo);
+    try app.refreshCwdDisplay();
+
+    try std.testing.expect(std.mem.indexOf(u8, app.state.git_branch, "\x1b") == null);
+    try std.testing.expect(std.mem.indexOf(u8, app.state.git_branch, "\x07") == null);
+    try std.testing.expect(std.mem.indexOf(u8, app.state.git_branch, "evil?[2J?") != null);
+}
+
+test "App slow tick re-reads the branch after the working directory changes" {
+    var repo = try BranchRepo.init(std.testing.allocator);
+    defer repo.deinit(std.testing.allocator);
+    try repo.writeHead(std.testing.allocator, "ref: refs/heads/one\n");
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, repo.repo);
+    try app.refreshCwdDisplay();
+    try std.testing.expectEqualStrings("one", app.state.git_branch);
+
+    try repo.writeHead(std.testing.allocator, "ref: refs/heads/two\n");
+    try app.refreshBranchOnSlowTick();
+    try std.testing.expectEqualStrings("two", app.state.git_branch);
+}
+
+const filesystem_root = "/";
+
+test "App git branch is empty when no ancestor holds a repository" {
+    const label = try gitHeadLabel(std.testing.allocator, filesystem_root);
+    defer if (label) |value| std.testing.allocator.free(value);
+    try std.testing.expect(label == null);
+}
+
+fn refreshGitBranchProbe(allocator: std.mem.Allocator) !void {
+    const label = try gitHeadLabel(allocator, filesystem_root);
+    if (label) |value| allocator.free(value);
+}
+
+test "gitHeadLabel survives an allocation failure at every step" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, refreshGitBranchProbe, .{});
 }
 
 test "collapseHome shortens the home directory only on a path component boundary" {
@@ -589,10 +856,16 @@ pub const App = struct {
     session_created_at: i64 = 0,
     compaction_offset: u64 = 0,
     pending_thinking: std.ArrayList(u8) = .empty,
+    pending_after_compaction: ?[]u8 = null,
+    compaction_just_ended: ?bool = null,
     session_title: []u8 = &.{},
     session_title_generated: bool = false,
     first_user_text: []u8 = &.{},
     title_session_id: []u8 = &.{},
+    run_error_text: []u8 = &.{},
+    auto_continue: tui_auto_continue.Streak = .{},
+    replaying_history: bool = false,
+    branch_dir: []u8 = &.{},
 
     pub fn init(allocator: std.mem.Allocator, options: tui_runtime.TuiRuntimeOptions) !App {
         var runtime_options = options;
@@ -663,9 +936,12 @@ pub const App = struct {
         if (self.written_model.len > 0) self.allocator.free(self.written_model);
         if (self.written_provider.len > 0) self.allocator.free(self.written_provider);
         self.pending_thinking.deinit(self.allocator);
+        if (self.pending_after_compaction) |pending| self.allocator.free(pending);
         if (self.session_title.len > 0) self.allocator.free(self.session_title);
         if (self.first_user_text.len > 0) self.allocator.free(self.first_user_text);
         if (self.title_session_id.len > 0) self.allocator.free(self.title_session_id);
+        if (self.run_error_text.len > 0) self.allocator.free(self.run_error_text);
+        if (self.branch_dir.len > 0) self.allocator.free(self.branch_dir);
         self.state.deinit();
         self.* = undefined;
     }
@@ -706,11 +982,25 @@ pub const App = struct {
         };
     }
 
+    fn rememberRunError(self: *App, message: []const u8) !void {
+        if (std.mem.eql(u8, self.run_error_text, message)) return;
+        const owned = try self.allocator.dupe(u8, message);
+        if (self.run_error_text.len > 0) self.allocator.free(self.run_error_text);
+        self.run_error_text = owned;
+    }
+
+    fn forgetRunError(self: *App) void {
+        if (self.run_error_text.len == 0) return;
+        self.allocator.free(self.run_error_text);
+        self.run_error_text = &.{};
+    }
+
     fn noteTerminalEvent(self: *App, event: tui_runtime.TuiEvent) !bool {
         switch (event) {
             .agent_end => |payload| return payload.reason == .completed,
             .compaction_end => |payload| {
                 if (payload.outcome == .completed) try self.recordCompactionTranscript(payload.transcript.slice());
+                self.compaction_just_ended = payload.outcome == .completed;
                 return true;
             },
             else => return false,
@@ -742,6 +1032,7 @@ pub const App = struct {
 
     pub fn resumeSelectedSession(self: *App) !void {
         const store = self.store orelse return error.NoStoreConfigured;
+        try self.dropPendingAfterCompaction("the session was resumed before the compaction finished");
         if (self.state.session_index >= self.state.sessions.items.len) return;
         const selected = self.state.sessions.items[self.state.session_index];
         const runtime = if (self.runtime) |r| r else return error.NoRuntimeConfigured;
@@ -770,9 +1061,12 @@ pub const App = struct {
         } else {
             try self.state.status.setModelWithContext(self.allocator, loaded.metadata.model, loaded.metadata.provider, 0);
         }
+        self.replaying_history = true;
+        defer self.replaying_history = false;
         for (loaded.events.items) |*event| {
             try self.applyRuntimeEvent(event.*);
         }
+        self.discardReplayedError();
         try self.state.finalizeInterruptedTools();
         self.state.retireToolOccurrences();
         if (self.session) |*session| session.clearQueuedMessages();
@@ -1473,6 +1767,55 @@ pub const App = struct {
         }
     }
 
+    fn runFinishedWithoutProviderError(self: *App) void {
+        self.forgetRunError();
+        self.auto_continue.onUserTurn();
+    }
+
+    pub fn userTookOver(self: *App) void {
+        const was_pending = self.auto_continue.pending();
+        self.auto_continue.onUserTurn();
+        if (!was_pending) return;
+        self.state.appendTranscript(.system, "the automatic continue was dropped.") catch {};
+    }
+
+    pub fn discardReplayedError(self: *App) void {
+        self.forgetRunError();
+        self.auto_continue.onUserTurn();
+    }
+
+    fn scheduleAutoContinue(self: *App) void {
+        if (self.state.queue.total() > 0) {
+            self.auto_continue.onUserTurn();
+            return;
+        }
+        switch (self.auto_continue.onRunEndedInError(self.run_error_text, compat.time.nowMillis())) {
+            .skip => {},
+            .send_after => |delay| {
+                const message = std.fmt.allocPrint(self.allocator, "The run ended in a provider error. Continuing in {d}s.", .{
+                    @divFloor(delay + 999, 1000),
+                }) catch return;
+                defer self.allocator.free(message);
+                self.state.appendTranscript(.system, message) catch {};
+            },
+        }
+    }
+
+    pub fn pumpAutoContinue(self: *App, now_ms: i64) void {
+        if (!self.auto_continue.due(now_ms)) return;
+        if (self.state.mode != .normal) return;
+        if (self.state.status.streaming) return;
+        if (self.state.queue.total() > 0) return;
+        self.auto_continue.take();
+        const message = std.fmt.allocPrint(self.allocator, "Provider error. Sending \"{s}\" on your behalf.", .{
+            tui_auto_continue.continue_text,
+        }) catch return;
+        defer self.allocator.free(message);
+        self.state.appendTranscript(.system, message) catch {};
+        if (self.compactBeforeTurn(tui_auto_continue.continue_text) catch false) return;
+        self.sendUserTurn(tui_auto_continue.continue_text) catch |err| self.recordError(@errorName(err)) catch {};
+    }
+
     pub fn drainEvents(self: *App) !void {
         var session = &(self.session orelse return);
         var completed_agent_end = false;
@@ -1524,6 +1867,7 @@ pub const App = struct {
         self.state.reconcileSteers(session.steersConsumedCount());
         self.syncBackpressureState();
         self.syncModelTelemetry();
+        try self.noteDroppedContextWindow();
         self.collectGeneratedTitle();
         if (self.pending_session_reset and !self.state.status.streaming) {
             if (self.runtime) |runtime| {
@@ -1538,6 +1882,7 @@ pub const App = struct {
                 self.pending_session_reset = false;
             }
         }
+        var resumed_run = false;
         if (completed_agent_end and self.state.queue.total() > 0) {
             session.resumeSession() catch |err| {
                 try self.state.status.setError(self.allocator, @errorName(err));
@@ -1545,10 +1890,25 @@ pub const App = struct {
                 return;
             };
             self.refreshQueuedCounts();
+            resumed_run = true;
+        }
+        if (self.compaction_just_ended) |completed| {
+            self.compaction_just_ended = null;
+            try self.sendPendingAfterCompaction(completed, resumed_run or self.state.status.streaming);
         }
     }
 
     fn applyRuntimeEvent(self: *App, event: tui_runtime.TuiEvent) !void {
+        if (!self.replaying_history) {
+            switch (event) {
+                .@"error" => |payload| try self.rememberRunError(payload.message.slice()),
+                .agent_end => |payload| switch (payload.reason) {
+                    .@"error" => self.scheduleAutoContinue(),
+                    .completed, .cancelled => self.runFinishedWithoutProviderError(),
+                },
+                else => {},
+            }
+        }
         switch (event) {
             .message_start => |payload| {
                 if (payload.role == .user) return;
@@ -1616,6 +1976,13 @@ pub const App = struct {
         if (trimmed.len == 0) return;
         self.state.transcript_scroll = 0;
         if (trimmed[0] == '/') return try self.submitCommand(trimmed);
+        self.forgetRunError();
+        self.userTookOver();
+        if (try self.compactBeforeTurn(trimmed)) return;
+        try self.sendUserTurn(trimmed);
+    }
+
+    fn sendUserTurn(self: *App, trimmed: []const u8) !void {
         self.applyPendingSessionResetSync() catch |err| {
             if (err == error.PendingSessionReset) {
                 try self.state.appendTranscript(.@"error", "Session reset pending; wait for the current run to finish.");
@@ -1637,10 +2004,67 @@ pub const App = struct {
         self.refreshQueuedCounts();
     }
 
+    fn contextWindowInEffect(self: *const App) u64 {
+        const runtime = self.runtime orelse return 0;
+        const model = runtime.currentModel() orelse return 0;
+        return model.context_window;
+    }
+
+    fn estimatedTokensForTurn(self: *const App, text: []const u8) u64 {
+        const message: ai_types.Message = .{ .user = .{
+            .content = .{ .text = text },
+            .timestamp = 0,
+        } };
+        return self.state.telemetry.estimated_tokens + agent.estimateMessageTokens(message);
+    }
+
+    fn compactBeforeTurn(self: *App, text: []const u8) !bool {
+        const share = self.state.autocompact_percent orelse return false;
+        if (self.pending_after_compaction != null) return false;
+        if (self.state.status.streaming or self.state.status.compacting) return false;
+        const history = if (self.session) |*session| session.history() else return false;
+        if (history.len == 0 or agent.compaction.isCompacted(history)) return false;
+        const window = self.contextWindowInEffect();
+        if (!agent.compaction.isAtShare(self.estimatedTokensForTurn(text), @intCast(window), share)) return false;
+
+        const pending = try self.allocator.dupe(u8, text);
+        errdefer self.allocator.free(pending);
+        const msg = try std.fmt.allocPrint(self.allocator, "context is at {d}% of {d} tokens; compacting before this turn.", .{ share, window });
+        defer self.allocator.free(msg);
+        try self.state.appendTranscript(.system, msg);
+        try self.startCompaction("");
+        self.pending_after_compaction = pending;
+        return true;
+    }
+
+    fn sendPendingAfterCompaction(self: *App, completed: bool, busy: bool) !void {
+        const pending = self.pending_after_compaction orelse return;
+        self.pending_after_compaction = null;
+        defer self.allocator.free(pending);
+        if (!completed) {
+            try self.state.appendTranscript(.system, "the automatic compaction did not finish; sending the message with the history unchanged");
+        }
+        if (busy) {
+            try self.steer(pending);
+            return;
+        }
+        try self.sendUserTurn(pending);
+    }
+
+    fn dropPendingAfterCompaction(self: *App, reason: []const u8) !void {
+        const pending = self.pending_after_compaction orelse return;
+        self.pending_after_compaction = null;
+        defer self.allocator.free(pending);
+        const msg = try std.fmt.allocPrint(self.allocator, "a message waiting on an automatic compaction was not sent: {s}.", .{reason});
+        defer self.allocator.free(msg);
+        try self.state.appendTranscript(.system, msg);
+    }
+
     pub fn steer(self: *App, text: []const u8) !void {
         const trimmed = std.mem.trim(u8, text, " \t\r\n");
         if (trimmed.len == 0) return;
         if (trimmed[0] == '/') return try self.submitCommand(trimmed);
+        self.userTookOver();
         self.applyPendingSessionResetSync() catch |err| {
             if (err == error.PendingSessionReset) {
                 try self.state.appendTranscript(.@"error", "Session reset pending; wait for the current run to finish.");
@@ -1695,6 +2119,7 @@ pub const App = struct {
 
         if (command.kind == .abort) {
             if (self.approval_waiter) |waiter| waiter.rejectPending();
+            self.userTookOver();
         }
 
         switch (result.action) {
@@ -1720,6 +2145,10 @@ pub const App = struct {
             .none => {},
         }
         if ((command.kind == .model or command.kind == .provider) and command.arg != null) self.persistCurrentModel();
+        switch (command.kind) {
+            .context, .model, .provider => self.applyContextWindow(),
+            else => {},
+        }
         if (result.output.len > 0) {
             try self.state.appendTranscript(if (result.is_error) .@"error" else .system, result.output);
             if (result.is_error) try self.state.status.setError(self.allocator, result.output);
@@ -1733,6 +2162,23 @@ pub const App = struct {
         }
         try self.state.status.setError(self.allocator, message);
         try self.state.appendTranscript(.@"error", message);
+    }
+
+    fn noteDroppedContextWindow(self: *App) !void {
+        const runtime = self.runtime orelse return;
+        const refused = runtime.takeContextWindowRefused() orelse return;
+        const model = runtime.currentModel() orelse return;
+        self.applyContextWindow();
+        const msg = try std.fmt.allocPrint(self.allocator, "{d} context tokens is above the {d} {s} takes, so the model's own {d} is in effect.", .{ refused, runtime.contextWindowMaximum() orelse 0, model.id, model.context_window });
+        defer self.allocator.free(msg);
+        try self.state.appendTranscript(.system, msg);
+    }
+
+    fn applyContextWindow(self: *App) void {
+        const runtime = self.runtime orelse return;
+        const window = runtime.contextWindow();
+        self.state.status.context_limit = @intCast(window);
+        self.state.telemetry.context_window = window;
     }
 
     fn persistCurrentModel(self: *App) void {
@@ -1793,6 +2239,7 @@ pub const App = struct {
     pub fn refreshCwdDisplay(self: *App) !void {
         if (self.working_dir.len == 0) {
             try self.state.setCwdDisplay(self.allocator, "");
+            try self.state.setGitBranch(self.allocator, "");
             return;
         }
         const sanitized = try tui_text.sanitizeTerminalText(self.allocator, self.working_dir);
@@ -1802,6 +2249,31 @@ pub const App = struct {
         const display = try collapseHome(self.allocator, sanitized, home);
         defer self.allocator.free(display);
         try self.state.setCwdDisplay(self.allocator, display);
+        try self.refreshGitBranch();
+    }
+
+    pub fn refreshGitBranch(self: *App) !void {
+        const raw = try gitHeadLabel(self.allocator, self.working_dir);
+        defer if (raw) |value| self.allocator.free(value);
+        const sanitized = if (raw) |value|
+            try tui_text.sanitizeTerminalText(self.allocator, value)
+        else
+            try self.allocator.dupe(u8, "");
+        defer self.allocator.free(sanitized);
+        try self.state.setGitBranch(self.allocator, sanitized);
+        if (!std.mem.eql(u8, self.branch_dir, self.working_dir)) {
+            const owned = try self.allocator.dupe(u8, self.working_dir);
+            if (self.branch_dir.len > 0) self.allocator.free(self.branch_dir);
+            self.branch_dir = owned;
+        }
+    }
+
+    pub fn refreshBranchOnSlowTick(self: *App) !void {
+        if (!std.mem.eql(u8, self.branch_dir, self.working_dir)) {
+            try self.refreshCwdDisplay();
+            return;
+        }
+        try self.refreshGitBranch();
     }
 
     pub fn appendWelcome(self: *App) !void {
@@ -1920,6 +2392,7 @@ pub const App = struct {
             return err;
         };
         try self.ensureSessionId();
+        self.userTookOver();
         if (self.session) |*session| {
             try session.followUp(trimmed);
             try self.state.appendQueuedFollowUp(trimmed);
@@ -2131,6 +2604,7 @@ pub const TuiModel = struct {
                             },
                             .escape => {
                                 app.decideApproval(false, false) catch |err| app.recordError(@errorName(err)) catch {};
+                                app.userTookOver();
                                 decided = true;
                             },
                             else => {},
@@ -2153,7 +2627,7 @@ pub const TuiModel = struct {
                         .enter => {
                             app.resumeSelectedSession() catch |err| app.recordError(@errorName(err)) catch {};
                         },
-                        .escape => app.state.mode = .normal,
+                        .escape => closeModal(app),
                         else => {},
                     }
                     return .none;
@@ -2165,7 +2639,10 @@ pub const TuiModel = struct {
                             app.submitLoginInput(text);
                             app.state.composer.clear();
                         },
-                        .escape => app.cancelLogin(),
+                        .escape => {
+                            app.cancelLogin();
+                            app.userTookOver();
+                        },
                         .backspace => _ = app.state.composer.deleteBeforeCursor(),
                         .char => |c| appendChar(app, c) catch {},
                         .paste => |text| app.state.composer.insertPaste(app.allocator, text) catch {},
@@ -2193,7 +2670,7 @@ pub const TuiModel = struct {
                             .login => app.applySelectedLogin() catch |err| app.recordError(@errorName(err)) catch {},
                             .permission => app.applySelectedPermission() catch |err| app.recordError(@errorName(err)) catch {},
                         },
-                        .escape => app.state.mode = .normal,
+                        .escape => closeModal(app),
                         else => {},
                     }
                     return .none;
@@ -2297,10 +2774,14 @@ pub const TuiModel = struct {
             .tick => {
                 app.state.anim_tick +%= 1;
                 app.drainEvents() catch {};
+                app.pumpAutoContinue(compat.time.nowMillis());
                 app.pollLogin() catch {};
                 app.state.refreshStreamingElapsed(compat.time.nowMillis());
                 if (app.interrupt_armed_tick) |armed| {
                     if (app.state.anim_tick -% armed > interrupt_window_ticks) app.interrupt_armed_tick = null;
+                }
+                if (app.state.anim_tick % branch_refresh_ticks == 0) {
+                    app.refreshBranchOnSlowTick() catch |err| app.recordError(@errorName(err)) catch {};
                 }
             },
             .quit => return self.quitCmd(app, ctx),
@@ -2321,6 +2802,8 @@ pub const TuiModel = struct {
 
     const interrupt_window_ticks: u64 = 30;
 
+    const branch_refresh_ticks: u64 = 100;
+
     fn streamActive(app: *const App) bool {
         if (app.state.status.streaming) return true;
         if (app.runtime) |runtime| return runtime.stream_active;
@@ -2332,6 +2815,7 @@ pub const TuiModel = struct {
     }
 
     fn handleInterrupt(self: *TuiModel, app: *App, ctx: *zz.Context) zz.Cmd(Msg) {
+        app.userTookOver();
         if (app.interrupt_armed_tick != null) return self.quitCmd(app, ctx);
         if (app.state.mode == .login_input) {
             app.cancelLogin();
@@ -2355,8 +2839,14 @@ pub const TuiModel = struct {
         return self.quitCmd(app, ctx);
     }
 
+    fn closeModal(app: *App) void {
+        app.state.mode = .normal;
+        app.userTookOver();
+    }
+
     fn handleEscape(self: *TuiModel, app: *App) void {
         _ = self;
+        app.userTookOver();
         if (app.state.composer.buffer.items.len > 0) {
             app.state.composer.clear();
             return;
@@ -2451,7 +2941,7 @@ pub const TuiModel = struct {
             composer_view.hintText(ctx.allocator, &app.state) catch "";
         const bar = status_bar_view.render(ctx.allocator, &app.state, .{ .width = width, .hint = hint }) catch "";
         const status = if (height >= cwd_row_min_height and app.state.cwd_display.len > 0) blk: {
-            const row = status_bar_view.renderCwdRow(ctx.allocator, app.state.cwd_display, width) catch break :blk bar;
+            const row = status_bar_view.renderCwdRow(ctx.allocator, app.state.cwd_display, app.state.git_branch, width) catch break :blk bar;
             break :blk tui_render.joinVertical(ctx.allocator, &.{ bar, row }) catch bar;
         } else bar;
         composer_view.adjustScroll(ctx.allocator, &app.state, width, height) catch {};
@@ -2842,6 +3332,81 @@ fn currentPathOwned(allocator: std.mem.Allocator) ![]u8 {
     return allocator.dupe(u8, path_z);
 }
 
+const git_head_prefix = "ref: refs/heads/";
+const git_head_max_bytes = 4096;
+const detached_id_len = 7;
+
+fn gitHeadLabel(allocator: std.mem.Allocator, dir_path: []const u8) !?[]u8 {
+    if (dir_path.len == 0) return null;
+    var current = try allocator.dupe(u8, dir_path);
+    defer allocator.free(current);
+    while (current.len > 0) {
+        const lookup = try gitHeadPath(allocator, current);
+        defer if (lookup.path) |value| allocator.free(value);
+        if (lookup.dot_git_present) {
+            const head = lookup.path orelse break;
+            return try readGitBranchName(allocator, head);
+        }
+        const parent = std.fs.path.dirname(current) orelse break;
+        if (parent.len == 0 or std.mem.eql(u8, parent, current)) break;
+        const next = try allocator.dupe(u8, parent);
+        allocator.free(current);
+        current = next;
+    }
+    return null;
+}
+
+fn readGitBranchName(allocator: std.mem.Allocator, head_path: []const u8) !?[]u8 {
+    const head = compat.fs.readFileAlloc(allocator, compat.fs.getCwd(), head_path, git_head_max_bytes) catch return null;
+    defer allocator.free(head);
+    const line = std.mem.trim(u8, head, " \t\r\n");
+    if (std.mem.startsWith(u8, line, git_head_prefix)) {
+        const name = std.mem.trim(u8, line[git_head_prefix.len..], " \t\r\n");
+        if (name.len == 0) return null;
+        return try allocator.dupe(u8, name);
+    }
+    if (line.len < detached_id_len) return null;
+    return try allocator.dupe(u8, line[0..detached_id_len]);
+}
+
+const HeadLookup = struct {
+    dot_git_present: bool,
+    path: ?[]u8,
+};
+
+fn gitHeadPath(allocator: std.mem.Allocator, dir_path: []const u8) !HeadLookup {
+    const dot_git = try std.fs.path.join(allocator, &.{ dir_path, ".git" });
+    defer allocator.free(dot_git);
+    return switch (compat.fs.fileKind(compat.fs.getCwd(), dot_git)) {
+        .absent => .{ .dot_git_present = false, .path = null },
+        .unreadable => .{ .dot_git_present = true, .path = null },
+        .directory => .{ .dot_git_present = true, .path = try std.fs.path.join(allocator, &.{ dot_git, "HEAD" }) },
+        .file => .{ .dot_git_present = true, .path = try gitPointerHeadPath(allocator, dir_path, dot_git) },
+        .other => .{ .dot_git_present = true, .path = null },
+    };
+}
+
+fn gitPointerHeadPath(allocator: std.mem.Allocator, dir_path: []const u8, dot_git: []const u8) !?[]u8 {
+    const pointer = compat.fs.readFileAlloc(allocator, compat.fs.getCwd(), dot_git, git_head_max_bytes) catch return null;
+    defer allocator.free(pointer);
+    const target = gitDirTarget(pointer) orelse return null;
+    const resolved = if (std.fs.path.isAbsolute(target))
+        try allocator.dupe(u8, target)
+    else
+        try std.fs.path.join(allocator, &.{ dir_path, target });
+    defer allocator.free(resolved);
+    return try std.fs.path.join(allocator, &.{ resolved, "HEAD" });
+}
+
+fn gitDirTarget(pointer: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, pointer, " \t\r\n");
+    const colon = std.mem.indexOfScalar(u8, trimmed, ':') orelse return null;
+    if (!std.mem.eql(u8, trimmed[0..colon], "gitdir")) return null;
+    const target = std.mem.trim(u8, trimmed[colon + 1 ..], " \t\r\n");
+    if (target.len == 0) return null;
+    return target;
+}
+
 fn collapseHome(allocator: std.mem.Allocator, path: []const u8, home: ?[]const u8) ![]u8 {
     const value = home orelse return allocator.dupe(u8, path);
     if (value.len <= 1) return allocator.dupe(u8, path);
@@ -3011,7 +3576,7 @@ fn defaultModel() ai_types.Model {
     };
 }
 
-pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
+pub fn run(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32) !void {
     var environ_map = try compat.createEnvMap(allocator);
     defer environ_map.deinit();
 
@@ -3027,6 +3592,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
     production.initBridge();
 
     var options = production.options();
+    options.context_window = context_window;
     if (fixture) |runtime| {
         options.protocol = runtime.provider.protocolClient();
         options.generate_titles = false;
@@ -3961,6 +4527,197 @@ test "App writes a reply's thinking even when the reply is too large to save" {
     try std.testing.expectEqualStrings("weighing it", loaded.events.items[1].thinking_delta.delta.slice());
 }
 
+const auto_compact_history = [_]ai_types.Message{
+    .{ .user = .{ .content = .{ .text = "first question" }, .timestamp = 0 } },
+    .{ .assistant = .{
+        .content = &.{.{ .text = .{ .text = "first answer" } }},
+        .api = "test-api",
+        .provider = "test-provider",
+        .model = "model-a",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+    } },
+};
+
+fn autoCompactTestApp(mock: *MockAppSession) !App {
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{auto_compact_test_model} });
+    errdefer app.deinit();
+    app.session = mock.session();
+    app.state.autocompact_percent = 50;
+    app.state.telemetry.estimated_tokens = 60_000;
+    return app;
+}
+
+const auto_compact_test_model = ai_types.Model{
+    .id = "model-a",
+    .name = "Model A",
+    .api = "test-api",
+    .provider = "test-provider",
+    .base_url = "https://example.invalid",
+    .reasoning = false,
+    .input = &[_][]const u8{"text"},
+    .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+    .context_window = 100_000,
+    .max_tokens = 1024,
+};
+
+test "autocompact holds a turn until the compaction it started has finished" {
+    var mock = MockAppSession{ .history_messages = &auto_compact_history };
+    defer mock.deinit();
+    var app = try autoCompactTestApp(&mock);
+    defer app.deinit();
+
+    try app.submit("second question");
+
+    try std.testing.expectEqual(@as(usize, 1), mock.compact_count);
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+    try std.testing.expect(app.pending_after_compaction != null);
+
+    try mock.eventStream().push(.{ .compaction_end = .{
+        .outcome = .completed,
+        .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "summary")),
+    } });
+    try app.drainEvents();
+
+    try std.testing.expectEqual(@as(usize, 1), mock.submit_count);
+    try std.testing.expect(app.pending_after_compaction == null);
+}
+
+test "autocompact sends the held turn when the compaction it started did not finish" {
+    var mock = MockAppSession{ .history_messages = &auto_compact_history };
+    defer mock.deinit();
+    var app = try autoCompactTestApp(&mock);
+    defer app.deinit();
+
+    try app.submit("second question");
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+
+    try mock.eventStream().push(.{ .compaction_end = .{ .outcome = .cancelled } });
+    try app.drainEvents();
+
+    try std.testing.expectEqual(@as(usize, 1), mock.submit_count);
+    var said_it = false;
+    for (app.state.transcript.items) |entry| {
+        if (std.mem.indexOf(u8, entry.text.items, "did not finish") != null) said_it = true;
+    }
+    try std.testing.expect(said_it);
+}
+
+test "autocompact leaves a turn alone below the share, and when it is off" {
+    var mock = MockAppSession{ .history_messages = &auto_compact_history };
+    defer mock.deinit();
+    var app = try autoCompactTestApp(&mock);
+    defer app.deinit();
+
+    app.state.telemetry.estimated_tokens = 1_000;
+    try app.submit("well under the share");
+
+    try std.testing.expectEqual(@as(usize, 0), mock.compact_count);
+    try std.testing.expectEqual(@as(usize, 1), mock.submit_count);
+    try std.testing.expect(app.pending_after_compaction == null);
+
+    app.state.telemetry.estimated_tokens = 60_000;
+    app.state.autocompact_percent = null;
+    try app.submit("over the share, but off");
+
+    try std.testing.expectEqual(@as(usize, 0), mock.compact_count);
+    try std.testing.expectEqual(@as(usize, 2), mock.submit_count);
+}
+
+test "autocompact steers the held turn rather than blocking on a run the queue resumed" {
+    var mock = MockAppSession{ .history_messages = &auto_compact_history };
+    defer mock.deinit();
+    var app = try autoCompactTestApp(&mock);
+    defer app.deinit();
+
+    try app.submit("held turn");
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+
+    mock.queued_counts.follow_up = 1;
+    try mock.eventStream().push(.{ .compaction_end = .{ .outcome = .completed } });
+    try app.drainEvents();
+
+    try std.testing.expectEqual(@as(usize, 1), mock.resume_count);
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+    try std.testing.expectEqual(@as(usize, 1), mock.steer_count);
+}
+
+test "a session resume drops a held turn with a note, before the resume runs" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+
+    var mock = MockAppSession{ .history_messages = &auto_compact_history };
+    defer mock.deinit();
+    var app = try autoCompactTestApp(&mock);
+    defer app.deinit();
+    if (app.store) |*store| store.deinit();
+    app.store = try session_store.Store.init(std.testing.allocator, base);
+    try saveTestSession(app.store.?, "s1", 1);
+    try app.loadSessions();
+    app.state.session_index = 0;
+
+    try app.submit("held turn");
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+
+    app.resumeSelectedSession() catch {};
+
+    try std.testing.expect(app.pending_after_compaction == null);
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+    var said_it = false;
+    for (app.state.transcript.items) |entry| {
+        if (std.mem.indexOf(u8, entry.text.items, "was not sent: the session was resumed") != null) said_it = true;
+    }
+    try std.testing.expect(said_it);
+}
+
+test "autocompact does not compact a history that is already a summary" {
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    var app = try autoCompactTestApp(&mock);
+    defer app.deinit();
+    mock.history_messages = &[_]ai_types.Message{
+        .{ .user = .{
+            .content = .{ .text = agent.compaction.header ++ "\n\n<summary>\nkept\n</summary>" },
+            .timestamp = 0,
+        } },
+        .{ .assistant = .{
+            .content = &.{.{ .text = .{ .text = agent.compaction.acknowledgement } }},
+            .api = "test-api",
+            .provider = "test-provider",
+            .model = "model-a",
+            .usage = .{},
+            .stop_reason = .stop,
+            .timestamp = 0,
+        } },
+    };
+
+    try app.submit("after a compaction");
+
+    try std.testing.expectEqual(@as(usize, 0), mock.compact_count);
+    try std.testing.expectEqual(@as(usize, 1), mock.submit_count);
+}
+
+test "autocompact starts one compaction, and a turn typed during it takes the normal path" {
+    var mock = MockAppSession{ .history_messages = &auto_compact_history };
+    defer mock.deinit();
+    var app = try autoCompactTestApp(&mock);
+    defer app.deinit();
+
+    try app.submit("first held turn");
+    try app.submit("second turn typed while compacting");
+
+    try std.testing.expectEqual(@as(usize, 1), mock.compact_count);
+    try std.testing.expectEqual(@as(usize, 1), mock.submit_count);
+
+    try mock.eventStream().push(.{ .compaction_end = .{ .outcome = .completed } });
+    try app.drainEvents();
+
+    try std.testing.expectEqual(@as(usize, 2), mock.submit_count);
+}
+
 test "App indexes where a completed compaction starts" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -4343,6 +5100,104 @@ test "App submit abort when streaming via runtime-only cancels and reports trans
     try std.testing.expectEqual(@as(usize, 1), app.state.transcript.items.len);
     try std.testing.expectEqual(tui_state.TranscriptKind.system, app.state.transcript.items[0].kind);
     try std.testing.expectEqualStrings("Turn aborted.", app.state.transcript.items[0].text.items);
+}
+
+const gpt_model = ai_types.Model{
+    .id = "gpt-5-codex",
+    .name = "GPT-5 Codex",
+    .api = "openai-responses",
+    .provider = "openai",
+    .base_url = "https://example.invalid",
+    .reasoning = true,
+    .input = &[_][]const u8{"text"},
+    .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+    .context_window = 128_000,
+    .max_tokens = 16_384,
+};
+
+const kimi_model = ai_types.Model{
+    .id = "kimi-k2.7-code",
+    .name = "Kimi K2.7 Code",
+    .api = "openai-completions",
+    .provider = "kimi",
+    .base_url = "https://example.invalid",
+    .reasoning = false,
+    .input = &[_][]const u8{"text"},
+    .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+    .context_window = 262_144,
+    .max_tokens = 16_384,
+};
+
+test "App says so when a window the model in effect cannot take is dropped" {
+    const models = [_]ai_types.Model{ gpt_model, kimi_model };
+    var app = try App.init(std.testing.allocator, .{ .models = &models, .context_window = 1_100_000 });
+    defer app.deinit();
+
+    try app.drainEvents();
+    var said_it = false;
+    for (app.state.transcript.items) |entry| {
+        if (std.mem.indexOf(u8, entry.text.items, "1100000 context tokens is above the 1000000 gpt-5-codex takes") != null) said_it = true;
+    }
+    try std.testing.expect(said_it);
+    try std.testing.expect(app.runtime.?.contextWindowRefused() == null);
+
+    try app.submit("/context 1m");
+    try app.drainEvents();
+    try app.runtime.?.switchModel("kimi-k2.7-code");
+    try app.drainEvents();
+    var said_again = false;
+    for (app.state.transcript.items) |entry| {
+        if (std.mem.indexOf(u8, entry.text.items, "1000000 context tokens is above the 262144 kimi-k2.7-code takes") != null) said_again = true;
+    }
+    try std.testing.expect(said_again);
+    try std.testing.expectEqual(@as(u64, 262_144), app.runtime.?.contextWindow());
+}
+
+test "App a model command leaves the gauge on the window in effect" {
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ gpt_model, kimi_model } });
+    defer app.deinit();
+
+    try app.submit("/context 200000");
+    try std.testing.expectEqual(@as(usize, 200_000), app.state.status.context_limit);
+
+    try app.submit("/model kimi-k2.7-code");
+    try std.testing.expectEqual(@as(usize, 200_000), app.state.status.context_limit);
+    try std.testing.expectEqual(@as(u64, 200_000), app.state.telemetry.context_window);
+
+    try app.submit("/model gpt-5-codex");
+    try std.testing.expectEqual(@as(u64, 200_000), app.state.telemetry.context_window);
+    try std.testing.expectEqual(@as(usize, 200_000), app.state.status.context_limit);
+}
+
+test "App a catalog refresh that drops the window leaves the gauge on the model's own" {
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ gpt_model, kimi_model } });
+    defer app.deinit();
+
+    try app.submit("/context 1m");
+    try std.testing.expectEqual(@as(usize, 1_000_000), app.state.status.context_limit);
+
+    try app.runtime.?.replaceModels(&[_]ai_types.Model{kimi_model}, null);
+    try app.drainEvents();
+
+    try std.testing.expectEqual(@as(u64, 262_144), app.runtime.?.contextWindow());
+    try std.testing.expectEqual(@as(usize, 262_144), app.state.status.context_limit);
+    try std.testing.expectEqual(@as(u64, 262_144), app.state.telemetry.context_window);
+}
+
+test "App context moves the gauge, and the model's own window comes back" {
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{test_model} });
+    defer app.deinit();
+
+    try app.submit("/context 512");
+
+    try std.testing.expectEqual(@as(usize, 512), app.state.status.context_limit);
+    try std.testing.expectEqual(@as(u64, 512), app.state.telemetry.context_window);
+    try std.testing.expectEqual(@as(u32, 512), app.runtime.?.currentModel().?.context_window);
+
+    try app.submit("/context default");
+
+    try std.testing.expectEqual(@as(usize, 1024), app.state.status.context_limit);
+    try std.testing.expectEqual(@as(u64, 1024), app.state.telemetry.context_window);
 }
 
 test "App submit does not clear stream_aborted for slash commands" {
@@ -5471,8 +6326,7 @@ const MockProvider = struct {
         s.* = event_stream.AssistantMessageEventStream.init(a);
         if (options) |opts| {
             if (opts.requires_owned_stream_events) {
-                s.owns_events = true;
-                s.clone_event_fn = ai_types.cloneAssistantMessageEvent;
+                s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
             }
         }
 
@@ -5834,4 +6688,369 @@ test "TuiModel flush budget ignores the composer's grown height" {
     try app.state.replaceComposerBuffer("aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk llll mmmm nnnn oooo pppp");
     const grown_budget = model.flushBudget(app, &tctx.ctx);
     try std.testing.expectEqual(empty_budget, grown_budget);
+}
+
+fn pushErrorRun(app: *App, mock: *MockAppSession, message: []const u8, reason: tui_runtime.TuiEndReason) !void {
+    try mock.eventStream().push(.{ .@"error" = .{ .message = OwnedSlice(u8).initOwned(try app.allocator.dupe(u8, message)) } });
+    try mock.eventStream().push(.{ .agent_end = .{ .reason = reason } });
+    try app.drainEvents();
+}
+
+const auto_continue_harness = struct {
+    app: App,
+    mock: *MockAppSession,
+
+    fn init() !@This() {
+        const mock = try std.testing.allocator.create(MockAppSession);
+        mock.* = .{};
+        errdefer std.testing.allocator.destroy(mock);
+        var harness = @This(){
+            .app = App.initWithoutRuntime(std.testing.allocator),
+            .mock = mock,
+        };
+        harness.app.session = mock.session();
+        return harness;
+    }
+
+    fn deinit(self: *@This()) void {
+        self.app.deinit();
+        self.mock.deinit();
+        std.testing.allocator.destroy(self.mock);
+    }
+
+    fn failRun(self: *@This(), message: []const u8, reason: tui_runtime.TuiEndReason) !void {
+        try pushErrorRun(&self.app, self.mock, message, reason);
+    }
+
+    fn pump(self: *@This(), advance_ms: i64) void {
+        self.app.pumpAutoContinue(compat.time.nowMillis() + advance_ms);
+    }
+
+    fn pastDelay(self: *@This()) void {
+        self.pump(@intCast(tui_auto_continue.default_delay_ms));
+    }
+
+    fn transcriptHas(self: *@This(), needle: []const u8) bool {
+        for (self.app.state.transcript.items) |entry| {
+            if (std.mem.indexOf(u8, entry.text.items, needle) != null) return true;
+        }
+        return false;
+    }
+};
+
+test "a run ending in a provider error schedules one continue and says so" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try std.testing.expect(harness.app.auto_continue.pending());
+    try std.testing.expect(harness.transcriptHas("Continuing in 3s"));
+
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 1), harness.mock.submit_count);
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.resume_count);
+    try std.testing.expect(harness.transcriptHas("on your behalf"));
+}
+
+test "the automatic continue holds when the second run fails the same way" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 1), harness.mock.submit_count);
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 1), harness.mock.submit_count);
+    try std.testing.expect(!harness.app.auto_continue.pending());
+}
+
+test "a user turn after a failure lets a later one nudge again" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 1), harness.mock.submit_count);
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try harness.app.submit("try the other model");
+    try std.testing.expect(!harness.app.auto_continue.continued);
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 3), harness.mock.submit_count);
+}
+
+test "a cancelled run never schedules a continue" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .cancelled);
+    try std.testing.expect(!harness.app.auto_continue.pending());
+
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+    try std.testing.expect(!harness.transcriptHas("Continuing in"));
+}
+
+test "an auth failure never schedules a continue" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 401 (check ANTHROPIC_API_KEY is valid) (authentication_error: invalid x-api-key)", .@"error");
+    try std.testing.expect(!harness.app.auto_continue.pending());
+
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+    try std.testing.expect(!harness.transcriptHas("Continuing in"));
+}
+
+test "a context overflow never schedules a continue" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("prompt is too long: 250000 tokens > 200000 maximum", .@"error");
+    try std.testing.expect(!harness.app.auto_continue.pending());
+
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+    try std.testing.expect(!harness.transcriptHas("Continuing in"));
+}
+
+test "a user turn inside the delay says the continue was dropped" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try std.testing.expect(harness.transcriptHas("Continuing in 3s"));
+
+    try harness.app.submit("never mind, I will retype it");
+    try std.testing.expect(harness.transcriptHas("the automatic continue was dropped"));
+
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 1), harness.mock.submit_count);
+}
+
+test "a clean run says nothing about a continue that was never armed" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 401 (check the key)", .@"error");
+    try harness.app.submit("let me fix the key");
+    try std.testing.expect(!harness.transcriptHas("dropped"));
+}
+
+test "an abort before the delay is up drops the pending continue" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try std.testing.expect(harness.app.auto_continue.pending());
+
+    try harness.app.submit("/abort");
+    try std.testing.expect(!harness.app.auto_continue.pending());
+
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+}
+
+test "a follow-up queued before the delay is up drops the pending continue" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try std.testing.expect(harness.app.auto_continue.pending());
+
+    _ = try harness.app.queueFollowUp("never mind, use the other key");
+    try std.testing.expect(!harness.app.auto_continue.pending());
+
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+}
+
+test "a follow-up already queued at the failure means no nudge is announced" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    _ = try harness.app.queueFollowUp("then try the other key");
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try std.testing.expect(!harness.app.auto_continue.pending());
+    try std.testing.expect(!harness.transcriptHas("Continuing in"));
+
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+}
+
+test "the automatic continue waits for an automatic compaction like a typed one" {
+    var mock = MockAppSession{ .history_messages = &auto_compact_history };
+    defer mock.deinit();
+    var app = try autoCompactTestApp(&mock);
+    defer app.deinit();
+
+    try pushErrorRun(&app, &mock, "anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try std.testing.expect(app.auto_continue.pending());
+
+    app.pumpAutoContinue(compat.time.nowMillis() + @as(i64, @intCast(tui_auto_continue.default_delay_ms)));
+    try std.testing.expectEqual(@as(usize, 1), mock.compact_count);
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+    try std.testing.expect(app.pending_after_compaction != null);
+
+    try mock.eventStream().push(.{ .compaction_end = .{ .outcome = .completed } });
+    try app.drainEvents();
+    try std.testing.expectEqual(@as(usize, 1), mock.submit_count);
+}
+
+test "a picker open at the deadline defers the nudge rather than spending it" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    harness.app.state.mode = .picker;
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+    try std.testing.expect(harness.app.auto_continue.pending());
+
+    harness.app.state.mode = .normal;
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 1), harness.mock.submit_count);
+}
+
+test "the nudge waits out its delay and holds while a run is still going" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    harness.pump(0);
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+
+    harness.app.state.status.streaming = true;
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+}
+
+test "resuming a session whose last run ended in an error does not nudge" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+
+    var production = try ProductionRuntime.init(std.testing.allocator, .{});
+    defer production.deinit();
+    production.initBridge();
+
+    var app = try App.init(std.testing.allocator, production.options());
+    defer app.deinit();
+    app.runtime.?.run_async = false;
+
+    if (app.store) |*store| store.deinit();
+    app.store = try session_store.Store.init(std.testing.allocator, base);
+
+    const model = app.runtime.?.currentModel() orelse return error.NoModelConfigured;
+    var meta = session_store.SessionMetadata{
+        .session_id = try std.testing.allocator.dupe(u8, "s-error"),
+        .model = try std.testing.allocator.dupe(u8, model.id),
+        .provider = try std.testing.allocator.dupe(u8, model.provider),
+        .last_active = 1,
+    };
+    defer meta.deinit(std.testing.allocator);
+    const saved_error = try std.testing.allocator.dupe(u8, "anthropic request failed: HTTP 400 invalid_request_error");
+    defer std.testing.allocator.free(saved_error);
+    try app.store.?.save(meta, .{ .@"error" = .{ .message = OwnedSlice(u8).initOwned(saved_error) } });
+    try app.store.?.saveEvent("s-error", .{ .agent_end = .{ .reason = .@"error" } });
+
+    try app.loadSessions();
+    app.state.session_index = 0;
+    try app.resumeSelectedSession();
+
+    try std.testing.expect(!app.auto_continue.pending());
+    try std.testing.expectEqualStrings("", app.run_error_text);
+    for (app.state.transcript.items) |entry| {
+        try std.testing.expect(std.mem.indexOf(u8, entry.text.items, "Continuing in") == null);
+    }
+    app.pumpAutoContinue(compat.time.nowMillis() + @as(i64, @intCast(tui_auto_continue.default_delay_ms)));
+    try std.testing.expectEqual(@as(usize, 0), app.runtime.?.steersConsumedCount());
+}
+
+test "Esc while a run is going aborts it and drops the pending continue" {
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    const app = &model.app.?;
+    app.session = mock.session();
+
+    try pushErrorRun(app, &mock, "anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try std.testing.expect(app.auto_continue.pending());
+
+    app.state.status.streaming = true;
+    model.handleEscape(app);
+    try std.testing.expectEqual(@as(usize, 1), mock.cancel_count);
+    try std.testing.expect(!app.auto_continue.pending());
+
+    app.pumpAutoContinue(compat.time.nowMillis() + @as(i64, @intCast(tui_auto_continue.default_delay_ms)));
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+}
+
+test "Esc closing a picker drops the pending continue" {
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    const app = &model.app.?;
+    app.session = mock.session();
+    const after_delay = compat.time.nowMillis() + @as(i64, @intCast(tui_auto_continue.default_delay_ms));
+
+    try pushErrorRun(app, &mock, "anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    app.state.mode = .picker;
+    app.pumpAutoContinue(after_delay);
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+    try std.testing.expect(app.auto_continue.pending());
+
+    _ = model.update(.{ .key = .{ .key = .escape } }, &tctx.ctx);
+    try std.testing.expectEqual(tui_state.AppMode.normal, app.state.mode);
+    try std.testing.expect(!app.auto_continue.pending());
+
+    app.pumpAutoContinue(after_delay);
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+}
+
+test "Ctrl+C drops the pending continue" {
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    const app = &model.app.?;
+    app.session = mock.session();
+
+    try pushErrorRun(app, &mock, "anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try std.testing.expect(app.auto_continue.pending());
+
+    _ = model.handleInterrupt(app, &tctx.ctx);
+    try std.testing.expect(!app.auto_continue.pending());
+
+    app.pumpAutoContinue(compat.time.nowMillis() + @as(i64, @intCast(tui_auto_continue.default_delay_ms)));
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+}
+
+test "a run that ends clean leaves no error text for a later failure" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try std.testing.expectEqualStrings("anthropic request failed: HTTP 400 invalid_request_error", harness.app.run_error_text);
+
+    try harness.mock.eventStream().push(.{ .agent_end = .{ .reason = .completed } });
+    try harness.app.drainEvents();
+    try std.testing.expectEqualStrings("", harness.app.run_error_text);
 }
