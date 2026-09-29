@@ -9,6 +9,417 @@ func hostModel(baseURL string) Model {
 	return Model{Provider: "openai", BaseURL: baseURL, HasBaseURL: true, HasCompat: true}
 }
 
+func TestAnOllamaHostIsLoopbackOn11434AndNothingElse(t *testing.T) {
+	hosts := []string{
+		"http://127.0.0.1:11434",
+		"http://127.0.0.1:11434/",
+		"http://127.0.0.1:11434/api/chat",
+		"http://localhost:11434",
+		"http://localhost:11434/api/chat",
+		"http://[::1]:11434",
+		"http://LOCALHOST:11434",
+	}
+	for _, url := range hosts {
+		if !isOllamaURL(url, true) {
+			t.Errorf("isOllamaURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"http://127.0.0.1:11435",
+		"http://localhost:11435",
+		"http://localhost",
+		"http://127.0.0.1",
+		"https://ollama.internal:11434",
+		"https://my-ollama.example.com",
+		"http://ollama.internal:11434",
+		"https://ollama.example.com/v1",
+		"http://example.com:11434/ollama",
+		"http://notlocalhost:11434",
+		"http://127.0.0.2:11434",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isOllamaURL(url, true) {
+			t.Errorf("isOllamaURL(%q) = true, want false: a loopback host on 11434, or nothing -- the bare word matched a path", url)
+		}
+	}
+
+	if isOllamaURL("http://127.0.0.1:11434", false) {
+		t.Error("no base url is not an ollama host")
+	}
+}
+
+func TestTheCataloguedOllamaLocalDefaultStillDetectsAsOllama(t *testing.T) {
+	const url = "http://127.0.0.1:11434"
+	if !isOllamaURL(url, true) {
+		t.Fatalf("isOllamaURL(%q) = false, want true", url)
+	}
+	if got := DetectProviderType(url, true); got != ProviderOllama {
+		t.Errorf("DetectProviderType(%q) = %q, want ollama", url, got)
+	}
+}
+
+func TestABedrockHostHasBedrockOrBedrockRuntimeAsItsFirstLabelUnderAmazonaws(t *testing.T) {
+	hosts := []string{
+		"https://bedrock.us-east-1.amazonaws.com",
+		"https://bedrock-runtime.us-east-1.amazonaws.com",
+		"https://bedrock-runtime.us-east-1.amazonaws.com/model/x/invoke",
+		"https://bedrock-fips.us-east-1.amazonaws.com",
+		"https://bedrock-runtime-fips.us-east-1.amazonaws.com",
+		"https://bedrock-runtime.cn-north-1.amazonaws.com.cn",
+		"https://BEDROCK-RUNTIME.US-EAST-1.AMAZONAWS.COM",
+	}
+	for _, url := range hosts {
+		if !isBedrockURL(url, true) {
+			t.Errorf("isBedrockURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://amazonaws.com",
+		"https://us-east-1.amazonaws.com",
+		"https://s3.us-east-1.amazonaws.com",
+		"https://mybedrock.us-east-1.amazonaws.com",
+		"https://us-east-1.bedrock.amazonaws.com",
+		"https://bedrock-runtime.amazonaws.com.evil.example",
+		"https://bedrock.us-east-1.amazonaws.co",
+		"https://evil.example/?next=bedrock-runtime.us-east-1.amazonaws.com",
+		"https://evil.example/v1/bedrock.us-east-1.amazonaws.com",
+		"https://gateway.example/proxy/bedrock-runtime.us-east-1.amazonaws.com",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isBedrockURL(url, true) {
+			t.Errorf("isBedrockURL(%q) = true, want false: the first label must be one of the four, and amazonaws.com on its own would claim every AWS service", url)
+		}
+	}
+
+	if isBedrockURL("https://bedrock-runtime.us-east-1.amazonaws.com", false) {
+		t.Error("no base url is not a bedrock host")
+	}
+}
+
+func TestABedrockHostStillDetectsAsBedrock(t *testing.T) {
+	const url = "https://bedrock-runtime.us-east-1.amazonaws.com"
+	if !isBedrockURL(url, true) {
+		t.Fatalf("isBedrockURL(%q) = false, want true", url)
+	}
+	if got := DetectProviderType(url, true); got != ProviderBedrock {
+		t.Errorf("DetectProviderType(%q) = %q, want bedrock", url, got)
+	}
+}
+
+func TestAnAzureHostMatchesALabelUnderAzureComAndNeverAzureComItself(t *testing.T) {
+	hosts := []string{
+		"https://contoso.openai.azure.com",
+		"https://contoso.openai.azure.com/openai/deployments/gpt/chat/completions",
+		"https://contoso.cognitiveservices.azure.com",
+		"https://openai.azure.com",
+		"https://CONTOSO.COGNITIVESERVICES.AZURE.COM",
+	}
+	for _, url := range hosts {
+		if !isAzureURL(url, true) {
+			t.Errorf("isAzureURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://azure.com",
+		"https://contoso.azure.com",
+		"https://notopenai.azure.com",
+		"https://notcognitiveservices.azure.com",
+		"https://notservices.ai.azure.com",
+		"https://contoso.services.ai.azure.com",
+		"https://cognitiveservices.azure.com.evil.example",
+		"https://services.ai.azure.com.evil.example",
+		"https://openai.azure.com.evil.example",
+		"https://evilcontoso.openai.azure.co",
+		"https://evil.example/?next=contoso.cognitiveservices.azure.com",
+		"https://evil.example/v1/contoso.services.ai.azure.com",
+		"https://gateway.example/proxy/contoso.openai.azure.com",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isAzureURL(url, true) {
+			t.Errorf("isAzureURL(%q) = true, want false: each azure label is anchored on its own and azure.com is never the match", url)
+		}
+	}
+
+	if isAzureURL("https://contoso.openai.azure.com", false) {
+		t.Error("no base url is not an azure host")
+	}
+}
+
+func TestEachAzureLabelIsAnchoredOnItsOwn(t *testing.T) {
+	others := []string{
+		"https://contoso.cognitiveservices.azure.com",
+		"https://contoso.openai.azure.com",
+	}
+	for _, url := range others {
+		matched := 0
+		if isHostOrSubdomain(url, true, "openai.azure.com") {
+			matched++
+		}
+		if isHostOrSubdomain(url, true, "cognitiveservices.azure.com") {
+			matched++
+		}
+		if matched != 1 {
+			t.Errorf("%q matched %d labels, want exactly 1", url, matched)
+		}
+	}
+}
+
+func TestAnAzureHostStillDetectsAsAzure(t *testing.T) {
+	const url = "https://contoso.openai.azure.com"
+	if !isAzureURL(url, true) {
+		t.Fatalf("isAzureURL(%q) = false, want true", url)
+	}
+	if got := DetectProviderType(url, true); got != ProviderAzure {
+		t.Errorf("DetectProviderType(%q) = %q, want azure", url, got)
+	}
+}
+
+func TestAGoogleHostIsTheTwoAPIHostsOrOneRegionalAiplatformLabel(t *testing.T) {
+	hosts := []string{
+		"https://generativelanguage.googleapis.com",
+		"https://generativelanguage.googleapis.com/v1beta",
+		"https://aiplatform.googleapis.com",
+		"https://us-central1-aiplatform.googleapis.com",
+		"https://europe-west4-aiplatform.googleapis.com/v1/projects/p/locations/l/publishers/google",
+		"https://US-CENTRAL1-AIPLATFORM.GOOGLEAPIS.COM",
+	}
+	for _, url := range hosts {
+		if !isGoogleURL(url, true) {
+			t.Errorf("isGoogleURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://googleapis.com",
+		"https://storage.googleapis.com",
+		"https://notgenerativelanguage.googleapis.com",
+		"https://foo.generativelanguage.googleapis.com.evil.com",
+		"https://aiplatform.googleapis.com.evil.com",
+		"https://foo.generativelanguage.googleapis.com",
+		"https://x.aiplatform.googleapis.com",
+		"https://foo.us-central1-aiplatform.googleapis.com",
+		"https://notgenerativelanguage.googleapis.com.attacker.test",
+		"https://evil-aiplatform.googleapis.com.attacker.test",
+		"https://evil.example/?next=aiplatform.googleapis.com",
+		"https://evil.example/v1/generativelanguage.googleapis.com",
+		"https://gateway.example/proxy/aiplatform.googleapis.com",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isGoogleURL(url, true) {
+			t.Errorf("isGoogleURL(%q) = true, want false: generativelanguage matches exactly, and the regional form is one label ending in -aiplatform directly under googleapis.com -- never a deeper subdomain", url)
+		}
+	}
+
+	if isGoogleURL("https://generativelanguage.googleapis.com", false) {
+		t.Error("no base url is not a google host")
+	}
+}
+
+func TestTheCataloguedGoogleBaseStillDetectsAsGoogleWithItsCaps(t *testing.T) {
+	const url = "https://generativelanguage.googleapis.com"
+	if !isGoogleURL(url, true) {
+		t.Fatalf("isGoogleURL(%q) = false, want true", url)
+	}
+	if got := DetectProviderType(url, true); got != ProviderGoogle {
+		t.Errorf("DetectProviderType(%q) = %q, want google", url, got)
+	}
+	caps := DetectCapabilities(url, true)
+	if caps.ProviderType != ProviderGoogle {
+		t.Errorf("caps provider type = %q, want google", caps.ProviderType)
+	}
+	if !caps.Vision || !caps.FunctionCalling {
+		t.Errorf("caps = %+v, want vision and function calling", caps)
+	}
+}
+
+func TestAZaiHostIsZukijourneyDotComOrASubdomainOfIt(t *testing.T) {
+	hosts := []string{
+		"https://api.zukijourney.com",
+		"https://api.zukijourney.com/api/paas/v4",
+		"https://zukijourney.com",
+		"https://API.ZUKIJOURNEY.COM",
+	}
+	for _, url := range hosts {
+		if !isZaiURL(url, true) {
+			t.Errorf("isZaiURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://myzukijourney.com",
+		"https://zukijourney.com.evil.example",
+		"https://evil.example/?next=api.zukijourney.com",
+		"https://evil.example/v1/zai",
+		"https://gateway.example/proxy/zai",
+		"https://api.z.ai/api/coding/paas/v4",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isZaiURL(url, true) {
+			t.Errorf("isZaiURL(%q) = true, want false: the bare word zai is not a host, and z.ai is the gap filed as #580", url)
+		}
+	}
+
+	if isZaiURL("https://api.zukijourney.com", false) {
+		t.Error("no base url is not a zai host")
+	}
+}
+
+func TestAQwenHostIsDashscopeAliyuncsDotComOrASubdomainOfIt(t *testing.T) {
+	hosts := []string{
+		"https://dashscope.aliyuncs.com",
+		"https://coding-intl.dashscope.aliyuncs.com",
+		"https://coding-intl.dashscope.aliyuncs.com/v1",
+		"https://DASHSCOPE.ALIYUNCS.COM",
+		"https://dashscope-intl.aliyuncs.com",
+		"https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+	}
+	for _, url := range hosts {
+		if !isQwenURL(url, true) {
+			t.Errorf("isQwenURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://mydashscope.aliyuncs.com.attacker.example",
+		"https://aliyuncs.com",
+		"https://www.aliyuncs.com",
+		"https://notdashscope.aliyuncs.com",
+		"https://evil.example/?next=dashscope",
+		"https://evil.example/v1/qwen",
+		"https://gateway.example/proxy/dashscope.aliyuncs.com",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isQwenURL(url, true) {
+			t.Errorf("isQwenURL(%q) = true, want false: the domain is dashscope.aliyuncs.com, not aliyuncs.com, and the old rule matched the bare words dashscope and qwen anywhere", url)
+		}
+	}
+
+	if isQwenURL("https://dashscope.aliyuncs.com", false) {
+		t.Error("no base url is not a qwen host")
+	}
+}
+
+func TestAnAnthropicHostIsAnthropicDotComOrASubdomainOfIt(t *testing.T) {
+	hosts := []string{
+		"https://api.anthropic.com",
+		"https://api.anthropic.com/v1",
+		"https://anthropic.com",
+		"https://API.ANTHROPIC.COM",
+	}
+	for _, url := range hosts {
+		if !isAnthropicURL(url, true) {
+			t.Errorf("isAnthropicURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://myanthropic.com",
+		"https://notanthropic.com",
+		"https://anthropic.com.evil.example",
+		"https://evil.example/?next=api.anthropic.com",
+		"https://evil.example/v1/api.anthropic.com",
+		"https://gateway.example/proxy/api.anthropic.com",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isAnthropicURL(url, true) {
+			t.Errorf("isAnthropicURL(%q) = true, want false: the name is in a host suffix, a path or a query", url)
+		}
+	}
+
+	if isAnthropicURL("https://api.anthropic.com", false) {
+		t.Error("no base url is not an anthropic host")
+	}
+}
+
+func TestTheCataloguedAnthropicBaseStillGetsTheAnthropicCaps(t *testing.T) {
+	const url = "https://api.anthropic.com"
+	if got := DetectProviderType(url, true); got != ProviderAnthropic {
+		t.Errorf("DetectProviderType(%q) = %q, want anthropic", url, got)
+	}
+	caps := DetectCapabilities(url, true)
+	if caps.ProviderType != ProviderAnthropic {
+		t.Errorf("caps provider type = %q, want anthropic", caps.ProviderType)
+	}
+	if !caps.ExtendedThinking || !caps.PromptCaching || !caps.Vision {
+		t.Errorf("caps = %+v, want the anthropic set", caps)
+	}
+}
+
+func TestAnOpenRouterHostIsOpenrouterDotAIOrASubdomainOfIt(t *testing.T) {
+	hosts := []string{
+		"https://openrouter.ai",
+		"https://openrouter.ai/api/v1",
+		"https://OPENROUTER.AI",
+	}
+	for _, url := range hosts {
+		if !isOpenRouterURL(url, true) {
+			t.Errorf("isOpenRouterURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://myopenrouter.ai",
+		"https://notopenrouter.ai",
+		"https://openrouter.ai.evil.example",
+		"https://evil.example/?next=openrouter.ai",
+		"https://evil.example/v1/openrouter.ai",
+		"https://gateway.example/proxy/openrouter.ai",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isOpenRouterURL(url, true) {
+			t.Errorf("isOpenRouterURL(%q) = true, want false: the name is in a host suffix, a path or a query", url)
+		}
+	}
+
+	if isOpenRouterURL("https://openrouter.ai", false) {
+		t.Error("no base url is not an openrouter host")
+	}
+}
+
+func TestADeepSeekHostIsDeepseekDotComOrASubdomainOfIt(t *testing.T) {
+	hosts := []string{
+		"https://api.deepseek.com",
+		"https://api.deepseek.com/v1",
+		"https://deepseek.com",
+		"https://API.DEEPSEEK.COM",
+	}
+	for _, url := range hosts {
+		if !isDeepSeekURL(url, true) {
+			t.Errorf("isDeepSeekURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://mydeepseek.com",
+		"https://notdeepseek.com",
+		"https://deepseek.com.evil.example",
+		"https://evil.example/?next=api.deepseek.com",
+		"https://evil.example/v1/api.deepseek.com",
+		"https://gateway.example/proxy/api.deepseek.com",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isDeepSeekURL(url, true) {
+			t.Errorf("isDeepSeekURL(%q) = true, want false: the name is in a host suffix, a path or a query", url)
+		}
+	}
+
+	if isDeepSeekURL("https://api.deepseek.com", false) {
+		t.Error("no base url is not a deepseek host")
+	}
+}
+
 func TestAGitHubCopilotHostIsGithubcopilotDotComOrASubdomainOfIt(t *testing.T) {
 	hosts := []string{
 		"https://api.githubcopilot.com",
@@ -251,7 +662,7 @@ func TestDetectProviderTypeOrdersItsSubstringChain(t *testing.T) {
 		"https://cognitiveservices.azure.com":              ProviderAzure,
 		"http://localhost:11434":                           ProviderOllama,
 		"http://127.0.0.1:11434":                           ProviderOllama,
-		"http://myollama.example":                          ProviderOllama,
+		"http://myollama.example":                          ProviderOpenAICompat,
 	}
 	for baseURL, want := range cases {
 		if got := DetectProviderType(baseURL, true); got != want {

@@ -10,6 +10,7 @@ const register_builtins = @import("register_builtins");
 const agent = @import("agent");
 const event_stream = @import("event_stream");
 const tui_runtime = @import("tui_runtime");
+const tui_auto_continue = @import("tui_auto_continue");
 const tui_state = @import("tui_state");
 const tui_commands = @import("tui_commands");
 const tui_login = @import("tui_login");
@@ -20,6 +21,7 @@ const tui_theme = @import("tui_theme");
 const tui_text = @import("tui_text");
 const oauth_storage = @import("oauth/storage");
 const session_store = @import("tui_session_store");
+const tui_worktree = @import("tui_worktree");
 const transcript_view = @import("tui_view_transcript");
 const composer_view = @import("tui_view_composer");
 const status_bar_view = @import("tui_view_status_bar");
@@ -223,6 +225,82 @@ test "App welcome banner neutralises control bytes in the working directory" {
     try std.testing.expect(std.mem.indexOf(u8, entry.text.items, "\x1b") == null);
     try std.testing.expect(std.mem.indexOf(u8, entry.text.items, "\x07") == null);
     try std.testing.expect(std.mem.indexOf(u8, entry.text.items, "/tmp/evil?[2J?]0;pwned?dir") != null);
+}
+
+test "App tool call arguments move the path row to the agent's directory" {
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, "/work/session");
+    try app.refreshCwdDisplay();
+    try std.testing.expectEqualStrings("/work/session", app.state.cwdRowPath());
+
+    try app.applyRuntimeEvent(.{ .tool_execution_start = .{
+        .tool_call_id = .initBorrowed("call-1"),
+        .tool_name = .initBorrowed("shell_execute"),
+        .args_json = .initBorrowed("{\"workspace_root\":\"/work/other\",\"command\":\"ls\"}"),
+    } });
+
+    try std.testing.expectEqualStrings("/work/other", app.state.cwdRowPath());
+    try std.testing.expect(app.state.agentCwdIsOutsideSession());
+}
+
+test "App tool call without a workspace root leaves the path row alone" {
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, "/work/session");
+    try app.refreshCwdDisplay();
+
+    try app.applyRuntimeEvent(.{ .tool_execution_start = .{
+        .tool_call_id = .initBorrowed("call-1"),
+        .tool_name = .initBorrowed("workspace_list"),
+        .args_json = .initBorrowed("{\"query\":\"src\"}"),
+    } });
+
+    try std.testing.expectEqualStrings("/work/session", app.state.cwdRowPath());
+    try std.testing.expect(!app.state.agentCwdIsOutsideSession());
+}
+
+test "App resume leaves the path row at the session root" {
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, "/work/session");
+    try app.refreshCwdDisplay();
+    try app.applyRuntimeEvent(.{ .tool_execution_start = .{
+        .tool_call_id = .initBorrowed("call-1"),
+        .tool_name = .initBorrowed("shell_execute"),
+        .args_json = .initBorrowed("{\"workspace_root\":\"/work/elsewhere\"}"),
+    } });
+    try std.testing.expectEqualStrings("/work/elsewhere", app.state.cwdRowPath());
+
+    app.state.resetReplayState();
+    app.state.setFollowingAgentCwd(false);
+    defer app.state.setFollowingAgentCwd(true);
+    try app.applyRuntimeEvent(.{ .tool_execution_start = .{
+        .tool_call_id = .initBorrowed("call-2"),
+        .tool_name = .initBorrowed("shell_execute"),
+        .args_json = .initBorrowed("{\"workspace_root\":\"/work/replayed\"}"),
+    } });
+
+    try std.testing.expectEqualStrings("/work/session", app.state.cwdRowPath());
+}
+
+test "App tool call keeps the path row muted inside the session root" {
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, "/work/session");
+    try app.refreshCwdDisplay();
+
+    try app.applyRuntimeEvent(.{ .tool_execution_start = .{
+        .tool_call_id = .initBorrowed("call-1"),
+        .tool_name = .initBorrowed("shell_execute"),
+        .args_json = .initBorrowed("{\"workspace_root\":\"/work/session/sub\"}"),
+    } });
+
+    try std.testing.expect(!app.state.agentCwdIsOutsideSession());
 }
 
 test "App cwd display neutralises control bytes in the working directory" {
@@ -564,6 +642,8 @@ pub const ProductionRuntime = struct {
     permission_engine: permission.PermissionEngine,
     models: []ai_types.Model,
     initial_model: ?SavedModelRef = null,
+    context_window: ?u32 = null,
+    mode_settings: tui_config.ModeSettings = .{},
 
     pub const InitOptions = struct {
         fixture: bool = false,
@@ -601,8 +681,12 @@ pub const ProductionRuntime = struct {
         }
         errdefer if (saved_config) |*cfg| cfg.deinit(allocator);
 
+        var mode_settings: tui_config.ModeSettings = .{};
         var initial_model: ?SavedModelRef = null;
+        var saved_context_window: ?u32 = null;
         if (saved_config) |cfg| {
+            saved_context_window = cfg.mode.context_window;
+            mode_settings = cfg.mode;
             if (cfg.model.len > 0) {
                 initial_model = SavedModelRef{
                     .id = try allocator.dupe(u8, cfg.model),
@@ -620,6 +704,8 @@ pub const ProductionRuntime = struct {
             .permission_engine = permission_engine,
             .models = models,
             .initial_model = initial_model,
+            .context_window = saved_context_window,
+            .mode_settings = mode_settings,
         };
         initial_model = null;
         if (saved_config) |*cfg| cfg.deinit(allocator);
@@ -642,8 +728,10 @@ pub const ProductionRuntime = struct {
             } else null,
             .permission_engine = &self.permission_engine,
             .workspace_root = self.permission_engine.workspace_root,
+            .context_window = self.context_window,
             .run_async = true,
-            .compact_output = true,
+            .compact_output = self.mode_settings.compact_output,
+            .auto_worktree = self.mode_settings.auto_worktree,
             .generate_titles = true,
         };
     }
@@ -833,8 +921,23 @@ pub const App = struct {
     approval_waiter: ?*ApprovalWaiter = null,
     login: ?*tui_login.LoginSession = null,
     store: ?session_store.Store = null,
+    mode_settings: tui_config.ModeSettings = .{},
+    worktree_job: ?*tui_worktree.CreateJob = null,
+    worktree_management_job: ?*tui_worktree.ManagementJob = null,
+    pending_resume_id: []u8 = &.{},
+    pending_resume_path: []u8 = &.{},
+    resume_without_worktree_id: []u8 = &.{},
+    pending_delete_id: []u8 = &.{},
+    pending_delete_path: []u8 = &.{},
+    worktree_attempted: bool = false,
+    held_user_message: []u8 = &.{},
+    queued_worktree_messages: std.ArrayList([]u8) = .empty,
+    session_turns: usize = 0,
+    pending_worktree_info: ?tui_worktree.WorktreeInfo = null,
+    pending_worktree_session_id: []u8 = &.{},
     session_id: []u8 = &.{},
     working_dir: []u8 = &.{},
+    launch_dir: []u8 = &.{},
     last_view_height: usize = 8,
     inline_history_flushed: usize = 0,
     inline_flushed_rows: usize = 0,
@@ -861,6 +964,9 @@ pub const App = struct {
     session_title_generated: bool = false,
     first_user_text: []u8 = &.{},
     title_session_id: []u8 = &.{},
+    run_error_text: []u8 = &.{},
+    auto_continue: tui_auto_continue.Streak = .{},
+    replaying_history: bool = false,
     branch_dir: []u8 = &.{},
 
     pub fn init(allocator: std.mem.Allocator, options: tui_runtime.TuiRuntimeOptions) !App {
@@ -877,6 +983,7 @@ pub const App = struct {
         };
         var app = App{
             .allocator = allocator,
+            .mode_settings = .{ .compact_output = options.compact_output, .auto_worktree = options.auto_worktree },
             .state = tui_state.AppState.init(allocator),
             .runtime = runtime_ptr,
             .approval_waiter = approval_waiter,
@@ -894,6 +1001,7 @@ pub const App = struct {
         app.store = session_store.Store.initDefault(allocator) catch null;
         try app.ensureSessionId();
         app.working_dir = currentPathOwned(allocator) catch try allocator.dupe(u8, "");
+        app.launch_dir = try allocator.dupe(u8, app.working_dir);
         try app.refreshCwdDisplay();
         app.loadSessions() catch |err| try app.recordError(@errorName(err));
         return app;
@@ -912,6 +1020,46 @@ pub const App = struct {
             session.deinit();
             self.login = null;
         }
+        if (self.worktree_job) |job| {
+            job.wait();
+            if (job.poll()) |outcome_value| {
+                var outcome = outcome_value;
+                defer outcome.deinit(self.allocator);
+                switch (outcome) {
+                    .created => |created| {
+                        var info = created.info;
+                        self.persistOrDiscardCreatedWorktree(&info);
+                    },
+                    else => {},
+                }
+            }
+            job.deinit();
+            self.worktree_job = null;
+        }
+        if (self.worktree_management_job) |job| {
+            job.wait();
+            if (job.poll()) |value| {
+                var outcome = value;
+                outcome.deinit(self.allocator);
+            }
+            job.deinit();
+            self.worktree_management_job = null;
+        }
+        if (self.pending_worktree_info) |pending| {
+            var info = pending;
+            self.pending_worktree_info = null;
+            self.persistOrDiscardCreatedWorktree(&info);
+            info.deinit(self.allocator);
+        }
+        if (self.pending_worktree_session_id.len > 0) self.allocator.free(self.pending_worktree_session_id);
+        if (self.pending_resume_id.len > 0) self.allocator.free(self.pending_resume_id);
+        if (self.pending_resume_path.len > 0) self.allocator.free(self.pending_resume_path);
+        if (self.resume_without_worktree_id.len > 0) self.allocator.free(self.resume_without_worktree_id);
+        if (self.pending_delete_id.len > 0) self.allocator.free(self.pending_delete_id);
+        if (self.pending_delete_path.len > 0) self.allocator.free(self.pending_delete_path);
+        if (self.held_user_message.len > 0) self.allocator.free(self.held_user_message);
+        for (self.queued_worktree_messages.items) |message| self.allocator.free(message);
+        self.queued_worktree_messages.deinit(self.allocator);
         if (self.approval_waiter) |waiter| waiter.cancel();
         if (self.runtime) |runtime| {
             runtime.deinit();
@@ -925,6 +1073,7 @@ pub const App = struct {
         if (self.pending_clipboard) |c| self.allocator.free(c);
         if (self.session_id.len > 0) self.allocator.free(self.session_id);
         if (self.working_dir.len > 0) self.allocator.free(self.working_dir);
+        if (self.launch_dir.len > 0) self.allocator.free(self.launch_dir);
         for (self.quarantine_buffer.items) |*event| event.deinit(self.allocator);
         self.quarantine_buffer.deinit(self.allocator);
         self.clearCompactionTranscripts();
@@ -936,6 +1085,7 @@ pub const App = struct {
         if (self.session_title.len > 0) self.allocator.free(self.session_title);
         if (self.first_user_text.len > 0) self.allocator.free(self.first_user_text);
         if (self.title_session_id.len > 0) self.allocator.free(self.title_session_id);
+        if (self.run_error_text.len > 0) self.allocator.free(self.run_error_text);
         if (self.branch_dir.len > 0) self.allocator.free(self.branch_dir);
         self.state.deinit();
         self.* = undefined;
@@ -977,6 +1127,19 @@ pub const App = struct {
         };
     }
 
+    fn rememberRunError(self: *App, message: []const u8) !void {
+        if (std.mem.eql(u8, self.run_error_text, message)) return;
+        const owned = try self.allocator.dupe(u8, message);
+        if (self.run_error_text.len > 0) self.allocator.free(self.run_error_text);
+        self.run_error_text = owned;
+    }
+
+    fn forgetRunError(self: *App) void {
+        if (self.run_error_text.len == 0) return;
+        self.allocator.free(self.run_error_text);
+        self.run_error_text = &.{};
+    }
+
     fn noteTerminalEvent(self: *App, event: tui_runtime.TuiEvent) !bool {
         switch (event) {
             .agent_end => |payload| return payload.reason == .completed,
@@ -1012,13 +1175,173 @@ pub const App = struct {
         }
     }
 
+    fn deleteSelectedSession(self: *App) !void {
+        const store = self.store orelse return error.NoStoreConfigured;
+        if (self.state.session_index >= self.state.sessions.items.len) return;
+        const id = self.state.sessions.items[self.state.session_index].id;
+        if (std.mem.eql(u8, id, self.session_id)) {
+            try self.state.appendTranscript(.system, "Cannot delete the active session; resume another session first.");
+            return;
+        }
+        if (self.worktree_job != null) {
+            try self.state.appendTranscript(.system, "Wait for worktree setup to finish before deleting a session.");
+            return;
+        }
+        if (self.worktree_management_job != null) {
+            try self.state.appendTranscript(.system, "Wait for worktree setup to finish before deleting a session.");
+            return;
+        }
+        if (try tui_worktree.readSidecar(self.allocator, store.base_dir, id)) |info_value| {
+            var info = info_value;
+            defer info.deinit(self.allocator);
+            const job = try tui_worktree.ManagementJob.start(self.allocator, tui_worktree.processRunner(), &info, .remove);
+            errdefer job.deinit();
+            const pending_id = try self.allocator.dupe(u8, id);
+            errdefer self.allocator.free(pending_id);
+            const pending_path = try self.allocator.dupe(u8, info.path);
+            errdefer self.allocator.free(pending_path);
+            try self.state.appendTranscript(.system, "Checking and removing the session worktree…");
+            self.worktree_management_job = job;
+            self.pending_delete_id = pending_id;
+            self.pending_delete_path = pending_path;
+            return;
+        }
+        try self.finishDeleteSession(id);
+    }
+
+    fn recordWorktreeSidecar(self: *App, info: *const tui_worktree.WorktreeInfo) !void {
+        const store = self.store orelse return;
+        if ((store.conversationBytes(self.session_id) catch 0) > 0) {
+            try tui_worktree.writeSidecar(self.allocator, store.base_dir, self.session_id, info);
+            return;
+        }
+        const cloned = try tui_worktree.cloneInfo(self.allocator, info);
+        errdefer {
+            var undo = cloned;
+            undo.deinit(self.allocator);
+        }
+        const session_id = try self.allocator.dupe(u8, self.session_id);
+        self.discardPendingWorktreeSidecar();
+        self.pending_worktree_info = cloned;
+        self.pending_worktree_session_id = session_id;
+    }
+
+    fn flushPendingWorktreeSidecar(self: *App) void {
+        if (self.pending_worktree_info == null) return;
+        const store = self.store orelse return;
+        if (!std.mem.eql(u8, self.pending_worktree_session_id, self.session_id)) {
+            var stale = self.pending_worktree_info.?;
+            self.pending_worktree_info = null;
+            self.freePendingWorktreeSessionId();
+            if (tui_worktree.remove(self.allocator, tui_worktree.processRunner(), &stale)) |message| {
+                if (message) |text| self.allocator.free(text);
+            } else |_| {}
+            stale.deinit(self.allocator);
+            return;
+        }
+        if ((store.conversationBytes(self.session_id) catch 0) == 0) return;
+        var info = self.pending_worktree_info.?;
+        tui_worktree.writeSidecar(self.allocator, store.base_dir, self.session_id, &info) catch {};
+        self.pending_worktree_info = null;
+        self.freePendingWorktreeSessionId();
+        info.deinit(self.allocator);
+    }
+
+    fn discardPendingWorktreeSidecar(self: *App) void {
+        const info = self.pending_worktree_info orelse return;
+        self.pending_worktree_info = null;
+        self.freePendingWorktreeSessionId();
+        var owned = info;
+        self.persistOrDiscardCreatedWorktree(&owned);
+        owned.deinit(self.allocator);
+    }
+
+    fn freePendingWorktreeSessionId(self: *App) void {
+        if (self.pending_worktree_session_id.len > 0) self.allocator.free(self.pending_worktree_session_id);
+        self.pending_worktree_session_id = &.{};
+    }
+
+    fn persistOrDiscardCreatedWorktree(self: *App, info: *const tui_worktree.WorktreeInfo) void {
+        const store = self.store orelse return;
+        const recorded = (store.conversationBytes(self.session_id) catch 0) > 0;
+        if (recorded) {
+            tui_worktree.writeSidecar(self.allocator, store.base_dir, self.session_id, info) catch {};
+            return;
+        }
+        if (tui_worktree.remove(self.allocator, tui_worktree.processRunner(), info)) |message| {
+            if (message) |text| self.allocator.free(text);
+        } else |_| {}
+    }
+
+    fn finishDeleteSession(self: *App, id: []const u8) !void {
+        const store = self.store orelse return error.NoStoreConfigured;
+        try store.deleteSession(id);
+        try self.loadSessions();
+        if (self.state.session_index >= self.state.sessions.items.len and self.state.session_index > 0) self.state.session_index -= 1;
+    }
+
     pub fn resumeSelectedSession(self: *App) !void {
+        if (self.worktree_job != null or self.worktree_management_job != null) {
+            try self.state.appendTranscript(.system, "Wait for worktree setup to finish before resuming another session.");
+            return;
+        }
+        if (self.state.status.streaming) {
+            self.state.mode = .normal;
+            try self.state.appendTranscript(.system, "Cannot resume a session while a turn is running; wait for it to finish or abort it.");
+            return;
+        }
+        self.discardPendingWorktreeSidecar();
         const store = self.store orelse return error.NoStoreConfigured;
         try self.dropPendingAfterCompaction("the session was resumed before the compaction finished");
         if (self.state.session_index >= self.state.sessions.items.len) return;
         const selected = self.state.sessions.items[self.state.session_index];
         const runtime = if (self.runtime) |r| r else return error.NoRuntimeConfigured;
         const id = selected.id;
+        if (try tui_worktree.readSidecar(self.allocator, store.base_dir, id)) |info_value| {
+            var info = info_value;
+            defer info.deinit(self.allocator);
+            self.worktree_attempted = true;
+            const fallback_without_worktree = self.resume_without_worktree_id.len > 0 and std.mem.eql(u8, self.resume_without_worktree_id, id);
+            if (fallback_without_worktree) {
+                self.allocator.free(self.resume_without_worktree_id);
+                self.resume_without_worktree_id = &.{};
+            }
+            if (!tui_worktree.pathExists(info.path) and !fallback_without_worktree) {
+                const job = try tui_worktree.ManagementJob.start(self.allocator, tui_worktree.processRunner(), &info, .reattach);
+                errdefer job.deinit();
+                const pending_id = try self.allocator.dupe(u8, id);
+                errdefer self.allocator.free(pending_id);
+                const pending_path = try self.allocator.dupe(u8, info.path);
+                errdefer self.allocator.free(pending_path);
+                try self.state.appendTranscript(.system, "Reattaching this session's Git worktree…");
+                self.worktree_management_job = job;
+                self.pending_resume_id = pending_id;
+                self.pending_resume_path = pending_path;
+                return;
+            }
+            const root = if (tui_worktree.pathExists(info.path))
+                try info.workingDir(self.allocator)
+            else root: {
+                if (info.prefix.len > 0) {
+                    const prefixed = try std.fs.path.join(self.allocator, &.{ info.repo_root, std.mem.trimEnd(u8, info.prefix, &.{std.fs.path.sep}) });
+                    if (tui_worktree.pathExists(prefixed)) break :root prefixed;
+                    self.allocator.free(prefixed);
+                }
+                if (tui_worktree.pathExists(info.repo_root)) break :root try self.allocator.dupe(u8, info.repo_root);
+                break :root try self.allocator.dupe(u8, self.launch_dir);
+            };
+            defer self.allocator.free(root);
+            try runtime.setWorkspaceRoot(root);
+            try replaceOwnedString(self.allocator, &self.working_dir, root);
+            try self.refreshCwdDisplay();
+        } else {
+            self.worktree_attempted = false;
+            if (self.launch_dir.len > 0) {
+                try runtime.setWorkspaceRoot(self.launch_dir);
+                try replaceOwnedString(self.allocator, &self.working_dir, self.launch_dir);
+                try self.refreshCwdDisplay();
+            }
+        }
         var loaded = try store.resumeSession(id, runtime);
         defer loaded.deinit(self.allocator);
         const new_session_id = try self.allocator.dupe(u8, loaded.metadata.session_id);
@@ -1043,16 +1366,25 @@ pub const App = struct {
         } else {
             try self.state.status.setModelWithContext(self.allocator, loaded.metadata.model, loaded.metadata.provider, 0);
         }
+        self.replaying_history = true;
+        self.state.setFollowingAgentCwd(false);
+        defer {
+            self.replaying_history = false;
+            self.state.setFollowingAgentCwd(true);
+        }
         for (loaded.events.items) |*event| {
             try self.applyRuntimeEvent(event.*);
         }
+        self.discardReplayedError();
         try self.state.finalizeInterruptedTools();
         self.state.retireToolOccurrences();
         if (self.session) |*session| session.clearQueuedMessages();
         self.refreshQueuedCounts();
         self.state.status.streaming = false;
         self.state.status.compacting = false;
+        self.state.confirm_session_delete = false;
         self.state.mode = .normal;
+        self.session_turns = if (loaded.events.items.len > 0) 1 else 0;
         try self.adoptLoadedSession(loaded.metadata);
         self.saveSessionIndex(store);
     }
@@ -1153,6 +1485,7 @@ pub const App = struct {
                 }
             },
             .login => self.refreshLoginStatus(),
+            .settings => {},
         }
         self.state.mode = .picker;
         self.ensureMenuSelectionVisible();
@@ -1163,6 +1496,7 @@ pub const App = struct {
             .model => if (self.runtime) |runtime| runtime.availableModels().len else 0,
             .login => login_providers.len,
             .permission => permission_modes.len,
+            .settings => 2,
         };
     }
 
@@ -1175,6 +1509,7 @@ pub const App = struct {
             } else .{ .label = "" },
             .login => .{ .label = login_providers[index], .badge = loginBadge(self.login_status[index]) },
             .permission => .{ .label = @tagName(permission_modes[index]), .detail = TuiModel.permissionModeDetail(permission_modes[index]) },
+            .settings => .{ .label = if (index == 0) "Compact output" else "Automatic worktrees", .detail = if (index == 0) "Reduce tool output in the transcript" else "Create an isolated Git worktree for each session", .badge = if ((if (index == 0) self.mode_settings.compact_output else self.mode_settings.auto_worktree)) "on" else "off" },
         };
     }
 
@@ -1559,6 +1894,7 @@ pub const App = struct {
         };
         if (wrote_metadata or titled or event == .agent_end) self.saveSessionIndex(store);
         if (event == .agent_end) self.requestSessionTitle();
+        self.flushPendingWorktreeSidecar();
     }
 
     fn titleFromFirstMessage(self: *App, text: []const u8) bool {
@@ -1746,6 +2082,191 @@ pub const App = struct {
         }
     }
 
+    fn runFinishedWithoutProviderError(self: *App) void {
+        self.forgetRunError();
+        self.auto_continue.onUserTurn();
+    }
+
+    pub fn userTookOver(self: *App) void {
+        const was_pending = self.auto_continue.pending();
+        self.auto_continue.onUserTurn();
+        if (!was_pending) return;
+        self.state.appendTranscript(.system, "the automatic continue was dropped.") catch {};
+    }
+
+    pub fn discardReplayedError(self: *App) void {
+        self.forgetRunError();
+        self.auto_continue.onUserTurn();
+    }
+
+    fn scheduleAutoContinue(self: *App) void {
+        if (self.state.queue.total() > 0) {
+            self.auto_continue.onUserTurn();
+            return;
+        }
+        switch (self.auto_continue.onRunEndedInError(self.run_error_text, compat.time.nowMillis())) {
+            .skip => {},
+            .send_after => |delay| {
+                const message = std.fmt.allocPrint(self.allocator, "The run ended in a provider error. Continuing in {d}s.", .{
+                    @divFloor(delay + 999, 1000),
+                }) catch return;
+                defer self.allocator.free(message);
+                self.state.appendTranscript(.system, message) catch {};
+            },
+        }
+    }
+
+    pub fn pumpAutoContinue(self: *App, now_ms: i64) void {
+        if (!self.auto_continue.due(now_ms)) return;
+        if (self.state.mode != .normal) return;
+        if (self.state.status.streaming) return;
+        if (self.state.queue.total() > 0) return;
+        self.auto_continue.take();
+        const message = std.fmt.allocPrint(self.allocator, "Provider error. Sending \"{s}\" on your behalf.", .{
+            tui_auto_continue.continue_text,
+        }) catch return;
+        defer self.allocator.free(message);
+        self.state.appendTranscript(.system, message) catch {};
+        if (self.compactBeforeTurn(tui_auto_continue.continue_text) catch false) return;
+        self.sendUserTurn(tui_auto_continue.continue_text) catch |err| self.recordError(@errorName(err)) catch {};
+    }
+
+    fn pollWorktree(self: *App) !void {
+        const job = self.worktree_job orelse return;
+        var outcome = job.poll() orelse return;
+        defer outcome.deinit(self.allocator);
+        job.deinit();
+        self.worktree_job = null;
+        self.applyWorktreeOutcome(outcome) catch |err| {
+            try self.state.status.setError(self.allocator, @errorName(err));
+            try self.state.appendTranscript(.@"error", @errorName(err));
+        };
+        if (self.held_user_message.len > 0) {
+            const message = self.held_user_message;
+            self.held_user_message = &.{};
+            defer self.allocator.free(message);
+            try self.submit(message);
+        }
+        while (self.queued_worktree_messages.items.len > 0) {
+            const message = self.queued_worktree_messages.orderedRemove(0);
+            defer self.allocator.free(message);
+            if (self.session) |*session| {
+                try session.followUp(message);
+                try self.state.appendQueuedFollowUp(message);
+                self.refreshQueuedCounts();
+            } else {
+                try self.submit(message);
+            }
+        }
+    }
+
+    fn applyWorktreeOutcome(self: *App, outcome: tui_worktree.CreateOutcome) !void {
+        switch (outcome) {
+            .not_a_repo => try self.state.appendTranscript(.system, "Current directory is not a Git repository; continuing without a worktree."),
+            .failed => |message| try self.state.appendTranscript(.system, message),
+            .created => |created| {
+                const new_dir = try created.info.workingDir(self.allocator);
+                defer self.allocator.free(new_dir);
+                try (self.runtime orelse return error.NoRuntimeConfigured).setWorkspaceRoot(new_dir);
+                try replaceOwnedString(self.allocator, &self.working_dir, new_dir);
+                try self.refreshCwdDisplay();
+                try self.recordWorktreeSidecar(&created.info);
+                try self.state.appendTranscript(.system, "Git worktree ready for this session.");
+                if (created.uncommitted > 0) try self.state.appendTranscript(.system, "Note: the original repository has uncommitted changes; the worktree starts from the current commit.");
+            },
+        }
+    }
+
+    fn pollWorktreeManagement(self: *App) !void {
+        const job = self.worktree_management_job orelse return;
+        const value = job.poll() orelse return;
+        var outcome = value;
+        defer outcome.deinit(self.allocator);
+        job.deinit();
+        self.worktree_management_job = null;
+        if (self.pending_delete_id.len > 0) {
+            const id = self.pending_delete_id;
+            self.pending_delete_id = &.{};
+            defer self.allocator.free(id);
+            const path = self.pending_delete_path;
+            self.pending_delete_path = &.{};
+            defer if (path.len > 0) self.allocator.free(path);
+            switch (outcome) {
+                .dirty => try self.state.appendTranscript(.system, "Cannot delete this session: its worktree is dirty or Git could not verify it safely."),
+                .removed => |message| {
+                    if (message) |text| try self.state.appendTranscript(.system, text);
+                    if (message != null and path.len > 0 and tui_worktree.pathExists(path)) {
+                        try self.state.appendTranscript(.system, "The session worktree could not be removed; keeping it and its worktree record.");
+                    } else {
+                        try self.finishDeleteSession(id);
+                    }
+                },
+                .failed => |message| try self.state.appendTranscript(.@"error", message),
+                else => return error.InvalidWorktreeOutcome,
+            }
+            try self.deliverHeldWorktreeMessages();
+            return;
+        }
+        if (self.pending_resume_id.len > 0) {
+            const id = self.pending_resume_id;
+            self.pending_resume_id = &.{};
+            defer self.allocator.free(id);
+            const expected_path = self.pending_resume_path;
+            self.pending_resume_path = &.{};
+            defer if (expected_path.len > 0) self.allocator.free(expected_path);
+            switch (outcome) {
+                .reattached => |message| {
+                    if (message) |text| {
+                        try self.state.appendTranscript(.system, text);
+                        if (!tui_worktree.pathExists(expected_path)) {
+                            try self.setResumeWithoutWorktree(id);
+                            try self.state.appendTranscript(.system, "The session worktree could not be reattached; resuming in the original repository.");
+                        }
+                    }
+                },
+                .missing_branch => {
+                    try self.setResumeWithoutWorktree(id);
+                    try self.state.appendTranscript(.system, "This session's Git worktree and branch are missing; resuming in the original repository.");
+                },
+                .failed => |message| {
+                    try self.setResumeWithoutWorktree(id);
+                    try self.state.appendTranscript(.@"error", message);
+                    try self.state.appendTranscript(.system, "The session worktree could not be reattached; resuming in the original repository.");
+                },
+                else => return error.InvalidWorktreeOutcome,
+            }
+            self.state.session_index = 0;
+            for (self.state.sessions.items, 0..) |entry, index| if (std.mem.eql(u8, entry.id, id)) {
+                self.state.session_index = index;
+                break;
+            };
+            try self.resumeSelectedSession();
+            try self.deliverHeldWorktreeMessages();
+        }
+    }
+
+    fn deliverHeldWorktreeMessages(self: *App) !void {
+        if (self.held_user_message.len > 0) {
+            const message = self.held_user_message;
+            self.held_user_message = &.{};
+            defer self.allocator.free(message);
+            try self.submit(message);
+        }
+        try self.drainQueuedWorktreeMessageIfIdle();
+    }
+
+    fn drainQueuedWorktreeMessageIfIdle(self: *App) !void {
+        if (self.worktree_job != null or self.worktree_management_job != null or self.state.status.streaming or self.queued_worktree_messages.items.len == 0) return;
+        if (self.runtime) |runtime| {
+            if (runtime.local_agent) |*local| {
+                if (!local.isIdle()) return;
+            }
+        }
+        const message = self.queued_worktree_messages.orderedRemove(0);
+        defer self.allocator.free(message);
+        try self.submit(message);
+    }
+
     pub fn drainEvents(self: *App) !void {
         var session = &(self.session orelse return);
         var completed_agent_end = false;
@@ -1826,9 +2347,20 @@ pub const App = struct {
             self.compaction_just_ended = null;
             try self.sendPendingAfterCompaction(completed, resumed_run or self.state.status.streaming);
         }
+        if (!completed_agent_end or self.state.queue.total() == 0) try self.drainQueuedWorktreeMessageIfIdle();
     }
 
     fn applyRuntimeEvent(self: *App, event: tui_runtime.TuiEvent) !void {
+        if (!self.replaying_history) {
+            switch (event) {
+                .@"error" => |payload| try self.rememberRunError(payload.message.slice()),
+                .agent_end => |payload| switch (payload.reason) {
+                    .@"error" => self.scheduleAutoContinue(),
+                    .completed, .cancelled => self.runFinishedWithoutProviderError(),
+                },
+                else => {},
+            }
+        }
         switch (event) {
             .message_start => |payload| {
                 if (payload.role == .user) return;
@@ -1891,11 +2423,19 @@ pub const App = struct {
         self.pending_session_reset = false;
     }
 
+    fn enqueueWorktreeMessage(self: *App, text: []const u8) !void {
+        const queued = try self.allocator.dupe(u8, text);
+        errdefer self.allocator.free(queued);
+        try self.queued_worktree_messages.append(self.allocator, queued);
+    }
+
     pub fn submit(self: *App, text: []const u8) !void {
         const trimmed = std.mem.trim(u8, text, " \t\r\n");
         if (trimmed.len == 0) return;
         self.state.transcript_scroll = 0;
         if (trimmed[0] == '/') return try self.submitCommand(trimmed);
+        self.forgetRunError();
+        self.userTookOver();
         if (try self.compactBeforeTurn(trimmed)) return;
         try self.sendUserTurn(trimmed);
     }
@@ -1909,6 +2449,38 @@ pub const App = struct {
             return err;
         };
         try self.ensureSessionId();
+        if (self.worktree_job != null or self.worktree_management_job != null) {
+            if (self.held_user_message.len == 0) {
+                self.held_user_message = try self.allocator.dupe(u8, trimmed);
+                try self.state.appendTranscript(.system, "Setting up this session's Git worktree; your message will be sent when ready.");
+            } else {
+                try self.enqueueWorktreeMessage(trimmed);
+                try self.state.appendTranscript(.system, "Worktree setup is still running; your message is queued and will be sent when ready.");
+            }
+            return;
+        }
+        if (self.mode_settings.auto_worktree and self.working_dir.len > 0 and self.worktree_job == null and self.worktree_management_job == null and !self.worktree_attempted and self.session_turns == 0) {
+            const home = compat.getEnvVarOwned(self.allocator, "HOME") catch null;
+            defer if (home) |value| self.allocator.free(value);
+            if (home) |h| {
+                const base = try std.fs.path.join(self.allocator, &.{ h, ".oapx", "worktrees" });
+                defer self.allocator.free(base);
+                if (tui_worktree.isUnderBase(self.working_dir, base)) {
+                    self.worktree_attempted = true;
+                    self.state.appendTranscript(.system, "Already in a managed session worktree; continuing here.") catch {};
+                } else {
+                    const job = try tui_worktree.CreateJob.start(self.allocator, tui_worktree.processRunner(), self.working_dir, base, self.session_id);
+                    errdefer job.deinit();
+                    const held = try self.allocator.dupe(u8, trimmed);
+                    errdefer self.allocator.free(held);
+                    try self.state.appendTranscript(.system, "Setting up an isolated Git worktree for this session…");
+                    self.worktree_job = job;
+                    self.held_user_message = held;
+                    self.worktree_attempted = true;
+                    return;
+                }
+            }
+        }
         self.state.stream_aborted = false;
         if (self.session) |*session| {
             session.submitTurn(trimmed) catch |err| {
@@ -1918,6 +2490,7 @@ pub const App = struct {
                 return;
             };
         }
+        self.session_turns += 1;
         try self.state.appendUserMessage(trimmed);
         self.refreshQueuedCounts();
     }
@@ -1982,6 +2555,7 @@ pub const App = struct {
         const trimmed = std.mem.trim(u8, text, " \t\r\n");
         if (trimmed.len == 0) return;
         if (trimmed[0] == '/') return try self.submitCommand(trimmed);
+        self.userTookOver();
         self.applyPendingSessionResetSync() catch |err| {
             if (err == error.PendingSessionReset) {
                 try self.state.appendTranscript(.@"error", "Session reset pending; wait for the current run to finish.");
@@ -2036,6 +2610,7 @@ pub const App = struct {
 
         if (command.kind == .abort) {
             if (self.approval_waiter) |waiter| waiter.rejectPending();
+            self.userTookOver();
         }
 
         switch (result.action) {
@@ -2043,6 +2618,7 @@ pub const App = struct {
             .clear_transcript => {
                 self.state.clearTranscript();
                 self.state.clearTools();
+                self.state.resetAgentCwd();
                 self.inline_history_flushed = 0;
                 self.inline_flushed_rows = 0;
                 self.pending_clear_screen = true;
@@ -2051,11 +2627,13 @@ pub const App = struct {
                 try self.loadSessions();
                 self.state.session_index = 0;
                 self.state.session_scroll = 0;
+                self.state.confirm_session_delete = false;
                 self.state.mode = .session_picker;
             },
             .open_model_picker => self.openPicker(.model),
             .open_login_picker => self.openPicker(.login),
             .open_permission_picker => self.openPicker(.permission),
+            .open_settings_picker => self.openPicker(.settings),
             .start_login_provider => try self.startLoginProviderName(result.login_provider),
             .compact => try self.startCompaction(command.arg orelse ""),
             .none => {},
@@ -2065,6 +2643,7 @@ pub const App = struct {
             .context, .model, .provider => self.applyContextWindow(),
             else => {},
         }
+        if (command.kind == .context and !result.is_error and command.arg != null) self.persistContextWindow();
         if (result.output.len > 0) {
             try self.state.appendTranscript(if (result.is_error) .@"error" else .system, result.output);
             if (result.is_error) try self.state.status.setError(self.allocator, result.output);
@@ -2097,6 +2676,23 @@ pub const App = struct {
         self.state.telemetry.context_window = window;
     }
 
+    fn toggleSetting(self: *App, index: usize) !void {
+        if (index == 0) {
+            self.mode_settings.compact_output = !self.mode_settings.compact_output;
+            if (self.runtime) |runtime| runtime.setCompactOutput(self.mode_settings.compact_output);
+        } else {
+            self.mode_settings.auto_worktree = !self.mode_settings.auto_worktree;
+        }
+        var store = try tui_config.Store.initDefault(self.allocator);
+        defer store.deinit();
+        var cfg = try store.load();
+        defer cfg.deinit(self.allocator);
+        var mode = self.mode_settings;
+        mode.context_window = cfg.mode.context_window;
+        cfg.mode = mode;
+        try store.save(cfg);
+    }
+
     fn persistCurrentModel(self: *App) void {
         const runtime = self.runtime orelse return;
         const model = runtime.currentModel() orelse return;
@@ -2115,10 +2711,33 @@ pub const App = struct {
         try store.save(cfg);
     }
 
+    fn persistContextWindow(self: *App) void {
+        const runtime = self.runtime orelse return;
+        var store = tui_config.Store.initDefault(self.allocator) catch |err| {
+            self.recordError(@errorName(err)) catch {};
+            return;
+        };
+        defer store.deinit();
+        var cfg = store.load() catch |err| {
+            self.recordError(@errorName(err)) catch {};
+            return;
+        };
+        defer cfg.deinit(self.allocator);
+        const window = runtime.contextWindowOverride();
+        self.mode_settings.context_window = window;
+        if (cfg.mode.context_window == window) return;
+        cfg.mode.context_window = window;
+        store.save(cfg) catch |err| self.recordError(@errorName(err)) catch {};
+    }
+
     fn replaceOwnedString(allocator: std.mem.Allocator, field: *[]u8, value: []const u8) !void {
         const next = try allocator.dupe(u8, value);
         allocator.free(field.*);
         field.* = next;
+    }
+
+    fn setResumeWithoutWorktree(self: *App, id: []const u8) !void {
+        try replaceOwnedString(self.allocator, &self.resume_without_worktree_id, id);
     }
 
     fn stageClipboard(self: *App, text: []const u8) void {
@@ -2165,6 +2784,7 @@ pub const App = struct {
         const display = try collapseHome(self.allocator, sanitized, home);
         defer self.allocator.free(display);
         try self.state.setCwdDisplay(self.allocator, display);
+        try self.state.setSessionRoot(self.allocator, self.working_dir);
         try self.refreshGitBranch();
     }
 
@@ -2308,6 +2928,7 @@ pub const App = struct {
             return err;
         };
         try self.ensureSessionId();
+        self.userTookOver();
         if (self.session) |*session| {
             try session.followUp(trimmed);
             try self.state.appendQueuedFollowUp(trimmed);
@@ -2519,6 +3140,7 @@ pub const TuiModel = struct {
                             },
                             .escape => {
                                 app.decideApproval(false, false) catch |err| app.recordError(@errorName(err)) catch {};
+                                app.userTookOver();
                                 decided = true;
                             },
                             else => {},
@@ -2530,18 +3152,38 @@ pub const TuiModel = struct {
                     }
                 }
                 if (app.state.mode == .session_picker) {
+                    if (app.state.confirm_session_delete) {
+                        switch (key.key) {
+                            .char => |c| {
+                                if (c == 'y' or c == 'Y') {
+                                    app.deleteSelectedSession() catch |err| app.recordError(@errorName(err)) catch {};
+                                    app.state.confirm_session_delete = false;
+                                } else if (c == 'n' or c == 'N') {
+                                    app.state.confirm_session_delete = false;
+                                }
+                            },
+                            .enter => {
+                                app.deleteSelectedSession() catch |err| app.recordError(@errorName(err)) catch {};
+                                app.state.confirm_session_delete = false;
+                            },
+                            .escape => app.state.confirm_session_delete = false,
+                            else => {},
+                        }
+                        return .none;
+                    }
                     switch (key.key) {
                         .up => moveSessionSelection(app, -1),
                         .down => moveSessionSelection(app, 1),
                         .char => |c| switch (c) {
                             'k' => moveSessionSelection(app, -1),
                             'j' => moveSessionSelection(app, 1),
+                            'd' => app.state.confirm_session_delete = true,
                             else => {},
                         },
                         .enter => {
                             app.resumeSelectedSession() catch |err| app.recordError(@errorName(err)) catch {};
                         },
-                        .escape => app.state.mode = .normal,
+                        .escape => closeModal(app),
                         else => {},
                     }
                     return .none;
@@ -2553,7 +3195,10 @@ pub const TuiModel = struct {
                             app.submitLoginInput(text);
                             app.state.composer.clear();
                         },
-                        .escape => app.cancelLogin(),
+                        .escape => {
+                            app.cancelLogin();
+                            app.userTookOver();
+                        },
                         .backspace => _ = app.state.composer.deleteBeforeCursor(),
                         .char => |c| appendChar(app, c) catch {},
                         .paste => |text| app.state.composer.insertPaste(app.allocator, text) catch {},
@@ -2580,8 +3225,9 @@ pub const TuiModel = struct {
                             .model => app.applySelectedModel() catch |err| app.recordError(@errorName(err)) catch {},
                             .login => app.applySelectedLogin() catch |err| app.recordError(@errorName(err)) catch {},
                             .permission => app.applySelectedPermission() catch |err| app.recordError(@errorName(err)) catch {},
+                            .settings => if (app.pickerSourceIndex(app.state.menu_index)) |index| app.toggleSetting(index) catch |err| app.recordError(@errorName(err)) catch {},
                         },
-                        .escape => app.state.mode = .normal,
+                        .escape => closeModal(app),
                         else => {},
                     }
                     return .none;
@@ -2685,7 +3331,10 @@ pub const TuiModel = struct {
             .tick => {
                 app.state.anim_tick +%= 1;
                 app.drainEvents() catch {};
+                app.pumpAutoContinue(compat.time.nowMillis());
                 app.pollLogin() catch {};
+                app.pollWorktree() catch |err| app.recordError(@errorName(err)) catch {};
+                app.pollWorktreeManagement() catch |err| app.recordError(@errorName(err)) catch {};
                 app.state.refreshStreamingElapsed(compat.time.nowMillis());
                 if (app.interrupt_armed_tick) |armed| {
                     if (app.state.anim_tick -% armed > interrupt_window_ticks) app.interrupt_armed_tick = null;
@@ -2725,6 +3374,7 @@ pub const TuiModel = struct {
     }
 
     fn handleInterrupt(self: *TuiModel, app: *App, ctx: *zz.Context) zz.Cmd(Msg) {
+        app.userTookOver();
         if (app.interrupt_armed_tick != null) return self.quitCmd(app, ctx);
         if (app.state.mode == .login_input) {
             app.cancelLogin();
@@ -2748,8 +3398,14 @@ pub const TuiModel = struct {
         return self.quitCmd(app, ctx);
     }
 
+    fn closeModal(app: *App) void {
+        app.state.mode = .normal;
+        app.userTookOver();
+    }
+
     fn handleEscape(self: *TuiModel, app: *App) void {
         _ = self;
+        app.userTookOver();
         if (app.state.composer.buffer.items.len > 0) {
             app.state.composer.clear();
             return;
@@ -2844,7 +3500,7 @@ pub const TuiModel = struct {
             composer_view.hintText(ctx.allocator, &app.state) catch "";
         const bar = status_bar_view.render(ctx.allocator, &app.state, .{ .width = width, .hint = hint }) catch "";
         const status = if (height >= cwd_row_min_height and app.state.cwd_display.len > 0) blk: {
-            const row = status_bar_view.renderCwdRow(ctx.allocator, app.state.cwd_display, app.state.git_branch, width) catch break :blk bar;
+            const row = status_bar_view.renderCwdRow(ctx.allocator, &app.state, width) catch break :blk bar;
             break :blk tui_render.joinVertical(ctx.allocator, &.{ bar, row }) catch bar;
         } else bar;
         composer_view.adjustScroll(ctx.allocator, &app.state, width, height) catch {};
@@ -2880,13 +3536,14 @@ pub const TuiModel = struct {
             .model => "Select model",
             .login => "Login provider",
             .permission => "Tool permissions",
+            .settings => "TUI settings",
         };
         const empty_message = if (filter.len > 0)
             try tui_text.truncateLineToWidth(allocator, try std.fmt.allocPrint(allocator, "  nothing matches \"{s}\"", .{filter}), width -| 4)
         else if (app.state.picker_kind == .model) "  no models available" else "  (nothing to select)";
         const subtitle: ?[]const u8 = if (filter.len > 0)
             try tui_text.truncateLineToWidth(allocator, try std.fmt.allocPrint(allocator, "{s} {s}{s}", .{ tui_theme.glyph.prompt, filter, tui_theme.glyph.caret }), width -| 4)
-        else if (app.state.picker_kind == .model) tui_theme.glyph.prompt ++ " type to filter" else null;
+        else if (app.state.picker_kind == .model) tui_theme.glyph.prompt ++ " type to filter" else if (app.state.picker_kind == .settings) "Enter toggles  Esc closes" else null;
         return menu_picker_view.render(allocator, .{
             .title = title,
             .subtitle = subtitle,
@@ -3479,6 +4136,10 @@ fn defaultModel() ai_types.Model {
     };
 }
 
+fn preferredContextWindow(stored: ?u32, flag: ?u32) ?u32 {
+    return flag orelse stored;
+}
+
 pub fn run(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32) !void {
     var environ_map = try compat.createEnvMap(allocator);
     defer environ_map.deinit();
@@ -3495,7 +4156,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32) !void
     production.initBridge();
 
     var options = production.options();
-    options.context_window = context_window;
+    options.context_window = preferredContextWindow(options.context_window, context_window);
     if (fixture) |runtime| {
         options.protocol = runtime.provider.protocolClient();
         options.generate_titles = false;
@@ -4121,6 +4782,16 @@ test "TuiModel picker filters by typing and applies the filtered choice" {
     try std.testing.expectEqualStrings("", model.app.?.state.pickerFilter());
 }
 
+test "settings picker resolves filtered selection to the visible setting" {
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.openPicker(.settings);
+    try app.state.appendPickerFilter("worktrees");
+    try std.testing.expectEqual(@as(usize, 1), app.pickerMatchCount());
+    try std.testing.expectEqual(@as(?usize, 1), app.pickerSourceIndex(0));
+    try std.testing.expect(app.pickerSourceIndex(1) == null);
+}
+
 test "filterMatches needs every term in the label or the detail" {
     try std.testing.expect(filterMatches("", "claude-opus-4", "anthropic"));
     try std.testing.expect(filterMatches("OPUS", "claude-opus-4", "anthropic"));
@@ -4442,6 +5113,35 @@ const auto_compact_history = [_]ai_types.Message{
         .timestamp = 0,
     } },
 };
+
+test "App init takes mode settings from options, not the environment" {
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{auto_compact_test_model} });
+    defer app.deinit();
+    try std.testing.expect(!app.mode_settings.auto_worktree);
+    try std.testing.expect(!app.mode_settings.compact_output);
+
+    var opted_in = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{auto_compact_test_model}, .auto_worktree = true, .compact_output = true });
+    defer opted_in.deinit();
+    try std.testing.expect(opted_in.mode_settings.auto_worktree);
+    try std.testing.expect(opted_in.mode_settings.compact_output);
+}
+
+test "resuming discards a pending worktree sidecar from another session" {
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.pending_worktree_info = tui_worktree.WorktreeInfo{
+        .path = try std.testing.allocator.dupe(u8, "/tmp/pending-worktree-test"),
+        .branch = try std.testing.allocator.dupe(u8, "tui/old"),
+        .repo_root = try std.testing.allocator.dupe(u8, "/tmp"),
+        .prefix = try std.testing.allocator.dupe(u8, ""),
+    };
+    app.pending_worktree_session_id = try std.testing.allocator.dupe(u8, "old");
+    app.session_id = try std.testing.allocator.dupe(u8, "new");
+
+    app.discardPendingWorktreeSidecar();
+    try std.testing.expect(app.pending_worktree_info == null);
+    try std.testing.expectEqual(@as(usize, 0), app.pending_worktree_session_id.len);
+}
 
 fn autoCompactTestApp(mock: *MockAppSession) !App {
     var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{auto_compact_test_model} });
@@ -5030,6 +5730,166 @@ const kimi_model = ai_types.Model{
     .context_window = 262_144,
     .max_tokens = 16_384,
 };
+
+fn oapxConfigDir(allocator: std.mem.Allocator, home: []const u8) ![]u8 {
+    return std.fs.path.join(allocator, &.{ home, ".oapx" });
+}
+
+fn expectConfiguredContextWindow(allocator: std.mem.Allocator, home: []const u8, expected: ?u32) !void {
+    const base = try oapxConfigDir(allocator, home);
+    defer allocator.free(base);
+    var store = try tui_config.Store.init(allocator, base);
+    defer store.deinit();
+    var cfg = try store.load();
+    defer cfg.deinit(allocator);
+    try std.testing.expectEqual(expected, cfg.mode.context_window);
+}
+
+fn configFileBytes(allocator: std.mem.Allocator, home: []const u8) ![]u8 {
+    const base = try oapxConfigDir(allocator, home);
+    defer allocator.free(base);
+    const path = try std.fs.path.join(allocator, &.{ base, "config.json" });
+    defer allocator.free(path);
+    return compat.fs.readFileAlloc(allocator, compat.fs.getCwd(), path, 1 << 20);
+}
+
+test "a context window the user chose is persisted, and the catalog's own is not written back" {
+    defer compat.clearTestEnv();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(home);
+    try compat.setTestEnv(std.testing.allocator, "HOME", home);
+
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{gpt_model, kimi_model} });
+    defer app.deinit();
+    if (app.store) |*owned| owned.deinit();
+    app.store = null;
+
+    try app.submit("/context 200000");
+    try std.testing.expectEqual(@as(u64, 200_000), app.runtime.?.contextWindow());
+    try expectConfiguredContextWindow(std.testing.allocator, home, 200_000);
+
+    try app.submit("/context default");
+    try std.testing.expectEqual(@as(u64, 128_000), app.runtime.?.contextWindow());
+    try expectConfiguredContextWindow(std.testing.allocator, home, null);
+}
+
+test "a persisted window the model in effect cannot take is dropped without rewriting the file" {
+    defer compat.clearTestEnv();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(home);
+    try compat.setTestEnv(std.testing.allocator, "HOME", home);
+
+    const base = try oapxConfigDir(std.testing.allocator, home);
+    defer std.testing.allocator.free(base);
+    var store = try tui_config.Store.init(std.testing.allocator, base);
+    defer store.deinit();
+    var cfg = try tui_config.Config.defaults(std.testing.allocator);
+    defer cfg.deinit(std.testing.allocator);
+    cfg.mode.context_window = 4_000_000_000;
+    try store.save(cfg);
+
+    const before = try configFileBytes(std.testing.allocator, home);
+    defer std.testing.allocator.free(before);
+
+    var production = try ProductionRuntime.init(std.testing.allocator, .{});
+    defer production.deinit();
+    production.initBridge();
+    try std.testing.expectEqual(@as(?u32, 4_000_000_000), production.options().context_window);
+
+    var app = try App.init(std.testing.allocator, production.options());
+    defer app.deinit();
+    if (app.store) |*owned| owned.deinit();
+    app.store = null;
+    try app.drainEvents();
+
+    try std.testing.expect(app.runtime.?.contextWindowOverride() == null);
+    try std.testing.expect(app.runtime.?.contextWindow() != 4_000_000_000);
+    var said_it = false;
+    for (app.state.transcript.items) |entry| {
+        if (std.mem.indexOf(u8, entry.text.items, "4000000000 context tokens is above the") != null) said_it = true;
+    }
+    try std.testing.expect(said_it);
+
+    const after = try configFileBytes(std.testing.allocator, home);
+    defer std.testing.allocator.free(after);
+    try std.testing.expectEqualStrings(before, after);
+}
+
+test "a flagless launch keeps the stored window, and the flag overrides it" {
+    defer compat.clearTestEnv();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(home);
+    try compat.setTestEnv(std.testing.allocator, "HOME", home);
+
+    const base = try oapxConfigDir(std.testing.allocator, home);
+    defer std.testing.allocator.free(base);
+    {
+        var store = try tui_config.Store.init(std.testing.allocator, base);
+        defer store.deinit();
+        var cfg = try tui_config.Config.defaults(std.testing.allocator);
+        defer cfg.deinit(std.testing.allocator);
+        cfg.mode.context_window = 200_000;
+        try store.save(cfg);
+    }
+
+    var production = try ProductionRuntime.init(std.testing.allocator, .{});
+    defer production.deinit();
+    production.initBridge();
+    try std.testing.expectEqual(@as(?u32, 200_000), production.options().context_window);
+
+    try std.testing.expectEqual(@as(?u32, 200_000), preferredContextWindow(200_000, null));
+    try std.testing.expectEqual(@as(?u32, 300_000), preferredContextWindow(200_000, 300_000));
+    try std.testing.expectEqual(@as(?u32, 200_000), preferredContextWindow(200_000, 200_000));
+    try std.testing.expectEqual(@as(?u32, null), preferredContextWindow(null, null));
+}
+
+test "a bare /context reports the window and leaves the persisted member alone" {
+    defer compat.clearTestEnv();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(home);
+    try compat.setTestEnv(std.testing.allocator, "HOME", home);
+
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{gpt_model, kimi_model} });
+    defer app.deinit();
+    if (app.store) |*owned| owned.deinit();
+    app.store = null;
+
+    try app.submit("/context 200000");
+    try expectConfiguredContextWindow(std.testing.allocator, home, 200_000);
+
+    try app.submit("/context");
+    try expectConfiguredContextWindow(std.testing.allocator, home, 200_000);
+}
+
+test "a settings toggle does not erase the persisted window" {
+    defer compat.clearTestEnv();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(home);
+    try compat.setTestEnv(std.testing.allocator, "HOME", home);
+
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{gpt_model, kimi_model} });
+    defer app.deinit();
+    if (app.store) |*owned| owned.deinit();
+    app.store = null;
+
+    try app.submit("/context 200000");
+    try expectConfiguredContextWindow(std.testing.allocator, home, 200_000);
+
+    try app.toggleSetting(0);
+    try expectConfiguredContextWindow(std.testing.allocator, home, 200_000);
+    try app.toggleSetting(1);
+    try expectConfiguredContextWindow(std.testing.allocator, home, 200_000);
+}
 
 test "App says so when a window the model in effect cannot take is dropped" {
     const models = [_]ai_types.Model{ gpt_model, kimi_model };
@@ -5944,6 +6804,22 @@ test "session picker navigation pages through hidden rows" {
     try std.testing.expectEqual(@as(usize, 4), TuiModel.visibleSessionCount(&app));
 }
 
+test "session deletion refuses to remove the active session" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "sessions" });
+    defer std.testing.allocator.free(base);
+    try compat.fs.createDir(compat.fs.getCwd(), base);
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.store = try session_store.Store.init(std.testing.allocator, base);
+    app.session_id = try std.testing.allocator.dupe(u8, "active");
+    try app.state.addSession("active", "Active session");
+    try app.deleteSelectedSession();
+    try std.testing.expectEqual(@as(usize, 1), app.state.sessions.items.len);
+    try std.testing.expect(std.mem.indexOf(u8, app.state.transcript.items[0].text.items, "active session") != null);
+}
+
 test "session picker typing characters does not edit anything" {
     var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
     defer model.deinit();
@@ -6213,6 +7089,43 @@ test "resume selected session clears delete reset flags on success" {
     try std.testing.expect(!app.quarantine_events);
     try std.testing.expectEqual(@as(usize, 0), app.quarantine_buffer.items.len);
     try std.testing.expectEqualStrings("s1", app.session_id);
+}
+
+test "resume of a session without a worktree resets the workspace to the launch directory" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+
+    var production = try ProductionRuntime.init(std.testing.allocator, .{});
+    defer production.deinit();
+    production.initBridge();
+
+    var app = try App.init(std.testing.allocator, production.options());
+    defer app.deinit();
+    app.runtime.?.run_async = false;
+
+    if (app.store) |*store| store.deinit();
+    app.store = try session_store.Store.init(std.testing.allocator, base);
+
+    const model = app.runtime.?.currentModel() orelse return error.NoModelConfigured;
+    var meta = session_store.SessionMetadata{
+        .session_id = try std.testing.allocator.dupe(u8, "s1"),
+        .model = try std.testing.allocator.dupe(u8, model.id),
+        .provider = try std.testing.allocator.dupe(u8, model.provider),
+        .last_active = 1,
+    };
+    defer meta.deinit(std.testing.allocator);
+    try app.store.?.save(meta, .{ .turn_start = .{} });
+    try app.loadSessions();
+
+    app.worktree_attempted = true;
+    if (app.working_dir.len > 0) std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, "/tmp/managed-worktree-of-another-session");
+
+    try app.resumeSelectedSession();
+    try std.testing.expectEqualStrings(app.launch_dir, app.working_dir);
+    try std.testing.expect(!app.worktree_attempted);
 }
 
 const MockProvider = struct {
@@ -6591,4 +7504,369 @@ test "TuiModel flush budget ignores the composer's grown height" {
     try app.state.replaceComposerBuffer("aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk llll mmmm nnnn oooo pppp");
     const grown_budget = model.flushBudget(app, &tctx.ctx);
     try std.testing.expectEqual(empty_budget, grown_budget);
+}
+
+fn pushErrorRun(app: *App, mock: *MockAppSession, message: []const u8, reason: tui_runtime.TuiEndReason) !void {
+    try mock.eventStream().push(.{ .@"error" = .{ .message = OwnedSlice(u8).initOwned(try app.allocator.dupe(u8, message)) } });
+    try mock.eventStream().push(.{ .agent_end = .{ .reason = reason } });
+    try app.drainEvents();
+}
+
+const auto_continue_harness = struct {
+    app: App,
+    mock: *MockAppSession,
+
+    fn init() !@This() {
+        const mock = try std.testing.allocator.create(MockAppSession);
+        mock.* = .{};
+        errdefer std.testing.allocator.destroy(mock);
+        var harness = @This(){
+            .app = App.initWithoutRuntime(std.testing.allocator),
+            .mock = mock,
+        };
+        harness.app.session = mock.session();
+        return harness;
+    }
+
+    fn deinit(self: *@This()) void {
+        self.app.deinit();
+        self.mock.deinit();
+        std.testing.allocator.destroy(self.mock);
+    }
+
+    fn failRun(self: *@This(), message: []const u8, reason: tui_runtime.TuiEndReason) !void {
+        try pushErrorRun(&self.app, self.mock, message, reason);
+    }
+
+    fn pump(self: *@This(), advance_ms: i64) void {
+        self.app.pumpAutoContinue(compat.time.nowMillis() + advance_ms);
+    }
+
+    fn pastDelay(self: *@This()) void {
+        self.pump(@intCast(tui_auto_continue.default_delay_ms));
+    }
+
+    fn transcriptHas(self: *@This(), needle: []const u8) bool {
+        for (self.app.state.transcript.items) |entry| {
+            if (std.mem.indexOf(u8, entry.text.items, needle) != null) return true;
+        }
+        return false;
+    }
+};
+
+test "a run ending in a provider error schedules one continue and says so" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try std.testing.expect(harness.app.auto_continue.pending());
+    try std.testing.expect(harness.transcriptHas("Continuing in 3s"));
+
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 1), harness.mock.submit_count);
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.resume_count);
+    try std.testing.expect(harness.transcriptHas("on your behalf"));
+}
+
+test "the automatic continue holds when the second run fails the same way" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 1), harness.mock.submit_count);
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 1), harness.mock.submit_count);
+    try std.testing.expect(!harness.app.auto_continue.pending());
+}
+
+test "a user turn after a failure lets a later one nudge again" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 1), harness.mock.submit_count);
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try harness.app.submit("try the other model");
+    try std.testing.expect(!harness.app.auto_continue.continued);
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 3), harness.mock.submit_count);
+}
+
+test "a cancelled run never schedules a continue" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .cancelled);
+    try std.testing.expect(!harness.app.auto_continue.pending());
+
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+    try std.testing.expect(!harness.transcriptHas("Continuing in"));
+}
+
+test "an auth failure never schedules a continue" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 401 (check ANTHROPIC_API_KEY is valid) (authentication_error: invalid x-api-key)", .@"error");
+    try std.testing.expect(!harness.app.auto_continue.pending());
+
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+    try std.testing.expect(!harness.transcriptHas("Continuing in"));
+}
+
+test "a context overflow never schedules a continue" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("prompt is too long: 250000 tokens > 200000 maximum", .@"error");
+    try std.testing.expect(!harness.app.auto_continue.pending());
+
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+    try std.testing.expect(!harness.transcriptHas("Continuing in"));
+}
+
+test "a user turn inside the delay says the continue was dropped" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try std.testing.expect(harness.transcriptHas("Continuing in 3s"));
+
+    try harness.app.submit("never mind, I will retype it");
+    try std.testing.expect(harness.transcriptHas("the automatic continue was dropped"));
+
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 1), harness.mock.submit_count);
+}
+
+test "a clean run says nothing about a continue that was never armed" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 401 (check the key)", .@"error");
+    try harness.app.submit("let me fix the key");
+    try std.testing.expect(!harness.transcriptHas("dropped"));
+}
+
+test "an abort before the delay is up drops the pending continue" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try std.testing.expect(harness.app.auto_continue.pending());
+
+    try harness.app.submit("/abort");
+    try std.testing.expect(!harness.app.auto_continue.pending());
+
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+}
+
+test "a follow-up queued before the delay is up drops the pending continue" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try std.testing.expect(harness.app.auto_continue.pending());
+
+    _ = try harness.app.queueFollowUp("never mind, use the other key");
+    try std.testing.expect(!harness.app.auto_continue.pending());
+
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+}
+
+test "a follow-up already queued at the failure means no nudge is announced" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    _ = try harness.app.queueFollowUp("then try the other key");
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try std.testing.expect(!harness.app.auto_continue.pending());
+    try std.testing.expect(!harness.transcriptHas("Continuing in"));
+
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+}
+
+test "the automatic continue waits for an automatic compaction like a typed one" {
+    var mock = MockAppSession{ .history_messages = &auto_compact_history };
+    defer mock.deinit();
+    var app = try autoCompactTestApp(&mock);
+    defer app.deinit();
+
+    try pushErrorRun(&app, &mock, "anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try std.testing.expect(app.auto_continue.pending());
+
+    app.pumpAutoContinue(compat.time.nowMillis() + @as(i64, @intCast(tui_auto_continue.default_delay_ms)));
+    try std.testing.expectEqual(@as(usize, 1), mock.compact_count);
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+    try std.testing.expect(app.pending_after_compaction != null);
+
+    try mock.eventStream().push(.{ .compaction_end = .{ .outcome = .completed } });
+    try app.drainEvents();
+    try std.testing.expectEqual(@as(usize, 1), mock.submit_count);
+}
+
+test "a picker open at the deadline defers the nudge rather than spending it" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    harness.app.state.mode = .picker;
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+    try std.testing.expect(harness.app.auto_continue.pending());
+
+    harness.app.state.mode = .normal;
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 1), harness.mock.submit_count);
+}
+
+test "the nudge waits out its delay and holds while a run is still going" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    harness.pump(0);
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+
+    harness.app.state.status.streaming = true;
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+}
+
+test "resuming a session whose last run ended in an error does not nudge" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+
+    var production = try ProductionRuntime.init(std.testing.allocator, .{});
+    defer production.deinit();
+    production.initBridge();
+
+    var app = try App.init(std.testing.allocator, production.options());
+    defer app.deinit();
+    app.runtime.?.run_async = false;
+
+    if (app.store) |*store| store.deinit();
+    app.store = try session_store.Store.init(std.testing.allocator, base);
+
+    const model = app.runtime.?.currentModel() orelse return error.NoModelConfigured;
+    var meta = session_store.SessionMetadata{
+        .session_id = try std.testing.allocator.dupe(u8, "s-error"),
+        .model = try std.testing.allocator.dupe(u8, model.id),
+        .provider = try std.testing.allocator.dupe(u8, model.provider),
+        .last_active = 1,
+    };
+    defer meta.deinit(std.testing.allocator);
+    const saved_error = try std.testing.allocator.dupe(u8, "anthropic request failed: HTTP 400 invalid_request_error");
+    defer std.testing.allocator.free(saved_error);
+    try app.store.?.save(meta, .{ .@"error" = .{ .message = OwnedSlice(u8).initOwned(saved_error) } });
+    try app.store.?.saveEvent("s-error", .{ .agent_end = .{ .reason = .@"error" } });
+
+    try app.loadSessions();
+    app.state.session_index = 0;
+    try app.resumeSelectedSession();
+
+    try std.testing.expect(!app.auto_continue.pending());
+    try std.testing.expectEqualStrings("", app.run_error_text);
+    for (app.state.transcript.items) |entry| {
+        try std.testing.expect(std.mem.indexOf(u8, entry.text.items, "Continuing in") == null);
+    }
+    app.pumpAutoContinue(compat.time.nowMillis() + @as(i64, @intCast(tui_auto_continue.default_delay_ms)));
+    try std.testing.expectEqual(@as(usize, 0), app.runtime.?.steersConsumedCount());
+}
+
+test "Esc while a run is going aborts it and drops the pending continue" {
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    const app = &model.app.?;
+    app.session = mock.session();
+
+    try pushErrorRun(app, &mock, "anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try std.testing.expect(app.auto_continue.pending());
+
+    app.state.status.streaming = true;
+    model.handleEscape(app);
+    try std.testing.expectEqual(@as(usize, 1), mock.cancel_count);
+    try std.testing.expect(!app.auto_continue.pending());
+
+    app.pumpAutoContinue(compat.time.nowMillis() + @as(i64, @intCast(tui_auto_continue.default_delay_ms)));
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+}
+
+test "Esc closing a picker drops the pending continue" {
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    const app = &model.app.?;
+    app.session = mock.session();
+    const after_delay = compat.time.nowMillis() + @as(i64, @intCast(tui_auto_continue.default_delay_ms));
+
+    try pushErrorRun(app, &mock, "anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    app.state.mode = .picker;
+    app.pumpAutoContinue(after_delay);
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+    try std.testing.expect(app.auto_continue.pending());
+
+    _ = model.update(.{ .key = .{ .key = .escape } }, &tctx.ctx);
+    try std.testing.expectEqual(tui_state.AppMode.normal, app.state.mode);
+    try std.testing.expect(!app.auto_continue.pending());
+
+    app.pumpAutoContinue(after_delay);
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+}
+
+test "Ctrl+C drops the pending continue" {
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    const app = &model.app.?;
+    app.session = mock.session();
+
+    try pushErrorRun(app, &mock, "anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try std.testing.expect(app.auto_continue.pending());
+
+    _ = model.handleInterrupt(app, &tctx.ctx);
+    try std.testing.expect(!app.auto_continue.pending());
+
+    app.pumpAutoContinue(compat.time.nowMillis() + @as(i64, @intCast(tui_auto_continue.default_delay_ms)));
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+}
+
+test "a run that ends clean leaves no error text for a later failure" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try std.testing.expectEqualStrings("anthropic request failed: HTTP 400 invalid_request_error", harness.app.run_error_text);
+
+    try harness.mock.eventStream().push(.{ .agent_end = .{ .reason = .completed } });
+    try harness.app.drainEvents();
+    try std.testing.expectEqualStrings("", harness.app.run_error_text);
 }

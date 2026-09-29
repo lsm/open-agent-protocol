@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,6 +13,8 @@ import (
 	"testing"
 	"time"
 )
+
+const openEnvelopeFields = `"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.request",`
 
 var hubParityScenarios = map[string][]string{
 	"the five ops this wire serves": {
@@ -28,6 +32,25 @@ var hubParityScenarios = map[string][]string{
 		`{"id":5,"op":"adapters","session_id":"x"}`,
 		`{"id":6,"op":"close"}`,
 	},
+	"the open gate refuses the same two ways, and the same line is a success": {
+		`{"id":1,"op":"open","adapter":"memory"}`,
+		`{"id":2,"op":"open","request":{}}`,
+		`{"id":3,"op":"open","adapter":"memory","request":null}`,
+		`{"id":4,"op":"open","adapter":"memory","request":{"id":"x"}}`,
+		`{"id":5,"op":"open","adapter":"memory","request":{` + openEnvelopeFields + `"id":"o5","payload":{"session_id":"s5"}}}`,
+	},
+	"an attachment that names something to run is refused by both": {
+		`{"id":1,"op":"open","adapter":"memory","request":{` + openEnvelopeFields + `"id":"o1","payload":{"session_id":"s1","tool_sources":[{"id":"l1","kind":"local","command":"/bin/sh"}]}}}`,
+		`{"id":2,"op":"open","adapter":"memory","request":{` + openEnvelopeFields + `"id":"o2","payload":{"session_id":"s2","tool_sources":[{"id":"l2","kind":"local","args":["-c"]}]}}}`,
+		`{"id":3,"op":"open","adapter":"memory","request":{` + openEnvelopeFields + `"id":"o3","payload":{"session_id":"s3","tool_sources":[{"id":"l3","kind":"local","environment":["PATH=/tmp"]}]}}}`,
+		`{"id":4,"op":"open","adapter":"memory","request":{` + openEnvelopeFields + `"id":"o4","payload":{"session_id":"s4","tool_sources":[{"id":"p1","kind":"process"}]}}}`,
+		`{"id":5,"op":"sessions"}`,
+	},
+	"a refused open leaves no session behind": {
+		`{"id":1,"op":"open","adapter":"absent","request":{` + openEnvelopeFields + `"id":"o1","payload":{"session_id":"s1"}}}`,
+		`{"id":2,"op":"open","adapter":"memory","request":{` + openEnvelopeFields + `"id":"o2","payload":{"session_id":"s1","metadata":7}}}`,
+		`{"id":3,"op":"sessions"}`,
+	},
 	"the catalog ops refuse the same refusals": {
 		`{"id":1,"op":"models","session_id":"absent"}`,
 		`{"id":2,"op":"tools","session_id":"absent"}`,
@@ -35,8 +58,6 @@ var hubParityScenarios = map[string][]string{
 		`{"id":4,"op":"tools"}`,
 		`{"id":5,"op":"models","run_id":"r1"}`,
 		`{"id":6,"op":"tools","adapter":"memory"}`,
-		`{"id":7,"op":"models","session_id":"absent","allow_degraded_features":"nope"}`,
-		`{"id":8,"op":"models","session_id":7}`,
 	},
 	"a null parameter is supplied, and a wrongly typed one is not read": {
 		`{"id":1,"op":"adapters","adapter":null}`,
@@ -47,7 +68,27 @@ var hubParityScenarios = map[string][]string{
 		`{"id":1,"op":"adapters"}`,
 		`not json`,
 		`{"id":2,"op":"sessions"}`,
+		`{"id":3,"op":"models","session_id":7}`,
+		`{"id":4,"op":"sessions"}`,
 	},
+	"a parameter of the wrong type is a framing defect, not a refusal": {
+		`{"id":1,"op":"adapters"}`,
+		`{"id":2,"op":"models","session_id":"absent","allow_degraded_features":"nope"}`,
+		`{"id":3,"op":"sessions"}`,
+	},
+}
+
+func TestHubStdioComparesWhatTheScenariosSend(t *testing.T) {
+	for name, lines := range hubParityScenarios {
+		stopAt := len(lines) - 1
+		if at, stops := hubWireStops[name]; stops {
+			stopAt = at
+		}
+		ids := expectedHubIDs(lines, stopAt)
+		if len(ids) == 0 {
+			t.Errorf("scenario %q would compare nothing", name)
+		}
+	}
 }
 
 func TestHubStdioAnswersGoapAndOapxTheSame(t *testing.T) {
@@ -63,29 +104,35 @@ func TestHubStdioAnswersGoapAndOapxTheSame(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			goAnswers := runHubScript(t, oapBinary(t), lines)
 			zigAnswers := runHubScript(t, oapx, lines)
-			assertSameHubAnswers(t, goAnswers, zigAnswers)
+			assertSameHubAnswers(t, name, lines, goAnswers, zigAnswers)
 		})
 	}
 }
 
-func TestHubStdioAnswersUnavailableForATransportItDoesNotCarry(t *testing.T) {
+func TestHubRefusesAConfigItCannotReadAndNamesTheFile(t *testing.T) {
 	oapx := os.Getenv("OAP_OAPX_BIN")
 	if oapx == "" {
-		t.Skip("set OAP_OAPX_BIN to an oapx binary to check its unavailable answers")
+		t.Skip("set OAP_OAPX_BIN to an oapx binary to check the flags it refuses")
 	}
-	for _, argument := range []string{"--addr=127.0.0.1:0", "--config=missing.json"} {
-		t.Run(argument, func(t *testing.T) {
-			command := exec.Command(oapx, "hub", argument)
+	cases := []struct {
+		argument string
+		wants    string
+	}{
+		{argument: "--config=missing.json", wants: "missing.json"},
+	}
+	for _, each := range cases {
+		t.Run(each.argument, func(t *testing.T) {
+			command := exec.Command(oapx, "hub", each.argument)
 			command.Stdin = strings.NewReader("")
 			output, err := command.CombinedOutput()
 			if err == nil {
-				t.Errorf("oapx hub %s exited 0; a transport it does not carry must exit non-zero", argument)
+				t.Errorf("oapx hub %s exited 0; a flag it cannot honour must exit non-zero", each.argument)
 			}
-			if !strings.Contains(string(output), "unavailable") {
-				t.Errorf("oapx hub %s did not answer unavailable:\n%s", argument, output)
+			if !strings.Contains(string(output), each.wants) {
+				t.Errorf("oapx hub %s did not name %q in its refusal:\n%s", each.argument, each.wants, output)
 			}
 			if strings.Contains(string(output), "{\"id\"") {
-				t.Errorf("oapx hub %s answered a request rather than refusing the flag", argument)
+				t.Errorf("oapx hub %s answered a request rather than refusing the flag", each.argument)
 			}
 		})
 	}
@@ -101,6 +148,64 @@ func TestHubStdioEndsCleanlyWhenTheHostClosesThePipe(t *testing.T) {
 	command.Stderr = os.Stderr
 	if err := command.Run(); err != nil {
 		t.Fatalf("oapx hub --stdio with a host that sent nothing and closed: %v", err)
+	}
+}
+
+func TestHubAddrBindsLoopbackAndEndsOnAnInterrupt(t *testing.T) {
+	oapx := os.Getenv("OAP_OAPX_BIN")
+	if oapx == "" {
+		t.Skip("set OAP_OAPX_BIN to an oapx binary to check its HTTP daemon")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, oapx, "hub", "--addr=127.0.0.1:0")
+	command.Stdin = strings.NewReader("")
+	var stderr strings.Builder
+	command.Stderr = &stderr
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	bound := make(chan string, 1)
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.HasPrefix(line, "listening on http://") {
+				bound <- strings.TrimPrefix(line, "listening on ")
+				return
+			}
+		}
+		bound <- ""
+	}()
+	var address string
+	select {
+	case address = <-bound:
+	case <-ctx.Done():
+		_ = command.Process.Kill()
+		t.Fatalf("oapx hub --addr never reported a bound address:\n%s", stderr.String())
+	}
+	if address == "" {
+		_ = command.Process.Kill()
+		t.Fatalf("oapx hub --addr bound nothing:\n%s", stderr.String())
+	}
+	if err := command.Process.Signal(os.Interrupt); err != nil {
+		_ = command.Process.Kill()
+		t.Fatalf("oapx hub --addr could not be interrupted: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- command.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("oapx hub --addr ended on an interrupt with %v:\n%s", err, stderr.String())
+		}
+	case <-time.After(30 * time.Second):
+		_ = command.Process.Kill()
+		t.Fatalf("oapx hub --addr ignored an interrupt:\n%s", stderr.String())
 	}
 }
 
@@ -153,6 +258,11 @@ func runHubScript(t *testing.T, binary string, lines []string) map[string]map[st
 
 func normaliseHubAnswer(answer map[string]any) {
 	normaliseMinted(answer)
+	refusal, ok := answer["error"].(map[string]any)
+	if !ok {
+		return
+	}
+	delete(refusal, "message")
 }
 func normaliseMinted(node any) {
 	switch value := node.(type) {
@@ -164,7 +274,7 @@ func normaliseMinted(node any) {
 					value[key] = "<minted>"
 					continue
 				}
-			case "timestamp", "sequence":
+			case "timestamp", "sequence", "updated_at_ms":
 				if _, isNumber := child.(float64); isNumber {
 					value[key] = float64(0)
 					continue
@@ -179,19 +289,62 @@ func normaliseMinted(node any) {
 	}
 }
 
-func assertSameHubAnswers(t *testing.T, goAnswers, zigAnswers map[string]map[string]any) {
+var hubWireStops = map[string]int{
+	"a framing defect stops the wire, and nothing after it is answered": 0,
+	"a parameter of the wrong type is a framing defect, not a refusal":  0,
+}
+
+func expectedHubIDs(lines []string, stopAt int) []string {
+	seen := map[string]bool{}
+	ids := make([]string, 0, len(lines))
+	for position, line := range lines {
+		if position > stopAt {
+			break
+		}
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
+			break
+		}
+		key, ok := parsed["id"].(float64)
+		if !ok {
+			continue
+		}
+		id := fmt.Sprintf("%d", int64(key))
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+func assertSameHubAnswers(t *testing.T, name string, lines []string, goAnswers, zigAnswers map[string]map[string]any) {
 	t.Helper()
 	if len(goAnswers) != len(zigAnswers) {
 		t.Errorf("goap answered %d requests and oapx answered %d", len(goAnswers), len(zigAnswers))
 	}
-	ids := make([]string, 0, len(goAnswers))
-	for id := range goAnswers {
+	stopAt := len(lines) - 1
+	if at, stops := hubWireStops[name]; stops {
+		stopAt = at
+	}
+	expected := expectedHubIDs(lines, stopAt)
+	ids := make([]string, 0, len(expected))
+	for _, id := range expected {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
 		goAnswer, goPresent := goAnswers[id]
 		zigAnswer, zigPresent := zigAnswers[id]
+		if !goPresent && !zigPresent {
+			t.Errorf("request %s was answered by neither tree, so nothing was compared", id)
+			continue
+		}
 		if !goPresent || !zigPresent {
 			t.Errorf("request %s: goap answered %t, oapx answered %t", id, goPresent, zigPresent)
 			continue

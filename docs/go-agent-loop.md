@@ -118,6 +118,19 @@ dependency, and each is useful on its own:
 | 3 | the loop | `Run`, one terminal per run, `max_iterations`, cancellation, and a turn that ends the run. A reply carrying a tool call fails the run here, because this loop has nowhere to send one; PR 4 is what makes that answerable |
 | 4 | client-executed tool calls | the caller's round trip: ask, wait, answer, and the answer becomes a message |
 
+The caller's round trip is three things, and each of them is a place a loop
+can go quietly wrong. The loop **asks** by emitting `tool_call_requested` and
+then waiting — so a caller has to be able to see the ask, and a consumer that
+never drains cannot be answered. The loop **waits** for one specific call, and
+`ResolveTool` refuses an id nothing is waiting on, by name, so a stale or
+mistyped answer is an error rather than a result attributed to the wrong call.
+The loop then **answers itself** for the calls no caller should be asked
+about: a call whose arguments the output limit cut off, and a call the run was
+cancelled while waiting for. Both are error results, and both say so in the
+text, because a tool that silently did not run is the one failure a model
+cannot recover from. The answer's `tool_call_id` is the loop's, not the
+caller's — a caller's own id would not correlate with the call the model made.
+
 Deliberately not in the first slice: permissions as a *policy engine*, steering
 and follow-up queues, compaction, and token accounting. Each is a few lines in
 the Zig loop and a real amount of policy in Go, and each is reachable only
@@ -125,7 +138,7 @@ after the first slice's traces match. `max_iterations` is the one that lands
 with the loop rather than after it: it is one counter and one condition, and a
 loop without it spins on a model that keeps calling tools.
 
-### Two contracts a consumer of a turn has to hold
+### The contracts a consumer has to hold
 
 **The channel closes; it does not report.** A `Turn` ends when its `Events`
 channel closes, and a cancelled turn closes with no terminal event at all —
@@ -141,6 +154,44 @@ consumer stops reading blocks on the next event until its context is
 cancelled. There is no abandoned-turn case to recover from, so a consumer that
 might stop reading early has to cancel the context rather than walk away.
 
+**Calls are asked for one at a time.** A reply carrying several tool calls has
+them asked in the order the model wrote them, and the loop waits for the
+answer to the first before asking for the second. A client therefore cannot
+run two of a turn's calls in parallel, which `oapx` can — it opens every call
+in a reply and settles them in the order the run settles. That is a
+difference in what a client *may* do rather than in what the wire carries, so
+it shows up in a trace only as one call's `action.call.requested` where two
+would be open at once. It is deliberate for the first slice: asking in order
+makes the cancellation rule simple to state, since only one call is ever
+outstanding. Parallel calls are the change to make when a client needs them,
+and `pi-two-open-calls` is the fixture that would catch it going the other
+way.
+
+**A run that hits its turn limit settles as `max_turns`,** not as the
+model's own stop reason. The model that wanted another turn said `tool_use`;
+the reason the run ended is that the loop stopped asking, and a consumer
+reading `tool_use` off a `run.completed` would conclude the turn finished on
+the model's terms when it did not. `oapx` reports the same at
+`bridge.zig:1010`, where an `agent_end` carrying `stop_reason: max_turns`
+becomes a `run.completed` with `stop_reason: max_turns` and whatever partial
+text the last turn produced. The partial text is the other half: a run cut off
+by its own limit has nothing else to show for, and the cut-off turn's text is
+what the caller has to work with.
+
+**A settle the answer derived names the request it answers.** A call's
+`action.call.completed` and `action.call.failed` come from a
+`action.call.resolve.request` the control layer accepted, and the validator
+reads them against it: the terminal must name that request in `request_id`,
+and a call whose accepted resolution is the error arm may only be failed. The
+loop cannot know any of that — it sees an answer, not a request — so the
+mapping asks the consumer for it (`looptrace.Trace.Accepted`) and cites what it
+is given. A consumer that accepts a resolution and forgets to record it gets a
+terminal citing no request, which the validator reports as
+`unmatched_interaction`. That is the intended failure: the alternative is a
+mapping inventing a request id, which settles a call against an answer nobody
+gave. It is also why the mapping and the session cannot be separate concerns —
+the contract is only holdable by the layer that receives the resolution.
+
 A run's terminal is the exception, and it is the exception by construction
 rather than by luck: the event buffer's last slot is reserved for it, so a
 non-terminal send never takes it and a cancelled run's terminal lands even
@@ -149,7 +200,15 @@ cancelled context cannot do that — both cases are ready, and Go picks at
 random, so a run that raced would settle as cancelled and deliver no terminal,
 which is the one trace a consumer cannot interpret. After a cancel, a
 non-terminal is dropped rather than waited for, so a cancelled run's events
-after the cancellation are whatever arrived before it.
+after the cancellation are whatever arrived before it. A tool call's closing
+event is dropped under the same rule, which is a trade worth naming: waiting
+for room instead would put the run's terminal behind a wait the cancelling
+consumer has already stopped serving, and the terminal is the one event the
+buffer reserves a slot for. So a cancel that lands with the buffer already
+full can leave a call open on the wire, which the validator reads as
+`pending_tool_at_terminal`. It takes a consumer that is behind by the whole
+buffer to get there, and the alternative loses the terminal, which is a worse
+trace than one missing a close.
 
 ## What the loop must be, whatever the slice
 

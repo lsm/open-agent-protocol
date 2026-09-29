@@ -23,6 +23,7 @@ pub const Options = struct {
     default_grant_ttl_ms: u64 = 300_000,
     accepts_inference: bool = false,
     resolves_own_credentials: bool = false,
+    catalog: ?types.ModelCatalogState = null,
 };
 
 pub const GrantedCredential = struct {
@@ -743,6 +744,7 @@ pub const Server = struct {
             .capability_revision = revision,
             .payload = .{ .provider_models_list_response = .{
                 .models = entries,
+                .catalog = self.options.catalog,
             } },
         };
         try self.push(response);
@@ -1888,6 +1890,17 @@ pub fn cloneModelEntry(allocator: std.mem.Allocator, entry: types.ModelEntry) !t
     const provider_id = try allocator.dupe(u8, entry.provider_id);
     errdefer allocator.free(provider_id);
     const capabilities = try allocator.dupe(types.ModelCapability, entry.capabilities);
+    errdefer allocator.free(capabilities);
+    const input_modalities = try allocator.dupe(types.Modality, entry.input_modalities);
+    errdefer allocator.free(input_modalities);
+    const output_modalities = try allocator.dupe(types.Modality, entry.output_modalities);
+    errdefer allocator.free(output_modalities);
+    const reasoning_levels = try allocator.dupe(types.ReasoningLevel, entry.reasoning_levels);
+    errdefer allocator.free(reasoning_levels);
+    const release_date = if (entry.release_date) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (release_date) |value| allocator.free(value);
+    const family = if (entry.family) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (family) |value| allocator.free(value);
 
     return types.ModelEntry{
         .model_ref = model_ref,
@@ -1902,6 +1915,12 @@ pub fn cloneModelEntry(allocator: std.mem.Allocator, entry: types.ModelEntry) !t
         .source = entry.source,
         .reasoning_default = entry.reasoning_default,
         .auth_status = entry.auth_status,
+        .cost = entry.cost,
+        .input_modalities = input_modalities,
+        .output_modalities = output_modalities,
+        .reasoning_levels = reasoning_levels,
+        .release_date = release_date,
+        .family = family,
     };
 }
 
@@ -1941,6 +1960,16 @@ fn testServer(allocator: std.mem.Allocator, options: Options) !Server {
     errdefer if (!model_transferred) allocator.free(model_provider_id);
     const capabilities = try allocator.dupe(types.ModelCapability, &.{ .chat, .streaming });
     errdefer if (!model_transferred) allocator.free(capabilities);
+    const input_modalities = try allocator.dupe(types.Modality, &.{ .text, .image });
+    errdefer if (!model_transferred) allocator.free(input_modalities);
+    const output_modalities = try allocator.dupe(types.Modality, &.{.text});
+    errdefer if (!model_transferred) allocator.free(output_modalities);
+    const reasoning_levels = try allocator.dupe(types.ReasoningLevel, &.{ .off, .high });
+    errdefer if (!model_transferred) allocator.free(reasoning_levels);
+    const release_date = try allocator.dupe(u8, "2025-09-29");
+    errdefer if (!model_transferred) allocator.free(release_date);
+    const family = try allocator.dupe(u8, "gemma");
+    errdefer if (!model_transferred) allocator.free(family);
 
     try server.addModel(.{
         .model_ref = model_ref,
@@ -1950,6 +1979,12 @@ fn testServer(allocator: std.mem.Allocator, options: Options) !Server {
         .capabilities = capabilities,
         .source = .discovered,
         .auth_status = .authenticated,
+        .cost = .{ .input = 0.5, .output = null, .cache_read = null, .cache_write = null },
+        .input_modalities = input_modalities,
+        .output_modalities = output_modalities,
+        .reasoning_levels = reasoning_levels,
+        .release_date = release_date,
+        .family = family,
     });
     model_transferred = true;
 
@@ -1990,6 +2025,81 @@ test "describe answers with the configured providers and the versions it speaks"
     try std.testing.expect(payload.providers[0].allows_anonymous);
     try std.testing.expectEqual(@as(usize, 1), payload.protocol_versions.len);
     try std.testing.expectEqualStrings("0.1", payload.protocol_versions[0]);
+}
+
+fn modelsListUnderFailure(allocator: std.mem.Allocator) !void {
+    var server = try testServer(allocator, .{});
+    defer server.deinit();
+
+    const asked = try makeRequest(allocator, "provider.models.list.request", "{}", "q1");
+    defer allocator.free(asked);
+    try server.handleLine(asked);
+
+    while (server.popOutbound()) |line| allocator.free(line);
+}
+
+test "listing a catalog frees nothing twice and leaks nothing under allocation failure" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        modelsListUnderFailure,
+        .{},
+    );
+}
+
+test "a listing publishes its own completeness and the facts each entry learned" {
+    const allocator = std.testing.allocator;
+    var partial = try testServer(allocator, .{ .catalog = .{ .observed_at_ms = 1756400000000, .complete = false } });
+    defer partial.deinit();
+
+    const asked = try makeRequest(allocator, "provider.models.list.request", "{}", "q1");
+    defer allocator.free(asked);
+    try partial.handleLine(asked);
+
+    var listed = try decodeOnly(allocator, &partial);
+    defer listed.deinit(allocator);
+    const response = listed.payload.provider_models_list_response;
+
+    const state = response.catalog orelse return error.CatalogStateUnpublished;
+    try std.testing.expect(!state.complete);
+    try std.testing.expectEqual(@as(?i64, 1756400000000), state.observed_at_ms);
+
+    const entry = response.models[0];
+    try std.testing.expectEqualSlices(types.Modality, &.{.text, .image}, entry.input_modalities);
+    try std.testing.expectEqualSlices(types.Modality, &.{.text}, entry.output_modalities);
+    const cost = entry.cost orelse return error.CostUnpublished;
+    try std.testing.expectEqual(@as(?f64, 0.5), cost.input);
+    try std.testing.expect(entry.cost.?.output == null);
+    try std.testing.expectEqualSlices(types.ReasoningLevel, &.{ .off, .high }, entry.reasoning_levels);
+    try std.testing.expectEqualStrings("2025-09-29", entry.release_date.?);
+    try std.testing.expectEqualStrings("gemma", entry.family.?);
+
+    var whole = try testServer(allocator, .{ .catalog = .{ .observed_at_ms = null, .complete = true } });
+    defer whole.deinit();
+
+    const asked_again = try makeRequest(allocator, "provider.models.list.request", "{}", "q2");
+    defer allocator.free(asked_again);
+    try whole.handleLine(asked_again);
+
+    var complete_listing = try decodeOnly(allocator, &whole);
+    defer complete_listing.deinit(allocator);
+    const complete_state = complete_listing.payload.provider_models_list_response.catalog orelse
+        return error.CatalogStateUnpublished;
+    try std.testing.expect(complete_state.complete);
+    try std.testing.expect(complete_state.observed_at_ms == null);
+}
+
+test "a listing that says nothing about its own completeness says nothing at all" {
+    const allocator = std.testing.allocator;
+    var server = try testServer(allocator, .{});
+    defer server.deinit();
+
+    const asked = try makeRequest(allocator, "provider.models.list.request", "{}", "q1");
+    defer allocator.free(asked);
+    try server.handleLine(asked);
+
+    var listed = try decodeOnly(allocator, &server);
+    defer listed.deinit(allocator);
+    try std.testing.expect(listed.payload.provider_models_list_response.catalog == null);
 }
 
 test "models list filters by provider and refuses one it never described" {

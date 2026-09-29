@@ -208,6 +208,36 @@ code paths; add a transcript row instead.
   `git checkout` shows up without a `git` process per render. When the row is too narrow
   for both, the branch is dropped and the path takes the full width.
 
+  The path is the directory the agent is working in, not the one the TUI started in.
+  `workspace_root` is a required, model-supplied argument on every workspace tool, and
+  the agent loop forwards the model's arguments unchanged, so the last absolute
+  `workspace_root` a tool call names is the directory that call is for. The TUI reads it
+  off `tool_execution_start`, whose `args_json` the runtime already carries. That event is
+  pushed before the permission engine evaluates the call, so the row leads the call
+  rather than following it, and it moves to the directory a refused call named even
+  though the call then never ran there — the row is where the agent is working, which is
+  what the model's next call will build on, not a receipt for what already happened. A
+  call with no `workspace_root`, or a relative one, leaves the last known value alone,
+  and the initial value is the directory the TUI started in. `/clear` and a session
+  resume return the row to the session root; resume suppresses the follow while it
+  replays the session's persisted events, so a directory from before the resume does not
+  come back with them.
+
+  A path outside the session root is shown, not hidden, and rendered bold in the warning
+  colour instead of muted — leaving the session's workspace is worth seeing. Both paths
+  are resolved with `std.fs.path.resolve` before that comparison, so a `workspace_root`
+  that climbs out with `..` is judged on where it lands rather than on how it is
+  spelled; the row still shows the path as the tool call wrote it. This is a label and
+  nothing more: it is never read by `PermissionEngine`, whose `workspace_root` is fixed
+  when the app initialises and continues to be what `isInsideWorkspace` checks against,
+  so the row cannot widen what a tool call is allowed to reach. Note the two are
+  genuinely different, since the engine's boundary test covers only `.read` and `.write`
+  and a relative path is joined against the model-supplied root — tracked in #587.
+
+  There is no directory the agent changes itself: each call names its own root, so a `cd`
+  does not persist and nothing needs reporting a resulting directory. #586 carries that
+  and the design question behind it.
+
 ## Credentials and the model catalog
 
 - Credentials stay in the macOS keychain (item label "makai credentials", service
@@ -312,6 +342,15 @@ refuse a request that size. A refusal is a limit on what this repository will as
 not a claim about what the provider accepts: a window above what a model reports still
 fails the turn with the provider's own overflow error, and `/compact` is the way out.
 
+A window the user sets is kept in `~/.oapx/config.json` under `mode.context_window`, so
+it is still there next session, and `/context default` removes the member rather than
+writing the model's own number back — an absent member means the catalog's window, which is
+what a session that never set one uses. A value above a model's ceiling that is found in
+the file on startup is dropped for that session and reported the same way a switch reports
+it, and the file is left exactly as it was: a window this repository will not ask for is
+not a reason to edit the user's settings. A window refused at the prompt changes nothing
+either, so what is written is always a window the user chose.
+
 The ceiling follows the model, so a window the model in effect cannot take is dropped
 rather than carried: `--context-window` above the first model's ceiling is dropped before
 the first turn, and so is a session's window when a model switch lands on a model whose
@@ -345,6 +384,36 @@ the tick thread. A `/resume` that lands before the compaction ends drops the hel
 with a note saying so, at the top of the resume, so it cannot be sent into the session that
 replaced it. A session whose history is already a summary, or empty, is not compacted
 again, and one automatic compaction runs at a time.
+
+## Recovery after a provider error
+
+The HTTP retry policy is five statuses — 429, 500, 502, 503, 504 — plus a
+transport failure, three attempts each with exponential backoff, and the
+capability model's `max_retry_delay_ms` bounds the sleep rather than choosing
+which errors retry. A 400 is outside that set, so one ends the run immediately
+and the transcript shows the error and nothing else.
+
+When a run ends that way the TUI waits about three seconds and then sends one
+`continue` on the user's behalf, with a system line saying it is doing so and
+the user message it sent visible in the transcript like any other turn. It does
+this once per failure streak: if the automatic continue fails too, that is left
+to the user, and a clean run or a turn the user sends themselves starts a fresh
+streak. It never does it after an abort, after a 401 or 403 (the credential has
+to be fixed, not replayed), or when the error is a context overflow that
+`/compact` handles. Anything the user does inside the delay — submitting,
+steering, queueing a follow-up, `Esc` or `Ctrl+C` — drops the pending continue,
+`Esc` here meaning any of them, whether it clears the draft, aborts the run or
+closes a picker. It waits rather than expires while a run is streaming or a
+picker or approval is open, so the three seconds is a wait rather than a
+deadline, and dropping it says so in the transcript rather than leaving the
+earlier announcement standing. The continue goes out through the same path a
+typed one does, so an `/autocompact` session compacts first and holds the
+continue until the compaction ends. A follow-up
+already queued when the run fails suppresses it entirely, because an
+error-ended run does not resume the queue on its own, so the continue would be
+a promise nothing keeps. Replaying a saved session is not a fresh failure: a
+session whose last run ended in an error does not nudge on resume, because the
+failure belongs to the process that hit it.
 
 ## Compaction
 

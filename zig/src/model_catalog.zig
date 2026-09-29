@@ -9,6 +9,7 @@ const custom_providers = @import("custom_providers");
 const github_copilot = @import("oauth/github_copilot");
 const provider_catalog = @import("provider_catalog");
 const provider_credential = @import("provider_credential");
+const auth_resolver = @import("auth_resolver");
 const provider_base_url = @import("provider_base_url");
 const anthropic_messages_api = @import("anthropic_messages_api");
 const openai_completions_api = @import("openai_completions_api");
@@ -453,7 +454,7 @@ fn catalogEndpointWithOverrides(
     id: []const u8,
     overrides: provider_base_url.BaseUrlOverrides,
 ) !?CatalogEndpoint {
-    const region = catalogRegion(allocator, null, id);
+    const region = try catalogRegion(allocator, null, id);
     const catalog = catalogTargetInRegion(id, region) orelse return null;
     var merged = overrides;
     if (region) |resolved| merged.kimi_region = resolved;
@@ -466,13 +467,13 @@ fn catalogEndpointFromEnvironment(
     storage: ?*oauth_storage.AuthStorage,
     id: []const u8,
 ) !?CatalogEndpoint {
-    const region = catalogRegion(allocator, storage, id);
+    const region = try catalogRegion(allocator, storage, id);
     const catalog = catalogTargetInRegion(id, region) orelse return null;
     const base_url = try provider_base_url.defaultBaseUrlForRefWithRegion(allocator, id, catalog.wire, region);
     return try catalogEndpointWithBase(allocator, catalog, base_url);
 }
 
-fn catalogRegion(allocator: std.mem.Allocator, storage: ?*oauth_storage.AuthStorage, id: []const u8) ?[]const u8 {
+fn catalogRegion(allocator: std.mem.Allocator, storage: ?*oauth_storage.AuthStorage, id: []const u8) !?[]const u8 {
     const fallback = provider_catalog.defaultRegion(id);
     if (provider_catalog.regionEnv(id)) |name| {
         if (compat.getEnvVarOwned(allocator, name) catch null) |value| {
@@ -480,7 +481,9 @@ fn catalogRegion(allocator: std.mem.Allocator, storage: ?*oauth_storage.AuthStor
             if (provider_catalog.regionFromValue(id, value)) |resolved| return resolved;
         }
     }
-    if (catalogStoredRegion(id, storage)) |stored| return stored;
+    if (!try provider_catalog.credentialEnvIsSet(allocator, id)) {
+        if (catalogStoredRegion(id, storage)) |stored| return stored;
+    }
     return fallback;
 }
 
@@ -493,7 +496,7 @@ fn catalogStoredRegion(id: []const u8, storage: ?*oauth_storage.AuthStorage) ?[]
     return provider_catalog.regionFromValue(id, provider_data["region:".len..]);
 }
 
-const catalog_loader_ids = [_][]const u8{
+const catalog_loader_rows = [_][]const u8{
     "deepseek",
     "openrouter",
     "opencode",
@@ -513,12 +516,32 @@ const deepseek_catalog_models_url = "https://api.deepseek.com/v1/models";
 const proxy_models_url = "https://proxy.example/api/v1/models";
 const xiaomi_catalog_models_url = "https://token-plan-cn.xiaomimimo.com/v1/models";
 
+fn isCatalogLoaderRow(id: []const u8) bool {
+    for (catalog_loader_rows) |row| {
+        if (std.mem.eql(u8, row, id)) return true;
+    }
+    return false;
+}
+
+fn orderedCatalogLoaderIds(allocator: std.mem.Allocator, out: *std.ArrayList([]const u8)) !void {
+    for (provider_catalog.coding_plan_ids) |id| {
+        if (isCatalogLoaderRow(id)) try out.append(allocator, id);
+    }
+    for (provider_catalog.all) |row| {
+        if (row.offering != null and row.offering.? == .coding_plan) continue;
+        if (isCatalogLoaderRow(row.id)) try out.append(allocator, row.id);
+    }
+}
+
 fn loadCatalogModels(
     allocator: std.mem.Allocator,
     storage: ?*oauth_storage.AuthStorage,
     mode: CatalogLoadMode,
 ) ![]ai_types.Model {
-    return loadCatalogModelsWithRows(allocator, &catalog_loader_ids, storage, mode);
+    var ids = std.ArrayList([]const u8).empty;
+    defer ids.deinit(allocator);
+    try orderedCatalogLoaderIds(allocator, &ids);
+    return loadCatalogModelsWithRows(allocator, ids.items, storage, mode);
 }
 
 fn loadCatalogModelsWithRows(
@@ -2117,7 +2140,7 @@ test "loadProductionModels includes the Kimi model, discovered like any other ro
 test "the Kimi row serves the China base by default and the global base when the region says so" {
     try provider_catalog.blankEnvironment(std.testing.allocator);
     defer compat.clearTestEnv();
-    const china = catalogRegion(std.testing.allocator, null, "kimi");
+    const china = try catalogRegion(std.testing.allocator, null, "kimi");
     try std.testing.expectEqualStrings("china", china.?);
     const china_target = catalogTargetInRegion("kimi", china) orelse return error.TestExpectedTarget;
     try std.testing.expectEqualStrings("https://api.kimi.com/coding", china_target.base_url);
@@ -2166,7 +2189,7 @@ test "KIMI_REGION chooses the region, and an unusable value falls back to the ro
     };
     for (cases) |case| {
         try compat.setTestEnv(std.testing.allocator, kimi_region_env, case.set);
-        const got = catalogRegion(std.testing.allocator, null, "kimi");
+        const got = try catalogRegion(std.testing.allocator, null, "kimi");
         if (!std.mem.eql(u8, case.want, got orelse "")) {
             std.debug.print("\nKIMI_REGION={s} should resolve to {s}\n", .{ case.set, case.want });
         }
@@ -2176,7 +2199,7 @@ test "KIMI_REGION chooses the region, and an unusable value falls back to the ro
 
     try compat.setTestEnv(std.testing.allocator, "KIMI_REGION", "global");
     defer compat.clearTestEnv();
-    const chosen = catalogRegion(std.testing.allocator, null, "kimi");
+    const chosen = try catalogRegion(std.testing.allocator, null, "kimi");
     try std.testing.expectEqualStrings("global", chosen.?);
     const target = catalogTargetInRegion("kimi", chosen) orelse return error.TestExpectedTarget;
     try std.testing.expectEqualStrings("https://api.moonshot.ai", target.base_url);
@@ -2188,6 +2211,110 @@ test "loadProductionModels omits Kimi model by default in tests" {
 
     for (models) |model| {
         try std.testing.expect(!std.mem.eql(u8, kimi_provider_id, model.provider));
+    }
+}
+
+test "a Kimi listing and the requests that follow use the same credential and the same region" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+
+    const cases = [_]struct { env_key: ?[]const u8, env_region: ?[]const u8, stored: ?[]const u8, stored_region: ?[]const u8, want_key: ?[]const u8, want_region: []const u8 }{
+        .{ .env_key = null, .env_region = null, .stored = "sk-stored", .stored_region = "global", .want_key = "sk-stored", .want_region = "global" },
+        .{ .env_key = null, .env_region = null, .stored = "sk-stored", .stored_region = null, .want_key = "sk-stored", .want_region = "china" },
+        .{ .env_key = "sk-env", .env_region = null, .stored = "sk-stored", .stored_region = "global", .want_key = "sk-env", .want_region = "china" },
+        .{ .env_key = "sk-env", .env_region = "global", .stored = "sk-stored", .stored_region = "china", .want_key = "sk-env", .want_region = "global" },
+        .{ .env_key = "sk-env", .env_region = "china", .stored = "sk-stored", .stored_region = "global", .want_key = "sk-env", .want_region = "china" },
+        .{ .env_key = "sk-env", .env_region = "mars", .stored = "sk-stored", .stored_region = "global", .want_key = "sk-env", .want_region = "china" },
+        .{ .env_key = null, .env_region = null, .stored = null, .stored_region = null, .want_key = null, .want_region = "china" },
+    };
+
+    for (cases) |case| {
+        var storage = oauth_storage.AuthStorage{
+            .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(allocator),
+            .allocator = allocator,
+        };
+        defer storage.deinit();
+        if (case.stored) |key| {
+            const data = if (case.stored_region) |region|
+                try std.fmt.allocPrint(allocator, "region:{s}", .{region})
+            else
+                try allocator.dupe(u8, "no region");
+            try storage.providers.put(try allocator.dupe(u8, kimi_provider_id), .{ .oauth = .{
+                .access = try allocator.dupe(u8, key),
+                .refresh = try allocator.dupe(u8, ""),
+                .expires = std.math.maxInt(i64),
+                .provider_data = data,
+            } });
+        }
+
+        try compat.setTestEnv(allocator, kimi_env_key, case.env_key orelse "");
+        try compat.setTestEnv(allocator, kimi_region_env, case.env_region orelse "");
+
+        var environment: [2]provider_credential.EnvironmentValue = undefined;
+        var held: usize = 0;
+        for (provider_catalog.credentialEnv(kimi_provider_id)) |name| {
+            const value = compat.getEnvVarOwned(allocator, name) catch continue;
+            environment[held] = .{ .name = name, .value = value };
+            held += 1;
+        }
+        test_catalog_environment = environment[0..held];
+        defer {
+            for (environment[0..held]) |entry| allocator.free(entry.value);
+            test_catalog_environment = null;
+        }
+
+        var listed = (try provider_credential.lookup(allocator, environment[0..held], &storage, kimi_provider_id));
+        defer if (listed) |*found| found.deinit(allocator);
+        if (case.want_key) |want| {
+            try std.testing.expectEqualStrings(want, listed.?.key);
+        } else {
+            try std.testing.expect(listed == null);
+        }
+
+        if (case.want_key) |want| {
+            var sent = try auth_resolver.resolveApiKeyOfKind(allocator, &storage, kimi_provider_id, null, .any);
+            defer sent.deinit(allocator);
+            try std.testing.expectEqualStrings(want, sent.api_key);
+        } else {
+            try std.testing.expectError(
+                error.AuthRequired,
+                auth_resolver.resolveApiKeyOfKind(allocator, &storage, kimi_provider_id, null, .any),
+            );
+        }
+
+        const region = try catalogRegion(allocator, &storage, kimi_provider_id);
+        try std.testing.expectEqualStrings(case.want_region, region.?);
+
+        var listed_base = (try catalogEndpointFromEnvironment(allocator, &storage, kimi_provider_id)).?;
+        defer listed_base.deinit(allocator);
+        try std.testing.expectEqualStrings(case.want_region, listed_base.region.?);
+
+        const request_base = try provider_base_url.defaultBaseUrlForRefWithRegion(
+            allocator,
+            kimi_provider_id,
+            kimi_api_id,
+            region,
+        );
+        defer allocator.free(request_base);
+        try std.testing.expectEqualStrings(listed_base.base_url, request_base);
+
+        const stored_for_request = catalogStoredRegion(kimi_provider_id, &storage);
+        const bare_ref_base = try provider_base_url.defaultBaseUrlForRefWithRegion(
+            allocator,
+            kimi_provider_id,
+            kimi_api_id,
+            stored_for_request,
+        );
+        defer allocator.free(bare_ref_base);
+        try std.testing.expectEqualStrings(listed_base.base_url, bare_ref_base);
+
+        const want_base = if (std.mem.eql(u8, case.want_region, "global"))
+            "https://api.moonshot.ai"
+        else
+            "https://api.kimi.com/coding";
+        try std.testing.expectEqualStrings(want_base, listed_base.base_url);
+        try std.testing.expectEqualStrings(want_base, request_base);
     }
 }
 
@@ -2215,7 +2342,7 @@ test "the region resolution a user chose at login reaches discovery and the mode
         .provider_data = try allocator.dupe(u8, "region:global"),
     } });
 
-    const region = catalogRegion(allocator, &storage, "kimi");
+    const region = try catalogRegion(allocator, &storage, "kimi");
     try std.testing.expectEqualStrings("global", region.?);
     const target = catalogTargetInRegion("kimi", region) orelse return error.TestExpectedTarget;
     try std.testing.expectEqualStrings("https://api.moonshot.ai", target.base_url);
@@ -2244,7 +2371,7 @@ test "an environment region still wins over the one chosen at login" {
     try compat.setTestEnv(allocator, kimi_region_env, "china");
     defer compat.clearTestEnv();
 
-    const region = catalogRegion(allocator, &storage, "kimi");
+    const region = try catalogRegion(allocator, &storage, "kimi");
     try std.testing.expectEqualStrings("china", region.?);
 }
 
@@ -2466,7 +2593,7 @@ test "a row the override machinery does not know falls back to the catalog base"
 
 test "the row's base-url override moves both the base and the models url" {
     var endpoint = (try catalogEndpointWithOverrides(std.testing.allocator, "deepseek", .{
-        .deepseek = "https://proxy.example/api",
+        .row = "https://proxy.example/api",
     })).?;
     defer endpoint.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("https://proxy.example/api", endpoint.base_url);
@@ -2475,7 +2602,7 @@ test "the row's base-url override moves both the base and the models url" {
 
 test "a versioned base-url override loses the trailing version the wire would re-add" {
     var endpoint = (try catalogEndpointWithOverrides(std.testing.allocator, "deepseek", .{
-        .deepseek = "https://proxy.example/api/v1/",
+        .row = "https://proxy.example/api/v1/",
     })).?;
     defer endpoint.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("https://proxy.example/api", endpoint.base_url);
@@ -2485,7 +2612,7 @@ test "a versioned base-url override loses the trailing version the wire would re
 test "the global base-url override outranks the row's own" {
     var endpoint = (try catalogEndpointWithOverrides(std.testing.allocator, "deepseek", .{
         .global = "https://everywhere.example",
-        .deepseek = "https://proxy.example/api",
+        .row = "https://proxy.example/api",
     })).?;
     defer endpoint.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("https://everywhere.example", endpoint.base_url);
@@ -2499,7 +2626,7 @@ test "a discovered model carries the overridden base rather than the catalog's" 
     test_catalog_environment = &[_]provider_credential.EnvironmentValue{
         .{ .name = "DEEPSEEK_API_KEY", .value = "row-key" },
     };
-    test_catalog_base_urls = .{ .deepseek = "https://proxy.example/api" };
+    test_catalog_base_urls = .{ .row = "https://proxy.example/api" };
     defer {
         test_catalog_discovery = null;
         test_catalog_environment = null;
@@ -2521,7 +2648,7 @@ test "a row's discovery is read from its overridden models url, not the catalog'
     test_catalog_environment = &[_]provider_credential.EnvironmentValue{
         .{ .name = "DEEPSEEK_API_KEY", .value = "row-key" },
     };
-    test_catalog_base_urls = .{ .deepseek = "https://proxy.example/api" };
+    test_catalog_base_urls = .{ .row = "https://proxy.example/api" };
     defer {
         test_catalog_discovery = null;
         test_catalog_environment = null;
@@ -2664,9 +2791,9 @@ test "the production loader enables deepseek, every gateway and every coding pla
         "openai",
         "kimi",
     };
-    try std.testing.expectEqual(enabled.len, catalog_loader_ids.len);
-    for (enabled, 0..) |id, index| {
-        try std.testing.expectEqualStrings(id, catalog_loader_ids[index]);
+    try std.testing.expectEqual(enabled.len, catalog_loader_rows.len);
+    for (enabled) |id| {
+        try std.testing.expect(isCatalogLoaderRow(id));
         try std.testing.expect(catalogTargetInRegion(id, provider_catalog.defaultRegion(id)) != null);
     }
 }
@@ -2691,10 +2818,57 @@ test "loadProductionModels serves a gateway row's discovered models beside deeps
     defer deinitModels(std.testing.allocator, models);
 
     try std.testing.expectEqual(@as(usize, 2), models.len);
-    try std.testing.expectEqualStrings("deepseek", models[0].provider);
-    try std.testing.expectEqualStrings("openrouter", models[1].provider);
-    try std.testing.expectEqualStrings("https://api.deepseek.com", models[0].base_url);
-    try std.testing.expectEqualStrings("https://openrouter.ai/api/v1", models[1].base_url);
+    try std.testing.expectEqualStrings("openrouter", models[0].provider);
+    try std.testing.expectEqualStrings("deepseek", models[1].provider);
+    try std.testing.expectEqualStrings("https://openrouter.ai/api/v1", models[0].base_url);
+    try std.testing.expectEqualStrings("https://api.deepseek.com", models[1].base_url);
+}
+
+test "the loaded list leads with the plans, and follows the catalog within each group" {
+    const allocator = std.testing.allocator;
+    var ids = std.ArrayList([]const u8).empty;
+    defer ids.deinit(allocator);
+    try orderedCatalogLoaderIds(allocator, &ids);
+
+    try std.testing.expectEqual(catalog_loader_rows.len, ids.items.len);
+    for (ids.items) |id| try std.testing.expect(isCatalogLoaderRow(id));
+
+    var seen_payg = false;
+    for (ids.items) |id| {
+        const row = provider_catalog.provider(id) orelse return error.TestExpectedRow;
+        const is_plan = row.offering != null and row.offering.? == .coding_plan;
+        try std.testing.expect(!is_plan or !seen_payg);
+        if (!is_plan) seen_payg = true;
+    }
+
+    var plans: usize = 0;
+    for (provider_catalog.coding_plan_ids) |id| {
+        if (isCatalogLoaderRow(id)) plans += 1;
+    }
+    try std.testing.expect(plans > 0);
+    for (ids.items[0..plans]) |id| {
+        const row = provider_catalog.provider(id) orelse return error.TestExpectedRow;
+        try std.testing.expect(row.offering.? == .coding_plan);
+    }
+    for (ids.items[plans..]) |id| {
+        const row = provider_catalog.provider(id) orelse return error.TestExpectedRow;
+        try std.testing.expect(row.offering == null or row.offering.? != .coding_plan);
+    }
+
+    const expected_plans = blk: {
+        var names: [catalog_loader_rows.len][]const u8 = undefined;
+        var total: usize = 0;
+        for (provider_catalog.coding_plan_ids) |id| {
+            if (isCatalogLoaderRow(id)) {
+                names[total] = id;
+                total += 1;
+            }
+        }
+        break :blk names[0..total];
+    };
+    for (ids.items[0..plans], 0..) |id, index| {
+        try std.testing.expectEqualStrings(expected_plans[index], id);
+    }
 }
 
 test "every coding plan row the loader enables carries its own version in the base" {
@@ -2856,10 +3030,10 @@ test "loadProductionModels serves a coding plan row's discovered models beside d
     defer deinitModels(std.testing.allocator, models);
 
     try std.testing.expectEqual(@as(usize, 2), models.len);
-    try std.testing.expectEqualStrings("deepseek", models[0].provider);
-    try std.testing.expectEqualStrings("tencent-coding-plan", models[1].provider);
-    try std.testing.expectEqualStrings("https://api.deepseek.com", models[0].base_url);
-    try std.testing.expectEqualStrings("https://api.lkeap.cloud.tencent.com/coding/v3", models[1].base_url);
+    try std.testing.expectEqualStrings("tencent-coding-plan", models[0].provider);
+    try std.testing.expectEqualStrings("deepseek", models[1].provider);
+    try std.testing.expectEqualStrings("https://api.lkeap.cloud.tencent.com/coding/v3", models[0].base_url);
+    try std.testing.expectEqualStrings("https://api.deepseek.com", models[1].base_url);
 }
 
 test "a window a session asks for is capped at the ceiling its row records" {
@@ -3031,8 +3205,8 @@ test "the wire a model is served on is the one the loader would pick for the row
 }
 
 test "the loader's rows are catalog rows the target answers for" {
-    try std.testing.expect(catalog_loader_ids.len > 0);
-    for (catalog_loader_ids) |id| {
+    try std.testing.expect(catalog_loader_rows.len > 0);
+    for (catalog_loader_rows) |id| {
         try std.testing.expect(provider_catalog.provider(id) != null);
         try std.testing.expect(catalogTargetInRegion(id, provider_catalog.defaultRegion(id)) != null);
     }
@@ -3297,7 +3471,11 @@ fn catalogLoadProbe(allocator: std.mem.Allocator) !void {
     const models = try loadCatalogModels(allocator, null, .allow_cache);
     defer deinitModels(allocator, models);
     try std.testing.expectEqual(@as(usize, 4), models.len);
-    try std.testing.expectEqualStrings("openai-responses", models[3].api);
+    var responses: usize = 0;
+    for (models) |model| {
+        if (std.mem.eql(u8, model.api, "openai-responses")) responses += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), responses);
 }
 
 fn declaredModelsFallbackProbe(allocator: std.mem.Allocator) !void {
@@ -3335,7 +3513,7 @@ fn overriddenCatalogLoadProbe(allocator: std.mem.Allocator) !void {
     test_catalog_environment = &[_]provider_credential.EnvironmentValue{
         .{ .name = "DEEPSEEK_API_KEY", .value = "row-key" },
     };
-    test_catalog_base_urls = .{ .deepseek = "https://proxy.example/api" };
+    test_catalog_base_urls = .{ .row = "https://proxy.example/api" };
     defer {
         test_catalog_discovery = null;
         test_catalog_environment = null;

@@ -90,28 +90,51 @@ type Model struct {
 	Cost            Cost
 }
 
-func holdsURL(baseURL string, hasBaseURL bool, needle string) bool {
-	if !hasBaseURL {
-		return false
-	}
-	return strings.Contains(baseURL, needle)
-}
-
 func isGitHubCopilotURL(baseURL string, hasBaseURL bool) bool {
 	return isHostOrSubdomain(baseURL, hasBaseURL, "githubcopilot.com")
 }
 
-func isHostOrSubdomain(baseURL string, hasBaseURL bool, domain string) bool {
+func hostOf(baseURL string, hasBaseURL bool) string {
 	if !hasBaseURL {
-		return false
+		return ""
 	}
 	parsed, err := url.Parse(baseURL)
 	if err != nil {
+		return ""
+	}
+	return strings.ToLower(parsed.Hostname())
+}
+
+func hostIsOrSubdomainOf(host, domain string) bool {
+	return host == domain || (len(host) > len(domain) && strings.HasSuffix(host, domain) && host[len(host)-len(domain)-1] == '.')
+}
+
+func isHostOrSubdomain(baseURL string, hasBaseURL bool, domain string) bool {
+	host := hostOf(baseURL, hasBaseURL)
+	return hostIsOrSubdomainOf(host, strings.ToLower(domain))
+}
+
+var bedrockFirstLabels = []string{"bedrock", "bedrock-runtime", "bedrock-fips", "bedrock-runtime-fips"}
+var awsParents = []string{"amazonaws.com", "amazonaws.com.cn"}
+
+func isBedrockURL(baseURL string, hasBaseURL bool) bool {
+	host := hostOf(baseURL, hasBaseURL)
+	dot := strings.IndexByte(host, '.')
+	if dot < 0 {
 		return false
 	}
-	host := strings.ToLower(parsed.Hostname())
-	d := strings.ToLower(domain)
-	return host == d || (len(host) > len(d) && strings.HasSuffix(host, d) && host[len(host)-len(d)-1] == '.')
+	label := host[:dot]
+	for _, candidate := range bedrockFirstLabels {
+		if label != candidate {
+			continue
+		}
+		for _, parent := range awsParents {
+			if hostIsOrSubdomainOf(host, parent) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func isMistralURL(baseURL string, hasBaseURL bool) bool {
@@ -126,12 +149,55 @@ func isCerebrasURL(baseURL string, hasBaseURL bool) bool {
 	return isHostOrSubdomain(baseURL, hasBaseURL, "cerebras.ai")
 }
 
+func isOllamaURL(baseURL string, hasBaseURL bool) bool {
+	if !hasBaseURL {
+		return false
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+	if parsed.Port() != "11434" {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	for _, candidate := range []string{"localhost", "127.0.0.1", "::1"} {
+		if host == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+var azureLabels = []string{"openai.azure.com", "cognitiveservices.azure.com"}
+
+func isAzureURL(baseURL string, hasBaseURL bool) bool {
+	for _, label := range azureLabels {
+		if isHostOrSubdomain(baseURL, hasBaseURL, label) {
+			return true
+		}
+	}
+	return false
+}
+
+func isGoogleURL(baseURL string, hasBaseURL bool) bool {
+	host := hostOf(baseURL, hasBaseURL)
+	if host == "generativelanguage.googleapis.com" || host == "aiplatform.googleapis.com" {
+		return true
+	}
+	const suffix = "-aiplatform.googleapis.com"
+	if len(host) > len(suffix) && strings.HasSuffix(host, suffix) {
+		return !strings.Contains(host[:len(host)-len(suffix)], ".")
+	}
+	return false
+}
+
 func isZaiURL(baseURL string, hasBaseURL bool) bool {
-	return holdsURL(baseURL, hasBaseURL, "api.zukijourney.com") || holdsURL(baseURL, hasBaseURL, "zai")
+	return isHostOrSubdomain(baseURL, hasBaseURL, "zukijourney.com")
 }
 
 func isOpenRouterURL(baseURL string, hasBaseURL bool) bool {
-	return holdsURL(baseURL, hasBaseURL, "openrouter.ai")
+	return isHostOrSubdomain(baseURL, hasBaseURL, "openrouter.ai")
 }
 
 func isChutesURL(baseURL string, hasBaseURL bool) bool {
@@ -139,15 +205,16 @@ func isChutesURL(baseURL string, hasBaseURL bool) bool {
 }
 
 func isQwenURL(baseURL string, hasBaseURL bool) bool {
-	return holdsURL(baseURL, hasBaseURL, "dashscope") || holdsURL(baseURL, hasBaseURL, "qwen")
+	return isHostOrSubdomain(baseURL, hasBaseURL, "dashscope.aliyuncs.com") ||
+		isHostOrSubdomain(baseURL, hasBaseURL, "dashscope-intl.aliyuncs.com")
 }
 
 func isDeepSeekURL(baseURL string, hasBaseURL bool) bool {
-	return holdsURL(baseURL, hasBaseURL, "api.deepseek.com")
+	return isHostOrSubdomain(baseURL, hasBaseURL, "deepseek.com")
 }
 
 func isAnthropicURL(baseURL string, hasBaseURL bool) bool {
-	return holdsURL(baseURL, hasBaseURL, "api.anthropic.com")
+	return isHostOrSubdomain(baseURL, hasBaseURL, "anthropic.com")
 }
 
 func IsOpenAIHost(baseURL string, hasBaseURL bool) bool {
@@ -181,16 +248,13 @@ func DetectProviderType(baseURL string, hasBaseURL bool) ProviderType {
 		isZaiURL(baseURL, hasBaseURL),
 		isOpenRouterURL(baseURL, hasBaseURL):
 		return ProviderOpenAICompat
-	case holdsURL(baseURL, hasBaseURL, "generativelanguage.googleapis.com"),
-		holdsURL(baseURL, hasBaseURL, "aiplatform.googleapis.com"):
+	case isGoogleURL(baseURL, hasBaseURL):
 		return ProviderGoogle
-	case holdsURL(baseURL, hasBaseURL, "bedrock-runtime."), holdsURL(baseURL, hasBaseURL, "bedrock."):
+	case isBedrockURL(baseURL, hasBaseURL):
 		return ProviderBedrock
-	case holdsURL(baseURL, hasBaseURL, ".openai.azure.com"), holdsURL(baseURL, hasBaseURL, "cognitiveservices.azure.com"):
+	case isAzureURL(baseURL, hasBaseURL):
 		return ProviderAzure
-	case holdsURL(baseURL, hasBaseURL, "localhost:11434"),
-		holdsURL(baseURL, hasBaseURL, "127.0.0.1:11434"),
-		holdsURL(baseURL, hasBaseURL, "ollama"):
+	case isOllamaURL(baseURL, hasBaseURL):
 		return ProviderOllama
 	}
 	if len(baseURL) > 0 {

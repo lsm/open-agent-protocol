@@ -16,6 +16,7 @@ pub const CommandKind = enum {
     compact,
     context,
     autocompact,
+    settings,
     abort,
     quit,
 };
@@ -39,6 +40,7 @@ pub const CommandAction = enum {
     open_model_picker,
     open_login_picker,
     open_permission_picker,
+    open_settings_picker,
     start_login_provider,
     compact,
 };
@@ -88,6 +90,7 @@ pub const commands = [_]CommandInfo{
     .{ .name = "compact", .kind = .compact, .usage = "/compact [focus]", .description = "Summarize the conversation to free context", .handler = handleCompact },
     .{ .name = "context", .kind = .context, .usage = "/context [tokens|default]", .description = "Show or set the context window for this session", .handler = handleContext },
     .{ .name = "autocompact", .kind = .autocompact, .usage = "/autocompact [percent|off]", .description = "Show or set the share of the window that compacts on its own", .handler = handleAutoCompact },
+    .{ .name = "settings", .kind = .settings, .usage = "/settings", .description = "Configure TUI settings", .handler = handleSettings },
     .{ .name = "abort", .kind = .abort, .usage = "/abort", .description = "Cancel the active streaming turn", .handler = handleAbort },
     .{ .name = "quit", .kind = .quit, .usage = "/quit", .description = "Exit TUI", .handler = handleQuit },
 };
@@ -341,6 +344,12 @@ fn handleThink(ctx: CommandContext, command: Command) !CommandResult {
 fn parseThinkingLevel(value: []const u8) ?ai_types.ThinkingLevel {
     const level = std.meta.stringToEnum(ai_types.ThinkingLevel, value) orelse return null;
     return if (level == .minimal) null else level;
+}
+
+fn handleSettings(ctx: CommandContext, command: Command) !CommandResult {
+    _ = ctx;
+    _ = command;
+    return .{ .action = .open_settings_picker };
 }
 
 fn handleClear(ctx: CommandContext, command: Command) !CommandResult {
