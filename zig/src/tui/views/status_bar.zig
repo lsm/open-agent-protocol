@@ -120,14 +120,16 @@ pub fn render(allocator: std.mem.Allocator, state: *const tui_state.AppState, op
     };
 }
 
-pub fn renderCwdRow(allocator: std.mem.Allocator, display: []const u8, branch: []const u8, width: usize) ![]u8 {
-    return renderCwdRowImpl(allocator, display, branch, width) catch |err| switch (err) {
+pub fn renderCwdRow(allocator: std.mem.Allocator, state: *const tui_state.AppState, width: usize) ![]u8 {
+    return renderCwdRowImpl(allocator, state, width) catch |err| switch (err) {
         error.WriteFailed => error.OutOfMemory,
         else => |e| e,
     };
 }
 
-fn renderCwdRowImpl(allocator: std.mem.Allocator, display: []const u8, branch: []const u8, width: usize) ![]u8 {
+fn renderCwdRowImpl(allocator: std.mem.Allocator, state: *const tui_state.AppState, width: usize) ![]u8 {
+    const display = state.cwdRowPath();
+    const branch = state.git_branch;
     const path_width = tui_text.visibleWidth(display);
     const branch_width = tui_text.visibleWidth(branch);
     const show_branch = branch_width > 0 and path_width +| hint_gap +| branch_width <= width;
@@ -135,8 +137,13 @@ fn renderCwdRowImpl(allocator: std.mem.Allocator, display: []const u8, branch: [
     defer allocator.free(clipped);
     var out: std.Io.Writer.Allocating = .init(allocator);
     errdefer out.deinit();
-    try tui_theme.palette.muted.writeFg(&out.writer);
-    try zz.ansi.sgr(&out.writer, "2");
+    if (state.agentCwdIsOutsideSession()) {
+        try tui_theme.palette.warning.writeFg(&out.writer);
+        try zz.ansi.sgr(&out.writer, "1");
+    } else {
+        try tui_theme.palette.muted.writeFg(&out.writer);
+        try zz.ansi.sgr(&out.writer, "2");
+    }
     try out.writer.writeAll(clipped);
     const left = tui_text.visibleWidth(clipped);
     if (show_branch) {
@@ -719,8 +726,20 @@ test "status bar clips to the width when even the kept segments overflow" {
     try std.testing.expect(std.mem.indexOf(u8, text, "…") != null);
 }
 
+fn cwdRowState(allocator: std.mem.Allocator, display: []const u8, branch: []const u8) !tui_state.AppState {
+    var state = tui_state.AppState.init(allocator);
+    errdefer state.deinit();
+    try state.setCwdDisplay(allocator, display);
+    try state.setSessionRoot(allocator, display);
+    try state.setGitBranch(allocator, branch);
+    return state;
+}
+
 test "cwd row left-aligns the path and right-aligns the branch" {
-    const row = try renderCwdRow(std.testing.allocator, "~/focus/open-agent-protocol", "main", 60);
+    var state = try cwdRowState(std.testing.allocator, "~/focus/open-agent-protocol", "main");
+    defer state.deinit();
+
+    const row = try renderCwdRow(std.testing.allocator, &state, 60);
     defer std.testing.allocator.free(row);
 
     try std.testing.expectEqual(@as(usize, 60), tui_text.visibleWidth(row));
@@ -732,12 +751,15 @@ test "cwd row left-aligns the path and right-aligns the branch" {
 }
 
 test "cwd row drops the branch before it drops the path" {
-    const fits = try renderCwdRow(std.testing.allocator, "~/work", "main", 20);
+    var state = try cwdRowState(std.testing.allocator, "~/work", "main");
+    defer state.deinit();
+
+    const fits = try renderCwdRow(std.testing.allocator, &state, 20);
     defer std.testing.allocator.free(fits);
     try std.testing.expect(tui_text.visibleWidth(fits) == 20);
     try std.testing.expect(std.mem.endsWith(u8, fits, "main" ++ zz.ansi.reset));
 
-    const narrow = try renderCwdRow(std.testing.allocator, "~/work", "main", 8);
+    const narrow = try renderCwdRow(std.testing.allocator, &state, 8);
     defer std.testing.allocator.free(narrow);
     try std.testing.expect(tui_text.visibleWidth(narrow) == 8);
     try std.testing.expect(std.mem.indexOf(u8, narrow, "main") == null);
@@ -745,7 +767,10 @@ test "cwd row drops the branch before it drops the path" {
 }
 
 test "cwd row left-aligns the path when there is no branch" {
-    const row = try renderCwdRow(std.testing.allocator, "~/focus/open-agent-protocol", "", 60);
+    var state = try cwdRowState(std.testing.allocator, "~/focus/open-agent-protocol", "");
+    defer state.deinit();
+
+    const row = try renderCwdRow(std.testing.allocator, &state, 60);
     defer std.testing.allocator.free(row);
 
     try std.testing.expectEqual(@as(usize, 60), tui_text.visibleWidth(row));
@@ -755,7 +780,10 @@ test "cwd row left-aligns the path when there is no branch" {
 }
 
 test "cwd row left-truncates a directory longer than the width and drops the branch" {
-    const row = try renderCwdRow(std.testing.allocator, "/Users/lsm/focus/open-agent-protocol", "main", 24);
+    var state = try cwdRowState(std.testing.allocator, "/Users/lsm/focus/open-agent-protocol", "main");
+    defer state.deinit();
+
+    const row = try renderCwdRow(std.testing.allocator, &state, 24);
     defer std.testing.allocator.free(row);
 
     try std.testing.expect(tui_text.visibleWidth(row) == 24);
@@ -765,7 +793,10 @@ test "cwd row left-truncates a directory longer than the width and drops the bra
 }
 
 test "cwd row keeps a path that only just fits beside the branch" {
-    const row = try renderCwdRow(std.testing.allocator, "~/a/b", "main", 12);
+    var state = try cwdRowState(std.testing.allocator, "~/a/b", "main");
+    defer state.deinit();
+
+    const row = try renderCwdRow(std.testing.allocator, &state, 12);
     defer std.testing.allocator.free(row);
 
     try std.testing.expect(tui_text.visibleWidth(row) == 12);
@@ -773,8 +804,104 @@ test "cwd row keeps a path that only just fits beside the branch" {
     try std.testing.expect(std.mem.endsWith(u8, row, "main" ++ zz.ansi.reset));
 }
 
+test "cwd row prefers the directory the agent named over the session's own" {
+    var state = try cwdRowState(std.testing.allocator, "/work/session", "main");
+    defer state.deinit();
+    try state.setAgentCwd(std.testing.allocator, "/work/other", "~/other");
+
+    const row = try renderCwdRow(std.testing.allocator, &state, 60);
+    defer std.testing.allocator.free(row);
+
+    try std.testing.expect(std.mem.indexOf(u8, row, "~/other") != null);
+    try std.testing.expect(std.mem.indexOf(u8, row, "/work/session") == null);
+}
+
+fn fgSequence(allocator: std.mem.Allocator, color: @TypeOf(tui_theme.palette.muted)) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try color.writeFg(&out.writer);
+    return out.toOwnedSlice();
+}
+
+test "cwd row warns when the agent's directory leaves the session root" {
+    var state = try cwdRowState(std.testing.allocator, "/work/session", "");
+    defer state.deinit();
+
+    try state.setAgentCwd(std.testing.allocator, "/work/session/sub", "~/session/sub");
+    try std.testing.expect(!state.agentCwdIsOutsideSession());
+    const plain = try renderCwdRow(std.testing.allocator, &state, 60);
+    defer std.testing.allocator.free(plain);
+    const muted_seq = try fgSequence(std.testing.allocator, tui_theme.palette.muted);
+    defer std.testing.allocator.free(muted_seq);
+    const warning_seq = try fgSequence(std.testing.allocator, tui_theme.palette.warning);
+    defer std.testing.allocator.free(warning_seq);
+    try std.testing.expect(std.mem.indexOf(u8, plain, muted_seq) != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain, warning_seq) == null);
+
+    try state.setAgentCwd(std.testing.allocator, "/elsewhere", "/elsewhere");
+    try std.testing.expect(state.agentCwdIsOutsideSession());
+    const outside = try renderCwdRow(std.testing.allocator, &state, 60);
+    defer std.testing.allocator.free(outside);
+    try std.testing.expect(std.mem.indexOf(u8, outside, warning_seq) != null);
+    try std.testing.expect(std.mem.indexOf(u8, outside, muted_seq) == null);
+    try std.testing.expect(std.mem.indexOf(u8, outside, "/elsewhere") != null);
+}
+
+test "cwd row reads the agent's directory from a tool call's arguments" {
+    const cases = [_]struct { args: []const u8, want: ?[]const u8 }{
+        .{ .args = "{\"workspace_root\":\"/abs/work\"}", .want = "/abs/work" },
+        .{ .args = "{\"workspace_root\":\"relative/work\"}", .want = null },
+        .{ .args = "{\"command\":\"pwd\"}", .want = null },
+        .{ .args = "{\"workspace_root\":42}", .want = null },
+        .{ .args = "not json", .want = null },
+        .{ .args = "[]", .want = null },
+    };
+    for (cases) |case| {
+        const got = try tui_state.agentCwdFromArgs(std.testing.allocator, case.args);
+        defer if (got) |value| std.testing.allocator.free(value);
+        if (case.want) |want| {
+            try std.testing.expectEqualStrings(want, got orelse return error.MissingAgentCwd);
+        } else {
+            try std.testing.expect(got == null);
+        }
+    }
+}
+
+test "resetting the agent's directory returns the row to the session root" {
+    var state = try cwdRowState(std.testing.allocator, "/work/session", "main");
+    defer state.deinit();
+    try state.setAgentCwd(std.testing.allocator, "/elsewhere", "/elsewhere");
+    try std.testing.expectEqualStrings("/elsewhere", state.cwdRowPath());
+
+    state.resetAgentCwd();
+
+    try std.testing.expectEqualStrings("/work/session", state.cwdRowPath());
+    try std.testing.expect(!state.agentCwdIsOutsideSession());
+}
+
+test "resetting replay state clears the agent's directory" {
+    var state = try cwdRowState(std.testing.allocator, "/work/session", "main");
+    defer state.deinit();
+    try state.setAgentCwd(std.testing.allocator, "/elsewhere", "/elsewhere");
+
+    state.resetReplayState();
+
+    try std.testing.expectEqualStrings("/work/session", state.cwdRowPath());
+}
+
+fn agentCwdFromArgsProbe(allocator: std.mem.Allocator) !void {
+    const got = try tui_state.agentCwdFromArgs(allocator, "{\"workspace_root\":\"/abs/work\"}");
+    if (got) |value| allocator.free(value);
+}
+
+test "agentCwdFromArgs survives an allocation failure at every step" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, agentCwdFromArgsProbe, .{});
+}
+
 fn renderCwdRowProbe(allocator: std.mem.Allocator) !void {
-    const row = try renderCwdRow(allocator, "~/focus/open-agent-protocol", "main", 24);
+    var state = try cwdRowState(allocator, "~/focus/open-agent-protocol", "main");
+    defer state.deinit();
+    const row = try renderCwdRow(allocator, &state, 24);
     allocator.free(row);
 }
 

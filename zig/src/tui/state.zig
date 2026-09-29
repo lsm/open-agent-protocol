@@ -481,6 +481,9 @@ pub const AppState = struct {
     picker_kind: PickerKind = .model,
     cwd_display: []u8 = &.{},
     git_branch: []u8 = &.{},
+    agent_cwd_display: []u8 = &.{},
+    agent_cwd_raw: []u8 = &.{},
+    session_root_raw: []u8 = &.{},
     active_user_entry: ?usize = null,
     active_assistant_entry: ?usize = null,
     active_thinking_entry: ?usize = null,
@@ -530,6 +533,9 @@ pub const AppState = struct {
         if (self.last_tool_calls_json.len > 0) self.allocator.free(self.last_tool_calls_json);
         if (self.cwd_display.len > 0) self.allocator.free(self.cwd_display);
         if (self.git_branch.len > 0) self.allocator.free(self.git_branch);
+        if (self.agent_cwd_display.len > 0) self.allocator.free(self.agent_cwd_display);
+        if (self.agent_cwd_raw.len > 0) self.allocator.free(self.agent_cwd_raw);
+        if (self.session_root_raw.len > 0) self.allocator.free(self.session_root_raw);
         self.* = undefined;
     }
 
@@ -539,10 +545,54 @@ pub const AppState = struct {
         self.cwd_display = owned;
     }
 
+    pub fn setSessionRoot(self: *AppState, allocator: std.mem.Allocator, raw: []const u8) !void {
+        const owned = try allocator.dupe(u8, raw);
+        if (self.session_root_raw.len > 0) self.allocator.free(self.session_root_raw);
+        self.session_root_raw = owned;
+    }
+
     pub fn setGitBranch(self: *AppState, allocator: std.mem.Allocator, branch: []const u8) !void {
         const owned = try allocator.dupe(u8, branch);
         if (self.git_branch.len > 0) self.allocator.free(self.git_branch);
         self.git_branch = owned;
+    }
+
+    pub fn setAgentCwd(self: *AppState, allocator: std.mem.Allocator, raw: []const u8, display: []const u8) !void {
+        const owned_raw = try allocator.dupe(u8, raw);
+        errdefer allocator.free(owned_raw);
+        const owned_display = try allocator.dupe(u8, display);
+        if (self.agent_cwd_raw.len > 0) self.allocator.free(self.agent_cwd_raw);
+        if (self.agent_cwd_display.len > 0) self.allocator.free(self.agent_cwd_display);
+        self.agent_cwd_raw = owned_raw;
+        self.agent_cwd_display = owned_display;
+    }
+
+    pub fn cwdRowPath(self: *const AppState) []const u8 {
+        if (self.agent_cwd_display.len > 0) return self.agent_cwd_display;
+        return self.cwd_display;
+    }
+
+    pub fn resetAgentCwd(self: *AppState) void {
+        if (self.agent_cwd_raw.len > 0) self.allocator.free(self.agent_cwd_raw);
+        if (self.agent_cwd_display.len > 0) self.allocator.free(self.agent_cwd_display);
+        self.agent_cwd_raw = &.{};
+        self.agent_cwd_display = &.{};
+    }
+
+    pub fn followAgentCwd(self: *AppState, args_json: []const u8) !void {
+        const raw = (try agentCwdFromArgs(self.allocator, args_json)) orelse return;
+        defer self.allocator.free(raw);
+        if (std.mem.eql(u8, raw, self.agent_cwd_raw)) return;
+        const home = compat.getEnvVarOwned(self.allocator, "HOME") catch null;
+        defer if (home) |value| self.allocator.free(value);
+        const display = try collapseHomePath(self.allocator, raw, home);
+        defer self.allocator.free(display);
+        try self.setAgentCwd(self.allocator, raw, display);
+    }
+
+    pub fn agentCwdIsOutsideSession(self: *const AppState) bool {
+        if (self.agent_cwd_raw.len == 0) return false;
+        return !pathWithin(self.agent_cwd_raw, self.session_root_raw);
     }
 
     pub fn appendTranscript(self: *AppState, kind: TranscriptKind, text: []const u8) !void {
@@ -618,6 +668,7 @@ pub const AppState = struct {
         }
         self.dropped_event_count = 0;
         self.backpressure_active = false;
+        self.resetAgentCwd();
         if (self.last_tool_calls_json.len > 0) {
             self.allocator.free(self.last_tool_calls_json);
             self.last_tool_calls_json = &.{};
@@ -858,6 +909,7 @@ pub const AppState = struct {
                 _ = try self.resolveToolOccurrence(payload.tool_call_id.slice(), payload.tool_name.slice(), payload.args_json.slice(), .live_intent, .pending);
             },
             .tool_execution_start => |payload| {
+                try self.followAgentCwd(payload.args_json.slice());
                 const resolution = try self.resolveToolOccurrence(payload.tool_call_id.slice(), payload.tool_name.slice(), payload.args_json.slice(), .live_intent, .running);
                 const summary = try toolInvocation(self.allocator, resolution.tool.label, payload.args_json.slice());
                 defer self.allocator.free(summary);
@@ -1604,6 +1656,39 @@ fn sanitizeTerminalText(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
         i += len;
     }
     return out.toOwnedSlice();
+}
+
+fn collapseHomePath(allocator: std.mem.Allocator, path: []const u8, home: ?[]const u8) ![]u8 {
+    const value = home orelse return allocator.dupe(u8, path);
+    if (value.len <= 1) return allocator.dupe(u8, path);
+    if (std.mem.eql(u8, path, value)) return allocator.dupe(u8, "~");
+    if (std.mem.startsWith(u8, path, value) and path.len > value.len and path[value.len] == std.fs.path.sep) {
+        return std.fmt.allocPrint(allocator, "~{s}", .{path[value.len..]});
+    }
+    return allocator.dupe(u8, path);
+}
+
+pub fn agentCwdFromArgs(allocator: std.mem.Allocator, args_json: []const u8) !?[]u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, args_json, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return null,
+    };
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const root = firstJsonString(parsed.value.object, &.{"workspace_root"}) orelse return null;
+    if (!std.fs.path.isAbsolute(root)) return null;
+    return sanitizeTerminalText(allocator, root) catch |err| switch (err) {
+        error.WriteFailed => error.OutOfMemory,
+        else => |e| e,
+    };
+}
+
+fn pathWithin(path: []const u8, root: []const u8) bool {
+    if (root.len == 0) return false;
+    if (std.mem.eql(u8, path, root)) return true;
+    if (!std.mem.startsWith(u8, path, root)) return false;
+    if (root[root.len - 1] == std.fs.path.sep) return true;
+    return path.len > root.len and path[root.len] == std.fs.path.sep;
 }
 
 fn firstJsonString(obj: std.json.ObjectMap, keys: []const []const u8) ?[]const u8 {
