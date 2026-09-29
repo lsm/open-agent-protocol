@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+
+- **The OAP endpoint client could not spawn an endpoint outside a test build.**
+  `endpoint_client.Client.spawn` handed `std.process.spawn` the io from
+  `std.Io.Threaded.global_single_threaded`, which has no thread to run a child's
+  pipes on, so every spawn outside a test binary failed with `OutOfMemory` from
+  `Threaded.spawnPosix` before a process existed. The client now owns its own
+  `std.Io.Threaded`, as `adapter/process.zig` and `tools/process_runner.zig`
+  already do, and spawns on that. Nothing caught it because the tests took the
+  other branch: `defaultIo` returned `std.testing.io` under `is_test`, so the
+  suite exercised a path the product never ran, and the branch is gone rather
+  than inverted, so the tests now drive the same io a release build does.
+
 ### Added
 
 - **The Zig semantic machine judges a published tool source that carries an
