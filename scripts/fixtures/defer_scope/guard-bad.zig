@@ -46,3 +46,11 @@ fn nested(flag: bool, other: bool, value: *u8) void {
     _ = flag;
     _ = other;
 }
+
+fn url_in_the_head(url: []const u8, value: *u8) void {
+    if (startsWith(url, "http://")) {
+        defer release(value);
+    }
+    consume(value);
+    _ = url;
+}

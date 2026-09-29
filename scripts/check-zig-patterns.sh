@@ -528,8 +528,9 @@ scan_defer_scope() {
   # unbalanced. Counting no braces at all removes that failure mode: the only thing
   # that moves the stack is a line that IS an opener or IS a closing brace, so a
   # brace inside a string cannot shift anything. What is left is a line that looks
-  # like an opener or like `}` while inside a string or a comment, which is a much
-  # smaller surface and one the fixtures now pin.
+  # like an opener or like `}` while inside a string or a comment. That is a much
+  # smaller surface, and guard-bad.zig pins the case that actually bit -- a `://`
+  # inside a string in the head, which a naive comment strip hid.
   #
   # Loops are out of scope on purpose. A `defer` in a loop body is scoped to the
   # iteration -- the body block ends every pass -- so a lone `defer` there is the
@@ -538,10 +539,23 @@ scan_defer_scope() {
   # the call it was meant to outlive.
   awk -v file="$file" '
     function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
-    function strip_line_comment(s,   i, c, n) {
-      n = length(s)
+    # String-aware, because an `if` head is full of them: `if (startsWith(url,
+    # "http://")) {` ends in `{`, and cutting at the `//` inside the literal
+    # truncated the line before the brace, so the frame never opened. The old
+    # raw-line regex had no comment handling and did open one there, so a naive
+    # strip is a coverage regression, not a tidy-up. Still not a full lexer: a
+    # `//` inside a `\\` multiline string is still treated as a comment.
+    function strip_line_comment(s,   i, c, n, instr, esc) {
+      n = length(s); instr = 0; esc = 0
       for (i = 1; i <= n; i++) {
         c = substr(s, i, 1)
+        if (instr) {
+          if (esc) { esc = 0; continue }
+          if (c == "\\") { esc = 1; continue }
+          if (c == "\"") instr = 0
+          continue
+        }
+        if (c == "\"") { instr = 1; continue }
         if (c == "/" && substr(s, i + 1, 1) == "/") return substr(s, 1, i - 1)
       }
       return s
@@ -666,7 +680,7 @@ if [[ "$scanned_zig_files" -eq 0 ]]; then
   echo "[patterns] that because it calls the scanner directly. Fail rather than pass on nothing." >&2
   exit 1
 fi
-defer_scope_expected_bad=5
+defer_scope_expected_bad=6
 defer_scope_expected_good=0
 bad_fixture_hits="$(scan_defer_scope "$defer_fixture_bad")"
 good_fixture_hits="$(scan_defer_scope "$defer_fixture_good")"
@@ -675,18 +689,12 @@ if [[ "$bad_fixture_count" -ne "$defer_scope_expected_bad" ]]; then
   echo "[patterns] the defer-scope check reports $bad_fixture_count of its $defer_scope_expected_bad bad fixtures:" >&2
   echo "$bad_fixture_hits" >&2
   echo "[patterns] guard-bad.zig holds one function per spelling this check is supposed to see: a" >&2
-  echo "[patterns] plain if, a \`} else if\` branch, a \`} else\` branch, a payload-capture head, and a" >&2
-  echo "[patterns] block nested one deep. Fewer means a spelling went unseen again, which is the" >&2
+  echo "[patterns] plain if, a \`} else if\` branch, a \`} else\` branch, a payload-capture head, a" >&2
+  echo "[patterns] block nested one deep, and an \`if\` head carrying a \`://\` string literal. Fewer" >&2
+  echo "[patterns] means a spelling went unseen again, which is the" >&2
   echo "[patterns] defect this check exists to prevent; more means it is matching something it should" >&2
   echo "[patterns] not. A count is checked rather than a non-empty result because a check that" >&2
-  echo "[patterns] quietly stops seeing three of the five shapes still passes an emptiness test." >&2
-  exit 1
-fi
-if [[ -z "$bad_fixture_hits" ]]; then
-  echo "[patterns] the defer-scope check no longer reports its own bad fixture:" >&2
-  echo "[patterns] $defer_fixture_bad holds the one shape this check exists to catch. A check that" >&2
-  echo "[patterns] has stopped catching it is not a check. The fixtures are scanned directly, so the" >&2
-  echo "[patterns] count above is what keeps the tree scan from passing on nothing." >&2
+  echo "[patterns] quietly stops seeing three of the six shapes still passes an emptiness test." >&2
   exit 1
 fi
 good_fixture_count="$(printf '%s\n' "$good_fixture_hits" | grep -c . || true)"
