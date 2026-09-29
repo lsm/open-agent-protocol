@@ -289,7 +289,10 @@ streak. It never does it after an abort, after a 401 or 403 (the credential has
 to be fixed, not replayed), or when the error is a context overflow that
 `/compact` handles. Anything the user does inside the delay — submitting,
 steering, queueing a follow-up, `Esc` or `Ctrl+C` — drops the pending continue,
-and it does not fire while a run is streaming or a follow-up is queued.
+and it does not fire while a run is streaming or a follow-up is queued. Replaying
+a saved session is not a fresh failure: a session whose last run ended in an
+error does not nudge on resume, because the failure belongs to the process that
+hit it.
 
 ## Compaction
 

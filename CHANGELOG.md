@@ -40,9 +40,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it does it once per failure streak: a second failure in the same streak is
   left to the user, and a clean run or a fresh turn from the user starts a new
   streak. It never auto-continues after an abort, after a 401 or 403, or on a
-  context overflow that `/compact` should handle, and any user action in the
-  three-second window — submit, steer, queued follow-up, `/abort` — drops the
-  pending nudge. The list of statuses retrying cannot fix, and the two
+  context overflow that `/compact` should handle, any user action in the
+  three-second window — submit, steer, queued follow-up, `/abort`, `Esc`,
+  `Ctrl+C` — drops the pending nudge, and resuming a saved session replays the
+  events without arming one, so a failure from a previous process does not fire
+  a turn in this one. The list of statuses retrying cannot fix, and the two
   providers that drop the status code from their error text so the auth carve-out
   cannot fire through them, are on #562.
 - **A design note for the Go tree's native agent loop (#370).**

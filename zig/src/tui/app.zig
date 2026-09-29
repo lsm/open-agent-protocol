@@ -790,6 +790,7 @@ pub const App = struct {
         for (loaded.events.items) |*event| {
             try self.applyRuntimeEvent(event.*);
         }
+        self.discardReplayedError();
         try self.state.finalizeInterruptedTools();
         self.state.retireToolOccurrences();
         if (self.session) |*session| session.clearQueuedMessages();
@@ -1491,6 +1492,11 @@ pub const App = struct {
     }
 
     fn runFinishedWithoutProviderError(self: *App) void {
+        self.forgetRunError();
+        self.auto_continue.onUserTurn();
+    }
+
+    pub fn discardReplayedError(self: *App) void {
         self.forgetRunError();
         self.auto_continue.onUserTurn();
     }
@@ -2399,6 +2405,7 @@ pub const TuiModel = struct {
     }
 
     fn handleInterrupt(self: *TuiModel, app: *App, ctx: *zz.Context) zz.Cmd(Msg) {
+        app.auto_continue.onUserTurn();
         if (app.interrupt_armed_tick != null) return self.quitCmd(app, ctx);
         if (app.state.mode == .login_input) {
             app.cancelLogin();
@@ -2424,6 +2431,7 @@ pub const TuiModel = struct {
 
     fn handleEscape(self: *TuiModel, app: *App) void {
         _ = self;
+        app.auto_continue.onUserTurn();
         if (app.state.composer.buffer.items.len > 0) {
             app.state.composer.clear();
             return;
@@ -5903,6 +5911,12 @@ test "TuiModel flush budget ignores the composer's grown height" {
     try std.testing.expectEqual(empty_budget, grown_budget);
 }
 
+fn pushErrorRun(app: *App, mock: *MockAppSession, message: []const u8, reason: tui_runtime.TuiEndReason) !void {
+    try mock.eventStream().push(.{ .@"error" = .{ .message = OwnedSlice(u8).initOwned(try app.allocator.dupe(u8, message)) } });
+    try mock.eventStream().push(.{ .agent_end = .{ .reason = reason } });
+    try app.drainEvents();
+}
+
 const auto_continue_harness = struct {
     app: App,
     mock: *MockAppSession,
@@ -5926,9 +5940,7 @@ const auto_continue_harness = struct {
     }
 
     fn failRun(self: *@This(), message: []const u8, reason: tui_runtime.TuiEndReason) !void {
-        try self.mock.eventStream().push(.{ .@"error" = .{ .message = OwnedSlice(u8).initOwned(try self.app.allocator.dupe(u8, message)) } });
-        try self.mock.eventStream().push(.{ .agent_end = .{ .reason = reason } });
-        try self.app.drainEvents();
+        try pushErrorRun(&self.app, self.mock, message, reason);
     }
 
     fn pump(self: *@This(), advance_ms: i64) void {
@@ -6067,6 +6079,88 @@ test "the nudge waits out its delay and holds while a run is still going" {
     harness.app.state.status.streaming = true;
     harness.pastDelay();
     try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+}
+
+test "resuming a session whose last run ended in an error does not nudge" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+
+    var production = try ProductionRuntime.init(std.testing.allocator, .{});
+    defer production.deinit();
+    production.initBridge();
+
+    var app = try App.init(std.testing.allocator, production.options());
+    defer app.deinit();
+    app.runtime.?.run_async = false;
+
+    if (app.store) |*store| store.deinit();
+    app.store = try session_store.Store.init(std.testing.allocator, base);
+
+    const model = app.runtime.?.currentModel() orelse return error.NoModelConfigured;
+    var meta = session_store.SessionMetadata{
+        .session_id = try std.testing.allocator.dupe(u8, "s-error"),
+        .model = try std.testing.allocator.dupe(u8, model.id),
+        .provider = try std.testing.allocator.dupe(u8, model.provider),
+        .last_active = 1,
+    };
+    defer meta.deinit(std.testing.allocator);
+    const saved_error = try std.testing.allocator.dupe(u8, "anthropic request failed: HTTP 400 invalid_request_error");
+    defer std.testing.allocator.free(saved_error);
+    try app.store.?.save(meta, .{ .@"error" = .{ .message = OwnedSlice(u8).initOwned(saved_error) } });
+    try app.store.?.saveEvent("s-error", .{ .agent_end = .{ .reason = .@"error" } });
+
+    try app.loadSessions();
+    app.state.session_index = 0;
+    try app.resumeSelectedSession();
+
+    try std.testing.expect(!app.auto_continue.pending());
+    try std.testing.expectEqualStrings("", app.run_error_text);
+    app.pumpAutoContinue(compat.time.nowMillis() + @as(i64, @intCast(tui_auto_continue.default_delay_ms)));
+    try std.testing.expectEqual(@as(usize, 0), app.runtime.?.steersConsumedCount());
+}
+
+test "Esc drops the pending continue without ending the run" {
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    const app = &model.app.?;
+    app.session = mock.session();
+
+    try pushErrorRun(app, &mock, "anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try std.testing.expect(app.auto_continue.pending());
+
+    model.handleEscape(app);
+    try std.testing.expect(!app.auto_continue.pending());
+
+    app.pumpAutoContinue(compat.time.nowMillis() + @as(i64, @intCast(tui_auto_continue.default_delay_ms)));
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+}
+
+test "Ctrl+C drops the pending continue" {
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    const app = &model.app.?;
+    app.session = mock.session();
+
+    try pushErrorRun(app, &mock, "anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try std.testing.expect(app.auto_continue.pending());
+
+    _ = model.handleInterrupt(app, &tctx.ctx);
+    try std.testing.expect(!app.auto_continue.pending());
+
+    app.pumpAutoContinue(compat.time.nowMillis() + @as(i64, @intCast(tui_auto_continue.default_delay_ms)));
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
 }
 
 test "a run that ends clean leaves no error text for a later failure" {
