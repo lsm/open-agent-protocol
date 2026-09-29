@@ -1778,7 +1778,7 @@ pub const Machine = struct {
         const holder = self.sessions.get(session) orelse return;
         if (holder.attached.count() == 0) return;
         if (duplicateSourceId(published).len != 0) try self.add(code_duplicate_tool_source, index);
-        const listed_sources = published orelse return;
+        const listed_sources = published orelse std.json.Value{ .null = {} };
 
         var expected = std.ArrayList([]const u8).empty;
         defer expected.deinit(self.allocator);
@@ -1800,6 +1800,13 @@ pub const Machine = struct {
             const held = stated orelse continue;
             const agrees = if (adopt) describesSource(held, listed) else sameSourceDescription(held, listed);
             if (agrees) continue;
+            try self.add(code_session_state_mismatch, index);
+        }
+        for (publishedSources(listed_sources)) |source| {
+            const id = memberString(source, "id");
+            if (id.len == 0) continue;
+            if (self.declared_sources.get(id) != null) continue;
+            if (holder.attached.get(id) != null) continue;
             try self.add(code_session_state_mismatch, index);
         }
     }
@@ -3708,6 +3715,11 @@ fn conformingRefusal(raised: std.json.Value, expectation: Expectation) bool {
 const error_run_active = "run_active";
 const resolution_session_busy = "session_busy";
 
+fn publishedSources(sources: std.json.Value) []const std.json.Value {
+    if (sources != .array) return &.{};
+    return sources.array.items;
+}
+
 fn sourceWithId(sources: ?std.json.Value, id: []const u8) ?std.json.Value {
     const listed = sources orelse return null;
     if (listed != .array) return null;
@@ -4155,7 +4167,7 @@ test "a bound below one is no bound at all" {
         \\{"action.tool_sources.attach":{"level":"native","modes":["session_open"],"limits":{"max_sources":-1}}}}},
         \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
         \\"tool_sources":[{"id":"a","kind":"process"}]}},
-        \\{"type":"session.open.response","id":"o2","in_reply_to":"o1","capability_revision":"v1","payload":{"session_id":"s"}}]
+        \\{"type":"session.open.response","id":"o2","in_reply_to":"o1","capability_revision":"v1","payload":{"session_id":"s","status":"idle","sources":[{"id":"a","kind":"process"}]}}]
     , &.{});
 
     try expectCodes(
@@ -4270,7 +4282,7 @@ test "a bound the endpoint honoured is not raised against the open it admitted" 
         \\"limits":{"transports":["process"]}}}}},
         \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
         \\"tool_sources":[{"id":"a","kind":"http"}]}},
-        \\{"type":"session.open.response","id":"o2","in_reply_to":"o1","capability_revision":"v1","payload":{"session_id":"s"}}]
+        \\{"type":"session.open.response","id":"o2","in_reply_to":"o1","capability_revision":"v1","payload":{"session_id":"s","status":"idle","sources":[{"id":"a","kind":"http"}]}}]
     , &.{});
 }
 
@@ -5116,7 +5128,7 @@ test "the earliest defect speaks" {
         \\{"action.tools.provide":{"level":"native"}}}}
     ;
     const answered =
-        \\{"type":"session.open.response","id":"o2","in_reply_to":"o1","capability_revision":"v1","payload":{"session_id":"s"}}]
+        \\{"type":"session.open.response","id":"o2","in_reply_to":"o1","capability_revision":"v1","payload":{"session_id":"s","status":"idle"}}]
     ;
     try expectCodes(
         \\[
