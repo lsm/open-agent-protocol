@@ -92,3 +92,15 @@ test "registry registers resolves and lists defaults" {
     try std.testing.expectEqualStrings("Replacement Shell", registry.resolve("shell_execute").?.label);
     try std.testing.expectEqual(@as(usize, 12), registry.list().len);
 }
+
+test "every built-in declares an operation kind, so no built-in resolves to unknown" {
+    const permission = @import("permission");
+    for (defaultTools()) |tool| {
+        try std.testing.expect(
+            tool.operation != .unknown,
+        );
+        try std.testing.expect(
+            permission.resolveOperation(tool.operation, tool.name) == tool.operation,
+        );
+    }
+}
