@@ -602,23 +602,33 @@ scan_defer_scope() {
       if (code == "}") { if (top >= 1) { evaluate(top); top-- } ; next }
       # `} else if (...) {` and `} else {` close one block and open the next on one
       # line. That is self-evident from the line itself, so it needs no brace count.
+      # The trailing brace is required before pushing, and the pop happens either
+      # way. A braceless `} else if (c) continue;` opens no block, so pushing for it
+      # left a phantom frame that swallowed the lines after the if-statement and
+      # would report a loop-scoped defer as a conditional one.
       if (code ~ /^\}[ \t]*else[ \t]*if[ \t]*\(/) {
+        opens_block = (code ~ /\{[ \t]*$/)
         if (top >= 1) { evaluate(top); top-- }
+        if (!opens_block) next
         h = code; sub(/^\}[ \t]*/, "", h); sub(/\{[ \t]*$/, "", h)
         push("if", FNR, h); next
       }
-      if (code ~ /^\}[ \t]*else[ \t]*\{[ \t]*$/) {
+      if (code ~ /^\}[ \t]*else[ \t]*(\||\{)/) {
+        opens_block = (code ~ /\{[ \t]*$/)
         if (top >= 1) { evaluate(top); top-- }
-        push("else", FNR, "else"); next
+        if (!opens_block) next
+        h = code; sub(/^\}[ \t]*/, "", h); sub(/\{[ \t]*$/, "", h)
+        push("else", FNR, h); next
       }
       if (code ~ /^(if[ \t]*\(|else[ \t]+if[ \t]*\()/ && code ~ /\{[ \t]*$/) {
         h = code; sub(/\{[ \t]*$/, "", h)
         if (top >= 1) add_stmt(top, code)
         push("if", FNR, h); next
       }
-      if (code ~ /^else[ \t]*\{[ \t]*$/) {
+      if (code ~ /^else[ \t]*(\||\{)/ && code ~ /\{[ \t]*$/) {
         if (top >= 1) add_stmt(top, code)
-        push("else", FNR, "else"); next
+        h = code; sub(/\{[ \t]*$/, "", h)
+        push("else", FNR, h); next
       }
       if (top >= 1) add_stmt(top, code)
     }
@@ -646,12 +656,13 @@ if [[ -n "$undeclared_defer_scope" ]]; then
   echo "[patterns] Hold the call's result, do the free, then branch on the error; see run() in" >&2
   echo "[patterns] zig/src/transports/in_process.zig." >&2
   echo "[patterns] This is a floor, not a detector. It sees a plain \`if\`, a \`} else if (...) {\`" >&2
-  echo "[patterns] or \`} else {\` branch, a payload-capture head, and a block nested one deep," >&2
-  echo "[patterns] whenever the block's only statement is the defer. NOT SEEN: an \`errdefer\` on" >&2
-  echo "[patterns] its own, which the pattern does not match; a \`defer { ... }\` block, whose body" >&2
-  echo "[patterns] is a block and not a statement; and a block written on one line with other code" >&2
-  echo "[patterns] after the defer, which is counted as one statement. Until then, read a defer" >&2
-  echo "[patterns] in a conditional as suspect by hand." >&2
+  echo "[patterns] or \`} else {\` / \`} else |err| {\` branch, a payload-capture head, and a block" >&2
+  echo "[patterns] nested one deep, whenever the block's only statement is the defer. A \`defer {\`" >&2
+  echo "[patterns] block IS seen, since the line still starts with \`defer\`. NOT SEEN: an \`errdefer\`" >&2
+  echo "[patterns] alone, which the pattern does not match; a braceless \`} else if (c) continue;\`," >&2
+  echo "[patterns] which opens no block; a switch prong; and a defer sharing a line with following" >&2
+  echo "[patterns] code, which is counted as one statement. Until then, read a defer in a" >&2
+  echo "[patterns] conditional as suspect by hand." >&2
   echo "[patterns] known_defer_scope is a backlog for sites that predate this check, not a list of" >&2
   echo "[patterns] approved ones. Adding to it needs a reason in the commit message saying why the" >&2
   echo "[patterns] defer is not meant to outlive its block. New code is expected to be fixed." >&2
@@ -680,7 +691,7 @@ if [[ "$scanned_zig_files" -eq 0 ]]; then
   echo "[patterns] that because it calls the scanner directly. Fail rather than pass on nothing." >&2
   exit 1
 fi
-defer_scope_expected_bad=6
+defer_scope_expected_bad=7
 defer_scope_expected_good=0
 bad_fixture_hits="$(scan_defer_scope "$defer_fixture_bad")"
 good_fixture_hits="$(scan_defer_scope "$defer_fixture_good")"
@@ -690,7 +701,8 @@ if [[ "$bad_fixture_count" -ne "$defer_scope_expected_bad" ]]; then
   echo "$bad_fixture_hits" >&2
   echo "[patterns] guard-bad.zig holds one function per spelling this check is supposed to see: a" >&2
   echo "[patterns] plain if, a \`} else if\` branch, a \`} else\` branch, a payload-capture head, a" >&2
-  echo "[patterns] block nested one deep, and an \`if\` head carrying a \`://\` string literal. Fewer" >&2
+  echo "[patterns] block nested one deep, an \`if\` head carrying a \`://\` string literal, and an" >&2
+  echo "[patterns] \`} else |err| {\` branch. Fewer" >&2
   echo "[patterns] means a spelling went unseen again, which is the" >&2
   echo "[patterns] defect this check exists to prevent; more means it is matching something it should" >&2
   echo "[patterns] not. A count is checked rather than a non-empty result because a check that" >&2

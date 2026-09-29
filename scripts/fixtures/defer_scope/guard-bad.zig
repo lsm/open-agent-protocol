@@ -54,3 +54,12 @@ fn url_in_the_head(url: []const u8, value: *u8) void {
     consume(value);
     _ = url;
 }
+
+fn error_else(found: anyerror!void, value: *u8) void {
+    if (found) |_| {
+        noop();
+    } else |err| {
+        defer release(value);
+    }
+    _ = err;
+}

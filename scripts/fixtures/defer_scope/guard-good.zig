@@ -65,3 +65,12 @@ fn else_if_frees_its_own_capture(first: bool, found: ?u8) void {
     }
     _ = first;
 }
+
+fn braceless_else_if_leaves_a_loop_defer(items: []const []const u8, value: *u8) void {
+    for (items) |item| {
+        if (item.len == 1) {
+            use(item);
+        } else if (item.len == 2) continue;
+        defer release(value);
+    }
+}
