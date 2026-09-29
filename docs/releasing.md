@@ -128,6 +128,20 @@ requirement is that the section exists and carries the version; what sits under
 which subheading is yours. Entries that were hand-written under a type heading
 come along in the carried-forward block and stay where they are.
 
+### Breaking changes come out on their own
+
+A pull request that changed a public Go package incompatibly carries a
+`## Breaking changes` section in its description — that is where `apidiffcheck`
+reads the record from, and what a release note needs to say. The script lifts
+each one into the release under a `### Breaking changes` heading of its own,
+above the generated list, so the breaks are not buried in it. The release form
+is level three on purpose: a `##` heading inside the `## [version]` section
+would end that section early, so the level-two spelling is what a pull request
+description must contain and the level-three one is what the notes carry.
+
+Both spellings are case sensitive, so `## breaking changes` is not recognised.
+Write it exactly.
+
 ## What the workflow does with all this
 
 | job | needs | what it does with the changelog |

@@ -1,0 +1,93 @@
+name: Compatibility
+
+# Moving this job out of ci.yml changes the check run GitHub reports, from
+# "CI / compatibility" to "Compatibility / compatibility" -- the job key and
+# display name are unchanged, the workflow name is not. If branch protection
+# ever names a required check, rename the entry in the same commit that
+# configures it, or every pull request reports the old check missing and cannot
+# merge. `main` is not protected today, so nothing needs updating yet; the note
+# is here because the file is where someone looks when a required check goes
+# missing, not the pull request that moved it.
+
+on:
+  # `edited` is load-bearing here and is why this is its own workflow. The gate's
+  # record is the pull request description, so a body edit is the only thing that
+  # can change it after the last run -- and agents edit descriptions constantly.
+  # With this job inside ci.yml, that would re-run all of ci.yml, which is the
+  # fleet's bottleneck, and skipping the other jobs on an edit is not an option:
+  # a job skipped by `if` reports as `skipped` rather than passing, and the merge
+  # gate reads the current head's checks. A separate workflow leaves ci.yml's
+  # checks untouched, so an edit costs this one job.
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+concurrency:
+  # The compat- prefix keeps this out of ci.yml's group. Both files display as
+  # different names, but a shared key would have the two cancel each other.
+  group: compat-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  compatibility:
+    name: compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # This pull request's head commit, not the default. The default for a
+          # pull_request event is refs/pull/N/merge, whose tree is the base plus
+          # this pull request *and* everything merged into the base since the two
+          # diverged, so comparing against it charges the pull request with other
+          # people's breaks. Naming the head here means the working tree is the
+          # thing being judged and -root needs no second checkout.
+          ref: ${{ github.event.pull_request.head.sha }}
+          # Full history: the comparison needs the merge base, which a shallow
+          # clone would not have fetched.
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+          cache: true
+
+      - name: Check out the merge base to compare against
+        env:
+          # Through the environment, for the same reason the description is: a
+          # branch name may legally contain quotes, $(...) and backticks, and
+          # this file already declines to let author-controlled text become
+          # script. Exploiting that needs write access, which is not the point --
+          # the standard is the standard, applied to every value, not only the
+          # one that happened to be a large body.
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/base"
+          # The merge base of the base ref and this pull request's head commit:
+          # the commit the two actually share.
+          #
+          # Not the base tip. Comparing against that charges this pull request
+          # with every public change merged into the base since the two
+          # diverged, and not HEAD either -- that is this pull request's own
+          # commit, which would make the comparison empty.
+          #
+          # Not `git fetch origin <sha>` either: GitHub does not serve an
+          # arbitrary sha as a ref, so that fails outright. checkout's
+          # fetch-depth: 0 has already brought the whole history, which is why
+          # the head commit is available here to name.
+          git worktree add --detach "$RUNNER_TEMP/base" \
+            "$(git merge-base "origin/$BASE_REF" HEAD)"
+
+      - name: Write the pull request description where the checker reads it
+        env:
+          # Through the environment and a file, never interpolated into the
+          # script: a description is author-controlled text, and a body carrying
+          # shell metacharacters must not be read as script.
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body.md"
+
+      - name: Require a Breaking changes section for what this pull request breaks
+        env:
+          PR_BASE_ROOT: ${{ runner.temp }}/base
+        run: go run ./go/cmd/apidiffcheck -description "$RUNNER_TEMP/pr-body.md"

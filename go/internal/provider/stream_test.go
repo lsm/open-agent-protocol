@@ -600,7 +600,11 @@ func TestEventsAreDeliveredInTheOrderTheyWereEmitted(t *testing.T) {
 		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`),
 		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}`),
 	)
-	want := []EventKind{EventStart, EventTextDelta, EventToolCallStart, EventToolCallDelta, EventToolCallEnd, EventDone}
+	want := []EventKind{
+		EventStart, EventTextStart, EventTextDelta,
+		EventToolCallStart, EventToolCallDelta,
+		EventTextEnd, EventToolCallEnd, EventDone,
+	}
 	got := kindsOf(events)
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v", got, want)
@@ -631,6 +635,82 @@ func TestASinkWithACallbackDoesNotAlsoRetainForItsReader(t *testing.T) {
 	held := sink.Drain()
 	if len(held) != 0 || seen == 0 {
 		t.Errorf("a callback saw %d events and a reader %d, want the callback to take the stream and the reader nothing", seen, len(held))
+	}
+}
+
+func TestATextPartIsDeclaredStartedAndEndedOnTheOpenaiWire(t *testing.T) {
+	events := runStream(t, streamModel(),
+		sseFrame(`{"choices":[{"delta":{"content":"hel"}}]}`),
+		sseFrame(`{"choices":[{"delta":{"content":"lo"}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}`),
+	)
+	kinds := kindsOf(events)
+	var start, end *Event
+	for i, event := range events {
+		switch event.Kind {
+		case EventTextStart:
+			start = &events[i]
+		case EventTextEnd:
+			end = &events[i]
+		}
+	}
+	if start == nil {
+		t.Fatalf("no text_start in %v: a part a consumer never saw opened cannot be assembled, and this wire has no block boundary to infer one from", kinds)
+	}
+	if end == nil {
+		t.Fatalf("no text_end in %v: a part.started with no part.ended leaves the terminal over an open part", kinds)
+	}
+	if end.Delta != "hello" {
+		t.Errorf("the text_end carries %q, want the accumulated text: a consumer reading incrementally has only the deltas and needs the whole", end.Delta)
+	}
+	if start.ContentIndex != end.ContentIndex {
+		t.Errorf("the text part opened at %d and ended at %d, want them equal", start.ContentIndex, end.ContentIndex)
+	}
+	startAt, endAt := -1, -1
+	for i, kind := range kinds {
+		if kind == EventTextStart {
+			startAt = i
+		}
+		if kind == EventTextEnd {
+			endAt = i
+		}
+	}
+	for i, kind := range kinds {
+		if kind == EventTextDelta && (i <= startAt || i >= endAt) {
+			t.Errorf("the text_delta at %d sits outside the part's %d..%d", i, startAt, endAt)
+		}
+	}
+}
+
+func TestATextOnlyTurnStillDeclaresBothEndsOfItsPart(t *testing.T) {
+	events := runStream(t, streamModel(),
+		sseFrame(`{"choices":[{"delta":{"content":"alone"}}]}`),
+	)
+	kinds := kindsOf(events)
+	var hasStart, hasEnd bool
+	for _, kind := range kinds {
+		switch kind {
+		case EventTextStart:
+			hasStart = true
+		case EventTextEnd:
+			hasEnd = true
+		}
+	}
+	if !hasStart || !hasEnd {
+		t.Errorf("got %v, want a text_start and a text_end around the text: a single-part turn is the common case, not an exception", kinds)
+	}
+}
+
+func TestATurnWithNoTextDeclaresNoTextPart(t *testing.T) {
+	events := runStream(t, streamModel(),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}`),
+	)
+	for _, kind := range kindsOf(events) {
+		if kind == EventTextStart || kind == EventTextEnd {
+			t.Errorf("got a %s in a turn that streamed no text, want no text part declared", kind)
+		}
 	}
 }
 
@@ -810,5 +890,85 @@ func TestAPartKeepsTheIndexItStartedAtAndTheTerminalFollows(t *testing.T) {
 		if len(claimed) != len(at) {
 			t.Errorf("%s: %d parts on the wire and %d in the terminal, want the same", name, len(claimed), len(at))
 		}
+	}
+}
+
+func TestPartsEndInIndexOrder(t *testing.T) {
+	events := runStream(t, streamModel(),
+		sseFrame(`{"choices":[{"delta":{"content":"before"}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"content":"after"}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}`),
+	)
+	var ends []string
+	for _, event := range events {
+		if event.Kind == EventTextEnd {
+			ends = append(ends, "text@"+itoa(event.ContentIndex))
+		}
+		if event.Kind == EventToolCallEnd {
+			ends = append(ends, "call@"+itoa(event.ContentIndex))
+		}
+	}
+	if got, want := strings.Join(ends, " "), "text@0 call@1"; got != want {
+		t.Errorf("the parts end %s, want %s: a consumer applies them in the order they arrive", got, want)
+	}
+}
+
+func TestAPartEndsAfterEveryPartHoldingALowerIndex(t *testing.T) {
+	events := runStream(t, streamModel(),
+		sseFrame(`{"choices":[{"delta":{"content":"a"}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"c2","function":{"name":"g"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"content":"b"}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"arguments":"{}"}}]}}]}`),
+	)
+	var ends []string
+	for _, event := range events {
+		if event.Kind == EventTextEnd {
+			ends = append(ends, "text@"+itoa(event.ContentIndex))
+		}
+		if event.Kind == EventToolCallEnd {
+			ends = append(ends, "call@"+itoa(event.ContentIndex))
+		}
+	}
+	if got, want := strings.Join(ends, " "), "text@0 call@1 call@2"; got != want {
+		t.Errorf("the parts end %s, want %s", got, want)
+	}
+}
+
+func TestACallEndingAfterTheTextKeepsTheTextInItsPartial(t *testing.T) {
+	events := runStream(t, streamModel(),
+		sseFrame(`{"choices":[{"delta":{"content":"before"}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"content":"after"}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}`),
+	)
+	end := findEvent(t, events, EventToolCallEnd)
+	if len(end.Partial.Content) != 1 {
+		t.Fatalf("the call's end partial holds %d blocks, want only the text ahead of it: the call it ends is not part of the content before it",
+			len(end.Partial.Content))
+	}
+	if end.Partial.Content[0].Text == nil || end.Partial.Content[0].Text.Text != "beforeafter" {
+		t.Errorf("the call's end partial = %+v, want the whole text ahead of it", end.Partial.Content)
+	}
+}
+
+func TestATextEndIsOnlyEmittedForAPartThatOpened(t *testing.T) {
+	state := newStreamState(streamModel())
+	state.text = "partial"
+	sink := &EventSink{}
+	if !state.completeOnStreamError(sink) {
+		t.Fatal("with text and no tool call the partial completes")
+	}
+	events := sink.Drain()
+	for _, event := range events {
+		if event.Kind == EventTextEnd {
+			t.Errorf("got a text_end at index %d, want none: no text part ever opened", event.ContentIndex)
+		}
+	}
+	done := findEvent(t, events, EventDone)
+	if done.Message.Content[0].Text == nil || done.Message.Content[0].Text.Text != "partial" {
+		t.Errorf("the terminal = %+v, want the partial text it kept", done.Message.Content[0])
 	}
 }
