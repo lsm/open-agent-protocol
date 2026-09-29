@@ -5,8 +5,6 @@ const endpoint_client = @import("endpoint_client");
 
 pub const default_line_deadline_ms: u64 = 300_000;
 
-// goap waits half a minute for an endpoint that has closed its stdout but has
-// not exited; the same grace keeps the check bounded rather than a hang.
 pub const default_exit_grace_ms: i64 = 30_000;
 
 pub const Check = struct {
@@ -184,9 +182,6 @@ const Runner = struct {
 
     fn nextEvent(self: *Runner, line_deadline_ms: i64) !oap_types.Envelope {
         while (self.events.items.len == 0) try self.pullUntil(line_deadline_ms);
-        // Events come off the queue in arrival order, not newest first: answering
-        // a gate pulls a batch of them, and the per-run sequence is what proves
-        // the runner read that batch the way the endpoint wrote it.
         return self.events.orderedRemove(0);
     }
 
@@ -217,8 +212,6 @@ const Runner = struct {
     }
 
     fn drive(self: *Runner, line_deadline_ms: i64) !void {
-        // request() owns the payload it is handed, so each guard is disarmed the
-        // moment its string goes in; left armed they free it a second time.
         var init_fields: [2][]const u8 = undefined;
         var init_built: usize = 0;
         var init_handed_off = false;
@@ -232,8 +225,6 @@ const Runner = struct {
         const participant_id = init_fields[0];
         const participant_name = init_fields[1];
 
-        // Each field is built before the literal: a literal that allocates twice
-        // cannot unwind the field it already built.
         const versions = try oap_types.dupeStringList(self.allocator, &.{oap_types.VERSION});
         errdefer oap_types.freeStringList(self.allocator, versions);
         const profiles = try oap_types.dupeStringList(self.allocator, &.{oap_types.PROFILE});
@@ -426,8 +417,6 @@ const Runner = struct {
     fn answerPermission(self: *Runner, gate: *const oap_types.PermissionEvent, line_deadline_ms: i64) !void {
         if (gate.choices.len == 0) return error.NoChoicesOffered;
 
-        // The resolve payload owns its strings and request frees them, so the
-        // copies built here are handed over whole and never freed twice.
         const fields = [_][]const u8{
             gate.interaction_id,
             gate.requested_by,

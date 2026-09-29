@@ -91,9 +91,6 @@ pub const Client = struct {
         }
     }
 
-    // An endpoint that has closed its stdout but has not exited would hang a
-    // caller that waited forever, so the wait is bounded and says so. goap
-    // bounds the same wait with a thirty second grace.
     pub fn waitExit(self: *Client, grace_ms: i64) !u8 {
         const child = &(self.child orelse return Error.NotRunning);
         if (builtin.os.tag == .windows) {
@@ -101,8 +98,6 @@ pub const Client = struct {
             self.child = null;
             return exitCodeOf(term);
         }
-        // Polled rather than waited on, because std.process.Child has no
-        // non-blocking wait and an unbounded one is the thing being bounded.
         var waited: i64 = 0;
         while (waited < grace_ms) {
             if (tryExitPosix(child)) |term| {
@@ -112,9 +107,6 @@ pub const Client = struct {
             std.Io.sleep(self.io(), .fromMilliseconds(exit_poll_ms), .boot) catch {};
             waited += exit_poll_ms;
         }
-        // Kill rather than close: closing waits for the child, which is the
-        // unbounded wait this function exists to avoid.
-        // kill reaps the child itself, so there is nothing left to wait for.
         if (self.child) |*pending| {
             pending.kill(self.io());
             self.child = null;
