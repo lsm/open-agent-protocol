@@ -169,7 +169,7 @@ func isOllamaURL(baseURL string, hasBaseURL bool) bool {
 	return false
 }
 
-var azureLabels = []string{"openai.azure.com", "cognitiveservices.azure.com", "services.ai.azure.com"}
+var azureLabels = []string{"openai.azure.com", "cognitiveservices.azure.com"}
 
 func isAzureURL(baseURL string, hasBaseURL bool) bool {
 	for _, label := range azureLabels {
