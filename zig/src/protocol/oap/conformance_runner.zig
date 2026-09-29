@@ -115,6 +115,7 @@ const Runner = struct {
     revision: []const u8 = "",
     run_id: []const u8 = "",
     refusal: []const u8 = "",
+    cancel_level: []const u8 = "",
     ids: usize = 0,
 
     fn releaseEnvelopes(self: *Runner) void {
@@ -123,6 +124,7 @@ const Runner = struct {
         self.responses.deinit(self.allocator);
         self.events.deinit(self.allocator);
         if (self.refusal.len != 0) self.allocator.free(self.refusal);
+        if (self.cancel_level.len != 0) self.allocator.free(self.cancel_level);
     }
 
     fn nextId(self: *Runner, kind: []const u8) ![]const u8 {
@@ -153,6 +155,18 @@ const Runner = struct {
         const owned_name = try self.allocator.dupe(u8, name);
         errdefer self.allocator.free(owned_name);
         try self.add(.{ .name = owned_name, .detail = detail });
+    }
+
+    fn skip(self: *Runner, name: []const u8, detail: []const u8) !void {
+        const owned_name = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(owned_name);
+        const owned_detail = try self.allocator.dupe(u8, detail);
+        errdefer self.allocator.free(owned_detail);
+        try self.add(.{
+            .name = owned_name,
+            .detail = owned_detail,
+            .skipped = true,
+        });
     }
 
     fn failOwned(self: *Runner, name: []const u8, detail: []const u8) !void {
@@ -208,11 +222,11 @@ const Runner = struct {
         return self.events.orderedRemove(0);
     }
 
-    fn request(self: *Runner, payload: oap_types.Payload, run_id: ?[]const u8, line_deadline_ms: i64) !oap_types.Envelope {
+    fn probe(self: *Runner, payload: oap_types.Payload, run_id: ?[]const u8) ![]const u8 {
         var owned = payload;
         defer owned.deinit(self.allocator);
         const id = try self.nextId("request");
-        defer self.allocator.free(id);
+        errdefer self.allocator.free(id);
         const envelope: oap_types.Envelope = .{
             .id = id,
             .payload = owned,
@@ -223,6 +237,12 @@ const Runner = struct {
         const line = try oap_envelope.serializeEnvelope(envelope, self.allocator);
         defer self.allocator.free(line);
         try self.client.write(line);
+        return id;
+    }
+
+    fn request(self: *Runner, payload: oap_types.Payload, run_id: ?[]const u8, line_deadline_ms: i64) !oap_types.Envelope {
+        const id = try self.probe(payload, run_id);
+        defer self.allocator.free(id);
 
         var answered = try self.answer(id, line_deadline_ms);
         if (answered.payload == .error_response) {
@@ -291,6 +311,9 @@ const Runner = struct {
             return;
         }
         try self.pass("capabilities.request is answered");
+        if (capabilities.payload.capabilities_response.feature("run.cancel")) |declared| {
+            self.cancel_level = try self.allocator.dupe(u8, @tagName(declared.level));
+        }
         if (capabilities.capability_revision) |revision| {
             self.revision = revision;
             try self.pass("capabilities.response carries a capability revision");
@@ -366,6 +389,69 @@ const Runner = struct {
         }
 
         try self.consumeRun(line_deadline_ms);
+        try self.answerCancel(line_deadline_ms);
+    }
+
+    fn answerCancel(self: *Runner, line_deadline_ms: i64) !void {
+        const name = "run.cancel.request is supported, or refused as unavailable";
+        if (self.run_id.len == 0) {
+            try self.skip(name, "no run was admitted, so there is nothing to cancel");
+            return;
+        }
+
+        var handed_off = false;
+        const cancel_session = try self.allocator.dupe(u8, self.session);
+        defer if (!handed_off) self.allocator.free(cancel_session);
+        const cancel_run = try self.allocator.dupe(u8, self.run_id);
+        defer if (!handed_off) self.allocator.free(cancel_run);
+        handed_off = true;
+        const id = try self.probe(.{ .run_cancel_request = .{
+            .session_id = cancel_session,
+            .run_id = cancel_run,
+        } }, self.run_id);
+        defer self.allocator.free(id);
+
+        var answered = self.answer(id, line_deadline_ms) catch |err| {
+            try self.failReason(name, err);
+            return;
+        };
+        defer answered.deinit(self.allocator);
+
+        const unavailable = self.cancel_level.len == 0 or
+            std.mem.eql(u8, self.cancel_level, "unavailable");
+        if (!unavailable) {
+            if (answered.payload != .run_cancel_response and answered.payload != .error_response) {
+                try self.failOwned(
+                    name,
+                    try std.fmt.allocPrint(
+                        self.allocator,
+                        "an endpoint declaring run.cancel \"{s}\" answered {s}",
+                        .{ self.cancel_level, answered.payload.typeName() },
+                    ),
+                );
+                return;
+            }
+            try self.pass(name);
+            return;
+        }
+
+        if (answered.payload != .error_response) {
+            try self.fail(name, "an endpoint declaring cancellation unavailable answered the call instead of refusing it");
+            return;
+        }
+        const failure = answered.payload.error_response;
+        if (!std.mem.eql(u8, failure.code, "unsupported_feature")) {
+            try self.failOwned(
+                name,
+                try std.fmt.allocPrint(
+                    self.allocator,
+                    "refused \"{s}\", want the typed \"unsupported_feature\"",
+                    .{failure.code},
+                ),
+            );
+            return;
+        }
+        try self.pass(name);
     }
 
     fn reasonOf(self: *const Runner, err: anyerror) []const u8 {
@@ -545,6 +631,7 @@ test "events that arrive ahead of the answer are read in the order they were wri
         \\  *session.open.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"a3","in_reply_to":"conformance-request-3","payload":{"session_id":"conformance","status":"idle"}}' ;;
         \\  *session.message.submit.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"e1","sequence":1,"payload":{"session_id":"conformance","run_id":"run-1","status":"running"}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"content.delta","id":"e2","sequence":2,"payload":{"session_id":"conformance","run_id":"run-1","message_id":"m-e2","part":{"type":"text","text":"one"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.requested","id":"e2","payload":{"interaction_id":"p-1","requested_by":"fake","responded_by":"user","session_id":"conformance","run_id":"run-1","title":"Allow","choices":[{"id":"approve","label":"Approve"}]}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"content.delta","id":"e4","sequence":4,"payload":{"session_id":"conformance","run_id":"run-1","message_id":"m-e4","part":{"type":"text","text":"two"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"a4","in_reply_to":"conformance-request-4","payload":{"session_id":"conformance","accepted":true,"submission_id":"s1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"run-1"}}' ;;
         \\  *choice_id*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.resolved","id":"e3","payload":{"interaction_id":"p-1","requested_by":"fake","responded_by":"user","session_id":"conformance","run_id":"run-1","outcome":"resolved","choice_id":"approve","granted":true}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.completed","id":"e6","sequence":6,"payload":{"session_id":"conformance","run_id":"run-1","stop_reason":"end_turn","final_response":{"role":"assistant","content":"done"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.resolve.response","id":"a5","in_reply_to":"conformance-request-5","payload":{"interaction_id":"p-1","session_id":"conformance","run_id":"run-1","accepted":true}}' ;;
+        \\  *run.cancel.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"a6","in_reply_to":"conformance-request-6","payload":{"error":{"code":"unsupported_feature","message":"cancellation is not implemented"}}}' ;;
         \\  esac
         \\done
     ;
@@ -571,6 +658,7 @@ const fixture_script =
     \\  *session.open.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"a3","in_reply_to":"conformance-request-3","payload":{"session_id":"conformance","status":"idle"}}' ;;
     \\  *session.message.submit.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"e1","sequence":1,"payload":{"session_id":"conformance","run_id":"run-1","status":"running"}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"content.delta","id":"e2","sequence":2,"payload":{"session_id":"conformance","run_id":"run-1","message_id":"m-e2","part":{"type":"text","text":"one"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.requested","id":"e3","sequence":3,"payload":{"interaction_id":"p-1","requested_by":"fake","responded_by":"user","session_id":"conformance","run_id":"run-1","title":"Allow","choices":[{"id":"approve","label":"Approve"}]}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"a4","in_reply_to":"conformance-request-4","payload":{"session_id":"conformance","accepted":true,"submission_id":"s1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"run-1"}}' ;;
     \\  *choice_id*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.resolved","id":"e5","sequence":5,"payload":{"interaction_id":"p-1","requested_by":"fake","responded_by":"user","session_id":"conformance","run_id":"run-1","outcome":"resolved","choice_id":"approve","granted":true}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.completed","id":"e6","sequence":6,"payload":{"session_id":"conformance","run_id":"run-1","stop_reason":"end_turn","final_response":{"role":"assistant","content":"done"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.resolve.response","id":"a7","in_reply_to":"conformance-request-5","payload":{"interaction_id":"p-1","session_id":"conformance","run_id":"run-1","accepted":true}}' ;;
+    \\  *run.cancel.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"e8","in_reply_to":"conformance-request-6","payload":{"error":{"code":"unsupported_feature","message":"cancellation is not implemented"}}}' ;;
     \\  esac
     \\done
 ;
@@ -713,4 +801,59 @@ test "an endpoint that ignores stdin EOF is reported under goap's check name" {
         killed.detail,
     );
     try std.testing.expect(report.verdict("endpoint exits 0 after stdin EOF") == null);
+}
+
+const cancel_script =
+    \\while read -r line; do
+    \\  case "$line" in
+    \\  *protocol.initialize.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"protocol.initialize.response","id":"a1","in_reply_to":"conformance-request-1","payload":{"protocol_version":"0.1","profile":"open-agent-protocol.agent-control-core","endpoint":{"id":"fake"}}}' ;;
+    \\  *capabilities.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"a2","in_reply_to":"conformance-request-2","capability_revision":"rev-1","payload":{"endpoint":{"id":"fake"},"features":{"run.cancel":{"key":"run.cancel","level":"native"}}}}' ;;
+    \\  *session.open.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"a3","in_reply_to":"conformance-request-3","payload":{"session_id":"conformance","status":"idle"}}' ;;
+    \\  *session.message.submit.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"a4","in_reply_to":"conformance-request-4","payload":{"session_id":"conformance","accepted":true,"submission_id":"s1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"run-1"}}' ;;
+    \\  *run.cancel.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.cancel.response","id":"a6","in_reply_to":"conformance-request-5","payload":{"session_id":"conformance","run_id":"run-1","accepted":true,"status":"cancelling"}}' ;;
+    \\  esac
+    \\done
+;
+
+const cancelling_script =
+    \\while read -r line; do
+    \\  case "$line" in
+    \\  *protocol.initialize.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"protocol.initialize.response","id":"a1","in_reply_to":"conformance-request-1","payload":{"protocol_version":"0.1","profile":"open-agent-protocol.agent-control-core","endpoint":{"id":"fake"}}}' ;;
+    \\  *capabilities.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"a2","in_reply_to":"conformance-request-2","capability_revision":"rev-1","payload":{"endpoint":{"id":"fake"},"features":{"run.cancel":{"key":"run.cancel","level":"native"}}}}' ;;
+    \\  *session.open.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"a3","in_reply_to":"conformance-request-3","payload":{"session_id":"conformance","status":"idle"}}' ;;
+    \\  *session.message.submit.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"a4","in_reply_to":"conformance-request-4","payload":{"session_id":"conformance","accepted":true,"submission_id":"s1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"run-1"}}' ;;
+    \\  *run.cancel.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"a6","in_reply_to":"conformance-request-5","payload":{"session_id":"conformance","accepted":true,"submission_id":"s2","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"run-2"}}' ;;
+    \\  esac
+    \\done
+;
+
+test "an endpoint declaring run.cancel supported may answer the call" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var report = try run(std.testing.allocator, .{
+        .command = "/bin/sh",
+        .args = &.{ "-c", cancel_script },
+        .line_deadline_ms = 5000,
+    });
+    defer report.deinit();
+
+    const cancel = report.verdict("run.cancel.request is supported, or refused as unavailable") orelse return error.CheckMissing;
+    try std.testing.expect(cancel.passed);
+    try std.testing.expect(!cancel.skipped);
+}
+
+test "an endpoint declaring run.cancel supported must not answer it with another request" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var report = try run(std.testing.allocator, .{
+        .command = "/bin/sh",
+        .args = &.{ "-c", cancelling_script },
+        .line_deadline_ms = 5000,
+    });
+    defer report.deinit();
+
+    const cancel = report.verdict("run.cancel.request is supported, or refused as unavailable") orelse return error.CheckMissing;
+    try std.testing.expect(!cancel.passed);
+    try std.testing.expectEqualStrings(
+        "an endpoint declaring run.cancel \"native\" answered session.message.submit.response",
+        cancel.detail,
+    );
 }
