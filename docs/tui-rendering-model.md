@@ -231,9 +231,13 @@ code paths; add a transcript row instead.
   counts as slow generation. A tool call is production, so `tool_call_delta` starts the
   clock as well: a reply that is only a tool call is measured over the span it was
   generated in, not dropped. A message that arrives whole with no stream at all — the
-  non-streaming result fallback — contributes neither tokens nor time, because there is
-  no span to divide by, and counting its tokens with no time would inflate the figure
-  several-fold while showing it unmarked. A turn is marked `~` when *any* of its messages
+  non-streaming result fallback, which emits a `message_end` and no `message_start` —
+  contributes neither tokens nor time, because no `message_start` means the clock never
+  began and there is no span to divide by, and counting its tokens with no time would
+  inflate the figure several-fold while showing it unmarked. A message that does begin
+  but streams nothing visible is a different case and is measured: its clock is already
+  running, so a turn that thinks and emits no text still reports the speed it really
+  took. A turn is marked `~` when *any* of its messages
   was estimated, and its measured and estimated parts are pooled separately, so a
   multi-message turn cannot present a mixed total as measured. The runtime always pushes
   `agent_end` immediately after the final `turn_end`, so a turn end that finds its

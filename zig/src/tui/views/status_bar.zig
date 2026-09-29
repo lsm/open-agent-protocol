@@ -320,8 +320,9 @@ fn rateValue(buf: *[16]u8, rate: tui_state.TokenRate) ?[]const u8 {
 fn writeRate(list: *SegmentList, allocator: std.mem.Allocator, state: *const tui_state.AppState) !void {
     const rate = &state.telemetry.rate;
     var turn_buf: [16]u8 = undefined;
-    const turn = rateValue(&turn_buf, rate.turnShown()) orelse return;
-    try pushValue(list, allocator, .rate, turn, tui_theme.statusSegment());
+    if (rateValue(&turn_buf, rate.turnShown())) |turn| {
+        try pushValue(list, allocator, .rate, turn, tui_theme.statusSegment());
+    }
     var avg_buf: [16]u8 = undefined;
     if (rateValue(&avg_buf, rate.average)) |avg| {
         var label: [24]u8 = undefined;
@@ -546,6 +547,29 @@ test "the row shows the turn figure and the average beside it" {
     defer std.testing.allocator.free(text);
     try std.testing.expect(std.mem.indexOf(u8, text, "100 tok/s") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "avg 80 tok/s") != null);
+}
+
+test "the average still shows at a turn boundary, before the new turn has a figure" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    try state.status.setModelWithContext(std.testing.allocator, "claude-sonnet-4-5", "anthropic", 200_000);
+
+    var rate = tui_state.TokenRateSet{};
+    rate.runStarted();
+    rate.produced(400, 1_000);
+    rate.messageEnded(2_000, 100);
+    rate.turnEnded();
+    rate.runEnded();
+    rate.average = .{ .output_tokens = 400, .stream_ms = 5_000 };
+    state.telemetry.rate = rate;
+
+    state.telemetry.rate.runStarted();
+    try std.testing.expect(!state.telemetry.rate.turnShown().hasFigure());
+
+    const text = try render(std.testing.allocator, &state, .{ .width = 160 });
+    defer std.testing.allocator.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "avg 80 tok/s") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "tok/s") != null);
 }
 
 test "the average is dropped before the turn figure when the row overflows" {
