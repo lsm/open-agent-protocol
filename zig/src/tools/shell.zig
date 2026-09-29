@@ -190,6 +190,27 @@ test "shell execute reports the directory the command ended in" {
     try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, &common.hash16("call-cd")) == null);
 }
 
+test "the reported directory is the shell's logical path, not a resolved one" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cwd = try std.process.currentPathAlloc(common.defaultIo(), std.testing.allocator);
+    defer std.testing.allocator.free(cwd);
+    const root = try std.Io.Dir.path.join(std.testing.allocator, &.{ cwd, ".zig-cache", "tmp", tmp.sub_path[0..] });
+    defer std.testing.allocator.free(root);
+    try tmp.dir.createDir(common.defaultIo(), "nested", .default_dir);
+    const alias = try std.Io.Dir.path.join(std.testing.allocator, &.{ root, "alias" });
+    defer std.testing.allocator.free(alias);
+    try std.Io.Dir.symLink(tmp.dir, common.defaultIo(), "nested", "alias", .{});
+    const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"command\":\"cd alias && pwd\"}}", .{root});
+    defer std.testing.allocator.free(args);
+    var result = try execute("call-logical", args, null, null, null, std.testing.allocator);
+    defer result.deinit(std.testing.allocator);
+    const expected = try std.Io.Dir.path.join(std.testing.allocator, &.{ root, "alias" });
+    defer std.testing.allocator.free(expected);
+    try std.testing.expectEqualStrings(expected, result.workingDirectory().?);
+}
+
 test "shell execute reports the start directory when the command does not move" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     const cwd = try std.process.currentPathAlloc(common.defaultIo(), std.testing.allocator);
