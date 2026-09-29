@@ -297,6 +297,16 @@ result as a `compaction_end` event; a resume replays it by resetting the history
 the summary. None of this crosses the protocol: the agent loop runs in-process, and
 the summary request is an ordinary model call.
 
+A session is `~/.oapx/sessions/<session>.jsonl`, the conversation records a resume
+replays. Streamed chunks (text, thinking and tool-call deltas, raw provider events,
+tool progress) go to `<session>.stream.jsonl`, which a resume does not read; a reply's
+thinking is also written to the conversation as one record when the reply ends. The
+model and provider are written with the first record and again when they change, and
+`<session>.meta.json` holds them with the creation and last-active times and the
+offset of the last completed compaction, so a resume starts there and reads up to
+256 KB before it for the screen. `/resume` lists sessions from these index files.
+Files written before this layout still load, skipping their chunk records unparsed.
+
 Scrolling: while `transcript_scroll` is non-zero the inline body is a window over the
 full transcript rendered at the current width (rows already flushed into terminal
 scrollback are re-rendered inside the window while it is scrolled), topped by a

@@ -43,18 +43,23 @@ fn appendFile(path: []const u8, data: []const u8) !void {
     try file.writePositionalAll(defaultIo(), data, stat.size);
 }
 
-const load_max_bytes = 64 * 1024 * 1024;
 const metadata_max_bytes = 1024 * 1024;
 const max_jsonl_line_bytes = 8 * 1024 * 1024;
+const display_tail_bytes = 256 * 1024;
+const index_max_bytes = 64 * 1024;
+const stream_suffix = ".stream.jsonl";
+const index_suffix = ".meta.json";
+const load_skips = [_][]const u8{ "provider_event", "tool_call_delta", "tool_execution_update" };
 
-fn readJsonlRecords(allocator: std.mem.Allocator, path: []const u8, max_bytes: usize, ctx: anytype, comptime onLine: fn (@TypeOf(ctx), []const u8) anyerror!void) !void {
+fn readJsonlRecords(allocator: std.mem.Allocator, path: []const u8, start: u64, ctx: anytype, comptime onLine: fn (@TypeOf(ctx), u64, []const u8) anyerror!void) !void {
     var file = try compat.fs.getCwd().openFile(defaultIo(), path, .{});
     defer file.close(defaultIo());
     var file_buffer: [16 * 1024]u8 = undefined;
     var reader = file.reader(defaultIo(), &file_buffer);
+    if (start > 0) try reader.seekTo(start);
     var out: std.Io.Writer.Allocating = .init(allocator);
     defer out.deinit();
-    var total: usize = 0;
+    var offset = start;
     while (true) {
         out.clearRetainingCapacity();
         _ = reader.interface.streamDelimiterEnding(&out.writer, '\n') catch |err| switch (err) {
@@ -62,16 +67,55 @@ fn readJsonlRecords(allocator: std.mem.Allocator, path: []const u8, max_bytes: u
             error.WriteFailed => return error.OutOfMemory,
         };
         const raw_line = out.written();
-        total += raw_line.len;
-        if (total > max_bytes) return error.StreamTooLong;
         if (raw_line.len > max_jsonl_line_bytes) return error.StreamTooLong;
         const line = std.mem.trim(u8, raw_line, " \t\r");
-        if (line.len > 0) try onLine(ctx, line);
+        if (line.len > 0) try onLine(ctx, offset, line);
+        offset += raw_line.len;
         if (reader.interface.buffered().len == 0) break;
         _ = reader.interface.takeByte() catch break;
-        total += 1;
-        if (total > max_bytes) return error.StreamTooLong;
+        offset += 1;
     }
+}
+
+fn readDisplayTail(allocator: std.mem.Allocator, path: []const u8, start: u64, ctx: *LoadLineContext) !void {
+    const from = start -| display_tail_bytes;
+    var file = try compat.fs.getCwd().openFile(defaultIo(), path, .{});
+    defer file.close(defaultIo());
+    const data = try allocator.alloc(u8, @intCast(start - from));
+    defer allocator.free(data);
+    const read = try file.readPositionalAll(defaultIo(), data, from);
+    var rest = data[0..read];
+    var offset = from;
+    if (from > 0) {
+        const newline = std.mem.indexOfScalar(u8, rest, '\n') orelse return;
+        rest = rest[newline + 1 ..];
+        offset += newline + 1;
+    }
+    var lines = std.mem.splitScalar(u8, rest, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (line.len > 0) try loadLine(ctx, offset, line);
+        offset += raw_line.len + 1;
+    }
+}
+
+fn startsCompaction(path: []const u8, offset: u64) bool {
+    if (offset == 0) return false;
+    var file = compat.fs.getCwd().openFile(defaultIo(), path, .{}) catch return false;
+    defer file.close(defaultIo());
+    var window: [1024]u8 = undefined;
+    const read = file.readPositionalAll(defaultIo(), &window, offset - 1) catch return false;
+    if (read < 2 or window[0] != '\n') return false;
+    const line_end = std.mem.indexOfScalarPos(u8, window[0..read], 1, '\n') orelse read;
+    return std.mem.indexOf(u8, window[1..line_end], "\"event\":{\"type\":\"compaction_end\",\"outcome\":\"completed\"") != null;
+}
+
+fn loadSkips(line: []const u8) bool {
+    const marker = "\"event\":{\"type\":\"";
+    const start = (std.mem.indexOf(u8, line, marker) orelse return false) + marker.len;
+    const end = std.mem.indexOfScalarPos(u8, line, start, '"') orelse return false;
+    for (load_skips) |kind| if (std.mem.eql(u8, line[start..end], kind)) return true;
+    return false;
 }
 
 fn readLastJsonlLines(allocator: std.mem.Allocator, path: []const u8, max_bytes: usize) ![]u8 {
@@ -92,6 +136,8 @@ pub const SessionMetadata = struct {
     model: []u8,
     provider: []u8,
     last_active: i64,
+    created_at: i64 = 0,
+    compaction_offset: u64 = 0,
 
     pub fn deinit(self: *SessionMetadata, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
@@ -156,23 +202,72 @@ pub const Store = struct {
     }
 
     pub fn save(self: Store, metadata: SessionMetadata, event: tui_session.TuiEvent) !void {
+        try self.appendRecord(metadata.session_id, ".jsonl", metadata, event);
+    }
+
+    pub fn saveEvent(self: Store, session_id: []const u8, event: tui_session.TuiEvent) !void {
+        try self.appendRecord(session_id, ".jsonl", null, event);
+    }
+
+    pub fn saveChunk(self: Store, session_id: []const u8, event: tui_session.TuiEvent) !void {
+        try self.appendRecord(session_id, stream_suffix, null, event);
+    }
+
+    fn appendRecord(self: Store, session_id: []const u8, suffix: []const u8, metadata: ?SessionMetadata, event: tui_session.TuiEvent) !void {
         try compat.fs.createDir(compat.fs.getCwd(), self.base_dir);
-        const path = try sessionPath(self.allocator, self.base_dir, metadata.session_id);
+        const path = try sessionFilePath(self.allocator, self.base_dir, session_id, suffix);
         defer self.allocator.free(path);
         const line = try serializeEventRecord(self.allocator, metadata, event);
         defer self.allocator.free(line);
         try appendFile(path, line);
     }
 
+    pub fn conversationBytes(self: Store, session_id: []const u8) !u64 {
+        const path = try sessionPath(self.allocator, self.base_dir, session_id);
+        defer self.allocator.free(path);
+        var file = compat.fs.getCwd().openFile(defaultIo(), path, .{}) catch |err| switch (err) {
+            error.FileNotFound => return 0,
+            else => return err,
+        };
+        defer file.close(defaultIo());
+        return (try file.stat(defaultIo())).size;
+    }
+
+    pub fn saveIndex(self: Store, metadata: SessionMetadata) !void {
+        try compat.fs.createDir(compat.fs.getCwd(), self.base_dir);
+        const path = try sessionFilePath(self.allocator, self.base_dir, metadata.session_id, index_suffix);
+        defer self.allocator.free(path);
+        const tmp_path = try std.fmt.allocPrint(self.allocator, "{s}.tmp", .{path});
+        defer self.allocator.free(tmp_path);
+        const data = try serializeIndex(self.allocator, metadata);
+        defer self.allocator.free(data);
+        try compat.fs.atomicReplace(compat.fs.getCwd(), path, tmp_path, data);
+    }
+
+    pub fn loadIndex(self: Store, session_id: []const u8) !SessionMetadata {
+        const path = try sessionFilePath(self.allocator, self.base_dir, session_id, index_suffix);
+        defer self.allocator.free(path);
+        const data = try compat.fs.readFileAlloc(self.allocator, compat.fs.getCwd(), path, index_max_bytes);
+        defer self.allocator.free(data);
+        return parseIndex(self.allocator, session_id, data);
+    }
+
     pub fn load(self: Store, session_id: []const u8) !LoadedSession {
         const path = try sessionPath(self.allocator, self.base_dir, session_id);
         defer self.allocator.free(path);
-        var loaded = LoadedSession{ .metadata = try defaultMetadata(self.allocator, session_id) };
+        const metadata = self.loadIndex(session_id) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => try defaultMetadata(self.allocator, session_id),
+        };
+        var loaded = LoadedSession{ .metadata = metadata };
         errdefer loaded.deinit(self.allocator);
         var replay = ReplayState{};
         defer replay.deinit(self.allocator);
         var ctx = LoadLineContext{ .allocator = self.allocator, .loaded = &loaded, .replay = &replay };
-        try readJsonlRecords(self.allocator, path, load_max_bytes, &ctx, loadLine);
+        const start: u64 = if (startsCompaction(path, loaded.metadata.compaction_offset)) loaded.metadata.compaction_offset else 0;
+        if (start > 0) try readDisplayTail(self.allocator, path, start, &ctx);
+        try readJsonlRecords(self.allocator, path, start, &ctx, loadLine);
+        loaded.metadata.compaction_offset = ctx.last_compaction;
         return loaded;
     }
 
@@ -189,9 +284,12 @@ pub const Store = struct {
         defer dir.close(defaultIo());
         var iter = dir.iterate();
         while (try iter.next(defaultIo())) |entry| {
-            if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".jsonl")) continue;
+            if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".jsonl") or std.mem.endsWith(u8, entry.name, stream_suffix)) continue;
             const session_id = entry.name[0 .. entry.name.len - ".jsonl".len];
-            var metadata = self.loadMetadata(session_id) catch continue;
+            var metadata = self.loadIndex(session_id) catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                else => self.loadMetadata(session_id) catch continue,
+            };
             errdefer metadata.deinit(self.allocator);
             try result.append(self.allocator, metadata);
         }
@@ -223,12 +321,32 @@ pub const Store = struct {
             if (obj.get("metadata")) |value| switch (value) {
                 .object => |meta_obj| {
                     try updateMetadata(self.allocator, &meta, meta_obj);
-                    break;
+                    return meta;
                 },
                 else => {},
             };
         }
+        try self.loadHeadMetadata(path, &meta);
         return meta;
+    }
+
+    fn loadHeadMetadata(self: Store, path: []const u8, meta: *SessionMetadata) !void {
+        var file = try compat.fs.getCwd().openFile(defaultIo(), path, .{});
+        defer file.close(defaultIo());
+        const data = try self.allocator.alloc(u8, index_max_bytes);
+        defer self.allocator.free(data);
+        const read = try file.readPositionalAll(defaultIo(), data, 0);
+        const line_end = std.mem.indexOfScalar(u8, data[0..read], '\n') orelse read;
+        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, data[0..line_end], .{}) catch return;
+        defer parsed.deinit();
+        const obj = switch (parsed.value) {
+            .object => |o| o,
+            else => return,
+        };
+        if (obj.get("metadata")) |value| switch (value) {
+            .object => |meta_obj| try updateMetadata(self.allocator, meta, meta_obj),
+            else => {},
+        };
     }
 
     pub fn transcriptPath(self: Store, session_id: []const u8, index: usize) ![]u8 {
@@ -259,10 +377,46 @@ pub const Store = struct {
 };
 
 fn sessionPath(allocator: std.mem.Allocator, base_dir: []const u8, session_id: []const u8) ![]u8 {
+    return sessionFilePath(allocator, base_dir, session_id, ".jsonl");
+}
+
+fn sessionFilePath(allocator: std.mem.Allocator, base_dir: []const u8, session_id: []const u8, suffix: []const u8) ![]u8 {
     try validateSessionId(session_id);
-    const file_name = try std.fmt.allocPrint(allocator, "{s}.jsonl", .{session_id});
+    const file_name = try std.fmt.allocPrint(allocator, "{s}{s}", .{ session_id, suffix });
     defer allocator.free(file_name);
     return std.fs.path.join(allocator, &.{ base_dir, file_name });
+}
+
+fn serializeIndex(allocator: std.mem.Allocator, meta: SessionMetadata) ![]u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    errdefer buf.deinit(allocator);
+    var w = json_writer.JsonWriter.init(&buf, allocator);
+    try w.beginObject();
+    try w.writeStringField("session_id", meta.session_id);
+    try w.writeStringField("model", meta.model);
+    try w.writeStringField("provider", meta.provider);
+    try w.writeIntField("created_at", meta.created_at);
+    try w.writeIntField("last_active", meta.last_active);
+    try w.writeIntField("compaction_offset", meta.compaction_offset);
+    try w.endObject();
+    return buf.toOwnedSlice(allocator);
+}
+
+fn parseIndex(allocator: std.mem.Allocator, session_id: []const u8, data: []const u8) !SessionMetadata {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, data, .{});
+    defer parsed.deinit();
+    const obj = switch (parsed.value) {
+        .object => |o| o,
+        else => return error.InvalidIndex,
+    };
+    var meta = try defaultMetadata(allocator, session_id);
+    errdefer meta.deinit(allocator);
+    if (stringField(obj, "model")) |v| try replaceString(allocator, &meta.model, v);
+    if (stringField(obj, "provider")) |v| try replaceString(allocator, &meta.provider, v);
+    meta.last_active = intField(obj, "last_active") orelse 0;
+    meta.created_at = intField(obj, "created_at") orelse 0;
+    meta.compaction_offset = if (uint64Field(obj, "compaction_offset")) |v| v else 0;
+    return meta;
 }
 
 fn validateSessionId(session_id: []const u8) !void {
@@ -357,25 +511,35 @@ fn appendParagraph(allocator: std.mem.Allocator, out: *std.ArrayList(u8), text: 
 }
 
 fn defaultMetadata(allocator: std.mem.Allocator, session_id: []const u8) !SessionMetadata {
-    return .{
-        .session_id = try allocator.dupe(u8, session_id),
-        .model = try allocator.dupe(u8, ""),
-        .provider = try allocator.dupe(u8, ""),
-        .last_active = 0,
-    };
+    const id = try allocator.dupe(u8, session_id);
+    errdefer allocator.free(id);
+    const model = try allocator.dupe(u8, "");
+    errdefer allocator.free(model);
+    const provider = try allocator.dupe(u8, "");
+    return .{ .session_id = id, .model = model, .provider = provider, .last_active = 0 };
 }
 
 const LoadLineContext = struct {
     allocator: std.mem.Allocator,
     loaded: *LoadedSession,
     replay: *ReplayState,
+    last_compaction: u64 = 0,
 };
 
-fn loadLine(ctx: *LoadLineContext, line: []const u8) !void {
+fn loadLine(ctx: *LoadLineContext, offset: u64, line: []const u8) !void {
+    if (loadSkips(line)) return;
+    const events_before = ctx.loaded.events.items.len;
     applyLine(ctx.allocator, ctx.loaded, ctx.replay, line) catch |err| switch (err) {
-        error.InvalidRecord, error.InvalidEvent, error.SyntaxError, error.UnexpectedToken, error.InvalidNumber, error.DuplicateField, error.UnknownField, error.MissingField, error.LengthMismatch => {},
+        error.InvalidRecord, error.InvalidEvent, error.SyntaxError, error.UnexpectedToken, error.InvalidNumber, error.DuplicateField, error.UnknownField, error.MissingField, error.LengthMismatch => return,
         else => return err,
     };
+    if (ctx.loaded.events.items.len == events_before) return;
+    switch (ctx.loaded.events.items[ctx.loaded.events.items.len - 1]) {
+        .compaction_end => |payload| if (payload.outcome == .completed) {
+            ctx.last_compaction = offset;
+        },
+        else => {},
+    }
 }
 
 fn applyLine(allocator: std.mem.Allocator, loaded: *LoadedSession, replay: *ReplayState, line: []const u8) !void {
@@ -519,16 +683,17 @@ fn updateMetadata(allocator: std.mem.Allocator, meta: *SessionMetadata, obj: std
 }
 
 fn replaceString(allocator: std.mem.Allocator, target: *[]u8, value: []const u8) !void {
+    const next = try allocator.dupe(u8, value);
     if (target.len > 0) allocator.free(target.*);
-    target.* = try allocator.dupe(u8, value);
+    target.* = next;
 }
 
-fn serializeEventRecord(allocator: std.mem.Allocator, metadata: SessionMetadata, event: tui_session.TuiEvent) ![]u8 {
+fn serializeEventRecord(allocator: std.mem.Allocator, metadata: ?SessionMetadata, event: tui_session.TuiEvent) ![]u8 {
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(allocator);
     var w = json_writer.JsonWriter.init(&buf, allocator);
     try w.beginObject();
-    try writeMetadata(&w, metadata);
+    if (metadata) |meta| try writeMetadata(&w, meta);
     try w.writeKey("event");
     try writeEvent(&w, event);
     try w.endObject();
@@ -1600,21 +1765,183 @@ test "assistant text fallback preserves stop reason" {
     try std.testing.expectEqual(ai_types.StopReason.aborted, loaded.messages.items[0].assistant.stop_reason);
 }
 
-test "JSONL byte cap counts consumed delimiters" {
+test "load skips the chunk records replay never reads" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const base = try tmpBase(std.testing.allocator, &tmp);
     defer std.testing.allocator.free(base);
-    const path = try sessionPath(std.testing.allocator, base, "delimiter-cap");
-    defer std.testing.allocator.free(path);
-    try appendFile(path, "\n\n");
+    var store = try Store.init(std.testing.allocator, base);
+    defer store.deinit();
+    var meta = try testMeta("skips");
+    defer meta.deinit(std.testing.allocator);
 
-    var loaded = LoadedSession{ .metadata = try defaultMetadata(std.testing.allocator, "delimiter-cap") };
+    var text = tui_session.TuiEvent{ .text_delta = .{ .content_index = 0, .delta = try owned(std.testing.allocator, "hi") } };
+    defer text.deinit(std.testing.allocator);
+    var provider = tui_session.TuiEvent{ .provider_event = .{ .event_json = try owned(std.testing.allocator, "{\"type\":\"done\"}") } };
+    defer provider.deinit(std.testing.allocator);
+    var call = tui_session.TuiEvent{ .tool_call_delta = .{ .content_index = 0, .delta = try owned(std.testing.allocator, "{\"x\":") } };
+    defer call.deinit(std.testing.allocator);
+    var update = tui_session.TuiEvent{ .tool_execution_update = .{
+        .tool_call_id = try owned(std.testing.allocator, "call-1"),
+        .tool_name = try owned(std.testing.allocator, "shell_execute"),
+        .args_json = try owned(std.testing.allocator, "{}"),
+        .partial_result_json = try owned(std.testing.allocator, "{\"stdout\":\"part\"}"),
+    } };
+    defer update.deinit(std.testing.allocator);
+    var done = tui_session.TuiEvent{ .message_end = .{ .role = .user, .text = try owned(std.testing.allocator, "done") } };
+    defer done.deinit(std.testing.allocator);
+    for ([_]tui_session.TuiEvent{ text, provider, call, update, done }) |event| try store.save(meta, event);
+
+    var loaded = try store.load("skips");
     defer loaded.deinit(std.testing.allocator);
-    var replay = ReplayState{};
-    defer replay.deinit(std.testing.allocator);
-    var ctx = LoadLineContext{ .allocator = std.testing.allocator, .loaded = &loaded, .replay = &replay };
-    try std.testing.expectError(error.StreamTooLong, readJsonlRecords(std.testing.allocator, path, 1, &ctx, loadLine));
+    try std.testing.expectEqual(@as(usize, 2), loaded.events.items.len);
+    try std.testing.expect(loaded.events.items[0] == .text_delta);
+    try std.testing.expect(loaded.events.items[1] == .message_end);
+}
+
+test "load starts at the indexed compaction and keeps a display tail before it" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try tmpBase(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+    var store = try Store.init(std.testing.allocator, base);
+    defer store.deinit();
+    var meta = try testMeta("indexed");
+    defer meta.deinit(std.testing.allocator);
+
+    var first = tui_session.TuiEvent{ .message_end = .{ .role = .user, .text = try owned(std.testing.allocator, "first question") } };
+    defer first.deinit(std.testing.allocator);
+    try store.save(meta, first);
+    const filler_text = try std.testing.allocator.alloc(u8, 16 * 1024);
+    defer std.testing.allocator.free(filler_text);
+    @memset(filler_text, 'x');
+    const filler = tui_session.TuiEvent{ .system_warning = .{ .message = OwnedSlice(u8).initBorrowed(filler_text) } };
+    for (0..20) |_| try store.saveEvent("indexed", filler);
+
+    const offset = try store.conversationBytes("indexed");
+    var compacted = tui_session.TuiEvent{ .compaction_end = .{
+        .outcome = .completed,
+        .text = try owned(std.testing.allocator, agent.compaction.header ++ " Summary follows.\n\n<summary>\nkept state\n</summary>"),
+        .messages_before = 21,
+    } };
+    defer compacted.deinit(std.testing.allocator);
+    try store.save(meta, compacted);
+    var after = tui_session.TuiEvent{ .message_end = .{ .role = .user, .text = try owned(std.testing.allocator, "after compaction") } };
+    defer after.deinit(std.testing.allocator);
+    try store.saveEvent("indexed", after);
+    meta.compaction_offset = offset;
+    try store.saveIndex(meta);
+
+    var loaded = try store.load("indexed");
+    defer loaded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(offset, loaded.metadata.compaction_offset);
+    try std.testing.expectEqual(@as(usize, 3), loaded.messages.items.len);
+    try std.testing.expectEqualStrings("kept state", agent.compaction.summaryOf(loaded.messages.items[0].user.content.text));
+    try std.testing.expectEqualStrings("after compaction", loaded.messages.items[2].user.content.text);
+
+    const events = loaded.events.items;
+    try std.testing.expect(events[0] == .system_warning);
+    var warnings: usize = 0;
+    for (events) |event| {
+        if (event == .system_warning) warnings += 1;
+    }
+    try std.testing.expect(warnings > 0 and warnings < 20);
+    try std.testing.expect(events[events.len - 2] == .compaction_end);
+    try std.testing.expect(events[events.len - 1] == .message_end);
+}
+
+test "load reads the whole file when the indexed offset does not start a compaction" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try tmpBase(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+    var store = try Store.init(std.testing.allocator, base);
+    defer store.deinit();
+    var meta = try testMeta("stale-index");
+    defer meta.deinit(std.testing.allocator);
+
+    var one = tui_session.TuiEvent{ .message_end = .{ .role = .user, .text = try owned(std.testing.allocator, "one") } };
+    defer one.deinit(std.testing.allocator);
+    try store.save(meta, one);
+    var two = tui_session.TuiEvent{ .message_end = .{ .role = .user, .text = try owned(std.testing.allocator, "two") } };
+    defer two.deinit(std.testing.allocator);
+    try store.saveEvent("stale-index", two);
+    meta.compaction_offset = 5;
+    try store.saveIndex(meta);
+
+    var loaded = try store.load("stale-index");
+    defer loaded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 2), loaded.events.items.len);
+    try std.testing.expectEqual(@as(usize, 2), loaded.messages.items.len);
+    try std.testing.expectEqual(@as(u64, 0), loaded.metadata.compaction_offset);
+}
+
+test "list reads a session's details from its index and skips its stream file" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try tmpBase(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+    var store = try Store.init(std.testing.allocator, base);
+    defer store.deinit();
+    var meta = try testMeta("indexed-list");
+    defer meta.deinit(std.testing.allocator);
+    meta.created_at = 11;
+    meta.last_active = 22;
+
+    try store.saveEvent("indexed-list", .{ .turn_start = .{} });
+    var chunk = tui_session.TuiEvent{ .text_delta = .{ .content_index = 0, .delta = try owned(std.testing.allocator, "streamed") } };
+    defer chunk.deinit(std.testing.allocator);
+    try store.saveChunk("indexed-list", chunk);
+    try store.saveIndex(meta);
+
+    var list = try store.list();
+    defer {
+        for (list.items) |*item| item.deinit(std.testing.allocator);
+        list.deinit(std.testing.allocator);
+    }
+    try std.testing.expectEqual(@as(usize, 1), list.items.len);
+    try std.testing.expectEqualStrings("indexed-list", list.items[0].session_id);
+    try std.testing.expectEqualStrings("model-a", list.items[0].model);
+    try std.testing.expectEqual(@as(i64, 11), list.items[0].created_at);
+    try std.testing.expectEqual(@as(i64, 22), list.items[0].last_active);
+}
+
+test "list falls back to the first record's metadata when the tail has none" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try tmpBase(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+    var store = try Store.init(std.testing.allocator, base);
+    defer store.deinit();
+    var meta = try testMeta("head-metadata");
+    defer meta.deinit(std.testing.allocator);
+
+    try store.save(meta, .{ .turn_start = .{} });
+    const path = try sessionPath(std.testing.allocator, base, "head-metadata");
+    defer std.testing.allocator.free(path);
+    const padding = try std.testing.allocator.alloc(u8, metadata_max_bytes + 16);
+    defer std.testing.allocator.free(padding);
+    @memset(padding, ' ');
+    try appendFile(path, padding);
+    try appendFile(path, "\n");
+    try store.saveEvent("head-metadata", .{ .turn_start = .{} });
+
+    var list = try store.list();
+    defer {
+        for (list.items) |*item| item.deinit(std.testing.allocator);
+        list.deinit(std.testing.allocator);
+    }
+    try std.testing.expectEqual(@as(usize, 1), list.items.len);
+    try std.testing.expectEqualStrings("model-a", list.items[0].model);
+}
+
+fn parseIndexProbe(allocator: std.mem.Allocator) !void {
+    var meta = try parseIndex(allocator, "s1", "{\"session_id\":\"s1\",\"model\":\"m\",\"provider\":\"p\",\"created_at\":1,\"last_active\":2,\"compaction_offset\":3}");
+    meta.deinit(allocator);
+}
+
+test "parseIndex survives an allocation failure at every step" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, parseIndexProbe, .{});
 }
 
 fn parseArtifactsProbe(allocator: std.mem.Allocator) !void {
