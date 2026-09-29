@@ -33,6 +33,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Zig stops escaping `<`, `>`, `&`, U+2028 and U+2029 the way
+  `encoding/json` does**, the last step of #417 under Decision 0038's amended
+  parity section, which compares the trees by parsed JSON. #319 and #330 made
+  `zig/src/json/writer.zig` and the ACP frame writer escape all five, so each
+  became six bytes on the wire -- in prompts and tool output that is mostly
+  code, where `if (a < b && c > d)` was being written as five escape
+  sequences. No ledger at any pin records a harness reading those bytes, so
+  under the amendment nothing earns the escaping; Decision 0032 says a Go
+  runtime quirk is not protocol behaviour until a decision says so, and none
+  did. The writer's own test now asserts the round trip rather than Go's
+  spelling, and a new one pins that a string carrying all five parses back to
+  itself.
+
+  **Those tests had never run.** `json_writer` was a module with no
+  `addTest` and no test root pulling it in, so its ten existing tests were
+  compiled by nothing -- the same class as `provider_caps` before #534, and
+  the reason a leak in the new one went unnoticed here. It is wired into
+  `test` and `test-unit-core` beside its sibling `json_encode`, so all
+  eleven run in CI now; the ten that had never executed pass unchanged.
+
+  **The ACP frame writer moves off `gomarshal` onto `json_encode`**, which is
+  already the module the adapter uses for the events it emits, rather than
+  having `gomarshal` itself stop escaping. That is the narrowest correct
+  change: `gomarshal` is shared with the OpenCode adapter, whose
+  `port-goldens.json` records what the Go adapter sends -- including a prompt
+  written as `a\u003cb\u003e\u0026c` -- and dropping the escaping there would
+  change bytes a recorded golden expects. ACP writes only what it builds
+  itself: ids are a string or an integer, because `parseMessage` refuses
+  `InvalidID` for anything else, and the parameters are assembled from strings
+  and integers, so no float reaches a frame and the two encoders cannot
+  differ on a number. `TestBackendsMatchOapx` and
+  `TestMemoryBackendMatchesOapx` pass against a freshly built `oapx`.
+
 - **Kimi is served by the generic catalog loader, and the catalog says which
   region it defaults to.** Kimi was the one row the loader could not take, so it
   kept a credential lookup, a models URL, a cache name, a parser and a base-URL
