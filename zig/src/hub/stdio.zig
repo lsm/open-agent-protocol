@@ -2230,9 +2230,6 @@ test "an allocator that refuses is not a request with no sources" {
     var hub: Hub = undefined;
     hub = Hub.init(fails.allocator(), wallClock, .{ .tool_sources = &configured });
     defer hub.deinit();
-    // `catch return null` would answer "no tool sources" and let the open
-    // succeed with the attachment silently dropped, which is the failure this
-    // whole path exists to prevent
     try testing.expectError(error.OutOfMemory, substitutedSources(fails.allocator(), &hub, "[{\"id\":\"pinned\",\"kind\":\"remote\"}]"));
 }
 
