@@ -361,13 +361,6 @@ pub const media_refused = Refusal{
     .message = "a request with a body declares application/json; the daemon reads no other media type",
 };
 
-/// The gate, decided on the head.
-///
-/// `application/json` registers no parameters at all (RFC 8259 §11), so a
-/// `charset` is a spelling the grammar does not carry and is admitted: the body
-/// is read as UTF-8 whatever the header names, including `latin1` and a name
-/// that is not a charset. What is refused is a different grammar rather than a
-/// different spelling of this one. Validity stays the decoder's business.
 pub fn answer(allow: []const []const u8, request: Request) Answer {
     if (request.origin) return .{ .refusal = origin_refused };
     if (hostRefused(allow, request.host)) return .{ .refusal = host_refused };
@@ -521,12 +514,10 @@ fn requestOver(raw: []const u8) !Request {
 test "a body must declare application/json, and only that" {
     const loopback: []const []const u8 = &.{};
 
-    // a media type the daemon does not read at all
     var wrong = try requestOver("POST /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\n{}");
     defer wrong.deinit(testing.allocator);
     try testing.expectEqualStrings("unsupported_media_type", answer(loopback, wrong).refusal.code);
 
-    // no Content-Type at all is the same refusal: a body with no grammar named
     var silent = try requestOver("POST /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Length: 2\r\n\r\n{}");
     defer silent.deinit(testing.allocator);
     try testing.expectEqualStrings("unsupported_media_type", answer(loopback, silent).refusal.code);
@@ -538,9 +529,6 @@ test "a body must declare application/json, and only that" {
 
 test "a charset is admitted, because application/json registers no parameters" {
     const loopback: []const []const u8 = &.{};
-    // RFC 8259 §11: the media type has no parameters, so `charset` describes
-    // something the grammar does not carry, and refusing it would be refusing a
-    // request the daemon can parse
     for ([_][]const u8{ "utf-8", "utf8", "UTF-8", "latin1", "us-ascii", "not-a-charset" }) |charset| {
         const raw = try std.fmt.allocPrint(testing.allocator, "POST /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: application/json; charset={s}\r\nContent-Length: 2\r\n\r\n{{}}", .{charset});
         defer testing.allocator.free(raw);
@@ -548,7 +536,6 @@ test "a charset is admitted, because application/json registers no parameters" {
         defer request.deinit(testing.allocator);
         try testing.expectEqual(Answer.not_found, answer(loopback, request));
     }
-    // case and whitespace are the header's, not the grammar's
     var spaced = try requestOver("POST /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type:  Application/JSON ; charset=utf-8\r\nContent-Length: 2\r\n\r\n{}");
     defer spaced.deinit(testing.allocator);
     try testing.expectEqual(Answer.not_found, answer(loopback, spaced));
