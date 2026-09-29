@@ -20,6 +20,8 @@ pub const Client = struct {
     capability_revision: ?[]u8 = null,
     pending_run_id: ?[]u8 = null,
     unanswered: u64 = 0,
+    last_error: ?[]u8 = null,
+    error_responses: u64 = 0,
 
     pub fn init(allocator: std.mem.Allocator, pipe: *PipeTransport) Client {
         return .{ .allocator = allocator, .pipe = pipe };
@@ -36,6 +38,7 @@ pub const Client = struct {
         if (self.session_id) |id| self.allocator.free(id);
         if (self.capability_revision) |rev| self.allocator.free(rev);
         if (self.pending_run_id) |id| self.allocator.free(id);
+        if (self.last_error) |message| self.allocator.free(message);
         self.* = undefined;
     }
 
@@ -67,7 +70,10 @@ pub const Client = struct {
 
     pub fn recv(self: *Client) !?oap_types.Envelope {
         var receiver = self.pipe.clientReceiver();
-        const line = (try receiver.readLine(self.allocator)) orelse return null;
+        const line = (try receiver.readLine(self.allocator)) orelse {
+            self.pipe.compact();
+            return null;
+        };
         defer self.allocator.free(line);
         return oap_envelope.deserializeEnvelope(line, self.allocator) catch |err| switch (err) {
             error.OutOfMemory => error.OutOfMemory,
@@ -162,8 +168,27 @@ pub const Client = struct {
             .run_completed => |payload| try self.releaseRun(payload.run_id),
             .run_failed => |payload| try self.releaseRun(payload.run_id),
             .run_cancelled => |payload| try self.releaseRun(payload.run_id),
+            .session_state_updated => |payload| {
+                if (payload.status == .closed) try self.closeSession();
+            },
+            .error_response => |payload| try self.rememberError(payload),
             else => {},
         }
+    }
+
+    pub fn closeSession(self: *Client) !void {
+        if (self.session_id) |id| {
+            self.allocator.free(id);
+            self.session_id = null;
+        }
+        self.forgetRun();
+    }
+
+    fn rememberError(self: *Client, payload: oap_types.ProtocolError) !void {
+        const owned = try self.allocator.dupe(u8, payload.code);
+        if (self.last_error) |old| self.allocator.free(old);
+        self.last_error = owned;
+        self.error_responses += 1;
     }
 
     fn confirmRun(self: *Client, run_id: ?[]const u8) !void {
@@ -226,8 +251,11 @@ const Exchange = struct {
 
     fn init(allocator: std.mem.Allocator, options: @import("oap_server").Server.Options) !Exchange {
         const pipe = try allocator.create(PipeTransport);
-        errdefer allocator.destroy(pipe);
         pipe.* = in_process.createSerializedPipe(allocator);
+        errdefer {
+            pipe.deinit();
+            allocator.destroy(pipe);
+        }
         return .{
             .allocator = allocator,
             .pipe = pipe,
@@ -339,6 +367,12 @@ test "the capability revision only moves on the responses that carry it" {
     try std.testing.expectEqualStrings("rev-3", client.capability_revision.?);
 }
 
+fn drainOne(client: *Client, allocator: std.mem.Allocator) !void {
+    const envelope = (try client.recv()) orelse return error.PipeAlreadyDrained;
+    var owned = envelope;
+    defer owned.deinit(allocator);
+}
+
 fn terminalEnvelope(run_id: []const u8) oap_types.Envelope {
     const final_message = oap_types.Message{ .role = .assistant, .content = .{ .parts = &.{} } };
     return .{
@@ -418,6 +452,61 @@ fn sendFailureProbe(allocator: std.mem.Allocator) !void {
 
 test "a request that fails to send is not left outstanding" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, sendFailureProbe, .{});
+}
+
+test "a drained read compacts the pipe instead of retaining every line" {
+    const allocator = std.testing.allocator;
+    var exchange = try admittedExchange(allocator);
+    defer exchange.deinit();
+    const session_id = exchange.client.session_id.?;
+
+    try exchange.server.noteContent(session_id, .{ .text = "one" });
+    try exchange.server.noteContent(session_id, .{ .text = "two" });
+    var sender = exchange.pipe.serverSender();
+    while (exchange.server.popOutbound()) |line| {
+        defer allocator.free(line);
+        try sender.write(line);
+    }
+    try std.testing.expect(exchange.pipe.to_client.items.len > 0);
+
+    try drainOne(&exchange.client, allocator);
+    try std.testing.expect(exchange.pipe.to_client.items.len > 0);
+    try drainOne(&exchange.client, allocator);
+    try std.testing.expect(exchange.pipe.to_client.items.len > 0);
+
+    try std.testing.expect((try exchange.client.recv()) == null);
+    try std.testing.expectEqual(@as(usize, 0), exchange.pipe.to_client.items.len);
+}
+
+test "a closed session is forgotten, so a later submit refuses instead of writing" {
+    const allocator = std.testing.allocator;
+    var exchange = try admittedExchange(allocator);
+    defer exchange.deinit();
+    try std.testing.expect(exchange.client.session_id != null);
+
+    try exchange.client.absorb(.{
+        .id = "state",
+        .payload = .{ .session_state_updated = .{ .session_id = "s", .status = .closed } },
+    });
+    try std.testing.expect(exchange.client.session_id == null);
+    try std.testing.expect(exchange.client.pending_run_id == null);
+    try std.testing.expectError(Error.NoSession, exchange.client.submit("go on"));
+}
+
+test "an error response is surfaced rather than dropped" {
+    const allocator = std.testing.allocator;
+    var pipe = in_process.createSerializedPipe(allocator);
+    defer pipe.deinit();
+    var client = Client.init(allocator, &pipe);
+    defer client.deinit();
+
+    try client.absorb(.{ .id = "err", .payload = .{ .error_response = .{ .code = "session_not_found", .message = "gone" } } });
+    try std.testing.expectEqual(@as(u64, 1), client.error_responses);
+    try std.testing.expectEqualStrings("session_not_found", client.last_error.?);
+
+    try client.absorb(.{ .id = "err2", .payload = .{ .error_response = .{ .code = "run_busy", .message = "busy" } } });
+    try std.testing.expectEqual(@as(u64, 2), client.error_responses);
+    try std.testing.expectEqualStrings("run_busy", client.last_error.?);
 }
 
 test "outstanding requests are settled as their responses arrive" {
