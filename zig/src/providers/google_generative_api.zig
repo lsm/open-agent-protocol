@@ -662,6 +662,65 @@ const CurrentBlock = enum {
     thinking,
 };
 
+fn endGoogleThinkingBlock(
+    allocator: std.mem.Allocator,
+    stream: *event_stream.AssistantMessageEventStream,
+    ctx: *ThreadCtx,
+    partial: ai_types.AssistantMessage,
+    content_blocks: *std.ArrayList(ai_types.AssistantContent),
+    content: []const u8,
+    signature: []const u8,
+    pending: ?*std.ArrayList([]ai_types.AssistantContent),
+) bool {
+    const thinking_copy = allocator.dupe(u8, content) catch {
+        ctx.deinit();
+        stream.completeWithError("oom thinking");
+        stream.markThreadDone();
+        return false;
+    };
+    const sig_copy = if (signature.len > 0) allocator.dupe(u8, signature) catch {
+        allocator.free(thinking_copy);
+        ctx.deinit();
+        stream.completeWithError("oom thinking");
+        stream.markThreadDone();
+        return false;
+    } else null;
+
+    content_blocks.append(allocator, .{ .thinking = .{
+        .thinking = thinking_copy,
+        .thinking_signature = sig_copy,
+    } }) catch {
+        allocator.free(thinking_copy);
+        if (sig_copy) |sig| allocator.free(sig);
+        ctx.deinit();
+        stream.completeWithError("oom thinking");
+        stream.markThreadDone();
+        return false;
+    };
+
+    const think_at = content_blocks.items.len - 1;
+    const carried = ai_types.partialWithContent(allocator, partial, content_blocks.items, think_at) catch {
+        ctx.deinit();
+        stream.completeWithError("oom thinking");
+        stream.markThreadDone();
+        return false;
+    };
+    carried.reserve(allocator, pending) catch {
+        carried.release(allocator, null);
+        ctx.deinit();
+        stream.completeWithError("oom thinking");
+        stream.markThreadDone();
+        return false;
+    };
+    _ = stream.pushBlocking(.{ .thinking_end = .{
+        .content_index = think_at,
+        .content = content,
+        .partial = carried.partial,
+    } });
+    carried.release(allocator, pending);
+    return true;
+}
+
 fn createPartialMessage(model: ai_types.Model) ai_types.AssistantMessage {
     return ai_types.AssistantMessage{
         .content = &.{},
@@ -1023,28 +1082,7 @@ fn runThread(ctx: *ThreadCtx) void {
                                         current_text_signature.clearRetainingCapacity();
                                     },
                                     .thinking => {
-                                        const thinking_copy = allocator.dupe(u8, current_thinking.items) catch continue;
-                                        const sig_copy = if (current_thinking_signature.items.len > 0)
-                                            allocator.dupe(u8, current_thinking_signature.items) catch null
-                                        else
-                                            null;
-                                        content_blocks.append(allocator, .{ .thinking = .{
-                                            .thinking = thinking_copy,
-                                            .thinking_signature = sig_copy,
-                                        } }) catch {};
-                                        const think_at = content_blocks.items.len - 1;
-                                        const carried = ai_types.partialWithContent(allocator, partial, content_blocks.items, think_at) catch {
-                                            ctx.deinit();
-                                            stream.completeWithError("oom thinking");
-                                            stream.markThreadDone();
-                                            return;
-                                        };
-                                        _ = stream.pushBlocking(.{ .thinking_end = .{
-                                            .content_index = think_at,
-                                            .content = current_thinking.items,
-                                            .partial = carried.partial,
-                                        } });
-                                        carried.release(allocator, if (stream_clones_events) null else &pending_partial_frees);
+                                        if (!endGoogleThinkingBlock(allocator, stream, ctx, partial, &content_blocks, current_thinking.items, current_thinking_signature.items, if (stream_clones_events) null else &pending_partial_frees)) return;
                                         current_thinking.clearRetainingCapacity();
                                         current_thinking_signature.clearRetainingCapacity();
                                     },
@@ -1121,28 +1159,7 @@ fn runThread(ctx: *ThreadCtx) void {
                                         current_text_signature.clearRetainingCapacity();
                                     },
                                     .thinking => {
-                                        const thinking_copy = allocator.dupe(u8, current_thinking.items) catch "";
-                                        const sig_copy = if (current_thinking_signature.items.len > 0)
-                                            allocator.dupe(u8, current_thinking_signature.items) catch null
-                                        else
-                                            null;
-                                        content_blocks.append(allocator, .{ .thinking = .{
-                                            .thinking = thinking_copy,
-                                            .thinking_signature = sig_copy,
-                                        } }) catch {};
-                                        const think_at = content_blocks.items.len - 1;
-                                        const carried = ai_types.partialWithContent(allocator, partial, content_blocks.items, think_at) catch {
-                                            ctx.deinit();
-                                            stream.completeWithError("oom thinking");
-                                            stream.markThreadDone();
-                                            return;
-                                        };
-                                        _ = stream.pushBlocking(.{ .thinking_end = .{
-                                            .content_index = think_at,
-                                            .content = current_thinking.items,
-                                            .partial = carried.partial,
-                                        } });
-                                        carried.release(allocator, if (stream_clones_events) null else &pending_partial_frees);
+                                        if (!endGoogleThinkingBlock(allocator, stream, ctx, partial, &content_blocks, current_thinking.items, current_thinking_signature.items, if (stream_clones_events) null else &pending_partial_frees)) return;
                                         current_thinking.clearRetainingCapacity();
                                         current_thinking_signature.clearRetainingCapacity();
                                     },
@@ -1246,28 +1263,7 @@ fn runThread(ctx: *ThreadCtx) void {
             },
             .thinking => {
                 const partial = createPartialMessage(model);
-                const thinking_copy = allocator.dupe(u8, current_thinking.items) catch "";
-                const sig_copy = if (current_thinking_signature.items.len > 0)
-                    allocator.dupe(u8, current_thinking_signature.items) catch null
-                else
-                    null;
-                content_blocks.append(allocator, .{ .thinking = .{
-                    .thinking = thinking_copy,
-                    .thinking_signature = sig_copy,
-                } }) catch {};
-                const think_at = content_blocks.items.len - 1;
-                const carried = ai_types.partialWithContent(allocator, partial, content_blocks.items, think_at) catch {
-                    ctx.deinit();
-                    stream.completeWithError("oom thinking");
-                    stream.markThreadDone();
-                    return;
-                };
-                _ = stream.pushBlocking(.{ .thinking_end = .{
-                    .content_index = think_at,
-                    .content = current_thinking.items,
-                    .partial = carried.partial,
-                } });
-                carried.release(allocator, if (stream_clones_events) null else &pending_partial_frees);
+                if (!endGoogleThinkingBlock(allocator, stream, ctx, partial, &content_blocks, current_thinking.items, current_thinking_signature.items, if (stream_clones_events) null else &pending_partial_frees)) return;
             },
             .none => {},
         }
@@ -1372,7 +1368,9 @@ pub fn streamGoogleGenerativeAI(model: ai_types.Model, context: ai_types.Context
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
     s.wait_for_thread_on_deinit = true;
     if (o.requires_owned_stream_events) {
-        s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
+        if (o.requires_owned_stream_events) {
+            s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
+        }
     }
 
     const ctx = try allocator.create(ThreadCtx);
