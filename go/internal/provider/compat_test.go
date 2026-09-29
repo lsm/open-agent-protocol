@@ -110,16 +110,18 @@ func TestABedrockHostStillDetectsAsBedrock(t *testing.T) {
 	}
 }
 
-func TestAnAzureOpenAIHostIsOpenaiAzureComOrASubdomainNeverAzureCom(t *testing.T) {
+func TestAnAzureHostIsOneOfThreeLabelsAndNeverAzureCom(t *testing.T) {
 	hosts := []string{
 		"https://contoso.openai.azure.com",
 		"https://contoso.openai.azure.com/openai/deployments/gpt/chat/completions",
+		"https://contoso.cognitiveservices.azure.com",
+		"https://contoso.services.ai.azure.com",
 		"https://openai.azure.com",
-		"https://CONTOSO.OPENAI.AZURE.COM",
+		"https://CONTOSO.COGNITIVESERVICES.AZURE.COM",
 	}
 	for _, url := range hosts {
-		if !isAzureOpenAIURL(url, true) {
-			t.Errorf("isAzureOpenAIURL(%q) = false, want true", url)
+		if !isAzureURL(url, true) {
+			t.Errorf("isAzureURL(%q) = false, want true", url)
 		}
 	}
 
@@ -127,28 +129,55 @@ func TestAnAzureOpenAIHostIsOpenaiAzureComOrASubdomainNeverAzureCom(t *testing.T
 		"https://azure.com",
 		"https://contoso.azure.com",
 		"https://notopenai.azure.com",
+		"https://notcognitiveservices.azure.com",
+		"https://notservices.ai.azure.com",
+		"https://cognitiveservices.azure.com.evil.example",
+		"https://services.ai.azure.com.evil.example",
 		"https://openai.azure.com.evil.example",
 		"https://evilcontoso.openai.azure.co",
-		"https://evil.example/?next=contoso.openai.azure.com",
-		"https://evil.example/v1/contoso.openai.azure.com",
+		"https://evil.example/?next=contoso.cognitiveservices.azure.com",
+		"https://evil.example/v1/contoso.services.ai.azure.com",
 		"https://gateway.example/proxy/contoso.openai.azure.com",
 		"not a url at all",
 	}
 	for _, url := range notHosts {
-		if isAzureOpenAIURL(url, true) {
-			t.Errorf("isAzureOpenAIURL(%q) = true, want false: azure.com on its own would claim every Azure host, and the label must be openai", url)
+		if isAzureURL(url, true) {
+			t.Errorf("isAzureURL(%q) = true, want false: the three labels are anchored separately and azure.com is never the match", url)
 		}
 	}
 
-	if isAzureOpenAIURL("https://contoso.openai.azure.com", false) {
-		t.Error("no base url is not an azure openai host")
+	if isAzureURL("https://contoso.openai.azure.com", false) {
+		t.Error("no base url is not an azure host")
 	}
 }
 
-func TestAnAzureOpenAIHostStillDetectsAsAzure(t *testing.T) {
+func TestEachAzureLabelIsAnchoredOnItsOwn(t *testing.T) {
+	others := []string{
+		"https://contoso.cognitiveservices.azure.com",
+		"https://contoso.services.ai.azure.com",
+		"https://contoso.openai.azure.com",
+	}
+	for _, url := range others {
+		matched := 0
+		if isHostOrSubdomain(url, true, "openai.azure.com") {
+			matched++
+		}
+		if isHostOrSubdomain(url, true, "cognitiveservices.azure.com") {
+			matched++
+		}
+		if isHostOrSubdomain(url, true, "services.ai.azure.com") {
+			matched++
+		}
+		if matched != 1 {
+			t.Errorf("%q matched %d of the three labels, want exactly 1", url, matched)
+		}
+	}
+}
+
+func TestAnAzureHostStillDetectsAsAzure(t *testing.T) {
 	const url = "https://contoso.openai.azure.com"
-	if !isAzureOpenAIURL(url, true) {
-		t.Fatalf("isAzureOpenAIURL(%q) = false, want true", url)
+	if !isAzureURL(url, true) {
+		t.Fatalf("isAzureURL(%q) = false, want true", url)
 	}
 	if got := DetectProviderType(url, true); got != ProviderAzure {
 		t.Errorf("DetectProviderType(%q) = %q, want azure", url, got)

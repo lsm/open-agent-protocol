@@ -176,8 +176,15 @@ func isOllamaURL(baseURL string, hasBaseURL bool) bool {
 	return false
 }
 
-func isAzureOpenAIURL(baseURL string, hasBaseURL bool) bool {
-	return isHostOrSubdomain(baseURL, hasBaseURL, "openai.azure.com")
+var azureLabels = []string{"openai.azure.com", "cognitiveservices.azure.com", "services.ai.azure.com"}
+
+func isAzureURL(baseURL string, hasBaseURL bool) bool {
+	for _, label := range azureLabels {
+		if isHostOrSubdomain(baseURL, hasBaseURL, label) {
+			return true
+		}
+	}
+	return false
 }
 
 func isGoogleURL(baseURL string, hasBaseURL bool) bool {
@@ -252,7 +259,7 @@ func DetectProviderType(baseURL string, hasBaseURL bool) ProviderType {
 		return ProviderGoogle
 	case isBedrockURL(baseURL, hasBaseURL):
 		return ProviderBedrock
-	case isAzureOpenAIURL(baseURL, hasBaseURL), holdsURL(baseURL, hasBaseURL, "cognitiveservices.azure.com"):
+	case isAzureURL(baseURL, hasBaseURL):
 		return ProviderAzure
 	case isOllamaURL(baseURL, hasBaseURL):
 		return ProviderOllama
