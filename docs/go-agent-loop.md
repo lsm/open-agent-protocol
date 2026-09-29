@@ -118,6 +118,19 @@ dependency, and each is useful on its own:
 | 3 | the loop | `Run`, one terminal per run, `max_iterations`, cancellation, and a turn that ends the run. A reply carrying a tool call fails the run here, because this loop has nowhere to send one; PR 4 is what makes that answerable |
 | 4 | client-executed tool calls | the caller's round trip: ask, wait, answer, and the answer becomes a message |
 
+The caller's round trip is three things, and each of them is a place a loop
+can go quietly wrong. The loop **asks** by emitting `tool_call_requested` and
+then waiting — so a caller has to be able to see the ask, and a consumer that
+never drains cannot be answered. The loop **waits** for one specific call, and
+`ResolveTool` refuses an id nothing is waiting on, by name, so a stale or
+mistyped answer is an error rather than a result attributed to the wrong call.
+The loop then **answers itself** for the calls no caller should be asked
+about: a call whose arguments the output limit cut off, and a call the run was
+cancelled while waiting for. Both are error results, and both say so in the
+text, because a tool that silently did not run is the one failure a model
+cannot recover from. The answer's `tool_call_id` is the loop's, not the
+caller's — a caller's own id would not correlate with the call the model made.
+
 Deliberately not in the first slice: permissions as a *policy engine*, steering
 and follow-up queues, compaction, and token accounting. Each is a few lines in
 the Zig loop and a real amount of policy in Go, and each is reachable only
