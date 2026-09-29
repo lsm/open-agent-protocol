@@ -1524,10 +1524,10 @@ pub const App = struct {
 
     pub fn pumpAutoContinue(self: *App, now_ms: i64) void {
         if (!self.auto_continue.due(now_ms)) return;
-        self.auto_continue.take();
         if (self.state.mode != .normal) return;
         if (self.state.status.streaming) return;
         if (self.state.queue.total() > 0) return;
+        self.auto_continue.take();
         const message = std.fmt.allocPrint(self.allocator, "Provider error. Sending \"{s}\" on your behalf.", .{
             tui_auto_continue.continue_text,
         }) catch return;
@@ -6330,6 +6330,21 @@ test "a follow-up queued before the delay is up drops the pending continue" {
 
     harness.pastDelay();
     try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+}
+
+test "a picker open at the deadline defers the nudge rather than spending it" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    harness.app.state.mode = .picker;
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+    try std.testing.expect(harness.app.auto_continue.pending());
+
+    harness.app.state.mode = .normal;
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 1), harness.mock.submit_count);
 }
 
 test "the nudge waits out its delay and holds while a run is still going" {
