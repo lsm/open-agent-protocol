@@ -3,6 +3,7 @@ const oap_types = @import("oap_types");
 const oap_envelope = @import("oap_envelope");
 const json_encode = @import("json_encode");
 const contract = @import("contract");
+const jsonschema = @import("jsonschema");
 const hubmod = @import("hub");
 
 pub const Hub = hubmod.Hub;
@@ -61,6 +62,8 @@ pub const Supplied = struct {
 const no_parameters: []const []const u8 = &.{};
 const session_and_degraded: []const []const u8 = &.{ "session_id", "allow_degraded_features" };
 const adapter_parameter: []const []const u8 = &.{"adapter"};
+const open_parameters: []const []const u8 = &.{ "adapter", "request" };
+const max_envelope_bytes: usize = 16 << 20;
 const session_parameter: []const []const u8 = &.{"session_id"};
 const all_parameters = [_][]const u8{ "adapter", "session_id", "run_id", "after", "request", "allow_degraded_features" };
 
@@ -345,6 +348,14 @@ pub const Frontend = struct {
             const session_id = request.session_id orelse "";
             return self.state(arena, session_id);
         }
+        if (std.mem.eql(u8, request.op, op_open)) {
+            if (try request.only(arena, open_parameters)) |refusal| return .{ .refused = refusal };
+            const name = request.adapter orelse "";
+            if (name.len == 0) {
+                return .{ .refused = .{ .code = "invalid_request", .message = "adapter is required" } };
+            }
+            return self.openSession(arena, name, request);
+        }
         if (std.mem.eql(u8, request.op, op_models)) {
             if (try request.only(arena, session_and_degraded)) |refusal| return .{ .refused = refusal };
             return self.models(arena, request.session_id orelse "", request.allow_degraded_features);
@@ -456,6 +467,223 @@ pub const Frontend = struct {
         return .{ .answer_line = try oap_envelope.serializeEnvelope(envelope, arena) };
     }
 
+    const Gate = union(enum) {
+        refused: Refusal,
+        envelope: oap_types.Envelope,
+    };
+
+    fn gateRequest(self: *Frontend, arena: std.mem.Allocator, payload: ?std.json.Value) Error!Gate {
+        _ = self;
+        const value = payload orelse return .{ .refused = .{ .code = "invalid_request", .message = "the request is required" } };
+        if (value == .null) return .{ .refused = .{ .code = "invalid_request", .message = "the request is required" } };
+        const raw = try oap_envelope.ownedRawJson(value, arena);
+        if (raw.len > max_envelope_bytes) {
+            return .{ .refused = .{ .code = "request_too_large", .message = "the request envelope exceeds the size limit" } };
+        }
+        var registry = jsonschema.Registry.initFromBundled(arena) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return .{ .refused = .{ .code = "internal", .message = "the bundled schemas could not be loaded" } },
+        };
+        defer registry.deinit();
+        if (value != .object) {
+            return .{ .refused = .{ .code = "malformed_json", .message = "the request envelope is not an object" } };
+        }
+        var validator = jsonschema.Validator.init(arena, &registry);
+        defer validator.deinit();
+        const failure = validator.validate("envelope.schema.json", value) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return .{ .refused = .{ .code = "malformed_json", .message = "the request envelope could not be validated" } },
+        };
+        if (failure != null) {
+            return .{ .refused = .{ .code = "schema_invalid", .message = "the request envelope does not satisfy envelope.schema.json" } };
+        }
+        var envelope = oap_envelope.deserializeEnvelope(raw, arena) catch {
+            return .{ .refused = .{ .code = "malformed_json", .message = "the request envelope could not be decoded" } };
+        };
+        if (std.meta.activeTag(envelope.payload) != .session_open_request) {
+            envelope.deinit(arena);
+            return .{ .refused = .{ .code = "type_mismatch", .message = "the request envelope is not a session.open.request" } };
+        }
+        return .{ .envelope = envelope };
+    }
+
+    const attachment_members = [_][]const u8{ "kind", "display_name", "protocol", "endpoint" };
+
+    fn attachmentRefusal(
+        self: *Frontend,
+        arena: std.mem.Allocator,
+        sources: ?std.json.Value,
+    ) Error!?Refusal {
+        const listed = sources orelse return null;
+        if (listed != .array) return null;
+        for (listed.array.items) |entry| {
+            if (entry != .object) continue;
+            const fields = entry.object;
+            const id = if (fields.get("id")) |value| (if (value == .string) value.string else "") else "";
+            if (fields.get("command")) |value| {
+                if (value == .string and value.string.len > 0) {
+                    return try attachmentRefuse(arena, id, "the daemon does not accept a command from the wire; name the source by id");
+                }
+            }
+            if (fields.get("args")) |value| {
+                if (value == .array and value.array.items.len > 0) {
+                    return try attachmentRefuse(arena, id, "the daemon does not accept args from the wire; name the source by id");
+                }
+            }
+            if (fields.get("environment")) |value| {
+                if (value == .array) {
+                    for (value.array.items) |entry_value| {
+                        if (entry_value != .string) continue;
+                        if (std.mem.indexOfScalar(u8, entry_value.string, '=') != null) {
+                            return try attachmentRefuse(arena, id, "the daemon accepts only the bare NAME allowlist, never a NAME=value assignment");
+                        }
+                    }
+                }
+            }
+            const configured = self.hub.toolSource(id);
+            if (configured == null) {
+                if (fields.get("kind")) |value| {
+                    if (value == .string and std.mem.eql(u8, value.string, "process")) {
+                        return try attachmentRefuse(arena, id, "no tool source of that id is configured on the daemon");
+                    }
+                }
+                continue;
+            }
+            for (attachment_members) |named| {
+                const wire = if (fields.get(named)) |value| (if (value == .string) value.string else null) else null;
+                const text = wire orelse continue;
+                if (text.len == 0) continue;
+                const operator = configuredSourceMember(configured.?, named);
+                if (std.mem.eql(u8, text, operator)) continue;
+                const message = try std.fmt.allocPrint(arena, "the daemon does not accept {s} from the wire for a configured source; name it by id", .{named});
+                return try attachmentRefuse(arena, id, message);
+            }
+        }
+        return null;
+    }
+
+    fn attachmentRefuse(arena: std.mem.Allocator, source: []const u8, message: []const u8) !Refusal {
+        return refusalWith(arena, "unsupported_feature", message, try arena.dupe(oap_types.DetailEntry, &.{
+            .{ .key = "feature", .value = contract.feature_tool_sources_attach },
+            .{ .key = "reason", .value = contract.reason_unsatisfiable },
+            .{ .key = "source", .value = source },
+        }));
+    }
+
+    fn configuredSourceMember(source: contract.ConfiguredSource, key: []const u8) []const u8 {
+        if (std.mem.eql(u8, key, "kind")) return source.kind;
+        if (std.mem.eql(u8, key, "display_name")) return source.display_name;
+        if (std.mem.eql(u8, key, "protocol")) return source.protocol;
+        if (std.mem.eql(u8, key, "endpoint")) return source.endpoint;
+        return "";
+    }
+
+    fn openSession(
+        self: *Frontend,
+        arena: std.mem.Allocator,
+        adapter: []const u8,
+        request: Request,
+    ) Error!Outcome {
+        const gated = try self.gateRequest(arena, request.payload);
+        var envelope: oap_types.Envelope = switch (gated) {
+            .refused => |refusal| return .{ .refused = refusal },
+            .envelope => |value| value,
+        };
+        const open = switch (envelope.payload) {
+            .session_open_request => |*payload| payload,
+            else => unreachable,
+        };
+        var metadata: ?std.json.Value = null;
+        if (request.payload) |value| {
+            if (value == .object) {
+                if (value.object.get("payload")) |body| {
+                    if (body == .object) {
+                        if (body.object.get("tool_sources")) |sources| {
+                            if (try self.attachmentRefusal(arena, sources)) |refusal| {
+                                envelope.deinit(arena);
+                                return .{ .refused = refusal };
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (request.payload) |value| {
+            if (value == .object) {
+                if (value.object.get("payload")) |body| {
+                    if (body == .object) {
+                        if (body.object.get("metadata")) |named| metadata = named;
+                    }
+                }
+            }
+        }
+        if (open.subscribe) {
+            envelope.deinit(arena);
+            return .{ .refused = .{ .code = "unsupported_feature", .message = "a subscribing open is refused until events lands" } };
+        }
+        if (open.message_json != null) {
+            envelope.deinit(arena);
+            return .{ .refused = .{ .code = "unsupported_feature", .message = "an open carrying a message is refused until submit lands" } };
+        }
+        const opened = self.hub.open(arena, adapter, .{
+            .session_id = open.session_id orelse "",
+            .metadata = metadata,
+            .capability_revision = envelope.capability_revision,
+            .subscribe = open.subscribe,
+            .allow_degraded_features = open.allow_degraded_features,
+            .tools_json = open.tools_json,
+            .tool_sources_json = open.tool_sources_json,
+        }) catch |err| {
+            const cited = if (envelope.capability_revision) |text| try arena.dupe(u8, text) else null;
+            envelope.deinit(arena);
+            return .{ .refused = try self.openRefusal(arena, err, request, cited) };
+        };
+        self.next_envelope += 1;
+        const answer_id = try std.fmt.allocPrint(arena, "oap-response-{d}", .{self.next_envelope});
+        const opened_envelope = oap_types.Envelope{
+            .id = answer_id,
+            .in_reply_to = envelope.id,
+            .session_id = opened.state.session_id,
+            .capability_revision = if (open.subscribe or contract.carriesEntries(open.tool_sources_json)) opened.revision else envelope.capability_revision,
+            .payload = .{ .session_open_response = opened.state },
+        };
+        const line = try oap_envelope.serializeEnvelope(opened_envelope, arena);
+        envelope.deinit(arena);
+        return .{ .answer_line = line };
+    }
+
+    fn openRefusal(
+        self: *Frontend,
+        arena: std.mem.Allocator,
+        err: hubmod.Failure,
+        request: Request,
+        cited: ?[]const u8,
+    ) !Refusal {
+        return switch (err) {
+            error.UnknownAdapter => .{ .code = "unknown_adapter", .message = try std.fmt.allocPrint(arena, "no adapter is registered as \"{s}\"", .{request.adapter orelse ""}) },
+            error.SessionExists => .{ .code = "session_exists", .message = "the session id is already open" },
+            error.SessionClosed => .{ .code = "session_closed", .message = "the session was already closed when the open probed it" },
+            error.StaleCapabilities => try refusalWith(arena, "stale_capabilities", "the open cites a capability revision that is no longer current", try arena.dupe(oap_types.DetailEntry, &.{
+                .{ .key = "expected_revision", .value = try self.registeredRevision(arena, request.adapter orelse "") },
+                .{ .key = "current_revision", .value = cited orelse "" },
+            })),
+            error.UnsupportedFeature, error.ToolCatalogUnavailable => .{ .code = "unsupported_feature", .message = "the adapter does not advertise a feature the request elected" },
+            error.CapabilityDegraded => .{ .code = "capability_degraded", .message = "a feature the request did not opt into is degraded" },
+            error.AdapterDescriptorUnbound => .{ .code = "internal", .message = "the adapter descriptor carries no capability revision" },
+            error.BackendFailed => .{ .code = "probe_failed", .message = "the adapter's probe refused" },
+            error.OutOfMemory => error.OutOfMemory,
+            else => .{ .code = "open_failed", .message = @errorName(err) },
+        };
+    }
+
+    fn registeredRevision(self: *Frontend, arena: std.mem.Allocator, adapter: []const u8) ![]const u8 {
+        const listed = try self.hub.listing(arena);
+        for (listed) |status| {
+            if (std.mem.eql(u8, status.name, adapter)) return status.revision;
+        }
+        return "";
+    }
+
     fn models(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8, degraded: []const []const u8) !Outcome {
         const catalog = self.hub.models(arena, session_id, &.{
             .session_id = session_id,
@@ -532,7 +760,6 @@ pub const Frontend = struct {
             else => .{ .code = fallback, .message = @errorName(err) },
         };
     }
-
 
     fn refusalFor(self: *Frontend, arena: std.mem.Allocator, err: hubmod.Failure, session_id: []const u8) !Refusal {
         _ = self;
@@ -980,6 +1207,8 @@ const ReferenceState = struct {
     lister_revision: []const u8 = "reference-lister-v2",
     has_lister: bool = true,
     last_id: []const u8 = "session-1",
+    last_id_buffer: [128]u8 = undefined,
+    saw_metadata_members: usize = 0,
     running: bool = false,
     state_fails: bool = false,
     lister_closed: bool = false,
@@ -989,7 +1218,7 @@ const ReferenceState = struct {
 var reference_holder: ReferenceState = .{};
 
 fn reference() contract.Adapter {
-    return .{ .ptr = @constCast(@ptrCast(&reference_holder)), .vtable = &.{ .probe = referenceProbe, .open = referenceOpen } };
+    return .{ .ptr = @ptrCast(@constCast(&reference_holder)), .vtable = &.{ .probe = referenceProbe, .open = referenceOpen } };
 }
 
 fn referenceProbe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {
@@ -1004,7 +1233,14 @@ fn referenceOpen(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.Op
     _ = refusal;
     state.opened += 1;
     state.running = false;
-    state.last_id = if (request.session_id.len > 0) request.session_id else "session-1";
+    state.saw_metadata_members = if (request.metadata) |named| named.object.count() else 0;
+    const asked = if (request.session_id.len > 0) request.session_id else "session-1";
+    if (asked.len <= state.last_id_buffer.len) {
+        @memcpy(state.last_id_buffer[0..asked.len], asked);
+        state.last_id = state.last_id_buffer[0..asked.len];
+    } else {
+        state.last_id = "session-1";
+    }
     return .{ .ptr = state, .vtable = &.{
         .id = referenceId,
         .state = referenceState,
@@ -1157,7 +1393,6 @@ test "a refusal that will not fit is reduced, then refused as too large" {
     const answer = (try harness.lastValue()).object.get("error").?.object;
     try testing.expectEqualStrings("response_too_large", answer.get("code").?.string);
     try testing.expectEqualStrings("the encoded response exceeds the frame limit", answer.get("message").?.string);
-
 }
 
 test "a line over the frame limit is a defect, and the limit is not negotiable below the floor" {
@@ -1751,6 +1986,172 @@ test "a state that cannot be read is state_failed, not internal" {
     try testing.expectEqualStrings("session.state.response", try textMember(harness.arena(), (try harness.lastValue()).object.get("result").?, "type"));
 }
 
+const open_envelope =
+    "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"payload\":{\"session_id\":\"s1\"}}";
+
+fn openLine(arena: std.mem.Allocator, adapter: []const u8, envelope: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(arena, "{{\"id\":1,\"op\":\"open\",\"adapter\":\"{s}\",\"request\":{s}}}", .{ adapter, envelope });
+}
+
+fn openResult(harness: *Harness) !std.json.ObjectMap {
+    return (try harness.lastValue()).object.get("result").?.object;
+}
+
+fn listedSessions(harness: *Harness) !usize {
+    try harness.send("{\"id\":2,\"op\":\"sessions\"}");
+    return (try openResult(harness)).get("sessions").?.array.items.len;
+}
+
+test "an open answers with the request envelope's own id and the session it made" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send(try openLine(harness.arena(), "reference", open_envelope));
+    const result = try openResult(harness);
+    try testing.expectEqualStrings("session.open.response", result.get("type").?.string);
+    try testing.expectEqualStrings("o1", result.get("in_reply_to").?.string);
+    try testing.expectEqualStrings("s1", result.get("session_id").?.string);
+    try testing.expect(!std.mem.eql(u8, result.get("id").?.string, "o1"));
+    try testing.expectEqual(@as(usize, 1), try listedSessions(harness));
+}
+
+test "a subscribing open is refused, because this wire cannot drain a subscription" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    const envelope = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"capability_revision\":\"reference-v1\",\"payload\":{\"session_id\":\"s1\",\"subscribe\":true}}";
+    try harness.send(try openLine(harness.arena(), "reference", envelope));
+    try testing.expectEqualStrings("unsupported_feature", try harness.code());
+}
+
+test "an open citing a stale revision is refused, naming both revisions" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    const envelope = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"capability_revision\":\"reference-v0\",\"payload\":{\"session_id\":\"s1\",\"tool_sources\":[{\"id\":\"extra\",\"kind\":\"local\"}]}}";
+    try harness.send(try openLine(harness.arena(), "reference", envelope));
+    try testing.expectEqualStrings("stale_capabilities", try harness.code());
+    const details = (try harness.lastValue()).object.get("error").?.object.get("details").?.object;
+    try testing.expectEqualStrings("reference-v1", details.get("expected_revision").?.string);
+    try testing.expectEqualStrings("reference-v0", details.get("current_revision").?.string);
+    try testing.expectEqual(@as(usize, 0), try listedSessions(harness));
+}
+
+test "an attachment that names something to run is refused, and no session is made" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    const envelopes = [_][]const u8{
+        "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"payload\":{\"session_id\":\"s1\",\"tool_sources\":[{\"id\":\"l1\",\"kind\":\"local\",\"command\":\"/bin/sh\"}]}}",
+        "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"payload\":{\"session_id\":\"s1\",\"tool_sources\":[{\"id\":\"l1\",\"kind\":\"local\",\"args\":[\"-c\"]}]}}",
+        "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"payload\":{\"session_id\":\"s1\",\"tool_sources\":[{\"id\":\"l1\",\"kind\":\"local\",\"environment\":[\"PATH=/tmp\"]}]}}",
+        "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"payload\":{\"session_id\":\"s1\",\"tool_sources\":[{\"id\":\"l1\",\"kind\":\"process\"}]}}",
+    };
+    for (envelopes) |envelope| {
+        try harness.send(try openLine(harness.arena(), "reference", envelope));
+        try testing.expectEqualStrings("unsupported_feature", try harness.code());
+    }
+    try testing.expectEqual(@as(usize, 0), try listedSessions(harness));
+}
+
+test "an unconfigured id may be named from the wire, but a process one may not" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    const arena = harness.arena();
+    const namable = try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena,
+        "[{\"id\":\"x1\",\"kind\":\"endpoint\"}]",
+        .{},
+    );
+    try testing.expect((try harness.frontend.attachmentRefusal(arena, namable)) == null);
+
+    const process = try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena,
+        "[{\"id\":\"x1\",\"kind\":\"process\"}]",
+        .{},
+    );
+    const refusal = (try harness.frontend.attachmentRefusal(arena, process)).?;
+    try testing.expectEqualStrings("unsupported_feature", refusal.code);
+    try testing.expectEqual(@as(usize, 3), refusal.details.len);
+    try testing.expectEqualStrings(contract.feature_tool_sources_attach, refusal.details[0].value);
+    try testing.expectEqualStrings("x1", refusal.details[2].value);
+}
+
+test "a configured source is named by id, not re-described from the wire" {
+    const configured = [_]contract.ConfiguredSource{.{
+        .id = "x1",
+        .kind = "endpoint",
+        .endpoint = "https://operator.test",
+    }};
+    const harness = try Harness.init(testing.allocator, .{ .tool_sources = &configured }, .{});
+    defer harness.deinit();
+    const arena = harness.arena();
+    const agreeing = try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena,
+        "[{\"id\":\"x1\",\"kind\":\"endpoint\",\"endpoint\":\"https://operator.test\"}]",
+        .{},
+    );
+    try testing.expect((try harness.frontend.attachmentRefusal(arena, agreeing)) == null);
+
+    const contested = try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena,
+        "[{\"id\":\"x1\",\"kind\":\"local\",\"endpoint\":\"https://wire.test\"}]",
+        .{},
+    );
+    const refusal = (try harness.frontend.attachmentRefusal(arena, contested)).?;
+    try testing.expectEqualStrings("unsupported_feature", refusal.code);
+
+    const unstatted = try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena,
+        "[{\"id\":\"x1\",\"display_name\":\"Mine\"}]",
+        .{},
+    );
+    const blank = (try harness.frontend.attachmentRefusal(arena, unstatted)).?;
+    try testing.expectEqualStrings("unsupported_feature", blank.code);
+}
+
+test "a metadata-carrying open hands the adapter what the payload carried" {
+    reference_holder.saw_metadata_members = 0;
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    const envelope = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"payload\":{\"session_id\":\"s1\",\"metadata\":{\"tenant\":\"acme\",\"attempt\":3}}}";
+    try harness.send(try openLine(harness.arena(), "reference", envelope));
+    try testing.expect((try openResult(harness)).get("session_id") != null);
+    try testing.expectEqual(@as(usize, 2), reference_holder.saw_metadata_members);
+}
+
+test "a metadata at the envelope root is not the payload's metadata" {
+    reference_holder.saw_metadata_members = 0;
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    const envelope = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"metadata\":{\"tenant\":\"acme\"},\"payload\":{\"session_id\":\"s1\"}}";
+    try harness.send(try openLine(harness.arena(), "reference", envelope));
+    try testing.expect((try openResult(harness)).get("session_id") != null);
+    try testing.expectEqual(@as(usize, 0), reference_holder.saw_metadata_members);
+}
+
+test "the refusals the open gate and the payload read name" {
+    const cases = [_]struct { line: []const u8, code: []const u8 }{
+        .{ .line = "{\"id\":1,\"op\":\"open\",\"request\":{}}", .code = "invalid_request" },
+        .{ .line = "{\"id\":1,\"op\":\"open\",\"adapter\":\"reference\"}", .code = "invalid_request" },
+        .{ .line = "{\"id\":1,\"op\":\"open\",\"adapter\":\"reference\",\"request\":null}", .code = "invalid_request" },
+        .{ .line = "{\"id\":1,\"op\":\"open\",\"adapter\":\"reference\",\"request\":{\"id\":\"x\",\"type\":\"nonesuch\"}}", .code = "schema_invalid" },
+        .{ .line = "{\"id\":1,\"op\":\"open\",\"adapter\":\"reference\",\"request\":{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"payload\":{\"session_id\":7}}}", .code = "schema_invalid" },
+        .{ .line = "{\"id\":1,\"op\":\"open\",\"adapter\":\"nope\",\"request\":{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"payload\":{\"session_id\":\"z\"}}}", .code = "unknown_adapter" },
+        .{ .line = "{\"id\":1,\"op\":\"open\",\"adapter\":\"reference\",\"request\":7}", .code = "malformed_json" },
+        .{ .line = "{\"id\":1,\"op\":\"open\",\"adapter\":\"reference\",\"request\":[]}", .code = "malformed_json" },
+        .{ .line = "{\"id\":1,\"op\":\"open\",\"adapter\":\"reference\",\"request\":{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"payload\":{\"session_id\":\"m\",\"message\":{\"messages\":[{\"role\":\"user\",\"content\":\"go\"}],\"delivery\":\"auto\"}}}}", .code = "unsupported_feature" },
+        .{ .line = "{\"id\":1,\"op\":\"open\",\"adapter\":\"reference\",\"request\":{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"payload\":{\"session_id\":\"n\",\"subscribe\":true}}}", .code = "unsupported_feature" },
+    };
+    for (cases) |case| {
+        const harness = try Harness.init(testing.allocator, .{}, .{});
+        defer harness.deinit();
+        try harness.send(case.line);
+        try testing.expectEqualStrings(case.code, try harness.code());
+    }
+}
+
 test "the in-flight bound refuses any op, naming the bound that refused it" {
     const harness = try Harness.init(testing.allocator, .{}, .{ .max_ops = 1 });
     defer harness.deinit();
@@ -1776,7 +2177,7 @@ const Fading = struct {
 var fading_holder: Fading = .{};
 
 fn fading() contract.Adapter {
-    return .{ .ptr = @constCast(@ptrCast(&fading_holder)), .vtable = &.{ .probe = fadingProbe, .open = referenceOpen } };
+    return .{ .ptr = @ptrCast(@constCast(&fading_holder)), .vtable = &.{ .probe = fadingProbe, .open = referenceOpen } };
 }
 
 fn fadingProbe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {

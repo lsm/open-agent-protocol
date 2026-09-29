@@ -1425,6 +1425,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "oap_envelope", .module = protocol_oap_envelope_mod },
             .{ .name = "json_encode", .module = json_encode_mod },
             .{ .name = "contract", .module = adapter_contract_mod },
+            .{ .name = "jsonschema", .module = jsonschema_mod },
             .{ .name = "hub", .module = hub_mod },
         },
     });
