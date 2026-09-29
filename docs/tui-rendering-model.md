@@ -272,6 +272,33 @@ space-separated term must appear, case-insensitively, in an item's label or deta
 `Backspace` edits the filter, `Up/Down` and `PgUp/PgDn` move, `Enter` selects and `Esc`
 closes; reopening a picker clears its filter.
 
+## Automatic compaction
+
+`/autocompact <percent>` sets the share of the context window at which the session compacts
+itself, `/autocompact off` turns that off, and `/autocompact` with no argument reports the
+share in effect. `off` is what a session starts with, so nothing compacts on its own until
+it is asked to. A percent sign is optional (`80` and `80%` are the same request) and the
+share must be between 1 and 100: `0`, `101`, a sign, a decimal and anything that is not
+digits are refused. `/status` carries the share on its own line, so the value is visible
+without a second command.
+
+The share measures the same figure the context gauge shows — the prompt estimate the
+provider was last sent — plus the message about to be sent, against the window in effect.
+It fires before a turn is submitted rather than during one, because a turn that has already
+overflowed is the failure this avoids. A message typed while a turn is streaming or a
+compaction is running takes the normal path, and the next submit is the one that measures
+again.
+
+When it fires, the transcript says so, the compaction runs exactly as `/compact` runs it
+(down to the transcript it writes), and the held message is sent when the compaction ends —
+including when it was cancelled or failed, because a message the user typed is not something
+to drop quietly; that case says the history is unchanged. A message the queue resumes while
+the compaction finishes is steered rather than submitted, so waiting for a turn never blocks
+the tick thread. A `/resume` that lands before the compaction ends drops the held message
+with a note saying so, at the top of the resume, so it cannot be sent into the session that
+replaced it. A session whose history is already a summary, or empty, is not compacted
+again, and one automatic compaction runs at a time.
+
 ## Compaction
 
 `/compact [focus]` replaces the agent's history with a summary the current model
