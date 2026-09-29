@@ -78,7 +78,14 @@ pub fn run(allocator: std.mem.Allocator, options: Options) !Report {
     runner.client.closeStdin();
     try runner.drain(options.line_deadline_ms);
     const code = runner.client.waitExit(options.exit_grace_ms) catch |err| blk: {
-        try runner.fail("endpoint exits 0 after stdin EOF", @errorName(err));
+        if (err == endpoint_client.Error.ExitGraceElapsed) {
+            try runner.fail(
+                "endpoint exits after stdin EOF",
+                "the endpoint was still running once the exit grace elapsed, so it was killed",
+            );
+        } else {
+            try runner.fail("endpoint exits 0 after stdin EOF", @errorName(err));
+        }
         break :blk null;
     };
     if (code) |status| {
@@ -220,8 +227,11 @@ const Runner = struct {
         var answered = try self.answer(id, line_deadline_ms);
         if (answered.payload == .error_response) {
             const failure = answered.payload.error_response;
+            var released = false;
+            defer if (!released) answered.deinit(self.allocator);
             self.refusal = try std.fmt.allocPrint(self.allocator, "{s}: {s}", .{ failure.code, failure.message });
             answered.deinit(self.allocator);
+            released = true;
             return error.ConformanceRefused;
         }
         return answered;
@@ -374,7 +384,11 @@ const Runner = struct {
 
     fn drain(self: *Runner, line_deadline_ms: i64) !void {
         while (true) {
-            const frame = (self.client.next(lineBudget(line_deadline_ms)) catch return) orelse return;
+            const frame = (self.client.next(lineBudget(line_deadline_ms)) catch |err| {
+                if (err == endpoint_client.Error.EndpointClosed) return;
+                try self.fail("frames the endpoint writes after the run completes decode", @errorName(err));
+                return;
+            }) orelse return;
             if (frame == .control) continue;
             var envelope = oap_envelope.deserializeEnvelope(frame.envelope, self.allocator) catch |err| {
                 try self.fail("frames the endpoint writes after the run completes decode", @errorName(err));
@@ -561,6 +575,12 @@ const fixture_script =
     \\done
 ;
 
+const refusing_script =
+    \\while read -r line; do
+    \\  printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"e1","in_reply_to":"conformance-request-1","payload":{"error":{"code":"unsupported_profile","message":"no"}}}'
+    \\done
+;
+
 fn runAllocationProbe(allocator: std.mem.Allocator) !void {
     var report = try run(allocator, .{
         .command = "/bin/sh",
@@ -575,6 +595,22 @@ fn runAllocationProbe(allocator: std.mem.Allocator) !void {
 test "a run that is refused part way through frees what it built exactly once" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     try std.testing.checkAllAllocationFailures(std.testing.allocator, runAllocationProbe, .{});
+}
+
+fn refusalAllocationProbe(allocator: std.mem.Allocator) !void {
+    var report = try run(allocator, .{
+        .command = "/bin/sh",
+        .args = &.{ "-c", refusing_script },
+        .line_deadline_ms = 5000,
+    });
+    defer report.deinit();
+    const refused = report.verdict("protocol.initialize.request is answered") orelse return error.ProbeReachedNoRefusal;
+    if (refused.passed) return;
+}
+
+test "a refusal frees its own envelope, and the reason, exactly once" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, refusalAllocationProbe, .{});
 }
 
 test "a frame the endpoint writes after the terminal event is recorded, not swallowed" {
@@ -612,4 +648,69 @@ test "an endpoint that exits non-zero is judged, and its detail is freed with it
     const exiting = report.verdict("endpoint exits 0 after stdin EOF") orelse return error.CheckMissing;
     try std.testing.expect(!exiting.passed);
     try std.testing.expectEqualStrings("exit code 3", exiting.detail);
+}
+
+test "a line with neither protocol nor control is judged, not skipped" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const script =
+        \\while read -r line; do
+        \\  case "$line" in
+        \\  *protocol.initialize.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"protocol.initialize.response","id":"a1","in_reply_to":"conformance-request-1","payload":{"protocol_version":"0.1","profile":"open-agent-protocol.agent-control-core","endpoint":{"id":"fake"}}}' ;;
+        \\  esac
+        \\done
+        \\printf '%s\n' 'not json at all' '{"an":"object"}'
+    ;
+
+    var report = try run(std.testing.allocator, .{
+        .command = "/bin/sh",
+        .args = &.{ "-c", script },
+        .line_deadline_ms = 5000,
+    });
+    defer report.deinit();
+
+    try std.testing.expect(!report.passed());
+    const trailing = report.verdict("frames the endpoint writes after the run completes decode") orelse return error.CheckMissing;
+    try std.testing.expect(!trailing.passed);
+    try std.testing.expectEqualStrings("UnclassifiedFrame", trailing.detail);
+}
+
+test "a control frame is answered, never judged" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const script =
+        \\while read -r line; do
+        \\  case "$line" in
+        \\  *protocol.initialize.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"protocol.initialize.response","id":"a1","in_reply_to":"conformance-request-1","payload":{"protocol_version":"0.1","profile":"open-agent-protocol.agent-control-core","endpoint":{"id":"fake"}}}' ;;
+        \\  esac
+        \\done
+        \\printf '%s\n' '{"control":"replay.accepted","id":"r1"}'
+    ;
+
+    var report = try run(std.testing.allocator, .{
+        .command = "/bin/sh",
+        .args = &.{ "-c", script },
+        .line_deadline_ms = 5000,
+    });
+    defer report.deinit();
+
+    try std.testing.expect(report.verdict("frames the endpoint writes after the run completes decode") == null);
+}
+
+test "an endpoint that ignores stdin EOF is reported under goap's check name" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var report = try run(std.testing.allocator, .{
+        .command = "/bin/sh",
+        .args = &.{ "-c", "while read -r line; do :; done; sleep 30" },
+        .line_deadline_ms = 1000,
+        .exit_grace_ms = 200,
+    });
+    defer report.deinit();
+
+    try std.testing.expect(!report.passed());
+    const killed = report.verdict("endpoint exits after stdin EOF") orelse return error.CheckMissing;
+    try std.testing.expect(!killed.passed);
+    try std.testing.expectEqualStrings(
+        "the endpoint was still running once the exit grace elapsed, so it was killed",
+        killed.detail,
+    );
+    try std.testing.expect(report.verdict("endpoint exits 0 after stdin EOF") == null);
 }

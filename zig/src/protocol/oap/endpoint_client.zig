@@ -10,6 +10,7 @@ pub const Error = error{
     NotRunning,
     EmbeddedNewline,
     ExitGraceElapsed,
+    UnclassifiedFrame,
 };
 
 pub const Spawn = struct {
@@ -126,7 +127,7 @@ pub const Client = struct {
             if (try self.takeLine()) |line| {
                 const trimmed = std.mem.trim(u8, line, " \t\r");
                 if (trimmed.len == 0) continue;
-                return classify(trimmed);
+                return try classify(trimmed);
             }
             const filled = try self.fill(timeout);
             if (!filled) return null;
@@ -178,6 +179,7 @@ fn tryExitPosix(child: *std.process.Child, io: std.Io) ?std.process.Child.Term {
             .SUCCESS => {
                 if (result == 0) return null;
                 child.id = null;
+                closePipes(child, io);
                 return termOf(status);
             },
             .INTR => continue,
@@ -201,6 +203,17 @@ fn tryExitWindows(child: *std.process.Child, io: std.Io) ?std.process.Child.Term
     return child.wait(io) catch null;
 }
 
+fn closePipes(child: *std.process.Child, io: std.Io) void {
+    if (child.stdin) |stdin| {
+        stdin.close(io);
+        child.stdin = null;
+    }
+    if (child.stdout) |stdout| {
+        stdout.close(io);
+        child.stdout = null;
+    }
+}
+
 fn termOf(status: anytype) std.process.Child.Term {
     const raw: u32 = @bitCast(status);
     return if (std.posix.W.IFEXITED(raw))
@@ -219,9 +232,10 @@ fn exitCodeOf(term: std.process.Child.Term) !u8 {
     };
 }
 
-fn classify(line: []const u8) Frame {
+fn classify(line: []const u8) Error!Frame {
     if (hasTopLevelMember(line, "protocol")) return .{ .envelope = line };
-    return .{ .control = line };
+    if (hasTopLevelMember(line, "control")) return .{ .control = line };
+    return Error.UnclassifiedFrame;
 }
 
 fn hasTopLevelMember(line: []const u8, name: []const u8) bool {
@@ -276,24 +290,24 @@ fn followedByColon(line: []const u8, from: usize) bool {
 }
 
 test "a line carrying protocol is an envelope and one carrying control is not" {
-    const envelope = classify("{\"protocol\":\"open-agent-protocol\",\"id\":\"q1\"}");
+    const envelope = try classify("{\"protocol\":\"open-agent-protocol\",\"id\":\"q1\"}");
     try std.testing.expect(envelope == .envelope);
-    const control = classify("{\"control\":\"replay\",\"cursor\":\"7\"}");
+    const control = try classify("{\"control\":\"replay\",\"cursor\":\"7\"}");
     try std.testing.expect(control == .control);
 }
 
 test "a nested protocol member does not make a control frame an envelope" {
-    const control = classify("{\"control\":\"replay\",\"detail\":{\"protocol\":\"x\"}}");
+    const control = try classify("{\"control\":\"replay\",\"detail\":{\"protocol\":\"x\"}}");
     try std.testing.expect(control == .control);
 }
 
 test "a protocol string that is a value rather than a key is not a member" {
-    const control = classify("{\"control\":\"protocol\"}");
+    const control = try classify("{\"control\":\"protocol\"}");
     try std.testing.expect(control == .control);
 }
 
 test "an escaped quote inside a key does not end the key early" {
-    const control = classify("{\"a\\\"protocol\":1}");
+    const control = try classify("{\"control\":\"replay\",\"a\\\"protocol\":1}");
     try std.testing.expect(control == .control);
 }
 
