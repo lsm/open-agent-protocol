@@ -1065,7 +1065,11 @@ pub const App = struct {
                 if (try tui_worktree.remove(self.allocator, runner, &info)) |message| {
                     defer self.allocator.free(message);
                     try self.state.appendTranscript(.system, message);
-                    return;
+                    if (std.mem.startsWith(u8, message, "git branch -d:")) {
+                        try self.state.appendTranscript(.system, "Worktree removed; retaining its branch because Git reports it is not safely deletable.");
+                    } else {
+                        return;
+                    }
                 }
             }
         }
@@ -1084,6 +1088,7 @@ pub const App = struct {
         if (try tui_worktree.readSidecar(self.allocator, store.base_dir, id)) |info_value| {
             var info = info_value;
             defer info.deinit(self.allocator);
+            self.worktree_attempted = true;
             if (!tui_worktree.pathExists(info.path)) {
                 if (try tui_worktree.branchExists(self.allocator, tui_worktree.processRunner(), info.repo_root, info.branch)) {
                     if (try tui_worktree.reattach(self.allocator, tui_worktree.processRunner(), &info)) |message| {
@@ -1092,7 +1097,12 @@ pub const App = struct {
                     }
                 }
             }
-            const root = try info.workingDir(self.allocator);
+            const root = if (tui_worktree.pathExists(info.path))
+                try info.workingDir(self.allocator)
+            else if (info.prefix.len > 0)
+                try std.fs.path.join(self.allocator, &.{ info.repo_root, std.mem.trimEnd(u8, info.prefix, &.{std.fs.path.sep}) })
+            else
+                try self.allocator.dupe(u8, info.repo_root);
             defer self.allocator.free(root);
             try runtime.setWorkspaceRoot(root);
             if (self.working_dir.len > 0) self.allocator.free(self.working_dir);
@@ -1465,6 +1475,7 @@ pub const App = struct {
             self.worktree_job = null;
         }
         if (self.held_user_message.len > 0) self.allocator.free(self.held_user_message);
+        self.held_user_message = &.{};
         if (self.state.mode == .login_input) self.state.mode = .normal;
     }
 
@@ -2107,7 +2118,7 @@ pub const App = struct {
             if (home) |h| {
                 const base = try std.fs.path.join(self.allocator, &.{ h, ".oapx", "worktrees" });
                 defer self.allocator.free(base);
-                if (tui_worktree.isUnderBase(self.launch_dir, base)) {
+                if (tui_worktree.isUnderBase(self.working_dir, base)) {
                     self.worktree_attempted = true;
                     self.state.appendTranscript(.system, "Already in a managed session worktree; continuing here.") catch {};
                 } else {
