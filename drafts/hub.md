@@ -397,6 +397,23 @@ error. That is stated because the four reasons are the whole set.
 | `POST /sessions/{id}/close` | `close` | `204 No Content`, no body | `unknown_session` 404, `run_active` 409, `session_closed` 409, `request_cancelled` 400, `internal` 500 |
 | `GET /sessions/{id}/events` | `events` | an SSE stream, adopting a held subscription when the request named no cursor | see [events](#events) |
 
+**The daemon serves a bounded number of connections at once, and a stream is
+not a connection to itself.** One connection at a time is enough for the
+read-only routes and wrong for `events`: a stream holds its connection for as
+long as the client listens, so a single-connection daemon answers exactly one
+SSE subscriber and then serves nothing else, forever. The bound goes in before
+the first streaming route, and it is three numbers rather than one — how many
+connections may be open at once, how long a request may hold one before the
+bound is reached, and what a client is told when the bound is reached. The
+last is the part that is protocol-adjacent: a client that receives `busy` over
+HTTP has to know whether to wait or to reconnect, so the code and the
+`Retry-After` it carries are named here rather than chosen per port. A
+per-connection arena is what bounds memory once several are open, and it is
+why the count cannot be unbounded.
+
+Go's hub has this and names its own numbers; a port may choose its own within
+"a bounded number", but it may not leave the client guessing about `busy`.
+
 Every route that reads a body requires `Content-Type: application/json`, and
 the body is read as UTF-8 whatever `charset` the header names. RFC 8259 §11
 records that no `charset` parameter is defined for `application/json` — the
