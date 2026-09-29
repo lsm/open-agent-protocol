@@ -9,8 +9,8 @@ pub const max_body_bytes = 16 * 1024 * 1024;
 pub const bad_request = "400 Bad Request";
 pub const header_too_large = "431 Request Header Fields Too Large";
 pub const request_timeout = "408 Request Timeout";
-pub const header_read_ms: i32 = 30 * std.time.ns_per_s / std.time.ns_per_ms;
-pub const idle_read_ms: i32 = 2 * 60 * std.time.ns_per_s / std.time.ns_per_ms;
+pub const header_read_ms: i32 = @intCast(30 * std.time.ns_per_s / std.time.ns_per_ms);
+pub const idle_read_ms: i32 = @intCast(2 * 60 * std.time.ns_per_s / std.time.ns_per_ms);
 
 pub const Failure = error{
     HeaderTooLarge,
@@ -92,6 +92,10 @@ pub fn splitTarget(allocator: std.mem.Allocator, target: []const u8) Failure!Tar
 
 const pollable = @import("builtin").os.tag != .windows;
 
+fn elapsedMs() !u64 {
+    return @intCast(try compat.time.monotonicNanos() / std.time.ns_per_ms);
+}
+
 fn readWithin(stream: *compat.net.Stream, buffer: []u8, wait_ms: i32) Failure!usize {
     if (comptime pollable) {
         const ready = compat.net.readableWithin(compat.net.streamHandle(stream), wait_ms) catch return error.ReadFailed;
@@ -104,8 +108,11 @@ pub fn readRequest(allocator: std.mem.Allocator, stream: *compat.net.Stream, hea
     var head = std.ArrayList(u8).empty;
     defer head.deinit(allocator);
     var byte: [1]u8 = undefined;
+    const started = elapsedMs() catch 0;
     while (head.items.len < max_header_bytes) {
-        const n = try readWithin(stream, &byte, header_wait_ms);
+        const budget: i64 = @as(i64, header_wait_ms) - @as(i64, @intCast((elapsedMs() catch 0) - started));
+        if (budget <= 0) return error.Timeout;
+        const n = try readWithin(stream, &byte, @intCast(@min(budget, @as(i64, std.math.maxInt(i32)))));
         if (n == 0) return error.Truncated;
         try head.append(allocator, byte[0]);
         if (std.mem.endsWith(u8, head.items, "\r\n\r\n")) break;
@@ -360,6 +367,15 @@ test "a peer that connects and never sends a request is given up on, not waited 
     defer pipe.close();
     try testing.expectError(error.Timeout, readRequest(testing.allocator, &pipe.accepted, 50, idle_read_ms));
     try testing.expectEqualStrings(request_timeout, statusFor(error.Timeout));
+}
+
+test "the header budget is the whole request's, not a fresh one per byte" {
+    var pipe = try Pipe.open();
+    defer pipe.close();
+    try pipe.client.writeAll("G");
+    const started = elapsedMs() catch 0;
+    try testing.expectError(error.Timeout, readRequest(testing.allocator, &pipe.accepted, 120, idle_read_ms));
+    try testing.expect((elapsedMs() catch 0) - started < 2000);
 }
 
 test "a header whose name merely starts with a known one is not that header" {

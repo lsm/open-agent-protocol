@@ -519,6 +519,16 @@ wedge every other client and leave a signal unobserved. Pinned by `a peer that
 connects and never sends a request is given up on, not waited on forever`;
 Go's bound is `ReadHeaderTimeout` on the same server.
 
+**The header budget is absolute, and the body budget is not.** Go's
+`ReadHeaderTimeout` runs from the first byte, so a peer that sends one byte
+per window never completes a request; the `IdleTimeout` restarts on every read,
+so a body read the same way can go on for as long as the peer keeps dribbling.
+Zig takes that split as it stands — a per-read budget on the header would let
+exactly the wedge the bound exists to prevent — and `the header budget is the
+whole request's, not a fresh one per byte` pins the first half. The second half
+is a hole the draft names rather than closes, and a port that wants it closed
+needs a whole-body deadline, which is not what either tree has.
+
 **A route that is not written yet answers a plain `404`, not a refusal.** Go's
 mux does the same for a path no pattern matches, and the draft's codes are
 `invalid_request`, `unknown_adapter` and `unknown_session` — none of which is

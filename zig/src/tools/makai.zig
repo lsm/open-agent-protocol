@@ -2539,7 +2539,11 @@ fn runHubHttp(
             const ready = compat.net.readableWithin(compat.net.serverHandle(&listener), hub_accept_poll_ms) catch continue;
             if (!ready) continue;
         }
-        var connection = try compat.net.accept(&listener);
+        var connection = compat.net.accept(&listener) catch |failure| {
+            sweepHubSessions(core, stderr);
+            try compat.stdio.writeAll(stderr, "oapx: stopped\n");
+            return failure;
+        };
         defer connection.stream.close();
         next_id += 1;
         var scratch_state = std.heap.ArenaAllocator.init(allocator);
