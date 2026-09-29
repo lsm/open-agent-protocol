@@ -2108,8 +2108,6 @@ test "the agent_end that follows every turn_end leaves the previous turn's figur
     var state = AppState.init(std.testing.allocator);
     defer state.deinit();
 
-    // The real event pair, driven through applyEvent: the runtime always pushes
-    // agent_end immediately after the final turn_end.
     state.telemetry.rate.turn_measured = .{ .output_tokens = 200, .stream_ms = 2_000 };
     state.telemetry.rate.turn_estimated = .{};
 
