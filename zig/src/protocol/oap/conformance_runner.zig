@@ -72,6 +72,8 @@ pub fn run(allocator: std.mem.Allocator, options: Options) !Report {
 
     try runner.drive(options.line_deadline_ms);
 
+    try runner.drain(options.line_deadline_ms);
+
     runner.client.closeStdin();
     const code = runner.client.waitExit(options.exit_grace_ms) catch |err| blk: {
         try runner.fail("endpoint exits 0 after stdin EOF", @errorName(err));
@@ -215,10 +217,20 @@ const Runner = struct {
     }
 
     fn drive(self: *Runner, line_deadline_ms: i64) !void {
-        const participant_id = try self.allocator.dupe(u8, "conformance");
-        errdefer self.allocator.free(participant_id);
-        const participant_name = try self.allocator.dupe(u8, "OAP conformance runner");
-        errdefer self.allocator.free(participant_name);
+        // request() owns the payload it is handed, so each guard is disarmed the
+        // moment its string goes in; left armed they free it a second time.
+        var init_fields: [2][]const u8 = undefined;
+        var init_built: usize = 0;
+        var init_handed_off = false;
+        errdefer if (!init_handed_off) {
+            for (init_fields[0..init_built]) |copy| self.allocator.free(copy);
+        };
+        init_fields[0] = try self.allocator.dupe(u8, "conformance");
+        init_built = 1;
+        init_fields[1] = try self.allocator.dupe(u8, "OAP conformance runner");
+        init_built = 2;
+        const participant_id = init_fields[0];
+        const participant_name = init_fields[1];
 
         // Each field is built before the literal: a literal that allocates twice
         // cannot unwind the field it already built.
@@ -227,6 +239,7 @@ const Runner = struct {
         const profiles = try oap_types.dupeStringList(self.allocator, &.{oap_types.PROFILE});
         errdefer oap_types.freeStringList(self.allocator, profiles);
 
+        init_handed_off = true;
         const initialized = self.request(.{
             .initialize_request = .{
                 .protocol_versions = versions,
@@ -265,8 +278,11 @@ const Runner = struct {
             );
         }
 
-        const open_session = try self.allocator.dupe(u8, self.session);
-        errdefer self.allocator.free(open_session);
+        var open_handed_off = false;
+        var open_session: []const u8 = undefined;
+        errdefer if (!open_handed_off) self.allocator.free(open_session);
+        open_session = try self.allocator.dupe(u8, self.session);
+        open_handed_off = true;
         var opened = self.request(.{ .session_open_request = .{ .session_id = open_session } }, null, line_deadline_ms) catch |err| {
             try self.failReason("session.open.request is answered", err);
             return;
@@ -287,8 +303,11 @@ const Runner = struct {
             );
         }
 
-        const submit_session = try self.allocator.dupe(u8, self.session);
-        errdefer self.allocator.free(submit_session);
+        var submit_handed_off = false;
+        var submit_session: []const u8 = undefined;
+        errdefer if (!submit_handed_off) self.allocator.free(submit_session);
+        submit_session = try self.allocator.dupe(u8, self.session);
+        submit_handed_off = true;
         var admitted = self.request(.{ .message_submit_request = .{
             .session_id = submit_session,
             .messages = try self.scriptedMessages(),
@@ -341,6 +360,18 @@ const Runner = struct {
         errdefer self.allocator.free(messages);
         messages[0] = .{ .role = .user, .content = .{ .text = text } };
         return messages;
+    }
+
+    fn drain(self: *Runner, line_deadline_ms: i64) !void {
+        while (true) {
+            const frame = (self.client.next(lineBudget(line_deadline_ms)) catch return) orelse return;
+            if (frame == .control) continue;
+            var envelope = try oap_envelope.deserializeEnvelope(frame.envelope, self.allocator);
+            self.events.append(self.allocator, envelope) catch |err| {
+                envelope.deinit(self.allocator);
+                return err;
+            };
+        }
     }
 
     fn consumeRun(self: *Runner, line_deadline_ms: i64) !void {
@@ -460,7 +491,8 @@ const Runner = struct {
                 const first = try self.allocator.dupe(u8, question.options[0].id);
                 break :blk try self.allocator.dupe([]const u8, &.{first});
             } else &.{};
-            answers[answered] = .{ .question_id = question_id, .selected_option_ids = chosen };
+            const text: ?[]const u8 = if (question.options.len > 0) null else try self.allocator.dupe(u8, "conformance");
+            answers[answered] = .{ .question_id = question_id, .text = text, .selected_option_ids = chosen };
             answered += 1;
         }
 
