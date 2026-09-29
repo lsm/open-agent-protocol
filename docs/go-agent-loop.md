@@ -162,7 +162,7 @@ malformed argument are three results, not three failures.
 `oapx serve agent` without `--backend` builds a `StdioProtocolLoop`
 (`zig/src/tools/makai.zig:8886`) and runs its own loop; with `--backend` it
 runs an adapter. The Go `serve agent` currently requires `--backend` and
-defaults it to `memory` (`go/cmd/goap/endpoint.go:38`). The third step makes
+defaults it to `memory` (`go/cmd/goap/endpoint.go:39`). The third step makes
 the Go tree's own loop the no-backend case, so the parity harness can drive
 `goap serve agent` and `oapx serve agent` over the same scenario with no
 adapter in either, and compare the two loops' traces.
