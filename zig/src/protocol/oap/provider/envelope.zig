@@ -1754,7 +1754,11 @@ const MODELS_LIST_RESPONSE_LINE =
     "\"model_ref\":\"gw/other:ollama-chat@llama3\",\"model_id\":\"llama3\",\"display_name\":\"Llama 3\"," ++
     "\"provider_id\":\"gw\",\"wire\":\"other\",\"context_window\":128000,\"max_output_tokens\":8192," ++
     "\"capabilities\":[\"chat\",\"streaming\"],\"lifecycle\":\"stable\",\"source\":\"discovered\"," ++
-    "\"reasoning_default\":\"medium\",\"auth_status\":\"authenticated\"}]}}";
+    "\"reasoning_default\":\"medium\",\"auth_status\":\"authenticated\",\"cost\":{\"input\":3,\"output\":15}," ++
+    "\"input_modalities\":[\"text\",\"image\"],\"output_modalities\":[\"text\"]," ++
+    "\"reasoning_levels\":[\"off\",\"medium\",\"high\"],\"release_date\":\"2025-09-29\"," ++
+    "\"family\":\"llama\"}]," ++
+    "\"catalog\":{\"observed_at_ms\":1759100000000,\"complete\":false}}}";
 
 test "a describe response decode leaks nothing when an allocation fails" {
     try expectNoLeakUnderAllocationFailure(DESCRIBE_RESPONSE_LINE);

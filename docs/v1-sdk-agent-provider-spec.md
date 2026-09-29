@@ -96,13 +96,13 @@ Facts a listing learned (Normative):
   v0.1 and ignored by a client that knows of the lists.
 - `reasoning_levels` is the set the model accepts, and `reasoning_default` names
   one of them.
-- These are the model-provider-core profile's `modelEntry` facts
+- These name the model-provider-core profile's `modelEntry` facts
   ([Decision 0035](../../decisions/0035-a-model-entry-publishes-its-facts-and-absence-means-unknown.md))
-  named on the SDK's descriptor. The profile's own wire carries them; the SDK
-  descriptor is where an implementation records them, and a client reading
-  either reads the same facts. The interface above is the shape, not a claim
-  that a shipped SDK already populates every member: where a client leaves one
-  absent, the absence means unknown under the rule above, exactly as on the
+  on the SDK's descriptor, so an implementation that serves the provider profile
+  has one shape to fill them in. The members above are the shape, not a claim
+  that a shipped SDK populates every one of them today: `sdk/typescript` and
+  `go/sdk` do not yet carry these fields, and a client that leaves one absent
+  reads the absence as unknown under the rule above, exactly as it does on the
   wire.
 
 Auth for listing:
