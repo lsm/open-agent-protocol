@@ -53,8 +53,7 @@ pub fn isMistral(base_url: ?[]const u8) bool {
 }
 
 pub fn isGroq(base_url: ?[]const u8) bool {
-    const url = base_url orelse return false;
-    return std.mem.find(u8, url, "api.groq.com") != null;
+    return isHostOrSubdomainOf(base_url, "groq.com");
 }
 
 pub fn isCerebras(base_url: ?[]const u8) bool {
@@ -213,6 +212,34 @@ test "isGitHubCopilot detection" {
     try std.testing.expect(isGitHubCopilot("https://api.githubcopilot.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot("https://api.openai.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot(null));
+}
+
+test "a groq host is groq.com or a subdomain of it" {
+    const hosts = [_][]const u8{
+        "https://api.groq.com",
+        "https://api.groq.com/openai/v1",
+        "https://groq.com",
+        "https://API.GROQ.COM",
+    };
+    for (hosts) |url| {
+        try std.testing.expect(isGroq(url));
+    }
+
+    const not_hosts = [_][]const u8{
+        "https://mygroq.com",
+        "https://notgroq.com",
+        "https://groq.com.evil.example",
+        "https://evil.example/?next=api.groq.com",
+        "https://evil.example/v1/api.groq.com",
+        "https://gateway.example/proxy/api.groq.com",
+        "not a url at all",
+        "",
+    };
+    for (not_hosts) |url| {
+        try std.testing.expect(!isGroq(url));
+    }
+
+    try std.testing.expect(!isGroq(null));
 }
 
 test "a mistral host is mistral.ai or a subdomain of it" {

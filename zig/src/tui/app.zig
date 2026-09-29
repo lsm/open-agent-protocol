@@ -37,6 +37,7 @@ extern "c" fn unsetenv(name: [*:0]const u8) c_int;
 
 pub const TuiRuntime = tui_runtime.TuiRuntime;
 pub const TuiRuntimeOptions = tui_runtime.TuiRuntimeOptions;
+pub const parseContextWindow = tui_runtime.parseContextWindow;
 
 const max_session_event_jsonl_bytes = 8 * 1024 * 1024;
 const max_session_event_payload_bytes = max_session_event_jsonl_bytes / 2;
@@ -1858,6 +1859,7 @@ pub const App = struct {
         self.state.reconcileSteers(session.steersConsumedCount());
         self.syncBackpressureState();
         self.syncModelTelemetry();
+        try self.noteDroppedContextWindow();
         self.collectGeneratedTitle();
         if (self.pending_session_reset and !self.state.status.streaming) {
             if (self.runtime) |runtime| {
@@ -2135,6 +2137,10 @@ pub const App = struct {
             .none => {},
         }
         if ((command.kind == .model or command.kind == .provider) and command.arg != null) self.persistCurrentModel();
+        switch (command.kind) {
+            .context, .model, .provider => self.applyContextWindow(),
+            else => {},
+        }
         if (result.output.len > 0) {
             try self.state.appendTranscript(if (result.is_error) .@"error" else .system, result.output);
             if (result.is_error) try self.state.status.setError(self.allocator, result.output);
@@ -2148,6 +2154,23 @@ pub const App = struct {
         }
         try self.state.status.setError(self.allocator, message);
         try self.state.appendTranscript(.@"error", message);
+    }
+
+    fn noteDroppedContextWindow(self: *App) !void {
+        const runtime = self.runtime orelse return;
+        const refused = runtime.takeContextWindowRefused() orelse return;
+        const model = runtime.currentModel() orelse return;
+        self.applyContextWindow();
+        const msg = try std.fmt.allocPrint(self.allocator, "{d} context tokens is above the {d} {s} takes, so the model's own {d} is in effect.", .{ refused, runtime.contextWindowMaximum() orelse 0, model.id, model.context_window });
+        defer self.allocator.free(msg);
+        try self.state.appendTranscript(.system, msg);
+    }
+
+    fn applyContextWindow(self: *App) void {
+        const runtime = self.runtime orelse return;
+        const window = runtime.contextWindow();
+        self.state.status.context_limit = @intCast(window);
+        self.state.telemetry.context_window = window;
     }
 
     fn persistCurrentModel(self: *App) void {
@@ -3536,7 +3559,7 @@ fn defaultModel() ai_types.Model {
     };
 }
 
-pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
+pub fn run(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32) !void {
     var environ_map = try compat.createEnvMap(allocator);
     defer environ_map.deinit();
 
@@ -3552,6 +3575,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
     production.initBridge();
 
     var options = production.options();
+    options.context_window = context_window;
     if (fixture) |runtime| {
         options.protocol = runtime.provider.protocolClient();
         options.generate_titles = false;
@@ -5061,6 +5085,104 @@ test "App submit abort when streaming via runtime-only cancels and reports trans
     try std.testing.expectEqualStrings("Turn aborted.", app.state.transcript.items[0].text.items);
 }
 
+const gpt_model = ai_types.Model{
+    .id = "gpt-5-codex",
+    .name = "GPT-5 Codex",
+    .api = "openai-responses",
+    .provider = "openai",
+    .base_url = "https://example.invalid",
+    .reasoning = true,
+    .input = &[_][]const u8{"text"},
+    .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+    .context_window = 128_000,
+    .max_tokens = 16_384,
+};
+
+const kimi_model = ai_types.Model{
+    .id = "kimi-k2.7-code",
+    .name = "Kimi K2.7 Code",
+    .api = "openai-completions",
+    .provider = "kimi",
+    .base_url = "https://example.invalid",
+    .reasoning = false,
+    .input = &[_][]const u8{"text"},
+    .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+    .context_window = 262_144,
+    .max_tokens = 16_384,
+};
+
+test "App says so when a window the model in effect cannot take is dropped" {
+    const models = [_]ai_types.Model{ gpt_model, kimi_model };
+    var app = try App.init(std.testing.allocator, .{ .models = &models, .context_window = 1_100_000 });
+    defer app.deinit();
+
+    try app.drainEvents();
+    var said_it = false;
+    for (app.state.transcript.items) |entry| {
+        if (std.mem.indexOf(u8, entry.text.items, "1100000 context tokens is above the 1000000 gpt-5-codex takes") != null) said_it = true;
+    }
+    try std.testing.expect(said_it);
+    try std.testing.expect(app.runtime.?.contextWindowRefused() == null);
+
+    try app.submit("/context 1m");
+    try app.drainEvents();
+    try app.runtime.?.switchModel("kimi-k2.7-code");
+    try app.drainEvents();
+    var said_again = false;
+    for (app.state.transcript.items) |entry| {
+        if (std.mem.indexOf(u8, entry.text.items, "1000000 context tokens is above the 262144 kimi-k2.7-code takes") != null) said_again = true;
+    }
+    try std.testing.expect(said_again);
+    try std.testing.expectEqual(@as(u64, 262_144), app.runtime.?.contextWindow());
+}
+
+test "App a model command leaves the gauge on the window in effect" {
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ gpt_model, kimi_model } });
+    defer app.deinit();
+
+    try app.submit("/context 200000");
+    try std.testing.expectEqual(@as(usize, 200_000), app.state.status.context_limit);
+
+    try app.submit("/model kimi-k2.7-code");
+    try std.testing.expectEqual(@as(usize, 200_000), app.state.status.context_limit);
+    try std.testing.expectEqual(@as(u64, 200_000), app.state.telemetry.context_window);
+
+    try app.submit("/model gpt-5-codex");
+    try std.testing.expectEqual(@as(u64, 200_000), app.state.telemetry.context_window);
+    try std.testing.expectEqual(@as(usize, 200_000), app.state.status.context_limit);
+}
+
+test "App a catalog refresh that drops the window leaves the gauge on the model's own" {
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ gpt_model, kimi_model } });
+    defer app.deinit();
+
+    try app.submit("/context 1m");
+    try std.testing.expectEqual(@as(usize, 1_000_000), app.state.status.context_limit);
+
+    try app.runtime.?.replaceModels(&[_]ai_types.Model{kimi_model}, null);
+    try app.drainEvents();
+
+    try std.testing.expectEqual(@as(u64, 262_144), app.runtime.?.contextWindow());
+    try std.testing.expectEqual(@as(usize, 262_144), app.state.status.context_limit);
+    try std.testing.expectEqual(@as(u64, 262_144), app.state.telemetry.context_window);
+}
+
+test "App context moves the gauge, and the model's own window comes back" {
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{test_model} });
+    defer app.deinit();
+
+    try app.submit("/context 512");
+
+    try std.testing.expectEqual(@as(usize, 512), app.state.status.context_limit);
+    try std.testing.expectEqual(@as(u64, 512), app.state.telemetry.context_window);
+    try std.testing.expectEqual(@as(u32, 512), app.runtime.?.currentModel().?.context_window);
+
+    try app.submit("/context default");
+
+    try std.testing.expectEqual(@as(usize, 1024), app.state.status.context_limit);
+    try std.testing.expectEqual(@as(u64, 1024), app.state.telemetry.context_window);
+}
+
 test "App submit does not clear stream_aborted for slash commands" {
     var app = App.initWithoutRuntime(std.testing.allocator);
     defer app.deinit();
@@ -6187,8 +6309,7 @@ const MockProvider = struct {
         s.* = event_stream.AssistantMessageEventStream.init(a);
         if (options) |opts| {
             if (opts.requires_owned_stream_events) {
-                s.owns_events = true;
-                s.clone_event_fn = ai_types.cloneAssistantMessageEvent;
+                s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
             }
         }
 

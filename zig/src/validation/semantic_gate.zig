@@ -40,7 +40,7 @@ test "the Zig semantic phase emits exactly the lifecycle codes the manifest decl
     defer manifest.deinit();
 
     var judged: usize = 0;
-    var skipped_tolerant: usize = 0;
+    var tolerant_judged: usize = 0;
     var provider_judged: usize = 0;
     var report = std.ArrayList(u8).empty;
     defer report.deinit(allocator);
@@ -58,12 +58,8 @@ test "the Zig semantic phase emits exactly the lifecycle codes the manifest decl
         if (std.mem.eql(u8, phase, "decode") or std.mem.eql(u8, phase, "schema")) continue;
         const provider_profile = std.mem.eql(u8, profile, "model-provider-core");
         if (provider_profile) provider_judged += 1;
-        if (entry.get("mode")) |mode| {
-            if (std.mem.eql(u8, mode.string, "tolerant")) {
-                skipped_tolerant += 1;
-                continue;
-            }
-        }
+        const tolerant = if (entry.get("mode")) |mode| std.mem.eql(u8, mode.string, "tolerant") else false;
+        if (tolerant) tolerant_judged += 1;
 
         var expected = std.ArrayList([]const u8).empty;
         defer expected.deinit(allocator);
@@ -149,7 +145,7 @@ test "the Zig semantic phase emits exactly the lifecycle codes the manifest decl
         }
     }
 
-    std.debug.print("\nsemantic judged={d} disagreeing={d} skipped_tolerant={d} provider={d}\n", .{ judged, disagreeing.items.len, skipped_tolerant, provider_judged });
+    std.debug.print("\nsemantic judged={d} disagreeing={d} tolerant={d} provider={d}\n", .{ judged, disagreeing.items.len, tolerant_judged, provider_judged });
 
     std.mem.sort([]const u8, disagreeing.items, {}, lessThan);
     var declared = std.ArrayList([]const u8).empty;
@@ -163,6 +159,6 @@ test "the Zig semantic phase emits exactly the lifecycle codes the manifest decl
         std.debug.print("disagreements:\n{s}\ndeclared: [{s}]\n", .{ report.items, accounted });
         return error.SemanticPhaseDisagrees;
     }
-    try std.testing.expect(judged >= judged_floor);
-    try std.testing.expectEqual(tolerant_fixtures, skipped_tolerant);
+    try std.testing.expect(judged >= judged_floor + tolerant_fixtures);
+    try std.testing.expectEqual(tolerant_fixtures, tolerant_judged);
 }

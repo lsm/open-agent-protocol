@@ -119,7 +119,7 @@ func isMistralURL(baseURL string, hasBaseURL bool) bool {
 }
 
 func isGroqURL(baseURL string, hasBaseURL bool) bool {
-	return holdsURL(baseURL, hasBaseURL, "api.groq.com")
+	return isHostOrSubdomain(baseURL, hasBaseURL, "groq.com")
 }
 
 func isCerebrasURL(baseURL string, hasBaseURL bool) bool {
