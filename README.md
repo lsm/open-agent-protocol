@@ -307,8 +307,10 @@ wire behavior is the contract the `client` package proves:
 **`go/serve` is the library, and it is for in-process hosts.** A Go host that
 wants the hub driven inside its own test binary imports `go/serve` and calls it
 directly — no socket, no port, no second process. `oapx hub` is the product's
-daemon; the two serve the same wire, and `go/cmd/goap`'s differential asserts
-that rather than assuming it.
+daemon; on the **stdio** wire the two answer identically, and `go/cmd/goap`'s
+differential asserts that rather than assuming it. It does not extend to HTTP:
+`oapx hub --addr` answers every route `404` until the route table lands, so an
+HTTP+SSE client such as `clients/ts` is served by `goap hub` today.
 
 ```sh
 go run ./go/cmd/goap hub [--config examples/oap-serve.json] [--addr 127.0.0.1:6270]

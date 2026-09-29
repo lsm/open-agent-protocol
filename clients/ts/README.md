@@ -1,8 +1,6 @@
 # oap-client (TypeScript)
 
-The TypeScript client for a local hub daemon — `oapx hub` on the released
-binary, or `goap hub` when you are running this repository from source: drives
-any OAP adapter
+The TypeScript client for a local `goap hub` daemon: drives any OAP adapter
 over the daemon's HTTP + SSE surface with verbatim schema/v0.1 envelopes. It
 is the counterpart of the Go `client` package — same wire surface, same
 semantics — so non-Go hosts (HyperNeo and friends) can consume the exact
