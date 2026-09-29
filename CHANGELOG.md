@@ -5,10 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-
 ## Unreleased
 
+### Fixed
+
+- **The OAP endpoint client could not spawn an endpoint outside a test build.**
+  `endpoint_client.Client.spawn` handed `std.process.spawn` the io from
+  `std.Io.Threaded.global_single_threaded`, which has no thread to run a child's
+  pipes on, so every spawn outside a test binary failed with `OutOfMemory` from
+  `Threaded.spawnPosix` before a process existed. The client now owns its own
+  `std.Io.Threaded`, as `adapter/process.zig` and `tools/process_runner.zig`
+  already do, and spawns on that. Nothing caught it because the tests took the
+  other branch: `defaultIo` returned `std.testing.io` under `is_test`, so the
+  suite exercised a path the product never ran, and the branch is gone rather
+  than inverted, so the tests now drive the same io a release build does.
+
 ### Added
+
+- **The Zig semantic machine judges a published tool source that carries an
+  attachment-only member**, `attachment_field_in_catalog`, part of #367. A
+  source published in a catalog — a `capabilities.response`'s `sources` or any
+  `layers.*.sources`, an `action.tools.list.response`, a `session.open.response`
+  or a session state document — is a *description* of a tool source, and
+  `command`, `args` and `environment` belong to the attachment that *serves* it.
+  A catalog that names one is publishing the attachment as though it were part of
+  the source, which is the leak `descriptor-leaks-attachment-fields` and
+  `tools-catalog-leaks-attachment-env` are about: an environment entry carrying
+  a secret into a document every session reads. Go has judged this since the
+  rule landed; the Zig machine declared neither the code nor the check, so a
+  source carrying one earned no semantic finding. **`oapx validate` on either
+  fixture is unchanged by this, and was never passing it**: in strict mode the
+  schema phase refuses the member first — `toolSourceDescriptor` is closed — and
+  the semantic phase does not run at all. The rule is unreachable in strict mode
+  by construction, which is why the two fixtures are `mode: tolerant` in the
+  manifest and why the semantic gate skips them: only once #367's tolerant mode
+  exists is there a path that reaches this check, and judging the three tolerant
+  fixtures rather than skipping them is that step's work. A source list the
+  check cannot read is left unjudged, matching Go's decode rather than
+  judging the entries around a malformed one.
 
 - **A design note for the Go tree's native agent loop (#370).**
   [`docs/go-agent-loop.md`](docs/go-agent-loop.md) maps `zig/src/agent/`'s loop
@@ -1572,40 +1606,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   non-Mistral host and every clean short id elsewhere. The Go transcription in
   `go/internal/provider` keyed its answered set by the arrival id and now does
   the same as here. #514
-
-### Added
-
-- **`oapx hub --stdio` serves `open`.** The first op whose parameters are `adapter` and a
-  nested `request`, and the nested value is an *envelope*, which changes three things the
-  other ops never had to think about. The answer mints **one** id and sets `in_reply_to` to
-  the request envelope's own, where `capabilities`, `state`, `models` and `tools` mint two
-  and correlate. The gate refuses five ways before anything else happens, in Go's order:
-  `invalid_request`, `request_too_large`, `malformed_json`, `schema_invalid`, `type_mismatch` —
-  so the stdio module gains the schema registry the last of those needs. And
-  `capability_revision` on the answer is the revision the open was **gated under** when the
-  request subscribes, not the revision the host claimed.
-
-- **The reference adapter double in the hub's tests no longer keeps what it is given.** It
-  stored `request.session_id` — a slice of the caller's per-line arena — in a struct that
-  outlives the call, so opening a session and then listing them read freed memory.
-  `open` is the first op that creates a session and so the first to reach it; the real
-  `adapter/memory` was already correct, duping what it keeps into its own arena.
-  `drafts/hub.md`'s D5 note now states the rule for the whole request rather than for
-  `metadata` alone, and names `adapter/memory` as the conforming reference.
-
-### Fixed
-
-- **The differential hub test no longer passes by comparing nothing.** A scenario built
-  from a Go const and a backtick literal sent the literal text `" + openEnvelopeFields + "`
-  rather than the const, so every such line was malformed JSON; both hubs stop the wire at
-  the first one, both are then absent for the rest, and the comparison found nothing to
-  disagree about. The const is now interpolated for real, and the comparison **fails when
-  neither hub answered a request the scenario sent** — so a scenario that goes inert cannot
-  pass again. That guard immediately found two lines in an existing scenario that had never
-  been compared: a wrongly typed `allow_degraded_features` is a framing defect in both trees,
-  not a refusal, so it moved to a scenario that says so. Scenarios whose wire is *meant* to
-  stop now declare where, so a real stop is not read as a hole.
-
 
 ## [0.2.0] - 2026-09-11
 
