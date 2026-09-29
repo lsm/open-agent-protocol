@@ -560,3 +560,21 @@ func TestTheWholeToolSequenceSatisfiesTheLifecycleTheValidatorEnforces(t *testin
 		}
 	}
 }
+
+func TestACallNamingNoToolReachesNoEnvelope(t *testing.T) {
+	tr := trace(t, nil)
+	nameless := provider.ToolCall{ID: "call_1", Arguments: "{}"}
+	result := provider.ToolResult{ToolCallID: "call_1", Parts: []provider.ContentPart{{Text: &provider.TextPart{Text: "a"}}}}
+	for _, event := range []agent.Event{
+		{Kind: agent.ToolCallRequested, Call: &nameless},
+		{Kind: agent.ToolCallResolved, Call: &nameless, ToolResult: &result},
+		{Kind: agent.ToolCallCancelled, Call: &nameless},
+	} {
+		if envelopes := tr.Envelopes(event); len(envelopes) != 0 {
+			t.Errorf("%q for a call naming no tool emits %s, want nothing: name is a required non-empty member and nothing could answer such a call", event.Kind, joinTypes(envelopes))
+		}
+	}
+	if tr.sequence != 1 {
+		t.Errorf("the sequence reached %d, want 1: a refused call must not consume a sequence number a later envelope would then skip", tr.sequence)
+	}
+}

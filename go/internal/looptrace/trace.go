@@ -100,12 +100,6 @@ func resultParts(result provider.ToolResult) []protocol.ContentPart {
 	if len(out) == 0 {
 		out = append(out, protocol.ContentPart{Type: protocol.ContentText})
 	}
-	if result.IsError {
-		isError := true
-		for index := range out {
-			out[index].IsError = &isError
-		}
-	}
 	return out
 }
 
@@ -138,7 +132,7 @@ func (t *Trace) Envelopes(event agent.Event) []protocol.Envelope {
 			Part: protocol.ContentPart{Type: protocol.ContentReasoning, Reasoning: event.Delta},
 		})
 	case agent.ToolCallRequested:
-		if event.Call == nil {
+		if event.Call == nil || event.Call.Name == "" {
 			return nil
 		}
 		payload := t.callScope(*event.Call)
@@ -149,12 +143,12 @@ func (t *Trace) Envelopes(event agent.Event) []protocol.Envelope {
 		}
 		return t.call(protocol.TypeActionCallRequested, payload)
 	case agent.ToolCallCancelled:
-		if event.Call == nil {
+		if event.Call == nil || event.Call.Name == "" {
 			return nil
 		}
 		return t.call(protocol.TypeActionCallCancelled, t.callScope(*event.Call))
 	case agent.ToolCallResolved:
-		if event.Call == nil || event.ToolResult == nil {
+		if event.Call == nil || event.ToolResult == nil || event.Call.Name == "" {
 			return nil
 		}
 		payload := t.callScope(*event.Call)
