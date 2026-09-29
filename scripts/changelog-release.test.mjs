@@ -34,6 +34,44 @@ test("a prerelease sorts below the release it precedes", () => {
   assert.equal(compareVersions("0.2.0-alpha.1", "0.2.0-alpha.2"), -1);
 });
 
+test("a two-digit prerelease counter orders above a single digit", () => {
+  // The tags here run v0.1.0-alpha.N, so this is the reachable crossover. As
+  // strings "alpha.10" < "alpha.9", which is the opposite of semver 11.4.
+  assert.equal(compareVersions("0.1.0-alpha.9", "0.1.0-alpha.10"), -1);
+  assert.equal(compareVersions("0.1.0-alpha.10", "0.1.0-alpha.9"), 1);
+  assert.equal(compareVersions("0.1.0-alpha.10", "0.1.0-alpha.10"), 0);
+  assert.equal(compareVersions("0.1.0-alpha.4", "0.1.0-alpha.10"), -1);
+  assert.equal(compareVersions("0.1.0-alpha.19", "0.1.0-alpha.20"), -1);
+});
+
+test("a numeric prerelease field has lower precedence than an alphanumeric one", () => {
+  assert.equal(compareVersions("0.1.0-1", "0.1.0-alpha"), -1);
+  assert.equal(compareVersions("0.1.0-alpha", "0.1.0-1"), 1);
+  assert.equal(compareVersions("0.1.0-alpha.1", "0.1.0-beta"), -1);
+  assert.equal(compareVersions("0.1.0-rc.1", "0.1.0-rc.2"), -1);
+});
+
+test("the ordering guard accepts the next counter and refuses a regression", () => {
+  const withAlpha9 = `${HEAD}## Unreleased\n\n## [0.1.0-alpha.9] - 2026-09-20\n\n## [0.1.0-alpha.8] - 2026-09-19\n`;
+  const accepted = fold(withAlpha9, {
+    version: "0.1.0-alpha.10",
+    date: "2026-09-29",
+    changelog: "CHANGELOG.md",
+    pullRequests: [],
+  });
+  assert.match(accepted.text, /## \[0\.1\.0-alpha\.10\] - 2026-09-29/);
+  assert.throws(
+    () => fold(accepted.text, {
+      version: "0.1.0-alpha.9",
+      date: "2026-09-30",
+      changelog: "CHANGELOG.md",
+      pullRequests: [],
+    }),
+    /is older than 0\.1\.0-alpha\.10/,
+    "a regressed counter must be refused once a two-digit one exists",
+  );
+});
+
 test("the line is the first sentence of the first prose paragraph, unwrapped", () => {
   const body = [
     "## What changed and why",

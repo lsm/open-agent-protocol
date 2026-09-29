@@ -62,12 +62,14 @@ function parseArgs(argv) {
 }
 
 // A version orders by its numeric parts, then a prerelease sorts below the
-// release it precedes: 0.1.0-alpha.4 < 0.1.0 < 0.2.0.
+// release it precedes: 0.1.0-alpha.4 < 0.1.0 < 0.2.0. Prerelease identifiers
+// follow semver 11.4: dot-separated fields, all-numeric ones compared as
+// numbers, so alpha.10 is above alpha.9 rather than below it as the strings
+// would sort. Tags here run v0.1.0-alpha.N, so the crossover is reachable.
 export function compareVersions(left, right) {
   const parse = (version) => {
     const [core, ...rest] = String(version).split("-");
-    const prerelease = rest.join("-");
-    return { numbers: core.split(".").map((part) => Number.parseInt(part, 10) || 0), prerelease };
+    return { numbers: core.split(".").map((part) => Number.parseInt(part, 10) || 0), prerelease: rest.join("-") };
   };
   const a = parse(left);
   const b = parse(right);
@@ -79,7 +81,27 @@ export function compareVersions(left, right) {
   if (a.prerelease === b.prerelease) return 0;
   if (a.prerelease === "") return 1;
   if (b.prerelease === "") return -1;
-  return a.prerelease < b.prerelease ? -1 : 1;
+  const aFields = a.prerelease.split(".");
+  const bFields = b.prerelease.split(".");
+  const fields = Math.max(aFields.length, bFields.length);
+  for (let i = 0; i < fields; i += 1) {
+    const x = aFields[i];
+    const y = bFields[i];
+    if (x === undefined) return -1;
+    if (y === undefined) return 1;
+    if (x === y) continue;
+    const xNumeric = /^\d+$/.test(x);
+    const yNumeric = /^\d+$/.test(y);
+    if (xNumeric && yNumeric) {
+      const difference = Number.parseInt(x, 10) - Number.parseInt(y, 10);
+      if (difference !== 0) return difference < 0 ? -1 : 1;
+      continue;
+    }
+    // A numeric identifier always has lower precedence than an alphanumeric one.
+    if (xNumeric !== yNumeric) return xNumeric ? -1 : 1;
+    return x < y ? -1 : 1;
+  }
+  return 0;
 }
 
 // The body is markdown, hard-wrapped, and carries the template's HTML comment
