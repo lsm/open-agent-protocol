@@ -300,11 +300,11 @@ func TestAContentIndexIsAssignedByArrivalNotByTheApiIndex(t *testing.T) {
 	if starts["second"] != 0 || starts["first"] != 1 {
 		t.Errorf("starts = %v, want the counter to follow arrival: the api index keys the tracker, the counter assigns the content index", starts)
 	}
-	if starts["first"] != ends[1].ContentIndex || starts["second"] != ends[0].ContentIndex {
-		t.Errorf("starts %v against ends %d and %d: a call's index is its place in the content, and nothing may renumber it between the two", starts, ends[0].ContentIndex, ends[1].ContentIndex)
-	}
 	if len(ends) != 2 {
 		t.Fatalf("got %d ends, want 2", len(ends))
+	}
+	if starts["first"] != ends[1].ContentIndex || starts["second"] != ends[0].ContentIndex {
+		t.Errorf("starts %v against ends %d and %d: a call's index is its place in the content, and nothing may renumber it between the two", starts, ends[0].ContentIndex, ends[1].ContentIndex)
 	}
 	if ends[0].ToolCall.ID != "second" || ends[1].ToolCall.ID != "first" {
 		t.Errorf("ends carry %q then %q, want the content order the starts established", ends[0].ToolCall.ID, ends[1].ToolCall.ID)

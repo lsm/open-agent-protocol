@@ -192,7 +192,6 @@ type streamState struct {
 	textIndex        int
 	textStreamed     bool
 	thinkingStreamed bool
-	textToolBase     int
 	toolCalls        int
 	tracker          *toolTracker
 	prevText         int
