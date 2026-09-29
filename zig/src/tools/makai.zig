@@ -29,8 +29,9 @@ const provider_base_url = @import("provider_base_url");
 const provider_catalog = @import("provider_catalog");
 const auth_providers = @import("auth/providers");
 
-const kimi_china_base_url = provider_catalog.baseUrlOrCompileError("kimi", "openai-completions", "china");
-const kimi_global_base_url = provider_catalog.baseUrlOrCompileError("kimi", "openai-completions", "global");
+const kimi_provider_id = "kimi";
+const kimi_china_base_url = provider_catalog.baseUrlOrCompileError(kimi_provider_id, "openai-completions", "china");
+const kimi_global_base_url = provider_catalog.baseUrlOrCompileError(kimi_provider_id, "openai-completions", "global");
 const oap_server = @import("oap_server");
 const oap_auth_adapter = @import("oap_auth_adapter");
 const agent_oap_provider_bridge = @import("agent_oap_provider_bridge");
@@ -91,29 +92,29 @@ const TEST_AUTH_POLL_ITERS_FAILURE: usize = 200;
 const TEST_AUTH_POLL_ITERS_POST_CANCEL: usize = 30;
 const TEST_AGENT_POLL_ITERS_DEFAULT: usize = 2_000;
 
-fn normalizeKimiRegion(value: []const u8) ?[]const u8 {
-    const trimmed = std.mem.trim(u8, value, " \t\r\n");
-    if (std.ascii.eqlIgnoreCase(trimmed, "global") or std.ascii.eqlIgnoreCase(trimmed, "moonshot")) return "global";
-    if (std.ascii.eqlIgnoreCase(trimmed, "china") or
-        std.ascii.eqlIgnoreCase(trimmed, "cn") or
-        std.ascii.eqlIgnoreCase(trimmed, "coding"))
-    {
-        return "china";
-    }
-    return null;
+fn kimiContextWindow() !u32 {
+    return provider_catalog.rowContextWindow(kimi_provider_id) orelse error.KimiRowHasNoContextWindow;
+}
+
+fn kimiMaxTokens() !u32 {
+    return provider_catalog.rowMaxTokens(kimi_provider_id) orelse error.KimiRowHasNoMaxTokens;
+}
+
+fn kimiDefaultRegion() []const u8 {
+    return provider_catalog.defaultRegion(kimi_provider_id) orelse "china";
 }
 
 fn kimiRegionFromProviderData(provider_data: []const u8) []const u8 {
     if (std.mem.startsWith(u8, provider_data, "region:")) {
-        return normalizeKimiRegion(provider_data["region:".len..]) orelse "china";
+        return provider_catalog.regionFromValue(kimi_provider_id, provider_data["region:".len..]) orelse kimiDefaultRegion();
     }
-    return "china";
+    return kimiDefaultRegion();
 }
 
 fn loadStoredKimiRegion(allocator: std.mem.Allocator) ?[]const u8 {
     var storage = oauth_storage.AuthStorage.loadDefaultStoredOnly(allocator) catch return null;
     defer storage.deinit();
-    const auth = storage.providers.get("kimi") orelse return null;
+    const auth = storage.providers.get(kimi_provider_id) orelse return null;
     return switch (auth) {
         .api_key => null,
         .oauth => |creds| if (creds.provider_data) |data| kimiRegionFromProviderData(data) else null,
@@ -121,15 +122,17 @@ fn loadStoredKimiRegion(allocator: std.mem.Allocator) ?[]const u8 {
 }
 
 fn resolvePrintKimiRegion(allocator: std.mem.Allocator, use_storage_auth: bool) []const u8 {
-    const region_env = compat.getEnvVarOwned(allocator, "KIMI_REGION") catch null;
-    if (region_env) |env| {
-        defer allocator.free(env);
-        if (normalizeKimiRegion(env)) |region| return region;
+    if (provider_catalog.regionEnv(kimi_provider_id)) |name| {
+        const region_env = compat.getEnvVarOwned(allocator, name) catch null;
+        if (region_env) |env| {
+            defer allocator.free(env);
+            if (provider_catalog.regionFromValue(kimi_provider_id, env)) |region| return region;
+        }
     }
     if (use_storage_auth) {
         if (loadStoredKimiRegion(allocator)) |region| return region;
     }
-    return "china";
+    return kimiDefaultRegion();
 }
 
 const RuntimeErrorCode = enum {
@@ -3202,8 +3205,8 @@ fn runPrintMode(allocator: std.mem.Allocator, args: []const []const u8) !void {
         .reasoning = false,
         .input = &[_][]const u8{"text"},
         .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
-        .context_window = 262_144,
-        .max_tokens = 16_384,
+        .context_window = try kimiContextWindow(),
+        .max_tokens = try kimiMaxTokens(),
     };
 
     var registry = api_registry.ApiRegistry.init(allocator);
@@ -3385,8 +3388,8 @@ fn runPrintTuiRuntime(allocator: std.mem.Allocator, prompt: []const u8) !void {
         .reasoning = false,
         .input = &[_][]const u8{"text"},
         .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
-        .context_window = 262_144,
-        .max_tokens = 16_384,
+        .context_window = try kimiContextWindow(),
+        .max_tokens = try kimiMaxTokens(),
     }};
 
     const options = tui_app.TuiRuntimeOptions{
@@ -3970,6 +3973,28 @@ fn pumpAndDrainStdioLoop(
 ) !void {
     _ = try stdio_loop.pumpBackground();
     _ = try stdio_loop.drainOutbound(outbound);
+}
+
+test "the print path resolves a Kimi region exactly as the catalog does" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+
+    const named = provider_catalog.defaultRegion(kimi_provider_id).?;
+    const values = [_][]const u8{ "", "china", "global", "moonshot", "cn", "coding", " global ", "GLOBAL", "mars", "region:global" };
+
+    for (values) |value| {
+        const canonical = provider_catalog.regionFromValue(kimi_provider_id, value) orelse named;
+        try compat.setTestEnv(allocator, "KIMI_REGION", value);
+        try std.testing.expectEqualStrings(canonical, resolvePrintKimiRegion(allocator, false));
+    }
+
+    try compat.setTestEnv(allocator, "KIMI_REGION", "global");
+    try std.testing.expectEqualStrings("global", kimiRegionFromProviderData("region:moonshot"));
+    try std.testing.expectEqualStrings("global", kimiRegionFromProviderData("region: global "));
+    try std.testing.expectEqualStrings(named, kimiRegionFromProviderData("region:"));
+    try std.testing.expectEqualStrings(named, kimiRegionFromProviderData("no region here"));
+    try std.testing.expectEqualStrings(named, kimiRegionFromProviderData("region:mars"));
 }
 
 test "the hub's wall clock is in nanoseconds, which is the unit the hub divides" {

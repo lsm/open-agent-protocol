@@ -387,7 +387,9 @@ func messagesValue(ctx Context, model Model, merged MergedCompat) jsonArray {
 		case msg.ToolResult != nil:
 			run := []*ToolResult{}
 			for i < len(ctx.Messages) && ctx.Messages[i].ToolResult != nil {
-				run = append(run, ctx.Messages[i].ToolResult)
+				if !isOrphanedToolResult(ctx.Messages[i], toolCallIDs) {
+					run = append(run, ctx.Messages[i].ToolResult)
+				}
 				i++
 			}
 			written, after := toolResultRun(run, merged, prevRole)

@@ -301,15 +301,17 @@ A session is `~/.oapx/sessions/<session>.jsonl`, the conversation records a resu
 replays. Streamed chunks (text, thinking and tool-call deltas, raw provider events,
 tool progress) go to `<session>.stream.jsonl`, which a resume does not read; a reply's
 thinking is also written to the conversation when the reply ends, folded into records
-of up to about 700 KB. The
-model and provider are written with the first record and again when they change, and
-`<session>.meta.json` holds them with the creation and last-active times and the
-offset of the last completed compaction, so a resume starts there and reads up to
-256 KB before it for the screen; when no completed compaction loads from there, as
-after a torn write, it reads the whole file. `/resume` lists sessions from these index
-files.
-Files written before this layout still load, skipping their provider events, tool-call
-deltas and tool progress unparsed.
+of up to about 700 KB. The model and provider are written with the first record and
+again when they change, and `<session>.meta.json` holds them with the creation and
+last-active times and the offset of the last completed compaction, so a resume starts
+there and reads up to 256 KB before it for the screen; when no completed compaction
+loads from there, as after a torn write, it reads the whole file. `/resume` lists
+sessions from these index files as `title · local date and time · model`. A session's
+title is the first line of its first message until its first reply ends; the current
+model is then asked, once and in the background, for a title of at most six words,
+which replaces it. Sessions from before the index take their first message from the
+head of the file. Files written before this layout still load, skipping their provider
+events, tool-call deltas and tool progress unparsed.
 
 Scrolling: while `transcript_scroll` is non-zero the inline body is a window over the
 full transcript rendered at the current width (rows already flushed into terminal
