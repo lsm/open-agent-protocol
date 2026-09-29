@@ -1707,6 +1707,7 @@ pub const Machine = struct {
         if (!publishedSourcesReadable(payload)) return;
         try self.checkRawSources(index, member(payload, "sources"));
         const layers = member(payload, "layers") orelse return;
+        if (layers != .object) return;
         var names = std.ArrayList([]const u8).empty;
         defer names.deinit(self.allocator);
         var layer = layers.object.iterator();
@@ -1719,7 +1720,9 @@ pub const Machine = struct {
 
     fn checkRawSources(self: *Machine, index: usize, sources: ?std.json.Value) !void {
         const listed = sources orelse return;
+        if (listed != .array) return;
         for (listed.array.items) |source| {
+            if (source != .object) continue;
             for (attachment_only_members) |held| {
                 if (source.object.get(held) == null) continue;
                 try self.add(code_attachment_field_in_catalog, index);
@@ -3781,8 +3784,10 @@ fn lessThanName(_: void, a: []const u8, b: []const u8) bool {
 
 fn sourceListReadable(sources: ?std.json.Value) bool {
     const listed = sources orelse return true;
+    if (listed == .null) return true;
     if (listed != .array) return false;
     for (listed.array.items) |source| {
+        if (source == .null) continue;
         if (source != .object) return false;
     }
     return true;
@@ -3791,9 +3796,11 @@ fn sourceListReadable(sources: ?std.json.Value) bool {
 fn publishedSourcesReadable(payload: std.json.Value) bool {
     if (!sourceListReadable(member(payload, "sources"))) return false;
     const layers = member(payload, "layers") orelse return true;
+    if (layers == .null) return true;
     if (layers != .object) return false;
     var layer = layers.object.iterator();
     while (layer.next()) |entry| {
+        if (entry.value_ptr.* == .null) continue;
         if (entry.value_ptr.* != .object) return false;
         if (!sourceListReadable(member(entry.value_ptr.*, "sources"))) return false;
     }
@@ -5776,4 +5783,21 @@ test "a source list this rule cannot read is not judged, the way Go's decode is 
         \\{"type":"action.tools.list.response","id":"l2","in_reply_to":"l1","capability_revision":"v1","session_id":"s","payload":
         \\{"session_id":"s","sources":{"not":"an array"}}}]
     , &.{});
+}
+
+test "a null container is an absent one, and the sources beside it are still judged" {
+    try expectCodes(
+        \\[{"type":"capabilities.request","id":"k0","payload":{}},
+        \\{"type":"capabilities.response","id":"k1","in_reply_to":"k0","capability_revision":"v1","payload":{"features":
+        \\{"tools":{"level":"native"}},
+        \\"sources":[{"id":"native","kind":"native","command":"/bin/tool"}],"layers":null}}]
+    , &.{code_attachment_field_in_catalog});
+
+    try expectCodes(
+        \\[{"type":"capabilities.request","id":"k0","payload":{}},
+        \\{"type":"capabilities.response","id":"k1","in_reply_to":"k0","capability_revision":"v1","payload":{"features":
+        \\{"tools":{"level":"native"}},
+        \\"sources":[{"id":"native","kind":"native","command":"/bin/tool"}],
+        \\"layers":{"action":null,"other":{"sources":[{"id":"files","kind":"process","args":["--f"]}]}}}}]
+    , &.{code_attachment_field_in_catalog, code_attachment_field_in_catalog});
 }
