@@ -140,18 +140,18 @@ pub const Builder = struct {
 pub const Sweep = struct {
     sessions: usize = 0,
     closed: usize = 0,
-    unfinished: usize = 0,
+    refused: usize = 0,
+    unattempted: usize = 0,
     attempts: usize = 0,
 
     pub fn clean(self: Sweep) bool {
-        return self.unfinished == 0;
+        return self.refused == 0 and self.unattempted == 0;
     }
 };
 
 const Settled = struct {
     attempts: usize = 0,
     closed: bool = false,
-    held: bool = false,
 };
 
 const pollable = builtin.os.tag != .windows;
@@ -791,7 +791,7 @@ pub const Hub = struct {
         while (self.entries.items.len > 0) {
             const now = self.clock();
             if (now >= deadline) {
-                summary.unfinished = self.entries.items.len;
+                summary.unattempted = self.entries.items.len;
                 break;
             }
             const share = (deadline - now) / @as(u64, @intCast(self.entries.items.len));
@@ -800,9 +800,9 @@ pub const Hub = struct {
             const outcome = self.settle(&self.entries.items[0], scratch.allocator(), now + share);
             summary.attempts += outcome.attempts;
             summary.closed += @intFromBool(outcome.closed);
-            if (outcome.held) summary.unfinished += 1;
+            summary.refused += @intFromBool(!outcome.closed);
         }
-        summary.sessions = summary.closed + summary.unfinished;
+        summary.sessions = summary.closed + summary.refused + summary.unattempted;
         return summary;
     }
 
@@ -824,7 +824,6 @@ pub const Hub = struct {
             const wait = @min(close_retry_wait_ns, until_ns - now);
             _ = entry.session.pump(wait) catch {};
         }
-        outcome.held = !outcome.closed;
         self.releaseSession(entry);
         return outcome;
     }
@@ -2768,6 +2767,7 @@ const Stubborn = struct {
     session_id: []const u8 = "stubborn",
     settle_after: usize = 0,
     running: bool = true,
+    state_ns: u64 = 0,
     cancels: usize = 0,
     closes: usize = 0,
     refusals: usize = 0,
@@ -2808,6 +2808,7 @@ fn stubbornId(ptr: *anyopaque) []const u8 {
 fn stubbornState(ptr: *anyopaque, arena: std.mem.Allocator, refusal: *contract.Refusal) contract.Failure!oap_types.SessionState {
     const self: *Stubborn = @ptrCast(@alignCast(ptr));
     _ = refusal;
+    if (self.state_ns > 0) tick(self.state_ns);
     const session_id = try arena.dupe(u8, self.session_id);
     if (!self.running) return .{ .session_id = session_id, .status = .idle };
     const run = try arena.dupe(u8, "run-1");
@@ -2914,7 +2915,8 @@ test "a close that never stops refusing is given the attempts the draft names, a
 
     const summary = hub.closeSessions();
     try testing.expect(!summary.clean());
-    try testing.expectEqual(@as(usize, 1), summary.unfinished);
+    try testing.expectEqual(@as(usize, 1), summary.refused);
+    try testing.expectEqual(@as(usize, 0), summary.unattempted);
     try testing.expectEqual(@as(usize, 0), summary.closed);
     try testing.expectEqual(close_attempts, stubborn.refusals);
     try testing.expectEqual(@as(usize, 0), stubborn.closes);
@@ -2939,7 +2941,8 @@ test "one wedged session is given a share of the window, and the session beside 
     const summary = hub.closeSessions();
     try testing.expectEqual(@as(usize, 2), summary.sessions);
     try testing.expectEqual(@as(usize, 1), summary.closed);
-    try testing.expectEqual(@as(usize, 1), summary.unfinished);
+    try testing.expectEqual(@as(usize, 1), summary.refused);
+    try testing.expectEqual(@as(usize, 0), summary.unattempted);
     try testing.expectEqual(@as(usize, 0), hub.sessionCount());
     try testing.expectError(error.UnknownSession, hub.state(arena, "settles"));
     try testing.expectEqual(window / 2, stubborn.pumped_ns);
@@ -2963,6 +2966,29 @@ test "the sweep waits no longer than the window it was given" {
     try testing.expect(stubborn.refusals < close_attempts);
     try testing.expectEqual(window, stubborn.pumped_ns);
     try testing.expectEqual(@as(usize, 0), hub.sessionCount());
+}
+
+test "a session whose own state call overruns its share leaves the rest unattempted, and the sweep says so" {
+    var overrunning = Stubborn{ .session_id = "slow", .settle_after = std.math.maxInt(usize), .state_ns = 60 * std.time.ns_per_ms };
+    var settles = memory.Adapter.init(testing.allocator);
+    const window = 50 * std.time.ns_per_ms;
+    var hub = Hub.init(testing.allocator, testClock, .{ .shutdown_ns = window });
+    defer hub.deinit();
+    try hub.register("slow", overrunning.adapter());
+    try hub.register("memory", settles.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    _ = try hub.open(arena, "slow", .{ .session_id = "slow" });
+    _ = try hub.open(arena, "memory", .{ .session_id = "settles" });
+
+    const summary = hub.closeSessions();
+    try testing.expectEqual(@as(usize, 2), summary.sessions);
+    try testing.expectEqual(@as(usize, 1), summary.refused);
+    try testing.expectEqual(@as(usize, 0), summary.closed);
+    try testing.expectEqual(@as(usize, 1), summary.unattempted);
+    try testing.expectEqual(@as(usize, 2), summary.closed + summary.refused + summary.unattempted);
+    try testing.expectEqual(@as(usize, 1), hub.sessionCount());
 }
 
 test "a session whose stream fails is ended, its subscribers told, and its child kept" {

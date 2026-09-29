@@ -2378,48 +2378,55 @@ const HubRegistry = struct {
     allocator: std.mem.Allocator,
     environ: *const std.process.Environ.Map,
     surface: ConfigSurface,
-    claude: claude_adapter.Adapter = undefined,
-    codex: codex_adapter.Adapter = undefined,
-    pi: pi_adapter.Adapter = undefined,
-    acp: acp_adapter.Adapter = undefined,
-    deepseek: deepseek_adapter.Adapter = undefined,
-    opencode: opencode_adapter.Adapter = undefined,
-    hermes: hermes_adapter.Adapter = undefined,
-    memory: memory_adapter.Adapter = undefined,
 
     fn build(context: *anyopaque, arena: std.mem.Allocator, entry: adapter_config.AdapterEntry) adapter_contract.Failure!adapter_contract.Adapter {
         const self: *HubRegistry = @ptrCast(@alignCast(context));
         if (std.mem.eql(u8, entry.kind, "claude")) {
-            self.claude = claude_adapter.Adapter.init(self.allocator, claudeBackendConfig(self.surface, arena, entry, self.environ) catch return error.Unavailable);
-            return self.claude.adapter();
+            const config = claudeBackendConfig(self.surface, arena, entry, self.environ) catch return error.Unavailable;
+            const built = try arena.create(claude_adapter.Adapter);
+            built.* = claude_adapter.Adapter.init(self.allocator, config);
+            return built.adapter();
         }
         if (std.mem.eql(u8, entry.kind, "codex")) {
-            self.codex = codex_adapter.Adapter.init(self.allocator, codexBackendConfig(self.surface, arena, entry, self.environ) catch return error.Unavailable);
-            return self.codex.adapter();
+            const config = codexBackendConfig(self.surface, arena, entry, self.environ) catch return error.Unavailable;
+            const built = try arena.create(codex_adapter.Adapter);
+            built.* = codex_adapter.Adapter.init(self.allocator, config);
+            return built.adapter();
         }
         if (std.mem.eql(u8, entry.kind, "pi")) {
-            self.pi = pi_adapter.Adapter.init(self.allocator, piBackendConfig(self.surface, arena, entry, self.environ) catch return error.Unavailable);
-            return self.pi.adapter();
+            const config = piBackendConfig(self.surface, arena, entry, self.environ) catch return error.Unavailable;
+            const built = try arena.create(pi_adapter.Adapter);
+            built.* = pi_adapter.Adapter.init(self.allocator, config);
+            return built.adapter();
         }
         if (std.mem.eql(u8, entry.kind, "acp")) {
-            self.acp = acp_adapter.Adapter.init(self.allocator, acpBackendConfig(self.surface, arena, entry, self.environ) catch return error.Unavailable);
-            return self.acp.adapter();
+            const config = acpBackendConfig(self.surface, arena, entry, self.environ) catch return error.Unavailable;
+            const built = try arena.create(acp_adapter.Adapter);
+            built.* = acp_adapter.Adapter.init(self.allocator, config);
+            return built.adapter();
         }
         if (std.mem.eql(u8, entry.kind, "deepseek")) {
-            self.deepseek = deepseek_adapter.Adapter.init(self.allocator, deepseekBackendConfig(self.surface, arena, entry, self.environ) catch return error.Unavailable);
-            return self.deepseek.adapter();
+            const config = deepseekBackendConfig(self.surface, arena, entry, self.environ) catch return error.Unavailable;
+            const built = try arena.create(deepseek_adapter.Adapter);
+            built.* = deepseek_adapter.Adapter.init(self.allocator, config);
+            return built.adapter();
         }
         if (std.mem.eql(u8, entry.kind, "opencode")) {
-            self.opencode = opencode_adapter.Adapter.init(self.allocator, opencodeBackendConfig(self.surface, arena, entry) catch return error.Unavailable);
-            return self.opencode.adapter();
+            const config = opencodeBackendConfig(self.surface, arena, entry) catch return error.Unavailable;
+            const built = try arena.create(opencode_adapter.Adapter);
+            built.* = opencode_adapter.Adapter.init(self.allocator, config);
+            return built.adapter();
         }
         if (std.mem.eql(u8, entry.kind, "hermes")) {
-            self.hermes = hermes_adapter.Adapter.init(self.allocator, hermesBackendConfig(self.surface, arena, entry, self.environ) catch return error.Unavailable);
-            return self.hermes.adapter();
+            const config = hermesBackendConfig(self.surface, arena, entry, self.environ) catch return error.Unavailable;
+            const built = try arena.create(hermes_adapter.Adapter);
+            built.* = hermes_adapter.Adapter.init(self.allocator, config);
+            return built.adapter();
         }
         if (std.mem.eql(u8, entry.kind, "memory")) {
-            self.memory = memory_adapter.Adapter.init(self.allocator);
-            return self.memory.adapter();
+            const built = try arena.create(memory_adapter.Adapter);
+            built.* = memory_adapter.Adapter.init(self.allocator);
+            return built.adapter();
         }
         return self.refuse(entry);
     }
@@ -2453,11 +2460,13 @@ fn hubConfiguredSources(
 fn sweepHubSessions(core: *hub.Hub, stderr: std.Io.File) void {
     const summary = core.closeSessions();
     if (summary.clean()) return;
-    var buffer: [192]u8 = undefined;
-    const message = std.fmt.bufPrint(&buffer, "oapx: shutdown: {d} of {d} sessions still held a run after {d} attempts; each was torn down\n", .{
-        summary.unfinished,
+    var buffer: [256]u8 = undefined;
+    const message = std.fmt.bufPrint(&buffer, "oapx: shutdown: closed {d} of {d} sessions; {d} still held a run after {d} attempts, {d} were never reached; the rest were torn down\n", .{
+        summary.closed,
         summary.sessions,
+        summary.refused,
         summary.attempts,
+        summary.unattempted,
     }) catch "oapx: shutdown: a session was not closed cleanly\n";
     compat.stdio.writeAll(stderr, message) catch {};
 }
@@ -2526,8 +2535,9 @@ fn runHub(
     var core = hub.Hub.init(allocator, wallClockNanoseconds, .{ .tool_sources = tool_sources });
     defer core.deinit();
     if (config == null) {
-        registry.memory = memory_adapter.Adapter.init(allocator);
-        try core.register("memory", registry.memory.adapter());
+        const memory = try arena.create(memory_adapter.Adapter);
+        memory.* = memory_adapter.Adapter.init(allocator);
+        try core.register("memory", memory.adapter());
     } else {
         try core.load(arena, file, .{ .context = &registry, .make = HubRegistry.build });
     }
@@ -9900,7 +9910,8 @@ test "the hub's registry builds every entry a document names, and a child inheri
 
     var registry = HubRegistry{ .allocator = allocator, .environ = &environ, .surface = withSurface(hub_config_surface, arena, complained_on) };
     const claude = try HubRegistry.build(&registry, arena, file.adapter("claude").?);
-    const inherited = registry.claude.config.backend.environment;
+    const claude_adapter_instance: *claude_adapter.Adapter = @ptrCast(@alignCast(claude.ptr));
+    const inherited = claude_adapter_instance.config.backend.environment;
     try std.testing.expectEqual(@as(usize, 2), inherited.len);
     try std.testing.expectEqualStrings("LITERAL=kept", inherited[0]);
     try std.testing.expectEqualStrings("HOME=/home/me", inherited[1]);
@@ -9951,6 +9962,37 @@ test "the hub's registry reports a known adapter's own requirement once, not as 
     const complained = try tmp.dir.readFileAlloc(std.testing.io, "stderr", allocator, .limited(4096));
     defer allocator.free(complained);
     try std.testing.expectEqualStrings("oapx hub: adapter \"a\" is an OpenCode server and needs a --config entry naming its \"endpoint\"\n", complained);
+}
+
+test "two entries of one type are two adapters, each with its own executable" {
+    const allocator = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var complained_on = try tmp.dir.createFile(std.testing.io, "stderr", .{});
+    defer complained_on.close(std.testing.io);
+
+    var environ = std.process.Environ.Map.init(arena);
+    const document =
+        "{\"adapters\":{" ++
+        "\"first\":{\"type\":\"claude\",\"executable\":\"/bin/one\",\"unrestricted_tools\":true,\"environment\":[\"LITERAL=first\"]}," ++
+        "\"second\":{\"type\":\"claude\",\"executable\":\"/bin/two\",\"unrestricted_tools\":true,\"environment\":[\"LITERAL=second\"]}" ++
+        "}}";
+    var diagnostic = adapter_config.Diagnostic{};
+    const file = try adapter_config.parse(arena, document, &environ, &diagnostic);
+    var registry = HubRegistry{ .allocator = allocator, .environ = &environ, .surface = withSurface(hub_config_surface, arena, complained_on) };
+
+    const first = try HubRegistry.build(&registry, arena, file.adapter("first").?);
+    const second = try HubRegistry.build(&registry, arena, file.adapter("second").?);
+    try std.testing.expect(first.ptr != second.ptr);
+    const first_claude: *claude_adapter.Adapter = @ptrCast(@alignCast(first.ptr));
+    const second_claude: *claude_adapter.Adapter = @ptrCast(@alignCast(second.ptr));
+    try std.testing.expectEqualStrings("/bin/one", first_claude.config.backend.executable);
+    try std.testing.expectEqualStrings("/bin/two", second_claude.config.backend.executable);
+    try std.testing.expectEqualStrings("LITERAL=first", first_claude.config.backend.environment[0]);
+    try std.testing.expectEqualStrings("LITERAL=second", second_claude.config.backend.environment[0]);
 }
 
 test "validate refuses a flag goap carries, and never reads its value as a path" {

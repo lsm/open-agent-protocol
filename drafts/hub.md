@@ -106,13 +106,14 @@ environment variable twice is refused.
 
 | rule | pinned by |
 | --- | --- |
-| Unknown adapter member refused, deterministically named | `TestLoadRegistryNamesOneUnknownMemberDeterministically` |
-| Case-variant member refused | `TestLoadRegistryRefusesCaseVariantMembers` |
-| Duplicated member refused | `TestLoadRegistryRefusesDuplicateMembers` |
+| Unknown adapter member refused, deterministically named | `TestLoadRegistryNamesOneUnknownMemberDeterministically`; Zig: `the first unknown field named is the first in sorted order, wherever the object is` |
+| Case-variant member refused | `TestLoadRegistryRefusesCaseVariantMembers`; Zig: `an unknown field is refused wherever it appears, naming the field and where` |
+| Duplicated member refused | `TestLoadRegistryRefusesDuplicateMembers`; Zig: `the file must be one JSON object, once, with no key twice; a null file is empty` |
 | `type` defaults to the entry name | `TestLoadRegistryDefaultsTypeToEntryName` |
 | Adapters load in sorted name order | `TestLoadRegistrySortedNames` |
 | Without a config, the built-in memory adapter is served | `TestDefaultRegistry`, `TestLoadRegistryMemory` |
-| Every adapter constructor is reached, and its requirements surface at startup | `TestLoadRegistryProcessAdapters`, `TestLoadRegistryConstructorErrors` |
+| Every adapter constructor is reached, and its requirements surface at startup | `TestLoadRegistryProcessAdapters`, `TestLoadRegistryConstructorErrors`; Zig: `the hub's registry refuses an entry of a type it does not know, naming the entry and the type` and `the hub's registry reports a known adapter's own requirement once, not as an unknown type` |
+| **Each entry gets its own adapter instance**, so a document naming two entries of one type serves two adapters rather than one of them twice | Zig: `two entries of one type are two adapters, each with its own executable`. Go's `buildAdapter` returns a fresh adapter per entry, so no Go test names this and the two trees are here by the same rule rather than by a shared test |
 | A document that is not one JSON object is refused | `TestLoadRegistryDocumentErrors` |
 | A tool source loads into the registry and is attachable by id | `TestLoadRegistryToolSources` |
 | A tool source needs a kind; a `process` one needs a command | `TestLoadRegistryToolSourceNeedsKind`, `TestLoadRegistryProcessToolSourceNeedsCommand` |
@@ -982,6 +983,15 @@ not settle, and a child that outlived three cancels inside a bounded window is
 reaped rather than orphaned. That last step is a consequence of freeing one's
 own memory, where Go exits the process and the operating system reclaims it.
 
+A sweep reports the two ways it can come up short **separately**, because they
+are different facts about the same run: a session it *attempted* and that
+refused every attempt, and a session it *never reached* because the window was
+already spent. The second is reachable and it is the honest cost of the
+difference above — a Zig session's `state` and `cancel` are not cancellable, so
+a slow one overruns the share it was given and the sessions behind it are left
+for the next exit. Go's context cancels the same call, which is why Go's
+`CloseSessions` can only ever be short by refusal.
+
 | rule | pinned by |
 | --- | --- |
 | Every session is attempted, not just the first | `TestCloseSessionsAttemptsEverySession`; Zig: `closeSessions settles every session` |
@@ -990,6 +1000,7 @@ own memory, where Go exits the process and the operating system reclaims it.
 | Active runs are settled before a close | `TestCloseSessionsSettlesActiveRuns`; Zig: `the shutdown sweep cancels a live run before it releases the session` |
 | A close that refuses because a run is active is retried through a cancel | `TestCloseRetriesThroughAsyncCancel`; Zig: `a close that refuses while a run is live is retried through a cancel until it lands` |
 | A close that never stops refusing is given the attempts, and the session is torn down and reported | Zig: `a close that never stops refusing is given the attempts the draft names, and the session is torn down rather than left behind` — no Go test, because Go's answer is that its entry is left and the process exits |
+| A sweep that ran out of window before a session says so, and separately from a refusal | Zig: `a session whose own state call overruns its share leaves the rest unattempted, and the sweep says so`. No Go counterpart: Go's context cancels the call, so the case cannot arise |
 | A close stops at its context deadline | `TestCloseStopsAtContextDeadline`; Zig: the same per-session deadline, `the sweep waits no longer than the window it was given` |
 | The reservations a snapshot names are cancelled | `TestCloseCancelsReservationsTheSnapshotNames` |
 | Every run a snapshot lists is cancelled | `TestCloseCancelsEveryRunTheSnapshotLists` |
@@ -1302,7 +1313,7 @@ are stated in [Shutdown](#shutdown) rather than only here:
 | **Go does** | `Session.Close` answers `base.ErrRunActive` while a run is live and does not close, and `closeForShutdown` retries: close, and on that answer read the state, cancel every live run, wait 100 ms, close again, three times. Every Go adapter can refuse. |
 | **Zig does** | `contract.Session.close` takes a `force` flag and may answer `error.RunActive`; the sweep cancels, pumps within the session's share, and closes again, three attempts in all. `Session.teardown` is the same call with `force`, and it is what the hub's own teardown uses, so a refusal can never leak. The memory adapter refuses while a run is live; the seven process-backed adapters destroy unconditionally. |
 | **Why it mattered** | Before this, the Zig sweep cancelled and released in one pass, so a harness that needed a moment to stop was released anyway and the retry the draft names had nowhere to live. |
-| **Where the two still differ** | Go's window is a context it can cancel; Zig's is a deadline it checks, because a Zig `close` is synchronous and returns rather than waiting. A sweep that has used its window stops and reports what it did not close, where Go's `CloseSessions` breaks and logs one session id. Both then exit, and both reap the child. |
+| **Where the two still differ** | Go's window is a context it can cancel; Zig's is a deadline it checks, because a Zig `close` is synchronous and returns rather than waiting, and because a Zig session's `state` and `cancel` cannot be interrupted at all. So a Zig sweep can come up short in two ways where Go's can come up short in one, and it reports which: a session it attempted and that refused, and a session it never reached. Both then exit, and both reap the child. |
 
 Pinned in Zig by `a close that refuses while a run is live is retried through a
 cancel until it lands`, `a close that never stops refusing is given the attempts

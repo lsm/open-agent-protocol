@@ -88,6 +88,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     is torn down and the sweep reports what it did not close, so a refusal can
     never leave an orphaned child or leak. `Hub.closeSessions` returns a count
     of what it managed instead of nothing.
+  - **Each `--config` entry gets its own adapter instance**, so a document
+    naming two entries of one type serves two adapters rather than silently
+    binding both names to the last one's executable and environment.
+  - **A sweep reports the two ways it can come up short separately**: a session
+    it attempted that refused every attempt, and a session it never reached
+    because an earlier one overran its share. The second is reachable and is
+    named here because a Zig session's `state` and `cancel` cannot be
+    interrupted, where Go's context cancels the same call.
 
   The seven process-backed adapters still close unconditionally, because each
   one's close reaps the child and a cancel followed by a close is the same
