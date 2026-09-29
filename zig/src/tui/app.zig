@@ -589,6 +589,8 @@ pub const App = struct {
     session_created_at: i64 = 0,
     compaction_offset: u64 = 0,
     pending_thinking: std.ArrayList(u8) = .empty,
+    pending_after_compaction: ?[]u8 = null,
+    compaction_just_ended: ?bool = null,
     session_title: []u8 = &.{},
     session_title_generated: bool = false,
     first_user_text: []u8 = &.{},
@@ -663,6 +665,7 @@ pub const App = struct {
         if (self.written_model.len > 0) self.allocator.free(self.written_model);
         if (self.written_provider.len > 0) self.allocator.free(self.written_provider);
         self.pending_thinking.deinit(self.allocator);
+        if (self.pending_after_compaction) |pending| self.allocator.free(pending);
         if (self.session_title.len > 0) self.allocator.free(self.session_title);
         if (self.first_user_text.len > 0) self.allocator.free(self.first_user_text);
         if (self.title_session_id.len > 0) self.allocator.free(self.title_session_id);
@@ -711,6 +714,7 @@ pub const App = struct {
             .agent_end => |payload| return payload.reason == .completed,
             .compaction_end => |payload| {
                 if (payload.outcome == .completed) try self.recordCompactionTranscript(payload.transcript.slice());
+                self.compaction_just_ended = payload.outcome == .completed;
                 return true;
             },
             else => return false,
@@ -1546,6 +1550,10 @@ pub const App = struct {
             };
             self.refreshQueuedCounts();
         }
+        if (self.compaction_just_ended) |completed| {
+            self.compaction_just_ended = null;
+            try self.sendPendingAfterCompaction(completed);
+        }
     }
 
     fn applyRuntimeEvent(self: *App, event: tui_runtime.TuiEvent) !void {
@@ -1616,6 +1624,11 @@ pub const App = struct {
         if (trimmed.len == 0) return;
         self.state.transcript_scroll = 0;
         if (trimmed[0] == '/') return try self.submitCommand(trimmed);
+        if (try self.compactBeforeTurn(trimmed)) return;
+        try self.sendUserTurn(trimmed);
+    }
+
+    fn sendUserTurn(self: *App, trimmed: []const u8) !void {
         self.applyPendingSessionResetSync() catch |err| {
             if (err == error.PendingSessionReset) {
                 try self.state.appendTranscript(.@"error", "Session reset pending; wait for the current run to finish.");
@@ -1635,6 +1648,50 @@ pub const App = struct {
         }
         try self.state.appendUserMessage(trimmed);
         self.refreshQueuedCounts();
+    }
+
+    fn contextWindowInEffect(self: *const App) u64 {
+        const runtime = self.runtime orelse return 0;
+        const model = runtime.currentModel() orelse return 0;
+        return model.context_window;
+    }
+
+    fn estimatedTokensForTurn(self: *const App, text: []const u8) u64 {
+        const message: ai_types.Message = .{ .user = .{
+            .content = .{ .text = text },
+            .timestamp = 0,
+        } };
+        return self.state.telemetry.estimated_tokens + agent.estimateMessageTokens(message);
+    }
+
+    fn compactBeforeTurn(self: *App, text: []const u8) !bool {
+        const share = self.state.autocompact_percent orelse return false;
+        if (self.pending_after_compaction != null) return false;
+        if (self.state.status.streaming or self.state.status.compacting) return false;
+        const history = if (self.session) |*session| session.history() else return false;
+        if (history.len == 0 or agent.compaction.isCompacted(history)) return false;
+        const window = self.contextWindowInEffect();
+        if (!agent.compaction.isAtShare(self.estimatedTokensForTurn(text), @intCast(window), share)) return false;
+
+        const pending = try self.allocator.dupe(u8, text);
+        errdefer self.allocator.free(pending);
+        const msg = try std.fmt.allocPrint(self.allocator, "context is at {d}% of {d} tokens; compacting before this turn.", .{ share, window });
+        defer self.allocator.free(msg);
+        try self.state.appendTranscript(.system, msg);
+        try self.startCompaction("");
+        if (self.pending_after_compaction) |earlier| self.allocator.free(earlier);
+        self.pending_after_compaction = pending;
+        return true;
+    }
+
+    fn sendPendingAfterCompaction(self: *App, completed: bool) !void {
+        const pending = self.pending_after_compaction orelse return;
+        self.pending_after_compaction = null;
+        defer self.allocator.free(pending);
+        if (!completed) {
+            try self.state.appendTranscript(.system, "the automatic compaction did not finish; sending the message with the history unchanged");
+        }
+        try self.sendUserTurn(pending);
     }
 
     pub fn steer(self: *App, text: []const u8) !void {
@@ -3959,6 +4016,149 @@ test "App writes a reply's thinking even when the reply is too large to save" {
     try std.testing.expectEqual(@as(usize, 2), loaded.events.items.len);
     try std.testing.expect(loaded.events.items[0] == .message_start);
     try std.testing.expectEqualStrings("weighing it", loaded.events.items[1].thinking_delta.delta.slice());
+}
+
+const auto_compact_history = [_]ai_types.Message{
+    .{ .user = .{ .content = .{ .text = "first question" }, .timestamp = 0 } },
+    .{ .assistant = .{
+        .content = &.{.{ .text = .{ .text = "first answer" } }},
+        .api = "test-api",
+        .provider = "test-provider",
+        .model = "model-a",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+    } },
+};
+
+fn autoCompactTestApp(mock: *MockAppSession) !App {
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{auto_compact_test_model} });
+    errdefer app.deinit();
+    app.session = mock.session();
+    app.state.autocompact_percent = 50;
+    app.state.telemetry.estimated_tokens = 60_000;
+    return app;
+}
+
+const auto_compact_test_model = ai_types.Model{
+    .id = "model-a",
+    .name = "Model A",
+    .api = "test-api",
+    .provider = "test-provider",
+    .base_url = "https://example.invalid",
+    .reasoning = false,
+    .input = &[_][]const u8{"text"},
+    .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+    .context_window = 100_000,
+    .max_tokens = 1024,
+};
+
+test "autocompact holds a turn until the compaction it started has finished" {
+    var mock = MockAppSession{ .history_messages = &auto_compact_history };
+    defer mock.deinit();
+    var app = try autoCompactTestApp(&mock);
+    defer app.deinit();
+
+    try app.submit("second question");
+
+    try std.testing.expectEqual(@as(usize, 1), mock.compact_count);
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+    try std.testing.expect(app.pending_after_compaction != null);
+
+    try mock.eventStream().push(.{ .compaction_end = .{
+        .outcome = .completed,
+        .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "summary")),
+    } });
+    try app.drainEvents();
+
+    try std.testing.expectEqual(@as(usize, 1), mock.submit_count);
+    try std.testing.expect(app.pending_after_compaction == null);
+}
+
+test "autocompact sends the held turn when the compaction it started did not finish" {
+    var mock = MockAppSession{ .history_messages = &auto_compact_history };
+    defer mock.deinit();
+    var app = try autoCompactTestApp(&mock);
+    defer app.deinit();
+
+    try app.submit("second question");
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+
+    try mock.eventStream().push(.{ .compaction_end = .{ .outcome = .cancelled } });
+    try app.drainEvents();
+
+    try std.testing.expectEqual(@as(usize, 1), mock.submit_count);
+    var said_it = false;
+    for (app.state.transcript.items) |entry| {
+        if (std.mem.indexOf(u8, entry.text.items, "did not finish") != null) said_it = true;
+    }
+    try std.testing.expect(said_it);
+}
+
+test "autocompact leaves a turn alone below the share, and when it is off" {
+    var mock = MockAppSession{ .history_messages = &auto_compact_history };
+    defer mock.deinit();
+    var app = try autoCompactTestApp(&mock);
+    defer app.deinit();
+
+    app.state.telemetry.estimated_tokens = 1_000;
+    try app.submit("well under the share");
+
+    try std.testing.expectEqual(@as(usize, 0), mock.compact_count);
+    try std.testing.expectEqual(@as(usize, 1), mock.submit_count);
+    try std.testing.expect(app.pending_after_compaction == null);
+
+    app.state.telemetry.estimated_tokens = 60_000;
+    app.state.autocompact_percent = null;
+    try app.submit("over the share, but off");
+
+    try std.testing.expectEqual(@as(usize, 0), mock.compact_count);
+    try std.testing.expectEqual(@as(usize, 2), mock.submit_count);
+}
+
+test "autocompact does not compact a history that is already a summary" {
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    var app = try autoCompactTestApp(&mock);
+    defer app.deinit();
+    mock.history_messages = &[_]ai_types.Message{
+        .{ .user = .{
+            .content = .{ .text = agent.compaction.header ++ "\n\n<summary>\nkept\n</summary>" },
+            .timestamp = 0,
+        } },
+        .{ .assistant = .{
+            .content = &.{.{ .text = .{ .text = agent.compaction.acknowledgement } }},
+            .api = "test-api",
+            .provider = "test-provider",
+            .model = "model-a",
+            .usage = .{},
+            .stop_reason = .stop,
+            .timestamp = 0,
+        } },
+    };
+
+    try app.submit("after a compaction");
+
+    try std.testing.expectEqual(@as(usize, 0), mock.compact_count);
+    try std.testing.expectEqual(@as(usize, 1), mock.submit_count);
+}
+
+test "autocompact starts one compaction, and a turn typed during it takes the normal path" {
+    var mock = MockAppSession{ .history_messages = &auto_compact_history };
+    defer mock.deinit();
+    var app = try autoCompactTestApp(&mock);
+    defer app.deinit();
+
+    try app.submit("first held turn");
+    try app.submit("second turn typed while compacting");
+
+    try std.testing.expectEqual(@as(usize, 1), mock.compact_count);
+    try std.testing.expectEqual(@as(usize, 1), mock.submit_count);
+
+    try mock.eventStream().push(.{ .compaction_end = .{ .outcome = .completed } });
+    try app.drainEvents();
+
+    try std.testing.expectEqual(@as(usize, 2), mock.submit_count);
 }
 
 test "App indexes where a completed compaction starts" {
