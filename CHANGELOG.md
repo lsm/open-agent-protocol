@@ -43,23 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fixtures rather than skipping them is that step's work. A source list the
   check cannot read is left unjudged, matching Go's decode rather than
   judging the entries around a malformed one.
-- **The TUI sends one `continue` of its own after a provider error the retries
-  did not cover (#562).** The HTTP retry policy is five statuses — 429, 500, 502,
-  503, 504 — and a transport failure, three attempts each; `max_retry_delay_ms`
-  only caps the sleep between them, so it was never the switch for *which*
-  errors retry. Everything else ended the run at once, a bare 400 most visibly,
-  and left the user's only move to notice and type `continue`. The TUI now waits
-  three seconds and sends exactly one itself, saying so in the transcript, and
-  it does it once per failure streak: a second failure in the same streak is
-  left to the user, and a clean run or a fresh turn from the user starts a new
-  streak. It never auto-continues after an abort, after a 401 or 403, or on a
-  context overflow that `/compact` should handle, any user action in the
-  three-second window — submit, steer, queued follow-up, `/abort`, `Esc`,
-  `Ctrl+C` — drops the pending nudge, and resuming a saved session replays the
-  events without arming one, so a failure from a previous process does not fire
-  a turn in this one. The list of statuses retrying cannot fix, and the two
-  providers that drop the status code from their error text so the auth carve-out
-  cannot fire through them, are on #562.
+
 - **A design note for the Go tree's native agent loop (#370).**
   [`docs/go-agent-loop.md`](docs/go-agent-loop.md) maps `zig/src/agent/`'s loop
   — turns, tool execution, permissions, cancellation, compaction — onto what
