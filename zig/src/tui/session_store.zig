@@ -248,6 +248,14 @@ pub const Store = struct {
         try compat.fs.atomicReplace(compat.fs.getCwd(), path, tmp_path, data);
     }
 
+    pub fn saveGeneratedTitle(self: Store, session_id: []const u8, title: []const u8) !void {
+        var meta = try self.loadIndex(session_id);
+        defer meta.deinit(self.allocator);
+        try replaceString(self.allocator, &meta.title, title);
+        meta.title_generated = true;
+        try self.saveIndex(meta);
+    }
+
     pub fn loadIndex(self: Store, session_id: []const u8) !SessionMetadata {
         const path = try sessionFilePath(self.allocator, self.base_dir, session_id, index_suffix);
         defer self.allocator.free(path);

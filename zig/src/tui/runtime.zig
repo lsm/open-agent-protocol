@@ -444,16 +444,17 @@ pub const TuiRuntime = struct {
         }
     }
 
-    pub fn requestTitle(self: *TuiRuntime, first_message: []const u8) !void {
-        if (!self.generate_titles or self.title_thread != null) return;
-        const protocol = self.protocol orelse return;
-        const selected = self.currentModel() orelse return;
+    pub fn requestTitle(self: *TuiRuntime, first_message: []const u8) !bool {
+        if (!self.generate_titles or self.title_thread != null) return false;
+        const protocol = self.protocol orelse return false;
+        const selected = self.currentModel() orelse return false;
         var model = try ai_types.cloneModel(self.allocator, selected);
         errdefer model.deinit(self.allocator);
         const prompt = try titlePrompt(self.allocator, first_message);
         errdefer self.allocator.free(prompt);
         self.title_cancel.store(false, .release);
         self.title_thread = try std.Thread.spawn(.{}, titleThread, .{ self, protocol, model, prompt });
+        return true;
     }
 
     pub fn waitForTitleRequest(self: *TuiRuntime) void {
@@ -2949,7 +2950,7 @@ test "requestTitle keeps the first line of the model's reply, thinking off" {
     var runtime = try TuiRuntime.init(std.testing.allocator, .{ .protocol = makeProtocol(&mock), .models = &[_]ai_types.Model{test_model_a}, .generate_titles = true });
     defer runtime.deinit();
 
-    try runtime.requestTitle("the resume freezes on long sessions");
+    try std.testing.expect(try runtime.requestTitle("the resume freezes on long sessions"));
     runtime.waitForTitleRequest();
     const title = runtime.takeGeneratedTitle().?;
     defer std.testing.allocator.free(title);
@@ -2964,7 +2965,7 @@ test "requestTitle sends nothing unless titles are enabled" {
     var runtime = try TuiRuntime.init(std.testing.allocator, .{ .protocol = makeProtocol(&mock), .models = &[_]ai_types.Model{test_model_a} });
     defer runtime.deinit();
 
-    try runtime.requestTitle("the resume freezes on long sessions");
+    try std.testing.expect(!try runtime.requestTitle("the resume freezes on long sessions"));
     runtime.waitForTitleRequest();
     try std.testing.expect(runtime.takeGeneratedTitle() == null);
     try std.testing.expectEqual(@as(usize, 0), mock.call_count);
