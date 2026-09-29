@@ -21,6 +21,7 @@ const tui_theme = @import("tui_theme");
 const tui_text = @import("tui_text");
 const oauth_storage = @import("oauth/storage");
 const session_store = @import("tui_session_store");
+const tui_worktree = @import("tui_worktree");
 const transcript_view = @import("tui_view_transcript");
 const composer_view = @import("tui_view_composer");
 const status_bar_view = @import("tui_view_status_bar");
@@ -641,6 +642,7 @@ pub const ProductionRuntime = struct {
     permission_engine: permission.PermissionEngine,
     models: []ai_types.Model,
     initial_model: ?SavedModelRef = null,
+    mode_settings: tui_config.ModeSettings = .{},
 
     pub const InitOptions = struct {
         fixture: bool = false,
@@ -678,8 +680,10 @@ pub const ProductionRuntime = struct {
         }
         errdefer if (saved_config) |*cfg| cfg.deinit(allocator);
 
+        var mode_settings: tui_config.ModeSettings = .{};
         var initial_model: ?SavedModelRef = null;
         if (saved_config) |cfg| {
+            mode_settings = cfg.mode;
             if (cfg.model.len > 0) {
                 initial_model = SavedModelRef{
                     .id = try allocator.dupe(u8, cfg.model),
@@ -697,6 +701,7 @@ pub const ProductionRuntime = struct {
             .permission_engine = permission_engine,
             .models = models,
             .initial_model = initial_model,
+            .mode_settings = mode_settings,
         };
         initial_model = null;
         if (saved_config) |*cfg| cfg.deinit(allocator);
@@ -720,7 +725,8 @@ pub const ProductionRuntime = struct {
             .permission_engine = &self.permission_engine,
             .workspace_root = self.permission_engine.workspace_root,
             .run_async = true,
-            .compact_output = true,
+            .compact_output = self.mode_settings.compact_output,
+            .auto_worktree = self.mode_settings.auto_worktree,
             .generate_titles = true,
         };
     }
@@ -910,8 +916,23 @@ pub const App = struct {
     approval_waiter: ?*ApprovalWaiter = null,
     login: ?*tui_login.LoginSession = null,
     store: ?session_store.Store = null,
+    mode_settings: tui_config.ModeSettings = .{},
+    worktree_job: ?*tui_worktree.CreateJob = null,
+    worktree_management_job: ?*tui_worktree.ManagementJob = null,
+    pending_resume_id: []u8 = &.{},
+    pending_resume_path: []u8 = &.{},
+    resume_without_worktree_id: []u8 = &.{},
+    pending_delete_id: []u8 = &.{},
+    pending_delete_path: []u8 = &.{},
+    worktree_attempted: bool = false,
+    held_user_message: []u8 = &.{},
+    queued_worktree_messages: std.ArrayList([]u8) = .empty,
+    session_turns: usize = 0,
+    pending_worktree_info: ?tui_worktree.WorktreeInfo = null,
+    pending_worktree_session_id: []u8 = &.{},
     session_id: []u8 = &.{},
     working_dir: []u8 = &.{},
+    launch_dir: []u8 = &.{},
     last_view_height: usize = 8,
     inline_history_flushed: usize = 0,
     inline_flushed_rows: usize = 0,
@@ -957,6 +978,7 @@ pub const App = struct {
         };
         var app = App{
             .allocator = allocator,
+            .mode_settings = .{ .compact_output = options.compact_output, .auto_worktree = options.auto_worktree },
             .state = tui_state.AppState.init(allocator),
             .runtime = runtime_ptr,
             .approval_waiter = approval_waiter,
@@ -974,6 +996,7 @@ pub const App = struct {
         app.store = session_store.Store.initDefault(allocator) catch null;
         try app.ensureSessionId();
         app.working_dir = currentPathOwned(allocator) catch try allocator.dupe(u8, "");
+        app.launch_dir = try allocator.dupe(u8, app.working_dir);
         try app.refreshCwdDisplay();
         app.loadSessions() catch |err| try app.recordError(@errorName(err));
         return app;
@@ -992,6 +1015,46 @@ pub const App = struct {
             session.deinit();
             self.login = null;
         }
+        if (self.worktree_job) |job| {
+            job.wait();
+            if (job.poll()) |outcome_value| {
+                var outcome = outcome_value;
+                defer outcome.deinit(self.allocator);
+                switch (outcome) {
+                    .created => |created| {
+                        var info = created.info;
+                        self.persistOrDiscardCreatedWorktree(&info);
+                    },
+                    else => {},
+                }
+            }
+            job.deinit();
+            self.worktree_job = null;
+        }
+        if (self.worktree_management_job) |job| {
+            job.wait();
+            if (job.poll()) |value| {
+                var outcome = value;
+                outcome.deinit(self.allocator);
+            }
+            job.deinit();
+            self.worktree_management_job = null;
+        }
+        if (self.pending_worktree_info) |pending| {
+            var info = pending;
+            self.pending_worktree_info = null;
+            self.persistOrDiscardCreatedWorktree(&info);
+            info.deinit(self.allocator);
+        }
+        if (self.pending_worktree_session_id.len > 0) self.allocator.free(self.pending_worktree_session_id);
+        if (self.pending_resume_id.len > 0) self.allocator.free(self.pending_resume_id);
+        if (self.pending_resume_path.len > 0) self.allocator.free(self.pending_resume_path);
+        if (self.resume_without_worktree_id.len > 0) self.allocator.free(self.resume_without_worktree_id);
+        if (self.pending_delete_id.len > 0) self.allocator.free(self.pending_delete_id);
+        if (self.pending_delete_path.len > 0) self.allocator.free(self.pending_delete_path);
+        if (self.held_user_message.len > 0) self.allocator.free(self.held_user_message);
+        for (self.queued_worktree_messages.items) |message| self.allocator.free(message);
+        self.queued_worktree_messages.deinit(self.allocator);
         if (self.approval_waiter) |waiter| waiter.cancel();
         if (self.runtime) |runtime| {
             runtime.deinit();
@@ -1005,6 +1068,7 @@ pub const App = struct {
         if (self.pending_clipboard) |c| self.allocator.free(c);
         if (self.session_id.len > 0) self.allocator.free(self.session_id);
         if (self.working_dir.len > 0) self.allocator.free(self.working_dir);
+        if (self.launch_dir.len > 0) self.allocator.free(self.launch_dir);
         for (self.quarantine_buffer.items) |*event| event.deinit(self.allocator);
         self.quarantine_buffer.deinit(self.allocator);
         self.clearCompactionTranscripts();
@@ -1106,13 +1170,173 @@ pub const App = struct {
         }
     }
 
+    fn deleteSelectedSession(self: *App) !void {
+        const store = self.store orelse return error.NoStoreConfigured;
+        if (self.state.session_index >= self.state.sessions.items.len) return;
+        const id = self.state.sessions.items[self.state.session_index].id;
+        if (std.mem.eql(u8, id, self.session_id)) {
+            try self.state.appendTranscript(.system, "Cannot delete the active session; resume another session first.");
+            return;
+        }
+        if (self.worktree_job != null) {
+            try self.state.appendTranscript(.system, "Wait for worktree setup to finish before deleting a session.");
+            return;
+        }
+        if (self.worktree_management_job != null) {
+            try self.state.appendTranscript(.system, "Wait for worktree setup to finish before deleting a session.");
+            return;
+        }
+        if (try tui_worktree.readSidecar(self.allocator, store.base_dir, id)) |info_value| {
+            var info = info_value;
+            defer info.deinit(self.allocator);
+            const job = try tui_worktree.ManagementJob.start(self.allocator, tui_worktree.processRunner(), &info, .remove);
+            errdefer job.deinit();
+            const pending_id = try self.allocator.dupe(u8, id);
+            errdefer self.allocator.free(pending_id);
+            const pending_path = try self.allocator.dupe(u8, info.path);
+            errdefer self.allocator.free(pending_path);
+            try self.state.appendTranscript(.system, "Checking and removing the session worktree…");
+            self.worktree_management_job = job;
+            self.pending_delete_id = pending_id;
+            self.pending_delete_path = pending_path;
+            return;
+        }
+        try self.finishDeleteSession(id);
+    }
+
+    fn recordWorktreeSidecar(self: *App, info: *const tui_worktree.WorktreeInfo) !void {
+        const store = self.store orelse return;
+        if ((store.conversationBytes(self.session_id) catch 0) > 0) {
+            try tui_worktree.writeSidecar(self.allocator, store.base_dir, self.session_id, info);
+            return;
+        }
+        const cloned = try tui_worktree.cloneInfo(self.allocator, info);
+        errdefer {
+            var undo = cloned;
+            undo.deinit(self.allocator);
+        }
+        const session_id = try self.allocator.dupe(u8, self.session_id);
+        self.discardPendingWorktreeSidecar();
+        self.pending_worktree_info = cloned;
+        self.pending_worktree_session_id = session_id;
+    }
+
+    fn flushPendingWorktreeSidecar(self: *App) void {
+        if (self.pending_worktree_info == null) return;
+        const store = self.store orelse return;
+        if (!std.mem.eql(u8, self.pending_worktree_session_id, self.session_id)) {
+            var stale = self.pending_worktree_info.?;
+            self.pending_worktree_info = null;
+            self.freePendingWorktreeSessionId();
+            if (tui_worktree.remove(self.allocator, tui_worktree.processRunner(), &stale)) |message| {
+                if (message) |text| self.allocator.free(text);
+            } else |_| {}
+            stale.deinit(self.allocator);
+            return;
+        }
+        if ((store.conversationBytes(self.session_id) catch 0) == 0) return;
+        var info = self.pending_worktree_info.?;
+        tui_worktree.writeSidecar(self.allocator, store.base_dir, self.session_id, &info) catch {};
+        self.pending_worktree_info = null;
+        self.freePendingWorktreeSessionId();
+        info.deinit(self.allocator);
+    }
+
+    fn discardPendingWorktreeSidecar(self: *App) void {
+        const info = self.pending_worktree_info orelse return;
+        self.pending_worktree_info = null;
+        self.freePendingWorktreeSessionId();
+        var owned = info;
+        self.persistOrDiscardCreatedWorktree(&owned);
+        owned.deinit(self.allocator);
+    }
+
+    fn freePendingWorktreeSessionId(self: *App) void {
+        if (self.pending_worktree_session_id.len > 0) self.allocator.free(self.pending_worktree_session_id);
+        self.pending_worktree_session_id = &.{};
+    }
+
+    fn persistOrDiscardCreatedWorktree(self: *App, info: *const tui_worktree.WorktreeInfo) void {
+        const store = self.store orelse return;
+        const recorded = (store.conversationBytes(self.session_id) catch 0) > 0;
+        if (recorded) {
+            tui_worktree.writeSidecar(self.allocator, store.base_dir, self.session_id, info) catch {};
+            return;
+        }
+        if (tui_worktree.remove(self.allocator, tui_worktree.processRunner(), info)) |message| {
+            if (message) |text| self.allocator.free(text);
+        } else |_| {}
+    }
+
+    fn finishDeleteSession(self: *App, id: []const u8) !void {
+        const store = self.store orelse return error.NoStoreConfigured;
+        try store.deleteSession(id);
+        try self.loadSessions();
+        if (self.state.session_index >= self.state.sessions.items.len and self.state.session_index > 0) self.state.session_index -= 1;
+    }
+
     pub fn resumeSelectedSession(self: *App) !void {
+        if (self.worktree_job != null or self.worktree_management_job != null) {
+            try self.state.appendTranscript(.system, "Wait for worktree setup to finish before resuming another session.");
+            return;
+        }
+        if (self.state.status.streaming) {
+            self.state.mode = .normal;
+            try self.state.appendTranscript(.system, "Cannot resume a session while a turn is running; wait for it to finish or abort it.");
+            return;
+        }
+        self.discardPendingWorktreeSidecar();
         const store = self.store orelse return error.NoStoreConfigured;
         try self.dropPendingAfterCompaction("the session was resumed before the compaction finished");
         if (self.state.session_index >= self.state.sessions.items.len) return;
         const selected = self.state.sessions.items[self.state.session_index];
         const runtime = if (self.runtime) |r| r else return error.NoRuntimeConfigured;
         const id = selected.id;
+        if (try tui_worktree.readSidecar(self.allocator, store.base_dir, id)) |info_value| {
+            var info = info_value;
+            defer info.deinit(self.allocator);
+            self.worktree_attempted = true;
+            const fallback_without_worktree = self.resume_without_worktree_id.len > 0 and std.mem.eql(u8, self.resume_without_worktree_id, id);
+            if (fallback_without_worktree) {
+                self.allocator.free(self.resume_without_worktree_id);
+                self.resume_without_worktree_id = &.{};
+            }
+            if (!tui_worktree.pathExists(info.path) and !fallback_without_worktree) {
+                const job = try tui_worktree.ManagementJob.start(self.allocator, tui_worktree.processRunner(), &info, .reattach);
+                errdefer job.deinit();
+                const pending_id = try self.allocator.dupe(u8, id);
+                errdefer self.allocator.free(pending_id);
+                const pending_path = try self.allocator.dupe(u8, info.path);
+                errdefer self.allocator.free(pending_path);
+                try self.state.appendTranscript(.system, "Reattaching this session's Git worktree…");
+                self.worktree_management_job = job;
+                self.pending_resume_id = pending_id;
+                self.pending_resume_path = pending_path;
+                return;
+            }
+            const root = if (tui_worktree.pathExists(info.path))
+                try info.workingDir(self.allocator)
+            else root: {
+                if (info.prefix.len > 0) {
+                    const prefixed = try std.fs.path.join(self.allocator, &.{ info.repo_root, std.mem.trimEnd(u8, info.prefix, &.{std.fs.path.sep}) });
+                    if (tui_worktree.pathExists(prefixed)) break :root prefixed;
+                    self.allocator.free(prefixed);
+                }
+                if (tui_worktree.pathExists(info.repo_root)) break :root try self.allocator.dupe(u8, info.repo_root);
+                break :root try self.allocator.dupe(u8, self.launch_dir);
+            };
+            defer self.allocator.free(root);
+            try runtime.setWorkspaceRoot(root);
+            try replaceOwnedString(self.allocator, &self.working_dir, root);
+            try self.refreshCwdDisplay();
+        } else {
+            self.worktree_attempted = false;
+            if (self.launch_dir.len > 0) {
+                try runtime.setWorkspaceRoot(self.launch_dir);
+                try replaceOwnedString(self.allocator, &self.working_dir, self.launch_dir);
+                try self.refreshCwdDisplay();
+            }
+        }
         var loaded = try store.resumeSession(id, runtime);
         defer loaded.deinit(self.allocator);
         const new_session_id = try self.allocator.dupe(u8, loaded.metadata.session_id);
@@ -1153,7 +1377,9 @@ pub const App = struct {
         self.refreshQueuedCounts();
         self.state.status.streaming = false;
         self.state.status.compacting = false;
+        self.state.confirm_session_delete = false;
         self.state.mode = .normal;
+        self.session_turns = if (loaded.events.items.len > 0) 1 else 0;
         try self.adoptLoadedSession(loaded.metadata);
         self.saveSessionIndex(store);
     }
@@ -1254,6 +1480,7 @@ pub const App = struct {
                 }
             },
             .login => self.refreshLoginStatus(),
+            .settings => {},
         }
         self.state.mode = .picker;
         self.ensureMenuSelectionVisible();
@@ -1264,6 +1491,7 @@ pub const App = struct {
             .model => if (self.runtime) |runtime| runtime.availableModels().len else 0,
             .login => login_providers.len,
             .permission => permission_modes.len,
+            .settings => 2,
         };
     }
 
@@ -1276,6 +1504,7 @@ pub const App = struct {
             } else .{ .label = "" },
             .login => .{ .label = login_providers[index], .badge = loginBadge(self.login_status[index]) },
             .permission => .{ .label = @tagName(permission_modes[index]), .detail = TuiModel.permissionModeDetail(permission_modes[index]) },
+            .settings => .{ .label = if (index == 0) "Compact output" else "Automatic worktrees", .detail = if (index == 0) "Reduce tool output in the transcript" else "Create an isolated Git worktree for each session", .badge = if ((if (index == 0) self.mode_settings.compact_output else self.mode_settings.auto_worktree)) "on" else "off" },
         };
     }
 
@@ -1660,6 +1889,7 @@ pub const App = struct {
         };
         if (wrote_metadata or titled or event == .agent_end) self.saveSessionIndex(store);
         if (event == .agent_end) self.requestSessionTitle();
+        self.flushPendingWorktreeSidecar();
     }
 
     fn titleFromFirstMessage(self: *App, text: []const u8) bool {
@@ -1896,6 +2126,142 @@ pub const App = struct {
         self.sendUserTurn(tui_auto_continue.continue_text) catch |err| self.recordError(@errorName(err)) catch {};
     }
 
+    fn pollWorktree(self: *App) !void {
+        const job = self.worktree_job orelse return;
+        var outcome = job.poll() orelse return;
+        defer outcome.deinit(self.allocator);
+        job.deinit();
+        self.worktree_job = null;
+        self.applyWorktreeOutcome(outcome) catch |err| {
+            try self.state.status.setError(self.allocator, @errorName(err));
+            try self.state.appendTranscript(.@"error", @errorName(err));
+        };
+        if (self.held_user_message.len > 0) {
+            const message = self.held_user_message;
+            self.held_user_message = &.{};
+            defer self.allocator.free(message);
+            try self.submit(message);
+        }
+        while (self.queued_worktree_messages.items.len > 0) {
+            const message = self.queued_worktree_messages.orderedRemove(0);
+            defer self.allocator.free(message);
+            if (self.session) |*session| {
+                try session.followUp(message);
+                try self.state.appendQueuedFollowUp(message);
+                self.refreshQueuedCounts();
+            } else {
+                try self.submit(message);
+            }
+        }
+    }
+
+    fn applyWorktreeOutcome(self: *App, outcome: tui_worktree.CreateOutcome) !void {
+        switch (outcome) {
+            .not_a_repo => try self.state.appendTranscript(.system, "Current directory is not a Git repository; continuing without a worktree."),
+            .failed => |message| try self.state.appendTranscript(.system, message),
+            .created => |created| {
+                const new_dir = try created.info.workingDir(self.allocator);
+                defer self.allocator.free(new_dir);
+                try (self.runtime orelse return error.NoRuntimeConfigured).setWorkspaceRoot(new_dir);
+                try replaceOwnedString(self.allocator, &self.working_dir, new_dir);
+                try self.refreshCwdDisplay();
+                try self.recordWorktreeSidecar(&created.info);
+                try self.state.appendTranscript(.system, "Git worktree ready for this session.");
+                if (created.uncommitted > 0) try self.state.appendTranscript(.system, "Note: the original repository has uncommitted changes; the worktree starts from the current commit.");
+            },
+        }
+    }
+
+    fn pollWorktreeManagement(self: *App) !void {
+        const job = self.worktree_management_job orelse return;
+        const value = job.poll() orelse return;
+        var outcome = value;
+        defer outcome.deinit(self.allocator);
+        job.deinit();
+        self.worktree_management_job = null;
+        if (self.pending_delete_id.len > 0) {
+            const id = self.pending_delete_id;
+            self.pending_delete_id = &.{};
+            defer self.allocator.free(id);
+            const path = self.pending_delete_path;
+            self.pending_delete_path = &.{};
+            defer if (path.len > 0) self.allocator.free(path);
+            switch (outcome) {
+                .dirty => try self.state.appendTranscript(.system, "Cannot delete this session: its worktree is dirty or Git could not verify it safely."),
+                .removed => |message| {
+                    if (message) |text| try self.state.appendTranscript(.system, text);
+                    if (message != null and path.len > 0 and tui_worktree.pathExists(path)) {
+                        try self.state.appendTranscript(.system, "The session worktree could not be removed; keeping it and its worktree record.");
+                    } else {
+                        try self.finishDeleteSession(id);
+                    }
+                },
+                .failed => |message| try self.state.appendTranscript(.@"error", message),
+                else => return error.InvalidWorktreeOutcome,
+            }
+            try self.deliverHeldWorktreeMessages();
+            return;
+        }
+        if (self.pending_resume_id.len > 0) {
+            const id = self.pending_resume_id;
+            self.pending_resume_id = &.{};
+            defer self.allocator.free(id);
+            const expected_path = self.pending_resume_path;
+            self.pending_resume_path = &.{};
+            defer if (expected_path.len > 0) self.allocator.free(expected_path);
+            switch (outcome) {
+                .reattached => |message| {
+                    if (message) |text| {
+                        try self.state.appendTranscript(.system, text);
+                        if (!tui_worktree.pathExists(expected_path)) {
+                            try self.setResumeWithoutWorktree(id);
+                            try self.state.appendTranscript(.system, "The session worktree could not be reattached; resuming in the original repository.");
+                        }
+                    }
+                },
+                .missing_branch => {
+                    try self.setResumeWithoutWorktree(id);
+                    try self.state.appendTranscript(.system, "This session's Git worktree and branch are missing; resuming in the original repository.");
+                },
+                .failed => |message| {
+                    try self.setResumeWithoutWorktree(id);
+                    try self.state.appendTranscript(.@"error", message);
+                    try self.state.appendTranscript(.system, "The session worktree could not be reattached; resuming in the original repository.");
+                },
+                else => return error.InvalidWorktreeOutcome,
+            }
+            self.state.session_index = 0;
+            for (self.state.sessions.items, 0..) |entry, index| if (std.mem.eql(u8, entry.id, id)) {
+                self.state.session_index = index;
+                break;
+            };
+            try self.resumeSelectedSession();
+            try self.deliverHeldWorktreeMessages();
+        }
+    }
+
+    fn deliverHeldWorktreeMessages(self: *App) !void {
+        if (self.held_user_message.len > 0) {
+            const message = self.held_user_message;
+            self.held_user_message = &.{};
+            defer self.allocator.free(message);
+            try self.submit(message);
+        }
+        try self.drainQueuedWorktreeMessageIfIdle();
+    }
+
+    fn drainQueuedWorktreeMessageIfIdle(self: *App) !void {
+        if (self.worktree_job != null or self.worktree_management_job != null or self.state.status.streaming or self.queued_worktree_messages.items.len == 0) return;
+        if (self.runtime) |runtime| {
+            if (runtime.local_agent) |*local| {
+                if (!local.isIdle()) return;
+            }
+        }
+        const message = self.queued_worktree_messages.orderedRemove(0);
+        defer self.allocator.free(message);
+        try self.submit(message);
+    }
+
     pub fn drainEvents(self: *App) !void {
         var session = &(self.session orelse return);
         var completed_agent_end = false;
@@ -1976,6 +2342,7 @@ pub const App = struct {
             self.compaction_just_ended = null;
             try self.sendPendingAfterCompaction(completed, resumed_run or self.state.status.streaming);
         }
+        if (!completed_agent_end or self.state.queue.total() == 0) try self.drainQueuedWorktreeMessageIfIdle();
     }
 
     fn applyRuntimeEvent(self: *App, event: tui_runtime.TuiEvent) !void {
@@ -2051,6 +2418,12 @@ pub const App = struct {
         self.pending_session_reset = false;
     }
 
+    fn enqueueWorktreeMessage(self: *App, text: []const u8) !void {
+        const queued = try self.allocator.dupe(u8, text);
+        errdefer self.allocator.free(queued);
+        try self.queued_worktree_messages.append(self.allocator, queued);
+    }
+
     pub fn submit(self: *App, text: []const u8) !void {
         const trimmed = std.mem.trim(u8, text, " \t\r\n");
         if (trimmed.len == 0) return;
@@ -2071,6 +2444,38 @@ pub const App = struct {
             return err;
         };
         try self.ensureSessionId();
+        if (self.worktree_job != null or self.worktree_management_job != null) {
+            if (self.held_user_message.len == 0) {
+                self.held_user_message = try self.allocator.dupe(u8, trimmed);
+                try self.state.appendTranscript(.system, "Setting up this session's Git worktree; your message will be sent when ready.");
+            } else {
+                try self.enqueueWorktreeMessage(trimmed);
+                try self.state.appendTranscript(.system, "Worktree setup is still running; your message is queued and will be sent when ready.");
+            }
+            return;
+        }
+        if (self.mode_settings.auto_worktree and self.working_dir.len > 0 and self.worktree_job == null and self.worktree_management_job == null and !self.worktree_attempted and self.session_turns == 0) {
+            const home = compat.getEnvVarOwned(self.allocator, "HOME") catch null;
+            defer if (home) |value| self.allocator.free(value);
+            if (home) |h| {
+                const base = try std.fs.path.join(self.allocator, &.{ h, ".oapx", "worktrees" });
+                defer self.allocator.free(base);
+                if (tui_worktree.isUnderBase(self.working_dir, base)) {
+                    self.worktree_attempted = true;
+                    self.state.appendTranscript(.system, "Already in a managed session worktree; continuing here.") catch {};
+                } else {
+                    const job = try tui_worktree.CreateJob.start(self.allocator, tui_worktree.processRunner(), self.working_dir, base, self.session_id);
+                    errdefer job.deinit();
+                    const held = try self.allocator.dupe(u8, trimmed);
+                    errdefer self.allocator.free(held);
+                    try self.state.appendTranscript(.system, "Setting up an isolated Git worktree for this session…");
+                    self.worktree_job = job;
+                    self.held_user_message = held;
+                    self.worktree_attempted = true;
+                    return;
+                }
+            }
+        }
         self.state.stream_aborted = false;
         if (self.session) |*session| {
             session.submitTurn(trimmed) catch |err| {
@@ -2080,6 +2485,7 @@ pub const App = struct {
                 return;
             };
         }
+        self.session_turns += 1;
         try self.state.appendUserMessage(trimmed);
         self.refreshQueuedCounts();
     }
@@ -2216,11 +2622,13 @@ pub const App = struct {
                 try self.loadSessions();
                 self.state.session_index = 0;
                 self.state.session_scroll = 0;
+                self.state.confirm_session_delete = false;
                 self.state.mode = .session_picker;
             },
             .open_model_picker => self.openPicker(.model),
             .open_login_picker => self.openPicker(.login),
             .open_permission_picker => self.openPicker(.permission),
+            .open_settings_picker => self.openPicker(.settings),
             .start_login_provider => try self.startLoginProviderName(result.login_provider),
             .compact => try self.startCompaction(command.arg orelse ""),
             .none => {},
@@ -2262,6 +2670,21 @@ pub const App = struct {
         self.state.telemetry.context_window = window;
     }
 
+    fn toggleSetting(self: *App, index: usize) !void {
+        if (index == 0) {
+            self.mode_settings.compact_output = !self.mode_settings.compact_output;
+            if (self.runtime) |runtime| runtime.setCompactOutput(self.mode_settings.compact_output);
+        } else {
+            self.mode_settings.auto_worktree = !self.mode_settings.auto_worktree;
+        }
+        var store = try tui_config.Store.initDefault(self.allocator);
+        defer store.deinit();
+        var cfg = try store.load();
+        defer cfg.deinit(self.allocator);
+        cfg.mode = self.mode_settings;
+        try store.save(cfg);
+    }
+
     fn persistCurrentModel(self: *App) void {
         const runtime = self.runtime orelse return;
         const model = runtime.currentModel() orelse return;
@@ -2284,6 +2707,10 @@ pub const App = struct {
         const next = try allocator.dupe(u8, value);
         allocator.free(field.*);
         field.* = next;
+    }
+
+    fn setResumeWithoutWorktree(self: *App, id: []const u8) !void {
+        try replaceOwnedString(self.allocator, &self.resume_without_worktree_id, id);
     }
 
     fn stageClipboard(self: *App, text: []const u8) void {
@@ -2698,12 +3125,32 @@ pub const TuiModel = struct {
                     }
                 }
                 if (app.state.mode == .session_picker) {
+                    if (app.state.confirm_session_delete) {
+                        switch (key.key) {
+                            .char => |c| {
+                                if (c == 'y' or c == 'Y') {
+                                    app.deleteSelectedSession() catch |err| app.recordError(@errorName(err)) catch {};
+                                    app.state.confirm_session_delete = false;
+                                } else if (c == 'n' or c == 'N') {
+                                    app.state.confirm_session_delete = false;
+                                }
+                            },
+                            .enter => {
+                                app.deleteSelectedSession() catch |err| app.recordError(@errorName(err)) catch {};
+                                app.state.confirm_session_delete = false;
+                            },
+                            .escape => app.state.confirm_session_delete = false,
+                            else => {},
+                        }
+                        return .none;
+                    }
                     switch (key.key) {
                         .up => moveSessionSelection(app, -1),
                         .down => moveSessionSelection(app, 1),
                         .char => |c| switch (c) {
                             'k' => moveSessionSelection(app, -1),
                             'j' => moveSessionSelection(app, 1),
+                            'd' => app.state.confirm_session_delete = true,
                             else => {},
                         },
                         .enter => {
@@ -2751,6 +3198,7 @@ pub const TuiModel = struct {
                             .model => app.applySelectedModel() catch |err| app.recordError(@errorName(err)) catch {},
                             .login => app.applySelectedLogin() catch |err| app.recordError(@errorName(err)) catch {},
                             .permission => app.applySelectedPermission() catch |err| app.recordError(@errorName(err)) catch {},
+                            .settings => if (app.pickerSourceIndex(app.state.menu_index)) |index| app.toggleSetting(index) catch |err| app.recordError(@errorName(err)) catch {},
                         },
                         .escape => closeModal(app),
                         else => {},
@@ -2858,6 +3306,8 @@ pub const TuiModel = struct {
                 app.drainEvents() catch {};
                 app.pumpAutoContinue(compat.time.nowMillis());
                 app.pollLogin() catch {};
+                app.pollWorktree() catch |err| app.recordError(@errorName(err)) catch {};
+                app.pollWorktreeManagement() catch |err| app.recordError(@errorName(err)) catch {};
                 app.state.refreshStreamingElapsed(compat.time.nowMillis());
                 if (app.interrupt_armed_tick) |armed| {
                     if (app.state.anim_tick -% armed > interrupt_window_ticks) app.interrupt_armed_tick = null;
@@ -3059,13 +3509,14 @@ pub const TuiModel = struct {
             .model => "Select model",
             .login => "Login provider",
             .permission => "Tool permissions",
+            .settings => "TUI settings",
         };
         const empty_message = if (filter.len > 0)
             try tui_text.truncateLineToWidth(allocator, try std.fmt.allocPrint(allocator, "  nothing matches \"{s}\"", .{filter}), width -| 4)
         else if (app.state.picker_kind == .model) "  no models available" else "  (nothing to select)";
         const subtitle: ?[]const u8 = if (filter.len > 0)
             try tui_text.truncateLineToWidth(allocator, try std.fmt.allocPrint(allocator, "{s} {s}{s}", .{ tui_theme.glyph.prompt, filter, tui_theme.glyph.caret }), width -| 4)
-        else if (app.state.picker_kind == .model) tui_theme.glyph.prompt ++ " type to filter" else null;
+        else if (app.state.picker_kind == .model) tui_theme.glyph.prompt ++ " type to filter" else if (app.state.picker_kind == .settings) "Enter toggles  Esc closes" else null;
         return menu_picker_view.render(allocator, .{
             .title = title,
             .subtitle = subtitle,
@@ -4300,6 +4751,16 @@ test "TuiModel picker filters by typing and applies the filtered choice" {
     try std.testing.expectEqualStrings("", model.app.?.state.pickerFilter());
 }
 
+test "settings picker resolves filtered selection to the visible setting" {
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.openPicker(.settings);
+    try app.state.appendPickerFilter("worktrees");
+    try std.testing.expectEqual(@as(usize, 1), app.pickerMatchCount());
+    try std.testing.expectEqual(@as(?usize, 1), app.pickerSourceIndex(0));
+    try std.testing.expect(app.pickerSourceIndex(1) == null);
+}
+
 test "filterMatches needs every term in the label or the detail" {
     try std.testing.expect(filterMatches("", "claude-opus-4", "anthropic"));
     try std.testing.expect(filterMatches("OPUS", "claude-opus-4", "anthropic"));
@@ -4621,6 +5082,35 @@ const auto_compact_history = [_]ai_types.Message{
         .timestamp = 0,
     } },
 };
+
+test "App init takes mode settings from options, not the environment" {
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{auto_compact_test_model} });
+    defer app.deinit();
+    try std.testing.expect(!app.mode_settings.auto_worktree);
+    try std.testing.expect(!app.mode_settings.compact_output);
+
+    var opted_in = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{auto_compact_test_model}, .auto_worktree = true, .compact_output = true });
+    defer opted_in.deinit();
+    try std.testing.expect(opted_in.mode_settings.auto_worktree);
+    try std.testing.expect(opted_in.mode_settings.compact_output);
+}
+
+test "resuming discards a pending worktree sidecar from another session" {
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.pending_worktree_info = tui_worktree.WorktreeInfo{
+        .path = try std.testing.allocator.dupe(u8, "/tmp/pending-worktree-test"),
+        .branch = try std.testing.allocator.dupe(u8, "tui/old"),
+        .repo_root = try std.testing.allocator.dupe(u8, "/tmp"),
+        .prefix = try std.testing.allocator.dupe(u8, ""),
+    };
+    app.pending_worktree_session_id = try std.testing.allocator.dupe(u8, "old");
+    app.session_id = try std.testing.allocator.dupe(u8, "new");
+
+    app.discardPendingWorktreeSidecar();
+    try std.testing.expect(app.pending_worktree_info == null);
+    try std.testing.expectEqual(@as(usize, 0), app.pending_worktree_session_id.len);
+}
 
 fn autoCompactTestApp(mock: *MockAppSession) !App {
     var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{auto_compact_test_model} });
@@ -6123,6 +6613,22 @@ test "session picker navigation pages through hidden rows" {
     try std.testing.expectEqual(@as(usize, 4), TuiModel.visibleSessionCount(&app));
 }
 
+test "session deletion refuses to remove the active session" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "sessions" });
+    defer std.testing.allocator.free(base);
+    try compat.fs.createDir(compat.fs.getCwd(), base);
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.store = try session_store.Store.init(std.testing.allocator, base);
+    app.session_id = try std.testing.allocator.dupe(u8, "active");
+    try app.state.addSession("active", "Active session");
+    try app.deleteSelectedSession();
+    try std.testing.expectEqual(@as(usize, 1), app.state.sessions.items.len);
+    try std.testing.expect(std.mem.indexOf(u8, app.state.transcript.items[0].text.items, "active session") != null);
+}
+
 test "session picker typing characters does not edit anything" {
     var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
     defer model.deinit();
@@ -6392,6 +6898,43 @@ test "resume selected session clears delete reset flags on success" {
     try std.testing.expect(!app.quarantine_events);
     try std.testing.expectEqual(@as(usize, 0), app.quarantine_buffer.items.len);
     try std.testing.expectEqualStrings("s1", app.session_id);
+}
+
+test "resume of a session without a worktree resets the workspace to the launch directory" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+
+    var production = try ProductionRuntime.init(std.testing.allocator, .{});
+    defer production.deinit();
+    production.initBridge();
+
+    var app = try App.init(std.testing.allocator, production.options());
+    defer app.deinit();
+    app.runtime.?.run_async = false;
+
+    if (app.store) |*store| store.deinit();
+    app.store = try session_store.Store.init(std.testing.allocator, base);
+
+    const model = app.runtime.?.currentModel() orelse return error.NoModelConfigured;
+    var meta = session_store.SessionMetadata{
+        .session_id = try std.testing.allocator.dupe(u8, "s1"),
+        .model = try std.testing.allocator.dupe(u8, model.id),
+        .provider = try std.testing.allocator.dupe(u8, model.provider),
+        .last_active = 1,
+    };
+    defer meta.deinit(std.testing.allocator);
+    try app.store.?.save(meta, .{ .turn_start = .{} });
+    try app.loadSessions();
+
+    app.worktree_attempted = true;
+    if (app.working_dir.len > 0) std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, "/tmp/managed-worktree-of-another-session");
+
+    try app.resumeSelectedSession();
+    try std.testing.expectEqualStrings(app.launch_dir, app.working_dir);
+    try std.testing.expect(!app.worktree_attempted);
 }
 
 const MockProvider = struct {

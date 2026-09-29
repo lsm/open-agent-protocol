@@ -63,6 +63,7 @@ pub const TuiRuntimeOptions = struct {
     permission_mode: PermissionMode = .bypass,
     thinking_level: ai_types.ThinkingLevel = .low,
     compact_output: bool = false,
+    auto_worktree: bool = false,
     run_async: bool = true,
     generate_titles: bool = false,
     context_window: ?u32 = null,
@@ -534,7 +535,7 @@ pub const TuiRuntime = struct {
         return model_catalog.contextWindowIsReported(self.models[index]);
     }
 
-    pub fn setContextWindow(self: *TuiRuntime, window: ?u32) error{AboveMaximum, AgentAlreadyStreaming}!void {
+    pub fn setContextWindow(self: *TuiRuntime, window: ?u32) error{ AboveMaximum, AgentAlreadyStreaming }!void {
         if (self.local_agent) |*local| {
             if (!local.isIdle()) return error.AgentAlreadyStreaming;
         }
@@ -602,6 +603,26 @@ pub const TuiRuntime = struct {
         }
         self.tool_protocol.server.tools.clearRetainingCapacity();
         try self.tool_protocol.server.registerTools(self.wrapped_tools);
+    }
+
+    pub fn setWorkspaceRoot(self: *TuiRuntime, root: []const u8) !void {
+        if (self.local_agent) |*local| {
+            if (!local.isIdle()) return error.AgentAlreadyStreaming;
+        }
+        const owned = try self.allocator.dupe(u8, root);
+        self.allocator.free(self.workspace_root);
+        self.workspace_root = owned;
+        if (self.permission_engine) |engine| try engine.setWorkspaceRoot(root);
+        if (self.local_agent) |*local| {
+            const system_prompt = try self.workspaceSystemPrompt();
+            defer self.allocator.free(system_prompt);
+            try local.setSystemPrompt(system_prompt);
+        }
+    }
+
+    pub fn setCompactOutput(self: *TuiRuntime, enabled: bool) void {
+        self.compact_output = enabled;
+        if (self.local_agent) |*local| local.setCompactToolOutput(enabled);
     }
 
     pub fn switchModel(self: *TuiRuntime, model_id: []const u8) !void {
@@ -1778,7 +1799,7 @@ test "a context window is a whole token count, optionally scaled, and nothing el
 }
 
 test "the window in effect is the model's own until a session sets one" {
-    const models = [_]ai_types.Model{test_model_a, test_model_b};
+    const models = [_]ai_types.Model{ test_model_a, test_model_b };
     var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &models });
     defer runtime.deinit();
 
