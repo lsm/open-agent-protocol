@@ -1100,16 +1100,14 @@ pub const App = struct {
         if (try tui_worktree.readSidecar(self.allocator, store.base_dir, id)) |info_value| {
             var info = info_value;
             defer info.deinit(self.allocator);
-            if (tui_worktree.pathExists(info.path)) {
-                const job = try tui_worktree.ManagementJob.start(self.allocator, tui_worktree.processRunner(), &info, .remove);
-                errdefer job.deinit();
-                const pending_id = try self.allocator.dupe(u8, id);
-                errdefer self.allocator.free(pending_id);
-                self.worktree_management_job = job;
-                self.pending_delete_id = pending_id;
-                try self.state.appendTranscript(.system, "Checking and removing the session worktree…");
-                return;
-            }
+            const job = try tui_worktree.ManagementJob.start(self.allocator, tui_worktree.processRunner(), &info, .remove);
+            errdefer job.deinit();
+            const pending_id = try self.allocator.dupe(u8, id);
+            errdefer self.allocator.free(pending_id);
+            self.worktree_management_job = job;
+            self.pending_delete_id = pending_id;
+            try self.state.appendTranscript(.system, "Checking and removing the session worktree…");
+            return;
         }
         try self.finishDeleteSession(id);
     }
@@ -1165,6 +1163,14 @@ pub const App = struct {
             if (self.working_dir.len > 0) self.allocator.free(self.working_dir);
             self.working_dir = try self.allocator.dupe(u8, root);
             try self.refreshCwdDisplay();
+        } else {
+            self.worktree_attempted = false;
+            if (self.launch_dir.len > 0) {
+                try runtime.setWorkspaceRoot(self.launch_dir);
+                if (self.working_dir.len > 0) self.allocator.free(self.working_dir);
+                self.working_dir = try self.allocator.dupe(u8, self.launch_dir);
+                try self.refreshCwdDisplay();
+            }
         }
         var loaded = try store.resumeSession(id, runtime);
         defer loaded.deinit(self.allocator);
@@ -6669,6 +6675,43 @@ test "resume selected session clears delete reset flags on success" {
     try std.testing.expect(!app.quarantine_events);
     try std.testing.expectEqual(@as(usize, 0), app.quarantine_buffer.items.len);
     try std.testing.expectEqualStrings("s1", app.session_id);
+}
+
+test "resume of a session without a worktree resets the workspace to the launch directory" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+
+    var production = try ProductionRuntime.init(std.testing.allocator, .{});
+    defer production.deinit();
+    production.initBridge();
+
+    var app = try App.init(std.testing.allocator, production.options());
+    defer app.deinit();
+    app.runtime.?.run_async = false;
+
+    if (app.store) |*store| store.deinit();
+    app.store = try session_store.Store.init(std.testing.allocator, base);
+
+    const model = app.runtime.?.currentModel() orelse return error.NoModelConfigured;
+    var meta = session_store.SessionMetadata{
+        .session_id = try std.testing.allocator.dupe(u8, "s1"),
+        .model = try std.testing.allocator.dupe(u8, model.id),
+        .provider = try std.testing.allocator.dupe(u8, model.provider),
+        .last_active = 1,
+    };
+    defer meta.deinit(std.testing.allocator);
+    try app.store.?.save(meta, .{ .turn_start = .{} });
+    try app.loadSessions();
+
+    app.worktree_attempted = true;
+    if (app.working_dir.len > 0) std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, "/tmp/managed-worktree-of-another-session");
+
+    try app.resumeSelectedSession();
+    try std.testing.expectEqualStrings(app.launch_dir, app.working_dir);
+    try std.testing.expect(!app.worktree_attempted);
 }
 
 const MockProvider = struct {

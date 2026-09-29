@@ -169,6 +169,16 @@ pub fn remove(allocator: std.mem.Allocator, runner: Runner, info: *const Worktre
     return null;
 }
 
+fn removeOrphaned(allocator: std.mem.Allocator, runner: Runner, info: *const WorktreeInfo) !?[]u8 {
+    var prune = try runner.run(allocator, &.{ "git", "-C", info.repo_root, "worktree", "prune" }, info.repo_root);
+    defer prune.deinit(allocator);
+    if (!prune.ok) return try failureMessage(allocator, "git worktree prune", &prune);
+    var branch = try runner.run(allocator, &.{ "git", "-C", info.repo_root, "branch", "-d", info.branch }, info.repo_root);
+    defer branch.deinit(allocator);
+    if (!branch.ok) return try failureMessage(allocator, "git branch -d", &branch);
+    return null;
+}
+
 pub fn sidecarPath(allocator: std.mem.Allocator, sessions_base: []const u8, session_id: []const u8) ![]u8 {
     try validateSessionId(session_id);
     return std.fs.path.join(allocator, &.{ sessions_base, session_id, "worktree.json" });
@@ -294,7 +304,7 @@ fn managementOperation(allocator: std.mem.Allocator, runner: Runner, info: *cons
         if (!try branchExists(allocator, runner, info.repo_root, info.branch)) return .{ .missing_branch = {} };
         return .{ .reattached = try reattach(allocator, runner, info) };
     }
-    if (!pathExists(info.path)) return .{ .removed = null };
+    if (!pathExists(info.path)) return .{ .removed = try removeOrphaned(allocator, runner, info) };
     const dirty = hasUncommitted(allocator, runner, info.path) catch return .{ .dirty = {} };
     if (dirty) return .{ .dirty = {} };
     return .{ .removed = try remove(allocator, runner, info) };
@@ -619,6 +629,28 @@ test "management job refuses to delete a dirty worktree" {
     var outcome = maybe.?;
     defer outcome.deinit(std.testing.allocator);
     try std.testing.expect(outcome == .dirty);
+}
+
+test "management job prunes an orphaned worktree whose directory is gone" {
+    var git: FakeGit = .{};
+    defer git.deinit(std.testing.allocator);
+    const info = WorktreeInfo{ .path = @constCast("/nonexistent/worktree/xyz"), .branch = @constCast("tui/test"), .repo_root = @constCast("/repo"), .prefix = "" };
+    const job = try ManagementJob.start(std.testing.allocator, git.runner(), &info, .remove);
+    defer job.deinit();
+    var maybe: ?ManagementOutcome = null;
+    while (maybe == null) {
+        maybe = job.poll();
+        if (maybe == null) std.atomic.spinLoopHint();
+    }
+    var outcome = maybe.?;
+    defer outcome.deinit(std.testing.allocator);
+    try std.testing.expect(outcome == .removed);
+    try std.testing.expect(outcome.removed == null);
+    var saw_prune = false;
+    for (git.calls.items) |call| {
+        if (std.mem.indexOf(u8, call, "worktree prune") != null) saw_prune = true;
+    }
+    try std.testing.expect(saw_prune);
 }
 
 test "sidecar round-trips the worktree record" {
