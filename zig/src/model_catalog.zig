@@ -808,7 +808,10 @@ fn discoverCatalogModels(
         else => return err,
     };
     if (listing.models != null and listing.fetched and honouring) forgetRefusal(allocator, marker);
-    if (marked and !listing.fetched) return error.ModelCatalogRemembered;
+    if (marked and !listing.fetched) {
+        if (listing.models) |models| freeDiscoveredModels(allocator, models);
+        return error.ModelCatalogRemembered;
+    }
     return listing.models;
 }
 
@@ -836,7 +839,7 @@ fn discoverCatalogModelsCacheThenProbe(
         error.OutOfMemory => return error.OutOfMemory,
         error.ModelCatalogRefused => {
             if (rowDropsOnRefusal(target.id)) return error.ModelCatalogRefused;
-            return .{ .models = try loadCachedCatalogModels(allocator, name, null), .fetched = false };
+            return cachedOrNothing(allocator, name, skip_cache);
         },
         else => return cachedOrNothing(allocator, name, skip_cache),
     };

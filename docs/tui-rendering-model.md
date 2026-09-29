@@ -261,7 +261,8 @@ code paths; add a transcript row instead.
   kimi` or `KIMI_API_KEY`, the stored one first): it fetches `GET /v1/models` on the
   region's own host — `api.kimi.com/coding` or `api.moonshot.ai`, whichever the stored
   login or `KIMI_REGION` names — with that key, caches the body under
-  `~/.oapx/model_catalog/kimi.json` (`kimi-global.json` for the global region) on the
+  `~/.oapx/model_catalog/catalog-kimi.json` (`catalog-kimi-global.json` for the global
+  region) on the
   same 24-hour window and stale-copy fallback as Anthropic's, and falls back to the
   static `kimi-k2.7-code` when both fetch and cache are unusable. Kimi is a plan row, so
   a 401 or 403 is a refusal rather than an outage: the row is dropped for that listing
