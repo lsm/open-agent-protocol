@@ -28,6 +28,7 @@ pub const retrieve_tool = agent.AgentTool{
     \\{"type":"object","properties":{"description":{"type":"string","description":"Why this tool call is needed and what information or change it is intended to produce."},"reference":{"type":"string","description":"Artifact reference from the tool result."},"mode":{"type":"string","enum":["preview","range","grep","full_for_context"],"description":"preview is capped and is the default. full_for_context explicitly returns the complete artifact to the model."},"start_line":{"type":"integer","minimum":1,"description":"First 1-based line for range mode."},"line_count":{"type":"integer","minimum":1,"description":"Maximum number of lines for range mode."},"pattern":{"type":"string","description":"Literal substring to search for in grep mode."},"context_lines":{"type":"integer","minimum":0,"description":"Number of surrounding lines for grep mode."},"max_bytes":{"type":"integer","minimum":1,"description":"Maximum bytes returned to model context for preview, range, or grep modes."}},"required":["description","reference"],"additionalProperties":false}
     ,
     .execute = executeRetrieve,
+    .operation = .read,
 };
 
 pub fn executeRetrieve(

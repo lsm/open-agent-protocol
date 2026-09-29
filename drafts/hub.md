@@ -63,10 +63,10 @@ security posture, and a port carries all of them or is not conformant.
 
 | rule | detail | pinned by |
 | --- | --- | --- |
-| **Loopback bind by default** | The HTTP daemon binds `127.0.0.1:6270`. Pointing it at an external interface is explicitly unsupported and opts out of the single-user model. | `TestServeDefaultAddrIsLoopback` |
+| **Loopback bind by default** | The HTTP daemon binds `127.0.0.1:6270`. Pointing it at an external interface is explicitly unsupported and opts out of the single-user model. | `TestServeDefaultAddrIsLoopback`. Zig: `oapx hub` with no transport flag binds `127.0.0.1:6270`, pinned by `the default bind is loopback, so every default user keeps the allowlist`; `the loopback allowlist is the three loopback spellings and nothing else` pins which binds are loopback at all, `a bind is read as a host and a port, and a malformed one says which part it is` pins every `--addr` refusal, and `the banner names the bound address, IPv4 plainly and IPv6 bracketed` pins what the banner prints |
 | **No authentication** | There is no credential, token or session cookie on either transport. Over stdio, spawning the process *is* the authorization. | structural: no auth code path exists on either transport, which is how the rule is kept — a test asserting an absence would only say the tree had not grown one yet |
-| **`Host` allowlisted on a loopback bind** | When the bind address names `localhost`, `127.0.0.1` or `::1`, only requests whose `Host` header names one of those three are served; anything else is refused `403`. Comparison is case-insensitive and the port is stripped. A non-loopback bind has no allowlist. | `TestHostAllowlist`, `TestLoopbackHosts` |
-| **`Origin` refused on every route** | A request carrying any `Origin` header is refused `403 cross_origin_request`. The check wraps the whole mux rather than living in the routes that read a body, so it covers `close` and every route not yet written. | `TestEveryRouteRefusesABrowserOrigin`, `TestReadRequestRefusesBrowserOrigins`, `TestTheOriginBoundaryHoldsWithoutAHostAllowlist` |
+| **`Host` allowlisted on a loopback bind** | When the bind address names `localhost`, `127.0.0.1` or `::1`, only requests whose `Host` header names one of those three are served; anything else is refused `403`. Comparison is case-insensitive and the port is stripped, and **a bracketed host has to carry a port**, which is what Go's split produces: `Host: [::1]` with no port is refused, and so is one that opens a bracket it never closes. A non-loopback bind has no allowlist. | `TestHostAllowlist`, `TestLoopbackHosts`. Zig: `a Host header is compared without its port and without case` and `a bind that is not loopback has no allowlist, so nothing is refused`, against a real listener — refused as an `error.response` carrying `unrecognized_host`, which is what `D1` fixed in Go |
+| **`Origin` refused on every route** | A request carrying any `Origin` header is refused `403 cross_origin_request`. The check wraps the whole mux rather than living in the routes that read a body, so it covers `close` and every route not yet written. | `TestEveryRouteRefusesABrowserOrigin`, `TestReadRequestRefusesBrowserOrigins`, `TestTheOriginBoundaryHoldsWithoutAHostAllowlist`. Zig: `a request carrying both an Origin and a foreign Host is refused the Origin first` and `the daemon answers over a real socket, and the bytes say which refusal it was` — both over a real listener, so the order and the bytes on the wire are pinned rather than asserted |
 | **`environment` is an allowlist** | A child process inherits nothing ambient. An adapter entry's `environment` names the variables forwarded: a bare `NAME` forwards the daemon's own value (an unset name is omitted), `NAME=value` passes through literally. A tool source's `environment` takes the same form with one stricter rule — a bare `NAME` the daemon does not carry fails at startup, naming the source and the variable, because that entry is the credential list of one executable the daemon itself launches. | `TestResolveEnvironment`, `TestLoadRegistryToolSourceNeedsEveryNameItLists`, `TestCallerEnvironmentNeverNamesAVariableTwice`. Zig: the transport builds the child's environment from the list alone rather than from its own, pinned by `the child sees exactly the environment it was given and nothing ambient`, and the hub's registry hands each adapter exactly what the document resolved, pinned by `the hub's registry builds every entry a document names, and a child inherits only the variables its entry lists` |
 | **A restart ends every live session** | Run children are per-session and no adapter survives the process, so a restart ends every harness process. Under [Decision 0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md) a session outlives its process and close releases it, so no entry accumulates; reopening one is staged as T7, and until it lands a client that reconnects to a restarted hub finds no session. | The restart: `TestServeSessionsClosedOnShutdown`. The release: none yet — `TestHubSessionCloseSemantics` and `TestSessionsListingAcrossLifecycle` still pin the kept entry, which D2 records. |
 | **A binding record holds no credential** | `--bindings <path>` appends one record per open: the session id, the adapter and its pin, the home, the working directory the adapter entry was configured with (omitted when the hub does not know one — never the daemon's own), the model, and the tool source ids. It never records the request's environment, a credential, or a resolved environment value — a record of what was asked must not become a copy of what was secret — and the file is created `0o600`. History is appended rather than replaced, and a torn tail is truncated on the next write or the next open, keeping the longest prefix of records that decode, so one crash cannot leave the log permanently unreadable | `TestAnOpenIsRecordedAsABindingAndNothingSensitiveIs` (opens a session and asserts the written bytes carry neither), `TestTheStoreFileIsNotWorldReadable` (the mode), `TestATornTailIsTruncatedSoTheStoreKeepsWorking`, `TestATornTailIsTruncatedWhenTheStoreIsOpenedAgain`, `TestACorruptLineThatKeepsItsNewlineIsTruncatedToo` and `TestACorruptLineIsTruncatedWhenTheStoreIsOpenedAgain` (the repair), `TestACloseAndADuplicateOpenCannotInterleaveTheirRecords` (a close never lands between an open and its registration), and `TestARolledBackOpenIsRecordedAsOpenedAndThenClosed` and `TestARefusedDuplicateOpenIsRecordedAsARefusalAndNothingElse` and `TestTheRecordsDirectoryIsTheAdaptersOwnAndIsOmittedWhenUnknown` (what a record claims) |
@@ -397,6 +397,31 @@ error. That is stated because the four reasons are the whole set.
 | `POST /sessions/{id}/close` | `close` | `204 No Content`, no body | `unknown_session` 404, `run_active` 409, `session_closed` 409, `request_cancelled` 400, `internal` 500 |
 | `GET /sessions/{id}/events` | `events` | an SSE stream, adopting a held subscription when the request named no cursor | see [events](#events) |
 
+**The daemon serves a bounded number of connections at once, and a stream is
+not a connection to itself.** One connection at a time is enough for the
+read-only routes and wrong for `events`: a stream holds its connection for as
+long as the client listens, so a single-connection daemon answers exactly one
+SSE subscriber and then serves nothing else, forever. So the number of
+connections open at once is bounded, and the bound is a transport fact rather
+than a protocol one — the client cannot observe how many are open, only that
+its own was answered.
+
+**Reaching the bound does not get a new wire code**, and this is the part that
+was wrong in the first draft of this paragraph. The rule below is that a port
+may not invent an admission ceiling, and inventing one is exactly what a
+`busy` with a `Retry-After` would be: a client that receives it has no way to
+know whether to wait or to reconnect, because the draft's codes are the ones
+the core defines and none of them means "the daemon is full". A port that
+reaches its bound therefore refuses the connection the way it refuses anything
+else, and **what a client is told at the bound is not decided here** — it needs
+a code the core defines, which is [G13](#known-gaps). Until then a port may
+choose, and the choice is a divergence rather than a rule.
+
+Go has no bound of its own: `go/cmd/goap/serve.go` runs a plain `http.Server`
+over `net.Listen` and `servehttp` does no connection accounting, which the
+bounds section below already records. So this rule is new, it is this port's
+rule, and a reader sent to Go for the numbers will find none.
+
 Every route that reads a body requires `Content-Type: application/json`, and
 the body is read as UTF-8 whatever `charset` the header names. RFC 8259 §11
 records that no `charset` parameter is defined for `application/json` — the
@@ -436,7 +461,7 @@ both answers, at the budget and one byte over it.
 | A wrong `Content-Type` is refused `415` | `TestReadRequestRefusesBrowserOrigins` (the status), `TestARequestTheDaemonWillNotParseIsRefusedWithItsCode` (the code, and the absent `Content-Type`; a `charset` is no longer a reason to refuse, and the row below says which test pins that) |
 | Any `charset` is admitted and the body is read as UTF-8 — no `charset` means UTF-8, and `utf-8`, `utf8`, `UTF-8`, `latin1`, `us-ascii`, `iso-8859-1` and a name that is not a charset all behave alike | `TestAnyCharsetIsAdmittedAndTheBodyIsReadAsUTF8` — each case's body names a session whose id carries non-ASCII text, and the answer must echo those characters unchanged, so a body transcoded per the header could not pass |
 | A body that is not valid UTF-8 is read with the replacement character, whatever `charset` it claims | `TestABodyThatIsNotUTF8IsReadWithTheReplacementCharacter` — a body with a raw invalid byte is admitted and the echoed id carries U+FFFD. The gate does not police UTF-8 validity; refusing it would be the new refusal the charset decision removed |
-| A body that cannot be read at all is refused `400 request_read` | `TestATruncatedRequestBodyIsRefusedWithItsOwnCode` — a client that hangs up mid-body over a raw connection, so the daemon's read fails rather than the client's write |
+| A body that cannot be read at all is refused `400 request_read` | `TestATruncatedRequestBodyIsRefusedWithItsOwnCode` — a client that hangs up mid-body over a raw connection, so the daemon's read fails rather than the client's write. Zig: `a client that hangs up mid-body is refused request_read, as the draft pins it`, which half-closes a real socket after a short prefix and reads the answer. A hangup **mid-header** is a different thing and gets a bare `400`, because no body was promised and there is nothing to have failed to read |
 | A body over 16 MiB is refused `413 request_too_large` | `TestRequestBudgetMatchesHTTP` (which pins the stdio `request_too_large` for the same budget) |
 | A body's refusing status and code match the stdio op's | `TestRequestBudgetMatchesHTTP`, `TestOpErrorCodesMirrorHTTP` |
 | A `GET /adapters/{name}/capabilities` response cites a daemon-minted correlation id | `TestCapabilitiesEndpoint` |
@@ -500,16 +525,108 @@ subscription ceiling, and a connection that stops reading is ended by
 the body cap, a 30 s header read and a 2 min idle timeout, none of which is
 protocol. **A port may not invent an admission ceiling on the HTTP surface**,
 because a client that receives `busy` over HTTP would have no way to know
-whether to wait or to reconnect.
+whether to wait or to reconnect. That rule is about the **wire**, and it
+stands: no port may answer a client with a status the draft does not define.
+
+It is *not* a statement that a port may serve an unbounded number of
+connections. A port must bound them, because a stream holds its connection
+for as long as the client listens and a daemon that serves one connection at
+a time answers exactly one subscriber and then nothing else, forever. **The
+bound itself is a transport choice and belongs to the table below rather than
+to the wire**: a port picks the number, and what a client is told when the
+bound is reached is undefined until a code for it exists, which is
+[G13](#known-gaps). Neither half contradicts the other — a port bounds its
+concurrency and invents no code for having done so.
 
 | bound | value | pinned by |
 | --- | --- | --- |
-| Request body | 16 MiB | `TestRequestBudgetMatchesHTTP` |
+| Request body | 16 MiB | `TestRequestBudgetMatchesHTTP`; Zig: `a body over the cap is refused before it is read` |
 | Per-subscription mailbox | 64 envelopes, as the core defines it | `TestHubSubscriptionQueueOverflow` |
+| Accept poll | 50 ms, so a signal is noticed by an idle daemon | Zig: `hub_accept_poll_ms` and `the accept poll reports an idle listener as idle and a waiting one as waiting`, which drives a real listener. This is not protocol and is not in Go, whose `Serve` returns a listener a runtime polls for it |
+| Accept failure | A failure the peer caused is served past; a failure of the listener stops the daemon | Zig: `an accept a peer aborted before the call is served again, not obeyed` and `a client that resets a connection the listener had not taken yet does not stop the hub`. The rule is not cosmetic: a daemon that stops on any accept error can be stopped by any local process that opens a connection and resets it, which a port scanner or a health check does by accident and an attacker does on purpose — and stopping it sweeps every session |
+| Request headers | 16 KiB | Zig: `headers over the cap are refused rather than buffered`. Go's net/http carries its own default and names no rule, so this is a Zig choice within "a port may choose its own" |
+| Concurrent connections | a port's own number; not on the wire, and no code for reaching it | none — Go has no bound at all (`serve.go` runs a plain `http.Server`), and this draft has no code for it either. [G13](#known-gaps) names what a port does meanwhile |
 
 A 30 s header read and a 2 min idle timeout keep a socket from being held open
 forever. Neither is protocol — no client observes them, and a port may choose
-its own — so they are named here only so a port knows they exist.
+its own — so they are named here only so a port knows they exist. Zig takes both
+numbers as written, and the one that matters is the header: **a peer that
+connects and then says nothing is given up on rather than waited on**, because
+the daemon serves connections one at a time and a stalled read would otherwise
+wedge every other client and leave a signal unobserved. Pinned by `a peer that
+connects and never sends a request is given up on, not waited on forever`;
+Go's bound is `ReadHeaderTimeout` on the same server.
+
+**Both bounds are a property of a platform that can wait on a socket**, and
+Zig's is a `poll`, so neither holds on Windows: a read there blocks with no
+deadline, and a peer that connects and stays silent wedges the daemon. Rather
+than claim a bound it does not have, the Zig daemon says so on stderr when it
+starts there, and the two tests that pin the bound skip. Closing it is #460's
+work, not this route's; the macOS and Linux builds are the ones the release
+covers.
+
+**The header budget is absolute, and the body budget is not.** Go's
+`ReadHeaderTimeout` runs from the first byte, so a peer that sends one byte
+per window never completes a request; the `IdleTimeout` restarts on every read,
+so a body read the same way can go on for as long as the peer keeps dribbling.
+Zig takes that split as it stands — a per-read budget on the header would let
+exactly the wedge the bound exists to prevent — and `the header budget is the
+whole request's, not a fresh one per byte` pins the first half. The second half
+is a hole the draft names rather than closes, and a port that wants it closed
+needs a whole-body deadline, which is not what either tree has.
+
+**A route that is not written yet answers a plain `404`, not a refusal.** Go's
+mux does the same for a path no pattern matches, and the draft's codes are
+`invalid_request`, `unknown_adapter` and `unknown_session` — none of which is
+"this URL does not exist". So a port that has written three of the twelve
+routes answers `404` for the other nine rather than inventing a code for them,
+and the answer carries no `error.response` envelope. Pinned in Zig by the
+daemon's own 404 while no route is written; Go pins the same thing by
+`TestTheRouteTableIsComplete`, which fails when a path is added to neither the
+mux nor a list of the routes still to come.
+
+**A body the daemon refused to read is drained before the socket closes.** A
+`403` or a `413` is answered without reading the body the head declared, and a
+close on a socket whose receive queue still holds those bytes is answered with a
+reset, which on Linux can discard the refusal the client has not read yet — the
+client sees a connection error rather than the reason. So every path that
+answers without consuming a body drains what the head declared, bounded at 64 KiB
+and one poll cycle, and gives up rather than waiting on a peer that sends nothing
+more. Zig: `a body the daemon refused to read is drained before the socket closes,
+or the close resets the answer away` and `a drain gives up rather than waiting on a
+peer that sends nothing more`; measured, forty consecutive refused POSTs with
+their bodies sent in full all arrive as `403`.
+
+**A read in flight is bounded, and a signal is noticed inside the bound.** The
+daemon polls a connection for at most 50 ms at a time and re-checks whether it
+should stop between polls, so an interrupt during a slow or stalled request ends
+the daemon in well under a second rather than at the end of the request's own
+budget. A read also returns **whatever has arrived** rather than waiting for its
+buffer to fill: a client that promises 4 KiB and sends 5 bytes must not hold the
+one connection the daemon serves until it sends the rest. Zig: `a poll waiting
+on a silent peer is re-checked inside its cycle, not held to its deadline` and
+`a body that arrives in part is taken as it comes, and never waited on for the
+rest`, plus the same two measured against the built binary.
+
+**The trust model is decided on the head, before any body is read.** A
+cross-origin or foreign-`Host` request that declares a body and withholds it is
+refused as soon as its head is parsed, which is what Go's middleware does — so it
+neither spends the 16 MiB scratch on a request the posture exists to refuse, nor
+holds the single serve slot for the idle budget. A body is read only by a route
+that will consume one. Zig: `the trust model is decided on the head, so a refused
+request never waits on a body it will not read`, and measured: a refused
+cross-origin POST that declares 4 KiB and sends 5 bytes is answered `403` in
+under a millisecond.
+
+**A `HEAD` is answered with the headers a `GET` would send and no body.** RFC
+9110 forbids a body in a HEAD response and net/http suppresses one, so a port
+that sends one is wrong rather than merely different — and the `Content-Length`
+still says what a `GET` would return, which is the only reason a client sends
+a HEAD at all. This holds for a read that failed after the method was parsed
+too, so a `HEAD` with a body over the cap gets a bare `413` and a `HEAD` with
+a duplicate header gets a bare `400`. Zig: `a HEAD is answered with the length
+a GET would send and no body at all` and `a HEAD whose read fails after its
+method gets no body either`.
 
 ## Cursor and replay
 
@@ -1145,6 +1262,21 @@ here; each was a place a differential test would otherwise not see.
   `400` and the code. The differential job for #388 should still carry a
   truncated-request case: this test pins the code, not the parity.
 
+- **G13 — open.** A port must bound how many connections it serves at once,
+  because a stream holds its connection for as long as the client listens and
+  an unbounded daemon is one nobody can bound, but **nothing says what a client
+  is told when the bound is reached**. The draft's codes are the ones the core
+  defines and none of them means "the daemon is full", and the rule above
+  forbids inventing one — so a port that reaches its bound has no correct
+  answer available to it. Go has the same absence in a worse form: it has no
+  bound at all. What closes this is a code in the core for a daemon at its
+  connection bound, and a `Test` that pins it on both trees; until then a port
+  refuses the connection the way it refuses anything else and records the
+  choice as a divergence. The Zig daemon's own bound — one connection, polled
+  at 50 ms — is pinned by `the accept poll reports an idle listener as idle and
+  a waiting one as waiting` on the trust-model side of this work, and that test
+  pins the poll, not the bound.
+
 One asymmetry is deliberate and is **not** a gap: a cross-origin refusal exists
 on the HTTP transport alone. A stdio peer is a separate process on the far side
 of a pipe, so the `Origin` check is HTTP's alone — and what stdio carries in its
@@ -1170,6 +1302,24 @@ byte-for-byte comparison on their first request.
 **D3 is fixed** ([#500](https://github.com/lsm/open-agent-protocol/pull/500)): a catalog is
 stamped with the revision its *lister* served it under, which is what makes the
 draft's "refuse one that disagrees with the descriptor" check possible at all.
+
+**D21 — a chunked body is refused, where Go de-chunks it.** A request carrying
+any `Transfer-Encoding` is answered a bare `400`; `net/http` decodes chunked
+transparently, so a streaming client works against `goap hub` and not against
+`oapx hub`. This is a gap rather than a decision, and it is closed by the routes
+that read a body — the decoder belongs beside the first `readBody` caller, under
+the same 16 MiB cap, not in a reader with no consumer. Until then the refusal is
+the safe one: a body whose framing this daemon cannot read is not a body it
+should guess at. Pinned by `a chunked body is refused rather than guessed at`.
+
+**D22 — no `100 Continue` is sent, where Go sends one when the handler reads the
+body.** A client that sends `Expect: 100-continue` waits for the interim answer;
+`curl` waits about a second and sends anyway, a stricter client waits out the
+idle budget. Sending it here would be worse than not sending it, because no route
+in this daemon consumes a body yet — an interim answer would invite a body the
+daemon is about to refuse. The routes that read a body answer `100 Continue`
+first, and a route that refuses the head answers the refusal instead. Noted here
+so the difference is a recorded one rather than a surprise in a differential run.
 
 **D5 is fixed** ([#516](https://github.com/lsm/open-agent-protocol/pull/516)): a session
 open's `metadata` reaches an adapter through the core, which before it **had no member to
@@ -1246,6 +1396,107 @@ are "stamped with the revision the lister served it under", and both name
 | **The fix** | `hub.OpenRequest` carries `capability_revision`. An open that **subscribes or attaches tool sources** compares it against the registered adapter's revision and returns `StaleCapabilities` on a disagreement — **after** the adapter's probe and **before** the `session_exists` lookup, so a probe failure answers ahead of it (`probe_failed` in Go, and the same here) and the gate still wins over a name collision and over an unadvertised feature. A request that states no revision is not gated, which is Go's own `revision != ""` guard and not a hole. The two Go gates differ only in which support feature they then check, and that half already exists as the election check, so one comparison covers both. The `expected`/`current` pair is assembled by the frontend, which reads the registered revision from `hub.listing` — the same route the `adapters` op already uses. |
 | **What it is not** | The stdio `open` arm, which is [#387](https://github.com/lsm/open-agent-protocol/issues/387)'s next step and depends on this. |
 
+### D11 — a `submit` on an open is refused in Zig and admitted in Go
+
+| | |
+| --- | --- |
+| **The draft says** | `open`'s params are `adapter` and `request`, and the request's `message` is a first-class member of `openRequest`. A message admitted at open time is **queued**: the answer carries `admitted_submit_requests` and the submission runs under the session it was admitted into. |
+| **Go does** | `OpenCompound` admits it: it opens, submits the message, and reports the admission in the answer. The subscription is registered *before* the message runs, so the open misses nothing. |
+| **Zig does** | Refuses it `unsupported_feature`. `hub.OpenRequest` has **no `message` member**, so there is nothing to admit into; the stdio op says so rather than dropping the submission. |
+| **Why it matters** | The refusal is the honest answer and the alternative is worse — Go's `refuseUnadvertisedOpen` exists and refuses a message on the *endpoint* surface, so "a message is unsatisfiable here" is already a shape this tree knows. What is missing is the machinery, not the will. |
+| **The fix** | `hub.OpenRequest` gains `message_json`, the hub registers the subscription before running the submission, and the answer carries `admitted_submit_requests`. For the subscribing case, the `Frontend` needs a held subscription — the same thing `events` needs — so both unblock together. This is `submit`'s work, not `open`'s: the same PR that serves `submit` on the wire is the one that can admit a message at open time. |
+| **The refusal's precedence** | It is checked **before** the adapter is looked up and before the revision gate runs, so an open naming an unregistered adapter *and* carrying a message answers `unsupported_feature` where Go answers `unknown_adapter`, and a subscribing open citing a stale revision answers `unsupported_feature` where Go answers `stale_capabilities`. Go's `openOp` looks the adapter up first and gates second, so both of those win there. Hoisting the refusal means it lives in the hub rather than the frontend, which is where it stops existing: the moment `submit` admits a message and `events` admits a subscription, neither refusal is there to be out of order. It is recorded rather than fixed because every input that reaches the difference is already divergent under this row. |
+| **Also refused here** | **A subscribing open, for the same reason and a sharper one.** `hub.open` registers a `Subscription` when `subscribe` is set, and the stdio op discarded it — the wire accepted a subscription it cannot deliver, and once `submit` lands its envelopes would queue against a subscription nothing drains. Go holds the subscription in its `Frontend`; there is no equivalent here yet, so the honest answer is to refuse until `events` exists. **This is a second divergence from the same cause** and it is why `open`'s parity cases carry no `subscribe` at all. |
+
+### D12 — an open's `unsupported_feature` and `capability_degraded` carry no `feature`
+
+| | |
+| --- | --- |
+| **The draft says** | `open`'s errors include `unsupported_feature` (400, for a tool source it will not attach) and `capability_degraded` (400, for a feature the request did not opt into), both naming the feature. |
+| **Go does** | `ControlRefusal` turns the adapter's refusal into the code **and its details**, so both arms carry `feature` and `reason` on the wire. |
+| **Zig does** | The same two codes with no `details`. `hub.open` returns a bare error from its `Failure` set and the `contract.Refusal` — which is where the feature and reason live — is a local in the hub that never escapes. `catalogRefusal` in `stdio.zig` gets away without it because its caller already knows which feature it asked for; an open's elections are three features and the frontend does not know which one failed. |
+| **Why it matters** | The differential comparison keeps `details` and drops only `message`, so the two trees will disagree on the first open whose elections are unadvertised or degraded. Unreachable today — the only registered adapter advertises all three — and live the moment #389's registry registers a real one. |
+| **The fix** | The hub has to surface the refusal, not just the error: either a `Failure` that carries the `Refusal`, or a variant of `open` that returns it. That is a core change, and it is the same change `submit`, `resolve` and `cancel` will each want, so it belongs in the PR that serves the first of them. |
+
+### D13 — an ill-typed envelope member answers `schema_invalid` where Go answers `malformed_json`
+
+| | |
+| --- | --- |
+| **The draft says** | `open`'s errors distinguish `malformed_json` (the envelope will not decode) from `schema_invalid` (it decodes and does not satisfy the schema). The distinction is the draft's, and it is meaningful. |
+| **Go does** | `gateRequest` runs `ParseEnvelope` first and only then `schema.Validate`. `ParseEnvelope` is "can `encoding/json` unmarshal this into the `Envelope` struct", so a **wrong-typed** member fails it (`json: cannot unmarshal number into Go struct field plain.id`) and answers `malformed_json`, while a **missing** member or an off-schema value parses and answers `schema_invalid`. |
+| **Zig does** | `schema_invalid` for both. `oap_envelope.deserializeEnvelope` decodes *and* dispatches on the type in one step, so the two questions Go asks separately cannot be asked separately here. |
+| **Why neither order fixes it** | Validate-then-decode gives `schema_invalid` for the ill-typed member, as now. Decode-then-validate gives `schema_invalid` for the ill-typed member too — but it *also* answers `malformed_json` for `{"id":"x","type":"nonesuch"}`, where Go answers `schema_invalid`, because the Zig decode rejects the unknown type and Go's parse does not. Measured, not reasoned: both orders were tried and each is wrong on one of the two inputs. |
+| **The fix** | The envelope module needs a parse step that is "shape only" — unmarshal into the struct without the type dispatch — so the gate can ask Go's two questions in Go's order. That is a change to `protocol/oap/envelope.zig`, shared by every consumer, and it is worth doing once rather than per op. |
+| **Reach** | Reachable today: any open with a number where a string belongs. The differential scenario sends `{"request":7}` and `{"request":[]}`, which both agree on, but not an ill-typed *member*. |
+
+### D14 — an unframable open answer keeps the session silently
+
+| | |
+| --- | --- |
+| **The draft says** | "An open response that cannot be encoded rolls the session back and says so", and "an open whose id the host named is **kept** when its response cannot be framed, and the refusal names it". |
+| **Go does** | `refuseOversizedOpen` and `refuseUnencodableOpen`: a **host-named** session is left open and the refusal says so; an **adapter-minted** one is rolled back, because nobody learned its id and an unreachable session must not leak. |
+| **Zig does** | The answer goes through the generic `answerLine` path, which answers `response_too_large` and **keeps the session in both cases**, with no distinction named. |
+| **Why it matters** | A `sessions` listing after such a refusal would show a session the host has no id for. Unreachable with today's registry — one adapter, an 18 MiB frame limit and a small state document — and live the moment a real adapter's state does not fit. |
+| **The fix** | Belongs with the `response_too_large` work, which is its own PR: the rollback needs the hub's own allocator and a shutdown-bounded close, which is the shape D6 gives hub-2 for #389. Recording it here so the follow-up PR starts from the rule rather than from this paragraph. |
+
+### D15 — a colliding session name is refused before the adapter ever runs
+
+| | |
+| --- | --- |
+| **The draft says** | `session_exists` (409) is one of `open`'s errors, and `unsupported_feature` (400) is another. The draft does not say which wins when a request is both. |
+| **Go does** | The adapter runs **first**. `hub.Open` opens the session and only detects a duplicate at `serve.go:102`, so the adapter's own refusals — an unattachable tool source, a bound it will not take — are what answer. Measured: opening `s1`, then opening `s1` naming three local tool sources answers `unsupported_feature` in Go. |
+| **Zig does** | `hub.open` pre-checks the name (`hub.zig:448`) and answers `session_exists` before the adapter is asked anything. The same input answers `session_exists`. |
+| **Why it matters** | The host is told its id is taken when the real reason its request cannot be served is that the adapter will not attach what it asked for. Fixing the name is then useless and the actual refusal is never reported. Reachable with both trees' own memory adapter, so it needs no exotic adapter to appear. |
+| **The fix, and why it is one change with four others** | Match Go: call `adapter.open`, then check for the duplicate, then close the session just opened. That is a **core** change, and it is the same one **D11** (admit a message, report `admitted_submit_requests`), **D12** (surface the `contract.Refusal` so `feature` and `reason` reach the wire), **D14** (roll an unnamed session back) and the ordering half of **D13** all want. Five rows, one change: `hub.open` should do what Go's `hub.Open` does — run the adapter, apply the checks in Go's order, and report *which* refusal and why. That belongs in its own PR before `submit`, and it is the reason `submit`'s PR is worth its size. |
+
+### D16 — the envelope size budget is measured on re-serialized bytes
+
+| | |
+| --- | --- |
+| **The draft says** | "A stdio request envelope over 16 MiB is refused" — which reads as the bytes the host sent. |
+| **Go does** | `gateRequest` compares `len(payload)` of the raw `json.RawMessage`, so the budget is the member's **byte span in the line**. |
+| **Zig does** | `Request.payload` is a parsed `std.json.Value`, and `gateRequest` re-encodes it with `ownedRawJson` — **compact** — before measuring. A pretty-printed or escaped envelope spanning 16–18 MiB compacts to under 16 MiB, so it is served. |
+| **Why it matters** | The frame limit is 18 MiB, so such a line is accepted by the wire and the two trees then disagree about it: oapx serves the open, goap answers `request_too_large`. It is the one budget where "what the host sent" and "what we re-printed" differ, and the draft's wording is about the first. |
+| **The fix** | The serve loop's `decode` has the raw line; it would need to record the member's byte span and hand it to the gate alongside the parsed value. That is a `Request` member and a change in `decode` — cheap, and local to this file. |
+| **Why it is not fixed here** | Not a size question: no test can send a 16 MiB envelope through the differential without making the job enormous, so a fix here would be asserted only by a unit test with a hand-built span, and the differential could not confirm it. It is also a wire detail rather than a core one, so it is not part of the `hub.open` refusal change that D11, D12, D14 and D15 share. |
+
+### D17 — a wire-named tool source was attached without the daemon's trust checks
+
+| | |
+| --- | --- |
+| **The draft says** | The daemon's trust model: a host may not hand the hub a command to run. An attachment that names a `local` source, `args`, a `NAME=value` `environment` entry, or an unconfigured process id is refused, not attached. |
+| **Go does** | `ResolveAttachments` (`serve/attach.go:58-71`) applies the three checks before the attachment is admitted, and an open naming a `local` source answers `unsupported_feature`. Measured: a source with `kind: "local"` and a `command` is refused. |
+| **Zig does** | **Fixed.** `openSession` handed `tool_sources_json` straight to `hub.open` with no counterpart, so the same open **succeeded** and the command was silently dropped. `attachmentRefusal` now applies all four checks in the frontend, and consults the hub's **registry-configured** sources — not the adapter's advertised ones — for the member comparison, so a source the operator configured is named by id and not re-described from the wire. |
+| **Why it matters** | This is the one divergence found so far that is about a *host being untrusted* rather than about a host being misinformed. Every other row is a wrong code or a missing reason; this one is a session that reports a command it never ran. It is reachable today, with both trees' own memory adapter, and four differential scenarios now attach a source — the one named "an attachment that names something to run is refused by both" sends five — so both trees are held to the same four refusals. That scenario is what caught the substitution gap recorded as D19. |
+| **The fix** | The three checks belong in the frontend, before the attachment is admitted, because that is where the wire is untrusted: a `kind` that names an executable, `args`, a `NAME=value` `environment` entry, and a process id the registry has not configured. That is the same place Go puts them, and it is the reason the trust model is a frontend concern rather than a hub one. |
+
+### D18 — a frontend refusal answers ahead of every hub refusal
+
+| | |
+| --- | --- |
+| **The draft says** | The order this page now specifies: the adapter is **looked up** (step 1), then **probed** (step 2), then the **attachment** is gated on its revision (step 3), and only then the adapter's own refusals (step 5). Every later check is downstream of every earlier one. |
+| **Go does** | `openOp` looks the adapter up at `ops.go:334` and refuses `unknown_adapter` there, runs `AttachmentGate`'s stale comparison at `ops.go:337` and refuses `stale_capabilities` or `probe_failed` through it, and only calls `ResolveAttachments` at `ops.go:359`. The three are in that order, and the attachment check is **last**. |
+| **Zig does** | `openSession` calls `attachmentRefusal` at `stdio.zig:602` **before** `hub.open`, so the one refusal living in the frontend outranks **all three** the hub owns. An open naming an unregistered adapter and a wire-described attachment answers `unsupported_feature` where Go answers `unknown_adapter`; a failing probe is outranked the same way; a stale revision is outranked the same way, which is what the row said when it covered only that one. D11's `message` refusal has the identical shape and its own cell. |
+| **Why it is not fixed here** | One cause, four symptoms, and the cause is structural: the checks are **split across two owners** and `openSession` can only order them by *where they run*. The gate, the lookup and the probe are inside `hub.open`; the attachment check is in the frontend, before it. No ordering of two calls puts a frontend call after something inside a call it precedes, short of duplicating the gate or hoisting the check into the hub — and hoisting it is wrong, because the check is the one place the wire is untrusted and it belongs where the wire arrives. All of it is the refusal PR's work: a hub that reports its refusals **in this page's order** is a hub a frontend can ask about without re-implementing the gate. Recording one row rather than four keeps the ledger pointing at one fix instead of four, and names D11's cell as the same inversion. |
+
+### D19 — a configured tool source is validated, then handed to the adapter as the wire wrote it
+
+| | |
+| --- | --- |
+| **The draft says** | A host names a tool source by the id the operator configured; the daemon substitutes what the operator declared and the adapter never sees the wire's own description. |
+| **Go does** | `ResolveAttachments` (`serve/attach.go:89`) replaces the wire entry with `hub.Registry().ToolSource` and merges the operator's `environment` before the adapter runs. |
+| **Zig does** | `openSession` hands the raw `tool_sources_json` to `hub.open`. `attachmentRefusal` now checks the wire against the registry, so naming a configured source by id — **the only form the check permits** — is refused by the memory adapter ("an attachment needs an id and a kind", mapped to `unsupported_feature`), and with a matching kind the operator's `endpoint` and `protocol` are still dropped. |
+| **Why it is not fixed here** | It is a second concern on top of the trust checks, and #549 has had nine rounds. Latent today because `oapx hub` refuses `--config`, so the registry is always empty; it becomes live the moment #389 registers sources. Carried as its own PR from main. |
+
+### D20 — `type_mismatch` is answered by no test in either tree
+
+| | |
+| --- | --- |
+| **The draft says** | An envelope whose payload is not a `session.open.request` is refused `type_mismatch`, distinct from `schema_invalid` (the envelope violates its schema) and from `invalid_request` (the request field is missing or the wrong type). |
+| **Go does** | Answered from `serve/servestdio/ops.go`, with no test that sends a schema-valid non-`open` payload to the `open` route. |
+| **Zig does** | Answered at `zig/src/hub/stdio.zig:505`, after the envelope is validated and before it is dispatched, and with no test that reaches it. `malformed_json` is covered by the Zig unit table; `type_mismatch` is not, in either tree. |
+| **Why it is not fixed here** | The line that reaches it does not exist yet in either tree, so the check is correct by inspection and unproven by execution. A row that claims coverage it does not have is the same defect as a name that claims an unexercised check, and the ledger is where that claim has to be visible. Renaming the differential scenario that claimed five gate refusals and exercised two is the other half of the same fix. |
+
 ### D4 — the registry's `journal_capacity` is hub-wide in Zig, per-adapter in Go
 
 | | |
@@ -1287,6 +1538,24 @@ re-parse for the adapter, which is the repo's idiom and costs one parse, or hold
 the line's arena for as long as the session lives. Writing that op without
 deciding is how a use-after-free gets in, and it would be invisible in every test
 that keeps the caller alive.
+
+**The rule is about the whole request, not just `metadata`, and serving `open` is
+what proved it.** An adapter may borrow *any* of `request` for the duration of the
+call — `session_id`, `participant`, the raw JSON — and must not retain any of it.
+The `open` op borrowed `envelope.id` for the answer's `in_reply_to` and read
+`envelope.capability_revision` for a refusal's `details` after releasing the
+envelope, and both were reads of memory the line's arena had already given back.
+The second is the subtler one: `refusalWith` dupes the `DetailEntry` array, and a
+**shallow dupe of a struct array does not dupe the slices inside it**, so copying
+the entry did not copy the string.
+
+`adapter/memory` is the reference implementation of the rule and was already right:
+`Session.create` dupes what it keeps into its own arena and uses the caller's only
+for the duration of the call. The test double in `hub/stdio.zig` was not, and
+`open` is the first op that creates a session, so it is the first to reach it — a
+stored `request.session_id` outlived the arena it came from and the next `sessions`
+listing read freed memory. A double that keeps what it is given is a real defect
+once an op retains anything, and cheaper to find at the double than in CI.
 
 Whether the contract should instead offer a *clone path*, so an adapter can keep a
 metadata value past the call, is a contract question rather than an `open` one, and

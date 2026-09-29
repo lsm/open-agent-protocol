@@ -61,7 +61,7 @@ pub const execute_tool = agent.AgentTool{
     .description = "Run a shell command in the workspace and return stdout, stderr, exit status, duration, and byte counts. Large output is stored as a retrievable artifact.",
     .short_description = "Run shell command; large output becomes artifact.",
     .parameters_schema_json = schema_execute,
-    .execute = execute,
+    .execute = execute, .operation = .shell,
 };
 
 pub fn execute(

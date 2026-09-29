@@ -642,6 +642,7 @@ pub const ProductionRuntime = struct {
     permission_engine: permission.PermissionEngine,
     models: []ai_types.Model,
     initial_model: ?SavedModelRef = null,
+    context_window: ?u32 = null,
     mode_settings: tui_config.ModeSettings = .{},
 
     pub const InitOptions = struct {
@@ -682,7 +683,9 @@ pub const ProductionRuntime = struct {
 
         var mode_settings: tui_config.ModeSettings = .{};
         var initial_model: ?SavedModelRef = null;
+        var saved_context_window: ?u32 = null;
         if (saved_config) |cfg| {
+            saved_context_window = cfg.mode.context_window;
             mode_settings = cfg.mode;
             if (cfg.model.len > 0) {
                 initial_model = SavedModelRef{
@@ -701,6 +704,7 @@ pub const ProductionRuntime = struct {
             .permission_engine = permission_engine,
             .models = models,
             .initial_model = initial_model,
+            .context_window = saved_context_window,
             .mode_settings = mode_settings,
         };
         initial_model = null;
@@ -724,6 +728,7 @@ pub const ProductionRuntime = struct {
             } else null,
             .permission_engine = &self.permission_engine,
             .workspace_root = self.permission_engine.workspace_root,
+            .context_window = self.context_window,
             .run_async = true,
             .compact_output = self.mode_settings.compact_output,
             .auto_worktree = self.mode_settings.auto_worktree,
@@ -947,6 +952,8 @@ pub const App = struct {
     slash_index: usize = 0,
     slash_index_query: u64 = 0,
     compaction_transcripts: std.ArrayList([]u8) = .empty,
+    rate_model: []u8 = &.{},
+    rate_provider: []u8 = &.{},
     written_model: []u8 = &.{},
     written_provider: []u8 = &.{},
     session_written: bool = false,
@@ -1077,6 +1084,8 @@ pub const App = struct {
         if (self.written_provider.len > 0) self.allocator.free(self.written_provider);
         self.pending_thinking.deinit(self.allocator);
         if (self.pending_after_compaction) |pending| self.allocator.free(pending);
+        if (self.rate_model.len > 0) self.allocator.free(self.rate_model);
+        if (self.rate_provider.len > 0) self.allocator.free(self.rate_provider);
         if (self.session_title.len > 0) self.allocator.free(self.session_title);
         if (self.first_user_text.len > 0) self.allocator.free(self.first_user_text);
         if (self.title_session_id.len > 0) self.allocator.free(self.title_session_id);
@@ -1370,6 +1379,7 @@ pub const App = struct {
         for (loaded.events.items) |*event| {
             try self.applyRuntimeEvent(event.*);
         }
+        self.state.telemetry.rate = .{};
         self.discardReplayedError();
         try self.state.finalizeInterruptedTools();
         self.state.retireToolOccurrences();
@@ -2638,6 +2648,7 @@ pub const App = struct {
             .context, .model, .provider => self.applyContextWindow(),
             else => {},
         }
+        if (command.kind == .context and !result.is_error and command.arg != null) self.persistContextWindow();
         if (result.output.len > 0) {
             try self.state.appendTranscript(if (result.is_error) .@"error" else .system, result.output);
             if (result.is_error) try self.state.status.setError(self.allocator, result.output);
@@ -2681,7 +2692,9 @@ pub const App = struct {
         defer store.deinit();
         var cfg = try store.load();
         defer cfg.deinit(self.allocator);
-        cfg.mode = self.mode_settings;
+        var mode = self.mode_settings;
+        mode.context_window = cfg.mode.context_window;
+        cfg.mode = mode;
         try store.save(cfg);
     }
 
@@ -2701,6 +2714,25 @@ pub const App = struct {
         try replaceOwnedString(self.allocator, &cfg.provider, model.provider);
         try replaceOwnedString(self.allocator, &cfg.api, model.api);
         try store.save(cfg);
+    }
+
+    fn persistContextWindow(self: *App) void {
+        const runtime = self.runtime orelse return;
+        var store = tui_config.Store.initDefault(self.allocator) catch |err| {
+            self.recordError(@errorName(err)) catch {};
+            return;
+        };
+        defer store.deinit();
+        var cfg = store.load() catch |err| {
+            self.recordError(@errorName(err)) catch {};
+            return;
+        };
+        defer cfg.deinit(self.allocator);
+        const window = runtime.contextWindowOverride();
+        self.mode_settings.context_window = window;
+        if (cfg.mode.context_window == window) return;
+        cfg.mode.context_window = window;
+        store.save(cfg) catch |err| self.recordError(@errorName(err)) catch {};
     }
 
     fn replaceOwnedString(allocator: std.mem.Allocator, field: *[]u8, value: []const u8) !void {
@@ -2819,6 +2851,25 @@ pub const App = struct {
         const runtime = self.runtime orelse return;
         const model = runtime.currentModel() orelse return;
         self.state.telemetry.input_cost_per_million = model.cost.input;
+        if (self.rate_model.len > 0 and
+            std.mem.eql(u8, self.rate_model, model.id) and
+            std.mem.eql(u8, self.rate_provider, model.provider)) return;
+        self.adoptRateModel(model.id, model.provider);
+    }
+
+    fn adoptRateModel(self: *App, id: []const u8, provider: []const u8) void {
+        const next_model = self.allocator.dupe(u8, id) catch return;
+        const next_provider = self.allocator.dupe(u8, provider) catch {
+            self.allocator.free(next_model);
+            return;
+        };
+        if (self.rate_model.len > 0) {
+            self.state.telemetry.rate.resetForModel();
+            self.allocator.free(self.rate_model);
+        }
+        if (self.rate_provider.len > 0) self.allocator.free(self.rate_provider);
+        self.rate_model = next_model;
+        self.rate_provider = next_provider;
     }
 
     pub fn slashQuery(self: *const App) ?[]const u8 {
@@ -3308,7 +3359,9 @@ pub const TuiModel = struct {
                 app.pollLogin() catch {};
                 app.pollWorktree() catch |err| app.recordError(@errorName(err)) catch {};
                 app.pollWorktreeManagement() catch |err| app.recordError(@errorName(err)) catch {};
-                app.state.refreshStreamingElapsed(compat.time.nowMillis());
+                const now_ms = compat.time.nowMillis();
+                app.state.refreshStreamingElapsed(now_ms);
+                app.state.telemetry.rate.liveAt(now_ms);
                 if (app.interrupt_armed_tick) |armed| {
                     if (app.state.anim_tick -% armed > interrupt_window_ticks) app.interrupt_armed_tick = null;
                 }
@@ -4109,6 +4162,10 @@ fn defaultModel() ai_types.Model {
     };
 }
 
+fn preferredContextWindow(stored: ?u32, flag: ?u32) ?u32 {
+    return flag orelse stored;
+}
+
 pub fn run(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32) !void {
     var environ_map = try compat.createEnvMap(allocator);
     defer environ_map.deinit();
@@ -4125,7 +4182,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32) !void
     production.initBridge();
 
     var options = production.options();
-    options.context_window = context_window;
+    options.context_window = preferredContextWindow(options.context_window, context_window);
     if (fixture) |runtime| {
         options.protocol = runtime.provider.protocolClient();
         options.generate_titles = false;
@@ -5700,6 +5757,166 @@ const kimi_model = ai_types.Model{
     .max_tokens = 16_384,
 };
 
+fn oapxConfigDir(allocator: std.mem.Allocator, home: []const u8) ![]u8 {
+    return std.fs.path.join(allocator, &.{ home, ".oapx" });
+}
+
+fn expectConfiguredContextWindow(allocator: std.mem.Allocator, home: []const u8, expected: ?u32) !void {
+    const base = try oapxConfigDir(allocator, home);
+    defer allocator.free(base);
+    var store = try tui_config.Store.init(allocator, base);
+    defer store.deinit();
+    var cfg = try store.load();
+    defer cfg.deinit(allocator);
+    try std.testing.expectEqual(expected, cfg.mode.context_window);
+}
+
+fn configFileBytes(allocator: std.mem.Allocator, home: []const u8) ![]u8 {
+    const base = try oapxConfigDir(allocator, home);
+    defer allocator.free(base);
+    const path = try std.fs.path.join(allocator, &.{ base, "config.json" });
+    defer allocator.free(path);
+    return compat.fs.readFileAlloc(allocator, compat.fs.getCwd(), path, 1 << 20);
+}
+
+test "a context window the user chose is persisted, and the catalog's own is not written back" {
+    defer compat.clearTestEnv();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(home);
+    try compat.setTestEnv(std.testing.allocator, "HOME", home);
+
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{gpt_model, kimi_model} });
+    defer app.deinit();
+    if (app.store) |*owned| owned.deinit();
+    app.store = null;
+
+    try app.submit("/context 200000");
+    try std.testing.expectEqual(@as(u64, 200_000), app.runtime.?.contextWindow());
+    try expectConfiguredContextWindow(std.testing.allocator, home, 200_000);
+
+    try app.submit("/context default");
+    try std.testing.expectEqual(@as(u64, 128_000), app.runtime.?.contextWindow());
+    try expectConfiguredContextWindow(std.testing.allocator, home, null);
+}
+
+test "a persisted window the model in effect cannot take is dropped without rewriting the file" {
+    defer compat.clearTestEnv();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(home);
+    try compat.setTestEnv(std.testing.allocator, "HOME", home);
+
+    const base = try oapxConfigDir(std.testing.allocator, home);
+    defer std.testing.allocator.free(base);
+    var store = try tui_config.Store.init(std.testing.allocator, base);
+    defer store.deinit();
+    var cfg = try tui_config.Config.defaults(std.testing.allocator);
+    defer cfg.deinit(std.testing.allocator);
+    cfg.mode.context_window = 4_000_000_000;
+    try store.save(cfg);
+
+    const before = try configFileBytes(std.testing.allocator, home);
+    defer std.testing.allocator.free(before);
+
+    var production = try ProductionRuntime.init(std.testing.allocator, .{});
+    defer production.deinit();
+    production.initBridge();
+    try std.testing.expectEqual(@as(?u32, 4_000_000_000), production.options().context_window);
+
+    var app = try App.init(std.testing.allocator, production.options());
+    defer app.deinit();
+    if (app.store) |*owned| owned.deinit();
+    app.store = null;
+    try app.drainEvents();
+
+    try std.testing.expect(app.runtime.?.contextWindowOverride() == null);
+    try std.testing.expect(app.runtime.?.contextWindow() != 4_000_000_000);
+    var said_it = false;
+    for (app.state.transcript.items) |entry| {
+        if (std.mem.indexOf(u8, entry.text.items, "4000000000 context tokens is above the") != null) said_it = true;
+    }
+    try std.testing.expect(said_it);
+
+    const after = try configFileBytes(std.testing.allocator, home);
+    defer std.testing.allocator.free(after);
+    try std.testing.expectEqualStrings(before, after);
+}
+
+test "a flagless launch keeps the stored window, and the flag overrides it" {
+    defer compat.clearTestEnv();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(home);
+    try compat.setTestEnv(std.testing.allocator, "HOME", home);
+
+    const base = try oapxConfigDir(std.testing.allocator, home);
+    defer std.testing.allocator.free(base);
+    {
+        var store = try tui_config.Store.init(std.testing.allocator, base);
+        defer store.deinit();
+        var cfg = try tui_config.Config.defaults(std.testing.allocator);
+        defer cfg.deinit(std.testing.allocator);
+        cfg.mode.context_window = 200_000;
+        try store.save(cfg);
+    }
+
+    var production = try ProductionRuntime.init(std.testing.allocator, .{});
+    defer production.deinit();
+    production.initBridge();
+    try std.testing.expectEqual(@as(?u32, 200_000), production.options().context_window);
+
+    try std.testing.expectEqual(@as(?u32, 200_000), preferredContextWindow(200_000, null));
+    try std.testing.expectEqual(@as(?u32, 300_000), preferredContextWindow(200_000, 300_000));
+    try std.testing.expectEqual(@as(?u32, 200_000), preferredContextWindow(200_000, 200_000));
+    try std.testing.expectEqual(@as(?u32, null), preferredContextWindow(null, null));
+}
+
+test "a bare /context reports the window and leaves the persisted member alone" {
+    defer compat.clearTestEnv();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(home);
+    try compat.setTestEnv(std.testing.allocator, "HOME", home);
+
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{gpt_model, kimi_model} });
+    defer app.deinit();
+    if (app.store) |*owned| owned.deinit();
+    app.store = null;
+
+    try app.submit("/context 200000");
+    try expectConfiguredContextWindow(std.testing.allocator, home, 200_000);
+
+    try app.submit("/context");
+    try expectConfiguredContextWindow(std.testing.allocator, home, 200_000);
+}
+
+test "a settings toggle does not erase the persisted window" {
+    defer compat.clearTestEnv();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(home);
+    try compat.setTestEnv(std.testing.allocator, "HOME", home);
+
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{gpt_model, kimi_model} });
+    defer app.deinit();
+    if (app.store) |*owned| owned.deinit();
+    app.store = null;
+
+    try app.submit("/context 200000");
+    try expectConfiguredContextWindow(std.testing.allocator, home, 200_000);
+
+    try app.toggleSetting(0);
+    try expectConfiguredContextWindow(std.testing.allocator, home, 200_000);
+    try app.toggleSetting(1);
+    try expectConfiguredContextWindow(std.testing.allocator, home, 200_000);
+}
+
 test "App says so when a window the model in effect cannot take is dropped" {
     const models = [_]ai_types.Model{ gpt_model, kimi_model };
     var app = try App.init(std.testing.allocator, .{ .models = &models, .context_window = 1_100_000 });
@@ -5723,6 +5940,129 @@ test "App says so when a window the model in effect cannot take is dropped" {
     }
     try std.testing.expect(said_again);
     try std.testing.expectEqual(@as(u64, 262_144), app.runtime.?.contextWindow());
+}
+
+test "a failed adopt leaves the old model pair and the average in place" {
+    var app = App{ .allocator = std.testing.allocator, .state = tui_state.AppState.init(std.testing.allocator) };
+    defer app.state.deinit();
+    app.rate_model = try std.testing.allocator.dupe(u8, "first-model");
+    app.rate_provider = try std.testing.allocator.dupe(u8, "first-provider");
+    defer std.testing.allocator.free(app.rate_model);
+    defer std.testing.allocator.free(app.rate_provider);
+    app.state.telemetry.rate.measured_since_switch = .{ .output_tokens = 400, .stream_ms = 1_000 };
+
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    const held = app.allocator;
+    app.allocator = failing.allocator();
+    defer app.allocator = held;
+    app.adoptRateModel("second-model", "second-provider");
+
+    try std.testing.expectEqualStrings("first-model", app.rate_model);
+    try std.testing.expectEqualStrings("first-provider", app.rate_provider);
+    try std.testing.expectEqual(@as(u64, 400), app.state.telemetry.rate.measured_since_switch.output_tokens);
+}
+
+test "an adopt that succeeds replaces the pair and clears the average" {
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{gpt_model, kimi_model} });
+    defer app.deinit();
+    app.drainEvents() catch {};
+
+    try std.testing.expectEqualStrings(gpt_model.id, app.rate_model);
+    try std.testing.expectEqualStrings(gpt_model.provider, app.rate_provider);
+    app.state.telemetry.rate.measured_since_switch = .{ .output_tokens = 400, .stream_ms = 1_000 };
+
+    try app.runtime.?.switchModel("kimi-k2.7-code");
+    app.drainEvents() catch {};
+
+    try std.testing.expectEqualStrings(kimi_model.id, app.rate_model);
+    try std.testing.expectEqualStrings(kimi_model.provider, app.rate_provider);
+    try std.testing.expectEqual(@as(u64, 0), app.state.telemetry.rate.measured_since_switch.output_tokens);
+}
+
+test "a resumed session's replayed events leave the rate showing nothing" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+
+    var production = try ProductionRuntime.init(std.testing.allocator, .{});
+    defer production.deinit();
+    production.initBridge();
+    if (production.models.len == 0) return error.TestExpectedTarget;
+    const model_id = production.models[0].id;
+
+    var store = try session_store.Store.init(std.testing.allocator, base);
+    defer store.deinit();
+    var meta = session_store.SessionMetadata{
+        .session_id = try std.testing.allocator.dupe(u8, "replayed"),
+        .model = try std.testing.allocator.dupe(u8, model_id),
+        .provider = try std.testing.allocator.dupe(u8, production.models[0].provider),
+        .last_active = 1,
+    };
+    defer meta.deinit(std.testing.allocator);
+    const text = "replayed assistant text";
+    var delta = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, text));
+    defer delta.deinit(std.testing.allocator);
+    var ended = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, text));
+    defer ended.deinit(std.testing.allocator);
+    try store.save(meta, .{ .turn_start = .{} });
+    try store.save(meta, .{ .message_start = .{ .role = .assistant } });
+    try store.save(meta, .{ .text_delta = .{ .content_index = 0, .delta = delta } });
+    try store.save(meta, .{ .message_end = .{ .role = .assistant, .text = ended } });
+    try store.save(meta, .{ .turn_end = .{ .stop_reason = .stop } });
+
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    var app = try App.init(std.testing.allocator, production.options());
+    defer app.deinit();
+    if (app.store) |*owned| owned.deinit();
+    app.store = try session_store.Store.init(std.testing.allocator, base);
+    app.session = mock.session();
+    try app.loadSessions();
+    try std.testing.expectEqual(@as(usize, 1), app.state.sessions.items.len);
+    app.state.session_index = 0;
+
+    try app.resumeSelectedSession();
+
+    try std.testing.expectEqual(@as(u64, 0), app.state.telemetry.rate.turn().output_tokens);
+    try std.testing.expectEqual(@as(u64, 0), app.state.telemetry.rate.estimated_since_switch.output_tokens);
+    try std.testing.expectEqual(@as(u64, 0), app.state.telemetry.rate.measured_since_switch.output_tokens);
+    try std.testing.expect(!app.state.telemetry.rate.previous.hasFigure());
+    try std.testing.expect(!app.state.telemetry.rate.average.hasFigure());
+    try std.testing.expect(!app.state.telemetry.rate.live.hasFigure());
+}
+
+test "a model switch resets the rate average, including between two models that cost the same" {
+    const same_price = ai_types.Model{
+        .id = "gpt-5-codex-twin",
+        .name = "GPT-5 Codex Twin",
+        .api = "openai-responses",
+        .provider = "openai",
+        .base_url = "https://example.invalid",
+        .reasoning = true,
+        .input = &[_][]const u8{"text"},
+        .cost = .{ .input = 1.25, .output = 10, .cache_read = 0, .cache_write = 0 },
+        .context_window = 128_000,
+        .max_tokens = 16_384,
+    };
+    var twin = gpt_model;
+    twin.id = "gpt-5-codex-twin";
+    twin.cost = same_price.cost;
+    const models = [_]ai_types.Model{ gpt_model, twin };
+    var app = try App.init(std.testing.allocator, .{ .models = &models });
+    defer app.deinit();
+
+    app.state.telemetry.rate.measured_since_switch = .{ .output_tokens = 400, .stream_ms = 1_000 };
+    app.state.telemetry.rate.turnEnded();
+    app.drainEvents() catch {};
+    try std.testing.expect(app.state.telemetry.rate.measured_since_switch.hasFigure());
+
+    try app.runtime.?.switchModel("gpt-5-codex-twin");
+    app.drainEvents() catch {};
+
+    try std.testing.expectEqual(@as(u64, 0), app.state.telemetry.rate.measured_since_switch.output_tokens);
+    try std.testing.expect(!app.state.telemetry.rate.average.hasFigure());
+    try std.testing.expect(!app.state.telemetry.rate.previous.hasFigure());
 }
 
 test "App a model command leaves the gauge on the window in effect" {

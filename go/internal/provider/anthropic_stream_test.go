@@ -481,3 +481,70 @@ func TestCancellationIsRecheckedBetweenBufferedEvents(t *testing.T) {
 		t.Errorf("got %d text deltas, want the drain to stop at the cancel rather than applying the rest", countKind(events, EventTextDelta))
 	}
 }
+
+func TestAThinkingEndCarriesItsOwnPartSoTheSignatureIsNotLost(t *testing.T) {
+	events := runAnthropic(t, anthropicStreamModel(),
+		sseFrame(`{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`),
+		sseFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"pondering"}}`),
+		sseFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-9"}}`),
+		sseFrame(`{"type":"content_block_stop","index":0}`),
+	)
+	end := findEvent(t, events, EventThinkingEnd)
+	carried := end.Partial.Content
+	if end.ContentIndex >= len(carried) {
+		t.Fatalf("the thinking end's partial holds %d blocks and its content index is %d, so nothing can read the part it ends", len(carried), end.ContentIndex)
+	}
+	thinking := carried[end.ContentIndex].Thinking
+	if thinking == nil {
+		t.Fatalf("the block at the ended index = %+v, want the thinking part", carried[end.ContentIndex])
+	}
+	if thinking.Thinking != "pondering" || thinking.Signature != "sig-9" {
+		t.Errorf("the ended part = %+v, want the whole block and the signature it saw", thinking)
+	}
+	terminal := findEvent(t, events, EventDone)
+	if thinking.Signature != terminal.Message.Content[end.ContentIndex].Thinking.Signature {
+		t.Errorf("the part carries %q and the terminal %q, want the same value: a carry that differs is a silent divergence",
+			thinking.Signature, terminal.Message.Content[end.ContentIndex].Thinking.Signature)
+	}
+}
+
+func TestAThinkingEndCarriesItsPartWhenThereIsNoSignature(t *testing.T) {
+	events := runAnthropic(t, anthropicStreamModel(),
+		sseFrame(`{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`),
+		sseFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"t"}}`),
+		sseFrame(`{"type":"content_block_stop","index":0}`),
+	)
+	end := findEvent(t, events, EventThinkingEnd)
+	if end.ContentIndex >= len(end.Partial.Content) {
+		t.Fatalf("the partial holds %d blocks and the content index is %d, want the part even with no signature to carry", len(end.Partial.Content), end.ContentIndex)
+	}
+	if end.Partial.Content[end.ContentIndex].Thinking == nil {
+		t.Errorf("the block at the ended index = %+v, want the thinking part", end.Partial.Content[end.ContentIndex])
+	}
+}
+
+func TestThePartsBeforeAThinkingEndAreInTheOrderTheyEnded(t *testing.T) {
+	events := runAnthropic(t, anthropicStreamModel(),
+		sseFrame(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`),
+		sseFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"first"}}`),
+		sseFrame(`{"type":"content_block_stop","index":0}`),
+		sseFrame(`{"type":"content_block_start","index":1,"content_block":{"type":"thinking","thinking":""}}`),
+		sseFrame(`{"type":"content_block_delta","index":1,"delta":{"type":"thinking_delta","thinking":"pondering"}}`),
+		sseFrame(`{"type":"content_block_delta","index":1,"delta":{"type":"signature_delta","signature":"s"}}`),
+		sseFrame(`{"type":"content_block_stop","index":1}`),
+	)
+	end := findEvent(t, events, EventThinkingEnd)
+	if end.ContentIndex != 1 {
+		t.Fatalf("the thinking ended at index %d, want 1, after the text", end.ContentIndex)
+	}
+	carried := end.Partial.Content
+	if len(carried) != 2 {
+		t.Fatalf("the partial holds %d blocks, want both ended parts", len(carried))
+	}
+	if carried[0].Text == nil || carried[0].Text.Text != "first" {
+		t.Errorf("slot 0 = %+v, want the text that ended first", carried[0])
+	}
+	if carried[1].Thinking == nil || carried[1].Thinking.Signature != "s" {
+		t.Errorf("slot 1 = %+v, want the thinking with its signature", carried[1])
+	}
+}
