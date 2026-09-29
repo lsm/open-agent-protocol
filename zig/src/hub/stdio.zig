@@ -2181,7 +2181,6 @@ test "the adapter is handed the operator's source, and an unconfigured one as wr
     const listed = handed.array.items;
     try testing.expectEqual(@as(usize, 2), listed.len);
 
-    // the operator's endpoint, not the wire's, and PATH kept the operator's value
     try testing.expectEqualStrings("https://operator.test", listed[0].object.get("endpoint").?.string);
     const environment = listed[0].object.get("environment").?.array.items;
     try testing.expectEqual(@as(usize, 3), environment.len);
@@ -2189,7 +2188,6 @@ test "the adapter is handed the operator's source, and an unconfigured one as wr
     try testing.expectEqualStrings("TOKEN=operator", environment[1].string);
     try testing.expectEqualStrings("EXTRA", environment[2].string);
 
-    // a source the operator left alone is passed through as the host wrote it
     try testing.expectEqualStrings("free", listed[1].object.get("id").?.string);
     try testing.expectEqualStrings("hosted", listed[1].object.get("kind").?.string);
 }
