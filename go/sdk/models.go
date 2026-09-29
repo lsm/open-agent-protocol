@@ -72,7 +72,31 @@ type ModelDescriptor struct {
 
 	ReasoningDefault ReasoningLevel
 
+	Cost *ModelCost
+
+	InputModalities  []string
+	OutputModalities []string
+
+	ReasoningLevels []ReasoningLevel
+
+	ReleaseDate string
+
+	Family string
+
 	Metadata map[string]string
+}
+
+type ModelCost struct {
+	Input      float64
+	Output     float64
+	CacheRead  float64
+	CacheWrite float64
+}
+
+type ModelCatalog struct {
+	ObservedAtMS int64
+
+	Complete bool
 }
 
 type ListModelsRequest struct {
@@ -89,6 +113,8 @@ type ListModelsRequest struct {
 
 type ListModelsResponse struct {
 	Models []ModelDescriptor
+
+	Catalog *ModelCatalog
 
 	FetchedAt time.Time
 
