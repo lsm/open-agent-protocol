@@ -22,20 +22,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **The Zig validation tree gains a validator that has a mode, part of #367.**
-  `zig/src/validation/validator.zig` is Go's `validation.NewWith(Options{...})`
-  made real on the Zig side: a `Mode` enum, an `Options` struct, a
-  `parseMode` that names only the two modes, and a `Validator` that owns the
-  compiled schema set for the mode it was built with. The audit behind #367
-  found this was the thing the checklist read further along than the code was:
-  `tolerate.zig` and `packs.zig` were both already there, with a `load` and a
-  `describe`, and **no `Mode` and no options struct at all** — so there was
-  nothing for a `--mode` flag to set and nothing for a `--pack` flag to hand
-  over. Adding either flag without this produces two flags that parse and then
-  do nothing, which is worse than refusing them because it looks finished.
-  `Validator.init(allocator, .{})` is strict, so every existing call site is
-  unchanged and the wire is the same; what changes is that the mode is now a
-  property of the validator rather than of the command that wants one.
 - **The Zig semantic machine judges a published tool source that carries an
   attachment-only member**, `attachment_field_in_catalog`, part of #367. A
   source published in a catalog — a `capabilities.response`'s `sources` or any
