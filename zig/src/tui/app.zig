@@ -1510,6 +1510,10 @@ pub const App = struct {
     }
 
     fn scheduleAutoContinue(self: *App) void {
+        if (self.state.queue.total() > 0) {
+            self.auto_continue.onUserTurn();
+            return;
+        }
         switch (self.auto_continue.onRunEndedInError(self.run_error_text, compat.time.nowMillis())) {
             .skip => {},
             .send_after => |delay| {
@@ -6327,6 +6331,19 @@ test "a follow-up queued before the delay is up drops the pending continue" {
 
     _ = try harness.app.queueFollowUp("never mind, use the other key");
     try std.testing.expect(!harness.app.auto_continue.pending());
+
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+}
+
+test "a follow-up already queued at the failure means no nudge is announced" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    _ = try harness.app.queueFollowUp("then try the other key");
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try std.testing.expect(!harness.app.auto_continue.pending());
+    try std.testing.expect(!harness.transcriptHas("Continuing in"));
 
     harness.pastDelay();
     try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);

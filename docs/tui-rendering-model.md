@@ -316,9 +316,11 @@ streak. It never does it after an abort, after a 401 or 403 (the credential has
 to be fixed, not replayed), or when the error is a context overflow that
 `/compact` handles. Anything the user does inside the delay — submitting,
 steering, queueing a follow-up, `Esc` or `Ctrl+C` — drops the pending continue.
-It defers rather than gives up while a run is streaming, a follow-up is queued
-or a picker or approval is open, so the three seconds are a wait and not a
-deadline that expires. Replaying a saved session is not a fresh failure: a
+It waits rather than expires while a run is streaming or a picker or approval
+is open, so the three seconds is a wait rather than a deadline. A follow-up
+already queued when the run fails suppresses it entirely, because an
+error-ended run does not resume the queue on its own, so the continue would be
+a promise nothing keeps. Replaying a saved session is not a fresh failure: a
 session whose last run ended in an error does not nudge on resume, because the
 failure belongs to the process that hit it.
 
