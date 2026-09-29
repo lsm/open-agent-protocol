@@ -25,9 +25,9 @@ func anthropicStreamModel() Model {
 }
 
 func textBlockFrame(index int, text string) string {
-	return sseFrame(`{"type":"content_block_start","index":`+itoa(index)+`,"content_block":{"type":"text","text":""}}`) +
-		sseFrame(`{"type":"content_block_delta","index":`+itoa(index)+`,"delta":{"type":"text_delta","text":"`+text+`"}}`) +
-		sseFrame(`{"type":"content_block_stop","index":`+itoa(index)+`}`)
+	return SSEFrame(`{"type":"content_block_start","index":`+itoa(index)+`,"content_block":{"type":"text","text":""}}`) +
+		SSEFrame(`{"type":"content_block_delta","index":`+itoa(index)+`,"delta":{"type":"text_delta","text":"`+text+`"}}`) +
+		SSEFrame(`{"type":"content_block_stop","index":`+itoa(index)+`}`)
 }
 
 func TestTheStreamOpensWithAStartAndEndsWithADone(t *testing.T) {
@@ -42,10 +42,10 @@ func TestTheStreamOpensWithAStartAndEndsWithADone(t *testing.T) {
 
 func TestATextBlockEmitsStartDeltaAndEnd(t *testing.T) {
 	events := runAnthropic(t, anthropicStreamModel(),
-		sseFrame(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`),
-		sseFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"one"}}`),
-		sseFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"two"}}`),
-		sseFrame(`{"type":"content_block_stop","index":0}`),
+		SSEFrame(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`),
+		SSEFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"one"}}`),
+		SSEFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"two"}}`),
+		SSEFrame(`{"type":"content_block_stop","index":0}`),
 	)
 	want := []EventKind{EventStart, EventTextStart, EventTextDelta, EventTextDelta, EventTextEnd, EventDone}
 	got := kindsOf(events)
@@ -64,10 +64,10 @@ func TestATextBlockEmitsStartDeltaAndEnd(t *testing.T) {
 
 func TestAThinkingBlockCarriesItsSignatureWithoutAnEventOfItsOwn(t *testing.T) {
 	events := runAnthropic(t, anthropicStreamModel(),
-		sseFrame(`{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`),
-		sseFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"pondering"}}`),
-		sseFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-9"}}`),
-		sseFrame(`{"type":"content_block_stop","index":0}`),
+		SSEFrame(`{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`),
+		SSEFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"pondering"}}`),
+		SSEFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-9"}}`),
+		SSEFrame(`{"type":"content_block_stop","index":0}`),
 	)
 	kinds := kindsOf(events)
 	for _, kind := range kinds {
@@ -87,19 +87,19 @@ func TestAThinkingBlockCarriesItsSignatureWithoutAnEventOfItsOwn(t *testing.T) {
 
 func TestASignatureDeltaEmitsNoEventOfItsOwn(t *testing.T) {
 	withSignature := runAnthropic(t, anthropicStreamModel(),
-		sseFrame(`{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`),
-		sseFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"s"}}`),
-		sseFrame(`{"type":"content_block_stop","index":0}`),
+		SSEFrame(`{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`),
+		SSEFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"s"}}`),
+		SSEFrame(`{"type":"content_block_stop","index":0}`),
 	)
 	if countKind(withSignature, EventThinkingDelta) != 0 {
 		t.Errorf("got %v, want a signature delta to accumulate without emitting", kindsOf(withSignature))
 	}
 	joined := runAnthropic(t, anthropicStreamModel(),
-		sseFrame(`{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`),
-		sseFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"one"}}`),
-		sseFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"s1"}}`),
-		sseFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"s2"}}`),
-		sseFrame(`{"type":"content_block_stop","index":0}`),
+		SSEFrame(`{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`),
+		SSEFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"one"}}`),
+		SSEFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"s1"}}`),
+		SSEFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"s2"}}`),
+		SSEFrame(`{"type":"content_block_stop","index":0}`),
 	)
 	thinking := findEvent(t, joined, EventDone).Message.Content[0].Thinking
 	if thinking.Signature != "s1s2" {
@@ -109,9 +109,9 @@ func TestASignatureDeltaEmitsNoEventOfItsOwn(t *testing.T) {
 
 func TestAThinkingBlockWithNoSignatureCarriesNone(t *testing.T) {
 	events := runAnthropic(t, anthropicStreamModel(),
-		sseFrame(`{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`),
-		sseFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"t"}}`),
-		sseFrame(`{"type":"content_block_stop","index":0}`),
+		SSEFrame(`{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`),
+		SSEFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"t"}}`),
+		SSEFrame(`{"type":"content_block_stop","index":0}`),
 	)
 	thinking := findEvent(t, events, EventDone).Message.Content[0].Thinking
 	if thinking.Signature != "" {
@@ -147,9 +147,9 @@ func TestABlockIndexIsAssignedFromTheCompletedListAtStart(t *testing.T) {
 
 func TestTheWireIndexAndTheContentIndexAreDifferentNumbers(t *testing.T) {
 	events := runAnthropic(t, anthropicStreamModel(),
-		sseFrame(`{"type":"content_block_start","index":7,"content_block":{"type":"text","text":""}}`),
-		sseFrame(`{"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":"x"}}`),
-		sseFrame(`{"type":"content_block_stop","index":7}`),
+		SSEFrame(`{"type":"content_block_start","index":7,"content_block":{"type":"text","text":""}}`),
+		SSEFrame(`{"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":"x"}}`),
+		SSEFrame(`{"type":"content_block_stop","index":7}`),
 	)
 	start := findEvent(t, events, EventTextStart)
 	if start.ContentIndex != 0 {
@@ -163,7 +163,7 @@ func TestTheWireIndexAndTheContentIndexAreDifferentNumbers(t *testing.T) {
 
 func TestADeltaForAnUnknownBlockIsDropped(t *testing.T) {
 	events := runAnthropic(t, anthropicStreamModel(),
-		sseFrame(`{"type":"content_block_delta","index":4,"delta":{"type":"text_delta","text":"orphan"}}`),
+		SSEFrame(`{"type":"content_block_delta","index":4,"delta":{"type":"text_delta","text":"orphan"}}`),
 		textBlockFrame(0, "kept"),
 	)
 	if countKind(events, EventTextDelta) != 1 {
@@ -177,7 +177,7 @@ func TestADeltaForAnUnknownBlockIsDropped(t *testing.T) {
 
 func TestAnUnmodelledBlockTypeIsSkippedNotAnError(t *testing.T) {
 	events := runAnthropic(t, anthropicStreamModel(),
-		sseFrame(`{"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"x"}}`),
+		SSEFrame(`{"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"x"}}`),
 		textBlockFrame(1, "kept"),
 	)
 	if countKind(events, EventTextStart) != 1 {
@@ -190,10 +190,10 @@ func TestAnUnmodelledBlockTypeIsSkippedNotAnError(t *testing.T) {
 
 func TestAToolUseBlockAssemblesItsArgumentsFromTheDeltas(t *testing.T) {
 	events := runAnthropic(t, anthropicStreamModel(),
-		sseFrame(`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"Read"}}`),
-		sseFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":"}}`),
-		sseFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"a\"}"}}`),
-		sseFrame(`{"type":"content_block_stop","index":0}`),
+		SSEFrame(`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"Read"}}`),
+		SSEFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":"}}`),
+		SSEFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"a\"}"}}`),
+		SSEFrame(`{"type":"content_block_stop","index":0}`),
 	)
 	start := findEvent(t, events, EventToolCallStart)
 	if start.ID != "toolu_1" || start.Name != "Read" {
@@ -208,9 +208,9 @@ func TestAToolUseBlockAssemblesItsArgumentsFromTheDeltas(t *testing.T) {
 func TestAToolCallEndCarriesItsPositionInTheFinalArray(t *testing.T) {
 	events := runAnthropic(t, anthropicStreamModel(),
 		textBlockFrame(0, "before"),
-		sseFrame(`{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"t","name":"f"}}`),
-		sseFrame(`{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{}"}}`),
-		sseFrame(`{"type":"content_block_stop","index":1}`),
+		SSEFrame(`{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"t","name":"f"}}`),
+		SSEFrame(`{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{}"}}`),
+		SSEFrame(`{"type":"content_block_stop","index":1}`),
 	)
 	if start := findEvent(t, events, EventToolCallStart); start.ContentIndex != 1 {
 		t.Errorf("the start's content index = %d, want 1", start.ContentIndex)
@@ -222,7 +222,7 @@ func TestAToolCallEndCarriesItsPositionInTheFinalArray(t *testing.T) {
 
 func TestMessageStartCarriesUsageWithoutTakingTheCacheOutOfTheInput(t *testing.T) {
 	events := runAnthropic(t, anthropicStreamModel(),
-		sseFrame(`{"type":"message_start","message":{"usage":{"input_tokens":100,"output_tokens":1,"cache_read_input_tokens":40,"cache_creation_input_tokens":7}}}`),
+		SSEFrame(`{"type":"message_start","message":{"usage":{"input_tokens":100,"output_tokens":1,"cache_read_input_tokens":40,"cache_creation_input_tokens":7}}}`),
 		textBlockFrame(0, "x"),
 	)
 	done := findEvent(t, events, EventDone)
@@ -237,7 +237,7 @@ func TestMessageStartCarriesUsageWithoutTakingTheCacheOutOfTheInput(t *testing.T
 
 func TestTheTotalTokensBackfillAddsOnlyInputAndOutput(t *testing.T) {
 	events := runAnthropic(t, anthropicStreamModel(),
-		sseFrame(`{"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":99,"cache_creation_input_tokens":99}}}`),
+		SSEFrame(`{"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":99,"cache_creation_input_tokens":99}}}`),
 		textBlockFrame(0, "x"),
 	)
 	usage := findEvent(t, events, EventDone).Message.Usage
@@ -248,9 +248,9 @@ func TestTheTotalTokensBackfillAddsOnlyInputAndOutput(t *testing.T) {
 
 func TestAMessageDeltaReassignsTheOutputUnconditionally(t *testing.T) {
 	events := runAnthropic(t, anthropicStreamModel(),
-		sseFrame(`{"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":5}}}`),
+		SSEFrame(`{"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":5}}}`),
 		textBlockFrame(0, "x"),
-		sseFrame(`{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`),
+		SSEFrame(`{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`),
 	)
 	usage := findEvent(t, events, EventDone).Message.Usage
 	if usage.OutputTokens != 0 {
@@ -271,7 +271,7 @@ func TestTheStopReasonMappingForThisWire(t *testing.T) {
 	for finish, want := range cases {
 		events := runAnthropic(t, anthropicStreamModel(),
 			textBlockFrame(0, "x"),
-			sseFrame(`{"type":"message_delta","delta":{"stop_reason":"`+finish+`"}}`),
+			SSEFrame(`{"type":"message_delta","delta":{"stop_reason":"`+finish+`"}}`),
 		)
 		done := findEvent(t, events, EventDone)
 		if done.Message.StopReason != want {
@@ -281,7 +281,7 @@ func TestTheStopReasonMappingForThisWire(t *testing.T) {
 }
 
 func TestAnEmptyResponseIsAnErrorNotAnEmptyTextBlock(t *testing.T) {
-	events := runAnthropic(t, anthropicStreamModel(), sseFrame(`{"type":"message_stop"}`))
+	events := runAnthropic(t, anthropicStreamModel(), SSEFrame(`{"type":"message_stop"}`))
 	last := events[len(events)-1]
 	if last.Kind != EventError {
 		t.Fatalf("the terminal = %+v, want an error", last)
@@ -312,8 +312,8 @@ func TestTheEmptyResponseErrorTakesTheMessageFromAnErrorBody(t *testing.T) {
 
 func TestUnterminatedTextStillBecomesABlock(t *testing.T) {
 	events := runAnthropic(t, anthropicStreamModel(),
-		sseFrame(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`),
-		sseFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"unfinished"}}`),
+		SSEFrame(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`),
+		SSEFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"unfinished"}}`),
 	)
 	done := findEvent(t, events, EventDone)
 	if done.Message.Content[0].Text.Text != "unfinished" {
@@ -326,7 +326,7 @@ func TestUnterminatedTextStillBecomesABlock(t *testing.T) {
 
 func TestAnErrorEventEndsTheStreamWithItsMessage(t *testing.T) {
 	events := runAnthropic(t, anthropicStreamModel(),
-		sseFrame(`{"type":"error","error":{"type":"overloaded_error","message":"overloaded"}}`),
+		SSEFrame(`{"type":"error","error":{"type":"overloaded_error","message":"overloaded"}}`),
 	)
 	last := events[len(events)-1]
 	if last.Kind != EventError || last.Reason != "overloaded" {
@@ -335,7 +335,7 @@ func TestAnErrorEventEndsTheStreamWithItsMessage(t *testing.T) {
 }
 
 func TestAnErrorEventWithNoMessageUsesTheLiteral(t *testing.T) {
-	events := runAnthropic(t, anthropicStreamModel(), sseFrame(`{"type":"error","error":{}}`))
+	events := runAnthropic(t, anthropicStreamModel(), SSEFrame(`{"type":"error","error":{}}`))
 	if events[len(events)-1].Reason != "anthropic api error" {
 		t.Errorf("the reason = %q, want the literal default", events[len(events)-1].Reason)
 	}
@@ -343,7 +343,7 @@ func TestAnErrorEventWithNoMessageUsesTheLiteral(t *testing.T) {
 
 func TestAPingEventOnTheWireIsIgnored(t *testing.T) {
 	events := runAnthropic(t, anthropicStreamModel(),
-		sseFrame(`{"type":"ping"}`),
+		SSEFrame(`{"type":"ping"}`),
 		textBlockFrame(0, "x"),
 	)
 	if countKind(events, EventKeepalive) != 0 {
@@ -358,8 +358,8 @@ func TestTheLoopFlushesATrailingEventWithASyntheticBlankLine(t *testing.T) {
 	sink := &EventSink{}
 	StreamAnthropic(sink, anthropicStreamModel(), Context{}, AnthropicOptions{},
 		chunkReader([]string{
-			sseFrame(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`),
-			sseFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"tail"}}`),
+			SSEFrame(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`),
+			SSEFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"tail"}}`),
 			"data: " + `{"type":"error","error":{"message":"late failure"}}`,
 		}), nil, func() string { return "" })
 	events := sink.take()
@@ -371,8 +371,8 @@ func TestTheLoopFlushesATrailingEventWithASyntheticBlankLine(t *testing.T) {
 
 func TestATrailingNonErrorFrameIsParsedButNotApplied(t *testing.T) {
 	events := runAnthropic(t, anthropicStreamModel(),
-		sseFrame(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`),
-		sseFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"tail"}}`),
+		SSEFrame(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`),
+		SSEFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"tail"}}`),
 		"data: "+`{"type":"content_block_stop","index":0}`,
 	)
 	if countKind(events, EventError) != 0 {
@@ -418,9 +418,9 @@ func TestAMalformedPayloadIsNeverAnError(t *testing.T) {
 
 func TestAnOverlongIndexIsNotAccepted(t *testing.T) {
 	events := runAnthropic(t, anthropicStreamModel(),
-		sseFrame(`{"type":"content_block_start","index":"0","content_block":{"type":"text","text":""}}`),
-		sseFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"x"}}`),
-		sseFrame(`{"type":"content_block_stop","index":0}`),
+		SSEFrame(`{"type":"content_block_start","index":"0","content_block":{"type":"text","text":""}}`),
+		SSEFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"x"}}`),
+		SSEFrame(`{"type":"content_block_stop","index":0}`),
 	)
 	if countKind(events, EventTextStart) != 0 {
 		t.Errorf("got %v, want a non-integer index refused", kindsOf(events))
@@ -463,10 +463,10 @@ func TestCancellationIsRecheckedBetweenBufferedEvents(t *testing.T) {
 	seen := 0
 	StreamAnthropic(sink, anthropicStreamModel(), Context{}, AnthropicOptions{},
 		func() ([]byte, error) {
-			frames := sseFrame(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`) +
-				sseFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"a"}}`) +
-				sseFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"b"}}`) +
-				sseFrame(`{"type":"content_block_stop","index":0}`)
+			frames := SSEFrame(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`) +
+				SSEFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"a"}}`) +
+				SSEFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"b"}}`) +
+				SSEFrame(`{"type":"content_block_stop","index":0}`)
 			return []byte(frames), nil
 		}, func() bool {
 			seen++

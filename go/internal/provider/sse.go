@@ -182,6 +182,10 @@ func subtractFloor(total, part int) int {
 	return total - part
 }
 
+func SSEFrame(data string) string {
+	return "data: " + data + "\n\n"
+}
+
 func SSEErrorMessage(err error) string {
 	switch {
 	case errors.Is(err, ErrLineTooLarge):

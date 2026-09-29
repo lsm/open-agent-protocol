@@ -7,19 +7,19 @@ import (
 
 func TestAnEmptyToolCallsKeySuppressesTheTextAndThinkingBranches(t *testing.T) {
 	events := runStream(t, streamModel(),
-		sseFrame(`{"choices":[{"delta":{"tool_calls":[],"content":"text"}}]}`),
+		SSEFrame(`{"choices":[{"delta":{"tool_calls":[],"content":"text"}}]}`),
 	)
 	if countKind(events, EventTextDelta) != 0 {
 		t.Error("zig branches on the presence of the tool_calls key, so an empty array suppresses the content branch too")
 	}
 	nulled := runStream(t, streamModel(),
-		sseFrame(`{"choices":[{"delta":{"tool_calls":null,"reasoning_content":"thought"}}]}`),
+		SSEFrame(`{"choices":[{"delta":{"tool_calls":null,"reasoning_content":"thought"}}]}`),
 	)
 	if countKind(nulled, EventThinkingDelta) != 0 {
 		t.Error("a null tool_calls key still suppresses the reasoning branch")
 	}
 	without := runStream(t, streamModel(),
-		sseFrame(`{"choices":[{"delta":{"content":"text"}}]}`),
+		SSEFrame(`{"choices":[{"delta":{"content":"text"}}]}`),
 	)
 	if countKind(without, EventTextDelta) != 1 {
 		t.Error("with no tool_calls key at all the content branch runs")
@@ -28,24 +28,24 @@ func TestAnEmptyToolCallsKeySuppressesTheTextAndThinkingBranches(t *testing.T) {
 
 func TestANullUsageLeavesTheAccumulatedTotalsAlone(t *testing.T) {
 	events := runStream(t, streamModel(),
-		sseFrame(`{"usage":{"prompt_tokens":10,"completion_tokens":4}}`),
-		sseFrame(`{"choices":[{"delta":{"content":"x"}}],"usage":null}`),
+		SSEFrame(`{"usage":{"prompt_tokens":10,"completion_tokens":4}}`),
+		SSEFrame(`{"choices":[{"delta":{"content":"x"}}],"usage":null}`),
 	)
 	done := findEvent(t, events, EventDone)
 	if done.Message.Usage.InputTokens != 10 || done.Message.Usage.OutputTokens != 4 {
 		t.Errorf("usage = %+v, want the reported totals kept: zig reads usage only when it is an object", done.Message.Usage)
 	}
 	nonObject := runStream(t, streamModel(),
-		sseFrame(`{"usage":{"prompt_tokens":10,"completion_tokens":4}}`),
-		sseFrame(`{"usage":42}`),
+		SSEFrame(`{"usage":{"prompt_tokens":10,"completion_tokens":4}}`),
+		SSEFrame(`{"usage":42}`),
 	)
 	got := findEvent(t, nonObject, EventDone)
 	if got.Message.Usage.InputTokens != 10 {
 		t.Errorf("usage = %+v, want a non-object left alone too", got.Message.Usage)
 	}
 	empty := runStream(t, streamModel(),
-		sseFrame(`{"usage":{"prompt_tokens":10,"completion_tokens":4}}`),
-		sseFrame(`{"usage":{}}`),
+		SSEFrame(`{"usage":{"prompt_tokens":10,"completion_tokens":4}}`),
+		SSEFrame(`{"usage":{}}`),
 	)
 	gotEmpty := findEvent(t, empty, EventDone)
 	if gotEmpty.Message.Usage.InputTokens != 10 {
@@ -75,7 +75,7 @@ func TestEveryEventIsStampedWithTheClock(t *testing.T) {
 	Stream(sink, streamModel(), Context{}, StreamOptions{Now: func() int64 {
 		ticks += 7
 		return ticks
-	}}, chunkReader([]string{sseFrame(`{"choices":[{"delta":{"content":"x"}}]}`)}), nil)
+	}}, chunkReader([]string{SSEFrame(`{"choices":[{"delta":{"content":"x"}}]}`)}), nil)
 	events := sink.take()
 	if len(events) == 0 {
 		t.Fatal("no events")
@@ -106,7 +106,7 @@ func TestAKeepaliveIsEmittedOnThePingInterval(t *testing.T) {
 		if reads > 3 {
 			return nil, nil
 		}
-		return []byte(sseFrame(`{"choices":[{"delta":{"content":"x"}}]}`)), nil
+		return []byte(SSEFrame(`{"choices":[{"delta":{"content":"x"}}]}`)), nil
 	}, nil)
 	events := sink.take()
 	if countKind(events, EventKeepalive) == 0 {
@@ -119,7 +119,7 @@ func TestTheFirstPingFiresBecauseTheLastPingStartsAtZero(t *testing.T) {
 	Stream(sink, streamModel(), Context{}, StreamOptions{
 		Now:        func() int64 { return 1_700_000_000_000 },
 		PingMillis: 5000,
-	}, chunkReader([]string{sseFrame(`{"choices":[{"delta":{"content":"x"}}]}`)}), nil)
+	}, chunkReader([]string{SSEFrame(`{"choices":[{"delta":{"content":"x"}}]}`)}), nil)
 	events := sink.take()
 	if events[1].Kind != EventKeepalive {
 		t.Errorf("events = %v, want a keepalive on the first loop: zig's last_ping_time starts at 0", kindsOf(events))
@@ -127,7 +127,7 @@ func TestTheFirstPingFiresBecauseTheLastPingStartsAtZero(t *testing.T) {
 }
 
 func TestNoKeepaliveWithoutAPingInterval(t *testing.T) {
-	events := runStream(t, streamModel(), sseFrame(`{"choices":[{"delta":{"content":"x"}}]}`))
+	events := runStream(t, streamModel(), SSEFrame(`{"choices":[{"delta":{"content":"x"}}]}`))
 	if countKind(events, EventKeepalive) != 0 {
 		t.Errorf("got %v, want no keepalive when pinging is off", kindsOf(events))
 	}
@@ -225,7 +225,7 @@ func TestTheCostIsCalculatedFromTheModelsOwnRates(t *testing.T) {
 	model := streamModel()
 	model.Cost = Cost{Input: 2, Output: 8, CacheRead: 0.5, CacheWrite: 1}
 	events := runStream(t, model,
-		sseFrame(`{"usage":{"prompt_tokens":1000000,"completion_tokens":500000}}`),
+		SSEFrame(`{"usage":{"prompt_tokens":1000000,"completion_tokens":500000}}`),
 	)
 	done := findEvent(t, events, EventDone)
 	cost := done.Message.Usage.Cost
@@ -273,8 +273,8 @@ func TestTheOAuthBranchCanonicalizesAToolNameAgainstTheTools(t *testing.T) {
 
 func TestTheReasoningDetailIsEscapedRatherThanSpliced(t *testing.T) {
 	events := runStream(t, streamModel(),
-		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`),
-		sseFrame(`{"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.encrypted","id":"c1","data":"a\"b\\c"}]}}]}`),
+		SSEFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`),
+		SSEFrame(`{"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.encrypted","id":"c1","data":"a\"b\\c"}]}}]}`),
 	)
 	end := findEvent(t, events, EventToolCallEnd)
 	var detail map[string]any
