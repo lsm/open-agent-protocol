@@ -205,17 +205,23 @@ pub fn readHead(allocator: std.mem.Allocator, stream: *compat.net.Stream, header
 pub const drain_cap_bytes = 64 * 1024;
 pub const drain_cycle_ms: i32 = 50;
 
-pub fn drain(stream: *compat.net.Stream, remaining: usize, keep_going: KeepGoing) void {
-    if (remaining == 0) return;
+pub fn drain(stream: *compat.net.Stream, remaining_in: usize, keep_going: KeepGoing) void {
+    var remaining = remaining_in;
     var scratch: [1024]u8 = undefined;
-    var owed: usize = @min(remaining, drain_cap_bytes);
-    const deadline = (elapsedMs() catch 0) + drain_cycle_ms;
-    while (owed > 0) {
+    while (remaining > 0) {
         if (!keep_going.yes()) return;
-        const chunk = @min(owed, scratch.len);
-        const n = readUntil(stream, scratch[0..chunk], deadline, drain_cycle_ms, keep_going) catch return;
-        if (n == 0) return;
-        owed -= n;
+        // each round is bounded in bytes and in time, so a peer that has
+        // stopped sending is abandoned within one cycle
+        var owed: usize = @min(remaining, drain_cap_bytes);
+        const deadline = (elapsedMs() catch 0) + drain_cycle_ms;
+        while (owed > 0) {
+            if (!keep_going.yes()) return;
+            const chunk = @min(owed, scratch.len);
+            const n = readUntil(stream, scratch[0..chunk], deadline, drain_cycle_ms, keep_going) catch return;
+            if (n == 0) return;
+            owed -= n;
+            remaining -= n;
+        }
     }
 }
 
@@ -1045,6 +1051,76 @@ test "a body the daemon refused to read is drained before the socket closes, or 
     const said = try readToEnd(&pipe.client, &spoken);
     try testing.expect(std.mem.startsWith(u8, said, "HTTP/1.1 403 Forbidden"));
     try testing.expect(std.mem.indexOf(u8, said, "unrecognized_host") != null);
+}
+
+test "a media-refused body larger than the drain cap still leaves the answer readable" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var pipe = try Pipe.open();
+    defer pipe.close();
+    // over the 64 KiB cap, so a single bounded round would leave the tail
+    // unread and the close would reset the answer away
+    const declared: usize = drain_cap_bytes * 2 + 4096;
+    const head = try std.fmt.allocPrint(testing.allocator, "POST /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: text/plain\r\nContent-Length: {d}\r\n\r\n", .{declared});
+    defer testing.allocator.free(head);
+    try pipe.client.writeAll(head);
+    const filler = "x" ** 8192;
+    var written: usize = 0;
+    while (written < declared) {
+        const chunk = @min(filler.len, declared - written);
+        try pipe.client.writeAll(filler[0..chunk]);
+        written += chunk;
+    }
+
+    var body_allowed = true;
+    var seen: usize = 0;
+    var request = try readHead(testing.allocator, &pipe.accepted, header_read_ms, test_cycle_ms, always_going, &body_allowed, &seen);
+    defer request.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, declared), request.content_length);
+
+    var scratch_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch_state.deinit();
+    const refused = answer(loopbackHosts("127.0.0.1:0").?, request);
+    try testing.expectEqualStrings("415 Unsupported Media Type", refused.refusal.status);
+    try writeAnswer(&pipe.accepted, scratch_state.allocator(), 7, refused, body_allowed);
+
+    drain(&pipe.accepted, request.content_length, always_going);
+    pipe.closeAccepted();
+
+    var spoken: [8192]u8 = undefined;
+    const said = try readToEnd(&pipe.client, &spoken);
+    try testing.expect(std.mem.startsWith(u8, said, "HTTP/1.1 415 Unsupported Media Type"));
+    try testing.expect(std.mem.indexOf(u8, said, "unsupported_media_type") != null);
+}
+
+test "a media-refused body the peer never finishes is still abandoned, and still answered" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var pipe = try Pipe.open();
+    defer pipe.close();
+    // declares 8 MiB, sends a few bytes, then stops: the answer must not wait
+    const declared: usize = 8 * 1024 * 1024;
+    const head = try std.fmt.allocPrint(testing.allocator, "POST /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: text/plain\r\nContent-Length: {d}\r\n\r\n", .{declared});
+    defer testing.allocator.free(head);
+    try pipe.client.writeAll(head);
+    try pipe.client.writeAll("x" ** 1024);
+
+    var body_allowed = true;
+    var seen: usize = 0;
+    var request = try readHead(testing.allocator, &pipe.accepted, header_read_ms, test_cycle_ms, always_going, &body_allowed, &seen);
+    defer request.deinit(testing.allocator);
+
+    var scratch_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch_state.deinit();
+    try writeAnswer(&pipe.accepted, scratch_state.allocator(), 8, answer(loopbackHosts("127.0.0.1:0").?, request), body_allowed);
+
+    const started = compat.time.nowMillis();
+    drain(&pipe.accepted, request.content_length, always_going);
+    const spent = compat.time.nowMillis() - started;
+    try testing.expect(spent < 2000);
+    pipe.closeAccepted();
+
+    var spoken: [8192]u8 = undefined;
+    const said = try readToEnd(&pipe.client, &spoken);
+    try testing.expect(std.mem.startsWith(u8, said, "HTTP/1.1 415 Unsupported Media Type"));
 }
 
 test "a drain gives up rather than waiting on a peer that sends nothing more" {
