@@ -224,6 +224,27 @@ fn regionNames(comptime row: Provider) []const []const u8 {
     }
 }
 
+pub fn rowsReadingEnv(env: []const u8) usize {
+    var rows: usize = 0;
+    for (all) |row| {
+        for (row.credential_env) |declared| {
+            if (std.mem.eql(u8, declared, env)) {
+                rows += 1;
+                break;
+            }
+        }
+    }
+    return rows;
+}
+
+pub fn sharesCredentialEnv(id: []const u8) bool {
+    const row = provider(id) orelse return false;
+    for (row.credential_env) |mine| {
+        if (rowsReadingEnv(mine) > 1) return true;
+    }
+    return false;
+}
+
 pub fn modelsEndpoint(id: []const u8) ?[]const u8 {
     const row = provider(id) orelse return null;
     return row.models_endpoint;
@@ -948,6 +969,46 @@ fn catalogTargetForTest(id: []const u8, wire_id: []const u8) ?CatalogTargetForTe
         };
     }
     return null;
+}
+
+test "one credential value opens four rows" {
+    try std.testing.expectEqual(@as(usize, 4), rowsReadingEnv("XIAOMI_API_KEY"));
+    try std.testing.expectEqual(@as(usize, 1), rowsReadingEnv("DEEPSEEK_API_KEY"));
+    try std.testing.expectEqual(@as(usize, 1), rowsReadingEnv("ANTHROPIC_API_KEY"));
+    try std.testing.expectEqual(@as(usize, 1), rowsReadingEnv("ANTHROPIC_AUTH_TOKEN"));
+    try std.testing.expectEqual(@as(usize, 0), rowsReadingEnv("NO_SUCH_VARIABLE"));
+
+    for ([_][]const u8{ "xiaomi", "xiaomi-token-plan-cn", "xiaomi-token-plan-sgp", "xiaomi-token-plan-ams" }) |id| {
+        try std.testing.expect(sharesCredentialEnv(id));
+        const row = provider(id) orelse return error.TestGroupNamesNoRow;
+        var declares = false;
+        for (row.credential_env) |declared| {
+            if (std.mem.eql(u8, declared, "XIAOMI_API_KEY")) declares = true;
+        }
+        try std.testing.expect(declares);
+    }
+
+    for ([_][]const u8{ "deepseek", "openai", "anthropic" }) |id| {
+        try std.testing.expect(!sharesCredentialEnv(id));
+    }
+    try std.testing.expect(!sharesCredentialEnv("no-such-provider"));
+}
+
+test "the catalog orders every plan a shared key opens before the row it also opens" {
+    var payg_index: usize = 0;
+    for (all, 0..) |row, index| {
+        if (std.mem.eql(u8, row.id, "xiaomi")) payg_index = index;
+    }
+    const plans = [_][]const u8{ "xiaomi-token-plan-cn", "xiaomi-token-plan-sgp", "xiaomi-token-plan-ams" };
+    for (plans) |plan| {
+        var found = false;
+        for (all, 0..) |row, index| {
+            if (!std.mem.eql(u8, row.id, plan)) continue;
+            found = true;
+            try std.testing.expect(index < payg_index);
+        }
+        try std.testing.expect(found);
+    }
 }
 
 test "a wire with no path joins to the base, trailing slash dropped" {
