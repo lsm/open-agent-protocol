@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+### Added
+
+- **`oapx hub --stdio` serves `open`.** The first op whose parameters are `adapter` and a
+  nested `request`, and the nested value is an *envelope*, which changes three things the
+  other ops never had to think about. The answer mints **one** id and sets `in_reply_to` to
+  the request envelope's own, where `capabilities`, `state`, `models` and `tools` mint two
+  and correlate. The gate refuses five ways before anything else happens, in Go's order:
+  `invalid_request`, `request_too_large`, `malformed_json`, `schema_invalid`, `type_mismatch` —
+  so the stdio module gains the schema registry the last of those needs. And
+  `capability_revision` on the answer is the revision the open was **gated under** when the
+  request subscribes, not the revision the host claimed.
+
+- **The reference adapter double in the hub's tests no longer keeps what it is given.** It
+  stored `request.session_id` — a slice of the caller's per-line arena — in a struct that
+  outlives the call, so opening a session and then listing them read freed memory.
+  `open` is the first op that creates a session and so the first to reach it; the real
+  `adapter/memory` was already correct, duping what it keeps into its own arena.
+  `drafts/hub.md`'s D5 note now states the rule for the whole request rather than for
+  `metadata` alone, and names `adapter/memory` as the conforming reference.
+
+
 ## Unreleased
 
 ### Added

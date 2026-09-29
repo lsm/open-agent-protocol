@@ -1253,6 +1253,24 @@ the line's arena for as long as the session lives. Writing that op without
 deciding is how a use-after-free gets in, and it would be invisible in every test
 that keeps the caller alive.
 
+**The rule is about the whole request, not just `metadata`, and serving `open` is
+what proved it.** An adapter may borrow *any* of `request` for the duration of the
+call — `session_id`, `participant`, the raw JSON — and must not retain any of it.
+The `open` op borrowed `envelope.id` for the answer's `in_reply_to` and read
+`envelope.capability_revision` for a refusal's `details` after releasing the
+envelope, and both were reads of memory the line's arena had already given back.
+The second is the subtler one: `refusalWith` dupes the `DetailEntry` array, and a
+**shallow dupe of a struct array does not dupe the slices inside it**, so copying
+the entry did not copy the string.
+
+`adapter/memory` is the reference implementation of the rule and was already right:
+`Session.create` dupes what it keeps into its own arena and uses the caller's only
+for the duration of the call. The test double in `hub/stdio.zig` was not, and
+`open` is the first op that creates a session, so it is the first to reach it — a
+stored `request.session_id` outlived the arena it came from and the next `sessions`
+listing read freed memory. A double that keeps what it is given is a real defect
+once an op retains anything, and cheaper to find at the double than in CI.
+
 Whether the contract should instead offer a *clone path*, so an adapter can keep a
 metadata value past the call, is a contract question rather than an `open` one, and
 a contract change belongs in [#407](https://github.com/lsm/open-agent-protocol/issues/407)

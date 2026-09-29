@@ -12,6 +12,8 @@ import (
 	"time"
 )
 
+const openEnvelopeFields = `\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\"`
+
 var hubParityScenarios = map[string][]string{
 	"the five ops this wire serves": {
 		`{"id":1,"op":"adapters"}`,
@@ -27,6 +29,18 @@ var hubParityScenarios = map[string][]string{
 		`{"id":4,"op":"capabilities"}`,
 		`{"id":5,"op":"adapters","session_id":"x"}`,
 		`{"id":6,"op":"close"}`,
+	},
+	"the open gate refuses the same five ways": {
+		`{"id":1,"op":"open","adapter":"memory"}`,
+		`{"id":2,"op":"open","request":{}}`,
+		`{"id":3,"op":"open","adapter":"memory","request":null}`,
+		`{"id":4,"op":"open","adapter":"memory","request":{"id":"x"}}`,
+		`{"id":5,"op":"open","adapter":"memory","request":{" + openEnvelopeFields + ","id":"o1"}}`,
+	},
+	"an open is refused the same way after it is asked for twice": {
+		`{"id":1,"op":"open","adapter":"absent","request":{" + openEnvelopeFields + ","id":"o1","payload":{"session_id":"s1"}}}`,
+		`{"id":2,"op":"open","adapter":"memory","request":{" + openEnvelopeFields + ","id":"o1","payload":{"session_id":"s1"},"metadata":7}}`,
+		`{"id":3,"op":"sessions"}`,
 	},
 	"the catalog ops refuse the same refusals": {
 		`{"id":1,"op":"models","session_id":"absent"}`,
@@ -153,6 +167,11 @@ func runHubScript(t *testing.T, binary string, lines []string) map[string]map[st
 
 func normaliseHubAnswer(answer map[string]any) {
 	normaliseMinted(answer)
+	refusal, ok := answer["error"].(map[string]any)
+	if !ok {
+		return
+	}
+	delete(refusal, "message")
 }
 func normaliseMinted(node any) {
 	switch value := node.(type) {
