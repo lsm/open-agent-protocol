@@ -670,7 +670,6 @@ fn endGoogleThinkingBlock(
     content_blocks: *std.ArrayList(ai_types.AssistantContent),
     content: []const u8,
     signature: []const u8,
-    pending: ?*std.ArrayList([]ai_types.AssistantContent),
 ) bool {
     const thinking_copy = allocator.dupe(u8, content) catch {
         ctx.deinit();
@@ -705,19 +704,12 @@ fn endGoogleThinkingBlock(
         stream.markThreadDone();
         return false;
     };
-    carried.reserve(allocator, pending) catch {
-        carried.release(allocator, null);
-        ctx.deinit();
-        stream.completeWithError("oom thinking");
-        stream.markThreadDone();
-        return false;
-    };
     _ = stream.pushBlocking(.{ .thinking_end = .{
         .content_index = think_at,
         .content = content,
         .partial = carried.partial,
     } });
-    carried.release(allocator, pending);
+    carried.release(allocator);
     return true;
 }
 
@@ -980,12 +972,6 @@ fn runThread(ctx: *ThreadCtx) void {
 
     var content_blocks = std.ArrayList(ai_types.AssistantContent).empty;
     defer content_blocks.deinit(allocator);
-    var pending_partial_frees = std.ArrayList([]ai_types.AssistantContent).empty;
-    defer {
-        for (pending_partial_frees.items) |s| allocator.free(s);
-        pending_partial_frees.deinit(allocator);
-    }
-    const stream_clones_events = stream.ownership.isOwned();
     var current_text = std.ArrayList(u8).empty;
     defer current_text.deinit(allocator);
     var current_thinking = std.ArrayList(u8).empty;
@@ -1082,7 +1068,7 @@ fn runThread(ctx: *ThreadCtx) void {
                                         current_text_signature.clearRetainingCapacity();
                                     },
                                     .thinking => {
-                                        if (!endGoogleThinkingBlock(allocator, stream, ctx, partial, &content_blocks, current_thinking.items, current_thinking_signature.items, if (stream_clones_events) null else &pending_partial_frees)) return;
+                                        if (!endGoogleThinkingBlock(allocator, stream, ctx, partial, &content_blocks, current_thinking.items, current_thinking_signature.items)) return;
                                         current_thinking.clearRetainingCapacity();
                                         current_thinking_signature.clearRetainingCapacity();
                                     },
@@ -1159,7 +1145,7 @@ fn runThread(ctx: *ThreadCtx) void {
                                         current_text_signature.clearRetainingCapacity();
                                     },
                                     .thinking => {
-                                        if (!endGoogleThinkingBlock(allocator, stream, ctx, partial, &content_blocks, current_thinking.items, current_thinking_signature.items, if (stream_clones_events) null else &pending_partial_frees)) return;
+                                        if (!endGoogleThinkingBlock(allocator, stream, ctx, partial, &content_blocks, current_thinking.items, current_thinking_signature.items)) return;
                                         current_thinking.clearRetainingCapacity();
                                         current_thinking_signature.clearRetainingCapacity();
                                     },
@@ -1263,7 +1249,7 @@ fn runThread(ctx: *ThreadCtx) void {
             },
             .thinking => {
                 const partial = createPartialMessage(model);
-                if (!endGoogleThinkingBlock(allocator, stream, ctx, partial, &content_blocks, current_thinking.items, current_thinking_signature.items, if (stream_clones_events) null else &pending_partial_frees)) return;
+                if (!endGoogleThinkingBlock(allocator, stream, ctx, partial, &content_blocks, current_thinking.items, current_thinking_signature.items)) return;
             },
             .none => {},
         }
@@ -1367,9 +1353,7 @@ pub fn streamGoogleGenerativeAI(model: ai_types.Model, context: ai_types.Context
     errdefer allocator.destroy(s);
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
     s.wait_for_thread_on_deinit = true;
-    if (o.requires_owned_stream_events) {
-        s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
-    }
+    s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
 
     const ctx = try allocator.create(ThreadCtx);
     errdefer allocator.destroy(ctx);

@@ -711,19 +711,9 @@ pub const CarriedPartial = struct {
     partial: AssistantMessage,
     owned: ?[]AssistantContent,
 
-    pub fn reserve(self: CarriedPartial, allocator: std.mem.Allocator, pending: ?*std.ArrayList([]AssistantContent)) error{OutOfMemory}!void {
-        if (self.owned == null) return;
-        const list = pending orelse return;
-        try list.ensureUnusedCapacity(allocator, 1);
-    }
-
-    pub fn release(self: CarriedPartial, allocator: std.mem.Allocator, pending: ?*std.ArrayList([]AssistantContent)) void {
+    pub fn release(self: CarriedPartial, allocator: std.mem.Allocator) void {
         const owned = self.owned orelse return;
-        const list = pending orelse {
-            allocator.free(owned);
-            return;
-        };
-        list.appendAssumeCapacity(owned);
+        allocator.free(owned);
     }
 };
 
@@ -1606,7 +1596,7 @@ test "partialWithContent puts the block at the index it is asked for" {
         .stop_reason = .stop,
         .timestamp = 0,
     }, &content, 1);
-    defer carried.release(allocator, null);
+    defer carried.release(allocator);
     try std.testing.expectEqual(@as(usize, 2), carried.partial.content.len);
     switch (carried.partial.content[1]) {
         .thinking => |t| try std.testing.expectEqualStrings("sig-9", t.thinking_signature.?),
@@ -1630,7 +1620,7 @@ test "partialWithContent leaves the partial alone when the index is not there" {
     try std.testing.expectEqual(@as(usize, 0), carried.partial.content.len);
 }
 
-test "a reserved retirement cannot fail, so release never frees a held array" {
+test "release frees the carried array once the cloned event has its own copy" {
     const allocator = std.testing.allocator;
     const content = [_]AssistantContent{.{ .text = .{ .text = "held" } }};
     const carried = try partialWithContent(allocator, .{
@@ -1643,36 +1633,6 @@ test "a reserved retirement cannot fail, so release never frees a held array" {
         .timestamp = 0,
     }, &content, 0);
     const slice = carried.owned.?;
-    var pending: std.ArrayList([]AssistantContent) = .empty;
-    defer {
-        for (pending.items) |item| allocator.free(item);
-        pending.deinit(allocator);
-    }
-    try carried.reserve(allocator, &pending);
-    carried.release(allocator, &pending);
-    try std.testing.expectEqual(@as(usize, 1), pending.items.len);
-    try std.testing.expectEqual(slice.ptr, pending.items[0].ptr);
-}
-
-test "reserve reports the failure to record a retirement instead of dropping it" {
-    const allocator = std.testing.allocator;
-    const content = [_]AssistantContent{.{ .text = .{ .text = "held" } }};
-    const carried = try partialWithContent(allocator, .{
-        .content = &.{},
-        .api = "anthropic-messages",
-        .provider = "anthropic",
-        .model = "claude",
-        .usage = .{},
-        .stop_reason = .stop,
-        .timestamp = 0,
-    }, &content, 0);
-    const slice = carried.owned.?;
-    defer allocator.free(slice);
-
-    var pending: std.ArrayList([]AssistantContent) = .empty;
-    defer pending.deinit(allocator);
-
-    var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 0 });
-    try std.testing.expectError(error.OutOfMemory, carried.reserve(failing.allocator(), &pending));
-    try std.testing.expectEqual(@as(usize, 0), pending.items.len);
+    try std.testing.expectEqual(slice.ptr, carried.partial.content.ptr);
+    carried.release(allocator);
 }

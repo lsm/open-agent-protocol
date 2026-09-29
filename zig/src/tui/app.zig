@@ -5761,7 +5761,7 @@ test "a context window the user chose is persisted, and the catalog's own is not
     defer std.testing.allocator.free(home);
     try compat.setTestEnv(std.testing.allocator, "HOME", home);
 
-    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{gpt_model, kimi_model} });
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ gpt_model, kimi_model } });
     defer app.deinit();
     if (app.store) |*owned| owned.deinit();
     app.store = null;
@@ -5857,7 +5857,7 @@ test "a bare /context reports the window and leaves the persisted member alone" 
     defer std.testing.allocator.free(home);
     try compat.setTestEnv(std.testing.allocator, "HOME", home);
 
-    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{gpt_model, kimi_model} });
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ gpt_model, kimi_model } });
     defer app.deinit();
     if (app.store) |*owned| owned.deinit();
     app.store = null;
@@ -5877,7 +5877,7 @@ test "a settings toggle does not erase the persisted window" {
     defer std.testing.allocator.free(home);
     try compat.setTestEnv(std.testing.allocator, "HOME", home);
 
-    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{gpt_model, kimi_model} });
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ gpt_model, kimi_model } });
     defer app.deinit();
     if (app.store) |*owned| owned.deinit();
     app.store = null;
@@ -7140,11 +7140,8 @@ const MockProvider = struct {
 
         const s = try a.create(event_stream.AssistantMessageEventStream);
         s.* = event_stream.AssistantMessageEventStream.init(a);
-        if (options) |opts| {
-            if (opts.requires_owned_stream_events) {
-                s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
-            }
-        }
+        _ = options;
+        s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
 
         s.push(.{ .start = .{ .partial = .{
             .content = &.{},
