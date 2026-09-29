@@ -73,21 +73,29 @@ func TestHubStdioAnswersGoapAndOapxTheSame(t *testing.T) {
 func TestHubStdioAnswersUnavailableForATransportItDoesNotCarry(t *testing.T) {
 	oapx := os.Getenv("OAP_OAPX_BIN")
 	if oapx == "" {
-		t.Skip("set OAP_OAPX_BIN to an oapx binary to check its unavailable answers")
+		t.Skip("set OAP_OAPX_BIN to an oapx binary to check the flags it refuses")
 	}
-	for _, argument := range []string{"--config=missing.json"} {
-		t.Run(argument, func(t *testing.T) {
-			command := exec.Command(oapx, "hub", argument)
+	cases := []struct {
+		argument string
+		wants    string
+	}{
+		// #389 gave --config a real reader, so it no longer answers "unavailable"
+		// for a file it cannot read; it names the file and refuses.
+		{argument: "--config=missing.json", wants: "missing.json"},
+	}
+	for _, each := range cases {
+		t.Run(each.argument, func(t *testing.T) {
+			command := exec.Command(oapx, "hub", each.argument)
 			command.Stdin = strings.NewReader("")
 			output, err := command.CombinedOutput()
 			if err == nil {
-				t.Errorf("oapx hub %s exited 0; a transport it does not carry must exit non-zero", argument)
+				t.Errorf("oapx hub %s exited 0; a flag it cannot honour must exit non-zero", each.argument)
 			}
-			if !strings.Contains(string(output), "unavailable") {
-				t.Errorf("oapx hub %s did not answer unavailable:\n%s", argument, output)
+			if !strings.Contains(string(output), each.wants) {
+				t.Errorf("oapx hub %s did not name %q in its refusal:\n%s", each.argument, each.wants, output)
 			}
 			if strings.Contains(string(output), "{\"id\"") {
-				t.Errorf("oapx hub %s answered a request rather than refusing the flag", argument)
+				t.Errorf("oapx hub %s answered a request rather than refusing the flag", each.argument)
 			}
 		})
 	}
