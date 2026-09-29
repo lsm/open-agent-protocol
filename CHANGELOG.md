@@ -194,6 +194,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     zero**, as `goap hub` does. The stdio serve loop had no way to be
     interrupted, so a signal did nothing at all; it now takes a stop predicate
     and the sweep runs on the signal path exactly as it runs on a hangup.
+    The handler is installed **only where the loop can poll for it** — on
+    Windows the stdio read is not pollable, so the hub installs no console
+    handler, says so on stderr, and Ctrl+C terminates the process as it did
+    before. Installing a handler the loop never observes would have turned
+    Ctrl+C into a hang, which is worse than the gap it was meant to close; a
+    bounded sweep on a signal is #460's work.
   - **The sweep retries a close that refuses** (D6). `contract.Session.close`
     reports a live run as `error.RunActive` without destroying, and the sweep
     cancels, waits inside that session's share of the window, and closes again

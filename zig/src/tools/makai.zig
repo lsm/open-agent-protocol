@@ -2382,43 +2382,43 @@ const HubRegistry = struct {
     fn build(context: *anyopaque, arena: std.mem.Allocator, entry: adapter_config.AdapterEntry) adapter_contract.Failure!adapter_contract.Adapter {
         const self: *HubRegistry = @ptrCast(@alignCast(context));
         if (std.mem.eql(u8, entry.kind, "claude")) {
-            const config = claudeBackendConfig(self.surface, arena, entry, self.environ) catch return error.Unavailable;
+            const config = claudeBackendConfig(self.surface, arena, entry, self.environ) catch |failure| return self.reported(failure);
             const built = try arena.create(claude_adapter.Adapter);
             built.* = claude_adapter.Adapter.init(self.allocator, config);
             return built.adapter();
         }
         if (std.mem.eql(u8, entry.kind, "codex")) {
-            const config = codexBackendConfig(self.surface, arena, entry, self.environ) catch return error.Unavailable;
+            const config = codexBackendConfig(self.surface, arena, entry, self.environ) catch |failure| return self.reported(failure);
             const built = try arena.create(codex_adapter.Adapter);
             built.* = codex_adapter.Adapter.init(self.allocator, config);
             return built.adapter();
         }
         if (std.mem.eql(u8, entry.kind, "pi")) {
-            const config = piBackendConfig(self.surface, arena, entry, self.environ) catch return error.Unavailable;
+            const config = piBackendConfig(self.surface, arena, entry, self.environ) catch |failure| return self.reported(failure);
             const built = try arena.create(pi_adapter.Adapter);
             built.* = pi_adapter.Adapter.init(self.allocator, config);
             return built.adapter();
         }
         if (std.mem.eql(u8, entry.kind, "acp")) {
-            const config = acpBackendConfig(self.surface, arena, entry, self.environ) catch return error.Unavailable;
+            const config = acpBackendConfig(self.surface, arena, entry, self.environ) catch |failure| return self.reported(failure);
             const built = try arena.create(acp_adapter.Adapter);
             built.* = acp_adapter.Adapter.init(self.allocator, config);
             return built.adapter();
         }
         if (std.mem.eql(u8, entry.kind, "deepseek")) {
-            const config = deepseekBackendConfig(self.surface, arena, entry, self.environ) catch return error.Unavailable;
+            const config = deepseekBackendConfig(self.surface, arena, entry, self.environ) catch |failure| return self.reported(failure);
             const built = try arena.create(deepseek_adapter.Adapter);
             built.* = deepseek_adapter.Adapter.init(self.allocator, config);
             return built.adapter();
         }
         if (std.mem.eql(u8, entry.kind, "opencode")) {
-            const config = opencodeBackendConfig(self.surface, arena, entry) catch return error.Unavailable;
+            const config = opencodeBackendConfig(self.surface, arena, entry) catch |failure| return self.reported(failure);
             const built = try arena.create(opencode_adapter.Adapter);
             built.* = opencode_adapter.Adapter.init(self.allocator, config);
             return built.adapter();
         }
         if (std.mem.eql(u8, entry.kind, "hermes")) {
-            const config = hermesBackendConfig(self.surface, arena, entry, self.environ) catch return error.Unavailable;
+            const config = hermesBackendConfig(self.surface, arena, entry, self.environ) catch |failure| return self.reported(failure);
             const built = try arena.create(hermes_adapter.Adapter);
             built.* = hermes_adapter.Adapter.init(self.allocator, config);
             return built.adapter();
@@ -2429,6 +2429,12 @@ const HubRegistry = struct {
             return built.adapter();
         }
         return self.refuse(entry);
+    }
+
+    fn reported(self: *HubRegistry, failure: anyerror) adapter_contract.Failure {
+        _ = self;
+        if (failure == error.OutOfMemory) return error.OutOfMemory;
+        return error.Unavailable;
     }
 
     fn refuse(self: *HubRegistry, entry: adapter_config.AdapterEntry) adapter_contract.Failure {
@@ -2455,6 +2461,10 @@ fn hubConfiguredSources(
         };
     }
     return sources;
+}
+
+fn hubTakesSignals() bool {
+    return @import("builtin").os.tag != .windows;
 }
 
 fn sweepHubSessions(core: *hub.Hub, stderr: std.Io.File) void {
@@ -2546,10 +2556,14 @@ fn runHub(
     var frontend = try hub_stdio.Frontend.init(allocator, &core, .{ .context = &sink, .write = StdoutSink.write }, .{});
     defer frontend.deinit();
 
-    endpoint_signals.install() catch {
-        try compat.stdio.writeAll(stderr, "oapx hub: the process cannot take a signal handler; refusing to serve a hub that cannot be stopped\n");
-        return error.BackendRefused;
-    };
+    if (hubTakesSignals()) {
+        endpoint_signals.install() catch {
+            try compat.stdio.writeAll(stderr, "oapx hub: the process cannot take a signal handler; refusing to serve a hub that cannot be stopped\n");
+            return error.BackendRefused;
+        };
+    } else {
+        try compat.stdio.writeAll(stderr, "oapx hub: a console interrupt ends this process rather than the hub; the Windows path is #460\n");
+    }
     const served = try std.mem.join(arena, ", ", try core.names(arena));
     try compat.stdio.writeAll(stderr, "oapx: serving adapters over stdio: ");
     try compat.stdio.writeAll(stderr, served);
@@ -2558,7 +2572,7 @@ fn runHub(
     hub_stdio.serve(allocator, &frontend, .{
         .read = readStdin,
         .context = &input,
-        .readable = if (@import("builtin").os.tag == .windows) null else input.handle,
+        .readable = if (hubTakesSignals()) input.handle else null,
         .stop = endpoint_signals.received,
     }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,

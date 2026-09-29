@@ -1007,6 +1007,7 @@ for the next exit. Go's context cancels the same call, which is why Go's
 | A run named only as the active run is still cancelled | `TestCloseFallsBackToTheNamedActiveRun` |
 | The window is 10 s for the hub, 5 s per stdio stage | every shutdown test drives a short custom window (`TestShutdownBoundedWhileWorkerStuck`, `TestTeardownStopsWhenAWriteParksForever`); **gap G8** — only the defaults are unpinned |
 | SIGINT and SIGTERM end every session inside that window and exit zero | Go: `runHub` returns nil on either. Zig: `oapx hub` installs both handlers before it serves, and the serve loop ends on either, so the sweep runs on the signal path exactly as it runs on a hangup |
+| **Where a signal can be taken, it is; where the loop cannot observe one, the default disposition stands** | Zig: `hubTakesSignals` gates the handler and the pollable handle on the same answer, because installing a handler the loop never polls for is worse than not installing one. On Windows the stdio read is not pollable, so the hub installs no console handler, says so on stderr, and Ctrl+C terminates the process as it did before — a bounded sweep on a signal is [#460](https://github.com/lsm/open-agent-protocol/issues/460)'s work, not this rule's |
 
 ## Known gaps
 
