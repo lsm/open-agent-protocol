@@ -9,6 +9,56 @@ func hostModel(baseURL string) Model {
 	return Model{Provider: "openai", BaseURL: baseURL, HasBaseURL: true, HasCompat: true}
 }
 
+func TestABedrockHostHasBedrockOrBedrockRuntimeAsItsFirstLabelUnderAmazonaws(t *testing.T) {
+	hosts := []string{
+		"https://bedrock.us-east-1.amazonaws.com",
+		"https://bedrock-runtime.us-east-1.amazonaws.com",
+		"https://bedrock-runtime.us-east-1.amazonaws.com/model/x/invoke",
+		"https://bedrock-fips.us-east-1.amazonaws.com",
+		"https://bedrock-runtime-fips.us-east-1.amazonaws.com",
+		"https://bedrock-runtime.cn-north-1.amazonaws.com.cn",
+		"https://BEDROCK-RUNTIME.US-EAST-1.AMAZONAWS.COM",
+	}
+	for _, url := range hosts {
+		if !isBedrockURL(url, true) {
+			t.Errorf("isBedrockURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://amazonaws.com",
+		"https://us-east-1.amazonaws.com",
+		"https://s3.us-east-1.amazonaws.com",
+		"https://mybedrock.us-east-1.amazonaws.com",
+		"https://us-east-1.bedrock.amazonaws.com",
+		"https://bedrock-runtime.amazonaws.com.evil.example",
+		"https://bedrock.us-east-1.amazonaws.co",
+		"https://evil.example/?next=bedrock-runtime.us-east-1.amazonaws.com",
+		"https://evil.example/v1/bedrock.us-east-1.amazonaws.com",
+		"https://gateway.example/proxy/bedrock-runtime.us-east-1.amazonaws.com",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isBedrockURL(url, true) {
+			t.Errorf("isBedrockURL(%q) = true, want false: the first label must be one of the four, and amazonaws.com on its own would claim every AWS service", url)
+		}
+	}
+
+	if isBedrockURL("https://bedrock-runtime.us-east-1.amazonaws.com", false) {
+		t.Error("no base url is not a bedrock host")
+	}
+}
+
+func TestABedrockHostStillDetectsAsBedrock(t *testing.T) {
+	const url = "https://bedrock-runtime.us-east-1.amazonaws.com"
+	if !isBedrockURL(url, true) {
+		t.Fatalf("isBedrockURL(%q) = false, want true", url)
+	}
+	if got := DetectProviderType(url, true); got != ProviderBedrock {
+		t.Errorf("DetectProviderType(%q) = %q, want bedrock", url, got)
+	}
+}
+
 func TestAnAzureOpenAIHostIsOpenaiAzureComOrASubdomainNeverAzureCom(t *testing.T) {
 	hosts := []string{
 		"https://contoso.openai.azure.com",

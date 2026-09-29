@@ -101,13 +101,37 @@ pub fn isDeepSeek(base_url: ?[]const u8) bool {
     return isHostOrSubdomainOf(base_url, "deepseek.com");
 }
 
+fn hostIsOrSubdomainOf(host: []const u8, domain: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(host, domain) or
+        (host.len > domain.len and std.ascii.eqlIgnoreCase(host[host.len - domain.len ..], domain) and host[host.len - domain.len - 1] == '.');
+}
+
+pub fn hostOf(base_url: ?[]const u8) ?[]const u8 {
+    const url = base_url orelse return null;
+    const uri = std.Uri.parse(url) catch return null;
+    const host = uri.host orelse return null;
+    return host.percent_encoded;
+}
+
 pub fn isHostOrSubdomainOf(base_url: ?[]const u8, domain: []const u8) bool {
-    const url = base_url orelse return false;
-    const uri = std.Uri.parse(url) catch return false;
-    const host = uri.host orelse return false;
-    const value = host.percent_encoded;
-    return std.ascii.eqlIgnoreCase(value, domain) or
-        (value.len > domain.len and std.ascii.eqlIgnoreCase(value[value.len - domain.len ..], domain) and value[value.len - domain.len - 1] == '.');
+    const host = hostOf(base_url) orelse return false;
+    return hostIsOrSubdomainOf(host, domain);
+}
+
+const bedrock_first_labels = [_][]const u8{ "bedrock", "bedrock-runtime", "bedrock-fips", "bedrock-runtime-fips" };
+const aws_parents = [_][]const u8{ "amazonaws.com", "amazonaws.com.cn" };
+
+pub fn isBedrock(base_url: ?[]const u8) bool {
+    const host = hostOf(base_url) orelse return false;
+    const dot = std.mem.indexOfScalar(u8, host, '.') orelse return false;
+    const label = host[0..dot];
+    for (bedrock_first_labels) |candidate| {
+        if (!std.ascii.eqlIgnoreCase(label, candidate)) continue;
+        for (aws_parents) |parent| {
+            if (hostIsOrSubdomainOf(host, parent)) return true;
+        }
+    }
+    return false;
 }
 
 pub fn isOpenAIHost(base_url: []const u8) bool {
@@ -130,7 +154,7 @@ pub fn detectProviderType(base_url: ?[]const u8) ProviderType {
     if (isZai(url)) return .openai_compatible;
     if (isOpenRouter(url)) return .openai_compatible;
     if (isGoogle(url)) return .google;
-    if (std.mem.find(u8, url, "bedrock-runtime.") != null or std.mem.find(u8, url, "bedrock.") != null) return .bedrock;
+    if (isBedrock(url)) return .bedrock;
     if (isAzureOpenAI(url) or std.mem.find(u8, url, "cognitiveservices.azure.com") != null) return .azure;
     if (std.mem.find(u8, url, "localhost:11434") != null or std.mem.find(u8, url, "127.0.0.1:11434") != null or std.mem.find(u8, url, "ollama") != null) return .ollama;
 
@@ -225,6 +249,47 @@ test "isGitHubCopilot detection" {
     try std.testing.expect(isGitHubCopilot("https://api.githubcopilot.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot("https://api.openai.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot(null));
+}
+
+test "a bedrock host has bedrock or bedrock-runtime as its first label under amazonaws" {
+    const hosts = [_][]const u8{
+        "https://bedrock.us-east-1.amazonaws.com",
+        "https://bedrock-runtime.us-east-1.amazonaws.com",
+        "https://bedrock-runtime.us-east-1.amazonaws.com/model/x/invoke",
+        "https://bedrock-fips.us-east-1.amazonaws.com",
+        "https://bedrock-runtime-fips.us-east-1.amazonaws.com",
+        "https://bedrock-runtime.cn-north-1.amazonaws.com.cn",
+        "https://BEDROCK-RUNTIME.US-EAST-1.AMAZONAWS.COM",
+    };
+    for (hosts) |url| {
+        try std.testing.expect(isBedrock(url));
+    }
+
+    const not_hosts = [_][]const u8{
+        "https://amazonaws.com",
+        "https://us-east-1.amazonaws.com",
+        "https://s3.us-east-1.amazonaws.com",
+        "https://mybedrock.us-east-1.amazonaws.com",
+        "https://us-east-1.bedrock.amazonaws.com",
+        "https://bedrock-runtime.amazonaws.com.evil.example",
+        "https://bedrock.us-east-1.amazonaws.co",
+        "https://evil.example/?next=bedrock-runtime.us-east-1.amazonaws.com",
+        "https://evil.example/v1/bedrock.us-east-1.amazonaws.com",
+        "https://gateway.example/proxy/bedrock-runtime.us-east-1.amazonaws.com",
+        "not a url at all",
+        "",
+    };
+    for (not_hosts) |url| {
+        try std.testing.expect(!isBedrock(url));
+    }
+
+    try std.testing.expect(!isBedrock(null));
+}
+
+test "a bedrock host still detects as bedrock" {
+    const url = "https://bedrock-runtime.us-east-1.amazonaws.com";
+    try std.testing.expect(isBedrock(url));
+    try std.testing.expectEqual(ProviderType.bedrock, detectProviderType(url));
 }
 
 test "an azure openai host is openai.azure.com or a subdomain, never azure.com" {
