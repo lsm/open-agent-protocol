@@ -281,6 +281,9 @@ func (s *streamState) emitFor(sink *EventSink) {
 	if len(s.text) > s.prevText {
 		s.textStreamed = true
 		index := s.reserve("text")
+		if s.prevText == 0 {
+			sink.emit(Event{Kind: EventTextStart, ContentIndex: index, Partial: partial})
+		}
 		sink.emit(Event{Kind: EventTextDelta, ContentIndex: index, Delta: s.text[s.prevText:], Partial: partial})
 	}
 	s.prevText = len(s.text)
@@ -358,6 +361,11 @@ func (s *streamState) finish(sink *EventSink) {
 	for _, one := range slots {
 		content = append(content, one.block)
 	}
+	textAt := partIndexUnset
+	if s.textStreamed {
+		textAt = s.textIndex
+	}
+	endedText := false
 	for _, call := range s.tracker.inContentOrder() {
 		completed, ok := s.tracker.completeCall(call.apiIndex)
 		if !ok {
@@ -366,6 +374,10 @@ func (s *streamState) finish(sink *EventSink) {
 		index, ok := s.tracker.contentIndex(call.apiIndex)
 		if !ok {
 			continue
+		}
+		if !endedText && textAt >= 0 && textAt < index {
+			sink.emit(Event{Kind: EventTextEnd, ContentIndex: textAt, Delta: s.text, Partial: s.partial(nil)})
+			endedText = true
 		}
 		grown := make([]AssistantBlock, 0, len(content))
 		for _, one := range slots {
@@ -380,6 +392,9 @@ func (s *streamState) finish(sink *EventSink) {
 			ToolCall:     &completed,
 			Partial:      s.partial(grown),
 		})
+	}
+	if !endedText && textAt >= 0 {
+		sink.emit(Event{Kind: EventTextEnd, ContentIndex: textAt, Delta: s.text, Partial: s.partial(nil)})
 	}
 	sink.emit(Event{
 		Kind: EventDone,

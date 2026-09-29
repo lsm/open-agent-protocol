@@ -4,7 +4,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } fro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { compareVersions, firstLine, fold } from "./changelog-release.mjs";
+import { breakingSection, compareVersions, firstLine, fold } from "./changelog-release.mjs";
 
 const SCRIPT = new URL("./changelog-release.mjs", import.meta.url).pathname;
 const HEAD = "# Changelog\n\nAll notable changes to this project will be documented in this file.\n\n";
@@ -254,6 +254,60 @@ test("--verify-tag accepts the tag whose section exists and refuses one that doe
   const bad = cli(["--verify-tag", "v0.1.0-alpha.5", "--changelog", path]);
   assert.notEqual(bad.code, 0);
   assert.match(bad.stderr, /no \[0\.1\.0-alpha\.5\] section/);
+});
+
+test("a Breaking changes section is lifted into the release", () => {
+  const base = `${HEAD}## Unreleased\n\n## [0.2.0] - 2026-09-11\n\n- old\n`;
+  const { text } = fold(base, {
+    version: "0.3.0",
+    date: "2026-09-29",
+    changelog: "CHANGELOG.md",
+    pullRequests: [
+      { number: 1, title: "go: ordinary", body: "Just prose.", url: "https://example/1" },
+      {
+        number: 2,
+        title: "go/providercatalog: drops ModelsURL",
+        body: "## What changed and why\n\nWhy.\n\n## Breaking changes\n\n- `go/providercatalog`.ModelsURL is gone; use Models().\n\n## Notes for reviewers\n\n- unrelated",
+        url: "https://example/2",
+      },
+    ],
+  });
+  const section = text.slice(text.indexOf("## [0.3.0]"), text.indexOf("## [0.2.0]"));
+  assert.match(section, /^### Breaking changes$/m, "the lifted section is a subsection, so the generated list is not nested inside it");
+  assert.ok(!/^## Breaking changes$/m.test(section), "the level-two form is only for pull request descriptions");
+  // The description's first sentence still belongs in the generated list, so
+  // scope the "not lifted wholesale" assertions to the Breaking changes block.
+  const lifted = section.slice(
+    section.indexOf("### Breaking changes"),
+    section.indexOf("### Merged pull requests"),
+  );
+  assert.ok(lifted.includes("ModelsURL is gone"), "the recorded break is carried over");
+  assert.ok(!lifted.includes("unrelated"), "the section after it is not swept in");
+  assert.ok(!lifted.includes("Why."), "only the Breaking changes body is lifted, not the whole description");
+  assert.ok(
+    section.indexOf("### Breaking changes") < section.indexOf("### Merged pull requests"),
+    "the breaking changes come before the generated list",
+  );
+});
+
+test("a description with no Breaking changes section contributes no heading", () => {
+  const base = `${HEAD}## Unreleased\n\n## [0.2.0] - 2026-09-11\n`;
+  const { text } = fold(base, {
+    version: "0.3.0",
+    date: "2026-09-29",
+    changelog: "CHANGELOG.md",
+    pullRequests: [{ number: 3, title: "go: ordinary", body: "## What changed and why\n\n- `go/serve` in a bullet\n", url: "https://example/3" }],
+  });
+  assert.doesNotMatch(text, /^## Breaking changes$/m, "a package named in ordinary prose is not a recorded break");
+  assert.match(text, /### Merged pull requests/);
+});
+
+test("the Breaking changes heading is case sensitive, matching the Go gate", () => {
+  assert.equal(breakingSection("## breaking changes\n\n- `go/serve`\n"), "");
+  assert.equal(breakingSection("## Breaking changes\n\n- `go/serve`\n").trim(), "- `go/serve`");
+  assert.equal(breakingSection("##BREAKING CHANGES\n\n- x\n"), "");
+  assert.equal(breakingSection("## Breaking changes  \n\n- x\n").trim(), "- x");
+  assert.equal(breakingSection("### Breaking changes\n\n- x\n"), "", "a level-three heading is not the section");
 });
 
 test("a wrapped line beginning with an issue reference is kept", () => {

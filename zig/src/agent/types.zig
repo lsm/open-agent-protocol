@@ -282,6 +282,7 @@ pub const AgentTool = struct {
     short_description: ?[]const u8 = null,
     parameters_schema_json: []const u8,
     execute: ToolExecuteFn,
+    operation: permission.Operation = .unknown,
     runtime_ctx: ?*anyopaque = null,
     runtime_execute: ?ToolRuntimeExecuteFn = null,
     approval_ctx: ?*anyopaque = null,
