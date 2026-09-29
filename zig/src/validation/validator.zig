@@ -286,7 +286,7 @@ test "a pack's branches belong to the core envelope, and to no other document" {
     var judge = try Validator.init(allocator, .{ .pack_dirs = &.{dir}, .io = std.testing.io });
     defer judge.deinit();
     try std.testing.expect(judge.branchesFor(envelope_document).len > 0);
-    try std.testing.expectEqual(@as(usize, 0), judge.branchesFor("provider-envelope.schema.json").len);
+    try std.testing.expectEqual(@as(usize, 0), judge.branchesFor(provider_document).len);
     try std.testing.expectEqual(@as(usize, 0), judge.branchesFor("common.schema.json").len);
 }
 
