@@ -9,6 +9,140 @@ func hostModel(baseURL string) Model {
 	return Model{Provider: "openai", BaseURL: baseURL, HasBaseURL: true, HasCompat: true}
 }
 
+func TestAGitHubCopilotHostIsGithubcopilotDotComOrASubdomainOfIt(t *testing.T) {
+	hosts := []string{
+		"https://api.githubcopilot.com",
+		"https://api.individual.githubcopilot.com",
+		"https://api.acme.githubcopilot.com",
+		"https://githubcopilot.com",
+		"https://API.GITHUBCOPILOT.COM",
+	}
+	for _, url := range hosts {
+		if !isGitHubCopilotURL(url, true) {
+			t.Errorf("isGitHubCopilotURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://notgithubcopilot.com",
+		"https://mygithubcopilot.com",
+		"https://githubcopilot.com.attacker.test",
+		"https://api.githubcopilot.com@attacker.test",
+		"https://evil.example/?next=api.githubcopilot.com",
+		"https://evil.example/v1/api.githubcopilot.com",
+		"https://gateway.example/proxy/api.githubcopilot.com",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isGitHubCopilotURL(url, true) {
+			t.Errorf("isGitHubCopilotURL(%q) = true, want false: the name is in a host suffix, a path, a query or a userinfo section", url)
+		}
+	}
+
+	if isGitHubCopilotURL("https://api.githubcopilot.com", false) {
+		t.Error("no base url is not a github copilot host")
+	}
+}
+
+func TestAChutesHostIsChutesDotAIOrASubdomainOfIt(t *testing.T) {
+	hosts := []string{
+		"https://api.chutes.ai",
+		"https://api.chutes.ai/v1",
+		"https://chutes.ai",
+		"https://API.CHUTES.AI",
+	}
+	for _, url := range hosts {
+		if !isChutesURL(url, true) {
+			t.Errorf("isChutesURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://mychutes.ai",
+		"https://notchutes.ai",
+		"https://chutes.ai.evil.example",
+		"https://evil.example/?next=chutes.ai",
+		"https://evil.example/v1/chutes.ai",
+		"https://gateway.example/proxy/chutes.ai",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isChutesURL(url, true) {
+			t.Errorf("isChutesURL(%q) = true, want false: the name is in a host suffix, a path or a query", url)
+		}
+	}
+
+	if isChutesURL("https://api.chutes.ai", false) {
+		t.Error("no base url is not a chutes host")
+	}
+}
+
+func TestACerebrasHostIsCerebrasDotAIOrASubdomainOfIt(t *testing.T) {
+	hosts := []string{
+		"https://api.cerebras.ai",
+		"https://api.cerebras.ai/v1",
+		"https://cerebras.ai",
+		"https://API.CEREBRAS.AI",
+	}
+	for _, url := range hosts {
+		if !isCerebrasURL(url, true) {
+			t.Errorf("isCerebrasURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://mycerebras.ai",
+		"https://notcerebras.ai",
+		"https://cerebras.ai.evil.example",
+		"https://evil.example/?next=api.cerebras.ai",
+		"https://evil.example/v1/api.cerebras.ai",
+		"https://gateway.example/proxy/api.cerebras.ai",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isCerebrasURL(url, true) {
+			t.Errorf("isCerebrasURL(%q) = true, want false: the name is in a host suffix, a path or a query", url)
+		}
+	}
+
+	if isCerebrasURL("https://api.cerebras.ai", false) {
+		t.Error("no base url is not a cerebras host")
+	}
+}
+
+func TestAGroqHostIsGroqDotComOrASubdomainOfIt(t *testing.T) {
+	hosts := []string{
+		"https://api.groq.com",
+		"https://api.groq.com/openai/v1",
+		"https://groq.com",
+		"https://API.GROQ.COM",
+	}
+	for _, url := range hosts {
+		if !isGroqURL(url, true) {
+			t.Errorf("isGroqURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://mygroq.com",
+		"https://notgroq.com",
+		"https://groq.com.evil.example",
+		"https://evil.example/?next=api.groq.com",
+		"https://evil.example/v1/api.groq.com",
+		"https://gateway.example/proxy/api.groq.com",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isGroqURL(url, true) {
+			t.Errorf("isGroqURL(%q) = true, want false: the name is in a host suffix, a path or a query", url)
+		}
+	}
+
+	if isGroqURL("https://api.groq.com", false) {
+		t.Error("no base url is not a groq host")
+	}
+}
+
 func TestAMistralHostIsMistralDotAIOrASubdomainOfIt(t *testing.T) {
 	hosts := []string{
 		"https://api.mistral.ai",

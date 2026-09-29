@@ -44,15 +44,12 @@ func (ChunkStreamer) Stream(ctx context.Context, request TurnRequest) Turn {
 	go func() {
 		defer close(out)
 		sink := &provider.EventSink{}
-		stopped := make(chan struct{})
-		defer close(stopped)
 		sink.OnEvent = func(event provider.Event) {
 			if ctx.Err() != nil {
 				return
 			}
 			select {
 			case out <- event:
-			case <-stopped:
 			case <-ctx.Done():
 			}
 		}

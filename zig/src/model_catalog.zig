@@ -493,7 +493,7 @@ fn catalogStoredRegion(id: []const u8, storage: ?*oauth_storage.AuthStorage) ?[]
     return provider_catalog.regionFromValue(id, provider_data["region:".len..]);
 }
 
-const catalog_loader_ids = [_][]const u8{
+const catalog_loader_rows = [_][]const u8{
     "deepseek",
     "openrouter",
     "opencode",
@@ -513,12 +513,32 @@ const deepseek_catalog_models_url = "https://api.deepseek.com/v1/models";
 const proxy_models_url = "https://proxy.example/api/v1/models";
 const xiaomi_catalog_models_url = "https://token-plan-cn.xiaomimimo.com/v1/models";
 
+fn isCatalogLoaderRow(id: []const u8) bool {
+    for (catalog_loader_rows) |row| {
+        if (std.mem.eql(u8, row, id)) return true;
+    }
+    return false;
+}
+
+fn orderedCatalogLoaderIds(allocator: std.mem.Allocator, out: *std.ArrayList([]const u8)) !void {
+    for (provider_catalog.coding_plan_ids) |id| {
+        if (isCatalogLoaderRow(id)) try out.append(allocator, id);
+    }
+    for (provider_catalog.all) |row| {
+        if (row.offering != null and row.offering.? == .coding_plan) continue;
+        if (isCatalogLoaderRow(row.id)) try out.append(allocator, row.id);
+    }
+}
+
 fn loadCatalogModels(
     allocator: std.mem.Allocator,
     storage: ?*oauth_storage.AuthStorage,
     mode: CatalogLoadMode,
 ) ![]ai_types.Model {
-    return loadCatalogModelsWithRows(allocator, &catalog_loader_ids, storage, mode);
+    var ids = std.ArrayList([]const u8).empty;
+    defer ids.deinit(allocator);
+    try orderedCatalogLoaderIds(allocator, &ids);
+    return loadCatalogModelsWithRows(allocator, ids.items, storage, mode);
 }
 
 fn loadCatalogModelsWithRows(
@@ -628,6 +648,24 @@ fn contextWindowFor(id: []const u8, model: DiscoveredModel) u32 {
         if (declared.context_window) |window| return window;
     }
     return provider_catalog.rowContextWindow(id) orelse catalog_context_window;
+}
+
+pub fn contextWindowMaximum(model: ai_types.Model) ?u32 {
+    if (provider_catalog.modelMaxContextWindow(model.provider, model.id)) |ceiling| {
+        if (!contextWindowIsReported(model)) return ceiling;
+        return @max(ceiling, model.context_window);
+    }
+    if (!contextWindowIsReported(model)) return null;
+    return model.context_window;
+}
+
+pub fn contextWindowIsReported(model: ai_types.Model) bool {
+    if (model.context_window == 0) return false;
+    if (provider_catalog.declaredModel(model.provider, model.id)) |declared| {
+        if (declared.context_window != null) return true;
+    }
+    if (provider_catalog.rowContextWindow(model.provider) != null) return true;
+    return model.context_window != catalog_context_window;
 }
 
 test "no catalogued row or model resolves a window above the ceiling it resolves" {
@@ -2646,9 +2684,9 @@ test "the production loader enables deepseek, every gateway and every coding pla
         "openai",
         "kimi",
     };
-    try std.testing.expectEqual(enabled.len, catalog_loader_ids.len);
-    for (enabled, 0..) |id, index| {
-        try std.testing.expectEqualStrings(id, catalog_loader_ids[index]);
+    try std.testing.expectEqual(enabled.len, catalog_loader_rows.len);
+    for (enabled) |id| {
+        try std.testing.expect(isCatalogLoaderRow(id));
         try std.testing.expect(catalogTargetInRegion(id, provider_catalog.defaultRegion(id)) != null);
     }
 }
@@ -2673,10 +2711,57 @@ test "loadProductionModels serves a gateway row's discovered models beside deeps
     defer deinitModels(std.testing.allocator, models);
 
     try std.testing.expectEqual(@as(usize, 2), models.len);
-    try std.testing.expectEqualStrings("deepseek", models[0].provider);
-    try std.testing.expectEqualStrings("openrouter", models[1].provider);
-    try std.testing.expectEqualStrings("https://api.deepseek.com", models[0].base_url);
-    try std.testing.expectEqualStrings("https://openrouter.ai/api/v1", models[1].base_url);
+    try std.testing.expectEqualStrings("openrouter", models[0].provider);
+    try std.testing.expectEqualStrings("deepseek", models[1].provider);
+    try std.testing.expectEqualStrings("https://openrouter.ai/api/v1", models[0].base_url);
+    try std.testing.expectEqualStrings("https://api.deepseek.com", models[1].base_url);
+}
+
+test "the loaded list leads with the plans, and follows the catalog within each group" {
+    const allocator = std.testing.allocator;
+    var ids = std.ArrayList([]const u8).empty;
+    defer ids.deinit(allocator);
+    try orderedCatalogLoaderIds(allocator, &ids);
+
+    try std.testing.expectEqual(catalog_loader_rows.len, ids.items.len);
+    for (ids.items) |id| try std.testing.expect(isCatalogLoaderRow(id));
+
+    var seen_payg = false;
+    for (ids.items) |id| {
+        const row = provider_catalog.provider(id) orelse return error.TestExpectedRow;
+        const is_plan = row.offering != null and row.offering.? == .coding_plan;
+        try std.testing.expect(!is_plan or !seen_payg);
+        if (!is_plan) seen_payg = true;
+    }
+
+    var plans: usize = 0;
+    for (provider_catalog.coding_plan_ids) |id| {
+        if (isCatalogLoaderRow(id)) plans += 1;
+    }
+    try std.testing.expect(plans > 0);
+    for (ids.items[0..plans]) |id| {
+        const row = provider_catalog.provider(id) orelse return error.TestExpectedRow;
+        try std.testing.expect(row.offering.? == .coding_plan);
+    }
+    for (ids.items[plans..]) |id| {
+        const row = provider_catalog.provider(id) orelse return error.TestExpectedRow;
+        try std.testing.expect(row.offering == null or row.offering.? != .coding_plan);
+    }
+
+    const expected_plans = blk: {
+        var names: [catalog_loader_rows.len][]const u8 = undefined;
+        var total: usize = 0;
+        for (provider_catalog.coding_plan_ids) |id| {
+            if (isCatalogLoaderRow(id)) {
+                names[total] = id;
+                total += 1;
+            }
+        }
+        break :blk names[0..total];
+    };
+    for (ids.items[0..plans], 0..) |id, index| {
+        try std.testing.expectEqualStrings(expected_plans[index], id);
+    }
 }
 
 test "every coding plan row the loader enables carries its own version in the base" {
@@ -2838,10 +2923,106 @@ test "loadProductionModels serves a coding plan row's discovered models beside d
     defer deinitModels(std.testing.allocator, models);
 
     try std.testing.expectEqual(@as(usize, 2), models.len);
-    try std.testing.expectEqualStrings("deepseek", models[0].provider);
-    try std.testing.expectEqualStrings("tencent-coding-plan", models[1].provider);
-    try std.testing.expectEqualStrings("https://api.deepseek.com", models[0].base_url);
-    try std.testing.expectEqualStrings("https://api.lkeap.cloud.tencent.com/coding/v3", models[1].base_url);
+    try std.testing.expectEqualStrings("tencent-coding-plan", models[0].provider);
+    try std.testing.expectEqualStrings("deepseek", models[1].provider);
+    try std.testing.expectEqualStrings("https://api.lkeap.cloud.tencent.com/coding/v3", models[0].base_url);
+    try std.testing.expectEqualStrings("https://api.deepseek.com", models[1].base_url);
+}
+
+test "a window a session asks for is capped at the ceiling its row records" {
+    const gpt: ai_types.Model = .{
+        .id = "gpt-5-codex",
+        .name = "GPT-5 Codex",
+        .api = "openai-responses",
+        .provider = "openai",
+        .base_url = "https://api.openai.com",
+        .reasoning = true,
+        .input = &.{},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 128_000,
+        .max_tokens = 16_384,
+    };
+    try std.testing.expectEqual(@as(?u32, 1_000_000), contextWindowMaximum(gpt));
+    try std.testing.expect(!contextWindowIsReported(gpt));
+
+    const kimi: ai_types.Model = .{
+        .id = "kimi-k2.7-code",
+        .name = "Kimi K2.7 Code",
+        .api = "openai-completions",
+        .provider = "kimi",
+        .base_url = "https://api.kimi.com/coding",
+        .reasoning = false,
+        .input = &.{},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 262_144,
+        .max_tokens = 16_384,
+    };
+    try std.testing.expectEqual(@as(?u32, 262_144), contextWindowMaximum(kimi));
+    try std.testing.expect(contextWindowIsReported(kimi));
+
+    const uncatalogued: ai_types.Model = .{
+        .id = "local-model",
+        .name = "Local",
+        .api = "openai-completions",
+        .provider = "not-a-catalogued-row",
+        .base_url = "http://localhost:11434",
+        .reasoning = false,
+        .input = &.{},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 128_000,
+        .max_tokens = 8_192,
+    };
+    try std.testing.expectEqual(@as(?u32, null), contextWindowMaximum(uncatalogued));
+    try std.testing.expect(!contextWindowIsReported(uncatalogued));
+
+    const uncatalogued_wide: ai_types.Model = .{
+        .id = "local-model",
+        .name = "Local",
+        .api = "openai-completions",
+        .provider = "not-a-catalogued-row",
+        .base_url = "http://localhost:11434",
+        .reasoning = false,
+        .input = &.{},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1_000_000,
+        .max_tokens = 8_192,
+    };
+    try std.testing.expectEqual(@as(?u32, 1_000_000), contextWindowMaximum(uncatalogued_wide));
+    try std.testing.expect(contextWindowIsReported(uncatalogued_wide));
+}
+
+test "a ceiling never sits below the window a listing already gave the model" {
+    const reported_wide: ai_types.Model = .{
+        .id = "gpt-5-codex",
+        .name = "GPT-5 Codex",
+        .api = "openai-responses",
+        .provider = "openai",
+        .base_url = "https://example.invalid",
+        .reasoning = true,
+        .input = &.{},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 2_000_000,
+        .max_tokens = 16_384,
+    };
+    try std.testing.expectEqual(@as(?u32, 2_000_000), contextWindowMaximum(reported_wide));
+    try std.testing.expect(contextWindowIsReported(reported_wide));
+}
+
+test "a model with no window of its own still takes its row's ceiling" {
+    const empty: ai_types.Model = .{
+        .id = "m",
+        .name = "M",
+        .api = "openai-completions",
+        .provider = "openai",
+        .base_url = "https://api.openai.com",
+        .reasoning = false,
+        .input = &.{},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 0,
+        .max_tokens = 8_192,
+    };
+    try std.testing.expectEqual(@as(?u32, 1_000_000), contextWindowMaximum(empty));
+    try std.testing.expect(!contextWindowIsReported(empty));
 }
 
 test "openai is served on the completions wire except for the models that need responses" {
@@ -2917,8 +3098,8 @@ test "the wire a model is served on is the one the loader would pick for the row
 }
 
 test "the loader's rows are catalog rows the target answers for" {
-    try std.testing.expect(catalog_loader_ids.len > 0);
-    for (catalog_loader_ids) |id| {
+    try std.testing.expect(catalog_loader_rows.len > 0);
+    for (catalog_loader_rows) |id| {
         try std.testing.expect(provider_catalog.provider(id) != null);
         try std.testing.expect(catalogTargetInRegion(id, provider_catalog.defaultRegion(id)) != null);
     }
@@ -3183,7 +3364,11 @@ fn catalogLoadProbe(allocator: std.mem.Allocator) !void {
     const models = try loadCatalogModels(allocator, null, .allow_cache);
     defer deinitModels(allocator, models);
     try std.testing.expectEqual(@as(usize, 4), models.len);
-    try std.testing.expectEqualStrings("openai-responses", models[3].api);
+    var responses: usize = 0;
+    for (models) |model| {
+        if (std.mem.eql(u8, model.api, "openai-responses")) responses += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), responses);
 }
 
 fn declaredModelsFallbackProbe(allocator: std.mem.Allocator) !void {

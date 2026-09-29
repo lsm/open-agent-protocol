@@ -102,7 +102,7 @@ pub const ProviderProtocolRuntime = struct {
         while (stream_events_forwarded < event_limit) {
             const event = active_stream.event_stream.poll() orelse break;
             var event_cleanup = event;
-            defer if (active_stream.event_stream.owns_events) {
+            defer if (active_stream.event_stream.ownership.isOwned()) {
                 protocol_types.deinitEvent(self.allocator, &event_cleanup);
             };
 
