@@ -364,8 +364,10 @@ Each entry in `provider.models.list.response`:
   `image`, `audio`, `video`, `document`. A list is never empty: a present list
   publishes a set, and an empty one would claim the model accepts nothing, which
   is not a fact any provider states. Omit the member instead.
-- `reasoning_levels?` — a non-empty list of the levels the model accepts, with
-  `reasoning_default` naming one of them.
+- `reasoning_levels?` — a non-empty list of the levels the model accepts. Where
+  both it and `reasoning_default` are present, the default names one of them:
+  that is an obligation on the producer, not a gate, and nothing here judges it.
+  See below.
 - `release_date?`, `family?` — a non-empty string each. A list is never empty
   and a string is never empty, for one reason: an absent member already says the
   fact is unknown, so an empty one would say the same thing while reading as
@@ -392,6 +394,18 @@ promise, and no unit judges it. A tier — the `context_over_200k` a provider's
 own dataset records on some models — is not in v0.1: no provider in the evidence
 publishes one, and a shape nothing fills is a claim about the schema rather than
 about a model.
+
+**What is judged, and what is only an obligation.** The shape of each member is
+judged, and it is decidable from one response: a list is non-empty, a published
+string is non-empty, a modality is one of the five, a `cost` is a subset of four
+numbers and carries no tier, and a `catalog` publishes its completeness. What no
+gate judges is a fact's *relationship* to another fact: that a `reasoning_default`
+names a level inside its own `reasoning_levels`, and that a published rate is
+honoured. Both are obligations on the producer, and both are stated here rather
+than enforced, because the first is a cross-member check the schema cannot
+express and the second would need a unit the owner has not granted. A caller
+that finds a default outside the offered set has found an implementation that
+broke its obligation, not a trace a validator refuses.
 
 #### The listing publishes its own completeness and age
 

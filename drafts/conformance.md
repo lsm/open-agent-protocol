@@ -564,7 +564,11 @@ response that carried it, which is what makes publishing it safe and judging it
 separate: an implementation that quotes a rate it does not honour has published
 a falsehood rather than a wrong price, and this draft judges neither. What the
 schema does judge is the shape — four numbers, no tier, and no member beyond
-those four — so a `cost` is a subset of them or absent. A listing's
+those four — so a `cost` is a subset of them or absent. The same holds for the
+other published members: the shape is judged, a fact's relationship to another
+fact is not. A `reasoning_default` outside its own `reasoning_levels` is an
+obligation the producer broke, not a diagnostic a validator emits, because the
+check is across two members and the schema cannot express one. A listing's
 `catalog.complete: false` is likewise
 published and unjudged; a caller told the listing is a subset decides for
 itself what to publish in its own catalog, and that is judged under that
