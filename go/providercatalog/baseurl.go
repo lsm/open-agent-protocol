@@ -140,12 +140,19 @@ func ProviderArm(providerID, wire string) string {
 	return ""
 }
 
-func KimiRegion(overrides BaseOverrides, stored string) string {
+func KimiRegion(catalog Catalog, overrides BaseOverrides, stored string) string {
 	if overrides.KimiRegion != "" {
 		return overrides.KimiRegion
 	}
 	if normalized := NormalizeKimiRegion(stored); normalized != "" {
 		return normalized
+	}
+	return DefaultKimiRegion(catalog)
+}
+
+func DefaultKimiRegion(catalog Catalog) string {
+	if region := DefaultRegion(catalog, "kimi"); region != "" {
+		return region
 	}
 	return "china"
 }
@@ -156,7 +163,7 @@ func ResolveBaseURL(catalog Catalog, env []EnvironmentValue, id, wire, region st
 		return override, true
 	}
 	if ProviderArm(id, wire) == "kimi" {
-		return BaseURL(catalog, id, wire, KimiRegion(overrides, region))
+		return BaseURL(catalog, id, wire, KimiRegion(catalog, overrides, region))
 	}
 	return BaseURL(catalog, id, wire, "")
 }

@@ -248,3 +248,61 @@ func TestEqualFoldASCIIIsNotUnicodeFolding(t *testing.T) {
 		t.Error("the long s must not fold: it is two bytes and outside ASCII")
 	}
 }
+
+func TestTheKimiFallbackIsTheRowsOwnDefaultRegionAndNotASpellingInGo(t *testing.T) {
+	catalog := heldCatalog(t)
+	if got := DefaultRegion(catalog, "kimi"); got != "china" {
+		t.Errorf("the real catalog's kimi default_region = %q, want china", got)
+	}
+	if got := DefaultKimiRegion(catalog); got != "china" {
+		t.Errorf("got %q, want the row's own value", got)
+	}
+	renamed := catalog
+	renamed.Providers = append([]Provider(nil), catalog.Providers...)
+	for i, row := range renamed.Providers {
+		if row.ID == "kimi" {
+			renamed.Providers[i].DefaultRegion = "global"
+		}
+	}
+	if got := DefaultKimiRegion(renamed); got != "global" {
+		t.Errorf("got %q, want global: the fallback is the row's, so editing the catalog moves it", got)
+	}
+	url, ok := ResolveBaseURL(renamed, nil, "kimi", "openai-completions", "")
+	if !ok || url != "https://api.moonshot.ai" {
+		t.Errorf("kimi with a default_region of global = %q, want the global endpoint", url)
+	}
+}
+
+func TestARowNamingNoDefaultRegionFallsBackToChina(t *testing.T) {
+	empty := Catalog{Providers: []Provider{{
+		ID: "kimi",
+		Endpoints: []Endpoint{
+			{Wire: "openai-completions", Region: "china", BaseURL: "http://china.test"},
+			{Wire: "openai-completions", Region: "global", BaseURL: "http://global.test"},
+		},
+	}}}
+	if got := DefaultRegion(empty, "kimi"); got != "" {
+		t.Errorf("got %q, want nothing for a row recording none", got)
+	}
+	if got := DefaultKimiRegion(empty); got != "china" {
+		t.Errorf("got %q, want china: a row that names no default is answered as the source's own literal does", got)
+	}
+	url, ok := ResolveBaseURL(empty, nil, "kimi", "openai-completions", "")
+	if !ok || url != "http://china.test" {
+		t.Errorf("got %q, ok=%v, want the china endpoint", url, ok)
+	}
+}
+
+func TestAKnownRegionStillOutranksTheDefault(t *testing.T) {
+	catalog := heldCatalog(t)
+	for _, value := range []string{"moonshot", "GLOBAL", "coding", "cn"} {
+		url, ok := ResolveBaseURL(catalog, nil, "kimi", "openai-completions", value)
+		want := "https://api.kimi.com/coding"
+		if value == "moonshot" || value == "GLOBAL" {
+			want = "https://api.moonshot.ai"
+		}
+		if !ok || url != want {
+			t.Errorf("a stored region of %q = %q, want %q: the default is a fallback, not an override", value, url, want)
+		}
+	}
+}
