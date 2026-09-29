@@ -61,13 +61,55 @@ func NeedsNoCredential(catalog Catalog, id string) bool {
 	return AcceptsAuth(catalog, id, "none")
 }
 
+func CredentialPrecedence(catalog Catalog, id string) []Source {
+	provider, known := findProvider(catalog, id)
+	if !known {
+		return nil
+	}
+	return precedenceOrder(provider.CredentialOrder)
+}
+
+func precedenceOrder(names []string) []Source {
+	out := make([]Source, 0, 2)
+	for _, name := range names {
+		if len(out) == cap(out) {
+			break
+		}
+		if name == string(SourceStored) {
+			out = append(out, SourceStored)
+			continue
+		}
+		if name == string(SourceEnvironment) {
+			out = append(out, SourceEnvironment)
+		}
+	}
+	if len(out) == 0 {
+		return []Source{SourceEnvironment, SourceStored}
+	}
+	return out
+}
+
 func LookupCredential(catalog Catalog, env []EnvironmentValue, stored *StoredCredential, id string) (Credential, bool) {
-	if _, known := findProvider(catalog, id); !known {
+	provider, known := findProvider(catalog, id)
+	if !known {
 		return Credential{}, false
 	}
-	if credential, ok := APIKeyForProvider(catalog, env, id); ok {
-		return credential, true
+	for _, source := range precedenceOrder(provider.CredentialOrder) {
+		switch source {
+		case SourceEnvironment:
+			if credential, ok := APIKeyForProvider(catalog, env, id); ok {
+				return credential, true
+			}
+		case SourceStored:
+			if credential, ok := storedCredential(catalog, stored, id); ok {
+				return credential, true
+			}
+		}
 	}
+	return Credential{}, false
+}
+
+func storedCredential(catalog Catalog, stored *StoredCredential, id string) (Credential, bool) {
 	if stored == nil {
 		return Credential{}, false
 	}
