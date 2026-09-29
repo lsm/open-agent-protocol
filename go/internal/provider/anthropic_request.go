@@ -210,13 +210,14 @@ func BuildAnthropicRequestBody(model Model, ctx Context, options AnthropicOption
 		}
 	}
 
+	hasSystem := ctx.HasSystem && ctx.SystemPrompt != ""
 	systemText := ctx.SystemPrompt
-	if isOAuth && ctx.HasSystem {
+	if isOAuth && hasSystem {
 		systemText = oauthSystemText + "\n\n" + ctx.SystemPrompt
 	} else if isOAuth {
 		systemText = oauthSystemText
 	}
-	if ctx.HasSystem || isOAuth {
+	if hasSystem || isOAuth {
 		block := jsonObject{member("type", jsonString("text")), member("text", jsonString(systemText))}
 		if cache := cacheBlock(cc); cache != nil {
 			block = block.with(member("cache_control", cache))
@@ -488,45 +489,32 @@ func anthropicMessages(ctx Context, cc *cacheControl) jsonArray {
 				})
 			}
 		default:
-			if hasImage(msg.User.Parts) || (isLastUser && cc != nil) {
-				blocks := jsonArray{}
-				for idx, part := range msg.User.Parts {
-					if idx == len(msg.User.Parts)-1 && isLastUser && cc != nil {
-						if part.Text != nil {
-							blocks = append(blocks, jsonObject{
-								member("type", jsonString("text")),
-								member("text", jsonString(part.Text.Text)),
-								member("cache_control", cacheBlock(cc)),
-							})
-							continue
-						}
-					}
-					switch {
-					case part.Text != nil:
+			blocks := jsonArray{}
+			for idx, part := range msg.User.Parts {
+				if idx == len(msg.User.Parts)-1 && isLastUser && cc != nil {
+					if part.Text != nil {
 						blocks = append(blocks, jsonObject{
 							member("type", jsonString("text")),
 							member("text", jsonString(part.Text.Text)),
+							member("cache_control", cacheBlock(cc)),
 						})
-					case part.Image != nil:
-						blocks = append(blocks, imageBlock(part.Image))
+						continue
 					}
 				}
-				out = append(out, jsonObject{
-					member("role", jsonString(role)),
-					member("content", blocks),
-				})
-			} else {
-				texts := []string{}
-				for _, part := range msg.User.Parts {
-					if part.Text != nil {
-						texts = append(texts, part.Text.Text)
-					}
+				switch {
+				case part.Text != nil:
+					blocks = append(blocks, jsonObject{
+						member("type", jsonString("text")),
+						member("text", jsonString(part.Text.Text)),
+					})
+				case part.Image != nil:
+					blocks = append(blocks, imageBlock(part.Image))
 				}
-				out = append(out, jsonObject{
-					member("role", jsonString(role)),
-					member("content", jsonString(strings.Join(texts, "\n"))),
-				})
 			}
+			out = append(out, jsonObject{
+				member("role", jsonString(role)),
+				member("content", blocks),
+			})
 		}
 		i++
 	}

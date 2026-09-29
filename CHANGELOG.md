@@ -76,6 +76,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     Code sentence, a blank line, and then the caller's own prompt. A port that
     replaces it drops the caller's instructions on every oauth request that has
     one; the bare sentence is written only when there is no prompt at all.
+  - **A user message that has parts is always a block array**, never a joined
+    string — the openai writer flattens text-only parts and this one does not,
+    so a port that shares the rule sends a different shape than oapx. A message
+    with no parts at all is still a plain string.
+  - **An empty system prompt counts as absent**, so no empty text block is
+    written, and under oauth the bare sentence goes out with no trailing blank
+    line rather than one followed by nothing.
   - **A tool call is a block inside the content array**, not a sibling member as
     in the openai body, and a tool result is a **`user`** message -- a whole run of
     consecutive results in one message -- whose `content` is a plain string for a

@@ -624,3 +624,48 @@ func TestAnAssistantImageIsDroppedWhereTheOracleDropsIt(t *testing.T) {
 		t.Errorf("the branch carrying a tool use keeps its images, got %v", kept["content"])
 	}
 }
+
+func TestAPartsUserMessageIsAlwaysABlockArray(t *testing.T) {
+	ctx := Context{Messages: []Message{
+		{User: &UserContent{Text: "first", HasText: true}},
+		{User: &UserContent{UseParts: true, Parts: []ContentPart{
+			{Text: &TextPart{Text: "one"}},
+			{Text: &TextPart{Text: "two"}},
+		}}},
+	}}
+	messages := anthropicBody(t, anthropicModel(), ctx, AnthropicOptions{})["messages"].([]any)
+	parts := messages[1].(map[string]any)["content"].([]any)
+	if len(parts) != 2 {
+		t.Fatalf("got %d blocks, want the two text parts written as blocks", len(parts))
+	}
+	if parts[0].(map[string]any)["text"] != "one" || parts[1].(map[string]any)["text"] != "two" {
+		t.Errorf("the blocks = %v", parts)
+	}
+	plain := messages[0].(map[string]any)["content"]
+	if plain != "first" {
+		t.Errorf("a message with no parts is still a plain string, got %v", plain)
+	}
+}
+
+func TestAPartsUserMessageOfOnlyTextIsStillAnArray(t *testing.T) {
+	ctx := Context{Messages: []Message{{User: &UserContent{UseParts: true, Parts: []ContentPart{
+		{Text: &TextPart{Text: "only"}},
+	}}}}}
+	messages := anthropicBody(t, anthropicModel(), ctx, AnthropicOptions{})["messages"].([]any)
+	content := messages[0].(map[string]any)["content"]
+	if _, ok := content.([]any); !ok {
+		t.Errorf("content = %v, want an array: the openai writer flattens these and this one does not", content)
+	}
+}
+
+func TestAnEmptySystemPromptCountsAsAbsent(t *testing.T) {
+	body := anthropicBody(t, anthropicModel(), Context{HasSystem: true, SystemPrompt: ""}, AnthropicOptions{})
+	if _, present := body["system"]; present {
+		t.Errorf("an empty prompt writes no system at all, got %v", body["system"])
+	}
+	oauth, _ := BuildAnthropicRequestBody(anthropicModel(), Context{HasSystem: true, SystemPrompt: ""}, AnthropicOptions{}, "sk-ant-oat01")
+	text := systemTextOf(t, oauth)
+	if text != oauthSystemText {
+		t.Errorf("under oauth with no prompt the text = %q, want the bare sentence with no trailing blank line", text)
+	}
+}
