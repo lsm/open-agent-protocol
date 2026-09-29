@@ -72,6 +72,27 @@ pub fn removeFile(path: []const u8) void {
     getCwd().deleteFile(defaultIo(), path) catch {};
 }
 
+pub const FileKind = enum { absent, unreadable, directory, file, other };
+
+pub fn fileKind(dir: Dir, path: []const u8) FileKind {
+    const stat = dir.statFile(defaultIo(), path, .{}) catch |err| switch (err) {
+        error.FileNotFound => {
+            _ = dir.statFile(defaultIo(), path, .{ .follow_symlinks = false }) catch return .absent;
+            return .unreadable;
+        },
+        else => return .unreadable,
+    };
+    return switch (stat.kind) {
+        .directory => .directory,
+        .file => .file,
+        else => .other,
+    };
+}
+
+pub fn symLink(dir: Dir, target_path: []const u8, link_path: []const u8) !void {
+    try dir.symLink(defaultIo(), target_path, link_path, .{});
+}
+
 pub fn directoryPermissions(path: []const u8) !u32 {
     var dir = try getCwd().openDir(defaultIo(), path, .{});
     defer dir.close(defaultIo());
@@ -149,6 +170,19 @@ test "compat filesystem wrappers create directories and open files" {
     var buf: [4]u8 = undefined;
     const n = try file.readStreaming(defaultIo(), &.{&buf});
     try std.testing.expectEqualStrings("data", buf[0..n]);
+}
+
+test "compat fileKind separates a directory from a file and from nothing" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try createDir(tmp.dir, "sub");
+    try writeFile(tmp.dir, "sub/leaf.txt", "x");
+
+    try std.testing.expectEqual(FileKind.directory, fileKind(tmp.dir, "sub"));
+    try std.testing.expectEqual(FileKind.file, fileKind(tmp.dir, "sub/leaf.txt"));
+    try std.testing.expectEqual(FileKind.absent, fileKind(tmp.dir, "sub/missing"));
+    try std.testing.expectEqual(FileKind.absent, fileKind(tmp.dir, "missing/deeper/still"));
 }
 
 test "compat getCwd returns a directory handle" {
