@@ -339,8 +339,8 @@ pub fn isReasoningModelRef(provider_id: []const u8, model_id: []const u8) bool {
 }
 
 pub fn defaultMaxTokensForRef(provider_id: []const u8, api: []const u8) u32 {
-    if (std.mem.eql(u8, provider_id, "kimi") and std.mem.eql(u8, api, "openai-completions")) {
-        return 16_384;
+    if (provider_catalog.declaresWire(provider_id, api)) {
+        if (provider_catalog.rowMaxTokens(provider_id)) |tokens| return tokens;
     }
     return 4_096;
 }
@@ -653,9 +653,13 @@ test "oauthOriginAllowed lets a kimi login keep streaming" {
     try std.testing.expect(!oauthOriginAllowed(allocator, "anthropic", "https://attacker.test", "", null));
 }
 
-test "defaultMaxTokensForRef uses catalog limits for catalog pairs" {
-    try std.testing.expectEqual(@as(u32, 16_384), defaultMaxTokensForRef("kimi", "openai-completions"));
+test "defaultMaxTokensForRef reads the row's own figure, and only for a wire the row declares" {
+    const kimi_row = provider_catalog.rowMaxTokens("kimi").?;
+    try std.testing.expectEqual(kimi_row, defaultMaxTokensForRef("kimi", "openai-completions"));
     try std.testing.expectEqual(@as(u32, 4_096), defaultMaxTokensForRef("anthropic", "anthropic-messages"));
     try std.testing.expectEqual(@as(u32, 4_096), defaultMaxTokensForRef("openai", "openai-completions"));
     try std.testing.expectEqual(@as(u32, 4_096), defaultMaxTokensForRef("kimi", "openai-responses"));
+    try std.testing.expect(provider_catalog.declaresWire("kimi", "openai-completions"));
+    try std.testing.expect(!provider_catalog.declaresWire("kimi", "openai-responses"));
+    try std.testing.expect(!provider_catalog.declaresWire("no-such-provider", "openai-completions"));
 }
