@@ -571,7 +571,6 @@ fn runAllocationProbe(allocator: std.mem.Allocator) !void {
 
 test "a run that is refused part way through frees what it built exactly once" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
-    try runAllocationProbe(std.testing.allocator);
     try std.testing.checkAllAllocationFailures(std.testing.allocator, runAllocationProbe, .{});
 }
 
