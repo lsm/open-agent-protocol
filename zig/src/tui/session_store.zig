@@ -139,11 +139,14 @@ pub const SessionMetadata = struct {
     created_at: i64 = 0,
     compaction_offset: u64 = 0,
     compactions: u32 = 0,
+    title: []u8 = &.{},
+    title_generated: bool = false,
 
     pub fn deinit(self: *SessionMetadata, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
         allocator.free(self.model);
         allocator.free(self.provider);
+        if (self.title.len > 0) allocator.free(self.title);
         self.* = undefined;
     }
 };
@@ -245,6 +248,14 @@ pub const Store = struct {
         try compat.fs.atomicReplace(compat.fs.getCwd(), path, tmp_path, data);
     }
 
+    pub fn saveGeneratedTitle(self: Store, session_id: []const u8, title: []const u8) !void {
+        var meta = try self.loadIndex(session_id);
+        defer meta.deinit(self.allocator);
+        try replaceString(self.allocator, &meta.title, title);
+        meta.title_generated = true;
+        try self.saveIndex(meta);
+    }
+
     pub fn loadIndex(self: Store, session_id: []const u8) !SessionMetadata {
         const path = try sessionFilePath(self.allocator, self.base_dir, session_id, index_suffix);
         defer self.allocator.free(path);
@@ -299,6 +310,7 @@ pub const Store = struct {
                 else => self.loadMetadata(session_id) catch continue,
             };
             errdefer metadata.deinit(self.allocator);
+            if (metadata.title.len == 0) metadata.title = try self.firstUserText(session_id);
             try result.append(self.allocator, metadata);
         }
         return result;
@@ -336,6 +348,32 @@ pub const Store = struct {
         }
         try self.loadHeadMetadata(path, &meta);
         return meta;
+    }
+
+    fn firstUserText(self: Store, session_id: []const u8) ![]u8 {
+        const path = try sessionPath(self.allocator, self.base_dir, session_id);
+        defer self.allocator.free(path);
+        var file = compat.fs.getCwd().openFile(defaultIo(), path, .{}) catch return &.{};
+        defer file.close(defaultIo());
+        const data = try self.allocator.alloc(u8, index_max_bytes);
+        defer self.allocator.free(data);
+        const read = file.readPositionalAll(defaultIo(), data, 0) catch return &.{};
+        var lines = std.mem.splitScalar(u8, data[0..read], '\n');
+        while (lines.next()) |line| {
+            if (std.mem.indexOf(u8, line, "\"type\":\"message_end\",\"role\":\"user\"") == null) continue;
+            var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, line, .{}) catch continue;
+            defer parsed.deinit();
+            const event = switch (parsed.value) {
+                .object => |o| o.get("event") orelse continue,
+                else => continue,
+            };
+            const text = switch (event) {
+                .object => |o| stringField(o, "text") orelse continue,
+                else => continue,
+            };
+            if (text.len > 0) return self.allocator.dupe(u8, text);
+        }
+        return &.{};
     }
 
     fn loadHeadMetadata(self: Store, path: []const u8, meta: *SessionMetadata) !void {
@@ -407,6 +445,8 @@ fn serializeIndex(allocator: std.mem.Allocator, meta: SessionMetadata) ![]u8 {
     try w.writeIntField("last_active", meta.last_active);
     try w.writeIntField("compaction_offset", meta.compaction_offset);
     try w.writeIntField("compactions", meta.compactions);
+    try w.writeStringField("title", meta.title);
+    try w.writeBoolField("title_generated", meta.title_generated);
     try w.endObject();
     return buf.toOwnedSlice(allocator);
 }
@@ -426,6 +466,10 @@ fn parseIndex(allocator: std.mem.Allocator, session_id: []const u8, data: []cons
     meta.created_at = intField(obj, "created_at") orelse 0;
     meta.compaction_offset = if (uint64Field(obj, "compaction_offset")) |v| v else 0;
     meta.compactions = uint32Field(obj, "compactions") orelse 0;
+    if (stringField(obj, "title")) |v| {
+        if (v.len > 0) meta.title = try allocator.dupe(u8, v);
+    }
+    meta.title_generated = boolField(obj, "title_generated", false);
     return meta;
 }
 
@@ -1992,7 +2036,7 @@ test "list falls back to the first record's metadata when the tail has none" {
 }
 
 fn parseIndexProbe(allocator: std.mem.Allocator) !void {
-    var meta = try parseIndex(allocator, "s1", "{\"session_id\":\"s1\",\"model\":\"m\",\"provider\":\"p\",\"created_at\":1,\"last_active\":2,\"compaction_offset\":3,\"compactions\":2}");
+    var meta = try parseIndex(allocator, "s1", "{\"session_id\":\"s1\",\"model\":\"m\",\"provider\":\"p\",\"created_at\":1,\"last_active\":2,\"compaction_offset\":3,\"compactions\":2,\"title\":\"t\",\"title_generated\":true}");
     meta.deinit(allocator);
 }
 

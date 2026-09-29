@@ -1409,9 +1409,9 @@ def scenario_session_roundtrip(args):
             second.settle()
             picker_from = len(second.session.plain)
             second.command("/resume", "Sessions")
-            picker_row = f"claude-sonnet-4-5 anthropic {time.gmtime().tm_year}"
-            if not second.seen(picker_row, picker_from):
-                raise ScenarioError("session-roundtrip: picker row does not show the saved model and provider")
+            picker_row = re.compile("remember the alpha · \\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d · claude-sonnet-4-5".encode())
+            if not picker_row.search(second.session.plain, picker_from):
+                raise ScenarioError("session-roundtrip: picker row does not show the session's title, time and model")
             second.frame("session-picker")
 
             second.session.send(KEY_ENTER, "Enter (resume session)")
