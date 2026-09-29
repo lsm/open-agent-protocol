@@ -120,23 +120,32 @@ pub fn render(allocator: std.mem.Allocator, state: *const tui_state.AppState, op
     };
 }
 
-pub fn renderCwdRow(allocator: std.mem.Allocator, display: []const u8, width: usize) ![]u8 {
-    return renderCwdRowImpl(allocator, display, width) catch |err| switch (err) {
+pub fn renderCwdRow(allocator: std.mem.Allocator, display: []const u8, branch: []const u8, width: usize) ![]u8 {
+    return renderCwdRowImpl(allocator, display, branch, width) catch |err| switch (err) {
         error.WriteFailed => error.OutOfMemory,
         else => |e| e,
     };
 }
 
-fn renderCwdRowImpl(allocator: std.mem.Allocator, display: []const u8, width: usize) ![]u8 {
+fn renderCwdRowImpl(allocator: std.mem.Allocator, display: []const u8, branch: []const u8, width: usize) ![]u8 {
+    const path_width = tui_text.visibleWidth(display);
+    const branch_width = tui_text.visibleWidth(branch);
+    const show_branch = branch_width > 0 and path_width +| hint_gap +| branch_width <= width;
     const clipped = try tui_text.takeTrailingWidth(allocator, display, width);
     defer allocator.free(clipped);
     var out: std.Io.Writer.Allocating = .init(allocator);
     errdefer out.deinit();
-    const pad = width -| tui_text.visibleWidth(clipped);
-    for (0..pad) |_| try out.writer.writeByte(' ');
     try tui_theme.palette.muted.writeFg(&out.writer);
     try zz.ansi.sgr(&out.writer, "2");
     try out.writer.writeAll(clipped);
+    const left = tui_text.visibleWidth(clipped);
+    if (show_branch) {
+        const gap = width - left -| branch_width;
+        for (0..gap) |_| try out.writer.writeByte(' ');
+        try out.writer.writeAll(branch);
+    } else {
+        for (left..width) |_| try out.writer.writeByte(' ');
+    }
     try out.writer.writeAll(zz.ansi.reset);
     return out.toOwnedSlice();
 }
@@ -710,16 +719,43 @@ test "status bar clips to the width when even the kept segments overflow" {
     try std.testing.expect(std.mem.indexOf(u8, text, "…") != null);
 }
 
-test "cwd row right-aligns the working directory" {
-    const row = try renderCwdRow(std.testing.allocator, "~/focus/open-agent-protocol", 60);
+test "cwd row left-aligns the path and right-aligns the branch" {
+    const row = try renderCwdRow(std.testing.allocator, "~/focus/open-agent-protocol", "main", 60);
     defer std.testing.allocator.free(row);
 
     try std.testing.expectEqual(@as(usize, 60), tui_text.visibleWidth(row));
-    try std.testing.expect(std.mem.endsWith(u8, row, "~/focus/open-agent-protocol" ++ zz.ansi.reset));
+    try std.testing.expect(std.mem.endsWith(u8, row, "main" ++ zz.ansi.reset));
+    const path_at = std.mem.indexOf(u8, row, "~/focus/open-agent-protocol").?;
+    const branch_at = std.mem.indexOf(u8, row, "main").?;
+    try std.testing.expect(branch_at > path_at + "~/focus/open-agent-protocol".len);
+    try std.testing.expect(tui_text.visibleWidth(row[0..path_at]) == 0);
+}
+
+test "cwd row drops the branch before it drops the path" {
+    const fits = try renderCwdRow(std.testing.allocator, "~/work", "main", 20);
+    defer std.testing.allocator.free(fits);
+    try std.testing.expect(tui_text.visibleWidth(fits) == 20);
+    try std.testing.expect(std.mem.endsWith(u8, fits, "main" ++ zz.ansi.reset));
+
+    const narrow = try renderCwdRow(std.testing.allocator, "~/work", "main", 8);
+    defer std.testing.allocator.free(narrow);
+    try std.testing.expect(tui_text.visibleWidth(narrow) == 8);
+    try std.testing.expect(std.mem.indexOf(u8, narrow, "main") == null);
+    try std.testing.expect(std.mem.indexOf(u8, narrow, "~/work") != null);
+}
+
+test "cwd row left-aligns the path when there is no branch" {
+    const row = try renderCwdRow(std.testing.allocator, "~/focus/open-agent-protocol", "", 60);
+    defer std.testing.allocator.free(row);
+
+    try std.testing.expectEqual(@as(usize, 60), tui_text.visibleWidth(row));
+    try std.testing.expect(std.mem.endsWith(u8, row, zz.ansi.reset));
+    const path_at = std.mem.indexOf(u8, row, "~/focus/open-agent-protocol").?;
+    try std.testing.expect(tui_text.visibleWidth(row[0..path_at]) == 0);
 }
 
 test "cwd row left-truncates a directory longer than the width" {
-    const row = try renderCwdRow(std.testing.allocator, "/Users/lsm/focus/open-agent-protocol", 24);
+    const row = try renderCwdRow(std.testing.allocator, "/Users/lsm/focus/open-agent-protocol", "main", 24);
     defer std.testing.allocator.free(row);
 
     try std.testing.expect(tui_text.visibleWidth(row) <= 24);
@@ -727,8 +763,16 @@ test "cwd row left-truncates a directory longer than the width" {
     try std.testing.expect(std.mem.endsWith(u8, row, "open-agent-protocol" ++ zz.ansi.reset));
 }
 
+test "cwd row left-truncates the path beside a branch that fits" {
+    const row = try renderCwdRow(std.testing.allocator, "/Users/lsm/focus/open-agent-protocol", "main", 24);
+    defer std.testing.allocator.free(row);
+
+    try std.testing.expect(tui_text.visibleWidth(row) == 24);
+    try std.testing.expect(std.mem.indexOf(u8, row, "…") != null);
+}
+
 fn renderCwdRowProbe(allocator: std.mem.Allocator) !void {
-    const row = try renderCwdRow(allocator, "~/focus/open-agent-protocol", 24);
+    const row = try renderCwdRow(allocator, "~/focus/open-agent-protocol", "main", 24);
     allocator.free(row);
 }
 

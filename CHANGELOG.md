@@ -33,6 +33,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The TUI's path row moves to the left and the git branch takes the right
+  end (#556).** The second row under the status line was one right-aligned
+  working directory; it is now the path on the left and the branch at the
+  right, and the branch is the first thing dropped when the row cannot hold
+  both. The branch is read from `.git/HEAD` rather than from a `git` process —
+  following a `gitdir:` pointer file so a linked worktree resolves to its own
+  HEAD, taking the name from a `ref: refs/heads/` line and the first seven
+  characters of the commit id from a detached one. A directory with no
+  repository, or an unreadable `HEAD`, shows nothing at the right end. It is
+  read when the working directory changes and every 100th tick (five seconds),
+  so a `git checkout` appears without a process per render. The permission
+  engine's workspace boundary is untouched: this is display only.
 - **Zig stops escaping `<`, `>`, `&`, U+2028 and U+2029 the way
   `encoding/json` does**, the last step of #417 under Decision 0038's amended
   parity section, which compares the trees by parsed JSON. #319 and #330 made

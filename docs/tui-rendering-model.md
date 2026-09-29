@@ -189,9 +189,17 @@ code paths; add a transcript row instead.
   priority (turns, thinking, cost, the hint, `ask` permission, queue, drops, model,
   backpressure, context) behind one trailing `…`; the state segment — and `bypass` or
   `pending` — are never dropped, and the row is clipped with `…` if even they do not
-  fit. A second row under it shows the working directory, right-aligned and muted,
-  collapsed to `~` under the home directory and left-truncated with `…`; it hides on
-  terminals shorter than 12 rows.
+  fit. A second row under it shows the working directory on the left, muted, collapsed
+  to `~` under the home directory and left-truncated with `…`, and the git branch at
+  the right end; the row hides on terminals shorter than 12 rows. The branch is read
+  from the repository rather than from a `git` process: `.git/HEAD` is parsed directly,
+  following a `gitdir:` pointer file when `.git` is one so a linked worktree resolves
+  to its own HEAD, a `ref: refs/heads/` line gives the branch name and any other line
+  gives the first seven characters of the commit id. A directory with no repository, or
+  a `.git/HEAD` that cannot be read, leaves the right end empty. The read happens when
+  the working directory changes and on a slow tick — every 100th tick, five seconds —
+  so a `git checkout` shows up without a `git` process per render. When the row is too
+  narrow for both, the branch is dropped and the path takes the full width.
 
 ## Credentials and the model catalog
 
