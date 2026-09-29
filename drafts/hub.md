@@ -784,6 +784,52 @@ flight.
   drive the op's own `probe_failed` and `internal` mappings, the second by
   making the response impossible to encode.
 
+#### What `open` decides, and in what order
+
+The row above lists the codes but not the order, and the order is observable: a
+request that is refused twice has one answer. **This is the spec both trees answer
+to**, written here because Go's behaviour is evidence and not authority (Decision
+0032). Each step below is pinned by the Go test named against it.
+
+| # | decided | codes | pinned by |
+| --- | --- | --- | --- |
+| 1 | the nested envelope | `invalid_request`, `request_too_large`, `malformed_json`, `schema_invalid`, `type_mismatch` | `TestOpenOpRefusals` |
+| 2 | the adapter exists | `unknown_adapter` | `TestOpenOpRefusals` |
+| 3 | the **attachment** cites a current revision and is elected | `stale_capabilities`, `unsupported_feature`, `capability_degraded` | `TestAttachingOpenPinsOnlyWhatItCites` (both halves, end to end on HTTP), `TestOpenOpRefusesAStaleRevisionOnTheSubscribePath` |
+| 4 | the **subscription**, same two checks, on `session.open.subscribe` | `stale_capabilities`, `unsupported_feature`, `capability_degraded` | `TestOpenOpRefusesAStaleRevisionOnTheSubscribePath`, `TestSharedGateRefusesADisclosureAnOpenCannotElect` |
+| 5 | the adapter's own refusals, for anything else the request elected | `unsupported_feature`, `capability_degraded`, `probe_failed` | `TestHubOpenRejections`, `TestOpenRefusalsAreBounded` |
+| 6 | the id is free | `session_exists` | `TestHubOpenRejections` |
+| 7 | anything else the adapter reports | `session_closed`, `open_failed` | `TestOpenSession`, `TestHubOpenClosesSessionWhenStateFails` |
+
+**Two rules the ordering makes explicit, and both are places the trees had
+diverged:**
+
+- **The attachment is gated before the subscription**, because the attachment is
+  the larger ask and a request that both subscribes and attaches is refused for
+  the attachment first.
+- **The adapter's own refusals come before `session_exists`** (D15). A host is told
+  its id is taken when the real reason its request cannot be served is that the
+  adapter will not attach what it asked for — and correcting the name does not
+  help, so the actual refusal is never reported. The duplicate is detected by
+  running the adapter and seeing what it made, not by looking the name up first.
+
+#### The `details` a refusal carries, and the `reason` vocabulary
+
+`details` is a wire member, so this table is the contract for both trees — not a
+description of what Go happens to emit. **The `reason` set is closed**: a tree that
+needs a value outside it has a spec question, not a code change.
+
+| code | `details` carries | `reason` may be |
+| --- | --- | --- |
+| `unsupported_feature` | `feature`, `reason`, and `tool` or `field` or `source` where the refusal names one | `unadvertised`, `unsatisfiable` |
+| `capability_degraded` | `feature` | — |
+| `stale_capabilities` | `expected_revision`, `current_revision` | — |
+
+`expected_revision` is **the adapter's** revision and `current_revision` is **the
+one the request cited**, which is the pair that makes the refusal actionable. The
+hub has to report both, so the refusal cannot be a bare error from a set with
+nowhere to put a reason (D12).
+
 ### `open`
 
 - **params:** `adapter` (required) and `request`, and nothing else.
