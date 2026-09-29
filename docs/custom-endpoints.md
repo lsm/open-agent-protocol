@@ -106,6 +106,18 @@ that, so the fourteen catalogued bases keep the URLs they had. Only a base the
 user names — a custom entry, an override, or one a provider-protocol client sends
 — reaches the rule above.
 
+A trailing `/` is ignored too, on every wire, so all three of these reach the same
+URL:
+
+```
+"base_url": "https://api.groq.com/openai"
+"base_url": "https://api.groq.com/openai/"
+"base_url": "https://api.groq.com/openai/v1/chat/completions"
+```
+
+No vendor serves `//`, and a base that already ends with its wire's path is used
+as it is rather than having the path appended again.
+
 ## Overriding a catalogued row
 
 A `providers` entry may not take a built-in id, because a provider that shadows
@@ -157,18 +169,6 @@ worked.
 
 A row may be overridden at most once, so a file that names `deepseek` twice
 fails with `DuplicateOverride` rather than depending on which line won.
-
-A trailing `/` is ignored too, on every wire, so all three of these reach the same
-URL:
-
-```
-"base_url": "https://api.groq.com/openai"
-"base_url": "https://api.groq.com/openai/"
-"base_url": "https://api.groq.com/openai/v1/chat/completions"
-```
-
-No vendor serves `//`, and a base that already ends with its wire's path is used
-as it is rather than having the path appended again.
 
 ## Credentials
 
