@@ -53,7 +53,10 @@ it failed.
 
 Zig 0.16.0, with `build.zig` in `zig/`. A root `Makefile` wraps the everyday
 ones (`make build|tui|test|test-tui|check|clean|clean-all`) and configures local
-macOS codesigning. Release signing and notarization are configured separately,
+macOS codesigning. `make build` and `make tui` build ReleaseSafe; pass
+`OPTIMIZE=Debug` for a debug build, but not to use the TUI, because Zig's debug
+allocator records a stack trace for every allocation and a long session then
+freezes. Release signing and notarization are configured separately,
 in `.github/workflows/release-binaries.yml`, so a change to one is not a change
 to the other.
 

@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`make build` and `make tui` build ReleaseSafe.** They built Debug, where Zig's debug allocator records a stack trace for every allocation: resuming a 50 MB session left the TUI unresponsive for over a minute, and a message sent later took 14 seconds to answer a keystroke. A ReleaseSafe build resumes the same session in about a second. `OPTIMIZE=Debug` still gives a debug build.
+
 - **The CI fixture auth provider is served only when a test asks for it by
   name.** `oapx auth providers` returns the catalog's rows and nothing else
   unless `OAPX_TEST_FIXTURE_PROVIDER` is set to `1` or `true`, so a user running
