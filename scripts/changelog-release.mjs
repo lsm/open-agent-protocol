@@ -22,6 +22,7 @@ import { pathToFileURL } from "node:url";
 
 const UNRELEASED = "## Unreleased";
 const GENERATED_HEADING = "### Merged pull requests";
+const LIFTED_BREAKING_HEADING = "### Breaking changes";
 const RELEASED = /^## \[([^\]]+)\] - (\S+)\s*$/;
 const KEEP_A_CHANGELOG_SECTIONS = ["Added", "Changed", "Deprecated", "Removed", "Fixed", "Security"];
 const MAX_LINE = 240;
@@ -197,7 +198,7 @@ export function fold(changelog, options) {
   const parts = [`${UNRELEASED}\n`, `## [${options.version}] - ${options.date}\n`];
   if (carried) parts.push(`${carried.replace(/\n+$/, "")}\n`);
   if (breaking.length > 0) {
-    parts.push(`## Breaking changes\n\n${breaking.join("\n\n")}\n`);
+    parts.push(`${LIFTED_BREAKING_HEADING}\n\n${breaking.join("\n\n")}\n`);
   }
   if (entries.length > 0) {
     parts.push(`${GENERATED_HEADING}\n\n${entries.join("\n")}\n`);

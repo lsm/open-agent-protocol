@@ -273,18 +273,19 @@ test("a Breaking changes section is lifted into the release", () => {
     ],
   });
   const section = text.slice(text.indexOf("## [0.3.0]"), text.indexOf("## [0.2.0]"));
-  assert.match(section, /^## Breaking changes$/m, "the release carries its own Breaking changes heading");
+  assert.match(section, /^### Breaking changes$/m, "the lifted section is a subsection, so the generated list is not nested inside it");
+  assert.ok(!/^## Breaking changes$/m.test(section), "the level-two form is only for pull request descriptions");
   // The description's first sentence still belongs in the generated list, so
   // scope the "not lifted wholesale" assertions to the Breaking changes block.
   const lifted = section.slice(
-    section.indexOf("## Breaking changes"),
+    section.indexOf("### Breaking changes"),
     section.indexOf("### Merged pull requests"),
   );
   assert.ok(lifted.includes("ModelsURL is gone"), "the recorded break is carried over");
   assert.ok(!lifted.includes("unrelated"), "the section after it is not swept in");
   assert.ok(!lifted.includes("Why."), "only the Breaking changes body is lifted, not the whole description");
   assert.ok(
-    section.indexOf("## Breaking changes") < section.indexOf("### Merged pull requests"),
+    section.indexOf("### Breaking changes") < section.indexOf("### Merged pull requests"),
     "the breaking changes come before the generated list",
   );
 });

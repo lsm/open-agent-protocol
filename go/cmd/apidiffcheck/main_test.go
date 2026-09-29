@@ -266,18 +266,70 @@ func TestAPackageThePublicSetDoesNotNameIsStillADirectoryTheBaseHad(t *testing.T
 	if !found {
 		t.Fatal("publicDirectories did not return a package the public set does not name, so a removal would go unreported")
 	}
-	removed, err := removalSet(root, nil)
+	if removed, err := removalSet(root, root); err != nil {
+		t.Fatal(err)
+	} else if len(removed) != 0 {
+		t.Fatalf("removed %v, want none: a package present in both trees is not removed", removed)
+	}
+	head := t.TempDir()
+	if err := os.WriteFile(filepath.Join(head, "go.mod"), []byte("module "+testModule+"\n\ngo 1.27\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(head, "other")
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(other, "other.go"), []byte("package other\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := removalSet(root, head)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(removed) != 1 || removed[0] != "gone" {
-		t.Fatalf("removed %v, want the unmapped package the public set does not name", removed)
-	}
-	if got := missingFrom(removed, "## Breaking changes\n\n- `gone` is gone"); len(got) != 0 {
-		t.Fatalf("missing %v, want none: the removal is recorded", got)
+		t.Fatalf("removed %v, want the package the head no longer has, even though the public set never named it", removed)
 	}
 	if got := missingFrom(removed, ""); len(got) != 1 {
 		t.Fatalf("missing %v, want one: nothing records the removal", got)
+	}
+}
+
+func TestAMainPackageIsNotAmongThePublicDirectories(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module "+testModule+"\n\ngo 1.27\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	command := filepath.Join(root, "tool")
+	if err := os.MkdirAll(command, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(command, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	library := filepath.Join(root, "lib")
+	if err := os.MkdirAll(library, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(library, "lib.go"), []byte("package lib\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dirs, err := publicDirectories(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range dirs {
+		if name == "tool" {
+			t.Fatal("a main package is among the public directories, so removing it would be charged as a break")
+		}
+	}
+	found := false
+	for _, name := range dirs {
+		if name == "lib" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("a library package is missing from the public directories, so removing one would go unreported")
 	}
 }
 

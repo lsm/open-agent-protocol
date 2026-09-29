@@ -30,7 +30,7 @@ func run(args []string, stdout io.Writer) error {
 	flags.SetOutput(io.Discard)
 	description := flags.String("description", "", "path to a file holding the pull request description, whose Breaking changes section records an incompatible change (default: the PR_BODY environment variable, which is also a PATH -- the event payload holds the body's text, so the workflow writes it to a file first)")
 	baseRoot := flags.String("base-root", "", "a checkout of the merge base, for the per-pull-request comparison (default: PR_BASE_ROOT)")
-	root := flags.String("root", ".", "the module root at the pull request head")
+	root := flags.String("root", ".", "a checkout of the pull request's head commit, which is what the comparison is about; NOT the checked-out tree, which for a pull_request event is the merge ref and so includes every change merged into the base since the fork")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -78,11 +78,7 @@ func check(root, baseRoot, description string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	headDirs, err := publicDirectories(root)
-	if err != nil {
-		return err
-	}
-	removed, err := removalSet(baseRoot, headDirs)
+	removed, err := removalSet(baseRoot, root)
 	if err != nil {
 		return err
 	}
@@ -166,15 +162,23 @@ func publicPackages(root string) ([]string, error) {
 	return public, nil
 }
 
-func removalSet(baseRoot string, head []string) ([]string, error) {
-	dirs, err := publicDirectories(baseRoot)
+func removalSet(baseRoot, headRoot string) ([]string, error) {
+	base, err := publicDirectories(baseRoot)
 	if err != nil {
 		return nil, err
 	}
-	return setDifference(dirs, head), nil
+	head, err := publicDirectories(headRoot)
+	if err != nil {
+		return nil, err
+	}
+	return setDifference(base, head), nil
 }
 
 func publicDirectories(root string) ([]string, error) {
+	commands, err := commandDirs(root)
+	if err != nil {
+		return nil, err
+	}
 	dirs, err := packageDirs(root)
 	if err != nil {
 		return nil, err
@@ -182,7 +186,7 @@ func publicDirectories(root string) ([]string, error) {
 	var names []string
 	for _, dir := range dirs {
 		relative, found := strings.CutPrefix(dir, strings.TrimSuffix(root, "/")+"/")
-		if found && !publicset.Internal(relative) {
+		if found && !publicset.Internal(relative) && !commands[dir] {
 			names = append(names, relative)
 		}
 	}
@@ -205,6 +209,20 @@ func packageDirs(root string) ([]string, error) {
 		return nil, fmt.Errorf("go list in %s found no packages", root)
 	}
 	return dirs, nil
+}
+
+func commandDirs(root string) (map[string]bool, error) {
+	command := exec.Command("go", "list", "-f", "{{if eq .Name \"main\"}}{{.Dir}}{{end}}", "./...")
+	command.Dir = root
+	out, err := command.Output()
+	if err != nil {
+		return nil, fmt.Errorf("go list in %s: %w", root, err)
+	}
+	names := map[string]bool{}
+	for _, dir := range strings.Fields(string(out)) {
+		names[dir] = true
+	}
+	return names, nil
 }
 
 func apidiffReport(head, baseRoot, module string, packages, added []string) (string, error) {
