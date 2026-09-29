@@ -2745,11 +2745,14 @@ fn runConformance(
     allocator: std.mem.Allocator,
     args: []const []const u8,
     stdout: std.Io.File,
+    stderr: std.Io.File,
 ) !bool {
     var format: ConformanceFormat = .text;
     var command: ?[]const u8 = null;
     var endpoint_args = std.ArrayList([]const u8).empty;
     defer endpoint_args.deinit(allocator);
+    var environment = std.ArrayList([]const u8).empty;
+    defer environment.deinit(allocator);
     var session: []const u8 = "conformance";
     var line_deadline_ms: i64 = @intCast(oap_conformance.default_line_deadline_ms);
     var exit_grace_ms: i64 = oap_conformance.default_exit_grace_ms;
@@ -2777,6 +2780,21 @@ fn runConformance(
             format = std.meta.stringToEnum(ConformanceFormat, arg["--format=".len..]) orelse return error.InvalidArgument;
             continue;
         }
+        if (std.mem.eql(u8, arg, "--env")) {
+            index += 1;
+            if (index >= args.len) return error.InvalidArgument;
+            try environment.append(allocator, args[index]);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--env=")) {
+            try environment.append(allocator, arg["--env=".len..]);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--exit-grace-ms=")) {
+            exit_grace_ms = std.fmt.parseInt(i64, arg["--exit-grace-ms=".len..], 10) catch return error.InvalidArgument;
+            if (exit_grace_ms <= 0) return error.InvalidArgument;
+            continue;
+        }
         if (std.mem.eql(u8, arg, "--exit-grace-ms")) {
             index += 1;
             if (index >= args.len) return error.InvalidArgument;
@@ -2784,10 +2802,19 @@ fn runConformance(
             if (exit_grace_ms <= 0) return error.InvalidArgument;
             continue;
         }
+        if (std.mem.startsWith(u8, arg, "--session=")) {
+            session = arg["--session=".len..];
+            continue;
+        }
         if (std.mem.eql(u8, arg, "--session")) {
             index += 1;
             if (index >= args.len) return error.InvalidArgument;
             session = args[index];
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--timeout-ms=")) {
+            line_deadline_ms = std.fmt.parseInt(i64, arg["--timeout-ms=".len..], 10) catch return error.InvalidArgument;
+            if (line_deadline_ms <= 0) return error.InvalidArgument;
             continue;
         }
         if (std.mem.eql(u8, arg, "--timeout-ms")) {
@@ -2801,18 +2828,19 @@ fn runConformance(
     }
 
     const named = command orelse {
-        try compat.stdio.writeAll(stdout, "conformance: --command CMD is required; there is no built-in endpoint to drive\n");
+        try compat.stdio.writeAll(stderr, "conformance: --command CMD is required; there is no built-in endpoint to drive\n");
         return true;
     };
 
     var report = oap_conformance.run(allocator, .{
         .command = named,
         .args = endpoint_args.items,
+        .environment = environment.items,
         .session_id = session,
         .line_deadline_ms = line_deadline_ms,
         .exit_grace_ms = exit_grace_ms,
     }) catch |err| {
-        try compat.stdio.writeAll(stdout, try std.fmt.allocPrint(allocator, "conformance: {s}\n", .{@errorName(err)}));
+        try compat.stdio.writeAll(stderr, try std.fmt.allocPrint(allocator, "conformance: {s}\n", .{@errorName(err)}));
         return true;
     };
     defer report.deinit();
@@ -3148,7 +3176,7 @@ fn printUsage(file: std.Io.File) !void {
         \\  oapx hub --stdio [--config <path>]
         \\  oapx validate [--format human|json] <trace.json>...
         \\  oapx conformance --command CMD [--session <id>] [--timeout-ms <n>]
-        \\                        [--exit-grace-ms <n>] [--format text|json]
+        \\                        [--exit-grace-ms <n>] [--env NAME]... [--format text|json]
         \\  oapx auth providers [--json]
         \\  oapx auth login --provider <id> [--json]
         \\  oapx --version
@@ -3183,7 +3211,10 @@ fn printUsage(file: std.Io.File) !void {
         \\  conformance      Drive an OAP endpoint and judge it: the handshake, then
         \\                   one submitted run through to its terminal event. Needs
         \\                   --command; everything after the flags is the endpoint's
-        \\                   own argv. Exits non-zero on any failed check.
+        \\                   own argv. The endpoint inherits this process's
+        \\                   environment unless --env narrows it. Diagnostics go to
+        \\                   stderr, so --format json stays parseable. Exits
+        \\                   non-zero on any failed check.
         \\  auth providers   List oauth-capable providers
         \\  auth login       Run OAuth flow and persist credentials
         \\  --version        Print binary version
@@ -7292,7 +7323,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (std.mem.eql(u8, args[1], "conformance")) {
-        const failed = runConformance(allocator, args[2..], stdout) catch |err| {
+        const failed = runConformance(allocator, args[2..], stdout, stderr) catch |err| {
             if (err == error.InvalidArgument) try printUsage(stderr);
             return err;
         };

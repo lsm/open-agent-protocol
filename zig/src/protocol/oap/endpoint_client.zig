@@ -162,6 +162,7 @@ pub const Client = struct {
             error.EndOfStream => return Error.EndpointClosed,
             else => |e| return e,
         };
+        if (reader.buffered().len == 0) return false;
         try self.pending.appendSlice(self.allocator, reader.buffered());
         return true;
     }

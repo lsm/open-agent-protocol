@@ -46,6 +46,7 @@ pub const Report = struct {
 pub const Options = struct {
     command: []const u8,
     args: []const []const u8 = &.{},
+    environment: []const []const u8 = &.{},
     session_id: []const u8 = "conformance",
     line_deadline_ms: i64 = default_line_deadline_ms,
     exit_grace_ms: i64 = default_exit_grace_ms,
@@ -64,15 +65,18 @@ pub fn run(allocator: std.mem.Allocator, options: Options) !Report {
         },
     };
     errdefer runner.report.deinit();
-    runner.client = try endpoint_client.Client.spawn(allocator, .{ .command = options.command, .args = options.args });
+    runner.client = try endpoint_client.Client.spawn(allocator, .{
+        .command = options.command,
+        .args = options.args,
+        .environment = options.environment,
+    });
     defer runner.client.deinit();
     defer runner.releaseEnvelopes();
 
     try runner.drive(options.line_deadline_ms);
 
-    try runner.drain(options.line_deadline_ms);
-
     runner.client.closeStdin();
+    try runner.drain(options.line_deadline_ms);
     const code = runner.client.waitExit(options.exit_grace_ms) catch |err| blk: {
         try runner.fail("endpoint exits 0 after stdin EOF", @errorName(err));
         break :blk null;
