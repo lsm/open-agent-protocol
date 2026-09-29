@@ -39,10 +39,10 @@ func firstEnvValue(env []EnvironmentValue, name string) string {
 
 func NormalizeKimiRegion(value string) string {
 	trimmed := strings.Trim(value, " \t\r\n")
-	if trimmed == "global" {
+	switch {
+	case strings.EqualFold(trimmed, "global"), strings.EqualFold(trimmed, "moonshot"):
 		return "global"
-	}
-	if trimmed == "china" {
+	case strings.EqualFold(trimmed, "china"), strings.EqualFold(trimmed, "cn"), strings.EqualFold(trimmed, "coding"):
 		return "china"
 	}
 	return ""
@@ -75,18 +75,18 @@ func BaseURLWithOverrides(overrides BaseOverrides, providerID, wire string) stri
 		}
 		return overrides.Global
 	}
-	switch {
-	case providerID == "anthropic" && wire == "anthropic-messages":
+	switch ProviderArm(providerID, wire) {
+	case "anthropic":
 		if overrides.Anthropic != "" {
 			return NormalizeVersionedBaseURL(overrides.Anthropic)
 		}
 		return ""
-	case providerID == "openai" && wire == "openai-completions":
+	case "openai":
 		if overrides.OpenAI != "" {
 			return NormalizeVersionedBaseURL(overrides.OpenAI)
 		}
 		return ""
-	case providerID == "deepseek" && wire == "openai-completions":
+	case "deepseek":
 		if overrides.DeepSeek != "" {
 			return NormalizeVersionedBaseURL(overrides.DeepSeek)
 		}
@@ -95,15 +95,42 @@ func BaseURLWithOverrides(overrides BaseOverrides, providerID, wire string) stri
 	return ""
 }
 
+func ProviderArm(providerID, wire string) string {
+	switch {
+	case providerID == "anthropic" && wire == "anthropic-messages":
+		return "anthropic"
+	case providerID == "openai" && (wire == "openai-completions" || wire == "openai-responses"):
+		return "openai"
+	case providerID == "deepseek" && wire == "openai-completions":
+		return "deepseek"
+	case providerID == "openai-codex" && wire == "openai-codex-responses":
+		return "openai-codex"
+	case providerID == "kimi" && wire == "openai-completions":
+		return "kimi"
+	}
+	return ""
+}
+
+func KimiRegion(overrides BaseOverrides, stored string) string {
+	if overrides.KimiRegion != "" {
+		return overrides.KimiRegion
+	}
+	if normalized := NormalizeKimiRegion(stored); normalized != "" {
+		return normalized
+	}
+	return "china"
+}
+
 func ResolveBaseURL(catalog Catalog, env []EnvironmentValue, id, wire, region string) (string, bool) {
 	overrides := BaseOverridesFromEnv(env)
 	if override := BaseURLWithOverrides(overrides, id, wire); override != "" {
 		return override, true
 	}
-	if id == "kimi" && wire == "openai-completions" {
-		if overrides.KimiRegion != "" {
-			region = overrides.KimiRegion
-		}
+	switch ProviderArm(id, wire) {
+	case "kimi":
+		return BaseURL(catalog, id, wire, KimiRegion(overrides, region))
+	case "anthropic", "openai", "deepseek", "openai-codex":
+		return BaseURL(catalog, id, wire, "")
 	}
 	return BaseURL(catalog, id, wire, region)
 }

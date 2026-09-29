@@ -107,3 +107,74 @@ func TestTheKimiRegionPicksTheCatalogEndpoint(t *testing.T) {
 		t.Errorf("kimi with no region = %q, want the china endpoint", fallback)
 	}
 }
+
+func TestTheOpenAIOverrideReachesTheResponsesWireAsWellAsCompletions(t *testing.T) {
+	overrides := BaseOverridesFromEnv(envOf("OPENAI_BASE_URL", "http://both.test"))
+	for _, wire := range []string{"openai-completions", "openai-responses"} {
+		if got := BaseURLWithOverrides(overrides, "openai", wire); got != "http://both.test" {
+			t.Errorf("openai on %s = %q, want the override: a responses model is reachable through WireForModel", wire, got)
+		}
+	}
+	if got := BaseURLWithOverrides(overrides, "openai", "openai-codex-responses"); got != "" {
+		t.Errorf("got %q, want nothing: the codex wire is a different provider", got)
+	}
+}
+
+func TestTheKimiRegionTakesItsAliasesAndIgnoresCase(t *testing.T) {
+	cases := map[string]string{
+		"global": "global", "GLOBAL": "global", " moonshot ": "global", "Moonshot": "global",
+		"china": "china", "CN": "china", "coding": "china", " Coding\n": "china",
+		"elsewhere": "", "": "", "globalish": "",
+	}
+	for in, want := range cases {
+		if got := NormalizeKimiRegion(in); got != want {
+			t.Errorf("NormalizeKimiRegion(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestAnAliasInTheEnvironmentReachesTheOtherEndpoint(t *testing.T) {
+	catalog := heldCatalog(t)
+	for _, value := range []string{"moonshot", "GLOBAL", "global"} {
+		url, ok := ResolveBaseURL(catalog, envOf("KIMI_REGION", value), "kimi", "openai-completions", "china")
+		if !ok || url != "https://api.moonshot.ai" {
+			t.Errorf("KIMI_REGION=%q resolved to %q, want the global endpoint", value, url)
+		}
+	}
+}
+
+func TestKimiFallsBackToChinaWhenNeitherTheEnvironmentNorTheCallerIsUsable(t *testing.T) {
+	catalog := heldCatalog(t)
+	for _, stored := range []string{"", "elsewhere", "   "} {
+		url, ok := ResolveBaseURL(catalog, nil, "kimi", "openai-completions", stored)
+		if !ok || url != "https://api.kimi.com/coding" {
+			t.Errorf("kimi with a stored region of %q = %q, want the china endpoint: an unusable region is not a refusal", stored, url)
+		}
+	}
+}
+
+func TestAStoredKimiRegionIsNormalisedOnItsWayToTheCatalog(t *testing.T) {
+	catalog := heldCatalog(t)
+	url, ok := ResolveBaseURL(catalog, nil, "kimi", "openai-completions", "moonshot")
+	if !ok || url != "https://api.moonshot.ai" {
+		t.Errorf("kimi with a stored region of moonshot = %q, want the global endpoint", url)
+	}
+}
+
+func TestTheCatalogFallbackForAKnownPairIgnoresTheRegion(t *testing.T) {
+	catalog := heldCatalog(t)
+	cases := map[string]string{
+		"openai":       "openai-completions",
+		"anthropic":    "anthropic-messages",
+		"deepseek":     "openai-completions",
+		"openai-codex": "openai-codex-responses",
+	}
+	for id, wire := range cases {
+		if _, ok := ResolveBaseURL(catalog, nil, id, wire, ""); !ok {
+			t.Fatalf("%s on %s did not resolve with no region", id, wire)
+		}
+		if _, ok := ResolveBaseURL(catalog, nil, id, wire, "a-region-nobody-declares"); !ok {
+			t.Errorf("%s on %s stopped resolving once a region was passed, want the catalog's own endpoint: only kimi is region-selected", id, wire)
+		}
+	}
+}

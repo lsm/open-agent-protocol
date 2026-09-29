@@ -7,6 +7,10 @@ import (
 	"testing"
 )
 
+func sseFrame(payload string) string {
+	return "data: " + payload + "\n\n"
+}
+
 func chunkReader(chunks []string) ReadChunkFunc {
 	i := 0
 	return func() ([]byte, error) {
@@ -81,8 +85,8 @@ func TestTheStreamOpensWithAStartBeforeAnyByte(t *testing.T) {
 
 func TestTextArrivesAsDeltasAndTheTerminalCarriesTheWhole(t *testing.T) {
 	events := runStream(t, streamModel(),
-		SSEFrame(`{"choices":[{"delta":{"content":"Hel"}}]}`),
-		SSEFrame(`{"choices":[{"delta":{"content":"lo"}}]}`),
+		sseFrame(`{"choices":[{"delta":{"content":"Hel"}}]}`),
+		sseFrame(`{"choices":[{"delta":{"content":"lo"}}]}`),
 	)
 	deltas := []string{}
 	for _, e := range events {
@@ -100,7 +104,7 @@ func TestTextArrivesAsDeltasAndTheTerminalCarriesTheWhole(t *testing.T) {
 }
 
 func TestAStreamThatProducedNothingStillYieldsOneEmptyTextPart(t *testing.T) {
-	events := runStream(t, streamModel(), SSEFrame("[DONE]"))
+	events := runStream(t, streamModel(), sseFrame("[DONE]"))
 	done := findEvent(t, events, EventDone)
 	if len(done.Message.Content) != 1 {
 		t.Fatalf("got %d content blocks, want exactly one", len(done.Message.Content))
@@ -112,9 +116,9 @@ func TestAStreamThatProducedNothingStillYieldsOneEmptyTextPart(t *testing.T) {
 
 func TestTheTerminalOrdersThinkingThenTextThenToolCalls(t *testing.T) {
 	events := runStream(t, streamModel(),
-		SSEFrame(`{"choices":[{"delta":{"content":"answer"}}]}`),
-		SSEFrame(`{"choices":[{"delta":{"reasoning_content":"pondering"}}]}`),
-		SSEFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"read"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"content":"answer"}}]}`),
+		sseFrame(`{"choices":[{"delta":{"reasoning_content":"pondering"}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"read"}}]}}]}`),
 	)
 	done := findEvent(t, events, EventDone)
 	blocks := done.Message.Content
@@ -133,7 +137,7 @@ func TestTheTerminalOrdersThinkingThenTextThenToolCalls(t *testing.T) {
 }
 
 func TestTheThinkingBlockCarriesTheSignatureFieldNameItSaw(t *testing.T) {
-	events := runStream(t, streamModel(), SSEFrame(`{"choices":[{"delta":{"reasoning":"pondering"}}]}`))
+	events := runStream(t, streamModel(), sseFrame(`{"choices":[{"delta":{"reasoning":"pondering"}}]}`))
 	done := findEvent(t, events, EventDone)
 	thinking := done.Message.Content[0].Thinking
 	if thinking.Signature != "reasoning" {
@@ -142,7 +146,7 @@ func TestTheThinkingBlockCarriesTheSignatureFieldNameItSaw(t *testing.T) {
 }
 
 func TestAStreamWithNoThinkingCarriesNoSignature(t *testing.T) {
-	events := runStream(t, streamModel(), SSEFrame(`{"choices":[{"delta":{"content":"x"}}]}`))
+	events := runStream(t, streamModel(), sseFrame(`{"choices":[{"delta":{"content":"x"}}]}`))
 	done := findEvent(t, events, EventDone)
 	if done.Message.Content[0].Thinking != nil {
 		t.Error("a text-only stream has no thinking block to carry a signature")
@@ -152,11 +156,11 @@ func TestAStreamWithNoThinkingCarriesNoSignature(t *testing.T) {
 func TestKimiThinkingIsNeverStreamedAsADelta(t *testing.T) {
 	model := streamModel()
 	model.Provider = "kimi"
-	events := runStream(t, model, SSEFrame(`{"choices":[{"delta":{"reasoning_content":"pondering"}}]}`))
+	events := runStream(t, model, sseFrame(`{"choices":[{"delta":{"reasoning_content":"pondering"}}]}`))
 	if countKind(events, EventThinkingDelta) != 0 {
 		t.Error("kimi's thinking is dropped: no thinking delta is emitted")
 	}
-	plain := runStream(t, streamModel(), SSEFrame(`{"choices":[{"delta":{"reasoning_content":"pondering"}}]}`))
+	plain := runStream(t, streamModel(), sseFrame(`{"choices":[{"delta":{"reasoning_content":"pondering"}}]}`))
 	if countKind(plain, EventThinkingDelta) != 1 {
 		t.Error("every other model streams its thinking")
 	}
@@ -164,9 +168,9 @@ func TestKimiThinkingIsNeverStreamedAsADelta(t *testing.T) {
 
 func TestAToolCallEndCarriesItsPositionNotTheIndexItsStartUsed(t *testing.T) {
 	events := runStream(t, streamModel(),
-		SSEFrame(`{"choices":[{"delta":{"content":"working"}}]}`),
-		SSEFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"read"}}]}}]}`),
-		SSEFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"content":"working"}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"read"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}`),
 	)
 	start := findEvent(t, events, EventToolCallStart)
 	end := findEvent(t, events, EventToolCallEnd)
@@ -180,11 +184,11 @@ func TestAToolCallEndCarriesItsPositionNotTheIndexItsStartUsed(t *testing.T) {
 
 func TestEachToolCallEndsWithTheContentSoFarAndThePartialGrows(t *testing.T) {
 	events := runStream(t, streamModel(),
-		SSEFrame(`{"choices":[{"delta":{"content":"ab"}}]}`),
-		SSEFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`),
-		SSEFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"1"}}]}}]}`),
-		SSEFrame(`{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"c2","function":{"name":"g"}}]}}]}`),
-		SSEFrame(`{"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"arguments":"2"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"content":"ab"}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"1"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"c2","function":{"name":"g"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"arguments":"2"}}]}}]}`),
 	)
 	var partials [][]AssistantBlock
 	for _, e := range events {
@@ -219,8 +223,8 @@ func TestEachToolCallEndsWithTheContentSoFarAndThePartialGrows(t *testing.T) {
 
 func TestAContentIndexIsAssignedByArrivalNotByTheApiIndex(t *testing.T) {
 	events := runStream(t, streamModel(),
-		SSEFrame(`{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"second","function":{"name":"g"}}]}}]}`),
-		SSEFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"first","function":{"name":"f"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"second","function":{"name":"g"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"first","function":{"name":"f"}}]}}]}`),
 	)
 	starts := map[string]int{}
 	var ends []Event
@@ -245,8 +249,8 @@ func TestAContentIndexIsAssignedByArrivalNotByTheApiIndex(t *testing.T) {
 
 func TestTheApiIndexKeysTheTrackerNotTheContentIndex(t *testing.T) {
 	events := runStream(t, streamModel(),
-		SSEFrame(`{"choices":[{"delta":{"tool_calls":[{"index":7,"id":"c7","function":{"name":"f"}}]}}]}`),
-		SSEFrame(`{"choices":[{"delta":{"tool_calls":[{"index":7,"function":{"arguments":"{}"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":7,"id":"c7","function":{"name":"f"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":7,"function":{"arguments":"{}"}}]}}]}`),
 	)
 	if countKind(events, EventToolCallStart) != 1 {
 		t.Errorf("a repeated api index must not open a second call: %v", kindsOf(events))
@@ -259,9 +263,9 @@ func TestTheApiIndexKeysTheTrackerNotTheContentIndex(t *testing.T) {
 
 func TestArgumentDeltasAreReEmittedUnderTheIndexTheTrackerHolds(t *testing.T) {
 	events := runStream(t, streamModel(),
-		SSEFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`),
-		SSEFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"a\":"}}]}}]}`),
-		SSEFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"1}"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"a\":"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"1}"}}]}}]}`),
 	)
 	joined := ""
 	for _, e := range events {
@@ -283,8 +287,8 @@ func TestArgumentDeltasAreReEmittedUnderTheIndexTheTrackerHolds(t *testing.T) {
 
 func TestAnEmptyArgumentStringIsNotADelta(t *testing.T) {
 	events := runStream(t, streamModel(),
-		SSEFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`),
-		SSEFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":""}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":""}}]}}]}`),
 	)
 	if countKind(events, EventToolCallDelta) != 0 {
 		t.Error("an empty arguments string produces no delta")
@@ -293,16 +297,16 @@ func TestAnEmptyArgumentStringIsNotADelta(t *testing.T) {
 
 func TestUsageComesFromTheChunkAndTheTotalIsBackfilled(t *testing.T) {
 	events := runStream(t, streamModel(),
-		SSEFrame(`{"choices":[{"delta":{"content":"x"}}]}`),
-		SSEFrame(`{"usage":{"prompt_tokens":10,"completion_tokens":4,"total_tokens":14}}`),
+		sseFrame(`{"choices":[{"delta":{"content":"x"}}]}`),
+		sseFrame(`{"usage":{"prompt_tokens":10,"completion_tokens":4,"total_tokens":14}}`),
 	)
 	done := findEvent(t, events, EventDone)
 	if done.Message.Usage.TotalTokens != 14 {
 		t.Errorf("the total = %d, want the reported 14", done.Message.Usage.TotalTokens)
 	}
 	backfilled := runStream(t, streamModel(),
-		SSEFrame(`{"choices":[{"delta":{"content":"x"}}]}`),
-		SSEFrame(`{"usage":{"prompt_tokens":10,"completion_tokens":4}}`),
+		sseFrame(`{"choices":[{"delta":{"content":"x"}}]}`),
+		sseFrame(`{"usage":{"prompt_tokens":10,"completion_tokens":4}}`),
 	)
 	got := findEvent(t, backfilled, EventDone)
 	if got.Message.Usage.TotalTokens != 14 {
@@ -312,7 +316,7 @@ func TestUsageComesFromTheChunkAndTheTotalIsBackfilled(t *testing.T) {
 
 func TestCachedTokensComeOutOfTheInputAndReasoningIntoTheOutput(t *testing.T) {
 	events := runStream(t, streamModel(),
-		SSEFrame(`{"usage":{"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":40},"completion_tokens":5,"completion_tokens_details":{"reasoning_tokens":7}}}`),
+		sseFrame(`{"usage":{"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":40},"completion_tokens":5,"completion_tokens_details":{"reasoning_tokens":7}}}`),
 	)
 	done := findEvent(t, events, EventDone)
 	if done.Message.Usage.InputTokens != 60 {
@@ -333,7 +337,7 @@ func TestTheFinishReasonIsMappedToTheRuntimesOwn(t *testing.T) {
 	}
 	for finish, want := range cases {
 		payload := fmt.Sprintf(`{"choices":[{"finish_reason":%q}]}`, finish)
-		done := findEvent(t, runStream(t, streamModel(), SSEFrame(payload)), EventDone)
+		done := findEvent(t, runStream(t, streamModel(), sseFrame(payload)), EventDone)
 		if done.Message.StopReason != want {
 			t.Errorf("finish %q = %q, want %q", finish, done.Message.StopReason, want)
 		}
@@ -342,7 +346,7 @@ func TestTheFinishReasonIsMappedToTheRuntimesOwn(t *testing.T) {
 
 func TestOnlyTheFirstChoiceIsRead(t *testing.T) {
 	events := runStream(t, streamModel(),
-		SSEFrame(`{"choices":[{"delta":{"content":"first"}},{"delta":{"content":"second"}}]}`),
+		sseFrame(`{"choices":[{"delta":{"content":"first"}},{"delta":{"content":"second"}}]}`),
 	)
 	done := findEvent(t, events, EventDone)
 	if done.Message.Content[0].Text.Text != "first" {
@@ -352,7 +356,7 @@ func TestOnlyTheFirstChoiceIsRead(t *testing.T) {
 
 func TestToolCallsWinOverThinkingAndThinkingOverText(t *testing.T) {
 	events := runStream(t, streamModel(),
-		SSEFrame(`{"choices":[{"delta":{"content":"text","reasoning":"thought","tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"content":"text","reasoning":"thought","tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`),
 	)
 	if countKind(events, EventToolCallStart) != 1 {
 		t.Error("a delta carrying tool calls is a tool call, not text or thinking")
@@ -365,20 +369,20 @@ func TestToolCallsWinOverThinkingAndThinkingOverText(t *testing.T) {
 func TestTheFirstNonEmptyReasoningFieldWins(t *testing.T) {
 	for _, field := range []string{"reasoning_content", "reasoning", "reasoning_text"} {
 		payload := fmt.Sprintf(`{"choices":[{"delta":{%q:"pondering"}}]}`, field)
-		done := findEvent(t, runStream(t, streamModel(), SSEFrame(payload)), EventDone)
+		done := findEvent(t, runStream(t, streamModel(), sseFrame(payload)), EventDone)
 		if done.Message.Content[0].Thinking.Signature != field {
 			t.Errorf("field %q = signature %q", field, done.Message.Content[0].Thinking.Signature)
 		}
 	}
 	both := `{"choices":[{"delta":{"reasoning_content":"first","reasoning":"second"}}]}`
-	done := findEvent(t, runStream(t, streamModel(), SSEFrame(both)), EventDone)
+	done := findEvent(t, runStream(t, streamModel(), sseFrame(both)), EventDone)
 	if done.Message.Content[0].Thinking.Thinking != "first" {
 		t.Errorf("with two fields the first wins, got %q", done.Message.Content[0].Thinking.Thinking)
 	}
 }
 
 func TestAnEmptyReasoningStringIsSkipped(t *testing.T) {
-	events := runStream(t, streamModel(), SSEFrame(`{"choices":[{"delta":{"reasoning_content":"","content":"text"}}]}`))
+	events := runStream(t, streamModel(), sseFrame(`{"choices":[{"delta":{"reasoning_content":"","content":"text"}}]}`))
 	done := findEvent(t, events, EventDone)
 	if done.Message.Content[0].Text.Text != "text" {
 		t.Errorf("an empty reasoning string falls through to the content, got %+v", done.Message.Content[0])
@@ -387,8 +391,8 @@ func TestAnEmptyReasoningStringIsSkipped(t *testing.T) {
 
 func TestReasoningDetailsAttachToTheToolCallTheyName(t *testing.T) {
 	events := runStream(t, streamModel(),
-		SSEFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`),
-		SSEFrame(`{"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.encrypted","id":"c1","data":"blob"}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.encrypted","id":"c1","data":"blob"}]}}]}`),
 	)
 	end := findEvent(t, events, EventToolCallEnd)
 	if !end.ToolCall.HasThought || end.ToolCall.ThoughtSig == "" {
@@ -405,8 +409,8 @@ func TestReasoningDetailsAttachToTheToolCallTheyName(t *testing.T) {
 
 func TestAnUnencryptedReasoningDetailIsIgnored(t *testing.T) {
 	events := runStream(t, streamModel(),
-		SSEFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`),
-		SSEFrame(`{"choices":[{"delta":{"reasoning_details":[{"type":"other","id":"c1","data":"blob"}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"reasoning_details":[{"type":"other","id":"c1","data":"blob"}]}}]}`),
 	)
 	end := findEvent(t, events, EventToolCallEnd)
 	if end.ToolCall.HasThought {
@@ -439,7 +443,7 @@ func TestCancellationMidStreamEndsWithTheCancelsReason(t *testing.T) {
 	calls := 0
 	Stream(sink, streamModel(), Context{}, StreamOptions{}, func() ([]byte, error) {
 		calls++
-		return []byte(SSEFrame(`{"choices":[{"delta":{"content":"x"}}]}`)), nil
+		return []byte(sseFrame(`{"choices":[{"delta":{"content":"x"}}]}`)), nil
 	}, func() bool { return calls > 1 })
 	events := sink.take()
 	last := events[len(events)-1]
@@ -452,7 +456,7 @@ func TestCancellationMidStreamEndsWithTheCancelsReason(t *testing.T) {
 }
 
 func TestAnEmptyChoicesArrayStopsNothingAndEndsTheStream(t *testing.T) {
-	events := runStream(t, streamModel(), SSEFrame(`{"choices":[]}`))
+	events := runStream(t, streamModel(), sseFrame(`{"choices":[]}`))
 	if countKind(events, EventDone) != 1 {
 		t.Errorf("got %v, want a terminal", kindsOf(events))
 	}
@@ -461,8 +465,8 @@ func TestAnEmptyChoicesArrayStopsNothingAndEndsTheStream(t *testing.T) {
 func TestAMalformedChunkIsSwallowedAndTheStreamStillCompletes(t *testing.T) {
 	sink := &EventSink{}
 	Stream(sink, streamModel(), Context{}, StreamOptions{}, chunkReader([]string{
-		SSEFrame(`{"choices":[{"delta":{"content":"kept"}}]}`),
-		SSEFrame("not json at all"),
+		sseFrame(`{"choices":[{"delta":{"content":"kept"}}]}`),
+		sseFrame("not json at all"),
 	}), nil)
 	events := sink.take()
 	if countKind(events, EventError) != 0 {
@@ -528,9 +532,9 @@ func TestTheParserErrorSpellingReachesTheStream(t *testing.T) {
 
 func TestEventsAreDeliveredInTheOrderTheyWereEmitted(t *testing.T) {
 	events := runStream(t, streamModel(),
-		SSEFrame(`{"choices":[{"delta":{"content":"a"}}]}`),
-		SSEFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`),
-		SSEFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"content":"a"}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}`),
 	)
 	want := []EventKind{EventStart, EventTextDelta, EventToolCallStart, EventToolCallDelta, EventToolCallEnd, EventDone}
 	got := kindsOf(events)
