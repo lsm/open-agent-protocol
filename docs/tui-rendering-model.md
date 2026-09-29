@@ -272,6 +272,25 @@ space-separated term must appear, case-insensitively, in an item's label or deta
 `Backspace` edits the filter, `Up/Down` and `PgUp/PgDn` move, `Enter` selects and `Esc`
 closes; reopening a picker clears its filter.
 
+## Recovery after a provider error
+
+The HTTP retry policy is five statuses — 429, 500, 502, 503, 504 — plus a
+transport failure, three attempts each with exponential backoff, and the
+capability model's `max_retry_delay_ms` bounds the sleep rather than choosing
+which errors retry. A 400 is outside that set, so one ends the run immediately
+and the transcript shows the error and nothing else.
+
+When a run ends that way the TUI waits about three seconds and then sends one
+`continue` on the user's behalf, with a system line saying it is doing so and
+the user message it sent visible in the transcript like any other turn. It does
+this once per failure streak: if the automatic continue fails too, that is left
+to the user, and a clean run or a turn the user sends themselves starts a fresh
+streak. It never does it after an abort, after a 401 or 403 (the credential has
+to be fixed, not replayed), or when the error is a context overflow that
+`/compact` handles. Anything the user does inside the delay — submitting,
+steering, queueing a follow-up, `Esc` or `Ctrl+C` — drops the pending continue,
+and it does not fire while a run is streaming or a follow-up is queued.
+
 ## Compaction
 
 `/compact [focus]` replaces the agent's history with a summary the current model

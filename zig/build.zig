@@ -1905,6 +1905,15 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const tui_auto_continue_mod = b.createModule(.{
+        .root_source_file = b.path("src/tui/auto_continue.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "overflow", .module = overflow_mod },
+        },
+    });
+
     const tui_state_mod = b.createModule(.{
         .root_source_file = b.path("src/tui/state.zig"),
         .target = target,
@@ -1914,6 +1923,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "agent", .module = agent_mod },
             .{ .name = "ai_types", .module = ai_types_mod },
             .{ .name = "tui_runtime", .module = tui_runtime_mod },
+            .{ .name = "tui_auto_continue", .module = tui_auto_continue_mod },
             .{ .name = "owned_slice", .module = owned_slice_mod },
         },
     });
@@ -2004,6 +2014,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "agent", .module = agent_mod },
             .{ .name = "event_stream", .module = event_stream_mod },
             .{ .name = "tui_runtime", .module = tui_runtime_mod },
+            .{ .name = "tui_auto_continue", .module = tui_auto_continue_mod },
             .{ .name = "tui_state", .module = tui_state_mod },
             .{ .name = "tui_commands", .module = tui_commands_mod },
             .{ .name = "tui_login", .module = tui_login_mod },
@@ -2463,6 +2474,7 @@ pub fn build(b: *std.Build) void {
     const tui_runtime_test = b.addTest(.{ .root_module = tui_runtime_mod });
     const tui_session_store_test = b.addTest(.{ .root_module = tui_session_store_mod });
     const tui_state_test = b.addTest(.{ .root_module = tui_state_mod });
+    const tui_auto_continue_test = b.addTest(.{ .root_module = tui_auto_continue_mod });
     const tui_commands_test = b.addTest(.{ .root_module = tui_commands_mod });
     const tui_login_test = b.addTest(.{ .root_module = tui_login_mod });
     const model_catalog_test = b.addTest(.{ .root_module = model_catalog_mod });
@@ -2826,6 +2838,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(tui_runtime_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_session_store_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_state_test).step);
+    test_step.dependOn(&b.addRunArtifact(tui_auto_continue_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_commands_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_login_test).step);
     test_step.dependOn(&b.addRunArtifact(model_catalog_test).step);
@@ -3087,6 +3100,7 @@ pub fn build(b: *std.Build) void {
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_runtime_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_session_store_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_state_test).step);
+    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_auto_continue_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_commands_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_login_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(model_catalog_test).step);
