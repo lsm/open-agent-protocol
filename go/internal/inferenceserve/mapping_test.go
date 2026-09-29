@@ -704,9 +704,6 @@ func TestTwoInferencesIssuingIdsAtOnceNeverRepeatOne(t *testing.T) {
 }
 
 func TestAMalformedToolCallIsNotReportedAsAnUnavailableProvider(t *testing.T) {
-	// drafts/model-provider-core.md:1562 names this exact shape as the anti-pattern:
-	// reporting a provider unavailable because the pump could not assemble a
-	// terminal fills a trace with evidence against a vendor that did nothing wrong.
 	state := NewState(&Ids{}, "i1", "m")
 	if _, err := state.Started(1); err != nil {
 		t.Fatal(err)
