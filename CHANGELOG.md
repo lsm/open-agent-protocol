@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A provider catalog row records the largest context window its models can be
+  given (#559).** `providers/catalog.json` gains `max_context_window` on a row
+  and on a model entry, declared in `providers/catalog.schema.json` and read by
+  both trees: `build.zig` turns it into typed rows alongside `context_window`,
+  and Go's `Provider` and `Model` carry it, so the strict decode accepts the
+  member. The `openai` and `openai-codex` rows state 1000000, from the owner's
+  statement that every GPT model holds a 1M-token window (2026-09-29). It is a
+  ceiling and not another window: a caller may lower the window a listing
+  reported and may raise it to the ceiling, and a row that states none has not
+  recorded a large one — the window the listing or the catalog reports for a
+  model stands in its place. The build refuses a row or model whose own
+  `context_window` is above the ceiling it states, because a default window the
+  ceiling would refuse is a contradiction rather than a default.
 - **A design note for the Go tree's native agent loop (#370).**
   [`docs/go-agent-loop.md`](docs/go-agent-loop.md) maps `zig/src/agent/`'s loop
   — turns, tool execution, permissions, cancellation, compaction — onto what

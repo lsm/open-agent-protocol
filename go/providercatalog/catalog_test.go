@@ -54,6 +54,56 @@ func TestLoadRefusesAnUnknownMemberAndAnEmptyCatalog(t *testing.T) {
 	}
 }
 
+func TestLoadReadsTheContextWindowCeilingAndOnlyTheRowsThatStateOneDo(t *testing.T) {
+	catalog, err := Load(providers.Files)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	ceiling := func(id string) int {
+		t.Helper()
+		provider, known := findProvider(catalog, id)
+		if !known {
+			t.Fatalf("no row for %s", id)
+		}
+		return provider.MaxContextWindow
+	}
+	if got := ceiling("openai"); got != 1000000 {
+		t.Errorf("openai max_context_window = %d, want 1000000", got)
+	}
+	if got := ceiling("openai-codex"); got != 1000000 {
+		t.Errorf("openai-codex max_context_window = %d, want 1000000", got)
+	}
+	if got := ceiling("anthropic"); got != 0 {
+		t.Errorf("anthropic states a ceiling of %d, want none", got)
+	}
+	for _, provider := range catalog.Providers {
+		if provider.ContextWindow == 0 {
+			continue
+		}
+		if provider.MaxContextWindow == 0 {
+			continue
+		}
+		if provider.ContextWindow > provider.MaxContextWindow {
+			t.Errorf("%s records a window of %d above its own ceiling of %d", provider.ID, provider.ContextWindow, provider.MaxContextWindow)
+		}
+		for _, model := range provider.Models {
+			if model.ContextWindow == 0 {
+				continue
+			}
+			limit := model.MaxContextWindow
+			if limit == 0 {
+				limit = provider.MaxContextWindow
+			}
+			if limit == 0 {
+				continue
+			}
+			if model.ContextWindow > limit {
+				t.Errorf("%s model %s records a window of %d above its own ceiling of %d", provider.ID, model.ID, model.ContextWindow, limit)
+			}
+		}
+	}
+}
+
 func TestLoadRefusesARepeatedMember(t *testing.T) {
 	if _, err := DecodeStrict([]byte(`{"providers":[],"providers":[]}`)); err == nil {
 		t.Fatal("a member spelled twice decoded")

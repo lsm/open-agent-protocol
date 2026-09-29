@@ -129,6 +129,11 @@
           "type": "integer",
           "minimum": 1
         },
+        "max_context_window": {
+          "description": "The largest context window in tokens this model can be given, for a model whose ceiling the row does not state. A caller may lower the window and may raise it up to this figure; a request for more is refused because the model cannot hold it. Absent means this model records no ceiling, which is not the same as a large one.",
+          "type": "integer",
+          "minimum": 1
+        },
         "max_tokens": {
           "description": "The output cap in tokens. Absent means the generic default, which is a guess and a low one.",
           "type": "integer",
@@ -222,13 +227,18 @@
           "type": "integer",
           "minimum": 1
         },
+        "max_context_window": {
+          "description": "The largest context window in tokens a model of this row can be given, for every model of this row that has no `models` entry saying otherwise. A caller may lower the window a listing reported and may raise it up to this figure; a request for more is refused because the model cannot hold it. Absent means the row records no ceiling, which is not the same as a large one: the window a listing or the catalog reports for a model is the ceiling in its place, and a model that reports no window of its own has nothing to refuse against.",
+          "type": "integer",
+          "minimum": 1
+        },
         "max_tokens": {
           "description": "The output cap in tokens, as this provider's own figures give it, for every model of this row that has no `models` entry saying otherwise. Absent means the generic default, which is a guess and a low one.",
           "type": "integer",
           "minimum": 1
         },
         "models": {
-          "description": "Models this row knows without asking the provider. An entry corrects the facts the generic loader would otherwise guess \u2014 the display name, the context window, the output cap \u2014 for that model id, and a row that lists models here still serves them when its own listing cannot be reached, so a provider that is up but whose models endpoint is not does not disappear. Discovered ids absent from this list keep the generic facts, so a row may record what it knows and not what it does not.",
+          "description": "Models this row knows without asking the provider. An entry corrects the facts the generic loader would otherwise guess \u2014 the display name, the context window, the largest window the model can be given, the output cap \u2014 for that model id, and a row that lists models here still serves them when its own listing cannot be reached, so a provider that is up but whose models endpoint is not does not disappear. Discovered ids absent from this list keep the generic facts, so a row may record what it knows and not what it does not.",
           "type": "array",
           "minItems": 1,
           "items": {
