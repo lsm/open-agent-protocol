@@ -40,19 +40,19 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/base"
-          # The base branch's tip, not the head's fork point. actions/checkout
-          # with no ref gives a pull_request event refs/pull/N/merge, and the
-          # merge base of that with origin/<base.ref> is the base tip itself --
-          # so this is origin/<base.ref> and saying otherwise would be a lie
-          # the next edit would act on. What keeps the comparison to this pull
-          # request's own work is the merge ref being checked out above: a merge
-          # commit's tree is the base plus this pull request's changes, so
-          # diffing it against the base is exactly this pull request.
+          # The merge base, computed against the pull request's HEAD commit
+          # rather than the checked-out tree.
           #
-          # base.sha would give the same tree here, so this is written out
-          # rather than trusted: the two agree only because of the merge ref.
+          # actions/checkout with no ref gives refs/pull/N/merge, and the merge
+          # base of that with origin/<base.ref> is the base *tip*, so using HEAD
+          # here would compare this pull request against every public change
+          # merged into the base since the two diverged and report them as this
+          # pull request's. Fetch the head sha and take the merge base of it
+          # with the base ref, which is the commit the two actually share.
+          git fetch -q origin "${{ github.event.pull_request.head.sha }}"
           git worktree add --detach "$RUNNER_TEMP/base" \
-            "origin/${{ github.event.pull_request.base.ref }}"
+            "$(git merge-base "origin/${{ github.event.pull_request.base.ref }}" \
+                            "origin/${{ github.event.pull_request.head.sha }}")"
 
       - name: Write the pull request description where the checker reads it
         env:

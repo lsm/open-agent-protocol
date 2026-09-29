@@ -78,7 +78,11 @@ func check(root, baseRoot, description string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	removed, err := removalSet(baseRoot, head)
+	headDirs, err := publicDirectories(root)
+	if err != nil {
+		return err
+	}
+	removed, err := removalSet(baseRoot, headDirs)
 	if err != nil {
 		return err
 	}
@@ -87,7 +91,7 @@ func check(root, baseRoot, description string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	changed := incompatible(report, module)
+	changed := incompatible(report, module, head)
 	changed = append(changed, removed...)
 	if len(added) > 0 {
 		fmt.Fprintf(stdout, "compatibility: %s added since the base, which is a compatible change\n", strings.Join(added, ", "))

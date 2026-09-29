@@ -1,12 +1,12 @@
 package main
 
-import (
-	"strings"
+import "strings"
 
-	"github.com/lsm/open-agent-protocol/go/internal/publicset"
-)
-
-func incompatible(report, module string) []string {
+func incompatible(report, module string, packages []string) []string {
+	watched := map[string]bool{}
+	for _, name := range packages {
+		watched[name] = true
+	}
 	var names []string
 	for _, block := range strings.Split(report, "\n# ") {
 		header, rest, found := strings.Cut(block, "\n")
@@ -17,7 +17,7 @@ func incompatible(report, module string) []string {
 		if !isPackage {
 			name = header
 		}
-		if publicset.Internal(name) {
+		if !watched[name] {
 			continue
 		}
 		if !hasIncompatibleEntry(rest) {

@@ -11,28 +11,30 @@ import (
 
 const testModule = "github.com/lsm/open-agent-protocol"
 
+var allPublic = []string{"go/protocol", "go/providercatalog", "go/serve", "go/sdk", "go/binding", "go/client", "go/validation", "go/harness", "go/adapter", "harnesses", "providers", "schema"}
+
 const protocolBreak = "\n# go/protocol\nIncompatible changes:\n- AuthProvider: old is comparable, new is not\nCompatible changes:\n- AuthProvider.AuthKinds: added\n"
 
 const catalogAddition = "\n# go/providercatalog\nIncompatible changes:\n\nCompatible changes:\n- CredentialKind: added\n"
 
 func TestAnIncompatibleBlockIsAChangeAndACompatibleOneIsNot(t *testing.T) {
-	if got := incompatible(protocolBreak, testModule); len(got) != 1 || got[0] != "go/protocol" {
+	if got := incompatible(protocolBreak, testModule, allPublic); len(got) != 1 || got[0] != "go/protocol" {
 		t.Fatalf("incompatible = %v, want go/protocol", got)
 	}
-	if got := incompatible(catalogAddition, testModule); len(got) != 0 {
+	if got := incompatible(catalogAddition, testModule, allPublic); len(got) != 0 {
 		t.Fatalf("incompatible = %v, want none: a member added is a compatible change", got)
 	}
 }
 
 func TestAnInternalPackageIsNotAChange(t *testing.T) {
 	report := "\n# go/internal/provider\nIncompatible changes:\n- Compat: removed\n"
-	if got := incompatible(report, testModule); len(got) != 0 {
+	if got := incompatible(report, testModule, allPublic); len(got) != 0 {
 		t.Fatalf("incompatible = %v, want none: go/internal is not a public package", got)
 	}
 }
 
 func TestAChangedPackageIsMissingUnlessTheSectionNamesItInBackticks(t *testing.T) {
-	changed := incompatible(protocolBreak, testModule)
+	changed := incompatible(protocolBreak, testModule, allPublic)
 	if got := missingFrom(changed, "### Fixed\n\n- nothing here"); len(got) != 1 || got[0] != "go/protocol" {
 		t.Fatalf("missing %v, want go/protocol", got)
 	}
@@ -107,7 +109,7 @@ func TestTheRecordedSectionIsReadFromTheFileTheWorkflowWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := missingFrom(incompatible(protocolBreak, testModule), recordedChanges(string(data))); len(got) != 0 {
+	if got := missingFrom(incompatible(protocolBreak, testModule, allPublic), recordedChanges(string(data))); len(got) != 0 {
 		t.Fatalf("missing %v, want none: the description's section names the package", got)
 	}
 }
@@ -125,7 +127,7 @@ func TestAnUnreadableDescriptionIsAnErrorRatherThanAMissingRecord(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := missingFrom(incompatible(protocolBreak, testModule), recordedChanges(body)); len(got) != 0 {
+	if got := missingFrom(incompatible(protocolBreak, testModule, allPublic), recordedChanges(body)); len(got) != 0 {
 		t.Fatalf("missing %v, want none: the file's section is the record", got)
 	}
 }
@@ -276,5 +278,26 @@ func TestAPackageThePublicSetDoesNotNameIsStillADirectoryTheBaseHad(t *testing.T
 	}
 	if got := missingFrom(removed, ""); len(got) != 1 {
 		t.Fatalf("missing %v, want one: nothing records the removal", got)
+	}
+}
+
+func TestAPackageTheWatchedSetDoesNotIncludeIsNotAChange(t *testing.T) {
+	report := "\n# go/tools/nocomment\nIncompatible changes:\n- Run: signature changed\n"
+	if got := incompatible(report, testModule, allPublic); len(got) != 0 {
+		t.Fatalf("incompatible = %v, want none: go/tools/nocomment is not a public package, so its diff is not a break the gate reports", got)
+	}
+	if got := incompatible(report, testModule, append(allPublic, "go/tools/nocomment")); len(got) != 1 {
+		t.Fatalf("incompatible = %v, want the package once it is watched", got)
+	}
+}
+
+func TestAPackagePresentInBothTreesIsNotARemovalEvenWhenItIsNotPublic(t *testing.T) {
+	dirs := []string{"go/cmd/goap", "go/protocol", "go/tools/nocomment"}
+	public := []string{"go/protocol"}
+	if removed := setDifference(dirs, public); len(removed) != 2 {
+		t.Fatalf("removed %v against the public set, which is the bug: a package in both trees is not removed", removed)
+	}
+	if removed := setDifference(dirs, dirs); len(removed) != 0 {
+		t.Fatalf("removed %v against the directories, want none", removed)
 	}
 }
