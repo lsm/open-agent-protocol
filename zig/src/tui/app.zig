@@ -2864,7 +2864,7 @@ pub const App = struct {
             return;
         };
         if (self.rate_model.len > 0) {
-            self.state.telemetry.rate = .{};
+            self.state.telemetry.rate.resetForModel();
             self.allocator.free(self.rate_model);
         }
         if (self.rate_provider.len > 0) self.allocator.free(self.rate_provider);

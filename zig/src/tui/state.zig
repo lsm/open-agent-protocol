@@ -272,6 +272,14 @@ pub const TokenRateSet = struct {
         self.run_active = false;
     }
 
+    pub fn resetForModel(self: *TokenRateSet) void {
+        const open = self.turn();
+        const clock = self.message_first_ms;
+        const bytes = self.message_bytes;
+        self.* = .{ .run_active = self.run_active, .message_first_ms = clock, .message_bytes = bytes };
+        if (open.hasFigure()) self.previous = open;
+    }
+
     pub fn turnEnded(self: *TokenRateSet) void {
         const finished = self.turn();
         self.message_bytes = 0;
@@ -2354,6 +2362,32 @@ test "a turn's tool phase shows the turn's own figure, not a lagging average" {
 
     try std.testing.expectEqual(@as(u64, 100), rate.turnShown().output_tokens);
     try std.testing.expectEqual(@as(u64, 500), rate.average.output_tokens);
+}
+
+test "a model switch mid-message keeps that message's clock, so its tokens divide by the real span" {
+    var state = AppState.init(std.testing.allocator);
+    defer state.deinit();
+
+    try state.applyEvent(.{ .agent_start = .{} });
+    try state.applyEvent(.{ .turn_start = .{} });
+    try state.applyEvent(.{ .message_start = .{ .role = .assistant } });
+    const began = state.telemetry.rate.message_first_ms;
+    state.telemetry.rate.produced(400, began + 1_000);
+
+    state.telemetry.rate.resetForModel();
+
+    try std.testing.expect(state.telemetry.rate.message_first_ms == began);
+    try std.testing.expectEqual(@as(u64, 400), state.telemetry.rate.message_bytes);
+    try std.testing.expect(!state.telemetry.rate.average.hasFigure());
+    try std.testing.expect(!state.telemetry.rate.turn_measured.hasFigure());
+
+    state.telemetry.rate.produced(400, began + 4_000);
+    state.telemetry.rate.messageEnded(began + 4_000, 800);
+    state.telemetry.rate.turnEnded();
+
+    try std.testing.expectEqual(@as(u64, 800), state.telemetry.rate.previous.output_tokens);
+    try std.testing.expectEqual(@as(u64, 4_000), state.telemetry.rate.previous.stream_ms);
+    try std.testing.expectEqual(@as(u64, 200), state.telemetry.rate.previous.perSecond());
 }
 
 test "a second turn's thinking still shows the first turn's figure" {

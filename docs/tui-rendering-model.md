@@ -230,7 +230,7 @@ code paths; add a transcript row instead.
   a provider that reports usage is never diluted by a guessed sample.
 - The rate's denominator is **the time the stream was actually producing**, which is not
   the status bar's elapsed: that clock starts at `turn_start` and includes tool calls.
-  The rate runs a second clock from an assistant message's first delta to its
+  The rate runs a second clock from an assistant message's `message_start` to its
   `message_end`, summed over the turn's assistant messages, so time spent in tools never
   counts as slow generation. A tool call is production, so `tool_call_delta` starts the
   clock as well: a reply that is only a tool call is measured over the span it was
@@ -250,7 +250,12 @@ code paths; add a transcript row instead.
   produced tokens rather than falling through to the average. Bytes convert at the
   agent's own divisor, `(bytes + 3) / 4`.
   The averages reset when the model in effect changes, which is what `/model` and
-  `/provider` do.
+  `/provider` do, and when a session is resumed, which is why an unchanged model can
+  show no figure at all after `/resume`: a replayed transcript carries no spans, so
+  there is nothing honest to divide. A model switch mid-stream is the one case that
+  keeps more than a reset — the message being streamed at the time keeps its clock and
+  its bytes, so its tokens are divided by the span they were really produced in rather
+  than by the time after the switch.
 - The cost segment beside it is **computed, not reported**: it is the model's
   `cost.input` multiplied by the prompt estimate, so the row now carries one figure from
   what the provider reported (the rate) beside one this repository worked out (the cost).
