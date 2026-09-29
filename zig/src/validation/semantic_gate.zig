@@ -19,9 +19,6 @@ const partial_code_gaps = [_]struct { code: []const u8, fixtures: []const []cons
         "control-state-omits-acknowledged",
         "models-current-mismatch",
         "models-held-position-moved-no-model",
-        "open-attach-contradicts-stated-member",
-        "open-sources-state-disagrees-with-catalog",
-        "open-sources-state-omits-attachment",
         "queue-open-adds-an-interaction-the-entry-denied",
         "queue-open-claims-two-started-runs",
         "queue-open-keeps-a-resolved-interaction-pending",
@@ -96,7 +93,6 @@ const partial_code_gaps = [_]struct { code: []const u8, fixtures: []const []cons
         "queue-state-two-started-entries",
         "queue-state-waiting-without-a-waiting-run",
         "state-omits-active-runs-with-pending-permission",
-        "tools-catalog-follows-contradicting-open",
     } },
 };
 

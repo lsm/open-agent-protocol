@@ -1774,10 +1774,34 @@ pub const Machine = struct {
         }
     }
 
-    fn checkPublishedUnion(self: *Machine, index: usize, session: []const u8, published: ?std.json.Value) !void {
+    fn checkPublishedUnion(self: *Machine, index: usize, session: []const u8, published: ?std.json.Value, adopt: bool) !void {
         const holder = self.sessions.get(session) orelse return;
         if (holder.attached.count() == 0) return;
         if (duplicateSourceId(published).len != 0) try self.add(code_duplicate_tool_source, index);
+        const listed_sources = published orelse return;
+
+        var expected = std.ArrayList([]const u8).empty;
+        defer expected.deinit(self.allocator);
+        var declared = self.declared_sources.iterator();
+        while (declared.next()) |entry| try expected.append(self.allocator, entry.key_ptr.*);
+        var attached = holder.attached.iterator();
+        while (attached.next()) |entry| {
+            if (self.declared_sources.get(entry.key_ptr.*) != null) continue;
+            try expected.append(self.allocator, entry.key_ptr.*);
+        }
+        std.mem.sort([]const u8, expected.items, {}, lessThanName);
+
+        for (expected.items) |id| {
+            const stated = holder.attached_sources.get(id);
+            const listed = sourceWithId(listed_sources, id) orelse {
+                try self.add(code_session_state_mismatch, index);
+                continue;
+            };
+            const held = stated orelse continue;
+            const agrees = if (adopt) describesSource(held, listed) else sameSourceDescription(held, listed);
+            if (agrees) continue;
+            try self.add(code_session_state_mismatch, index);
+        }
     }
 
     fn collectCatalog(self: *Machine, payload: std.json.Value) !bool {
@@ -2605,7 +2629,7 @@ pub const Machine = struct {
                 try self.bootstrapRecoveredRuns(index, session_id, payload);
             }
         }
-        if (!attachment_refused) try self.checkPublishedUnion(index, session_id, member(payload, "sources"));
+        if (!attachment_refused) try self.checkPublishedUnion(index, session_id, member(payload, "sources"), true);
         try self.compoundOpen(index, envelope, payload, session_id);
     }
 
@@ -2743,7 +2767,7 @@ pub const Machine = struct {
             holder.current_model = reported;
             holder.current_known = true;
         }
-        try self.checkPublishedUnion(index, session_id, member(payload, "sources"));
+        try self.checkPublishedUnion(index, session_id, member(payload, "sources"), false);
         try self.checkPublishedSources(index, payload);
         const recovery = self.recoveries.get(session_id) orelse return;
         if (recovery.state_checked) return;
