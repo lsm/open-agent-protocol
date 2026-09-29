@@ -2,6 +2,7 @@ const std = @import("std");
 const oap_types = @import("types");
 const oap_envelope = @import("envelope");
 const endpoint_client = @import("endpoint_client");
+const json_writer = @import("json_writer");
 
 pub const default_line_deadline_ms: u64 = 300_000;
 
@@ -222,7 +223,7 @@ const Runner = struct {
         return self.events.orderedRemove(0);
     }
 
-    fn probe(self: *Runner, payload: oap_types.Payload, run_id: ?[]const u8) ![]const u8 {
+    fn probe(self: *Runner, payload: oap_types.Payload, run_id: ?[]const u8, revision: []const u8) ![]const u8 {
         var owned = payload;
         defer owned.deinit(self.allocator);
         const id = try self.nextId("request");
@@ -232,7 +233,7 @@ const Runner = struct {
             .payload = owned,
             .session_id = self.session,
             .run_id = run_id,
-            .capability_revision = if (self.revision.len == 0) null else self.revision,
+            .capability_revision = if (revision.len == 0) null else revision,
         };
         const line = try oap_envelope.serializeEnvelope(envelope, self.allocator);
         defer self.allocator.free(line);
@@ -240,8 +241,31 @@ const Runner = struct {
         return id;
     }
 
+    fn rawProbe(self: *Runner, envelope_type: []const u8, revision: []const u8) ![]const u8 {
+        const id = try self.nextId("request");
+        errdefer self.allocator.free(id);
+        var buffer = std.ArrayList(u8).empty;
+        defer buffer.deinit(self.allocator);
+        var writer = json_writer.JsonWriter.init(&buffer, self.allocator);
+        try writer.beginObject();
+        try writer.writeStringField("protocol", oap_types.PROTOCOL);
+        try writer.writeStringField("version", oap_types.VERSION);
+        try writer.writeStringField("profile", oap_types.PROFILE);
+        try writer.writeStringField("type", envelope_type);
+        try writer.writeStringField("id", id);
+        try writer.writeStringField("session_id", self.session);
+        if (revision.len != 0) try writer.writeStringField("capability_revision", revision);
+        try writer.writeKey("payload");
+        try writer.beginObject();
+        try writer.writeStringField("session_id", self.session);
+        try writer.endObject();
+        try writer.endObject();
+        try self.client.write(buffer.items);
+        return id;
+    }
+
     fn request(self: *Runner, payload: oap_types.Payload, run_id: ?[]const u8, line_deadline_ms: i64) !oap_types.Envelope {
-        const id = try self.probe(payload, run_id);
+        const id = try self.probe(payload, run_id, self.revision);
         defer self.allocator.free(id);
 
         var answered = try self.answer(id, line_deadline_ms);
@@ -389,7 +413,105 @@ const Runner = struct {
         }
 
         try self.consumeRun(line_deadline_ms);
+        try self.refuseStaleRevision(line_deadline_ms);
         try self.answerCancel(line_deadline_ms);
+        try self.refuseAddressableEnvelope(line_deadline_ms);
+    }
+
+    fn refuseStaleRevision(self: *Runner, line_deadline_ms: i64) !void {
+        const name = "a stale capability_revision is refused with stale_capabilities";
+        if (self.revision.len == 0) {
+            try self.skip(name, "the endpoint issued no revision, so none can be stale");
+            return;
+        }
+        const stale = try std.fmt.allocPrint(self.allocator, "{s}-stale", .{self.revision});
+        defer self.allocator.free(stale);
+        var handed_off = false;
+        const probe_session = try self.allocator.dupe(u8, self.session);
+        defer if (!handed_off) self.allocator.free(probe_session);
+        handed_off = true;
+        const id = try self.probe(.{
+            .session_state_request = .{ .session_id = probe_session },
+        }, null, stale);
+        defer self.allocator.free(id);
+
+        var answered = self.answer(id, line_deadline_ms) catch |err| {
+            try self.failReason(name, err);
+            return;
+        };
+        defer answered.deinit(self.allocator);
+
+        if (answered.payload != .error_response) {
+            try self.failOwned(
+                name,
+                try std.fmt.allocPrint(
+                    self.allocator,
+                    "a request citing a revision this endpoint never issued was answered {s}",
+                    .{answered.payload.typeName()},
+                ),
+            );
+            return;
+        }
+        const failure = answered.payload.error_response;
+        if (!std.mem.eql(u8, failure.code, "stale_capabilities")) {
+            try self.failOwned(
+                name,
+                try std.fmt.allocPrint(self.allocator, "refused \"{s}\", want \"stale_capabilities\"", .{failure.code}),
+            );
+            return;
+        }
+        try self.pass(name);
+    }
+
+    fn refuseAddressableEnvelope(self: *Runner, line_deadline_ms: i64) !void {
+        const name = "an addressable envelope that is wrong draws a correlated refusal";
+        const id = try self.rawProbe("conformance.not.a.real.request", self.revision);
+        defer self.allocator.free(id);
+
+        var answered = self.answer(id, line_deadline_ms) catch |err| {
+            try self.failReason(name, err);
+            return;
+        };
+        defer answered.deinit(self.allocator);
+
+        if (answered.payload != .error_response) {
+            try self.failOwned(
+                name,
+                try std.fmt.allocPrint(self.allocator, "an unserveable request was answered {s}", .{answered.payload.typeName()}),
+            );
+            return;
+        }
+        const correlated = answered.in_reply_to != null and std.mem.eql(u8, answered.in_reply_to.?, id);
+        if (!correlated) {
+            try self.failOwned(
+                name,
+                try std.fmt.allocPrint(
+                    self.allocator,
+                    "the refusal is correlated to \"{?s}\", not to the request \"{s}\" that drew it",
+                    .{ answered.in_reply_to, id },
+                ),
+            );
+            return;
+        }
+        var handed_off = false;
+        const probe_session = try self.allocator.dupe(u8, self.session);
+        defer if (!handed_off) self.allocator.free(probe_session);
+        handed_off = true;
+        var recovered = self.request(.{
+            .session_state_request = .{ .session_id = probe_session },
+        }, null, line_deadline_ms) catch |err| {
+            try self.failOwned(
+                name,
+                try std.fmt.allocPrint(
+                    self.allocator,
+                    "the endpoint stopped answering after a recoverable protocol error: {s}",
+                    .{self.reasonOf(err)},
+                ),
+            );
+            return;
+        };
+        defer recovered.deinit(self.allocator);
+        try self.pass(name);
     }
 
     fn answerCancel(self: *Runner, line_deadline_ms: i64) !void {
@@ -408,7 +530,7 @@ const Runner = struct {
         const id = try self.probe(.{ .run_cancel_request = .{
             .session_id = cancel_session,
             .run_id = cancel_run,
-        } }, self.run_id);
+        } }, self.run_id, self.revision);
         defer self.allocator.free(id);
 
         var answered = self.answer(id, line_deadline_ms) catch |err| {
@@ -631,7 +753,10 @@ test "events that arrive ahead of the answer are read in the order they were wri
         \\  *session.open.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"a3","in_reply_to":"conformance-request-3","payload":{"session_id":"conformance","status":"idle"}}' ;;
         \\  *session.message.submit.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"e1","sequence":1,"payload":{"session_id":"conformance","run_id":"run-1","status":"running"}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"content.delta","id":"e2","sequence":2,"payload":{"session_id":"conformance","run_id":"run-1","message_id":"m-e2","part":{"type":"text","text":"one"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.requested","id":"e2","payload":{"interaction_id":"p-1","requested_by":"fake","responded_by":"user","session_id":"conformance","run_id":"run-1","title":"Allow","choices":[{"id":"approve","label":"Approve"}]}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"content.delta","id":"e4","sequence":4,"payload":{"session_id":"conformance","run_id":"run-1","message_id":"m-e4","part":{"type":"text","text":"two"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"a4","in_reply_to":"conformance-request-4","payload":{"session_id":"conformance","accepted":true,"submission_id":"s1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"run-1"}}' ;;
         \\  *choice_id*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.resolved","id":"e3","payload":{"interaction_id":"p-1","requested_by":"fake","responded_by":"user","session_id":"conformance","run_id":"run-1","outcome":"resolved","choice_id":"approve","granted":true}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.completed","id":"e6","sequence":6,"payload":{"session_id":"conformance","run_id":"run-1","stop_reason":"end_turn","final_response":{"role":"assistant","content":"done"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.resolve.response","id":"a5","in_reply_to":"conformance-request-5","payload":{"interaction_id":"p-1","session_id":"conformance","run_id":"run-1","accepted":true}}' ;;
-        \\  *run.cancel.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"a6","in_reply_to":"conformance-request-6","payload":{"error":{"code":"unsupported_feature","message":"cancellation is not implemented"}}}' ;;
+        \\  *run.cancel.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"cancel-answer","in_reply_to":"%s","payload":{"error":{"code":"unsupported_feature","message":"cancellation is not implemented"}}}\n' "$rid" ;;
+    \\  *conformance.not.a.real.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"unknown-answer","in_reply_to":"%s","payload":{"error":{"code":"unknown_request","message":"no such request"}}}\n' "$rid" ;;
+    \\  *-stale*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"stale-answer","in_reply_to":"%s","payload":{"error":{"code":"stale_capabilities","message":"that revision is not current"}}}\n' "$rid" ;;
+    \\  *session.state.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.state.response","id":"state-answer","in_reply_to":"%s","payload":{"session_id":"conformance","status":"idle"}}\n' "$rid" ;;
         \\  esac
         \\done
     ;
@@ -658,7 +783,10 @@ const fixture_script =
     \\  *session.open.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"a3","in_reply_to":"conformance-request-3","payload":{"session_id":"conformance","status":"idle"}}' ;;
     \\  *session.message.submit.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"e1","sequence":1,"payload":{"session_id":"conformance","run_id":"run-1","status":"running"}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"content.delta","id":"e2","sequence":2,"payload":{"session_id":"conformance","run_id":"run-1","message_id":"m-e2","part":{"type":"text","text":"one"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.requested","id":"e3","sequence":3,"payload":{"interaction_id":"p-1","requested_by":"fake","responded_by":"user","session_id":"conformance","run_id":"run-1","title":"Allow","choices":[{"id":"approve","label":"Approve"}]}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"a4","in_reply_to":"conformance-request-4","payload":{"session_id":"conformance","accepted":true,"submission_id":"s1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"run-1"}}' ;;
     \\  *choice_id*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.resolved","id":"e5","sequence":5,"payload":{"interaction_id":"p-1","requested_by":"fake","responded_by":"user","session_id":"conformance","run_id":"run-1","outcome":"resolved","choice_id":"approve","granted":true}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.completed","id":"e6","sequence":6,"payload":{"session_id":"conformance","run_id":"run-1","stop_reason":"end_turn","final_response":{"role":"assistant","content":"done"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.resolve.response","id":"a7","in_reply_to":"conformance-request-5","payload":{"interaction_id":"p-1","session_id":"conformance","run_id":"run-1","accepted":true}}' ;;
-    \\  *run.cancel.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"e8","in_reply_to":"conformance-request-6","payload":{"error":{"code":"unsupported_feature","message":"cancellation is not implemented"}}}' ;;
+    \\  *run.cancel.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"cancel-answer","in_reply_to":"%s","payload":{"error":{"code":"unsupported_feature","message":"cancellation is not implemented"}}}\n' "$rid" ;;
+    \\  *conformance.not.a.real.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"unknown-answer","in_reply_to":"%s","payload":{"error":{"code":"unknown_request","message":"no such request"}}}\n' "$rid" ;;
+    \\  *-stale*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"stale-answer","in_reply_to":"%s","payload":{"error":{"code":"stale_capabilities","message":"that revision is not current"}}}\n' "$rid" ;;
+    \\  *session.state.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.state.response","id":"state-answer","in_reply_to":"%s","payload":{"session_id":"conformance","status":"idle"}}\n' "$rid" ;;
     \\  esac
     \\done
 ;
@@ -810,7 +938,10 @@ const cancel_script =
     \\  *capabilities.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"a2","in_reply_to":"conformance-request-2","capability_revision":"rev-1","payload":{"endpoint":{"id":"fake"},"features":{"run.cancel":{"key":"run.cancel","level":"native"}}}}' ;;
     \\  *session.open.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"a3","in_reply_to":"conformance-request-3","payload":{"session_id":"conformance","status":"idle"}}' ;;
     \\  *session.message.submit.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"a4","in_reply_to":"conformance-request-4","payload":{"session_id":"conformance","accepted":true,"submission_id":"s1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"run-1"}}' ;;
-    \\  *run.cancel.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.cancel.response","id":"a6","in_reply_to":"conformance-request-5","payload":{"session_id":"conformance","run_id":"run-1","accepted":true,"status":"cancelling"}}' ;;
+    \\  *run.cancel.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.cancel.response","id":"cancel-answer","in_reply_to":"%s","payload":{"session_id":"conformance","run_id":"run-1","accepted":true,"status":"cancelling"}}\n' "$rid" ;;
+    \\  *conformance.not.a.real.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"unknown-answer","in_reply_to":"%s","payload":{"error":{"code":"unknown_request","message":"no such request"}}}\n' "$rid" ;;
+    \\  *-stale*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"stale-answer","in_reply_to":"%s","payload":{"error":{"code":"stale_capabilities","message":"that revision is not current"}}}\n' "$rid" ;;
+    \\  *session.state.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.state.response","id":"state-answer","in_reply_to":"%s","payload":{"session_id":"conformance","status":"idle"}}\n' "$rid" ;;
     \\  esac
     \\done
 ;
@@ -822,7 +953,10 @@ const cancelling_script =
     \\  *capabilities.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"a2","in_reply_to":"conformance-request-2","capability_revision":"rev-1","payload":{"endpoint":{"id":"fake"},"features":{"run.cancel":{"key":"run.cancel","level":"native"}}}}' ;;
     \\  *session.open.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"a3","in_reply_to":"conformance-request-3","payload":{"session_id":"conformance","status":"idle"}}' ;;
     \\  *session.message.submit.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"a4","in_reply_to":"conformance-request-4","payload":{"session_id":"conformance","accepted":true,"submission_id":"s1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"run-1"}}' ;;
-    \\  *run.cancel.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"a6","in_reply_to":"conformance-request-5","payload":{"session_id":"conformance","accepted":true,"submission_id":"s2","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"run-2"}}' ;;
+    \\  *run.cancel.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"cancel-answer","in_reply_to":"%s","payload":{"session_id":"conformance","accepted":true,"submission_id":"s2","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"run-2"}}\n' "$rid" ;;
+    \\  *conformance.not.a.real.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"unknown-answer","in_reply_to":"%s","payload":{"error":{"code":"unknown_request","message":"no such request"}}}\n' "$rid" ;;
+    \\  *-stale*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"stale-answer","in_reply_to":"%s","payload":{"error":{"code":"stale_capabilities","message":"that revision is not current"}}}\n' "$rid" ;;
+    \\  *session.state.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.state.response","id":"state-answer","in_reply_to":"%s","payload":{"session_id":"conformance","status":"idle"}}\n' "$rid" ;;
     \\  esac
     \\done
 ;
@@ -856,4 +990,70 @@ test "an endpoint declaring run.cancel supported must not answer it with another
         "an endpoint declaring run.cancel \"native\" answered session.message.submit.response",
         cancel.detail,
     );
+}
+
+const stale_refusing_script =
+    \\while read -r line; do
+    \\  case "$line" in
+    \\  *protocol.initialize.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"protocol.initialize.response","id":"a1","in_reply_to":"conformance-request-1","payload":{"protocol_version":"0.1","profile":"open-agent-protocol.agent-control-core","endpoint":{"id":"fake"}}}' ;;
+    \\  *capabilities.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"a2","in_reply_to":"conformance-request-2","capability_revision":"rev-1","payload":{"endpoint":{"id":"fake"},"features":{}}}' ;;
+    \\  *session.open.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"a3","in_reply_to":"conformance-request-3","payload":{"session_id":"conformance","status":"idle"}}' ;;
+    \\  *session.message.submit.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"e1","sequence":1,"payload":{"session_id":"conformance","run_id":"run-1","status":"running"}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.completed","id":"e2","sequence":2,"payload":{"session_id":"conformance","run_id":"run-1","stop_reason":"end_turn","final_response":{"role":"assistant","content":"done"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"a4","in_reply_to":"conformance-request-4","payload":{"session_id":"conformance","accepted":true,"submission_id":"s1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"run-1"}}' ;;
+    \\  *run.cancel.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"c","in_reply_to":"%s","payload":{"error":{"code":"unsupported_feature","message":"x"}}}\n' "$rid" ;;
+    \\  *conformance.not.a.real.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"u","in_reply_to":"%s","payload":{"error":{"code":"unknown_request","message":"x"}}}\n' "$rid" ;;
+    \\  *-stale*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"s","in_reply_to":"%s","payload":{"error":{"code":"invalid_request","message":"that revision is not one this endpoint issued"}}}\n' "$rid" ;;
+    \\  *session.state.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.state.response","id":"t","in_reply_to":"%s","payload":{"session_id":"conformance","status":"idle"}}\n' "$rid" ;;
+    \\  esac
+    \\done
+;
+
+test "a revision this endpoint never issued is judged, not waved through" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var report = try run(std.testing.allocator, .{
+        .command = "/bin/sh",
+        .args = &.{ "-c", stale_refusing_script },
+        .line_deadline_ms = 5000,
+    });
+    defer report.deinit();
+
+    const stale = report.verdict("a stale capability_revision is refused with stale_capabilities") orelse return error.CheckMissing;
+    try std.testing.expect(!stale.passed);
+    try std.testing.expectEqualStrings(
+        "refused \"invalid_request\", want \"stale_capabilities\"",
+        stale.detail,
+    );
+}
+
+test "a recovery failure is reported under the check it belongs to" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const script =
+        \\while read -r line; do
+        \\  case "$line" in
+        \\  *protocol.initialize.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"protocol.initialize.response","id":"a1","in_reply_to":"conformance-request-1","payload":{"protocol_version":"0.1","profile":"open-agent-protocol.agent-control-core","endpoint":{"id":"fake"}}}' ;;
+        \\  *capabilities.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"a2","in_reply_to":"conformance-request-2","capability_revision":"rev-1","payload":{"endpoint":{"id":"fake"},"features":{}}}' ;;
+        \\  *session.open.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"a3","in_reply_to":"conformance-request-3","payload":{"session_id":"conformance","status":"idle"}}' ;;
+        \\  *session.message.submit.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"e1","sequence":1,"payload":{"session_id":"conformance","run_id":"run-1","status":"running"}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.completed","id":"e2","sequence":2,"payload":{"session_id":"conformance","run_id":"run-1","stop_reason":"end_turn","final_response":{"role":"assistant","content":"done"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"a4","in_reply_to":"conformance-request-4","payload":{"session_id":"conformance","accepted":true,"submission_id":"s1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"run-1"}}' ;;
+        \\  *run.cancel.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"c","in_reply_to":"%s","payload":{"error":{"code":"unsupported_feature","message":"x"}}}\n' "$rid" ;;
+        \\  *-stale*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"s","in_reply_to":"%s","payload":{"error":{"code":"stale_capabilities","message":"x"}}}\n' "$rid" ;;
+        \\  *conformance.not.a.real.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"u","in_reply_to":"%s","payload":{"error":{"code":"unknown_request","message":"x"}}}\n' "$rid" ;;
+        \\  *session.state.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"r","in_reply_to":"%s","payload":{"error":{"code":"unsupported_feature","message":"this endpoint will not be asked again"}}}\n' "$rid" ;;
+        \\  esac
+        \\done
+    ;
+
+    var report = try run(std.testing.allocator, .{
+        .command = "/bin/sh",
+        .args = &.{ "-c", script },
+        .line_deadline_ms = 2000,
+    });
+    defer report.deinit();
+
+    try std.testing.expect(!report.passed());
+    const refused = report.verdict("an addressable envelope that is wrong draws a correlated refusal") orelse return error.CheckMissing;
+    try std.testing.expect(!refused.passed);
+    try std.testing.expectEqualStrings(
+        "the endpoint stopped answering after a recoverable protocol error: unsupported_feature: this endpoint will not be asked again",
+        refused.detail,
+    );
+    try std.testing.expect(report.verdict("the endpoint stopped answering after a recoverable protocol error") == null);
 }
