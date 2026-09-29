@@ -13,17 +13,16 @@ import (
 )
 
 const (
-	CodeDuplicateID     = "provider_duplicate_id"
-	CodeMissingID       = "provider_missing_id"
-	CodeEndpointLone    = "provider_endpoint_without_wire"
-	CodeBaseURLText     = "provider_base_url_literal"
-	CodeOffering        = "provider_offering_unknown"
-	CodeStatus          = "provider_status_unknown"
-	CodeStaleURLs       = "provider_resolved_urls_stale"
-	CodeCarriesOn       = "provider_carries_version_without_versioned_path"
-	CodeDefaultRegion   = "provider_default_region_unknown"
-	CodeDuplicateModel  = "provider_duplicate_model"
-	CodeCredentialOrder = "provider_credential_preference_unknown"
+	CodeDuplicateID    = "provider_duplicate_id"
+	CodeMissingID      = "provider_missing_id"
+	CodeEndpointLone   = "provider_endpoint_without_wire"
+	CodeBaseURLText    = "provider_base_url_literal"
+	CodeOffering       = "provider_offering_unknown"
+	CodeStatus         = "provider_status_unknown"
+	CodeStaleURLs      = "provider_resolved_urls_stale"
+	CodeCarriesOn      = "provider_carries_version_without_versioned_path"
+	CodeDefaultRegion  = "provider_default_region_unknown"
+	CodeDuplicateModel = "provider_duplicate_model"
 )
 
 var LiteralRoots = []string{"go", "zig/src", "zig/build.zig"}
@@ -65,16 +64,6 @@ func Check(catalog Catalog) []Finding {
 				findings = append(findings, Finding{Provider: provider.ID, Code: CodeDuplicateModel, Detail: fmt.Sprintf("provider %q declares model %q twice, and the two entries would disagree about which name and limits win", provider.ID, model.ID)})
 			}
 			modelsSeen[model.ID] = struct{}{}
-		}
-		sourcesSeen := map[string]struct{}{}
-		for _, source := range provider.CredentialOrder {
-			if source != "stored" && source != "environment" {
-				findings = append(findings, Finding{Provider: provider.ID, Code: CodeCredentialOrder, Detail: fmt.Sprintf("provider %q looks for its credential in %q, which is neither a stored login nor the environment", provider.ID, source)})
-			}
-			if _, repeated := sourcesSeen[source]; repeated {
-				findings = append(findings, Finding{Provider: provider.ID, Code: CodeCredentialOrder, Detail: fmt.Sprintf("provider %q looks for its credential in %q twice, so the order says nothing about which is first", provider.ID, source)})
-			}
-			sourcesSeen[source] = struct{}{}
 		}
 		switch provider.Offering {
 		case "coding_plan", "subscription", "api_key", "":

@@ -90,13 +90,6 @@ type Model struct {
 	Cost            Cost
 }
 
-func holdsURL(baseURL string, hasBaseURL bool, needle string) bool {
-	if !hasBaseURL {
-		return false
-	}
-	return strings.Contains(baseURL, needle)
-}
-
 func isGitHubCopilotURL(baseURL string, hasBaseURL bool) bool {
 	return isHostOrSubdomain(baseURL, hasBaseURL, "githubcopilot.com")
 }
@@ -156,7 +149,7 @@ func isCerebrasURL(baseURL string, hasBaseURL bool) bool {
 	return isHostOrSubdomain(baseURL, hasBaseURL, "cerebras.ai")
 }
 
-func isHostEndingIn(baseURL string, hasBaseURL bool, suffix string) bool {
+func isOllamaURL(baseURL string, hasBaseURL bool) bool {
 	if !hasBaseURL {
 		return false
 	}
@@ -164,25 +157,39 @@ func isHostEndingIn(baseURL string, hasBaseURL bool, suffix string) bool {
 	if err != nil {
 		return false
 	}
-	host := strings.ToLower(parsed.Hostname())
-	d := strings.ToLower(suffix)
-	if host == d {
-		return true
-	}
-	if len(host) <= len(d) || !strings.HasSuffix(host, d) {
+	if parsed.Port() != "11434" {
 		return false
 	}
-	before := host[len(host)-len(d)-1]
-	return before == '.' || before == '-'
+	host := strings.ToLower(parsed.Hostname())
+	for _, candidate := range []string{"localhost", "127.0.0.1", "::1"} {
+		if host == candidate {
+			return true
+		}
+	}
+	return false
 }
 
-func isAzureOpenAIURL(baseURL string, hasBaseURL bool) bool {
-	return isHostOrSubdomain(baseURL, hasBaseURL, "openai.azure.com")
+var azureLabels = []string{"openai.azure.com", "cognitiveservices.azure.com"}
+
+func isAzureURL(baseURL string, hasBaseURL bool) bool {
+	for _, label := range azureLabels {
+		if isHostOrSubdomain(baseURL, hasBaseURL, label) {
+			return true
+		}
+	}
+	return false
 }
 
 func isGoogleURL(baseURL string, hasBaseURL bool) bool {
-	return isHostOrSubdomain(baseURL, hasBaseURL, "generativelanguage.googleapis.com") ||
-		isHostEndingIn(baseURL, hasBaseURL, "aiplatform.googleapis.com")
+	host := hostOf(baseURL, hasBaseURL)
+	if host == "generativelanguage.googleapis.com" || host == "aiplatform.googleapis.com" {
+		return true
+	}
+	const suffix = "-aiplatform.googleapis.com"
+	if len(host) > len(suffix) && strings.HasSuffix(host, suffix) {
+		return !strings.Contains(host[:len(host)-len(suffix)], ".")
+	}
+	return false
 }
 
 func isZaiURL(baseURL string, hasBaseURL bool) bool {
@@ -245,11 +252,9 @@ func DetectProviderType(baseURL string, hasBaseURL bool) ProviderType {
 		return ProviderGoogle
 	case isBedrockURL(baseURL, hasBaseURL):
 		return ProviderBedrock
-	case isAzureOpenAIURL(baseURL, hasBaseURL), holdsURL(baseURL, hasBaseURL, "cognitiveservices.azure.com"):
+	case isAzureURL(baseURL, hasBaseURL):
 		return ProviderAzure
-	case holdsURL(baseURL, hasBaseURL, "localhost:11434"),
-		holdsURL(baseURL, hasBaseURL, "127.0.0.1:11434"),
-		holdsURL(baseURL, hasBaseURL, "ollama"):
+	case isOllamaURL(baseURL, hasBaseURL):
 		return ProviderOllama
 	}
 	if len(baseURL) > 0 {

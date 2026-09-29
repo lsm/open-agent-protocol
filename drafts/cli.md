@@ -26,7 +26,7 @@ not a second product.
 | `serve agent,provider --stdio` | both profiles on one pipe (Decision 0027) | yes | answers `unavailable` |
 | `hub [--config F] [--addr ADDR \| --stdio]` | the multi-session daemon: an adapter registry, fan-out, cursor replay, HTTP+SSE or the stdio transport-object wire, per [hub](hub.md) | yes (stdio) | yes |
 | `validate [--format human\|json] [--mode strict\|tolerant] [--pack DIR]... [--provider] TRACE...` | judge traces: decode, schema, semantic | yes (packs, modes and some semantic rules still porting) | yes |
-| `conformance [--command CMD] [--format text\|json]` | drive an endpoint and judge what crossed the pipe | not yet | yes |
+| `conformance [--command CMD] [--format text\|json]` | drive an endpoint and judge what crossed the pipe | yes, first slice: the handshake and one submitted run; the interaction, tool, queue, model and auth groups are still to come | yes |
 | `check` | the repository's own schemas, fixtures and reference path | not yet | yes |
 | `run`, `auth`, the TUI (bare invocation) | the product's own loop and credentials | yes | — |
 

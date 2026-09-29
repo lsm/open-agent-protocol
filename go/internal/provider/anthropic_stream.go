@@ -303,7 +303,7 @@ func (s *anthropicState) apply(event anthropicEvent, sink *EventSink) bool {
 				Kind:         EventThinkingEnd,
 				ContentIndex: info.contentIndex,
 				Delta:        s.thinking,
-				Partial:      s.partial(nil),
+				Partial:      s.partial(s.completed),
 			})
 		case blockToolUse:
 			completed, ok := s.tracker.completeCall(event.index)

@@ -33,6 +33,7 @@ const kimi_provider_id = "kimi";
 const kimi_china_base_url = provider_catalog.baseUrlOrCompileError(kimi_provider_id, "openai-completions", "china");
 const kimi_global_base_url = provider_catalog.baseUrlOrCompileError(kimi_provider_id, "openai-completions", "global");
 const oap_server = @import("oap_server");
+const oap_conformance = @import("oap_conformance");
 const oap_auth_adapter = @import("oap_auth_adapter");
 const agent_oap_provider_bridge = @import("agent_oap_provider_bridge");
 const oap_remote_provider_transport = @import("oap_remote_provider_transport");
@@ -63,6 +64,7 @@ const hermes_adapter = @import("hermes_adapter");
 const memory_adapter = @import("memory_adapter");
 const hub = @import("hub");
 const hub_stdio = @import("hub_stdio");
+const hub_http = @import("hub_http");
 const bounded_output = @import("bounded_output");
 const endpoint_signals = @import("endpoint_signals");
 
@@ -2466,6 +2468,105 @@ fn hubConfiguredSources(
     return sources;
 }
 
+fn hubBindRefusal(stderr: std.Io.File, message: []const u8) error{InvalidHubOption} {
+    compat.stdio.writeAll(stderr, "oapx hub: ") catch {};
+    compat.stdio.writeAll(stderr, message) catch {};
+    compat.stdio.writeAll(stderr, "\n") catch {};
+    return error.InvalidHubOption;
+}
+const hub_accept_poll_ms: i32 = 50;
+const hub_io_cycle_ms: i32 = 50;
+
+const keepGoing = hub_http.KeepGoing{ .context = undefined, .check = hubSignalled };
+
+fn hubSignalled(_: *const anyopaque) bool {
+    return !endpoint_signals.received();
+}
+
+
+fn runHubHttp(
+    allocator: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    core: *hub.Hub,
+    bind: []const u8,
+    served: []const u8,
+    stdout: std.Io.File,
+    stderr: std.Io.File,
+) !void {
+    const wanted = hub_http.parseBind(bind) catch |failure| return hubBindRefusal(stderr, switch (failure) {
+        error.NoPort => "--addr names no port; write host:port, as 127.0.0.1:6270",
+        error.NoHost => "--addr names no host; write one, as 127.0.0.1:6270 or [::1]:6270",
+        error.UnclosedBracket => "--addr opens a bracket and closes none; write an IPv6 host as [::1]:6270",
+        error.UnbracketedIpv6 => "--addr cannot tell its port from an unbracketed IPv6 host; write it as [::1]:6270",
+        error.NotAPort => "--addr names a port that is not a number; write host:port, as 127.0.0.1:6270",
+    });
+    const allow = hub_http.loopbackHosts(bind);
+    const address = try compat.net.resolveAddress(arena, wanted.host, wanted.port);
+    var listener = try compat.net.tcpListen(address, .{ .reuse_address = true });
+    defer compat.net.closeServer(&listener);
+    try compat.stdio.writeAll(stdout, "listening on http://");
+    try compat.stdio.writeAll(stdout, try hub_http.addressText(arena, compat.net.listenAddress(&listener)));
+    try compat.stdio.writeAll(stdout, "\n");
+    try compat.stdio.writeAll(stderr, "oapx: serving adapters: ");
+    try compat.stdio.writeAll(stderr, served);
+    try compat.stdio.writeAll(stderr, " (restart kills all sessions)\n");
+    if (allow == null) {
+        try compat.stdio.writeAll(stderr, "oapx: this bind is not loopback; the single-user model is opted out of\n");
+    }
+    if (comptime !hub_http.pollable) {
+        try compat.stdio.writeAll(stderr, "oapx: this platform cannot wait on a socket, so a stalled client is not given up on and a signal ends the process rather than the hub; the Windows path is #460\n");
+    }
+
+    var next_id: u64 = 0;
+    while (!endpoint_signals.received()) {
+        if (!hub_http.connectionPending(&listener, hub_accept_poll_ms)) continue;
+        var connection = compat.net.accept(&listener) catch |failure| switch (hub_http.classifyAccept(failure)) {
+            .serve_again => continue,
+            .back_off => {
+                compat.time.sleepMs(hub_http.accept_backoff_ms);
+                continue;
+            },
+            .stop => {
+                sweepHubSessions(core, stderr);
+                try compat.stdio.writeAll(stderr, "oapx: stopped\n");
+                return failure;
+            },
+        };
+        defer connection.stream.close();
+        next_id += 1;
+        var scratch_state = std.heap.ArenaAllocator.init(allocator);
+        defer scratch_state.deinit();
+        const scratch = scratch_state.allocator();
+        var body_allowed = true;
+        var declared: usize = 0;
+        var request = hub_http.readHead(scratch, &connection.stream, hub_http.header_read_ms, hub_io_cycle_ms, keepGoing, &body_allowed, &declared) catch |failure| {
+            if (failure == error.Stopped) break;
+            hub_http.writeTransportFailure(&connection.stream, scratch, next_id, failure, body_allowed) catch {};
+            hub_http.drain(&connection.stream, declared, keepGoing);
+            continue;
+        };
+        defer request.deinit(scratch);
+        const answered = hub_http.answer(allow orelse &.{}, request);
+        if (answered != .not_found) {
+            hub_http.writeAnswer(&connection.stream, scratch, next_id, answered, body_allowed) catch {};
+            hub_http.drain(&connection.stream, request.content_length, keepGoing);
+            continue;
+        }
+        try compat.stdio.writeAll(stderr, "\n");
+        hub_http.readBody(scratch, &connection.stream, &request, hub_http.idle_read_ms, hub_io_cycle_ms, keepGoing) catch |failure| {
+            try compat.stdio.writeAll(stderr, "\n");
+            if (failure == error.Stopped) break;
+            hub_http.writeTransportFailure(&connection.stream, scratch, next_id, failure, body_allowed) catch {};
+            hub_http.drain(&connection.stream, request.content_length -| request.filled, keepGoing);
+            continue;
+        };
+        hub_http.writeAnswer(&connection.stream, scratch, next_id, answered, body_allowed) catch {};
+    }
+    try compat.stdio.writeAll(stderr, "oapx: shutting down\n");
+    sweepHubSessions(core, stderr);
+    try compat.stdio.writeAll(stderr, "oapx: stopped\n");
+}
+
 fn hubTakesSignals() bool {
     return @import("builtin").os.tag != .windows;
 }
@@ -2520,10 +2621,6 @@ fn runHub(
         try compat.stdio.writeAll(stderr, "oapx hub: --stdio takes no listen address; --addr and --stdio are mutually exclusive\n");
         return error.InvalidHubOption;
     }
-    if (!over_stdio) {
-        if (addr != null) return unavailable(stderr, "hub", "--addr", "the HTTP and SSE transport lands with #388");
-        return unavailable(stderr, "hub", "--stdio", "a hub with no transport has nothing to serve");
-    }
 
     var arena_state = std.heap.ArenaAllocator.init(allocator);
     defer arena_state.deinit();
@@ -2560,10 +2657,6 @@ fn runHub(
         };
     }
 
-    var sink = StdoutSink{ .file = stdout, .io = hubIo() };
-    var frontend = try hub_stdio.Frontend.init(allocator, &core, .{ .context = &sink, .write = StdoutSink.write }, .{});
-    defer frontend.deinit();
-
     if (hubTakesSignals()) {
         endpoint_signals.install() catch {
             try compat.stdio.writeAll(stderr, "oapx hub: the process cannot take a signal handler; refusing to serve a hub that cannot be stopped\n");
@@ -2572,7 +2665,13 @@ fn runHub(
     } else {
         try compat.stdio.writeAll(stderr, "oapx hub: a console interrupt ends this process rather than the hub; the Windows path is #460\n");
     }
+
     const served = try std.mem.join(arena, ", ", try core.names(arena));
+    if (!over_stdio) return runHubHttp(allocator, arena, &core, addr orelse hub_http.defaultBind(), served, stdout, stderr);
+
+    var sink = StdoutSink{ .file = stdout, .io = hubIo() };
+    var frontend = try hub_stdio.Frontend.init(allocator, &core, .{ .context = &sink, .write = StdoutSink.write }, .{});
+    defer frontend.deinit();
     try compat.stdio.writeAll(stderr, "oapx: serving adapters over stdio: ");
     try compat.stdio.writeAll(stderr, served);
     try compat.stdio.writeAll(stderr, " (exit kills all sessions)\n");
@@ -2731,6 +2830,157 @@ const TraceItem = struct {
 };
 
 const ValidateFormat = enum { human, json };
+
+const ConformanceFormat = enum { text, json };
+
+fn writeConformanceString(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: []const u8) !void {
+    const quoted = try std.json.Stringify.valueAlloc(allocator, value, .{});
+    defer allocator.free(quoted);
+    try out.appendSlice(allocator, quoted);
+}
+
+fn runConformance(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    stdout: std.Io.File,
+    stderr: std.Io.File,
+) !bool {
+    var format: ConformanceFormat = .text;
+    var command: ?[]const u8 = null;
+    var endpoint_args = std.ArrayList([]const u8).empty;
+    defer endpoint_args.deinit(allocator);
+    var environment = std.ArrayList([]const u8).empty;
+    defer environment.deinit(allocator);
+    var session: []const u8 = "conformance";
+    var line_deadline_ms: i64 = @intCast(oap_conformance.default_line_deadline_ms);
+    var exit_grace_ms: i64 = oap_conformance.default_exit_grace_ms;
+
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--command")) {
+            index += 1;
+            if (index >= args.len) return error.InvalidArgument;
+            command = args[index];
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--command=")) {
+            command = arg["--command=".len..];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--format")) {
+            index += 1;
+            if (index >= args.len) return error.InvalidArgument;
+            format = std.meta.stringToEnum(ConformanceFormat, args[index]) orelse return error.InvalidArgument;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--format=")) {
+            format = std.meta.stringToEnum(ConformanceFormat, arg["--format=".len..]) orelse return error.InvalidArgument;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--env")) {
+            index += 1;
+            if (index >= args.len) return error.InvalidArgument;
+            try environment.append(allocator, args[index]);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--env=")) {
+            try environment.append(allocator, arg["--env=".len..]);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--exit-grace-ms=")) {
+            exit_grace_ms = std.fmt.parseInt(i64, arg["--exit-grace-ms=".len..], 10) catch return error.InvalidArgument;
+            if (exit_grace_ms <= 0) return error.InvalidArgument;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--exit-grace-ms")) {
+            index += 1;
+            if (index >= args.len) return error.InvalidArgument;
+            exit_grace_ms = std.fmt.parseInt(i64, args[index], 10) catch return error.InvalidArgument;
+            if (exit_grace_ms <= 0) return error.InvalidArgument;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--session=")) {
+            session = arg["--session=".len..];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--session")) {
+            index += 1;
+            if (index >= args.len) return error.InvalidArgument;
+            session = args[index];
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--timeout-ms=")) {
+            line_deadline_ms = std.fmt.parseInt(i64, arg["--timeout-ms=".len..], 10) catch return error.InvalidArgument;
+            if (line_deadline_ms <= 0) return error.InvalidArgument;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--timeout-ms")) {
+            index += 1;
+            if (index >= args.len) return error.InvalidArgument;
+            line_deadline_ms = std.fmt.parseInt(i64, args[index], 10) catch return error.InvalidArgument;
+            if (line_deadline_ms <= 0) return error.InvalidArgument;
+            continue;
+        }
+        try endpoint_args.append(allocator, arg);
+    }
+
+    const named = command orelse {
+        try compat.stdio.writeAll(stderr, "conformance: --command CMD is required; there is no built-in endpoint to drive\n");
+        return true;
+    };
+
+    var report = oap_conformance.run(allocator, .{
+        .command = named,
+        .args = endpoint_args.items,
+        .environment = environment.items,
+        .session_id = session,
+        .line_deadline_ms = line_deadline_ms,
+        .exit_grace_ms = exit_grace_ms,
+    }) catch |err| {
+        try compat.stdio.writeAll(stderr, try std.fmt.allocPrint(allocator, "conformance: {s}\n", .{@errorName(err)}));
+        return true;
+    };
+    defer report.deinit();
+
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(allocator);
+    if (format == .json) try out.appendSlice(allocator, "{\"endpoint\":");
+    if (format == .json) try writeConformanceString(allocator, &out, report.endpoint);
+    if (format == .json) try out.appendSlice(allocator, ",\"checks\":[");
+    for (report.checks.items, 0..) |check, position| {
+        if (position != 0) try out.appendSlice(allocator, if (format == .json) "," else "\n");
+        if (format == .json) {
+            try out.appendSlice(allocator, "{\"name\":");
+            try writeConformanceString(allocator, &out, check.name);
+            try out.appendSlice(allocator, ",\"passed\":");
+            try out.appendSlice(allocator, if (check.passed) "true" else "false");
+            if (check.skipped) try out.appendSlice(allocator, ",\"skipped\":true");
+            if (check.detail.len != 0) {
+                try out.appendSlice(allocator, ",\"detail\":");
+                try writeConformanceString(allocator, &out, check.detail);
+            }
+            try out.appendSlice(allocator, "}");
+        } else {
+            try out.appendSlice(allocator, if (check.passed) "PASS " else "FAIL ");
+            try out.appendSlice(allocator, check.name);
+            if (check.detail.len != 0) {
+                try out.appendSlice(allocator, "\n     ");
+                try out.appendSlice(allocator, check.detail);
+            }
+        }
+    }
+    if (format == .json) {
+        try out.appendSlice(allocator, "],\"passed\":");
+        try out.appendSlice(allocator, if (report.passed()) "true" else "false");
+        try out.appendSlice(allocator, "}\n");
+    } else {
+        try out.appendSlice(allocator, if (report.passed()) "\nconformance: PASS\n" else "\nconformance: FAIL\n");
+    }
+    try compat.stdio.writeAll(stdout, out.items);
+    return !report.passed();
+}
+
 
 const ValidateVerdict = union(enum) {
     judged: []ValidateFinding,
@@ -3065,6 +3315,8 @@ fn printUsage(file: std.Io.File) !void {
         \\  oapx serve agent,provider --stdio [--model <model-ref>]
         \\  oapx hub --stdio [--config <path>]
         \\  oapx validate [--format human|json] [--mode strict|tolerant] [--pack DIR]... <trace.json>...
+        \\  oapx conformance --command CMD [--session <id>] [--timeout-ms <n>]
+        \\                        [--exit-grace-ms <n>] [--env NAME]... [--format text|json]
         \\  oapx auth providers [--json]
         \\  oapx auth login --provider <id> [--json]
         \\  oapx --version
@@ -3096,6 +3348,13 @@ fn printUsage(file: std.Io.File) !void {
         \\                   Use --http for a loopback-only HTTP/SSE endpoint.
         \\  serve agent,provider  Serve both OAP profiles over one stdio connection
         \\  validate         Judge traces: decode, schema, then the ported semantic rules
+        \\  conformance      Drive an OAP endpoint and judge it: the handshake, then
+        \\                   one submitted run through to its terminal event. Needs
+        \\                   --command; everything after the flags is the endpoint's
+        \\                   own argv. The endpoint inherits this process's
+        \\                   environment unless --env narrows it. Diagnostics go to
+        \\                   stderr, so --format json stays parseable. Exits
+        \\                   non-zero on any failed check.
         \\  auth providers   List oauth-capable providers
         \\  auth login       Run OAuth flow and persist credentials
         \\  --version        Print binary version
@@ -7245,6 +7504,15 @@ pub fn main(init: std.process.Init) !void {
                 try compat.stdio.writeAll(stderr, "oapx validate: --mode: strict or tolerant\n");
                 std.process.exit(1);
             }
+            if (err == error.InvalidArgument) try printUsage(stderr);
+            return err;
+        };
+        if (failed) std.process.exit(1);
+        return;
+    }
+
+    if (std.mem.eql(u8, args[1], "conformance")) {
+        const failed = runConformance(allocator, args[2..], stdout, stderr) catch |err| {
             if (err == error.InvalidArgument) try printUsage(stderr);
             return err;
         };
