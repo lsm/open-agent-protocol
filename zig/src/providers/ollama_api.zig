@@ -13,6 +13,15 @@ const retry_util = @import("retry");
 const pre_transform = @import("pre_transform");
 const StringBuilder = @import("string_builder").StringBuilder;
 
+fn ollamaErrorDetail(allocator: std.mem.Allocator, body: []const u8) !?[]u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const message = parsed.value.object.get("error") orelse return null;
+    if (message != .string or message.string.len == 0) return null;
+    return try std.fmt.allocPrint(allocator, " ({s})", .{message.string});
+}
+
 fn shouldSkipAssistant(msg: ai_types.Message) bool {
     switch (msg) {
         .assistant => |a| {
@@ -727,8 +736,21 @@ fn runThread(ctx: *ThreadCtx) void {
     }
 
     if (response.head.status != .ok) {
+        const status_code = @intFromEnum(response.head.status);
+        var error_transfer_buf: [4096]u8 = undefined;
+        const error_reader = compat.http.responseReader(&response, &error_transfer_buf);
+        const error_body = compat.http.allocRemainingResponse(allocator, error_reader, 8192) catch null;
+        defer if (error_body) |text| allocator.free(text);
+        const detail = if (error_body) |text| ollamaErrorDetail(allocator, text) catch null else null;
+        defer if (detail) |text| allocator.free(text);
+        const message = std.fmt.allocPrint(allocator, "ollama request failed: HTTP {d}{s}", .{
+            status_code,
+            detail orelse "",
+        }) catch null;
+        defer if (message) |text| allocator.free(text);
+
         ctx.deinit();
-        stream.completeWithError("ollama request failed");
+        stream.completeWithError(message orelse "ollama request failed");
         return;
     }
 
@@ -1488,4 +1510,13 @@ test "provider_cancellation_ollama_cancel_before_request" {
         std.testing.allocator,
     );
     try expectCancelledStream(stream, std.testing.allocator);
+}
+
+test "ollamaErrorDetail surfaces the API message, and nothing else" {
+    const detail = (try ollamaErrorDetail(std.testing.allocator, "{\"error\":\"model 'llama3' not found, try pulling it first\"}")).?;
+    defer std.testing.allocator.free(detail);
+    try std.testing.expectEqualStrings(" (model 'llama3' not found, try pulling it first)", detail);
+    try std.testing.expect((try ollamaErrorDetail(std.testing.allocator, "<html>oops</html>")) == null);
+    try std.testing.expect((try ollamaErrorDetail(std.testing.allocator, "{\"error\":\"\"}")) == null);
+    try std.testing.expect((try ollamaErrorDetail(std.testing.allocator, "{\"error\":{\"message\":\"nested\"}}")) == null);
 }

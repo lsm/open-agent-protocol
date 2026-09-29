@@ -368,6 +368,36 @@ with a note saying so, at the top of the resume, so it cannot be sent into the s
 replaced it. A session whose history is already a summary, or empty, is not compacted
 again, and one automatic compaction runs at a time.
 
+## Recovery after a provider error
+
+The HTTP retry policy is five statuses — 429, 500, 502, 503, 504 — plus a
+transport failure, three attempts each with exponential backoff, and the
+capability model's `max_retry_delay_ms` bounds the sleep rather than choosing
+which errors retry. A 400 is outside that set, so one ends the run immediately
+and the transcript shows the error and nothing else.
+
+When a run ends that way the TUI waits about three seconds and then sends one
+`continue` on the user's behalf, with a system line saying it is doing so and
+the user message it sent visible in the transcript like any other turn. It does
+this once per failure streak: if the automatic continue fails too, that is left
+to the user, and a clean run or a turn the user sends themselves starts a fresh
+streak. It never does it after an abort, after a 401 or 403 (the credential has
+to be fixed, not replayed), or when the error is a context overflow that
+`/compact` handles. Anything the user does inside the delay — submitting,
+steering, queueing a follow-up, `Esc` or `Ctrl+C` — drops the pending continue,
+`Esc` here meaning any of them, whether it clears the draft, aborts the run or
+closes a picker. It waits rather than expires while a run is streaming or a
+picker or approval is open, so the three seconds is a wait rather than a
+deadline, and dropping it says so in the transcript rather than leaving the
+earlier announcement standing. The continue goes out through the same path a
+typed one does, so an `/autocompact` session compacts first and holds the
+continue until the compaction ends. A follow-up
+already queued when the run fails suppresses it entirely, because an
+error-ended run does not resume the queue on its own, so the continue would be
+a promise nothing keeps. Replaying a saved session is not a fresh failure: a
+session whose last run ended in an error does not nudge on resume, because the
+failure belongs to the process that hit it.
+
 ## Compaction
 
 `/compact [focus]` replaces the agent's history with a summary the current model

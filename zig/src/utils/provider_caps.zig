@@ -44,8 +44,7 @@ pub const ProviderCapabilities = struct {
 };
 
 pub fn isGitHubCopilot(base_url: ?[]const u8) bool {
-    const url = base_url orelse return false;
-    return std.mem.find(u8, url, "api.githubcopilot.com") != null;
+    return isHostOrSubdomainOf(base_url, "githubcopilot.com");
 }
 
 pub fn isMistral(base_url: ?[]const u8) bool {
@@ -57,8 +56,7 @@ pub fn isGroq(base_url: ?[]const u8) bool {
 }
 
 pub fn isCerebras(base_url: ?[]const u8) bool {
-    const url = base_url orelse return false;
-    return std.mem.find(u8, url, "api.cerebras.ai") != null;
+    return isHostOrSubdomainOf(base_url, "cerebras.ai");
 }
 
 pub fn isZai(base_url: ?[]const u8) bool {
@@ -67,13 +65,11 @@ pub fn isZai(base_url: ?[]const u8) bool {
 }
 
 pub fn isOpenRouter(base_url: ?[]const u8) bool {
-    const url = base_url orelse return false;
-    return std.mem.find(u8, url, "openrouter.ai") != null;
+    return isHostOrSubdomainOf(base_url, "openrouter.ai");
 }
 
 pub fn isChutes(base_url: ?[]const u8) bool {
-    const url = base_url orelse return false;
-    return std.mem.find(u8, url, "chutes.ai") != null;
+    return isHostOrSubdomainOf(base_url, "chutes.ai");
 }
 
 pub fn isQwen(base_url: ?[]const u8) bool {
@@ -82,8 +78,7 @@ pub fn isQwen(base_url: ?[]const u8) bool {
 }
 
 pub fn isDeepSeek(base_url: ?[]const u8) bool {
-    const url = base_url orelse return false;
-    return std.mem.find(u8, url, "api.deepseek.com") != null;
+    return isHostOrSubdomainOf(base_url, "deepseek.com");
 }
 
 pub fn isHostOrSubdomainOf(base_url: ?[]const u8, domain: []const u8) bool {
@@ -212,6 +207,161 @@ test "isGitHubCopilot detection" {
     try std.testing.expect(isGitHubCopilot("https://api.githubcopilot.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot("https://api.openai.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot(null));
+}
+
+test "an openrouter host is openrouter.ai or a subdomain of it" {
+    const hosts = [_][]const u8{
+        "https://openrouter.ai",
+        "https://openrouter.ai/api/v1",
+        "https://OPENROUTER.AI",
+    };
+    for (hosts) |url| {
+        try std.testing.expect(isOpenRouter(url));
+    }
+
+    const not_hosts = [_][]const u8{
+        "https://myopenrouter.ai",
+        "https://notopenrouter.ai",
+        "https://openrouter.ai.evil.example",
+        "https://evil.example/?next=openrouter.ai",
+        "https://evil.example/v1/openrouter.ai",
+        "https://gateway.example/proxy/openrouter.ai",
+        "not a url at all",
+        "",
+    };
+    for (not_hosts) |url| {
+        try std.testing.expect(!isOpenRouter(url));
+    }
+
+    try std.testing.expect(!isOpenRouter(null));
+}
+
+test "the catalogued openrouter row still detects as openai compatible" {
+    const url = "https://openrouter.ai/api/v1";
+    try std.testing.expect(isOpenRouter(url));
+    try std.testing.expectEqual(ProviderType.openai_compatible, detectProviderType(url));
+}
+
+test "a deepseek host is deepseek.com or a subdomain of it" {
+    const hosts = [_][]const u8{
+        "https://api.deepseek.com",
+        "https://api.deepseek.com/v1",
+        "https://deepseek.com",
+        "https://API.DEEPSEEK.COM",
+    };
+    for (hosts) |url| {
+        try std.testing.expect(isDeepSeek(url));
+    }
+
+    const not_hosts = [_][]const u8{
+        "https://mydeepseek.com",
+        "https://notdeepseek.com",
+        "https://deepseek.com.evil.example",
+        "https://evil.example/?next=api.deepseek.com",
+        "https://evil.example/v1/api.deepseek.com",
+        "https://gateway.example/proxy/api.deepseek.com",
+        "not a url at all",
+        "",
+    };
+    for (not_hosts) |url| {
+        try std.testing.expect(!isDeepSeek(url));
+    }
+
+    try std.testing.expect(!isDeepSeek(null));
+}
+
+test "the catalogued deepseek row still asks for its thinking as text" {
+    const url = "https://api.deepseek.com";
+    try std.testing.expect(isDeepSeek(url));
+    const caps = detectCapabilities(url);
+    try std.testing.expectEqual(ProviderType.openai_compatible, caps.provider_type);
+    try std.testing.expect(caps.requires_thinking_as_text);
+}
+
+test "a github copilot host is githubcopilot.com or a subdomain of it" {
+    const hosts = [_][]const u8{
+        "https://api.githubcopilot.com",
+        "https://api.individual.githubcopilot.com",
+        "https://api.acme.githubcopilot.com",
+        "https://githubcopilot.com",
+        "https://API.GITHUBCOPILOT.COM",
+    };
+    for (hosts) |url| {
+        try std.testing.expect(isGitHubCopilot(url));
+    }
+
+    const not_hosts = [_][]const u8{
+        "https://notgithubcopilot.com",
+        "https://mygithubcopilot.com",
+        "https://githubcopilot.com.attacker.test",
+        "https://api.githubcopilot.com@attacker.test",
+        "https://evil.example/?next=api.githubcopilot.com",
+        "https://evil.example/v1/api.githubcopilot.com",
+        "https://gateway.example/proxy/api.githubcopilot.com",
+        "not a url at all",
+        "",
+    };
+    for (not_hosts) |url| {
+        try std.testing.expect(!isGitHubCopilot(url));
+    }
+
+    try std.testing.expect(!isGitHubCopilot(null));
+}
+
+test "a chutes host is chutes.ai or a subdomain of it" {
+    const hosts = [_][]const u8{
+        "https://api.chutes.ai",
+        "https://api.chutes.ai/v1",
+        "https://chutes.ai",
+        "https://API.CHUTES.AI",
+    };
+    for (hosts) |url| {
+        try std.testing.expect(isChutes(url));
+    }
+
+    const not_hosts = [_][]const u8{
+        "https://mychutes.ai",
+        "https://notchutes.ai",
+        "https://chutes.ai.evil.example",
+        "https://evil.example/?next=chutes.ai",
+        "https://evil.example/v1/chutes.ai",
+        "https://gateway.example/proxy/chutes.ai",
+        "not a url at all",
+        "",
+    };
+    for (not_hosts) |url| {
+        try std.testing.expect(!isChutes(url));
+    }
+
+    try std.testing.expect(!isChutes(null));
+}
+
+test "a cerebras host is cerebras.ai or a subdomain of it" {
+    const hosts = [_][]const u8{
+        "https://api.cerebras.ai",
+        "https://api.cerebras.ai/v1",
+        "https://cerebras.ai",
+        "https://API.CEREBRAS.AI",
+    };
+    for (hosts) |url| {
+        try std.testing.expect(isCerebras(url));
+    }
+
+    const not_hosts = [_][]const u8{
+        "https://mycerebras.ai",
+        "https://notcerebras.ai",
+        "https://cerebras.ai.evil.example",
+        "https://evil.example/?next=api.cerebras.ai",
+        "https://evil.example/v1/api.cerebras.ai",
+        "https://gateway.example/proxy/api.cerebras.ai",
+        "not a url at all",
+        "",
+    };
+    for (not_hosts) |url| {
+        try std.testing.expect(!isCerebras(url));
+    }
+
+    try std.testing.expect(!isCerebras(null));
 }
 
 test "a groq host is groq.com or a subdomain of it" {

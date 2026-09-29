@@ -224,6 +224,12 @@ vendor, so a key is never sent to an endpoint the operator redirected away from.
 A versioned override keeps the rule above: a trailing `/v1` is dropped, because
 the wire adds its own.
 
+A row's own `base_url_env` is read from the catalogued row rather than named in
+code, so every row that declares one is routed by it — `OLLAMA_BASE_URL`,
+`AZURE_OPENAI_BASE_URL` and `GOOGLE_BASE_URL` as much as `DEEPSEEK_BASE_URL`. A
+row that declares no variable has no per-row override and can only be moved by
+`OAPX_BASE_URL`.
+
 ## Capabilities
 
 Capability detection is otherwise a hostname guess, which cannot work for an
@@ -349,6 +355,14 @@ OAuth provider added without an entry — has **no** allowed origin, so a stored
 OAuth token under that id is withheld from every non-empty `base_url`. That is
 deliberate: a new OAuth provider fails loudly at its first request rather than
 silently reopening the gap.
+
+An endpoint a configuration **file** names for a row is a fourth source, and it
+is the only one that needs a second signal. The environment is trusted without
+one because whoever runs the process sets it, and a variable disappears when the
+process ends. A file persists, is synced, and is edited by hand, so an endpoint
+only a file names is not a destination for a vendor token unless that same file
+also says the row's stored credential may go there. An override that omits that
+leaves the token where it is.
 
 The rule reaches API keys stored in the OAuth shape, which is why "an `.oauth`
 entry" is not the same as "an OAuth credential" here. `/login kimi` records a
