@@ -1970,6 +1970,20 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const tui_oap_client_mod = b.createModule(.{
+        .root_source_file = b.path("src/tui/oap_client.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "transports/in_process", .module = in_process_transport_mod },
+            .{ .name = "transport", .module = transport_mod },
+            .{ .name = "oap_types", .module = protocol_oap_types_mod },
+            .{ .name = "oap_envelope", .module = protocol_oap_envelope_mod },
+            .{ .name = "oap_server", .module = protocol_oap_server_mod },
+        },
+    });
+    const tui_oap_client_test = b.addTest(.{ .root_module = tui_oap_client_mod });
+
     const tui_auto_continue_mod = b.createModule(.{
         .root_source_file = b.path("src/tui/auto_continue.zig"),
         .target = target,
@@ -2903,6 +2917,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(tui_runtime_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_session_store_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_state_test).step);
+    test_step.dependOn(&b.addRunArtifact(tui_oap_client_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_auto_continue_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_commands_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_login_test).step);
@@ -3168,6 +3183,7 @@ pub fn build(b: *std.Build) void {
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_runtime_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_session_store_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_state_test).step);
+    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_oap_client_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_auto_continue_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_commands_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_login_test).step);
