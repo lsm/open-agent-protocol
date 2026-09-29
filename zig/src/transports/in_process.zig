@@ -396,7 +396,7 @@ pub const EventBridge = struct {
     }
 };
 
-pub const ZeroCopyForwarder = struct {
+pub const EventForwarder = struct {
     dest: *event_stream.AssistantMessageStream,
     allocator: std.mem.Allocator,
 
@@ -537,13 +537,13 @@ test "EventBridge forwards events" {
     ai_types.deinitAssistantMessageEvent(allocator, &mutable_ev);
 }
 
-test "ZeroCopyForwarder forwards events" {
+test "EventForwarder forwards events" {
     const allocator = std.testing.allocator;
 
     var dest_stream = event_stream.AssistantMessageStream.init(allocator);
     defer dest_stream.deinit();
 
-    var forwarder = ZeroCopyForwarder.init(&dest_stream, allocator);
+    var forwarder = EventForwarder.init(&dest_stream, allocator);
 
     const partial = ai_types.AssistantMessage{
         .content = &.{},
