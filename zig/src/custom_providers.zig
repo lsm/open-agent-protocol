@@ -87,6 +87,15 @@ pub const Config = struct {
     pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
         deinitProviders(allocator, self.providers);
         deinitOverrides(allocator, self.overrides);
+        self.* = undefined;
+    }
+
+    pub fn takeProviders(self: *Config, allocator: std.mem.Allocator) []CustomProvider {
+        const providers = self.providers;
+        self.providers = &.{};
+        deinitOverrides(allocator, self.overrides);
+        self.overrides = &.{};
+        return providers;
     }
 };
 
@@ -165,7 +174,8 @@ pub fn configPath(allocator: std.mem.Allocator) ![]u8 {
 }
 
 pub fn load(allocator: std.mem.Allocator, max_bytes: usize) ![]CustomProvider {
-    return (try loadConfig(allocator, max_bytes)).providers;
+    var config = try loadConfig(allocator, max_bytes);
+    return config.takeProviders(allocator);
 }
 
 pub fn loadConfig(allocator: std.mem.Allocator, max_bytes: usize) !Config {
@@ -189,10 +199,7 @@ pub fn deinitOverrides(allocator: std.mem.Allocator, overrides: []Override) void
 
 pub fn parse(allocator: std.mem.Allocator, data: []const u8) ![]CustomProvider {
     var config = try parseConfig(allocator, data);
-    const providers = config.providers;
-    config.providers = &.{};
-    deinitOverrides(allocator, config.overrides);
-    return providers;
+    return config.takeProviders(allocator);
 }
 
 pub fn parseConfig(allocator: std.mem.Allocator, data: []const u8) !Config {
@@ -918,6 +925,26 @@ test "an override states where its version sits, so no request URL is a guess" {
     defer denied.deinit(testing.allocator);
     try testing.expectEqualStrings("https://proxy.example/api", denied.overrides[0].base_url.?);
     try testing.expectEqual(@as(?bool, false), denied.overrides[0].carries_version);
+}
+
+test "a caller that reads only the providers leaves nothing behind" {
+    var config = try parseConfig(testing.allocator,
+        \\{"providers":[{"id":"gw","base_url":"https://gw.test"}],
+        \\ "overrides":[{"id":"deepseek","base_url":"https://proxy.example","headers":{"X-Tenant":"acme"},
+        \\ "models":["deepseek-chat"]}]}
+    );
+    const providers = config.takeProviders(testing.allocator);
+    defer deinitProviders(testing.allocator, providers);
+    try testing.expectEqual(@as(usize, 1), providers.len);
+    try testing.expectEqual(@as(usize, 0), providers[0].headers.len);
+    try testing.expectEqual(@as(usize, 0), config.overrides.len);
+
+    const from_parse = try parse(testing.allocator,
+        \\{"providers":[{"id":"gw","base_url":"https://gw.test"}],
+        \\ "overrides":[{"id":"deepseek","base_url":"https://proxy.example","headers":{"X-Tenant":"acme"}}]}
+    );
+    defer deinitProviders(testing.allocator, from_parse);
+    try testing.expectEqual(@as(usize, 1), from_parse.len);
 }
 
 test "an override is found by the row it names and by no other row" {
