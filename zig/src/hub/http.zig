@@ -98,9 +98,11 @@ fn elapsedMs() !u64 {
     return @intCast(try compat.time.monotonicNanos() / std.time.ns_per_ms);
 }
 
-fn readWithin(stream: *compat.net.Stream, buffer: []u8, wait_ms: i32) Failure!usize {
+fn readUntil(stream: *compat.net.Stream, buffer: []u8, deadline_ms: u64) Failure!usize {
+    const left_ms: i64 = @as(i64, @intCast(deadline_ms)) - @as(i64, @intCast(elapsedMs() catch 0));
+    if (left_ms <= 0) return error.Timeout;
     if (comptime !pollable) return stream.read(buffer) catch error.ReadFailed;
-    const ready = compat.net.readableWithin(compat.net.streamHandle(stream), wait_ms) catch return error.ReadFailed;
+    const ready = compat.net.readableWithin(compat.net.streamHandle(stream), @intCast(@min(left_ms, @as(i64, std.math.maxInt(i32))))) catch return error.ReadFailed;
     if (!ready) return error.Timeout;
     return stream.read(buffer) catch error.ReadFailed;
 }
@@ -109,11 +111,9 @@ pub fn readRequest(allocator: std.mem.Allocator, stream: *compat.net.Stream, hea
     var head = std.ArrayList(u8).empty;
     defer head.deinit(allocator);
     var byte: [1]u8 = undefined;
-    const started = elapsedMs() catch 0;
+    const headers_done = (elapsedMs() catch 0) + @as(u64, @intCast(@max(header_wait_ms, 0)));
     while (head.items.len < max_header_bytes) {
-        const budget: i64 = @as(i64, header_wait_ms) - @as(i64, @intCast((elapsedMs() catch 0) - started));
-        if (budget <= 0) return error.Timeout;
-        const n = try readWithin(stream, &byte, @intCast(@min(budget, @as(i64, std.math.maxInt(i32)))));
+        const n = try readUntil(stream, &byte, headers_done);
         if (n == 0) return error.Truncated;
         try head.append(allocator, byte[0]);
         if (std.mem.endsWith(u8, head.items, "\r\n\r\n")) break;
@@ -160,9 +160,10 @@ pub fn readRequest(allocator: std.mem.Allocator, stream: *compat.net.Stream, hea
     if (request.content_length > max_body_bytes) return error.BodyTooLarge;
     if (request.content_length == 0) return request;
     request.body = try allocator.alloc(u8, request.content_length);
+    const idle_ms: u64 = @intCast(@max(idle_wait_ms, 0));
     var filled: usize = 0;
     while (filled < request.body.len) {
-        const n = try readWithin(stream, request.body[filled..], idle_wait_ms);
+        const n = try readUntil(stream, request.body[filled..], (elapsedMs() catch 0) + idle_ms);
         if (n == 0) return error.Truncated;
         filled += n;
     }
