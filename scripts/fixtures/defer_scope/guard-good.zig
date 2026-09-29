@@ -12,16 +12,6 @@ fn whole(value: *u8) void {
     consume(value);
 }
 
-fn branches(flag: bool, value: *u8) void {
-    if (flag) {
-        defer release(value);
-    } else {
-        other();
-    }
-    consume(value);
-    _ = flag;
-}
-
 fn captured(found: ?u8, value: *u8) void {
     if (found) |byte| {
         defer release(value);

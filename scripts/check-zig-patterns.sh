@@ -567,13 +567,16 @@ if [[ -n "$undeclared_defer_scope" ]]; then
   echo "[patterns] closes, so here it runs before the call it was meant to outlive." >&2
   echo "[patterns] Hold the call's result, do the free, then branch on the error; see run() in" >&2
   echo "[patterns] zig/src/transports/in_process.zig." >&2
-  echo "[patterns] This is a floor, not a detector, and it is a narrow floor. NOT SEEN: a defer in" >&2
-  echo "[patterns] a \`} else if (...) {\` or \`} else {\` branch, in a payload-capture head such as" >&2
-  echo "[patterns] \`if (x) |v| {\`, or nested one block deep. Each of those is the same defect and" >&2
-  echo "[patterns] none of them is caught; catching them needs brace-depth tracking, which reports" >&2
-  echo "[patterns] ten false positives on today's tree. Tracked in the issue named in the commit that" >&2
-  echo "[patterns] added the fixture, with that reproducer. Until then, read a defer in a conditional" >&2
-  echo "[patterns] as suspect by hand." >&2
+  echo "[patterns] This is a floor, not a detector, and it is a narrow floor. NOT SEEN: a defer in a" >&2
+  echo "[patterns] branch that has a following \`else\` (the \`} else {\` line reads as a second" >&2
+  echo "[patterns] statement, so the block looks non-empty); a defer in a \`} else if (...) {\` or" >&2
+  echo "[patterns] \`else {\` branch; one in a payload-capture head such as \`if (x) |v| {\`; one" >&2
+  echo "[patterns] nested one block deep; an \`errdefer\` on its own, which the pattern does not" >&2
+  echo "[patterns] match; and any \`while\` or \`for\` body, since only \`if\` opens are matched." >&2
+  echo "[patterns] Each is the same defect - the defer runs before the code it was meant to" >&2
+  echo "[patterns] outlive. Catching them needs brace-depth tracking, which reports ten false" >&2
+  echo "[patterns] positives on today's tree; tracked in #603, with the reproducer. Until then," >&2
+  echo "[patterns] read a defer in a conditional as suspect by hand." >&2
   echo "[patterns] known_defer_scope is a backlog for sites that predate this check, not a list of" >&2
   echo "[patterns] approved ones. Adding to it needs a reason in the commit message saying why the" >&2
   echo "[patterns] defer is not meant to outlive its block. New code is expected to be fixed." >&2
