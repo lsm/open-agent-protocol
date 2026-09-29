@@ -14,7 +14,7 @@ func runAnthropicWith(t *testing.T, model Model, options AnthropicOptions, raw s
 	t.Helper()
 	sink := &EventSink{}
 	StreamAnthropic(sink, model, Context{}, options, chunkReader(frames), nil, func() string { return raw })
-	return sink.take()
+	return sink.Drain()
 }
 
 func anthropicStreamModel() Model {
@@ -262,11 +262,11 @@ func TestAMessageDeltaReassignsTheOutputUnconditionally(t *testing.T) {
 }
 
 func TestTheStopReasonMappingForThisWire(t *testing.T) {
-	cases := map[string]string{
-		"max_tokens": "length",
-		"tool_use":   "tool_use",
-		"end_turn":   "stop",
-		"anything":   "stop",
+	cases := map[string]StopReason{
+		"max_tokens": StopLength,
+		"tool_use":   StopToolUse,
+		"end_turn":   StopStop,
+		"anything":   StopStop,
 	}
 	for finish, want := range cases {
 		events := runAnthropic(t, anthropicStreamModel(),
@@ -362,7 +362,7 @@ func TestTheLoopFlushesATrailingEventWithASyntheticBlankLine(t *testing.T) {
 			sseFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"tail"}}`),
 			"data: " + `{"type":"error","error":{"message":"late failure"}}`,
 		}), nil, func() string { return "" })
-	events := sink.take()
+	events := sink.Drain()
 	last := events[len(events)-1]
 	if last.Kind != EventError || last.Reason != "late failure" {
 		t.Errorf("the terminal = %+v, want the error the trailing frame carried to be found by the tail", last)
@@ -431,7 +431,7 @@ func TestCancellationEndsTheAnthropicStreamWithTheCancelsReason(t *testing.T) {
 	sink := &EventSink{}
 	StreamAnthropic(sink, anthropicStreamModel(), Context{}, AnthropicOptions{},
 		func() ([]byte, error) { return nil, nil }, func() bool { return true }, nil)
-	events := sink.take()
+	events := sink.Drain()
 	last := events[len(events)-1]
 	if last.Kind != EventError || last.Reason != "request cancelled" {
 		t.Errorf("the terminal = %+v, want the cancel reason", last)
@@ -453,7 +453,7 @@ func TestTheAnthropicKeepaliveFiresOnThePingInterval(t *testing.T) {
 		}
 		return []byte(textBlockFrame(reads-1, "x")), nil
 	}, nil, nil)
-	if countKind(sink.take(), EventKeepalive) == 0 {
+	if countKind(sink.Drain(), EventKeepalive) == 0 {
 		t.Error("want a keepalive once the interval elapsed")
 	}
 }
@@ -472,7 +472,7 @@ func TestCancellationIsRecheckedBetweenBufferedEvents(t *testing.T) {
 			seen++
 			return seen > 2
 		}, nil)
-	events := sink.take()
+	events := sink.Drain()
 	last := events[len(events)-1]
 	if last.Kind != EventError || last.Reason != "request cancelled" {
 		t.Errorf("the terminal = %+v, want the cancel reason: one buffered chunk carries several events", last)

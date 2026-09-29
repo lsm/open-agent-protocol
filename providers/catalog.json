@@ -30,6 +30,7 @@
         }
       ],
       "models_endpoint": "/v1/models",
+      "max_context_window": 1000000,
       "docs": "https://platform.openai.com/docs"
     },
     {
@@ -335,6 +336,7 @@
           "https://chatgpt.com/backend-api/codex"
         ]
       },
+      "max_context_window": 1000000,
       "docs": "https://platform.openai.com/docs/codex"
     },
     {

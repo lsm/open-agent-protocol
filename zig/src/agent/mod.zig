@@ -39,6 +39,7 @@ pub const ProtocolStreamFn = types.ProtocolStreamFn;
 
 pub const agentLoop = agent_loop_mod.agentLoop;
 pub const agentLoopContinue = agent_loop_mod.agentLoopContinue;
+pub const estimateMessageTokens = agent_loop_mod.estimateMessageTokens;
 
 pub const Agent = @import("agent.zig").Agent;
 pub const AgentOptions = @import("agent.zig").AgentOptions;

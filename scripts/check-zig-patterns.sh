@@ -512,6 +512,121 @@ if [[ -n "$stale_multi_alloc" ]]; then
   exit 1
 fi
 
+build_zig="zig/build.zig"
+build_dir="$(dirname "$build_zig")/"
+
+module_test_scan() {
+  awk -v module_root="$build_dir" '
+  function paren_delta(text,   tmp, opens, closes) {
+    tmp = text; opens = gsub(/\(/, "", tmp)
+    tmp = text; closes = gsub(/\)/, "", tmp)
+    return opens - closes
+  }
+  function root_path(text,   p) {
+    if (match(text, /root_source_file = b\.path\("[^"]+"\)/) == 0) return ""
+    p = substr(text, RSTART, RLENGTH)
+    sub(/^root_source_file = b\.path\("/, "", p)
+    sub(/"\)$/, "", p)
+    return p
+  }
+  function module_name(text,   name) {
+    name = text
+    sub(/^[[:space:]]*/, "", name)
+    sub(/^const /, "", name)
+    if (match(name, /^[A-Za-z_][A-Za-z0-9_]* = b\.createModule\(/) == 0) return ""
+    sub(/ = b\.createModule\(.*/, "", name)
+    return name
+  }
+  function has_test_block(path,   file, line) {
+    file = module_root path
+    while ((getline line < file) > 0) {
+      if (line ~ /^[[:space:]]*test[[:space:]]*("|\{)/) { close(file); return 1 }
+    }
+    close(file)
+    return 0
+  }
+  function walk(pass,   i, line, p, name, ref, rest, tail, delta) {
+    depth = 0; in_test = 0; test_base = 0; in_mod = 0; mod_base = 0; cur_mod = ""; cur_root = ""
+    for (i = 1; i <= n; i++) {
+      line = lines[i]
+      delta = paren_delta(line)
+      if (index(line, "b.addTest(") > 0) { in_test = 1; test_base = depth }
+      name = module_name(line)
+      if (name != "" && !in_test) {
+        in_mod = 1; mod_base = depth; cur_mod = name; cur_root = ""
+      }
+      if (in_mod && index(line, "b.createModule(") > 0 && module_name(line) == "") {
+        unresolved["a nested createModule inside " cur_mod] = 1
+      }
+      p = root_path(line)
+      if (p != "") {
+        declared[p] = 1
+        if (in_mod) cur_root = p
+        if (in_test && pass == 2) tested[p] = 1
+      }
+      if (pass == 2 && in_test && match(line, /\.root_module =/)) {
+        rest = substr(line, RSTART + RLENGTH + 1)
+        sub(/^[[:space:]]+/, "", rest)
+        if (rest ~ /^b\.createModule/) {
+          inline_root = 1
+        } else if (match(rest, /^[A-Za-z_][A-Za-z0-9_]*/)) {
+          ref = substr(rest, 1, RLENGTH)
+          tail = substr(rest, RLENGTH + 1, 1)
+          if (tail == ".") {
+            unresolved[ref ".<field>"] = 1
+          } else if (ref in modroot) {
+            tested[modroot[ref]] = 1
+          } else {
+            unresolved[ref] = 1
+          }
+        }
+      }
+      depth += delta
+      if (in_mod && depth <= mod_base) { modroot[cur_mod] = cur_root; in_mod = 0 }
+      if (in_test && depth <= test_base) in_test = 0
+    }
+  }
+  { lines[++n] = $0 }
+  END {
+    walk(1)
+    walk(2)
+    for (name in unresolved) print "unresolved " name
+    for (p in declared) {
+      if (p in tested) continue
+      if (p !~ /\.zig$/) continue
+      if (has_test_block(p)) untested[p] = 1
+    }
+    for (p in untested) print p
+  }
+  ' "$build_zig"
+}
+
+echo "[patterns] checking every module root with test blocks has an addTest..."
+module_test_scan_result="$(module_test_scan)"
+unresolved_root_modules="$(printf "%s\n" "$module_test_scan_result" | grep "^unresolved " | sed "s/^unresolved //" || true)"
+if [[ -n "$unresolved_root_modules" ]]; then
+  echo "[patterns] build.zig has a root module this check cannot resolve:" >&2
+  printf "%s\n" "$unresolved_root_modules" >&2
+  echo "[patterns] update scripts/check-zig-patterns.sh when build.zig hands addTest a" >&2
+  echo "[patterns] module that is neither a declared name nor an inline createModule," >&2
+  echo "[patterns] nests a createModule inside a declared module, or reaches a root" >&2
+  echo "[patterns] through another module's field. Each would otherwise be counted" >&2
+  echo "[patterns] as untested and reported with the wrong reason." >&2
+  exit 1
+fi
+
+module_roots_without_test_wiring="$(printf "%s\n" "$module_test_scan_result" | grep -v "^unresolved " | sort)"
+if [[ -n "$module_roots_without_test_wiring" ]]; then
+  echo "[patterns] module root carries test blocks that nothing compiles:" >&2
+  printf "%s\n" "$module_roots_without_test_wiring" | sed "s|^|$build_dir|" >&2
+  echo "[patterns] a b.createModule root is its own Zig module, and only the root source" >&2
+  echo "[patterns] file of a test compilation runs test blocks, so importing one of these" >&2
+  echo "[patterns] into another module's addTest compiles none of them and no failure will" >&2
+  echo "[patterns] ever report them. Give the module an addTest over the declared module," >&2
+  echo "[patterns] wired into test and into the test-unit-* group CI invokes." >&2
+  exit 1
+fi
+
 echo "[patterns] checking providers do not drop stream events..."
 dropped_events="$(grep -n '\.push(' zig/src/providers/*.zig | grep -v 'keepalive' || true)"
 if [[ -n "$dropped_events" ]]; then

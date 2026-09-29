@@ -80,13 +80,22 @@ const Reader = struct {
         switch (value) {
             .null => return null,
             .object => |object| {
-                for (object.keys()) |key| {
-                    if (!listed(known, key)) return self.refuse("{s}: unknown field \"{s}\"", .{ where, key });
-                }
+                const unknown = try self.unknownKeys(object, known);
+                if (unknown.len > 0) return self.refuse("{s}: unknown field \"{s}\"", .{ where, unknown[0] });
                 return object;
             },
             else => return self.refuse("{s}: must be an object", .{where}),
         }
+    }
+
+    fn unknownKeys(self: Reader, object: std.json.ObjectMap, known: []const []const u8) Error![]const []const u8 {
+        var unknown = std.ArrayList([]const u8).empty;
+        for (object.keys()) |key| {
+            if (listed(known, key)) continue;
+            try unknown.append(self.arena, key);
+        }
+        std.mem.sort([]const u8, unknown.items, {}, lessThan);
+        return unknown.items;
     }
 
     fn string(self: Reader, object: std.json.ObjectMap, where: []const u8, key: []const u8) Error![]const u8 {
@@ -396,6 +405,12 @@ test "an unknown field is refused wherever it appears, naming the field and wher
     try expectRefused("{\"tool_sources\":{\"fs\":{\"kind\":\"native\",\"secret\":\"x\"}}}", &.{}, "config: tool source \"fs\": unknown field \"secret\"");
 }
 
+test "the first unknown field named is the first in sorted order, wherever the object is" {
+    try expectRefused("{\"adapters\":{\"memory\":{\"Zz\":1,\"Aa\":2}}}", &.{}, "config: adapter \"memory\": unknown field \"Aa\"");
+    try expectRefused("{\"adapters\":{},\"tool_sources\":{},\"daemon\":1,\"bus\":2}", &.{}, "config: the file: unknown field \"bus\"");
+    try expectRefused("{\"tool_sources\":{\"fs\":{\"kind\":\"native\",\"zeta\":1,\"alpha\":2}}}", &.{}, "config: tool source \"fs\": unknown field \"alpha\"");
+}
+
 test "a member of the wrong JSON type is refused naming it" {
     try expectRefused("{\"adapters\":{\"claude\":{\"executable\":7}}}", &.{}, "config: adapter \"claude\": \"executable\" must be a string");
     try expectRefused("{\"adapters\":{\"claude\":{\"args\":[\"--x\",7]}}}", &.{}, "config: adapter \"claude\": \"args\" must be an array of strings");
@@ -410,10 +425,13 @@ test "a member of the wrong JSON type is refused naming it" {
 test "the file must be one JSON object, once, with no key twice; a null file is empty" {
     const trailing = try refusal("{\"adapters\":{}} {}", &.{});
     defer testing.allocator.free(trailing);
-    try testing.expect(std.mem.startsWith(u8, trailing, "config: not one JSON object"));
+    try testing.expectEqualStrings("config: not one JSON object: SyntaxError", trailing);
     const doubled = try refusal("{\"adapters\":{},\"adapters\":{}}", &.{});
     defer testing.allocator.free(doubled);
-    try testing.expect(std.mem.startsWith(u8, doubled, "config: not one JSON object"));
+    try testing.expectEqualStrings("config: not one JSON object: DuplicateField", doubled);
+    const twice = try refusal("{\"adapters\":{\"memory\":{\"type\":\"memory\",\"type\":\"memory\"}}}", &.{});
+    defer testing.allocator.free(twice);
+    try testing.expectEqualStrings("config: not one JSON object: DuplicateField", twice);
     try expectRefused("[]", &.{}, "config: the file: must be an object");
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -582,3 +600,4 @@ fn parseExample(allocator: std.mem.Allocator) !void {
 test "parsing frees what it built when any allocation fails" {
     try testing.checkAllAllocationFailures(testing.allocator, parseExample, .{});
 }
+

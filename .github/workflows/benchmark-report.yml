@@ -7,6 +7,15 @@ permissions:
   actions: read
   contents: read
 
+concurrency:
+  # This workflow only runs for a pull request, so the number is the whole key: a
+  # newer push to that pull request cancels the report the previous push was
+  # still taking, which is minutes of runner time for output that is stale by
+  # the time it lands. The run-id fallback keeps a run that is not a pull
+  # request's in a group of its own rather than one it could be dropped from.
+  group: benchmark-report-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   report:
     name: Informational benchmark report

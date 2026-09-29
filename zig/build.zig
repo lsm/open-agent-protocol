@@ -101,6 +101,19 @@ pub fn build(b: *std.Build) void {
     });
     semantic_mod.addImport("jsonschema", jsonschema_mod);
     const semantic_test = b.addTest(.{ .root_module = semantic_mod });
+    const provider_semantic_mod = b.createModule(.{
+        .root_source_file = b.path("src/validation/provider_semantic.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const validator_mod = b.createModule(.{
+        .root_source_file = b.path("src/validation/validator.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    validator_mod.addImport("jsonschema", jsonschema_mod);
+    validator_mod.addImport("tolerate", tolerate_mod);
+    const validator_test = b.addTest(.{ .root_module = validator_mod });
     const semantic_gate_mod = b.createModule(.{
         .root_source_file = b.path("src/validation/semantic_gate.zig"),
         .target = target,
@@ -108,11 +121,6 @@ pub fn build(b: *std.Build) void {
     });
     semantic_gate_mod.addImport("semantic", semantic_mod);
     semantic_gate_mod.addImport("packs", packs_mod);
-    const provider_semantic_mod = b.createModule(.{
-        .root_source_file = b.path("src/validation/provider_semantic.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
     semantic_gate_mod.addImport("provider_semantic", provider_semantic_mod);
     const provider_semantic_test = b.addTest(.{ .root_module = provider_semantic_mod });
     semantic_gate_mod.addOptions("build_options", gate_options);
@@ -161,6 +169,7 @@ pub fn build(b: *std.Build) void {
     test_unit_validation_step.dependOn(&b.addRunArtifact(schema_bytes_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(jsonschema_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(tolerate_test).step);
+    test_unit_validation_step.dependOn(&b.addRunArtifact(validator_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(fixture_gate_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(semantic_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(provider_semantic_test).step);
@@ -2614,7 +2623,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "semantic", .module = semantic_mod },
             .{ .name = "provider_semantic", .module = provider_semantic_mod },
             .{ .name = "packs", .module = packs_mod },
-            .{ .name = "jsonschema", .module = jsonschema_mod },
+            .{ .name = "validator", .module = validator_mod },
             .{ .name = "version_options", .module = version_module },
             .{ .name = "adapter_endpoint", .module = adapter_endpoint_mod },
             .{ .name = "adapter_contract", .module = adapter_contract_mod },
@@ -2750,6 +2759,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(schema_bytes_test).step);
     test_step.dependOn(&b.addRunArtifact(jsonschema_test).step);
     test_step.dependOn(&b.addRunArtifact(tolerate_test).step);
+    test_step.dependOn(&b.addRunArtifact(validator_test).step);
     test_step.dependOn(&b.addRunArtifact(fixture_gate_test).step);
     test_step.dependOn(&b.addRunArtifact(semantic_test).step);
     test_step.dependOn(&b.addRunArtifact(provider_semantic_test).step);
@@ -3236,6 +3246,7 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
         id: []const u8,
         name: ?[]const u8 = null,
         context_window: ?u32 = null,
+        max_context_window: ?u32 = null,
         max_tokens: ?u32 = null,
     };
     const Row = struct {
@@ -3254,6 +3265,7 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
         endpoints: []const Endpoint = &.{},
         models_endpoint: ?[]const u8 = null,
         context_window: ?u32 = null,
+        max_context_window: ?u32 = null,
         max_tokens: ?u32 = null,
         models: []const Model = &.{},
         oauth_origin: ?Origin = null,
@@ -3302,15 +3314,31 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
                 .{ row.id, endpoint.wire },
             );
         }
+        if (row.context_window) |window| {
+            if (row.max_context_window) |ceiling| {
+                if (window > ceiling) std.debug.panic(
+                    "providers/catalog.json gives {s} a context_window of {d} above the {d} it records as max_context_window, so the default window would be one the ceiling refuses",
+                    .{ row.id, window, ceiling },
+                );
+            }
+        }
+        for (row.models) |model| {
+            const window = model.context_window orelse row.context_window orelse continue;
+            const ceiling = model.max_context_window orelse row.max_context_window orelse continue;
+            if (window > ceiling) std.debug.panic(
+                "providers/catalog.json gives {s}'s model {s} a context_window of {d} above the {d} it resolves, so the window would be one the ceiling refuses",
+                .{ row.id, model.id, window, ceiling },
+            );
+        }
     }
     var out = std.ArrayList(u8).empty;
     out.appendSlice(gpa, "pub const AuthKind = enum { api_key, oauth, none };\n\n") catch @panic("out of memory");
     out.appendSlice(gpa, "pub const Offering = enum { coding_plan, subscription, api_key };\n\n") catch @panic("out of memory");
     out.appendSlice(gpa, "pub const Status = enum { current, supported, withheld };\n\n") catch @panic("out of memory");
     out.appendSlice(gpa, "pub const Endpoint = struct {\n    wire: []const u8,\n    base_url: []const u8,\n    region: ?[]const u8 = null,\n    carries_version: bool = false,\n};\n\n") catch @panic("out of memory");
-    out.appendSlice(gpa, "pub const Model = struct {\n    id: []const u8,\n    name: ?[]const u8 = null,\n    context_window: ?u32 = null,\n    max_tokens: ?u32 = null,\n};\n\n") catch @panic("out of memory");
+    out.appendSlice(gpa, "pub const Model = struct {\n    id: []const u8,\n    name: ?[]const u8 = null,\n    context_window: ?u32 = null,\n    max_context_window: ?u32 = null,\n    max_tokens: ?u32 = null,\n};\n\n") catch @panic("out of memory");
     out.appendSlice(gpa, "pub const OAuthOrigin = struct {\n    exact: []const []const u8 = &.{},\n    domain: ?[]const u8 = null,\n    credential_declares_origin: bool = false,\n};\n\n") catch @panic("out of memory");
-    out.appendSlice(gpa, "pub const Provider = struct {\n    id: []const u8,\n    display_name: ?[]const u8 = null,\n    auth: []const AuthKind = &.{},\n    offering: ?Offering = null,\n    status: ?Status = null,\n    credential_env: []const []const u8 = &.{},\n    credential_precedence: []const []const u8 = &.{},\n    base_url_env: []const []const u8 = &.{},\n    region_env: ?[]const u8 = null,\n    default_region: ?[]const u8 = null,\n    wires: []const []const u8 = &.{},\n    base_url_source: ?[]const u8 = null,\n    endpoints: []const Endpoint = &.{},\n    models_endpoint: ?[]const u8 = null,\n    context_window: ?u32 = null,\n    max_tokens: ?u32 = null,\n    models: []const Model = &.{},\n    oauth_origin: ?OAuthOrigin = null,\n    docs: ?[]const u8 = null,\n};\n\n") catch @panic("out of memory");
+    out.appendSlice(gpa, "pub const Provider = struct {\n    id: []const u8,\n    display_name: ?[]const u8 = null,\n    auth: []const AuthKind = &.{},\n    offering: ?Offering = null,\n    status: ?Status = null,\n    credential_env: []const []const u8 = &.{},\n    credential_precedence: []const []const u8 = &.{},\n    base_url_env: []const []const u8 = &.{},\n    region_env: ?[]const u8 = null,\n    default_region: ?[]const u8 = null,\n    wires: []const []const u8 = &.{},\n    base_url_source: ?[]const u8 = null,\n    endpoints: []const Endpoint = &.{},\n    models_endpoint: ?[]const u8 = null,\n    context_window: ?u32 = null,\n    max_context_window: ?u32 = null,\n    max_tokens: ?u32 = null,\n    models: []const Model = &.{},\n    oauth_origin: ?OAuthOrigin = null,\n    docs: ?[]const u8 = null,\n};\n\n") catch @panic("out of memory");
     out.appendSlice(gpa, "pub const providers: []const Provider = &.{\n") catch @panic("out of memory");
     for (catalog.providers) |row| {
         out.print(gpa, "    .{{\n        .id = \"{f}\",\n", .{std.zig.fmtString(row.id)}) catch @panic("out of memory");
@@ -3367,6 +3395,9 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
         if (row.context_window) |window| {
             out.print(gpa, "        .context_window = {d},\n", .{window}) catch @panic("out of memory");
         }
+        if (row.max_context_window) |window| {
+            out.print(gpa, "        .max_context_window = {d},\n", .{window}) catch @panic("out of memory");
+        }
         if (row.max_tokens) |tokens| {
             out.print(gpa, "        .max_tokens = {d},\n", .{tokens}) catch @panic("out of memory");
         }
@@ -3379,6 +3410,9 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
                 }
                 if (model.context_window) |window| {
                     out.print(gpa, ", .context_window = {d}", .{window}) catch @panic("out of memory");
+                }
+                if (model.max_context_window) |window| {
+                    out.print(gpa, ", .max_context_window = {d}", .{window}) catch @panic("out of memory");
                 }
                 if (model.max_tokens) |tokens| {
                     out.print(gpa, ", .max_tokens = {d}", .{tokens}) catch @panic("out of memory");
