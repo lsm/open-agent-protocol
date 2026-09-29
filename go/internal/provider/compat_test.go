@@ -9,6 +9,40 @@ func hostModel(baseURL string) Model {
 	return Model{Provider: "openai", BaseURL: baseURL, HasBaseURL: true, HasCompat: true}
 }
 
+func TestAQwenHostIsDashscopeAliyuncsDotComOrASubdomainOfIt(t *testing.T) {
+	hosts := []string{
+		"https://dashscope.aliyuncs.com",
+		"https://coding-intl.dashscope.aliyuncs.com",
+		"https://coding-intl.dashscope.aliyuncs.com/v1",
+		"https://DASHSCOPE.ALIYUNCS.COM",
+	}
+	for _, url := range hosts {
+		if !isQwenURL(url, true) {
+			t.Errorf("isQwenURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://mydashscope.aliyuncs.com.attacker.example",
+		"https://aliyuncs.com",
+		"https://www.aliyuncs.com",
+		"https://notdashscope.aliyuncs.com",
+		"https://evil.example/?next=dashscope",
+		"https://evil.example/v1/qwen",
+		"https://gateway.example/proxy/dashscope.aliyuncs.com",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isQwenURL(url, true) {
+			t.Errorf("isQwenURL(%q) = true, want false: the domain is dashscope.aliyuncs.com, not aliyuncs.com, and the old rule matched the bare words dashscope and qwen anywhere", url)
+		}
+	}
+
+	if isQwenURL("https://dashscope.aliyuncs.com", false) {
+		t.Error("no base url is not a qwen host")
+	}
+}
+
 func TestAnAnthropicHostIsAnthropicDotComOrASubdomainOfIt(t *testing.T) {
 	hosts := []string{
 		"https://api.anthropic.com",
