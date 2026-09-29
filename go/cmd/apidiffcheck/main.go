@@ -29,8 +29,7 @@ func run(args []string, stdout io.Writer) error {
 	flags := flag.NewFlagSet("apidiffcheck", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	description := flags.String("description", "", "a file holding the pull request description, whose Breaking changes section records an incompatible change (default: PR_BODY, which the workflow sets from the event payload)")
-	base := flags.String("base", "", "the commit this pull request is based on, compared over a second checkout at -base-root (default: PR_BASE_SHA, which the workflow sets)")
-	baseRoot := flags.String("base-root", "", "a checkout of the base commit, for the per-pull-request comparison (default: PR_BASE_ROOT)")
+	baseRoot := flags.String("base-root", "", "a checkout of the merge base, for the per-pull-request comparison (default: PR_BASE_ROOT)")
 	root := flags.String("root", ".", "the module root at the pull request head")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -38,17 +37,11 @@ func run(args []string, stdout io.Writer) error {
 	if *description == "" {
 		*description = os.Getenv("PR_BODY")
 	}
-	if *base == "" {
-		*base = os.Getenv("PR_BASE_SHA")
-	}
 	if *baseRoot == "" {
 		*baseRoot = os.Getenv("PR_BASE_ROOT")
 	}
 	if *baseRoot == "" {
-		return errors.New("the gate needs a checkout of the pull request's base commit: pass -base-root, or set PR_BASE_ROOT in the workflow")
-	}
-	if *base == "" {
-		return errors.New("a base checkout needs the base commit it is at; pass -base or set PR_BASE_SHA")
+		return errors.New("the gate needs a checkout of the merge base: pass -base-root, or set PR_BASE_ROOT in the workflow")
 	}
 	return check(*root, *baseRoot, readDescription(*description), stdout)
 }
@@ -73,20 +66,29 @@ func check(root, baseRoot, description string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	packages, err := publicPackages(root, module)
+	head, err := publicPackages(root, module)
 	if err != nil {
 		return err
 	}
-	report, err := apidiffReport(root, baseRoot, module, packages)
+	base, err := publicPackages(baseRoot, module)
+	if err != nil {
+		return err
+	}
+	removed, added := setDifference(base, head), setDifference(head, base)
+	report, err := apidiffReport(root, baseRoot, module, head)
 	if err != nil {
 		return err
 	}
 	changed := incompatible(report, module)
+	changed = append(changed, removed...)
+	if len(added) > 0 {
+		fmt.Fprintf(stdout, "compatibility: %s added since the base, which is a compatible change\n", strings.Join(added, ", "))
+	}
 	if len(changed) == 0 {
 		fmt.Fprintf(stdout, "PASS compatibility: no incompatible public API change in this pull request\n")
 		return nil
 	}
-	if missing := unrecorded(report, module, packages, recordedChanges(description)); len(missing) > 0 {
+	if missing := missingFrom(changed, recordedChanges(description)); len(missing) > 0 {
 		return fmt.Errorf("this pull request changes %s incompatibly without its Breaking changes section naming them in backticks: %s. Add a '## Breaking changes' section to the description naming each one, or say why the break is intended. A package that is gone counts: removing a public package is the most incompatible change there is", strings.Join(changed, ", "), strings.Join(missing, ", "))
 	}
 	fmt.Fprintf(stdout, "PASS compatibility: recorded incompatible change in %s\n", strings.Join(changed, ", "))
@@ -104,6 +106,30 @@ func modulePath(root string) (string, error) {
 		}
 	}
 	return "", errors.New("go.mod names no module")
+}
+
+func missingFrom(changed []string, section string) []string {
+	var missing []string
+	for _, name := range changed {
+		if !strings.Contains(section, "`"+name+"`") {
+			missing = append(missing, name)
+		}
+	}
+	return missing
+}
+
+func setDifference(from, other []string) []string {
+	present := map[string]bool{}
+	for _, name := range other {
+		present[name] = true
+	}
+	var difference []string
+	for _, name := range from {
+		if !present[name] {
+			difference = append(difference, name)
+		}
+	}
+	return difference
 }
 
 func publicPackages(root, module string) ([]string, error) {
@@ -154,7 +180,9 @@ func apidiffReport(head, baseRoot, module string, packages []string) (string, er
 		oldExport := path.Join(work, "old")
 		newExport := path.Join(work, "new")
 		if err := writeExport(baseRoot, importPath, oldExport); err != nil {
-			return "", fmt.Errorf("export data for the base of %s: %w", name, err)
+			if _, statErr := os.Stat(oldExport); statErr != nil {
+				continue
+			}
 		}
 		if err := writeExport(head, importPath, newExport); err != nil {
 			return "", fmt.Errorf("export data for %s: %w", name, err)
@@ -177,9 +205,6 @@ func writeExport(root, importPath, out string) error {
 	var stderr bytes.Buffer
 	command.Stderr = &stderr
 	if err := command.Run(); err != nil {
-		if strings.Contains(stderr.String(), "no required module provides") || strings.Contains(stderr.String(), "undefined") {
-			return nil
-		}
 		return errors.New(strings.TrimSpace(stderr.String()))
 	}
 	return nil

@@ -29,24 +29,42 @@ func TestAnInternalPackageIsNotAChange(t *testing.T) {
 	}
 }
 
-func TestAnUnrecordedChangeFailsAndARecordedOneDoesNot(t *testing.T) {
-	packages := []string{"go/protocol", "go/providercatalog"}
-	if got := unrecorded(protocolBreak, testModule, packages, "### Fixed\n\n- nothing here"); len(got) != 1 || got[0] != "go/protocol" {
-		t.Fatalf("unrecorded %v, want go/protocol", got)
+func TestAChangedPackageIsMissingUnlessTheSectionNamesItInBackticks(t *testing.T) {
+	changed := incompatible(protocolBreak, testModule)
+	if got := missingFrom(changed, "### Fixed\n\n- nothing here"); len(got) != 1 || got[0] != "go/protocol" {
+		t.Fatalf("missing %v, want go/protocol", got)
 	}
-	if got := unrecorded(protocolBreak, testModule, packages, "## Breaking changes\n\n- `go/protocol` no longer comparable"); len(got) != 0 {
-		t.Fatalf("unrecorded %v, want none: the section names it", got)
+	if got := missingFrom(changed, "## Breaking changes\n\n- `go/protocol` no longer comparable"); len(got) != 0 {
+		t.Fatalf("missing %v, want none: the section names it in backticks", got)
+	}
+	if got := missingFrom(changed, "## Breaking changes\n\n- the protocol package changed"); len(got) != 1 {
+		t.Fatalf("missing %v, want one: a package named in prose is not a record", got)
 	}
 }
 
-func TestProseAndAPackageTheGateDoesNotWatchAreNotARecord(t *testing.T) {
-	packages := []string{"go/protocol", "go/providercatalog"}
-	if got := unrecorded(protocolBreak, testModule, packages, "## Breaking changes\n\n- the protocol package changed"); len(got) != 1 {
-		t.Fatalf("unrecorded %v, want one: a package named in prose is not a record", got)
+func TestARemovedPublicPackageNeedsARecordEvenWithNothingToDiff(t *testing.T) {
+	base := []string{"go/binding", "go/protocol"}
+	head := []string{"go/protocol"}
+	removed := setDifference(base, head)
+	if len(removed) != 1 || removed[0] != "go/binding" {
+		t.Fatalf("removed %v, want go/binding: a deleted public package is the most incompatible change there is", removed)
 	}
-	report := "\n# go/serve\nIncompatible changes:\n- Hub: removed\n"
-	if got := unrecorded(report, testModule, packages, "## Breaking changes\n\n- `go/serve` gone"); len(got) != 0 {
-		t.Fatalf("unrecorded %v, want none: go/serve is not in the watched set", got)
+	if got := missingFrom(removed, ""); len(got) != 1 {
+		t.Fatalf("missing %v, want one: nothing in an empty description names it", got)
+	}
+	if got := missingFrom(removed, "## Breaking changes\n\n- `go/binding` is gone"); len(got) != 0 {
+		t.Fatalf("missing %v, want none: the removal is recorded", got)
+	}
+}
+
+func TestAPackageOnlyTheHeadHasIsAnAdditionAndNeedsNoRecord(t *testing.T) {
+	base := []string{"go/protocol"}
+	head := []string{"go/protocol", "go/adapter/newharness"}
+	if added := setDifference(head, base); len(added) != 1 || added[0] != "go/adapter/newharness" {
+		t.Fatalf("added %v, want go/adapter/newharness", added)
+	}
+	if removed := setDifference(base, head); len(removed) != 0 {
+		t.Fatalf("removed %v, want none", removed)
 	}
 }
 
@@ -87,15 +105,15 @@ func TestTheRecordedSectionIsReadFromTheFileTheWorkflowWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := unrecorded(protocolBreak, testModule, []string{"go/protocol"}, recordedChanges(string(data))); len(got) != 0 {
-		t.Fatalf("unrecorded %v, want none: the description's section names the package", got)
+	if got := missingFrom(incompatible(protocolBreak, testModule), recordedChanges(string(data))); len(got) != 0 {
+		t.Fatalf("missing %v, want none: the description's section names the package", got)
 	}
 }
 
 func TestAnUnreadableDescriptionRecordsNothingRatherThanFailing(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "absent.md")
-	if got := unrecorded(protocolBreak, testModule, []string{"go/protocol"}, recordedChanges(readDescription(missing))); len(got) != 1 {
-		t.Fatalf("unrecorded %v, want one: an absent description is not a record", got)
+	if got := missingFrom(incompatible(protocolBreak, testModule), recordedChanges(readDescription(missing))); len(got) != 1 {
+		t.Fatalf("missing %v, want one: an absent description is not a record", got)
 	}
 }
 
@@ -119,10 +137,17 @@ func TestTheModuleNameComesFromGoMod(t *testing.T) {
 	}
 }
 
-func TestABaseCheckoutWithoutItsCommitIsAnError(t *testing.T) {
-	err := run([]string{"-base-root", t.TempDir()}, os.Stdout)
-	if err == nil || !strings.Contains(err.Error(), "needs the base commit") {
-		t.Fatalf("err = %v, want one naming the base commit", err)
+func TestTheGateRefusesToRunWithoutABaseCheckout(t *testing.T) {
+	err := run([]string{"-base-root", ""}, os.Stdout)
+	if err == nil || !strings.Contains(err.Error(), "needs a checkout of the merge base") {
+		t.Fatalf("err = %v, want one naming the merge base", err)
+	}
+}
+
+func TestTheBaseCheckoutComesFromTheEnvironment(t *testing.T) {
+	t.Setenv("PR_BASE_ROOT", "")
+	if err := run(nil, os.Stdout); err == nil || !strings.Contains(err.Error(), "needs a checkout of the merge base") {
+		t.Fatalf("err = %v, want one naming the merge base", err)
 	}
 }
 

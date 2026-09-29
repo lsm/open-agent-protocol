@@ -111,13 +111,17 @@ jobs:
       # cumulative view still exists: the release lifts each pull request's
       # Breaking changes section into the notes, so the release section names
       # every break since the last tag.
-      - name: Check out the base commit to compare against
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      - name: Check out the merge base to compare against
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/base"
-          git worktree add --detach "$RUNNER_TEMP/base" "$BASE_SHA"
+          # The merge base, not base.sha. base.sha is the base branch's tip at
+          # event time, so a base that moved while this pull request was open
+          # would hand it every break those intervening merges made, and the
+          # author would have to record packages this pull request never
+          # touched -- which the release lift would then misattribute.
+          git worktree add --detach "$RUNNER_TEMP/base" \
+            "$(git merge-base origin/"${{ github.event.pull_request.base.ref }}" HEAD)"
 
       - name: Write the pull request description where the checker reads it
         env:
@@ -129,9 +133,10 @@ jobs:
 
       - name: An incompatible public API change must be recorded in this pull request
         env:
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_BASE_ROOT: ${{ runner.temp }}/base
-        run: go run ./go/cmd/apidiffcheck -description "$RUNNER_TEMP/pr-body.md"
+        run: |
+          set -euo pipefail
+          go run ./go/cmd/apidiffcheck -description "$RUNNER_TEMP/pr-body.md"
 
   ts:
     runs-on: ubuntu-latest
