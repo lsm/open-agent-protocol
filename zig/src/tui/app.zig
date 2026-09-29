@@ -1817,6 +1817,7 @@ pub const App = struct {
         const runtime = self.runtime orelse return;
         const refused = runtime.takeContextWindowRefused() orelse return;
         const model = runtime.currentModel() orelse return;
+        self.applyContextWindow();
         const msg = try std.fmt.allocPrint(self.allocator, "{d} context tokens is above the {d} {s} takes, so the model's own {d} is in effect.", .{ refused, runtime.contextWindowMaximum() orelse 0, model.id, model.context_window });
         defer self.allocator.free(msg);
         try self.state.appendTranscript(.system, msg);
@@ -4696,6 +4697,21 @@ test "App a model command leaves the gauge on the window in effect" {
     try app.submit("/model gpt-5-codex");
     try std.testing.expectEqual(@as(u64, 200_000), app.state.telemetry.context_window);
     try std.testing.expectEqual(@as(usize, 200_000), app.state.status.context_limit);
+}
+
+test "App a catalog refresh that drops the window leaves the gauge on the model's own" {
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ gpt_model, kimi_model } });
+    defer app.deinit();
+
+    try app.submit("/context 1m");
+    try std.testing.expectEqual(@as(usize, 1_000_000), app.state.status.context_limit);
+
+    try app.runtime.?.replaceModels(&[_]ai_types.Model{kimi_model}, null);
+    try app.drainEvents();
+
+    try std.testing.expectEqual(@as(u64, 262_144), app.runtime.?.contextWindow());
+    try std.testing.expectEqual(@as(usize, 262_144), app.state.status.context_limit);
+    try std.testing.expectEqual(@as(u64, 262_144), app.state.telemetry.context_window);
 }
 
 test "App context moves the gauge, and the model's own window comes back" {
