@@ -194,8 +194,9 @@ code paths; add a transcript row instead.
   in the rate's drop order can be said to drop before the path does.
 - The rate is a `~`-marked estimate or an unmarked measurement, and the mark always
   means the same thing: **a mark means an estimate, an unmarked figure is measured.**
-  The row carries two: the turn figure and the average since the last model switch, as
-  `84 tok/s · avg 79`, so the last turn's speed is still visible once the run is over.
+  The row carries two segments, joined like every other pair by `│`: the turn figure and
+  the average since the last model switch, as `84 tok/s │ avg 79 tok/s`, so the last
+  turn's speed is still visible once the run is over.
   The turn figure is the live one while a message streams — necessarily an estimate,
   because usage only arrives at `message_end` — then the turn in progress, which reads
   its own accumulated figure so a tool phase shows the message just streamed rather

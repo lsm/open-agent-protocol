@@ -272,6 +272,12 @@ pub const TokenRateSet = struct {
         self.run_active = false;
     }
 
+    pub fn messageAborted(self: *TokenRateSet) void {
+        self.message_bytes = 0;
+        self.message_first_ms = 0;
+        self.live = .{};
+    }
+
     pub fn resetForModel(self: *TokenRateSet) void {
         const open = self.turn();
         const clock = self.message_first_ms;

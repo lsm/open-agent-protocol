@@ -549,6 +549,22 @@ test "the row shows the turn figure and the average beside it" {
     try std.testing.expect(std.mem.indexOf(u8, text, "avg 80 tok/s") != null);
 }
 
+test "an aborted message leaves no live figure decaying beside an idle row" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    try state.status.setModelWithContext(std.testing.allocator, "claude-sonnet-4-5", "anthropic", 200_000);
+
+    state.telemetry.rate.runStarted();
+    state.telemetry.rate.produced(400, 1_000);
+    state.telemetry.rate.liveAt(3_000);
+    try std.testing.expect(state.telemetry.rate.live.hasFigure());
+
+    state.telemetry.rate.messageAborted();
+    state.telemetry.rate.liveAt(60_000);
+    try std.testing.expect(!state.telemetry.rate.live.hasFigure());
+    try std.testing.expect(!state.telemetry.rate.turnShown().hasFigure());
+}
+
 test "the average still shows at a turn boundary, before the new turn has a figure" {
     var state = tui_state.AppState.init(std.testing.allocator);
     defer state.deinit();
