@@ -800,3 +800,69 @@ func TestACancelledRunAsksForNoCallEvenWhenTheLoopReachesOne(t *testing.T) {
 		t.Error("the call was never asked for, so answering it must be refused rather than accepted")
 	}
 }
+
+func TestACallTheCallerAnswersIsAnnouncedAsResolved(t *testing.T) {
+	script := &scripted{turns: []scriptedTurn{toolTurn("call_1", "read", "{}"), textTurn("done")}}
+	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("read a"))
+	var resolved []string
+	events := drainActing(t, run, func(event Event) {
+		if event.Kind == ToolCallResolved {
+			resolved = append(resolved, event.Call.ID)
+		}
+		if event.Kind == ToolCallRequested {
+			_ = run.ResolveTool(event.Call.ID, provider.ToolResult{Parts: []provider.ContentPart{{Text: &provider.TextPart{Text: "a"}}}})
+		}
+	})
+	terminalOf(t, events)
+	if strings.Join(resolved, ",") != "call_1" {
+		t.Errorf("the loop announced %v as resolved, want the call it asked about: a call with no resolve event is a call still open when the run settles", resolved)
+	}
+}
+
+func TestACallTheLoopAnswersItselfIsAnnouncedWithoutAskingTheCaller(t *testing.T) {
+	script := &scripted{turns: []scriptedTurn{toolTurn("call_1", "read", "{}")}}
+	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("read a"))
+	var asked, resolved int
+	drainActing(t, run, func(event Event) {
+		switch event.Kind {
+		case ToolCallRequested:
+			asked++
+			run.Cancel()
+		case ToolCallResolved:
+			resolved++
+			if event.ToolResult == nil || !event.ToolResult.IsError {
+				t.Errorf("a call the loop answered itself is announced as %+v, want an error result: nothing ran it", event.ToolResult)
+			}
+		}
+	})
+	if asked != 1 {
+		t.Errorf("the loop asked %d times, want 1: the call was already open when the cancel landed", asked)
+	}
+	if resolved != 1 {
+		t.Errorf("a call the run was cancelled waiting for was announced %d times, want 1: an open call at run.cancelled is pending_tool_at_terminal, which the validator rejects", resolved)
+	}
+}
+
+func TestACutOffCallIsAnnouncedWithoutAskingTheCaller(t *testing.T) {
+	cut := scriptedTurn{frames: []string{
+		frame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"write","arguments":"{\"text\":\"cut"}}]}}]}`),
+		frame(`{"choices":[{"delta":{},"finish_reason":"length"}]}`),
+	}}
+	script := &scripted{turns: []scriptedTurn{cut, textTurn("done")}}
+	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("write"))
+	var asked, resolved int
+	drainActing(t, run, func(event Event) {
+		switch event.Kind {
+		case ToolCallRequested:
+			asked++
+		case ToolCallResolved:
+			resolved++
+		}
+	})
+	if asked != 0 {
+		t.Errorf("a cut-off call asked the caller %d times, want 0: its arguments may be truncated", asked)
+	}
+	if resolved != 1 {
+		t.Errorf("a cut-off call was announced %d times, want 1: a call that vanishes from the wire is a tool call with no terminal event", resolved)
+	}
+}

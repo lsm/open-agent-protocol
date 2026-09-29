@@ -14,12 +14,15 @@ type Ids interface {
 }
 
 type Options struct {
-	SessionID protocol.SessionID
-	RunID     protocol.RunID
-	ModelID   string
-	Revision  string
-	Ids       Ids
-	NowMS     int64
+	SessionID      protocol.SessionID
+	RunID          protocol.RunID
+	ModelID        string
+	Revision       string
+	Requester      protocol.ParticipantID
+	Responder      protocol.ParticipantID
+	ExecutionOwner protocol.ParticipantID
+	Ids            Ids
+	Now            func() int64
 }
 
 var ErrNoIds = errors.New("looptrace: an id generator is required")
@@ -37,6 +40,12 @@ func NewTrace(options Options) (*Trace, error) {
 	if options.SessionID == "" || options.RunID == "" {
 		return nil, errors.New("looptrace: a session and a run are required")
 	}
+	if options.Requester == "" || options.Responder == "" || options.ExecutionOwner == "" {
+		return nil, errors.New("looptrace: the requester, the responder and the execution owner are required: an action.call envelope names all three and the schema admits no empty one")
+	}
+	if options.Now == nil {
+		options.Now = func() int64 { return 0 }
+	}
 	return &Trace{options: options, sequence: 1, model: options.ModelID}, nil
 }
 
@@ -50,7 +59,7 @@ func (t *Trace) next(typ protocol.EnvelopeType, payload any) (protocol.Envelope,
 	sequence := t.sequence
 	t.sequence++
 	envelope.Sequence = &sequence
-	timestamp := t.options.NowMS
+	timestamp := t.options.Now()
 	envelope.TimestampMS = &timestamp
 	envelope.SessionID = t.options.SessionID
 	envelope.RunID = t.options.RunID
@@ -58,32 +67,51 @@ func (t *Trace) next(typ protocol.EnvelopeType, payload any) (protocol.Envelope,
 	return envelope, nil
 }
 
-func (t *Trace) callPayload(call provider.ToolCall, result *provider.ToolResult) protocol.ActionCallPayload {
-	payload := protocol.ActionCallPayload{
-		SessionID:  t.options.SessionID,
-		RunID:      t.options.RunID,
-		ToolCallID: protocol.ToolCallID(call.ID),
-		Name:       call.Name,
+func (t *Trace) callScope(call provider.ToolCall) protocol.ActionCallPayload {
+	return protocol.ActionCallPayload{
+		SessionID:      t.options.SessionID,
+		RunID:          t.options.RunID,
+		ToolCallID:     protocol.ToolCallID(call.ID),
+		Name:           call.Name,
+		RequestedBy:    t.options.Requester,
+		RespondedBy:    t.options.Responder,
+		ExecutionOwner: t.options.ExecutionOwner,
 	}
-	if json.Valid([]byte(call.Arguments)) {
-		payload.ArgumentsJSON = json.RawMessage(call.Arguments)
-	}
-	if result != nil {
-		payload.Result = json.RawMessage(protocol.PartsContent([]protocol.ContentPart{resultPart(*result)}))
-	}
-	return payload
 }
 
-func resultPart(result provider.ToolResult) protocol.ContentPart {
-	out := protocol.ContentPart{Type: protocol.ContentText}
-	if len(result.Parts) > 0 && result.Parts[0].Text != nil {
-		out.Text = result.Parts[0].Text.Text
+func resultParts(result provider.ToolResult) []protocol.ContentPart {
+	out := make([]protocol.ContentPart, 0, len(result.Parts))
+	for _, part := range result.Parts {
+		switch {
+		case part.Text != nil:
+			out = append(out, protocol.ContentPart{Type: protocol.ContentText, Text: part.Text.Text})
+		case part.Thinking != nil:
+			out = append(out, protocol.ContentPart{Type: protocol.ContentText, Text: part.Thinking.Thinking})
+		case part.Image != nil:
+			out = append(out, protocol.ContentPart{Type: protocol.ContentImage, Image: &protocol.ImageContent{
+				URL: part.Image.DataURL(), MediaType: part.Image.MediaType,
+			}})
+		}
+	}
+	if len(out) == 0 {
+		out = append(out, protocol.ContentPart{Type: protocol.ContentText})
 	}
 	if result.IsError {
 		isError := true
-		out.IsError = &isError
+		for index := range out {
+			out[index].IsError = &isError
+		}
 	}
 	return out
+}
+
+func resultText(result provider.ToolResult) string {
+	for _, part := range result.Parts {
+		if part.Text != nil && part.Text.Text != "" {
+			return part.Text.Text
+		}
+	}
+	return ""
 }
 
 func (t *Trace) Envelopes(event agent.Event) []protocol.Envelope {
@@ -102,18 +130,23 @@ func (t *Trace) Envelopes(event agent.Event) []protocol.Envelope {
 		if event.Call == nil {
 			return nil
 		}
-		payload := t.callPayload(*event.Call, nil)
+		payload := t.callScope(*event.Call)
 		payload.InteractionID = protocol.InteractionID(t.options.Ids.NewID("call"))
+		payload.ArgumentsJSON = json.RawMessage("null")
+		if json.Valid([]byte(event.Call.Arguments)) {
+			payload.ArgumentsJSON = json.RawMessage(event.Call.Arguments)
+		}
 		return t.call(protocol.TypeActionCallRequested, payload)
 	case agent.ToolCallResolved:
 		if event.Call == nil || event.ToolResult == nil {
 			return nil
 		}
-		payload := t.callPayload(*event.Call, event.ToolResult)
+		payload := t.callScope(*event.Call)
 		if event.ToolResult.IsError {
-			payload.Error = &protocol.ProtocolError{Code: "tool_failed", Message: resultPart(*event.ToolResult).Text}
+			payload.Error = &protocol.ProtocolError{Code: "tool_failed", Message: resultText(*event.ToolResult)}
 			return t.call(protocol.TypeActionCallFailed, payload)
 		}
+		payload.Result = json.RawMessage(protocol.PartsContent(resultParts(*event.ToolResult)))
 		return t.call(protocol.TypeActionCallCompleted, payload)
 	case agent.AgentEnd:
 		return t.settle(event)
@@ -159,7 +192,7 @@ func (t *Trace) settle(event agent.Event) []protocol.Envelope {
 	if final.StopReason == provider.StopError {
 		return t.one(protocol.TypeRunFailed, protocol.RunFailedPayload{
 			SessionID: t.options.SessionID, RunID: t.options.RunID,
-			Error: protocol.ProtocolError{Code: "provider_error", Message: finalText(final)},
+			Error: protocol.ProtocolError{Code: "provider_error", Message: failureText(final)},
 		})
 	}
 	return t.completed(string(final.StopReason), finalText(final))
@@ -173,6 +206,13 @@ func (t *Trace) completed(stopReason, body string) []protocol.Envelope {
 		ModelID:       t.model,
 		FinalResponse: protocol.Message{Role: protocol.RoleAssistant, Content: protocol.TextContent(body)},
 	})
+}
+
+func failureText(assistant provider.AssistantContent) string {
+	if text := finalText(assistant); text != "" {
+		return text
+	}
+	return "the provider ended the reply with stop reason " + string(assistant.StopReason)
 }
 
 func finalText(assistant provider.AssistantContent) string {

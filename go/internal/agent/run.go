@@ -251,11 +251,11 @@ func (r *Run) runToolCalls(assistant provider.AssistantContent) ([]provider.Tool
 		}
 		call := *part.ToolCall
 		if assistant.StopReason == provider.StopLength {
-			results = append(results, cutOffResult(call))
+			results = append(results, r.answerCall(call, cutOffResult(call)))
 			continue
 		}
 		if !live {
-			results = append(results, cancelledResult(call))
+			results = append(results, r.answerCall(call, cancelledResult(call)))
 			continue
 		}
 		result, answered := r.awaitToolResult(call)
@@ -263,6 +263,11 @@ func (r *Run) runToolCalls(assistant provider.AssistantContent) ([]provider.Tool
 		results = append(results, result)
 	}
 	return results, live
+}
+
+func (r *Run) answerCall(call provider.ToolCall, result provider.ToolResult) provider.ToolResult {
+	r.emit(Event{Kind: ToolCallResolved, Call: &call, ToolResult: &result})
+	return result
 }
 
 func (r *Run) awaitToolResult(call provider.ToolCall) (provider.ToolResult, bool) {
@@ -285,7 +290,7 @@ func (r *Run) awaitToolResult(call provider.ToolCall) (provider.ToolResult, bool
 		r.mu.Lock()
 		delete(r.pending, call.ID)
 		r.mu.Unlock()
-		return cancelledResult(call), false
+		return r.answerCall(call, cancelledResult(call)), false
 	}
 }
 
