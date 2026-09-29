@@ -841,6 +841,11 @@ pub const App = struct {
     store: ?session_store.Store = null,
     mode_settings: tui_config.ModeSettings = .{},
     worktree_job: ?*tui_worktree.CreateJob = null,
+    worktree_management_job: ?*tui_worktree.ManagementJob = null,
+    pending_resume_id: []u8 = &.{},
+    pending_resume_path: []u8 = &.{},
+    resume_without_worktree_id: []u8 = &.{},
+    pending_delete_id: []u8 = &.{},
     worktree_attempted: bool = false,
     held_user_message: []u8 = &.{},
     queued_worktree_messages: std.ArrayList([]u8) = .empty,
@@ -916,6 +921,7 @@ pub const App = struct {
                     var cfg = cfg_value;
                     defer cfg.deinit(allocator);
                     app.mode_settings = cfg.mode;
+                    if (app.runtime) |runtime| runtime.setCompactOutput(app.mode_settings.compact_output);
                 }
             } else |_| {}
         }
@@ -955,6 +961,19 @@ pub const App = struct {
             job.deinit();
             self.worktree_job = null;
         }
+        if (self.worktree_management_job) |job| {
+            job.wait();
+            if (job.poll()) |value| {
+                var outcome = value;
+                outcome.deinit(self.allocator);
+            }
+            job.deinit();
+            self.worktree_management_job = null;
+        }
+        if (self.pending_resume_id.len > 0) self.allocator.free(self.pending_resume_id);
+        if (self.pending_resume_path.len > 0) self.allocator.free(self.pending_resume_path);
+        if (self.resume_without_worktree_id.len > 0) self.allocator.free(self.resume_without_worktree_id);
+        if (self.pending_delete_id.len > 0) self.allocator.free(self.pending_delete_id);
         if (self.held_user_message.len > 0) self.allocator.free(self.held_user_message);
         for (self.queued_worktree_messages.items) |message| self.allocator.free(message);
         self.queued_worktree_messages.deinit(self.allocator);
@@ -1081,34 +1100,33 @@ pub const App = struct {
             try self.state.appendTranscript(.system, "Cannot delete the active session; resume another session first.");
             return;
         }
+        if (self.worktree_management_job != null) return;
         if (try tui_worktree.readSidecar(self.allocator, store.base_dir, id)) |info_value| {
             var info = info_value;
             defer info.deinit(self.allocator);
             if (tui_worktree.pathExists(info.path)) {
-                const runner = tui_worktree.processRunner();
-                const dirty = try tui_worktree.hasUncommitted(self.allocator, runner, info.path);
-                if (dirty) {
-                    try self.state.appendTranscript(.system, "Cannot delete a session with uncommitted worktree changes.");
-                    return;
-                }
-                if (try tui_worktree.remove(self.allocator, runner, &info)) |message| {
-                    defer self.allocator.free(message);
-                    try self.state.appendTranscript(.system, message);
-                    if (std.mem.startsWith(u8, message, "git branch -d:")) {
-                        try self.state.appendTranscript(.system, "Worktree removed; retaining its branch because Git reports it is not safely deletable.");
-                    } else {
-                        return;
-                    }
-                }
+                const job = try tui_worktree.ManagementJob.start(self.allocator, tui_worktree.processRunner(), &info, .remove);
+                errdefer job.deinit();
+                const pending_id = try self.allocator.dupe(u8, id);
+                errdefer self.allocator.free(pending_id);
+                self.worktree_management_job = job;
+                self.pending_delete_id = pending_id;
+                try self.state.appendTranscript(.system, "Checking and removing the session worktree…");
+                return;
             }
         }
+        try self.finishDeleteSession(id);
+    }
+
+    fn finishDeleteSession(self: *App, id: []const u8) !void {
+        const store = self.store orelse return error.NoStoreConfigured;
         try store.deleteSession(id);
         try self.loadSessions();
         if (self.state.session_index >= self.state.sessions.items.len and self.state.session_index > 0) self.state.session_index -= 1;
     }
 
     pub fn resumeSelectedSession(self: *App) !void {
-        if (self.worktree_job != null) {
+        if (self.worktree_job != null or self.worktree_management_job != null) {
             try self.state.appendTranscript(.system, "Wait for worktree setup to finish before resuming another session.");
             return;
         }
@@ -1122,13 +1140,23 @@ pub const App = struct {
             var info = info_value;
             defer info.deinit(self.allocator);
             self.worktree_attempted = true;
-            if (!tui_worktree.pathExists(info.path)) {
-                if (try tui_worktree.branchExists(self.allocator, tui_worktree.processRunner(), info.repo_root, info.branch)) {
-                    if (try tui_worktree.reattach(self.allocator, tui_worktree.processRunner(), &info)) |message| {
-                        defer self.allocator.free(message);
-                        try self.state.appendTranscript(.system, message);
-                    }
-                }
+            const fallback_without_worktree = self.resume_without_worktree_id.len > 0 and std.mem.eql(u8, self.resume_without_worktree_id, id);
+            if (fallback_without_worktree) {
+                self.allocator.free(self.resume_without_worktree_id);
+                self.resume_without_worktree_id = &.{};
+            }
+            if (!tui_worktree.pathExists(info.path) and !fallback_without_worktree) {
+                const job = try tui_worktree.ManagementJob.start(self.allocator, tui_worktree.processRunner(), &info, .reattach);
+                errdefer job.deinit();
+                const pending_id = try self.allocator.dupe(u8, id);
+                errdefer self.allocator.free(pending_id);
+                const pending_path = try self.allocator.dupe(u8, info.path);
+                errdefer self.allocator.free(pending_path);
+                self.worktree_management_job = job;
+                self.pending_resume_id = pending_id;
+                self.pending_resume_path = pending_path;
+                try self.state.appendTranscript(.system, "Reattaching this session's Git worktree…");
+                return;
             }
             const root = if (tui_worktree.pathExists(info.path))
                 try info.workingDir(self.allocator)
@@ -1954,7 +1982,7 @@ pub const App = struct {
             if (outcome != .created) try self.appendRuntimeUserMessage(message);
             try self.submit(message);
         }
-        if (self.queued_worktree_messages.items.len > 0 and self.held_user_message.len == 0 and !self.state.status.streaming) {
+        while (self.queued_worktree_messages.items.len > 0) {
             const message = self.queued_worktree_messages.orderedRemove(0);
             defer self.allocator.free(message);
             if (self.session) |*session| {
@@ -1967,8 +1995,71 @@ pub const App = struct {
         }
     }
 
+    fn pollWorktreeManagement(self: *App) !void {
+        const job = self.worktree_management_job orelse return;
+        const value = job.poll() orelse return;
+        var outcome = value;
+        defer outcome.deinit(self.allocator);
+        job.deinit();
+        self.worktree_management_job = null;
+        if (self.pending_delete_id.len > 0) {
+            const id = self.pending_delete_id;
+            self.pending_delete_id = &.{};
+            defer self.allocator.free(id);
+            switch (outcome) {
+                .dirty => try self.state.appendTranscript(.system, "Cannot delete this session: its worktree is dirty or Git could not verify it safely."),
+                .removed => |message| {
+                    if (message) |text| {
+                        try self.state.appendTranscript(.system, text);
+                        if (!std.mem.startsWith(u8, text, "git branch -d:")) return;
+                        try self.state.appendTranscript(.system, "Worktree removed; retaining its branch because Git reports it is not safely deletable.");
+                    }
+                    try self.finishDeleteSession(id);
+                },
+                .failed => |message| try self.state.appendTranscript(.@"error", message),
+                else => return error.InvalidWorktreeOutcome,
+            }
+            return;
+        }
+        if (self.pending_resume_id.len > 0) {
+            const id = self.pending_resume_id;
+            self.pending_resume_id = &.{};
+            defer self.allocator.free(id);
+            const expected_path = self.pending_resume_path;
+            self.pending_resume_path = &.{};
+            defer if (expected_path.len > 0) self.allocator.free(expected_path);
+            switch (outcome) {
+                .reattached => |message| {
+                    if (message) |text| {
+                        try self.state.appendTranscript(.system, text);
+                        if (!tui_worktree.pathExists(expected_path)) {
+                            self.resume_without_worktree_id = try self.allocator.dupe(u8, id);
+                            try self.state.appendTranscript(.system, "The session worktree could not be reattached; resuming in the original repository.");
+                        }
+                    }
+                },
+                .missing_branch => {
+                    self.resume_without_worktree_id = try self.allocator.dupe(u8, id);
+                    try self.state.appendTranscript(.system, "This session's Git worktree and branch are missing; resuming in the original repository.");
+                },
+                .failed => |message| {
+                    self.resume_without_worktree_id = try self.allocator.dupe(u8, id);
+                    try self.state.appendTranscript(.@"error", message);
+                    try self.state.appendTranscript(.system, "The session worktree could not be reattached; resuming in the original repository.");
+                },
+                else => return error.InvalidWorktreeOutcome,
+            }
+            self.state.session_index = 0;
+            for (self.state.sessions.items, 0..) |entry, index| if (std.mem.eql(u8, entry.id, id)) {
+                self.state.session_index = index;
+                break;
+            };
+            try self.resumeSelectedSession();
+        }
+    }
+
     fn drainQueuedWorktreeMessageIfIdle(self: *App) !void {
-        if (self.state.status.streaming or self.queued_worktree_messages.items.len == 0) return;
+        if (self.worktree_job != null or self.state.status.streaming or self.queued_worktree_messages.items.len == 0) return;
         if (self.runtime) |runtime| {
             if (runtime.local_agent) |*local| {
                 if (!local.isIdle()) return;
@@ -2181,9 +2272,13 @@ pub const App = struct {
                     self.worktree_attempted = true;
                     self.state.appendTranscript(.system, "Already in a managed session worktree; continuing here.") catch {};
                 } else {
-                    self.held_user_message = try self.allocator.dupe(u8, trimmed);
+                    const job = try tui_worktree.CreateJob.start(self.allocator, tui_worktree.processRunner(), self.launch_dir, base, self.session_id);
+                    errdefer job.deinit();
+                    const held = try self.allocator.dupe(u8, trimmed);
+                    errdefer self.allocator.free(held);
+                    self.worktree_job = job;
+                    self.held_user_message = held;
                     self.worktree_attempted = true;
-                    self.worktree_job = try tui_worktree.CreateJob.start(self.allocator, tui_worktree.processRunner(), self.launch_dir, base, self.session_id);
                     try self.state.appendTranscript(.system, "Setting up an isolated Git worktree for this session…");
                     return;
                 }
@@ -3012,6 +3107,7 @@ pub const TuiModel = struct {
                 app.pumpAutoContinue(compat.time.nowMillis());
                 app.pollLogin() catch {};
                 app.pollWorktree() catch {};
+                app.pollWorktreeManagement() catch |err| app.recordError(@errorName(err)) catch {};
                 app.state.refreshStreamingElapsed(compat.time.nowMillis());
                 if (app.interrupt_armed_tick) |armed| {
                     if (app.state.anim_tick -% armed > interrupt_window_ticks) app.interrupt_armed_tick = null;

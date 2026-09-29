@@ -206,6 +206,100 @@ pub fn readSidecar(allocator: std.mem.Allocator, sessions_base: []const u8, sess
     return try parseSidecar(allocator, data);
 }
 
+pub const ManagementKind = enum { reattach, remove };
+
+pub const ManagementOutcome = union(enum) {
+    reattached: ?[]u8,
+    removed: ?[]u8,
+    missing_branch: void,
+    dirty: void,
+    failed: []u8,
+
+    pub fn deinit(self: *ManagementOutcome, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .reattached, .removed => |message| if (message) |value| allocator.free(value),
+            .failed => |message| allocator.free(message),
+            .missing_branch, .dirty => {},
+        }
+        self.* = undefined;
+    }
+};
+
+pub const ManagementJob = struct {
+    allocator: std.mem.Allocator,
+    runner: Runner,
+    info: WorktreeInfo,
+    kind: ManagementKind,
+    thread: std.Thread = undefined,
+    joined: bool = false,
+    mutex: std.atomic.Mutex = .unlocked,
+    finished: bool = false,
+    outcome: ?ManagementOutcome = null,
+
+    pub fn start(allocator: std.mem.Allocator, runner: Runner, info: *const WorktreeInfo, kind: ManagementKind) !*ManagementJob {
+        const self = try allocator.create(ManagementJob);
+        errdefer allocator.destroy(self);
+        self.* = .{ .allocator = allocator, .runner = runner, .info = try cloneInfo(allocator, info), .kind = kind };
+        errdefer self.info.deinit(allocator);
+        self.thread = try std.Thread.spawn(.{}, runManagement, .{self});
+        return self;
+    }
+
+    pub fn poll(self: *ManagementJob) ?ManagementOutcome {
+        while (!self.mutex.tryLock()) std.atomic.spinLoopHint();
+        defer self.mutex.unlock();
+        if (!self.finished) return null;
+        const outcome = self.outcome;
+        self.outcome = null;
+        return outcome;
+    }
+
+    pub fn wait(self: *ManagementJob) void {
+        if (!self.joined) {
+            self.thread.join();
+            self.joined = true;
+        }
+    }
+
+    pub fn deinit(self: *ManagementJob) void {
+        self.wait();
+        if (self.outcome) |*value| value.deinit(self.allocator);
+        self.info.deinit(self.allocator);
+        self.allocator.destroy(self);
+    }
+};
+
+fn cloneInfo(allocator: std.mem.Allocator, info: *const WorktreeInfo) !WorktreeInfo {
+    const path = try allocator.dupe(u8, info.path);
+    errdefer allocator.free(path);
+    const branch = try allocator.dupe(u8, info.branch);
+    errdefer allocator.free(branch);
+    const repo_root = try allocator.dupe(u8, info.repo_root);
+    errdefer allocator.free(repo_root);
+    const prefix = try allocator.dupe(u8, info.prefix);
+    errdefer allocator.free(prefix);
+    return .{ .path = path, .branch = branch, .repo_root = repo_root, .prefix = prefix };
+}
+
+fn runManagement(self: *ManagementJob) void {
+    const outcome: ManagementOutcome = managementOperation(self.allocator, self.runner, &self.info, self.kind) catch |err| .{ .failed = self.allocator.dupe(u8, @errorName(err)) catch @constCast("") };
+    while (!self.mutex.tryLock()) std.atomic.spinLoopHint();
+    self.outcome = outcome;
+    self.finished = true;
+    self.mutex.unlock();
+}
+
+fn managementOperation(allocator: std.mem.Allocator, runner: Runner, info: *const WorktreeInfo, kind: ManagementKind) !ManagementOutcome {
+    if (kind == .reattach) {
+        if (!try branchExists(allocator, runner, info.repo_root, info.branch)) return .{ .missing_branch = {} };
+        return .{ .reattached = try reattach(allocator, runner, info) };
+    }
+    if (!pathExists(info.path)) return .{ .removed = null };
+    const dirty = hasUncommitted(allocator, runner, info.path) catch return .{ .dirty = {} };
+    if (dirty) return .{ .dirty = {} };
+    return .{ .removed = try remove(allocator, runner, info) };
+}
+
 pub const CreateJob = struct {
     allocator: std.mem.Allocator,
     runner: Runner,
@@ -365,6 +459,7 @@ const FakeGit = struct {
     uncommitted_lines: usize = 0,
     is_repo: bool = true,
     fail_worktree_add: bool = false,
+    branch_exists: bool = true,
     calls: std.ArrayList([]const u8) = .empty,
 
     fn run(ctx: *anyopaque, allocator: std.mem.Allocator, argv: []const []const u8, cwd: []const u8) anyerror!GitResult {
@@ -374,12 +469,14 @@ const FakeGit = struct {
         try self.calls.append(allocator, joined);
         const is_toplevel = std.mem.indexOf(u8, joined, "--show-toplevel") != null;
         const is_add = std.mem.indexOf(u8, joined, "worktree add") != null;
-        const ok = if (is_toplevel) self.is_repo else if (is_add) !self.fail_worktree_add else true;
+        const is_branch_lookup = std.mem.indexOf(u8, joined, "rev-parse --verify") != null;
+        const is_status = std.mem.indexOf(u8, joined, "status") != null;
+        const ok = if (is_toplevel) self.is_repo else if (is_add) !self.fail_worktree_add else if (is_branch_lookup) self.branch_exists else true;
         const stdout: []const u8 = if (std.mem.indexOf(u8, joined, "--show-toplevel") != null)
             self.repo_root
         else if (std.mem.indexOf(u8, joined, "--show-prefix") != null)
             self.prefix
-        else if (std.mem.indexOf(u8, joined, "--porcelain") != null)
+        else if (is_status)
             if (self.uncommitted_lines > 0) " M changed.zig\n" else ""
         else
             "";
@@ -490,6 +587,38 @@ test "create job publishes its outcome once the thread finishes" {
     defer outcome.deinit(std.testing.allocator);
     try std.testing.expect(outcome == .created);
     try std.testing.expect(job.poll() == null);
+}
+
+test "management job reports missing branch without blocking caller" {
+    var git: FakeGit = .{ .branch_exists = false };
+    defer git.deinit(std.testing.allocator);
+    const info = WorktreeInfo{ .path = @constCast("/tmp/worktree"), .branch = @constCast("tui/test"), .repo_root = @constCast("/repo"), .prefix = "" };
+    const job = try ManagementJob.start(std.testing.allocator, git.runner(), &info, .reattach);
+    defer job.deinit();
+    var maybe: ?ManagementOutcome = null;
+    while (maybe == null) {
+        maybe = job.poll();
+        if (maybe == null) std.atomic.spinLoopHint();
+    }
+    var outcome = maybe.?;
+    defer outcome.deinit(std.testing.allocator);
+    try std.testing.expect(outcome == .missing_branch);
+}
+
+test "management job refuses to delete a dirty worktree" {
+    var git: FakeGit = .{ .uncommitted_lines = 1 };
+    defer git.deinit(std.testing.allocator);
+    const info = WorktreeInfo{ .path = @constCast("/tmp"), .branch = @constCast("tui/test"), .repo_root = @constCast("/repo"), .prefix = "" };
+    const job = try ManagementJob.start(std.testing.allocator, git.runner(), &info, .remove);
+    defer job.deinit();
+    var maybe: ?ManagementOutcome = null;
+    while (maybe == null) {
+        maybe = job.poll();
+        if (maybe == null) std.atomic.spinLoopHint();
+    }
+    var outcome = maybe.?;
+    defer outcome.deinit(std.testing.allocator);
+    try std.testing.expect(outcome == .dirty);
 }
 
 test "sidecar round-trips the worktree record" {
