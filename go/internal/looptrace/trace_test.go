@@ -122,11 +122,11 @@ func TestAnAnswerBecomesTheCallCompletedWithTheCallersOwnResult(t *testing.T) {
 
 	result := provider.ToolResult{ToolCallID: "call_1", ToolName: "read", Parts: []provider.ContentPart{{Text: &provider.TextPart{Text: "a"}}}}
 	resolved := tr.Envelopes(agent.Event{Kind: agent.ToolCallResolved, Call: &call, ToolResult: &result})
-	if got := joinTypes(resolved); got != "action.call.completed" {
-		t.Fatalf("an answered call emits %s, want one action.call.completed", got)
+	if got := joinTypes(resolved); got != "action.call.started action.call.completed" {
+		t.Fatalf("an answered call emits %s, want it started immediately before the terminal it derives", got)
 	}
 	var completed protocol.ActionCallPayload
-	if err := json.Unmarshal(mustJSON(t, resolved[0]), &completed); err != nil {
+	if err := json.Unmarshal(mustJSON(t, last(resolved)), &completed); err != nil {
 		t.Fatal(err)
 	}
 	if !contains(completed.Result, "a") {
@@ -139,11 +139,11 @@ func TestAnErroredCallFailsRatherThanCompleting(t *testing.T) {
 	call := provider.ToolCall{ID: "call_1", Name: "read", Arguments: "{}"}
 	result := provider.ToolResult{ToolCallID: "call_1", Parts: []provider.ContentPart{{Text: &provider.TextPart{Text: "it was refused"}}}, IsError: true}
 	envelopes := tr.Envelopes(agent.Event{Kind: agent.ToolCallResolved, Call: &call, ToolResult: &result})
-	if got := joinTypes(envelopes); got != "action.call.failed" {
-		t.Fatalf("an errored call emits %s, want action.call.failed", got)
+	if got := joinTypes(envelopes); got != "action.call.started action.call.failed" {
+		t.Fatalf("an errored call emits %s, want it started immediately before the terminal it derives", got)
 	}
 	var failed protocol.ActionCallPayload
-	if err := json.Unmarshal(mustJSON(t, envelopes[0]), &failed); err != nil {
+	if err := json.Unmarshal(mustJSON(t, last(envelopes)), &failed); err != nil {
 		t.Fatal(err)
 	}
 	if failed.Error == nil || failed.Error.Message != "it was refused" {
@@ -160,7 +160,7 @@ func TestACallTheRunWasCancelledWaitingForIsCancelledRatherThanFailed(t *testing
 		t.Fatalf("a call the run was cancelled waiting for emits %s, want action.call.cancelled: a failure reaches the validator only from started or progress, and a cancel closes a pending call", got)
 	}
 	var closed protocol.ActionCallPayload
-	if err := json.Unmarshal(mustJSON(t, envelopes[0]), &closed); err != nil {
+	if err := json.Unmarshal(mustJSON(t, last(envelopes)), &closed); err != nil {
 		t.Fatal(err)
 	}
 	if closed.Error != nil || closed.Result != nil {
@@ -177,11 +177,11 @@ func TestACutOffCallIsFailedWithTheLoopsOwnReason(t *testing.T) {
 	body := "Tool call \"write\" was not run: the reply hit the output token limit, so its arguments may be cut off. Call the tool again with complete arguments."
 	result := provider.ToolResult{ToolCallID: "call_1", Parts: []provider.ContentPart{{Text: &provider.TextPart{Text: body}}}, IsError: true}
 	envelopes := tr.Envelopes(agent.Event{Kind: agent.ToolCallResolved, Call: &call, ToolResult: &result})
-	if got := joinTypes(envelopes); got != "action.call.failed" {
-		t.Fatalf("a cut-off call emits %s, want action.call.failed", got)
+	if got := joinTypes(envelopes); got != "action.call.started action.call.failed" {
+		t.Fatalf("a cut-off call emits %s, want it started immediately before the terminal it derives", got)
 	}
 	var failed protocol.ActionCallPayload
-	if err := json.Unmarshal(mustJSON(t, envelopes[0]), &failed); err != nil {
+	if err := json.Unmarshal(mustJSON(t, last(envelopes)), &failed); err != nil {
 		t.Fatal(err)
 	}
 	if failed.Error == nil || failed.Error.Message != body {
@@ -301,7 +301,7 @@ func TestEveryPartOfACallersResultReachesTheWire(t *testing.T) {
 	}}
 	envelopes := tr.Envelopes(agent.Event{Kind: agent.ToolCallResolved, Call: &call, ToolResult: &result})
 	var completed protocol.ActionCallPayload
-	if err := json.Unmarshal(mustJSON(t, envelopes[0]), &completed); err != nil {
+	if err := json.Unmarshal(mustJSON(t, last(envelopes)), &completed); err != nil {
 		t.Fatal(err)
 	}
 	var parts []protocol.ContentPart
@@ -393,6 +393,10 @@ func contains(raw json.RawMessage, needle string) bool {
 	return strings.Contains(string(raw), needle)
 }
 
+func last(envelopes []protocol.Envelope) protocol.Envelope {
+	return envelopes[len(envelopes)-1]
+}
+
 func mustJSON(t *testing.T, envelope protocol.Envelope) []byte {
 	t.Helper()
 	encoded, err := json.Marshal(envelope.Payload)
@@ -410,6 +414,8 @@ func TestEveryPayloadMatchesItsOwnTypeSchemaAndNotTheTraceRulesAroundIt(t *testi
 	tr := trace(t, &sequenceIDs{})
 	call := provider.ToolCall{ID: "call_1", Name: "read", Arguments: `{"path":"a"}`}
 	cut := provider.ToolCall{ID: "call_2", Name: "write", Arguments: `{"text":"cut`}
+	tr.Accepted("call_1", "resolve-1")
+	tr.Accepted("call_2", "resolve-2")
 	answered := provider.ToolResult{ToolCallID: "call_1", Parts: []provider.ContentPart{{Text: &provider.TextPart{Text: "a"}}}}
 	failed := provider.ToolResult{ToolCallID: "call_2", Parts: []provider.ContentPart{{Text: &provider.TextPart{Text: "not run"}}}, IsError: true}
 	answeredText := provider.AssistantContent{
@@ -445,7 +451,7 @@ func TestEveryPayloadMatchesItsOwnTypeSchemaAndNotTheTraceRulesAroundIt(t *testi
 	}
 	for _, want := range []protocol.EnvelopeType{
 		protocol.TypeContentDelta, protocol.TypeActionCallRequested,
-		protocol.TypeActionCallCompleted, protocol.TypeActionCallFailed,
+		protocol.TypeActionCallStarted, protocol.TypeActionCallCompleted, protocol.TypeActionCallFailed,
 		protocol.TypeActionCallCancelled,
 		protocol.TypeRunCompleted, protocol.TypeRunFailed, protocol.TypeRunCancelled,
 	} {
@@ -476,11 +482,11 @@ func TestAToolErrorWithNoMessageStillCarriesOne(t *testing.T) {
 	call := provider.ToolCall{ID: "call_1", Name: "read", Arguments: "{}"}
 	result := provider.ToolResult{ToolCallID: "call_1", ToolName: "read", IsError: true}
 	envelopes := tr.Envelopes(agent.Event{Kind: agent.ToolCallResolved, Call: &call, ToolResult: &result})
-	if got := joinTypes(envelopes); got != "action.call.failed" {
-		t.Fatalf("a tool error with no message emits %s, want action.call.failed", got)
+	if got := joinTypes(envelopes); got != "action.call.started action.call.failed" {
+		t.Fatalf("a tool error with no message emits %s, want it started immediately before the terminal it derives", got)
 	}
 	var failed protocol.ActionCallPayload
-	if err := json.Unmarshal(mustJSON(t, envelopes[0]), &failed); err != nil {
+	if err := json.Unmarshal(mustJSON(t, last(envelopes)), &failed); err != nil {
 		t.Fatal(err)
 	}
 	if failed.Error == nil || failed.Error.Message == "" {
@@ -488,5 +494,69 @@ func TestAToolErrorWithNoMessageStillCarriesOne(t *testing.T) {
 	}
 	if !strings.Contains(failed.Error.Message, `"read"`) {
 		t.Errorf("the failure says %q, want it to name the tool: nothing else identifies which call went wrong", failed.Error.Message)
+	}
+}
+
+func TestAResolveDerivedTerminalNamesTheRecordedRequestAndInventsNoneWithoutOne(t *testing.T) {
+	tr := trace(t, nil)
+	call := provider.ToolCall{ID: "call_1", Name: "read", Arguments: "{}"}
+	result := provider.ToolResult{ToolCallID: "call_1", Parts: []provider.ContentPart{{Text: &provider.TextPart{Text: "a"}}}}
+	tr.Accepted("call_1", "resolve-7")
+	envelopes := tr.Envelopes(agent.Event{Kind: agent.ToolCallResolved, Call: &call, ToolResult: &result})
+	for index, want := range []protocol.EnvelopeType{protocol.TypeActionCallStarted, protocol.TypeActionCallCompleted} {
+		var payload protocol.ActionCallPayload
+		if err := json.Unmarshal(mustJSON(t, envelopes[index]), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.RequestID != "resolve-7" {
+			t.Errorf("%s names request %q, want resolve-7: only the control layer knows which of its own requests an answer answers", want, payload.RequestID)
+		}
+	}
+	unrecorded := trace(t, nil)
+	envelopes = unrecorded.Envelopes(agent.Event{Kind: agent.ToolCallResolved, Call: &call, ToolResult: &result})
+	var payload protocol.ActionCallPayload
+	if err := json.Unmarshal(mustJSON(t, last(envelopes)), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.RequestID != "" {
+		t.Errorf("a terminal cites request %q with none recorded, want none: a trace that invented a resolve request would settle a call against an answer nobody gave", payload.RequestID)
+	}
+}
+
+func TestTheWholeToolSequenceSatisfiesTheLifecycleTheValidatorEnforces(t *testing.T) {
+	validator, err := validation.New()
+	if err != nil {
+		t.Fatalf("building the validator: %v", err)
+	}
+	tr := trace(t, &sequenceIDs{})
+	call := provider.ToolCall{ID: "call_1", Name: "read", Arguments: `{"path":"a"}`}
+	dropped := provider.ToolCall{ID: "call_2", Name: "write", Arguments: "{}"}
+	answered := provider.ToolResult{ToolCallID: "call_1", Parts: []provider.ContentPart{{Text: &provider.TextPart{Text: "a"}}}}
+	tr.Accepted("call_1", "resolve-1")
+	var envelopes []protocol.Envelope
+	for _, event := range []agent.Event{
+		{Kind: agent.ToolCallRequested, Call: &call},
+		{Kind: agent.ToolCallResolved, Call: &call, ToolResult: &answered},
+		{Kind: agent.ToolCallRequested, Call: &dropped},
+		{Kind: agent.ToolCallCancelled, Call: &dropped},
+	} {
+		envelopes = append(envelopes, tr.Envelopes(event)...)
+	}
+	lines := &bytes.Buffer{}
+	for _, envelope := range envelopes {
+		encoded, err := json.Marshal(envelope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines.Write(encoded)
+		lines.WriteByte('\n')
+	}
+	for _, code := range []string{"illegal_tool_transition", "unmatched_tool", "schema_invalid", "unmatched_interaction"} {
+		result := validator.Validate(lines, "looptrace.jsonl")
+		for _, diagnostic := range result.Diagnostics {
+			if diagnostic.Code == code {
+				t.Errorf("%s: %s\n%s", code, diagnostic.Message, lines.String())
+			}
+		}
 	}
 }

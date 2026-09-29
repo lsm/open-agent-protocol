@@ -32,6 +32,7 @@ type Trace struct {
 	options  Options
 	sequence uint64
 	model    string
+	accepted map[string]protocol.EnvelopeID
 }
 
 func NewTrace(options Options) (*Trace, error) {
@@ -47,7 +48,11 @@ func NewTrace(options Options) (*Trace, error) {
 	if options.Now == nil {
 		options.Now = func() int64 { return 0 }
 	}
-	return &Trace{options: options, sequence: 1, model: options.ModelID}, nil
+	return &Trace{options: options, sequence: 1, model: options.ModelID, accepted: map[string]protocol.EnvelopeID{}}, nil
+}
+
+func (t *Trace) Accepted(toolCallID string, requestID protocol.EnvelopeID) {
+	t.accepted[toolCallID] = requestID
 }
 
 func (t *Trace) ModelID() string { return t.model }
@@ -153,12 +158,14 @@ func (t *Trace) Envelopes(event agent.Event) []protocol.Envelope {
 			return nil
 		}
 		payload := t.callScope(*event.Call)
+		payload.RequestID = t.accepted[event.Call.ID]
+		started := t.call(protocol.TypeActionCallStarted, payload)
 		if event.ToolResult.IsError {
 			payload.Error = &protocol.ProtocolError{Code: "tool_failed", Message: failureTextOf(resultText(*event.ToolResult), *event.ToolResult)}
-			return t.call(protocol.TypeActionCallFailed, payload)
+			return append(started, t.call(protocol.TypeActionCallFailed, payload)...)
 		}
 		payload.Result = json.RawMessage(protocol.PartsContent(resultParts(*event.ToolResult)))
-		return t.call(protocol.TypeActionCallCompleted, payload)
+		return append(started, t.call(protocol.TypeActionCallCompleted, payload)...)
 	case agent.AgentEnd:
 		return t.settle(event)
 	case agent.RunFailed:
