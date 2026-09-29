@@ -617,6 +617,10 @@ the list cannot drift by adding a directory.
 [`docs/go-library.md`](docs/go-library.md) says what each of those is for and
 which file in `goap` uses it, which is where to start when the signature alone
 does not answer the question.
+[`docs/go-agent-loop.md`](docs/go-agent-loop.md) covers the agent loop the Go
+tree is growing its own (#370): what `oapx`'s loop does, which parts the Go
+tree needs first, and why the first slice is text turns and client-executed
+tool calls.
 
 `adapter.RunToTerminal` is the shortest path from a prompt to a result: it
 submits, reads the stream, answers every interaction through a policy

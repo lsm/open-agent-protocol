@@ -60,6 +60,21 @@ func TestLoadRefusesARepeatedMember(t *testing.T) {
 	}
 }
 
+func TestCheckNamesACredentialSourceItDoesNotKnowOrRepeats(t *testing.T) {
+	findings := Check(Catalog{Providers: []Provider{{ID: "kimi", CredentialOrder: []string{"stored", "keychain"}}}})
+	if len(findings) != 1 || findings[0].Code != CodeCredentialOrder {
+		t.Fatalf("findings = %v, want one unknown credential source", findings)
+	}
+	findings = Check(Catalog{Providers: []Provider{{ID: "kimi", CredentialOrder: []string{"stored", "stored"}}}})
+	if len(findings) != 1 || findings[0].Code != CodeCredentialOrder {
+		t.Fatalf("findings = %v, want one repeated credential source", findings)
+	}
+	findings = Check(Catalog{Providers: []Provider{{ID: "kimi", CredentialOrder: []string{"stored", "environment"}}}})
+	if len(findings) != 0 {
+		t.Fatalf("findings = %v, want none", findings)
+	}
+}
+
 func TestCheckNamesADuplicateRow(t *testing.T) {
 	duplicated := []Provider{{ID: "kimi"}, {ID: "kimi"}}
 	findings := Check(Catalog{Providers: duplicated})
