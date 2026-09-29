@@ -2193,6 +2193,8 @@ test "loadProductionModels omits Kimi model by default in tests" {
 
 test "the region resolution a user chose at login reaches discovery and the model's base" {
     const allocator = std.testing.allocator;
+    try compat.setTestEnv(allocator, kimi_region_env, "");
+    defer compat.clearTestEnv();
     var storage = oauth_storage.AuthStorage{
         .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(allocator),
         .allocator = allocator,
