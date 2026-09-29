@@ -381,9 +381,9 @@ pub fn carriesBody(request: Request) bool {
 
 pub fn declaresJson(content_type: ?[]const u8) bool {
     const named = content_type orelse return false;
-    const media = std.mem.trim(u8, named, " ");
+    const media = std.mem.trim(u8, named, " \t");
     const cut = std.mem.indexOfScalar(u8, media, ';') orelse media.len;
-    return std.ascii.eqlIgnoreCase(std.mem.trim(u8, media[0..cut], " "), "application/json");
+    return std.ascii.eqlIgnoreCase(std.mem.trim(u8, media[0..cut], " \t"), "application/json");
 }
 
 pub fn writeAnswer(stream: *compat.net.Stream, arena: std.mem.Allocator, next_id: u64, given: Answer, body_allowed: bool) !void {
@@ -551,6 +551,9 @@ test "a charset is admitted, because application/json registers no parameters" {
     // case and whitespace are the header's, not the grammar's
     var spaced = try requestOver("POST /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type:  Application/JSON ; charset=utf-8\r\nContent-Length: 2\r\n\r\n{}");
     defer spaced.deinit(testing.allocator);
+    var tabbed = try requestOver("POST /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type:\tapplication/json\t;\tcharset=utf-8\r\nContent-Length: 2\r\n\r\n{}");
+    defer tabbed.deinit(testing.allocator);
+    try testing.expectEqual(Answer.not_found, answer(loopback, tabbed));
     try testing.expectEqual(Answer.not_found, answer(loopback, spaced));
 }
 
