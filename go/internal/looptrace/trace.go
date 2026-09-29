@@ -3,6 +3,7 @@ package looptrace
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/lsm/open-agent-protocol/go/internal/agent"
 	"github.com/lsm/open-agent-protocol/go/internal/provider"
@@ -103,6 +104,13 @@ func resultParts(result provider.ToolResult) []protocol.ContentPart {
 	return out
 }
 
+func failureTextOf(text string, result provider.ToolResult) string {
+	if text != "" {
+		return text
+	}
+	return fmt.Sprintf("the tool %q reported an error with no message", result.ToolName)
+}
+
 func resultText(result provider.ToolResult) string {
 	for _, part := range result.Parts {
 		if part.Text != nil && part.Text.Text != "" {
@@ -146,7 +154,7 @@ func (t *Trace) Envelopes(event agent.Event) []protocol.Envelope {
 		}
 		payload := t.callScope(*event.Call)
 		if event.ToolResult.IsError {
-			payload.Error = &protocol.ProtocolError{Code: "tool_failed", Message: resultText(*event.ToolResult)}
+			payload.Error = &protocol.ProtocolError{Code: "tool_failed", Message: failureTextOf(resultText(*event.ToolResult), *event.ToolResult)}
 			return t.call(protocol.TypeActionCallFailed, payload)
 		}
 		payload.Result = json.RawMessage(protocol.PartsContent(resultParts(*event.ToolResult)))

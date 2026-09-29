@@ -106,20 +106,14 @@ func (r *Run) emit(event Event) {
 		r.events <- event
 		return
 	}
-	for {
-		if len(r.events) < eventBuffer-1 {
-			select {
-			case r.events <- event:
-			default:
-			}
-			return
-		}
+	for len(r.events) >= eventBuffer-1 {
 		select {
 		case <-r.ctx.Done():
 			return
 		case <-time.After(roomPoll):
 		}
 	}
+	r.events <- event
 }
 
 func (r *Run) settle(result Result) {
@@ -263,11 +257,6 @@ func (r *Run) runToolCalls(assistant provider.AssistantContent) ([]provider.Tool
 		results = append(results, result)
 	}
 	return results, live
-}
-
-func (r *Run) answerCall(call provider.ToolCall, result provider.ToolResult) provider.ToolResult {
-	r.emit(Event{Kind: ToolCallResolved, Call: &call, ToolResult: &result})
-	return result
 }
 
 func (r *Run) cancelCall(call provider.ToolCall) provider.ToolResult {

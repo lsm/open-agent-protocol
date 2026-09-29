@@ -470,3 +470,23 @@ func TestEveryPayloadMatchesItsOwnTypeSchemaAndNotTheTraceRulesAroundIt(t *testi
 		}
 	}
 }
+
+func TestAToolErrorWithNoMessageStillCarriesOne(t *testing.T) {
+	tr := trace(t, nil)
+	call := provider.ToolCall{ID: "call_1", Name: "read", Arguments: "{}"}
+	result := provider.ToolResult{ToolCallID: "call_1", ToolName: "read", IsError: true}
+	envelopes := tr.Envelopes(agent.Event{Kind: agent.ToolCallResolved, Call: &call, ToolResult: &result})
+	if got := joinTypes(envelopes); got != "action.call.failed" {
+		t.Fatalf("a tool error with no message emits %s, want action.call.failed", got)
+	}
+	var failed protocol.ActionCallPayload
+	if err := json.Unmarshal(mustJSON(t, envelopes[0]), &failed); err != nil {
+		t.Fatal(err)
+	}
+	if failed.Error == nil || failed.Error.Message == "" {
+		t.Fatalf("the failure carries %+v, want a message: the schema admits no empty one, and a tool that reports an error with no text is exactly the case that leaves nothing to say", failed.Error)
+	}
+	if !strings.Contains(failed.Error.Message, `"read"`) {
+		t.Errorf("the failure says %q, want it to name the tool: nothing else identifies which call went wrong", failed.Error.Message)
+	}
+}

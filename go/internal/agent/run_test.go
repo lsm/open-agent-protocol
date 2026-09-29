@@ -872,3 +872,44 @@ func TestACutOffCallIsAnsweredForTheModelAndStaysOffTheWire(t *testing.T) {
 		t.Errorf("a cut-off call left no result for the model to see: %+v", run.Result().Messages)
 	}
 }
+
+func TestNoEventIsLostToAReaderThatFallsBehind(t *testing.T) {
+	const deltas = 300
+	frames := make([]string, 0, deltas+1)
+	for i := 0; i < deltas; i++ {
+		frames = append(frames, frame(fmt.Sprintf(`{"choices":[{"delta":{"content":"%d."}}]}`, i)))
+	}
+	frames = append(frames, frame(`{"choices":[{"delta":{},"finish_reason":"stop"}]}`))
+	script := &scripted{turns: []scriptedTurn{{frames: frames}}}
+	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("count"))
+	time.Sleep(50 * time.Millisecond)
+	var got []string
+	for _, event := range drain(t, run) {
+		if event.Kind == TextDelta {
+			got = append(got, event.Delta)
+		}
+	}
+	if len(got) != deltas {
+		t.Fatalf("a reader that fell behind by %d deltas saw %d, want %d: an event the buffer could not hold is an event the run never had", deltas, len(got), deltas)
+	}
+	for i, delta := range got {
+		if want := fmt.Sprintf("%d.", i); delta != want {
+			t.Fatalf("delta %d is %q, want %q: a wait for room must not reorder what a consumer reads", i, delta, want)
+		}
+	}
+}
+
+func TestARunThatIsCancelledWhileTheBufferIsFullStopsRatherThanWaitsForever(t *testing.T) {
+	frames := make([]string, 0, 300)
+	for i := 0; i < 300; i++ {
+		frames = append(frames, frame(fmt.Sprintf(`{"choices":[{"delta":{"content":"%d."}}]}`, i)))
+	}
+	script := &scripted{turns: []scriptedTurn{{frames: frames}}}
+	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("count"))
+	time.Sleep(50 * time.Millisecond)
+	run.Cancel()
+	terminal := terminalOf(t, drain(t, run))
+	if terminal.Kind != AgentEnd || terminal.Termination != TerminationCanceled {
+		t.Errorf("a run cancelled while its buffer is full ended as %q/%q, want a cancelled agent_end: the wait for room is abandoned rather than held past the cancel", terminal.Kind, terminal.Termination)
+	}
+}
