@@ -138,10 +138,17 @@ const Runner = struct {
         });
     }
 
-    fn failOwned(self: *Runner, name: []const u8, detail: []const u8) !void {
+    fn passOwned(self: *Runner, name: []const u8, detail: []const u8) !void {
+        errdefer self.allocator.free(detail);
         const owned_name = try self.allocator.dupe(u8, name);
         errdefer self.allocator.free(owned_name);
+        try self.add(.{ .name = owned_name, .detail = detail });
+    }
+
+    fn failOwned(self: *Runner, name: []const u8, detail: []const u8) !void {
         errdefer self.allocator.free(detail);
+        const owned_name = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(owned_name);
         try self.add(.{ .name = owned_name, .passed = false, .detail = detail });
     }
 
@@ -341,10 +348,8 @@ const Runner = struct {
                 "the admission did not repeat the requested auto delivery",
             );
         } else {
-            const check_name = try self.allocator.dupe(u8, "the admission repeats requested_delivery and reports a concrete effective_delivery");
-            errdefer self.allocator.free(check_name);
             const settled = try std.fmt.allocPrint(self.allocator, "auto resolved to {s}", .{@tagName(admission.effective_delivery)});
-            try self.add(.{ .name = check_name, .detail = settled });
+            try self.passOwned("the admission repeats requested_delivery and reports a concrete effective_delivery", settled);
         }
 
         try self.consumeRun(line_deadline_ms);
@@ -419,10 +424,8 @@ const Runner = struct {
                 else => {},
             }
             if (held.payload.isTerminal()) {
-                const check_name = try self.allocator.dupe(u8, "the run reaches a terminal event");
-                errdefer self.allocator.free(check_name);
                 const settled = try std.fmt.allocPrint(self.allocator, "settled {s}", .{held.payload.typeName()});
-                try self.add(.{ .name = check_name, .detail = settled });
+                try self.passOwned("the run reaches a terminal event", settled);
                 return;
             }
         }
