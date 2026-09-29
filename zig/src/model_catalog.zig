@@ -682,7 +682,61 @@ fn freeEnvironment(allocator: std.mem.Allocator, values: []provider_credential.E
     allocator.free(values);
 }
 
+fn refusalMarkerName(allocator: std.mem.Allocator, id: []const u8, region: ?[]const u8) ![]u8 {
+    const base = try catalogRowCacheName(allocator, id, region);
+    defer allocator.free(base);
+    if (std.mem.endsWith(u8, base, ".json")) {
+        return std.fmt.allocPrint(allocator, "{s}.refused", .{base[0 .. base.len - ".json".len]});
+    }
+    return std.fmt.allocPrint(allocator, "{s}.refused", .{base});
+}
+
+fn refusalIsFresh(allocator: std.mem.Allocator, name: []const u8, max_age_ms: i64) bool {
+    const path = makaiCatalogPath(allocator, name) catch return false;
+    defer allocator.free(path);
+    const modified = compat.fs.modifiedMillis(compat.fs.getCwd(), path) catch return false;
+    return catalogIsFresh(modified, compat.time.nowMillis(), max_age_ms);
+}
+
+fn rememberRefusal(allocator: std.mem.Allocator, name: []const u8) void {
+    const path = makaiCatalogPath(allocator, name) catch return;
+    defer allocator.free(path);
+    if (std.fs.path.dirname(path)) |dir| {
+        compat.fs.createDir(compat.fs.getCwd(), dir) catch {};
+    }
+    compat.fs.writeFile(compat.fs.getCwd(), path, "") catch {};
+}
+
+fn forgetRefusal(allocator: std.mem.Allocator, name: []const u8) void {
+    const path = makaiCatalogPath(allocator, name) catch return;
+    defer allocator.free(path);
+    compat.fs.removeFile(path);
+}
+
 fn discoverCatalogModels(
+    allocator: std.mem.Allocator,
+    target: CatalogEndpoint,
+    token: []const u8,
+    mode: CatalogLoadMode,
+) !?[]DiscoveredModel {
+    const marker = try refusalMarkerName(allocator, target.id, target.region);
+    defer allocator.free(marker);
+    if (mode == .allow_cache and refusalIsFresh(allocator, marker, anthropic_catalog_max_age_ms)) {
+        return error.ModelCatalogRefused;
+    }
+
+    const found = discoverCatalogModelsUncached(allocator, target, token, mode) catch |err| switch (err) {
+        error.ModelCatalogRefused => {
+            rememberRefusal(allocator, marker);
+            return error.ModelCatalogRefused;
+        },
+        else => return err,
+    };
+    if (found != null) forgetRefusal(allocator, marker);
+    return found;
+}
+
+fn discoverCatalogModelsUncached(
     allocator: std.mem.Allocator,
     target: CatalogEndpoint,
     token: []const u8,
@@ -2207,10 +2261,20 @@ fn probeXiaomiGroup(allocator: std.mem.Allocator, refused: bool) ![]ai_types.Mod
     return loadCatalogModelsWithRows(allocator, &xiaomi_group, null, .allow_cache);
 }
 
+fn tempHome(allocator: std.mem.Allocator) !std.testing.TmpDir {
+    var tmp = std.testing.tmpDir(.{});
+    errdefer tmp.cleanup();
+    var home_buf: [160]u8 = undefined;
+    try compat.setTestEnv(allocator, "HOME", try std.fmt.bufPrint(&home_buf, ".zig-cache/tmp/{s}", .{tmp.sub_path}));
+    return tmp;
+}
+
 test "a key refused on every plan is offered only the pay-as-you-go row" {
     const allocator = std.testing.allocator;
     try provider_catalog.blankEnvironment(allocator);
     defer compat.clearTestEnv();
+    var tmp = try tempHome(allocator);
+    defer tmp.cleanup();
 
     const models = try probeXiaomiGroup(allocator, true);
     defer deinitModels(allocator, models);
@@ -2224,16 +2288,92 @@ const cached_listing =
     \\{"data":[{"id":"cached-plan-model","display_name":"Cached Plan Model"}]}
 ;
 
+test "a refusal is remembered, so a later run drops the row without asking again" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+    var tmp = try tempHome(allocator);
+    defer tmp.cleanup();
+
+    const plan = "xiaomi-token-plan-cn";
+    var target = catalogTargetInRegion(plan, null) orelse return error.TestExpectedTarget;
+    defer target.deinit(allocator);
+
+    test_catalog_environment = &[_]provider_credential.EnvironmentValue{
+        .{ .name = "XIAOMI_API_KEY", .value = "shared-key" },
+    };
+    defer test_catalog_environment = null;
+
+    const refusing = [_]CatalogDiscovery{
+        .{ .id = plan, .models_url = target.models_url, .model_ids = &.{}, .refused = true },
+    };
+    test_catalog_discovery = &refusing;
+    const first = try loadCatalogModelsWithRows(allocator, &[_][]const u8{plan}, null, .allow_cache);
+    defer deinitModels(allocator, first);
+    try std.testing.expectEqual(@as(usize, 0), first.len);
+
+    const answering = [_]CatalogDiscovery{
+        .{ .id = plan, .models_url = target.models_url, .model_ids = &.{"plan-model"} },
+    };
+    test_catalog_discovery = &answering;
+    const second = try loadCatalogModelsWithRows(allocator, &[_][]const u8{plan}, null, .allow_cache);
+    defer deinitModels(allocator, second);
+    try std.testing.expectEqual(@as(usize, 0), second.len);
+
+    const marker = try refusalMarkerName(allocator, plan, null);
+    defer allocator.free(marker);
+    try std.testing.expect(refusalIsFresh(allocator, marker, anthropic_catalog_max_age_ms));
+
+    const refreshed = try loadCatalogModelsWithRows(allocator, &[_][]const u8{plan}, null, .force_fetch);
+    defer deinitModels(allocator, refreshed);
+    try std.testing.expectEqual(@as(usize, 1), refreshed.len);
+    try std.testing.expectEqualStrings("plan-model", refreshed[0].id);
+}
+
+test "a remembered refusal is forgotten once the row answers again" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+    var tmp = try tempHome(allocator);
+    defer tmp.cleanup();
+
+    const plan = "xiaomi-token-plan-cn";
+    var target = catalogTargetInRegion(plan, null) orelse return error.TestExpectedTarget;
+    defer target.deinit(allocator);
+
+    test_catalog_environment = &[_]provider_credential.EnvironmentValue{
+        .{ .name = "XIAOMI_API_KEY", .value = "shared-key" },
+    };
+    defer test_catalog_environment = null;
+
+    const marker = try refusalMarkerName(allocator, plan, null);
+    defer allocator.free(marker);
+    rememberRefusal(allocator, marker);
+    try std.testing.expect(refusalIsFresh(allocator, marker, anthropic_catalog_max_age_ms));
+
+    const answering = [_]CatalogDiscovery{
+        .{ .id = plan, .models_url = target.models_url, .model_ids = &.{"plan-model"} },
+    };
+    test_catalog_discovery = &answering;
+    defer test_catalog_discovery = null;
+
+    const dropped = try loadCatalogModelsWithRows(allocator, &[_][]const u8{plan}, null, .allow_cache);
+    defer deinitModels(allocator, dropped);
+    try std.testing.expectEqual(@as(usize, 0), dropped.len);
+
+    const refreshed = try loadCatalogModelsWithRows(allocator, &[_][]const u8{plan}, null, .force_fetch);
+    defer deinitModels(allocator, refreshed);
+    try std.testing.expectEqual(@as(usize, 1), refreshed.len);
+    try std.testing.expect(!refusalIsFresh(allocator, marker, anthropic_catalog_max_age_ms));
+}
+
 test "a cached listing is read back for a row, freshness and all" {
     const allocator = std.testing.allocator;
     try provider_catalog.blankEnvironment(allocator);
     defer compat.clearTestEnv();
 
-    var tmp = std.testing.tmpDir(.{});
+    var tmp = try tempHome(allocator);
     defer tmp.cleanup();
-    var home_buf: [160]u8 = undefined;
-    const home = try std.fmt.bufPrint(&home_buf, ".zig-cache/tmp/{s}", .{tmp.sub_path});
-    try compat.setTestEnv(allocator, "HOME", home);
 
     const name = try catalogRowCacheName(allocator, "xiaomi-token-plan-cn", null);
     defer allocator.free(name);
@@ -2255,6 +2395,8 @@ test "a key every plan answers keeps all four rows, the plans first" {
     const allocator = std.testing.allocator;
     try provider_catalog.blankEnvironment(allocator);
     defer compat.clearTestEnv();
+    var tmp = try tempHome(allocator);
+    defer tmp.cleanup();
 
     const models = try probeXiaomiGroup(allocator, false);
     defer deinitModels(allocator, models);
