@@ -24,7 +24,7 @@ bypasses all of it and calls `agent.Agent` directly.
 | `session.state` | degraded | via `advertised_degradation`; not resumable, no transcript replay |
 | `session.model.switch` | native | |
 | `models.list` | native | |
-| `auth.providers`, `auth.login` | native | advertised, but see G5 |
+| `auth.providers`, `auth.login` | native | dispatched by `auth_adapter.zig`, not by `server.zig` — see G5 |
 | `session.message.submit`, `session.message.delivery.auto` | native | auto delivery only |
 | `run.streaming`, `run.status` | native | |
 | `run.model_selection` | native, scope `run` | |
@@ -35,8 +35,9 @@ bypasses all of it and calls `agent.Agent` directly.
 `session.message.delivery.btw`, `action.tools.list`, `action.providers.attach`
 and `run.instructions` are **not advertised**, and `handleSubmit` refuses any
 delivery but `auto` with `unsupported_feature`. A test at `server.zig:2131`
-pins that refusal, so it is a decision, not an oversight — but it is a decision
-that costs the TUI two of its primary mid-run controls, which is G2.
+pins that they are unadvertised and a test at `server.zig:3024` pins the typed
+refusal, so it is a decision, not an oversight — but it is a decision that costs
+the TUI two of its primary mid-run controls, which is G2.
 
 ## The map
 
@@ -51,7 +52,7 @@ without going through the ops table.
 | `cancel` | `run.cancel.request` | covered, degraded — G1 |
 | `switch_model`, `switch_model_exact` | `session.model.switch.request` | covered |
 | `current_model` | `session.state.request` | covered |
-| `queued_counts` | `session.state.request` | covered |
+| `queued_counts` | none | **gap** — G3 |
 | `can_steer` | `capabilities` gating | covered |
 | `history` | `session.state.request` | covered, degraded — G1 |
 | `stream_events` | `content.delta`, `run.status.updated`, terminal run events | covered |
@@ -96,32 +97,55 @@ optional core features, so this is an endpoint gap rather than a protocol one.
 
 This is agent-side work and it gates two of the TUI's most-used features.
 
-### G3 — two queue counters have no envelope
+### G3 — three queue counters have no envelope
 
-`clear_queued_messages` and `steers_consumed` are the TUI asking about its own
-queue. Neither is session state the protocol carries, and neither should become
-a new envelope. Recommendation: TUI-local state, derived from the admission
-responses the TUI already receives for each submit, and it never crosses the
-boundary. Filed as #616.
+`clear_queued_messages`, `steers_consumed` and `queued_counts` are the TUI asking
+about its own queue. `SessionState` carries `session_id`, `status`,
+`active_run_id`, `current_model_id` and `updated_at_ms` (`server.zig:849`) and no
+queue counters, while `TuiSession`'s `QueuedCounts` is `{steering, follow_up}`.
+None of the three is session state the protocol carries, and none should grow an
+envelope to carry it.
 
-### G4 — permissions and user input are not implemented in the endpoint
+Recommendation: TUI-local state, derived from the admission responses the TUI
+already receives for each submit, and it never crosses the boundary. Filed as
+#616.
+
+### G4 — permissions and user input are not dispatched by the endpoint
 
 `action.permissions` and `user_input` are named as optional core features in the
-draft and appear **nowhere** in `zig/src/protocol/oap/` — not in the capability
-list and not in the dispatch. The TUI cannot move `decide_tool_approval`,
-permission modes or the approval prompt until they exist. Filed as its own issue
-(#612) because it is agent-side work, not TUI work, and it is on the critical
-path for the tools work.
+draft. `action.permissions` appears **nowhere** in `zig/src/protocol/oap/` — not
+in the capability list, not in `server.zig`'s dispatch, and not among the
+payload shapes in `types.zig`. `user_input` is in a different position: its
+`user.input.resolve.request` / `.response` and `user.input.requested` / `.resolved`
+shapes are defined in `types.zig:1088` and carried in `envelope.zig`, but it is
+absent from the capability list and from `server.zig`'s dispatch, so nothing
+produces or answers one today.
 
-### G5 — `auth.login` is advertised but not dispatched
+Either way the TUI cannot move `decide_tool_approval`, permission modes or the
+approval prompt until the endpoint answers them. The `user_input` shapes being
+present is the better half of that news: the work is dispatch and advertisement,
+not a wire format. Filed as its own issue (#612) because it is agent-side work,
+not TUI work, and it is on the critical path for the tools work.
 
-`auth.providers` and `auth.login` are both advertised `native`, and the draft
-puts auth provider listing and login flows outside the core. **Decision: auth
-stays TUI-local and never crosses the boundary.** Credentials belong to the
-store that holds them — today the Keychain through `oauth/storage` — and login
-is not agent state. Two consequences: #375's step list no longer moves login,
-and the endpoint's `auth.*` advertisement is a capability claim with no handler
-behind it, which is worth correcting on its own.
+### G5 — auth is served, and stays TUI-local anyway
+
+`auth.providers` and `auth.login` are advertised `native` and are genuinely
+served: `zig/src/protocol/oap/auth_adapter.zig:173` dispatches
+`auth.providers.request`, `auth.login.start.request` and
+`auth.login.cancel.request`, and `zig/src/tools/makai.zig:9154` wires the adapter
+into the serve path. It is a separate adapter rather than a `server.zig` branch,
+which is why a capability list read alone does not show it.
+
+The draft puts auth provider listing and login flows outside the core.
+**Decision: auth stays TUI-local and never crosses the boundary.** Credentials
+belong to the store that holds them — today the Keychain through
+`oauth/storage` — and login is not agent state. The endpoint keeping a working
+auth surface is not a problem; the TUI simply does not use it, and #375's step
+list no longer moves login.
+
+This is worth recording rather than treating as settled, because it is the one
+place where a working endpoint capability is deliberately left on the table. If
+a future control layer wants login over the wire, the endpoint already answers.
 
 ### G6 — compaction and continue-after-compaction have no verb
 
@@ -157,7 +181,7 @@ tool definitions are #374's subject and gate the TUI's tools step. Filed as
 ## What stays on the TUI side of the line
 
 - **Credentials and login** (G5), on the owner's decision and the draft's own
-  section.
+  section. The endpoint serves `auth.*` today; the TUI does not use it.
 - **The queue counters** in G3, derived locally.
 - **The title request.** `TuiRuntime.protocol` is an `agent.ProtocolClient` —
   a *model-provider* seam, a different protocol from agent-control, and the TUI
