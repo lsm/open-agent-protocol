@@ -357,6 +357,7 @@ const CatalogDiscovery = struct {
     id: []const u8,
     models_url: []const u8,
     model_ids: []const []const u8,
+    refused: bool = false,
 };
 
 var test_catalog_discovery: ?[]const CatalogDiscovery = null;
@@ -544,6 +545,10 @@ fn loadCatalogModelsWithRows(
     return models.toOwnedSlice(allocator);
 }
 
+fn rowDropsOnRefusal(id: []const u8) bool {
+    return provider_catalog.offering(id) == .coding_plan;
+}
+
 fn appendCatalogTargetModels(
     allocator: std.mem.Allocator,
     out: *std.ArrayList(ai_types.Model),
@@ -557,7 +562,10 @@ fn appendCatalogTargetModels(
     var credential = (try provider_credential.lookup(allocator, environment, storage, target.id)) orelse return;
     defer credential.deinit(allocator);
 
-    const discovered = try discoverCatalogModels(allocator, target, credential.key, mode);
+    const discovered = discoverCatalogModels(allocator, target, credential.key, mode) catch |err| switch (err) {
+        error.ModelCatalogRefused => return,
+        else => return err,
+    };
     defer if (discovered) |models| freeDiscoveredModels(allocator, models);
 
     if (discovered) |models| {
@@ -689,15 +697,22 @@ fn discoverCatalogModels(
         if (try loadCachedCatalogModels(allocator, name, anthropic_catalog_max_age_ms)) |models| return models;
     }
 
-    if (fetchCatalogModelsCatalog(allocator, target, token)) |body| {
-        defer allocator.free(body);
-        if (parseCatalogModels(allocator, body)) |models| {
-            if (models.len > 0) {
-                saveMakaiCatalog(allocator, name, body) catch {};
-                return models;
-            }
-            freeDiscoveredModels(allocator, models);
-        } else |_| {}
+    const body = fetchCatalogModelsCatalog(allocator, target, token) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.ModelCatalogRefused => {
+            if (rowDropsOnRefusal(target.id)) return error.ModelCatalogRefused;
+            return loadCachedCatalogModels(allocator, name, null);
+        },
+        else => return loadCachedCatalogModels(allocator, name, null),
+    };
+    defer allocator.free(body);
+
+    if (parseCatalogModels(allocator, body)) |models| {
+        if (models.len > 0) {
+            saveMakaiCatalog(allocator, name, body) catch {};
+            return models;
+        }
+        freeDiscoveredModels(allocator, models);
     } else |_| {}
 
     return loadCachedCatalogModels(allocator, name, null);
@@ -708,6 +723,7 @@ fn testCatalogModels(allocator: std.mem.Allocator, id: []const u8, models_url: [
     for (rows) |row| {
         if (!std.mem.eql(u8, row.id, id)) continue;
         if (!std.mem.eql(u8, row.models_url, models_url)) continue;
+        if (row.refused) return error.ModelCatalogRefused;
         const out = try allocator.alloc(DiscoveredModel, row.model_ids.len);
         var filled: usize = 0;
         errdefer {
@@ -2157,6 +2173,97 @@ test "loadProductionModels omits Kimi model by default in tests" {
     for (models) |model| {
         try std.testing.expect(!std.mem.eql(u8, kimi_provider_id, model.provider));
     }
+}
+
+const xiaomi_group = [_][]const u8{
+    "xiaomi-token-plan-cn",
+    "xiaomi-token-plan-sgp",
+    "xiaomi-token-plan-ams",
+    "xiaomi",
+};
+
+fn probeXiaomiGroup(allocator: std.mem.Allocator, refused: bool) ![]ai_types.Model {
+    const plans = [_][]const u8{ "xiaomi-token-plan-cn", "xiaomi-token-plan-sgp", "xiaomi-token-plan-ams" };
+    var rows: [4]CatalogDiscovery = undefined;
+    var filled: usize = 0;
+    for (plans) |plan| {
+        var target = catalogTargetInRegion(plan, null) orelse return error.TestExpectedTarget;
+        defer target.deinit(allocator);
+        rows[filled] = .{ .id = plan, .models_url = target.models_url, .model_ids = &.{"plan-model"}, .refused = refused };
+        filled += 1;
+    }
+    var payg = catalogTargetInRegion("xiaomi", null) orelse return error.TestExpectedTarget;
+    defer payg.deinit(allocator);
+    rows[filled] = .{ .id = "xiaomi", .models_url = payg.models_url, .model_ids = &.{"mimo-model"}, .refused = false };
+
+    test_catalog_discovery = &rows;
+    test_catalog_environment = &[_]provider_credential.EnvironmentValue{
+        .{ .name = "XIAOMI_API_KEY", .value = "shared-key" },
+    };
+    defer {
+        test_catalog_discovery = null;
+        test_catalog_environment = null;
+    }
+    return loadCatalogModelsWithRows(allocator, &xiaomi_group, null, .allow_cache);
+}
+
+test "a key refused on every plan is offered only the pay-as-you-go row" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+
+    const models = try probeXiaomiGroup(allocator, true);
+    defer deinitModels(allocator, models);
+
+    try std.testing.expectEqual(@as(usize, 1), models.len);
+    try std.testing.expectEqualStrings("xiaomi", models[0].provider);
+    try std.testing.expectEqualStrings("mimo-model", models[0].id);
+}
+
+const cached_listing =
+    \\{"data":[{"id":"cached-plan-model","display_name":"Cached Plan Model"}]}
+;
+
+test "a cached listing is read back for a row, freshness and all" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var home_buf: [160]u8 = undefined;
+    const home = try std.fmt.bufPrint(&home_buf, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    try compat.setTestEnv(allocator, "HOME", home);
+
+    const name = try catalogRowCacheName(allocator, "xiaomi-token-plan-cn", null);
+    defer allocator.free(name);
+    const dir = try makaiCatalogDirPath(allocator);
+    defer allocator.free(dir);
+    try compat.fs.createDir(compat.fs.getCwd(), dir);
+    const cache_path = try std.fs.path.join(allocator, &.{ dir, name });
+    defer allocator.free(cache_path);
+    try compat.fs.writeFile(compat.fs.getCwd(), cache_path, cached_listing);
+
+    const models = (try loadCachedCatalogModels(allocator, name, anthropic_catalog_max_age_ms)).?;
+    defer freeDiscoveredModels(allocator, models);
+    try std.testing.expectEqual(@as(usize, 1), models.len);
+    try std.testing.expectEqualStrings("cached-plan-model", models[0].id);
+    try std.testing.expectEqualStrings("Cached Plan Model", models[0].name.?);
+}
+
+test "a key every plan answers keeps all four rows, the plans first" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+
+    const models = try probeXiaomiGroup(allocator, false);
+    defer deinitModels(allocator, models);
+
+    try std.testing.expectEqual(@as(usize, 4), models.len);
+    try std.testing.expectEqualStrings("xiaomi-token-plan-cn", models[0].provider);
+    try std.testing.expectEqualStrings("xiaomi-token-plan-sgp", models[1].provider);
+    try std.testing.expectEqualStrings("xiaomi-token-plan-ams", models[2].provider);
+    try std.testing.expectEqualStrings("xiaomi", models[3].provider);
 }
 
 test "only a 401 or a 403 says the key was refused, and an outage does not" {
