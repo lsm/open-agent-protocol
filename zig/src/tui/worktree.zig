@@ -286,7 +286,7 @@ pub const ManagementJob = struct {
     }
 };
 
-fn cloneInfo(allocator: std.mem.Allocator, info: *const WorktreeInfo) !WorktreeInfo {
+pub fn cloneInfo(allocator: std.mem.Allocator, info: *const WorktreeInfo) !WorktreeInfo {
     const path = try allocator.dupe(u8, info.path);
     errdefer allocator.free(path);
     const branch = try allocator.dupe(u8, info.branch);

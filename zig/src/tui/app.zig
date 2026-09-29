@@ -846,6 +846,7 @@ pub const App = struct {
     held_user_message: []u8 = &.{},
     queued_worktree_messages: std.ArrayList([]u8) = .empty,
     session_turns: usize = 0,
+    pending_worktree_info: ?tui_worktree.WorktreeInfo = null,
     session_id: []u8 = &.{},
     working_dir: []u8 = &.{},
     launch_dir: []u8 = &.{},
@@ -967,6 +968,12 @@ pub const App = struct {
             }
             job.deinit();
             self.worktree_management_job = null;
+        }
+        if (self.pending_worktree_info) |pending| {
+            var info = pending;
+            self.pending_worktree_info = null;
+            self.persistOrDiscardCreatedWorktree(&info);
+            info.deinit(self.allocator);
         }
         if (self.pending_resume_id.len > 0) self.allocator.free(self.pending_resume_id);
         if (self.pending_resume_path.len > 0) self.allocator.free(self.pending_resume_path);
@@ -1116,6 +1123,27 @@ pub const App = struct {
             return;
         }
         try self.finishDeleteSession(id);
+    }
+
+    fn recordWorktreeSidecar(self: *App, info: *const tui_worktree.WorktreeInfo) !void {
+        const store = self.store orelse return;
+        if ((store.conversationBytes(self.session_id) catch 0) > 0) {
+            try tui_worktree.writeSidecar(self.allocator, store.base_dir, self.session_id, info);
+            return;
+        }
+        const cloned = try tui_worktree.cloneInfo(self.allocator, info);
+        if (self.pending_worktree_info) |*previous| previous.deinit(self.allocator);
+        self.pending_worktree_info = cloned;
+    }
+
+    fn flushPendingWorktreeSidecar(self: *App) void {
+        const pending = self.pending_worktree_info orelse return;
+        const store = self.store orelse return;
+        if ((store.conversationBytes(self.session_id) catch 0) == 0) return;
+        tui_worktree.writeSidecar(self.allocator, store.base_dir, self.session_id, &pending) catch {};
+        var owned = self.pending_worktree_info.?;
+        self.pending_worktree_info = null;
+        owned.deinit(self.allocator);
     }
 
     fn persistOrDiscardCreatedWorktree(self: *App, info: *const tui_worktree.WorktreeInfo) void {
@@ -1741,6 +1769,7 @@ pub const App = struct {
         };
         if (wrote_metadata or titled or event == .agent_end) self.saveSessionIndex(store);
         if (event == .agent_end) self.requestSessionTitle();
+        self.flushPendingWorktreeSidecar();
     }
 
     fn titleFromFirstMessage(self: *App, text: []const u8) bool {
@@ -2016,7 +2045,7 @@ pub const App = struct {
                 try (self.runtime orelse return error.NoRuntimeConfigured).setWorkspaceRoot(new_dir);
                 try replaceOwnedString(self.allocator, &self.working_dir, new_dir);
                 try self.refreshCwdDisplay();
-                if (self.store) |store| try tui_worktree.writeSidecar(self.allocator, store.base_dir, self.session_id, &created.info);
+                try self.recordWorktreeSidecar(&created.info);
                 try self.state.appendTranscript(.system, "Git worktree ready for this session.");
                 if (created.uncommitted > 0) try self.state.appendTranscript(.system, "Note: the original repository has uncommitted changes; the worktree starts from the current commit.");
             },
@@ -2037,14 +2066,13 @@ pub const App = struct {
             switch (outcome) {
                 .dirty => try self.state.appendTranscript(.system, "Cannot delete this session: its worktree is dirty or Git could not verify it safely."),
                 .removed => |message| {
-                    if (message) |text| {
-                        try self.state.appendTranscript(.system, text);
-                        if (!std.mem.startsWith(u8, text, "git branch -d:")) return;
-                        try self.state.appendTranscript(.system, "Worktree removed; retaining its branch because Git reports it is not safely deletable.");
-                    }
+                    if (message) |text| try self.state.appendTranscript(.system, text);
                     try self.finishDeleteSession(id);
                 },
-                .failed => |message| try self.state.appendTranscript(.@"error", message),
+                .failed => |message| {
+                    try self.state.appendTranscript(.@"error", message);
+                    try self.finishDeleteSession(id);
+                },
                 else => return error.InvalidWorktreeOutcome,
             }
             return;
