@@ -259,6 +259,31 @@ test "App tool call without a workspace root leaves the path row alone" {
     try std.testing.expect(!app.state.agentCwdIsOutsideSession());
 }
 
+test "App resume leaves the path row at the session root" {
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, "/work/session");
+    try app.refreshCwdDisplay();
+    try app.applyRuntimeEvent(.{ .tool_execution_start = .{
+        .tool_call_id = .initBorrowed("call-1"),
+        .tool_name = .initBorrowed("shell_execute"),
+        .args_json = .initBorrowed("{\"workspace_root\":\"/work/elsewhere\"}"),
+    } });
+    try std.testing.expectEqualStrings("/work/elsewhere", app.state.cwdRowPath());
+
+    app.state.resetReplayState();
+    app.state.setFollowingAgentCwd(false);
+    defer app.state.setFollowingAgentCwd(true);
+    try app.applyRuntimeEvent(.{ .tool_execution_start = .{
+        .tool_call_id = .initBorrowed("call-2"),
+        .tool_name = .initBorrowed("shell_execute"),
+        .args_json = .initBorrowed("{\"workspace_root\":\"/work/replayed\"}"),
+    } });
+
+    try std.testing.expectEqualStrings("/work/session", app.state.cwdRowPath());
+}
+
 test "App tool call keeps the path row muted inside the session root" {
     var app = App.initWithoutRuntime(std.testing.allocator);
     defer app.deinit();
@@ -1093,6 +1118,8 @@ pub const App = struct {
         } else {
             try self.state.status.setModelWithContext(self.allocator, loaded.metadata.model, loaded.metadata.provider, 0);
         }
+        self.state.setFollowingAgentCwd(false);
+        defer self.state.setFollowingAgentCwd(true);
         for (loaded.events.items) |*event| {
             try self.applyRuntimeEvent(event.*);
         }

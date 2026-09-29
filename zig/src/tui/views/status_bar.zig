@@ -889,6 +889,29 @@ test "resetting replay state clears the agent's directory" {
     try std.testing.expectEqualStrings("/work/session", state.cwdRowPath());
 }
 
+test "a replayed tool call does not move the path row" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    try state.setCwdDisplay(std.testing.allocator, "/work/session");
+    try state.setSessionRoot(std.testing.allocator, "/work/session");
+
+    try state.applyEvent(.{ .tool_execution_start = .{
+        .tool_call_id = .initBorrowed("call-1"),
+        .tool_name = .initBorrowed("shell_execute"),
+        .args_json = .initBorrowed("{\"workspace_root\":\"/work/live\"}"),
+    } });
+    try std.testing.expectEqualStrings("/work/live", state.cwdRowPath());
+
+    state.setFollowingAgentCwd(false);
+    try state.applyEvent(.{ .tool_execution_start = .{
+        .tool_call_id = .initBorrowed("call-2"),
+        .tool_name = .initBorrowed("shell_execute"),
+        .args_json = .initBorrowed("{\"workspace_root\":\"/work/replayed\"}"),
+    } });
+
+    try std.testing.expectEqualStrings("/work/live", state.cwdRowPath());
+}
+
 fn agentCwdFromArgsProbe(allocator: std.mem.Allocator) !void {
     const got = try tui_state.agentCwdFromArgs(allocator, "{\"workspace_root\":\"/abs/work\"}");
     if (got) |value| allocator.free(value);

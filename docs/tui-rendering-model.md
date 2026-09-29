@@ -211,12 +211,17 @@ code paths; add a transcript row instead.
   The path is the directory the agent is working in, not the one the TUI started in.
   `workspace_root` is a required, model-supplied argument on every workspace tool, and
   the agent loop forwards the model's arguments unchanged, so the last absolute
-  `workspace_root` a tool call names is the directory that call ran in. The TUI reads it
-  off `tool_execution_start`, whose `args_json` the runtime already carries, so the row
-  moves before the call runs rather than after. A call with no `workspace_root`, or a
-  relative one, leaves the last known value alone, and the initial value is the
-  directory the TUI started in. `/clear` and a session resume return the row to the
-  session root.
+  `workspace_root` a tool call names is the directory that call is for. The TUI reads it
+  off `tool_execution_start`, whose `args_json` the runtime already carries. That event is
+  pushed before the permission engine evaluates the call, so the row leads the call
+  rather than following it, and it moves to the directory a refused call named even
+  though the call then never ran there — the row is where the agent is working, which is
+  what the model's next call will build on, not a receipt for what already happened. A
+  call with no `workspace_root`, or a relative one, leaves the last known value alone,
+  and the initial value is the directory the TUI started in. `/clear` and a session
+  resume return the row to the session root; resume suppresses the follow while it
+  replays the session's persisted events, so a directory from before the resume does not
+  come back with them.
 
   A path outside the session root is shown, not hidden, and rendered bold in the warning
   colour instead of muted — leaving the session's workspace is worth seeing. This is a

@@ -484,6 +484,7 @@ pub const AppState = struct {
     agent_cwd_display: []u8 = &.{},
     agent_cwd_raw: []u8 = &.{},
     session_root_raw: []u8 = &.{},
+    follow_agent_cwd: bool = true,
     active_user_entry: ?usize = null,
     active_assistant_entry: ?usize = null,
     active_thinking_entry: ?usize = null,
@@ -577,6 +578,10 @@ pub const AppState = struct {
         if (self.agent_cwd_display.len > 0) self.allocator.free(self.agent_cwd_display);
         self.agent_cwd_raw = &.{};
         self.agent_cwd_display = &.{};
+    }
+
+    pub fn setFollowingAgentCwd(self: *AppState, following: bool) void {
+        self.follow_agent_cwd = following;
     }
 
     pub fn followAgentCwd(self: *AppState, args_json: []const u8) !void {
@@ -909,7 +914,7 @@ pub const AppState = struct {
                 _ = try self.resolveToolOccurrence(payload.tool_call_id.slice(), payload.tool_name.slice(), payload.args_json.slice(), .live_intent, .pending);
             },
             .tool_execution_start => |payload| {
-                try self.followAgentCwd(payload.args_json.slice());
+                if (self.follow_agent_cwd) try self.followAgentCwd(payload.args_json.slice());
                 const resolution = try self.resolveToolOccurrence(payload.tool_call_id.slice(), payload.tool_name.slice(), payload.args_json.slice(), .live_intent, .running);
                 const summary = try toolInvocation(self.allocator, resolution.tool.label, payload.args_json.slice());
                 defer self.allocator.free(summary);
