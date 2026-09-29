@@ -11,9 +11,10 @@ pub const schema_execute =
 const end_directory_script =
     \\__oap_cmd=$1
     \\set --
+    \\exec 9>&1
     \\eval "$__oap_cmd"
     \\__oap_rc=$?
-    \\printf '\nOAPNONCE%s\n' "$(pwd)"
+    \\printf '\nOAPNONCE%s\n' "$(pwd)" >&9
     \\exit $__oap_rc
 ;
 
@@ -38,8 +39,8 @@ fn splitEndDirectory(stdout: []const u8, nonce: [16]u8) EndDirectory {
     const after = stdout[index + needle.len ..];
     const newline = std.mem.indexOfScalar(u8, after, '\n');
     const line_end = newline orelse after.len;
-    if (line_end == 0) return .{ .before = stdout[0..index], .found = true, .directory = null, .after = &.{} };
     const tail = if (newline) |at| after[at + 1 ..] else after[after.len..];
+    if (line_end == 0) return .{ .before = stdout[0..index], .found = true, .directory = null, .after = tail };
     return .{ .before = stdout[0..index], .found = true, .directory = after[0..line_end], .after = tail };
 }
 
@@ -113,16 +114,16 @@ pub fn execute(
             .raw_bytes = 0,
             .working_directory = start_directory,
         });
+        var details_here = true;
+        defer if (details_here) allocator.free(details);
         const text = try std.fmt.allocPrint(allocator, "shell command failed: {s}", .{@errorName(err)});
-        var owned_here = true;
-        defer if (owned_here) {
-            allocator.free(text);
-            allocator.free(details);
-        };
+        var text_here = true;
+        defer if (text_here) allocator.free(text);
         var failed = try common.makeTextResultOwned(allocator, text, details);
         errdefer failed.deinit(allocator);
         failed.working_directory = ai_types.OwnedSlice(u8).initOwned(owned_directory);
-        owned_here = false;
+        text_here = false;
+        details_here = false;
         return failed;
     };
     defer allocator.free(result.stdout);

@@ -19,6 +19,7 @@ pub fn run(allocator: std.mem.Allocator, argv: []const []const u8, cwd: std.proc
 fn runWithIo(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, cwd: std.process.Child.Cwd, timeout_ms: u64, cancel_token: ?ai_types.CancelToken) !ProcessResult {
     if (common.isCancelled(cancel_token)) return error.Cancelled;
     const start_ms = common.nowMs();
+    const own_group = true;
     var environ_map = try saneChildEnv(allocator);
     defer environ_map.deinit();
     var child = try std.process.spawn(io, .{
@@ -29,8 +30,9 @@ fn runWithIo(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8,
         .stdout = .pipe,
         .stderr = .pipe,
         .create_no_window = true,
+        .pgid = if (own_group and builtin.os.tag != .windows) 0 else null,
     });
-    defer cleanupChild(&child, io);
+    defer cleanupChild(&child, io, own_group);
 
     var multi_reader_buffer: std.Io.File.MultiReader.Buffer(2) = undefined;
     var multi_reader: std.Io.File.MultiReader = undefined;
@@ -136,8 +138,17 @@ fn lookupCurrentUser() ?CurrentUser {
     };
 }
 
-fn cleanupChild(child: *std.process.Child, io: std.Io) void {
-    if (child.id != null) child.kill(io);
+fn cleanupChild(child: *std.process.Child, io: std.Io, own_group: bool) void {
+    if (child.id != null) {
+        if (own_group) {
+            if (builtin.os.tag != .windows) {
+                if (child.id) |id| {
+                    std.posix.kill(-@as(std.posix.pid_t, @intCast(id)), std.posix.SIG.TERM) catch {};
+                }
+            }
+        }
+        child.kill(io);
+    }
     if (child.stdin) |stdin| {
         stdin.close(io);
         child.stdin = null;
