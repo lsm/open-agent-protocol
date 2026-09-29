@@ -473,6 +473,15 @@ fn catalogEndpointFromEnvironment(
     return try catalogEndpointWithBase(allocator, catalog, base_url);
 }
 
+fn environmentCredentialIsSet(allocator: std.mem.Allocator, id: []const u8) bool {
+    const environment = catalogEnvironment(allocator, id) catch return false;
+    defer freeEnvironment(allocator, environment);
+    for (environment) |held| {
+        if (held.value.len > 0) return true;
+    }
+    return false;
+}
+
 fn catalogRegion(allocator: std.mem.Allocator, storage: ?*oauth_storage.AuthStorage, id: []const u8) ?[]const u8 {
     const fallback = provider_catalog.defaultRegion(id);
     if (provider_catalog.regionEnv(id)) |name| {
@@ -481,7 +490,9 @@ fn catalogRegion(allocator: std.mem.Allocator, storage: ?*oauth_storage.AuthStor
             if (provider_catalog.regionFromValue(id, value)) |resolved| return resolved;
         }
     }
-    if (catalogStoredRegion(id, storage)) |stored| return stored;
+    if (!environmentCredentialIsSet(allocator, id)) {
+        if (catalogStoredRegion(id, storage)) |stored| return stored;
+    }
     return fallback;
 }
 
@@ -2168,10 +2179,10 @@ test "a Kimi listing and the requests that follow use the same credential and th
     const cases = [_]struct { env_key: ?[]const u8, env_region: ?[]const u8, stored: ?[]const u8, stored_region: ?[]const u8, want_key: ?[]const u8, want_region: []const u8 }{
         .{ .env_key = null, .env_region = null, .stored = "sk-stored", .stored_region = "global", .want_key = "sk-stored", .want_region = "global" },
         .{ .env_key = null, .env_region = null, .stored = "sk-stored", .stored_region = null, .want_key = "sk-stored", .want_region = "china" },
-        .{ .env_key = "sk-env", .env_region = null, .stored = "sk-stored", .stored_region = "global", .want_key = "sk-env", .want_region = "global" },
+        .{ .env_key = "sk-env", .env_region = null, .stored = "sk-stored", .stored_region = "global", .want_key = "sk-env", .want_region = "china" },
         .{ .env_key = "sk-env", .env_region = "global", .stored = "sk-stored", .stored_region = "china", .want_key = "sk-env", .want_region = "global" },
         .{ .env_key = "sk-env", .env_region = "china", .stored = "sk-stored", .stored_region = "global", .want_key = "sk-env", .want_region = "china" },
-        .{ .env_key = "sk-env", .env_region = "mars", .stored = "sk-stored", .stored_region = "global", .want_key = "sk-env", .want_region = "global" },
+        .{ .env_key = "sk-env", .env_region = "mars", .stored = "sk-stored", .stored_region = "global", .want_key = "sk-env", .want_region = "china" },
         .{ .env_key = null, .env_region = null, .stored = null, .stored_region = null, .want_key = null, .want_region = "china" },
     };
 
@@ -2204,8 +2215,10 @@ test "a Kimi listing and the requests that follow use the same credential and th
             environment[held] = .{ .name = name, .value = value };
             held += 1;
         }
+        test_catalog_environment = environment[0..held];
         defer {
             for (environment[0..held]) |entry| allocator.free(entry.value);
+            test_catalog_environment = null;
         }
 
         var listed = (try provider_credential.lookup(allocator, environment[0..held], &storage, kimi_provider_id));
