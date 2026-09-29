@@ -199,8 +199,13 @@ type streamState struct {
 	lastDetails   []reasoningDetail
 }
 
+const partIndexUnset = -1
+
 func newStreamState(model Model) *streamState {
-	return &streamState{model: model, stopReason: "stop", tracker: newToolTracker(), clock: &streamClock{}}
+	return &streamState{
+		model: model, stopReason: "stop", tracker: newToolTracker(), clock: &streamClock{},
+		thinkingIndex: partIndexUnset, textIndex: partIndexUnset,
+	}
 }
 
 func (s *streamState) partial(content []AssistantBlock) PartialMessage {

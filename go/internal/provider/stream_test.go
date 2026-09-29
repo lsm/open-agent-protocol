@@ -642,3 +642,71 @@ func TestAReasoningOnlyTurnHoldsIndexZero(t *testing.T) {
 		t.Errorf("the reasoning delta holds index %d, want 0: with nothing ahead of it, reasoning is the first part", delta.ContentIndex)
 	}
 }
+
+func TestNoTwoPartsShareAContentIndexWhateverOrderTheyArriveIn(t *testing.T) {
+	cases := map[string][]string{
+		"text then reasoning": {
+			`{"choices":[{"delta":{"content":"a"}}]}`,
+			`{"choices":[{"delta":{"reasoning_content":"t"}}]}`,
+		},
+		"reasoning then text": {
+			`{"choices":[{"delta":{"reasoning_content":"t"}}]}`,
+			`{"choices":[{"delta":{"content":"a"}}]}`,
+		},
+		"a call then trailing text": {
+			`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`,
+			`{"choices":[{"delta":{"content":"after"}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}`,
+		},
+		"text then a call": {
+			`{"choices":[{"delta":{"content":"a"}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}`,
+		},
+	}
+	for name, frames := range cases {
+		built := make([]string, 0, len(frames))
+		for _, frame := range frames {
+			built = append(built, sseFrame(frame))
+		}
+		events := runStream(t, streamModel(), built...)
+		claimed := map[int]EventKind{}
+		for _, event := range events {
+			switch event.Kind {
+			case EventTextDelta, EventThinkingDelta, EventToolCallStart:
+			default:
+				continue
+			}
+			if previous, held := claimed[event.ContentIndex]; held {
+				t.Errorf("%s: %s and %s both hold index %d, and a consumer opens a part by its index", name, previous, event.Kind, event.ContentIndex)
+			}
+			claimed[event.ContentIndex] = event.Kind
+		}
+	}
+}
+
+func TestAContentIndexIsReservedByTheFirstPartThatClaimsIt(t *testing.T) {
+	events := runStream(t, streamModel(),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"content":"after"}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}`),
+	)
+	start := findEvent(t, events, EventToolCallStart)
+	end := findEvent(t, events, EventToolCallEnd)
+	var text *Event
+	for _, event := range events {
+		if event.Kind == EventTextDelta {
+			held := event
+			text = &held
+		}
+	}
+	if text == nil {
+		t.Fatal("the fixture streamed no text, so it is not the script under test")
+	}
+	if text.ContentIndex == start.ContentIndex {
+		t.Errorf("the trailing text and the call both hold index %d: the call claimed it first, so the text is a second part", text.ContentIndex)
+	}
+	if end.ContentIndex != start.ContentIndex {
+		t.Errorf("the call opened at %d and ended at %d, want them equal", start.ContentIndex, end.ContentIndex)
+	}
+}
