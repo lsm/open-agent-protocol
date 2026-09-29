@@ -1405,6 +1405,12 @@ pub fn build(b: *std.Build) void {
             .{ .name = "compat", .module = compat_mod },
         },
     });
+    const hub_routes_mod = b.createModule(.{
+        .root_source_file = b.path("src/hub/routes.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const hub_routes_test = b.addTest(.{ .root_module = hub_routes_mod });
     const hub_http_mod = b.createModule(.{
         .root_source_file = b.path("src/hub/http.zig"),
         .target = target,
@@ -2765,12 +2771,15 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(adapter_endpoint_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_endpoint_test).step);
     test_step.dependOn(&b.addRunArtifact(hub_test).step);
+    test_step.dependOn(&b.addRunArtifact(hub_routes_test).step);
     test_step.dependOn(&b.addRunArtifact(hub_http_test).step);
     test_step.dependOn(&b.addRunArtifact(hub_stdio_test).step);
     compile_hub_step.dependOn(&hub_test.step);
+    compile_hub_step.dependOn(&hub_routes_test.step);
     compile_hub_step.dependOn(&hub_http_test.step);
     compile_hub_step.dependOn(&hub_stdio_test.step);
     test_unit_hub_step.dependOn(&b.addRunArtifact(hub_test).step);
+    test_unit_hub_step.dependOn(&b.addRunArtifact(hub_routes_test).step);
     test_unit_hub_step.dependOn(&b.addRunArtifact(hub_http_test).step);
     test_unit_hub_step.dependOn(&b.addRunArtifact(hub_stdio_test).step);
     test_step.dependOn(&b.addRunArtifact(claude_adapter_test).step);
