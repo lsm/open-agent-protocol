@@ -212,7 +212,11 @@ code paths; add a transcript row instead.
   no span to divide by, and counting its tokens with no time would inflate the figure
   several-fold while showing it unmarked. A turn is marked `~` when *any* of its messages
   was estimated, and its measured and estimated parts are pooled separately, so a
-  multi-message turn cannot present a mixed total as measured. Bytes convert at the
+  multi-message turn cannot present a mixed total as measured. The runtime always pushes
+  `agent_end` immediately after the final `turn_end`, so a turn end that finds its
+  accumulators already empty does not clear the standing figure: the previous turn keeps
+  its number, and a run of two or more turns still shows the last turn that actually
+  produced tokens rather than falling through to the average. Bytes convert at the
   agent's own divisor, `(bytes + 3) / 4`.
   The averages reset when the model in effect changes, which is what `/model` and
   `/provider` do.

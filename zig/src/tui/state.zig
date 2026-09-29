@@ -255,6 +255,7 @@ pub const TokenRateSet = struct {
     }
 
     pub fn turnEnded(self: *TokenRateSet) void {
+        const finished = self.turn();
         self.message_bytes = 0;
         self.message_first_ms = 0;
         self.live = .{};
@@ -266,7 +267,7 @@ pub const TokenRateSet = struct {
             self.estimated_since_switch.output_tokens += self.turn_estimated.output_tokens;
             self.estimated_since_switch.stream_ms += self.turn_estimated.stream_ms;
         }
-        self.previous = self.turn();
+        if (finished.measured()) self.previous = finished;
         const measured = self.measured_since_switch.measured();
         self.average = if (measured) self.measured_since_switch else self.estimated_since_switch;
         self.average.estimated = !measured;
@@ -2101,6 +2102,39 @@ test "a turn with one measured and one estimated message is marked, and pools th
     try std.testing.expectEqual(@as(u64, 200), rate.average.output_tokens);
     try std.testing.expectEqual(@as(u64, 1_000), rate.average.stream_ms);
     try std.testing.expect(!rate.average.estimated);
+}
+
+test "the agent_end that follows every turn_end leaves the previous turn's figure standing" {
+    var state = AppState.init(std.testing.allocator);
+    defer state.deinit();
+
+    // The real event pair, driven through applyEvent: the runtime always pushes
+    // agent_end immediately after the final turn_end.
+    state.telemetry.rate.turn_measured = .{ .output_tokens = 200, .stream_ms = 2_000 };
+    state.telemetry.rate.turn_estimated = .{};
+
+    try state.applyEvent(.{ .turn_end = .{ .stop_reason = .stop } });
+    try std.testing.expect(state.telemetry.rate.previous.measured());
+    try std.testing.expectEqual(@as(u64, 100), state.telemetry.rate.previous.perSecond());
+
+    try state.applyEvent(.{ .agent_end = .{ .reason = .completed } });
+    try std.testing.expect(state.telemetry.rate.previous.measured());
+    try std.testing.expectEqual(@as(u64, 200), state.telemetry.rate.previous.output_tokens);
+    try std.testing.expectEqual(@as(u64, 2_000), state.telemetry.rate.previous.stream_ms);
+    try std.testing.expectEqual(@as(u64, 100), state.telemetry.rate.average.perSecond());
+}
+
+test "a turn that produced nothing leaves the last real figure standing" {
+    var rate = TokenRateSet{};
+    rate.produced(400, 1_000);
+    rate.messageEnded(2_000, 100);
+    rate.turnEnded();
+    try std.testing.expectEqual(@as(u64, 100), rate.previous.perSecond());
+
+    rate.turnEnded();
+    try std.testing.expectEqual(@as(u64, 100), rate.previous.perSecond());
+    try std.testing.expectEqual(@as(u64, 100), rate.measured_since_switch.output_tokens);
+    try std.testing.expectEqual(@as(u64, 1_000), rate.measured_since_switch.stream_ms);
 }
 
 test "a rate with no time or no tokens never reads as speed" {
