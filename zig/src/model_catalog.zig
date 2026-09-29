@@ -473,15 +473,6 @@ fn catalogEndpointFromEnvironment(
     return try catalogEndpointWithBase(allocator, catalog, base_url);
 }
 
-fn environmentCredentialIsSet(allocator: std.mem.Allocator, id: []const u8) bool {
-    const environment = catalogEnvironment(allocator, id) catch return false;
-    defer freeEnvironment(allocator, environment);
-    for (environment) |held| {
-        if (held.value.len > 0) return true;
-    }
-    return false;
-}
-
 fn catalogRegion(allocator: std.mem.Allocator, storage: ?*oauth_storage.AuthStorage, id: []const u8) ?[]const u8 {
     const fallback = provider_catalog.defaultRegion(id);
     if (provider_catalog.regionEnv(id)) |name| {
@@ -490,7 +481,7 @@ fn catalogRegion(allocator: std.mem.Allocator, storage: ?*oauth_storage.AuthStor
             if (provider_catalog.regionFromValue(id, value)) |resolved| return resolved;
         }
     }
-    if (!environmentCredentialIsSet(allocator, id)) {
+    if (!provider_catalog.credentialEnvIsSet(allocator, id)) {
         if (catalogStoredRegion(id, storage)) |stored| return stored;
     }
     return fallback;
@@ -2255,6 +2246,16 @@ test "a Kimi listing and the requests that follow use the same credential and th
         );
         defer allocator.free(request_base);
         try std.testing.expectEqualStrings(listed_base.base_url, request_base);
+
+        const stored_for_request = catalogStoredRegion(kimi_provider_id, &storage);
+        const bare_ref_base = try provider_base_url.defaultBaseUrlForRefWithRegion(
+            allocator,
+            kimi_provider_id,
+            kimi_api_id,
+            stored_for_request,
+        );
+        defer allocator.free(bare_ref_base);
+        try std.testing.expectEqualStrings(listed_base.base_url, bare_ref_base);
 
         const want_base = if (std.mem.eql(u8, case.want_region, "global"))
             "https://api.moonshot.ai"

@@ -75,8 +75,10 @@ fn resolveKimiRegion(allocator: std.mem.Allocator, stored_region: ?[]const u8) [
         defer allocator.free(value);
         if (provider_catalog.regionFromValue("kimi", value)) |resolved| return resolved;
     }
-    if (stored_region) |stored| {
-        if (provider_catalog.regionFromValue("kimi", stored)) |resolved| return resolved;
+    if (!provider_catalog.credentialEnvIsSet(allocator, "kimi")) {
+        if (stored_region) |stored| {
+            if (provider_catalog.regionFromValue("kimi", stored)) |resolved| return resolved;
+        }
     }
     return fallback;
 }

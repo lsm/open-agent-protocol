@@ -119,6 +119,8 @@ fn makeStorage(allocator: std.mem.Allocator) AuthStorage {
 }
 
 test "resolveApiKey - explicit api key wins, no storage lookup" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
     var storage = makeStorage(testing.allocator);
     defer storage.deinit();
 
@@ -133,6 +135,8 @@ test "resolveApiKey - explicit api key wins, no storage lookup" {
 }
 
 test "resolveApiKey - empty explicit key falls through to storage" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
     var storage = makeStorage(testing.allocator);
     defer storage.deinit();
 
@@ -147,6 +151,8 @@ test "resolveApiKey - empty explicit key falls through to storage" {
 }
 
 test "resolveApiKey - loads api_key from storage by provider_id" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
     var storage = makeStorage(testing.allocator);
     defer storage.deinit();
 
@@ -161,6 +167,8 @@ test "resolveApiKey - loads api_key from storage by provider_id" {
 }
 
 test "resolveApiKey - loads oauth access token from storage by provider_id" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
     var storage = makeStorage(testing.allocator);
     defer storage.deinit();
 
@@ -220,6 +228,8 @@ test "an environment key wins over a stored login, and a row that names no varia
 }
 
 test "resolveApiKeyOfKind - api_key_only refuses a stored oauth token" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
     var storage = makeStorage(testing.allocator);
     defer storage.deinit();
 
@@ -243,6 +253,8 @@ test "resolveApiKeyOfKind - api_key_only refuses a stored oauth token" {
 }
 
 test "resolveApiKeyOfKind - api_key_only still returns a stored api key" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
     var storage = makeStorage(testing.allocator);
     defer storage.deinit();
 
@@ -256,6 +268,8 @@ test "resolveApiKeyOfKind - api_key_only still returns a stored api key" {
 }
 
 test "resolveApiKey - missing storage and no key returns AuthRequired" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
     try testing.expectError(
         error.AuthRequired,
         resolveApiKey(testing.allocator, null, "anthropic", null),
@@ -263,6 +277,8 @@ test "resolveApiKey - missing storage and no key returns AuthRequired" {
 }
 
 test "resolveApiKey - empty storage returns AuthRequired" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
     var storage = makeStorage(testing.allocator);
     defer storage.deinit();
 
@@ -273,6 +289,8 @@ test "resolveApiKey - empty storage returns AuthRequired" {
 }
 
 test "resolveApiKey - provider not in storage returns AuthRequired" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
     var storage = makeStorage(testing.allocator);
     defer storage.deinit();
 
@@ -287,6 +305,8 @@ test "resolveApiKey - provider not in storage returns AuthRequired" {
 }
 
 test "resolveApiKey - empty key with no storage returns AuthRequired" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
     try testing.expectError(
         error.AuthRequired,
         resolveApiKey(testing.allocator, null, "anthropic", ""),
@@ -307,6 +327,8 @@ test "envKeyForProvider reads the declared variable and ignores other providers"
 }
 
 test "a granted credential outranks a configured one on the resolution path" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
     const allocator = std.testing.allocator;
 
     var storage = AuthStorage{
