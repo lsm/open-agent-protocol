@@ -52,9 +52,20 @@ func joined(events []provider.Event) string {
 
 func take(t *testing.T, turn Turn) []provider.Event {
 	t.Helper()
+	return takeUntil(t, turn, nil, nil)
+}
+
+func takeUntil(t *testing.T, turn Turn, stop func(), enough func([]provider.Event) bool) []provider.Event {
+	t.Helper()
 	var out []provider.Event
 	deadline := time.After(5 * time.Second)
 	for {
+		if enough != nil && enough(out) {
+			if stop != nil {
+				stop()
+			}
+			return out
+		}
 		select {
 		case event, open := <-turn.Events:
 			if !open {
@@ -304,5 +315,51 @@ func TestAReasoningLevelThatAsksForThinkingPutsOneOnTheWire(t *testing.T) {
 	}, mapped, "")
 	if !strings.Contains(string(body), `"thinking"`) {
 		t.Errorf("a request at the high level is %s, want a thinking block", body)
+	}
+}
+
+func TestATurnCancelledMidStreamDeliversTheSameEventsEveryTime(t *testing.T) {
+	var counts []int
+	for attempt := 0; attempt < 20; attempt++ {
+		blocked := make(chan struct{})
+		var once bool
+		read := func() ([]byte, error) {
+			if !once {
+				once = true
+				return []byte(textDelta("half")), nil
+			}
+			<-blocked
+			return nil, context.Canceled
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		turn := ChunkStreamer{}.Stream(ctx, TurnRequest{Model: completionsModel(), Read: read})
+		var events []provider.Event
+		events = takeUntil(t, turn, cancel, func(seen []provider.Event) bool { return len(seen) >= 2 })
+		cancel()
+		close(blocked)
+		events = append(events, take(t, turn)...)
+		counts = append(counts, len(events))
+	}
+	for attempt, count := range counts {
+		if count != counts[0] {
+			t.Fatalf("a cancelled turn delivered %v events over twenty runs, want one answer every time: which events survive a cancellation cannot be a coin toss", counts[:attempt+1])
+		}
+	}
+	if counts[0] != 2 {
+		t.Errorf("a cancelled turn delivered %d events, want the start and the delta it read before the cancellation and nothing after", counts[0])
+	}
+}
+
+func TestATurnCancelledBeforeItStartedDeliversNothing(t *testing.T) {
+	for attempt := 0; attempt < 12; attempt++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		turn := ChunkStreamer{}.Stream(ctx, TurnRequest{Model: completionsModel(), Read: func() ([]byte, error) {
+			t.Error("a turn cancelled before it started read from the model")
+			return nil, nil
+		}})
+		if events := take(t, turn); len(events) != 0 {
+			t.Fatalf("a turn cancelled before it started delivered %v, want nothing", joined(events))
+		}
 	}
 }

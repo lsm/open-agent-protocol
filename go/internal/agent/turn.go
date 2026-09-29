@@ -47,6 +47,9 @@ func (ChunkStreamer) Stream(ctx context.Context, request TurnRequest) Turn {
 		stopped := make(chan struct{})
 		defer close(stopped)
 		sink.OnEvent = func(event provider.Event) {
+			if ctx.Err() != nil {
+				return
+			}
 			select {
 			case out <- event:
 			case <-stopped:
@@ -59,7 +62,7 @@ func (ChunkStreamer) Stream(ctx context.Context, request TurnRequest) Turn {
 }
 
 func streamTurn(sink *provider.EventSink, model provider.Model, turn provider.Context, options provider.StreamOptions, read provider.ReadChunkFunc, cancelled provider.CancelledFunc) {
-	if model.API != "anthropic-messages" {
+	if model.API != provider.AnthropicWire {
 		provider.Stream(sink, model, turn, options, read, cancelled)
 		return
 	}
