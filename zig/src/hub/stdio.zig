@@ -485,6 +485,9 @@ pub const Frontend = struct {
             else => return .{ .refused = .{ .code = "internal", .message = "the bundled schemas could not be loaded" } },
         };
         defer registry.deinit();
+        if (value != .object) {
+            return .{ .refused = .{ .code = "malformed_json", .message = "the request envelope is not an object" } };
+        }
         var validator = jsonschema.Validator.init(arena, &registry);
         defer validator.deinit();
         const failure = validator.validate("envelope.schema.json", value) catch |err| switch (err) {
@@ -519,25 +522,23 @@ pub const Frontend = struct {
             .session_open_request => |*payload| payload,
             else => unreachable,
         };
+        var metadata: ?std.json.Value = null;
         if (request.payload) |value| {
             if (value == .object) {
-                if (value.object.get("metadata")) |metadata| {
-                    if (metadata != .object) {
-                        envelope.deinit(arena);
-                        return .{ .refused = .{ .code = "invalid_payload", .message = "metadata must be an object" } };
+                if (value.object.get("payload")) |body| {
+                    if (body == .object) {
+                        if (body.object.get("metadata")) |named| metadata = named;
                     }
                 }
             }
         }
+        if (open.message_json != null) {
+            envelope.deinit(arena);
+            return .{ .refused = .{ .code = "unsupported_feature", .message = "an open carrying a message is refused until submit lands" } };
+        }
         const opened = self.hub.open(arena, adapter, .{
             .session_id = open.session_id orelse "",
-            .metadata = if (request.payload) |value| blk: {
-                if (value != .object) break :blk null;
-                const object = value.object;
-                const named = object.get("metadata") orelse break :blk null;
-                if (named != .object) break :blk null;
-                break :blk named;
-            } else null,
+            .metadata = metadata,
             .capability_revision = envelope.capability_revision,
             .subscribe = open.subscribe,
             .allow_degraded_features = open.allow_degraded_features,
@@ -1111,6 +1112,7 @@ const ReferenceState = struct {
     has_lister: bool = true,
     last_id: []const u8 = "session-1",
     last_id_buffer: [128]u8 = undefined,
+    saw_metadata_members: usize = 0,
     running: bool = false,
     state_fails: bool = false,
     lister_closed: bool = false,
@@ -1135,6 +1137,7 @@ fn referenceOpen(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.Op
     _ = refusal;
     state.opened += 1;
     state.running = false;
+    state.saw_metadata_members = if (request.metadata) |named| named.object.count() else 0;
     const asked = if (request.session_id.len > 0) request.session_id else "session-1";
     if (asked.len <= state.last_id_buffer.len) {
         @memcpy(state.last_id_buffer[0..asked.len], asked);
@@ -1895,14 +1898,17 @@ test "an open citing a stale revision is refused, naming both revisions" {
     try testing.expectEqual(@as(usize, 0), try listedSessions(harness));
 }
 
-test "the six refusals the open gate names" {
+test "the refusals the open gate and the payload read name" {
     const cases = [_]struct { line: []const u8, code: []const u8 }{
         .{ .line = "{\"id\":1,\"op\":\"open\",\"request\":{}}", .code = "invalid_request" },
         .{ .line = "{\"id\":1,\"op\":\"open\",\"adapter\":\"reference\"}", .code = "invalid_request" },
         .{ .line = "{\"id\":1,\"op\":\"open\",\"adapter\":\"reference\",\"request\":null}", .code = "invalid_request" },
-        .{ .line = "{\"id\":1,\"op\":\"open\",\"adapter\":\"reference\",\"request\":{\"id\":\"x\"}}", .code = "schema_invalid" },
+        .{ .line = "{\"id\":1,\"op\":\"open\",\"adapter\":\"reference\",\"request\":{\"id\":\"x\",\"type\":\"nonesuch\"}}", .code = "schema_invalid" },
+        .{ .line = "{\"id\":1,\"op\":\"open\",\"adapter\":\"reference\",\"request\":{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"payload\":{\"session_id\":7}}}", .code = "schema_invalid" },
         .{ .line = "{\"id\":1,\"op\":\"open\",\"adapter\":\"nope\",\"request\":{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"payload\":{\"session_id\":\"z\"}}}", .code = "unknown_adapter" },
-        .{ .line = "{\"id\":1,\"op\":\"open\",\"adapter\":\"reference\",\"request\":{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"payload\":{\"session_id\":\"q\"},\"metadata\":7}}", .code = "invalid_payload" },
+        .{ .line = "{\"id\":1,\"op\":\"open\",\"adapter\":\"reference\",\"request\":7}", .code = "malformed_json" },
+        .{ .line = "{\"id\":1,\"op\":\"open\",\"adapter\":\"reference\",\"request\":[]}", .code = "malformed_json" },
+        .{ .line = "{\"id\":1,\"op\":\"open\",\"adapter\":\"reference\",\"request\":{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"payload\":{\"session_id\":\"m\",\"message\":{\"messages\":[{\"role\":\"user\",\"content\":\"go\"}],\"delivery\":\"auto\"}}}}", .code = "unsupported_feature" },
     };
     for (cases) |case| {
         const harness = try Harness.init(testing.allocator, .{}, .{});

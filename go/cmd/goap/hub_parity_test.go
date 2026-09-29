@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const openEnvelopeFields = `\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\"`
+const openEnvelopeFields = `"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.request"`
 
 var hubParityScenarios = map[string][]string{
 	"the five ops this wire serves": {
@@ -35,11 +35,11 @@ var hubParityScenarios = map[string][]string{
 		`{"id":2,"op":"open","request":{}}`,
 		`{"id":3,"op":"open","adapter":"memory","request":null}`,
 		`{"id":4,"op":"open","adapter":"memory","request":{"id":"x"}}`,
-		`{"id":5,"op":"open","adapter":"memory","request":{" + openEnvelopeFields + ","id":"o1"}}`,
+		`{"id":5,"op":"open","adapter":"memory","request":` + openEnvelopeFields + `,"id":"o1"}}`,
 	},
 	"an open is refused the same way after it is asked for twice": {
-		`{"id":1,"op":"open","adapter":"absent","request":{" + openEnvelopeFields + ","id":"o1","payload":{"session_id":"s1"}}}`,
-		`{"id":2,"op":"open","adapter":"memory","request":{" + openEnvelopeFields + ","id":"o1","payload":{"session_id":"s1"},"metadata":7}}`,
+		`{"id":1,"op":"open","adapter":"absent","request":` + openEnvelopeFields + `,"id":"o1","payload":{"session_id":"s1"}}}`,
+		`{"id":2,"op":"open","adapter":"memory","request":` + openEnvelopeFields + `,"id":"o1","payload":{"session_id":"s1"},"metadata":7}}`,
 		`{"id":3,"op":"sessions"}`,
 	},
 	"the catalog ops refuse the same refusals": {
@@ -211,6 +211,10 @@ func assertSameHubAnswers(t *testing.T, goAnswers, zigAnswers map[string]map[str
 	for _, id := range ids {
 		goAnswer, goPresent := goAnswers[id]
 		zigAnswer, zigPresent := zigAnswers[id]
+		if !goPresent && !zigPresent {
+			t.Errorf("request %s was answered by neither tree, so nothing was compared", id)
+			continue
+		}
 		if !goPresent || !zigPresent {
 			t.Errorf("request %s: goap answered %t, oapx answered %t", id, goPresent, zigPresent)
 			continue

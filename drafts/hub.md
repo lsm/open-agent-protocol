@@ -1211,6 +1211,17 @@ are "stamped with the revision the lister served it under", and both name
 | **The fix** | `hub.OpenRequest` carries `capability_revision`. An open that **subscribes or attaches tool sources** compares it against the registered adapter's revision and returns `StaleCapabilities` on a disagreement — **after** the adapter's probe and **before** the `session_exists` lookup, so a probe failure answers ahead of it (`probe_failed` in Go, and the same here) and the gate still wins over a name collision and over an unadvertised feature. A request that states no revision is not gated, which is Go's own `revision != ""` guard and not a hole. The two Go gates differ only in which support feature they then check, and that half already exists as the election check, so one comparison covers both. The `expected`/`current` pair is assembled by the frontend, which reads the registered revision from `hub.listing` — the same route the `adapters` op already uses. |
 | **What it is not** | The stdio `open` arm, which is [#387](https://github.com/lsm/open-agent-protocol/issues/387)'s next step and depends on this. |
 
+### D11 — a `submit` on an open is refused in Zig and admitted in Go
+
+| | |
+| --- | --- |
+| **The draft says** | `open`'s params are `adapter` and `request`, and the request's `message` is a first-class member of `openRequest`. A message admitted at open time is **queued**: the answer carries `admitted_submit_requests` and the submission runs under the session it was admitted into. |
+| **Go does** | `OpenCompound` admits it: it opens, submits the message, and reports the admission in the answer. The subscription is registered *before* the message runs, so the open misses nothing. |
+| **Zig does** | Refuses it `unsupported_feature`. `hub.OpenRequest` has **no `message` member**, so there is nothing to admit into; the stdio op says so rather than dropping the submission. |
+| **Why it matters** | The refusal is the honest answer and the alternative is worse — Go's `refuseUnadvertisedOpen` exists and refuses a message on the *endpoint* surface, so "a message is unsatisfiable here" is already a shape this tree knows. What is missing is the machinery, not the will. |
+| **The fix** | `hub.OpenRequest` gains `message_json`, the hub registers the subscription before running the submission, and the answer carries `admitted_submit_requests`. This is `submit`'s work, not `open`'s: the same PR that serves `submit` on the wire is the one that can admit a message at open time. |
+| **Why it is not fixed here** | Admitting a message is a submission, and submitting is the next op. Doing it inside `open` would put two ops in one PR and land the answer shape before anything can produce the thing it reports. |
+
 ### D4 — the registry's `journal_capacity` is hub-wide in Zig, per-adapter in Go
 
 | | |
