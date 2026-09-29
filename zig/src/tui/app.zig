@@ -6967,27 +6967,29 @@ test "Esc while a run is going aborts it and drops the pending continue" {
 }
 
 test "Esc closing a picker drops the pending continue" {
-    var harness = try auto_continue_harness.init();
-    defer harness.deinit();
+    var mock = MockAppSession{};
+    defer mock.deinit();
     var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
     defer model.deinit();
     var tctx: TestContext = undefined;
     tctx.setup();
     defer tctx.deinit();
     const app = &model.app.?;
-    app.session = harness.mock.session();
+    app.session = mock.session();
+    const after_delay = compat.time.nowMillis() + @as(i64, @intCast(tui_auto_continue.default_delay_ms));
 
-    try pushErrorRun(app, harness.mock, "anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try pushErrorRun(app, &mock, "anthropic request failed: HTTP 400 invalid_request_error", .@"error");
     app.state.mode = .picker;
-    harness.pastDelay();
-    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+    app.pumpAutoContinue(after_delay);
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+    try std.testing.expect(app.auto_continue.pending());
 
     _ = model.update(.{ .key = .{ .key = .escape } }, &tctx.ctx);
     try std.testing.expectEqual(tui_state.AppMode.normal, app.state.mode);
     try std.testing.expect(!app.auto_continue.pending());
 
-    harness.pastDelay();
-    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+    app.pumpAutoContinue(after_delay);
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
 }
 
 test "Ctrl+C drops the pending continue" {
