@@ -85,7 +85,10 @@ pub fn run(allocator: std.mem.Allocator, options: Options) !Report {
         if (status == 0) {
             try runner.pass("endpoint exits 0 after stdin EOF");
         } else {
-            try runner.fail("endpoint exits 0 after stdin EOF", try std.fmt.allocPrint(allocator, "exit code {d}", .{status}));
+            try runner.failOwned(
+                "endpoint exits 0 after stdin EOF",
+                try std.fmt.allocPrint(allocator, "exit code {d}", .{status}),
+            );
         }
     }
     return runner.report;
@@ -595,4 +598,18 @@ test "a frame the endpoint writes after the terminal event is recorded, not swal
     try std.testing.expect(!report.passed());
     const trailing = report.verdict("frames the endpoint writes after the run completes decode") orelse return error.CheckMissing;
     try std.testing.expect(!trailing.passed);
+}
+
+test "an endpoint that exits non-zero is judged, and its detail is freed with it" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var report = try run(std.testing.allocator, .{
+        .command = "/bin/sh",
+        .args = &.{ "-c", "while read -r line; do :; done; exit 3" },
+        .line_deadline_ms = 5000,
+    });
+    defer report.deinit();
+
+    const exiting = report.verdict("endpoint exits 0 after stdin EOF") orelse return error.CheckMissing;
+    try std.testing.expect(!exiting.passed);
+    try std.testing.expectEqualStrings("exit code 3", exiting.detail);
 }
