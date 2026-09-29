@@ -126,8 +126,8 @@ func TestACreateResponseIsUnscopedAndTheStartedEnvelopeStillOpensAtOne(t *testin
 	if _, present := document["sequence"]; present {
 		t.Error("an accepted create response carries a sequence: it is not a scoped event")
 	}
-	if _, present := document["inference_id"]; present {
-		t.Error("an accepted create response carries an inference id before the inference has started")
+	if document["inference_id"] != "i1" {
+		t.Errorf("an accepted create carries inference_id %v, want i1: the envelope schema requires it on the accepted branch and both fixtures carry it", document["inference_id"])
 	}
 	if document["in_reply_to"] != "c0" {
 		t.Errorf("the create response = %v, want it in reply to c0", document)
@@ -215,17 +215,21 @@ func TestEveryEnvelopeCarriesTheProtocolHeader(t *testing.T) {
 	}
 }
 
-func TestARefusalIsAFailurePayloadAndNotAReason(t *testing.T) {
+func TestAFailureNestsItsErrorTheWayTheSchemaRequires(t *testing.T) {
 	envelope, err := NewState("i1", "m").Failed("provider_unavailable", "the provider stream failed")
 	if err != nil {
 		t.Fatal(err)
 	}
 	document := body(t, envelope)
-	if document["code"] != "provider_unavailable" || document["message"] != "the provider stream failed" {
-		t.Errorf("the failure = %v", document)
+	failure, ok := document["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("the failure payload = %s, want the code and message nested under error", envelope.Payload)
 	}
-	if names := keysOf(t, document); len(names) != 2 {
-		t.Errorf("a failure payload carries %v, want a code and a message alone", names)
+	if failure["code"] != "provider_unavailable" || failure["message"] != "the provider stream failed" {
+		t.Errorf("the failure = %v", failure)
+	}
+	if names := keysOf(t, document); len(names) != 1 || !has(names, "error") {
+		t.Errorf("a failure payload carries %v, want error alone: a flat code or message is not a member the schema knows", names)
 	}
 }
 
@@ -345,7 +349,7 @@ func TestTheTerminalAssemblesTheEndedPartsInOrder(t *testing.T) {
 	if len(terminal) != 3 {
 		t.Fatalf("the terminal content = %v, want three parts", terminal)
 	}
-	if terminal[0].Type != "reasoning" || terminal[0].Reasoning != "think" || terminal[0].Carry != "sig-1" {
+	if terminal[0].Type != "reasoning" || terminal[0].Reasoning == nil || *terminal[0].Reasoning != "think" || terminal[0].Carry != "sig-1" {
 		t.Errorf("the first block = %+v, want the reasoning and its carry", terminal[0])
 	}
 	if terminal[1].Type != "text" || terminal[1].Text == nil || *terminal[1].Text != "hello" {
@@ -371,14 +375,29 @@ func TestTheTerminalAssemblesTheEndedPartsInOrder(t *testing.T) {
 	}
 }
 
-func TestAnEmptyTerminalStillCarriesAPartArray(t *testing.T) {
+func TestAnEmptyTerminalCarriesTheEmptyStringTheSchemaAllows(t *testing.T) {
 	envelope, err := NewState("i1", "m").Completed("stop", partsOf(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw := string(envelope.Payload)
-	if !contains(raw, `"content":[]`) {
-		t.Errorf("the terminal payload = %s, want an empty array rather than null: the validator fails content that is not a part array", raw)
+	message := body(t, envelope)["message"].(map[string]any)
+	held, present := message["content"]
+	if !present {
+		t.Fatalf("the terminal payload = %s, want a content member: message requires it", envelope.Payload)
+	}
+	if text, ok := held.(string); !ok || text != "" {
+		t.Errorf("content = %v, want the empty string: the schema allows a string or an array of one or more, and an empty array is neither", held)
+	}
+}
+
+func TestAReasoningBlockWithEmptyTextStillCarriesItsMember(t *testing.T) {
+	terminal := partsOf([]provider.AssistantBlock{{Thinking: &provider.ThinkingPart{Thinking: ""}}})
+	if len(terminal) != 1 {
+		t.Fatalf("a turn whose only reasoning is empty assembled %d blocks, want 1", len(terminal))
+	}
+	names := keysOf(t, terminal[0])
+	if !has(names, "reasoning") {
+		t.Errorf("the reasoning block = %v, want its member present: a plain string with omitempty drops an empty one, which the schema requires", names)
 	}
 }
 

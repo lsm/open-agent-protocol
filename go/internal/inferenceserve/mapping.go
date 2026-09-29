@@ -49,7 +49,7 @@ type PartEnded struct {
 type TerminalBlock struct {
 	Type          string          `json:"type"`
 	Text          *string         `json:"text,omitempty"`
-	Reasoning     string          `json:"reasoning,omitempty"`
+	Reasoning     *string         `json:"reasoning,omitempty"`
 	Image         *ImagePart      `json:"image,omitempty"`
 	ToolCallID    string          `json:"tool_call_id,omitempty"`
 	Name          string          `json:"name,omitempty"`
@@ -63,9 +63,18 @@ type ImagePart struct {
 	MediaType string `json:"media_type,omitempty"`
 }
 
+type Content []TerminalBlock
+
+func (c Content) MarshalJSON() ([]byte, error) {
+	if len(c) == 0 {
+		return json.Marshal("")
+	}
+	return json.Marshal([]TerminalBlock(c))
+}
+
 type TerminalMessage struct {
-	Role    string          `json:"role"`
-	Content []TerminalBlock `json:"content"`
+	Role    string  `json:"role"`
+	Content Content `json:"content"`
 }
 
 type Honoured struct {
@@ -92,7 +101,11 @@ func (s *State) nextID() string {
 }
 
 func (s *State) emit(typ string, inReplyTo string, payload any) (Envelope, error) {
-	if s.refused && scoped(typ) {
+	return s.emitAllocated(typ, inReplyTo, payload, scoped(typ))
+}
+
+func (s *State) emitAllocated(typ string, inReplyTo string, payload any, allocated bool) (Envelope, error) {
+	if s.refused && allocated {
 		return Envelope{}, ErrRefused
 	}
 	held, err := json.Marshal(payload)
@@ -108,10 +121,12 @@ func (s *State) emit(typ string, inReplyTo string, payload any) (Envelope, error
 		InReplyTo: inReplyTo,
 		Payload:   held,
 	}
+	if allocated {
+		envelope.InferenceID = s.inferenceID
+	}
 	if scoped(typ) {
 		s.sequence++
 		envelope.Sequence = s.sequence
-		envelope.InferenceID = s.inferenceID
 	}
 	return envelope, nil
 }
@@ -133,14 +148,14 @@ func (s *State) Started(nowMillis int64) (Envelope, error) {
 }
 
 func (s *State) Accepted(requestID string, honoured Honoured) (Envelope, error) {
-	return s.emit("inference.create.response", requestID, struct {
+	return s.emitAllocated("inference.create.response", requestID, struct {
 		Accepted bool     `json:"accepted"`
 		Honoured Honoured `json:"honoured"`
-	}{Accepted: true, Honoured: honoured})
+	}{Accepted: true, Honoured: honoured}, true)
 }
 
 func (s *State) Refused(requestID, code, message string) (Envelope, error) {
-	envelope, err := s.emit("inference.create.response", requestID, struct {
+	envelope, err := s.emitAllocated("inference.create.response", requestID, struct {
 		Accepted bool `json:"accepted"`
 		Error    struct {
 			Code    string `json:"code"`
@@ -149,7 +164,7 @@ func (s *State) Refused(requestID, code, message string) (Envelope, error) {
 	}{Error: struct {
 		Code    string `json:"code"`
 		Message string `json:"message"`
-	}{Code: code, Message: message}})
+	}{Code: code, Message: message}}, false)
 	if err != nil {
 		return Envelope{}, err
 	}
@@ -166,9 +181,14 @@ func (s *State) Completed(stopReason string, content []TerminalBlock) (Envelope,
 
 func (s *State) Failed(code, message string) (Envelope, error) {
 	return s.emit("inference.failed", "", struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}{Error: struct {
 		Code    string `json:"code"`
 		Message string `json:"message"`
-	}{Code: code, Message: message})
+	}{Code: code, Message: message}})
 }
 
 func partsOf(blocks []provider.AssistantBlock) []TerminalBlock {
@@ -179,7 +199,8 @@ func partsOf(blocks []provider.AssistantBlock) []TerminalBlock {
 			held := block.Text.Text
 			out = append(out, TerminalBlock{Type: "text", Text: &held})
 		case block.Thinking != nil:
-			out = append(out, TerminalBlock{Type: "reasoning", Reasoning: block.Thinking.Thinking, Carry: block.Thinking.Signature})
+			held := block.Thinking.Thinking
+			out = append(out, TerminalBlock{Type: "reasoning", Reasoning: &held, Carry: block.Thinking.Signature})
 		case block.ToolCall != nil:
 			arguments := json.RawMessage("{}")
 			if block.ToolCall.Arguments != "" {
