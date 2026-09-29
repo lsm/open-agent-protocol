@@ -827,7 +827,8 @@ pub const Session = struct {
         return .running;
     }
 
-    fn close(ptr: *anyopaque) void {
+    fn close(ptr: *anyopaque, force: bool) contract.Failure!void {
+        _ = force;
         cast(ptr).destroy();
     }
 };
@@ -973,7 +974,7 @@ const Probe = struct {
     }
 
     fn deinit(self: *Probe) void {
-        if (self.handle) |live| live.close();
+        if (self.handle) |live| live.teardown();
         self.arena.deinit();
         self.fake.deinit(testing.allocator);
     }

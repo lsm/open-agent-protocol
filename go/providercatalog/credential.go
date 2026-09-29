@@ -61,13 +61,27 @@ func NeedsNoCredential(catalog Catalog, id string) bool {
 	return AcceptsAuth(catalog, id, "none")
 }
 
-func LookupCredential(catalog Catalog, env []EnvironmentValue, stored *StoredCredential, id string) (Credential, bool) {
-	if _, known := findProvider(catalog, id); !known {
-		return Credential{}, false
+func CredentialPrecedence(catalog Catalog, id string) []Source {
+	provider, known := findProvider(catalog, id)
+	if !known {
+		return []Source{SourceEnvironment, SourceStored}
 	}
-	if credential, ok := APIKeyForProvider(catalog, env, id); ok {
-		return credential, true
+	var order []Source
+	for _, name := range provider.CredentialOrder {
+		switch Source(name) {
+		case SourceEnvironment:
+			order = append(order, SourceEnvironment)
+		case SourceStored:
+			order = append(order, SourceStored)
+		}
 	}
+	if len(order) == 0 {
+		return []Source{SourceEnvironment, SourceStored}
+	}
+	return order
+}
+
+func storedCredential(catalog Catalog, stored *StoredCredential, id string) (Credential, bool) {
 	if stored == nil {
 		return Credential{}, false
 	}
@@ -88,6 +102,25 @@ func LookupCredential(catalog Catalog, env []EnvironmentValue, stored *StoredCre
 			return Credential{}, false
 		}
 		return Credential{Key: *stored.OAuthAccess, Source: SourceOAuth, Name: id}, true
+	}
+	return Credential{}, false
+}
+
+func LookupCredential(catalog Catalog, env []EnvironmentValue, stored *StoredCredential, id string) (Credential, bool) {
+	if _, known := findProvider(catalog, id); !known {
+		return Credential{}, false
+	}
+	for _, source := range CredentialPrecedence(catalog, id) {
+		switch source {
+		case SourceEnvironment:
+			if credential, ok := APIKeyForProvider(catalog, env, id); ok {
+				return credential, true
+			}
+		case SourceStored:
+			if credential, ok := storedCredential(catalog, stored, id); ok {
+				return credential, true
+			}
+		}
 	}
 	return Credential{}, false
 }

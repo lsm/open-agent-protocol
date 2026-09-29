@@ -88,12 +88,17 @@ pub fn isDeepSeek(base_url: ?[]const u8) bool {
     return std.mem.find(u8, url, "api.deepseek.com") != null;
 }
 
-pub fn isOpenAIHost(base_url: []const u8) bool {
-    const uri = std.Uri.parse(base_url) catch return false;
+pub fn isHostOrSubdomainOf(base_url: ?[]const u8, domain: []const u8) bool {
+    const url = base_url orelse return false;
+    const uri = std.Uri.parse(url) catch return false;
     const host = uri.host orelse return false;
     const value = host.percent_encoded;
-    return std.ascii.eqlIgnoreCase(value, "openai.com") or
-        (value.len > "openai.com".len and std.ascii.eqlIgnoreCase(value[value.len - "openai.com".len ..], "openai.com") and value[value.len - "openai.com".len - 1] == '.');
+    return std.ascii.eqlIgnoreCase(value, domain) or
+        (value.len > domain.len and std.ascii.eqlIgnoreCase(value[value.len - domain.len ..], domain) and value[value.len - domain.len - 1] == '.');
+}
+
+pub fn isOpenAIHost(base_url: []const u8) bool {
+    return isHostOrSubdomainOf(base_url, "openai.com");
 }
 
 pub fn isAnthropic(base_url: ?[]const u8) bool {
@@ -209,6 +214,37 @@ test "isGitHubCopilot detection" {
     try std.testing.expect(isGitHubCopilot("https://api.githubcopilot.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot("https://api.openai.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot(null));
+}
+
+test "a host matches its own domain or a subdomain of it and nothing else" {
+    const matches = [_][]const u8{
+        "https://mistral.ai",
+        "https://api.mistral.ai",
+        "https://API.MISTRAL.AI",
+        "https://inference.mistral.ai/v1",
+        "https://user:key@mistral.ai",
+    };
+    for (matches) |url| {
+        try std.testing.expect(isHostOrSubdomainOf(url, "mistral.ai"));
+    }
+
+    const misses = [_][]const u8{
+        "https://mymistral.ai",
+        "https://notmistral.ai",
+        "https://mistral.ai.evil.example",
+        "https://evil.example/?next=api.mistral.ai",
+        "https://evil.example/v1/api.mistral.ai",
+        "https://gateway.example/proxy/api.mistral.ai",
+        "not a url at all",
+        "",
+    };
+    for (misses) |url| {
+        try std.testing.expect(!isHostOrSubdomainOf(url, "mistral.ai"));
+    }
+
+    try std.testing.expect(!isHostOrSubdomainOf(null, "mistral.ai"));
+    try std.testing.expect(isHostOrSubdomainOf("https://api.mistral.ai", "ai"));
+    try std.testing.expect(!isHostOrSubdomainOf("https://api.mistral.ai", "mistral.ai.uk"));
 }
 
 test "an openai host is a host ending in openai.com on a label boundary" {

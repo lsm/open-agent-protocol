@@ -114,7 +114,7 @@ dependency, and each is useful on its own:
 | # | PR | what it carries |
 | --- | --- | --- |
 | 1 | the turn's outcome | `TurnOutcome` and the cut-off rule, over `provider.AssistantContent` and nothing else. No I/O, so it is the rule under test before anything streams |
-| 2 | a turn, as a channel | a `Streamer` the loop depends on, and `provider.EventSink` becoming readable outside its own package. This is the seam every later piece is written against |
+| 2 | a turn, as a channel | a `Streamer` the loop depends on, `provider.EventSink.Drain` becoming readable outside its own package, and `provider.StopReason`'s six names so a reply's stop reason is typed rather than a string any caller can spell either way. This is the seam every later piece is written against |
 | 3 | the loop | `Run`, one terminal per run, `max_iterations`, cancellation, and a turn that ends the run |
 | 4 | client-executed tool calls | the caller's round trip: ask, wait, answer, and the answer becomes a message |
 

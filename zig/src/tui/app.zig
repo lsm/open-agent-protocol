@@ -235,6 +235,271 @@ test "App cwd display neutralises control bytes in the working directory" {
     try std.testing.expect(std.mem.indexOf(u8, app.state.cwd_display, "/tmp/evil?[2J?]0;pwned?dir") != null);
 }
 
+fn branchRepoBase(allocator: std.mem.Allocator, tmp: *const std.testing.TmpDir) ![]u8 {
+    const cwd = try currentPathOwned(allocator);
+    defer allocator.free(cwd);
+    return std.fs.path.join(allocator, &.{ cwd, ".zig-cache", "tmp", &tmp.sub_path });
+}
+
+const BranchRepo = struct {
+    tmp: std.testing.TmpDir,
+    repo: []u8,
+    git: []u8,
+
+    fn init(allocator: std.mem.Allocator) !BranchRepo {
+        var self: BranchRepo = .{ .tmp = std.testing.tmpDir(.{}), .repo = &.{}, .git = &.{} };
+        errdefer self.tmp.cleanup();
+        const base = try branchRepoBase(allocator, &self.tmp);
+        self.repo = std.fs.path.join(allocator, &.{ base, "work" }) catch |err| {
+            allocator.free(base);
+            return err;
+        };
+        allocator.free(base);
+        errdefer allocator.free(self.repo);
+        self.git = try std.fs.path.join(allocator, &.{ self.repo, ".git" });
+        errdefer allocator.free(self.git);
+        try compat.fs.createDir(compat.fs.getCwd(), self.git);
+        return self;
+    }
+
+    fn deinit(self: *BranchRepo, allocator: std.mem.Allocator) void {
+        allocator.free(self.git);
+        allocator.free(self.repo);
+        self.tmp.cleanup();
+    }
+
+    fn writeHead(self: BranchRepo, allocator: std.mem.Allocator, contents: []const u8) !void {
+        const head = try std.fs.path.join(allocator, &.{ self.git, "HEAD" });
+        defer allocator.free(head);
+        try compat.fs.writeFile(compat.fs.getCwd(), head, contents);
+    }
+
+    fn makeDotGitAFile(self: BranchRepo, allocator: std.mem.Allocator, contents: []const u8) !void {
+        const head = try std.fs.path.join(allocator, &.{ self.git, "HEAD" });
+        defer allocator.free(head);
+        compat.fs.removeFile(head);
+        compat.fs.removeDir(self.git);
+        try compat.fs.writeFile(compat.fs.getCwd(), self.git, contents);
+    }
+};
+
+test "App git branch reads the branch name from the repository HEAD" {
+    var repo = try BranchRepo.init(std.testing.allocator);
+    defer repo.deinit(std.testing.allocator);
+    try repo.writeHead(std.testing.allocator, "ref: refs/heads/tui-status\n");
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, repo.repo);
+    try app.refreshCwdDisplay();
+
+    try std.testing.expectEqualStrings("tui-status", app.state.git_branch);
+}
+
+test "App git branch shows the abbreviated commit id on a detached HEAD" {
+    var repo = try BranchRepo.init(std.testing.allocator);
+    defer repo.deinit(std.testing.allocator);
+    try repo.writeHead(std.testing.allocator, "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0\n");
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, repo.repo);
+    try app.refreshCwdDisplay();
+
+    try std.testing.expectEqualStrings("a1b2c3d", app.state.git_branch);
+}
+
+test "App git branch follows a worktree gitdir file to the real HEAD" {
+    var repo = try BranchRepo.init(std.testing.allocator);
+    defer repo.deinit(std.testing.allocator);
+    const base = try branchRepoBase(std.testing.allocator, &repo.tmp);
+    defer std.testing.allocator.free(base);
+    const real_git = try std.fs.path.join(std.testing.allocator, &.{ base, "real-git" });
+    defer std.testing.allocator.free(real_git);
+    try compat.fs.createDir(compat.fs.getCwd(), real_git);
+    const real_head = try std.fs.path.join(std.testing.allocator, &.{ real_git, "HEAD" });
+    defer std.testing.allocator.free(real_head);
+    try compat.fs.writeFile(compat.fs.getCwd(), real_head, "ref: refs/heads/worktree-branch\n");
+    const pointer = try std.fmt.allocPrint(std.testing.allocator, "gitdir: {s}\n", .{real_git});
+    defer std.testing.allocator.free(pointer);
+    try repo.makeDotGitAFile(std.testing.allocator, pointer);
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, repo.repo);
+    try app.refreshCwdDisplay();
+
+    try std.testing.expectEqualStrings("worktree-branch", app.state.git_branch);
+}
+
+test "App git branch follows a relative gitdir pointer against the working directory" {
+    var repo = try BranchRepo.init(std.testing.allocator);
+    defer repo.deinit(std.testing.allocator);
+    const real_git = try std.fs.path.join(std.testing.allocator, &.{ repo.repo, "..", "modules", "sub" });
+    defer std.testing.allocator.free(real_git);
+    try compat.fs.createDir(compat.fs.getCwd(), real_git);
+    const real_head = try std.fs.path.join(std.testing.allocator, &.{ real_git, "HEAD" });
+    defer std.testing.allocator.free(real_head);
+    try compat.fs.writeFile(compat.fs.getCwd(), real_head, "ref: refs/heads/submodule\n");
+    const pointer = try std.fmt.allocPrint(std.testing.allocator, "gitdir: ../modules/sub\n", .{});
+    defer std.testing.allocator.free(pointer);
+    try repo.makeDotGitAFile(std.testing.allocator, pointer);
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, repo.repo);
+    try app.refreshCwdDisplay();
+
+    try std.testing.expectEqualStrings("submodule", app.state.git_branch);
+}
+
+test "App git branch walks up to the enclosing repository" {
+    var repo = try BranchRepo.init(std.testing.allocator);
+    defer repo.deinit(std.testing.allocator);
+    try repo.writeHead(std.testing.allocator, "ref: refs/heads/enclosing\n");
+    const nested = try std.fs.path.join(std.testing.allocator, &.{ repo.repo, "src", "deep" });
+    defer std.testing.allocator.free(nested);
+    try compat.fs.createDir(compat.fs.getCwd(), nested);
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, nested);
+    try app.refreshCwdDisplay();
+
+    try std.testing.expectEqualStrings("enclosing", app.state.git_branch);
+}
+
+test "App git branch stops at a repository it cannot inspect" {
+    var repo = try BranchRepo.init(std.testing.allocator);
+    defer repo.deinit(std.testing.allocator);
+    try repo.writeHead(std.testing.allocator, "ref: refs/heads/outer\n");
+    const broken = try std.fs.path.join(std.testing.allocator, &.{ repo.repo, "locked" });
+    defer std.testing.allocator.free(broken);
+    try compat.fs.createDir(compat.fs.getCwd(), broken);
+    const broken_git = try std.fs.path.join(std.testing.allocator, &.{ broken, ".git" });
+    defer std.testing.allocator.free(broken_git);
+    try compat.fs.symLink(compat.fs.getCwd(), "/nonexistent-oap-git-target", broken_git);
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, broken);
+    try app.refreshCwdDisplay();
+
+    try std.testing.expectEqualStrings("", app.state.git_branch);
+}
+
+test "App git branch stops at a repository whose gitdir pointer is unparseable" {
+    var repo = try BranchRepo.init(std.testing.allocator);
+    defer repo.deinit(std.testing.allocator);
+    try repo.writeHead(std.testing.allocator, "ref: refs/heads/outer\n");
+    try repo.makeDotGitAFile(std.testing.allocator, "not a pointer at all");
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, repo.repo);
+    try app.refreshCwdDisplay();
+
+    try std.testing.expectEqualStrings("", app.state.git_branch);
+}
+
+test "App git branch stops at a repository whose HEAD is unreadable" {
+    var repo = try BranchRepo.init(std.testing.allocator);
+    defer repo.deinit(std.testing.allocator);
+    try repo.writeHead(std.testing.allocator, "ref: refs/heads/outer\n");
+    const inner = try std.fs.path.join(std.testing.allocator, &.{ repo.repo, "inner" });
+    defer std.testing.allocator.free(inner);
+    const inner_git = try std.fs.path.join(std.testing.allocator, &.{ inner, ".git" });
+    defer std.testing.allocator.free(inner_git);
+    try compat.fs.createDir(compat.fs.getCwd(), inner_git);
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, inner);
+    try app.refreshCwdDisplay();
+
+    try std.testing.expectEqualStrings("", app.state.git_branch);
+}
+
+test "App git branch takes the nearest repository rather than an enclosing one" {
+    var repo = try BranchRepo.init(std.testing.allocator);
+    defer repo.deinit(std.testing.allocator);
+    try repo.writeHead(std.testing.allocator, "ref: refs/heads/outer\n");
+    const inner = try std.fs.path.join(std.testing.allocator, &.{ repo.repo, "inner" });
+    defer std.testing.allocator.free(inner);
+    const inner_git = try std.fs.path.join(std.testing.allocator, &.{ inner, ".git" });
+    defer std.testing.allocator.free(inner_git);
+    try compat.fs.createDir(compat.fs.getCwd(), inner_git);
+    const inner_head = try std.fs.path.join(std.testing.allocator, &.{ inner_git, "HEAD" });
+    defer std.testing.allocator.free(inner_head);
+    try compat.fs.writeFile(compat.fs.getCwd(), inner_head, "ref: refs/heads/inner\n");
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, inner);
+    try app.refreshCwdDisplay();
+
+    try std.testing.expectEqualStrings("inner", app.state.git_branch);
+}
+
+test "App git branch neutralises control bytes read from HEAD" {
+    var repo = try BranchRepo.init(std.testing.allocator);
+    defer repo.deinit(std.testing.allocator);
+    try repo.writeHead(std.testing.allocator, "ref: refs/heads/evil\x1b[2J\x07\n");
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, repo.repo);
+    try app.refreshCwdDisplay();
+
+    try std.testing.expect(std.mem.indexOf(u8, app.state.git_branch, "\x1b") == null);
+    try std.testing.expect(std.mem.indexOf(u8, app.state.git_branch, "\x07") == null);
+    try std.testing.expect(std.mem.indexOf(u8, app.state.git_branch, "evil?[2J?") != null);
+}
+
+test "App slow tick re-reads the branch after the working directory changes" {
+    var repo = try BranchRepo.init(std.testing.allocator);
+    defer repo.deinit(std.testing.allocator);
+    try repo.writeHead(std.testing.allocator, "ref: refs/heads/one\n");
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, repo.repo);
+    try app.refreshCwdDisplay();
+    try std.testing.expectEqualStrings("one", app.state.git_branch);
+
+    try repo.writeHead(std.testing.allocator, "ref: refs/heads/two\n");
+    try app.refreshBranchOnSlowTick();
+    try std.testing.expectEqualStrings("two", app.state.git_branch);
+}
+
+const filesystem_root = "/";
+
+test "App git branch is empty when no ancestor holds a repository" {
+    const label = try gitHeadLabel(std.testing.allocator, filesystem_root);
+    defer if (label) |value| std.testing.allocator.free(value);
+    try std.testing.expect(label == null);
+}
+
+fn refreshGitBranchProbe(allocator: std.mem.Allocator) !void {
+    const label = try gitHeadLabel(allocator, filesystem_root);
+    if (label) |value| allocator.free(value);
+}
+
+test "gitHeadLabel survives an allocation failure at every step" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, refreshGitBranchProbe, .{});
+}
+
 test "collapseHome shortens the home directory only on a path component boundary" {
     const collapsed = try collapseHome(std.testing.allocator, "/Users/lsm/work/repo", "/Users/lsm");
     defer std.testing.allocator.free(collapsed);
@@ -589,10 +854,13 @@ pub const App = struct {
     session_created_at: i64 = 0,
     compaction_offset: u64 = 0,
     pending_thinking: std.ArrayList(u8) = .empty,
+    pending_after_compaction: ?[]u8 = null,
+    compaction_just_ended: ?bool = null,
     session_title: []u8 = &.{},
     session_title_generated: bool = false,
     first_user_text: []u8 = &.{},
     title_session_id: []u8 = &.{},
+    branch_dir: []u8 = &.{},
 
     pub fn init(allocator: std.mem.Allocator, options: tui_runtime.TuiRuntimeOptions) !App {
         var runtime_options = options;
@@ -663,9 +931,11 @@ pub const App = struct {
         if (self.written_model.len > 0) self.allocator.free(self.written_model);
         if (self.written_provider.len > 0) self.allocator.free(self.written_provider);
         self.pending_thinking.deinit(self.allocator);
+        if (self.pending_after_compaction) |pending| self.allocator.free(pending);
         if (self.session_title.len > 0) self.allocator.free(self.session_title);
         if (self.first_user_text.len > 0) self.allocator.free(self.first_user_text);
         if (self.title_session_id.len > 0) self.allocator.free(self.title_session_id);
+        if (self.branch_dir.len > 0) self.allocator.free(self.branch_dir);
         self.state.deinit();
         self.* = undefined;
     }
@@ -711,6 +981,7 @@ pub const App = struct {
             .agent_end => |payload| return payload.reason == .completed,
             .compaction_end => |payload| {
                 if (payload.outcome == .completed) try self.recordCompactionTranscript(payload.transcript.slice());
+                self.compaction_just_ended = payload.outcome == .completed;
                 return true;
             },
             else => return false,
@@ -742,6 +1013,7 @@ pub const App = struct {
 
     pub fn resumeSelectedSession(self: *App) !void {
         const store = self.store orelse return error.NoStoreConfigured;
+        try self.dropPendingAfterCompaction("the session was resumed before the compaction finished");
         if (self.state.session_index >= self.state.sessions.items.len) return;
         const selected = self.state.sessions.items[self.state.session_index];
         const runtime = if (self.runtime) |r| r else return error.NoRuntimeConfigured;
@@ -1538,6 +1810,7 @@ pub const App = struct {
                 self.pending_session_reset = false;
             }
         }
+        var resumed_run = false;
         if (completed_agent_end and self.state.queue.total() > 0) {
             session.resumeSession() catch |err| {
                 try self.state.status.setError(self.allocator, @errorName(err));
@@ -1545,6 +1818,11 @@ pub const App = struct {
                 return;
             };
             self.refreshQueuedCounts();
+            resumed_run = true;
+        }
+        if (self.compaction_just_ended) |completed| {
+            self.compaction_just_ended = null;
+            try self.sendPendingAfterCompaction(completed, resumed_run or self.state.status.streaming);
         }
     }
 
@@ -1616,6 +1894,11 @@ pub const App = struct {
         if (trimmed.len == 0) return;
         self.state.transcript_scroll = 0;
         if (trimmed[0] == '/') return try self.submitCommand(trimmed);
+        if (try self.compactBeforeTurn(trimmed)) return;
+        try self.sendUserTurn(trimmed);
+    }
+
+    fn sendUserTurn(self: *App, trimmed: []const u8) !void {
         self.applyPendingSessionResetSync() catch |err| {
             if (err == error.PendingSessionReset) {
                 try self.state.appendTranscript(.@"error", "Session reset pending; wait for the current run to finish.");
@@ -1635,6 +1918,62 @@ pub const App = struct {
         }
         try self.state.appendUserMessage(trimmed);
         self.refreshQueuedCounts();
+    }
+
+    fn contextWindowInEffect(self: *const App) u64 {
+        const runtime = self.runtime orelse return 0;
+        const model = runtime.currentModel() orelse return 0;
+        return model.context_window;
+    }
+
+    fn estimatedTokensForTurn(self: *const App, text: []const u8) u64 {
+        const message: ai_types.Message = .{ .user = .{
+            .content = .{ .text = text },
+            .timestamp = 0,
+        } };
+        return self.state.telemetry.estimated_tokens + agent.estimateMessageTokens(message);
+    }
+
+    fn compactBeforeTurn(self: *App, text: []const u8) !bool {
+        const share = self.state.autocompact_percent orelse return false;
+        if (self.pending_after_compaction != null) return false;
+        if (self.state.status.streaming or self.state.status.compacting) return false;
+        const history = if (self.session) |*session| session.history() else return false;
+        if (history.len == 0 or agent.compaction.isCompacted(history)) return false;
+        const window = self.contextWindowInEffect();
+        if (!agent.compaction.isAtShare(self.estimatedTokensForTurn(text), @intCast(window), share)) return false;
+
+        const pending = try self.allocator.dupe(u8, text);
+        errdefer self.allocator.free(pending);
+        const msg = try std.fmt.allocPrint(self.allocator, "context is at {d}% of {d} tokens; compacting before this turn.", .{ share, window });
+        defer self.allocator.free(msg);
+        try self.state.appendTranscript(.system, msg);
+        try self.startCompaction("");
+        self.pending_after_compaction = pending;
+        return true;
+    }
+
+    fn sendPendingAfterCompaction(self: *App, completed: bool, busy: bool) !void {
+        const pending = self.pending_after_compaction orelse return;
+        self.pending_after_compaction = null;
+        defer self.allocator.free(pending);
+        if (!completed) {
+            try self.state.appendTranscript(.system, "the automatic compaction did not finish; sending the message with the history unchanged");
+        }
+        if (busy) {
+            try self.steer(pending);
+            return;
+        }
+        try self.sendUserTurn(pending);
+    }
+
+    fn dropPendingAfterCompaction(self: *App, reason: []const u8) !void {
+        const pending = self.pending_after_compaction orelse return;
+        self.pending_after_compaction = null;
+        defer self.allocator.free(pending);
+        const msg = try std.fmt.allocPrint(self.allocator, "a message waiting on an automatic compaction was not sent: {s}.", .{reason});
+        defer self.allocator.free(msg);
+        try self.state.appendTranscript(.system, msg);
     }
 
     pub fn steer(self: *App, text: []const u8) !void {
@@ -1793,6 +2132,7 @@ pub const App = struct {
     pub fn refreshCwdDisplay(self: *App) !void {
         if (self.working_dir.len == 0) {
             try self.state.setCwdDisplay(self.allocator, "");
+            try self.state.setGitBranch(self.allocator, "");
             return;
         }
         const sanitized = try tui_text.sanitizeTerminalText(self.allocator, self.working_dir);
@@ -1802,6 +2142,31 @@ pub const App = struct {
         const display = try collapseHome(self.allocator, sanitized, home);
         defer self.allocator.free(display);
         try self.state.setCwdDisplay(self.allocator, display);
+        try self.refreshGitBranch();
+    }
+
+    pub fn refreshGitBranch(self: *App) !void {
+        const raw = try gitHeadLabel(self.allocator, self.working_dir);
+        defer if (raw) |value| self.allocator.free(value);
+        const sanitized = if (raw) |value|
+            try tui_text.sanitizeTerminalText(self.allocator, value)
+        else
+            try self.allocator.dupe(u8, "");
+        defer self.allocator.free(sanitized);
+        try self.state.setGitBranch(self.allocator, sanitized);
+        if (!std.mem.eql(u8, self.branch_dir, self.working_dir)) {
+            const owned = try self.allocator.dupe(u8, self.working_dir);
+            if (self.branch_dir.len > 0) self.allocator.free(self.branch_dir);
+            self.branch_dir = owned;
+        }
+    }
+
+    pub fn refreshBranchOnSlowTick(self: *App) !void {
+        if (!std.mem.eql(u8, self.branch_dir, self.working_dir)) {
+            try self.refreshCwdDisplay();
+            return;
+        }
+        try self.refreshGitBranch();
     }
 
     pub fn appendWelcome(self: *App) !void {
@@ -2302,6 +2667,9 @@ pub const TuiModel = struct {
                 if (app.interrupt_armed_tick) |armed| {
                     if (app.state.anim_tick -% armed > interrupt_window_ticks) app.interrupt_armed_tick = null;
                 }
+                if (app.state.anim_tick % branch_refresh_ticks == 0) {
+                    app.refreshBranchOnSlowTick() catch |err| app.recordError(@errorName(err)) catch {};
+                }
             },
             .quit => return self.quitCmd(app, ctx),
         }
@@ -2320,6 +2688,8 @@ pub const TuiModel = struct {
     }
 
     const interrupt_window_ticks: u64 = 30;
+
+    const branch_refresh_ticks: u64 = 100;
 
     fn streamActive(app: *const App) bool {
         if (app.state.status.streaming) return true;
@@ -2451,7 +2821,7 @@ pub const TuiModel = struct {
             composer_view.hintText(ctx.allocator, &app.state) catch "";
         const bar = status_bar_view.render(ctx.allocator, &app.state, .{ .width = width, .hint = hint }) catch "";
         const status = if (height >= cwd_row_min_height and app.state.cwd_display.len > 0) blk: {
-            const row = status_bar_view.renderCwdRow(ctx.allocator, app.state.cwd_display, width) catch break :blk bar;
+            const row = status_bar_view.renderCwdRow(ctx.allocator, app.state.cwd_display, app.state.git_branch, width) catch break :blk bar;
             break :blk tui_render.joinVertical(ctx.allocator, &.{ bar, row }) catch bar;
         } else bar;
         composer_view.adjustScroll(ctx.allocator, &app.state, width, height) catch {};
@@ -2840,6 +3210,81 @@ fn currentPathOwned(allocator: std.mem.Allocator) ![]u8 {
     const path_z = try std.process.currentPathAlloc(defaultIo(), allocator);
     defer allocator.free(path_z);
     return allocator.dupe(u8, path_z);
+}
+
+const git_head_prefix = "ref: refs/heads/";
+const git_head_max_bytes = 4096;
+const detached_id_len = 7;
+
+fn gitHeadLabel(allocator: std.mem.Allocator, dir_path: []const u8) !?[]u8 {
+    if (dir_path.len == 0) return null;
+    var current = try allocator.dupe(u8, dir_path);
+    defer allocator.free(current);
+    while (current.len > 0) {
+        const lookup = try gitHeadPath(allocator, current);
+        defer if (lookup.path) |value| allocator.free(value);
+        if (lookup.dot_git_present) {
+            const head = lookup.path orelse break;
+            return try readGitBranchName(allocator, head);
+        }
+        const parent = std.fs.path.dirname(current) orelse break;
+        if (parent.len == 0 or std.mem.eql(u8, parent, current)) break;
+        const next = try allocator.dupe(u8, parent);
+        allocator.free(current);
+        current = next;
+    }
+    return null;
+}
+
+fn readGitBranchName(allocator: std.mem.Allocator, head_path: []const u8) !?[]u8 {
+    const head = compat.fs.readFileAlloc(allocator, compat.fs.getCwd(), head_path, git_head_max_bytes) catch return null;
+    defer allocator.free(head);
+    const line = std.mem.trim(u8, head, " \t\r\n");
+    if (std.mem.startsWith(u8, line, git_head_prefix)) {
+        const name = std.mem.trim(u8, line[git_head_prefix.len..], " \t\r\n");
+        if (name.len == 0) return null;
+        return try allocator.dupe(u8, name);
+    }
+    if (line.len < detached_id_len) return null;
+    return try allocator.dupe(u8, line[0..detached_id_len]);
+}
+
+const HeadLookup = struct {
+    dot_git_present: bool,
+    path: ?[]u8,
+};
+
+fn gitHeadPath(allocator: std.mem.Allocator, dir_path: []const u8) !HeadLookup {
+    const dot_git = try std.fs.path.join(allocator, &.{ dir_path, ".git" });
+    defer allocator.free(dot_git);
+    return switch (compat.fs.fileKind(compat.fs.getCwd(), dot_git)) {
+        .absent => .{ .dot_git_present = false, .path = null },
+        .unreadable => .{ .dot_git_present = true, .path = null },
+        .directory => .{ .dot_git_present = true, .path = try std.fs.path.join(allocator, &.{ dot_git, "HEAD" }) },
+        .file => .{ .dot_git_present = true, .path = try gitPointerHeadPath(allocator, dir_path, dot_git) },
+        .other => .{ .dot_git_present = true, .path = null },
+    };
+}
+
+fn gitPointerHeadPath(allocator: std.mem.Allocator, dir_path: []const u8, dot_git: []const u8) !?[]u8 {
+    const pointer = compat.fs.readFileAlloc(allocator, compat.fs.getCwd(), dot_git, git_head_max_bytes) catch return null;
+    defer allocator.free(pointer);
+    const target = gitDirTarget(pointer) orelse return null;
+    const resolved = if (std.fs.path.isAbsolute(target))
+        try allocator.dupe(u8, target)
+    else
+        try std.fs.path.join(allocator, &.{ dir_path, target });
+    defer allocator.free(resolved);
+    return try std.fs.path.join(allocator, &.{ resolved, "HEAD" });
+}
+
+fn gitDirTarget(pointer: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, pointer, " \t\r\n");
+    const colon = std.mem.indexOfScalar(u8, trimmed, ':') orelse return null;
+    if (!std.mem.eql(u8, trimmed[0..colon], "gitdir")) return null;
+    const target = std.mem.trim(u8, trimmed[colon + 1 ..], " \t\r\n");
+    if (target.len == 0) return null;
+    return target;
 }
 
 fn collapseHome(allocator: std.mem.Allocator, path: []const u8, home: ?[]const u8) ![]u8 {
@@ -3959,6 +4404,197 @@ test "App writes a reply's thinking even when the reply is too large to save" {
     try std.testing.expectEqual(@as(usize, 2), loaded.events.items.len);
     try std.testing.expect(loaded.events.items[0] == .message_start);
     try std.testing.expectEqualStrings("weighing it", loaded.events.items[1].thinking_delta.delta.slice());
+}
+
+const auto_compact_history = [_]ai_types.Message{
+    .{ .user = .{ .content = .{ .text = "first question" }, .timestamp = 0 } },
+    .{ .assistant = .{
+        .content = &.{.{ .text = .{ .text = "first answer" } }},
+        .api = "test-api",
+        .provider = "test-provider",
+        .model = "model-a",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+    } },
+};
+
+fn autoCompactTestApp(mock: *MockAppSession) !App {
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{auto_compact_test_model} });
+    errdefer app.deinit();
+    app.session = mock.session();
+    app.state.autocompact_percent = 50;
+    app.state.telemetry.estimated_tokens = 60_000;
+    return app;
+}
+
+const auto_compact_test_model = ai_types.Model{
+    .id = "model-a",
+    .name = "Model A",
+    .api = "test-api",
+    .provider = "test-provider",
+    .base_url = "https://example.invalid",
+    .reasoning = false,
+    .input = &[_][]const u8{"text"},
+    .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+    .context_window = 100_000,
+    .max_tokens = 1024,
+};
+
+test "autocompact holds a turn until the compaction it started has finished" {
+    var mock = MockAppSession{ .history_messages = &auto_compact_history };
+    defer mock.deinit();
+    var app = try autoCompactTestApp(&mock);
+    defer app.deinit();
+
+    try app.submit("second question");
+
+    try std.testing.expectEqual(@as(usize, 1), mock.compact_count);
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+    try std.testing.expect(app.pending_after_compaction != null);
+
+    try mock.eventStream().push(.{ .compaction_end = .{
+        .outcome = .completed,
+        .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "summary")),
+    } });
+    try app.drainEvents();
+
+    try std.testing.expectEqual(@as(usize, 1), mock.submit_count);
+    try std.testing.expect(app.pending_after_compaction == null);
+}
+
+test "autocompact sends the held turn when the compaction it started did not finish" {
+    var mock = MockAppSession{ .history_messages = &auto_compact_history };
+    defer mock.deinit();
+    var app = try autoCompactTestApp(&mock);
+    defer app.deinit();
+
+    try app.submit("second question");
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+
+    try mock.eventStream().push(.{ .compaction_end = .{ .outcome = .cancelled } });
+    try app.drainEvents();
+
+    try std.testing.expectEqual(@as(usize, 1), mock.submit_count);
+    var said_it = false;
+    for (app.state.transcript.items) |entry| {
+        if (std.mem.indexOf(u8, entry.text.items, "did not finish") != null) said_it = true;
+    }
+    try std.testing.expect(said_it);
+}
+
+test "autocompact leaves a turn alone below the share, and when it is off" {
+    var mock = MockAppSession{ .history_messages = &auto_compact_history };
+    defer mock.deinit();
+    var app = try autoCompactTestApp(&mock);
+    defer app.deinit();
+
+    app.state.telemetry.estimated_tokens = 1_000;
+    try app.submit("well under the share");
+
+    try std.testing.expectEqual(@as(usize, 0), mock.compact_count);
+    try std.testing.expectEqual(@as(usize, 1), mock.submit_count);
+    try std.testing.expect(app.pending_after_compaction == null);
+
+    app.state.telemetry.estimated_tokens = 60_000;
+    app.state.autocompact_percent = null;
+    try app.submit("over the share, but off");
+
+    try std.testing.expectEqual(@as(usize, 0), mock.compact_count);
+    try std.testing.expectEqual(@as(usize, 2), mock.submit_count);
+}
+
+test "autocompact steers the held turn rather than blocking on a run the queue resumed" {
+    var mock = MockAppSession{ .history_messages = &auto_compact_history };
+    defer mock.deinit();
+    var app = try autoCompactTestApp(&mock);
+    defer app.deinit();
+
+    try app.submit("held turn");
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+
+    mock.queued_counts.follow_up = 1;
+    try mock.eventStream().push(.{ .compaction_end = .{ .outcome = .completed } });
+    try app.drainEvents();
+
+    try std.testing.expectEqual(@as(usize, 1), mock.resume_count);
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+    try std.testing.expectEqual(@as(usize, 1), mock.steer_count);
+}
+
+test "a session resume drops a held turn with a note, before the resume runs" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+
+    var mock = MockAppSession{ .history_messages = &auto_compact_history };
+    defer mock.deinit();
+    var app = try autoCompactTestApp(&mock);
+    defer app.deinit();
+    if (app.store) |*store| store.deinit();
+    app.store = try session_store.Store.init(std.testing.allocator, base);
+    try saveTestSession(app.store.?, "s1", 1);
+    try app.loadSessions();
+    app.state.session_index = 0;
+
+    try app.submit("held turn");
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+
+    app.resumeSelectedSession() catch {};
+
+    try std.testing.expect(app.pending_after_compaction == null);
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+    var said_it = false;
+    for (app.state.transcript.items) |entry| {
+        if (std.mem.indexOf(u8, entry.text.items, "was not sent: the session was resumed") != null) said_it = true;
+    }
+    try std.testing.expect(said_it);
+}
+
+test "autocompact does not compact a history that is already a summary" {
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    var app = try autoCompactTestApp(&mock);
+    defer app.deinit();
+    mock.history_messages = &[_]ai_types.Message{
+        .{ .user = .{
+            .content = .{ .text = agent.compaction.header ++ "\n\n<summary>\nkept\n</summary>" },
+            .timestamp = 0,
+        } },
+        .{ .assistant = .{
+            .content = &.{.{ .text = .{ .text = agent.compaction.acknowledgement } }},
+            .api = "test-api",
+            .provider = "test-provider",
+            .model = "model-a",
+            .usage = .{},
+            .stop_reason = .stop,
+            .timestamp = 0,
+        } },
+    };
+
+    try app.submit("after a compaction");
+
+    try std.testing.expectEqual(@as(usize, 0), mock.compact_count);
+    try std.testing.expectEqual(@as(usize, 1), mock.submit_count);
+}
+
+test "autocompact starts one compaction, and a turn typed during it takes the normal path" {
+    var mock = MockAppSession{ .history_messages = &auto_compact_history };
+    defer mock.deinit();
+    var app = try autoCompactTestApp(&mock);
+    defer app.deinit();
+
+    try app.submit("first held turn");
+    try app.submit("second turn typed while compacting");
+
+    try std.testing.expectEqual(@as(usize, 1), mock.compact_count);
+    try std.testing.expectEqual(@as(usize, 1), mock.submit_count);
+
+    try mock.eventStream().push(.{ .compaction_end = .{ .outcome = .completed } });
+    try app.drainEvents();
+
+    try std.testing.expectEqual(@as(usize, 2), mock.submit_count);
 }
 
 test "App indexes where a completed compaction starts" {

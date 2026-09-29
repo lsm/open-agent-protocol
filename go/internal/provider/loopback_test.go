@@ -87,7 +87,7 @@ func TestARunIsPointedAtTheLoopbackAndTheLoopbackAnswersTheRun(t *testing.T) {
 
 	sink := &EventSink{}
 	Stream(sink, model, ctx, StreamOptions{}, loopbackReader(t, mock.URL(), body), nil)
-	events := sink.take()
+	events := sink.Drain()
 	if reason := firstError(events); reason != "" {
 		t.Fatalf("the run errored: %s", reason)
 	}
@@ -115,7 +115,7 @@ func TestTheLoopbackRefusalArrivesAsAnErrorAndNoTerminalIsReached(t *testing.T) 
 	sink := &EventSink{}
 	Stream(sink, Model{ID: "gpt-4o", API: "openai-completions", Provider: "openai", MaxTokens: 100, HasCompat: true}, Context{}, StreamOptions{},
 		loopbackReader(t, mock.URL(), []byte(`{"model":"gpt-4o"}`)), nil)
-	events := sink.take()
+	events := sink.Drain()
 
 	if firstError(events) == "" {
 		t.Fatalf("got %v, want the refusal to surface as an error", kindsOf(events))
@@ -140,7 +140,7 @@ func TestATextWithAQuoteInItReachesTheTerminal(t *testing.T) {
 	sink := &EventSink{}
 	Stream(sink, Model{ID: "gpt-4o", API: "openai-completions", Provider: "openai", MaxTokens: 100, HasCompat: true}, Context{}, StreamOptions{},
 		loopbackReader(t, mock.URL(), []byte(`{"model":"gpt-4o"}`)), nil)
-	events := sink.take()
+	events := sink.Drain()
 	if got := findEvent(t, events, EventDone).Message.Content[0].Text.Text; got != quoted {
 		t.Errorf("the terminal text = %q, want %q: a fixture that splices raw would not survive its own round trip", got, quoted)
 	}
@@ -153,7 +153,7 @@ func TestAToolCallWithQuotesInItsArgumentsReachesTheTerminal(t *testing.T) {
 	sink := &EventSink{}
 	Stream(sink, Model{ID: "gpt-4o", API: "openai-completions", Provider: "openai", MaxTokens: 100, HasCompat: true}, Context{}, StreamOptions{},
 		loopbackReader(t, mock.URL(), []byte(`{"model":"gpt-4o"}`)), nil)
-	events := sink.take()
+	events := sink.Drain()
 	found := findEvent(t, events, EventToolCallEnd)
 	if found.ToolCall.Arguments != args {
 		t.Errorf("the arguments = %q, want %q", found.ToolCall.Arguments, args)
@@ -166,7 +166,7 @@ func TestUsageTurnsCarryTheirCountsOverTheWire(t *testing.T) {
 	sink := &EventSink{}
 	Stream(sink, Model{ID: "gpt-4o", API: "openai-completions", Provider: "openai", MaxTokens: 100, HasCompat: true}, Context{}, StreamOptions{},
 		loopbackReader(t, mock.URL(), []byte(`{"model":"gpt-4o"}`)), nil)
-	done := findEvent(t, sink.take(), EventDone)
+	done := findEvent(t, sink.Drain(), EventDone)
 	if done.Message.Usage.InputTokens != 11 || done.Message.Usage.OutputTokens != 5 {
 		t.Errorf("the usage = %+v, want 11 input and 5 output", done.Message.Usage)
 	}
