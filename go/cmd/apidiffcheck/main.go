@@ -9,13 +9,14 @@ import (
 	"os"
 	"os/exec"
 	"path"
-	"regexp"
+	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/lsm/open-agent-protocol/go/internal/publicset"
 )
 
-const goreleaseVersion = "v0.0.0-20260908205506-85c1c2202aba"
+const apidiffVersion = "v0.0.0-20260908205506-85c1c2202aba"
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout); err != nil {
@@ -27,48 +28,68 @@ func main() {
 func run(args []string, stdout io.Writer) error {
 	flags := flag.NewFlagSet("apidiffcheck", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	base := flags.String("base", "", "the release tag to compare against (default: the newest v* tag)")
 	description := flags.String("description", "", "a file holding the pull request description, whose Breaking changes section records an incompatible change (default: PR_BODY, which the workflow sets from the event payload)")
-	root := flags.String("root", ".", "the module root")
+	base := flags.String("base", "", "the commit this pull request is based on, compared over a second checkout at -base-root (default: PR_BASE_SHA, which the workflow sets)")
+	baseRoot := flags.String("base-root", "", "a checkout of the base commit, for the per-pull-request comparison (default: PR_BASE_ROOT)")
+	root := flags.String("root", ".", "the module root at the pull request head")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if *description == "" {
 		*description = os.Getenv("PR_BODY")
 	}
-	var recorded string
-	if *description != "" {
-		data, err := os.ReadFile(*description)
-		if err != nil {
-			return fmt.Errorf("reading the pull request description: %w", err)
-		}
-		recorded = string(data)
+	if *base == "" {
+		*base = os.Getenv("PR_BASE_SHA")
 	}
-	if err := check(*root, *base, recorded, stdout); err != nil {
-		return err
+	if *baseRoot == "" {
+		*baseRoot = os.Getenv("PR_BASE_ROOT")
 	}
-	return nil
+	if *baseRoot == "" {
+		return errors.New("the gate needs a checkout of the pull request's base commit: pass -base-root, or set PR_BASE_ROOT in the workflow")
+	}
+	if *base == "" {
+		return errors.New("a base checkout needs the base commit it is at; pass -base or set PR_BASE_SHA")
+	}
+	return check(*root, *baseRoot, readDescription(*description), stdout)
 }
 
-func check(root, base, description string, stdout io.Writer) error {
+func readDescription(path string) string {
+	if path == "" {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func check(root, baseRoot, description string, stdout io.Writer) error {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
 	module, err := modulePath(root)
 	if err != nil {
 		return err
 	}
-	if base == "" {
-		if base, err = newestTag(root); err != nil {
-			return err
-		}
-	}
-	report, err := gorelease(root, module, base)
+	packages, err := publicPackages(root, module)
 	if err != nil {
 		return err
 	}
-	missing := unrecorded(report, module, recordedChanges(description))
-	if len(missing) > 0 {
-		return fmt.Errorf("these packages changed incompatibly against %s without the pull request's Breaking changes section naming them in backticks: %s. Add a '## Breaking changes' section to the pull request description naming each one, or say why the break is intended. A package that is gone counts: removing a public package is the most incompatible change there is", base, strings.Join(missing, ", "))
+	report, err := apidiffReport(root, baseRoot, module, packages)
+	if err != nil {
+		return err
 	}
-	fmt.Fprintf(stdout, "PASS compatibility: no unrecorded incompatible change against %s\n", base)
+	changed := incompatible(report, module)
+	if len(changed) == 0 {
+		fmt.Fprintf(stdout, "PASS compatibility: no incompatible public API change in this pull request\n")
+		return nil
+	}
+	if missing := unrecorded(report, module, packages, recordedChanges(description)); len(missing) > 0 {
+		return fmt.Errorf("this pull request changes %s incompatibly without its Breaking changes section naming them in backticks: %s. Add a '## Breaking changes' section to the description naming each one, or say why the break is intended. A package that is gone counts: removing a public package is the most incompatible change there is", strings.Join(changed, ", "), strings.Join(missing, ", "))
+	}
+	fmt.Fprintf(stdout, "PASS compatibility: recorded incompatible change in %s\n", strings.Join(changed, ", "))
 	return nil
 }
 
@@ -85,83 +106,92 @@ func modulePath(root string) (string, error) {
 	return "", errors.New("go.mod names no module")
 }
 
-func newestTag(root string) (string, error) {
-	out, err := exec.Command("git", "-C", root, "tag", "--list", "v*", "--sort=-v:refname").Output()
+func publicPackages(root, module string) ([]string, error) {
+	dirs, err := packageDirs(root)
+	if err != nil {
+		return nil, err
+	}
+	var public []string
+	for _, dir := range dirs {
+		relative, found := strings.CutPrefix(dir, strings.TrimSuffix(root, "/")+"/")
+		if !found || publicset.Internal(relative) {
+			continue
+		}
+		if publicset.Public(relative) {
+			public = append(public, relative)
+		}
+	}
+	if len(public) == 0 {
+		return nil, fmt.Errorf("no public package found under %s", root)
+	}
+	sort.Strings(public)
+	return public, nil
+}
+
+func packageDirs(root string) ([]string, error) {
+	command := exec.Command("go", "list", "-f", "{{.Dir}}", "./...")
+	command.Dir = root
+	out, err := command.Output()
+	if err != nil {
+		return nil, fmt.Errorf("go list in %s: %w", root, err)
+	}
+	dirs := strings.Fields(string(out))
+	if len(dirs) == 0 {
+		return nil, fmt.Errorf("go list in %s found no packages", root)
+	}
+	return dirs, nil
+}
+
+func apidiffReport(head, baseRoot, module string, packages []string) (string, error) {
+	work, err := os.MkdirTemp("", "apidiffcheck")
 	if err != nil {
 		return "", err
 	}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if line != "" {
-			return line, nil
+	defer os.RemoveAll(work)
+	var report strings.Builder
+	for _, name := range packages {
+		importPath := module + "/" + name
+		oldExport := path.Join(work, "old")
+		newExport := path.Join(work, "new")
+		if err := writeExport(baseRoot, importPath, oldExport); err != nil {
+			return "", fmt.Errorf("export data for the base of %s: %w", name, err)
 		}
+		if err := writeExport(head, importPath, newExport); err != nil {
+			return "", fmt.Errorf("export data for %s: %w", name, err)
+		}
+		output, err := apidiff(oldExport, newExport)
+		if err != nil {
+			return "", err
+		}
+		if !strings.Contains(output, "Incompatible changes:") {
+			continue
+		}
+		fmt.Fprintf(&report, "\n# %s\n%s\n", module+"/"+name, output)
 	}
-	return "", errors.New("no v* tag to compare against; pass -base or fetch the tags")
+	return report.String(), nil
 }
 
-func gorelease(root, module, base string) (string, error) {
-	command := exec.Command("go", "run", "golang.org/x/exp/cmd/gorelease@"+goreleaseVersion, "-base", module+"@"+base)
+func writeExport(root, importPath, out string) error {
+	command := exec.Command("go", "run", "golang.org/x/exp/cmd/apidiff@"+apidiffVersion, "-w", out, importPath)
 	command.Dir = root
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		if strings.Contains(stderr.String(), "no required module provides") || strings.Contains(stderr.String(), "undefined") {
+			return nil
+		}
+		return errors.New(strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
+func apidiff(oldExport, newExport string) (string, error) {
+	command := exec.Command("go", "run", "golang.org/x/exp/cmd/apidiff@"+apidiffVersion, oldExport, newExport)
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	if err := command.Run(); err != nil {
-		return "", fmt.Errorf("gorelease against %s: %v: %s", base, err, strings.TrimSpace(stderr.String()))
+		return "", fmt.Errorf("apidiff: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.String(), nil
-}
-
-var sectionHeader = regexp.MustCompile(`^## (incompatible|compatible) changes$`)
-
-func incompatiblePackages(report, module string) []string {
-	seen := map[string]bool{}
-	var packages []string
-	current, incompatible := "", false
-	for _, line := range strings.Split(report, "\n") {
-		line = strings.TrimSpace(line)
-		switch {
-		case strings.HasPrefix(line, "# "):
-			current, incompatible = strings.TrimSpace(strings.TrimPrefix(line, "# ")), false
-		case sectionHeader.MatchString(line):
-			incompatible = strings.HasPrefix(line, "## incompatible")
-		case line != "" && current != "" && incompatible:
-			name, found := strings.CutPrefix(current, module+"/")
-			if !found || seen[name] || publicset.Internal(name) {
-				continue
-			}
-			seen[name] = true
-			packages = append(packages, name)
-		}
-	}
-	return packages
-}
-
-func names(section, name string) bool {
-	return strings.Contains(section, "`"+name+"`")
-}
-
-func unrecorded(report, module, unreleased string) []string {
-	var missing []string
-	for _, name := range incompatiblePackages(report, module) {
-		if !names(unreleased, name) {
-			missing = append(missing, name)
-		}
-	}
-	return missing
-}
-
-var breakingHeading = regexp.MustCompile(`(?m)^##[ \t]+Breaking changes[ \t]*$`)
-
-func recordedChanges(description string) string {
-	if description == "" {
-		return ""
-	}
-	match := breakingHeading.FindStringIndex(description)
-	if match == nil {
-		return ""
-	}
-	rest := description[match[1]:]
-	if end := regexp.MustCompile(`(?m)^##\s`).FindStringIndex(rest); end != nil {
-		rest = rest[:end[0]]
-	}
-	return rest
 }

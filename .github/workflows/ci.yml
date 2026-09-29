@@ -104,6 +104,21 @@ jobs:
         with:
           go-version: '1.27.x'
           cache: true
+      # The comparison is against this pull request's own base, not the last
+      # release tag. A tag comparison is cumulative, so every pull request would
+      # have to re-record every break any earlier one made, which is why the
+      # description as the record could not work while both were in place. The
+      # cumulative view still exists: the release lifts each pull request's
+      # Breaking changes section into the notes, so the release section names
+      # every break since the last tag.
+      - name: Check out the base commit to compare against
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/base"
+          git worktree add --detach "$RUNNER_TEMP/base" "$BASE_SHA"
+
       - name: Write the pull request description where the checker reads it
         env:
           # The description is the record now that a PR does not edit
@@ -111,7 +126,11 @@ jobs:
           # instead of that file's Unreleased section.
           PR_BODY: ${{ github.event.pull_request.body }}
         run: printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body.md"
-      - name: Incompatible changes to a public package must be recorded
+
+      - name: An incompatible public API change must be recorded in this pull request
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_BASE_ROOT: ${{ runner.temp }}/base
         run: go run ./go/cmd/apidiffcheck -description "$RUNNER_TEMP/pr-body.md"
 
   ts:
