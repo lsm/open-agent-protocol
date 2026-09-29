@@ -210,8 +210,6 @@ pub fn drain(stream: *compat.net.Stream, remaining_in: usize, keep_going: KeepGo
     var scratch: [1024]u8 = undefined;
     while (remaining > 0) {
         if (!keep_going.yes()) return;
-        // each round is bounded in bytes and in time, so a peer that has
-        // stopped sending is abandoned within one cycle
         var owed: usize = @min(remaining, drain_cap_bytes);
         const deadline = (elapsedMs() catch 0) + drain_cycle_ms;
         while (owed > 0) {
@@ -1057,8 +1055,6 @@ test "a media-refused body larger than the drain cap still leaves the answer rea
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var pipe = try Pipe.open();
     defer pipe.close();
-    // over the 64 KiB cap, so a single bounded round would leave the tail
-    // unread and the close would reset the answer away
     const declared: usize = drain_cap_bytes * 2 + 4096;
     const head = try std.fmt.allocPrint(testing.allocator, "POST /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: text/plain\r\nContent-Length: {d}\r\n\r\n", .{declared});
     defer testing.allocator.free(head);
@@ -1096,7 +1092,6 @@ test "a media-refused body the peer never finishes is still abandoned, and still
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var pipe = try Pipe.open();
     defer pipe.close();
-    // declares 8 MiB, sends a few bytes, then stops: the answer must not wait
     const declared: usize = 8 * 1024 * 1024;
     const head = try std.fmt.allocPrint(testing.allocator, "POST /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: text/plain\r\nContent-Length: {d}\r\n\r\n", .{declared});
     defer testing.allocator.free(head);
