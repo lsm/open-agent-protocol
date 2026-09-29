@@ -101,6 +101,19 @@ pub fn build(b: *std.Build) void {
     });
     semantic_mod.addImport("jsonschema", jsonschema_mod);
     const semantic_test = b.addTest(.{ .root_module = semantic_mod });
+    const provider_semantic_mod = b.createModule(.{
+        .root_source_file = b.path("src/validation/provider_semantic.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const validator_mod = b.createModule(.{
+        .root_source_file = b.path("src/validation/validator.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    validator_mod.addImport("jsonschema", jsonschema_mod);
+    validator_mod.addImport("tolerate", tolerate_mod);
+    const validator_test = b.addTest(.{ .root_module = validator_mod });
     const semantic_gate_mod = b.createModule(.{
         .root_source_file = b.path("src/validation/semantic_gate.zig"),
         .target = target,
@@ -108,11 +121,6 @@ pub fn build(b: *std.Build) void {
     });
     semantic_gate_mod.addImport("semantic", semantic_mod);
     semantic_gate_mod.addImport("packs", packs_mod);
-    const provider_semantic_mod = b.createModule(.{
-        .root_source_file = b.path("src/validation/provider_semantic.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
     semantic_gate_mod.addImport("provider_semantic", provider_semantic_mod);
     const provider_semantic_test = b.addTest(.{ .root_module = provider_semantic_mod });
     semantic_gate_mod.addOptions("build_options", gate_options);
@@ -161,6 +169,7 @@ pub fn build(b: *std.Build) void {
     test_unit_validation_step.dependOn(&b.addRunArtifact(schema_bytes_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(jsonschema_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(tolerate_test).step);
+    test_unit_validation_step.dependOn(&b.addRunArtifact(validator_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(fixture_gate_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(semantic_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(provider_semantic_test).step);
@@ -1867,6 +1876,28 @@ pub fn build(b: *std.Build) void {
     const tools_mcp_bridge_mod = b.createModule(.{ .root_source_file = b.path("src/tools/mcp_bridge.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "compat", .module = compat_mod }, .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent", .module = agent_mod }, .{ .name = "tools/common", .module = tools_common_mod }, .{ .name = "build_options", .module = version_module }, .{ .name = "json_encode", .module = json_encode_mod } } });
     const tools_registry_mod = b.createModule(.{ .root_source_file = b.path("src/tools/registry.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "agent", .module = agent_mod }, .{ .name = "tools/shell", .module = tools_shell_mod }, .{ .name = "tools/file", .module = tools_file_mod }, .{ .name = "tools/edit", .module = tools_edit_mod }, .{ .name = "tools/hashline", .module = tools_hashline_mod }, .{ .name = "tools/search", .module = tools_search_mod }, .{ .name = "tools/workspace", .module = tools_workspace_mod }, .{ .name = "tools/artifact", .module = tools_artifact_mod }, .{ .name = "tools/mcp_bridge", .module = tools_mcp_bridge_mod } } });
 
+    const model_catalog_mod = b.createModule(.{
+        .root_source_file = b.path("src/model_catalog.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "compat", .module = compat_mod },
+            .{ .name = "ai_types", .module = ai_types_mod },
+            .{ .name = "oauth/storage", .module = oauth_storage_mod },
+            .{ .name = "oauth/openai_codex", .module = oauth_openai_codex_mod },
+            .{ .name = "oauth/anthropic", .module = oauth_anthropic_mod },
+            .{ .name = "custom_providers", .module = custom_providers_mod },
+            .{ .name = "oauth/github_copilot", .module = github_copilot_mod },
+            .{ .name = "provider_catalog", .module = provider_catalog_mod },
+            .{ .name = "provider_credential", .module = provider_credential_mod },
+            .{ .name = "provider_base_url", .module = provider_base_url_mod },
+            .{ .name = "anthropic_messages_api", .module = anthropic_messages_api_mod },
+            .{ .name = "openai_completions_api", .module = openai_completions_api_mod },
+            .{ .name = "openai_responses_api", .module = openai_responses_api_mod },
+            .{ .name = "ollama_api", .module = ollama_api_mod },
+        },
+    });
+
     const tui_runtime_mod = b.createModule(.{
         .root_source_file = b.path("src/tui/runtime.zig"),
         .target = target,
@@ -1877,6 +1908,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "event_stream", .module = event_stream_mod },
             .{ .name = "agent", .module = agent_mod },
             .{ .name = "agent_types", .module = agent_types_mod },
+            .{ .name = "model_catalog", .module = model_catalog_mod },
             .{ .name = "permission", .module = permission_mod },
             .{ .name = "transport", .module = transport_mod },
             .{ .name = "json_writer", .module = json_writer_mod },
@@ -1902,6 +1934,15 @@ pub fn build(b: *std.Build) void {
             .{ .name = "json/writer", .module = json_writer_mod },
             .{ .name = "json_writer", .module = json_writer_mod },
             .{ .name = "owned_slice", .module = owned_slice_mod },
+        },
+    });
+
+    const tui_auto_continue_mod = b.createModule(.{
+        .root_source_file = b.path("src/tui/auto_continue.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "overflow", .module = overflow_mod },
         },
     });
 
@@ -1955,27 +1996,6 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    const model_catalog_mod = b.createModule(.{
-        .root_source_file = b.path("src/model_catalog.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "compat", .module = compat_mod },
-            .{ .name = "ai_types", .module = ai_types_mod },
-            .{ .name = "oauth/storage", .module = oauth_storage_mod },
-            .{ .name = "oauth/openai_codex", .module = oauth_openai_codex_mod },
-            .{ .name = "oauth/anthropic", .module = oauth_anthropic_mod },
-            .{ .name = "custom_providers", .module = custom_providers_mod },
-            .{ .name = "oauth/github_copilot", .module = github_copilot_mod },
-            .{ .name = "provider_catalog", .module = provider_catalog_mod },
-            .{ .name = "provider_credential", .module = provider_credential_mod },
-            .{ .name = "provider_base_url", .module = provider_base_url_mod },
-            .{ .name = "anthropic_messages_api", .module = anthropic_messages_api_mod },
-            .{ .name = "openai_completions_api", .module = openai_completions_api_mod },
-            .{ .name = "openai_responses_api", .module = openai_responses_api_mod },
-            .{ .name = "ollama_api", .module = ollama_api_mod },
-        },
-    });
 
     const tui_fixture_mod = b.createModule(.{
         .root_source_file = b.path("src/tui/fixture_provider.zig"),
@@ -2004,6 +2024,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "agent", .module = agent_mod },
             .{ .name = "event_stream", .module = event_stream_mod },
             .{ .name = "tui_runtime", .module = tui_runtime_mod },
+            .{ .name = "tui_auto_continue", .module = tui_auto_continue_mod },
             .{ .name = "tui_state", .module = tui_state_mod },
             .{ .name = "tui_commands", .module = tui_commands_mod },
             .{ .name = "tui_login", .module = tui_login_mod },
@@ -2463,6 +2484,7 @@ pub fn build(b: *std.Build) void {
     const tui_runtime_test = b.addTest(.{ .root_module = tui_runtime_mod });
     const tui_session_store_test = b.addTest(.{ .root_module = tui_session_store_mod });
     const tui_state_test = b.addTest(.{ .root_module = tui_state_mod });
+    const tui_auto_continue_test = b.addTest(.{ .root_module = tui_auto_continue_mod });
     const tui_commands_test = b.addTest(.{ .root_module = tui_commands_mod });
     const tui_login_test = b.addTest(.{ .root_module = tui_login_mod });
     const model_catalog_test = b.addTest(.{ .root_module = model_catalog_mod });
@@ -2601,7 +2623,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "semantic", .module = semantic_mod },
             .{ .name = "provider_semantic", .module = provider_semantic_mod },
             .{ .name = "packs", .module = packs_mod },
-            .{ .name = "jsonschema", .module = jsonschema_mod },
+            .{ .name = "validator", .module = validator_mod },
             .{ .name = "version_options", .module = version_module },
             .{ .name = "adapter_endpoint", .module = adapter_endpoint_mod },
             .{ .name = "adapter_contract", .module = adapter_contract_mod },
@@ -2737,6 +2759,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(schema_bytes_test).step);
     test_step.dependOn(&b.addRunArtifact(jsonschema_test).step);
     test_step.dependOn(&b.addRunArtifact(tolerate_test).step);
+    test_step.dependOn(&b.addRunArtifact(validator_test).step);
     test_step.dependOn(&b.addRunArtifact(fixture_gate_test).step);
     test_step.dependOn(&b.addRunArtifact(semantic_test).step);
     test_step.dependOn(&b.addRunArtifact(provider_semantic_test).step);
@@ -2826,6 +2849,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(tui_runtime_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_session_store_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_state_test).step);
+    test_step.dependOn(&b.addRunArtifact(tui_auto_continue_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_commands_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_login_test).step);
     test_step.dependOn(&b.addRunArtifact(model_catalog_test).step);
@@ -3087,6 +3111,7 @@ pub fn build(b: *std.Build) void {
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_runtime_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_session_store_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_state_test).step);
+    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_auto_continue_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_commands_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_login_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(model_catalog_test).step);

@@ -98,19 +98,32 @@ func holdsURL(baseURL string, hasBaseURL bool, needle string) bool {
 }
 
 func isGitHubCopilotURL(baseURL string, hasBaseURL bool) bool {
-	return holdsURL(baseURL, hasBaseURL, "api.githubcopilot.com")
+	return isHostOrSubdomain(baseURL, hasBaseURL, "githubcopilot.com")
+}
+
+func isHostOrSubdomain(baseURL string, hasBaseURL bool, domain string) bool {
+	if !hasBaseURL {
+		return false
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	d := strings.ToLower(domain)
+	return host == d || (len(host) > len(d) && strings.HasSuffix(host, d) && host[len(host)-len(d)-1] == '.')
 }
 
 func isMistralURL(baseURL string, hasBaseURL bool) bool {
-	return holdsURL(baseURL, hasBaseURL, "api.mistral.ai")
+	return isHostOrSubdomain(baseURL, hasBaseURL, "mistral.ai")
 }
 
 func isGroqURL(baseURL string, hasBaseURL bool) bool {
-	return holdsURL(baseURL, hasBaseURL, "api.groq.com")
+	return isHostOrSubdomain(baseURL, hasBaseURL, "groq.com")
 }
 
 func isCerebrasURL(baseURL string, hasBaseURL bool) bool {
-	return holdsURL(baseURL, hasBaseURL, "api.cerebras.ai")
+	return isHostOrSubdomain(baseURL, hasBaseURL, "cerebras.ai")
 }
 
 func isZaiURL(baseURL string, hasBaseURL bool) bool {
@@ -118,11 +131,11 @@ func isZaiURL(baseURL string, hasBaseURL bool) bool {
 }
 
 func isOpenRouterURL(baseURL string, hasBaseURL bool) bool {
-	return holdsURL(baseURL, hasBaseURL, "openrouter.ai")
+	return isHostOrSubdomain(baseURL, hasBaseURL, "openrouter.ai")
 }
 
 func isChutesURL(baseURL string, hasBaseURL bool) bool {
-	return holdsURL(baseURL, hasBaseURL, "chutes.ai")
+	return isHostOrSubdomain(baseURL, hasBaseURL, "chutes.ai")
 }
 
 func isQwenURL(baseURL string, hasBaseURL bool) bool {
@@ -130,7 +143,7 @@ func isQwenURL(baseURL string, hasBaseURL bool) bool {
 }
 
 func isDeepSeekURL(baseURL string, hasBaseURL bool) bool {
-	return holdsURL(baseURL, hasBaseURL, "api.deepseek.com")
+	return isHostOrSubdomain(baseURL, hasBaseURL, "deepseek.com")
 }
 
 func isAnthropicURL(baseURL string, hasBaseURL bool) bool {

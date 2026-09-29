@@ -79,7 +79,7 @@ pub const ProtocolClient = struct {
     pub fn init(allocator: std.mem.Allocator, options: Options) Self {
         const es = oom.unreachableOnOom(allocator.create(event_stream.AssistantMessageEventStream));
         es.* = event_stream.AssistantMessageEventStream.init(allocator);
-        es.owns_events = true;
+        es.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
         return .{
             .allocator = allocator,
             .reconstructor = partial_reconstructor.PartialReconstructor.init(allocator),
@@ -169,7 +169,7 @@ pub const ProtocolClient = struct {
         if (self.stream_event_streams.get(stream_id)) |es| return es;
         const es = oom.unreachableOnOom(self.allocator.create(event_stream.AssistantMessageEventStream));
         es.* = event_stream.AssistantMessageEventStream.init(self.allocator);
-        es.owns_events = true;
+        es.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
         try self.stream_event_streams.put(stream_id, es);
         return es;
     }
@@ -371,12 +371,12 @@ pub const ProtocolClient = struct {
             },
             .event => |evt| {
                 if (self.options.event_delivery != .per_stream) {
-                    try self.pushOwnedEvent(self.event_stream, evt);
+                    try self.event_stream.push(evt);
                 }
 
                 if (self.options.event_delivery != .global) {
                     const stream_es = try self.ensureStreamEventStream(env.stream_id);
-                    try self.pushOwnedEvent(stream_es, evt);
+                    try stream_es.push(evt);
                 }
 
                 try self.reconstructor.processEvent(evt);
@@ -423,17 +423,6 @@ pub const ProtocolClient = struct {
             else => {
             },
         }
-    }
-
-    fn pushOwnedEvent(self: *Self, destination: *event_stream.AssistantMessageEventStream, event: ai_types.AssistantMessageEvent) !void {
-        const owned = try ai_types.cloneAssistantMessageEvent(self.allocator, event);
-        var transferred = false;
-        errdefer if (!transferred) {
-            var cleanup = owned;
-            ai_types.deinitAssistantMessageEvent(self.allocator, &cleanup);
-        };
-        try destination.push(owned);
-        transferred = true;
     }
 
     pub fn eventDeliveryCapacity(self: *Self) usize {

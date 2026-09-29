@@ -483,7 +483,8 @@ pub const Session = struct {
         return .idle;
     }
 
-    fn close(ptr: *anyopaque) void {
+    fn close(ptr: *anyopaque, force: bool) contract.Failure!void {
+        _ = force;
         cast(ptr).destroy();
     }
 };
@@ -702,7 +703,7 @@ const Probe = struct {
     }
 
     fn deinit(self: *Probe) void {
-        if (self.handle) |opened| opened.close();
+        if (self.handle) |opened| opened.teardown();
         self.fake.finish();
         self.arena.deinit();
     }

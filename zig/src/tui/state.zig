@@ -470,6 +470,7 @@ pub const AppState = struct {
     telemetry: TelemetryState = .{},
     preview: PreviewState = .{},
     thinking_level: ai_types.ThinkingLevel = .low,
+    autocompact_percent: ?u8 = null,
     login_input_secret: bool = false,
     anim_tick: u64 = 0,
     transcript_scroll: usize = 0,
@@ -479,6 +480,7 @@ pub const AppState = struct {
     menu_scroll: usize = 0,
     picker_kind: PickerKind = .model,
     cwd_display: []u8 = &.{},
+    git_branch: []u8 = &.{},
     active_user_entry: ?usize = null,
     active_assistant_entry: ?usize = null,
     active_thinking_entry: ?usize = null,
@@ -527,6 +529,7 @@ pub const AppState = struct {
         self.picker_filter.deinit(self.allocator);
         if (self.last_tool_calls_json.len > 0) self.allocator.free(self.last_tool_calls_json);
         if (self.cwd_display.len > 0) self.allocator.free(self.cwd_display);
+        if (self.git_branch.len > 0) self.allocator.free(self.git_branch);
         self.* = undefined;
     }
 
@@ -534,6 +537,12 @@ pub const AppState = struct {
         const owned = try allocator.dupe(u8, display);
         if (self.cwd_display.len > 0) self.allocator.free(self.cwd_display);
         self.cwd_display = owned;
+    }
+
+    pub fn setGitBranch(self: *AppState, allocator: std.mem.Allocator, branch: []const u8) !void {
+        const owned = try allocator.dupe(u8, branch);
+        if (self.git_branch.len > 0) self.allocator.free(self.git_branch);
+        self.git_branch = owned;
     }
 
     pub fn appendTranscript(self: *AppState, kind: TranscriptKind, text: []const u8) !void {

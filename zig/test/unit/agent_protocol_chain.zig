@@ -30,8 +30,7 @@ fn mockProviderStream(
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
     if (options) |o| {
         if (o.requires_owned_stream_events) {
-            s.owns_events = true;
-            s.clone_event_fn = ai_types.cloneAssistantMessageEvent;
+            s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
         }
     }
 

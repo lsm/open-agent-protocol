@@ -803,6 +803,7 @@ pub const Stream = struct {
     read: *const fn (context: *anyopaque, buffer: []u8) anyerror!usize,
     context: *anyopaque,
     readable: ?std.Io.File.Handle = null,
+    stop: ?*const fn () bool = null,
 };
 
 const ReadFailure = error{InputFailed};
@@ -814,6 +815,12 @@ pub fn serve(allocator: std.mem.Allocator, frontend: *Frontend, stream: Stream) 
     defer scratch.deinit();
 
     while (!frontend.stopped) {
+        if (stream.stop) |stop| {
+            if (stop()) {
+                frontend.stopped = true;
+                return;
+            }
+        }
         _ = scratch.reset(.retain_capacity);
         const arena = scratch.allocator();
         const input_ready = try waitOn(frontend, stream, arena, cycle_budget_ns);
@@ -1106,8 +1113,9 @@ fn referenceActivity(ptr: *anyopaque) contract.Activity {
     return .idle;
 }
 
-fn referenceClose(ptr: *anyopaque) void {
+fn referenceClose(ptr: *anyopaque, force: bool) contract.Failure!void {
     _ = ptr;
+    _ = force;
 }
 
 fn textMember(arena: std.mem.Allocator, document: std.json.Value, key: []const u8) ![]const u8 {
@@ -1407,6 +1415,17 @@ const ScriptedHarness = struct {
         });
     }
 
+    fn runUntilStopped(self: *ScriptedHarness, stop: *const fn () bool) !void {
+        var frontend = try Frontend.init(self.allocator, &self.backing.hub, self.backing.recorder.sink(), .{});
+        defer frontend.deinit();
+        try serve(self.allocator, &frontend, .{
+            .read = Scripted.read,
+            .context = &self.scripted,
+            .readable = null,
+            .stop = stop,
+        });
+    }
+
     fn deinit(self: *ScriptedHarness) void {
         const allocator = self.allocator;
         self.backing.deinit();
@@ -1420,6 +1439,36 @@ test "the serve loop reads even when it has no handle to wait on" {
     try harness.run();
     try testing.expectEqual(@as(usize, 1), harness.backing.recorder.lines.items.len);
     try testing.expect(std.mem.indexOf(u8, harness.backing.recorder.lines.items[0], "\"ok\":true") != null);
+}
+
+var stop_at_cycle: usize = 0;
+var stop_cycles: usize = 0;
+
+fn stopAfterCycle() bool {
+    const reached = stop_cycles >= stop_at_cycle;
+    stop_cycles += 1;
+    return reached;
+}
+
+test "the serve loop ends when the stream is told to stop, without a line from the host and without reading one" {
+    const harness = try ScriptedHarness.init(testing.allocator, .{}, .{}, &.{});
+    defer harness.deinit();
+    stop_at_cycle = 0;
+    stop_cycles = 0;
+    try harness.runUntilStopped(stopAfterCycle);
+    try testing.expectEqual(@as(usize, 0), harness.backing.recorder.lines.items.len);
+    try testing.expectEqual(@as(usize, 0), harness.scripted.at);
+}
+
+test "a serve loop told to stop answers nothing further, however many lines the host still had queued" {
+    const harness = try ScriptedHarness.init(testing.allocator, .{}, .{}, &.{ "{\"id\":1,\"op\":\"adapters\"}\n", "{\"id\":2,\"op\":\"adapters\"}\n" });
+    defer harness.deinit();
+    stop_at_cycle = 1;
+    stop_cycles = 0;
+    try harness.runUntilStopped(stopAfterCycle);
+    try testing.expectEqual(@as(usize, 1), harness.backing.recorder.lines.items.len);
+    try testing.expectEqual(@as(usize, 1), harness.scripted.at);
+    try testing.expect(std.mem.indexOf(u8, harness.backing.recorder.lines.items[0], "\"id\":1") != null);
 }
 
 test "a request stream that never ends its line is a framing defect, bounded" {

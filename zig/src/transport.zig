@@ -145,7 +145,7 @@ pub fn forwardStream(
 ) !void {
     while (stream.wait()) |ev| {
         var owned_ev = ev;
-        defer if (stream.owns_events) {
+        defer if (stream.ownership.isOwned()) {
             ai_types.deinitAssistantMessageEvent(allocator, &owned_ev);
         };
 
