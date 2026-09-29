@@ -630,6 +630,21 @@ fn contextWindowFor(id: []const u8, model: DiscoveredModel) u32 {
     return provider_catalog.rowContextWindow(id) orelse catalog_context_window;
 }
 
+pub fn contextWindowMaximum(model: ai_types.Model) ?u32 {
+    if (provider_catalog.modelMaxContextWindow(model.provider, model.id)) |ceiling| return ceiling;
+    if (!contextWindowIsReported(model)) return null;
+    return model.context_window;
+}
+
+pub fn contextWindowIsReported(model: ai_types.Model) bool {
+    if (model.context_window == 0) return false;
+    if (provider_catalog.declaredModel(model.provider, model.id)) |declared| {
+        if (declared.context_window != null) return true;
+    }
+    if (provider_catalog.rowContextWindow(model.provider) != null) return true;
+    return model.context_window != catalog_context_window;
+}
+
 fn maxTokensFor(id: []const u8, model: DiscoveredModel) u32 {
     if (model.max_tokens) |reported| return reported;
     if (provider_catalog.declaredModel(id, model.id)) |declared| {
@@ -2815,6 +2830,85 @@ test "loadProductionModels serves a coding plan row's discovered models beside d
     try std.testing.expectEqualStrings("tencent-coding-plan", models[1].provider);
     try std.testing.expectEqualStrings("https://api.deepseek.com", models[0].base_url);
     try std.testing.expectEqualStrings("https://api.lkeap.cloud.tencent.com/coding/v3", models[1].base_url);
+}
+
+test "a window a session asks for is capped at the ceiling its row records" {
+    const gpt: ai_types.Model = .{
+        .id = "gpt-5-codex",
+        .name = "GPT-5 Codex",
+        .api = "openai-responses",
+        .provider = "openai",
+        .base_url = "https://api.openai.com",
+        .reasoning = true,
+        .input = &.{},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 128_000,
+        .max_tokens = 16_384,
+    };
+    try std.testing.expectEqual(@as(?u32, 1_000_000), contextWindowMaximum(gpt));
+    try std.testing.expect(!contextWindowIsReported(gpt));
+
+    const kimi: ai_types.Model = .{
+        .id = "kimi-k2.7-code",
+        .name = "Kimi K2.7 Code",
+        .api = "openai-completions",
+        .provider = "kimi",
+        .base_url = "https://api.kimi.com/coding",
+        .reasoning = false,
+        .input = &.{},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 262_144,
+        .max_tokens = 16_384,
+    };
+    try std.testing.expectEqual(@as(?u32, 262_144), contextWindowMaximum(kimi));
+    try std.testing.expect(contextWindowIsReported(kimi));
+
+    const uncatalogued: ai_types.Model = .{
+        .id = "local-model",
+        .name = "Local",
+        .api = "openai-completions",
+        .provider = "not-a-catalogued-row",
+        .base_url = "http://localhost:11434",
+        .reasoning = false,
+        .input = &.{},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 128_000,
+        .max_tokens = 8_192,
+    };
+    try std.testing.expectEqual(@as(?u32, null), contextWindowMaximum(uncatalogued));
+    try std.testing.expect(!contextWindowIsReported(uncatalogued));
+
+    const uncatalogued_wide: ai_types.Model = .{
+        .id = "local-model",
+        .name = "Local",
+        .api = "openai-completions",
+        .provider = "not-a-catalogued-row",
+        .base_url = "http://localhost:11434",
+        .reasoning = false,
+        .input = &.{},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1_000_000,
+        .max_tokens = 8_192,
+    };
+    try std.testing.expectEqual(@as(?u32, 1_000_000), contextWindowMaximum(uncatalogued_wide));
+    try std.testing.expect(contextWindowIsReported(uncatalogued_wide));
+}
+
+test "a model with no window at all has no ceiling and reports no window" {
+    const empty: ai_types.Model = .{
+        .id = "m",
+        .name = "M",
+        .api = "openai-completions",
+        .provider = "openai",
+        .base_url = "https://api.openai.com",
+        .reasoning = false,
+        .input = &.{},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 0,
+        .max_tokens = 8_192,
+    };
+    try std.testing.expectEqual(@as(?u32, 1_000_000), contextWindowMaximum(empty));
+    try std.testing.expect(!contextWindowIsReported(empty));
 }
 
 test "openai is served on the completions wire except for the models that need responses" {

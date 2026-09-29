@@ -36,6 +36,7 @@ extern "c" fn unsetenv(name: [*:0]const u8) c_int;
 
 pub const TuiRuntime = tui_runtime.TuiRuntime;
 pub const TuiRuntimeOptions = tui_runtime.TuiRuntimeOptions;
+pub const parseContextWindow = tui_runtime.parseContextWindow;
 
 const max_session_event_jsonl_bytes = 8 * 1024 * 1024;
 const max_session_event_payload_bytes = max_session_event_jsonl_bytes / 2;
@@ -1720,6 +1721,7 @@ pub const App = struct {
             .none => {},
         }
         if ((command.kind == .model or command.kind == .provider) and command.arg != null) self.persistCurrentModel();
+        if (command.kind == .context) self.applyContextWindow();
         if (result.output.len > 0) {
             try self.state.appendTranscript(if (result.is_error) .@"error" else .system, result.output);
             if (result.is_error) try self.state.status.setError(self.allocator, result.output);
@@ -1733,6 +1735,13 @@ pub const App = struct {
         }
         try self.state.status.setError(self.allocator, message);
         try self.state.appendTranscript(.@"error", message);
+    }
+
+    fn applyContextWindow(self: *App) void {
+        const runtime = self.runtime orelse return;
+        const window = runtime.contextWindow();
+        self.state.status.context_limit = @intCast(window);
+        self.state.telemetry.context_window = window;
     }
 
     fn persistCurrentModel(self: *App) void {
@@ -3011,7 +3020,7 @@ fn defaultModel() ai_types.Model {
     };
 }
 
-pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
+pub fn run(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32) !void {
     var environ_map = try compat.createEnvMap(allocator);
     defer environ_map.deinit();
 
@@ -3027,6 +3036,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
     production.initBridge();
 
     var options = production.options();
+    options.context_window = context_window;
     if (fixture) |runtime| {
         options.protocol = runtime.provider.protocolClient();
         options.generate_titles = false;
@@ -4343,6 +4353,27 @@ test "App submit abort when streaming via runtime-only cancels and reports trans
     try std.testing.expectEqual(@as(usize, 1), app.state.transcript.items.len);
     try std.testing.expectEqual(tui_state.TranscriptKind.system, app.state.transcript.items[0].kind);
     try std.testing.expectEqualStrings("Turn aborted.", app.state.transcript.items[0].text.items);
+}
+
+test "App context moves the gauge, and the model's own window comes back" {
+    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    errdefer std.testing.allocator.destroy(runtime);
+    runtime.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{test_model} });
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.runtime = runtime;
+    try app.state.status.setModelWithContext(std.testing.allocator, "mock-model", "mock", 1024);
+
+    try app.submit("/context 512");
+
+    try std.testing.expectEqual(@as(usize, 512), app.state.status.context_limit);
+    try std.testing.expectEqual(@as(u64, 512), app.state.telemetry.context_window);
+    try std.testing.expectEqual(@as(u32, 512), app.runtime.?.currentModel().?.context_window);
+
+    try app.submit("/context");
+
+    try std.testing.expectEqual(@as(usize, 1024), app.state.status.context_limit);
+    try std.testing.expectEqual(@as(u64, 1024), app.state.telemetry.context_window);
 }
 
 test "App submit does not clear stream_aborted for slash commands" {
