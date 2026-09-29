@@ -760,3 +760,32 @@ func TestOneImagePartServesBothWriters(t *testing.T) {
 		t.Errorf("the anthropic writer = %v, want the part's own two fields", source)
 	}
 }
+
+func TestAReasoningLevelBecomesTheEffortAndBudgetThatWireTakes(t *testing.T) {
+	cases := map[string]struct {
+		effort  string
+		budget  int
+		enabled bool
+	}{
+		"":        {"", 0, false},
+		"off":     {"", 0, false},
+		"minimal": {"low", 256, true},
+		"low":     {"low", 512, true},
+		"medium":  {"medium", 1024, true},
+		"high":    {"high", 2048, true},
+		"xhigh":   {"max", 4096, true},
+	}
+	for level, want := range cases {
+		got := AnthropicThinkingForLevel(level, nil)
+		if got.ThinkingEnabled != want.enabled || got.ThinkingEffort != want.effort || got.ThinkingBudgetTokens != want.budget {
+			t.Errorf("the level %q gives %+v, want enabled %v at effort %q and budget %d", level, got, want.enabled, want.effort, want.budget)
+		}
+	}
+}
+
+func TestABudgetForTheLevelWinsOverTheFallback(t *testing.T) {
+	got := AnthropicThinkingForLevel("high", map[string]int{"high": 9000})
+	if got.ThinkingBudgetTokens != 9000 {
+		t.Errorf("a budget for the level gives %+v, want the caller's 9000 rather than the 2048 fallback", got)
+	}
+}

@@ -9,6 +9,39 @@ func hostModel(baseURL string) Model {
 	return Model{Provider: "openai", BaseURL: baseURL, HasBaseURL: true, HasCompat: true}
 }
 
+func TestAMistralHostIsMistralDotAIOrASubdomainOfIt(t *testing.T) {
+	hosts := []string{
+		"https://api.mistral.ai",
+		"https://api.mistral.ai/v1",
+		"https://mistral.ai",
+		"https://API.MISTRAL.AI",
+	}
+	for _, url := range hosts {
+		if !isMistralURL(url, true) {
+			t.Errorf("isMistralURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://mymistral.ai",
+		"https://notmistral.ai",
+		"https://mistral.ai.evil.example",
+		"https://evil.example/?next=api.mistral.ai",
+		"https://evil.example/v1/api.mistral.ai",
+		"https://gateway.example/proxy/api.mistral.ai",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isMistralURL(url, true) {
+			t.Errorf("isMistralURL(%q) = true, want false: the name is in a host suffix, a path or a query", url)
+		}
+	}
+
+	if isMistralURL("https://api.mistral.ai", false) {
+		t.Error("no base url is not a mistral host")
+	}
+}
+
 func TestAnOpenAIHostIsAHostEndingInOpenAIDotComOnALabelBoundary(t *testing.T) {
 	hosts := []string{
 		"https://api.openai.com",
