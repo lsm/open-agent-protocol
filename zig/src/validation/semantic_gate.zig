@@ -100,6 +100,12 @@ const partial_code_gaps = [_]struct { code: []const u8, fixtures: []const []cons
     } },
 };
 
+fn isPartialCode(code: []const u8) bool {
+    for (partial_code_gaps) |held| {
+        if (std.mem.eql(u8, held.code, code)) return true;
+    }
+    return false;
+}
 
 fn knownPartialGap(code: []const u8, id: []const u8) bool {
     for (partial_code_gaps) |held| {
@@ -176,7 +182,8 @@ test "the Zig semantic phase emits exactly the lifecycle codes the manifest decl
         if (entry.get("codes")) |codes| {
             for (codes.array.items) |code| {
                 const ported = if (provider_profile) provider.isImplemented(code.string) else semantic.isImplemented(code.string);
-                if (!ported) continue;
+                const partial = !provider_profile and isPartialCode(code.string);
+                if (!ported and !partial) continue;
                 if (knownPartialGap(code.string, id)) {
                     try gapped.append(allocator, code.string);
                     continue;
