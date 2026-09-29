@@ -2787,7 +2787,7 @@ fn validateFlagRefusal(arg: []const u8) ?[]const u8 {
     if (std.mem.startsWith(u8, arg, "--format=")) return null;
     if (std.mem.eql(u8, arg, "--mode") or std.mem.startsWith(u8, arg, "--mode=")) return "tolerant mode lands with the validator's own mode, in #367";
     if (std.mem.eql(u8, arg, "--pack") or std.mem.startsWith(u8, arg, "--pack=")) return "extension packs land with the validator's own packs, in #367";
-    if (std.mem.eql(u8, arg, "--provider")) return "the model-provider-core profile is not carried, in #367";
+    if (std.mem.eql(u8, arg, "--provider")) return "the override is not carried; a trace declaring the profile routes itself, in #367";
     return "oapx validate does not carry this flag";
 }
 
@@ -9773,7 +9773,7 @@ test "validate names the goap flag it is refusing rather than a generic one" {
     try std.testing.expectEqualStrings("tolerant mode lands with the validator's own mode, in #367", validateFlagRefusal("--mode=tolerant").?);
     try std.testing.expectEqualStrings("extension packs land with the validator's own packs, in #367", validateFlagRefusal("--pack").?);
     try std.testing.expectEqualStrings("extension packs land with the validator's own packs, in #367", validateFlagRefusal("--pack=./p").?);
-    try std.testing.expectEqualStrings("the model-provider-core profile is not carried, in #367", validateFlagRefusal("--provider").?);
+    try std.testing.expectEqualStrings("the override is not carried; a trace declaring the profile routes itself, in #367", validateFlagRefusal("--provider").?);
 }
 
 test "validate still takes a path, and the one flag it does carry" {
