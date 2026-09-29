@@ -32,7 +32,7 @@ const MergedCompat = struct {
 fn mergeCompat(model: ai_types.Model) MergedCompat {
     const caps = provider_caps.detectCapabilities(model.base_url);
     const compat: ai_types.OpenAICompatOptions = model.compat orelse .{};
-    const is_openai_native = isOpenAIHost(model.base_url);
+    const is_openai_native = provider_caps.isOpenAIHost(model.base_url);
     const honors_native_caps = is_openai_native or isTransparentOpenAIProxy(model);
     const detected_developer_role = if (honors_native_caps) caps.supports_developer_role else false;
     const detected_reasoning_effort = if (honors_native_caps) caps.supports_reasoning_effort else false;
@@ -70,14 +70,6 @@ fn isTransparentOpenAIProxy(model: ai_types.Model) bool {
     return compat.supports_store == true and
         compat.supports_developer_role == true and
         compat.supports_reasoning_effort == true;
-}
-
-fn isOpenAIHost(base_url: []const u8) bool {
-    const uri = std.Uri.parse(base_url) catch return false;
-    const host = uri.host orelse return false;
-    const value = host.percent_encoded;
-    return std.ascii.eqlIgnoreCase(value, "openai.com") or
-        (value.len > "openai.com".len and std.ascii.eqlIgnoreCase(value[value.len - "openai.com".len ..], "openai.com") and value[value.len - "openai.com".len - 1] == '.');
 }
 
 fn allowsAnonymous(model: ai_types.Model) bool {
@@ -514,6 +506,11 @@ fn writeMessagesArray(
             while (msg_idx < context.messages.len and context.messages[msg_idx] == .tool_result) {
                 const tr = context.messages[msg_idx].tool_result;
 
+                if (isOrphanedToolResult(context.messages[msg_idx], &tool_call_ids)) {
+                    msg_idx += 1;
+                    continue;
+                }
+
                 if (merged.requires_assistant_after_tool_result and std.mem.eql(u8, prev_role, "tool")) {
                     try writer.beginObject();
                     try writer.writeStringField("role", "assistant");
@@ -618,7 +615,7 @@ fn buildRequestBody(
         .target_api = model.api,
         .target_provider = model.provider,
         .target_model_id = model.id,
-        .max_tool_id_len = if (isOpenAIHost(model.base_url) or isTransparentOpenAIProxy(model)) 40 else 0,
+        .max_tool_id_len = if (provider_caps.isOpenAIHost(model.base_url) or isTransparentOpenAIProxy(model)) 40 else 0,
         .mistral_tool_ids = merged.requires_mistral_tool_ids,
         .insert_synthetic_results = true,
         .tools = context.tools,
@@ -928,7 +925,12 @@ fn parseChunk(
                                                     if (dat == .string and dat.string.len > 0) {
                                                         var detail_buf = std.ArrayList(u8).empty;
                                                         defer detail_buf.deinit(allocator);
-                                                        detail_buf.print(allocator, "{{\"type\":\"reasoning.encrypted\",\"id\":\"{s}\",\"data\":\"{s}\"}}", .{ id.string, dat.string }) catch return;
+                                                        var detail_writer = json_writer.JsonWriter.init(&detail_buf, allocator);
+                                                        try detail_writer.beginObject();
+                                                        try detail_writer.writeStringField("type", "reasoning.encrypted");
+                                                        try detail_writer.writeStringField("id", id.string);
+                                                        try detail_writer.writeStringField("data", dat.string);
+                                                        try detail_writer.endObject();
                                                         const detail_json = try allocator.dupe(u8, detail_buf.items);
                                                         const tool_call_id = try allocator.dupe(u8, id.string);
 
@@ -1992,6 +1994,171 @@ test "stream errors can finalize accumulated text but not partial tool calls" {
     try std.testing.expect(!canCompletePartialTextOnStreamError(1, 0, 1));
 }
 
+test "parseChunk ignores a chunk that is not json and a json value that is not an object" {
+    const allocator = std.testing.allocator;
+
+    var text = std.ArrayList(u8).empty;
+    defer text.deinit(allocator);
+    var thinking = std.ArrayList(u8).empty;
+    defer thinking.deinit(allocator);
+    var usage = ai_types.Usage{};
+    var stop_reason: ai_types.StopReason = .content_filter;
+    var current_block: BlockType = .none;
+    var reasoning_signature: ?[]const u8 = null;
+    defer if (reasoning_signature) |sig| allocator.free(sig);
+    var tool_call_events = std.ArrayList(ToolCallEvent).empty;
+    defer {
+        for (tool_call_events.items) |*tce| {
+            @constCast(tce).deinit(allocator);
+        }
+        tool_call_events.deinit(allocator);
+    }
+    var reasoning_detail_events = std.ArrayList(ReasoningDetailEvent).empty;
+    defer {
+        for (reasoning_detail_events.items) |*rde| {
+            @constCast(rde).deinit(allocator);
+        }
+        reasoning_detail_events.deinit(allocator);
+    }
+
+    const chunks = [_][]const u8{
+        "{not json at all",
+        "{\"choices\":",
+        "[]",
+        "42",
+        "\"a string\"",
+        "null",
+    };
+    for (chunks) |chunk| {
+        try parseChunk(
+            chunk,
+            &text,
+            &thinking,
+            &usage,
+            &stop_reason,
+            &current_block,
+            &reasoning_signature,
+            &tool_call_events,
+            &reasoning_detail_events,
+            allocator,
+        );
+    }
+
+    try std.testing.expectEqual(@as(usize, 0), text.items.len);
+    try std.testing.expectEqual(@as(usize, 0), thinking.items.len);
+    try std.testing.expectEqual(@as(usize, 0), tool_call_events.items.len);
+    try std.testing.expectEqual(@as(usize, 0), reasoning_detail_events.items.len);
+    try std.testing.expectEqual(ai_types.Usage{}, usage);
+    try std.testing.expectEqual(ai_types.StopReason.content_filter, stop_reason);
+}
+
+test "parseChunk keeps reading after a chunk it could not read" {
+    const allocator = std.testing.allocator;
+
+    var text = std.ArrayList(u8).empty;
+    defer text.deinit(allocator);
+    var thinking = std.ArrayList(u8).empty;
+    defer thinking.deinit(allocator);
+    var usage = ai_types.Usage{};
+    var stop_reason: ai_types.StopReason = .content_filter;
+    var current_block: BlockType = .none;
+    var reasoning_signature: ?[]const u8 = null;
+    defer if (reasoning_signature) |sig| allocator.free(sig);
+    var tool_call_events = std.ArrayList(ToolCallEvent).empty;
+    defer {
+        for (tool_call_events.items) |*tce| {
+            @constCast(tce).deinit(allocator);
+        }
+        tool_call_events.deinit(allocator);
+    }
+    var reasoning_detail_events = std.ArrayList(ReasoningDetailEvent).empty;
+    defer {
+        for (reasoning_detail_events.items) |*rde| {
+            @constCast(rde).deinit(allocator);
+        }
+        reasoning_detail_events.deinit(allocator);
+    }
+
+    const args = [_][]const u8{
+        "not json",
+        "{\"choices\":[{\"delta\":{\"content\":\"kept\"}}]}",
+    };
+    for (args) |chunk| {
+        try parseChunk(
+            chunk,
+            &text,
+            &thinking,
+            &usage,
+            &stop_reason,
+            &current_block,
+            &reasoning_signature,
+            &tool_call_events,
+            &reasoning_detail_events,
+            allocator,
+        );
+    }
+
+    try std.testing.expectEqualStrings("kept", text.items);
+}
+
+test "writeMessagesArray drops an orphan wherever it falls in a run of results" {
+    const allocator = std.testing.allocator;
+
+    const model = ai_types.Model{
+        .id = "gpt-4o-mini",
+        .name = "GPT-4o Mini",
+        .api = "openai-completions",
+        .provider = "openai",
+        .base_url = "https://api.openai.com",
+        .reasoning = false,
+        .input = &[_][]const u8{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 128_000,
+        .max_tokens = 100,
+    };
+
+    const messages = [_]ai_types.Message{
+        .{ .assistant = .{
+            .content = &.{
+                .{ .tool_call = .{ .id = "call-1", .name = "read", .arguments_json = "{}" } },
+                .{ .tool_call = .{ .id = "call-2", .name = "read", .arguments_json = "{}" } },
+            },
+            .api = "openai-completions",
+            .provider = "openai",
+            .model = "gpt-4o-mini",
+            .usage = .{},
+            .stop_reason = .tool_use,
+            .timestamp = 0,
+        } },
+        .{ .tool_result = .{ .tool_call_id = "call-1", .tool_name = "read", .content = &.{.{ .text = .{ .text = "first" } }}, .is_error = false, .timestamp = 0 } },
+        .{ .tool_result = .{ .tool_call_id = "call-9", .tool_name = "read", .content = &.{.{ .text = .{ .text = "orphan" } }}, .is_error = false, .timestamp = 0 } },
+        .{ .tool_result = .{ .tool_call_id = "call-2", .tool_name = "read", .content = &.{.{ .text = .{ .text = "second" } }}, .is_error = false, .timestamp = 0 } },
+    };
+
+    const ctx = ai_types.Context{ .messages = &messages };
+
+    const body = try buildRequestBody(model, ctx, .{ .max_tokens = 100 }, allocator);
+    defer allocator.free(body);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+
+    const written = parsed.value.object.get("messages").?.array;
+    var tool_ids = std.ArrayList([]const u8).empty;
+    defer tool_ids.deinit(allocator);
+    for (written.items) |m| {
+        if (m.object.get("role")) |role| {
+            if (role.string.len == 4 and std.mem.eql(u8, role.string, "tool")) {
+                try tool_ids.append(allocator, m.object.get("tool_call_id").?.string);
+            }
+        }
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), tool_ids.items.len);
+    try std.testing.expectEqualStrings("call-1", tool_ids.items[0]);
+    try std.testing.expectEqualStrings("call-2", tool_ids.items[1]);
+}
+
 test "parseChunk does not leak memory with reasoning content" {
     const allocator = std.testing.allocator;
 
@@ -2766,9 +2933,163 @@ test "parseChunk extracts reasoning_details for encrypted reasoning round-trip" 
 
     try std.testing.expectEqual(@as(usize, 1), reasoning_detail_events.items.len);
     try std.testing.expectEqualStrings("call_abc123", reasoning_detail_events.items[0].tool_call_id);
-    try std.testing.expect(std.mem.find(u8, reasoning_detail_events.items[0].detail_json, "reasoning.encrypted") != null);
-    try std.testing.expect(std.mem.find(u8, reasoning_detail_events.items[0].detail_json, "call_abc123") != null);
-    try std.testing.expect(std.mem.find(u8, reasoning_detail_events.items[0].detail_json, "encrypted_data_here") != null);
+    try std.testing.expectEqualStrings(
+        "{\"type\":\"reasoning.encrypted\",\"id\":\"call_abc123\",\"data\":\"encrypted_data_here\"}",
+        reasoning_detail_events.items[0].detail_json,
+    );
+}
+
+test "parseChunk encodes a reasoning detail's id and data rather than splicing them" {
+    const allocator = std.testing.allocator;
+
+    var text = std.ArrayList(u8).empty;
+    defer text.deinit(allocator);
+    var thinking = std.ArrayList(u8).empty;
+    defer thinking.deinit(allocator);
+    var usage = ai_types.Usage{};
+    var stop_reason: ai_types.StopReason = .stop;
+    var current_block: BlockType = .none;
+    var reasoning_signature: ?[]const u8 = null;
+    defer if (reasoning_signature) |sig| allocator.free(sig);
+    var tool_call_events = std.ArrayList(ToolCallEvent).empty;
+    defer {
+        for (tool_call_events.items) |*tce| {
+            @constCast(tce).deinit(allocator);
+        }
+        tool_call_events.deinit(allocator);
+    }
+    var reasoning_detail_events = std.ArrayList(ReasoningDetailEvent).empty;
+    defer {
+        for (reasoning_detail_events.items) |*rde| {
+            @constCast(rde).deinit(allocator);
+        }
+        reasoning_detail_events.deinit(allocator);
+    }
+
+    const chunk =
+        \\{"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.encrypted","id":"call\"1","data":"a\"b\\c"}]}}]}
+    ;
+
+    try parseChunk(
+        chunk,
+        &text,
+        &thinking,
+        &usage,
+        &stop_reason,
+        &current_block,
+        &reasoning_signature,
+        &tool_call_events,
+        &reasoning_detail_events,
+        allocator,
+    );
+
+    try std.testing.expectEqual(@as(usize, 1), reasoning_detail_events.items.len);
+    try std.testing.expectEqualStrings("call\"1", reasoning_detail_events.items[0].tool_call_id);
+
+    const detail = try std.json.parseFromSlice(std.json.Value, allocator, reasoning_detail_events.items[0].detail_json, .{});
+    defer detail.deinit();
+
+    try std.testing.expectEqualStrings("reasoning.encrypted", detail.value.object.get("type").?.string);
+    try std.testing.expectEqualStrings("call\"1", detail.value.object.get("id").?.string);
+    try std.testing.expectEqualStrings("a\"b\\c", detail.value.object.get("data").?.string);
+}
+
+test "a reasoning detail carrying a quote leaves the request body parseable" {
+    const allocator = std.testing.allocator;
+
+    const model = ai_types.Model{
+        .id = "o1",
+        .name = "O1",
+        .api = "openai-completions",
+        .provider = "openai",
+        .base_url = "https://api.openai.com",
+        .reasoning = true,
+        .input = &[_][]const u8{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 200_000,
+        .max_tokens = 100,
+    };
+
+    var text = std.ArrayList(u8).empty;
+    defer text.deinit(allocator);
+    var thinking = std.ArrayList(u8).empty;
+    defer thinking.deinit(allocator);
+    var usage = ai_types.Usage{};
+    var stop_reason: ai_types.StopReason = .stop;
+    var current_block: BlockType = .none;
+    var reasoning_signature: ?[]const u8 = null;
+    defer if (reasoning_signature) |sig| allocator.free(sig);
+    var tool_call_events = std.ArrayList(ToolCallEvent).empty;
+    defer {
+        for (tool_call_events.items) |*tce| {
+            @constCast(tce).deinit(allocator);
+        }
+        tool_call_events.deinit(allocator);
+    }
+    var reasoning_detail_events = std.ArrayList(ReasoningDetailEvent).empty;
+    defer {
+        for (reasoning_detail_events.items) |*rde| {
+            @constCast(rde).deinit(allocator);
+        }
+        reasoning_detail_events.deinit(allocator);
+    }
+
+    const chunk =
+        \\{"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.encrypted","id":"call_abc123","data":"a\"b"}]}}]}
+    ;
+
+    try parseChunk(
+        chunk,
+        &text,
+        &thinking,
+        &usage,
+        &stop_reason,
+        &current_block,
+        &reasoning_signature,
+        &tool_call_events,
+        &reasoning_detail_events,
+        allocator,
+    );
+
+    try std.testing.expectEqual(@as(usize, 1), reasoning_detail_events.items.len);
+
+    const assistant_content = try allocator.alloc(ai_types.AssistantContent, 1);
+    defer allocator.free(assistant_content);
+    assistant_content[0] = .{
+        .tool_call = .{
+            .id = "call_abc123",
+            .name = "bash",
+            .arguments_json = "{}",
+            .thought_signature = reasoning_detail_events.items[0].detail_json,
+        },
+    };
+
+    const ctx = ai_types.Context{
+        .messages = &[_]ai_types.Message{
+            .{ .assistant = .{
+                .content = assistant_content,
+                .api = "openai-completions",
+                .provider = "openai",
+                .model = "o1",
+                .usage = .{},
+                .stop_reason = .tool_use,
+                .timestamp = 0,
+            } },
+        },
+    };
+
+    const body = try buildRequestBody(model, ctx, .{ .max_tokens = 100 }, allocator);
+    defer allocator.free(body);
+
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
+        std.debug.print("the body is not json: {s}\n", .{body});
+        return error.TestExpectedEqual;
+    };
+    defer parsed.deinit();
+
+    const messages = parsed.value.object.get("messages").?.array;
+    const details = messages.items[0].object.get("reasoning_details").?.array;
+    try std.testing.expectEqualStrings("a\"b", details.items[0].object.get("data").?.string);
 }
 
 test "buildRequestBody includes reasoning_details for tool calls with thought_signature" {

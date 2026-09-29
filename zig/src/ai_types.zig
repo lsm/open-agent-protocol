@@ -711,6 +711,31 @@ pub fn deinitAssistantMessageOwned(allocator: std.mem.Allocator, msg: *Assistant
     msg.deinit(allocator);
 }
 
+pub const OwnedMessage = struct {
+    const Self = @This();
+
+    message: AssistantMessage,
+
+    pub fn cloneOf(allocator: std.mem.Allocator, msg: AssistantMessage) !Self {
+        return .{ .message = try cloneAssistantMessage(allocator, msg) };
+    }
+
+    pub fn borrow(self: *const Self) *const AssistantMessage {
+        return &self.message;
+    }
+
+    pub fn intoMessage(self: *Self) AssistantMessage {
+        const released = self.message;
+        self.* = undefined;
+        return released;
+    }
+
+    pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+        self.message.deinit(allocator);
+        self.* = undefined;
+    }
+};
+
 pub fn cloneAssistantMessageEvent(allocator: std.mem.Allocator, event: AssistantMessageEvent) !AssistantMessageEvent {
     return switch (event) {
         .start => |s| .{ .start = .{
@@ -1477,4 +1502,57 @@ test "cloneModel frees duped header pairs when a later allocation fails" {
     };
 
     try std.testing.checkAllAllocationFailures(allocator, Case.run, .{model});
+}
+
+test "OwnedMessage copy is freed by its own deinit, and intoMessage hands it off" {
+    const allocator = std.testing.allocator;
+
+    const content = [_]AssistantContent{.{ .text = .{ .text = "borrowed" } }};
+    const source = AssistantMessage{
+        .content = &content,
+        .api = "test-api",
+        .provider = "test-provider",
+        .model = "test-model",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 3,
+    };
+
+    var owned = try OwnedMessage.cloneOf(allocator, source);
+    try std.testing.expectEqualStrings("borrowed", owned.borrow().content[0].text.text);
+    try std.testing.expect(owned.borrow().is_owned);
+    owned.deinit(allocator);
+
+    var second = try OwnedMessage.cloneOf(allocator, source);
+    const released = second.intoMessage();
+    try std.testing.expectEqualStrings("borrowed", released.content[0].text.text);
+    var mutable = released;
+    mutable.deinit(allocator);
+}
+
+test "OwnedMessage cloneOf frees its copy when a later allocation fails" {
+    const allocator = std.testing.allocator;
+
+    const content = [_]AssistantContent{
+        .{ .text = .{ .text = "one" } },
+        .{ .text = .{ .text = "two" } },
+    };
+    const source = AssistantMessage{
+        .content = &content,
+        .api = "test-api",
+        .provider = "test-provider",
+        .model = "test-model",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 4,
+    };
+
+    const Case = struct {
+        fn run(failing: std.mem.Allocator, src: AssistantMessage) !void {
+            var owned = try OwnedMessage.cloneOf(failing, src);
+            owned.deinit(failing);
+        }
+    };
+
+    try std.testing.checkAllAllocationFailures(allocator, Case.run, .{source});
 }
