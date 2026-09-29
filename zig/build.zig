@@ -3235,6 +3235,7 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
         id: []const u8,
         name: ?[]const u8 = null,
         context_window: ?u32 = null,
+        max_context_window: ?u32 = null,
         max_tokens: ?u32 = null,
     };
     const Row = struct {
@@ -3253,6 +3254,7 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
         endpoints: []const Endpoint = &.{},
         models_endpoint: ?[]const u8 = null,
         context_window: ?u32 = null,
+        max_context_window: ?u32 = null,
         max_tokens: ?u32 = null,
         models: []const Model = &.{},
         oauth_origin: ?Origin = null,
@@ -3301,15 +3303,31 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
                 .{ row.id, endpoint.wire },
             );
         }
+        if (row.context_window) |window| {
+            if (row.max_context_window) |ceiling| {
+                if (window > ceiling) std.debug.panic(
+                    "providers/catalog.json gives {s} a context_window of {d} above the {d} it records as max_context_window, so the default window would be one the ceiling refuses",
+                    .{ row.id, window, ceiling },
+                );
+            }
+        }
+        for (row.models) |model| {
+            const window = model.context_window orelse row.context_window orelse continue;
+            const ceiling = model.max_context_window orelse row.max_context_window orelse continue;
+            if (window > ceiling) std.debug.panic(
+                "providers/catalog.json gives {s}'s model {s} a context_window of {d} above the {d} it resolves, so the window would be one the ceiling refuses",
+                .{ row.id, model.id, window, ceiling },
+            );
+        }
     }
     var out = std.ArrayList(u8).empty;
     out.appendSlice(gpa, "pub const AuthKind = enum { api_key, oauth, none };\n\n") catch @panic("out of memory");
     out.appendSlice(gpa, "pub const Offering = enum { coding_plan, subscription, api_key };\n\n") catch @panic("out of memory");
     out.appendSlice(gpa, "pub const Status = enum { current, supported, withheld };\n\n") catch @panic("out of memory");
     out.appendSlice(gpa, "pub const Endpoint = struct {\n    wire: []const u8,\n    base_url: []const u8,\n    region: ?[]const u8 = null,\n    carries_version: bool = false,\n};\n\n") catch @panic("out of memory");
-    out.appendSlice(gpa, "pub const Model = struct {\n    id: []const u8,\n    name: ?[]const u8 = null,\n    context_window: ?u32 = null,\n    max_tokens: ?u32 = null,\n};\n\n") catch @panic("out of memory");
+    out.appendSlice(gpa, "pub const Model = struct {\n    id: []const u8,\n    name: ?[]const u8 = null,\n    context_window: ?u32 = null,\n    max_context_window: ?u32 = null,\n    max_tokens: ?u32 = null,\n};\n\n") catch @panic("out of memory");
     out.appendSlice(gpa, "pub const OAuthOrigin = struct {\n    exact: []const []const u8 = &.{},\n    domain: ?[]const u8 = null,\n    credential_declares_origin: bool = false,\n};\n\n") catch @panic("out of memory");
-    out.appendSlice(gpa, "pub const Provider = struct {\n    id: []const u8,\n    display_name: ?[]const u8 = null,\n    auth: []const AuthKind = &.{},\n    offering: ?Offering = null,\n    status: ?Status = null,\n    credential_env: []const []const u8 = &.{},\n    credential_precedence: []const []const u8 = &.{},\n    base_url_env: []const []const u8 = &.{},\n    region_env: ?[]const u8 = null,\n    default_region: ?[]const u8 = null,\n    wires: []const []const u8 = &.{},\n    base_url_source: ?[]const u8 = null,\n    endpoints: []const Endpoint = &.{},\n    models_endpoint: ?[]const u8 = null,\n    context_window: ?u32 = null,\n    max_tokens: ?u32 = null,\n    models: []const Model = &.{},\n    oauth_origin: ?OAuthOrigin = null,\n    docs: ?[]const u8 = null,\n};\n\n") catch @panic("out of memory");
+    out.appendSlice(gpa, "pub const Provider = struct {\n    id: []const u8,\n    display_name: ?[]const u8 = null,\n    auth: []const AuthKind = &.{},\n    offering: ?Offering = null,\n    status: ?Status = null,\n    credential_env: []const []const u8 = &.{},\n    credential_precedence: []const []const u8 = &.{},\n    base_url_env: []const []const u8 = &.{},\n    region_env: ?[]const u8 = null,\n    default_region: ?[]const u8 = null,\n    wires: []const []const u8 = &.{},\n    base_url_source: ?[]const u8 = null,\n    endpoints: []const Endpoint = &.{},\n    models_endpoint: ?[]const u8 = null,\n    context_window: ?u32 = null,\n    max_context_window: ?u32 = null,\n    max_tokens: ?u32 = null,\n    models: []const Model = &.{},\n    oauth_origin: ?OAuthOrigin = null,\n    docs: ?[]const u8 = null,\n};\n\n") catch @panic("out of memory");
     out.appendSlice(gpa, "pub const providers: []const Provider = &.{\n") catch @panic("out of memory");
     for (catalog.providers) |row| {
         out.print(gpa, "    .{{\n        .id = \"{f}\",\n", .{std.zig.fmtString(row.id)}) catch @panic("out of memory");
@@ -3366,6 +3384,9 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
         if (row.context_window) |window| {
             out.print(gpa, "        .context_window = {d},\n", .{window}) catch @panic("out of memory");
         }
+        if (row.max_context_window) |window| {
+            out.print(gpa, "        .max_context_window = {d},\n", .{window}) catch @panic("out of memory");
+        }
         if (row.max_tokens) |tokens| {
             out.print(gpa, "        .max_tokens = {d},\n", .{tokens}) catch @panic("out of memory");
         }
@@ -3378,6 +3399,9 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
                 }
                 if (model.context_window) |window| {
                     out.print(gpa, ", .context_window = {d}", .{window}) catch @panic("out of memory");
+                }
+                if (model.max_context_window) |window| {
+                    out.print(gpa, ", .max_context_window = {d}", .{window}) catch @panic("out of memory");
                 }
                 if (model.max_tokens) |tokens| {
                     out.print(gpa, ", .max_tokens = {d}", .{tokens}) catch @panic("out of memory");

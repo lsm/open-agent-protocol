@@ -167,6 +167,18 @@ pub fn rowContextWindow(id: []const u8) ?u32 {
     return row.context_window;
 }
 
+pub fn rowMaxContextWindow(id: []const u8) ?u32 {
+    const row = provider(id) orelse return null;
+    return row.max_context_window;
+}
+
+pub fn modelMaxContextWindow(id: []const u8, model_id: []const u8) ?u32 {
+    if (declaredModel(id, model_id)) |model| {
+        if (model.max_context_window) |window| return window;
+    }
+    return rowMaxContextWindow(id);
+}
+
 pub fn rowMaxTokens(id: []const u8) ?u32 {
     const row = provider(id) orelse return null;
     return row.max_tokens;
@@ -222,6 +234,27 @@ fn regionNames(comptime row: Provider) []const []const u8 {
         const frozen = names;
         return frozen[0..total];
     }
+}
+
+pub fn rowsReadingEnv(env: []const u8) usize {
+    var rows: usize = 0;
+    for (all) |row| {
+        for (row.credential_env) |declared| {
+            if (std.mem.eql(u8, declared, env)) {
+                rows += 1;
+                break;
+            }
+        }
+    }
+    return rows;
+}
+
+pub fn sharesCredentialEnv(id: []const u8) bool {
+    const row = provider(id) orelse return false;
+    for (row.credential_env) |mine| {
+        if (rowsReadingEnv(mine) > 1) return true;
+    }
+    return false;
 }
 
 pub fn modelsEndpoint(id: []const u8) ?[]const u8 {
@@ -616,6 +649,41 @@ test "a models listing is an absolute path appended to a base that does not end 
     }
 }
 
+test "a row records the largest context window its models can be given, and only the rows that state one do" {
+    const with_ceiling = [_][]const u8{ "openai", "openai-codex" };
+    for (all) |row| {
+        var expected = false;
+        for (with_ceiling) |id| {
+            if (std.mem.eql(u8, row.id, id)) expected = true;
+        }
+        try std.testing.expectEqual(expected, rowMaxContextWindow(row.id) != null);
+    }
+    try std.testing.expectEqual(@as(?u32, 1_000_000), rowMaxContextWindow("openai"));
+    try std.testing.expectEqual(@as(?u32, 1_000_000), rowMaxContextWindow("openai-codex"));
+    try std.testing.expectEqual(@as(?u32, 1_000_000), modelMaxContextWindow("openai", "gpt-5-codex"));
+    try std.testing.expectEqual(@as(?u32, null), rowMaxContextWindow("no-such-provider"));
+    try std.testing.expectEqual(@as(?u32, null), modelMaxContextWindow("no-such-provider", "gpt-5-codex"));
+}
+
+test "a row that serves a window states no ceiling for it, because the window is not the ceiling" {
+    try std.testing.expectEqual(@as(?u32, 262_144), rowContextWindow("kimi"));
+    try std.testing.expectEqual(@as(?u32, null), modelMaxContextWindow("kimi", "kimi-k2.7-code"));
+    try std.testing.expectEqual(@as(?u32, null), modelMaxContextWindow("anthropic", "claude-sonnet-4-5"));
+}
+
+test "no row or model records a context window above the ceiling it states" {
+    for (all) |row| {
+        if (row.context_window) |window| {
+            if (rowMaxContextWindow(row.id)) |ceiling| try std.testing.expect(window <= ceiling);
+        }
+        for (row.models) |model| {
+            if (model.context_window) |window| {
+                if (modelMaxContextWindow(row.id, model.id)) |ceiling| try std.testing.expect(window <= ceiling);
+            }
+        }
+    }
+}
+
 pub fn wireTakesVersionedPath(wire: []const u8) bool {
     const path = wirePath(wire) orelse return false;
     return std.mem.startsWith(u8, path.suffix, "/v1/");
@@ -948,6 +1016,46 @@ fn catalogTargetForTest(id: []const u8, wire_id: []const u8) ?CatalogTargetForTe
         };
     }
     return null;
+}
+
+test "one credential value opens four rows" {
+    try std.testing.expectEqual(@as(usize, 4), rowsReadingEnv("XIAOMI_API_KEY"));
+    try std.testing.expectEqual(@as(usize, 1), rowsReadingEnv("DEEPSEEK_API_KEY"));
+    try std.testing.expectEqual(@as(usize, 1), rowsReadingEnv("ANTHROPIC_API_KEY"));
+    try std.testing.expectEqual(@as(usize, 1), rowsReadingEnv("ANTHROPIC_AUTH_TOKEN"));
+    try std.testing.expectEqual(@as(usize, 0), rowsReadingEnv("NO_SUCH_VARIABLE"));
+
+    for ([_][]const u8{ "xiaomi", "xiaomi-token-plan-cn", "xiaomi-token-plan-sgp", "xiaomi-token-plan-ams" }) |id| {
+        try std.testing.expect(sharesCredentialEnv(id));
+        const row = provider(id) orelse return error.TestGroupNamesNoRow;
+        var declares = false;
+        for (row.credential_env) |declared| {
+            if (std.mem.eql(u8, declared, "XIAOMI_API_KEY")) declares = true;
+        }
+        try std.testing.expect(declares);
+    }
+
+    for ([_][]const u8{ "deepseek", "openai", "anthropic" }) |id| {
+        try std.testing.expect(!sharesCredentialEnv(id));
+    }
+    try std.testing.expect(!sharesCredentialEnv("no-such-provider"));
+}
+
+test "the catalog orders every plan a shared key opens before the row it also opens" {
+    var payg_index: usize = 0;
+    for (all, 0..) |row, index| {
+        if (std.mem.eql(u8, row.id, "xiaomi")) payg_index = index;
+    }
+    const plans = [_][]const u8{ "xiaomi-token-plan-cn", "xiaomi-token-plan-sgp", "xiaomi-token-plan-ams" };
+    for (plans) |plan| {
+        var found = false;
+        for (all, 0..) |row, index| {
+            if (!std.mem.eql(u8, row.id, plan)) continue;
+            found = true;
+            try std.testing.expect(index < payg_index);
+        }
+        try std.testing.expect(found);
+    }
 }
 
 test "a wire with no path joins to the base, trailing slash dropped" {
