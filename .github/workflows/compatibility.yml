@@ -1,5 +1,14 @@
 name: Compatibility
 
+# Moving this job out of ci.yml changes the check run GitHub reports, from
+# "CI / compatibility" to "Compatibility / compatibility" -- the job key and
+# display name are unchanged, the workflow name is not. If branch protection
+# ever names a required check, rename the entry in the same commit that
+# configures it, or every pull request reports the old check missing and cannot
+# merge. `main` is not protected today, so nothing needs updating yet; the note
+# is here because the file is where someone looks when a required check goes
+# missing, not the pull request that moved it.
+
 on:
   # `edited` is load-bearing here and is why this is its own workflow. The gate's
   # record is the pull request description, so a body edit is the only thing that
