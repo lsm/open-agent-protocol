@@ -374,6 +374,25 @@ test "App git branch walks up to the enclosing repository" {
     try std.testing.expectEqualStrings("enclosing", app.state.git_branch);
 }
 
+test "App git branch stops at a repository whose HEAD is unreadable" {
+    var repo = try BranchRepo.init(std.testing.allocator);
+    defer repo.deinit(std.testing.allocator);
+    try repo.writeHead(std.testing.allocator, "ref: refs/heads/outer\n");
+    const inner = try std.fs.path.join(std.testing.allocator, &.{ repo.repo, "inner" });
+    defer std.testing.allocator.free(inner);
+    const inner_git = try std.fs.path.join(std.testing.allocator, &.{ inner, ".git" });
+    defer std.testing.allocator.free(inner_git);
+    try compat.fs.createDir(compat.fs.getCwd(), inner_git);
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, inner);
+    try app.refreshCwdDisplay();
+
+    try std.testing.expectEqualStrings("", app.state.git_branch);
+}
+
 test "App git branch takes the nearest repository rather than an enclosing one" {
     var repo = try BranchRepo.init(std.testing.allocator);
     defer repo.deinit(std.testing.allocator);
@@ -3097,9 +3116,7 @@ fn gitHeadLabel(allocator: std.mem.Allocator, dir_path: []const u8) !?[]u8 {
     while (current.len > 0) {
         const head_path = try gitHeadPath(allocator, current);
         defer if (head_path) |value| allocator.free(value);
-        if (head_path) |path| {
-            if (try readGitBranchName(allocator, path)) |name| return name;
-        }
+        if (head_path) |path| return try readGitBranchName(allocator, path);
         const parent = std.fs.path.dirname(current) orelse break;
         if (parent.len == 0 or std.mem.eql(u8, parent, current)) break;
         const next = try allocator.dupe(u8, parent);
