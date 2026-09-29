@@ -119,6 +119,8 @@ export {
   type ListModelsResponse,
   type MakaiModelsApi,
   type ModelCapability,
+  type ModelCatalog,
+  type ModelCost,
   type ModelDescriptor,
   type ModelLifecycle,
   type ModelSource,
