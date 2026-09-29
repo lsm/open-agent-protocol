@@ -2713,9 +2713,15 @@ pub const App = struct {
 
     fn persistContextWindow(self: *App) void {
         const runtime = self.runtime orelse return;
-        var store = tui_config.Store.initDefault(self.allocator) catch return;
+        var store = tui_config.Store.initDefault(self.allocator) catch |err| {
+            self.recordError(@errorName(err)) catch {};
+            return;
+        };
         defer store.deinit();
-        var cfg = store.load() catch return;
+        var cfg = store.load() catch |err| {
+            self.recordError(@errorName(err)) catch {};
+            return;
+        };
         defer cfg.deinit(self.allocator);
         const window = runtime.contextWindowOverride();
         self.mode_settings.context_window = window;
@@ -4130,6 +4136,10 @@ fn defaultModel() ai_types.Model {
     };
 }
 
+fn preferredContextWindow(stored: ?u32, flag: ?u32) ?u32 {
+    return flag orelse stored;
+}
+
 pub fn run(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32) !void {
     var environ_map = try compat.createEnvMap(allocator);
     defer environ_map.deinit();
@@ -4146,7 +4156,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32) !void
     production.initBridge();
 
     var options = production.options();
-    options.context_window = context_window;
+    options.context_window = preferredContextWindow(options.context_window, context_window);
     if (fixture) |runtime| {
         options.protocol = runtime.provider.protocolClient();
         options.generate_titles = false;
@@ -5807,6 +5817,36 @@ test "a persisted window the model in effect cannot take is dropped without rewr
     const after = try configFileBytes(std.testing.allocator, home);
     defer std.testing.allocator.free(after);
     try std.testing.expectEqualStrings(before, after);
+}
+
+test "a flagless launch keeps the stored window, and the flag overrides it" {
+    defer compat.clearTestEnv();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(home);
+    try compat.setTestEnv(std.testing.allocator, "HOME", home);
+
+    const base = try oapxConfigDir(std.testing.allocator, home);
+    defer std.testing.allocator.free(base);
+    {
+        var store = try tui_config.Store.init(std.testing.allocator, base);
+        defer store.deinit();
+        var cfg = try tui_config.Config.defaults(std.testing.allocator);
+        defer cfg.deinit(std.testing.allocator);
+        cfg.mode.context_window = 200_000;
+        try store.save(cfg);
+    }
+
+    var production = try ProductionRuntime.init(std.testing.allocator, .{});
+    defer production.deinit();
+    production.initBridge();
+    try std.testing.expectEqual(@as(?u32, 200_000), production.options().context_window);
+
+    try std.testing.expectEqual(@as(?u32, 200_000), preferredContextWindow(200_000, null));
+    try std.testing.expectEqual(@as(?u32, 300_000), preferredContextWindow(200_000, 300_000));
+    try std.testing.expectEqual(@as(?u32, 200_000), preferredContextWindow(200_000, 200_000));
+    try std.testing.expectEqual(@as(?u32, null), preferredContextWindow(null, null));
 }
 
 test "a bare /context reports the window and leaves the persisted member alone" {
