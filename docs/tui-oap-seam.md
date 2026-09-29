@@ -60,7 +60,7 @@ without going through the ops table.
 | `follow_up` | `session.message.submit` (delivery `queue`) | **gap** — G2, unadvertised |
 | `clear_queued_messages` | none | **gap** — G3 |
 | `steers_consumed` | none | **gap** — G3 |
-| `decide_tool_approval` | `action.permissions` or `user_input` | **gap** — G4 |
+| `decide_tool_approval` | `action.permission.*`, `user.input.*` | **gap** — G4, shaped, undispatched |
 | `compact` | none | **gap** — G6 |
 | `resume_session` | `session.state.request`, then submit | **gap** — G1 |
 | `replaceMessages` (direct) | `transcript.load` | **gap** — G1 |
@@ -110,22 +110,31 @@ Recommendation: TUI-local state, derived from the admission responses the TUI
 already receives for each submit, and it never crosses the boundary. Filed as
 #616.
 
-### G4 — permissions and user input are not dispatched by the endpoint
+### G4 — permissions and user input are shaped but not dispatched
 
 `action.permissions` and `user_input` are named as optional core features in the
-draft. `action.permissions` appears **nowhere** in `zig/src/protocol/oap/` — not
-in the capability list, not in `server.zig`'s dispatch, and not among the
-payload shapes in `types.zig`. `user_input` is in a different position: its
-`user.input.resolve.request` / `.response` and `user.input.requested` / `.resolved`
-shapes are defined in `types.zig:1088` and carried in `envelope.zig`, but it is
-absent from the capability list and from `server.zig`'s dispatch, so nothing
-produces or answers one today.
+draft, and the endpoint has **neither in its capability list or its dispatch** —
+`server.zig` mentions neither. Both are more built out than that suggests, though,
+and the shape is worth stating precisely because it changes the sizing:
 
-Either way the TUI cannot move `decide_tool_approval`, permission modes or the
-approval prompt until the endpoint answers them. The `user_input` shapes being
-present is the better half of that news: the work is dispatch and advertisement,
-not a wire format. Filed as its own issue (#612) because it is agent-side work,
-not TUI work, and it is on the critical path for the tools work.
+- `action.permission.resolve.request` / `.response` and
+  `action.permission.requested` / `.resolved` are defined in `types.zig:1090` with
+  their wire names at `types.zig:1184`, and `envelope.zig:672` serialises and
+  round-trips them.
+- `user.input.resolve.request` / `.response` and `user.input.requested` /
+  `.resolved` are defined beside them at `types.zig:1088` and carried in
+  `envelope.zig`.
+
+So the missing work is dispatch and advertisement, not a wire format. The TUI
+still cannot move `decide_tool_approval`, permission modes or the approval
+prompt until the endpoint answers them. Filed as #612.
+
+A discrepancy in the draft is worth recording here, because a control layer
+reading only the capability-key list would get it wrong: `drafts/agent-control-core.md:679`
+lists the key as `action.permissions`, plural, while lines 584 and 768 and the
+Zig wire names are `action.permission.*`, singular. Whoever implements the unit
+has to reconcile that, or the capability key will not match what the endpoint
+accepts.
 
 ### G5 — auth is served, and stays TUI-local anyway
 
