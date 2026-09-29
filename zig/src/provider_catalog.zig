@@ -963,7 +963,7 @@ fn catalogTargetForTest(id: []const u8, wire_id: []const u8) ?CatalogTargetForTe
     return null;
 }
 
-test "one credential value opens four rows, and the plans come before the pay-as-you-go one" {
+test "one credential value opens four rows" {
     try std.testing.expectEqual(@as(usize, 4), rowsReadingEnv("XIAOMI_API_KEY"));
     try std.testing.expectEqual(@as(usize, 1), rowsReadingEnv("DEEPSEEK_API_KEY"));
     try std.testing.expectEqual(@as(usize, 1), rowsReadingEnv("ANTHROPIC_API_KEY"));
