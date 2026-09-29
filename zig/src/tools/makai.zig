@@ -2752,6 +2752,7 @@ fn runConformance(
     defer endpoint_args.deinit(allocator);
     var session: []const u8 = "conformance";
     var line_deadline_ms: i64 = @intCast(oap_conformance.default_line_deadline_ms);
+    var exit_grace_ms: i64 = oap_conformance.default_exit_grace_ms;
 
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
@@ -2774,6 +2775,13 @@ fn runConformance(
         }
         if (std.mem.startsWith(u8, arg, "--format=")) {
             format = std.meta.stringToEnum(ConformanceFormat, arg["--format=".len..]) orelse return error.InvalidArgument;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--exit-grace-ms")) {
+            index += 1;
+            if (index >= args.len) return error.InvalidArgument;
+            exit_grace_ms = std.fmt.parseInt(i64, args[index], 10) catch return error.InvalidArgument;
+            if (exit_grace_ms <= 0) return error.InvalidArgument;
             continue;
         }
         if (std.mem.eql(u8, arg, "--session")) {
@@ -2802,6 +2810,7 @@ fn runConformance(
         .args = endpoint_args.items,
         .session_id = session,
         .line_deadline_ms = line_deadline_ms,
+        .exit_grace_ms = exit_grace_ms,
     }) catch |err| {
         try compat.stdio.writeAll(stdout, try std.fmt.allocPrint(allocator, "conformance: {s}\n", .{@errorName(err)}));
         return true;
@@ -3138,7 +3147,8 @@ fn printUsage(file: std.Io.File) !void {
         \\  oapx serve agent,provider --stdio [--model <model-ref>]
         \\  oapx hub --stdio [--config <path>]
         \\  oapx validate [--format human|json] <trace.json>...
-        \\  oapx conformance --command CMD [--session <id>] [--timeout-ms <n>] [--format text|json]
+        \\  oapx conformance --command CMD [--session <id>] [--timeout-ms <n>]
+        \\                        [--exit-grace-ms <n>] [--format text|json]
         \\  oapx auth providers [--json]
         \\  oapx auth login --provider <id> [--json]
         \\  oapx --version
@@ -7274,15 +7284,6 @@ pub fn main(init: std.process.Init) !void {
     if (std.mem.eql(u8, args[1], "validate")) {
         const failed = runValidate(allocator, args[2..], stdout, stderr) catch |err| {
             if (err == error.Unavailable) std.process.exit(1);
-            if (err == error.InvalidArgument) try printUsage(stderr);
-            return err;
-        };
-        if (failed) std.process.exit(1);
-        return;
-    }
-
-    if (std.mem.eql(u8, args[1], "conformance")) {
-        const failed = runConformance(allocator, args[2..], stdout) catch |err| {
             if (err == error.InvalidArgument) try printUsage(stderr);
             return err;
         };

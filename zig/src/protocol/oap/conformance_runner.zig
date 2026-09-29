@@ -5,6 +5,10 @@ const endpoint_client = @import("endpoint_client");
 
 pub const default_line_deadline_ms: u64 = 300_000;
 
+// goap waits half a minute for an endpoint that has closed its stdout but has
+// not exited; the same grace keeps the check bounded rather than a hang.
+pub const default_exit_grace_ms: i64 = 30_000;
+
 pub const Check = struct {
     name: []const u8,
     passed: bool = true,
@@ -46,6 +50,7 @@ pub const Options = struct {
     args: []const []const u8 = &.{},
     session_id: []const u8 = "conformance",
     line_deadline_ms: i64 = default_line_deadline_ms,
+    exit_grace_ms: i64 = default_exit_grace_ms,
 };
 
 pub fn run(allocator: std.mem.Allocator, options: Options) !Report {
@@ -68,7 +73,7 @@ pub fn run(allocator: std.mem.Allocator, options: Options) !Report {
     try runner.drive(options.line_deadline_ms);
 
     runner.client.closeStdin();
-    const code = runner.client.waitExit() catch |err| blk: {
+    const code = runner.client.waitExit(options.exit_grace_ms) catch |err| blk: {
         try runner.fail("endpoint exits 0 after stdin EOF", @errorName(err));
         break :blk null;
     };
@@ -125,6 +130,17 @@ const Runner = struct {
             .passed = false,
             .detail = owned_detail,
         });
+    }
+
+    fn failOwned(self: *Runner, name: []const u8, detail: []const u8) !void {
+        const owned_name = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(owned_name);
+        errdefer self.allocator.free(detail);
+        try self.add(.{ .name = owned_name, .passed = false, .detail = detail });
+    }
+
+    fn failReason(self: *Runner, name: []const u8, err: anyerror) !void {
+        try self.fail(name, self.reasonOf(err));
     }
 
     fn add(self: *Runner, check: Check) !void {
@@ -204,14 +220,21 @@ const Runner = struct {
         const participant_name = try self.allocator.dupe(u8, "OAP conformance runner");
         errdefer self.allocator.free(participant_name);
 
+        // Each field is built before the literal: a literal that allocates twice
+        // cannot unwind the field it already built.
+        const versions = try oap_types.dupeStringList(self.allocator, &.{oap_types.VERSION});
+        errdefer oap_types.freeStringList(self.allocator, versions);
+        const profiles = try oap_types.dupeStringList(self.allocator, &.{oap_types.PROFILE});
+        errdefer oap_types.freeStringList(self.allocator, profiles);
+
         const initialized = self.request(.{
             .initialize_request = .{
-                .protocol_versions = try oap_types.dupeStringList(self.allocator, &.{oap_types.VERSION}),
-                .profiles = try oap_types.dupeStringList(self.allocator, &.{oap_types.PROFILE}),
+                .protocol_versions = versions,
+                .profiles = profiles,
                 .participant = .{ .id = participant_id, .name = participant_name },
             },
         }, null, line_deadline_ms) catch |err| {
-            try self.fail("protocol.initialize.request is answered", self.reasonOf(err));
+            try self.failReason("protocol.initialize.request is answered", err);
             return;
         };
         var held = initialized;
@@ -223,7 +246,7 @@ const Runner = struct {
         try self.pass("protocol.initialize.request is answered");
 
         var capabilities = self.request(.capabilities_request, null, line_deadline_ms) catch |err| {
-            try self.fail("capabilities.request is answered", self.reasonOf(err));
+            try self.failReason("capabilities.request is answered", err);
             return;
         };
         defer capabilities.deinit(self.allocator);
@@ -245,7 +268,7 @@ const Runner = struct {
         const open_session = try self.allocator.dupe(u8, self.session);
         errdefer self.allocator.free(open_session);
         var opened = self.request(.{ .session_open_request = .{ .session_id = open_session } }, null, line_deadline_ms) catch |err| {
-            try self.fail("session.open.request is answered", self.reasonOf(err));
+            try self.failReason("session.open.request is answered", err);
             return;
         };
         defer opened.deinit(self.allocator);
@@ -258,7 +281,7 @@ const Runner = struct {
         if (std.mem.eql(u8, state.session_id, self.session)) {
             try self.pass("the open names the session it was asked for");
         } else {
-            try self.fail(
+            try self.failOwned(
                 "the open names the session it was asked for",
                 try std.fmt.allocPrint(self.allocator, "opened {s}, asked for {s}", .{ state.session_id, self.session }),
             );
@@ -271,7 +294,7 @@ const Runner = struct {
             .messages = try self.scriptedMessages(),
             .delivery = .auto,
         } }, null, line_deadline_ms) catch |err| {
-            try self.fail("session.message.submit.request is answered", self.reasonOf(err));
+            try self.failReason("session.message.submit.request is answered", err);
             return;
         };
         defer admitted.deinit(self.allocator);
@@ -282,7 +305,7 @@ const Runner = struct {
         try self.pass("session.message.submit.request is answered");
         const admission = admitted.payload.message_submit_response;
         if (!admission.accepted or admission.run_id == null or admission.run_id.?.len == 0) {
-            try self.fail(
+            try self.failOwned(
                 "the submission is admitted and names its run",
                 try std.fmt.allocPrint(self.allocator, "accepted={} run={?s}", .{ admission.accepted, admission.run_id }),
             );
@@ -333,7 +356,7 @@ const Runner = struct {
             if (held.sequence) |sequence| {
                 if (held.run_id != null and std.mem.eql(u8, held.run_id.?, self.run_id)) {
                     if (sequence <= last_sequence) {
-                        try self.fail(
+                        try self.failOwned(
                             "run events carry an advancing per-run sequence",
                             try std.fmt.allocPrint(self.allocator, "sequence {d} did not advance past {d}", .{ sequence, last_sequence }),
                         );

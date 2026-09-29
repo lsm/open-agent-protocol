@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const compat = @import("compat");
 
 pub const max_line_bytes: usize = 1 << 20;
@@ -8,6 +9,7 @@ pub const Error = error{
     EndpointClosed,
     NotRunning,
     EmbeddedNewline,
+    ExitGraceElapsed,
 };
 
 pub const Spawn = struct {
@@ -89,15 +91,35 @@ pub const Client = struct {
         }
     }
 
-    pub fn waitExit(self: *Client) !u8 {
+    // An endpoint that has closed its stdout but has not exited would hang a
+    // caller that waited forever, so the wait is bounded and says so. goap
+    // bounds the same wait with a thirty second grace.
+    pub fn waitExit(self: *Client, grace_ms: i64) !u8 {
         const child = &(self.child orelse return Error.NotRunning);
-        const term = try child.wait(self.io());
-        self.child = null;
-        return switch (term) {
-            .exited => |code| code,
-            .signal => |number| 128 +% @as(u8, @intCast(@intFromEnum(number))),
-            else => Error.NotRunning,
-        };
+        if (builtin.os.tag == .windows) {
+            const term = try child.wait(self.io());
+            self.child = null;
+            return exitCodeOf(term);
+        }
+        // Polled rather than waited on, because std.process.Child has no
+        // non-blocking wait and an unbounded one is the thing being bounded.
+        var waited: i64 = 0;
+        while (waited < grace_ms) {
+            if (tryExitPosix(child)) |term| {
+                self.child = null;
+                return exitCodeOf(term);
+            }
+            std.Io.sleep(self.io(), .fromMilliseconds(exit_poll_ms), .boot) catch {};
+            waited += exit_poll_ms;
+        }
+        // Kill rather than close: closing waits for the child, which is the
+        // unbounded wait this function exists to avoid.
+        // kill reaps the child itself, so there is nothing left to wait for.
+        if (self.child) |*pending| {
+            pending.kill(self.io());
+            self.child = null;
+        }
+        return Error.ExitGraceElapsed;
     }
 
     pub fn write(self: *Client, line: []const u8) !void {
@@ -152,6 +174,44 @@ pub const Client = struct {
         return true;
     }
 };
+
+const exit_poll_ms: i64 = 25;
+
+fn tryExitPosix(child: *std.process.Child) ?std.process.Child.Term {
+    if (builtin.os.tag == .windows) return null;
+    const id = child.id orelse return null;
+    var status: if (builtin.link_libc) c_int else u32 = undefined;
+    while (true) {
+        const result = std.posix.system.waitpid(id, &status, std.posix.W.NOHANG);
+        switch (std.posix.errno(result)) {
+            .SUCCESS => {
+                if (result == 0) return null;
+                child.id = null;
+                return termOf(status);
+            },
+            .INTR => continue,
+            else => return null,
+        }
+    }
+}
+
+fn termOf(status: anytype) std.process.Child.Term {
+    const raw: u32 = @bitCast(status);
+    return if (std.posix.W.IFEXITED(raw))
+        .{ .exited = std.posix.W.EXITSTATUS(raw) }
+    else if (std.posix.W.IFSIGNALED(raw))
+        .{ .signal = std.posix.W.TERMSIG(raw) }
+    else
+        .{ .unknown = raw };
+}
+
+fn exitCodeOf(term: std.process.Child.Term) !u8 {
+    return switch (term) {
+        .exited => |code| code,
+        .signal => |number| 128 +% @as(u8, @intCast(@intFromEnum(number))),
+        else => Error.NotRunning,
+    };
+}
 
 fn classify(line: []const u8) Frame {
     if (hasTopLevelMember(line, "protocol")) return .{ .envelope = line };
