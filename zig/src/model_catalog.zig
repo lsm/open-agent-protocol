@@ -852,7 +852,7 @@ fn discoverCatalogModelsCacheThenProbe(
     return cachedOrNothing(allocator, name, skip_cache);
 }
 
-fn cachedOrNothing(allocator: std.mem.Allocator, name: []const u8, skip_cache: bool) CatalogListing {
+fn cachedOrNothing(allocator: std.mem.Allocator, name: []const u8, skip_cache: bool) !CatalogListing {
     if (skip_cache) return .{ .models = null, .fetched = false };
     return .{ .models = try loadCachedCatalogModels(allocator, name, null), .fetched = false };
 }
