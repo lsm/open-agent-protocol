@@ -110,8 +110,7 @@ func TestARunIsPointedAtTheLoopbackAndTheLoopbackAnswersTheRun(t *testing.T) {
 func TestTheLoopbackRefusalArrivesAsAnErrorAndNoTerminalIsReached(t *testing.T) {
 	mock := mockprovider.New()
 	defer mock.Close()
-	mock.FailWith = http.StatusTooManyRequests
-	mock.FailMessage = "rate limited"
+	mock.Refuse(http.StatusTooManyRequests, "rate limited")
 
 	sink := &EventSink{}
 	Stream(sink, Model{ID: "gpt-4o", API: "openai-completions", Provider: "openai", MaxTokens: 100, HasCompat: true}, Context{}, StreamOptions{},

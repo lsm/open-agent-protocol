@@ -44,12 +44,34 @@ func firstEnvValue(env []EnvironmentValue, name string) string {
 	return ""
 }
 
+func EqualFoldASCII(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		left, right := a[i], b[i]
+		if left == right {
+			continue
+		}
+		if left >= 'A' && left <= 'Z' {
+			left += 'a' - 'A'
+		}
+		if right >= 'A' && right <= 'Z' {
+			right += 'a' - 'A'
+		}
+		if left != right {
+			return false
+		}
+	}
+	return true
+}
+
 func NormalizeKimiRegion(value string) string {
 	trimmed := strings.Trim(value, " \t\r\n")
 	switch {
-	case strings.EqualFold(trimmed, "global"), strings.EqualFold(trimmed, "moonshot"):
+	case EqualFoldASCII(trimmed, "global"), EqualFoldASCII(trimmed, "moonshot"):
 		return "global"
-	case strings.EqualFold(trimmed, "china"), strings.EqualFold(trimmed, "cn"), strings.EqualFold(trimmed, "coding"):
+	case EqualFoldASCII(trimmed, "china"), EqualFoldASCII(trimmed, "cn"), EqualFoldASCII(trimmed, "coding"):
 		return "china"
 	}
 	return ""

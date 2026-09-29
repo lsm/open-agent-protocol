@@ -128,7 +128,7 @@ func TestTheKimiRegionTakesItsAliasesAndIgnoresCase(t *testing.T) {
 	cases := map[string]string{
 		"global": "global", "GLOBAL": "global", " moonshot ": "global", "Moonshot": "global",
 		"china": "china", "CN": "china", "coding": "china", " Coding\n": "china",
-		"elsewhere": "", "": "", "globalish": "",
+		"elsewhere": "", "": "", "globalish": "", "moonſhot": "",
 	}
 	for in, want := range cases {
 		if got := NormalizeKimiRegion(in); got != want {
@@ -220,5 +220,31 @@ func TestTheOverrideNamesComeFromTheCatalogRowAndNotFromASpellinGo(t *testing.T)
 	}
 	if got := RegionEnv(catalog, "kimi"); got != "KIMI_REGION" {
 		t.Errorf("got %q, want the row's own region variable", got)
+	}
+}
+
+func TestTheRegionFoldsAsciiOnlyAndNotUnicode(t *testing.T) {
+	if got := NormalizeKimiRegion("MOONSHOT"); got != "global" {
+		t.Errorf("MOONSHOT = %q, want global: ascii folding is what both trees do", got)
+	}
+	if got := NormalizeKimiRegion("Coding"); got != "china" {
+		t.Errorf("Coding = %q, want china", got)
+	}
+	for _, value := range []string{"moonſhot", "globalſ", "CHİNA", "glob\u0131al"} {
+		if got := NormalizeKimiRegion(value); got != "" {
+			t.Errorf("%q = %q, want nothing: std.ascii.eqlIgnoreCase folds ASCII only, and a value one tree takes and the other rejects is a credential sent to a different endpoint", value, got)
+		}
+	}
+}
+
+func TestEqualFoldASCIIIsNotUnicodeFolding(t *testing.T) {
+	if !EqualFoldASCII("CN", "cn") || !EqualFoldASCII("cn", "Cn") {
+		t.Error("ascii letters must fold")
+	}
+	if EqualFoldASCII("cn", "china") {
+		t.Error("a prefix is not a fold")
+	}
+	if EqualFoldASCII("moonſhot", "moonshot") {
+		t.Error("the long s must not fold: it is two bytes and outside ASCII")
 	}
 }

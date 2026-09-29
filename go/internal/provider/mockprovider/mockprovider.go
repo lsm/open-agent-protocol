@@ -25,16 +25,22 @@ type Provider struct {
 	Headers []http.Header
 	Bodies  []string
 
-	FailWith    int
-	FailMessage string
-
-	mu sync.Mutex
+	mu          sync.Mutex
+	failWith    int
+	failMessage string
 }
 
 func New(frames ...string) *Provider {
-	mock := &Provider{Frames: frames, FailMessage: "mock failure"}
+	mock := &Provider{Frames: frames, failMessage: "mock failure"}
 	mock.Server = httptest.NewServer(http.HandlerFunc(mock.serve))
 	return mock
+}
+
+func (m *Provider) Refuse(status int, message string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.failWith = status
+	m.failMessage = message
 }
 
 func (m *Provider) Close() { m.Server.Close() }
@@ -72,8 +78,8 @@ func (m *Provider) serve(w http.ResponseWriter, r *http.Request) {
 	m.Paths = append(m.Paths, r.URL.Path)
 	m.Headers = append(m.Headers, r.Header.Clone())
 	m.Bodies = append(m.Bodies, body.String())
-	fail := m.FailWith
-	message := m.FailMessage
+	fail := m.failWith
+	message := m.failMessage
 	frames := m.Frames
 	m.mu.Unlock()
 

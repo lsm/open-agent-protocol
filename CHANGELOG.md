@@ -311,7 +311,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `WireForModel` and a redirect that missed it would send the credential to
   `api.openai.com` anyway. The Kimi region takes the aliases the catalog's own
   test names — `moonshot` for global, `cn` and `coding` for china — folded
-  case-insensitively, and falls back to `china` when neither the environment nor
+  **ASCII**-only, the way `std.ascii.eqlIgnoreCase` is: `strings.EqualFold` also
+  folds `moonſhot` onto `moonshot`, and a value one tree accepts and the other
+  rejects points the run at a different endpoint, which is a credential sent
+  somewhere else. It falls back to `china` when neither the environment nor
   the caller's region is usable, so a blank or unrecognised region selects an
   endpoint instead of refusing to resolve at all. The region is kimi's alone:
   every other pair looks its endpoint up without one, which is what

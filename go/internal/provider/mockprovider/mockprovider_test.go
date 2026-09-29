@@ -40,8 +40,7 @@ func TestTheMockServesItsFramesToAnHTTPCaller(t *testing.T) {
 func TestTheMockRefusesWithTheMessageItWasGiven(t *testing.T) {
 	mock := New()
 	defer mock.Close()
-	mock.FailWith = http.StatusTooManyRequests
-	mock.FailMessage = "rate limited"
+	mock.Refuse(http.StatusTooManyRequests, "rate limited")
 	got := post(t, mock.URL(), "{}")
 	if !strings.Contains(got, `"message":"rate limited"`) {
 		t.Errorf("the body = %q, want the refusal carrying its message", got)
@@ -104,4 +103,41 @@ func TestEachTurnIsMadeOfTheFramesItsShapeNeeds(t *testing.T) {
 	if got := len(UsageTurn(1, 1)); got != 3 {
 		t.Errorf("a usage turn is %d frames, want 3", got)
 	}
+}
+
+func TestARefusalSetAfterTheServerStartedIsSeenByTheHandler(t *testing.T) {
+	mock := New(TextTurn("never served")...)
+	defer mock.Close()
+	mock.Refuse(http.StatusBadGateway, "upstream is down")
+	got := post(t, mock.URL(), "{}")
+	if !strings.Contains(got, "upstream is down") {
+		t.Errorf("the body = %q, want the refusal set after New", got)
+	}
+	if strings.Contains(got, "never served") {
+		t.Errorf("the body = %q, want no frames once a refusal is set", got)
+	}
+}
+
+func TestARefusalMayBeChangedWhileRequestsAreInFlight(t *testing.T) {
+	mock := New(TextTurn("served")...)
+	defer mock.Close()
+
+	done := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				mock.Refuse(429, "slow down")
+			}
+		}
+	}()
+	for i := 0; i < 200; i++ {
+		post(t, mock.URL(), "{}")
+	}
+	close(done)
+	<-finished
 }
