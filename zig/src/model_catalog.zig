@@ -462,11 +462,14 @@ fn catalogEndpointFromEnvironment(allocator: std.mem.Allocator, id: []const u8) 
 
 const catalog_loader_ids = [_][]const u8{
     "deepseek",
+<<<<<<< Updated upstream
     "openrouter",
     "opencode",
     "vercel",
     "zenmux",
     "deepinfra",
+=======
+>>>>>>> Stashed changes
     "zai-coding-plan",
     "alibaba-coding-plan",
     "minimax-coding-plan",
@@ -2324,8 +2327,13 @@ fn countVersions(url: []const u8) usize {
 
 test "a carries-version row's listing and its request agree under an override" {
     const rows = [_][]const u8{
+<<<<<<< Updated upstream
         "opencode",          "openrouter",              "vercel",            "zenmux",           "deepinfra",
         "zai-coding-plan",   "alibaba-coding-plan",     "minimax-coding-plan", "tencent-coding-plan", "volcengine-coding-plan",
+=======
+        "opencode",      "openrouter",         "vercel",             "zenmux",            "deepinfra",
+        "zai-coding-plan", "alibaba-coding-plan", "minimax-coding-plan", "tencent-coding-plan", "volcengine-coding-plan",
+>>>>>>> Stashed changes
     };
     for (rows) |id| {
         const target = catalogTarget(id) orelse return error.TestExpectedTarget;
@@ -2519,6 +2527,7 @@ test "a row with no implemented wire, endpoint or models listing has no target" 
     try std.testing.expect(catalogTarget("no-such-provider") == null);
 }
 
+<<<<<<< Updated upstream
 test "every gateway row the loader enables has its own target, wire and version fact" {
     const gateways = [_][]const u8{ "openrouter", "opencode", "vercel", "zenmux", "deepinfra" };
     for (gateways) |id| {
@@ -2592,6 +2601,11 @@ test "the production loader enables deepseek, every gateway and every coding pla
         "vercel",
         "zenmux",
         "deepinfra",
+=======
+test "the production loader enables deepseek and every coding plan this step adds" {
+    const enabled = [_][]const u8{
+        "deepseek",
+>>>>>>> Stashed changes
         "zai-coding-plan",
         "alibaba-coding-plan",
         "minimax-coding-plan",
@@ -2606,6 +2620,7 @@ test "the production loader enables deepseek, every gateway and every coding pla
     }
 }
 
+<<<<<<< Updated upstream
 test "loadProductionModels serves a gateway row's discovered models beside deepseek's" {
     const deepseek = catalogTarget("deepseek") orelse return error.TestExpectedTarget;
     const openrouter = catalogTarget("openrouter") orelse return error.TestExpectedTarget;
@@ -2632,6 +2647,8 @@ test "loadProductionModels serves a gateway row's discovered models beside deeps
     try std.testing.expectEqualStrings("https://openrouter.ai/api/v1", models[1].base_url);
 }
 
+=======
+>>>>>>> Stashed changes
 test "every coding plan row the loader enables carries its own version in the base" {
     const plans = [_][]const u8{
         "zai-coding-plan",
@@ -2645,6 +2662,7 @@ test "every coding plan row the loader enables carries its own version in the ba
         try std.testing.expectEqualStrings(id, target.id);
         try std.testing.expect(provider_catalog.endpointCarriesVersion(id, target.base_url));
         try std.testing.expectEqualStrings("/models", provider_catalog.modelsEndpoint(id).?);
+<<<<<<< Updated upstream
         const listed = try provider_catalog.listingUrlOwned(
             std.testing.allocator,
             target.base_url,
@@ -2652,6 +2670,9 @@ test "every coding plan row the loader enables carries its own version in the ba
             true,
             false,
         );
+=======
+        const listed = try provider_catalog.listingUrlOwned(std.testing.allocator, target.base_url, "/models", true, false);
+>>>>>>> Stashed changes
         defer std.testing.allocator.free(listed);
         try std.testing.expectEqualStrings(target.models_url, listed);
         try std.testing.expect(std.mem.endsWith(u8, listed, "/models"));
@@ -2659,6 +2680,7 @@ test "every coding plan row the loader enables carries its own version in the ba
     }
 }
 
+<<<<<<< Updated upstream
 test "an override on a coding plan row lists and requests through the loader's own resolution" {
     const id = "volcengine-coding-plan";
     const catalogued = catalogTarget(id) orelse return error.TestExpectedTarget;
@@ -2730,6 +2752,29 @@ test "an override base that already carries a version is normalised before the l
     defer deinitModels(std.testing.allocator, models);
     try std.testing.expectEqual(@as(usize, 1), models.len);
     try std.testing.expectEqualStrings("https://proxy.example/api", models[0].base_url);
+=======
+test "an override on a coding plan row lists under /v1 while the request drops the version" {
+    const id = "volcengine-coding-plan";
+    const target = catalogTarget(id) orelse return error.TestExpectedTarget;
+    const overridden = try provider_catalog.listingUrlOwned(
+        std.testing.allocator,
+        "https://proxy.example/api",
+        "/models",
+        true,
+        true,
+    );
+    defer std.testing.allocator.free(overridden);
+    try std.testing.expectEqualStrings("https://proxy.example/api/v1/models", overridden);
+    const request = try provider_catalog.joinUrlOwned(
+        std.testing.allocator,
+        "https://proxy.example/api",
+        provider_catalog.wirePath(target.wire).?,
+        true,
+    );
+    defer std.testing.allocator.free(request);
+    try std.testing.expectEqualStrings("https://proxy.example/api/chat/completions", request);
+    try std.testing.expect(std.mem.endsWith(u8, target.models_url, "/coding/v3/models"));
+>>>>>>> Stashed changes
 }
 
 test "a coding plan row's discovered models carry that row's base, wire and own listing url" {
@@ -2750,12 +2795,16 @@ test "a coding plan row's discovered models carry that row's base, wire and own 
         test_catalog_environment = &[_]provider_credential.EnvironmentValue{
             .{ .name = case.env, .value = "row-key" },
         };
+<<<<<<< Updated upstream
         const models = try loadCatalogModelsWithRows(
             std.testing.allocator,
             &.{case.id},
             null,
             .allow_cache,
         );
+=======
+        const models = try loadCatalogModelsWithRows(std.testing.allocator, &.{case.id}, null, .allow_cache);
+>>>>>>> Stashed changes
         defer {
             for (models) |*model| model.deinit(std.testing.allocator);
             std.testing.allocator.free(models);
@@ -2797,6 +2846,7 @@ test "loadProductionModels serves a coding plan row's discovered models beside d
     try std.testing.expectEqualStrings("https://api.lkeap.cloud.tencent.com/coding/v3", models[1].base_url);
 }
 
+<<<<<<< Updated upstream
 test "openai is served on the completions wire except for the models that need responses" {
     const cases = [_]struct { model: []const u8, wire: []const u8 }{
         .{ .model = "gpt-4o", .wire = "openai-completions" },
@@ -2869,11 +2919,80 @@ test "the wire a model is served on is the one the loader would pick for the row
     }
 }
 
+=======
+>>>>>>> Stashed changes
 test "the loader's rows are catalog rows the target answers for" {
     try std.testing.expect(catalog_loader_ids.len > 0);
     for (catalog_loader_ids) |id| {
         try std.testing.expect(provider_catalog.provider(id) != null);
         try std.testing.expect(catalogTarget(id) != null);
+    }
+}
+
+test "openai is served on the completions wire except for the models that need responses" {
+    const cases = [_]struct { model: []const u8, wire: []const u8 }{
+        .{ .model = "gpt-4o", .wire = "openai-completions" },
+        .{ .model = "gpt-4o-mini", .wire = "openai-completions" },
+        .{ .model = "gpt-5", .wire = "openai-completions" },
+        .{ .model = "gpt-5.1-codex", .wire = "openai-completions" },
+        .{ .model = "o1-pro", .wire = "openai-responses" },
+        .{ .model = "o3-pro", .wire = "openai-responses" },
+        .{ .model = "gpt-5-pro", .wire = "openai-responses" },
+        .{ .model = "gpt-5-codex", .wire = "openai-responses" },
+        .{ .model = "gpt-5.1-codex-max", .wire = "openai-responses" },
+        .{ .model = "deep-research-preview", .wire = "openai-responses" },
+        .{ .model = "computer-use-preview", .wire = "openai-responses" },
+    };
+    for (cases) |case| {
+        const wire = provider_catalog.wireForModel("openai", case.model) orelse return error.TestExpectedTarget;
+        try std.testing.expectEqualStrings(case.wire, wire.id);
+    }
+}
+
+test "a row with one wire keeps it whatever the model is called" {
+    for (provider_catalog.all) |row| {
+        if (row.wires.len != 1) continue;
+        const only = provider_catalog.wirePath(row.wires[0]) orelse continue;
+        for ([_][]const u8{ "gpt-4o", "o1-pro", "gpt-5-codex", "deep-research-preview" }) |model| {
+            const wire = provider_catalog.wireForModel(row.id, model) orelse continue;
+            try std.testing.expectEqualStrings(only.id, wire.id);
+        }
+    }
+}
+
+test "openai's responses-only models reach the loader on the responses wire" {
+    const target = catalogTarget("openai") orelse return error.TestExpectedTarget;
+    try std.testing.expectEqualStrings("openai-completions", target.wire);
+    try std.testing.expectEqualStrings("https://api.openai.com", target.base_url);
+    test_catalog_discovery = &[_]CatalogDiscovery{.{
+        .id = "openai",
+        .models_url = target.models_url,
+        .model_ids = &.{ "gpt-4o-mini", "gpt-5-codex" },
+    }};
+    test_catalog_environment = &[_]provider_credential.EnvironmentValue{
+        .{ .name = "OPENAI_API_KEY", .value = "openai-key" },
+    };
+    defer {
+        test_catalog_discovery = null;
+        test_catalog_environment = null;
+    }
+
+    const models = try loadCatalogModelsWithRows(std.testing.allocator, &.{"openai"}, null, .allow_cache);
+    defer deinitModels(std.testing.allocator, models);
+
+    try std.testing.expectEqual(@as(usize, 2), models.len);
+    try std.testing.expectEqualStrings("gpt-4o-mini", models[0].id);
+    try std.testing.expectEqualStrings("openai-completions", models[0].api);
+    try std.testing.expectEqualStrings("gpt-5-codex", models[1].id);
+    try std.testing.expectEqualStrings("openai-responses", models[1].api);
+    try std.testing.expectEqualStrings("https://api.openai.com", models[1].base_url);
+}
+
+test "the wire a model is served on is the one the loader would pick for the row" {
+    for (provider_catalog.all) |row| {
+        const target = catalogTarget(row.id) orelse continue;
+        const per_model = provider_catalog.wireForModel(row.id, "gpt-4o") orelse return error.TestExpectedTarget;
+        try std.testing.expectEqualStrings(target.wire, per_model.id);
     }
 }
 

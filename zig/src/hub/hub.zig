@@ -2820,14 +2820,17 @@ fn stubbornSubmit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap
     _ = request;
     _ = refusal;
     self.running = true;
+    const session_id = try arena.dupe(u8, self.session_id);
+    const submission_id = try arena.dupe(u8, "s1");
+    const run_id = try arena.dupe(u8, "run-1");
     return .{
-        .session_id = try arena.dupe(u8, self.session_id),
+        .session_id = session_id,
         .accepted = true,
-        .submission_id = try arena.dupe(u8, "s1"),
+        .submission_id = submission_id,
         .requested_delivery = .auto,
         .effective_delivery = .start,
         .admission = .started,
-        .run_id = try arena.dupe(u8, "run-1"),
+        .run_id = run_id,
         .status = .running,
     };
 }
@@ -2837,7 +2840,9 @@ fn stubbornCancel(ptr: *anyopaque, arena: std.mem.Allocator, run_id: []const u8,
     _ = refusal;
     self.cancels += 1;
     if (self.settle_after == 0) self.running = false else self.settle_after -= 1;
-    return .{ .session_id = try arena.dupe(u8, self.session_id), .run_id = try arena.dupe(u8, run_id), .accepted = true, .status = .cancelling };
+    const session_id = try arena.dupe(u8, self.session_id);
+    const named = try arena.dupe(u8, run_id);
+    return .{ .session_id = session_id, .run_id = named, .accepted = true, .status = .cancelling };
 }
 
 fn stubbornPump(ptr: *anyopaque, wait_ns: u64) contract.Failure!bool {
