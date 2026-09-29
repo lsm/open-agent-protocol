@@ -100,6 +100,17 @@ One package, `go/agent`, holding:
   waits for `action.call.resolve.response`, and turns the answer into a tool
   result message.
 
+It lands as four PRs, each merged on its own from `main`, because the whole
+slice at once is four concerns in one review. The order is the order of
+dependency, and each is useful on its own:
+
+| # | PR | what it carries |
+| --- | --- | --- |
+| 1 | the turn's outcome | `TurnOutcome` and the cut-off rule, over `provider.AssistantContent` and nothing else. No I/O, so it is the rule under test before anything streams |
+| 2 | a turn, as a channel | a `Streamer` the loop depends on, and `provider.EventSink` becoming readable outside its own package. This is the seam every later piece is written against |
+| 3 | the loop | `Run`, one terminal per run, `max_iterations`, cancellation, and a turn that ends the run |
+| 4 | client-executed tool calls | the caller's round trip: ask, wait, answer, and the answer becomes a message |
+
 Deliberately not in the first slice: permissions as a *policy engine*, steering
 and follow-up queues, compaction, and token accounting. Each is a few lines in
 the Zig loop and a real amount of policy in Go, and each is reachable only

@@ -19,7 +19,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   two rules the Go loop inherits rather than rediscovers: a run ends with
   exactly one terminal event, and a provider that refuses is a normal
   `agent_end` — what it settles as on the wire is the endpoint's decision, not
-  the loop's.
+  the loop's. The note now also records that the first slice lands as four
+  PRs, one concern each, in dependency order.
+- **`go/internal/agent` gains the rule that decides a turn's fate (#370, first
+  of four).** `TurnOutcome` reads a reply and says which of three things
+  happens next: the turn failed, the run is answered, or the reply's tool calls
+  run. It carries `oapx`'s cut-off rule with it — a reply whose arguments were
+  truncated by the output limit is retried, and after three in a row the run is
+  answered rather than retried forever — because a Go loop that ended a run on
+  a different condition would be a parity divergence the harness reports as an
+  unexplained order difference. It reads `provider.AssistantContent` and does no
+  I/O, so it is the one piece of the loop that can be right or wrong on its own.
 
 ### Changed
 
