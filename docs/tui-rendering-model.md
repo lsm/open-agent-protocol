@@ -269,14 +269,16 @@ code paths; add a transcript row instead.
   subscription does not open. The refusal is remembered as a marker, and only for a
   stored login — a key from `KIMI_API_KEY` is never covered by one, never earns one, and
   never clears one; logging out brings the row back on the next listing. Because the row
-  is one the subscription does not open, the marker holds for as long as it is
-  remembered: only a fetch that answers clears it, which is what the refresh the TUI
-  runs after a `/login` is. A listing served from the on-disk cache is not an answer and
-  does not clear it, so the models a refusal removed cannot come back for the
-  twenty-four hours the cached copy survives. There is no age on a marker to lapse: only
-  a plan row records one, since only a plan row turns a 401 into a refusal rather than a
-  fallback to its cache, so a marker's age decides nothing and the code does not read it.
-  The marker is keyed by row and region, not by the login that earned it, so it is
+  is one the subscription does not open, a marker younger than the listing cache's own
+  twenty-four hours answers the row without a request. An older one does not answer: the
+  row probes instead, and while any marker is remembered the row is kept off its cached
+  listing, so the cache can never bring the models back however old the marker is. A probe
+  that refuses writes the marker again, and a probe that answers clears it — which is also
+  what the refresh after a `/login` does, and the reason one bad 401 or 403 from a WAF
+  challenge costs a day rather than the session. The bound is the cache's lifetime on
+  purpose: a marker outliving the copy it outranks would be a verdict with nothing behind
+  it, and a marker perishing with that copy would be one that could not be renewed. The
+  marker is keyed by row and region, not by the login that earned it, so it is
   deliberately not derived from the credential and nothing derived from a credential
   reaches disk. The cost of that is one bounded case: replacing a stored login with a
   different one leaves the new key suppressed until a forced refresh re-probes. Nothing
