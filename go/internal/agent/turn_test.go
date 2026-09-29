@@ -268,22 +268,41 @@ func TestAForcedToolNamesItselfOnTheAnthropicWire(t *testing.T) {
 	}
 }
 
-func TestAReasoningEffortReachesTheAnthropicWireAsThinking(t *testing.T) {
-	options := provider.StreamOptions{ReasoningEffort: "high"}
-	mapped := anthropicOptions(options)
-	if !mapped.ThinkingEnabled || mapped.ThinkingEffort != "high" {
-		t.Errorf("a reasoning effort maps to %+v, want thinking enabled at that effort: the completions wire sends reasoning_effort, so dropping it here would make one request mean two things", mapped)
+func TestAReasoningLevelReachesTheAnthropicWireAsTheEffortThatWireSpells(t *testing.T) {
+	cases := map[string]string{
+		"minimal": "low",
+		"low":     "low",
+		"medium":  "medium",
+		"high":    "high",
+		"xhigh":   "max",
+	}
+	for level, want := range cases {
+		mapped := anthropicOptions(provider.StreamOptions{ReasoningEffort: level})
+		if !mapped.ThinkingEnabled || mapped.ThinkingEffort != want {
+			t.Errorf("the level %q maps to %+v, want thinking at effort %q: the wire does not spell the level the schema does", level, mapped, want)
+		}
+	}
+}
+
+func TestTheOffLevelIsNotThinkingEnabled(t *testing.T) {
+	mapped := anthropicOptions(provider.StreamOptions{ReasoningEffort: "off"})
+	if mapped.ThinkingEnabled {
+		t.Errorf("the level \"off\" maps to %+v, want thinking disabled", mapped)
 	}
 	body, _ := provider.BuildAnthropicRequestBody(anthropicModel(), provider.Context{
 		Messages: []provider.Message{{User: &provider.UserContent{Text: "go", HasText: true}}},
 	}, mapped, "")
-	if !strings.Contains(string(body), `"thinking"`) {
-		t.Errorf("an anthropic body with a reasoning effort is %s, want a thinking block", body)
+	if strings.Contains(string(body), `"thinking"`) {
+		t.Errorf("a request at the off level is %s, want no thinking block", body)
 	}
-	without, _ := provider.BuildAnthropicRequestBody(anthropicModel(), provider.Context{
+}
+
+func TestAReasoningLevelThatAsksForThinkingPutsOneOnTheWire(t *testing.T) {
+	mapped := anthropicOptions(provider.StreamOptions{ReasoningEffort: "high"})
+	body, _ := provider.BuildAnthropicRequestBody(anthropicModel(), provider.Context{
 		Messages: []provider.Message{{User: &provider.UserContent{Text: "go", HasText: true}}},
-	}, anthropicOptions(provider.StreamOptions{}), "")
-	if strings.Contains(string(without), `"thinking"`) {
-		t.Errorf("a request with no reasoning effort is %s, want no thinking block", without)
+	}, mapped, "")
+	if !strings.Contains(string(body), `"thinking"`) {
+		t.Errorf("a request at the high level is %s, want a thinking block", body)
 	}
 }

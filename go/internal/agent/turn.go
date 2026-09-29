@@ -82,8 +82,11 @@ func anthropicOptions(options provider.StreamOptions) provider.AnthropicOptions 
 		out.HasToolChoice = true
 	}
 	if options.ReasoningEffort != "" {
-		out.ThinkingEnabled = true
-		out.ThinkingEffort = options.ReasoningEffort
+		thinking := provider.AnthropicThinkingForLevel(options.ReasoningEffort, nil)
+		out.ThinkingEnabled = thinking.ThinkingEnabled
+		out.ThinkingEffort = thinking.ThinkingEffort
+		out.ThinkingBudgetTokens = thinking.ThinkingBudgetTokens
+		out.HasThinkingBudget = thinking.HasThinkingBudget
 	}
 	return out
 }

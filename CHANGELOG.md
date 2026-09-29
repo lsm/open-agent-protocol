@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+
+- **The OAP endpoint client could not spawn an endpoint outside a test build.**
+  `endpoint_client.Client.spawn` handed `std.process.spawn` the io from
+  `std.Io.Threaded.global_single_threaded`, which has no thread to run a child's
+  pipes on, so every spawn outside a test binary failed with `OutOfMemory` from
+  `Threaded.spawnPosix` before a process existed. The client now owns its own
+  `std.Io.Threaded`, as `adapter/process.zig` and `tools/process_runner.zig`
+  already do, and spawns on that. Nothing caught it because the tests took the
+  other branch: `defaultIo` returned `std.testing.io` under `is_test`, so the
+  suite exercised a path the product never ran, and the branch is gone rather
+  than inverted, so the tests now drive the same io a release build does.
+
 ### Added
 
 - **The Zig semantic machine judges a published tool source that carries an
@@ -52,38 +65,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a different condition would be a parity divergence the harness reports as an
   unexplained order difference. It reads `provider.AssistantContent` and does no
   I/O, so it is the one piece of the loop that can be right or wrong on its own.
-- **`go/internal/agent` gains a turn as a channel (#370, second of four), and
-  the provider runtime's stop reasons gain names.** The loop's one dependency on
-  a model is a `Streamer`: given a `TurnRequest`, it returns the provider
-  runtime's own `provider.Event` values on a channel and closes it, so a reply
-  arrives as the runtime produced it rather than as something the loop
-  reshapes. `ChunkStreamer` is that dependency over a byte reader, and it picks
-  the completions or the anthropic-messages client from the model's API — the
-  two paths a wire that is not the completions one would otherwise be read by
-  the wrong parser and produce nothing.
-  A stop reason was a bare string, so the loop compared `TurnOutcome` against
-  `"content_filter"` and `"length"` and a typo there would have been a rule that
-  quietly never fired. `StopStop`, `StopLength`, `StopToolUse`,
-  `StopContentFilter`, `StopAborted` and `StopError` are now the six names,
-  and `provider.StopReason` is the type a reply carries — which means a
-  `PartialMessage` or `AssistantMessage` that reaches a caller is typed rather
-  than a `string` any caller can spell either way.
-  `EventSink` grows an `OnEvent` callback and a `Drain` reader, renamed from an
-  unexported `take`, so a package outside the runtime can consume a stream as
-  it arrives. A turn that delivered only at EOF would have made the ping
-  cadence this forwards meaningless: a keepalive emitted while a slow body was
-  still arriving would have been held until the body ended, which is the one
-  moment it is not needed. A stream error reaches that callback too, so a turn
-  that breaks mid-flight reports it rather than ending quietly. A sink with a
-  callback set no longer retains anything, because a turn that kept its whole
-  event log — every delta, every grown content block — until the stream ended
-  paid for the reply twice, and a long one pays for it in full.
-  The two wires now also agree on what a `TurnRequest` means. A forced tool
-  carried its mode across but not its name, so an anthropic body would have
-  asked for `{"type":"tool","name":""}` — a tool that does not exist — while
-  the completions body named it correctly. A reasoning effort was dropped
-  entirely, so the same request meant "think" on one wire and nothing on the
-  other; it now reaches the anthropic body as thinking at that effort.
 
 ### Changed
 
