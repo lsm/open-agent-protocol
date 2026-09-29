@@ -3015,6 +3015,8 @@ fn printUsage(file: std.Io.File) !void {
     try compat.stdio.writeAll(file,
         \\Usage:
         \\  oapx                                              Start the terminal UI
+        \\  oapx --tui --context-window <tokens>            Start the terminal UI on a window
+        \\                                                   (a whole number, optionally with k or m)
         \\  oapx run [--agent] [--storage] [--model <id>] "<prompt>"
         \\  oapx serve agent [--stdio] [--model <model-ref>]
         \\  oapx serve agent [--stdio] --backend <name> [--config <path>]
@@ -3064,8 +3066,56 @@ fn printUsage(file: std.Io.File) !void {
     );
 }
 
-fn runTui(allocator: std.mem.Allocator, io: std.Io) !void {
-    try tui_app.run(allocator, io);
+const TuiArgError = error{
+    UnknownOption,
+    MissingContextWindow,
+    ContextWindowNotATokenCount,
+};
+
+const TuiArgs = struct {
+    context_window: ?u32 = null,
+};
+
+fn parseTuiArgs(args: []const []const u8) TuiArgError!TuiArgs {
+    var parsed = TuiArgs{};
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (!std.mem.eql(u8, arg, "--context-window")) return error.UnknownOption;
+        if (index + 1 >= args.len) return error.MissingContextWindow;
+        index += 1;
+        parsed.context_window = tui_app.parseContextWindow(args[index]) catch return error.ContextWindowNotATokenCount;
+    }
+    return parsed;
+}
+
+fn runTui(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stderr: std.Io.File) !void {
+    const parsed = parseTuiArgs(args) catch |err| {
+        switch (err) {
+            error.MissingContextWindow => try compat.stdio.writeAll(stderr, "--context-window takes a token count\n\n"),
+            error.ContextWindowNotATokenCount => try compat.stdio.writeAll(stderr, "--context-window takes a whole number of tokens, optionally with k or m\n\n"),
+            error.UnknownOption => try compat.stdio.writeAll(stderr, "unknown argument to --tui\n\n"),
+        }
+        try printUsage(stderr);
+        return error.InvalidArgument;
+    };
+    try tui_app.run(allocator, io, parsed.context_window);
+}
+
+test "the tui takes a context window and refuses anything else" {
+    const none = try parseTuiArgs(&.{});
+    try std.testing.expect(none.context_window == null);
+
+    const sized = try parseTuiArgs(&.{ "--context-window", "1m" });
+    try std.testing.expectEqual(@as(u32, 1_000_000), sized.context_window.?);
+
+    const exact = try parseTuiArgs(&.{ "--context-window", "272000" });
+    try std.testing.expectEqual(@as(u32, 272_000), exact.context_window.?);
+
+    try std.testing.expectError(error.MissingContextWindow, parseTuiArgs(&.{"--context-window"}));
+    try std.testing.expectError(error.ContextWindowNotATokenCount, parseTuiArgs(&.{ "--context-window", "loads" }));
+    try std.testing.expectError(error.ContextWindowNotATokenCount, parseTuiArgs(&.{ "--context-window", "0" }));
+    try std.testing.expectError(error.UnknownOption, parseTuiArgs(&.{"--model", "gpt-5-codex"}));
 }
 
 const DEFAULT_PRINT_MODEL_ID = "kimi-k2.7-code";
@@ -7112,7 +7162,7 @@ pub fn main(init: std.process.Init) !void {
     defer allocator.free(args);
 
     if (args.len <= 1) {
-        try runTui(allocator, init.io);
+        try runTui(allocator, init.io, &.{}, stderr);
         return;
     }
 
@@ -7204,7 +7254,10 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (std.mem.eql(u8, args[1], "--tui")) {
-        try runTui(allocator, init.io);
+        runTui(allocator, init.io, args[2..], stderr) catch |err| switch (err) {
+            error.InvalidArgument => return error.InvalidArgument,
+            else => return err,
+        };
         return;
     }
 

@@ -11,6 +11,7 @@ const local_tools = @import("tools/registry");
 const tool_local_runtime = @import("tool_local_runtime");
 const permission = @import("permission");
 const OwnedSlice = @import("owned_slice").OwnedSlice;
+const model_catalog = @import("model_catalog");
 
 pub const TuiSession = session.TuiSession;
 pub const TuiEvent = session.TuiEvent;
@@ -64,7 +65,26 @@ pub const TuiRuntimeOptions = struct {
     compact_output: bool = false,
     run_async: bool = true,
     generate_titles: bool = false,
+    context_window: ?u32 = null,
 };
+
+pub const ContextWindowError = error{
+    NotATokenCount,
+    AboveMaximum,
+};
+
+pub fn parseContextWindow(text: []const u8) error{NotATokenCount}!u32 {
+    const trimmed = std.mem.trim(u8, text, " \t\r\n");
+    var digits: usize = 0;
+    while (digits < trimmed.len and std.ascii.isDigit(trimmed[digits])) : (digits += 1) {}
+    if (digits == 0) return error.NotATokenCount;
+    const suffix = trimmed[digits..];
+    const scale: u64 = if (suffix.len == 0) 1 else if (std.ascii.eqlIgnoreCase(suffix, "k")) 1_000 else if (std.ascii.eqlIgnoreCase(suffix, "m")) 1_000_000 else return error.NotATokenCount;
+    const count = std.fmt.parseInt(u64, trimmed[0..digits], 10) catch return error.NotATokenCount;
+    const window = std.math.mul(u64, count, scale) catch return error.NotATokenCount;
+    if (window == 0 or window > std.math.maxInt(u32)) return error.NotATokenCount;
+    return @intCast(window);
+}
 
 pub const InitialModelRef = struct {
     id: []const u8,
@@ -188,6 +208,8 @@ pub const TuiRuntime = struct {
     permission_engine: ?*permission.PermissionEngine,
     permission_mode: PermissionMode = .bypass,
     thinking_level: ai_types.ThinkingLevel = .low,
+    context_window: ?u32 = null,
+    context_window_refused: ?u32 = null,
     cancelled: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     completed: bool = false,
     started: bool = false,
@@ -272,6 +294,7 @@ pub const TuiRuntime = struct {
             .permission_engine = options.permission_engine,
             .permission_mode = options.permission_mode,
             .thinking_level = normalizeTuiThinkingLevel(options.thinking_level),
+            .context_window = options.context_window,
             .compact_output = options.compact_output,
             .run_async = options.run_async,
             .generate_titles = options.generate_titles,
@@ -306,6 +329,7 @@ pub const TuiRuntime = struct {
             runtime.wrapped_tools = next_wrapped_tools;
             runtime.approval_contexts = next_approval_contexts;
         }
+        runtime.dropContextWindowAboveCeiling();
         if (runtime.permission_engine) |engine| engine.setBypassAll(runtime.permission_mode == .bypass);
         runtime.rebuildWrappedTools();
         return runtime;
@@ -357,7 +381,7 @@ pub const TuiRuntime = struct {
         const system_prompt = try self.workspaceSystemPrompt();
         defer self.allocator.free(system_prompt);
         try self.local_agent.?.setSystemPrompt(system_prompt);
-        if (self.selected_model_index) |idx| self.local_agent.?.setModel(self.models[idx]);
+        if (self.selected_model_index) |idx| self.local_agent.?.setModel(self.effectiveModel(self.models[idx]));
         self.local_agent.?.setThinkingLevel(self.thinking_level);
         self.tool_protocol.server.tools.clearRetainingCapacity();
         try self.tool_protocol.server.registerTools(self.wrapped_tools);
@@ -438,9 +462,10 @@ pub const TuiRuntime = struct {
         self.models = owned_next;
         owned_next = &.{};
         self.selected_model_index = next_selected;
+        self.dropContextWindowAboveCeiling();
 
         if (self.local_agent) |*local| {
-            if (next_selected) |idx| local.setModel(self.models[idx]);
+            if (next_selected) |idx| local.setModel(self.effectiveModel(self.models[idx]));
         }
     }
 
@@ -483,8 +508,70 @@ pub const TuiRuntime = struct {
     }
 
     pub fn currentModel(self: *TuiRuntime) ?ai_types.Model {
-        if (self.selected_model_index) |idx| return self.models[idx];
+        if (self.selected_model_index) |idx| return self.effectiveModel(self.models[idx]);
         return null;
+    }
+
+    fn effectiveModel(self: *const TuiRuntime, model: ai_types.Model) ai_types.Model {
+        var effective = model;
+        if (self.context_window) |window| effective.context_window = window;
+        return effective;
+    }
+
+    pub fn contextWindow(self: *const TuiRuntime) u64 {
+        if (self.context_window) |window| return window;
+        if (self.selected_model_index) |idx| return self.models[idx].context_window;
+        return 0;
+    }
+
+    pub fn contextWindowMaximum(self: *const TuiRuntime) ?u32 {
+        const index = self.selected_model_index orelse return null;
+        return model_catalog.contextWindowMaximum(self.models[index]);
+    }
+
+    pub fn contextWindowIsReported(self: *const TuiRuntime) bool {
+        const index = self.selected_model_index orelse return false;
+        return model_catalog.contextWindowIsReported(self.models[index]);
+    }
+
+    pub fn setContextWindow(self: *TuiRuntime, window: ?u32) error{AboveMaximum, AgentAlreadyStreaming}!void {
+        if (self.local_agent) |*local| {
+            if (!local.isIdle()) return error.AgentAlreadyStreaming;
+        }
+        if (window) |held| {
+            if (self.contextWindowMaximum()) |ceiling| {
+                if (held > ceiling) return error.AboveMaximum;
+            }
+        }
+        self.context_window = window;
+        self.context_window_refused = null;
+        self.applyContextWindowToAgent();
+    }
+
+    pub fn contextWindowRefused(self: *const TuiRuntime) ?u32 {
+        return self.context_window_refused;
+    }
+
+    pub fn takeContextWindowRefused(self: *TuiRuntime) ?u32 {
+        const refused = self.context_window_refused;
+        self.context_window_refused = null;
+        return refused;
+    }
+
+    fn applyContextWindowToAgent(self: *TuiRuntime) void {
+        if (self.selected_model_index) |idx| {
+            if (self.local_agent) |*local| local.setModel(self.effectiveModel(self.models[idx]));
+        }
+    }
+
+    fn dropContextWindowAboveCeiling(self: *TuiRuntime) void {
+        const held = self.context_window orelse return;
+        const index = self.selected_model_index orelse return;
+        const model = self.models[index];
+        const ceiling = model_catalog.contextWindowMaximum(model) orelse return;
+        if (held <= ceiling) return;
+        self.context_window = null;
+        self.context_window_refused = held;
     }
 
     pub fn availableTools(self: *TuiRuntime) []const agent.AgentTool {
@@ -525,7 +612,8 @@ pub const TuiRuntime = struct {
         for (self.models, 0..) |model, i| {
             if (std.mem.eql(u8, model.id, model_id)) {
                 self.selected_model_index = i;
-                if (self.local_agent) |*local| local.setModel(model);
+                self.dropContextWindowAboveCeiling();
+                if (self.local_agent) |*local| local.setModel(self.effectiveModel(self.models[i]));
                 return;
             }
         }
@@ -543,7 +631,8 @@ pub const TuiRuntime = struct {
                 std.mem.eql(u8, model.api, selected.api))
             {
                 self.selected_model_index = i;
-                if (self.local_agent) |*local| local.setModel(model);
+                self.dropContextWindowAboveCeiling();
+                if (self.local_agent) |*local| local.setModel(self.effectiveModel(self.models[i]));
                 return;
             }
         }
@@ -1675,6 +1764,127 @@ fn collectUntilEnd(tui_session: *TuiSession, saw_turn_start: *bool, saw_message_
             else => {},
         }
     }
+}
+
+test "a context window is a whole token count, optionally scaled, and nothing else" {
+    try std.testing.expectEqual(@as(u32, 1_000_000), try parseContextWindow("1000000"));
+    try std.testing.expectEqual(@as(u32, 272_000), try parseContextWindow(" 272k "));
+    try std.testing.expectEqual(@as(u32, 1_000_000), try parseContextWindow("1M"));
+    try std.testing.expectEqual(@as(u32, 1_000), try parseContextWindow("1k"));
+    try std.testing.expectEqual(@as(u32, 7), try parseContextWindow("7"));
+    for ([_][]const u8{ "", "  ", "k", "0", "0k", "-1", "1.5m", "1e6", "1 000", "99999999999m", "1g", "1kk" }) |bad| {
+        try std.testing.expectError(error.NotATokenCount, parseContextWindow(bad));
+    }
+}
+
+test "the window in effect is the model's own until a session sets one" {
+    const models = [_]ai_types.Model{test_model_a, test_model_b};
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &models });
+    defer runtime.deinit();
+
+    try std.testing.expectEqual(@as(u64, 8192), runtime.contextWindow());
+    try std.testing.expectEqual(@as(u32, 8192), runtime.currentModel().?.context_window);
+
+    try runtime.setContextWindow(4_000);
+    try std.testing.expectEqual(@as(u64, 4_000), runtime.contextWindow());
+    try std.testing.expectEqual(@as(u32, 4_000), runtime.currentModel().?.context_window);
+    try std.testing.expectEqual(@as(u32, 8192), runtime.availableModels()[0].context_window);
+
+    try runtime.switchModel("model-b");
+    try std.testing.expectEqual(@as(u64, 4_000), runtime.contextWindow());
+    try runtime.setContextWindow(null);
+    try std.testing.expectEqual(@as(u32, test_model_b.context_window), runtime.currentModel().?.context_window);
+}
+
+test "the model handed to the agent carries the window in effect" {
+    const models = [_]ai_types.Model{test_model_a};
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &models });
+    defer runtime.deinit();
+
+    try std.testing.expectEqual(@as(u32, 8192), runtime.effectiveModel(models[0]).context_window);
+    try runtime.setContextWindow(4_000);
+    try std.testing.expectEqual(@as(u32, 4_000), runtime.effectiveModel(models[0]).context_window);
+    try std.testing.expectEqual(@as(u32, 8192), models[0].context_window);
+}
+
+test "a session's window set before the first turn survives the agent starting" {
+    var mock = MockProtocolCtx{};
+    const models = [_]ai_types.Model{test_model_a};
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{
+        .protocol = makeProtocol(&mock),
+        .models = &models,
+        .context_window = 4_000,
+        .run_async = false,
+    });
+    defer runtime.deinit();
+    try runtime.start();
+    defer runtime.stop();
+
+    try std.testing.expectEqual(@as(u64, 4_000), runtime.contextWindow());
+    try runtime.setContextWindow(6_000);
+    try std.testing.expectEqual(@as(u64, 6_000), runtime.contextWindow());
+}
+
+const wide_ceiling_model = ai_types.Model{
+    .id = "gpt-5-codex",
+    .name = "GPT-5 Codex",
+    .api = "openai-responses",
+    .provider = "openai",
+    .base_url = "https://example.invalid",
+    .reasoning = true,
+    .input = &.{"text"},
+    .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+    .context_window = 128_000,
+    .max_tokens = 16_384,
+};
+
+const narrow_ceiling_model = ai_types.Model{
+    .id = "kimi-k2.7-code",
+    .name = "Kimi K2.7 Code",
+    .api = "openai-completions",
+    .provider = "kimi",
+    .base_url = "https://example.invalid",
+    .reasoning = false,
+    .input = &.{"text"},
+    .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+    .context_window = 262_144,
+    .max_tokens = 16_384,
+};
+
+test "a session's window the model in effect cannot take is dropped, and named" {
+    const models = [_]ai_types.Model{ wide_ceiling_model, narrow_ceiling_model };
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &models, .context_window = 1_000_000 });
+    defer runtime.deinit();
+
+    try std.testing.expectEqual(@as(u64, 1_000_000), runtime.contextWindow());
+    try std.testing.expect(runtime.contextWindowRefused() == null);
+
+    try runtime.switchModel("kimi-k2.7-code");
+
+    try std.testing.expectEqual(@as(u64, 262_144), runtime.contextWindow());
+    try std.testing.expectEqual(@as(?u32, 1_000_000), runtime.takeContextWindowRefused());
+    try std.testing.expect(runtime.contextWindowRefused() == null);
+}
+
+test "a startup window above the ceiling is dropped before the first turn" {
+    const models = [_]ai_types.Model{narrow_ceiling_model};
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &models, .context_window = 1_000_000 });
+    defer runtime.deinit();
+
+    try std.testing.expectEqual(@as(u64, 262_144), runtime.contextWindow());
+    try std.testing.expectEqual(@as(?u32, 1_000_000), runtime.takeContextWindowRefused());
+}
+
+test "a window the model in effect can take survives a switch to another that can" {
+    const models = [_]ai_types.Model{ wide_ceiling_model, narrow_ceiling_model };
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &models });
+    defer runtime.deinit();
+
+    try runtime.setContextWindow(200_000);
+    try runtime.switchModel("kimi-k2.7-code");
+
+    try std.testing.expectEqual(@as(u64, 200_000), runtime.contextWindow());
+    try std.testing.expect(runtime.contextWindowRefused() == null);
 }
 
 test "runtime registers default local tools and allows overrides" {

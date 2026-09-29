@@ -14,6 +14,7 @@ pub const CommandKind = enum {
     think,
     clear,
     compact,
+    context,
     autocompact,
     abort,
     quit,
@@ -85,6 +86,7 @@ pub const commands = [_]CommandInfo{
     .{ .name = "think", .kind = .think, .usage = "/think [off|low|medium|high|xhigh|max]", .description = "Show or set the thinking level", .handler = handleThink },
     .{ .name = "clear", .kind = .clear, .usage = "/clear", .description = "Clear transcript display", .handler = handleClear },
     .{ .name = "compact", .kind = .compact, .usage = "/compact [focus]", .description = "Summarize the conversation to free context", .handler = handleCompact },
+    .{ .name = "context", .kind = .context, .usage = "/context [tokens|default]", .description = "Show or set the context window for this session", .handler = handleContext },
     .{ .name = "autocompact", .kind = .autocompact, .usage = "/autocompact [percent|off]", .description = "Show or set the share of the window that compacts on its own", .handler = handleAutoCompact },
     .{ .name = "abort", .kind = .abort, .usage = "/abort", .description = "Cancel the active streaming turn", .handler = handleAbort },
     .{ .name = "quit", .kind = .quit, .usage = "/quit", .description = "Exit TUI", .handler = handleQuit },
@@ -353,6 +355,53 @@ fn handleCompact(ctx: CommandContext, command: Command) !CommandResult {
     return .{ .action = .compact };
 }
 
+fn handleContext(ctx: CommandContext, command: Command) !CommandResult {
+    const runtime = ctx.runtime orelse return error.NoRuntimeConfigured;
+    const model = runtime.currentModel() orelse return error.NoModelConfigured;
+    const arg = command.arg orelse return .{ .output = try contextWindowReport(ctx.allocator, runtime) };
+    if (std.ascii.eqlIgnoreCase(arg, "default")) {
+        runtime.setContextWindow(null) catch |err| switch (err) {
+            error.AgentAlreadyStreaming => return .{
+                .output = try ctx.allocator.dupe(u8, "A turn is running; restore the catalog's window once it finishes."),
+                .is_error = true,
+            },
+            error.AboveMaximum => return error.AboveMaximum,
+        };
+        return .{ .output = try contextWindowReport(ctx.allocator, runtime) };
+    }
+    const window = tui_runtime.parseContextWindow(arg) catch {
+        return .{
+            .output = try std.fmt.allocPrint(ctx.allocator, "not a token count: {s}. Give a whole number, optionally with k or m, such as 1m", .{arg}),
+            .is_error = true,
+        };
+    };
+    runtime.setContextWindow(window) catch |err| switch (err) {
+        error.AboveMaximum => return .{
+            .output = try std.fmt.allocPrint(ctx.allocator, "{s} takes at most {d} context tokens; {d} is above it. The window in effect is {d}.", .{ model.id, runtime.contextWindowMaximum() orelse 0, window, runtime.contextWindow() }),
+            .is_error = true,
+        },
+        error.AgentAlreadyStreaming => return .{
+            .output = try ctx.allocator.dupe(u8, "A turn is running; set the context window once it finishes."),
+            .is_error = true,
+        },
+    };
+    return .{ .output = try contextWindowReport(ctx.allocator, runtime) };
+}
+
+fn contextWindowReport(allocator: std.mem.Allocator, runtime: *tui_runtime.TuiRuntime) ![]u8 {
+    const model = runtime.currentModel() orelse return allocator.dupe(u8, "no model");
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    const writer = &out.writer;
+    try writer.print("context window: {d} for {s} ({s})", .{ runtime.contextWindow(), model.id, model.provider });
+    if (runtime.contextWindowMaximum()) |ceiling| {
+        try writer.print(", up to {d}", .{ceiling});
+    } else {
+        try writer.writeAll(", and the model reports no window of its own, so the provider may refuse a request this size");
+    }
+    try writer.writeAll(". /context default restores the catalog's window.");
+    return out.toOwnedSlice();
+}
+
 fn handleAutoCompact(ctx: CommandContext, command: Command) !CommandResult {
     const arg = command.arg orelse return .{ .output = try autoCompactReport(ctx.allocator, ctx.state.autocompact_percent) };
     if (std.ascii.eqlIgnoreCase(arg, "off") or std.ascii.eqlIgnoreCase(arg, "none")) {
@@ -486,6 +535,111 @@ test "dispatch reaches command handlers" {
             try std.testing.expect(result.output.len > 0);
         }
     }
+}
+
+const context_test_model: ai_types.Model = .{
+    .id = "gpt-5-codex",
+    .name = "GPT-5 Codex",
+    .api = "openai-responses",
+    .provider = "openai",
+    .base_url = "https://example.invalid",
+    .reasoning = true,
+    .input = &.{"text"},
+    .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+    .context_window = 128_000,
+    .max_tokens = 16_384,
+};
+
+const context_test_uncatalogued: ai_types.Model = .{
+    .id = "local-model",
+    .name = "Local",
+    .api = "openai-completions",
+    .provider = "not-a-catalogued-row",
+    .base_url = "http://localhost:11434",
+    .reasoning = false,
+    .input = &.{"text"},
+    .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+    .context_window = 128_000,
+    .max_tokens = 8_192,
+};
+
+fn contextTestRuntime(models: []const ai_types.Model) !tui_runtime.TuiRuntime {
+    return tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .models = models });
+}
+
+test "context sets the window for the session and names the model and the window" {
+    const models = [_]ai_types.Model{context_test_model};
+    var runtime = try contextTestRuntime(&models);
+    defer runtime.deinit();
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    const ctx = CommandContext{ .allocator = std.testing.allocator, .state = &state, .runtime = &runtime };
+
+    var set = try dispatch(ctx, .{ .kind = .context, .arg = "1m" });
+    defer set.deinit(std.testing.allocator);
+    try std.testing.expect(!set.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, set.output, "context window: 1000000 for gpt-5-codex (openai)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, set.output, "up to 1000000") != null);
+    try std.testing.expectEqual(@as(u64, 1_000_000), runtime.contextWindow());
+
+    var shown = try dispatch(ctx, .{ .kind = .context });
+    defer shown.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, shown.output, "context window: 1000000 for gpt-5-codex (openai)") != null);
+
+    var reset = try dispatch(ctx, .{ .kind = .context, .arg = "default" });
+    defer reset.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u64, 128_000), runtime.contextWindow());
+    try std.testing.expect(std.mem.indexOf(u8, reset.output, "context window: 128000 for gpt-5-codex (openai)") != null);
+}
+
+test "context refuses a window above the ceiling and says what the ceiling is" {
+    const models = [_]ai_types.Model{context_test_model};
+    var runtime = try contextTestRuntime(&models);
+    defer runtime.deinit();
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    const ctx = CommandContext{ .allocator = std.testing.allocator, .state = &state, .runtime = &runtime };
+
+    var refused = try dispatch(ctx, .{ .kind = .context, .arg = "2m" });
+    defer refused.deinit(std.testing.allocator);
+    try std.testing.expect(refused.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, refused.output, "gpt-5-codex takes at most 1000000 context tokens; 2000000 is above it") != null);
+    try std.testing.expectEqual(@as(u64, 128_000), runtime.contextWindow());
+}
+
+test "context lowers a window freely and says a model with no window of its own" {
+    const models = [_]ai_types.Model{context_test_uncatalogued};
+    var runtime = try contextTestRuntime(&models);
+    defer runtime.deinit();
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    const ctx = CommandContext{ .allocator = std.testing.allocator, .state = &state, .runtime = &runtime };
+
+    var lowered = try dispatch(ctx, .{ .kind = .context, .arg = "32k" });
+    defer lowered.deinit(std.testing.allocator);
+    try std.testing.expect(!lowered.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, lowered.output, "context window: 32000 for local-model") != null);
+    try std.testing.expect(std.mem.indexOf(u8, lowered.output, "the model reports no window of its own, so the provider may refuse a request this size") != null);
+
+    var raised = try dispatch(ctx, .{ .kind = .context, .arg = "1000000" });
+    defer raised.deinit(std.testing.allocator);
+    try std.testing.expect(!raised.is_error);
+    try std.testing.expectEqual(@as(u64, 1_000_000), runtime.contextWindow());
+}
+
+test "context refuses a value that is not a token count" {
+    const models = [_]ai_types.Model{context_test_model};
+    var runtime = try contextTestRuntime(&models);
+    defer runtime.deinit();
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    const ctx = CommandContext{ .allocator = std.testing.allocator, .state = &state, .runtime = &runtime };
+
+    var refused = try dispatch(ctx, .{ .kind = .context, .arg = "lots" });
+    defer refused.deinit(std.testing.allocator);
+    try std.testing.expect(refused.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, refused.output, "not a token count: lots") != null);
+    try std.testing.expectEqual(@as(u64, 128_000), runtime.contextWindow());
 }
 
 test "autocompact sets, reports and turns off the share for the session" {
