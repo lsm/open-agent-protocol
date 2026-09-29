@@ -82,6 +82,11 @@ type Honoured struct {
 	IncludeSnapshot string `json:"include_snapshot"`
 }
 
+const (
+	CodeProtocolViolation   = "protocol_violation"
+	CodeProviderUnavailable = "provider_unavailable"
+)
+
 var ErrRefused = fmt.Errorf("inferenceserve: a refused inference allocates nothing to scope to")
 
 type Ids struct {
@@ -190,7 +195,7 @@ func (s *State) Completed(stopReason string, content []TerminalBlock) (Envelope,
 			continue
 		}
 		if !json.Valid(block.ArgumentsJSON) {
-			return s.Failed("provider_unavailable", "the provider sent a tool call whose arguments are not json")
+			return s.Failed(CodeProtocolViolation, "the provider streamed a tool call whose arguments_json is not json")
 		}
 	}
 	return s.emit("inference.completed", "", struct {

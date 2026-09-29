@@ -626,10 +626,10 @@ func TestMalformedToolCallArgumentsEndTheInferenceRatherThanDroppingTheTerminal(
 	if !ok {
 		t.Fatalf("the payload = %s, want the code and message under error", envelope.Payload)
 	}
-	if failure["code"] != "provider_unavailable" {
-		t.Errorf("the failure code = %v, want provider_unavailable", failure["code"])
+	if failure["code"] != CodeProtocolViolation {
+		t.Errorf("the failure code = %v, want %s: the provider is streaming and sent a malformed tool call, and reporting it unavailable is a Retry-class falsehood about a vendor that did nothing wrong", failure["code"], CodeProtocolViolation)
 	}
-	if !strings.Contains(failure["message"].(string), "not json") {
+	if !strings.Contains(failure["message"].(string), "arguments_json") {
 		t.Errorf("the failure message = %v, want it to say the arguments are not json", failure["message"])
 	}
 }
@@ -700,5 +700,65 @@ func TestTwoInferencesIssuingIdsAtOnceNeverRepeatOne(t *testing.T) {
 	wg.Wait()
 	if len(seen) != 600 {
 		t.Errorf("%d distinct ids from three concurrent inferences, want 600", len(seen))
+	}
+}
+
+func TestAMalformedToolCallIsNotReportedAsAnUnavailableProvider(t *testing.T) {
+	// drafts/model-provider-core.md:1562 names this exact shape as the anti-pattern:
+	// reporting a provider unavailable because the pump could not assemble a
+	// terminal fills a trace with evidence against a vendor that did nothing wrong.
+	state := NewState(&Ids{}, "i1", "m")
+	if _, err := state.Started(1); err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := state.Completed("tool_use", []TerminalBlock{{
+		Type: "tool_call", ToolCallID: "tc1", Name: "lookup", ArgumentsJSON: json.RawMessage(`{"city":`),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := body(t, envelope)["error"].(map[string]any)["code"]
+	if code == CodeProviderUnavailable {
+		t.Errorf("a malformed tool call is reported as %s, which is Retry-class: a host would back off and resend, and a trace would record unavailability that never happened", code)
+	}
+	if code != CodeProtocolViolation {
+		t.Errorf("the code = %v, want %s: the provider is streaming, so the peer is broken and someone reads a log", code, CodeProtocolViolation)
+	}
+}
+
+func TestTheCodesThisLayerEmitsAreAllInTheSchemasSet(t *testing.T) {
+	permitted := map[string]bool{
+		"rate_limited": true, "provider_unavailable": true, "resource_exhausted": true,
+		"endpoint_error": true, "credential_expired": true, "credential_missing": true,
+		"credential_rejected": true, "invalid_request": true, "protocol_violation": true,
+		"unsupported_version": true, "unsupported_feature": true, "model_not_found": true,
+		"aborted": true,
+	}
+	state := NewState(&Ids{}, "i1", "m")
+	if _, err := state.Started(1); err != nil {
+		t.Fatal(err)
+	}
+	emitted := []Envelope{}
+	settled, err := state.Completed("tool_use", []TerminalBlock{{
+		Type: "tool_call", ToolCallID: "tc1", Name: "lookup", ArgumentsJSON: json.RawMessage(`{`),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	emitted = append(emitted, settled)
+	failed, err := state.Failed(CodeProviderUnavailable, "the provider stream failed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	emitted = append(emitted, failed)
+	for _, envelope := range emitted {
+		code, ok := body(t, envelope)["error"].(map[string]any)["code"].(string)
+		if !ok {
+			t.Errorf("%s carries no error code", envelope.Type)
+			continue
+		}
+		if !permitted[code] {
+			t.Errorf("%s settles with %q, which is not in the profile's set: an implementation inventing a code is the divergence the taxonomy was closed to catch", envelope.Type, code)
+		}
 	}
 }
