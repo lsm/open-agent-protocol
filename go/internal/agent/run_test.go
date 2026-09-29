@@ -521,3 +521,165 @@ func TestAnAnswerArrivingAfterACancelIsRefusedRatherThanBlocking(t *testing.T) {
 		t.Fatal("resolving a call after its run was cancelled blocked: the waiter is already gone")
 	}
 }
+
+func TestARunWithNoStreamerFailsRatherThanEndingQuietly(t *testing.T) {
+	run := Start(context.Background(), Config{Model: completionsModel()}, prompts("hi"))
+	events := drain(t, run)
+	if got := terminalOf(t, events).Kind; got != RunFailed {
+		t.Errorf("a run with no streamer ends with %q, want run_failed", got)
+	}
+	if run.Err() == nil {
+		t.Error("run_failed without an error is a failure a consumer cannot read")
+	}
+}
+
+func TestARunWithNoMessageFailsRatherThanAskingTheModel(t *testing.T) {
+	script := &scripted{turns: []scriptedTurn{textTurn("hi")}}
+	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, nil)
+	events := drain(t, run)
+	if got := terminalOf(t, events).Kind; got != RunFailed {
+		t.Errorf("a run with nothing to run ends with %q, want run_failed", got)
+	}
+	if script.turn != 0 {
+		t.Errorf("a run with nothing to run asked the model %d times, want 0", script.turn)
+	}
+}
+
+func manyDeltaFrames() []string {
+	frames := make([]string, 0, 201)
+	for i := 0; i < 200; i++ {
+		frames = append(frames, frame(`{"choices":[{"delta":{"content":"x"}}]}`))
+	}
+	return append(frames, frame(`{"choices":[{"delta":{},"finish_reason":"stop"}]}`))
+}
+
+func TestTheTerminalLandsOnAFullBufferAfterACancelOnEveryAttempt(t *testing.T) {
+	for attempt := 0; attempt < 30; attempt++ {
+		run := Start(context.Background(), Config{
+			Model:    completionsModel(),
+			Streamer: &scripted{turns: []scriptedTurn{{frames: manyDeltaFrames()}}},
+		}, prompts("hi"))
+		settled := make(chan struct{})
+		go func() { run.Wait(); close(settled) }()
+		time.Sleep(150 * time.Millisecond)
+		run.Cancel()
+		select {
+		case <-settled:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("attempt %d: Wait did not return after a cancel with a full buffer; buffered=%d", attempt, len(run.events))
+		}
+		var terminals int
+		var kinds []EventKind
+		for event := range run.Events() {
+			if event.IsTerminal() {
+				terminals++
+			}
+			kinds = append(kinds, event.Kind)
+		}
+		if terminals != 1 {
+			t.Fatalf("attempt %d: a cancelled run delivered %d terminals (%s), want exactly one: the last buffer slot is the terminal's, so a full buffer cannot cost the run its only terminal", attempt, terminals, joinKinds(kinds))
+		}
+	}
+}
+
+func TestANonTerminalNeverOccupiesTheSlotsReservedForTheTerminal(t *testing.T) {
+	run := Start(context.Background(), Config{
+		Model:    completionsModel(),
+		Streamer: &scripted{turns: []scriptedTurn{{frames: manyDeltaFrames()}}},
+	}, prompts("hi"))
+	for i := 0; i < 10; i++ {
+		time.Sleep(20 * time.Millisecond)
+		if held := len(run.events); held > eventBuffer-1 {
+			t.Fatalf("a running run held %d events, want at most %d: the last slot is the terminal's", held, eventBuffer-1)
+		}
+	}
+	run.Cancel()
+}
+
+func TestATerminalReachesAConsumerThatIsStillReading(t *testing.T) {
+	script := &scripted{turns: []scriptedTurn{{frames: manyDeltaFrames()}}}
+	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("hi"))
+	terminal := terminalOf(t, drain(t, run))
+	if terminal.Kind != AgentEnd {
+		t.Errorf("a run whose event buffer filled ends with %q, want agent_end: the consumer was still reading", terminal.Kind)
+	}
+}
+
+func TestAFinishedRunReleasesItsOwnContext(t *testing.T) {
+	for i := 0; i < 5; i++ {
+		script := &scripted{turns: []scriptedTurn{textTurn("done")}}
+		run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("hi"))
+		run.Wait()
+		for i := 0; i < 50 && run.ctx.Err() == nil; i++ {
+			time.Sleep(2 * time.Millisecond)
+		}
+		if run.ctx.Err() == nil {
+			t.Fatalf("a run that finished left its context live, so a parent starting many runs keeps one context per run")
+		}
+	}
+}
+
+func TestReleasingTheContextAtTheEndLeavesTheTerminalDelivered(t *testing.T) {
+	script := &scripted{turns: []scriptedTurn{{frames: manyDeltaFrames()}}}
+	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("hi"))
+	events := drain(t, run)
+	terminal := terminalOf(t, events)
+	if terminal.Kind != AgentEnd {
+		t.Errorf("a run that released its own context ends with %q, want agent_end", terminal.Kind)
+	}
+	if terminal.Termination != TerminationClean {
+		t.Errorf("a run that released its own context terminates %q, want a clean finish: releasing the context is not a cancellation", terminal.Termination)
+	}
+}
+
+func TestTheTerminalKindsAreTheOnesThatEndARun(t *testing.T) {
+	for _, kind := range []EventKind{AgentEnd, RunFailed} {
+		if !(Event{Kind: kind}).IsTerminal() {
+			t.Errorf("%q ends a run, so IsTerminal must say so", kind)
+		}
+	}
+	for _, kind := range []EventKind{AgentStart, TurnStart, TurnEnd, TextDelta, ReasoningDelta, MessageStart, MessageEnd, ToolCallRequested, ToolCallResolved} {
+		if (Event{Kind: kind}).IsTerminal() {
+			t.Errorf("%q does not end a run, so IsTerminal must not claim it does", kind)
+		}
+	}
+}
+
+func TestNoCallAfterTheFirstIsAskedOnceTheRunIsCancelled(t *testing.T) {
+	first := `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read","arguments":"{}"}}]}}]}`
+	second := `{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_2","function":{"name":"write","arguments":"{}"}}]}}]}`
+	third := `{"choices":[{"delta":{"tool_calls":[{"index":2,"id":"call_3","function":{"name":"write","arguments":"{}"}}]}}]}`
+	turn := scriptedTurn{frames: []string{frame(first), frame(second), frame(third), frame(`{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`)}}
+	script := &scripted{turns: []scriptedTurn{turn, textTurn("done")}}
+	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("go"))
+	var asked []string
+	events := drainActing(t, run, func(event Event) {
+		if event.Kind != ToolCallRequested {
+			return
+		}
+		asked = append(asked, event.Call.ID)
+		run.Cancel()
+	})
+	terminal := terminalOf(t, events)
+	if terminal.Kind != AgentEnd || terminal.Termination != TerminationCanceled {
+		t.Errorf("a run cancelled at its first call ends with %q/%q, want agent_end/cancelled", terminal.Kind, terminal.Termination)
+	}
+	if len(asked) != 1 {
+		t.Errorf("the loop asked for %v after the run was cancelled, want only the call it was already waiting on: a client-executed tool is side-effecting, and the later answers are refused", asked)
+	}
+	answered := map[string]bool{}
+	for _, message := range run.Result().Messages {
+		if message.ToolResult == nil {
+			continue
+		}
+		answered[message.ToolResult.ToolCallID] = true
+		if !message.ToolResult.IsError {
+			t.Errorf("the call %q left a successful result, want an error: nothing ran it", message.ToolResult.ToolCallID)
+		}
+	}
+	for _, id := range []string{"call_1", "call_2", "call_3"} {
+		if !answered[id] {
+			t.Errorf("the call %q left no result at all, so the history has a tool call with nothing answering it", id)
+		}
+	}
+}

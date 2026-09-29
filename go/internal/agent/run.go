@@ -238,6 +238,7 @@ func (r *Run) loop(prompts []provider.Message) {
 
 func (r *Run) runToolCalls(assistant provider.AssistantContent) ([]provider.ToolResult, bool) {
 	results := make([]provider.ToolResult, 0, len(assistant.Parts))
+	live := true
 	for _, part := range assistant.Parts {
 		if part.ToolCall == nil {
 			continue
@@ -247,12 +248,18 @@ func (r *Run) runToolCalls(assistant provider.AssistantContent) ([]provider.Tool
 			results = append(results, cutOffResult(call))
 			continue
 		}
-		results = append(results, r.awaitToolResult(call))
+		if !live {
+			results = append(results, cancelledResult(call))
+			continue
+		}
+		result, answered := r.awaitToolResult(call)
+		live = answered
+		results = append(results, result)
 	}
-	return results, r.ctx.Err() == nil
+	return results, live
 }
 
-func (r *Run) awaitToolResult(call provider.ToolCall) provider.ToolResult {
+func (r *Run) awaitToolResult(call provider.ToolCall) (provider.ToolResult, bool) {
 	waiter := make(chan provider.ToolResult, 1)
 	r.mu.Lock()
 	r.pending[call.ID] = waiter
@@ -261,12 +268,12 @@ func (r *Run) awaitToolResult(call provider.ToolCall) provider.ToolResult {
 	select {
 	case result := <-waiter:
 		r.emit(Event{Kind: ToolCallResolved, Call: &call, ToolResult: &result})
-		return result
+		return result, true
 	case <-r.ctx.Done():
 		r.mu.Lock()
 		delete(r.pending, call.ID)
 		r.mu.Unlock()
-		return cancelledResult(call)
+		return cancelledResult(call), false
 	}
 }
 
