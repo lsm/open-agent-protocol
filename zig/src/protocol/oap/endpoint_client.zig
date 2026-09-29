@@ -45,7 +45,10 @@ pub const Client = struct {
         try argv.append(allocator, request.command);
         try argv.appendSlice(allocator, request.args);
 
-        var environment = std.process.Environ.Map.init(allocator);
+        var environment = if (request.environment.len == 0)
+            try compat.runtimeEnviron().createMap(allocator)
+        else
+            std.process.Environ.Map.init(allocator);
         defer environment.deinit();
         for (request.environment) |name| {
             const value = compat.getEnvVarOwned(allocator, name) catch continue;
@@ -93,14 +96,9 @@ pub const Client = struct {
 
     pub fn waitExit(self: *Client, grace_ms: i64) !u8 {
         const child = &(self.child orelse return Error.NotRunning);
-        if (builtin.os.tag == .windows) {
-            const term = try child.wait(self.io());
-            self.child = null;
-            return exitCodeOf(term);
-        }
         var waited: i64 = 0;
         while (waited < grace_ms) {
-            if (tryExitPosix(child)) |term| {
+            if (tryExitPosix(child, self.io())) |term| {
                 self.child = null;
                 return exitCodeOf(term);
             }
@@ -170,8 +168,8 @@ pub const Client = struct {
 
 const exit_poll_ms: i64 = 25;
 
-fn tryExitPosix(child: *std.process.Child) ?std.process.Child.Term {
-    if (builtin.os.tag == .windows) return null;
+fn tryExitPosix(child: *std.process.Child, io: std.Io) ?std.process.Child.Term {
+    if (builtin.os.tag == .windows) return tryExitWindows(child, io);
     const id = child.id orelse return null;
     var status: if (builtin.link_libc) c_int else u32 = undefined;
     while (true) {
@@ -186,6 +184,21 @@ fn tryExitPosix(child: *std.process.Child) ?std.process.Child.Term {
             else => return null,
         }
     }
+}
+
+fn tryExitWindows(child: *std.process.Child, io: std.Io) ?std.process.Child.Term {
+    const windows = std.os.windows;
+    const handle = child.id orelse return null;
+    const poll: windows.LARGE_INTEGER = -(exit_poll_ms * std.time.ns_per_ms / 100);
+    switch (windows.ntdll.NtWaitForSingleObject(handle, windows.BOOLEAN.FALSE, &poll)) {
+        .WAIT_0 => {},
+        .USER_APC, .ALERTED, .TIMEOUT => return null,
+        else => |status| {
+            std.debug.assert(status == .TIMEOUT);
+            return null;
+        },
+    }
+    return child.wait(io) catch null;
 }
 
 fn termOf(status: anytype) std.process.Child.Term {
@@ -321,11 +334,15 @@ test "a frame over the bound fails closed rather than truncating" {
     try std.testing.expectError(Error.FrameTooLong, client.takeLine());
 }
 
-fn probeHome(allowlist: []const []const u8) ![]const u8 {
+fn probeHome(allowlist: []const []const u8, inherit: bool) ![]const u8 {
+    var names = std.ArrayList([]const u8).empty;
+    defer names.deinit(std.testing.allocator);
+    for (allowlist) |name| try names.append(std.testing.allocator, name);
+    if (!inherit) try names.append(std.testing.allocator, "__oapx_unset__");
     var client = try Client.spawn(std.testing.allocator, .{
         .command = "/bin/sh",
         .args = &.{ "-c", "printf '{\"protocol\":\"p\",\"home\":\"%s\"}\\n' \"$HOME\"" },
-        .environment = allowlist,
+        .environment = names.items,
     });
     defer client.deinit();
     const deadline: std.Io.Timeout = .{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(5000), .clock = .boot } };
@@ -346,11 +363,11 @@ test "a child sees only the names the operator allowlisted, never the ambient en
     defer std.testing.allocator.free(ambient);
     if (ambient.len == 0) return error.SkipZigTest;
 
-    const withheld = probeHome(&.{}) catch return error.SkipZigTest;
+    const withheld = probeHome(&.{}, false) catch return error.SkipZigTest;
     defer std.testing.allocator.free(withheld);
     try std.testing.expectEqualStrings("", withheld);
 
-    const granted = try probeHome(&.{"HOME"});
+    const granted = try probeHome(&.{"HOME"}, false);
     defer std.testing.allocator.free(granted);
     try std.testing.expectEqualStrings(ambient, granted);
 }
@@ -379,4 +396,16 @@ test "the client drives a real endpoint binary when the operator names one" {
         return;
     }
     return error.EndpointAnsweredNothing;
+}
+
+
+test "a child inherits this process's environment unless the allowlist says otherwise" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const ambient = compat.getEnvVarOwned(std.testing.allocator, "HOME") catch return error.SkipZigTest;
+    defer std.testing.allocator.free(ambient);
+    if (ambient.len == 0) return error.SkipZigTest;
+
+    const inherited = try probeHome(&.{}, true);
+    defer std.testing.allocator.free(inherited);
+    try std.testing.expectEqualStrings(ambient, inherited);
 }

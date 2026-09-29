@@ -122,6 +122,7 @@ const Runner = struct {
 
     fn pass(self: *Runner, name: []const u8) !void {
         const owned = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(owned);
         try self.add(.{ .name = owned });
     }
 
@@ -129,6 +130,7 @@ const Runner = struct {
         const owned_name = try self.allocator.dupe(u8, name);
         errdefer self.allocator.free(owned_name);
         const owned_detail = try self.allocator.dupe(u8, detail);
+        errdefer self.allocator.free(owned_detail);
         try self.add(.{
             .name = owned_name,
             .passed = false,
@@ -190,10 +192,10 @@ const Runner = struct {
     }
 
     fn request(self: *Runner, payload: oap_types.Payload, run_id: ?[]const u8, line_deadline_ms: i64) !oap_types.Envelope {
-        const id = try self.nextId("request");
-        defer self.allocator.free(id);
         var owned = payload;
         defer owned.deinit(self.allocator);
+        const id = try self.nextId("request");
+        defer self.allocator.free(id);
         const envelope: oap_types.Envelope = .{
             .id = id,
             .payload = owned,
@@ -218,9 +220,15 @@ const Runner = struct {
     fn drive(self: *Runner, line_deadline_ms: i64) !void {
         var init_fields: [2][]const u8 = undefined;
         var init_built: usize = 0;
+        var versions: []const []const u8 = undefined;
+        var profiles: []const []const u8 = undefined;
+        var versions_owned = false;
+        var profiles_owned = false;
         var init_handed_off = false;
         errdefer if (!init_handed_off) {
             for (init_fields[0..init_built]) |copy| self.allocator.free(copy);
+            if (versions_owned) oap_types.freeStringList(self.allocator, versions);
+            if (profiles_owned) oap_types.freeStringList(self.allocator, profiles);
         };
         init_fields[0] = try self.allocator.dupe(u8, "conformance");
         init_built = 1;
@@ -229,10 +237,10 @@ const Runner = struct {
         const participant_id = init_fields[0];
         const participant_name = init_fields[1];
 
-        const versions = try oap_types.dupeStringList(self.allocator, &.{oap_types.VERSION});
-        errdefer oap_types.freeStringList(self.allocator, versions);
-        const profiles = try oap_types.dupeStringList(self.allocator, &.{oap_types.PROFILE});
-        errdefer oap_types.freeStringList(self.allocator, profiles);
+        versions = try oap_types.dupeStringList(self.allocator, &.{oap_types.VERSION});
+        versions_owned = true;
+        profiles = try oap_types.dupeStringList(self.allocator, &.{oap_types.PROFILE});
+        profiles_owned = true;
 
         init_handed_off = true;
         const initialized = self.request(.{
@@ -274,9 +282,8 @@ const Runner = struct {
         }
 
         var open_handed_off = false;
-        var open_session: []const u8 = undefined;
+        const open_session = try self.allocator.dupe(u8, self.session);
         errdefer if (!open_handed_off) self.allocator.free(open_session);
-        open_session = try self.allocator.dupe(u8, self.session);
         open_handed_off = true;
         var opened = self.request(.{ .session_open_request = .{ .session_id = open_session } }, null, line_deadline_ms) catch |err| {
             try self.failReason("session.open.request is answered", err);
@@ -299,13 +306,13 @@ const Runner = struct {
         }
 
         var submit_handed_off = false;
-        var submit_session: []const u8 = undefined;
+        const submit_session = try self.allocator.dupe(u8, self.session);
         errdefer if (!submit_handed_off) self.allocator.free(submit_session);
-        submit_session = try self.allocator.dupe(u8, self.session);
+        const submit_messages = try self.scriptedMessages();
         submit_handed_off = true;
         var admitted = self.request(.{ .message_submit_request = .{
             .session_id = submit_session,
-            .messages = try self.scriptedMessages(),
+            .messages = submit_messages,
             .delivery = .auto,
         } }, null, line_deadline_ms) catch |err| {
             try self.failReason("session.message.submit.request is answered", err);
@@ -361,7 +368,10 @@ const Runner = struct {
         while (true) {
             const frame = (self.client.next(lineBudget(line_deadline_ms)) catch return) orelse return;
             if (frame == .control) continue;
-            var envelope = try oap_envelope.deserializeEnvelope(frame.envelope, self.allocator);
+            var envelope = oap_envelope.deserializeEnvelope(frame.envelope, self.allocator) catch |err| {
+                try self.fail("frames the endpoint writes after the run completes decode", @errorName(err));
+                return;
+            };
             self.events.append(self.allocator, envelope) catch |err| {
                 envelope.deinit(self.allocator);
                 return err;
@@ -479,14 +489,16 @@ const Runner = struct {
 
         answers = try self.allocator.alloc(oap_types.InputAnswer, gate.questions.len);
         for (gate.questions) |question| {
-            const question_id = try self.allocator.dupe(u8, question.id);
-            const chosen: []const []const u8 = if (question.options.len > 0) blk: {
-                const first = try self.allocator.dupe(u8, question.options[0].id);
-                break :blk try self.allocator.dupe([]const u8, &.{first});
-            } else &.{};
-            const text: ?[]const u8 = if (question.options.len > 0) null else try self.allocator.dupe(u8, "conformance");
-            answers[answered] = .{ .question_id = question_id, .text = text, .selected_option_ids = chosen };
+            answers[answered] = .{ .question_id = undefined, .text = null, .selected_option_ids = &.{} };
+            answers[answered].question_id = try self.allocator.dupe(u8, question.id);
             answered += 1;
+            if (question.options.len > 0) {
+                const first = try self.allocator.dupe(u8, question.options[0].id);
+                errdefer self.allocator.free(first);
+                answers[answered - 1].selected_option_ids = try self.allocator.dupe([]const u8, &.{first});
+            } else {
+                answers[answered - 1].text = try self.allocator.dupe(u8, "conformance");
+            }
         }
 
         const payload: oap_types.Payload = .{ .user_input_resolve_request = .{
@@ -529,4 +541,56 @@ test "events that arrive ahead of the answer are read in the order they were wri
     try std.testing.expect(gate_check.passed);
     const terminal = report.verdict("the run reaches a terminal event") orelse return error.CheckMissing;
     try std.testing.expectEqualStrings("settled run.completed", terminal.detail);
+}
+
+const fixture_script =
+    \\while read -r line; do
+    \\  case "$line" in
+    \\  *protocol.initialize.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"protocol.initialize.response","id":"a1","in_reply_to":"conformance-request-1","payload":{"protocol_version":"0.1","profile":"open-agent-protocol.agent-control-core","endpoint":{"id":"fake"}}}' ;;
+    \\  *capabilities.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"a2","in_reply_to":"conformance-request-2","capability_revision":"rev-1","payload":{"endpoint":{"id":"fake"},"features":{}}}' ;;
+    \\  *session.open.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"a3","in_reply_to":"conformance-request-3","payload":{"session_id":"conformance","status":"idle"}}' ;;
+    \\  *session.message.submit.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"e1","sequence":1,"payload":{"session_id":"conformance","run_id":"run-1","status":"running"}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"content.delta","id":"e2","sequence":2,"payload":{"session_id":"conformance","run_id":"run-1","message_id":"m-e2","part":{"type":"text","text":"one"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.requested","id":"e3","sequence":3,"payload":{"interaction_id":"p-1","requested_by":"fake","responded_by":"user","session_id":"conformance","run_id":"run-1","title":"Allow","choices":[{"id":"approve","label":"Approve"}]}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"a4","in_reply_to":"conformance-request-4","payload":{"session_id":"conformance","accepted":true,"submission_id":"s1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"run-1"}}' ;;
+    \\  *choice_id*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.resolved","id":"e5","sequence":5,"payload":{"interaction_id":"p-1","requested_by":"fake","responded_by":"user","session_id":"conformance","run_id":"run-1","outcome":"resolved","choice_id":"approve","granted":true}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.completed","id":"e6","sequence":6,"payload":{"session_id":"conformance","run_id":"run-1","stop_reason":"end_turn","final_response":{"role":"assistant","content":"done"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.resolve.response","id":"a7","in_reply_to":"conformance-request-5","payload":{"interaction_id":"p-1","session_id":"conformance","run_id":"run-1","accepted":true}}' ;;
+    \\  esac
+    \\done
+;
+
+fn runAllocationProbe(allocator: std.mem.Allocator) !void {
+    var report = try run(allocator, .{
+        .command = "/bin/sh",
+        .args = &.{ "-c", fixture_script },
+        .line_deadline_ms = 5000,
+    });
+    defer report.deinit();
+    const gate = report.verdict("a permission gate is resolvable from the stream") orelse return error.ProbeReachedNoGate;
+    if (!gate.passed) return;
+}
+
+test "a run that is refused part way through frees what it built exactly once" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    try runAllocationProbe(std.testing.allocator);
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, runAllocationProbe, .{});
+}
+
+test "a frame the endpoint writes after the terminal event is recorded, not swallowed" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const script =
+        \\while read -r line; do
+        \\  case "$line" in
+        \\  *protocol.initialize.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"protocol.initialize.response","id":"a1","in_reply_to":"conformance-request-1","payload":{"protocol_version":"0.1","profile":"open-agent-protocol.agent-control-core","endpoint":{"id":"fake"}}}' ;;
+        \\  esac
+        \\done
+        \\printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"nonsense.event","id":"z1","payload":{}}'
+    ;
+
+    var report = try run(std.testing.allocator, .{
+        .command = "/bin/sh",
+        .args = &.{ "-c", script },
+        .line_deadline_ms = 5000,
+    });
+    defer report.deinit();
+
+    try std.testing.expect(!report.passed());
+    const trailing = report.verdict("frames the endpoint writes after the run completes decode") orelse return error.CheckMissing;
+    try std.testing.expect(!trailing.passed);
 }
