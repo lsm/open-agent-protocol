@@ -12,7 +12,7 @@ pub const Options = struct {
 const gauge_cells: usize = 8;
 const hint_gap: usize = 3;
 
-const SegmentKind = enum { model, context, queue, perm, cost, backpressure, drops, think, turns, state, rate };
+const SegmentKind = enum { model, context, queue, perm, cost, backpressure, drops, think, turns, state, rate, rate_avg };
 
 const Segment = struct {
     kind: SegmentKind,
@@ -29,6 +29,7 @@ const DropStep = union(enum) {
 };
 
 const drop_steps = [_]DropStep{
+    .{ .kind = .rate_avg },
     .{ .kind = .rate },
     .{ .kind = .turns },
     .{ .kind = .think },
@@ -307,14 +308,26 @@ fn writeState(list: *SegmentList, allocator: std.mem.Allocator, state: *const tu
     }
 }
 
+fn rateMark(rate: tui_state.TokenRate) []const u8 {
+    return if (rate.estimated) "~" else "";
+}
+
+fn rateValue(buf: *[16]u8, rate: tui_state.TokenRate) ?[]const u8 {
+    if (!rate.hasFigure()) return null;
+    return std.fmt.bufPrint(buf, "{s}{d} tok/s", .{ rateMark(rate), rate.perSecond() }) catch null;
+}
+
 fn writeRate(list: *SegmentList, allocator: std.mem.Allocator, state: *const tui_state.AppState) !void {
     const rate = &state.telemetry.rate;
-    const shown = rate.shown();
-    if (!shown.hasFigure()) return;
-    var buf: [16]u8 = undefined;
-    const mark = if (shown.estimated) "~" else "";
-    const value = std.fmt.bufPrint(&buf, "{s}{d} tok/s", .{ mark, shown.perSecond() }) catch return;
-    try pushValue(list, allocator, .rate, value, tui_theme.statusSegment());
+    var turn_buf: [16]u8 = undefined;
+    const turn = rateValue(&turn_buf, rate.turnShown()) orelse return;
+    try pushValue(list, allocator, .rate, turn, tui_theme.statusSegment());
+    var avg_buf: [16]u8 = undefined;
+    if (rateValue(&avg_buf, rate.average)) |avg| {
+        var label: [24]u8 = undefined;
+        const shown = std.fmt.bufPrint(&label, "avg {s}", .{avg}) catch return;
+        try pushValue(list, allocator, .rate_avg, shown, tui_theme.statusSegment());
+    }
 }
 
 fn formatElapsed(buf: *[12]u8, ms: u64) []const u8 {
@@ -490,11 +503,13 @@ test "status bar puts the state segment last" {
 
 fn rateProbe(measured: bool) !tui_state.TokenRateSet {
     var rate = tui_state.TokenRateSet{};
+    rate.runStarted();
     rate.produced(400, 1_000);
     rate.messageEnded(2_000, 100);
     rate.turnEnded();
+    rate.runEnded();
     rate.previous.estimated = !measured;
-    rate.average = rate.previous;
+    rate.average = .{ .output_tokens = 400, .stream_ms = 5_000 };
     return rate;
 }
 
@@ -519,6 +534,34 @@ test "a rate that is an estimate is marked, so a mark always means an estimate" 
     const text = try render(std.testing.allocator, &state, .{ .width = 160 });
     defer std.testing.allocator.free(text);
     try std.testing.expect(std.mem.indexOf(u8, text, "~100 tok/s") != null);
+}
+
+test "the row shows the turn figure and the average beside it" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    try state.status.setModelWithContext(std.testing.allocator, "claude-sonnet-4-5", "anthropic", 200_000);
+    state.telemetry.rate = try rateProbe(true);
+
+    const text = try render(std.testing.allocator, &state, .{ .width = 160 });
+    defer std.testing.allocator.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "100 tok/s") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "avg 80 tok/s") != null);
+}
+
+test "the average is dropped before the turn figure when the row overflows" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    try state.status.setModelWithContext(std.testing.allocator, "claude-sonnet-4-5", "anthropic", 200_000);
+    state.telemetry.rate = try rateProbe(true);
+
+    const roomy = try render(std.testing.allocator, &state, .{ .width = 100 });
+    defer std.testing.allocator.free(roomy);
+    try std.testing.expect(std.mem.indexOf(u8, roomy, "avg 80 tok/s") != null);
+
+    const tight = try render(std.testing.allocator, &state, .{ .width = 80 });
+    defer std.testing.allocator.free(tight);
+    try std.testing.expect(std.mem.indexOf(u8, tight, "avg ") == null);
+    try std.testing.expect(std.mem.indexOf(u8, tight, "100 tok/s") != null);
 }
 
 test "the rate drops before any other segment when the row overflows" {

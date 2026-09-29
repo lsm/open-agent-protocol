@@ -194,16 +194,31 @@ code paths; add a transcript row instead.
   in the rate's drop order can be said to drop before the path does.
 - The rate is a `~`-marked estimate or an unmarked measurement, and the mark always
   means the same thing: **a mark means an estimate, an unmarked figure is measured.**
-  It is the live figure while a message streams — necessarily an estimate, because
-  usage only arrives at `message_end`. While a run is in progress that is the figure
-  the run has just produced, since the previous turn's would describe a run already
-  finished — the turn in progress reads its own accumulated figure, so a turn's tool
-  phase shows the message it just streamed rather than an average that does not fold
-  that message in until the turn ends. Once the run ends the row shows the average
-  since the last model switch,
-  because an idle line is asking how fast this model is, not what one reply happened to
-  manage. A run that has measured nothing yet falls back to the average rather than
-  showing nothing, so the segment never appears and disappears at the start of a run.
+  The row carries two: the turn figure and the average since the last model switch, as
+  `84 tok/s · avg 79`, so the last turn's speed is still visible once the run is over.
+  The turn figure is the live one while a message streams — necessarily an estimate,
+  because usage only arrives at `message_end` — then the turn in progress, which reads
+  its own accumulated figure so a tool phase shows the message just streamed rather
+  than an average that will not fold it in until the turn ends, and once the run ends
+  the last turn that produced anything. The average is the mean since the last model
+  switch, so an idle line answers how fast this model is rather than what one reply
+  managed. When the row is short the average is dropped first and the turn figure
+  second, the way the context segment shrinks, so the row loses the summary before it
+  loses the current number.
+  The live figure is withheld for the first second of a message: a few deltas over a
+  few milliseconds read as thousands of tokens a second, which is an artefact of the
+  divisor rather than a property of the model, and the turn figure stands in until the
+  denominator means something.
+  The denominator starts at the assistant `message_start`, not at the first visible
+  delta. A reasoning model spends its time before any text appears, and `Usage` has no
+  reasoning count while the provider's `output` includes those tokens, so a clock
+  begun at the first delta reads a thirty-second think and four seconds of text as
+  over a thousand tokens a second — unmarked, on the owner's own main models. Counting
+  the thinking time in the denominator keeps the reported figure honest and keeps it
+  measured, which matters more here than precision: there is no way to know how many
+  tokens were hidden, so the alternative — falling back to the byte estimate whenever
+  the two disagree — would mark ordinary messages as estimates and throw away an exact
+  count to avoid a problem that a correct clock already solves.
   The average never mixes the two kinds: it is the mean
   of the measured turns alone, and only when the model has produced no measured turn at
   all does it fall back to the mean of the estimates, marked. So a provider that

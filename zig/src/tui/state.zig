@@ -214,6 +214,13 @@ pub const TokenRateSet = struct {
     message_bytes: u64 = 0,
     message_first_ms: i64 = 0,
     run_active: bool = false,
+    live_min_ms: i64 = 1_000,
+
+    pub fn messageStarted(self: *TokenRateSet, now_ms: i64) void {
+        self.message_bytes = 0;
+        self.message_first_ms = now_ms;
+        self.live = .{};
+    }
 
     pub fn produced(self: *TokenRateSet, bytes: u64, now_ms: i64) void {
         if (self.message_first_ms == 0) self.message_first_ms = now_ms;
@@ -288,11 +295,24 @@ pub const TokenRateSet = struct {
 
     pub fn liveAt(self: *TokenRateSet, now_ms: i64) void {
         if (self.message_first_ms == 0 or now_ms <= self.message_first_ms) return;
+        if (now_ms - self.message_first_ms < self.live_min_ms) return;
         self.live = .{
             .output_tokens = estimateTokenBytes(self.message_bytes),
             .stream_ms = @intCast(now_ms - self.message_first_ms),
             .estimated = true,
         };
+    }
+
+    pub fn turnShown(self: *const TokenRateSet) TokenRate {
+        if (self.live.hasFigure()) return self.live;
+        if (self.run_active) {
+            const open = self.turn();
+            if (open.hasFigure()) return open;
+            if (self.previous.hasFigure()) return self.previous;
+            return .{};
+        }
+        if (self.previous.hasFigure()) return self.previous;
+        return .{};
     }
 
     pub fn shown(self: *const TokenRateSet) TokenRate {
@@ -984,7 +1004,10 @@ pub const AppState = struct {
                 self.retireToolOccurrences();
             },
             .message_start => |payload| switch (payload.role) {
-                .assistant => self.active_assistant_entry = try self.appendEmptyTranscript(.assistant),
+                .assistant => {
+                    self.telemetry.rate.messageStarted(compat.time.nowMillis());
+                    self.active_assistant_entry = try self.appendEmptyTranscript(.assistant);
+                },
                 .user => self.active_user_entry = try self.ensureTrailingEntry(.user),
                 .tool_result => self.active_tool_result_entry = try self.appendEmptyTranscript(.tool),
             },
@@ -2342,6 +2365,51 @@ test "a turn's tool phase shows the turn's own figure, not a lagging average" {
 
     try std.testing.expectEqual(@as(u64, 100), rate.shown().output_tokens);
     try std.testing.expectEqual(@as(u64, 500), rate.average.output_tokens);
+}
+
+test "a message that thinks for half a minute is measured from when it began" {
+    var state = AppState.init(std.testing.allocator);
+    defer state.deinit();
+    try state.applyEvent(.{ .turn_start = .{} });
+    try state.applyEvent(.{ .message_start = .{ .role = .assistant } });
+
+    const began = state.telemetry.rate.message_first_ms;
+    try std.testing.expect(began != 0);
+    state.telemetry.rate.produced(400, began + 30_000);
+    state.telemetry.rate.messageEnded(began + 34_000, 20_000);
+    state.telemetry.rate.turnEnded();
+
+    try std.testing.expectEqual(@as(u64, 20_000), state.telemetry.rate.previous.output_tokens);
+    try std.testing.expectEqual(@as(u64, 34_000), state.telemetry.rate.previous.stream_ms);
+    try std.testing.expect(!state.telemetry.rate.previous.estimated);
+    try std.testing.expectEqual(@as(u64, 588), state.telemetry.rate.previous.perSecond());
+}
+
+test "the live figure waits for a second of streaming, then reports" {
+    var rate = TokenRateSet{};
+    rate.runStarted();
+    rate.produced(400, 1_000);
+    rate.produced(400, 1_200);
+    rate.liveAt(1_400);
+    try std.testing.expect(!rate.live.hasFigure());
+
+    rate.liveAt(2_000);
+    try std.testing.expect(rate.live.hasFigure());
+    try std.testing.expect(rate.live.estimated);
+}
+
+test "the turn figure stands in while the live figure is still too young" {
+    var rate = TokenRateSet{};
+    rate.runStarted();
+    rate.produced(400, 1_000);
+    rate.messageEnded(3_000, 400);
+    rate.turnEnded();
+
+    rate.produced(400, 10_000);
+    rate.liveAt(10_200);
+    try std.testing.expect(!rate.live.hasFigure());
+    try std.testing.expectEqual(@as(u64, 400), rate.turnShown().output_tokens);
+    try std.testing.expectEqual(@as(u64, 200), rate.turnShown().perSecond());
 }
 
 test "a rate with no time or no tokens never reads as speed" {
