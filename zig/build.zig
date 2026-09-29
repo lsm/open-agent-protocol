@@ -1217,6 +1217,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "types", .module = protocol_oap_types_mod },
             .{ .name = "envelope", .module = protocol_oap_envelope_mod },
             .{ .name = "endpoint_client", .module = oap_endpoint_client_mod },
+            .{ .name = "json_writer", .module = json_writer_mod },
         },
     });
     const oap_conformance_runner_test = b.addTest(.{ .root_module = oap_conformance_runner_mod });
