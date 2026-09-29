@@ -823,6 +823,29 @@ fn fgSequence(allocator: std.mem.Allocator, color: @TypeOf(tui_theme.palette.mut
     return out.toOwnedSlice();
 }
 
+test "cwd row resolves .. before deciding the agent left the session root" {
+    var state = try cwdRowState(std.testing.allocator, "/root/proj", "");
+    defer state.deinit();
+
+    try state.setAgentCwd(std.testing.allocator, "/root/proj/../other", "/root/proj/../other");
+    try std.testing.expect(state.agentCwdIsOutsideSession());
+    const climbing = try renderCwdRow(std.testing.allocator, &state, 60);
+    defer std.testing.allocator.free(climbing);
+    try std.testing.expect(std.mem.indexOf(u8, climbing, "/root/proj/../other") != null);
+    const warning_seq = try fgSequence(std.testing.allocator, tui_theme.palette.warning);
+    defer std.testing.allocator.free(warning_seq);
+    try std.testing.expect(std.mem.indexOf(u8, climbing, warning_seq) != null);
+
+    try state.setAgentCwd(std.testing.allocator, "/root/proj/sub/..", "/root/proj/sub/..");
+    try std.testing.expect(!state.agentCwdIsOutsideSession());
+    const staying = try renderCwdRow(std.testing.allocator, &state, 60);
+    defer std.testing.allocator.free(staying);
+    const muted_seq = try fgSequence(std.testing.allocator, tui_theme.palette.muted);
+    defer std.testing.allocator.free(muted_seq);
+    try std.testing.expect(std.mem.indexOf(u8, staying, muted_seq) != null);
+    try std.testing.expect(std.mem.indexOf(u8, staying, warning_seq) == null);
+}
+
 test "cwd row warns when the agent's directory leaves the session root" {
     var state = try cwdRowState(std.testing.allocator, "/work/session", "");
     defer state.deinit();
@@ -910,6 +933,14 @@ test "a replayed tool call does not move the path row" {
     } });
 
     try std.testing.expectEqualStrings("/work/live", state.cwdRowPath());
+}
+
+fn pathWithinProbe(allocator: std.mem.Allocator) !void {
+    _ = try tui_state.pathWithinForTest(allocator, "/root/proj/../other", "/root/proj");
+}
+
+test "pathWithin survives an allocation failure at every step" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, pathWithinProbe, .{});
 }
 
 fn agentCwdFromArgsProbe(allocator: std.mem.Allocator) !void {

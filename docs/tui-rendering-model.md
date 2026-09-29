@@ -224,10 +224,13 @@ code paths; add a transcript row instead.
   come back with them.
 
   A path outside the session root is shown, not hidden, and rendered bold in the warning
-  colour instead of muted — leaving the session's workspace is worth seeing. This is a
-  label and nothing more: it is never read by `PermissionEngine`, whose `workspace_root`
-  is fixed when the app initialises and continues to be what `isInsideWorkspace` checks
-  against, so the row cannot widen what a tool call is allowed to reach. Note the two are
+  colour instead of muted — leaving the session's workspace is worth seeing. Both paths
+  are resolved with `std.fs.path.resolve` before that comparison, so a `workspace_root`
+  that climbs out with `..` is judged on where it lands rather than on how it is
+  spelled; the row still shows the path as the tool call wrote it. This is a label and
+  nothing more: it is never read by `PermissionEngine`, whose `workspace_root` is fixed
+  when the app initialises and continues to be what `isInsideWorkspace` checks against,
+  so the row cannot widen what a tool call is allowed to reach. Note the two are
   genuinely different, since the engine's boundary test covers only `.read` and `.write`
   and a relative path is joined against the model-supplied root — tracked in #587.
 

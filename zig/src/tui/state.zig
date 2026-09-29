@@ -597,7 +597,8 @@ pub const AppState = struct {
 
     pub fn agentCwdIsOutsideSession(self: *const AppState) bool {
         if (self.agent_cwd_raw.len == 0) return false;
-        return !pathWithin(self.agent_cwd_raw, self.session_root_raw);
+        const within = pathWithin(self.allocator, self.agent_cwd_raw, self.session_root_raw) catch return true;
+        return !within;
     }
 
     pub fn appendTranscript(self: *AppState, kind: TranscriptKind, text: []const u8) !void {
@@ -1688,12 +1689,20 @@ pub fn agentCwdFromArgs(allocator: std.mem.Allocator, args_json: []const u8) !?[
     };
 }
 
-fn pathWithin(path: []const u8, root: []const u8) bool {
+pub fn pathWithinForTest(allocator: std.mem.Allocator, path: []const u8, root: []const u8) !bool {
+    return pathWithin(allocator, path, root);
+}
+
+fn pathWithin(allocator: std.mem.Allocator, path: []const u8, root: []const u8) !bool {
     if (root.len == 0) return false;
-    if (std.mem.eql(u8, path, root)) return true;
-    if (!std.mem.startsWith(u8, path, root)) return false;
-    if (root[root.len - 1] == std.fs.path.sep) return true;
-    return path.len > root.len and path[root.len] == std.fs.path.sep;
+    const resolved_path = try std.fs.path.resolve(allocator, &.{path});
+    defer allocator.free(resolved_path);
+    const resolved_root = try std.fs.path.resolve(allocator, &.{root});
+    defer allocator.free(resolved_root);
+    if (std.mem.eql(u8, resolved_path, resolved_root)) return true;
+    if (!std.mem.startsWith(u8, resolved_path, resolved_root)) return false;
+    if (resolved_root[resolved_root.len - 1] == std.fs.path.sep) return true;
+    return resolved_path.len > resolved_root.len and resolved_path[resolved_root.len] == std.fs.path.sep;
 }
 
 fn firstJsonString(obj: std.json.ObjectMap, keys: []const []const u8) ?[]const u8 {
