@@ -265,14 +265,25 @@ func TestACancelledRunCancelsRatherThanFailing(t *testing.T) {
 	}
 }
 
-func TestARunThatHitTheTurnLimitCompletes(t *testing.T) {
+func TestARunThatHitTheTurnLimitCompletesWithMaxTurnsNotTheModelsOwnReason(t *testing.T) {
 	tr := trace(t, nil)
 	envelopes := tr.Envelopes(agent.Event{Kind: agent.AgentEnd, Result: agent.Result{
 		FinalMessage: provider.AssistantContent{Parts: []provider.ContentPart{{Text: &provider.TextPart{Text: "partial"}}}, StopReason: provider.StopToolUse},
 		Termination:  agent.TerminationMaxTurns,
 	}})
 	if got := joinTypes(envelopes); got != "run.completed" {
-		t.Errorf("a run that hit the turn limit emits %s, want run.completed: a limit is not a failure", got)
+		t.Fatalf("a run that hit the turn limit emits %s, want run.completed: a limit is not a failure", got)
+	}
+	var completed protocol.RunCompletedPayload
+	if err := json.Unmarshal(mustJSON(t, last(envelopes)), &completed); err != nil {
+		t.Fatal(err)
+	}
+	if completed.StopReason != "max_turns" {
+		t.Errorf("the completion carries stop reason %q, want max_turns: the loop stopped, not the model, and oapx reports the same at bridge.zig:1010", completed.StopReason)
+	}
+	text, ok := completed.FinalResponse.Content.Text()
+	if !ok || text != "partial" {
+		t.Errorf("the completion carries %s, want the last turn partial text, which is what a run cut off by its own limit has to show for", completed.FinalResponse.Content)
 	}
 }
 

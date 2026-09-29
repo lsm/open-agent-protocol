@@ -167,6 +167,17 @@ outstanding. Parallel calls are the change to make when a client needs them,
 and `pi-two-open-calls` is the fixture that would catch it going the other
 way.
 
+**A run that hits its turn limit settles as `max_turns`,** not as the
+model's own stop reason. The model that wanted another turn said `tool_use`;
+the reason the run ended is that the loop stopped asking, and a consumer
+reading `tool_use` off a `run.completed` would conclude the turn finished on
+the model's terms when it did not. `oapx` reports the same at
+`bridge.zig:1010`, where an `agent_end` carrying `stop_reason: max_turns`
+becomes a `run.completed` with `stop_reason: max_turns` and whatever partial
+text the last turn produced. The partial text is the other half: a run cut off
+by its own limit has nothing else to show for, and the cut-off turn's text is
+what the caller has to work with.
+
 **A settle the answer derived names the request it answers.** A call's
 `action.call.completed` and `action.call.failed` come from a
 `action.call.resolve.request` the control layer accepted, and the validator

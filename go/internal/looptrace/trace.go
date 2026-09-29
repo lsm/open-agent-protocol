@@ -28,6 +28,8 @@ type Options struct {
 
 var ErrNoIds = errors.New("looptrace: an id generator is required")
 
+const maxTurnsStopReason = "max_turns"
+
 type Trace struct {
 	options  Options
 	sequence uint64
@@ -199,7 +201,7 @@ func (t *Trace) settle(event agent.Event) []protocol.Envelope {
 			SessionID: t.options.SessionID, RunID: t.options.RunID, Reason: "the run was cancelled",
 		})
 	case agent.TerminationMaxTurns:
-		return t.completed(string(final.StopReason), finalText(final))
+		return t.completed(maxTurnsStopReason, finalText(final))
 	}
 	if final.StopReason == provider.StopError {
 		return t.one(protocol.TypeRunFailed, protocol.RunFailedPayload{
