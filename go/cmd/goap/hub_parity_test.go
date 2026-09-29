@@ -37,6 +37,13 @@ var hubParityScenarios = map[string][]string{
 		`{"id":4,"op":"open","adapter":"memory","request":{"id":"x"}}`,
 		`{"id":5,"op":"open","adapter":"memory","request":{` + openEnvelopeFields + `"id":"o1"}}`,
 	},
+	"an attachment that names something to run is refused by both": {
+		`{"id":1,"op":"open","adapter":"memory","request":{` + openEnvelopeFields + `"id":"o1","payload":{"session_id":"s1","tool_sources":[{"id":"l1","kind":"local","command":"/bin/sh"}]}}}`,
+		`{"id":2,"op":"open","adapter":"memory","request":{` + openEnvelopeFields + `"id":"o2","payload":{"session_id":"s2","tool_sources":[{"id":"l2","kind":"local","args":["-c"]}]}}}`,
+		`{"id":3,"op":"open","adapter":"memory","request":{` + openEnvelopeFields + `"id":"o3","payload":{"session_id":"s3","tool_sources":[{"id":"l3","kind":"local","environment":["PATH=/tmp"]}]}}}`,
+		`{"id":4,"op":"open","adapter":"memory","request":{` + openEnvelopeFields + `"id":"o4","payload":{"session_id":"s4","tool_sources":[{"id":"p1","kind":"process"}]}}}`,
+		`{"id":5,"op":"sessions"}`,
+	},
 	"a refused open leaves no session behind": {
 		`{"id":1,"op":"open","adapter":"absent","request":{` + openEnvelopeFields + `"id":"o1","payload":{"session_id":"s1"}}}`,
 		`{"id":2,"op":"open","adapter":"memory","request":{` + openEnvelopeFields + `"id":"o2","payload":{"session_id":"s1","metadata":7}}}`,

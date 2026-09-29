@@ -507,6 +507,90 @@ pub const Frontend = struct {
         return .{ .envelope = envelope };
     }
 
+    const attachment_members = [_][]const u8{ "kind", "display_name", "protocol", "endpoint" };
+
+    fn attachmentRefusal(
+        self: *Frontend,
+        arena: std.mem.Allocator,
+        adapter: []const u8,
+        sources: ?std.json.Value,
+    ) Error!?Refusal {
+        const listed = sources orelse return null;
+        if (listed != .array) return null;
+        const descriptor = self.hub.probe(adapter) catch |err| switch (err) {
+            error.UnknownAdapter => return null,
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return null,
+        };
+        for (listed.array.items) |entry| {
+            if (entry != .object) continue;
+            const fields = entry.object;
+            const id = if (fields.get("id")) |value| (if (value == .string) value.string else "") else "";
+            if (fields.get("command")) |value| {
+                if (value == .string and value.string.len > 0) {
+                    return try attachmentRefuse(arena, id, "the daemon does not accept a command from the wire; name the source by id");
+                }
+            }
+            if (fields.get("args")) |value| {
+                if (value == .array and value.array.items.len > 0) {
+                    return try attachmentRefuse(arena, id, "the daemon does not accept args from the wire; name the source by id");
+                }
+            }
+            if (fields.get("environment")) |value| {
+                if (value == .array) {
+                    for (value.array.items) |entry_value| {
+                        if (entry_value != .string) continue;
+                        if (std.mem.indexOfScalar(u8, entry_value.string, '=') != null) {
+                            return try attachmentRefuse(arena, id, "the daemon accepts only the bare NAME allowlist, never a NAME=value assignment");
+                        }
+                    }
+                }
+            }
+            const configured = configuredSource(descriptor.sources, id);
+            if (configured == null) {
+                if (fields.get("kind")) |value| {
+                    if (value == .string and std.mem.eql(u8, value.string, "process")) {
+                        return try attachmentRefuse(arena, id, "no tool source of that id is configured on the daemon");
+                    }
+                }
+                continue;
+            }
+            for (attachment_members) |named| {
+                const wire = if (fields.get(named)) |value| (if (value == .string) value.string else null) else null;
+                const text = wire orelse continue;
+                if (text.len == 0) continue;
+                const operator = configuredSourceMember(configured.?, named);
+                if (operator.len == 0 or std.mem.eql(u8, text, operator)) continue;
+                const message = try std.fmt.allocPrint(arena, "the daemon does not accept {s} from the wire for a configured source; name it by id", .{named});
+                return try attachmentRefuse(arena, id, message);
+            }
+        }
+        return null;
+    }
+
+    fn attachmentRefuse(arena: std.mem.Allocator, source: []const u8, message: []const u8) !Refusal {
+        return refusalWith(arena, "unsupported_feature", message, try arena.dupe(oap_types.DetailEntry, &.{
+            .{ .key = "feature", .value = contract.feature_tool_sources_attach },
+            .{ .key = "reason", .value = contract.reason_unsatisfiable },
+            .{ .key = "source", .value = source },
+        }));
+    }
+
+    fn configuredSource(sources: []const oap_types.ToolSourceDescriptor, id: []const u8) ?oap_types.ToolSourceDescriptor {
+        for (sources) |source| {
+            if (std.mem.eql(u8, source.id, id)) return source;
+        }
+        return null;
+    }
+
+    fn configuredSourceMember(source: oap_types.ToolSourceDescriptor, key: []const u8) []const u8 {
+        if (std.mem.eql(u8, key, "kind")) return source.kind;
+        if (std.mem.eql(u8, key, "display_name")) return source.display_name orelse "";
+        if (std.mem.eql(u8, key, "protocol")) return source.protocol orelse "";
+        if (std.mem.eql(u8, key, "endpoint")) return source.endpoint orelse "";
+        return "";
+    }
+
     fn openSession(
         self: *Frontend,
         arena: std.mem.Allocator,
@@ -523,6 +607,20 @@ pub const Frontend = struct {
             else => unreachable,
         };
         var metadata: ?std.json.Value = null;
+        if (request.payload) |value| {
+            if (value == .object) {
+                if (value.object.get("payload")) |body| {
+                    if (body == .object) {
+                        if (body.object.get("tool_sources")) |sources| {
+                            if (try self.attachmentRefusal(arena, adapter, sources)) |refusal| {
+                                envelope.deinit(arena);
+                                return .{ .refused = refusal };
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if (request.payload) |value| {
             if (value == .object) {
                 if (value.object.get("payload")) |body| {
@@ -1898,6 +1996,47 @@ test "an open citing a stale revision is refused, naming both revisions" {
     try testing.expectEqualStrings("reference-v1", details.get("expected_revision").?.string);
     try testing.expectEqualStrings("reference-v0", details.get("current_revision").?.string);
     try testing.expectEqual(@as(usize, 0), try listedSessions(harness));
+}
+
+test "an attachment that names something to run is refused, and no session is made" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    const envelopes = [_][]const u8{
+        "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"payload\":{\"session_id\":\"s1\",\"tool_sources\":[{\"id\":\"l1\",\"kind\":\"local\",\"command\":\"/bin/sh\"}]}}",
+        "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"payload\":{\"session_id\":\"s1\",\"tool_sources\":[{\"id\":\"l1\",\"kind\":\"local\",\"args\":[\"-c\"]}]}}",
+        "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"payload\":{\"session_id\":\"s1\",\"tool_sources\":[{\"id\":\"l1\",\"kind\":\"local\",\"environment\":[\"PATH=/tmp\"]}]}}",
+        "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"payload\":{\"session_id\":\"s1\",\"tool_sources\":[{\"id\":\"l1\",\"kind\":\"process\"}]}}",
+    };
+    for (envelopes) |envelope| {
+        try harness.send(try openLine(harness.arena(), "reference", envelope));
+        try testing.expectEqualStrings("unsupported_feature", try harness.code());
+    }
+    try testing.expectEqual(@as(usize, 0), try listedSessions(harness));
+}
+
+test "an unconfigured id may be named from the wire, but a process one may not" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    const arena = harness.arena();
+    const namable = try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena,
+        "[{\"id\":\"x1\",\"kind\":\"endpoint\"}]",
+        .{},
+    );
+    try testing.expect((try harness.frontend.attachmentRefusal(arena, "reference", namable)) == null);
+
+    const process = try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena,
+        "[{\"id\":\"x1\",\"kind\":\"process\"}]",
+        .{},
+    );
+    const refusal = (try harness.frontend.attachmentRefusal(arena, "reference", process)).?;
+    try testing.expectEqualStrings("unsupported_feature", refusal.code);
+    try testing.expectEqual(@as(usize, 3), refusal.details.len);
+    try testing.expectEqualStrings(contract.feature_tool_sources_attach, refusal.details[0].value);
+    try testing.expectEqualStrings("x1", refusal.details[2].value);
 }
 
 test "a metadata-carrying open hands the adapter what the payload carried" {
