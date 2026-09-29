@@ -425,6 +425,10 @@ func anthropicMessages(ctx Context, cc *cacheControl) jsonArray {
 		if msg.ToolResult != nil {
 			results := jsonArray{}
 			for i < len(ctx.Messages) && ctx.Messages[i].ToolResult != nil {
+				if isOrphanedToolResult(ctx.Messages[i], toolCallIDs) {
+					i++
+					continue
+				}
 				tr := ctx.Messages[i].ToolResult
 				entry := jsonObject{
 					member("type", jsonString("tool_result")),
