@@ -63,6 +63,7 @@ const hermes_adapter = @import("hermes_adapter");
 const memory_adapter = @import("memory_adapter");
 const hub = @import("hub");
 const hub_stdio = @import("hub_stdio");
+const hub_http = @import("hub_http");
 const bounded_output = @import("bounded_output");
 const endpoint_signals = @import("endpoint_signals");
 
@@ -2466,6 +2467,90 @@ fn hubConfiguredSources(
     return sources;
 }
 
+const hub_default_addr = "127.0.0.1:6270";
+const hub_accept_poll_ms: i32 = 50;
+const hub_accept_is_pollable = @import("builtin").os.tag != .windows;
+
+fn boundAddress(arena: std.mem.Allocator, bound: compat.net.Address) ![]const u8 {
+    return switch (bound) {
+        .ip4 => |four| try std.fmt.allocPrint(arena, "{d}.{d}.{d}.{d}:{d}", .{ four.bytes[0], four.bytes[1], four.bytes[2], four.bytes[3], bound.getPort() }),
+        .ip6 => |six| try std.fmt.allocPrint(arena, "[{x}:{x}:{x}:{x}:{x}:{x}:{x}:{x}]:{d}", .{
+            std.mem.readInt(u16, six.bytes[0..2], .big),
+            std.mem.readInt(u16, six.bytes[2..4], .big),
+            std.mem.readInt(u16, six.bytes[4..6], .big),
+            std.mem.readInt(u16, six.bytes[6..8], .big),
+            std.mem.readInt(u16, six.bytes[8..10], .big),
+            std.mem.readInt(u16, six.bytes[10..12], .big),
+            std.mem.readInt(u16, six.bytes[12..14], .big),
+            std.mem.readInt(u16, six.bytes[14..16], .big),
+            bound.getPort(),
+        }),
+    };
+}
+
+fn runHubHttp(
+    allocator: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    core: *hub.Hub,
+    bind: []const u8,
+    served: []const u8,
+    stdout: std.Io.File,
+    stderr: std.Io.File,
+) !void {
+    const colon = std.mem.lastIndexOfScalar(u8, bind, ':') orelse return error.InvalidHubOption;
+    const port = std.fmt.parseInt(u16, std.mem.trim(u8, bind[colon + 1 ..], " "), 10) catch return error.InvalidHubOption;
+    const named = hub_http.hostOf(bind);
+    const allow = hub_http.loopbackHosts(bind);
+    const address = try compat.net.resolveAddress(arena, if (named.len == 0) "127.0.0.1" else named, port);
+    var listener = try compat.net.tcpListen(address, .{ .reuse_address = true });
+    defer compat.net.closeServer(&listener);
+    const bound = compat.net.listenAddress(&listener);
+    try compat.stdio.writeAll(stdout, "listening on http://");
+    try compat.stdio.writeAll(stdout, try boundAddress(arena, bound));
+    try compat.stdio.writeAll(stdout, "\n");
+    try compat.stdio.writeAll(stderr, "oapx: serving adapters: ");
+    try compat.stdio.writeAll(stderr, served);
+    try compat.stdio.writeAll(stderr, " (restart kills all sessions)\n");
+    if (allow == null) {
+        try compat.stdio.writeAll(stderr, "oapx: this bind is not loopback; the single-user model is opted out of\n");
+    }
+
+    var next_id: u64 = 0;
+    while (!endpoint_signals.received()) {
+        if (comptime hub_accept_is_pollable) {
+            const ready = compat.net.readableWithin(compat.net.serverHandle(&listener), hub_accept_poll_ms) catch continue;
+            if (!ready) continue;
+        }
+        var connection = try compat.net.accept(&listener);
+        defer connection.stream.close();
+        next_id += 1;
+        var scratch_state = std.heap.ArenaAllocator.init(allocator);
+        defer scratch_state.deinit();
+        const scratch = scratch_state.allocator();
+        var request = hub_http.readRequest(scratch, &connection.stream) catch |failure| {
+            if (hub_http.transportRefusal(failure)) |refused| {
+                hub_http.writeRefusal(&connection.stream, refused, hub_http.refusalEnvelope(scratch, next_id, refused) catch "") catch {};
+            } else {
+                hub_http.writeStatus(&connection.stream, hub_http.statusFor(failure), "bad request") catch {};
+            }
+            continue;
+        };
+        defer request.deinit(scratch);
+        if (hub_http.hostRefused(allow orelse &.{}, request.host)) {
+            hub_http.writeRefusal(&connection.stream, hub_http.host_refused, hub_http.refusalEnvelope(scratch, next_id, hub_http.host_refused) catch "") catch {};
+            continue;
+        }
+        if (request.origin) {
+            hub_http.writeRefusal(&connection.stream, hub_http.origin_refused, hub_http.refusalEnvelope(scratch, next_id, hub_http.origin_refused) catch "") catch {};
+            continue;
+        }
+        hub_http.writeStatus(&connection.stream, "404 Not Found", hub_http.not_found_body) catch {};
+    }
+    try compat.stdio.writeAll(stderr, "oapx: shutting down\n");
+    sweepHubSessions(core, stderr);
+    try compat.stdio.writeAll(stderr, "oapx: stopped\n");
+}
+
 fn hubTakesSignals() bool {
     return @import("builtin").os.tag != .windows;
 }
@@ -2520,10 +2605,6 @@ fn runHub(
         try compat.stdio.writeAll(stderr, "oapx hub: --stdio takes no listen address; --addr and --stdio are mutually exclusive\n");
         return error.InvalidHubOption;
     }
-    if (!over_stdio) {
-        if (addr != null) return unavailable(stderr, "hub", "--addr", "the HTTP and SSE transport lands with #388");
-        return unavailable(stderr, "hub", "--stdio", "a hub with no transport has nothing to serve");
-    }
 
     var arena_state = std.heap.ArenaAllocator.init(allocator);
     defer arena_state.deinit();
@@ -2560,10 +2641,6 @@ fn runHub(
         };
     }
 
-    var sink = StdoutSink{ .file = stdout, .io = hubIo() };
-    var frontend = try hub_stdio.Frontend.init(allocator, &core, .{ .context = &sink, .write = StdoutSink.write }, .{});
-    defer frontend.deinit();
-
     if (hubTakesSignals()) {
         endpoint_signals.install() catch {
             try compat.stdio.writeAll(stderr, "oapx hub: the process cannot take a signal handler; refusing to serve a hub that cannot be stopped\n");
@@ -2572,7 +2649,13 @@ fn runHub(
     } else {
         try compat.stdio.writeAll(stderr, "oapx hub: a console interrupt ends this process rather than the hub; the Windows path is #460\n");
     }
+
     const served = try std.mem.join(arena, ", ", try core.names(arena));
+    if (!over_stdio) return runHubHttp(allocator, arena, &core, addr orelse hub_default_addr, served, stdout, stderr);
+
+    var sink = StdoutSink{ .file = stdout, .io = hubIo() };
+    var frontend = try hub_stdio.Frontend.init(allocator, &core, .{ .context = &sink, .write = StdoutSink.write }, .{});
+    defer frontend.deinit();
     try compat.stdio.writeAll(stderr, "oapx: serving adapters over stdio: ");
     try compat.stdio.writeAll(stderr, served);
     try compat.stdio.writeAll(stderr, " (exit kills all sessions)\n");
