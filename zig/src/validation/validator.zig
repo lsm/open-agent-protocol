@@ -22,16 +22,13 @@ pub const Validator = struct {
     widened: std.StringArrayHashMapUnmanaged(std.json.Value) = .empty,
 
     pub fn init(allocator: std.mem.Allocator, options: Options) !Validator {
-        var documents = std.heap.ArenaAllocator.init(allocator);
-        errdefer documents.deinit();
-        var registry = try jsonschema.Registry.initFromBundled(allocator);
-        errdefer registry.deinit();
         var self: Validator = .{
             .allocator = allocator,
-            .registry = registry,
+            .registry = try jsonschema.Registry.initFromBundled(allocator),
             .mode = options.mode,
-            .documents = documents,
+            .documents = std.heap.ArenaAllocator.init(allocator),
         };
+        errdefer self.deinit();
         if (self.mode == .tolerant) try self.widen();
         return self;
     }
@@ -96,13 +93,23 @@ test "a mode is named by its own spelling, in either case, and nothing else pars
     try std.testing.expectEqual(Mode.strict, (Options{}).mode);
 }
 
-test "the mode is the validator's own, so one instance judges every trace it is given" {
+test "a validator keeps the mode it was built with, and judges through it" {
     const allocator = std.testing.allocator;
     var judge = try Validator.init(allocator, .{ .mode = .tolerant });
     defer judge.deinit();
     try std.testing.expectEqual(Mode.tolerant, judge.mode);
-    try std.testing.expect(try accepts(allocator, .tolerant, packed_type_request));
-    try std.testing.expect(!try accepts(allocator, .tolerant, packed_type_without_id));
+
+    var admitted = try std.json.parseFromSlice(std.json.Value, allocator, packed_type_request, .{});
+    defer admitted.deinit();
+    var first = try judge.schema();
+    defer first.deinit();
+    try std.testing.expect(try first.validate(envelope_document, admitted.value) == null);
+
+    var refused = try std.json.parseFromSlice(std.json.Value, allocator, packed_type_without_id, .{});
+    defer refused.deinit();
+    var second = try judge.schema();
+    defer second.deinit();
+    try std.testing.expect(try second.validate(envelope_document, refused.value) != null);
 }
 
 test "tolerance is what admits a type no pack claims, and the mode is what admits it" {
@@ -120,4 +127,23 @@ test "a core type is judged the same in either mode" {
     const allocator = std.testing.allocator;
     try std.testing.expect(!try accepts(allocator, .strict, core_without_id));
     try std.testing.expect(!try accepts(allocator, .tolerant, core_without_id));
+}
+
+test "a validator frees itself exactly once, on every allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var judge = try Validator.init(allocator, .{ .mode = .tolerant });
+            defer judge.deinit();
+            var compiled = try judge.schema();
+            defer compiled.deinit();
+        }
+    }.run, .{});
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var judge = try Validator.init(allocator, .{});
+            defer judge.deinit();
+            var compiled = try judge.schema();
+            defer compiled.deinit();
+        }
+    }.run, .{});
 }
