@@ -186,48 +186,11 @@ const PreparedAgentRun = struct {
     }
 };
 
-const StdioToolRequest = struct {
-    session_id: AgentProtocolTypes.SessionId,
-    generation: u64,
-    tool_call_id: []u8,
-    tool_name: []u8,
-    args_json: []u8,
+const AgentToolBridge = @import("tools/agent_tool_bridge");
 
-    fn deinit(self: *StdioToolRequest, allocator: std.mem.Allocator) void {
-        allocator.free(self.tool_call_id);
-        allocator.free(self.tool_name);
-        allocator.free(self.args_json);
-        self.* = undefined;
-    }
-};
-
-const StdioToolKey = struct {
-    session_id: AgentProtocolTypes.SessionId,
-    tool_call_id: []u8,
-    request_message_id: AgentProtocolTypes.Ulid,
-    generation: u64,
-
-    fn deinit(self: *StdioToolKey, allocator: std.mem.Allocator) void {
-        allocator.free(self.tool_call_id);
-        self.* = undefined;
-    }
-};
-
-const StdioToolResult = struct {
-    session_id: AgentProtocolTypes.SessionId,
-    tool_call_id: []u8,
-    in_reply_to: ?AgentProtocolTypes.Ulid,
-    result_json: []u8,
-    details_json: []u8,
-    is_error: bool,
-
-    fn deinit(self: *StdioToolResult, allocator: std.mem.Allocator) void {
-        allocator.free(self.tool_call_id);
-        allocator.free(self.result_json);
-        allocator.free(self.details_json);
-        self.* = undefined;
-    }
-};
+const StdioToolRequest = AgentToolBridge.Request;
+const StdioToolKey = AgentToolBridge.Key;
+const StdioToolResult = AgentToolBridge.Result;
 
 const StdioToolBridge = struct {
     mutex: std.atomic.Mutex = .unlocked,
