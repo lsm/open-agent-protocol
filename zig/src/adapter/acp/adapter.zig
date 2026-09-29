@@ -8,7 +8,6 @@ const session = @import("session");
 const rpc = @import("rpc");
 const compat = @import("compat");
 const json_encode = @import("json_encode");
-const gomarshal = @import("gomarshal");
 
 pub const endpoint_id = session.endpoint_id;
 pub const capability_revision = harness_pins.acp_capability_revision;
@@ -443,10 +442,7 @@ pub const Session = struct {
     }
 
     fn encode(self: *Session, frame: std.json.ObjectMap) ![]const u8 {
-        return gomarshal.marshal(self.owned(), .{ .object = frame }) catch |err| switch (err) {
-            error.OutOfMemory => error.OutOfMemory,
-            error.UnsupportedValue => error.InvalidSubmission,
-        };
+        return json_encode.valueAlloc(self.owned(), .{ .object = frame });
     }
 
     fn requestFrame(self: *Session, id: i64, method: []const u8, params: std.json.Value) ![]const u8 {
@@ -1028,7 +1024,7 @@ const Probe = struct {
     }
 };
 
-test "an open writes initialize and session/new in Go's form, with the agent's working directory" {
+test "an open writes initialize and session/new, with the agent's working directory" {
     var probe: Probe = undefined;
     try probe.init(fake_prelude ++ fake_idle);
     defer probe.deinit();
@@ -1042,6 +1038,20 @@ test "an open writes initialize and session/new in Go's form, with the agent's w
         \\
     , .{probe.fake.cwd});
     try testing.expectEqualStrings(want, written);
+}
+
+test "a prompt is written with its punctuation as itself, the way the writer writes it" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_text_turn ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    const admitted = try probe.submit("a<b>&c \u{2028}d\u{2029}e", &refusal);
+    try testing.expect(admitted.accepted);
+    const scratch = probe.arena.allocator();
+    const written = try probe.fake.written(scratch);
+    try testing.expect(std.mem.indexOf(u8, written, "\"text\":\"a<b>&c \u{2028}d\u{2029}e\"") != null);
+    try testing.expect(std.mem.indexOf(u8, written, "u003c") == null);
 }
 
 test "a turn is admitted when its prompt is written and settles on the prompt's stop reason" {

@@ -110,23 +110,10 @@ pub const JsonWriter = struct {
                 '\n' => try self.buffer.appendSlice(self.allocator, "\\n"),
                 '\r' => try self.buffer.appendSlice(self.allocator, "\\r"),
                 '\t' => try self.buffer.appendSlice(self.allocator, "\\t"),
-                '<' => try self.buffer.appendSlice(self.allocator, "\\u003c"),
-                '>' => try self.buffer.appendSlice(self.allocator, "\\u003e"),
-                '&' => try self.buffer.appendSlice(self.allocator, "\\u0026"),
                 0x00...0x08, 0x0B, 0x0C, 0x0E...0x1F => {
                     try self.buffer.print(self.allocator, "\\u{x:0>4}", .{c});
                 },
                 0x80...0xFF => {
-                    if (std.mem.startsWith(u8, s[i..], "\u{2028}")) {
-                        try self.buffer.appendSlice(self.allocator, "\\u2028");
-                        i += 3;
-                        continue;
-                    }
-                    if (std.mem.startsWith(u8, s[i..], "\u{2029}")) {
-                        try self.buffer.appendSlice(self.allocator, "\\u2029");
-                        i += 3;
-                        continue;
-                    }
                     const len = std.unicode.utf8ByteSequenceLength(c) catch {
                         try self.buffer.appendSlice(self.allocator, "\\ufffd");
                         i += 1;
@@ -245,7 +232,7 @@ test "invalid utf8 bytes are replaced" {
     try std.testing.expectEqualStrings("{\"text\":\"a\\ufffdb\"}", getResult(&writer));
 }
 
-test "html and line-separator characters escape as encoding/json does" {
+test "html and line-separator characters are written as themselves, not escaped" {
     const allocator = std.testing.allocator;
     var buffer = std.ArrayList(u8).empty;
     defer buffer.deinit(allocator);
@@ -255,7 +242,23 @@ test "html and line-separator characters escape as encoding/json does" {
     try writer.writeStringField("text", "a<b>&c\u{2028}d\u{2029}e");
     try writer.endObject();
 
-    try std.testing.expectEqualStrings("{\"text\":\"a\\u003cb\\u003e\\u0026c\\u2028d\\u2029e\"}", getResult(&writer));
+    try std.testing.expectEqualStrings("{\"text\":\"a<b>&c\u{2028}d\u{2029}e\"}", getResult(&writer));
+}
+
+test "a string carrying all five still parses to the value it was written from" {
+    const allocator = std.testing.allocator;
+    var buffer = std.ArrayList(u8).empty;
+    defer buffer.deinit(allocator);
+
+    const value = "a<b>&c \u{2028}d\u{2029}e \"q\" \\\\ \n\t";
+
+    var writer = JsonWriter.init(&buffer, allocator);
+    try writer.beginObject();
+    try writer.writeStringField("text", value);
+    try writer.endObject();
+
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, allocator, getResult(&writer), .{});
+    try std.testing.expectEqualStrings(value, parsed.object.get("text").?.string);
 }
 
 test "nested objects and arrays" {
