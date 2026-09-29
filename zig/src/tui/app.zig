@@ -5261,7 +5261,7 @@ test "a resumed session's replayed events leave the rate showing nothing" {
 
     try app.resumeSelectedSession();
 
-    try std.testing.expectEqual(@as(u64, 0), app.state.telemetry.rate.turn.output_tokens);
+    try std.testing.expectEqual(@as(u64, 0), app.state.telemetry.rate.turn().output_tokens);
     try std.testing.expectEqual(@as(u64, 0), app.state.telemetry.rate.estimated_since_switch.output_tokens);
     try std.testing.expectEqual(@as(u64, 0), app.state.telemetry.rate.measured_since_switch.output_tokens);
     try std.testing.expect(!app.state.telemetry.rate.previous.measured());

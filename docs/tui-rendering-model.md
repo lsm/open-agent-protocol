@@ -205,7 +205,15 @@ code paths; add a transcript row instead.
   the status bar's elapsed: that clock starts at `turn_start` and includes tool calls.
   The rate runs a second clock from an assistant message's first delta to its
   `message_end`, summed over the turn's assistant messages, so time spent in tools never
-  counts as slow generation. Bytes convert at the agent's own divisor, `(bytes + 3) / 4`.
+  counts as slow generation. A tool call is production, so `tool_call_delta` starts the
+  clock as well: a reply that is only a tool call is measured over the span it was
+  generated in, not dropped. A message that arrives whole with no stream at all — the
+  non-streaming result fallback — contributes neither tokens nor time, because there is
+  no span to divide by, and counting its tokens with no time would inflate the figure
+  several-fold while showing it unmarked. A turn is marked `~` when *any* of its messages
+  was estimated, and its measured and estimated parts are pooled separately, so a
+  multi-message turn cannot present a mixed total as measured. Bytes convert at the
+  agent's own divisor, `(bytes + 3) / 4`.
   The averages reset when the model in effect changes, which is what `/model` and
   `/provider` do.
 - The cost segment beside it is **computed, not reported**: it is the model's

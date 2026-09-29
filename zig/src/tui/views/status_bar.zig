@@ -302,7 +302,7 @@ fn writeState(list: *SegmentList, allocator: std.mem.Allocator, state: *const tu
 
 fn writeRate(list: *SegmentList, allocator: std.mem.Allocator, state: *const tui_state.AppState) !void {
     const rate = &state.telemetry.rate;
-    const shown = if (rate.live.measured()) rate.live else if (rate.previous.measured()) rate.previous else rate.average;
+    const shown = rate.shown();
     if (!shown.measured()) return;
     var buf: [16]u8 = undefined;
     const mark = if (shown.estimated) "~" else "";
