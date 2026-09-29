@@ -11,7 +11,7 @@ func envOf(pairs ...string) []EnvironmentValue {
 }
 
 func TestTheGlobalOverrideRedirectsAnyProviderToTheLoopback(t *testing.T) {
-	overrides := BaseOverridesFromEnv(envOf(GlobalBaseURLEnv, "http://127.0.0.1:9/v1"))
+	overrides := BaseOverridesFromEnv(heldCatalog(t), envOf(GlobalBaseURLEnv, "http://127.0.0.1:9/v1"))
 	for _, id := range []string{"openai", "anthropic", "deepseek", "kimi"} {
 		wire := "openai-completions"
 		if id == "anthropic" {
@@ -24,15 +24,19 @@ func TestTheGlobalOverrideRedirectsAnyProviderToTheLoopback(t *testing.T) {
 	}
 }
 
-func TestTheGlobalOverrideIsUntouchedForAnUnversionedRoute(t *testing.T) {
-	overrides := BaseOverridesFromEnv(envOf(GlobalBaseURLEnv, "http://127.0.0.1:9/v1"))
-	if got := BaseURLWithOverrides(overrides, "github-copilot", "openai-completions"); got != "http://127.0.0.1:9/v1" {
-		t.Errorf("got %q, want the raw value: github-copilot is excluded from the versioned route", got)
+func TestTheGlobalOverrideKeepsItsPathButLosesItsSlashesForAnUnversionedRoute(t *testing.T) {
+	overrides := BaseOverridesFromEnv(heldCatalog(t), envOf(GlobalBaseURLEnv, "http://127.0.0.1:9/proxy/"))
+	if got := BaseURLWithOverrides(overrides, "github-copilot", "openai-completions"); got != "http://127.0.0.1:9/proxy" {
+		t.Errorf("got %q, want the path kept and the trailing slash trimmed: the unversioned branch trims, it does not normalise the version away", got)
+	}
+	overrides = BaseOverridesFromEnv(heldCatalog(t), envOf(GlobalBaseURLEnv, "http://127.0.0.1:9///"))
+	if got := BaseURLWithOverrides(overrides, "github-copilot", "openai-completions"); got != "http://127.0.0.1:9" {
+		t.Errorf("got %q, want every trailing slash gone", got)
 	}
 }
 
 func TestTheGlobalOverrideWinsOverThePerProviderOne(t *testing.T) {
-	overrides := BaseOverridesFromEnv(envOf(
+	overrides := BaseOverridesFromEnv(heldCatalog(t), envOf(
 		GlobalBaseURLEnv, "http://global.test",
 		"OPENAI_BASE_URL", "http://openai.test",
 	))
@@ -42,7 +46,7 @@ func TestTheGlobalOverrideWinsOverThePerProviderOne(t *testing.T) {
 }
 
 func TestAPerProviderOverrideOnlyReachesItsOwnProviderAndWire(t *testing.T) {
-	overrides := BaseOverridesFromEnv(envOf("ANTHROPIC_BASE_URL", "http://anthropic.test"))
+	overrides := BaseOverridesFromEnv(heldCatalog(t), envOf("ANTHROPIC_BASE_URL", "http://anthropic.test"))
 	if got := BaseURLWithOverrides(overrides, "anthropic", "anthropic-messages"); got != "http://anthropic.test" {
 		t.Errorf("got %q, want the anthropic override", got)
 	}
@@ -77,7 +81,7 @@ func TestTheVersionSuffixIsStrippedAndTrailingSlashesTrimmed(t *testing.T) {
 }
 
 func TestAnEmptyOverrideIsNoOverride(t *testing.T) {
-	overrides := BaseOverridesFromEnv(envOf(GlobalBaseURLEnv, "", "OPENAI_BASE_URL", ""))
+	overrides := BaseOverridesFromEnv(heldCatalog(t), envOf(GlobalBaseURLEnv, "", "OPENAI_BASE_URL", ""))
 	if got := BaseURLWithOverrides(overrides, "openai", "openai-completions"); got != "" {
 		t.Errorf("got %q, want nothing: a variable that is set but empty is not an override", got)
 	}
@@ -90,7 +94,7 @@ func TestTheKimiRegionComesFromTheEnvironmentAndAnUnknownOneIsIgnored(t *testing
 	if got := NormalizeKimiRegion("elsewhere"); got != "" {
 		t.Errorf("got %q, want nothing: only two regions are recognised", got)
 	}
-	overrides := BaseOverridesFromEnv(envOf("KIMI_REGION", "elsewhere"))
+	overrides := BaseOverridesFromEnv(heldCatalog(t), envOf("KIMI_REGION", "elsewhere"))
 	if overrides.KimiRegion != "" {
 		t.Errorf("got %q, want an unusable region to be dropped", overrides.KimiRegion)
 	}
@@ -109,7 +113,7 @@ func TestTheKimiRegionPicksTheCatalogEndpoint(t *testing.T) {
 }
 
 func TestTheOpenAIOverrideReachesTheResponsesWireAsWellAsCompletions(t *testing.T) {
-	overrides := BaseOverridesFromEnv(envOf("OPENAI_BASE_URL", "http://both.test"))
+	overrides := BaseOverridesFromEnv(heldCatalog(t), envOf("OPENAI_BASE_URL", "http://both.test"))
 	for _, wire := range []string{"openai-completions", "openai-responses"} {
 		if got := BaseURLWithOverrides(overrides, "openai", wire); got != "http://both.test" {
 			t.Errorf("openai on %s = %q, want the override: a responses model is reachable through WireForModel", wire, got)
@@ -176,5 +180,45 @@ func TestTheCatalogFallbackForAKnownPairIgnoresTheRegion(t *testing.T) {
 		if _, ok := ResolveBaseURL(catalog, nil, id, wire, "a-region-nobody-declares"); !ok {
 			t.Errorf("%s on %s stopped resolving once a region was passed, want the catalog's own endpoint: only kimi is region-selected", id, wire)
 		}
+	}
+}
+
+func TestAnUnknownPairResolvesWithoutARegionToo(t *testing.T) {
+	catalog := heldCatalog(t)
+	for _, region := range []string{"", "a-region-nobody-declares"} {
+		if _, ok := ResolveBaseURL(catalog, nil, "openrouter", "openai-completions", region); !ok {
+			t.Errorf("openrouter with a region of %q did not resolve, want the row's own endpoint: the region is kimi's alone", region)
+		}
+	}
+}
+
+func TestTheOverrideNamesComeFromTheCatalogRowAndNotFromASpellinGo(t *testing.T) {
+	catalog := heldCatalog(t)
+	renamed := catalog
+	renamed.Providers = append([]Provider(nil), catalog.Providers...)
+	for i, row := range renamed.Providers {
+		switch row.ID {
+		case "openai":
+			renamed.Providers[i].BaseURLEnv = []string{"A_DIFFERENT_NAME"}
+		case "kimi":
+			renamed.Providers[i].RegionEnv = "A_DIFFERENT_REGION_NAME"
+		}
+	}
+	overrides := BaseOverridesFromEnv(renamed, envOf("A_DIFFERENT_NAME", "http://renamed.test", "OPENAI_BASE_URL", "http://stale.test"))
+	if got := BaseURLWithOverrides(overrides, "openai", "openai-completions"); got != "http://renamed.test" {
+		t.Errorf("got %q, want the name the row records: a catalog rename must not strand the Go tree", got)
+	}
+	regionOverrides := BaseOverridesFromEnv(renamed, envOf("A_DIFFERENT_REGION_NAME", "moonshot", "KIMI_REGION", "china"))
+	if regionOverrides.KimiRegion != "global" {
+		t.Errorf("the region = %q, want global: the region variable's name comes from the row too", regionOverrides.KimiRegion)
+	}
+	if got := FirstBaseURLEnv(catalog, "openai"); got != "OPENAI_BASE_URL" {
+		t.Errorf("got %q, want the row's own name", got)
+	}
+	if got := FirstBaseURLEnv(catalog, "a-row-that-has-none"); got != "" {
+		t.Errorf("got %q, want nothing for a row recording no variable", got)
+	}
+	if got := RegionEnv(catalog, "kimi"); got != "KIMI_REGION" {
+		t.Errorf("got %q, want the row's own region variable", got)
 	}
 }

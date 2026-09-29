@@ -14,21 +14,28 @@ type BaseOverrides struct {
 	KimiRegion string
 }
 
-func BaseOverridesFromEnv(env []EnvironmentValue) BaseOverrides {
-	region := ""
-	if value := firstEnvValue(env, "KIMI_REGION"); value != "" {
-		region = NormalizeKimiRegion(value)
-	}
+func BaseOverridesFromEnv(catalog Catalog, env []EnvironmentValue) BaseOverrides {
 	return BaseOverrides{
 		Global:     firstEnvValue(env, GlobalBaseURLEnv),
-		Anthropic:  firstEnvValue(env, "ANTHROPIC_BASE_URL"),
-		OpenAI:     firstEnvValue(env, "OPENAI_BASE_URL"),
-		DeepSeek:   firstEnvValue(env, "DEEPSEEK_BASE_URL"),
-		KimiRegion: region,
+		Anthropic:  firstEnvValue(env, FirstBaseURLEnv(catalog, "anthropic")),
+		OpenAI:     firstEnvValue(env, FirstBaseURLEnv(catalog, "openai")),
+		DeepSeek:   firstEnvValue(env, FirstBaseURLEnv(catalog, "deepseek")),
+		KimiRegion: NormalizeKimiRegion(firstEnvValue(env, RegionEnv(catalog, "kimi"))),
 	}
 }
 
+func FirstBaseURLEnv(catalog Catalog, id string) string {
+	names := BaseURLEnv(catalog, id)
+	if len(names) == 0 {
+		return ""
+	}
+	return names[0]
+}
+
 func firstEnvValue(env []EnvironmentValue, name string) string {
+	if name == "" {
+		return ""
+	}
 	for _, held := range env {
 		if held.Name == name {
 			return held.Value
@@ -73,7 +80,7 @@ func BaseURLWithOverrides(overrides BaseOverrides, providerID, wire string) stri
 		if UsesVersionedRoute(providerID, wire) {
 			return NormalizeVersionedBaseURL(overrides.Global)
 		}
-		return overrides.Global
+		return strings.TrimRight(overrides.Global, "/")
 	}
 	switch ProviderArm(providerID, wire) {
 	case "anthropic":
@@ -122,15 +129,12 @@ func KimiRegion(overrides BaseOverrides, stored string) string {
 }
 
 func ResolveBaseURL(catalog Catalog, env []EnvironmentValue, id, wire, region string) (string, bool) {
-	overrides := BaseOverridesFromEnv(env)
+	overrides := BaseOverridesFromEnv(catalog, env)
 	if override := BaseURLWithOverrides(overrides, id, wire); override != "" {
 		return override, true
 	}
-	switch ProviderArm(id, wire) {
-	case "kimi":
+	if ProviderArm(id, wire) == "kimi" {
 		return BaseURL(catalog, id, wire, KimiRegion(overrides, region))
-	case "anthropic", "openai", "deepseek", "openai-codex":
-		return BaseURL(catalog, id, wire, "")
 	}
-	return BaseURL(catalog, id, wire, region)
+	return BaseURL(catalog, id, wire, "")
 }
