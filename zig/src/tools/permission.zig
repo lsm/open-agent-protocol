@@ -176,6 +176,13 @@ pub const PermissionEngine = struct {
         return self.evaluateCall(call);
     }
 
+    pub fn evaluateTool(self: *Self, operation: Operation, tool_name: []const u8, args_json: []const u8) PermissionDecision {
+        if (self.bypass_all) return .allow;
+        const call = parseToolCallOf(self.allocator, operation, tool_name, args_json) catch return .prompt;
+        defer deinitParsedToolCall(self.allocator, call);
+        return self.evaluateCall(call);
+    }
+
     pub fn evaluateCall(self: *Self, call: ToolCall) PermissionDecision {
         if (self.bypass_all) return .allow;
         if (self.findPersisted(call)) |decision| return decision;
@@ -185,6 +192,13 @@ pub const PermissionEngine = struct {
     pub fn approve(self: *Self, tool_name: []const u8, args_json: []const u8) !ApprovalDecision {
         if (self.bypass_all) return .approve;
         const call = parseToolCall(self.allocator, tool_name, args_json) catch return .reject;
+        defer deinitParsedToolCall(self.allocator, call);
+        return try self.approveCall(call);
+    }
+
+    pub fn approveTool(self: *Self, operation: Operation, tool_name: []const u8, args_json: []const u8) !ApprovalDecision {
+        if (self.bypass_all) return .approve;
+        const call = parseToolCallOf(self.allocator, operation, tool_name, args_json) catch return .reject;
         defer deinitParsedToolCall(self.allocator, call);
         return try self.approveCall(call);
     }
@@ -356,10 +370,19 @@ pub const PermissionEngine = struct {
 };
 
 pub fn parseToolCall(allocator: std.mem.Allocator, tool_name: []const u8, args_json: []const u8) !ToolCall {
+    return parseToolCallOf(allocator, .unknown, tool_name, args_json);
+}
+
+pub fn resolveOperation(declared: Operation, tool_name: []const u8) Operation {
+    if (declared != .unknown) return declared;
+    return inferOperation(tool_name);
+}
+
+pub fn parseToolCallOf(allocator: std.mem.Allocator, declared: Operation, tool_name: []const u8, args_json: []const u8) !ToolCall {
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, args_json, .{});
     defer parsed.deinit();
 
-    const operation = inferOperation(tool_name);
+    const operation = resolveOperation(declared, tool_name);
     var path: ?[]u8 = null;
     errdefer if (path) |owned| allocator.free(owned);
     var command: ?[]u8 = null;

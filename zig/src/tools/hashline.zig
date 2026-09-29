@@ -12,8 +12,8 @@ pub const schema_edit =
     \\{"type":"object","properties":{"description":{"type":"string","description":"Why this tool call is needed and what information or change it is intended to produce."},"workspace_root":{"type":"string"},"path":{"type":"string"},"operation":{"type":"string","enum":["replace_range","insert_before","insert_after","delete_range"]},"start_line":{"type":"integer","minimum":1},"start_hash":{"type":"string"},"end_line":{"type":"integer","minimum":1},"end_hash":{"type":"string"},"replacement":{"type":"string"},"preview_only":{"type":"boolean"}},"required":["description","workspace_root","path","operation","start_line","start_hash"],"additionalProperties":false}
 ;
 
-pub const read_tool = agent.AgentTool{ .label = "Hashline Read", .name = "hashline_read", .description = "Read a workspace file line range with stable SHA-256 per-line anchors for large-file edits.", .short_description = "Read line range with SHA-256 anchors.", .parameters_schema_json = schema_read, .execute = readExecute };
-pub const edit_tool = agent.AgentTool{ .label = "Hashline Edit", .name = "hashline_edit", .description = "Preview or apply hash-anchored structured edits. Edits reject stale line anchors before writing.", .short_description = "Edit line range with anchor checks.", .parameters_schema_json = schema_edit, .execute = editExecute };
+pub const read_tool = agent.AgentTool{ .label = "Hashline Read", .name = "hashline_read", .description = "Read a workspace file line range with stable SHA-256 per-line anchors for large-file edits.", .short_description = "Read line range with SHA-256 anchors.", .parameters_schema_json = schema_read, .execute = readExecute, .operation = .read };
+pub const edit_tool = agent.AgentTool{ .label = "Hashline Edit", .name = "hashline_edit", .description = "Preview or apply hash-anchored structured edits. Edits reject stale line anchors before writing.", .short_description = "Edit line range with anchor checks.", .parameters_schema_json = schema_edit, .execute = editExecute, .operation = .write };
 
 const Operation = tool_types.HashlineEditOperation;
 const max_read_bytes: usize = common.max_file_bytes;

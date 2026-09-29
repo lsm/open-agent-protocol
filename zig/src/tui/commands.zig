@@ -468,6 +468,7 @@ fn handleAbort(ctx: CommandContext, command: Command) !CommandResult {
             return .{ .output = try ctx.allocator.dupe(u8, "Nothing to abort — agent is idle.") };
         }
         ctx.state.status.streaming = false;
+        ctx.state.telemetry.rate.messageAborted();
         ctx.state.stream_aborted = true;
         ctx.state.clearPendingSteers();
         ctx.state.clearPendingFollowUps();

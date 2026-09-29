@@ -171,6 +171,11 @@ fn ownRevisions(arena: std.mem.Allocator, refused: *hubmod.OpenRefusal) std.mem.
     refused.current_revision = try arena.dupe(u8, refused.current_revision);
 }
 
+fn featureOnly(arena: std.mem.Allocator, reason: contract.Refusal) std.mem.Allocator.Error![]oap_types.DetailEntry {
+    if (reason.feature.len == 0) return &.{};
+    return try arena.dupe(oap_types.DetailEntry, &.{.{ .key = "feature", .value = reason.feature }});
+}
+
 fn requireStringOrNull(root: std.json.ObjectMap, name: []const u8) Error!void {
     const value = member(root, name) orelse return;
     if (value == .null or value == .string) return;
@@ -692,20 +697,12 @@ pub const Frontend = struct {
                 .{ .key = "current_revision", .value = refused.current_revision },
             })),
             error.UnsupportedFeature, error.ToolCatalogUnavailable => try refusalWith(arena, "unsupported_feature", "the adapter does not advertise a feature the request elected", try detailForReason(arena, refused.reason)),
-            error.CapabilityDegraded => try refusalWith(arena, "capability_degraded", "a feature the request did not opt into is degraded", try detailForReason(arena, refused.reason)),
+            error.CapabilityDegraded => try refusalWith(arena, "capability_degraded", "a feature the request did not opt into is degraded", try featureOnly(arena, refused.reason)),
             error.AdapterDescriptorUnbound => .{ .code = "internal", .message = "the adapter descriptor carries no capability revision" },
             error.BackendFailed => .{ .code = "probe_failed", .message = "the adapter's probe refused" },
             error.OutOfMemory => error.OutOfMemory,
             else => .{ .code = "open_failed", .message = @errorName(err) },
         };
-    }
-
-    fn registeredRevision(self: *Frontend, arena: std.mem.Allocator, adapter: []const u8) ![]const u8 {
-        const listed = try self.hub.listing(arena);
-        for (listed) |status| {
-            if (std.mem.eql(u8, status.name, adapter)) return status.revision;
-        }
-        return "";
     }
 
     fn models(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8, degraded: []const []const u8) !Outcome {
