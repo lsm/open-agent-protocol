@@ -135,7 +135,7 @@ func isOpenRouterURL(baseURL string, hasBaseURL bool) bool {
 }
 
 func isChutesURL(baseURL string, hasBaseURL bool) bool {
-	return holdsURL(baseURL, hasBaseURL, "chutes.ai")
+	return isHostOrSubdomain(baseURL, hasBaseURL, "chutes.ai")
 }
 
 func isQwenURL(baseURL string, hasBaseURL bool) bool {
