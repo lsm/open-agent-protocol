@@ -983,11 +983,11 @@ pub const AppState = struct {
             .agent_start => {
                 self.status.streaming = true;
                 self.markStreamingStarted();
+                self.telemetry.rate.runStarted();
             },
             .turn_start => {
                 self.status.streaming = true;
                 self.markStreamingStarted();
-                self.telemetry.rate.runStarted();
                 self.status.turn_count += 1;
                 self.cleanupActiveTranscriptEntries();
                 self.retireToolOccurrences();
@@ -2354,6 +2354,29 @@ test "a turn's tool phase shows the turn's own figure, not a lagging average" {
 
     try std.testing.expectEqual(@as(u64, 100), rate.turnShown().output_tokens);
     try std.testing.expectEqual(@as(u64, 500), rate.average.output_tokens);
+}
+
+test "a second turn's thinking still shows the first turn's figure" {
+    var state = AppState.init(std.testing.allocator);
+    defer state.deinit();
+
+    try state.applyEvent(.{ .agent_start = .{} });
+    try state.applyEvent(.{ .turn_start = .{} });
+    try state.applyEvent(.{ .message_start = .{ .role = .assistant } });
+    const began = state.telemetry.rate.message_first_ms;
+    state.telemetry.rate.produced(400, began + 2_000);
+    state.telemetry.rate.messageEnded(began + 2_000, 400);
+    try state.applyEvent(.{ .turn_end = .{ .stop_reason = .stop } });
+    try std.testing.expectEqual(@as(u64, 200), state.telemetry.rate.previous.perSecond());
+
+    try state.applyEvent(.{ .turn_start = .{} });
+    try state.applyEvent(.{ .message_start = .{ .role = .assistant } });
+    state.telemetry.rate.produced(80, state.telemetry.rate.message_first_ms + 40);
+    state.telemetry.rate.liveAt(state.telemetry.rate.message_first_ms + 200);
+
+    try std.testing.expect(!state.telemetry.rate.live.hasFigure());
+    try std.testing.expectEqual(@as(u64, 400), state.telemetry.rate.turnShown().output_tokens);
+    try std.testing.expectEqual(@as(u64, 2_000), state.telemetry.rate.turnShown().stream_ms);
 }
 
 test "a message that thinks for half a minute is measured from when it began" {

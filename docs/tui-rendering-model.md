@@ -200,7 +200,11 @@ code paths; add a transcript row instead.
   because usage only arrives at `message_end` — then the turn in progress, which reads
   its own accumulated figure so a tool phase shows the message just streamed rather
   than an average that will not fold it in until the turn ends, and once the run ends
-  the last turn that produced anything. The average is the mean since the last model
+  the last turn that produced anything, which is why a run of two or more turns still
+  shows the last turn that actually produced tokens. A run begins at `agent_start` and
+  clears that standing figure once per run, not once per turn, so a turn that is
+  thinking shows the turn before it rather than a blank. The average is the mean since
+  the last model
   switch, so an idle line answers how fast this model is rather than what one reply
   managed. When the row is short the average is dropped first and the turn figure
   second, the way the context segment shrinks, so the row loses the summary before it
