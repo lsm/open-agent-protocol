@@ -6229,8 +6229,7 @@ const MockProvider = struct {
         s.* = event_stream.AssistantMessageEventStream.init(a);
         if (options) |opts| {
             if (opts.requires_owned_stream_events) {
-                s.owns_events = true;
-                s.clone_event_fn = ai_types.cloneAssistantMessageEvent;
+                s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
             }
         }
 

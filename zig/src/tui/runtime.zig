@@ -152,7 +152,7 @@ fn requestTitleText(allocator: std.mem.Allocator, protocol: agent.ProtocolClient
             },
             else => {},
         }
-        if (stream.owns_events) ai_types.deinitAssistantMessageEvent(allocator, &owned_event);
+        if (stream.ownership.isOwned()) ai_types.deinitAssistantMessageEvent(allocator, &owned_event);
     }
     if (reply == null) reply = try stream.cloneResult(allocator);
     const final = reply orelse return null;
