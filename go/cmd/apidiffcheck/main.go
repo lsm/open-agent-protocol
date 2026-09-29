@@ -28,7 +28,7 @@ func main() {
 func run(args []string, stdout io.Writer) error {
 	flags := flag.NewFlagSet("apidiffcheck", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	description := flags.String("description", "", "a file holding the pull request description, whose Breaking changes section records an incompatible change (default: PR_BODY, which the workflow sets from the event payload)")
+	description := flags.String("description", "", "path to a file holding the pull request description, whose Breaking changes section records an incompatible change (default: the PR_BODY environment variable, which is also a PATH -- the event payload holds the body's text, so the workflow writes it to a file first)")
 	baseRoot := flags.String("base-root", "", "a checkout of the merge base, for the per-pull-request comparison (default: PR_BASE_ROOT)")
 	root := flags.String("root", ".", "the module root at the pull request head")
 	if err := flags.Parse(args); err != nil {
@@ -37,24 +37,28 @@ func run(args []string, stdout io.Writer) error {
 	if *description == "" {
 		*description = os.Getenv("PR_BODY")
 	}
+	if *description == "" {
+		return errors.New("the gate needs the pull request description: pass -description, or set PR_BODY to the path of a file holding it")
+	}
 	if *baseRoot == "" {
 		*baseRoot = os.Getenv("PR_BASE_ROOT")
 	}
 	if *baseRoot == "" {
 		return errors.New("the gate needs a checkout of the merge base: pass -base-root, or set PR_BASE_ROOT in the workflow")
 	}
-	return check(*root, *baseRoot, readDescription(*description), stdout)
+	body, err := readDescription(*description)
+	if err != nil {
+		return err
+	}
+	return check(*root, *baseRoot, body, stdout)
 }
 
-func readDescription(path string) string {
-	if path == "" {
-		return ""
-	}
+func readDescription(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("reading the pull request description at %s: %w", path, err)
 	}
-	return string(data)
+	return string(data), nil
 }
 
 func check(root, baseRoot, description string, stdout io.Writer) error {
@@ -210,7 +214,11 @@ func writeExport(root, importPath, out string) error {
 	var stderr bytes.Buffer
 	command.Stderr = &stderr
 	if err := command.Run(); err != nil {
-		return errors.New(strings.TrimSpace(stderr.String()))
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = err.Error()
+		}
+		return errors.New(detail)
 	}
 	return nil
 }

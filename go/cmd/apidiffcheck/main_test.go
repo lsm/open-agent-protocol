@@ -110,10 +110,30 @@ func TestTheRecordedSectionIsReadFromTheFileTheWorkflowWrites(t *testing.T) {
 	}
 }
 
-func TestAnUnreadableDescriptionRecordsNothingRatherThanFailing(t *testing.T) {
-	missing := filepath.Join(t.TempDir(), "absent.md")
-	if got := missingFrom(incompatible(protocolBreak, testModule), recordedChanges(readDescription(missing))); len(got) != 1 {
-		t.Fatalf("missing %v, want one: an absent description is not a record", got)
+func TestAnUnreadableDescriptionIsAnErrorRatherThanAMissingRecord(t *testing.T) {
+	absent := filepath.Join(t.TempDir(), "absent.md")
+	if _, err := readDescription(absent); err == nil {
+		t.Fatal("a description path that cannot be read was accepted")
+	}
+	notADescription := filepath.Join(t.TempDir(), "body.md")
+	if err := os.WriteFile(notADescription, []byte("## Breaking changes\n\n- `go/protocol` gone\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	body, err := readDescription(notADescription)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := missingFrom(incompatible(protocolBreak, testModule), recordedChanges(body)); len(got) != 0 {
+		t.Fatalf("missing %v, want none: the file's section is the record", got)
+	}
+}
+
+func TestTheGateRefusesToRunWithoutADescription(t *testing.T) {
+	t.Setenv("PR_BODY", "")
+	t.Setenv("PR_BASE_ROOT", t.TempDir())
+	err := run(nil, os.Stdout)
+	if err == nil || !strings.Contains(err.Error(), "needs the pull request description") {
+		t.Fatalf("err = %v, want one naming the description", err)
 	}
 }
 
@@ -138,13 +158,22 @@ func TestTheModuleNameComesFromGoMod(t *testing.T) {
 }
 
 func TestTheGateRefusesToRunWithoutABaseCheckout(t *testing.T) {
-	err := run([]string{"-base-root", ""}, os.Stdout)
+	description := filepath.Join(t.TempDir(), "body.md")
+	if err := os.WriteFile(description, []byte("## Breaking changes\n\n- none\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := run([]string{"-base-root", "", "-description", description}, os.Stdout)
 	if err == nil || !strings.Contains(err.Error(), "needs a checkout of the merge base") {
 		t.Fatalf("err = %v, want one naming the merge base", err)
 	}
 }
 
 func TestTheBaseCheckoutComesFromTheEnvironment(t *testing.T) {
+	description := filepath.Join(t.TempDir(), "body.md")
+	if err := os.WriteFile(description, []byte("## Breaking changes\n\n- none\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PR_BODY", description)
 	t.Setenv("PR_BASE_ROOT", "")
 	if err := run(nil, os.Stdout); err == nil || !strings.Contains(err.Error(), "needs a checkout of the merge base") {
 		t.Fatalf("err = %v, want one naming the merge base", err)
@@ -170,16 +199,20 @@ func TestPackageDirsListTheTreeTheyArePointedAt(t *testing.T) {
 
 func TestAnAddedPackageIsSkippedRatherThanDiffedAgainstAStaleExport(t *testing.T) {
 	base := []string{"go/protocol"}
-	head := []string{"go/protocol", "go/adapter/newharness"}
+	head := []string{"go/adapter/newharness", "go/protocol"}
 	added := setDifference(head, base)
 	if len(added) != 1 {
 		t.Fatalf("added %v, want one package", added)
 	}
-	baseDir := t.TempDir()
-	if _, err := apidiffReport(baseDir, filepath.Join(t.TempDir(), "absent"), testModule, head, added); err == nil {
-		t.Fatal("a base that cannot be loaded was accepted for go/protocol")
-	} else if !strings.Contains(err.Error(), "go/protocol") {
-		t.Fatalf("err = %v, want one naming the package", err)
+	report, err := apidiffReport(t.TempDir(), filepath.Join(t.TempDir(), "absent"), testModule, []string{"go/adapter/newharness"}, added)
+	if err != nil {
+		t.Fatalf("the added package was asked about, so the skip did not happen: %v", err)
+	}
+	if report != "" {
+		t.Fatalf("report = %q, want empty", report)
+	}
+	if _, err := apidiffReport(t.TempDir(), filepath.Join(t.TempDir(), "absent"), testModule, []string{"go/adapter/newharness"}, nil); err == nil {
+		t.Fatal("the same call without the added set was accepted, so the test proves nothing about the skip")
 	}
 }
 
