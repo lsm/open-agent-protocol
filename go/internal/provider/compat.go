@@ -127,7 +127,7 @@ func isCerebrasURL(baseURL string, hasBaseURL bool) bool {
 }
 
 func isZaiURL(baseURL string, hasBaseURL bool) bool {
-	return holdsURL(baseURL, hasBaseURL, "api.zukijourney.com") || holdsURL(baseURL, hasBaseURL, "zai")
+	return isHostOrSubdomain(baseURL, hasBaseURL, "zukijourney.com")
 }
 
 func isOpenRouterURL(baseURL string, hasBaseURL bool) bool {
@@ -139,7 +139,8 @@ func isChutesURL(baseURL string, hasBaseURL bool) bool {
 }
 
 func isQwenURL(baseURL string, hasBaseURL bool) bool {
-	return holdsURL(baseURL, hasBaseURL, "dashscope") || holdsURL(baseURL, hasBaseURL, "qwen")
+	return isHostOrSubdomain(baseURL, hasBaseURL, "dashscope.aliyuncs.com") ||
+		isHostOrSubdomain(baseURL, hasBaseURL, "dashscope-intl.aliyuncs.com")
 }
 
 func isDeepSeekURL(baseURL string, hasBaseURL bool) bool {
