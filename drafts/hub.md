@@ -401,18 +401,26 @@ error. That is stated because the four reasons are the whole set.
 not a connection to itself.** One connection at a time is enough for the
 read-only routes and wrong for `events`: a stream holds its connection for as
 long as the client listens, so a single-connection daemon answers exactly one
-SSE subscriber and then serves nothing else, forever. The bound goes in before
-the first streaming route, and it is three numbers rather than one — how many
-connections may be open at once, how long a request may hold one before the
-bound is reached, and what a client is told when the bound is reached. The
-last is the part that is protocol-adjacent: a client that receives `busy` over
-HTTP has to know whether to wait or to reconnect, so the code and the
-`Retry-After` it carries are named here rather than chosen per port. A
-per-connection arena is what bounds memory once several are open, and it is
-why the count cannot be unbounded.
+SSE subscriber and then serves nothing else, forever. So the number of
+connections open at once is bounded, and the bound is a transport fact rather
+than a protocol one — the client cannot observe how many are open, only that
+its own was answered.
 
-Go's hub has this and names its own numbers; a port may choose its own within
-"a bounded number", but it may not leave the client guessing about `busy`.
+**Reaching the bound does not get a new wire code**, and this is the part that
+was wrong in the first draft of this paragraph. The rule below is that a port
+may not invent an admission ceiling, and inventing one is exactly what a
+`busy` with a `Retry-After` would be: a client that receives it has no way to
+know whether to wait or to reconnect, because the draft's codes are the ones
+the core defines and none of them means "the daemon is full". A port that
+reaches its bound therefore refuses the connection the way it refuses anything
+else, and **what a client is told at the bound is not decided here** — it needs
+a code the core defines, which is [G13](#known-gaps). Until then a port may
+choose, and the choice is a divergence rather than a rule.
+
+Go has no bound of its own: `go/cmd/goap/serve.go` runs a plain `http.Server`
+over `net.Listen` and `servehttp` does no connection accounting, which the
+bounds section below already records. So this rule is new, it is this port's
+rule, and a reader sent to Go for the numbers will find none.
 
 Every route that reads a body requires `Content-Type: application/json`, and
 the body is read as UTF-8 whatever `charset` the header names. RFC 8259 §11
@@ -517,12 +525,24 @@ subscription ceiling, and a connection that stops reading is ended by
 the body cap, a 30 s header read and a 2 min idle timeout, none of which is
 protocol. **A port may not invent an admission ceiling on the HTTP surface**,
 because a client that receives `busy` over HTTP would have no way to know
-whether to wait or to reconnect.
+whether to wait or to reconnect. That rule is about the **wire**, and it
+stands: no port may answer a client with a status the draft does not define.
+
+It is *not* a statement that a port may serve an unbounded number of
+connections. A port must bound them, because a stream holds its connection
+for as long as the client listens and a daemon that serves one connection at
+a time answers exactly one subscriber and then nothing else, forever. **The
+bound itself is a transport choice and belongs to the table below rather than
+to the wire**: a port picks the number, and what a client is told when the
+bound is reached is undefined until a code for it exists, which is
+[G13](#known-gaps). Neither half contradicts the other — a port bounds its
+concurrency and invents no code for having done so.
 
 | bound | value | pinned by |
 | --- | --- | --- |
 | Request body | 16 MiB | `TestRequestBudgetMatchesHTTP` |
 | Per-subscription mailbox | 64 envelopes, as the core defines it | `TestHubSubscriptionQueueOverflow` |
+| Concurrent connections | a port's own number; not on the wire, and no code for reaching it | none — Go has no bound at all (`serve.go` runs a plain `http.Server`), and this draft has no code for it either. [G13](#known-gaps) names what a port does meanwhile |
 
 A 30 s header read and a 2 min idle timeout keep a socket from being held open
 forever. Neither is protocol — no client observes them, and a port may choose
@@ -1161,6 +1181,21 @@ here; each was a place a differential test would otherwise not see.
   daemon's read fails rather than the client's write — and pins both the
   `400` and the code. The differential job for #388 should still carry a
   truncated-request case: this test pins the code, not the parity.
+
+- **G13 — open.** A port must bound how many connections it serves at once,
+  because a stream holds its connection for as long as the client listens and
+  an unbounded daemon is one nobody can bound, but **nothing says what a client
+  is told when the bound is reached**. The draft's codes are the ones the core
+  defines and none of them means "the daemon is full", and the rule above
+  forbids inventing one — so a port that reaches its bound has no correct
+  answer available to it. Go has the same absence in a worse form: it has no
+  bound at all. What closes this is a code in the core for a daemon at its
+  connection bound, and a `Test` that pins it on both trees; until then a port
+  refuses the connection the way it refuses anything else and records the
+  choice as a divergence. The Zig daemon's own bound — one connection, polled
+  at 50 ms — is pinned by `the accept poll reports an idle listener as idle and
+  a waiting one as waiting` on the trust-model side of this work, and that test
+  pins the poll, not the bound.
 
 One asymmetry is deliberate and is **not** a gap: a cross-origin refusal exists
 on the HTTP transport alone. A stdio peer is a separate process on the far side

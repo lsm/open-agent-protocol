@@ -323,7 +323,7 @@ test "an escape that is not one is a refusal, not a name" {
     }
 }
 
-test "the matcher allocates nothing it did not have to, and frees it all" {
+test "a request with a name to decode survives every allocation failing, and leaks nothing" {
     try testing.checkAllAllocationFailures(testing.allocator, struct {
         fn drive(allocator: std.mem.Allocator) !void {
             var arena_state = std.heap.ArenaAllocator.init(allocator);
