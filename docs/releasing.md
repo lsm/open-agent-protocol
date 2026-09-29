@@ -80,9 +80,33 @@ Those two sections are now deleted. They were the most complete release notes in
 the file, and deleting them is the price of the decision: keeping them would mean
 either tagging `v0.2.0` after four alphas already shipped past it, or leaving
 `[0.2.0]` above every version that exists, which is the disagreement itself.
-Their content is not lost — every entry describes work that is on `main` and in
-the repository's history, and the next `--write` re-collects from the last real
-tag (`v0.1.0-alpha.4`), so the next release section covers all of it again.
+
+**What is actually lost: the prose, permanently.** The 37 pull requests those
+sections cite are `#184` through `#243`, all merged 2026-09-05 to 2026-09-11 —
+before `v0.1.0-alpha.4` (2026-09-27). The next `--write` collects everything
+merged *since the last real tag*, so **none of those 37 is in the list it will
+build**; checked, zero of the 37 appear in the 142 pull requests a
+`0.1.0-alpha.5` release actually collects. The re-collection is not a recovery
+path for this content. What survives is the work itself, on `main` and in the
+history, and the notes in the commit that removed them.
+
+That search returns three commits, because the string was added, merged and
+removed; the **newest** is the one that removed it, and its parent has the
+sections intact:
+
+```sh
+removed=$(git log --format=%H -S'## [0.2.0] - 2026-09-11' -- CHANGELOG.md | head -1)
+git show "$removed"^:CHANGELOG.md
+```
+
+Read the *newest* on purpose. `-S` reports commits where the string's **count**
+changed, so the two commits that *added* it come back too: `9f351fe1` (the
+`v0.2.0` prep) and `4a523bf3` (the makai merge). Neither is the removal, and
+neither of their parents has an `[0.2.0]` section at all — so picking one of them
+looks right and yields a file with nothing in it.
+
+If those notes are ever wanted back, that is where they are — a deliberate
+revert of one commit, not a regeneration.
 
 `package.json` and `package-lock.json` are `0.1.0-alpha.5` so the declared
 version and the next tag agree. That value is not cosmetic:
