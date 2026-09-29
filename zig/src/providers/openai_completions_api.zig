@@ -1788,7 +1788,7 @@ fn thinkingLevelToString(level: ai_types.ThinkingLevel) []const u8 {
         .low => "low",
         .medium => "medium",
         .high => "high",
-        .xhigh => "xhigh",
+        .xhigh, .max => "xhigh",
     };
 }
 

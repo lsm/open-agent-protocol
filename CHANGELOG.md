@@ -122,6 +122,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     before its `output_config.effort`; and a thinking budget is guarded by
     `max_tokens > 1024`, defaulted to 1024, and clamped to
     `[1024, max_tokens - 1]`, so a budget the api would reject cannot go out.
+- **`/think` is back in the TUI**, as `/think [off|low|medium|high|xhigh|max]`: with a level it sets it, and alone it shows the current one. Shift+Tab still cycles the levels, and the status line now shows `off` instead of hiding the level.
+
+- **A `max` thinking level, above `xhigh`.** It sends Anthropic's `max` effort, the effort `xhigh` already sent there; OpenAI's highest level, `xhigh`, or `high` on a model without it; and the largest budget or level elsewhere. The OAP provider profile has no `max`, so a provider reached through it gets `xhigh`.
+
 - **`go/internal/provider`: the `openai-completions` client, part of #358 step 2.**
   A Go program can now drive an OpenAI-compatible endpoint without a Zig binary in
   the path. The package is `internal` on purpose: it is not yet a public surface,
@@ -769,6 +773,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shrinking composer no longer leaves blank rows behind.
 
 ### Fixed
+- **A shell command's output under 10 KB now reaches the model whole.** With compact output on, which the TUI turns on by default, `shell_execute` stored every output as an artifact whatever its size and returned only a summary: about 430 bytes of retrieval instructions, then the first and last 512 bytes. Output under 1 KB came back about three times its size, output between 1 and 10 KB lost its middle, and the model often had to call `artifact_retrieve` next to read it. The shell tool no longer takes `compact_output`, and only output over its 10 KB limit is stored as an artifact.
+
 - `contract.Session`'s `models` and `tools` now report the revision the lister served
   the catalog under, beside the catalog itself, as Go's `base.Catalog` and
   `base.ToolCatalog` do. The hub stamped the answer with the **adapter descriptor's**

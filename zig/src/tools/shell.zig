@@ -5,7 +5,7 @@ const common = @import("tools/common");
 const process_runner = @import("tools/process_runner");
 
 pub const schema_execute =
-    \\{"type":"object","properties":{"description":{"type":"string","description":"Why this tool call is needed and what information or change it is intended to produce."},"workspace_root":{"type":"string"},"command":{"type":"string"},"timeout_ms":{"type":"integer","minimum":1},"compact_output":{"type":"boolean"}},"required":["description","workspace_root","command"],"additionalProperties":false}
+    \\{"type":"object","properties":{"description":{"type":"string","description":"Why this tool call is needed and what information or change it is intended to produce."},"workspace_root":{"type":"string"},"command":{"type":"string"},"timeout_ms":{"type":"integer","minimum":1}},"required":["description","workspace_root","command"],"additionalProperties":false}
 ;
 
 pub const execute_tool = agent.AgentTool{
@@ -36,7 +36,6 @@ pub fn execute(
     const workspace_root = try common.requiredString(obj, "workspace_root");
     const command = try common.requiredString(obj, "command");
     const timeout_ms = @min(common.optionalU64(obj, "timeout_ms", 30_000), @as(u64, std.math.maxInt(i64)));
-    const compact = common.optionalBool(obj, "compact_output", false);
 
     var dir = try common.openWorkspace(workspace_root, false);
     defer dir.close(common.defaultIo());
@@ -91,7 +90,7 @@ pub fn execute(
         \\{s}
     , .{ result.stdout, result.stderr });
     defer allocator.free(text);
-    const made = try common.makeTextResultWithArtifact(allocator, .{ .tool_name = "shell_execute", .call_id = tool_call_id, .text = text, .details_json = details, .force_artifact = compact });
+    const made = try common.makeTextResultWithArtifact(allocator, .{ .tool_name = "shell_execute", .call_id = tool_call_id, .text = text, .details_json = details });
     defer if (made.artifact_path) |path| allocator.free(path);
     return made.result;
 }
@@ -111,12 +110,12 @@ test "shell execute supports filesystem root workspace" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var artifact_root = common.TestArtifactRoot.init();
     defer artifact_root.deinit();
-    var result = try execute("call-root", "{\"workspace_root\":\"/\",\"command\":\"pwd && ls -al\",\"timeout_ms\":10000,\"compact_output\":true}", null, null, null, std.testing.allocator);
+    var result = try execute("call-root", "{\"workspace_root\":\"/\",\"command\":\"pwd\",\"timeout_ms\":10000}", null, null, null, std.testing.allocator);
     defer result.deinit(std.testing.allocator);
-    try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, "output stored as artifact") != null);
+    try std.testing.expect(std.mem.startsWith(u8, result.content.slice()[0].text.text, "stdout:\n/\n"));
 }
 
-test "shell execute stores large output as artifact and supports compact output" {
+test "shell execute stores only output over the limit as an artifact, whatever compact_output says" {
     var artifact_root = common.TestArtifactRoot.init();
     defer artifact_root.deinit();
     const cwd = try std.process.currentPathAlloc(common.defaultIo(), std.testing.allocator);
@@ -129,19 +128,13 @@ test "shell execute stores large output as artifact and supports compact output"
     try std.testing.expect(std.mem.indexOf(u8, large.content.slice()[0].text.text, "mode \"preview\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, large.content.slice()[0].text.text, "full_for_context") != null);
     try std.testing.expect(std.mem.indexOf(u8, large.getDetailsJson().?, "\"compressed\":true") != null);
-    const compact_args = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"command\":\"echo ok\",\"compact_output\":true}}", .{cwd});
-    defer std.testing.allocator.free(compact_args);
-    var compact = try execute("call-compact", compact_args, null, null, null, std.testing.allocator);
-    defer compact.deinit(std.testing.allocator);
-    try std.testing.expect(std.mem.indexOf(u8, compact.content.slice()[0].text.text, "output stored as artifact") != null);
-    try std.testing.expect(std.mem.indexOf(u8, compact.content.slice()[0].text.text, "mode \"preview\"") != null);
-    try std.testing.expectEqual(@as(usize, 1), compact.artifacts.slice().len);
-    const compact_large_args = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"command\":\"python3 - <<'PY'\\nimport sys\\nsys.stdout.write('y' * 11000)\\nPY\",\"compact_output\":true}}", .{cwd});
-    defer std.testing.allocator.free(compact_large_args);
-    var compact_large = try execute("call-compact-large", compact_large_args, null, null, null, std.testing.allocator);
-    defer compact_large.deinit(std.testing.allocator);
-    try std.testing.expect(std.mem.indexOf(u8, compact_large.content.slice()[0].text.text, "mode \"preview\"") != null);
-    try std.testing.expectEqual(@as(usize, 1), compact_large.artifacts.slice().len);
+    try std.testing.expectEqual(@as(usize, 1), large.artifacts.slice().len);
+    const small_args = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"command\":\"echo ok\",\"compact_output\":true}}", .{cwd});
+    defer std.testing.allocator.free(small_args);
+    var small = try execute("call-small", small_args, null, null, null, std.testing.allocator);
+    defer small.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.startsWith(u8, small.content.slice()[0].text.text, "stdout:\nok\n"));
+    try std.testing.expectEqual(@as(usize, 0), small.artifacts.slice().len);
 }
 
 test "shell execute reports timeout and clamps large timeout" {

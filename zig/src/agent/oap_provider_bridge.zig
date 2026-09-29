@@ -195,7 +195,22 @@ fn reasoningBudget(level: ai_types.ThinkingLevel, budgets: ?ai_types.ThinkingBud
         .medium => b.medium,
         .high => b.high,
         .xhigh => b.xhigh,
+        .max => b.max,
     };
+}
+
+fn reasoningEffortName(level: ai_types.ThinkingLevel) []const u8 {
+    return switch (level) {
+        .max => "xhigh",
+        else => @tagName(level),
+    };
+}
+
+test "reasoningEffortName sends max as xhigh and every other level by name" {
+    try std.testing.expectEqualStrings("xhigh", reasoningEffortName(.max));
+    try std.testing.expectEqualStrings("xhigh", reasoningEffortName(.xhigh));
+    try std.testing.expectEqualStrings("medium", reasoningEffortName(.medium));
+    try std.testing.expectEqualStrings("off", reasoningEffortName(.off));
 }
 
 fn createRequest(ctx: *ThreadContext, arena: std.mem.Allocator) ![]u8 {
@@ -215,7 +230,7 @@ fn createRequest(ctx: *ThreadContext, arena: std.mem.Allocator) ![]u8 {
             .reasoning = if (enabled) provider_types.ReasoningOptions{
                 .enabled = enabled,
                 .budget_tokens = reasoningBudget(ctx.options.thinking_level, ctx.options.thinking_budgets),
-                .effort = @tagName(ctx.options.thinking_level),
+                .effort = reasoningEffortName(ctx.options.thinking_level),
             } else null,
         } },
     };

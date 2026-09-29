@@ -780,6 +780,7 @@ RATIFIED_COMMANDS = (
     "/login",
     "/provider",
     "/permissions",
+    "/think",
     "/resume",
     "/status",
     "/abort",
