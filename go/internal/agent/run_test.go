@@ -430,3 +430,27 @@ func TestATerminalReachesAConsumerThatIsStillReading(t *testing.T) {
 		t.Errorf("a run whose event buffer filled ends with %q, want agent_end: the consumer was still reading", terminal.Kind)
 	}
 }
+
+func TestAFinishedRunReleasesItsOwnContext(t *testing.T) {
+	for i := 0; i < 5; i++ {
+		script := &scripted{turns: []scriptedTurn{textTurn("done")}}
+		run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("hi"))
+		run.Wait()
+		if run.ctx.Err() == nil {
+			t.Fatalf("a run that finished left its context live, so a parent starting many runs keeps one context per run: %v", run.ctx.Err())
+		}
+	}
+}
+
+func TestReleasingTheContextAtTheEndLeavesTheTerminalDelivered(t *testing.T) {
+	script := &scripted{turns: []scriptedTurn{{frames: manyDeltaFrames()}}}
+	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("hi"))
+	events := drain(t, run)
+	terminal := terminalOf(t, events)
+	if terminal.Kind != AgentEnd {
+		t.Errorf("a run that released its own context ends with %q, want agent_end", terminal.Kind)
+	}
+	if terminal.Termination != TerminationClean {
+		t.Errorf("a run that released its own context terminates %q, want a clean finish: releasing the context is not a cancellation", terminal.Termination)
+	}
+}
