@@ -368,27 +368,27 @@ pub fn defaultMaxTokensForRef(provider_id: []const u8, api: []const u8) u32 {
 test "KIMI_REGION still decides the region for a caller that resolves nothing itself" {
     try provider_catalog.blankEnvironment(std.testing.allocator);
     defer compat.clearTestEnv();
-    try std.testing.expectEqualStrings("china", resolveKimiRegion(std.testing.allocator, null));
-    try std.testing.expectEqualStrings("global", resolveKimiRegion(std.testing.allocator, "global"));
-    try std.testing.expectEqualStrings("china", resolveKimiRegion(std.testing.allocator, "china"));
-    try std.testing.expectEqualStrings("global", resolveKimiRegion(std.testing.allocator, "moonshot"));
-    try std.testing.expectEqualStrings("global", resolveKimiRegion(std.testing.allocator, " global "));
-    try std.testing.expectEqualStrings("china", resolveKimiRegion(std.testing.allocator, "mars"));
+    try std.testing.expectEqualStrings("china", try resolveKimiRegion(std.testing.allocator, null));
+    try std.testing.expectEqualStrings("global", try resolveKimiRegion(std.testing.allocator, "global"));
+    try std.testing.expectEqualStrings("china", try resolveKimiRegion(std.testing.allocator, "china"));
+    try std.testing.expectEqualStrings("global", try resolveKimiRegion(std.testing.allocator, "moonshot"));
+    try std.testing.expectEqualStrings("global", try resolveKimiRegion(std.testing.allocator, " global "));
+    try std.testing.expectEqualStrings("china", try resolveKimiRegion(std.testing.allocator, "mars"));
 
     try compat.setTestEnv(std.testing.allocator, kimi_region_env_name, "global");
-    try std.testing.expectEqualStrings("global", resolveKimiRegion(std.testing.allocator, null));
-    try std.testing.expectEqualStrings("global", resolveKimiRegion(std.testing.allocator, "china"));
+    try std.testing.expectEqualStrings("global", try resolveKimiRegion(std.testing.allocator, null));
+    try std.testing.expectEqualStrings("global", try resolveKimiRegion(std.testing.allocator, "china"));
 
     try compat.setTestEnv(std.testing.allocator, kimi_region_env_name, " global ");
-    try std.testing.expectEqualStrings("global", resolveKimiRegion(std.testing.allocator, null));
+    try std.testing.expectEqualStrings("global", try resolveKimiRegion(std.testing.allocator, null));
 
     try compat.setTestEnv(std.testing.allocator, kimi_region_env_name, "mars");
-    try std.testing.expectEqualStrings("global", resolveKimiRegion(std.testing.allocator, "global"));
-    try std.testing.expectEqualStrings("global", resolveKimiRegion(std.testing.allocator, "moonshot"));
+    try std.testing.expectEqualStrings("global", try resolveKimiRegion(std.testing.allocator, "global"));
+    try std.testing.expectEqualStrings("global", try resolveKimiRegion(std.testing.allocator, "moonshot"));
 
     try provider_catalog.blankEnvironment(std.testing.allocator);
-    try std.testing.expectEqualStrings("global", resolveKimiRegion(std.testing.allocator, "moonshot"));
-    try std.testing.expectEqualStrings("china", resolveKimiRegion(std.testing.allocator, null));
+    try std.testing.expectEqualStrings("global", try resolveKimiRegion(std.testing.allocator, "moonshot"));
+    try std.testing.expectEqualStrings("china", try resolveKimiRegion(std.testing.allocator, null));
 }
 
 test "baseUrlWithOverrides resolves canonical provider defaults" {

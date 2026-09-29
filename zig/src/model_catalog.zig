@@ -454,7 +454,7 @@ fn catalogEndpointWithOverrides(
     id: []const u8,
     overrides: provider_base_url.BaseUrlOverrides,
 ) !?CatalogEndpoint {
-    const region = catalogRegion(allocator, null, id);
+    const region = try catalogRegion(allocator, null, id);
     const catalog = catalogTargetInRegion(id, region) orelse return null;
     var merged = overrides;
     if (region) |resolved| merged.kimi_region = resolved;
@@ -2140,7 +2140,7 @@ test "loadProductionModels includes the Kimi model, discovered like any other ro
 test "the Kimi row serves the China base by default and the global base when the region says so" {
     try provider_catalog.blankEnvironment(std.testing.allocator);
     defer compat.clearTestEnv();
-    const china = catalogRegion(std.testing.allocator, null, "kimi");
+    const china = try catalogRegion(std.testing.allocator, null, "kimi");
     try std.testing.expectEqualStrings("china", china.?);
     const china_target = catalogTargetInRegion("kimi", china) orelse return error.TestExpectedTarget;
     try std.testing.expectEqualStrings("https://api.kimi.com/coding", china_target.base_url);
@@ -2189,7 +2189,7 @@ test "KIMI_REGION chooses the region, and an unusable value falls back to the ro
     };
     for (cases) |case| {
         try compat.setTestEnv(std.testing.allocator, kimi_region_env, case.set);
-        const got = catalogRegion(std.testing.allocator, null, "kimi");
+        const got = try catalogRegion(std.testing.allocator, null, "kimi");
         if (!std.mem.eql(u8, case.want, got orelse "")) {
             std.debug.print("\nKIMI_REGION={s} should resolve to {s}\n", .{ case.set, case.want });
         }
@@ -2199,7 +2199,7 @@ test "KIMI_REGION chooses the region, and an unusable value falls back to the ro
 
     try compat.setTestEnv(std.testing.allocator, "KIMI_REGION", "global");
     defer compat.clearTestEnv();
-    const chosen = catalogRegion(std.testing.allocator, null, "kimi");
+    const chosen = try catalogRegion(std.testing.allocator, null, "kimi");
     try std.testing.expectEqualStrings("global", chosen.?);
     const target = catalogTargetInRegion("kimi", chosen) orelse return error.TestExpectedTarget;
     try std.testing.expectEqualStrings("https://api.moonshot.ai", target.base_url);
@@ -2283,7 +2283,7 @@ test "a Kimi listing and the requests that follow use the same credential and th
             );
         }
 
-        const region = catalogRegion(allocator, &storage, kimi_provider_id);
+        const region = try catalogRegion(allocator, &storage, kimi_provider_id);
         try std.testing.expectEqualStrings(case.want_region, region.?);
 
         var listed_base = (try catalogEndpointFromEnvironment(allocator, &storage, kimi_provider_id)).?;
@@ -2342,7 +2342,7 @@ test "the region resolution a user chose at login reaches discovery and the mode
         .provider_data = try allocator.dupe(u8, "region:global"),
     } });
 
-    const region = catalogRegion(allocator, &storage, "kimi");
+    const region = try catalogRegion(allocator, &storage, "kimi");
     try std.testing.expectEqualStrings("global", region.?);
     const target = catalogTargetInRegion("kimi", region) orelse return error.TestExpectedTarget;
     try std.testing.expectEqualStrings("https://api.moonshot.ai", target.base_url);
@@ -2371,7 +2371,7 @@ test "an environment region still wins over the one chosen at login" {
     try compat.setTestEnv(allocator, kimi_region_env, "china");
     defer compat.clearTestEnv();
 
-    const region = catalogRegion(allocator, &storage, "kimi");
+    const region = try catalogRegion(allocator, &storage, "kimi");
     try std.testing.expectEqualStrings("china", region.?);
 }
 
