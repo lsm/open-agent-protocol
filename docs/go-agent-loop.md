@@ -9,7 +9,7 @@ companion to [`go-library.md`](go-library.md): that one lists the packages
 Decision 0038 makes the Go tree native, and #370 is its loop. Until that lands,
 `go/sdk`'s `Agent` runs a loop it does not own — it spawns `oapx serve
 agent,provider --stdio` and projects the other tree's envelopes
-(`go/sdk/oap.go:704`, `oapNext`). Every parity question about the Go loop is
+(`go/sdk/oap.go:712`, `oapNext`). Every parity question about the Go loop is
 therefore a question about `oapx` today, and the step that removes the process
 is the one that makes the Go tree's answers its own. Nothing here claims a
 parity result: it says what the Go tree needs and what the first slice is.
@@ -37,13 +37,19 @@ inner while, and a `switch` on what a turn produced.
 Two facts about the loop are load-bearing and neither is obvious from the
 signature. The first is that **a run ends with exactly one terminal event**,
 and it is a type-level fact: `AgentEvent.isTerminal` names `agent_end` and
-`run_failed`, and `runLoopThread` (`:1412`) emits exactly one of the two from
-its `catch`, so every path out of the run ends it — including a path that
-returns before the run starts, and a failure that arrives after the run has
-already ended. The second is that **`AgentEndPayload.termination` is evidence
-of nothing**: it encodes only `max_turns` or `cancelled`, and is null on a
-clean finish *and* on a provider that refused the request. A provider failure
-is a normal `agent_end` whose `final_message.stop_reason` is `error`.
+`run_failed`, and `Agent.runLoopThread` (`agent.zig:956`) emits exactly one of
+the two from its `defer`, guarded by `terminal_sent` — `agent_end` sets the
+flag on the way out (`agent.zig:1136`), and the `defer` emits `run_failed` only
+if the flag is still clear (`agent.zig:968`). So every path out of the run ends
+it: the paths that return before the run starts (`NoModelConfigured`,
+`NothingToRun`), a failure inside it, and a failure *after* it has already
+ended, which must not end it twice. The lower `runLoopThread`
+(`agent_loop.zig:1412`) is not where that lives — its `catch` calls
+`stream.completeWithError`, which records an error on the stream and emits no
+event at all. The second fact is that **`AgentEndPayload.termination` is
+evidence of nothing**: it encodes only `max_turns` or `cancelled`, and is null
+on a clean finish *and* on a provider that refused the request. A provider
+failure is a normal `agent_end` whose `final_message.stop_reason` is `error`.
 
 The Go tree inherits both. The first is a rule about the Go loop's own
 structure; the second is a rule about what the Go loop may claim.
@@ -52,10 +58,13 @@ structure; the second is a rule about what the Go loop may claim.
 
 The Go provider runtime is done (#358): `go/internal/provider` builds request
 bodies for `openai-completions` and `anthropic-messages` and turns an SSE chunk
-into `provider.Event`s. What it does not have is a loop. There is no
-equivalent of `ai_types.Message`'s user/assistant/tool-result triple, no
-`AgentEvent` union, no `StopReason` beyond `aborted`/`error`
-(`go/internal/provider/types.go:18`), and no turn counter.
+into `provider.Event`s. What it does not have is a loop. `provider.Message`
+already is the user/assistant/tool-result triple
+(`go/internal/provider/types.go:98`), so the slice reuses it rather than
+declaring a parallel one; what is missing is everything a *loop* needs around
+it: an `AgentEvent` union, a `StopReason` beyond `aborted`/`error`
+(`go/internal/provider/types.go:18`), a turn counter, and the per-run event
+stream that carries a terminal.
 
 The Go tree does have the half of the loop that is protocol rather than model:
 `go/serve/serveendpoint` (`dispatch.go:294` `submit`, `:332` `pump`) admits a
@@ -70,9 +79,9 @@ script-free counterpart, over the provider runtime.
 **Text turns and client-executed tool calls, over `go/internal/provider`.**
 One package, `go/agent`, holding:
 
-- a `Message` union over user, assistant and tool result, in the shape
-  `provider.Context` already takes, so a turn is a `provider.Context` and
-  nothing translates between them;
+- the loop's own history over `provider.Message` and `provider.Context` — the
+  types the provider runtime already takes, so a turn is a `provider.Context`
+  and nothing translates between the loop and the wire;
 - `TurnOutcome` with the same three cases and the same `max_cut_off_tool_turns`
   rule as `turnOutcome`, because a Go reply that ends a run on a different
   condition is a parity divergence the harness will report as an unexplained
@@ -87,36 +96,45 @@ One package, `go/agent`, holding:
   result message.
 
 Deliberately not in the first slice: permissions as a *policy engine*, steering
-and follow-up queues, compaction, token accounting, `max_iterations`. Each is a
-few lines in the Zig loop and a real amount of policy in Go, and each is
-reachable only after the first slice's traces match. `max_iterations` is the
-exception — it is one counter and one condition, and a loop without it can spin
-on a model that keeps calling tools, so it lands with the loop.
+and follow-up queues, compaction, and token accounting. Each is a few lines in
+the Zig loop and a real amount of policy in Go, and each is reachable only
+after the first slice's traces match. `max_iterations` is the one that lands
+with the loop rather than after it: it is one counter and one condition, and a
+loop without it spins on a model that keeps calling tools.
 
 ## What the loop must be, whatever the slice
 
 Three rules carry over from the Zig loop and are worth stating here because
 each is easy to violate while writing Go.
 
-**A run ends with exactly one terminal event.** In Go this is a
-`sync.Once`-guarded terminator on the run rather than a `defer` in a thread
-function, because Go's structure is different: a `Run` is a goroutine writing
-into a channel, and a `select` on `ctx.Done()` gives the cancellation path
-somewhere to happen. The terminal is emitted from one place that every exit
-path — normal finish, provider failure, cancellation, and a run that never
-started — goes through. `go/serve/serveendpoint` already knows the difference
-between "the run ended" and "the stream stopped reaching the host"
-(`reportLostStream`, `dispatch.go:354`); the loop's terminal is the former, and
-`run.failed` is a settlement while a lost stream is a control frame.
+**A run ends with exactly one terminal event.** Zig spells it as a flag on the
+run's state, set when `agent_end` goes out and tested by the thread's `defer`.
+Go's structure differs — a `Run` is a goroutine writing into a channel, and a
+`select` on `ctx.Done()` gives the cancellation path somewhere to happen — so
+the natural spelling is a `sync.Once` on the run, but the requirement is the
+flag's: the terminal comes from one place every exit path reaches, and a run
+that ends twice is a defect rather than a duplicate. Those paths are normal
+finish, provider failure, cancellation, and a run that never started.
+`go/serve/serveendpoint` already knows the difference between "the run ended"
+and "the stream stopped reaching the host" (`reportLostStream`,
+`dispatch.go:354`); the loop's terminal is the former, and `run.failed` is a
+settlement while a lost stream is a control frame.
 
-**A provider failure is a normal `agent_end`.** `provider.Stream` reports a
-provider that refuses through `Event{Kind: EventError}`, not through a Go
-error, so the loop turns that into a final message with
-`StopReason: StopError` and an `agent_end`. Returning it as a Go `error` would
-make a `run.failed` where `oapx` emits `run.completed` with
-`stop_reason: error` — a settlement the parity harness will call a difference,
-and one the CLAUDE.md rule about "a provider that refuses is a run that got
-far enough to end" is written about.
+**A provider failure is a normal `agent_end`, and the *endpoint* decides what
+that settles as.** These are two layers, and conflating them is the mistake.
+At the loop, `provider.Stream` reports a provider that refuses through
+`Event{Kind: EventError}` rather than a Go `error`, so the loop makes a final
+message with `StopReason: StopError` and an `agent_end` — the run got far
+enough to end, and `termination` is null, which is the CLAUDE.md rule written
+about. Above the loop, the OAP server turns that into the wire's settlement:
+`Bridge.settleFromEvidence` (`bridge.zig:285`) reads the stop reason, and
+`"error"` becomes `settleFailed` — a `run.failed` carrying
+`err.code: provider_error` (`server.zig:1515`). So `oapx` emits a `run.failed`
+on the wire for a provider refusal, and a Go loop that returned a Go `error`
+all the way to the endpoint would reach the same settlement by a different
+route, or — worse — a `run.failed` where `oapx` completes. The rule for the Go
+loop is the narrower one: **the terminal is the loop's own event, and what it
+settles as is the endpoint's decision, not the loop's.**
 
 **A tool call the loop cannot resolve is a tool result, not a run failure.**
 `executeToolCalls` produces an error result and carries on
@@ -135,7 +153,7 @@ malformed argument are three results, not three failures.
 | `max_iterations` | yes | — | one counter; without it a tool-calling model spins |
 | streaming, per-run `sequence` | via `serveendpoint` | — | the endpoint already owns sequence and pump |
 | permissions as policy | — | yes | the Zig order is `evaluate`, then approval callback, then persistence where `canPersistDecision` allows; Go's version is OAP's `action.permission.requested`/`resolved` pair, and it is a *protocol* exchange, so it wants the endpoint in the loop rather than beside it |
-| steering, follow-up | — | yes | `get_steering_messages_fn` is a callback polled between turns and after each tool; the `inner`/`outer` `continue` distinction is what makes a follow-up restart the turn counter |
+| steering, follow-up | — | yes | `get_steering_messages_fn` is a callback polled between turns and after each tool. A steering message re-enters the `inner` loop and a follow-up re-enters the `outer` one, which buys a fresh cancel-token check before the next turn; `state.iterations` is not reset on either path, so `max_iterations` keeps binding across follow-ups |
 | compaction | — | yes | `compaction.zig` plus the overflow detection in `zig/src/utils/overflow.zig`; it needs transcript files, so it is storage work as much as loop work |
 | token accounting, `context_usage` | — | yes | a `len/4` estimate; not worth carrying until something reads it |
 
