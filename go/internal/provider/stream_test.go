@@ -174,8 +174,8 @@ func TestAToolCallEndsAtTheIndexItsStartUsed(t *testing.T) {
 	)
 	start := findEvent(t, events, EventToolCallStart)
 	end := findEvent(t, events, EventToolCallEnd)
-	if start.ContentIndex != 0 {
-		t.Errorf("the start's content index = %d, want 0: it counted tool calls alone", start.ContentIndex)
+	if start.ContentIndex != 1 {
+		t.Errorf("the start's content index = %d, want 1: the text part holds 0, and a part's index is its place in the content", start.ContentIndex)
 	}
 	if end.ContentIndex != start.ContentIndex {
 		t.Errorf("the end's content index = %d and the start's = %d: one call occupies one index, and a consumer that opened the part it started cannot end a part it never opened", end.ContentIndex, start.ContentIndex)
@@ -271,6 +271,9 @@ func TestAContentIndexIsAssignedByArrivalNotByTheApiIndex(t *testing.T) {
 	}
 	if starts["second"] != 0 || starts["first"] != 1 {
 		t.Errorf("starts = %v, want the counter to follow arrival: the api index keys the tracker, the counter assigns the content index", starts)
+	}
+	if starts["first"] != ends[1].ContentIndex || starts["second"] != ends[0].ContentIndex {
+		t.Errorf("starts %v against ends %d and %d: a call's index is its place in the content, and nothing may renumber it between the two", starts, ends[0].ContentIndex, ends[1].ContentIndex)
 	}
 	if len(ends) != 2 {
 		t.Fatalf("got %d ends, want 2", len(ends))
@@ -600,5 +603,42 @@ func TestASinkWithACallbackDoesNotAlsoRetainForItsReader(t *testing.T) {
 	held := sink.Drain()
 	if len(held) != 0 || seen == 0 {
 		t.Errorf("a callback saw %d events and a reader %d, want the callback to take the stream and the reader nothing", seen, len(held))
+	}
+}
+
+func TestReasoningThenTextHoldDifferentParts(t *testing.T) {
+	events := runStream(t, streamModel(),
+		sseFrame(`{"choices":[{"delta":{"reasoning_content":"think"}}]}`),
+		sseFrame(`{"choices":[{"delta":{"content":"answer"}}]}`),
+	)
+	seen := map[int]EventKind{}
+	for _, event := range events {
+		switch event.Kind {
+		case EventThinkingDelta, EventTextDelta:
+			if previous, held := seen[event.ContentIndex]; held {
+				t.Errorf("%s and %s both hold content index %d: two parts cannot occupy one index, and a consumer opens a part by index", previous, event.Kind, event.ContentIndex)
+			}
+			seen[event.ContentIndex] = event.Kind
+		}
+	}
+	if len(seen) != 2 {
+		t.Errorf("the turn streamed %d distinct parts, want 2: reasoning and text are different parts and the terminal holds both", len(seen))
+	}
+	thinkingAt, thoughtThere := seen[0]
+	if !thoughtThere || thinkingAt != EventThinkingDelta {
+		t.Errorf("index 0 holds %v, want the reasoning: the content array puts thinking before text", seen[0])
+	}
+	if body := findEvent(t, events, EventDone).Message; len(body.Content) != 2 {
+		t.Errorf("the terminal holds %d blocks, want 2", len(body.Content))
+	}
+}
+
+func TestAReasoningOnlyTurnHoldsIndexZero(t *testing.T) {
+	events := runStream(t, streamModel(),
+		sseFrame(`{"choices":[{"delta":{"reasoning_content":"think"}}]}`),
+	)
+	delta := findEvent(t, events, EventThinkingDelta)
+	if delta.ContentIndex != 0 {
+		t.Errorf("the reasoning delta holds index %d, want 0: with nothing ahead of it, reasoning is the first part", delta.ContentIndex)
 	}
 }

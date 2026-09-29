@@ -220,14 +220,28 @@ func canCarryPartial(s *streamState) bool {
 	return CanCompletePartialTextOnStreamError(len(s.text), len(s.thinking), s.toolCalls)
 }
 
+func (s *streamState) assignPartIndexes() {
+	base := s.nextIndex
+	if s.thinking != "" {
+		s.thinkingIndex = base
+		base++
+	}
+	if s.text != "" {
+		s.textIndex = base
+		base++
+	}
+	s.textToolBase = base
+}
+
 func (s *streamState) emitFor(sink *EventSink) {
 	partial := s.partial(nil)
+	s.assignPartIndexes()
 	if len(s.text) > s.prevText {
-		sink.emit(Event{Kind: EventTextDelta, ContentIndex: 0, Delta: s.text[s.prevText:], Partial: partial})
+		sink.emit(Event{Kind: EventTextDelta, ContentIndex: s.textIndex, Delta: s.text[s.prevText:], Partial: partial})
 	}
 	s.prevText = len(s.text)
 	if len(s.thinking) > s.prevThink && !IsKimiModel(s.model) {
-		sink.emit(Event{Kind: EventThinkingDelta, ContentIndex: 0, Delta: s.thinking[s.prevThink:], Partial: partial})
+		sink.emit(Event{Kind: EventThinkingDelta, ContentIndex: s.thinkingIndex, Delta: s.thinking[s.prevThink:], Partial: partial})
 	}
 	s.prevThink = len(s.thinking)
 	for _, detail := range s.lastDetails {
@@ -235,7 +249,8 @@ func (s *streamState) emitFor(sink *EventSink) {
 	}
 	for _, call := range s.lastToolCalls {
 		if call.isStart {
-			index := s.nextIndex
+			index := s.textToolBase
+			s.textToolBase++
 			s.tracker.startCall(call.apiIndex, index, call.id, call.name)
 			s.nextIndex++
 			s.toolCalls++
