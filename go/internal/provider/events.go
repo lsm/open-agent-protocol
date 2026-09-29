@@ -70,6 +70,8 @@ type AssistantMessage struct {
 }
 
 type EventSink struct {
+	OnEvent func(Event)
+
 	events []Event
 	err    string
 	done   bool
@@ -77,6 +79,9 @@ type EventSink struct {
 
 func (s *EventSink) emit(event Event) {
 	s.events = append(s.events, event)
+	if s.OnEvent != nil {
+		s.OnEvent(event)
+	}
 }
 
 func (s *EventSink) Drain() []Event {

@@ -46,9 +46,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `provider.StopReason` is the type a reply carries — which means a
   `PartialMessage` or `AssistantMessage` that reaches a caller is typed rather
   than a `string` any caller can spell either way.
-  `EventSink.Drain` is the sink's reader, renamed from an unexported `take`, so
-  a package outside the runtime can consume a stream. It was the one thing
-  standing between a turn and the loop that will drive it.
+  `EventSink` grows an `OnEvent` callback and a `Drain` reader, renamed from an
+  unexported `take`, so a package outside the runtime can consume a stream as
+  it arrives. A turn that delivered only at EOF would have made the ping
+  cadence this forwards meaningless: a keepalive emitted while a slow body was
+  still arriving would have been held until the body ended, which is the one
+  moment it is not needed. A stream error reaches that callback too, so a turn
+  that breaks mid-flight reports it rather than ending quietly.
 
 ### Changed
 

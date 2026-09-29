@@ -211,3 +211,35 @@ func TestATurnWithNoReaderFinishesRatherThanBlocking(t *testing.T) {
 		t.Errorf("a turn with nothing to read is %s, want an empty reply rather than a hang", got)
 	}
 }
+
+func TestADeltaReachesTheChannelWhileTheStreamIsStillReading(t *testing.T) {
+	release := make(chan struct{})
+	served := 0
+	read := func() ([]byte, error) {
+		served++
+		if served == 1 {
+			return []byte(textDelta("half")), nil
+		}
+		<-release
+		return []byte(finishStop()), nil
+	}
+	turn := ChunkStreamer{}.Stream(context.Background(), TurnRequest{Model: completionsModel(), Read: read})
+	var seen []provider.EventKind
+	deadline := time.After(5 * time.Second)
+	for len(seen) < 2 {
+		select {
+		case event, open := <-turn.Events:
+			if !open {
+				t.Fatalf("the turn closed after %v, want a delta delivered while the reader was still blocked", seen)
+			}
+			seen = append(seen, event.Kind)
+		case <-deadline:
+			close(release)
+			t.Fatalf("only %v arrived within five seconds of a blocked reader", seen)
+		}
+	}
+	close(release)
+	if seen[0] != provider.EventStart || seen[1] != provider.EventTextDelta {
+		t.Errorf("a turn delivers %v, want a start then the delta, both before the reader finished", seen)
+	}
+}

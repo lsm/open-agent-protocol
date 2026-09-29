@@ -335,7 +335,7 @@ func (s *streamState) completeOnStreamError(sink *EventSink) bool {
 func (s *EventSink) fail(reason string) {
 	s.err = reason
 	s.done = true
-	s.events = append(s.events, Event{Kind: EventError, Reason: reason})
+	s.emit(Event{Kind: EventError, Reason: reason})
 }
 
 type ReadChunkFunc func() ([]byte, error)

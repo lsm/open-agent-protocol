@@ -35,25 +35,25 @@ func (ChunkStreamer) Stream(ctx context.Context, request TurnRequest) Turn {
 	if options.Now == nil {
 		options.Now = func() int64 { return time.Now().UnixMilli() }
 	}
+	if ctx.Err() != nil {
+		close(out)
+		return Turn{Events: out}
+	}
 	cancelled := func() bool { return ctx.Err() != nil }
 	turn := provider.Context{Messages: request.Messages, Tools: request.Tools}
 	go func() {
 		defer close(out)
 		sink := &provider.EventSink{}
-		streamTurn(sink, request.Model, turn, options, read, cancelled)
-		for {
-			batch := sink.Drain()
-			if len(batch) == 0 {
-				return
-			}
-			for _, event := range batch {
-				select {
-				case out <- event:
-				case <-ctx.Done():
-					return
-				}
+		stopped := make(chan struct{})
+		defer close(stopped)
+		sink.OnEvent = func(event provider.Event) {
+			select {
+			case out <- event:
+			case <-stopped:
+			case <-ctx.Done():
 			}
 		}
+		streamTurn(sink, request.Model, turn, options, read, cancelled)
 	}()
 	return Turn{Events: out}
 }
