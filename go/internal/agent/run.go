@@ -39,7 +39,7 @@ type Run struct {
 	settled bool
 	result  Result
 	err     error
-	pending map[string]chan provider.ToolResult
+	pending map[string]pendingCall
 }
 
 func Start(ctx context.Context, config Config, prompts []provider.Message) *Run {
@@ -50,7 +50,7 @@ func Start(ctx context.Context, config Config, prompts []provider.Message) *Run 
 		cancel:  cancel,
 		events:  make(chan Event, eventBuffer),
 		done:    make(chan struct{}),
-		pending: map[string]chan provider.ToolResult{},
+		pending: map[string]pendingCall{},
 	}
 	go func() {
 		defer close(run.done)
@@ -79,9 +79,14 @@ func (r *Run) Err() error {
 
 func (r *Run) Cancel() { r.cancel() }
 
+type pendingCall struct {
+	call   provider.ToolCall
+	waiter chan provider.ToolResult
+}
+
 func (r *Run) ResolveTool(toolCallID string, result provider.ToolResult) error {
 	r.mu.Lock()
-	waiter, found := r.pending[toolCallID]
+	pending, found := r.pending[toolCallID]
 	if found {
 		delete(r.pending, toolCallID)
 	}
@@ -89,9 +94,10 @@ func (r *Run) ResolveTool(toolCallID string, result provider.ToolResult) error {
 	if !found {
 		return fmt.Errorf("agent: no tool call %q is waiting for a result", toolCallID)
 	}
-	result.ToolCallID = toolCallID
-	waiter <- result
-	close(waiter)
+	result.ToolCallID = pending.call.ID
+	result.ToolName = pending.call.Name
+	pending.waiter <- result
+	close(pending.waiter)
 	return nil
 }
 
@@ -260,13 +266,19 @@ func (r *Run) runToolCalls(assistant provider.AssistantContent) ([]provider.Tool
 }
 
 func (r *Run) awaitToolResult(call provider.ToolCall) (provider.ToolResult, bool) {
+	if r.ctx.Err() != nil {
+		return cancelledResult(call), false
+	}
 	waiter := make(chan provider.ToolResult, 1)
 	r.mu.Lock()
-	r.pending[call.ID] = waiter
+	r.pending[call.ID] = pendingCall{call: call, waiter: waiter}
 	r.mu.Unlock()
 	r.emit(Event{Kind: ToolCallRequested, Call: &call})
 	select {
 	case result := <-waiter:
+		if r.ctx.Err() != nil {
+			return cancelledResult(call), false
+		}
 		r.emit(Event{Kind: ToolCallResolved, Call: &call, ToolResult: &result})
 		return result, true
 	case <-r.ctx.Done():

@@ -683,3 +683,120 @@ func TestNoCallAfterTheFirstIsAskedOnceTheRunIsCancelled(t *testing.T) {
 		}
 	}
 }
+
+func TestTheAnswerIsCorrelatedByTheLoopSCallNotTheCallers(t *testing.T) {
+	script := &scripted{turns: []scriptedTurn{toolTurn("call_1", "read", "{}"), textTurn("done")}}
+	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("read a"))
+	drainActing(t, run, func(event Event) {
+		if event.Kind == ToolCallRequested {
+			_ = run.ResolveTool(event.Call.ID, provider.ToolResult{
+				ToolCallID: "something_else",
+				ToolName:   "a_tool_that_was_never_called",
+				Parts:      []provider.ContentPart{{Text: &provider.TextPart{Text: "a"}}},
+			})
+		}
+	})
+	for _, message := range run.Result().Messages {
+		if message.ToolResult == nil {
+			continue
+		}
+		if message.ToolResult.ToolCallID != "call_1" || message.ToolResult.ToolName != "read" {
+			t.Errorf("the result is %+v, want call_1 running read: a caller's own id or name would not correlate with the call the model made, and some wires serialize that name", message.ToolResult)
+		}
+	}
+}
+
+func TestACallIsNeverAskedForAfterTheFirstOneIsCancelledWhileWaiting(t *testing.T) {
+	for attempt := 0; attempt < 20; attempt++ {
+		first := `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read","arguments":"{}"}}]}}]}`
+		second := `{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_2","function":{"name":"write","arguments":"{}"}}]}}]}`
+		turn := scriptedTurn{frames: []string{frame(first), frame(second), frame(`{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`)}}
+		script := &scripted{turns: []scriptedTurn{turn, textTurn("done")}}
+		run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("go"))
+		asked := []string{}
+		events := drainActing(t, run, func(event Event) {
+			if event.Kind != ToolCallRequested {
+				return
+			}
+			asked = append(asked, event.Call.ID)
+			run.Cancel()
+		})
+		if len(asked) != 1 {
+			t.Fatalf("attempt %d: the loop asked for %v, want only the call it was waiting on: a client-executed tool is side-effecting, and the answer to a later ask is refused", attempt, asked)
+		}
+		terminal := terminalOf(t, events)
+		if terminal.Kind != AgentEnd || terminal.Termination != TerminationCanceled {
+			t.Fatalf("attempt %d: a cancelled run ends with %q/%q, want agent_end/cancelled", attempt, terminal.Kind, terminal.Termination)
+		}
+		answered := map[string]bool{}
+		for _, message := range run.Result().Messages {
+			if message.ToolResult == nil {
+				continue
+			}
+			answered[message.ToolResult.ToolCallID] = true
+			if !message.ToolResult.IsError {
+				t.Errorf("attempt %d: the call %q left a successful result, want an error: nothing ran it", attempt, message.ToolResult.ToolCallID)
+			}
+		}
+		if len(answered) != 2 {
+			t.Fatalf("attempt %d: %d of the 2 calls left a result, want both: a tool call with nothing answering it is a history the next turn cannot use", attempt, len(answered))
+		}
+	}
+}
+
+func TestAnAnswerArrivingBesideACancelIsEitherAcceptedOrRefusedByName(t *testing.T) {
+	for attempt := 0; attempt < 20; attempt++ {
+		script := &scripted{turns: []scriptedTurn{toolTurn("call_1", "read", "{}"), textTurn("done")}}
+		run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("read a"))
+		var answer error
+		events := drainActing(t, run, func(event Event) {
+			if event.Kind != ToolCallRequested {
+				return
+			}
+			run.Cancel()
+			answer = run.ResolveTool(event.Call.ID, provider.ToolResult{Parts: []provider.ContentPart{{Text: &provider.TextPart{Text: "ok"}}}})
+		})
+		terminalOf(t, events)
+		results := map[string]provider.ToolResult{}
+		for _, message := range run.Result().Messages {
+			if message.ToolResult != nil {
+				results[message.ToolResult.ToolCallID] = *message.ToolResult
+			}
+		}
+		held, hasResult := results["call_1"]
+		if answer == nil {
+			if !hasResult {
+				t.Fatalf("attempt %d: the answer was accepted but no result reached the history, so a tool call is left unanswered", attempt)
+			}
+			continue
+		}
+		if !strings.Contains(answer.Error(), "call_1") {
+			t.Errorf("attempt %d: the refusal says %q, want it to name the call it could not match", attempt, answer)
+		}
+		if hasResult && !held.IsError {
+			t.Errorf("attempt %d: a refused answer still produced a successful result: %+v", attempt, held)
+		}
+	}
+}
+
+func TestACancelledRunAsksForNoCallEvenWhenTheLoopReachesOne(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	run := Start(ctx, Config{Model: completionsModel(), Streamer: &scripted{}}, prompts("read a"))
+	run.Wait()
+	call := provider.ToolCall{ID: "call_1", Name: "read", Arguments: "{}"}
+	before := len(run.events)
+	result, answered := run.awaitToolResult(call)
+	if answered {
+		t.Errorf("a call reached on an already-cancelled run came back answered, want the loop to know it is not live")
+	}
+	if result.IsError != true {
+		t.Errorf("a call reached on an already-cancelled run gave %+v, want an error result: nothing ran it", result)
+	}
+	if held := len(run.events); held != before {
+		t.Errorf("a cancelled run emitted %d events asking for a call, want none: a client-executed tool is side-effecting", held-before)
+	}
+	if err := run.ResolveTool("call_1", provider.ToolResult{}); err == nil {
+		t.Error("the call was never asked for, so answering it must be refused rather than accepted")
+	}
+}
