@@ -40,6 +40,7 @@ const pre_transform = @import("pre_transform");
 const semantic = @import("semantic");
 const provider_semantic = @import("provider_semantic");
 const jsonschema = @import("jsonschema");
+const validator = @import("validator");
 const oap_provider_types = @import("oap_provider_types");
 const oap_provider_envelope = @import("oap_provider_envelope");
 const oap_provider_server = @import("oap_provider_server");
@@ -2662,7 +2663,7 @@ fn traceItems(allocator: std.mem.Allocator, arena: std.mem.Allocator, source: []
     return items.items;
 }
 
-fn validateTrace(allocator: std.mem.Allocator, registry: *const jsonschema.Registry, source: []const u8, out: *std.ArrayList(ValidateFinding)) !void {
+fn validateTrace(allocator: std.mem.Allocator, judge: *validator.Validator, source: []const u8, out: *std.ArrayList(ValidateFinding)) !void {
     var arena_state = std.heap.ArenaAllocator.init(allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -2672,14 +2673,14 @@ fn validateTrace(allocator: std.mem.Allocator, registry: *const jsonschema.Regis
 
     const provider = namesProviderProfile(trace);
     const schema_document = if (provider) "provider-envelope.schema.json" else "envelope.schema.json";
-    var validator = jsonschema.Validator.init(allocator, registry);
-    defer validator.deinit();
+    var compiled = try judge.schema();
+    defer compiled.deinit();
     for (items, 0..) |item, index| {
         if (try repeatsAKey(allocator, item.raw)) {
             try appendFinding(allocator, out, .decode, "duplicate_key", index, item.line);
             continue;
         }
-        if (try validator.validate(schema_document, item.value) != null) {
+        if (try compiled.validate(schema_document, item.value) != null) {
             try appendFinding(allocator, out, .schema, "schema_invalid", index, item.line);
         }
     }
@@ -2772,8 +2773,8 @@ fn writeJsonReport(out: *std.ArrayList(u8), allocator: std.mem.Allocator, path: 
     try json.endObject();
 }
 
-fn judgeTrace(allocator: std.mem.Allocator, registry: *const jsonschema.Registry, source: []const u8, findings: *std.ArrayList(ValidateFinding)) !?[]const u8 {
-    validateTrace(allocator, registry, source, findings) catch |err| switch (err) {
+fn judgeTrace(allocator: std.mem.Allocator, judge: *validator.Validator, source: []const u8, findings: *std.ArrayList(ValidateFinding)) !?[]const u8 {
+    validateTrace(allocator, judge, source, findings) catch |err| switch (err) {
         error.OutOfMemory => return err,
         error.UnsupportedKeyword, error.UnsupportedPattern, error.UnresolvableRef, error.InvalidSchema => return "the schema interpreter cannot judge this trace",
         else => return @errorName(err),
@@ -2818,8 +2819,8 @@ fn runValidate(
     }
     if (paths.items.len == 0) return error.InvalidArgument;
 
-    var registry = try jsonschema.Registry.initFromBundled(allocator);
-    defer registry.deinit();
+    var judge = try validator.Validator.init(allocator, .{});
+    defer judge.deinit();
 
     var report = std.ArrayList(u8).empty;
     defer report.deinit(allocator);
@@ -2840,7 +2841,7 @@ fn runValidate(
 
         var findings = std.ArrayList(ValidateFinding).empty;
         defer freeFindings(allocator, &findings);
-        const verdict: ValidateVerdict = if (try judgeTrace(allocator, &registry, source, &findings)) |reason|
+        const verdict: ValidateVerdict = if (try judgeTrace(allocator, &judge, source, &findings)) |reason|
             .{ .unjudged = reason }
         else
             .{ .judged = findings.items };
@@ -10478,18 +10479,18 @@ test "combined stdio dispatches only the provider profile to the provider handle
 }
 
 fn diagnosedCodes(allocator: std.mem.Allocator, trace: []const u8, out: *std.ArrayList([]const u8)) !void {
-    var registry = try jsonschema.Registry.initFromBundled(allocator);
-    defer registry.deinit();
+    var judge = try validator.Validator.init(allocator, .{});
+    defer judge.deinit();
     var found = std.ArrayList(ValidateFinding).empty;
     defer freeFindings(allocator, &found);
-    try validateTrace(allocator, &registry, trace, &found);
+    try validateTrace(allocator, &judge, trace, &found);
     for (found.items) |finding| try out.append(allocator, try allocator.dupe(u8, finding.code));
 }
 
 fn judgedFindings(allocator: std.mem.Allocator, trace: []const u8, out: *std.ArrayList(ValidateFinding)) !void {
-    var registry = try jsonschema.Registry.initFromBundled(allocator);
-    defer registry.deinit();
-    try validateTrace(allocator, &registry, trace, out);
+    var judge = try validator.Validator.init(allocator, .{});
+    defer judge.deinit();
+    try validateTrace(allocator, &judge, trace, out);
 }
 
 test "validate accepts a trace the validator judges clean" {
