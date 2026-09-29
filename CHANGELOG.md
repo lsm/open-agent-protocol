@@ -53,6 +53,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   literal rather than by mutating the process.
 
 ### Added
+- **`/think` is back in the TUI**, as `/think [off|low|medium|high|xhigh|max]`: with a level it sets it, and alone it shows the current one. Shift+Tab still cycles the levels, and the status line now shows `off` instead of hiding the level.
+
+- **A `max` thinking level, above `xhigh`.** It sends Anthropic's `max` effort, the effort `xhigh` already sent there; OpenAI's highest level, `xhigh`, or `high` on a model without it; and the largest budget or level elsewhere. The OAP provider profile has no `max`, so a provider reached through it gets `xhigh`.
+
 - **`go/internal/provider`: the `openai-completions` client, part of #358 step 2.**
   A Go program can now drive an OpenAI-compatible endpoint without a Zig binary in
   the path. The package is `internal` on purpose: it is not yet a public surface,

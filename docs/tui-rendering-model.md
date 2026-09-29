@@ -183,7 +183,7 @@ code paths; add a transcript row instead.
 - Status line: `provider/model`, context gauge with a usage percentage coloured by
   band (green below 60%, yellow 60–75, orange 75–85, red 85 and up), `queue`, a bare
   permission value (`ask`/`bypass`/`pending`), cost (once tokens are known), a bare
-  thinking level (hidden while `off`), `turns:`, and the state (`idle` or spinner +
+  thinking level (`off` included), `turns:`, and the state (`idle` or spinner +
   elapsed) last, plus a right-aligned key hint. When the row overflows, the context
   segment first shrinks to just the coloured percentage, then segments drop whole by
   priority (turns, thinking, cost, the hint, `ask` permission, queue, drops, model,

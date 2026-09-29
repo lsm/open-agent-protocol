@@ -118,7 +118,7 @@ fn mapThinkingLevelToEffort(level: ai_types.ThinkingLevel) []const u8 {
         .low => "low",
         .medium => "medium",
         .high => "high",
-        .xhigh => "max",
+        .xhigh, .max => "max",
     };
 }
 
@@ -131,6 +131,7 @@ fn getDefaultThinkingBudget(level: ai_types.ThinkingLevel, budgets: ?ai_types.Th
             .medium => b.medium orelse 1024,
             .high => b.high orelse 2048,
             .xhigh => b.xhigh orelse 4096,
+            .max => b.max orelse 8192,
         };
     }
     return switch (level) {
@@ -140,6 +141,7 @@ fn getDefaultThinkingBudget(level: ai_types.ThinkingLevel, budgets: ?ai_types.Th
         .medium => 1024,
         .high => 2048,
         .xhigh => 4096,
+        .max => 8192,
     };
 }
 
