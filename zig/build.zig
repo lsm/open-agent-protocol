@@ -2101,31 +2101,9 @@ pub fn build(b: *std.Build) void {
 
     const tool_call_tracker_test = b.addTest(.{ .root_module = tool_call_tracker_mod });
 
-    const api_registry_test = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/api_registry.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "ai_types", .module = ai_types_mod },
-                .{ .name = "event_stream", .module = event_stream_mod },
-                .{ .name = "oauth/storage", .module = oauth_storage_mod },
-            },
-        }),
-    });
+    const api_registry_test = b.addTest(.{ .root_module = api_registry_mod });
 
-    const stream_test = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/stream.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "ai_types", .module = ai_types_mod },
-                .{ .name = "event_stream", .module = event_stream_mod },
-                .{ .name = "api_registry", .module = api_registry_mod },
-            },
-        }),
-    });
+    const stream_test = b.addTest(.{ .root_module = stream_mod });
 
     const register_builtins_test = b.addTest(.{ .root_module = register_builtins_mod });
 
