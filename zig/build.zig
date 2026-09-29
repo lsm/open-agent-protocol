@@ -216,6 +216,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const json_writer_test = b.addTest(.{ .root_module = json_writer_mod });
     const json_encode_mod = b.createModule(.{
         .root_source_file = b.path("src/json/encode.zig"),
         .target = target,
@@ -2110,31 +2111,9 @@ pub fn build(b: *std.Build) void {
 
     const tool_call_tracker_test = b.addTest(.{ .root_module = tool_call_tracker_mod });
 
-    const api_registry_test = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/api_registry.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "ai_types", .module = ai_types_mod },
-                .{ .name = "event_stream", .module = event_stream_mod },
-                .{ .name = "oauth/storage", .module = oauth_storage_mod },
-            },
-        }),
-    });
+    const api_registry_test = b.addTest(.{ .root_module = api_registry_mod });
 
-    const stream_test = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/stream.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "ai_types", .module = ai_types_mod },
-                .{ .name = "event_stream", .module = event_stream_mod },
-                .{ .name = "api_registry", .module = api_registry_mod },
-            },
-        }),
-    });
+    const stream_test = b.addTest(.{ .root_module = stream_mod });
 
     const register_builtins_test = b.addTest(.{ .root_module = register_builtins_mod });
 
@@ -2167,6 +2146,7 @@ pub fn build(b: *std.Build) void {
 
     const oauth_pkce_test = b.addTest(.{ .root_module = oauth_pkce_mod });
     const oauth_utils_pkce_test = b.addTest(.{ .root_module = oauth_utils_pkce_mod });
+    const oauth_anthropic_test = b.addTest(.{ .root_module = oauth_anthropic_mod });
     const oauth_openai_codex_test = b.addTest(.{ .root_module = oauth_openai_codex_mod });
 
     const oauth_storage_test = b.addTest(.{ .root_module = oauth_storage_mod });
@@ -2506,9 +2486,11 @@ pub fn build(b: *std.Build) void {
     const tui_view_approval_test = b.addTest(.{ .root_module = tui_view_approval_mod });
     const tui_view_session_picker_test = b.addTest(.{ .root_module = tui_view_session_picker_mod });
     const tui_view_menu_picker_test = b.addTest(.{ .root_module = tui_view_menu_picker_mod });
+    const tui_fixture_test = b.addTest(.{ .root_module = tui_fixture_mod });
     const tui_tests_scenarios_test = b.addTest(.{ .root_module = tui_tests_scenarios_mod });
     const tui_tests_e2e_test = b.addTest(.{ .root_module = tui_tests_e2e_mod });
     const tui_tests_mock_transport_test = b.addTest(.{ .root_module = tui_tests_mock_transport_mod });
+    const tui_tests_fixtures_test = b.addTest(.{ .root_module = tui_tests_fixtures_mod });
     const tools_common_test = b.addTest(.{ .root_module = tools_common_mod });
     const tools_process_runner_test = b.addTest(.{ .root_module = tools_process_runner_mod });
     const tools_artifact_test = b.addTest(.{ .root_module = tools_artifact_mod });
@@ -2776,6 +2758,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(string_builder_test).step);
     test_step.dependOn(&b.addRunArtifact(hive_array_test).step);
     test_step.dependOn(&b.addRunArtifact(compat_test).step);
+    test_step.dependOn(&b.addRunArtifact(json_writer_test).step);
     test_step.dependOn(&b.addRunArtifact(json_encode_test).step);
     test_step.dependOn(&b.addRunArtifact(artifact_store_test).step);
     test_step.dependOn(&b.addRunArtifact(provider_base_url_test).step);
@@ -2826,6 +2809,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(ollama_api_test).step);
     test_step.dependOn(&b.addRunArtifact(oauth_pkce_test).step);
     test_step.dependOn(&b.addRunArtifact(oauth_utils_pkce_test).step);
+    test_step.dependOn(&b.addRunArtifact(oauth_anthropic_test).step);
     test_step.dependOn(&b.addRunArtifact(oauth_openai_codex_test).step);
     test_step.dependOn(&b.addRunArtifact(oauth_storage_test).step);
     test_step.dependOn(&b.addRunArtifact(refresh_lock_test).step);
@@ -2866,9 +2850,11 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(tui_view_approval_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_view_session_picker_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_view_menu_picker_test).step);
+    test_step.dependOn(&b.addRunArtifact(tui_fixture_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_tests_scenarios_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_tests_e2e_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_tests_mock_transport_test).step);
+    test_step.dependOn(&b.addRunArtifact(tui_tests_fixtures_test).step);
     test_step.dependOn(&b.addRunArtifact(tools_process_runner_test).step);
     test_step.dependOn(&b.addRunArtifact(agent_test).step);
     test_step.dependOn(&b.addRunArtifact(agent_protocol_chain_test).step);
@@ -2960,6 +2946,7 @@ pub fn build(b: *std.Build) void {
     test_unit_core_step.dependOn(&b.addRunArtifact(string_builder_test).step);
     test_unit_core_step.dependOn(&b.addRunArtifact(hive_array_test).step);
     test_unit_core_step.dependOn(&b.addRunArtifact(compat_test).step);
+    test_unit_core_step.dependOn(&b.addRunArtifact(json_writer_test).step);
     test_unit_core_step.dependOn(&b.addRunArtifact(json_encode_test).step);
     test_unit_core_step.dependOn(&b.addRunArtifact(artifact_store_test).step);
     test_unit_core_step.dependOn(&b.addRunArtifact(counting_allocator_test).step);
@@ -3034,6 +3021,7 @@ pub fn build(b: *std.Build) void {
     test_unit_utils_step.dependOn(&b.addRunArtifact(github_copilot_test).step);
     test_unit_utils_step.dependOn(&b.addRunArtifact(oauth_pkce_test).step);
     test_unit_utils_step.dependOn(&b.addRunArtifact(oauth_utils_pkce_test).step);
+    test_unit_utils_step.dependOn(&b.addRunArtifact(oauth_anthropic_test).step);
     test_unit_utils_step.dependOn(&b.addRunArtifact(oauth_openai_codex_test).step);
     test_unit_utils_step.dependOn(&b.addRunArtifact(oauth_storage_test).step);
     test_unit_utils_step.dependOn(&b.addRunArtifact(refresh_lock_test).step);
@@ -3123,9 +3111,11 @@ pub fn build(b: *std.Build) void {
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_view_approval_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_view_session_picker_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_view_menu_picker_test).step);
+    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_fixture_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_tests_scenarios_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_tests_e2e_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_tests_mock_transport_test).step);
+    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_tests_fixtures_test).step);
 
     const test_e2e_anthropic_step = b.step("test-e2e-anthropic", "Run Anthropic E2E tests");
     test_e2e_anthropic_step.dependOn(&b.addRunArtifact(e2e_anthropic_test).step);
