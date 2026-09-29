@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -9,9 +9,9 @@ import { compareVersions, firstLine, fold } from "./changelog-release.mjs";
 const SCRIPT = new URL("./changelog-release.mjs", import.meta.url).pathname;
 const HEAD = "# Changelog\n\nAll notable changes to this project will be documented in this file.\n\n";
 
-function cli(args, input) {
+function cli(args, input, script) {
   try {
-    const stdout = execFileSync("node", [SCRIPT, ...args], { input, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
+    const stdout = execFileSync("node", [script ?? SCRIPT, ...args], { input, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
     return { code: 0, stdout, stderr: "" };
   } catch (error) {
     return { code: error.status, stdout: error.stdout ?? "", stderr: error.stderr ?? "" };
@@ -254,4 +254,37 @@ test("--verify-tag accepts the tag whose section exists and refuses one that doe
   const bad = cli(["--verify-tag", "v0.1.0-alpha.5", "--changelog", path]);
   assert.notEqual(bad.code, 0);
   assert.match(bad.stderr, /no \[0\.1\.0-alpha\.5\] section/);
+});
+
+test("a wrapped line beginning with an issue reference is kept", () => {
+  // A markdown heading is "#" then a space. Filtering every line that starts
+  // with "#" ate a wrapped continuation like this one and cut the sentence.
+  const body = "This closes the gap that\n#210 and #215 left\nopen in the client.";
+  const line = firstLine(body);
+  assert.ok(line.includes("#210"), `kept the reference, got ${JSON.stringify(line)}`);
+  assert.ok(line.includes("open in the client"), "kept the rest of the paragraph");
+});
+
+test("a real heading is still skipped", () => {
+  const body = "## What changed and why\n\nA real sentence, with #210 inside it.";
+  assert.equal(firstLine(body), "A real sentence, with #210 inside it.");
+  assert.equal(firstLine("# Heading\n\nBody."), "Body.");
+  assert.equal(firstLine("###### Deep heading\n\nBody."), "Body.");
+});
+
+test("the entry-point guard survives a checkout path holding a space", () => {
+  // `file://${process.argv[1]}` mismatches on a percent-encoded path, which made
+  // main() never run and the script exit 0 having done nothing.
+  const directory = mkdtempSync(join(tmpdir(), "changelog-release-"));
+  const spaced = join(directory, "a dir with a space");
+  const path = join(spaced, "CHANGELOG.md");
+  const script = join(spaced, "changelog-release.mjs");
+  mkdirSync(spaced, { recursive: true });
+  writeFileSync(path, `${HEAD}## Unreleased\n\n## [0.2.0] - 2026-09-11\n`);
+  copyFileSync(SCRIPT, script);
+  const input = JSON.stringify([{ number: 3, title: "go: a thing", body: "A reason.", url: "https://example/3" }]);
+  const result = cli(["--version", "0.3.0", "--date", "2026-09-29", "--changelog", path, "--write"], input, script);
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /wrote \[0\.3\.0\]/, "the script ran from a path with a space");
+  assert.match(readFileSync(path, "utf8"), /go: a thing/);
 });

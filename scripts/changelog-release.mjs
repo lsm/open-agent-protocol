@@ -16,7 +16,8 @@
 // section is already there and exit non-zero if not, which is what the release
 // workflow runs so a tag cannot ship without its notes.
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 
 const UNRELEASED = "## Unreleased";
 const GENERATED_HEADING = "### Merged pull requests";
@@ -115,7 +116,10 @@ export function firstLine(body) {
       .split("\n")
       .map((line) => line.trim())
       .filter((line) => line.length > 0)
-      .filter((line) => !line.startsWith("#") && !line.startsWith("<!--"))
+      // A markdown heading is "#" then a space. Plain startsWith("#") also ate a
+      // wrapped line beginning with an issue reference, which dropped the rest of
+      // the sentence mid-clause.
+      .filter((line) => !/^#{1,6}\s/.test(line) && !line.startsWith("<!--"))
       .join(" ")
       .replace(/\s+/g, " ")
       .trim();
@@ -246,4 +250,10 @@ function run() {
   process.stdout.write(`wrote [${options.version}] - ${options.date} with ${folded.count} merged pull request(s)\n`);
 }
 
-if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) main();
+// pathToFileURL of the realpath, as check-no-comments.mjs does: comparing against
+// `file://${process.argv[1]}` mismatches whenever the checkout path holds a space
+// or another character that percent-encodes, and then main() never runs and the
+// script exits 0 without writing or checking anything.
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
+  main();
+}
