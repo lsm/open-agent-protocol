@@ -15,6 +15,18 @@ on:
   push:
     branches: [main]
   pull_request:
+    # `edited` is load-bearing for the compatibility gate, which records an
+    # incompatible Go change in the pull request description: a body edit is the
+    # only way that record changes after the last run, and without it a deleted
+    # or mis-cased `## Breaking changes` section would leave the break recorded
+    # nowhere -- the push run skips that job, and the release lifts nothing.
+    #
+    # It also fires on a title edit, so an edit costs one run of this workflow
+    # rather than one job. The other jobs are deliberately NOT skipped on an
+    # edited run: a skipped check reports as `skipped` rather than passing, and
+    # the merge gate reads the current head's checks, so scoping the re-run to
+    # the gate alone would risk the very merge it is meant to keep safe.
+    types: [opened, synchronize, reopened, edited]
 
 permissions:
   contents: read
