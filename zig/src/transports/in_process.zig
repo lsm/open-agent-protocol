@@ -19,7 +19,10 @@ pub const InProcessTransport = struct {
 
     const Self = @This();
 
-    pub fn initWithStream(stream: *event_stream.AssistantMessageStream, allocator: std.mem.Allocator) Self {
+    pub const Error = error{BorrowedStream};
+
+    pub fn initWithStream(stream: *event_stream.AssistantMessageStream, allocator: std.mem.Allocator) Error!Self {
+        if (!stream.ownership.isOwned()) return error.BorrowedStream;
         return .{
             .stream = stream,
             .allocator = allocator,
@@ -189,10 +192,10 @@ pub fn createPair(allocator: std.mem.Allocator) !struct { client: *InProcessTran
     stream.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
 
     const client = try allocator.create(InProcessTransport);
-    client.* = InProcessTransport.initWithStream(stream, allocator);
+    client.* = try InProcessTransport.initWithStream(stream, allocator);
 
     const server = try allocator.create(InProcessTransport);
-    server.* = InProcessTransport.initWithStream(stream, allocator);
+    server.* = try InProcessTransport.initWithStream(stream, allocator);
 
     return .{ .client = client, .server = server };
 }
@@ -357,10 +360,11 @@ pub const EventBridge = struct {
         while (!self.cancel_token.load(.acquire)) {
             if (self.source.poll()) |ev| {
                 var mutable_ev = ev;
+                const pushed = self.dest.push(ev);
                 if (self.source.ownership.isOwned()) {
-                    defer ai_types.deinitAssistantMessageEvent(self.source.allocator, &mutable_ev);
+                    ai_types.deinitAssistantMessageEvent(self.source.allocator, &mutable_ev);
                 }
-                self.dest.push(ev) catch {
+                pushed catch {
                     self.dest.completeWithError("Destination queue full");
                     return;
                 };
@@ -954,5 +958,17 @@ test "EventForwarder refuses a borrowed destination" {
     try std.testing.expectError(
         error.BorrowedDestination,
         EventForwarder.init(&dest_stream, allocator),
+    );
+}
+
+test "InProcessTransport refuses a borrowed stream, because writeFn frees what it writes" {
+    const allocator = std.testing.allocator;
+
+    var stream = event_stream.AssistantMessageStream.init(allocator);
+    defer stream.deinit();
+
+    try std.testing.expectError(
+        error.BorrowedStream,
+        InProcessTransport.initWithStream(&stream, allocator),
     );
 }
