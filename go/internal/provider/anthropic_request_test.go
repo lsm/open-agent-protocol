@@ -596,7 +596,7 @@ func TestAnAssistantImageIsDroppedWhereTheOracleDropsIt(t *testing.T) {
 			API: AnthropicWire, Provider: "anthropic", Model: "claude-sonnet-4-5",
 			Parts: []ContentPart{
 				{Text: &TextPart{Text: "hi"}},
-				{Image: &ImagePart{URL: "aGk=", Detail: "image/png"}},
+				{Image: &ImagePart{Data: "aGk=", MediaType: "image/png"}},
 			},
 		}}}}
 	}
@@ -610,7 +610,7 @@ func TestAnAssistantImageIsDroppedWhereTheOracleDropsIt(t *testing.T) {
 		API: AnthropicWire, Provider: "anthropic", Model: "claude-sonnet-4-5", StopReason: "tool_use",
 		Parts: []ContentPart{
 			{ToolCall: &ToolCall{ID: "t", Name: "f", Arguments: "{}"}},
-			{Image: &ImagePart{URL: "aGk=", Detail: "image/png"}},
+			{Image: &ImagePart{Data: "aGk=", MediaType: "image/png"}},
 		},
 	}}}}
 	kept := anthropicBody(t, anthropicModel(), withTools, AnthropicOptions{})["messages"].([]any)[0].(map[string]any)
@@ -667,5 +667,30 @@ func TestAnEmptySystemPromptCountsAsAbsent(t *testing.T) {
 	text := systemTextOf(t, oauth)
 	if text != oauthSystemText {
 		t.Errorf("under oauth with no prompt the text = %q, want the bare sentence with no trailing blank line", text)
+	}
+}
+
+func TestOneImagePartServesBothWriters(t *testing.T) {
+	img := ImagePart{Data: "aGVsbG8=", MediaType: "image/png"}
+	if got := img.DataURL(); got != "data:image/png;base64,aGVsbG8=" {
+		t.Errorf("the data url = %q, want the mime and the base64 spliced in", got)
+	}
+	ctx := func() Context {
+		return Context{Messages: []Message{{User: &UserContent{UseParts: true, Parts: []ContentPart{{Image: &img}}}}}}
+	}
+	openaiRaw := BuildRequestBody(openAIModel(), ctx(), StreamOptions{})
+	var openaiParsed map[string]any
+	if err := json.Unmarshal(openaiRaw, &openaiParsed); err != nil {
+		t.Fatalf("the openai body is not json: %v", err)
+	}
+	openai := openaiParsed["messages"].([]any)[0].(map[string]any)
+	openaiURL := openai["content"].([]any)[0].(map[string]any)["image_url"].(map[string]any)["url"]
+	if openaiURL != "data:image/png;base64,aGVsbG8=" {
+		t.Errorf("the openai writer = %v, want the data url built from the part", openaiURL)
+	}
+	anthropic := anthropicBody(t, anthropicModel(), ctx(), AnthropicOptions{})["messages"].([]any)[0].(map[string]any)
+	source := anthropic["content"].([]any)[0].(map[string]any)["source"].(map[string]any)
+	if source["media_type"] != "image/png" || source["data"] != "aGVsbG8=" {
+		t.Errorf("the anthropic writer = %v, want the part's own two fields", source)
 	}
 }

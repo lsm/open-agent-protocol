@@ -76,6 +76,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     Code sentence, a blank line, and then the caller's own prompt. A port that
     replaces it drops the caller's instructions on every oauth request that has
     one; the bare sentence is written only when there is no prompt at all.
+  - **An image part means one thing to both writers**: base64 `data` and a
+    `media_type`, as the oracle's single `ImageContent` does. The openai writer
+    builds `data:<media_type>;base64,<data>` from them and the anthropic writer
+    writes the two members directly, so one context serves both clients. The
+    earlier shape — a URL plus a fidelity knob — meant different things to each
+    and sent `media_type: ""` with a URL where base64 belonged.
   - **A user message that has parts is always a block array**, never a joined
     string — the openai writer flattens text-only parts and this one does not,
     so a port that shares the rule sends a different shape than oapx. A message

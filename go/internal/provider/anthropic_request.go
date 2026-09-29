@@ -335,8 +335,8 @@ func imageBlock(img *ImagePart) jsonObject {
 		member("type", jsonString("image")),
 		member("source", jsonObject{
 			member("type", jsonString("base64")),
-			member("media_type", jsonString(img.Detail)),
-			member("data", jsonString(img.URL)),
+			member("media_type", jsonString(img.MediaType)),
+			member("data", jsonString(img.Data)),
 		}),
 	}
 }
