@@ -4,9 +4,14 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/lsm/open-agent-protocol/go/internal/provider"
 )
+
+const eventBuffer = 64
+
+const roomPoll = time.Millisecond
 
 type Config struct {
 	Model         provider.Model
@@ -42,7 +47,7 @@ func Start(ctx context.Context, config Config, prompts []provider.Message) *Run 
 		config: config,
 		ctx:    runCtx,
 		cancel: cancel,
-		events: make(chan Event, 64),
+		events: make(chan Event, eventBuffer),
 		done:   make(chan struct{}),
 	}
 	go func() {
@@ -72,21 +77,23 @@ func (r *Run) Err() error {
 func (r *Run) Cancel() { r.cancel() }
 
 func (r *Run) emit(event Event) {
-	if !event.IsTerminal() {
-		select {
-		case r.events <- event:
-		case <-r.ctx.Done():
+	if event.IsTerminal() {
+		r.events <- event
+		return
+	}
+	for {
+		if len(r.events) < eventBuffer-1 {
+			select {
+			case r.events <- event:
+			default:
+			}
+			return
 		}
-		return
-	}
-	select {
-	case r.events <- event:
-		return
-	default:
-	}
-	select {
-	case r.events <- event:
-	case <-r.ctx.Done():
+		select {
+		case <-r.ctx.Done():
+			return
+		case <-time.After(roomPoll):
+		}
 	}
 }
 

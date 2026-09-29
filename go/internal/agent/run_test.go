@@ -379,18 +379,47 @@ func manyDeltaFrames() []string {
 	return append(frames, frame(`{"choices":[{"delta":{},"finish_reason":"stop"}]}`))
 }
 
-func TestARunNobodyReadsStillSettlesOnceItsContextIsCancelled(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	run := Start(ctx, Config{Model: completionsModel(), Streamer: &scripted{turns: []scriptedTurn{{frames: manyDeltaFrames()}}}}, prompts("hi"))
-	time.Sleep(200 * time.Millisecond)
-	cancel()
-	waited := make(chan Result, 1)
-	go func() { waited <- run.Wait() }()
-	select {
-	case <-waited:
-	case <-time.After(5 * time.Second):
-		t.Fatal("Wait did not return within five seconds of a run whose consumer walked away: the terminal send is blocked on a full buffer nobody will drain")
+func TestTheTerminalLandsOnAFullBufferAfterACancelOnEveryAttempt(t *testing.T) {
+	for attempt := 0; attempt < 30; attempt++ {
+		run := Start(context.Background(), Config{
+			Model:    completionsModel(),
+			Streamer: &scripted{turns: []scriptedTurn{{frames: manyDeltaFrames()}}},
+		}, prompts("hi"))
+		settled := make(chan struct{})
+		go func() { run.Wait(); close(settled) }()
+		time.Sleep(150 * time.Millisecond)
+		run.Cancel()
+		select {
+		case <-settled:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("attempt %d: Wait did not return after a cancel with a full buffer; buffered=%d", attempt, len(run.events))
+		}
+		var terminals int
+		var kinds []EventKind
+		for event := range run.Events() {
+			if event.IsTerminal() {
+				terminals++
+			}
+			kinds = append(kinds, event.Kind)
+		}
+		if terminals != 1 {
+			t.Fatalf("attempt %d: a cancelled run delivered %d terminals (%s), want exactly one: the last buffer slot is the terminal's, so a full buffer cannot cost the run its only terminal", attempt, terminals, joinKinds(kinds))
+		}
 	}
+}
+
+func TestANonTerminalNeverOccupiesTheSlotsReservedForTheTerminal(t *testing.T) {
+	run := Start(context.Background(), Config{
+		Model:    completionsModel(),
+		Streamer: &scripted{turns: []scriptedTurn{{frames: manyDeltaFrames()}}},
+	}, prompts("hi"))
+	for i := 0; i < 10; i++ {
+		time.Sleep(20 * time.Millisecond)
+		if held := len(run.events); held > eventBuffer-1 {
+			t.Fatalf("a running run held %d events, want at most %d: the last slot is the terminal's", held, eventBuffer-1)
+		}
+	}
+	run.Cancel()
 }
 
 func TestATerminalReachesAConsumerThatIsStillReading(t *testing.T) {

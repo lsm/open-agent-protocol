@@ -139,11 +139,17 @@ the difference is invisible in the trace because both end the same way.
 **Drain the channel, or cancel.** The channel is buffered, and a turn whose
 consumer stops reading blocks on the next event until its context is
 cancelled. There is no abandoned-turn case to recover from, so a consumer that
-might stop reading early has to cancel the context rather than walk away. A
-run's terminal is the one event that survives that rule, in the sense that a
-cancelled run's terminal may be dropped rather than block the run forever —
-which is why `Wait`, `Result` and `Err` exist and why a caller that has
-cancelled a run learns its outcome from those rather than from the channel.
+might stop reading early has to cancel the context rather than walk away.
+
+A run's terminal is the exception, and it is the exception by construction
+rather than by luck: the event buffer's last slot is reserved for it, so a
+non-terminal send never takes it and a cancelled run's terminal lands even
+when the buffer is full and nobody is reading. A `select` over a send and a
+cancelled context cannot do that — both cases are ready, and Go picks at
+random, so a run that raced would settle as cancelled and deliver no terminal,
+which is the one trace a consumer cannot interpret. After a cancel, a
+non-terminal is dropped rather than waited for, so a cancelled run's events
+after the cancellation are whatever arrived before it.
 
 ## What the loop must be, whatever the slice
 
