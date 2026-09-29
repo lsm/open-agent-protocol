@@ -505,7 +505,7 @@ const Runner = struct {
                 try std.fmt.allocPrint(
                     self.allocator,
                     "the endpoint stopped answering after a recoverable protocol error: {s}",
-                    .{@errorName(err)},
+                    .{self.reasonOf(err)},
                 ),
             );
             return;
@@ -1036,7 +1036,7 @@ test "a recovery failure is reported under the check it belongs to" {
         \\  *run.cancel.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"c","in_reply_to":"%s","payload":{"error":{"code":"unsupported_feature","message":"x"}}}\n' "$rid" ;;
         \\  *-stale*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"s","in_reply_to":"%s","payload":{"error":{"code":"stale_capabilities","message":"x"}}}\n' "$rid" ;;
         \\  *conformance.not.a.real.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"u","in_reply_to":"%s","payload":{"error":{"code":"unknown_request","message":"x"}}}\n' "$rid" ;;
-        \\  *session.state.request*) exit 0 ;;
+        \\  *session.state.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"r","in_reply_to":"%s","payload":{"error":{"code":"unsupported_feature","message":"this endpoint will not be asked again"}}}\n' "$rid" ;;
         \\  esac
         \\done
     ;
@@ -1051,6 +1051,9 @@ test "a recovery failure is reported under the check it belongs to" {
     try std.testing.expect(!report.passed());
     const refused = report.verdict("an addressable envelope that is wrong draws a correlated refusal") orelse return error.CheckMissing;
     try std.testing.expect(!refused.passed);
-    try std.testing.expect(std.mem.startsWith(u8, refused.detail, "the endpoint stopped answering after a recoverable protocol error: "));
+    try std.testing.expectEqualStrings(
+        "the endpoint stopped answering after a recoverable protocol error: unsupported_feature: this endpoint will not be asked again",
+        refused.detail,
+    );
     try std.testing.expect(report.verdict("the endpoint stopped answering after a recoverable protocol error") == null);
 }
