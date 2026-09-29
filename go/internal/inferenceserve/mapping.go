@@ -197,7 +197,18 @@ func (s *State) settled() bool {
 	return s.lastSettled
 }
 
+func SettableStopReason(reason string) bool {
+	switch reason {
+	case "stop", "length", "tool_use", "content_filter", "error", "aborted":
+		return true
+	}
+	return false
+}
+
 func (s *State) Completed(stopReason string, content []TerminalBlock) (Envelope, error) {
+	if !SettableStopReason(stopReason) {
+		return s.Failed(CodeProtocolViolation, "the provider settled with a stop reason the profile does not define")
+	}
 	for _, block := range content {
 		if block.ArgumentsJSON == nil {
 			continue

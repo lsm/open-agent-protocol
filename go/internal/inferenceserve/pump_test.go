@@ -473,3 +473,24 @@ func TestASignatureThePartNeverSawIsNotInventedOnTheTerminal(t *testing.T) {
 		t.Errorf("the terminal carries %v, want no carry: the part ended without one and the terminal is not a second source", first["carry"])
 	}
 }
+
+func TestAStopReasonTheProfileDoesNotDefineSettlesAFailure(t *testing.T) {
+	state := NewState(&Ids{}, "i1", "m")
+	started, err := state.Started(1700000000000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := state.Completed("nearly_stopped", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Type != "inference.failed" {
+		t.Fatalf("got a %s, want inference.failed: stop_reason is a closed enum, so anything else is a frame the schema refuses", envelope.Type)
+	}
+	for _, reason := range []string{"stop", "length", "tool_use", "content_filter", "error", "aborted"} {
+		if !SettableStopReason(reason) {
+			t.Errorf("%q is refused, want it accepted: it is in the profile's enum", reason)
+		}
+	}
+	validate(t, []Envelope{started, envelope})
+}

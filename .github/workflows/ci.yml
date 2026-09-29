@@ -7,6 +7,19 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # One group per pull request, so a newer push to that pull request cancels the
+  # run the previous push started, queued or in progress. A push carries no pull
+  # request number, so it falls back to its own run id and shares a group with
+  # nothing: every main commit keeps its own run, and cancel-in-progress is false
+  # off a pull request besides. The event name is in the group so a push and a
+  # pull request cannot land in one group -- a pull request number and a run id
+  # come from separate counters, and the two must never be interchangeable. The
+  # ci- and ci-zig- prefixes must stay distinct too: both files display as "CI",
+  # so one shared prefix would have the two workflows cancel each other.
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     runs-on: ubuntu-latest

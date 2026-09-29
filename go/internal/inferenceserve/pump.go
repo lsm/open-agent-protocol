@@ -152,7 +152,7 @@ func blockOf(part PartEnded) TerminalBlock {
 func settleCompleted(state *State, event provider.Event) Envelope {
 	stopReason := "stop"
 	if event.Message != nil && event.Message.StopReason != "" {
-		stopReason = event.Message.StopReason
+		stopReason = string(event.Message.StopReason)
 	}
 	content := state.ended
 	envelope, err := state.Completed(stopReason, content)
