@@ -2936,7 +2936,8 @@ fn validateFlagRefusal(arg: []const u8) ?[]const u8 {
     if (!std.mem.startsWith(u8, arg, "-")) return null;
     if (std.mem.eql(u8, arg, "--format") or std.mem.eql(u8, arg, "-format")) return null;
     if (std.mem.startsWith(u8, arg, "--format=")) return null;
-    if (std.mem.eql(u8, arg, "--mode") or std.mem.startsWith(u8, arg, "--mode=")) return "tolerant mode lands with the validator's own mode, in #367";
+    if (std.mem.eql(u8, arg, "--mode") or std.mem.eql(u8, arg, "-mode")) return null;
+    if (std.mem.startsWith(u8, arg, "--mode=")) return null;
     if (std.mem.eql(u8, arg, "--pack") or std.mem.startsWith(u8, arg, "--pack=")) return "extension packs land with the validator's own packs, in #367";
     if (std.mem.eql(u8, arg, "--provider")) return "the override is not carried; a trace declaring the profile routes itself, in #367";
     return "oapx validate does not carry this flag";
@@ -2949,6 +2950,7 @@ fn runValidate(
     stderr: std.Io.File,
 ) !bool {
     var format: ValidateFormat = .human;
+    var mode: validator.Mode = .strict;
     var paths = std.ArrayList([]const u8).empty;
     defer paths.deinit(allocator);
     var index: usize = 0;
@@ -2965,11 +2967,21 @@ fn runValidate(
             format = std.meta.stringToEnum(ValidateFormat, arg["--format=".len..]) orelse return error.InvalidArgument;
             continue;
         }
+        if (std.mem.eql(u8, arg, "--mode") or std.mem.eql(u8, arg, "-mode")) {
+            index += 1;
+            if (index >= args.len) return error.UnsupportedMode;
+            mode = validator.parseMode(args[index]) orelse return error.UnsupportedMode;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--mode=")) {
+            mode = validator.parseMode(arg["--mode=".len..]) orelse return error.UnsupportedMode;
+            continue;
+        }
         try paths.append(allocator, arg);
     }
     if (paths.items.len == 0) return error.InvalidArgument;
 
-    var judge = try validator.Validator.init(allocator, .{});
+    var judge = try validator.Validator.init(allocator, .{ .mode = mode });
     defer judge.deinit();
 
     var report = std.ArrayList(u8).empty;
@@ -3022,7 +3034,7 @@ fn printUsage(file: std.Io.File) !void {
         \\  oapx serve provider --http 127.0.0.1:<port>
         \\  oapx serve agent,provider --stdio [--model <model-ref>]
         \\  oapx hub --stdio [--config <path>]
-        \\  oapx validate [--format human|json] <trace.json>...
+        \\  oapx validate [--format human|json] [--mode strict|tolerant] <trace.json>...
         \\  oapx auth providers [--json]
         \\  oapx auth login --provider <id> [--json]
         \\  oapx --version
@@ -7154,6 +7166,10 @@ pub fn main(init: std.process.Init) !void {
     if (std.mem.eql(u8, args[1], "validate")) {
         const failed = runValidate(allocator, args[2..], stdout, stderr) catch |err| {
             if (err == error.Unavailable) std.process.exit(1);
+            if (err == error.UnsupportedMode) {
+                try compat.stdio.writeAll(stderr, "oapx validate: --mode: strict or tolerant\n");
+                std.process.exit(1);
+            }
             if (err == error.InvalidArgument) try printUsage(stderr);
             return err;
         };
@@ -10041,19 +10057,19 @@ test "two entries of one type are two adapters, each with its own executable" {
     try std.testing.expectEqualStrings("LITERAL=second", second_claude.config.backend.environment[0]);
 }
 
-test "validate refuses a flag goap carries, and never reads its value as a path" {
+test "validate refuses a flag goap carries and oapx does not, and never reads its value as a path" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var out = try tmp.dir.createFile(std.testing.io, "stdout", .{});
     var complained_on = try tmp.dir.createFile(std.testing.io, "stderr", .{});
-    try std.testing.expectError(error.Unavailable, runValidate(allocator, &.{ "--mode", "json" }, out, complained_on));
+    try std.testing.expectError(error.Unavailable, runValidate(allocator, &.{ "--pack", "storage" }, out, complained_on));
     out.close(std.testing.io);
     complained_on.close(std.testing.io);
     const complained = try tmp.dir.readFileAlloc(std.testing.io, "stderr", allocator, .limited(4096));
     defer allocator.free(complained);
-    try std.testing.expect(std.mem.indexOf(u8, complained, "oapx validate: --mode: unavailable:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, complained, "json") == null);
+    try std.testing.expect(std.mem.indexOf(u8, complained, "oapx validate: --pack: unavailable:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, complained, "storage") == null);
     try std.testing.expect(std.mem.indexOf(u8, complained, "unreadable") == null);
 }
 
@@ -10072,19 +10088,38 @@ test "validate refuses a flag it has never heard of, by the name it was given" {
 }
 
 test "validate names the goap flag it is refusing rather than a generic one" {
-    try std.testing.expectEqualStrings("tolerant mode lands with the validator's own mode, in #367", validateFlagRefusal("--mode").?);
-    try std.testing.expectEqualStrings("tolerant mode lands with the validator's own mode, in #367", validateFlagRefusal("--mode=tolerant").?);
     try std.testing.expectEqualStrings("extension packs land with the validator's own packs, in #367", validateFlagRefusal("--pack").?);
     try std.testing.expectEqualStrings("extension packs land with the validator's own packs, in #367", validateFlagRefusal("--pack=./p").?);
     try std.testing.expectEqualStrings("the override is not carried; a trace declaring the profile routes itself, in #367", validateFlagRefusal("--provider").?);
 }
 
-test "validate still takes a path, and the one flag it does carry" {
+test "validate still takes a path, and both flags it does carry" {
     try std.testing.expect(validateFlagRefusal("fixtures/manifest.json") == null);
     try std.testing.expect(validateFlagRefusal("manifest.json") == null);
     try std.testing.expect(validateFlagRefusal("--format") == null);
     try std.testing.expect(validateFlagRefusal("-format") == null);
     try std.testing.expect(validateFlagRefusal("--format=json") == null);
+    try std.testing.expect(validateFlagRefusal("--mode") == null);
+    try std.testing.expect(validateFlagRefusal("-mode") == null);
+    try std.testing.expect(validateFlagRefusal("--mode=tolerant") == null);
+}
+
+test "a mode oapx does not carry is refused by name, and never read as a path" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var out = try tmp.dir.createFile(std.testing.io, "stdout", .{});
+    var complained_on = try tmp.dir.createFile(std.testing.io, "stderr", .{});
+    try std.testing.expectError(error.UnsupportedMode, runValidate(allocator, &.{ "--mode", "lenient", "t.json" }, out, complained_on));
+    try std.testing.expectError(error.UnsupportedMode, runValidate(allocator, &.{"--mode=lenient", "t.json"}, out, complained_on));
+    try std.testing.expectError(error.UnsupportedMode, runValidate(allocator, &.{"--mode"}, out, complained_on));
+    out.close(std.testing.io);
+    complained_on.close(std.testing.io);
+    const complained = try tmp.dir.readFileAlloc(std.testing.io, "stderr", allocator, .limited(4096));
+    defer allocator.free(complained);
+    try std.testing.expect(std.mem.indexOf(u8, complained, "unreadable") == null);
+    try std.testing.expect(std.mem.indexOf(u8, complained, "lenient") == null);
+    try std.testing.expect(std.mem.indexOf(u8, complained, "t.json") == null);
 }
 
 test "unavailable names the surface it was called for" {
