@@ -1138,13 +1138,20 @@ byte-for-byte comparison on their first request.
 stamped with the revision its *lister* served it under, which is what makes the
 draft's "refuse one that disagrees with the descriptor" check possible at all.
 
-**D4 to D8 are what is left, and all of it is the Zig side and all of one kind:**
-each names something `zig/src/adapter/contract.zig` cannot carry that the draft
-specifies — a member that does not exist, or a signal with nowhere to report it.
-None of them changes a byte on the wire today, and each is a small contract change
-rather than a re-decision, so they are queued rather than fixed here: D5, D6, D7 and
-D8 in [#407](https://github.com/lsm/open-agent-protocol/issues/407). D7 is the per-run
-exposure a stream failure needs; D8 is that `request_cancelled` has no signal to come from.
+**D5 is fixed** ([#516](https://github.com/lsm/open-agent-protocol/pull/516)): a session
+open's `metadata` reaches an adapter through the core, which before it **had no member to
+carry it** — so the member could not arrive rather than arriving and being dropped. The
+one surface that did accept a metadata-carrying open and discard it is the endpoint, in
+**both** trees, and that is D9.
+
+**D4, D6, D7, D8 and D9 are what is left.** Four of them are the Zig side and all of one
+kind: each names something the Zig tree cannot carry that the draft specifies — a member
+that does not exist, or a signal with nowhere to report it. None of them changes a byte
+on the wire today, and each is a small contract change rather than a re-decision, so they
+are queued rather than fixed here: D6, D7, D8 and D9 in
+[#407](https://github.com/lsm/open-agent-protocol/issues/407). D7 is the per-run exposure
+a stream failure needs; D8 is that `request_cancelled` has no signal to come from; D9 is
+a gap **both** trees share, which is why fixing it on one side would be the wrong move.
 D4 is different in one respect: its negative-capacity half is a Go change, queued in
 [#406](https://github.com/lsm/open-agent-protocol/issues/406).
 
@@ -1177,6 +1184,18 @@ are "stamped with the revision the lister served it under", and both name
 | **Why it is not fixable here** | It needs `contract`'s slots to report cancellation, which is a member that does not exist — the same kind of gap as D3 and D5, and the reason it is recorded rather than papered over with a mapping the hub cannot actually reach. |
 | **The fix** | `contract`'s slots report cancellation as its own error, as Go's context does, and the transports map it to `request_cancelled`. |
 
+### D9 — the endpoint surface drops an open's `metadata`, in **both** trees
+
+| | |
+| --- | --- |
+| **The draft says** | `session.open.request` carries `metadata`, and the schema has the member. |
+| **Go does** | Only the **endpoint** surface drops it: `serveendpoint`'s open path builds a `base.OpenRequest` with no `Metadata`. The other two frontends read it and enforce the draft's `invalid_payload` — `servehttp` and the stdio op both decode each value and refuse one that will not parse. |
+| **Zig does** | The same, and one layer deeper: `oap_types.SessionOpenRequest` has no `metadata` member either, so it cannot reach `endpoint.zig`'s `adapter.open` even now that D5 gave `contract.OpenRequest` one. |
+| **Why it matters** | D5 fixed the core's path, so a metadata-carrying open reaches an adapter when it is driven **through the core** and is still dropped when it is driven through an **endpoint**. Two paths to the same adapter, one of which silently discards a request member. |
+| **Why it is not fixed here** | **Both** trees do it. Fixing it on the Zig side alone would make the two *diverge* — the Zig endpoint would forward metadata and the Go one would not — which is the opposite of what Decision 0032 is for. It needs to be a change to both trees, and it is a change to the shared surface rather than to the hub. |
+| **The fix** | `oap_types.SessionOpenRequest` gains `metadata` and both trees' **endpoint** surfaces read it into their `OpenRequest`, in one step — the only two places either tree drops it. The Zig stdio `open` op, when it is written, has to read `metadata` off the wire the way Go's does, or the Zig line becomes a *third* dropper rather than a second reader. |
+
+
 ### D4 — the registry's `journal_capacity` is hub-wide in Zig, per-adapter in Go
 
 | | |
@@ -1188,9 +1207,47 @@ are "stamped with the revision the lister served it under", and both name
 | **The two zeros are not the same zero** | A **document's** `journal_capacity: 0` keeps the default in both trees, because every Go constructor treats `<= 0` as "unspecified" (`go/adapter/memory.go:123`) and the Zig `load` does the same. The Zig **core's** own `Options.journal_capacity = 0` means *retain nothing*, and no config document can reach it — a host that wants no journal sets the option, and a host that writes `0` gets the default. Go has no equivalent: a `0` reaching an adapter always becomes that adapter's own capacity. So the two trees agree on every document, and differ only on a value only a Zig host can set. |
 | **A negative is refused, not defaulted** | Both trees refuse it. The Zig `load` refuses a negative with `ConfigRefused`, and the Go registry refuses a document naming one, because a negative capacity is a malformed document and defaulting it would report success for something the operator did not write. A document naming `0` still keeps the default in both, because that is a request for the default rather than a malformed value. |
 
-### D5 — `session.open.request`'s `metadata` never reaches an adapter
+### D5 — `session.open.request`'s `metadata` never reached an adapter
 
-`session.open.request` carries `metadata`, and the draft names `invalid_payload` for a value that is not JSON. `contract.OpenRequest` has no `metadata` member, so the Zig core cannot carry one to an adapter at all: it is neither validated nor forwarded, and a Zig hub silently drops what a Go hub passes to the adapter. The field is the fix, and until it exists the two trees differ on a request member the draft specifies.
+**Fixed.** `contract.OpenRequest` and `hub.OpenRequest` both carry a `metadata`
+member and the hub forwards it, so a session open's metadata is a value an
+adapter receives rather than one the core drops. It is a `std.json.Value`, which
+is what Go hands an adapter: `base.OpenRequest.Metadata` is a `map[string]any`,
+parsed, not raw text. What this names is that the core had nowhere to put it: a
+host that sent metadata to a Zig hub could not have it delivered, because the
+member the draft specifies did not exist between the wire and the adapter. The
+one surface that *did* accept such an open and drop it is the endpoint, in both
+trees, and that is D9 rather than this row.
+
+**The value's lifetime is the call's, and that is a rule rather than an accident.**
+`metadata` is a `std.json.Value`, which is a *shallow* copy: its `.object` is a
+pointer into the arena the value was parsed in, so the value is only as long as
+that arena. The repo has no deep-copy helper for one — the idiom is to re-parse —
+which makes the rule simple to state and easy to break: **an adapter may read
+`request.metadata` for the duration of the call and must not retain it**, and the
+hub forwards without retaining.
+
+Nothing dangles today, and it is worth being precise about why. The hub core hands
+the value straight through and holds nothing, and the one test double that *does*
+retain it (`Flaky.saw_metadata`) is read back inside its caller's own scratch
+arena, so the read is in lifetime. The trap is ahead, not behind: the stdio
+frontend parses each line into a scratch arena that is `defer`-deinit'd when the
+line is done, so **the `open` wire op has to decide this deliberately** — either
+re-parse for the adapter, which is the repo's idiom and costs one parse, or hold
+the line's arena for as long as the session lives. Writing that op without
+deciding is how a use-after-free gets in, and it would be invisible in every test
+that keeps the caller alive.
+
+Whether the contract should instead offer a *clone path*, so an adapter can keep a
+metadata value past the call, is a contract question rather than an `open` one, and
+a contract change belongs in [#407](https://github.com/lsm/open-agent-protocol/issues/407)
+rather than in a hub PR.
+
+The draft's `invalid_payload` for a value that is not JSON is enforced where the
+value is read, which is the wire op and not the core: the core's member is
+already a parsed value, so there is nothing left for it to refuse. That is
+recorded rather than left implied, because "the core does not validate it" and
+"nothing validates it" are different sentences and only the first is true.
 
 ### D6 — the Zig shutdown sweep cannot retry a close that refuses
 

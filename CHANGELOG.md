@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`make build` and `make tui` build ReleaseSafe.** They built Debug, where Zig's debug allocator records a stack trace for every allocation: resuming a 50 MB session left the TUI unresponsive for over a minute, and a message sent later took 14 seconds to answer a keystroke. A ReleaseSafe build resumes the same session in about a second. `OPTIMIZE=Debug` still gives a debug build.
+
 - **The CI fixture auth provider is served only when a test asks for it by
   name.** `oapx auth providers` returns the catalog's rows and nothing else
   unless `OAPX_TEST_FIXTURE_PROVIDER` is set to `1` or `true`, so a user running
@@ -788,9 +790,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   than the descriptor's, and refuses an unlabelled catalog rather than passing one
   through, so a session mediated by an endpoint is checked the same way a direct one is.
   A lister that reports the session closed now releases the session and answers
-  `unknown_session`, as `state`, `cancel` and `resolveCall` already did. The two
-  catalog operations propagated it raw and left a stale entry in the hub for the life
-  of the process.
+  `session_closed`, as Go does: it marks the session closed and still propagates the
+  error, so the answer is that once and `unknown_session` only on the next operation.
+- A session open's `metadata` now reaches the adapter. `contract.OpenRequest` and
+  `hub.OpenRequest` carry it and the hub forwards it, as a parsed value, which is
+  what Go hands an adapter. It could not be forwarded at all: the core had no
+  member to carry it, so a metadata-carrying open had nowhere to put it between
+  the wire and the adapter. Accepting one and dropping it is the endpoint's
+  behaviour, in both trees, and is recorded as D9.
 - **`docs/oap-system-map.html` is kept and made true.** The page was an orphan with nothing linking to it, and everything countable on it had drifted: it said 546 fixtures where `fixtures/manifest.json` lists 576, 53 diagnostic codes where `go/validation/diagnostic.go` declares 57, twelve schema documents where `schema/v0.1/` holds thirteen, and it showed eleven conformance units where `drafts/conformance.md` lists twelve — `+provider-attach` was missing from the chips. The status ladder was behind the tree: **semantic is complete** (`nothing_outstanding` in `zig/src/validation/semantic_gate.zig` is empty) and **all seven adapters are reachable behind `oapx serve agent --backend`**, so the page now carries a hub row instead — `oapx hub --stdio` serves `adapters`, `sessions`, `capabilities`, `state` and `close` and answers `unknown_op` for the rest — and names #496 for the differential. The commands table was wrong about the released binary: `oapx serve agent provider` is `oapx serve agent,provider --stdio`, `oapx run` only enters the agent loop with `--agent`, and `oapx hub --stdio` and `oapx validate` were missing; the hero now says `oapx` is the released binary and that `goap` is run with `go run ./go/cmd/goap` and never installed. The SVG's harnesses are pinned to catalogued versions rather than to one commit (Decision 0033), and the vendor box says it shows four of the catalog's 23 rows. The trace section and the `goap validate --format=json` transcript were checked against `fixtures/valid/tools-permission-completed.json` and the command's real output and are unchanged — every key and value the page shows is in the fixture, field for field. The README links the page and says to open it in a browser, and its SDK line now names three SDKs in `sdk/` and the Go one at `go/sdk/`.
 - **A run no longer stops by itself after 100 turns.** The agent loop capped a run at 100 model turns when its caller set no limit, and the TUI never sets one, so a long task ended right after a tool call, with no reply and no message. A run now goes on until the model answers without calling a tool or you cancel it, as pi-mono's loop does. `max_iterations` still sets a limit for a caller that wants one.
 - **The agent loop runs the tool calls a reply carries, whatever stop reason it reports.** It used to act on the stop reason alone, and the OpenAI Responses and Google providers never report `tool_use`, so a reply calling a tool through them ended the run without running it. A reply reporting `tool_use` with no tool call now ends the run instead of asking again. A tool call cut off at the output token limit is not run: the model gets an error asking it to call the tool again with complete arguments, and the run goes on. A fourth cut-off reply in a row ends the run, and the TUI now says when a run ends on a reply cut off at the output token limit.
@@ -1279,6 +1286,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Redesigned the TUI surface: welcome banner, role-glyph transcript entries with soft user blocks, styled assistant prose (bold/italic/code spans, bullets, numbered lists, headings, quotes, fenced code blocks with language tags) applied on top of the existing sanitizer and wrapper, one-line tool rows with right-aligned live status (`running`, `awaiting approval`, `✓ bytes · tokens`, `✗ failed`, `■ interrupted`) and capped `⎿` result previews, streaming spinner headers with a caret, titled pickers with a highlighted selection row, a key/value approval panel, a state-coloured composer border, a `/` command palette with `Tab` completion, and a compact status line with a context gauge, elapsed streaming time, model-priced context cost, and a right-aligned key hint.
 - TUI keys: `Esc` clears the draft, then aborts a running turn; `Ctrl+C` aborts or clears first and quits on a second press (immediately when idle with an empty composer); `Ctrl+D` quits on an empty idle composer; `Ctrl+A/E/U/K/W`, `Alt+Backspace`, `Ctrl`/`Alt`+arrows and `Alt+B/F` edit and move by word; `Delete` removes the character under the caret.
 - `scripts/tui-pty-driver.py` assertions follow the new rendering (raw-stream row breaks for the Shift+Enter draft, `✓`/`✗` tool glyphs, optional status-bar cut marker, double `Ctrl+C` semantics); the fixture provider accepts `<think>…</think>` in `text:` steps.
+
+### Fixed
+
+- **An unrecognised argument to `oapx validate` is no longer read as a path.**
+  `runValidate` appended any argument it did not recognise to the path list, so
+  `oapx validate --mode json manifest.json` reported `--mode: unreadable` and then
+  `json: unreadable` — two files that do not exist — and carried on. The verdict was
+  false about what had happened, and the user's intent was dropped without a word.
+  A flag oapx does not carry is now refused by name:
+  `oapx validate: --mode: unavailable: tolerant mode lands with the validator's own
+  mode, in #367`. The flag's value is never consumed, so one mistyped flag no longer
+  costs two phantom files, and the three flags `goap validate` has but oapx does not —
+  `--mode`, `--pack` and `--provider` — each name themselves rather than falling
+  through to a generic refusal. `unavailable` grew a `surface` parameter, because it
+  hardcoded `oapx hub:` into its message and would have answered
+  `oapx hub: --mode: unavailable` for a `validate` refusal; its `arena` parameter went
+  with that, having been discarded on entry (`_ = arena`) and the only reason `runHub`
+  still allocated an arena at all.
+
 
 ## [0.2.0] - 2026-09-11
 

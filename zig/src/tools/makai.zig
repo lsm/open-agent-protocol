@@ -2363,14 +2363,13 @@ fn wallClockNanoseconds() u64 {
 }
 
 fn unavailable(
-    arena: std.mem.Allocator,
     stderr: std.Io.File,
-    verb: []const u8,
+    surface: []const u8,
+    flag: []const u8,
     reason: []const u8,
 ) error{Unavailable}!void {
-    _ = arena;
     var buffer: [512]u8 = undefined;
-    const message = std.fmt.bufPrint(&buffer, "oapx hub: {s}: unavailable: {s}\n", .{ verb, reason }) catch "oapx hub: unavailable\n";
+    const message = std.fmt.bufPrint(&buffer, "oapx {s}: {s}: unavailable: {s}\n", .{ surface, flag, reason }) catch "oapx: unavailable\n";
     compat.stdio.writeAll(stderr, message) catch {};
     return error.Unavailable;
 }
@@ -2382,10 +2381,6 @@ fn runHub(
     stdout: std.Io.File,
     stderr: std.Io.File,
 ) !void {
-    var arena_state = std.heap.ArenaAllocator.init(allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
     var over_stdio = false;
     var config: ?[]const u8 = null;
     var addr: ?[]const u8 = null;
@@ -2415,10 +2410,10 @@ fn runHub(
         try compat.stdio.writeAll(stderr, "oapx hub: --stdio takes no listen address; --addr and --stdio are mutually exclusive\n");
         return error.InvalidHubOption;
     }
-    if (config != null) return unavailable(arena, stderr, "--config", "the hub's registry config lands with #389");
+    if (config != null) return unavailable(stderr, "hub", "--config", "the hub's registry config lands with #389");
     if (!over_stdio) {
-        if (addr != null) return unavailable(arena, stderr, "--addr", "the HTTP and SSE transport lands with #388");
-        return unavailable(arena, stderr, "--stdio", "a hub with no transport has nothing to serve");
+        if (addr != null) return unavailable(stderr, "hub", "--addr", "the HTTP and SSE transport lands with #388");
+        return unavailable(stderr, "hub", "--stdio", "a hub with no transport has nothing to serve");
     }
 
     var memory: memory_adapter.Adapter = undefined;
@@ -2786,6 +2781,16 @@ fn judgeTrace(allocator: std.mem.Allocator, registry: *const jsonschema.Registry
     return null;
 }
 
+fn validateFlagRefusal(arg: []const u8) ?[]const u8 {
+    if (!std.mem.startsWith(u8, arg, "-")) return null;
+    if (std.mem.eql(u8, arg, "--format") or std.mem.eql(u8, arg, "-format")) return null;
+    if (std.mem.startsWith(u8, arg, "--format=")) return null;
+    if (std.mem.eql(u8, arg, "--mode") or std.mem.startsWith(u8, arg, "--mode=")) return "tolerant mode lands with the validator's own mode, in #367";
+    if (std.mem.eql(u8, arg, "--pack") or std.mem.startsWith(u8, arg, "--pack=")) return "extension packs land with the validator's own packs, in #367";
+    if (std.mem.eql(u8, arg, "--provider")) return "the override is not carried; a trace declaring the profile routes itself, in #367";
+    return "oapx validate does not carry this flag";
+}
+
 fn runValidate(
     allocator: std.mem.Allocator,
     args: []const []const u8,
@@ -2798,6 +2803,7 @@ fn runValidate(
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
         const arg = args[index];
+        if (validateFlagRefusal(arg)) |reason| try unavailable(stderr, "validate", arg, reason);
         if (std.mem.eql(u8, arg, "--format") or std.mem.eql(u8, arg, "-format")) {
             index += 1;
             if (index >= args.len) return error.InvalidArgument;
@@ -6972,6 +6978,7 @@ pub fn main(init: std.process.Init) !void {
 
     if (std.mem.eql(u8, args[1], "validate")) {
         const failed = runValidate(allocator, args[2..], stdout, stderr) catch |err| {
+            if (err == error.Unavailable) std.process.exit(1);
             if (err == error.InvalidArgument) try printUsage(stderr);
             return err;
         };
@@ -9729,6 +9736,64 @@ fn refusedBackend(allocator: std.mem.Allocator, name: []const u8, config_path: ?
     try std.testing.expectEqual(@as(?anyerror, error.BackendRefused), runner.err);
     try std.testing.expectEqual(@as(usize, 0), written.len);
     return complained;
+}
+
+test "validate refuses a flag goap carries, and never reads its value as a path" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var out = try tmp.dir.createFile(std.testing.io, "stdout", .{});
+    var complained_on = try tmp.dir.createFile(std.testing.io, "stderr", .{});
+    try std.testing.expectError(error.Unavailable, runValidate(allocator, &.{ "--mode", "json" }, out, complained_on));
+    out.close(std.testing.io);
+    complained_on.close(std.testing.io);
+    const complained = try tmp.dir.readFileAlloc(std.testing.io, "stderr", allocator, .limited(4096));
+    defer allocator.free(complained);
+    try std.testing.expect(std.mem.indexOf(u8, complained, "oapx validate: --mode: unavailable:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, complained, "json") == null);
+    try std.testing.expect(std.mem.indexOf(u8, complained, "unreadable") == null);
+}
+
+test "validate refuses a flag it has never heard of, by the name it was given" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var out = try tmp.dir.createFile(std.testing.io, "stdout", .{});
+    var complained_on = try tmp.dir.createFile(std.testing.io, "stderr", .{});
+    try std.testing.expectError(error.Unavailable, runValidate(allocator, &.{"--bogus"}, out, complained_on));
+    out.close(std.testing.io);
+    complained_on.close(std.testing.io);
+    const complained = try tmp.dir.readFileAlloc(std.testing.io, "stderr", allocator, .limited(4096));
+    defer allocator.free(complained);
+    try std.testing.expectEqualStrings("oapx validate: --bogus: unavailable: oapx validate does not carry this flag\n", complained);
+}
+
+test "validate names the goap flag it is refusing rather than a generic one" {
+    try std.testing.expectEqualStrings("tolerant mode lands with the validator's own mode, in #367", validateFlagRefusal("--mode").?);
+    try std.testing.expectEqualStrings("tolerant mode lands with the validator's own mode, in #367", validateFlagRefusal("--mode=tolerant").?);
+    try std.testing.expectEqualStrings("extension packs land with the validator's own packs, in #367", validateFlagRefusal("--pack").?);
+    try std.testing.expectEqualStrings("extension packs land with the validator's own packs, in #367", validateFlagRefusal("--pack=./p").?);
+    try std.testing.expectEqualStrings("the override is not carried; a trace declaring the profile routes itself, in #367", validateFlagRefusal("--provider").?);
+}
+
+test "validate still takes a path, and the one flag it does carry" {
+    try std.testing.expect(validateFlagRefusal("fixtures/manifest.json") == null);
+    try std.testing.expect(validateFlagRefusal("manifest.json") == null);
+    try std.testing.expect(validateFlagRefusal("--format") == null);
+    try std.testing.expect(validateFlagRefusal("-format") == null);
+    try std.testing.expect(validateFlagRefusal("--format=json") == null);
+}
+
+test "unavailable names the surface it was called for" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var complained_on = try tmp.dir.createFile(std.testing.io, "stderr", .{});
+    try std.testing.expectError(error.Unavailable, unavailable(complained_on, "hub", "--config", "the hub's registry config lands with #389"));
+    complained_on.close(std.testing.io);
+    const complained = try tmp.dir.readFileAlloc(std.testing.io, "stderr", allocator, .limited(4096));
+    defer allocator.free(complained);
+    try std.testing.expectEqualStrings("oapx hub: --config: unavailable: the hub's registry config lands with #389\n", complained);
 }
 
 test "a backend oapx does not know, or a --config entry it cannot serve, is refused on stderr before any request is read" {
