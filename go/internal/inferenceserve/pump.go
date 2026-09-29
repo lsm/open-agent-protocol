@@ -3,11 +3,13 @@ package inferenceserve
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/lsm/open-agent-protocol/go/internal/provider"
 )
 
 var (
+	ErrAfterTerminal        = fmt.Errorf("inferenceserve: a part arrived after the inference settled")
 	ErrPartAlreadyOpen      = fmt.Errorf("inferenceserve: a part is already open")
 	ErrPartIndexMismatch    = fmt.Errorf("inferenceserve: a part arrived that is not the one open")
 	ErrToolCallIdentity     = fmt.Errorf("inferenceserve: a tool_call part needs an id and a name")
@@ -40,21 +42,40 @@ func Pump(state *State, event provider.Event) ([]Envelope, error) {
 		if state.settled() {
 			return nil, nil
 		}
-		return []Envelope{settleFailed(state, CodeProviderUnavailable, "the provider stream failed")}, nil
+		if isCancellation(event.Reason) {
+			envelope, err := state.Completed("aborted", nil)
+			if err != nil {
+				return nil, err
+			}
+			return []Envelope{envelope}, nil
+		}
+		envelope, err := settleFailed(state, CodeEndpointError, failureMessage(event.Reason))
+		if err != nil {
+			return nil, err
+		}
+		return []Envelope{envelope}, nil
 	case provider.EventDone:
 		if state.settled() {
 			return nil, nil
 		}
 		if state.open != nil {
-			return []Envelope{settleFailed(state, CodeEndpointError,
-				"the endpoint could not deliver the terminal for this inference")}, nil
+			envelope, err := settleFailed(state, CodeEndpointError,
+				"the endpoint could not deliver the terminal for this inference")
+			if err != nil {
+				return nil, err
+			}
+			return []Envelope{envelope}, nil
 		}
-		return []Envelope{settleCompleted(state, event)}, nil
+		envelope, err := settleCompleted(state, event)
+		if err != nil {
+			return nil, err
+		}
+		return []Envelope{envelope}, nil
 	}
 
 	if isPartStart(event.Kind) || isDelta(event.Kind) || isPartEnd(event.Kind) {
 		if state.settled() {
-			return nil, nil
+			return nil, ErrAfterTerminal
 		}
 	}
 
@@ -119,8 +140,12 @@ func Pump(state *State, event provider.Event) ([]Envelope, error) {
 					if state.settled() {
 						return nil, nil
 					}
-					return []Envelope{settleFailed(state, CodeProtocolViolation,
-						"the provider streamed a tool call whose arguments_json is not json")}, nil
+					envelope, err := settleFailed(state, CodeProtocolViolation,
+						"the provider streamed a tool call whose arguments_json is not json")
+					if err != nil {
+						return nil, err
+					}
+					return []Envelope{envelope}, nil
 				}
 				arguments = call.Arguments
 			}
@@ -155,26 +180,28 @@ func blockOf(part PartEnded) TerminalBlock {
 	}
 }
 
-func settleCompleted(state *State, event provider.Event) Envelope {
+func settleCompleted(state *State, event provider.Event) (Envelope, error) {
 	stopReason := "stop"
 	if event.Message != nil && event.Message.StopReason != "" {
 		stopReason = string(event.Message.StopReason)
 	}
-	content := state.ended
-	envelope, err := state.Completed(stopReason, content)
-	if err != nil {
-		return settleFailed(state, CodeProtocolViolation, err.Error())
-	}
-	return envelope
+	return state.Completed(stopReason, state.ended)
 }
 
-func settleFailed(state *State, code, message string) Envelope {
+func settleFailed(state *State, code, message string) (Envelope, error) {
 	state.open = nil
-	envelope, err := state.Failed(code, message)
-	if err != nil {
-		return Envelope{Type: "inference.failed", Payload: json.RawMessage(`{}`)}
+	return state.Failed(code, message)
+}
+
+func isCancellation(reason string) bool {
+	return strings.Contains(reason, "cancel")
+}
+
+func failureMessage(reason string) string {
+	if reason == "" {
+		return "the provider stream failed"
 	}
-	return envelope
+	return "the provider stream failed: " + reason
 }
 
 func partKindOf(event provider.EventKind) string {

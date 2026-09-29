@@ -3,6 +3,7 @@ package inferenceserve
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -170,8 +171,8 @@ func TestAnErrorEventSettlesAFailureAndNothingFollowsIt(t *testing.T) {
 		t.Fatalf("got a %s, want inference.failed", all[len(all)-1].Type)
 	}
 	failure := body(t, all[len(all)-1])["error"].(map[string]any)
-	if failure["code"] != CodeProviderUnavailable {
-		t.Errorf("the failure code = %v, want %s: the stream itself failed, which is what this code is for", failure["code"], CodeProviderUnavailable)
+	if failure["code"] != CodeEndpointError {
+		t.Errorf("the failure code = %v, want %s: the client hands over a reason string and nothing says the vendor was at fault, and provider_unavailable is a statement about a third party", failure["code"], CodeEndpointError)
 	}
 	after, err := Pump(state, provider.Event{Kind: provider.EventDone, Message: &provider.AssistantMessage{StopReason: "stop"}})
 	if err != nil {
@@ -274,8 +275,8 @@ func TestAFailureAbandonsTheOpenPartSoNothingScopedCanFollow(t *testing.T) {
 	)
 	validate(t, all)
 	after, err := Pump(state, provider.Event{Kind: provider.EventTextEnd, ContentIndex: 0, Delta: "a"})
-	if err != nil {
-		t.Fatal(err)
+	if err != ErrAfterTerminal {
+		t.Fatalf("a part ending after the failure = %v, want it refused as after the terminal, so it cannot reach the wire", err)
 	}
 	if len(after) != 0 {
 		t.Errorf("a part ending after the failure emitted %v, want nothing: the failure abandoned the open part and settled the inference, so this part belongs to neither", typesOf(after))
@@ -506,25 +507,107 @@ func TestAPartAfterAMidStreamSettleIsRefused(t *testing.T) {
 	if all[len(all)-1].Type != "inference.failed" {
 		t.Fatalf("got a %s, want inference.failed", all[len(all)-1].Type)
 	}
-	after, err := Pump(state, provider.Event{Kind: provider.EventTextStart, ContentIndex: 1})
+	for _, event := range []provider.Event{
+		{Kind: provider.EventTextStart, ContentIndex: 1},
+		{Kind: provider.EventTextDelta, ContentIndex: 1, Delta: "a"},
+		{Kind: provider.EventTextEnd, ContentIndex: 1, Delta: "a"},
+	} {
+		after, err := Pump(state, event)
+		if err != ErrAfterTerminal {
+			t.Errorf("a %s after the mid-stream settle = %v, want it refused as after the terminal", event.Kind, err)
+		}
+		if len(after) != 0 {
+			t.Errorf("a %s after the mid-stream settle emitted %v, want nothing: the validator calls that event_after_terminal", event.Kind, typesOf(after))
+		}
+	}
+}
+
+func TestACancelledInferenceSettlesAbortedRatherThanBlamingTheVendor(t *testing.T) {
+	sink := &provider.EventSink{}
+	reads := 0
+	read := provider.ReadChunkFunc(func() ([]byte, error) {
+		reads++
+		switch reads {
+		case 1:
+			return []byte("data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n"), nil
+		case 2:
+			return []byte("data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"a\"}}\n\n"), nil
+		default:
+			return nil, nil
+		}
+	})
+	cancelled := provider.CancelledFunc(func() bool { return reads >= 2 })
+	provider.StreamAnthropic(sink, provider.Model{ID: "claude", API: "anthropic-messages", Provider: "anthropic", MaxTokens: 100, HasCompat: true},
+		provider.Context{}, provider.AnthropicOptions{}, read, cancelled, nil)
+
+	state := NewState(&Ids{}, "i1", "openai/openai-completions@gpt-4o")
+	started, err := state.Started(1700000000000)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(after) != 0 {
-		t.Errorf("a part start after the mid-stream settle emitted %v, want nothing: the validator calls that event_after_terminal", typesOf(after))
+	var all []Envelope
+	all = append(all, started)
+	sawError := false
+	for _, event := range sinkEvents(sink) {
+		if event.Kind == provider.EventError {
+			sawError = true
+		}
+		emitted, err := Pump(state, event)
+		if err != nil {
+			t.Fatalf("the %s event: %v", event.Kind, err)
+		}
+		all = append(all, emitted...)
 	}
-	delta, err := Pump(state, provider.Event{Kind: provider.EventTextDelta, ContentIndex: 1, Delta: "a"})
-	if err != nil {
+	if !sawError {
+		t.Fatal("the cancelled run produced no error event, so this is not the script under test")
+	}
+	validate(t, all)
+	terminal := all[len(all)-1]
+	if terminal.Type != "inference.completed" {
+		t.Fatalf("got a %s, want inference.completed: the draft says an aborted call ends as a completed with stop_reason aborted, because cancellation at this boundary is a stop reason and not a third terminal", terminal.Type)
+	}
+	if got := body(t, terminal)["stop_reason"]; got != "aborted" {
+		t.Errorf("the stop reason = %v, want aborted", got)
+	}
+}
+
+func TestANonCancellationStreamFailureDoesNotBecomeAnOutage(t *testing.T) {
+	state := NewState(&Ids{}, "i1", "m")
+	all := runTrace(t, state, provider.Event{Kind: provider.EventError, Reason: "read error"})
+	validate(t, all)
+	failure := body(t, all[len(all)-1])["error"].(map[string]any)
+	if failure["code"] != CodeEndpointError {
+		t.Errorf("a read error settled as %v, want %s: the client hands over a string and nothing says the vendor was at fault", failure["code"], CodeEndpointError)
+	}
+	if !strings.Contains(failure["message"].(string), "read error") {
+		t.Errorf("the message = %v, want it to carry the client's reason", failure["message"])
+	}
+}
+
+func sinkEvents(sink *provider.EventSink) []provider.Event {
+	return sink.Drain()
+}
+
+func TestASettleThatCannotBeBuiltReturnsTheErrorRatherThanAnEnvelope(t *testing.T) {
+	state := NewState(&Ids{}, "i1", "m")
+	if _, err := state.Started(1); err != nil {
 		t.Fatal(err)
 	}
-	if len(delta) != 0 {
-		t.Errorf("a delta after the mid-stream settle emitted %v, want nothing", typesOf(delta))
-	}
-	end, err := Pump(state, provider.Event{Kind: provider.EventTextEnd, ContentIndex: 1, Delta: "a"})
-	if err != nil {
+	if _, err := state.Refused("c0", "model_not_found", "no such model"); err != nil {
 		t.Fatal(err)
 	}
-	if len(end) != 0 {
-		t.Errorf("a part end after the mid-stream settle emitted %v, want nothing", typesOf(end))
+	envelope, err := settleFailed(state, CodeEndpointError, "the provider stream failed")
+	if err == nil {
+		t.Fatalf("got an envelope %+v, want the error: a headerless inference.failed has no id, no inference_id, no sequence and no error member, so it is something no validator accepts and must not be handed to a caller as a settlement", envelope)
+	}
+	if !errors.Is(err, ErrRefused) {
+		t.Errorf("the error = %v, want ErrRefused", err)
+	}
+	if envelope.Payload != nil || envelope.ID != "" {
+		t.Errorf("the discarded envelope = %+v, want it empty", envelope)
+	}
+	completed, err := settleCompleted(state, provider.Event{Kind: provider.EventDone, Message: &provider.AssistantMessage{StopReason: "stop"}})
+	if err == nil {
+		t.Errorf("got a %+v, want the error from the completed path too", completed)
 	}
 }
