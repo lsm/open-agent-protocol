@@ -49,8 +49,7 @@ pub fn isGitHubCopilot(base_url: ?[]const u8) bool {
 }
 
 pub fn isMistral(base_url: ?[]const u8) bool {
-    const url = base_url orelse return false;
-    return std.mem.find(u8, url, "api.mistral.ai") != null;
+    return isHostOrSubdomainOf(base_url, "mistral.ai");
 }
 
 pub fn isGroq(base_url: ?[]const u8) bool {
@@ -214,6 +213,34 @@ test "isGitHubCopilot detection" {
     try std.testing.expect(isGitHubCopilot("https://api.githubcopilot.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot("https://api.openai.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot(null));
+}
+
+test "a mistral host is mistral.ai or a subdomain of it" {
+    const hosts = [_][]const u8{
+        "https://api.mistral.ai",
+        "https://api.mistral.ai/v1",
+        "https://mistral.ai",
+        "https://API.MISTRAL.AI",
+    };
+    for (hosts) |url| {
+        try std.testing.expect(isMistral(url));
+    }
+
+    const not_hosts = [_][]const u8{
+        "https://mymistral.ai",
+        "https://notmistral.ai",
+        "https://mistral.ai.evil.example",
+        "https://evil.example/?next=api.mistral.ai",
+        "https://evil.example/v1/api.mistral.ai",
+        "https://gateway.example/proxy/api.mistral.ai",
+        "not a url at all",
+        "",
+    };
+    for (not_hosts) |url| {
+        try std.testing.expect(!isMistral(url));
+    }
+
+    try std.testing.expect(!isMistral(null));
 }
 
 test "a host matches its own domain or a subdomain of it and nothing else" {
