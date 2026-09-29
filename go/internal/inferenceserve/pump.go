@@ -44,6 +44,9 @@ func Pump(state *State, event provider.Event) ([]Envelope, error) {
 		}
 		if isCancellation(event.Reason) {
 			var out []Envelope
+			if state.open != nil && state.open.kind == "tool_call" {
+				state.open = nil
+			}
 			if state.open != nil {
 				held := state.takeImplicit(state.open.index, state.open.kind)
 				if held == nil {
@@ -122,14 +125,19 @@ func Pump(state *State, event provider.Event) ([]Envelope, error) {
 				return nil, ErrPartAlreadyOpen
 			}
 			state.ended = append(state.ended, blockOf(*held))
-			envelope, err := state.emit("inference.part.ended", "", *held)
+			closed, err := state.emit("inference.part.ended", "", *held)
 			if err != nil {
 				return nil, err
 			}
-			if _, err := state.emit("inference.part.started", "", PartStarted{PartIndex: event.ContentIndex, PartKind: partKindOf(event.Kind), ToolCallID: event.ID, Name: event.Name}); err != nil {
-				return []Envelope{envelope}, nil
+			started, err := state.emit("inference.part.started", "", PartStarted{
+				PartIndex: event.ContentIndex, PartKind: partKindOf(event.Kind),
+				ToolCallID: event.ID, Name: event.Name,
+			})
+			if err != nil {
+				return nil, err
 			}
-			return []Envelope{envelope}, nil
+			state.open = &openPart{index: event.ContentIndex, kind: partKindOf(event.Kind)}
+			return []Envelope{closed, started}, nil
 		}
 		part := PartStarted{PartIndex: event.ContentIndex, PartKind: partKindOf(event.Kind)}
 		if part.PartKind == "tool_call" {
@@ -342,6 +350,9 @@ func isPartEnd(event provider.EventKind) bool {
 func (s *State) openImplicitPart(event provider.Event) ([]Envelope, error) {
 	kind := partKindOf(event.Kind)
 	if kind == "" {
+		return nil, ErrPartIndexMismatch
+	}
+	if kind == "tool_call" {
 		return nil, ErrPartIndexMismatch
 	}
 	part := PartStarted{PartIndex: event.ContentIndex, PartKind: kind}

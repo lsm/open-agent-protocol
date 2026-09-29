@@ -819,3 +819,64 @@ func TestACancelMidPartEndsThePartItWasStreaming(t *testing.T) {
 		t.Errorf("the terminal text = %v, want half: text streamed before the cancel was streamed to the caller", blocks[0])
 	}
 }
+
+func TestACancelMidToolCallSettlesWithoutAnIdentitylessPart(t *testing.T) {
+	state := NewState(&Ids{}, "i1", "anthropic/anthropic-messages@claude")
+	all := runTrace(t, state,
+		provider.Event{Kind: provider.EventToolCallStart, ContentIndex: 0, ID: "tc1", Name: "lookup"},
+		provider.Event{Kind: provider.EventToolCallDelta, ContentIndex: 0, Delta: "{"},
+		provider.Event{Kind: provider.EventError, Reason: ReasonCancelled},
+	)
+	validate(t, all)
+	terminal := all[len(all)-1]
+	if terminal.Type != "inference.completed" {
+		t.Fatalf("got a %s, want a completed", terminal.Type)
+	}
+	for _, envelope := range all {
+		if envelope.Type != "inference.part.ended" {
+			continue
+		}
+		held := body(t, envelope)
+		if held["part_kind"] == "tool_call" {
+			if _, present := held["tool_call"]; !present {
+				t.Errorf("a tool call part ended without its call: %s, which the schema refuses", envelope.Payload)
+			}
+			if _, present := held["text"]; present {
+				t.Errorf("a tool call part ended carrying text: %s, which the schema forbids on that branch", envelope.Payload)
+			}
+		}
+	}
+}
+
+func TestAToolCallDeltaWithNoPartOpenIsRefusedRatherThanInventingAnIdentity(t *testing.T) {
+	state := NewState(&Ids{}, "i1", "m")
+	if _, err := Pump(state, provider.Event{Kind: provider.EventToolCallDelta, ContentIndex: 0, Delta: "{"}); err != ErrPartIndexMismatch {
+		t.Fatalf("a tool call delta with nothing open = %v, want it refused: an implicit tool_call part would need an id and a name this layer does not have, and part.started requires both", err)
+	}
+	all := runTrace(t, state, provider.Event{Kind: provider.EventTextDelta, ContentIndex: 0, Delta: "a"})
+	validate(t, all)
+}
+
+func TestAPartStartOverAnImplicitPartReturnsBothEnvelopes(t *testing.T) {
+	state := NewState(&Ids{}, "i1", "m")
+	opened, err := Pump(state, provider.Event{Kind: provider.EventTextDelta, ContentIndex: 0, Delta: "hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	emitted, err := Pump(state, provider.Event{Kind: provider.EventThinkingStart, ContentIndex: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(emitted) != 2 || emitted[0].Type != "inference.part.ended" || emitted[1].Type != "inference.part.started" {
+		t.Fatalf("got %v, want the implicit part closed and the new one opened: returning only the ended one spends its sequence and id, and the caller sees a gap", typesOf(emitted))
+	}
+	if emitted[1].Sequence != opened[len(opened)-1].Sequence+2 {
+		t.Errorf("the new part opened at sequence %d after %d, want them adjacent: a dropped envelope leaves a gap the validator fails", emitted[1].Sequence, opened[len(opened)-1].Sequence)
+	}
+	all := append([]Envelope{opened[0], opened[1]}, emitted...)
+	closed, err := Pump(state, provider.Event{Kind: provider.EventThinkingEnd, ContentIndex: 1, Delta: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	validate(t, append(all, closed...))
+}
