@@ -363,6 +363,7 @@ const CatalogDiscovery = struct {
 var test_catalog_discovery: ?[]const CatalogDiscovery = null;
 var test_catalog_environment: ?[]const provider_credential.EnvironmentValue = null;
 var test_catalog_base_urls: ?provider_base_url.BaseUrlOverrides = null;
+var test_catalog_refusal_markers: bool = false;
 
 const loader_wires = [_][]const []const u8{
     anthropic_messages_api.wires,
@@ -494,7 +495,7 @@ fn catalogStoredRegion(id: []const u8, storage: ?*oauth_storage.AuthStorage) ?[]
     return provider_catalog.regionFromValue(id, provider_data["region:".len..]);
 }
 
-const catalog_loader_ids = [_][]const u8{
+const catalog_loader_rows = [_][]const u8{
     "deepseek",
     "openrouter",
     "opencode",
@@ -514,12 +515,32 @@ const deepseek_catalog_models_url = "https://api.deepseek.com/v1/models";
 const proxy_models_url = "https://proxy.example/api/v1/models";
 const xiaomi_catalog_models_url = "https://token-plan-cn.xiaomimimo.com/v1/models";
 
+fn isCatalogLoaderRow(id: []const u8) bool {
+    for (catalog_loader_rows) |row| {
+        if (std.mem.eql(u8, row, id)) return true;
+    }
+    return false;
+}
+
+fn orderedCatalogLoaderIds(allocator: std.mem.Allocator, out: *std.ArrayList([]const u8)) !void {
+    for (provider_catalog.coding_plan_ids) |id| {
+        if (isCatalogLoaderRow(id)) try out.append(allocator, id);
+    }
+    for (provider_catalog.all) |row| {
+        if (row.offering != null and row.offering.? == .coding_plan) continue;
+        if (isCatalogLoaderRow(row.id)) try out.append(allocator, row.id);
+    }
+}
+
 fn loadCatalogModels(
     allocator: std.mem.Allocator,
     storage: ?*oauth_storage.AuthStorage,
     mode: CatalogLoadMode,
 ) ![]ai_types.Model {
-    return loadCatalogModelsWithRows(allocator, &catalog_loader_ids, storage, mode);
+    var ids = std.ArrayList([]const u8).empty;
+    defer ids.deinit(allocator);
+    try orderedCatalogLoaderIds(allocator, &ids);
+    return loadCatalogModelsWithRows(allocator, ids.items, storage, mode);
 }
 
 fn loadCatalogModelsWithRows(
@@ -735,18 +756,20 @@ fn discoverCatalogModels(
 ) !?[]DiscoveredModel {
     const marker = try refusalMarkerName(allocator, target.id, target.region);
     defer allocator.free(marker);
-    if (mode == .allow_cache and refusalIsFresh(allocator, marker, anthropic_catalog_max_age_ms)) {
+    if (refusalMarkersEnabled() and mode == .allow_cache and
+        refusalIsFresh(allocator, marker, anthropic_catalog_max_age_ms))
+    {
         return error.ModelCatalogRefused;
     }
 
     const found = discoverCatalogModelsUncached(allocator, target, token, mode) catch |err| switch (err) {
         error.ModelCatalogRefused => {
-            rememberRefusal(allocator, marker);
+            if (refusalMarkersEnabled()) rememberRefusal(allocator, marker);
             return error.ModelCatalogRefused;
         },
         else => return err,
     };
-    if (found != null) forgetRefusal(allocator, marker);
+    if (found != null and refusalMarkersEnabled()) forgetRefusal(allocator, marker);
     return found;
 }
 
@@ -791,7 +814,7 @@ fn testCatalogModels(allocator: std.mem.Allocator, id: []const u8, models_url: [
     for (rows) |row| {
         if (!std.mem.eql(u8, row.id, id)) continue;
         if (!std.mem.eql(u8, row.models_url, models_url)) continue;
-        if (row.refused) return error.ModelCatalogRefused;
+        if (row.refused and rowDropsOnRefusal(id)) return error.ModelCatalogRefused;
         const out = try allocator.alloc(DiscoveredModel, row.model_ids.len);
         var filled: usize = 0;
         errdefer {
@@ -805,6 +828,10 @@ fn testCatalogModels(allocator: std.mem.Allocator, id: []const u8, models_url: [
         return out;
     }
     return null;
+}
+
+fn refusalMarkersEnabled() bool {
+    return !builtin.is_test or test_catalog_refusal_markers;
 }
 
 fn isRefusalStatus(status: u16) bool {
@@ -2306,6 +2333,8 @@ test "a refusal is remembered, so a later run drops the row without asking again
     const allocator = std.testing.allocator;
     try provider_catalog.blankEnvironment(allocator);
     defer compat.clearTestEnv();
+    test_catalog_refusal_markers = true;
+    defer test_catalog_refusal_markers = false;
     var tmp = try tempHome(allocator);
     defer tmp.cleanup();
 
@@ -2348,6 +2377,8 @@ test "a remembered refusal is forgotten once the row answers again" {
     const allocator = std.testing.allocator;
     try provider_catalog.blankEnvironment(allocator);
     defer compat.clearTestEnv();
+    test_catalog_refusal_markers = true;
+    defer test_catalog_refusal_markers = false;
     var tmp = try tempHome(allocator);
     defer tmp.cleanup();
 
@@ -2379,6 +2410,44 @@ test "a remembered refusal is forgotten once the row answers again" {
     defer deinitModels(allocator, refreshed);
     try std.testing.expectEqual(@as(usize, 1), refreshed.len);
     try std.testing.expect(!refusalIsFresh(allocator, marker, anthropic_catalog_max_age_ms));
+}
+
+test "the refusal drop is scoped to the rows a plan subscription opens" {
+    for (provider_catalog.all) |row| {
+        const is_plan = row.offering != null and row.offering.? == .coding_plan;
+        try std.testing.expectEqual(is_plan, rowDropsOnRefusal(row.id));
+    }
+    try std.testing.expect(rowDropsOnRefusal("xiaomi-token-plan-cn"));
+    try std.testing.expect(!rowDropsOnRefusal("xiaomi"));
+    try std.testing.expect(!rowDropsOnRefusal("deepseek"));
+    try std.testing.expect(!rowDropsOnRefusal("no-such-provider"));
+}
+
+test "a refused pay-as-you-go row still lists, because only a plan is unsubscribed" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+    var tmp = try tempHome(allocator);
+    defer tmp.cleanup();
+
+    const payg = "xiaomi";
+    var target = catalogTargetInRegion(payg, null) orelse return error.TestExpectedTarget;
+    defer target.deinit(allocator);
+    test_catalog_discovery = &[_]CatalogDiscovery{
+        .{ .id = payg, .models_url = target.models_url, .model_ids = &.{"mimo-model"}, .refused = true },
+    };
+    test_catalog_environment = &[_]provider_credential.EnvironmentValue{
+        .{ .name = "XIAOMI_API_KEY", .value = "shared-key" },
+    };
+    defer {
+        test_catalog_discovery = null;
+        test_catalog_environment = null;
+    }
+
+    const models = try loadCatalogModelsWithRows(allocator, &[_][]const u8{payg}, null, .allow_cache);
+    defer deinitModels(allocator, models);
+    try std.testing.expectEqual(@as(usize, 1), models.len);
+    try std.testing.expectEqualStrings("mimo-model", models[0].id);
 }
 
 test "a cached listing is read back for a row, freshness and all" {
@@ -2895,9 +2964,9 @@ test "the production loader enables deepseek, every gateway and every coding pla
         "openai",
         "kimi",
     };
-    try std.testing.expectEqual(enabled.len, catalog_loader_ids.len);
-    for (enabled, 0..) |id, index| {
-        try std.testing.expectEqualStrings(id, catalog_loader_ids[index]);
+    try std.testing.expectEqual(enabled.len, catalog_loader_rows.len);
+    for (enabled) |id| {
+        try std.testing.expect(isCatalogLoaderRow(id));
         try std.testing.expect(catalogTargetInRegion(id, provider_catalog.defaultRegion(id)) != null);
     }
 }
@@ -2922,10 +2991,57 @@ test "loadProductionModels serves a gateway row's discovered models beside deeps
     defer deinitModels(std.testing.allocator, models);
 
     try std.testing.expectEqual(@as(usize, 2), models.len);
-    try std.testing.expectEqualStrings("deepseek", models[0].provider);
-    try std.testing.expectEqualStrings("openrouter", models[1].provider);
-    try std.testing.expectEqualStrings("https://api.deepseek.com", models[0].base_url);
-    try std.testing.expectEqualStrings("https://openrouter.ai/api/v1", models[1].base_url);
+    try std.testing.expectEqualStrings("openrouter", models[0].provider);
+    try std.testing.expectEqualStrings("deepseek", models[1].provider);
+    try std.testing.expectEqualStrings("https://openrouter.ai/api/v1", models[0].base_url);
+    try std.testing.expectEqualStrings("https://api.deepseek.com", models[1].base_url);
+}
+
+test "the loaded list leads with the plans, and follows the catalog within each group" {
+    const allocator = std.testing.allocator;
+    var ids = std.ArrayList([]const u8).empty;
+    defer ids.deinit(allocator);
+    try orderedCatalogLoaderIds(allocator, &ids);
+
+    try std.testing.expectEqual(catalog_loader_rows.len, ids.items.len);
+    for (ids.items) |id| try std.testing.expect(isCatalogLoaderRow(id));
+
+    var seen_payg = false;
+    for (ids.items) |id| {
+        const row = provider_catalog.provider(id) orelse return error.TestExpectedRow;
+        const is_plan = row.offering != null and row.offering.? == .coding_plan;
+        try std.testing.expect(!is_plan or !seen_payg);
+        if (!is_plan) seen_payg = true;
+    }
+
+    var plans: usize = 0;
+    for (provider_catalog.coding_plan_ids) |id| {
+        if (isCatalogLoaderRow(id)) plans += 1;
+    }
+    try std.testing.expect(plans > 0);
+    for (ids.items[0..plans]) |id| {
+        const row = provider_catalog.provider(id) orelse return error.TestExpectedRow;
+        try std.testing.expect(row.offering.? == .coding_plan);
+    }
+    for (ids.items[plans..]) |id| {
+        const row = provider_catalog.provider(id) orelse return error.TestExpectedRow;
+        try std.testing.expect(row.offering == null or row.offering.? != .coding_plan);
+    }
+
+    const expected_plans = blk: {
+        var names: [catalog_loader_rows.len][]const u8 = undefined;
+        var total: usize = 0;
+        for (provider_catalog.coding_plan_ids) |id| {
+            if (isCatalogLoaderRow(id)) {
+                names[total] = id;
+                total += 1;
+            }
+        }
+        break :blk names[0..total];
+    };
+    for (ids.items[0..plans], 0..) |id, index| {
+        try std.testing.expectEqualStrings(expected_plans[index], id);
+    }
 }
 
 test "every coding plan row the loader enables carries its own version in the base" {
@@ -3087,10 +3203,10 @@ test "loadProductionModels serves a coding plan row's discovered models beside d
     defer deinitModels(std.testing.allocator, models);
 
     try std.testing.expectEqual(@as(usize, 2), models.len);
-    try std.testing.expectEqualStrings("deepseek", models[0].provider);
-    try std.testing.expectEqualStrings("tencent-coding-plan", models[1].provider);
-    try std.testing.expectEqualStrings("https://api.deepseek.com", models[0].base_url);
-    try std.testing.expectEqualStrings("https://api.lkeap.cloud.tencent.com/coding/v3", models[1].base_url);
+    try std.testing.expectEqualStrings("tencent-coding-plan", models[0].provider);
+    try std.testing.expectEqualStrings("deepseek", models[1].provider);
+    try std.testing.expectEqualStrings("https://api.lkeap.cloud.tencent.com/coding/v3", models[0].base_url);
+    try std.testing.expectEqualStrings("https://api.deepseek.com", models[1].base_url);
 }
 
 test "openai is served on the completions wire except for the models that need responses" {
@@ -3166,8 +3282,8 @@ test "the wire a model is served on is the one the loader would pick for the row
 }
 
 test "the loader's rows are catalog rows the target answers for" {
-    try std.testing.expect(catalog_loader_ids.len > 0);
-    for (catalog_loader_ids) |id| {
+    try std.testing.expect(catalog_loader_rows.len > 0);
+    for (catalog_loader_rows) |id| {
         try std.testing.expect(provider_catalog.provider(id) != null);
         try std.testing.expect(catalogTargetInRegion(id, provider_catalog.defaultRegion(id)) != null);
     }
@@ -3432,7 +3548,11 @@ fn catalogLoadProbe(allocator: std.mem.Allocator) !void {
     const models = try loadCatalogModels(allocator, null, .allow_cache);
     defer deinitModels(allocator, models);
     try std.testing.expectEqual(@as(usize, 4), models.len);
-    try std.testing.expectEqualStrings("openai-responses", models[3].api);
+    var responses: usize = 0;
+    for (models) |model| {
+        if (std.mem.eql(u8, model.api, "openai-responses")) responses += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), responses);
 }
 
 fn declaredModelsFallbackProbe(allocator: std.mem.Allocator) !void {
