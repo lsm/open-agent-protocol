@@ -1275,15 +1275,24 @@ are "stamped with the revision the lister served it under", and both name
 | **The fix** | The serve loop's `decode` has the raw line; it would need to record the member's byte span and hand it to the gate alongside the parsed value. That is a `Request` member and a change in `decode` — cheap, and local to this file. |
 | **Why it is not fixed here** | Not a size question: no test can send a 16 MiB envelope through the differential without making the job enormous, so a fix here would be asserted only by a unit test with a hand-built span, and the differential could not confirm it. It is also a wire detail rather than a core one, so it is not part of the `hub.open` refusal change that D11, D12, D14 and D15 share. |
 
-### D17 — a wire-named tool source is attached without the daemon's trust checks
+### D17 — a wire-named tool source was attached without the daemon's trust checks
 
 | | |
 | --- | --- |
 | **The draft says** | The daemon's trust model: a host may not hand the hub a command to run. An attachment that names a `local` source, `args`, a `NAME=value` `environment` entry, or an unconfigured process id is refused, not attached. |
 | **Go does** | `ResolveAttachments` (`serve/attach.go:58-71`) applies the three checks before the attachment is admitted, and an open naming a `local` source answers `unsupported_feature`. Measured: a source with `kind: "local"` and a `command` is refused. |
-| **Zig does** | `openSession` hands `tool_sources_json` straight to `hub.open` with no counterpart. The same open **succeeds**, and the command is silently dropped — the session reports the attachment without the command ever being run, which is the appearance of the trust model rather than the thing. |
+| **Zig does** | **Fixed.** `openSession` handed `tool_sources_json` straight to `hub.open` with no counterpart, so the same open **succeeded** and the command was silently dropped. `attachmentRefusal` now applies all four checks in the frontend, and consults the hub's **registry-configured** sources — not the adapter's advertised ones — for the member comparison, so a source the operator configured is named by id and not re-described from the wire. |
 | **Why it matters** | This is the one divergence found so far that is about a *host being untrusted* rather than about a host being misinformed. Every other row is a wrong code or a missing reason; this one is a session that reports a command it never ran. It is reachable today, with both trees' own memory adapter, and no differential scenario attaches a source, so nothing catches it. |
 | **The fix** | The three checks belong in the frontend, before the attachment is admitted, because that is where the wire is untrusted: a `kind` that names an executable, `args`, a `NAME=value` `environment` entry, and a process id the registry has not configured. That is the same place Go puts them, and it is the reason the trust model is a frontend concern rather than a hub one. |
+
+### D18 — the trust check answers before the revision gate
+
+| | |
+| --- | --- |
+| **The draft says** | The order this page now specifies: the **attachment** is gated on its revision (step 3) before the adapter's own refusals (step 5). |
+| **Go does** | `AttachmentGate` runs the stale comparison at `ops.go:337`, and `ResolveAttachments` at `ops.go:359` — the gate first. |
+| **Zig does** | `openSession` calls `attachmentRefusal` **before** `hub.open`, where the revision gate lives, so an open that both cites a stale revision and names a `command` answers `unsupported_feature` where Go answers `stale_capabilities`. |
+| **Why it is not fixed here** | The gate is inside the hub and the check is in the frontend, so there is no order that puts one before the other without either duplicating the gate or moving the check into the hub. Both are the refusal PR's work — the hub reporting its refusals in this page's order is exactly what makes a frontend check orderable — and D11's precedence note is the same inversion. Reachable today with both memory adapters; no differential scenario sends a stale revision and an attachment together. |
 
 ### D4 — the registry's `journal_capacity` is hub-wide in Zig, per-adapter in Go
 

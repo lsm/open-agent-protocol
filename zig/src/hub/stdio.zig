@@ -512,16 +512,10 @@ pub const Frontend = struct {
     fn attachmentRefusal(
         self: *Frontend,
         arena: std.mem.Allocator,
-        adapter: []const u8,
         sources: ?std.json.Value,
     ) Error!?Refusal {
         const listed = sources orelse return null;
         if (listed != .array) return null;
-        const descriptor = self.hub.probe(adapter) catch |err| switch (err) {
-            error.UnknownAdapter => return null,
-            error.OutOfMemory => return error.OutOfMemory,
-            else => return null,
-        };
         for (listed.array.items) |entry| {
             if (entry != .object) continue;
             const fields = entry.object;
@@ -546,7 +540,7 @@ pub const Frontend = struct {
                     }
                 }
             }
-            const configured = configuredSource(descriptor.sources, id);
+            const configured = self.hub.configuredSource(id);
             if (configured == null) {
                 if (fields.get("kind")) |value| {
                     if (value == .string and std.mem.eql(u8, value.string, "process")) {
@@ -560,7 +554,7 @@ pub const Frontend = struct {
                 const text = wire orelse continue;
                 if (text.len == 0) continue;
                 const operator = configuredSourceMember(configured.?, named);
-                if (operator.len == 0 or std.mem.eql(u8, text, operator)) continue;
+                if (std.mem.eql(u8, text, operator)) continue;
                 const message = try std.fmt.allocPrint(arena, "the daemon does not accept {s} from the wire for a configured source; name it by id", .{named});
                 return try attachmentRefuse(arena, id, message);
             }
@@ -576,18 +570,11 @@ pub const Frontend = struct {
         }));
     }
 
-    fn configuredSource(sources: []const oap_types.ToolSourceDescriptor, id: []const u8) ?oap_types.ToolSourceDescriptor {
-        for (sources) |source| {
-            if (std.mem.eql(u8, source.id, id)) return source;
-        }
-        return null;
-    }
-
-    fn configuredSourceMember(source: oap_types.ToolSourceDescriptor, key: []const u8) []const u8 {
+    fn configuredSourceMember(source: contract.ConfiguredSource, key: []const u8) []const u8 {
         if (std.mem.eql(u8, key, "kind")) return source.kind;
-        if (std.mem.eql(u8, key, "display_name")) return source.display_name orelse "";
-        if (std.mem.eql(u8, key, "protocol")) return source.protocol orelse "";
-        if (std.mem.eql(u8, key, "endpoint")) return source.endpoint orelse "";
+        if (std.mem.eql(u8, key, "display_name")) return source.display_name;
+        if (std.mem.eql(u8, key, "protocol")) return source.protocol;
+        if (std.mem.eql(u8, key, "endpoint")) return source.endpoint;
         return "";
     }
 
@@ -612,7 +599,7 @@ pub const Frontend = struct {
                 if (value.object.get("payload")) |body| {
                     if (body == .object) {
                         if (body.object.get("tool_sources")) |sources| {
-                            if (try self.attachmentRefusal(arena, adapter, sources)) |refusal| {
+                            if (try self.attachmentRefusal(arena, sources)) |refusal| {
                                 envelope.deinit(arena);
                                 return .{ .refused = refusal };
                             }
@@ -2024,7 +2011,7 @@ test "an unconfigured id may be named from the wire, but a process one may not" 
         "[{\"id\":\"x1\",\"kind\":\"endpoint\"}]",
         .{},
     );
-    try testing.expect((try harness.frontend.attachmentRefusal(arena, "reference", namable)) == null);
+    try testing.expect((try harness.frontend.attachmentRefusal(arena, namable)) == null);
 
     const process = try std.json.parseFromSliceLeaky(
         std.json.Value,
@@ -2032,11 +2019,47 @@ test "an unconfigured id may be named from the wire, but a process one may not" 
         "[{\"id\":\"x1\",\"kind\":\"process\"}]",
         .{},
     );
-    const refusal = (try harness.frontend.attachmentRefusal(arena, "reference", process)).?;
+    const refusal = (try harness.frontend.attachmentRefusal(arena, process)).?;
     try testing.expectEqualStrings("unsupported_feature", refusal.code);
     try testing.expectEqual(@as(usize, 3), refusal.details.len);
     try testing.expectEqualStrings(contract.feature_tool_sources_attach, refusal.details[0].value);
     try testing.expectEqualStrings("x1", refusal.details[2].value);
+}
+
+test "a configured source is named by id, not re-described from the wire" {
+    const configured = [_]contract.ConfiguredSource{.{
+        .id = "x1",
+        .kind = "endpoint",
+        .endpoint = "https://operator.test",
+    }};
+    const harness = try Harness.init(testing.allocator, .{ .tool_sources = &configured }, .{});
+    defer harness.deinit();
+    const arena = harness.arena();
+    const agreeing = try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena,
+        "[{\"id\":\"x1\",\"kind\":\"endpoint\",\"endpoint\":\"https://operator.test\"}]",
+        .{},
+    );
+    try testing.expect((try harness.frontend.attachmentRefusal(arena, agreeing)) == null);
+
+    const contested = try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena,
+        "[{\"id\":\"x1\",\"kind\":\"local\",\"endpoint\":\"https://wire.test\"}]",
+        .{},
+    );
+    const refusal = (try harness.frontend.attachmentRefusal(arena, contested)).?;
+    try testing.expectEqualStrings("unsupported_feature", refusal.code);
+
+    const unstatted = try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena,
+        "[{\"id\":\"x1\",\"display_name\":\"Mine\"}]",
+        .{},
+    );
+    const blank = (try harness.frontend.attachmentRefusal(arena, unstatted)).?;
+    try testing.expectEqualStrings("unsupported_feature", blank.code);
 }
 
 test "a metadata-carrying open hands the adapter what the payload carried" {

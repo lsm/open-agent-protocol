@@ -433,6 +433,13 @@ pub const Hub = struct {
         return self.entries.items.len;
     }
 
+    pub fn configuredSource(self: *const Hub, id: []const u8) ?contract.ConfiguredSource {
+        for (self.tool_sources) |source| {
+            if (std.mem.eql(u8, source.id, id)) return source;
+        }
+        return null;
+    }
+
     pub fn open(self: *Hub, arena: std.mem.Allocator, adapter_name: []const u8, request: OpenRequest) Failure!Opened {
         const registered = self.find(adapter_name) orelse return error.UnknownAdapter;
         if (registered.revision.len == 0) return error.AdapterDescriptorUnbound;
@@ -2424,7 +2431,6 @@ test "the revision gate fires for a subscribing or attaching open, and for no ot
             .capability_revision = "reference-memory-v10",
         }));
     }
-
 }
 
 test "an open's metadata reaches the adapter" {
@@ -3127,7 +3133,7 @@ const fading_descriptor = contract.Descriptor{
 var fading_registered: bool = false;
 
 fn fadingAdapter(state: *bool) contract.Adapter {
-    return .{ .ptr = @constCast(@ptrCast(state)), .vtable = &.{ .probe = fadingProbe, .open = fadingOpen } };
+    return .{ .ptr = @ptrCast(@constCast(state)), .vtable = &.{ .probe = fadingProbe, .open = fadingOpen } };
 }
 
 fn fadingProbe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {
@@ -3153,7 +3159,7 @@ const bare_descriptor = contract.Descriptor{
 };
 
 fn bareAdapter() contract.Adapter {
-    return .{ .ptr = @constCast(@ptrCast(&bare_descriptor)), .vtable = &.{ .probe = bareProbe, .open = bareOpen } };
+    return .{ .ptr = @ptrCast(@constCast(&bare_descriptor)), .vtable = &.{ .probe = bareProbe, .open = bareOpen } };
 }
 
 fn bareProbe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {
