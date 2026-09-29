@@ -2381,6 +2381,7 @@ test "a refusal is remembered, so a later run drops the row without asking again
         .{ .id = plan, .models_url = target.models_url, .model_ids = &.{}, .refused = true },
     };
     test_catalog_discovery = &refusing;
+    defer test_catalog_discovery = null;
     const first = try loadCatalogModelsWithRows(allocator, &[_][]const u8{plan}, &storage, .allow_cache);
     defer deinitModels(allocator, first);
     try std.testing.expectEqual(@as(usize, 0), first.len);
@@ -2468,6 +2469,7 @@ test "a refusal recorded for a stored key does not drop the row once an environm
         .{ .id = plan, .models_url = target.models_url, .model_ids = &.{}, .refused = true },
     };
     test_catalog_discovery = &refusing;
+    defer test_catalog_discovery = null;
     const refused = try loadCatalogModelsWithRows(allocator, &[_][]const u8{plan}, &storage, .allow_cache);
     defer deinitModels(allocator, refused);
     try std.testing.expectEqual(@as(usize, 0), refused.len);
@@ -2526,6 +2528,7 @@ test "a refusal taken under an environment key does not suppress a stored key" {
         .{ .id = plan, .models_url = target.models_url, .model_ids = &.{}, .refused = true },
     };
     test_catalog_discovery = &refusing;
+    defer test_catalog_discovery = null;
     const refused = try loadCatalogModelsWithRows(allocator, &[_][]const u8{plan}, &storage, .allow_cache);
     defer deinitModels(allocator, refused);
     try std.testing.expectEqual(@as(usize, 0), refused.len);
