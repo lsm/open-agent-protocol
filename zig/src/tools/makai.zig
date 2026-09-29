@@ -3013,7 +3013,7 @@ fn printUsage(file: std.Io.File) !void {
         \\  oapx serve provider [--stdio] [--specimens]
         \\  oapx serve provider --http 127.0.0.1:<port>
         \\  oapx serve agent,provider --stdio [--model <model-ref>]
-        \\  oapx hub --stdio
+        \\  oapx hub --stdio [--config <path>]
         \\  oapx validate [--format human|json] <trace.json>...
         \\  oapx auth providers [--json]
         \\  oapx auth login --provider <id> [--json]
@@ -3022,7 +3022,9 @@ fn printUsage(file: std.Io.File) !void {
         \\
         \\Commands:
         \\  hub              The multi-session hub: one process holding many
-        \\                   sessions over one adapter registry.
+        \\                   sessions over one adapter registry. --config
+        \\                   names the registry document; without it the
+        \\                   built-in memory adapter is served alone.
         \\  run              Non-interactive print mode: stream a prompt using
         \\                   stored credentials and print every event to stdout.
         \\                   Options may appear before or after the prompt.
