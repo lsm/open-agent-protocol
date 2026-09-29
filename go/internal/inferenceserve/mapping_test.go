@@ -1,12 +1,14 @@
 package inferenceserve
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 
 	"github.com/lsm/open-agent-protocol/go/internal/provider"
+	"github.com/lsm/open-agent-protocol/go/validation"
 )
 
 func body(t *testing.T, envelope Envelope) map[string]any {
@@ -439,4 +441,102 @@ func decode(t *testing.T, raw json.RawMessage) any {
 		t.Fatalf("not json: %v", err)
 	}
 	return value
+}
+
+func buildFullTrace(t *testing.T) []Envelope {
+	t.Helper()
+	call := provider.ToolCall{ID: "tc1", Name: "lookup", Arguments: `{"city":"Kyoto"}`, ThoughtSig: "sig-1"}
+	thinking := provider.ThinkingPart{Thinking: "think", Signature: "sig-1"}
+	state := NewState("i1", "openai/openai-completions@gpt-4o")
+	var envelopes []Envelope
+	add := func(envelope Envelope, err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		envelopes = append(envelopes, envelope)
+	}
+	add(state.Accepted("c0", Honoured{IncludeSnapshot: "never"}))
+	add(state.Started(1700000000000))
+	add(state.emit("inference.part.started", "", PartStarted{PartIndex: 0, PartKind: "reasoning"}))
+	add(state.emit("inference.part.delta", "", struct {
+		PartIndex int    `json:"part_index"`
+		Delta     string `json:"delta"`
+	}{PartIndex: 0, Delta: "think"}))
+	add(state.emit("inference.part.ended", "", PartEnded{PartIndex: 0, PartKind: "reasoning", Text: &thinking.Thinking, Carry: thinking.Signature}))
+	add(state.emit("inference.part.started", "", PartStarted{PartIndex: 1, PartKind: "tool_call", ToolCallID: "tc1", Name: "lookup"}))
+	add(state.emit("inference.part.ended", "", PartEnded{PartIndex: 1, PartKind: "tool_call", Carry: call.ThoughtSig, ToolCall: &EndedToolCall{
+		ToolCallID: call.ID, Name: call.Name, ArgumentsJSON: json.RawMessage(call.Arguments),
+	}}))
+	add(state.Completed("tool_use", partsOf([]provider.AssistantBlock{{Thinking: &thinking}, {ToolCall: &call}})))
+	return envelopes
+}
+
+func TestAFullTraceThisLayerBuildsPassesTheTreeOwnProviderValidator(t *testing.T) {
+	validator, err := validation.NewProviderValidator()
+	if err != nil {
+		t.Fatalf("the provider validator is not available: %v", err)
+	}
+	envelopes := buildFullTrace(t)
+	if len(envelopes) != 8 {
+		t.Fatalf("the trace is %d envelopes, want 8: a validator run over a subset proves nothing about the rest", len(envelopes))
+	}
+	var document []byte
+	document = append(document, '[')
+	for i, envelope := range envelopes {
+		held, err := json.Marshal(envelope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i > 0 {
+			document = append(document, ',')
+		}
+		document = append(document, held...)
+	}
+	document = append(document, ']')
+	result := validator.Validate(bytes.NewReader(document), "built-by-this-layer")
+	if len(result.Diagnostics) != 0 {
+		for _, diagnostic := range result.Diagnostics {
+			t.Errorf("%s %s: %s", diagnostic.Phase, diagnostic.Code, diagnostic.Message)
+		}
+		t.Fatalf("a trace this layer built failed the validator: %s", document)
+	}
+}
+
+func TestTheValidatorRejectsATraceThisLayerWouldHaveEmittedBeforeTheFixes(t *testing.T) {
+	validator, err := validation.NewProviderValidator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := NewState("i1", "m")
+	broken, err := state.emit("inference.failed", "", struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}{Code: "provider_unavailable", Message: "flat"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := json.Marshal(broken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := validator.Validate(bytes.NewReader(append(append([]byte("["), held...), ']')), "flat-failure")
+	if len(result.Diagnostics) == 0 {
+		t.Error("the validator accepted a flattened failure payload, so it cannot be the oracle this test leans on")
+	}
+}
+
+func TestTheCarryOnAToolCallPartMustBeTheOneTheTerminalCarries(t *testing.T) {
+	call := provider.ToolCall{ID: "tc1", Name: "lookup", Arguments: `{}`, ThoughtSig: "sig-1"}
+	ended := PartEnded{PartIndex: 0, PartKind: "tool_call", Carry: call.ThoughtSig, ToolCall: &EndedToolCall{
+		ToolCallID: call.ID, Name: call.Name, ArgumentsJSON: json.RawMessage(call.Arguments),
+	}}
+	terminal := partsOf([]provider.AssistantBlock{{ToolCall: &call}})
+	if terminal[0].Carry != ended.Carry {
+		t.Errorf("the terminal carries %q and the ended part carried %q: the validator fails that pair as not an assembly", terminal[0].Carry, ended.Carry)
+	}
+	un := PartEnded{PartIndex: 1, PartKind: "tool_call", ToolCall: &EndedToolCall{ToolCallID: "tc2", Name: "other", ArgumentsJSON: json.RawMessage("{}")}}
+	if partsOf([]provider.AssistantBlock{{ToolCall: &provider.ToolCall{ID: "tc2", Name: "other"}}})[0].Carry != un.Carry {
+		t.Error("an unsigned call must carry nothing on either side")
+	}
 }
