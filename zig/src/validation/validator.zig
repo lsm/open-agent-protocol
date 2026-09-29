@@ -215,6 +215,48 @@ test "a packed type is judged through the branch its pack declares, and refused 
     try std.testing.expect(try admits(allocator, &with_pack, packed_type_declared));
 }
 
+test "a schema path that leaves the pack root is refused, and one that stays is read" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    for ([_][]const u8{ "escaping", "staying" }) |name| {
+        try tmp.dir.createDir(std.testing.io, name, .default_dir);
+    }
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "escaping/pack.json",
+        .data =
+            \\{"id":"com.example.esc","version":"1.0.0","schemas":["../../../etc/hosts"],"envelope_types":[]}
+        ,
+    });
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "staying/note.schema.json",
+        .data =
+            \\{"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"thing":{"type":"object","required":["type"],"properties":{"type":{"const":"com.example.ok.thing"}}}}}
+        ,
+    });
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "staying/pack.json",
+        .data =
+            \\{"id":"com.example.ok","version":"1.0.0","schemas":["note.schema.json"],"envelope_types":[{"type":"com.example.ok.thing","role":"event","schema":"note.schema.json#/$defs/thing"}]}
+        ,
+    });
+    const escaping = try tmp.dir.realPathFileAlloc(std.testing.io, "escaping", allocator);
+    defer allocator.free(escaping);
+    const staying = try tmp.dir.realPathFileAlloc(std.testing.io, "staying", allocator);
+    defer allocator.free(staying);
+
+    var judge = try Validator.init(allocator, .{ .io = std.testing.io });
+    defer judge.deinit();
+
+    const out = [_][]const u8{escaping};
+    try std.testing.expectError(error.InvalidPackDescriptor, packs_mod.load(std.testing.io, allocator, &judge.registry, &out));
+
+    const within = [_][]const u8{staying};
+    var read = try packs_mod.load(std.testing.io, allocator, &judge.registry, &within);
+    defer read.deinit();
+    try std.testing.expectEqual(@as(usize, 1), read.branches.len);
+}
+
 test "a descriptor whose fields are the wrong shape is refused, not read past" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});

@@ -104,9 +104,13 @@ fn gather(
 
         if (registry) |target| {
             if (arrayField(descriptor, "schemas")) |schemas| {
+                const pack_root = try std.fs.path.resolve(allocator, &.{dir});
                 for (schemas.items) |schema_name| {
                     const file = asString(schema_name) orelse return error.InvalidPackDescriptor;
-                    const schema_path = try std.fs.path.join(allocator, &.{ dir, file });
+                    const schema_path = try std.fs.path.resolve(allocator, &.{ dir, file });
+                    if (schema_path.len <= pack_root.len + 1 or
+                        !std.mem.startsWith(u8, schema_path, pack_root) or
+                        schema_path[pack_root.len] != std.fs.path.sep) return error.InvalidPackDescriptor;
                     const schema_bytes = try readAll(io, allocator, schema_path);
                     const key = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/{s}", .{ pack_base_uri, pack_id, version, file });
                     try target.addDocument(key, schema_bytes);

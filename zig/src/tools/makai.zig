@@ -3108,7 +3108,7 @@ fn lineOf(items: []const TraceItem, index: usize) usize {
 }
 
 const partial_semantic_note = "semantic rules partial: this validator has not ported every rule; goap validate checks them all";
-const partial_load_note = "pack load checks partial: a pack is gathered but not checked, and this validator runs none of goap's load checks, so a pack goap refuses may be accepted here";
+const partial_load_note = "pack load checks partial: a pack is gathered but not checked, this validator runs none of goap's load checks, and a pack's payload members are not widened, so a pack goap refuses may be accepted here and a trace carrying a declared member is refused schema_invalid";
 
 fn writeHumanReport(out: *std.ArrayList(u8), allocator: std.mem.Allocator, path: []const u8, verdict: ValidateVerdict) !void {
     switch (verdict) {
