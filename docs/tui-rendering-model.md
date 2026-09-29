@@ -236,15 +236,22 @@ code paths; add a transcript row instead.
   static `kimi-k2.7-code` when both fetch and cache are unusable. Kimi is a plan row, so
   a 401 or 403 is a refusal rather than an outage: the row is dropped for that listing
   and the fallbacks above are not consulted, because a plan row that refuses is one the
-  subscription does not open. The refusal is remembered as a marker for five minutes,
-  and only for a stored login — a key from `KIMI_API_KEY` is never covered by one, and
-  logging out brings the row back on the next listing. The marker is keyed by row and
-  region, not by the login that earned it, so it is deliberately not derived from the
-  credential and nothing derived from a credential reaches disk. The cost of that is one
-  bounded case: replacing a stored login with a different one inside the five minutes
-  leaves the new key suppressed until the marker expires or a forced refresh re-probes.
-  Nothing is written that would let the marker tell the two logins apart, so the window is
-  kept short rather than made exact. Each entry takes its
+  subscription does not open. The refusal is remembered as a marker, and only for a
+  stored login — a key from `KIMI_API_KEY` is never covered by one, never earns one, and
+  never clears one; logging out brings the row back on the next listing. Because the row
+  is one the subscription does not open, the marker holds for as long as it is
+  remembered: only a fetch that answers clears it, which is what the refresh the TUI
+  runs after a `/login` is. A listing served from the on-disk cache is not an answer and
+  does not clear it, so the models a refusal removed cannot come back for the
+  twenty-four hours the cached copy survives. A row that does not drop on refusal keeps
+  the five-minute window instead, its marker being a short-term reading of one listing
+  rather than a verdict on the subscription. The marker is keyed by row and region, not
+  by the login that earned it, so it is deliberately not derived from the credential
+  and nothing derived from a credential reaches disk. The cost of that is one bounded
+  case: replacing a stored login with a different one leaves the new key suppressed
+  until a forced refresh re-probes. Nothing is written that would let the marker tell
+  the two logins apart, so the marker is cleared by a re-probe rather than made exact.
+  Each entry takes its
   display name, context window, reasoning flag and text/image input from the response's
   `display_name`, `context_length`, `supports_reasoning` and `supports_image_in`; the
   endpoint reports no output cap, so every entry keeps the 16 384 default. A selected

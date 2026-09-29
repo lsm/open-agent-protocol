@@ -365,6 +365,12 @@ var test_catalog_discovery: ?[]const CatalogDiscovery = null;
 var test_catalog_environment: ?[]const provider_credential.EnvironmentValue = null;
 var test_catalog_base_urls: ?provider_base_url.BaseUrlOverrides = null;
 var test_catalog_refusal_markers: bool = false;
+var test_refusal_marker_age_ms: ?i64 = null;
+
+const CatalogListing = struct {
+    models: ?[]DiscoveredModel,
+    fetched: bool,
+};
 
 const loader_wires = [_][]const []const u8{
     anthropic_messages_api.wires,
@@ -751,7 +757,14 @@ fn refusalIsFresh(allocator: std.mem.Allocator, name: []const u8, max_age_ms: i6
     const path = makaiCatalogPath(allocator, name) catch return false;
     defer allocator.free(path);
     const modified = compat.fs.modifiedMillis(compat.fs.getCwd(), path) catch return false;
-    return catalogIsFresh(modified, compat.time.nowMillis(), max_age_ms);
+    const now = if (test_refusal_marker_age_ms) |age| modified + age else compat.time.nowMillis();
+    return catalogIsFresh(modified, now, max_age_ms);
+}
+
+fn refusalIsRemembered(allocator: std.mem.Allocator, name: []const u8) bool {
+    const path = makaiCatalogPath(allocator, name) catch return false;
+    defer allocator.free(path);
+    return compat.fs.fileKind(compat.fs.getCwd(), path) == .file;
 }
 
 fn rememberRefusal(allocator: std.mem.Allocator, name: []const u8) void {
@@ -779,56 +792,66 @@ fn discoverCatalogModels(
     const marker = try refusalMarkerName(allocator, target.id, target.region);
     defer allocator.free(marker);
     if (honour_marker and refusalMarkersEnabled() and mode == .allow_cache and
-        refusalIsFresh(allocator, marker, refusal_marker_max_age_ms))
+        refusalMarkerHolds(allocator, marker, rowDropsOnRefusal(target.id)))
     {
         return error.ModelCatalogRefused;
     }
 
-    const found = discoverCatalogModelsUncached(allocator, target, token, mode) catch |err| switch (err) {
+    const listing = discoverCatalogModelsCacheThenProbe(allocator, target, token, mode) catch |err| switch (err) {
         error.ModelCatalogRefused => {
             if (honour_marker and refusalMarkersEnabled()) rememberRefusal(allocator, marker);
             return error.ModelCatalogRefused;
         },
         else => return err,
     };
-    if (found != null and refusalMarkersEnabled()) forgetRefusal(allocator, marker);
-    return found;
+    if (listing.models != null and listing.fetched and honour_marker and refusalMarkersEnabled())
+        forgetRefusal(allocator, marker);
+    return listing.models;
 }
 
-fn discoverCatalogModelsUncached(
+fn refusalMarkerHolds(allocator: std.mem.Allocator, marker: []const u8, drops_on_refusal: bool) bool {
+    if (drops_on_refusal) return refusalIsRemembered(allocator, marker);
+    return refusalIsFresh(allocator, marker, refusal_marker_max_age_ms);
+}
+
+fn discoverCatalogModelsCacheThenProbe(
     allocator: std.mem.Allocator,
     target: CatalogEndpoint,
     token: []const u8,
     mode: CatalogLoadMode,
-) !?[]DiscoveredModel {
-    if (builtin.is_test) return testCatalogModels(allocator, target.id, target.models_url);
+) !CatalogListing {
+    if (builtin.is_test) {
+        const models = try testCatalogModels(allocator, target.id, target.models_url);
+        return .{ .models = models, .fetched = models != null };
+    }
 
     const name = try catalogRowCacheName(allocator, target.id, target.region);
     defer allocator.free(name);
 
     if (mode == .allow_cache) {
-        if (try loadCachedCatalogModels(allocator, name, anthropic_catalog_max_age_ms)) |models| return models;
+        if (try loadCachedCatalogModels(allocator, name, anthropic_catalog_max_age_ms)) |models|
+            return .{ .models = models, .fetched = false };
     }
 
     const body = fetchCatalogModelsCatalog(allocator, target, token) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.ModelCatalogRefused => {
             if (rowDropsOnRefusal(target.id)) return error.ModelCatalogRefused;
-            return loadCachedCatalogModels(allocator, name, null);
+            return .{ .models = try loadCachedCatalogModels(allocator, name, null), .fetched = false };
         },
-        else => return loadCachedCatalogModels(allocator, name, null),
+        else => return .{ .models = try loadCachedCatalogModels(allocator, name, null), .fetched = false },
     };
     defer allocator.free(body);
 
     if (parseCatalogModels(allocator, body)) |models| {
         if (models.len > 0) {
             saveMakaiCatalog(allocator, name, body) catch {};
-            return models;
+            return .{ .models = models, .fetched = true };
         }
         freeDiscoveredModels(allocator, models);
     } else |_| {}
 
-    return loadCachedCatalogModels(allocator, name, null);
+    return .{ .models = try loadCachedCatalogModels(allocator, name, null), .fetched = false };
 }
 
 fn testCatalogModels(allocator: std.mem.Allocator, id: []const u8, models_url: []const u8) !?[]DiscoveredModel {
@@ -2396,7 +2419,7 @@ test "a refusal is remembered, so a later run drops the row without asking again
 
     const marker = try refusalMarkerName(allocator, plan, null);
     defer allocator.free(marker);
-    try std.testing.expect(refusalIsFresh(allocator, marker, refusal_marker_max_age_ms));
+    try std.testing.expect(refusalIsRemembered(allocator, marker));
 
     const refreshed = try loadCatalogModelsWithRows(allocator, &[_][]const u8{plan}, &storage, .force_fetch);
     defer deinitModels(allocator, refreshed);
@@ -2427,7 +2450,7 @@ test "a remembered refusal is forgotten once the row answers again" {
     const marker = try refusalMarkerName(allocator, plan, null);
     defer allocator.free(marker);
     rememberRefusal(allocator, marker);
-    try std.testing.expect(refusalIsFresh(allocator, marker, refusal_marker_max_age_ms));
+    try std.testing.expect(refusalIsRemembered(allocator, marker));
 
     const answering = [_]CatalogDiscovery{
         .{ .id = plan, .models_url = target.models_url, .model_ids = &.{"plan-model"} },
@@ -2442,7 +2465,53 @@ test "a remembered refusal is forgotten once the row answers again" {
     const refreshed = try loadCatalogModelsWithRows(allocator, &[_][]const u8{plan}, &storage, .force_fetch);
     defer deinitModels(allocator, refreshed);
     try std.testing.expectEqual(@as(usize, 1), refreshed.len);
+    try std.testing.expect(!refusalIsRemembered(allocator, marker));
+}
+
+test "a remembered refusal still drops the row once the freshness window has passed" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+    test_catalog_refusal_markers = true;
+    defer test_catalog_refusal_markers = false;
+    var tmp = try tempHome(allocator);
+    defer tmp.cleanup();
+
+    const plan = "xiaomi-token-plan-cn";
+    var target = catalogTargetInRegion(plan, null) orelse return error.TestExpectedTarget;
+    defer target.deinit(allocator);
+
+    var storage = oauth_storage.AuthStorage{
+        .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(allocator),
+        .allocator = allocator,
+    };
+    defer storage.deinit();
+    try putStoredKey(&storage, allocator, plan);
+
+    const refusing = [_]CatalogDiscovery{
+        .{ .id = plan, .models_url = target.models_url, .model_ids = &.{}, .refused = true },
+    };
+    test_catalog_discovery = &refusing;
+    defer test_catalog_discovery = null;
+    const first = try loadCatalogModelsWithRows(allocator, &[_][]const u8{plan}, &storage, .allow_cache);
+    defer deinitModels(allocator, first);
+    try std.testing.expectEqual(@as(usize, 0), first.len);
+
+    const marker = try refusalMarkerName(allocator, plan, null);
+    defer allocator.free(marker);
+    try std.testing.expect(refusalIsFresh(allocator, marker, refusal_marker_max_age_ms));
+    test_refusal_marker_age_ms = refusal_marker_max_age_ms + 60_000;
+    defer test_refusal_marker_age_ms = null;
     try std.testing.expect(!refusalIsFresh(allocator, marker, refusal_marker_max_age_ms));
+
+    const answering = [_]CatalogDiscovery{
+        .{ .id = plan, .models_url = target.models_url, .model_ids = &.{"plan-model"} },
+    };
+    test_catalog_discovery = &answering;
+    const second = try loadCatalogModelsWithRows(allocator, &[_][]const u8{plan}, &storage, .allow_cache);
+    defer deinitModels(allocator, second);
+    try std.testing.expectEqual(@as(usize, 0), second.len);
+    try std.testing.expect(refusalIsRemembered(allocator, marker));
 }
 
 test "a refusal recorded for a stored key does not drop the row once an environment key is in use" {
@@ -2476,7 +2545,7 @@ test "a refusal recorded for a stored key does not drop the row once an environm
 
     const marker = try refusalMarkerName(allocator, plan, null);
     defer allocator.free(marker);
-    try std.testing.expect(refusalIsFresh(allocator, marker, refusal_marker_max_age_ms));
+    try std.testing.expect(refusalIsRemembered(allocator, marker));
 
     test_catalog_environment = &[_]provider_credential.EnvironmentValue{
         .{ .name = "XIAOMI_API_KEY", .value = "a-different-key" },
@@ -2535,7 +2604,7 @@ test "a refusal taken under an environment key does not suppress a stored key" {
 
     const marker = try refusalMarkerName(allocator, plan, null);
     defer allocator.free(marker);
-    try std.testing.expect(!refusalIsFresh(allocator, marker, refusal_marker_max_age_ms));
+    try std.testing.expect(!refusalIsRemembered(allocator, marker));
 
     test_catalog_environment = null;
     const answering = [_]CatalogDiscovery{
