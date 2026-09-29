@@ -166,16 +166,23 @@ pub const AgentToolResult = struct {
     details_json: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
     artifacts: OwnedSlice(ArtifactReference) = OwnedSlice(ArtifactReference).initBorrowed(&.{}),
     is_error: bool = false,
+    working_directory: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
 
     pub fn getDetailsJson(self: *const AgentToolResult) ?[]const u8 {
         const details = self.details_json.slice();
         return if (details.len > 0) details else null;
     }
 
+    pub fn workingDirectory(self: *const AgentToolResult) ?[]const u8 {
+        const directory = self.working_directory.slice();
+        return if (directory.len > 0) directory else null;
+    }
+
     pub fn deinit(self: *AgentToolResult, allocator: std.mem.Allocator) void {
         self.content.deinit(allocator);
         self.details_json.deinit(allocator);
         self.artifacts.deinit(allocator);
+        self.working_directory.deinit(allocator);
     }
 };
 
