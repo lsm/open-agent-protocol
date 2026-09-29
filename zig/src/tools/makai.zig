@@ -2536,7 +2536,7 @@ fn runHubHttp(
             continue;
         };
         defer request.deinit(scratch);
-        hub_http.writeAnswer(&connection.stream, scratch, next_id, hub_http.answer(allow orelse &.{}, request)) catch {};
+        hub_http.writeAnswer(&connection.stream, scratch, next_id, hub_http.answer(allow orelse &.{}, request), hub_http.bodyAllowedFor(request.method)) catch {};
     }
     try compat.stdio.writeAll(stderr, "oapx: shutting down\n");
     sweepHubSessions(core, stderr);

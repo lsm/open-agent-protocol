@@ -201,7 +201,13 @@ pub fn hostOf(addr: []const u8) []const u8 {
 
 pub fn hostRefused(allow: []const []const u8, host: ?[]const u8) bool {
     if (allow.len == 0) return false;
-    const name = hostOf(std.mem.trim(u8, host orelse "", " \t"));
+    const trimmed = std.mem.trim(u8, host orelse "", " \t");
+    if (trimmed.len == 0) return true;
+    if (trimmed[0] == '[') {
+        const close_at = std.mem.indexOfScalar(u8, trimmed, ']') orelse return true;
+        if (std.mem.indexOfScalarPos(u8, trimmed, close_at, ':') == null) return true;
+    }
+    const name = hostOf(trimmed);
     for (allow) |candidate| {
         if (std.ascii.eqlIgnoreCase(candidate, name)) return false;
     }
@@ -284,19 +290,23 @@ pub const Answer = union(enum) {
     not_found,
 };
 
+pub fn bodyAllowedFor(method: []const u8) bool {
+    return !std.ascii.eqlIgnoreCase(method, "HEAD");
+}
+
 pub fn answer(allow: []const []const u8, request: Request) Answer {
     if (request.origin) return .{ .refusal = origin_refused };
     if (hostRefused(allow, request.host)) return .{ .refusal = host_refused };
     return .not_found;
 }
 
-pub fn writeAnswer(stream: *compat.net.Stream, arena: std.mem.Allocator, next_id: u64, given: Answer) !void {
+pub fn writeAnswer(stream: *compat.net.Stream, arena: std.mem.Allocator, next_id: u64, given: Answer, body_allowed: bool) !void {
     switch (given) {
         .refusal => |refused| {
             const body = try refusalEnvelope(arena, next_id, refused);
-            try writeHead(stream, refused.status, "application/json", body);
+            try writeHead(stream, refused.status, "application/json", body, body_allowed);
         },
-        .not_found => try writeHead(stream, "404 Not Found", "text/plain; charset=utf-8", not_found_body),
+        .not_found => try writeHead(stream, "404 Not Found", "text/plain; charset=utf-8", not_found_body, body_allowed),
     }
 }
 
@@ -326,12 +336,12 @@ pub fn connectionPending(server: *const compat.net.Server, wait_ms: i32) bool {
 pub fn writeTransportFailure(stream: *compat.net.Stream, arena: std.mem.Allocator, next_id: u64, failure: Failure) !void {
     if (transportRefusal(failure)) |refused| {
         const body = try refusalEnvelope(arena, next_id, refused);
-        return writeHead(stream, refused.status, "application/json", body);
+        return writeHead(stream, refused.status, "application/json", body, true);
     }
-    return writeHead(stream, statusFor(failure), "text/plain; charset=utf-8", "bad request");
+    return writeHead(stream, statusFor(failure), "text/plain; charset=utf-8", "bad request", true);
 }
 
-fn writeHead(stream: *compat.net.Stream, status: []const u8, content_type: []const u8, body: []const u8) !void {
+fn writeHead(stream: *compat.net.Stream, status: []const u8, content_type: []const u8, body: []const u8, body_allowed: bool) !void {
     var counted: [24]u8 = undefined;
     const length = try std.fmt.bufPrint(&counted, "{d}\r\n\r\n", .{body.len});
     try stream.writeAll("HTTP/1.1 ");
@@ -340,7 +350,7 @@ fn writeHead(stream: *compat.net.Stream, status: []const u8, content_type: []con
     try stream.writeAll(content_type);
     try stream.writeAll("\r\nContent-Length: ");
     try stream.writeAll(length);
-    try stream.writeAll(body);
+    if (body_allowed) try stream.writeAll(body);
 }
 
 const not_found_body = "not found";
@@ -407,6 +417,13 @@ fn requestOver(raw: []const u8) !Request {
     defer pipe.close();
     try pipe.client.writeAll(raw);
     return readRequest(testing.allocator, &pipe.accepted, header_read_ms, idle_read_ms);
+}
+
+test "a HEAD request is read like any other, so the answer can be shaped from its method" {
+    var request = try requestOver("HEAD /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\n\r\n");
+    defer request.deinit(testing.allocator);
+    try testing.expectEqualStrings("HEAD", request.method);
+    try testing.expectEqualStrings("/adapters", request.split.path);
 }
 
 test "a request is read off the wire, headers and body included" {
@@ -601,6 +618,40 @@ test "a client that resets a connection the listener had not taken yet does not 
     try testing.expect(compat.net.listenAddress(&server).getPort() != 0);
 }
 
+test "a bracketed Host with no port is refused, because Go keeps the brackets and does not admit it" {
+    const allow = loopbackHosts("[::1]:6270").?;
+    try testing.expect(hostRefused(allow, "[::1]"));
+    try testing.expect(hostRefused(allow, "[::1"));
+    try testing.expect(!hostRefused(allow, "[::1]:6270"));
+    try testing.expect(!hostRefused(allow, "[::1]:9999"));
+    try testing.expect(!hostRefused(allow, "127.0.0.1:6270"));
+    try testing.expect(hostRefused(allow, "]"));
+}
+
+test "a HEAD is answered with the length a GET would send and no body at all" {
+    for ([_][]const u8{ "HEAD", "head", "Head" }) |method| {
+        try testing.expect(!bodyAllowedFor(method));
+    }
+    for ([_][]const u8{ "GET", "POST", "PUT", "DELETE" }) |method| {
+        try testing.expect(bodyAllowedFor(method));
+    }
+    var pipe = try Pipe.open();
+    defer pipe.close();
+    try pipe.client.writeAll("HEAD /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\n\r\n");
+    var request = try readRequest(testing.allocator, &pipe.accepted, header_read_ms, idle_read_ms);
+    request.deinit(testing.allocator);
+    var scratch_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch_state.deinit();
+    try writeAnswer(&pipe.accepted, scratch_state.allocator(), 1, .not_found, bodyAllowedFor("HEAD"));
+    pipe.closeAccepted();
+    var spoken: [4096]u8 = undefined;
+    const said = try readToEnd(&pipe.client, &spoken);
+    try testing.expect(std.mem.startsWith(u8, said, "HTTP/1.1 404 Not Found"));
+    try testing.expect(std.mem.indexOf(u8, said, "Content-Length: 9") != null);
+    try testing.expect(std.mem.indexOf(u8, said, "not found") == null);
+    try testing.expectEqualStrings("HTTP/1.1 404 Not Found\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 9\r\n\r\n", said);
+}
+
 test "a bind is read as a host and a port, and a malformed one says which part it is" {
     const refused = [_]struct { bind: []const u8, want: BindFailure }{
         .{ .bind = "127.0.0.1", .want = error.NoPort },
@@ -660,7 +711,7 @@ test "the daemon answers over a real socket, and the bytes say which refusal it 
         defer request.deinit(testing.allocator);
         var scratch_state = std.heap.ArenaAllocator.init(testing.allocator);
         defer scratch_state.deinit();
-        try writeAnswer(&pipe.accepted, scratch_state.allocator(), index + 1, answer(allow, request));
+        try writeAnswer(&pipe.accepted, scratch_state.allocator(), index + 1, answer(allow, request), bodyAllowedFor(request.method));
         pipe.closeAccepted();
         var spoken: [64 * 1024]u8 = undefined;
         const said = try readToEnd(&pipe.client, &spoken);
