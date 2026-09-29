@@ -3004,3 +3004,35 @@ test "an allocation failure never ends a signed block unsigned" {
         }
     }
 }
+
+test "a borrowed stream still holds the signature when the event is polled" {
+    const allocator = std.testing.allocator;
+    const stream = try newBorrowedStream(allocator);
+    defer _ = stream.deinitAndDestroy();
+
+    var content_blocks: std.ArrayList(ai_types.AssistantContent) = .empty;
+    defer freeThinkingBlocks(allocator, &content_blocks);
+    var pending: std.ArrayList([]ai_types.AssistantContent) = .empty;
+    defer {
+        for (pending.items) |slice| allocator.free(slice);
+        pending.deinit(allocator);
+    }
+
+    try std.testing.expectEqual(
+        ThinkingEnd.ended,
+        endThinkingBlock(allocator, stream, createPartialMessage(try signedThinkingTestModel()), &content_blocks, "pondering", "sig-9", 0, &pending),
+    );
+    try std.testing.expectEqual(@as(usize, 1), pending.items.len);
+
+    const polled = stream.poll() orelse return error.NoEvent;
+    switch (polled) {
+        .thinking_end => |t| {
+            if (t.content_index >= t.partial.content.len) return error.PartNotCarried;
+            switch (t.partial.content[t.content_index]) {
+                .thinking => |thinking| try std.testing.expectEqualStrings("sig-9", thinking.thinking_signature orelse return error.SignatureNotCarried),
+                else => return error.PartNotCarried,
+            }
+        },
+        else => return error.NotThinkingEnd,
+    }
+}
