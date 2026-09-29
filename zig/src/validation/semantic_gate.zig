@@ -100,6 +100,13 @@ const partial_code_gaps = [_]struct { code: []const u8, fixtures: []const []cons
     } },
 };
 
+fn emittedCode(codes: []const []const u8, wanted: []const u8) bool {
+    for (codes) |code| {
+        if (std.mem.eql(u8, code, wanted)) return true;
+    }
+    return false;
+}
+
 fn isPartialCode(code: []const u8) bool {
     for (partial_code_gaps) |held| {
         if (std.mem.eql(u8, held.code, code)) return true;
@@ -261,15 +268,14 @@ test "the Zig semantic phase emits exactly the lifecycle codes the manifest decl
         defer allocator.free(want);
         const got = try joined(allocator, emitted.items);
         defer allocator.free(got);
+        for (gapped.items) |code| {
+            if (!emittedCode(emitted.items, code)) continue;
+            try no_longer_gapped.append(allocator, id);
+            try report.print(allocator, "  {s}: listed as a gap, and {s} is raised\n", .{ id, code });
+        }
         if (!std.mem.eql(u8, want, got)) {
             try disagreeing.append(allocator, id);
             try report.print(allocator, "  {s}\n    want [{s}]\n    got  [{s}]\n", .{ id, want, got });
-            continue;
-        }
-        for (gapped.items) |code| {
-            if (std.mem.indexOf(u8, got, code) == null) continue;
-            try no_longer_gapped.append(allocator, id);
-            try report.print(allocator, "  {s}: listed as a gap, and {s} is raised\n", .{ id, code });
         }
     }
 
