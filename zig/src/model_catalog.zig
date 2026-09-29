@@ -638,6 +638,20 @@ fn contextWindowFor(id: []const u8, model: DiscoveredModel) u32 {
     return provider_catalog.rowContextWindow(id) orelse catalog_context_window;
 }
 
+test "no catalogued row or model resolves a window above the ceiling it resolves" {
+    for (provider_catalog.all) |row| {
+        if (provider_catalog.rowMaxContextWindow(row.id)) |ceiling| {
+            const window = row.context_window orelse catalog_context_window;
+            try std.testing.expect(window <= ceiling);
+        }
+        for (row.models) |model| {
+            const ceiling = provider_catalog.modelMaxContextWindow(row.id, model.id) orelse continue;
+            const window = model.context_window orelse row.context_window orelse catalog_context_window;
+            try std.testing.expect(window <= ceiling);
+        }
+    }
+}
+
 fn maxTokensFor(id: []const u8, model: DiscoveredModel) u32 {
     if (model.max_tokens) |reported| return reported;
     if (provider_catalog.declaredModel(id, model.id)) |declared| {
