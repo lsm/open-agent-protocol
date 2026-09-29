@@ -118,6 +118,7 @@ export {
   type ListModelsRequest,
   type ListModelsResponse,
   type MakaiModelsApi,
+  type Modality,
   type ModelCapability,
   type ModelCatalog,
   type ModelCost,
