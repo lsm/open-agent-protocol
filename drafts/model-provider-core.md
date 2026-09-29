@@ -366,7 +366,10 @@ Each entry in `provider.models.list.response`:
   is not a fact any provider states. Omit the member instead.
 - `reasoning_levels?` — a non-empty list of the levels the model accepts, with
   `reasoning_default` naming one of them.
-- `release_date?`, `family?` — a string each.
+- `release_date?`, `family?` — a non-empty string each. A list is never empty
+  and a string is never empty, for one reason: an absent member already says the
+  fact is unknown, so an empty one would say the same thing while reading as
+  published. `display_name?` is non-empty for the same reason.
 
 `source` distinguishes a catalog the implementation read from the provider from
 one it fell back to from a built-in list. Merging the two silently is how a
