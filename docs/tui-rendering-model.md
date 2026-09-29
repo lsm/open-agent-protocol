@@ -273,14 +273,15 @@ code paths; add a transcript row instead.
   remembered: only a fetch that answers clears it, which is what the refresh the TUI
   runs after a `/login` is. A listing served from the on-disk cache is not an answer and
   does not clear it, so the models a refusal removed cannot come back for the
-  twenty-four hours the cached copy survives. A row that does not drop on refusal keeps
-  the five-minute window instead, its marker being a short-term reading of one listing
-  rather than a verdict on the subscription. The marker is keyed by row and region, not
-  by the login that earned it, so it is deliberately not derived from the credential
-  and nothing derived from a credential reaches disk. The cost of that is one bounded
-  case: replacing a stored login with a different one leaves the new key suppressed
-  until a forced refresh re-probes. Nothing is written that would let the marker tell
-  the two logins apart, so the marker is cleared by a re-probe rather than made exact.
+  twenty-four hours the cached copy survives. There is no age on a marker to lapse: only
+  a plan row records one, since only a plan row turns a 401 into a refusal rather than a
+  fallback to its cache, so a marker's age decides nothing and the code does not read it.
+  The marker is keyed by row and region, not by the login that earned it, so it is
+  deliberately not derived from the credential and nothing derived from a credential
+  reaches disk. The cost of that is one bounded case: replacing a stored login with a
+  different one leaves the new key suppressed until a forced refresh re-probes. Nothing
+  is written that would let the marker tell the two logins apart, so the marker is
+  cleared by a re-probe rather than made exact.
   Each entry takes its
   display name, context window, reasoning flag and text/image input from the response's
   `display_name`, `context_length`, `supports_reasoning` and `supports_image_in`; the

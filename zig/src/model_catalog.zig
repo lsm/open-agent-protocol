@@ -42,7 +42,6 @@ const catalog_max_output_tokens: u32 = 8_192;
 pub const catalog_fetch_timeout_ms: u64 = 20_000;
 
 const anthropic_catalog_max_age_ms: i64 = 24 * 60 * 60 * 1000;
-const refusal_marker_max_age_ms: i64 = 5 * 60 * 1000;
 const default_codex_client_version = "0.0.0";
 const default_max_output_tokens: u32 = 16_384;
 
@@ -366,7 +365,6 @@ var test_catalog_discovery: ?[]const CatalogDiscovery = null;
 var test_catalog_environment: ?[]const provider_credential.EnvironmentValue = null;
 var test_catalog_base_urls: ?provider_base_url.BaseUrlOverrides = null;
 var test_catalog_refusal_markers: bool = false;
-var test_refusal_marker_age_ms: ?i64 = null;
 
 const CatalogListing = struct {
     models: ?[]DiscoveredModel,
@@ -756,14 +754,6 @@ fn refusalMarkerName(allocator: std.mem.Allocator, id: []const u8, region: ?[]co
     return std.fmt.allocPrint(allocator, "{s}.refused", .{base});
 }
 
-fn refusalIsFresh(allocator: std.mem.Allocator, name: []const u8, max_age_ms: i64) bool {
-    const path = makaiCatalogPath(allocator, name) catch return false;
-    defer allocator.free(path);
-    const modified = compat.fs.modifiedMillis(compat.fs.getCwd(), path) catch return false;
-    const now = if (test_refusal_marker_age_ms) |age| modified + age else compat.time.nowMillis();
-    return catalogIsFresh(modified, now, max_age_ms);
-}
-
 fn refusalIsRemembered(allocator: std.mem.Allocator, name: []const u8) bool {
     const path = makaiCatalogPath(allocator, name) catch return false;
     defer allocator.free(path);
@@ -795,7 +785,7 @@ fn discoverCatalogModels(
     const marker = try refusalMarkerName(allocator, target.id, target.region);
     defer allocator.free(marker);
     if (honour_marker and refusalMarkersEnabled() and mode == .allow_cache and
-        refusalMarkerHolds(allocator, marker, rowDropsOnRefusal(target.id)))
+        refusalIsRemembered(allocator, marker))
     {
         return error.ModelCatalogRefused;
     }
@@ -810,11 +800,6 @@ fn discoverCatalogModels(
     if (listing.models != null and listing.fetched and honour_marker and refusalMarkersEnabled())
         forgetRefusal(allocator, marker);
     return listing.models;
-}
-
-fn refusalMarkerHolds(allocator: std.mem.Allocator, marker: []const u8, drops_on_refusal: bool) bool {
-    if (drops_on_refusal) return refusalIsRemembered(allocator, marker);
-    return refusalIsFresh(allocator, marker, refusal_marker_max_age_ms);
 }
 
 fn discoverCatalogModelsCacheThenProbe(
@@ -2471,7 +2456,7 @@ test "a remembered refusal is forgotten once the row answers again" {
     try std.testing.expect(!refusalIsRemembered(allocator, marker));
 }
 
-test "a remembered refusal still drops the row once the freshness window has passed" {
+test "a remembered refusal still drops the row when the next listing would answer" {
     const allocator = std.testing.allocator;
     try provider_catalog.blankEnvironment(allocator);
     defer compat.clearTestEnv();
@@ -2502,10 +2487,7 @@ test "a remembered refusal still drops the row once the freshness window has pas
 
     const marker = try refusalMarkerName(allocator, plan, null);
     defer allocator.free(marker);
-    try std.testing.expect(refusalIsFresh(allocator, marker, refusal_marker_max_age_ms));
-    test_refusal_marker_age_ms = refusal_marker_max_age_ms + 60_000;
-    defer test_refusal_marker_age_ms = null;
-    try std.testing.expect(!refusalIsFresh(allocator, marker, refusal_marker_max_age_ms));
+    try std.testing.expect(refusalIsRemembered(allocator, marker));
 
     const answering = [_]CatalogDiscovery{
         .{ .id = plan, .models_url = target.models_url, .model_ids = &.{"plan-model"} },
@@ -2565,13 +2547,6 @@ test "a refusal recorded for a stored key does not drop the row once an environm
     try std.testing.expectEqualStrings("plan-model", listed[0].id);
 
 }
-
-test "a refusal marker is not honoured an hour after it was recorded" {
-    const now = compat.time.nowMillis();
-    try std.testing.expect(catalogIsFresh(now - 60 * 1000, now, refusal_marker_max_age_ms));
-    try std.testing.expect(!catalogIsFresh(now - 60 * 60 * 1000, now, refusal_marker_max_age_ms));
-}
-
 
 test "a refusal taken under an environment key does not suppress a stored key" {
     const allocator = std.testing.allocator;
