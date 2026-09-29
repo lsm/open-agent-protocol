@@ -39,8 +39,12 @@ type TextPart struct {
 }
 
 type ImagePart struct {
-	URL    string
-	Detail string
+	Data      string
+	MediaType string
+}
+
+func (p ImagePart) DataURL() string {
+	return "data:" + p.MediaType + ";base64," + p.Data
 }
 
 type ThinkingPart struct {

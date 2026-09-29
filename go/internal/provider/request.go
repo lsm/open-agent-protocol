@@ -98,11 +98,10 @@ func cachedTextPart(text string) jsonObject {
 }
 
 func imageUrlPart(img *ImagePart) jsonObject {
-	inner := jsonObject{member("url", jsonString(img.URL))}
-	if img.Detail != "" {
-		inner = inner.with(member("detail", jsonString(img.Detail)))
+	return jsonObject{
+		member("type", jsonString("image_url")),
+		member("image_url", jsonObject{member("url", jsonString(img.DataURL()))}),
 	}
-	return jsonObject{member("type", jsonString("image_url")), member("image_url", inner)}
 }
 
 func visibleTexts(parts []ContentPart) []string {

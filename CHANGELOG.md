@@ -53,6 +53,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   literal rather than by mutating the process.
 
 ### Added
+- **`go/internal/provider` gains the `anthropic-messages` client, part of #358
+  step 3.** It reuses step 2's SSE parser, event types, json tree and
+  pre-transform, and it is **a different client rather than a variant of the one
+  beside it**, so the parts that differ are called out rather than smoothed over:
+
+  - **The key goes out as `x-api-key`, not `Authorization`.** A bearer header
+    appears only under an oauth key -- one containing `sk-ant-oat` -- which is the
+    only case that also adds two extra `anthropic-beta` flags, a fixed `user-agent`
+    and `x-app: cli`. An **empty** key still sends `anthropic-beta`, so "no
+    credential" and "no auth header" are not the same thing. A model may not
+    displace a header the client already set.
+  - **The wire is block-indexed**, with a `content_block_start`, deltas and a
+    `content_block_stop` per block, so this client emits the four
+    `text_start`/`text_end`/`thinking_start`/`thinking_end` kinds the openai one
+    does not -- all thirteen of the union, against nine there. A block's content
+    index is assigned at **start** from the number of blocks that have already
+    completed, while the **wire** index only keys the map, so the two numbers
+    differ; a delta for an index the map has not seen is dropped, and a block type
+    the client does not model is skipped rather than failing.
+  - **Under an oauth key the system text is prepended, not replaced**: the Claude
+    Code sentence, a blank line, and then the caller's own prompt. A port that
+    replaces it drops the caller's instructions on every oauth request that has
+    one; the bare sentence is written only when there is no prompt at all.
+  - **An image part means one thing to both writers**: base64 `data` and a
+    `media_type`, as the oracle's single `ImageContent` does. The openai writer
+    builds `data:<media_type>;base64,<data>` from them and the anthropic writer
+    writes the two members directly, so one context serves both clients. The
+    earlier shape — a URL plus a fidelity knob — meant different things to each
+    and sent `media_type: ""` with a URL where base64 belonged.
+  - **A user message that has parts is always a block array**, never a joined
+    string — the openai writer flattens text-only parts and this one does not,
+    so a port that shares the rule sends a different shape than oapx. A message
+    with no parts at all is still a plain string.
+  - **An empty system prompt counts as absent**, so no empty text block is
+    written, and under oauth the bare sentence goes out with no trailing blank
+    line rather than one followed by nothing.
+  - **A tool call is a block inside the content array**, not a sibling member as
+    in the openai body, and a tool result is a **`user`** message -- a whole run of
+    consecutive results in one message -- whose `content` is a plain string for a
+    single text part, an array for several or an image, and `""` for none.
+  - **A signed thinking block is the only one that is not text**: without a
+    signature it is written as a text block, with one it carries `thinking` and
+    `signature`.
+  - **The default `max_tokens` is `min(model / 3, 32000)`** and the order is
+    `model`, `max_tokens`, `stream`. There is no `stream_options`: usage arrives
+    in `message_start`, and **its cache tokens are kept separate rather than
+    subtracted from the input**, which is the opposite of the openai path. The
+    `total_tokens` backfill adds the input and the output only.
+  - **An empty response is an error, not an empty text block** -- the openai client
+    emits one empty text part. The message is the raw body's own error text when it
+    is one, the byte count when it is not, and a fixed sentence otherwise.
+  - **After the loop a synthetic blank line is fed to the parser** so a final frame
+    that arrived without its trailing separator is recognised, and **only an error
+    in it is acted on** -- a trailing delta is parsed and discarded.
+  - **The anonymous rule excludes one vendor, `anthropic`**, where the openai rule
+    excludes four. The two lists are separate on purpose: reusing the openai one
+    here would let an anthropic model through anonymously.
+  - **A `ping` on this wire is not handled** and falls through to nothing;
+    keepalives come from the client's own interval.
+  - The `is_oauth` branch of the shared pre-transform, which step 2 added behind a
+    flag because its own path never sets it, is what canonicalises a tool name
+    against the declared tools here -- so **#514** and **#515** are inherited
+    directly by this client.
+  - **The cache ttl and the thinking branches are complete or absent**: a long
+    retention gets `ttl:"1h"` when the host is anthropic **or** the model's own
+    compat says so; an adaptive model declares `thinking:{"type":"adaptive"}`
+    before its `output_config.effort`; and a thinking budget is guarded by
+    `max_tokens > 1024`, defaulted to 1024, and clamped to
+    `[1024, max_tokens - 1]`, so a budget the api would reject cannot go out.
 - **`/think` is back in the TUI**, as `/think [off|low|medium|high|xhigh|max]`: with a level it sets it, and alone it shows the current one. Shift+Tab still cycles the levels, and the status line now shows `off` instead of hiding the level.
 
 - **A `max` thinking level, above `xhigh`.** It sends Anthropic's `max` effort, the effort `xhigh` already sent there; OpenAI's highest level, `xhigh`, or `high` on a model without it; and the largest budget or level elsewhere. The OAP provider profile has no `max`, so a provider reached through it gets `xhigh`.

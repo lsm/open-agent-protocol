@@ -346,7 +346,7 @@ func TestAToolResultCarriesItsNameOnlyWhenTheMergeAsks(t *testing.T) {
 func TestAToolResultWithOnlyImagesSaysSo(t *testing.T) {
 	ctx := Context{Messages: []Message{
 		{Assistant: &AssistantContent{Parts: []ContentPart{{ToolCall: &ToolCall{ID: "c1", Name: "shot", Arguments: "{}"}}}}},
-		{ToolResult: &ToolResult{ToolCallID: "c1", Parts: []ContentPart{{Image: &ImagePart{URL: "https://img.test/a.png"}}}}},
+		{ToolResult: &ToolResult{ToolCallID: "c1", Parts: []ContentPart{{Image: &ImagePart{Data: "aGk=", MediaType: "image/png"}}}}},
 	}}
 	got := messages(t, BuildRequestBody(loopbackModel(), ctx, StreamOptions{}))
 	sawPlaceholder, sawUser := false, false
@@ -464,7 +464,7 @@ func TestTheLastUserMessageCarriesCacheControlUnderOpenRouterAnthropic(t *testin
 func TestAUserMessageWithImagesIsAlwaysAnArray(t *testing.T) {
 	ctx := Context{Messages: []Message{{User: &UserContent{UseParts: true, Parts: []ContentPart{
 		{Text: &TextPart{Text: "look"}},
-		{Image: &ImagePart{URL: "https://img.test/a.png"}},
+		{Image: &ImagePart{Data: "aGk=", MediaType: "image/png"}},
 	}}}}}
 	got := messages(t, BuildRequestBody(loopbackModel(), ctx, StreamOptions{}))[0].(map[string]any)
 	parts := got["content"].([]any)
@@ -475,7 +475,7 @@ func TestAUserMessageWithImagesIsAlwaysAnArray(t *testing.T) {
 	if image["type"] != "image_url" {
 		t.Errorf("an image part = %v, want image_url", image)
 	}
-	if image["image_url"].(map[string]any)["url"] != "https://img.test/a.png" {
+	if image["image_url"].(map[string]any)["url"] != "data:image/png;base64,aGk=" {
 		t.Errorf("the image url = %v", image["image_url"])
 	}
 }
