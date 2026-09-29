@@ -73,7 +73,8 @@ pub fn isChutes(base_url: ?[]const u8) bool {
 }
 
 pub fn isQwen(base_url: ?[]const u8) bool {
-    return isHostOrSubdomainOf(base_url, "dashscope.aliyuncs.com");
+    return isHostOrSubdomainOf(base_url, "dashscope.aliyuncs.com") or
+        isHostOrSubdomainOf(base_url, "dashscope-intl.aliyuncs.com");
 }
 
 pub fn isDeepSeek(base_url: ?[]const u8) bool {
@@ -213,6 +214,8 @@ test "a qwen host is dashscope.aliyuncs.com or a subdomain of it" {
         "https://coding-intl.dashscope.aliyuncs.com",
         "https://coding-intl.dashscope.aliyuncs.com/v1",
         "https://DASHSCOPE.ALIYUNCS.COM",
+        "https://dashscope-intl.aliyuncs.com",
+        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
     };
     for (hosts) |url| {
         try std.testing.expect(isQwen(url));

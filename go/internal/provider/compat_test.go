@@ -15,6 +15,8 @@ func TestAQwenHostIsDashscopeAliyuncsDotComOrASubdomainOfIt(t *testing.T) {
 		"https://coding-intl.dashscope.aliyuncs.com",
 		"https://coding-intl.dashscope.aliyuncs.com/v1",
 		"https://DASHSCOPE.ALIYUNCS.COM",
+		"https://dashscope-intl.aliyuncs.com",
+		"https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
 	}
 	for _, url := range hosts {
 		if !isQwenURL(url, true) {
