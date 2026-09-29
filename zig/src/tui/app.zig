@@ -2102,6 +2102,7 @@ pub const App = struct {
                 .failed => |message| try self.state.appendTranscript(.@"error", message),
                 else => return error.InvalidWorktreeOutcome,
             }
+            try self.deliverHeldWorktreeMessages();
             return;
         }
         if (self.pending_resume_id.len > 0) {
@@ -2138,14 +2139,18 @@ pub const App = struct {
                 break;
             };
             try self.resumeSelectedSession();
-            if (self.held_user_message.len > 0) {
-                const message = self.held_user_message;
-                self.held_user_message = &.{};
-                defer self.allocator.free(message);
-                try self.submit(message);
-            }
-            try self.drainQueuedWorktreeMessageIfIdle();
+            try self.deliverHeldWorktreeMessages();
         }
+    }
+
+    fn deliverHeldWorktreeMessages(self: *App) !void {
+        if (self.held_user_message.len > 0) {
+            const message = self.held_user_message;
+            self.held_user_message = &.{};
+            defer self.allocator.free(message);
+            try self.submit(message);
+        }
+        try self.drainQueuedWorktreeMessageIfIdle();
     }
 
     fn drainQueuedWorktreeMessageIfIdle(self: *App) !void {
