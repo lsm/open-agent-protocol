@@ -1722,7 +1722,10 @@ pub const App = struct {
             .none => {},
         }
         if ((command.kind == .model or command.kind == .provider) and command.arg != null) self.persistCurrentModel();
-        if (command.kind == .context) self.applyContextWindow();
+        switch (command.kind) {
+            .context, .model, .provider => self.applyContextWindow(),
+            else => {},
+        }
         if (result.output.len > 0) {
             try self.state.appendTranscript(if (result.is_error) .@"error" else .system, result.output);
             if (result.is_error) try self.state.status.setError(self.allocator, result.output);
@@ -4414,6 +4417,22 @@ test "App says so when a window the model in effect cannot take is dropped" {
     }
     try std.testing.expect(said_again);
     try std.testing.expectEqual(@as(u64, 262_144), app.runtime.?.contextWindow());
+}
+
+test "App a model command leaves the gauge on the window in effect" {
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ gpt_model, kimi_model } });
+    defer app.deinit();
+
+    try app.submit("/context 200000");
+    try std.testing.expectEqual(@as(usize, 200_000), app.state.status.context_limit);
+
+    try app.submit("/model kimi-k2.7-code");
+    try std.testing.expectEqual(@as(usize, 200_000), app.state.status.context_limit);
+    try std.testing.expectEqual(@as(u64, 200_000), app.state.telemetry.context_window);
+
+    try app.submit("/model gpt-5-codex");
+    try std.testing.expectEqual(@as(u64, 200_000), app.state.telemetry.context_window);
+    try std.testing.expectEqual(@as(usize, 200_000), app.state.status.context_limit);
 }
 
 test "App context moves the gauge, and the model's own window comes back" {

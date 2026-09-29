@@ -350,7 +350,13 @@ fn handleContext(ctx: CommandContext, command: Command) !CommandResult {
     const model = runtime.currentModel() orelse return error.NoModelConfigured;
     const arg = command.arg orelse return .{ .output = try contextWindowReport(ctx.allocator, runtime) };
     if (std.ascii.eqlIgnoreCase(arg, "default")) {
-        try runtime.setContextWindow(null);
+        runtime.setContextWindow(null) catch |err| switch (err) {
+            error.AgentAlreadyStreaming => return .{
+                .output = try ctx.allocator.dupe(u8, "A turn is running; restore the catalog's window once it finishes."),
+                .is_error = true,
+            },
+            error.AboveMaximum => return error.AboveMaximum,
+        };
         return .{ .output = try contextWindowReport(ctx.allocator, runtime) };
     }
     const window = tui_runtime.parseContextWindow(arg) catch {
