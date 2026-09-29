@@ -112,7 +112,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     validator_mod.addImport("jsonschema", jsonschema_mod);
+    validator_mod.addImport("packs", packs_mod);
+    validator_mod.addImport("semantic", semantic_mod);
     validator_mod.addImport("tolerate", tolerate_mod);
+    validator_mod.addOptions("build_options", gate_options);
     const validator_test = b.addTest(.{ .root_module = validator_mod });
     const semantic_gate_mod = b.createModule(.{
         .root_source_file = b.path("src/validation/semantic_gate.zig"),

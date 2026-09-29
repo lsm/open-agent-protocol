@@ -29,6 +29,15 @@ pub const Loaded = struct {
     pub fn deinit(self: *Loaded) void {
         self.arena.deinit();
     }
+
+    pub fn empty(child: std.mem.Allocator) Loaded {
+        return .{
+            .arena = std.heap.ArenaAllocator.init(child),
+            .branches = &.{},
+            .members = &.{},
+            .types = &.{},
+        };
+    }
 };
 
 fn readAll(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]u8 {

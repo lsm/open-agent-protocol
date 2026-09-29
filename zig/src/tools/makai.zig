@@ -2823,14 +2823,14 @@ fn validateTrace(allocator: std.mem.Allocator, judge: *validator.Validator, sour
 
     const provider = namesProviderProfile(trace);
     const schema_document = if (provider) "provider-envelope.schema.json" else "envelope.schema.json";
-    var compiled = try judge.schema();
+    var compiled = try judge.schema(schema_document);
     defer compiled.deinit();
     for (items, 0..) |item, index| {
         if (try repeatsAKey(allocator, item.raw)) {
             try appendFinding(allocator, out, .decode, "duplicate_key", index, item.line);
             continue;
         }
-        if (try compiled.validate(schema_document, item.value) != null) {
+        if (try compiled.validateWithBranches(schema_document, item.value, judge.branches()) != null) {
             try appendFinding(allocator, out, .schema, "schema_invalid", index, item.line);
         }
     }
@@ -2847,6 +2847,7 @@ fn validateTrace(allocator: std.mem.Allocator, judge: *validator.Validator, sour
 
     var machine = semantic.Machine.init(allocator);
     defer machine.deinit();
+    machine.packs = judge.semanticPacks();
     for (trace, 0..) |envelope, index| try machine.apply(index, envelope);
     try machine.close();
     for (machine.diagnostics.items) |diagnostic| try appendFinding(allocator, out, .semantic, diagnostic.code, diagnostic.index, lineOf(items, diagnostic.index));
@@ -2938,7 +2939,8 @@ fn validateFlagRefusal(arg: []const u8) ?[]const u8 {
     if (std.mem.startsWith(u8, arg, "--format=")) return null;
     if (std.mem.eql(u8, arg, "--mode") or std.mem.eql(u8, arg, "-mode")) return null;
     if (std.mem.startsWith(u8, arg, "--mode=")) return null;
-    if (std.mem.eql(u8, arg, "--pack") or std.mem.startsWith(u8, arg, "--pack=")) return "extension packs land with the validator's own packs, in #367";
+    if (std.mem.eql(u8, arg, "--pack") or std.mem.eql(u8, arg, "-pack")) return null;
+    if (std.mem.startsWith(u8, arg, "--pack=")) return null;
     if (std.mem.eql(u8, arg, "--provider")) return "the override is not carried; a trace declaring the profile routes itself, in #367";
     return "oapx validate does not carry this flag";
 }
@@ -2951,6 +2953,8 @@ fn runValidate(
 ) !bool {
     var format: ValidateFormat = .human;
     var mode: validator.Mode = .strict;
+    var pack_dirs = std.ArrayList([]const u8).empty;
+    defer pack_dirs.deinit(allocator);
     var paths = std.ArrayList([]const u8).empty;
     defer paths.deinit(allocator);
     var index: usize = 0;
@@ -2977,11 +2981,33 @@ fn runValidate(
             mode = validator.parseMode(arg["--mode=".len..]) orelse return error.UnsupportedMode;
             continue;
         }
+        if (std.mem.eql(u8, arg, "--pack") or std.mem.eql(u8, arg, "-pack")) {
+            index += 1;
+            if (index >= args.len) return error.InvalidArgument;
+            try pack_dirs.append(allocator, args[index]);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--pack=")) {
+            try pack_dirs.append(allocator, arg["--pack=".len..]);
+            continue;
+        }
         try paths.append(allocator, arg);
     }
     if (paths.items.len == 0) return error.InvalidArgument;
 
-    var judge = try validator.Validator.init(allocator, .{ .mode = mode });
+    var judge = validator.Validator.init(allocator, .{
+        .mode = mode,
+        .pack_dirs = pack_dirs.items,
+        .io = compat.fs.defaultIo(),
+    }) catch |err| {
+        var buf: [512]u8 = undefined;
+        const reason = std.fmt.bufPrint(&buf, "{s} did not load as a pack: {s}", .{
+            if (pack_dirs.items.len == 1) pack_dirs.items[0] else "a --pack directory",
+            @errorName(err),
+        }) catch "a pack did not load";
+        try unavailable(stderr, "validate", "--pack", reason);
+        return error.Unavailable;
+    };
     defer judge.deinit();
 
     var report = std.ArrayList(u8).empty;
@@ -3036,7 +3062,7 @@ fn printUsage(file: std.Io.File) !void {
         \\  oapx serve provider --http 127.0.0.1:<port>
         \\  oapx serve agent,provider --stdio [--model <model-ref>]
         \\  oapx hub --stdio [--config <path>]
-        \\  oapx validate [--format human|json] [--mode strict|tolerant] <trace.json>...
+        \\  oapx validate [--format human|json] [--mode strict|tolerant] [--pack DIR]... <trace.json>...
         \\  oapx auth providers [--json]
         \\  oapx auth login --provider <id> [--json]
         \\  oapx --version
@@ -10120,20 +10146,21 @@ test "two entries of one type are two adapters, each with its own executable" {
     try std.testing.expectEqualStrings("LITERAL=second", second_claude.config.backend.environment[0]);
 }
 
-test "validate refuses a flag goap carries and oapx does not, and never reads its value as a path" {
+test "validate names the pack directory that would not load, and judges no trace" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var out = try tmp.dir.createFile(std.testing.io, "stdout", .{});
     var complained_on = try tmp.dir.createFile(std.testing.io, "stderr", .{});
-    try std.testing.expectError(error.Unavailable, runValidate(allocator, &.{ "--pack", "storage" }, out, complained_on));
+    try std.testing.expectError(error.Unavailable, runValidate(allocator, &.{ "--pack", "storage", "t.json" }, out, complained_on));
     out.close(std.testing.io);
     complained_on.close(std.testing.io);
     const complained = try tmp.dir.readFileAlloc(std.testing.io, "stderr", allocator, .limited(4096));
     defer allocator.free(complained);
-    try std.testing.expect(std.mem.indexOf(u8, complained, "oapx validate: --pack: unavailable:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, complained, "storage") == null);
-    try std.testing.expect(std.mem.indexOf(u8, complained, "unreadable") == null);
+    const said = try tmp.dir.readFileAlloc(std.testing.io, "stdout", allocator, .limited(4096));
+    defer allocator.free(said);
+    try std.testing.expect(std.mem.indexOf(u8, complained, "oapx validate: --pack: unavailable: storage did not load as a pack:") != null);
+    try std.testing.expect(said.len == 0);
 }
 
 test "validate refuses a flag it has never heard of, by the name it was given" {
@@ -10151,12 +10178,10 @@ test "validate refuses a flag it has never heard of, by the name it was given" {
 }
 
 test "validate names the goap flag it is refusing rather than a generic one" {
-    try std.testing.expectEqualStrings("extension packs land with the validator's own packs, in #367", validateFlagRefusal("--pack").?);
-    try std.testing.expectEqualStrings("extension packs land with the validator's own packs, in #367", validateFlagRefusal("--pack=./p").?);
     try std.testing.expectEqualStrings("the override is not carried; a trace declaring the profile routes itself, in #367", validateFlagRefusal("--provider").?);
 }
 
-test "validate still takes a path, and both flags it does carry" {
+test "validate still takes a path, and every flag it does carry" {
     try std.testing.expect(validateFlagRefusal("fixtures/manifest.json") == null);
     try std.testing.expect(validateFlagRefusal("manifest.json") == null);
     try std.testing.expect(validateFlagRefusal("--format") == null);
@@ -10165,6 +10190,9 @@ test "validate still takes a path, and both flags it does carry" {
     try std.testing.expect(validateFlagRefusal("--mode") == null);
     try std.testing.expect(validateFlagRefusal("-mode") == null);
     try std.testing.expect(validateFlagRefusal("--mode=tolerant") == null);
+    try std.testing.expect(validateFlagRefusal("--pack") == null);
+    try std.testing.expect(validateFlagRefusal("-pack") == null);
+    try std.testing.expect(validateFlagRefusal("--pack=./p") == null);
 }
 
 test "a mode oapx does not carry is refused by name, and never read as a path" {
@@ -10879,7 +10907,7 @@ test "combined stdio dispatches only the provider profile to the provider handle
 }
 
 fn diagnosedCodes(allocator: std.mem.Allocator, trace: []const u8, out: *std.ArrayList([]const u8)) !void {
-    var judge = try validator.Validator.init(allocator, .{});
+    var judge = try validator.Validator.init(allocator, .{ .io = std.testing.io });
     defer judge.deinit();
     var found = std.ArrayList(ValidateFinding).empty;
     defer freeFindings(allocator, &found);
@@ -10888,7 +10916,7 @@ fn diagnosedCodes(allocator: std.mem.Allocator, trace: []const u8, out: *std.Arr
 }
 
 fn judgedFindings(allocator: std.mem.Allocator, trace: []const u8, out: *std.ArrayList(ValidateFinding)) !void {
-    var judge = try validator.Validator.init(allocator, .{});
+    var judge = try validator.Validator.init(allocator, .{ .io = std.testing.io });
     defer judge.deinit();
     try validateTrace(allocator, &judge, trace, out);
 }
