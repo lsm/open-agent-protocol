@@ -135,7 +135,7 @@ fn getGemini3ThinkingLevel(level: ai_types.ThinkingLevel, model: ai_types.Model)
         return switch (level) {
             .off => "NONE",
             .minimal, .low => "LOW",
-            .medium, .high, .xhigh => "HIGH",
+            .medium, .high, .xhigh, .max => "HIGH",
         };
     }
     return switch (level) {
@@ -143,7 +143,7 @@ fn getGemini3ThinkingLevel(level: ai_types.ThinkingLevel, model: ai_types.Model)
         .minimal => "MINIMAL",
         .low => "LOW",
         .medium => "MEDIUM",
-        .high, .xhigh => "HIGH",
+        .high, .xhigh, .max => "HIGH",
     };
 }
 
@@ -158,6 +158,7 @@ fn getGoogleBudget(level: ai_types.ThinkingLevel, budgets: ?ai_types.ThinkingBud
             .medium => if (b.medium) |v| @intCast(v) else -1,
             .high => if (b.high) |v| @intCast(v) else -1,
             .xhigh => if (b.xhigh) |v| @intCast(v) else -1,
+            .max => if (b.max) |v| @intCast(v) else -1,
         };
     }
 
@@ -167,7 +168,7 @@ fn getGoogleBudget(level: ai_types.ThinkingLevel, budgets: ?ai_types.ThinkingBud
             .minimal => 128,
             .low => 2048,
             .medium => 8192,
-            .high, .xhigh => 32768,
+            .high, .xhigh, .max => 32768,
         };
     }
 
@@ -177,7 +178,7 @@ fn getGoogleBudget(level: ai_types.ThinkingLevel, budgets: ?ai_types.ThinkingBud
             .minimal => 128,
             .low => 2048,
             .medium => 8192,
-            .high, .xhigh => 24576,
+            .high, .xhigh, .max => 24576,
         };
     }
 

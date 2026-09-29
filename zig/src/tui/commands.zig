@@ -11,6 +11,7 @@ pub const CommandKind = enum {
     status,
     @"resume",
     permissions,
+    think,
     clear,
     compact,
     abort,
@@ -80,6 +81,7 @@ pub const commands = [_]CommandInfo{
     .{ .name = "resume", .kind = .@"resume", .usage = "/resume", .description = "Open saved sessions", .handler = handleSessions },
     .{ .name = "permissions", .kind = .permissions, .usage = "/permissions [ask|bypass]", .description = "Pick or set tool permission mode", .handler = handlePermissions },
     .{ .name = "perm", .kind = .permissions, .usage = "/perm [ask|bypass]", .description = "Pick or set tool permission mode", .handler = handlePermissions },
+    .{ .name = "think", .kind = .think, .usage = "/think [off|low|medium|high|xhigh|max]", .description = "Show or set the thinking level", .handler = handleThink },
     .{ .name = "clear", .kind = .clear, .usage = "/clear", .description = "Clear transcript display", .handler = handleClear },
     .{ .name = "compact", .kind = .compact, .usage = "/compact [focus]", .description = "Summarize the conversation to free context", .handler = handleCompact },
     .{ .name = "abort", .kind = .abort, .usage = "/abort", .description = "Cancel the active streaming turn", .handler = handleAbort },
@@ -307,6 +309,26 @@ fn parsePermissionMode(value: []const u8) ?tui_runtime.PermissionMode {
     if (std.mem.eql(u8, value, "ask")) return .ask;
     if (std.mem.eql(u8, value, "bypass")) return .bypass;
     return null;
+}
+
+fn handleThink(ctx: CommandContext, command: Command) !CommandResult {
+    const arg = command.arg orelse {
+        return .{ .output = try std.fmt.allocPrint(ctx.allocator, "thinking level: {s}", .{@tagName(ctx.state.thinking_level)}) };
+    };
+    const level = parseThinkingLevel(arg) orelse {
+        return .{
+            .output = try std.fmt.allocPrint(ctx.allocator, "unknown thinking level: {s}. Use off, low, medium, high, xhigh or max", .{arg}),
+            .is_error = true,
+        };
+    };
+    ctx.state.thinking_level = level;
+    if (ctx.runtime) |runtime| runtime.setThinkingLevel(level);
+    return .{ .output = try std.fmt.allocPrint(ctx.allocator, "thinking level set to {s}", .{@tagName(level)}) };
+}
+
+fn parseThinkingLevel(value: []const u8) ?ai_types.ThinkingLevel {
+    const level = std.meta.stringToEnum(ai_types.ThinkingLevel, value) orelse return null;
+    return if (level == .minimal) null else level;
 }
 
 fn handleClear(ctx: CommandContext, command: Command) !CommandResult {
@@ -765,3 +787,50 @@ const MockAbortSession = struct {
         if (self.events_initialized) self.events.deinit();
     }
 };
+
+test "think sets the thinking level in the state and the runtime" {
+    const command = try parse("/think max");
+    try std.testing.expectEqual(CommandKind.think, command.kind);
+    try std.testing.expectEqualStrings("max", command.arg.?);
+
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    var runtime = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{});
+    defer runtime.deinit();
+
+    var result = try dispatch(.{ .allocator = std.testing.allocator, .state = &state, .runtime = &runtime }, command);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("thinking level set to max", result.output);
+    try std.testing.expectEqual(ai_types.ThinkingLevel.max, state.thinking_level);
+    try std.testing.expectEqual(ai_types.ThinkingLevel.max, runtime.thinkingLevel());
+
+    var off = try dispatch(.{ .allocator = std.testing.allocator, .state = &state, .runtime = &runtime }, .{ .kind = .think, .arg = "off" });
+    defer off.deinit(std.testing.allocator);
+    try std.testing.expectEqual(ai_types.ThinkingLevel.off, state.thinking_level);
+    try std.testing.expectEqual(ai_types.ThinkingLevel.off, runtime.thinkingLevel());
+}
+
+test "think without a level shows the current one" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    state.thinking_level = .high;
+
+    var result = try dispatch(.{ .allocator = std.testing.allocator, .state = &state }, .{ .kind = .think });
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("thinking level: high", result.output);
+    try std.testing.expectEqual(ai_types.ThinkingLevel.high, state.thinking_level);
+}
+
+test "think refuses a level the TUI does not offer and keeps the current one" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    state.thinking_level = .medium;
+
+    for ([_][]const u8{ "minimal", "extreme" }) |level| {
+        var result = try dispatch(.{ .allocator = std.testing.allocator, .state = &state }, .{ .kind = .think, .arg = level });
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(result.is_error);
+        try std.testing.expect(std.mem.startsWith(u8, result.output, "unknown thinking level: "));
+        try std.testing.expectEqual(ai_types.ThinkingLevel.medium, state.thinking_level);
+    }
+}

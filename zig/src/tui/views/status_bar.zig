@@ -75,9 +75,7 @@ pub fn render(allocator: std.mem.Allocator, state: *const tui_state.AppState, op
             try pushOwnedValue(&segments, allocator, .drops, value, tui_theme.statusSegment());
         }
     }
-    if (state.thinking_level != .off) {
-        try pushValue(&segments, allocator, .think, @tagName(state.thinking_level), tui_theme.statusSegment());
-    }
+    try pushValue(&segments, allocator, .think, @tagName(state.thinking_level), tui_theme.statusSegment());
     try pushOwnedSegment(&segments, allocator, .turns, "turns", try std.fmt.allocPrint(allocator, "{d}", .{state.status.turn_count}));
     try writeState(&segments, allocator, state);
 
@@ -527,7 +525,7 @@ test "status bar renders bypass permission mode as a bare value" {
     try std.testing.expect(std.mem.indexOf(u8, text, "perm:") == null);
 }
 
-test "status bar hides the thinking segment when thinking is off" {
+test "status bar shows off when thinking is off" {
     var state = tui_state.AppState.init(std.testing.allocator);
     defer state.deinit();
     state.thinking_level = .off;
@@ -535,7 +533,7 @@ test "status bar hides the thinking segment when thinking is off" {
     const text = try render(std.testing.allocator, &state, .{ .width = 160 });
     defer std.testing.allocator.free(text);
 
-    try std.testing.expect(std.mem.indexOf(u8, text, "off") == null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "off") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "low") == null);
 }
 
