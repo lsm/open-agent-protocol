@@ -31,6 +31,12 @@ pub const Loaded = struct {
     }
 };
 
+fn beneath(root: []const u8, path: []const u8) bool {
+    if (path.len <= root.len + 1) return false;
+    if (!std.mem.startsWith(u8, path, root)) return false;
+    return path[root.len] == std.fs.path.sep;
+}
+
 fn readAll(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     return std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(8 * 1024 * 1024));
 }
@@ -72,9 +78,12 @@ fn gather(
 
         if (registry) |target| {
             if (descriptor.object.get("schemas")) |schemas| {
+                const pack_root = std.Io.Dir.cwd().realPathFileAlloc(io, dir, allocator) catch try std.fs.path.resolve(allocator, &.{dir});
                 for (schemas.array.items) |schema_name| {
                     const file = schema_name.string;
                     const schema_path = try std.fs.path.join(allocator, &.{ dir, file });
+                    const resolved = std.Io.Dir.cwd().realPathFileAlloc(io, schema_path, allocator) catch return error.InvalidPackDescriptor;
+                    if (!beneath(pack_root, resolved)) return error.InvalidPackDescriptor;
                     const schema_bytes = try readAll(io, allocator, schema_path);
                     const key = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/{s}", .{ pack_base_uri, pack_id, version, file });
                     try target.addDocument(key, schema_bytes);
@@ -212,4 +221,73 @@ pub fn payloadTarget(
         .document = if (file.len == 0) envelope_document else file,
         .definition = fragment[marker.len..],
     };
+}
+
+test "a descriptor schema path is read only when it lands beneath the pack root" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    for ([_][]const u8{ "staying", "aliased", "upward", "absolute", "linked" }) |name| {
+        try tmp.dir.createDir(std.testing.io, name, .default_dir);
+    }
+    try tmp.dir.createDir(std.testing.io, "outside", .default_dir);
+
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "staying/note.schema.json", .data =
+            \\{"$schema": "https://json-schema.org/draft/2020-12/schema", "$defs": {"thing": {"type": "object", "required": ["type"], "properties": {"type": {"const": "com.example.ok.thing"}}}}}
+        ,
+    });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "staying/pack.json", .data =
+            \\{"id": "com.example.ok", "version": "1.0.0", "schemas": ["note.schema.json"], "envelope_types": [{"type": "com.example.ok.thing", "role": "event", "schema": "note.schema.json#/$defs/thing"}]}
+        ,
+    });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "aliased/pack.json", .data =
+            \\{"id": "com.example.alias", "version": "1.0.0", "schemas": ["alias.schema.json"], "envelope_types": [{"type": "com.example.alias.thing", "role": "event", "schema": "note.schema.json#/$defs/thing"}]}
+        ,
+    });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "aliased/note.schema.json", .data =
+            \\{"$schema": "https://json-schema.org/draft/2020-12/schema", "$defs": {"thing": {"type": "object", "required": ["type"], "properties": {"type": {"const": "com.example.ok.thing"}}}}}
+        ,
+    });
+    try tmp.dir.symLink(std.testing.io, "note.schema.json", "aliased/alias.schema.json", .{ .is_directory = false });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "upward/pack.json", .data =
+            \\{"id": "com.example.up", "version": "1.0.0", "schemas": ["../../../etc/hosts"], "envelope_types": []}
+        ,
+    });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "absolute/pack.json", .data =
+            \\{"id": "com.example.abs", "version": "1.0.0", "schemas": ["/etc/hosts"], "envelope_types": []}
+        ,
+    });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "outside/away.schema.json", .data =
+            \\{"$schema": "https://json-schema.org/draft/2020-12/schema", "$defs": {"thing": {"type": "object", "required": ["type"], "properties": {"type": {"const": "com.example.ok.thing"}}}}}
+        ,
+    });
+    try tmp.dir.symLink(std.testing.io, "../outside/away.schema.json", "linked/away.schema.json", .{ .is_directory = false });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "linked/pack.json", .data =
+            \\{"id": "com.example.out", "version": "1.0.0", "schemas": ["away.schema.json"], "envelope_types": []}
+        ,
+    });
+
+    var registry = try jsonschema.Registry.initFromBundled(allocator);
+    defer registry.deinit();
+
+    const staying = try tmp.dir.realPathFileAlloc(std.testing.io, "staying", allocator);
+    defer allocator.free(staying);
+    const one = [_][]const u8{staying};
+    var read = try load(std.testing.io, allocator, &registry, &one);
+    defer read.deinit();
+    try std.testing.expectEqual(@as(usize, 1), read.branches.len);
+
+    const aliased = try tmp.dir.realPathFileAlloc(std.testing.io, "aliased", allocator);
+    defer allocator.free(aliased);
+    const within = [_][]const u8{aliased};
+    var symlinked = try load(std.testing.io, allocator, &registry, &within);
+    defer symlinked.deinit();
+    try std.testing.expectEqual(@as(usize, 1), symlinked.branches.len);
+
+    for ([_][]const u8{ "upward", "absolute", "linked" }) |name| {
+        const dir = try tmp.dir.realPathFileAlloc(std.testing.io, name, allocator);
+        defer allocator.free(dir);
+        const escaping = [_][]const u8{dir};
+        try std.testing.expectError(error.InvalidPackDescriptor, load(std.testing.io, allocator, &registry, &escaping));
+    }
 }
