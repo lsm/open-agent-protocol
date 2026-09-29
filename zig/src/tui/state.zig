@@ -298,6 +298,8 @@ pub const TokenRateSet = struct {
     pub fn shown(self: *const TokenRateSet) TokenRate {
         if (self.live.hasFigure()) return self.live;
         if (self.run_active) {
+            const open = self.turn();
+            if (open.hasFigure()) return open;
             if (self.previous.hasFigure()) return self.previous;
             return self.average;
         }
@@ -2318,6 +2320,28 @@ test "a turn that produced nothing leaves the last real figure standing" {
     try std.testing.expectEqual(@as(u64, 100), rate.previous.perSecond());
     try std.testing.expectEqual(@as(u64, 100), rate.measured_since_switch.output_tokens);
     try std.testing.expectEqual(@as(u64, 1_000), rate.measured_since_switch.stream_ms);
+}
+
+test "a turn's tool phase shows the turn's own figure, not a lagging average" {
+    var rate = TokenRateSet{};
+    rate.runStarted();
+
+    rate.produced(400, 1_000);
+    rate.messageEnded(2_000, 400);
+    try std.testing.expectEqual(@as(u64, 400), rate.turn().output_tokens);
+    try std.testing.expectEqual(@as(u64, 400), rate.shown().output_tokens);
+    try std.testing.expect(!rate.shown().estimated);
+
+    rate.turnEnded();
+    try std.testing.expectEqual(@as(u64, 400), rate.previous.output_tokens);
+
+    rate.runStarted();
+    rate.produced(400, 10_000_000);
+    rate.messageEnded(10_000_500, 100);
+    rate.turnEnded();
+
+    try std.testing.expectEqual(@as(u64, 100), rate.shown().output_tokens);
+    try std.testing.expectEqual(@as(u64, 500), rate.average.output_tokens);
 }
 
 test "a rate with no time or no tokens never reads as speed" {

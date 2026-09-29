@@ -197,7 +197,10 @@ code paths; add a transcript row instead.
   It is the live figure while a message streams — necessarily an estimate, because
   usage only arrives at `message_end`. While a run is in progress that is the figure
   the run has just produced, since the previous turn's would describe a run already
-  finished; once the run ends the row shows the average since the last model switch,
+  finished — the turn in progress reads its own accumulated figure, so a turn's tool
+  phase shows the message it just streamed rather than an average that does not fold
+  that message in until the turn ends. Once the run ends the row shows the average
+  since the last model switch,
   because an idle line is asking how fast this model is, not what one reply happened to
   manage. A run that has measured nothing yet falls back to the average rather than
   showing nothing, so the segment never appears and disappears at the start of a run.
