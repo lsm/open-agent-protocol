@@ -204,21 +204,28 @@ pub fn readHead(allocator: std.mem.Allocator, stream: *compat.net.Stream, header
 
 pub const drain_cap_bytes = 64 * 1024;
 pub const drain_cycle_ms: i32 = 50;
+pub const drain_total_cap_bytes = 1024 * 1024;
+pub const drain_total_ms: i32 = 2500;
 
 pub fn drain(stream: *compat.net.Stream, remaining_in: usize, keep_going: KeepGoing) void {
-    var remaining = remaining_in;
+    var remaining: usize = @min(remaining_in, drain_total_cap_bytes);
+    var spent: usize = 0;
     var scratch: [1024]u8 = undefined;
+    const started = elapsedMs() catch 0;
     while (remaining > 0) {
         if (!keep_going.yes()) return;
+        if (elapsedMs() catch 0 -| started >= drain_total_ms) return;
         var owed: usize = @min(remaining, drain_cap_bytes);
         const deadline = (elapsedMs() catch 0) + drain_cycle_ms;
         while (owed > 0) {
             if (!keep_going.yes()) return;
             const chunk = @min(owed, scratch.len);
-            const n = readUntil(stream, scratch[0..chunk], deadline, drain_cycle_ms, keep_going) catch return;
+            const n: usize = @intCast(readUntil(stream, scratch[0..chunk], deadline, drain_cycle_ms, keep_going) catch return);
             if (n == 0) return;
             owed -= n;
             remaining -= n;
+            spent += n;
+            if (spent >= drain_total_cap_bytes) return;
         }
     }
 }
@@ -1116,6 +1123,82 @@ test "a media-refused body the peer never finishes is still abandoned, and still
     var spoken: [8192]u8 = undefined;
     const said = try readToEnd(&pipe.client, &spoken);
     try testing.expect(std.mem.startsWith(u8, said, "HTTP/1.1 415 Unsupported Media Type"));
+}
+
+test "an oversized declaration from a peer that never stops writing is bounded in time" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var pipe = try Pipe.open();
+    defer pipe.close();
+    // over the 16 MiB cap, so readHead rejects it -- but it writes `declared`
+    // first, and makai hands that raw value to drain on the error arm
+    const declared: usize = max_body_bytes + (8 * 1024 * 1024);
+    const head = try std.fmt.allocPrint(testing.allocator, "POST /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: text/plain\r\nContent-Length: {d}\r\n\r\n", .{declared});
+    defer testing.allocator.free(head);
+    try pipe.client.writeAll(head);
+
+    var body_allowed = true;
+    var seen: usize = 0;
+    const failure = readHead(testing.allocator, &pipe.accepted, header_read_ms, test_cycle_ms, always_going, &body_allowed, &seen);
+    try testing.expectError(error.BodyTooLarge, failure);
+    try testing.expectEqual(declared, seen);
+
+    // a writer that keeps going for the whole call, so a per-round bound alone
+    // would let this run for as long as the peer keeps writing
+    var stop = std.atomic.Value(bool).init(false);
+    const writer = try std.Thread.spawn(.{}, struct {
+        fn body(stream: *compat.net.Stream, owed: usize, done: *std.atomic.Value(bool)) void {
+            const filler = "x" ** 4096;
+            var written: usize = 0;
+            while (written < owed and !done.load(.seq_cst)) {
+                stream.writeAll(filler[0..@min(filler.len, owed - written)]) catch return;
+                written += filler.len;
+            }
+        }
+    }.body, .{ &pipe.client, declared, &stop });
+
+    const started = compat.time.nowMillis();
+    drain(&pipe.accepted, seen, always_going);
+    const spent = compat.time.nowMillis() - started;
+    stop.store(true, .seq_cst);
+    writer.join();
+    try testing.expect(spent < 6000);
+}
+
+test "a head that goes malformed after declaring its length is still bounded" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var pipe = try Pipe.open();
+    defer pipe.close();
+    // Content-Length first, then a header that fails the parse: `declared` is
+    // already set, so the error arm drains a length nothing validated
+    try pipe.client.writeAll("POST /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Length: 4194304\r\nContent-Length: 4194305\r\n\r\n");
+    try pipe.client.writeAll("y" ** 4096);
+
+    var body_allowed = true;
+    var seen: usize = 0;
+    const failure = readHead(testing.allocator, &pipe.accepted, header_read_ms, test_cycle_ms, always_going, &body_allowed, &seen);
+    try testing.expectError(error.Malformed, failure);
+    try testing.expectEqual(@as(usize, 4194304), seen);
+
+    const started = compat.time.nowMillis();
+    drain(&pipe.accepted, seen, always_going);
+    try testing.expect(compat.time.nowMillis() - started < 6000);
+}
+
+test "drain honours keepGoing, so a signal ends it mid-body" {
+    var pipe = try Pipe.open();
+    defer pipe.close();
+    try pipe.client.writeAll("z" ** (256 * 1024));
+    var stopped = std.atomic.Value(bool).init(false);
+    const keeping: KeepGoing = .{ .context = &stopped, .check = struct {
+        fn refused(context: *const anyopaque) bool {
+            const flag: *const std.atomic.Value(bool) = @ptrCast(@alignCast(context));
+            return !flag.load(.seq_cst);
+        }
+    }.refused };
+    drain(&pipe.accepted, 256 * 1024, keeping);
+    // the peer owes 256 KiB and sent it, but the signal says stop: the point
+    // is that drain returned rather than reading the rest
+    try testing.expect(!stopped.load(.seq_cst));
 }
 
 test "a drain gives up rather than waiting on a peer that sends nothing more" {
