@@ -786,7 +786,7 @@ fn discoverCatalogModels(
 
     const found = discoverCatalogModelsUncached(allocator, target, token, mode) catch |err| switch (err) {
         error.ModelCatalogRefused => {
-            if (refusalMarkersEnabled()) rememberRefusal(allocator, marker);
+            if (honour_marker and refusalMarkersEnabled()) rememberRefusal(allocator, marker);
             return error.ModelCatalogRefused;
         },
         else => return err,
@@ -2498,6 +2498,52 @@ test "a refusal marker is not honoured an hour after it was recorded" {
     try std.testing.expect(!catalogIsFresh(now - 60 * 60 * 1000, now, refusal_marker_max_age_ms));
 }
 
+
+test "a refusal taken under an environment key does not suppress a stored key" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+    test_catalog_refusal_markers = true;
+    defer test_catalog_refusal_markers = false;
+    var tmp = try tempHome(allocator);
+    defer tmp.cleanup();
+
+    const plan = "xiaomi-token-plan-cn";
+    var target = catalogTargetInRegion(plan, null) orelse return error.TestExpectedTarget;
+    defer target.deinit(allocator);
+
+    var storage = oauth_storage.AuthStorage{
+        .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(allocator),
+        .allocator = allocator,
+    };
+    defer storage.deinit();
+    try putStoredKey(&storage, allocator, plan);
+
+    test_catalog_environment = &[_]provider_credential.EnvironmentValue{
+        .{ .name = "XIAOMI_API_KEY", .value = "an-environment-key" },
+    };
+    const refusing = [_]CatalogDiscovery{
+        .{ .id = plan, .models_url = target.models_url, .model_ids = &.{}, .refused = true },
+    };
+    test_catalog_discovery = &refusing;
+    const refused = try loadCatalogModelsWithRows(allocator, &[_][]const u8{plan}, &storage, .allow_cache);
+    defer deinitModels(allocator, refused);
+    try std.testing.expectEqual(@as(usize, 0), refused.len);
+
+    const marker = try refusalMarkerName(allocator, plan, null);
+    defer allocator.free(marker);
+    try std.testing.expect(!refusalIsFresh(allocator, marker, refusal_marker_max_age_ms));
+
+    test_catalog_environment = null;
+    const answering = [_]CatalogDiscovery{
+        .{ .id = plan, .models_url = target.models_url, .model_ids = &.{"plan-model"} },
+    };
+    test_catalog_discovery = &answering;
+    const listed = try loadCatalogModelsWithRows(allocator, &[_][]const u8{plan}, &storage, .allow_cache);
+    defer deinitModels(allocator, listed);
+    try std.testing.expectEqual(@as(usize, 1), listed.len);
+    try std.testing.expectEqualStrings("plan-model", listed[0].id);
+}
 
 test "the refusal drop is scoped to the rows a plan subscription opens" {
     for (provider_catalog.all) |row| {
