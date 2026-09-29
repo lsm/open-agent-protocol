@@ -147,6 +147,35 @@ fn refusalWith(
     return Refusal{ .code = code, .message = message, .details = try arena.dupe(oap_types.DetailEntry, details) };
 }
 
+fn detailForReason(arena: std.mem.Allocator, reason: contract.Refusal) std.mem.Allocator.Error![]oap_types.DetailEntry {
+    const named = [_]struct { key: []const u8, value: []const u8 }{
+        .{ .key = "feature", .value = reason.feature },
+        .{ .key = "reason", .value = reason.reason },
+        .{ .key = "tool", .value = reason.tool },
+        .{ .key = "field", .value = reason.field },
+        .{ .key = "source", .value = reason.source },
+    };
+    var entries: [named.len]oap_types.DetailEntry = undefined;
+    var count: usize = 0;
+    for (named) |entry| {
+        if (entry.value.len == 0) continue;
+        entries[count] = .{ .key = entry.key, .value = entry.value };
+        count += 1;
+    }
+    if (count == 0) return &.{};
+    return try arena.dupe(oap_types.DetailEntry, entries[0..count]);
+}
+
+fn ownRevisions(arena: std.mem.Allocator, refused: *hubmod.OpenRefusal) std.mem.Allocator.Error!void {
+    refused.expected_revision = try arena.dupe(u8, refused.expected_revision);
+    refused.current_revision = try arena.dupe(u8, refused.current_revision);
+}
+
+fn featureOnly(arena: std.mem.Allocator, reason: contract.Refusal) std.mem.Allocator.Error![]oap_types.DetailEntry {
+    if (reason.feature.len == 0) return &.{};
+    return try arena.dupe(oap_types.DetailEntry, &.{.{ .key = "feature", .value = reason.feature }});
+}
+
 fn requireStringOrNull(root: std.json.ObjectMap, name: []const u8) Error!void {
     const value = member(root, name) orelse return;
     if (value == .null or value == .string) return;
@@ -625,7 +654,8 @@ pub const Frontend = struct {
             envelope.deinit(arena);
             return .{ .refused = .{ .code = "unsupported_feature", .message = "an open carrying a message is refused until submit lands" } };
         }
-        const opened = self.hub.open(arena, adapter, .{
+        var refused: hubmod.OpenRefusal = .{};
+        const opened = self.hub.openReporting(arena, adapter, .{
             .session_id = open.session_id orelse "",
             .metadata = metadata,
             .capability_revision = envelope.capability_revision,
@@ -633,10 +663,10 @@ pub const Frontend = struct {
             .allow_degraded_features = open.allow_degraded_features,
             .tools_json = open.tools_json,
             .tool_sources_json = open.tool_sources_json,
-        }) catch |err| {
-            const cited = if (envelope.capability_revision) |text| try arena.dupe(u8, text) else null;
+        }, &refused) catch |err| {
+            try ownRevisions(arena, &refused);
             envelope.deinit(arena);
-            return .{ .refused = try self.openRefusal(arena, err, request, cited) };
+            return .{ .refused = try openRefusal(arena, err, request, &refused) };
         };
         self.next_envelope += 1;
         const answer_id = try std.fmt.allocPrint(arena, "oap-response-{d}", .{self.next_envelope});
@@ -653,35 +683,26 @@ pub const Frontend = struct {
     }
 
     fn openRefusal(
-        self: *Frontend,
         arena: std.mem.Allocator,
         err: hubmod.Failure,
         request: Request,
-        cited: ?[]const u8,
+        refused: *const hubmod.OpenRefusal,
     ) !Refusal {
         return switch (err) {
             error.UnknownAdapter => .{ .code = "unknown_adapter", .message = try std.fmt.allocPrint(arena, "no adapter is registered as \"{s}\"", .{request.adapter orelse ""}) },
             error.SessionExists => .{ .code = "session_exists", .message = "the session id is already open" },
             error.SessionClosed => .{ .code = "session_closed", .message = "the session was already closed when the open probed it" },
             error.StaleCapabilities => try refusalWith(arena, "stale_capabilities", "the open cites a capability revision that is no longer current", try arena.dupe(oap_types.DetailEntry, &.{
-                .{ .key = "expected_revision", .value = try self.registeredRevision(arena, request.adapter orelse "") },
-                .{ .key = "current_revision", .value = cited orelse "" },
+                .{ .key = "expected_revision", .value = refused.expected_revision },
+                .{ .key = "current_revision", .value = refused.current_revision },
             })),
-            error.UnsupportedFeature, error.ToolCatalogUnavailable => .{ .code = "unsupported_feature", .message = "the adapter does not advertise a feature the request elected" },
-            error.CapabilityDegraded => .{ .code = "capability_degraded", .message = "a feature the request did not opt into is degraded" },
+            error.UnsupportedFeature, error.ToolCatalogUnavailable => try refusalWith(arena, "unsupported_feature", "the adapter does not advertise a feature the request elected", try detailForReason(arena, refused.reason)),
+            error.CapabilityDegraded => try refusalWith(arena, "capability_degraded", "a feature the request did not opt into is degraded", try featureOnly(arena, refused.reason)),
             error.AdapterDescriptorUnbound => .{ .code = "internal", .message = "the adapter descriptor carries no capability revision" },
             error.BackendFailed => .{ .code = "probe_failed", .message = "the adapter's probe refused" },
             error.OutOfMemory => error.OutOfMemory,
             else => .{ .code = "open_failed", .message = @errorName(err) },
         };
-    }
-
-    fn registeredRevision(self: *Frontend, arena: std.mem.Allocator, adapter: []const u8) ![]const u8 {
-        const listed = try self.hub.listing(arena);
-        for (listed) |status| {
-            if (std.mem.eql(u8, status.name, adapter)) return status.revision;
-        }
-        return "";
     }
 
     fn models(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8, degraded: []const []const u8) !Outcome {
@@ -2020,6 +2041,37 @@ test "a subscribing open is refused, because this wire cannot drain a subscripti
     const envelope = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"capability_revision\":\"reference-v1\",\"payload\":{\"session_id\":\"s1\",\"subscribe\":true}}";
     try harness.send(try openLine(harness.arena(), "reference", envelope));
     try testing.expectEqualStrings("unsupported_feature", try harness.code());
+}
+
+test "a refusal carries the adapter's own feature and reason, and nothing more" {
+    const arena = testing.allocator;
+    const both = try detailForReason(arena, .{ .feature = "session.open.subscribe", .reason = contract.reason_unadvertised });
+    defer if (both.len > 0) arena.free(both);
+    try testing.expectEqual(@as(usize, 2), both.len);
+    try testing.expectEqualStrings("feature", both[0].key);
+    try testing.expectEqualStrings("session.open.subscribe", both[0].value);
+    try testing.expectEqualStrings("reason", both[1].key);
+    try testing.expectEqualStrings("unadvertised", both[1].value);
+
+    const feature_only = try detailForReason(arena, .{ .feature = "session.tool_sources.attach" });
+    defer if (feature_only.len > 0) arena.free(feature_only);
+    try testing.expectEqual(@as(usize, 1), feature_only.len);
+    try testing.expectEqualStrings("session.tool_sources.attach", feature_only[0].value);
+
+    const named_source = try detailForReason(arena, .{
+        .feature = "session.tool_sources.attach",
+        .reason = contract.reason_unsatisfiable,
+        .source = "x1",
+    });
+    defer if (named_source.len > 0) arena.free(named_source);
+    try testing.expectEqual(@as(usize, 3), named_source.len);
+    try testing.expectEqualStrings("session.tool_sources.attach", named_source[0].value);
+    try testing.expectEqualStrings("unsatisfiable", named_source[1].value);
+    try testing.expectEqualStrings("source", named_source[2].key);
+    try testing.expectEqualStrings("x1", named_source[2].value);
+
+    const nothing = try detailForReason(arena, .{});
+    try testing.expectEqual(@as(usize, 0), nothing.len);
 }
 
 test "an open citing a stale revision is refused, naming both revisions" {
