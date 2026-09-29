@@ -131,7 +131,7 @@ func isZaiURL(baseURL string, hasBaseURL bool) bool {
 }
 
 func isOpenRouterURL(baseURL string, hasBaseURL bool) bool {
-	return holdsURL(baseURL, hasBaseURL, "openrouter.ai")
+	return isHostOrSubdomain(baseURL, hasBaseURL, "openrouter.ai")
 }
 
 func isChutesURL(baseURL string, hasBaseURL bool) bool {
