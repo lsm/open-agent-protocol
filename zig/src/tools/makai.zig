@@ -3073,7 +3073,7 @@ fn validateTrace(allocator: std.mem.Allocator, judge: *validator.Validator, sour
 
     const provider = namesProviderProfile(trace);
     const schema_document = if (provider) "provider-envelope.schema.json" else "envelope.schema.json";
-    var compiled = try judge.schema(schema_document);
+    var compiled = try judge.schema();
     defer compiled.deinit();
     for (items, 0..) |item, index| {
         if (try repeatsAKey(allocator, item.raw)) {

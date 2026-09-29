@@ -26,8 +26,6 @@ pub const Validator = struct {
     documents: std.heap.ArenaAllocator,
     widened: std.StringArrayHashMapUnmanaged(std.json.Value) = .empty,
     loaded: packs_mod.Loaded,
-    opened: std.StringArrayHashMapUnmanaged(std.json.Value) = .empty,
-    opened_for: std.StringHashMap(void),
     vocabulary: semantic.Packs = .{},
 
     pub fn init(allocator: std.mem.Allocator, options: Options) !Validator {
@@ -37,7 +35,6 @@ pub const Validator = struct {
             .mode = options.mode,
             .documents = std.heap.ArenaAllocator.init(allocator),
             .loaded = packs_mod.Loaded.empty(allocator),
-            .opened_for = std.StringHashMap(void).init(allocator),
         };
         errdefer self.deinit();
         self.loaded = try packs_mod.load(options.io, allocator, &self.registry, options.pack_dirs);
@@ -47,10 +44,6 @@ pub const Validator = struct {
     }
 
     pub fn deinit(self: *Validator) void {
-        var opened_for = self.opened_for.iterator();
-        while (opened_for.next()) |entry| self.allocator.free(entry.key_ptr.*);
-        self.opened_for.deinit();
-        self.opened.deinit(self.allocator);
         self.loaded.deinit();
         self.widened.deinit(self.allocator);
         self.documents.deinit();
@@ -66,43 +59,13 @@ pub const Validator = struct {
         }
     }
 
-    pub fn schema(self: *Validator, document: []const u8) !jsonschema.Validator {
+    pub fn schema(self: *Validator) !jsonschema.Validator {
         var compiled = jsonschema.Validator.init(self.allocator, &self.registry);
         errdefer compiled.deinit();
         for (self.widened.keys(), self.widened.values()) |name, held| {
             try compiled.overrides.put(self.allocator, name, held);
         }
-        try self.openMembers(document);
-        for (self.opened.keys(), self.opened.values()) |name, held| {
-            try compiled.overrides.put(self.allocator, name, held);
-        }
         return compiled;
-    }
-
-    fn openMembers(self: *Validator, document: []const u8) !void {
-        if (!appliesTo(document)) return;
-        if (self.opened_for.contains(document)) return;
-        const owned = try self.allocator.dupe(u8, document);
-        self.opened_for.put(owned, {}) catch |err| {
-            self.allocator.free(owned);
-            return err;
-        };
-        const opened = self.documents.allocator();
-        for (self.loaded.members) |member| {
-            const target = packs_mod.payloadTarget(&self.registry, document, member.payload_type) orelse continue;
-            const current = self.opened.get(target.document) orelse self.widened.get(target.document) orelse self.registry.root(target.document) orelse continue;
-            const member_schema = if (self.mode == .tolerant)
-                try tolerate.document(opened, member.schema)
-            else
-                member.schema;
-            try self.opened.put(self.allocator, target.document, try jsonschema.withMember(
-                opened,
-                current,
-                target.definition,
-                member.name,
-                member_schema,
-            ));
-        }
     }
 
     pub fn branchesFor(self: *const Validator, document: []const u8) []const jsonschema.Alternative {
@@ -165,20 +128,13 @@ const core_without_id =
     \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.request","payload":{}}
 ;
 
-const packed_member_typed =
-    "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.message.submit.request\",\"capability_revision\":\"v1\",\"id\":\"req1\",\"session_id\":\"s1\",\"payload\":{\"session_id\":\"s1\",\"delivery\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"go\"}],\"com.example.storage.workspace\":{\"bucket\":\"reports\"}}}"
-;
-
-const packed_member_mistyped =
-    "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.message.submit.request\",\"capability_revision\":\"v1\",\"id\":\"req1\",\"session_id\":\"s1\",\"payload\":{\"session_id\":\"s1\",\"delivery\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"go\"}],\"com.example.storage.workspace\":{\"bucket\":42}}}"
-;
 
 fn accepts(allocator: std.mem.Allocator, mode: Mode, envelope: []const u8) !bool {
     var judge = try Validator.init(allocator, .{ .mode = mode, .io = std.testing.io });
     defer judge.deinit();
     var document = try std.json.parseFromSlice(std.json.Value, allocator, envelope, .{});
     defer document.deinit();
-    var compiled = try judge.schema(envelope_document);
+    var compiled = try judge.schema();
     defer compiled.deinit();
     return (try compiled.validate(envelope_document, document.value)) == null;
 }
@@ -202,13 +158,13 @@ test "a validator keeps the mode it was built with, and judges through it" {
 
     var admitted = try std.json.parseFromSlice(std.json.Value, allocator, packed_type_request, .{});
     defer admitted.deinit();
-    var first = try judge.schema(envelope_document);
+    var first = try judge.schema();
     defer first.deinit();
     try std.testing.expect(try first.validate(envelope_document, admitted.value) == null);
 
     var refused = try std.json.parseFromSlice(std.json.Value, allocator, packed_type_without_id, .{});
     defer refused.deinit();
-    var second = try judge.schema(envelope_document);
+    var second = try judge.schema();
     defer second.deinit();
     try std.testing.expect(try second.validate(envelope_document, refused.value) != null);
 }
@@ -238,7 +194,7 @@ fn storagePack(allocator: std.mem.Allocator) ![]const u8 {
 fn admits(allocator: std.mem.Allocator, judge: *Validator, envelope: []const u8) !bool {
     var document = try std.json.parseFromSlice(std.json.Value, allocator, envelope, .{});
     defer document.deinit();
-    var compiled = try judge.schema(envelope_document);
+    var compiled = try judge.schema();
     defer compiled.deinit();
     return (try compiled.validateWithBranches(envelope_document, document.value, judge.branchesFor(envelope_document))) == null;
 }
@@ -257,21 +213,6 @@ test "a packed type is judged through the branch its pack declares, and refused 
     defer with_pack.deinit();
     try std.testing.expect(with_pack.branchesFor(envelope_document).len > 0);
     try std.testing.expect(try admits(allocator, &with_pack, packed_type_declared));
-}
-
-test "a packed member is admitted by its own schema and held to it, and by no pack at all" {
-    const allocator = std.testing.allocator;
-    const dir = try storagePack(allocator);
-    defer allocator.free(dir);
-
-    var unpacked = try Validator.init(allocator, .{ .io = std.testing.io });
-    defer unpacked.deinit();
-    try std.testing.expect(!try admits(allocator, &unpacked, packed_member_typed));
-
-    var with_pack = try Validator.init(allocator, .{ .pack_dirs = &.{dir}, .io = std.testing.io });
-    defer with_pack.deinit();
-    try std.testing.expect(try admits(allocator, &with_pack, packed_member_typed));
-    try std.testing.expect(!try admits(allocator, &with_pack, packed_member_mistyped));
 }
 
 test "a descriptor whose fields are the wrong shape is refused, not read past" {
@@ -320,34 +261,6 @@ test "one pack at two paths is one pack, and contributes one branch" {
     try std.testing.expectEqual(once.branches.len, twice.branches.len);
     try std.testing.expectEqual(once.types.len, twice.types.len);
     try std.testing.expectEqual(once.members.len, twice.members.len);
-}
-
-test "a pack's members widen the core payload only, and no other document" {
-    const allocator = std.testing.allocator;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "pack.json",
-        .data = "{\"id\":\"com.example.note\",\"version\":\"1.0.0\",\"payload_members\":[{\"payload_type\":\"inference.create.request\",\"member\":\"com.example.note.extra\",\"schema\":{\"type\":\"object\",\"properties\":{\"why\":{\"type\":\"string\"}}}}]}",
-    });
-    const dir = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
-    defer allocator.free(dir);
-
-    const provider =
-        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"inference.create.request","id":"i1","payload":{"model_ref":"m","messages":[],"com.example.note.extra":{"why":"because"}}}
-    ;
-    var carrying = try Validator.init(allocator, .{ .pack_dirs = &.{dir}, .io = std.testing.io });
-    defer carrying.deinit();
-
-    var widened = try std.json.parseFromSlice(std.json.Value, allocator, provider, .{});
-    defer widened.deinit();
-    var on_provider = try carrying.schema(provider_document);
-    defer on_provider.deinit();
-    try std.testing.expect(try on_provider.validate(provider_document, widened.value) != null);
-
-    var on_core = try carrying.schema(envelope_document);
-    defer on_core.deinit();
-    try std.testing.expect(try on_core.validate(envelope_document, widened.value) != null);
 }
 
 test "a descriptor declaring one type twice is refused, not loaded once" {
@@ -407,7 +320,7 @@ test "a validator frees itself exactly once when a pack cannot be loaded" {
         fn run(allocator: std.mem.Allocator) !void {
             var judge = try Validator.init(allocator, .{ .io = std.testing.io });
             defer judge.deinit();
-            var compiled = try judge.schema(envelope_document);
+            var compiled = try judge.schema();
             defer compiled.deinit();
         }
     }.run, .{});
@@ -417,7 +330,7 @@ test "a validator frees itself exactly once when a pack cannot be loaded" {
             defer allocator.free(dir);
             var judge = try Validator.init(allocator, .{ .pack_dirs = &.{dir}, .io = std.testing.io });
             defer judge.deinit();
-            var compiled = try judge.schema(envelope_document);
+            var compiled = try judge.schema();
             defer compiled.deinit();
         }
     }.run, .{});
@@ -428,7 +341,7 @@ test "a validator frees itself exactly once, on every allocation failure" {
         fn run(allocator: std.mem.Allocator) !void {
             var judge = try Validator.init(allocator, .{ .mode = .tolerant, .io = std.testing.io });
             defer judge.deinit();
-            var compiled = try judge.schema(envelope_document);
+            var compiled = try judge.schema();
             defer compiled.deinit();
         }
     }.run, .{});
@@ -436,7 +349,7 @@ test "a validator frees itself exactly once, on every allocation failure" {
         fn run(allocator: std.mem.Allocator) !void {
             var judge = try Validator.init(allocator, .{ .io = std.testing.io });
             defer judge.deinit();
-            var compiled = try judge.schema(envelope_document);
+            var compiled = try judge.schema();
             defer compiled.deinit();
         }
     }.run, .{});
