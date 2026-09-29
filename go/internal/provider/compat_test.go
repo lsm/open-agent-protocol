@@ -9,6 +9,39 @@ func hostModel(baseURL string) Model {
 	return Model{Provider: "openai", BaseURL: baseURL, HasBaseURL: true, HasCompat: true}
 }
 
+func TestADeepSeekHostIsDeepseekDotComOrASubdomainOfIt(t *testing.T) {
+	hosts := []string{
+		"https://api.deepseek.com",
+		"https://api.deepseek.com/v1",
+		"https://deepseek.com",
+		"https://API.DEEPSEEK.COM",
+	}
+	for _, url := range hosts {
+		if !isDeepSeekURL(url, true) {
+			t.Errorf("isDeepSeekURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://mydeepseek.com",
+		"https://notdeepseek.com",
+		"https://deepseek.com.evil.example",
+		"https://evil.example/?next=api.deepseek.com",
+		"https://evil.example/v1/api.deepseek.com",
+		"https://gateway.example/proxy/api.deepseek.com",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isDeepSeekURL(url, true) {
+			t.Errorf("isDeepSeekURL(%q) = true, want false: the name is in a host suffix, a path or a query", url)
+		}
+	}
+
+	if isDeepSeekURL("https://api.deepseek.com", false) {
+		t.Error("no base url is not a deepseek host")
+	}
+}
+
 func TestAGitHubCopilotHostIsGithubcopilotDotComOrASubdomainOfIt(t *testing.T) {
 	hosts := []string{
 		"https://api.githubcopilot.com",

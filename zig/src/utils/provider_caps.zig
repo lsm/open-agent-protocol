@@ -79,8 +79,7 @@ pub fn isQwen(base_url: ?[]const u8) bool {
 }
 
 pub fn isDeepSeek(base_url: ?[]const u8) bool {
-    const url = base_url orelse return false;
-    return std.mem.find(u8, url, "api.deepseek.com") != null;
+    return isHostOrSubdomainOf(base_url, "deepseek.com");
 }
 
 pub fn isHostOrSubdomainOf(base_url: ?[]const u8, domain: []const u8) bool {
@@ -209,6 +208,42 @@ test "isGitHubCopilot detection" {
     try std.testing.expect(isGitHubCopilot("https://api.githubcopilot.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot("https://api.openai.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot(null));
+}
+
+test "a deepseek host is deepseek.com or a subdomain of it" {
+    const hosts = [_][]const u8{
+        "https://api.deepseek.com",
+        "https://api.deepseek.com/v1",
+        "https://deepseek.com",
+        "https://API.DEEPSEEK.COM",
+    };
+    for (hosts) |url| {
+        try std.testing.expect(isDeepSeek(url));
+    }
+
+    const not_hosts = [_][]const u8{
+        "https://mydeepseek.com",
+        "https://notdeepseek.com",
+        "https://deepseek.com.evil.example",
+        "https://evil.example/?next=api.deepseek.com",
+        "https://evil.example/v1/api.deepseek.com",
+        "https://gateway.example/proxy/api.deepseek.com",
+        "not a url at all",
+        "",
+    };
+    for (not_hosts) |url| {
+        try std.testing.expect(!isDeepSeek(url));
+    }
+
+    try std.testing.expect(!isDeepSeek(null));
+}
+
+test "the catalogued deepseek row still asks for its thinking as text" {
+    const url = "https://api.deepseek.com";
+    try std.testing.expect(isDeepSeek(url));
+    const caps = detectCapabilities(url);
+    try std.testing.expectEqual(ProviderType.openai_compatible, caps.provider_type);
+    try std.testing.expect(caps.requires_thinking_as_text);
 }
 
 test "a github copilot host is githubcopilot.com or a subdomain of it" {

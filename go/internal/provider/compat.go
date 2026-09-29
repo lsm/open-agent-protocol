@@ -143,7 +143,7 @@ func isQwenURL(baseURL string, hasBaseURL bool) bool {
 }
 
 func isDeepSeekURL(baseURL string, hasBaseURL bool) bool {
-	return holdsURL(baseURL, hasBaseURL, "api.deepseek.com")
+	return isHostOrSubdomain(baseURL, hasBaseURL, "deepseek.com")
 }
 
 func isAnthropicURL(baseURL string, hasBaseURL bool) bool {
