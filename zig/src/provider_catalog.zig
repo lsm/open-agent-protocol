@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const data = @import("data");
 const ai_types = @import("ai_types");
 const compat = @import("compat");
@@ -135,6 +136,18 @@ pub fn regionEnv(id: []const u8) ?[]const u8 {
 pub fn defaultRegion(id: []const u8) ?[]const u8 {
     const row = provider(id) orelse return null;
     return row.default_region;
+}
+
+pub const global_base_url_env = "OAPX_BASE_URL";
+
+pub fn blankEnvironment(allocator: std.mem.Allocator) !void {
+    if (!builtin.is_test) return;
+    try compat.setTestEnv(allocator, global_base_url_env, "");
+    for (all) |row| {
+        for (row.credential_env) |name| try compat.setTestEnv(allocator, name, "");
+        for (row.base_url_env) |name| try compat.setTestEnv(allocator, name, "");
+        if (row.region_env) |name| try compat.setTestEnv(allocator, name, "");
+    }
 }
 
 pub fn modelsFor(id: []const u8) []const Model {
@@ -1049,6 +1062,44 @@ test "anthropic's row keeps the auth token ahead of the api key, and the anthrop
     defer std.testing.allocator.free(found.?);
     try std.testing.expectEqualStrings("from-the-second-name", found.?);
     try std.testing.expectEqual(@as(usize, 2), probe.names.items.len);
+}
+
+test "blankEnvironment hides every variable the catalog reads, including ones a test has not heard of" {
+    const allocator = std.testing.allocator;
+    for (all) |row| {
+        for (row.credential_env) |name| try compat.setTestEnv(allocator, name, "leaked");
+        for (row.base_url_env) |name| try compat.setTestEnv(allocator, name, "https://leaked.example");
+        if (row.region_env) |name| try compat.setTestEnv(allocator, name, "leaked");
+    }
+    try compat.setTestEnv(allocator, global_base_url_env, "https://leaked.example");
+    defer compat.clearTestEnv();
+
+    try blankEnvironment(allocator);
+
+    for (all) |row| {
+        for (row.credential_env) |name| try expectBlanked(allocator, name);
+        if (apiKeyFromEnv(allocator, row.id)) |value| {
+            std.debug.print("\n{s} still reads a key after blankEnvironment\n", .{row.id});
+            allocator.free(value);
+            return error.TestEnvironmentNotBlanked;
+        }
+        for (row.base_url_env) |name| {
+            try expectBlanked(allocator, name);
+        }
+        if (row.region_env) |name| {
+            try expectBlanked(allocator, name);
+        }
+    }
+    try expectBlanked(allocator, global_base_url_env);
+}
+
+fn expectBlanked(allocator: std.mem.Allocator, name: []const u8) !void {
+    const value = (compat.getEnvVarOwned(allocator, name) catch null) orelse return;
+    defer allocator.free(value);
+    if (value.len != 0) {
+        std.debug.print("\n{s} is {s} after blankEnvironment\n", .{ name, value });
+        return error.TestEnvironmentNotBlanked;
+    }
 }
 
 test "a set but empty variable is skipped for the next name the row records" {

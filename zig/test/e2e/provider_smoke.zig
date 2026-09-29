@@ -389,7 +389,7 @@ test "the smoke gate lists every current row and no other" {
 }
 
 test "a row with no region named falls back to the region the catalog names" {
-    try compat.setTestEnv(testing.allocator, "KIMI_REGION", "");
+    try provider_catalog.blankEnvironment(testing.allocator);
     defer compat.clearTestEnv();
     for (rows) |row| {
         if (!provider_catalog.isRegional(row.id)) {

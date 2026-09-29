@@ -14,7 +14,7 @@ pub fn defaultBaseUrlForRefWithRegion(
     api: []const u8,
     stored_kimi_region: ?[]const u8,
 ) ![]const u8 {
-    const global = try envOwnedOrNull(allocator, "OAPX_BASE_URL");
+    const global = try envOwnedOrNull(allocator, provider_catalog.global_base_url_env);
     defer if (global) |g| allocator.free(g);
     const anthropic = try envOwnedOrNull(allocator, anthropic_base_url_env);
     defer if (anthropic) |v| allocator.free(v);
@@ -348,7 +348,7 @@ pub fn defaultMaxTokensForRef(provider_id: []const u8, api: []const u8) u32 {
 }
 
 test "KIMI_REGION still decides the region for a caller that resolves nothing itself" {
-    try compat.setTestEnv(std.testing.allocator, kimi_region_env_name, "");
+    try provider_catalog.blankEnvironment(std.testing.allocator);
     defer compat.clearTestEnv();
     try std.testing.expectEqualStrings("china", resolveKimiRegion(std.testing.allocator, null));
     try std.testing.expectEqualStrings("global", resolveKimiRegion(std.testing.allocator, "global"));
@@ -368,7 +368,7 @@ test "KIMI_REGION still decides the region for a caller that resolves nothing it
     try std.testing.expectEqualStrings("global", resolveKimiRegion(std.testing.allocator, "global"));
     try std.testing.expectEqualStrings("global", resolveKimiRegion(std.testing.allocator, "moonshot"));
 
-    try compat.setTestEnv(std.testing.allocator, kimi_region_env_name, "");
+    try provider_catalog.blankEnvironment(std.testing.allocator);
     try std.testing.expectEqualStrings("global", resolveKimiRegion(std.testing.allocator, "moonshot"));
     try std.testing.expectEqualStrings("china", resolveKimiRegion(std.testing.allocator, null));
 }

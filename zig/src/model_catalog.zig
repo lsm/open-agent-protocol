@@ -2085,7 +2085,7 @@ test "parseCodexModelsCache maps visible supported Codex models" {
 }
 
 test "loadProductionModels includes the Kimi model, discovered like any other row" {
-    try compat.setTestEnv(std.testing.allocator, kimi_region_env, "");
+    try provider_catalog.blankEnvironment(std.testing.allocator);
     defer compat.clearTestEnv();
     const target = catalogTargetInRegion("kimi", "china") orelse return error.TestExpectedTarget;
     test_catalog_discovery = &[_]CatalogDiscovery{.{
@@ -2115,7 +2115,7 @@ test "loadProductionModels includes the Kimi model, discovered like any other ro
 }
 
 test "the Kimi row serves the China base by default and the global base when the region says so" {
-    try compat.setTestEnv(std.testing.allocator, kimi_region_env, "");
+    try provider_catalog.blankEnvironment(std.testing.allocator);
     defer compat.clearTestEnv();
     const china = catalogRegion(std.testing.allocator, null, "kimi");
     try std.testing.expectEqualStrings("china", china.?);
@@ -2193,7 +2193,7 @@ test "loadProductionModels omits Kimi model by default in tests" {
 
 test "the region resolution a user chose at login reaches discovery and the model's base" {
     const allocator = std.testing.allocator;
-    try compat.setTestEnv(allocator, kimi_region_env, "");
+    try provider_catalog.blankEnvironment(allocator);
     defer compat.clearTestEnv();
     var storage = oauth_storage.AuthStorage{
         .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(allocator),
@@ -2279,7 +2279,7 @@ test "a stored OAuth credential's region picks the row's endpoint, and an unusab
 
 
 test "refreshProductionModels keeps Kimi when Codex refresh fails" {
-    try compat.setTestEnv(std.testing.allocator, kimi_region_env, "");
+    try provider_catalog.blankEnvironment(std.testing.allocator);
     defer compat.clearTestEnv();
     const target = catalogTargetInRegion("kimi", "china") orelse return error.TestExpectedTarget;
     test_catalog_discovery = &[_]CatalogDiscovery{.{
@@ -3003,7 +3003,7 @@ test "a catalog row with discovery but no model id contributes nothing" {
 }
 
 test "a row's own limits reach a model it does not declare, and a row that declares none keeps the generic ones" {
-    try compat.setTestEnv(std.testing.allocator, kimi_region_env, "");
+    try provider_catalog.blankEnvironment(std.testing.allocator);
     defer compat.clearTestEnv();
     const target = catalogTargetInRegion("kimi", "china") orelse return error.TestExpectedTarget;
     test_catalog_discovery = &[_]CatalogDiscovery{
@@ -3043,7 +3043,7 @@ test "a row's own limits reach a model it does not declare, and a row that decla
 }
 
 test "a row that declares models still serves them when its own listing answers with none" {
-    try compat.setTestEnv(std.testing.allocator, kimi_region_env, "");
+    try provider_catalog.blankEnvironment(std.testing.allocator);
     defer compat.clearTestEnv();
     const target = catalogTargetInRegion("kimi", "china") orelse return error.TestExpectedTarget;
     test_catalog_discovery = &[_]CatalogDiscovery{.{
@@ -3202,7 +3202,7 @@ fn catalogLoadProbe(allocator: std.mem.Allocator) !void {
 
 fn declaredModelsFallbackProbe(allocator: std.mem.Allocator) !void {
     defer compat.clearTestEnv();
-    try compat.setTestEnv(allocator, kimi_region_env, "");
+    try provider_catalog.blankEnvironment(allocator);
     const target = catalogTargetInRegion("kimi", "china") orelse return error.TestExpectedTarget;
     test_catalog_discovery = &[_]CatalogDiscovery{
         .{ .id = "kimi", .models_url = target.models_url, .model_ids = &.{} },
