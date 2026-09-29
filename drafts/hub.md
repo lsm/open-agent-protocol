@@ -1349,7 +1349,7 @@ byte-for-byte comparison on their first request.
 stamped with the revision its *lister* served it under, which is what makes the
 draft's "refuse one that disagrees with the descriptor" check possible at all.
 
-**D13 — a chunked body is refused, where Go de-chunks it.** A request carrying
+**D21 — a chunked body is refused, where Go de-chunks it.** A request carrying
 any `Transfer-Encoding` is answered a bare `400`; `net/http` decodes chunked
 transparently, so a streaming client works against `goap hub` and not against
 `oapx hub`. This is a gap rather than a decision, and it is closed by the routes
@@ -1358,7 +1358,7 @@ the same 16 MiB cap, not in a reader with no consumer. Until then the refusal is
 the safe one: a body whose framing this daemon cannot read is not a body it
 should guess at. Pinned by `a chunked body is refused rather than guessed at`.
 
-**D14 — no `100 Continue` is sent, where Go sends one when the handler reads the
+**D22 — no `100 Continue` is sent, where Go sends one when the handler reads the
 body.** A client that sends `Expect: 100-continue` waits for the interim answer;
 `curl` waits about a second and sends anyway, a stricter client waits out the
 idle budget. Sending it here would be worse than not sending it, because no route
@@ -1454,13 +1454,14 @@ are "stamped with the revision the lister served it under", and both name
 | **The refusal's precedence** | It is checked **before** the adapter is looked up and before the revision gate runs, so an open naming an unregistered adapter *and* carrying a message answers `unsupported_feature` where Go answers `unknown_adapter`, and a subscribing open citing a stale revision answers `unsupported_feature` where Go answers `stale_capabilities`. Go's `openOp` looks the adapter up first and gates second, so both of those win there. Hoisting the refusal means it lives in the hub rather than the frontend, which is where it stops existing: the moment `submit` admits a message and `events` admits a subscription, neither refusal is there to be out of order. It is recorded rather than fixed because every input that reaches the difference is already divergent under this row. |
 | **Also refused here** | **A subscribing open, for the same reason and a sharper one.** `hub.open` registers a `Subscription` when `subscribe` is set, and the stdio op discarded it — the wire accepted a subscription it cannot deliver, and once `submit` lands its envelopes would queue against a subscription nothing drains. Go holds the subscription in its `Frontend`; there is no equivalent here yet, so the honest answer is to refuse until `events` exists. **This is a second divergence from the same cause** and it is why `open`'s parity cases carry no `subscribe` at all. |
 
-### D12 — an open's `unsupported_feature` and `capability_degraded` carry no `feature`
+### D12 — an open's `unsupported_feature` and `capability_degraded` carried no `feature`
 
 | | |
 | --- | --- |
 | **The draft says** | `open`'s errors include `unsupported_feature` (400, for a tool source it will not attach) and `capability_degraded` (400, for a feature the request did not opt into), both naming the feature. |
 | **Go does** | `ControlRefusal` turns the adapter's refusal into the code **and its details**, so both arms carry `feature` and `reason` on the wire. |
-| **Zig does** | The same two codes with no `details`. `hub.open` returns a bare error from its `Failure` set and the `contract.Refusal` — which is where the feature and reason live — is a local in the hub that never escapes. `catalogRefusal` in `stdio.zig` gets away without it because its caller already knows which feature it asked for; an open's elections are three features and the frontend does not know which one failed. |
+| **Zig does** | **Fixed.** The same two codes with no `details`: `hub.open` returned a bare error from its `Failure` set, and the `contract.Refusal` — which is where the feature and reason live — was a local in the hub, gone by the time the transport built the answer. `hub.openReporting` now takes a `*OpenRefusal`, the hub writes the adapter's own words into it at every slot that can refuse, and the transport answers from what it was given rather than re-deriving them. `open` keeps its signature and passes `null`. |
+| **What is still not fixed here** | The **order** those refusals arrive in, which is D18: the hub now says why, but the frontend check still answers ahead of it. |
 | **Why it matters** | The differential comparison keeps `details` and drops only `message`, so the two trees will disagree on the first open whose elections are unadvertised or degraded. Unreachable today — the only registered adapter advertises all three — and live the moment #389's registry registers a real one. |
 | **The fix** | The hub has to surface the refusal, not just the error: either a `Failure` that carries the `Refusal`, or a variant of `open` that returns it. That is a core change, and it is the same change `submit`, `resolve` and `cancel` will each want, so it belongs in the PR that serves the first of them. |
 
