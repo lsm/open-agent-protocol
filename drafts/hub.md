@@ -1144,6 +1144,10 @@ carry it** — so the member could not arrive rather than arriving and being dro
 one surface that did accept a metadata-carrying open and discard it is the endpoint, in
 **both** trees, and that is D9.
 
+**D10 is fixed**: a subscribing open is gated on the revision the host asked for, so
+`stale_capabilities` is reachable and the answer's `capability_revision` reports a
+revision that was checked rather than one that was merely sent.
+
 **D4, D6, D7, D8 and D9 are what is left.** Four of them are the Zig side and all of one
 kind: each names something the Zig tree cannot carry that the draft specifies — a member
 that does not exist, or a signal with nowhere to report it. None of them changes a byte
@@ -1195,6 +1199,17 @@ are "stamped with the revision the lister served it under", and both name
 | **Why it is not fixed here** | **Both** trees do it. Fixing it on the Zig side alone would make the two *diverge* — the Zig endpoint would forward metadata and the Go one would not — which is the opposite of what Decision 0032 is for. It needs to be a change to both trees, and it is a change to the shared surface rather than to the hub. |
 | **The fix** | `oap_types.SessionOpenRequest` gains `metadata` and both trees' **endpoint** surfaces read it into their `OpenRequest`, in one step — the only two places either tree drops it. The Zig stdio `open` op, when it is written, has to read `metadata` off the wire the way Go's does, or the Zig line becomes a *third* dropper rather than a second reader. |
 
+
+### D10 — nothing gated a `subscribe` open on the revision the host asked for
+
+| | |
+| --- | --- |
+| **The draft says** | `open`'s errors include `stale_capabilities` (409, with `expected_revision` and `current_revision` in `details`), and its answer carries `capability_revision` "set to the revision the open was gated under". |
+| **Go does** | `SubscribeGate` runs **only when the request set `subscribe`**, and returns early otherwise. It compares the request envelope's `capability_revision` against the probed descriptor's, and on a disagreement returns `StaleRevisionError{Expected: the descriptor's, Current: the request's}`, which the stdio op turns into `stale_capabilities` with both in `details`. On success it returns the **descriptor's** revision, and that is what stamps the answer. |
+| **Zig does** | `Failure.StaleCapabilities` was **declared and never returned**. Nothing anywhere compared a revision, and `hub.OpenRequest` had no member to carry one, so the refusal had no arm and the gate had no value. |
+| **Why it matters** | Two consequences, and the second is the one that would have shipped quietly. `stale_capabilities` was unreachable, so a host that gated its open on a revision got a session opened against whatever the adapter happened to be serving — a silent disagreement where the draft specifies a refusal. And the answer's `capability_revision` had no gated revision to report: the only value available was the request's own, which is exactly the value the gate exists to check, so a "success" would have been stamped with the number that was never verified. |
+| **The fix** | `hub.OpenRequest` carries `capability_revision`. A subscribing open compares it against the registered adapter's revision and returns `StaleCapabilities` on a disagreement — **before** the `session_exists` lookup, so the gate wins over a name collision in the order Go's wire has it. A request that states no revision is not gated, which is Go's own `revision != ""` guard and not a hole. The `expected`/`current` pair is assembled by the frontend, which reads the registered revision from `hub.listing` — the same route the `adapters` op already uses. |
+| **What it is not** | The stdio `open` arm, which is [#387](https://github.com/lsm/open-agent-protocol/issues/387)'s next step and depends on this. |
 
 ### D4 — the registry's `journal_capacity` is hub-wide in Zig, per-adapter in Go
 

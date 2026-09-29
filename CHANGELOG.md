@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+### Added
+
+- **A subscribing open is gated on the revision the host asked for.** `hub.OpenRequest`
+  carries a `capability_revision`, and an open that set `subscribe` compares it against
+  the registered adapter's revision, answering `error.StaleCapabilities` on a
+  disagreement — the refusal the draft names, with `expected_revision` and
+  `current_revision` for the frontend to report. `Failure.StaleCapabilities` had been
+  declared since the hub was written and **never returned by anything**: no code
+  compared a revision, and the request had no member to carry one. So a host that gated
+  its open on a revision got a session opened against whatever the adapter happened to
+  be serving — a silent disagreement where the draft specifies a 409 — and the answer's
+  `capability_revision` had no checked value to report, only the request's own, which is
+  the number the gate exists to verify. The comparison runs before the `session_exists`
+  lookup, so the gate wins over a name collision in the order Go's wire has it, and a
+  request that states no revision is not gated, which is Go's own `revision != ""`
+  guard rather than a hole.
+
+
 ## Unreleased
 
 ### Changed
