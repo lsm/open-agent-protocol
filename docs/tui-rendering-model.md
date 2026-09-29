@@ -332,9 +332,32 @@ code paths; add a transcript row instead.
   kimi` or `KIMI_API_KEY`, the stored one first): it fetches `GET /v1/models` on the
   region's own host — `api.kimi.com/coding` or `api.moonshot.ai`, whichever the stored
   login or `KIMI_REGION` names — with that key, caches the body under
-  `~/.oapx/model_catalog/kimi.json` (`kimi-global.json` for the global region) on the
+  `~/.oapx/model_catalog/catalog-kimi.json` (`catalog-kimi-global.json` for the global
+  region) on the
   same 24-hour window and stale-copy fallback as Anthropic's, and falls back to the
-  static `kimi-k2.7-code` when both fetch and cache are unusable. Each entry takes its
+  static `kimi-k2.7-code` when both fetch and cache are unusable. Kimi is a plan row, so
+  a 401 or 403 is a refusal rather than an outage: the row is dropped for that listing
+  and the fallbacks above are not consulted, because a plan row that refuses is one the
+  subscription does not open. The refusal is remembered as a marker, and only for a
+  stored login — a key from `KIMI_API_KEY` is never covered by one, never earns one, and
+  never clears one; logging out brings the row back on the next listing. Because the row
+  is one the subscription does not open, a marker younger than the listing cache's own
+  twenty-four hours answers the row without a request. An older one does not answer: the
+  row probes instead, and a remembered marker takes the row off the catalog altogether
+  rather than only off its cached listing — no cached models and none of the row's declared
+  ones, however old the marker is and whatever the probe returns. A probe that refuses writes
+  the marker again, and a probe that answers clears it, which is also what the refresh after
+  a `/login` does; the two together are why one bad 401 or 403 from a WAF challenge costs a
+  day rather than the session, and why it is not permanent. The bound is the cache's lifetime on
+  purpose: a marker outliving the copy it outranks would be a verdict with nothing behind
+  it, and a marker perishing with that copy would be one that could not be renewed. The
+  marker is keyed by row and region, not by the login that earned it, so it is
+  deliberately not derived from the credential and nothing derived from a credential
+  reaches disk. The cost of that is one bounded case: replacing a stored login with a
+  different one leaves the new key suppressed until a forced refresh re-probes. Nothing
+  is written that would let the marker tell the two logins apart, so the marker is
+  cleared by a re-probe rather than made exact.
+  Each entry takes its
   display name, context window, reasoning flag and text/image input from the response's
   `display_name`, `context_length`, `supports_reasoning` and `supports_image_in`; the
   endpoint reports no output cap, so every entry keeps the 16 384 default. A selected
