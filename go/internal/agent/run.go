@@ -253,6 +253,10 @@ func (r *Run) runToolCalls(assistant provider.AssistantContent) ([]provider.Tool
 			results = append(results, namelessResult(call))
 			continue
 		}
+		if call.ID == "" {
+			results = append(results, idlessResult(call))
+			continue
+		}
 		if !live {
 			results = append(results, cancelledResult(call))
 			continue
@@ -300,6 +304,10 @@ func cutOffResult(call provider.ToolCall) provider.ToolResult {
 
 func namelessResult(call provider.ToolCall) provider.ToolResult {
 	return errorResult(call, fmt.Sprintf("Tool call %s was not run: the reply named no tool, so there is nothing to run. Call a tool by name.", quotedID(call)))
+}
+
+func idlessResult(call provider.ToolCall) provider.ToolResult {
+	return errorResult(call, fmt.Sprintf("Tool call %q was not run: the reply gave it no id, so no answer could be matched to it. Call the tool again.", call.Name))
 }
 
 func quotedID(call provider.ToolCall) string {

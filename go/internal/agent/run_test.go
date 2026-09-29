@@ -17,6 +17,7 @@ type scriptedTurn struct {
 	silent   bool
 	dropDone bool
 	hold     chan struct{}
+	idless   *string
 	once     bool
 }
 
@@ -48,6 +49,20 @@ func frames(ctx context.Context, turn scriptedTurn) <-chan provider.Event {
 			return
 		}
 		sink := &provider.EventSink{OnEvent: func(event provider.Event) { out <- event }}
+		if turn.idless != nil {
+			call := provider.ToolCall{Name: *turn.idless}
+			provider.Stream(&provider.EventSink{OnEvent: func(event provider.Event) { out <- event }},
+				completionsModel(), provider.Context{}, provider.StreamOptions{},
+				func() ([]byte, error) { return nil, nil },
+				func() bool { return ctx.Err() != nil })
+			out <- provider.Event{Kind: provider.EventToolCallStart, ContentIndex: 0, ID: call.ID, Name: call.Name}
+			out <- provider.Event{Kind: provider.EventToolCallEnd, ContentIndex: 0, ToolCall: &call}
+			out <- provider.Event{Kind: provider.EventDone, Message: &provider.AssistantMessage{
+				API: "openai-completions", Provider: "local", Model: "local-model",
+				StopReason: provider.StopToolUse, Content: []provider.AssistantBlock{{ToolCall: &call}},
+			}}
+			return
+		}
 		if turn.hold != nil {
 			read := func() ([]byte, error) {
 				if !turn.once {
@@ -870,6 +885,34 @@ func TestACallTheRunWasCancelledWaitingForIsAnnouncedAsCancelled(t *testing.T) {
 	}
 	if cancelled != 1 {
 		t.Errorf("a call the run was cancelled waiting for was announced %d times, want 1: a call open at run.cancelled is pending_tool_at_terminal, which the validator rejects", cancelled)
+	}
+}
+
+func TestACallWithNoIdIsAnsweredForTheModelAndNeverAskedFor(t *testing.T) {
+	name := "Read"
+	script := &scripted{turns: []scriptedTurn{{idless: &name}, textTurn("done")}}
+	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("read a"))
+	var asked int
+	terminalOf(t, drainActing(t, run, func(event Event) {
+		if event.Kind == ToolCallRequested {
+			asked++
+		}
+	}))
+	if asked != 0 {
+		t.Errorf("the loop asked %d times, want 0: tool_call_id is a required non-empty member, and a pending call is keyed by its id, so an id-less call could only be answered by an id-less answer", asked)
+	}
+	var reason string
+	for _, message := range run.Result().Messages {
+		if message.ToolResult == nil {
+			continue
+		}
+		if !message.ToolResult.IsError {
+			t.Error("an id-less call is an error result, so the model knows it did not run")
+		}
+		reason = message.ToolResult.Parts[0].Text.Text
+	}
+	if !strings.Contains(reason, "no id") {
+		t.Errorf("the model is told %q, want it told no answer could be matched to the call", reason)
 	}
 }
 

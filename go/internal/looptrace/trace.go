@@ -132,7 +132,7 @@ func (t *Trace) Envelopes(event agent.Event) []protocol.Envelope {
 			Part: protocol.ContentPart{Type: protocol.ContentReasoning, Reasoning: event.Delta},
 		})
 	case agent.ToolCallRequested:
-		if event.Call == nil || event.Call.Name == "" {
+		if event.Call == nil || event.Call.Name == "" || event.Call.ID == "" {
 			return nil
 		}
 		payload := t.callScope(*event.Call)
@@ -143,12 +143,12 @@ func (t *Trace) Envelopes(event agent.Event) []protocol.Envelope {
 		}
 		return t.call(protocol.TypeActionCallRequested, payload)
 	case agent.ToolCallCancelled:
-		if event.Call == nil || event.Call.Name == "" {
+		if event.Call == nil || event.Call.Name == "" || event.Call.ID == "" {
 			return nil
 		}
 		return t.call(protocol.TypeActionCallCancelled, t.callScope(*event.Call))
 	case agent.ToolCallResolved:
-		if event.Call == nil || event.ToolResult == nil || event.Call.Name == "" {
+		if event.Call == nil || event.ToolResult == nil || event.Call.Name == "" || event.Call.ID == "" {
 			return nil
 		}
 		payload := t.callScope(*event.Call)
