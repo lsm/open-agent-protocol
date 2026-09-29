@@ -343,7 +343,7 @@ pub const Frontend = struct {
         }
     }
 
-    const Outcome = union(enum) {
+    pub const Outcome = union(enum) {
         answer: std.json.Value,
         answer_line: []const u8,
         refused: Refusal,
@@ -396,7 +396,7 @@ pub const Frontend = struct {
         return .{ .refused = .{ .code = "unknown_op", .message = try std.fmt.allocPrint(arena, "no op \"{s}\"", .{request.op}) } };
     }
 
-    fn adapters(self: *Frontend, arena: std.mem.Allocator) !std.json.Value {
+    pub fn adapters(self: *Frontend, arena: std.mem.Allocator) !std.json.Value {
         const listed = try self.hub.listing(arena);
         const entries = try arena.alloc(std.json.Value, listed.len);
         for (listed, entries) |status, *entry| {
@@ -415,7 +415,7 @@ pub const Frontend = struct {
         return .{ .object = root };
     }
 
-    fn sessions(self: *Frontend, arena: std.mem.Allocator) !std.json.Value {
+    pub fn sessions(self: *Frontend, arena: std.mem.Allocator) !std.json.Value {
         const listed = try self.hub.sessions(arena);
         const entries = try arena.alloc(std.json.Value, listed.len);
         for (listed, entries) |status, *entry| {
@@ -448,7 +448,7 @@ pub const Frontend = struct {
         return .{ .object = root };
     }
 
-    fn capabilities(self: *Frontend, arena: std.mem.Allocator, name: []const u8) !Outcome {
+    pub fn capabilities(self: *Frontend, arena: std.mem.Allocator, name: []const u8) !Outcome {
         self.next_envelope += 1;
         const correlation = try std.fmt.allocPrint(arena, "oap-request-{d}", .{self.next_envelope});
         const descriptor = self.hub.probe(name) catch |err| switch (err) {
@@ -479,7 +479,7 @@ pub const Frontend = struct {
         return .{ .answer_line = try oap_envelope.serializeEnvelope(envelope, arena) };
     }
 
-    fn state(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8) !Outcome {
+    pub fn state(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8) !Outcome {
         const reported = self.hub.state(arena, session_id) catch |err| {
             return .{ .refused = try self.stateRefusal(arena, err, session_id) };
         };
@@ -705,7 +705,7 @@ pub const Frontend = struct {
         };
     }
 
-    fn models(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8, degraded: []const []const u8) !Outcome {
+    pub fn models(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8, degraded: []const []const u8) !Outcome {
         const catalog = self.hub.models(arena, session_id, &.{
             .session_id = session_id,
             .allow_degraded_features = degraded,
@@ -726,7 +726,7 @@ pub const Frontend = struct {
         return .{ .answer_line = try oap_envelope.serializeEnvelope(envelope, arena) };
     }
 
-    fn tools(self: *Frontend, arena: std.mem.Allocator, session_id: ?[]const u8, degraded: []const []const u8) !Outcome {
+    pub fn tools(self: *Frontend, arena: std.mem.Allocator, session_id: ?[]const u8, degraded: []const []const u8) !Outcome {
         const served = self.hub.tools(arena, session_id orelse "", &.{
             .session_id = session_id,
             .allow_degraded_features = degraded,
