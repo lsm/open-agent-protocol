@@ -183,13 +183,35 @@ code paths; add a transcript row instead.
 - Status line: `provider/model`, context gauge with a usage percentage coloured by
   band (green below 60%, yellow 60–75, orange 75–85, red 85 and up), `queue`, a bare
   permission value (`ask`/`bypass`/`pending`), cost (once tokens are known), a bare
-  thinking level (`off` included), `turns:`, and the state (`idle` or spinner +
-  elapsed) last, plus a right-aligned key hint. When the row overflows, the context
+  thinking level (`off` included), `turns:`, the state (`idle` or spinner + elapsed),
+  and the token rate, plus a right-aligned key hint. When the row overflows, the context
   segment first shrinks to just the coloured percentage, then segments drop whole by
-  priority (turns, thinking, cost, the hint, `ask` permission, queue, drops, model,
-  backpressure, context) behind one trailing `…`; the state segment — and `bypass` or
-  `pending` — are never dropped, and the row is clipped with `…` if even they do not
-  fit. A second row under it shows the working directory on the left, muted, collapsed
+  priority (the rate, turns, thinking, cost, the hint, `ask` permission, queue, drops,
+  model, backpressure, context) behind one trailing `…`; the state segment — and
+  `bypass` or `pending` — are never dropped, and the row is clipped with `…` if even
+  they do not fit. The rate is first to go because it is the most transient figure in
+  the row; the second row below carries the path and never competes with it, so nothing
+  in the rate's drop order can be said to drop before the path does.
+- The rate is a `~`-marked estimate or an unmarked measurement, and the mark always
+  means the same thing: **a mark means an estimate, an unmarked figure is measured.**
+  It is the live figure while a message streams — necessarily an estimate, because
+  usage only arrives at `message_end` — then the previous turn's, then the average
+  since the last model switch. The average never mixes the two kinds: it is the mean
+  of the measured turns alone, and only when the model has produced no measured turn at
+  all does it fall back to the mean of the estimates, marked. So a provider that
+  reports no usage leaves the average measuring nothing rather than reading as slow, and
+  a provider that reports usage is never diluted by a guessed sample.
+- The rate's denominator is **the time the stream was actually producing**, which is not
+  the status bar's elapsed: that clock starts at `turn_start` and includes tool calls.
+  The rate runs a second clock from an assistant message's first delta to its
+  `message_end`, summed over the turn's assistant messages, so time spent in tools never
+  counts as slow generation. Bytes convert at the agent's own divisor, `(bytes + 3) / 4`.
+  The averages reset when the model in effect changes, which is what `/model` and
+  `/provider` do.
+- The cost segment beside it is **computed, not reported**: it is the model's
+  `cost.input` multiplied by the prompt estimate, so the row now carries one figure from
+  what the provider reported (the rate) beside one this repository worked out (the cost).
+ A second row under it shows the working directory on the left, muted, collapsed
   to `~` under the home directory and left-truncated with `…`, and the git branch at
   the right end; the row hides on terminals shorter than 12 rows. The branch is read
   from the repository rather than from a `git` process: the working directory and each

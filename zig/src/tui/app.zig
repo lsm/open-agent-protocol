@@ -849,6 +849,8 @@ pub const App = struct {
     slash_index: usize = 0,
     slash_index_query: u64 = 0,
     compaction_transcripts: std.ArrayList([]u8) = .empty,
+    rate_model: []u8 = &.{},
+    rate_provider: []u8 = &.{},
     written_model: []u8 = &.{},
     written_provider: []u8 = &.{},
     session_written: bool = false,
@@ -933,6 +935,8 @@ pub const App = struct {
         if (self.written_provider.len > 0) self.allocator.free(self.written_provider);
         self.pending_thinking.deinit(self.allocator);
         if (self.pending_after_compaction) |pending| self.allocator.free(pending);
+        if (self.rate_model.len > 0) self.allocator.free(self.rate_model);
+        if (self.rate_provider.len > 0) self.allocator.free(self.rate_provider);
         if (self.session_title.len > 0) self.allocator.free(self.session_title);
         if (self.first_user_text.len > 0) self.allocator.free(self.first_user_text);
         if (self.title_session_id.len > 0) self.allocator.free(self.title_session_id);
@@ -2225,6 +2229,9 @@ pub const App = struct {
     fn syncModelTelemetry(self: *App) void {
         const runtime = self.runtime orelse return;
         const model = runtime.currentModel() orelse return;
+        if (self.state.telemetry.input_cost_per_million != model.cost.input) {
+            self.state.telemetry.rate = .{};
+        }
         self.state.telemetry.input_cost_per_million = model.cost.input;
     }
 
@@ -2686,7 +2693,9 @@ pub const TuiModel = struct {
                 app.state.anim_tick +%= 1;
                 app.drainEvents() catch {};
                 app.pollLogin() catch {};
-                app.state.refreshStreamingElapsed(compat.time.nowMillis());
+                const now_ms = compat.time.nowMillis();
+                app.state.refreshStreamingElapsed(now_ms);
+                app.state.telemetry.rate.liveAt(now_ms);
                 if (app.interrupt_armed_tick) |armed| {
                     if (app.state.anim_tick -% armed > interrupt_window_ticks) app.interrupt_armed_tick = null;
                 }

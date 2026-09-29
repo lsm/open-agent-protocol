@@ -12,7 +12,7 @@ pub const Options = struct {
 const gauge_cells: usize = 8;
 const hint_gap: usize = 3;
 
-const SegmentKind = enum { model, context, queue, perm, cost, backpressure, drops, think, turns, state };
+const SegmentKind = enum { model, context, queue, perm, cost, backpressure, drops, think, turns, state, rate };
 
 const Segment = struct {
     kind: SegmentKind,
@@ -29,6 +29,7 @@ const DropStep = union(enum) {
 };
 
 const drop_steps = [_]DropStep{
+    .{ .kind = .rate },
     .{ .kind = .turns },
     .{ .kind = .think },
     .{ .kind = .cost },
@@ -78,6 +79,7 @@ pub fn render(allocator: std.mem.Allocator, state: *const tui_state.AppState, op
     try pushValue(&segments, allocator, .think, @tagName(state.thinking_level), tui_theme.statusSegment());
     try pushOwnedSegment(&segments, allocator, .turns, "turns", try std.fmt.allocPrint(allocator, "{d}", .{state.status.turn_count}));
     try writeState(&segments, allocator, state);
+    try writeRate(&segments, allocator, state);
 
     var dropped = [_]bool{false} ** max_segments;
     const mask = dropped[0..segments.items.len];
@@ -298,6 +300,16 @@ fn writeState(list: *SegmentList, allocator: std.mem.Allocator, state: *const tu
     }
 }
 
+fn writeRate(list: *SegmentList, allocator: std.mem.Allocator, state: *const tui_state.AppState) !void {
+    const rate = &state.telemetry.rate;
+    const shown = if (rate.live.measured()) rate.live else if (rate.previous.measured()) rate.previous else rate.average;
+    if (!shown.measured()) return;
+    var buf: [16]u8 = undefined;
+    const mark = if (shown.estimated) "~" else "";
+    const value = std.fmt.bufPrint(&buf, "{s}{d} tok/s", .{ mark, shown.perSecond() }) catch return;
+    try pushValue(list, allocator, .rate, value, tui_theme.statusSegment());
+}
+
 fn formatElapsed(buf: *[12]u8, ms: u64) []const u8 {
     const secs = ms / 1000;
     if (secs < 60) {
@@ -467,6 +479,65 @@ test "status bar puts the state segment last" {
     const idle_pos = std.mem.indexOf(u8, text, "idle") orelse return error.MissingStateSegment;
     const turns_pos = std.mem.indexOf(u8, text, "turns") orelse return error.MissingTurnsSegment;
     try std.testing.expect(idle_pos > turns_pos);
+}
+
+fn rateProbe(measured: bool) !tui_state.TokenRateSet {
+    var rate = tui_state.TokenRateSet{};
+    rate.produced(400, 1_000);
+    rate.messageEnded(2_000, 100);
+    rate.turnEnded();
+    rate.previous.estimated = !measured;
+    rate.average = rate.previous;
+    return rate;
+}
+
+test "the rate shows the last turn's measured figure unmarked" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    try state.status.setModelWithContext(std.testing.allocator, "claude-sonnet-4-5", "anthropic", 200_000);
+    state.telemetry.rate = try rateProbe(true);
+
+    const text = try render(std.testing.allocator, &state, .{ .width = 160 });
+    defer std.testing.allocator.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "100 tok/s") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "~100 tok/s") == null);
+}
+
+test "a rate that is an estimate is marked, so a mark always means an estimate" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    try state.status.setModelWithContext(std.testing.allocator, "claude-sonnet-4-5", "anthropic", 200_000);
+    state.telemetry.rate = try rateProbe(false);
+
+    const text = try render(std.testing.allocator, &state, .{ .width = 160 });
+    defer std.testing.allocator.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "~100 tok/s") != null);
+}
+
+test "the rate drops before any other segment when the row overflows" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    try state.status.setModelWithContext(std.testing.allocator, "claude-sonnet-4-5", "anthropic", 200_000);
+    state.status.turn_count = 4;
+    state.telemetry.rate = try rateProbe(true);
+
+    const narrow = try render(std.testing.allocator, &state, .{ .width = 30 });
+    defer std.testing.allocator.free(narrow);
+    try std.testing.expect(std.mem.indexOf(u8, narrow, "tok/s") == null);
+
+    const wide = try render(std.testing.allocator, &state, .{ .width = 160 });
+    defer std.testing.allocator.free(wide);
+    try std.testing.expect(std.mem.indexOf(u8, wide, "tok/s") != null);
+}
+
+test "a session with no figure yet shows no rate segment" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    try state.status.setModelWithContext(std.testing.allocator, "claude-sonnet-4-5", "anthropic", 200_000);
+
+    const text = try render(std.testing.allocator, &state, .{ .width = 160 });
+    defer std.testing.allocator.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "tok/s") == null);
 }
 
 test "status bar appends the hint right-aligned and drops segments by priority to fit it" {

@@ -187,10 +187,106 @@ pub const ApprovalState = struct {
     }
 };
 
+pub const TokenRate = struct {
+    output_tokens: u64 = 0,
+    stream_ms: u64 = 0,
+    estimated: bool = false,
+
+    pub fn measured(self: TokenRate) bool {
+        return self.output_tokens > 0 and self.stream_ms > 0;
+    }
+
+    pub fn perSecond(self: TokenRate) u64 {
+        if (!self.measured()) return 0;
+        return @intCast((@as(u128, self.output_tokens) * 1000) / self.stream_ms);
+    }
+};
+
+pub const TokenRateSet = struct {
+    live: TokenRate = .{},
+    previous: TokenRate = .{},
+    average: TokenRate = .{},
+    turn: TokenRate = .{},
+    measured_since_switch: TokenRate = .{},
+    estimated_since_switch: TokenRate = .{},
+    message_bytes: u64 = 0,
+    turn_first_ms: i64 = 0,
+    message_first_ms: i64 = 0,
+
+    pub fn produced(self: *TokenRateSet, bytes: u64, now_ms: i64) void {
+        if (self.message_first_ms == 0) {
+            self.message_first_ms = now_ms;
+            if (self.turn_first_ms == 0) self.turn_first_ms = now_ms;
+        }
+        self.message_bytes += bytes;
+    }
+
+    pub fn messageEnded(self: *TokenRateSet, now_ms: i64, output_tokens: u64) void {
+        if (self.message_first_ms == 0) {
+            if (output_tokens == 0) return;
+            self.message_first_ms = now_ms;
+            if (self.turn_first_ms == 0) self.turn_first_ms = now_ms;
+        }
+        if (now_ms > self.message_first_ms) self.turn.stream_ms += @intCast(now_ms - self.message_first_ms);
+        if (output_tokens > 0) {
+            self.turn.output_tokens += output_tokens;
+            self.turn.estimated = false;
+        } else {
+            self.turn.output_tokens += estimateTokenBytes(self.message_bytes);
+            self.turn.estimated = true;
+        }
+        self.message_bytes = 0;
+        self.message_first_ms = 0;
+        self.live = .{};
+    }
+
+    pub fn turnEnded(self: *TokenRateSet) void {
+        if (self.turn.stream_ms == 0 and self.turn.output_tokens == 0) {
+            self.turn = .{};
+            self.turn_first_ms = 0;
+            return;
+        }
+        self.previous = self.turn;
+        if (self.turn.estimated) {
+            self.estimated_since_switch.output_tokens += self.turn.output_tokens;
+            self.estimated_since_switch.stream_ms += self.turn.stream_ms;
+        } else {
+            self.measured_since_switch.output_tokens += self.turn.output_tokens;
+            self.measured_since_switch.stream_ms += self.turn.stream_ms;
+        }
+        const measured = self.measured_since_switch.measured();
+        self.average = if (measured) self.measured_since_switch else self.estimated_since_switch;
+        self.average.estimated = !measured;
+        self.turn = .{};
+        self.turn_first_ms = 0;
+    }
+
+    pub fn liveAt(self: *TokenRateSet, now_ms: i64) void {
+        if (self.message_first_ms == 0 or now_ms <= self.message_first_ms) return;
+        self.live = .{
+            .output_tokens = estimateTokenBytes(self.message_bytes),
+            .stream_ms = @intCast(now_ms - self.message_first_ms),
+            .estimated = true,
+        };
+    }
+
+    pub fn shown(self: *const TokenRateSet) TokenRate {
+        if (self.live.measured()) return self.live;
+        if (self.previous.measured()) return self.previous;
+        return self.average;
+    }
+};
+
+pub fn estimateTokenBytes(bytes: u64) u64 {
+    if (bytes == 0) return 0;
+    return (bytes + 3) / 4;
+}
+
 pub const TelemetryState = struct {
     estimated_tokens: u64 = 0,
     context_window: u64 = 0,
     input_cost_per_million: f64 = 0,
+    rate: TokenRateSet = .{},
 };
 
 pub const QueueState = tui_runtime.QueuedCounts;
@@ -802,12 +898,19 @@ pub const AppState = struct {
                 .user => self.active_user_entry = try self.ensureTrailingEntry(.user),
                 .tool_result => self.active_tool_result_entry = try self.appendEmptyTranscript(.tool),
             },
-            .text_delta => |payload| try self.appendDelta(.assistant, payload.delta.slice()),
-            .thinking_delta => |payload| try self.appendThinkingDelta(payload.delta.slice()),
+            .text_delta => |payload| {
+                self.telemetry.rate.produced(payload.delta.slice().len, compat.time.nowMillis());
+                try self.appendDelta(.assistant, payload.delta.slice());
+            },
+            .thinking_delta => |payload| {
+                self.telemetry.rate.produced(payload.delta.slice().len, compat.time.nowMillis());
+                try self.appendThinkingDelta(payload.delta.slice());
+            },
             .tool_call_delta => {},
             .provider_event => {},
             .message_end => |payload| switch (payload.role) {
                 .assistant => {
+                    self.telemetry.rate.messageEnded(compat.time.nowMillis(), payload.output_tokens);
                     self.active_thinking_entry = null;
                     try self.finishTranscriptEntry(.assistant, payload.text.slice(), &self.active_assistant_entry);
                     try self.rememberToolCalls(payload.tool_calls_json.slice());
@@ -927,12 +1030,14 @@ pub const AppState = struct {
                 }
             },
             .turn_end => {
+                self.telemetry.rate.turnEnded();
                 self.status.streaming = false;
                 self.markStreamingStopped();
                 self.stream_aborted = false;
                 try self.finalizeInterruptedTools();
             },
             .agent_end => |payload| {
+                self.telemetry.rate.turnEnded();
                 self.status.streaming = false;
                 self.markStreamingStopped();
                 self.stream_aborted = false;
@@ -1825,6 +1930,117 @@ pub fn noopToolForTest(
     _ = allocator;
     return error.NotImplemented;
 }
+
+test "a measured turn reports the provider's own output tokens" {
+    var rate = TokenRateSet{};
+    rate.produced(400, 1_000);
+    rate.messageEnded(3_000, 150);
+    rate.turnEnded();
+
+    try std.testing.expectEqual(@as(u64, 150), rate.previous.output_tokens);
+    try std.testing.expectEqual(@as(u64, 2_000), rate.previous.stream_ms);
+    try std.testing.expectEqual(@as(u64, 75), rate.previous.perSecond());
+    try std.testing.expect(!rate.previous.estimated);
+    try std.testing.expectEqual(@as(u64, 75), rate.average.perSecond());
+    try std.testing.expect(!rate.average.estimated);
+}
+
+test "a turn with no reported usage is estimated from the bytes that streamed" {
+    var rate = TokenRateSet{};
+    rate.produced(400, 1_000);
+    rate.messageEnded(3_000, 0);
+    rate.turnEnded();
+
+    try std.testing.expectEqual(@as(u64, 100), rate.previous.output_tokens);
+    try std.testing.expect(rate.previous.estimated);
+    try std.testing.expectEqual(@as(u64, 50), rate.previous.perSecond());
+}
+
+test "a turn's stream time is its messages' spans, so tool time between them never counts" {
+    var rate = TokenRateSet{};
+    rate.produced(400, 1_000);
+    rate.messageEnded(2_000, 100);
+    rate.produced(400, 60_000);
+    rate.messageEnded(61_000, 100);
+    rate.turnEnded();
+
+    try std.testing.expectEqual(@as(u64, 200), rate.previous.output_tokens);
+    try std.testing.expectEqual(@as(u64, 2_000), rate.previous.stream_ms);
+    try std.testing.expectEqual(@as(u64, 100), rate.previous.perSecond());
+}
+
+test "the average never mixes a measured turn with an estimated one" {
+    var rate = TokenRateSet{};
+    rate.produced(400, 1_000);
+    rate.messageEnded(2_000, 0);
+    rate.turnEnded();
+    try std.testing.expect(rate.previous.estimated);
+
+    rate.produced(400, 3_000);
+    rate.messageEnded(5_000, 400);
+    rate.turnEnded();
+
+    try std.testing.expect(!rate.previous.estimated);
+    try std.testing.expectEqual(@as(u64, 400), rate.average.output_tokens);
+    try std.testing.expectEqual(@as(u64, 2_000), rate.average.stream_ms);
+    try std.testing.expect(!rate.average.estimated);
+}
+
+test "with no measured sample at all the average is of the estimates, and says so" {
+    var rate = TokenRateSet{};
+    rate.produced(400, 1_000);
+    rate.messageEnded(2_000, 0);
+    rate.turnEnded();
+    rate.produced(800, 3_000);
+    rate.messageEnded(5_000, 0);
+    rate.turnEnded();
+
+    try std.testing.expectEqual(@as(u64, 300), rate.average.output_tokens);
+    try std.testing.expectEqual(@as(u64, 3_000), rate.average.stream_ms);
+    try std.testing.expect(rate.average.estimated);
+}
+
+test "the shown figure is the live one while a message streams, then the turn's" {
+    var rate = TokenRateSet{};
+    rate.produced(400, 1_000);
+    rate.liveAt(2_000);
+    try std.testing.expect(rate.live.measured());
+    try std.testing.expect(rate.live.estimated);
+    try std.testing.expectEqual(@as(u64, 100), rate.shown().output_tokens);
+    try std.testing.expectEqual(@as(u64, 1_000), rate.shown().stream_ms);
+
+    rate.messageEnded(2_000, 100);
+    rate.turnEnded();
+    try std.testing.expect(!rate.live.measured());
+    try std.testing.expectEqual(@as(u64, 100), rate.shown().output_tokens);
+    try std.testing.expect(!rate.shown().estimated);
+}
+
+test "a turn that produced nothing reports nothing" {
+    var rate = TokenRateSet{};
+    rate.turnEnded();
+    try std.testing.expect(!rate.previous.measured());
+    try std.testing.expect(!rate.shown().measured());
+    try std.testing.expectEqual(@as(u64, 0), rate.shown().perSecond());
+}
+
+test "a rate with no time or no tokens never reads as speed" {
+    const no_time = TokenRate{ .output_tokens = 500, .stream_ms = 0 };
+    try std.testing.expect(!no_time.measured());
+    try std.testing.expectEqual(@as(u64, 0), no_time.perSecond());
+    const no_tokens = TokenRate{ .output_tokens = 0, .stream_ms = 500 };
+    try std.testing.expect(!no_tokens.measured());
+    try std.testing.expectEqual(@as(u64, 0), no_tokens.perSecond());
+}
+
+test "bytes convert at the agent's own divisor" {
+    try std.testing.expectEqual(@as(u64, 0), estimateTokenBytes(0));
+    try std.testing.expectEqual(@as(u64, 1), estimateTokenBytes(1));
+    try std.testing.expectEqual(@as(u64, 1), estimateTokenBytes(4));
+    try std.testing.expectEqual(@as(u64, 2), estimateTokenBytes(5));
+    try std.testing.expectEqual(@as(u64, 100), estimateTokenBytes(400));
+}
+
 
 test "AppState applies transcript and tool events" {
     var state = AppState.init(std.testing.allocator);
