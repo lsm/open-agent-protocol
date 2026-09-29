@@ -13,9 +13,9 @@ pub const schema_stat =
     \\{"type":"object","properties":{"description":{"type":"string","description":"Why this tool call is needed and what information or change it is intended to produce."},"workspace_root":{"type":"string"},"path":{"type":"string"},"compact_output":{"type":"boolean"}},"required":["description","workspace_root","path"],"additionalProperties":false}
 ;
 
-pub const read_tool = agent.AgentTool{ .label = "File Read", .name = "file_read", .description = "Read a text file from the workspace, optionally by byte range. Output includes per-line content hashes as line_no:hash|content for hash-anchored edits.", .short_description = "Read file with line hashes.", .parameters_schema_json = schema_read, .execute = readExecute };
-pub const write_tool = agent.AgentTool{ .label = "File Write", .name = "file_write", .description = "Create or overwrite a file in the workspace.", .short_description = "Write file content.", .parameters_schema_json = schema_write, .execute = writeExecute };
-pub const stat_tool = agent.AgentTool{ .label = "File Stat", .name = "file_stat", .description = "Return file metadata for a workspace path.", .short_description = "Stat file path.", .parameters_schema_json = schema_stat, .execute = statExecute };
+pub const read_tool = agent.AgentTool{ .label = "File Read", .name = "file_read", .description = "Read a text file from the workspace, optionally by byte range. Output includes per-line content hashes as line_no:hash|content for hash-anchored edits.", .short_description = "Read file with line hashes.", .parameters_schema_json = schema_read, .execute = readExecute, .operation = .read };
+pub const write_tool = agent.AgentTool{ .label = "File Write", .name = "file_write", .description = "Create or overwrite a file in the workspace.", .short_description = "Write file content.", .parameters_schema_json = schema_write, .execute = writeExecute, .operation = .write };
+pub const stat_tool = agent.AgentTool{ .label = "File Stat", .name = "file_stat", .description = "Return file metadata for a workspace path.", .short_description = "Stat file path.", .parameters_schema_json = schema_stat, .execute = statExecute, .operation = .read };
 
 const max_hashed_output_bytes: usize = common.max_file_bytes;
 
