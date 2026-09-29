@@ -259,7 +259,7 @@ fn runStreamThread(ctx: *StreamThreadContext) void {
         return;
     };
 
-    const final_result = client.waitResult(1) catch {
+    var final_result = client.waitResult(1) catch {
         if (client.getLastError()) |last_err| {
             ctx.out_stream.completeWithError(last_err);
         } else {
@@ -268,12 +268,8 @@ fn runStreamThread(ctx: *StreamThreadContext) void {
         return;
     };
 
-    if (final_result) |result| {
-        const cloned = ai_types.cloneAssistantMessage(ctx.allocator, result) catch |err| {
-            ctx.out_stream.completeWithError(@errorName(err));
-            return;
-        };
-        ctx.out_stream.complete(cloned);
+    if (final_result) |*owned| {
+        ctx.out_stream.complete(owned.intoMessage());
         return;
     }
 

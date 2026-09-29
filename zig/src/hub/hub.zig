@@ -71,6 +71,7 @@ pub const OpenRequest = struct {
     session_id: []const u8 = "",
     participant: []const u8 = default_participant,
     metadata: ?std.json.Value = null,
+    capability_revision: ?[]const u8 = null,
     subscribe: bool = false,
     allow_degraded_features: []const []const u8 = &.{},
     tools_json: ?[]const u8 = null,
@@ -455,9 +456,16 @@ pub const Hub = struct {
     pub fn open(self: *Hub, arena: std.mem.Allocator, adapter_name: []const u8, request: OpenRequest) Failure!Opened {
         const registered = self.find(adapter_name) orelse return error.UnknownAdapter;
         if (registered.revision.len == 0) return error.AdapterDescriptorUnbound;
-        if (request.session_id.len > 0 and self.findSession(request.session_id) != null) return error.SessionExists;
         var refusal = contract.Refusal{};
         const descriptor = try registered.adapter.probe(&refusal);
+        if (request.subscribe or contract.carriesEntries(request.tool_sources_json)) {
+            if (request.capability_revision) |wanted| {
+                if (wanted.len > 0 and !std.mem.eql(u8, wanted, registered.revision)) {
+                    return error.StaleCapabilities;
+                }
+            }
+        }
+        if (request.session_id.len > 0 and self.findSession(request.session_id) != null) return error.SessionExists;
         try contract.refuseUnadvertisedOpenElections(descriptor, &request.payload(), &refusal);
         var session = try registered.adapter.open(arena, request.contractRequest(), &refusal);
         var adopted = false;
@@ -2377,6 +2385,98 @@ test "a catalog is checked before it is served, and stamped with its revision" {
 
     try testing.expectError(error.ScopeMismatch, hub.models(arena, opened.session_id, &.{ .session_id = "elsewhere" }));
     try testing.expectError(error.ScopeMismatch, hub.tools(arena, opened.session_id, &.{ .session_id = "elsewhere" }));
+}
+
+test "a subscribing open is gated on the revision the host asked for" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    var hub = Hub.init(testing.allocator, testClock, .{});
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    try testing.expectError(error.StaleCapabilities, hub.open(arena, "memory", .{
+        .session_id = "stale",
+        .subscribe = true,
+        .capability_revision = "reference-memory-v10",
+    }));
+    try testing.expect(hub.findSession("stale") == null);
+
+    const matched = try hub.open(arena, "memory", .{
+        .session_id = "matched",
+        .subscribe = true,
+        .capability_revision = "reference-memory-v11",
+    });
+    try testing.expectEqualStrings("reference-memory-v11", matched.revision);
+
+    const unstated = try hub.open(arena, "memory", .{
+        .session_id = "unstated",
+        .subscribe = true,
+    });
+    try testing.expectEqualStrings("reference-memory-v11", unstated.revision);
+}
+
+test "the revision gate fires for a subscribing or attaching open, and for no other" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    var hub = Hub.init(testing.allocator, testClock, .{});
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const plain = try hub.open(arena, "memory", .{
+        .session_id = "plain",
+        .capability_revision = "reference-memory-v10",
+    });
+    try testing.expectEqualStrings("plain", plain.session_id);
+
+    _ = try hub.open(arena, "memory", .{ .session_id = "taken" });
+    try testing.expectError(error.StaleCapabilities, hub.open(arena, "memory", .{
+        .session_id = "taken",
+        .subscribe = true,
+        .capability_revision = "reference-memory-v10",
+    }));
+
+    try testing.expectError(error.StaleCapabilities, hub.open(arena, "memory", .{
+        .session_id = "attaching",
+        .tool_sources_json = "[{\"kind\":\"endpoint\",\"id\":\"e1\"}]",
+        .capability_revision = "reference-memory-v10",
+    }));
+    try testing.expect(hub.findSession("attaching") == null);
+
+    const spellings = [_][]const u8{ "[]", "[ ]", "[\n]", "[\r\n \t]", " [ ] " };
+    var index: usize = 0;
+    for (spellings) |spelling| {
+        var name_buffer: [16]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buffer, "empty-{d}", .{index});
+        index += 1;
+        const empty = try hub.open(arena, "memory", .{
+            .session_id = name,
+            .tool_sources_json = spelling,
+            .capability_revision = "reference-memory-v10",
+        });
+        try testing.expectEqualStrings(name, empty.session_id);
+    }
+
+    try testing.expectError(error.UnsupportedFeature, hub.open(arena, "memory", .{
+        .session_id = "provided",
+        .tools_json = "[{\"name\":\"echo\",\"description\":\"d\"}]",
+        .capability_revision = "reference-memory-v10",
+    }));
+
+    for ([_][]const u8{ "[{}]", "[null]", "[0]", "true", "[\"\"]" }) |spelling| {
+        var name_buffer: [16]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buffer, "short-{d}", .{index});
+        index += 1;
+        try testing.expectError(error.StaleCapabilities, hub.open(arena, "memory", .{
+            .session_id = name,
+            .tool_sources_json = spelling,
+            .capability_revision = "reference-memory-v10",
+        }));
+    }
+
 }
 
 test "an open's metadata reaches the adapter" {

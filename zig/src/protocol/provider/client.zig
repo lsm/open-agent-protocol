@@ -482,12 +482,17 @@ pub const ProtocolClient = struct {
         return self.stream_event_streams.get(stream_id);
     }
 
-    pub fn waitResult(self: *Self, timeout_ms: u64) !?ai_types.AssistantMessage {
-        const stream_id = self.current_stream_id orelse return self.last_result;
+    pub fn waitResult(self: *Self, timeout_ms: u64) !?ai_types.OwnedMessage {
+        const stream_id = self.current_stream_id orelse {
+            if (self.last_result) |result| {
+                return try ai_types.OwnedMessage.cloneOf(self.allocator, result);
+            }
+            return null;
+        };
         return self.waitResultFor(stream_id, timeout_ms);
     }
 
-    pub fn waitResultFor(self: *Self, stream_id: protocol_types.Ulid, timeout_ms: u64) !?ai_types.AssistantMessage {
+    pub fn waitResultFor(self: *Self, stream_id: protocol_types.Ulid, timeout_ms: u64) !?ai_types.OwnedMessage {
         const start_time = compat.time.nowMillis();
         const deadline = start_time + @as(i64, @intCast(timeout_ms));
 
@@ -503,7 +508,7 @@ pub const ProtocolClient = struct {
         }
 
         if (self.stream_results.get(stream_id)) |result| {
-            return result;
+            return try ai_types.OwnedMessage.cloneOf(self.allocator, result);
         }
         return null;
     }
@@ -1144,9 +1149,74 @@ test "waitResult returns final message" {
     });
     client.stream_complete = true;
 
-    const result = try client.waitResult(1000);
-    try std.testing.expect(result != null);
-    try std.testing.expectEqualStrings("test-model", result.?.model);
+    var result = (try client.waitResult(1000)).?;
+    defer result.deinit(allocator);
+    try std.testing.expectEqualStrings("test-model", result.message.model);
+}
+
+test "waitResultFor hands back a result that outlives per-stream state removal" {
+    const allocator = std.testing.allocator;
+
+    const sid = protocol_types.generateUlid();
+    const content = [_]ai_types.AssistantContent{.{ .text = .{ .text = "kept past cleanup" } }};
+
+    var owned: ai_types.OwnedMessage = undefined;
+
+    {
+        var client = ProtocolClient.init(allocator, .{});
+        defer client.deinit();
+
+        try client.stream_results.put(sid, try ai_types.cloneAssistantMessage(allocator, .{
+            .content = &content,
+            .api = "test-api",
+            .provider = "test-provider",
+            .model = "test-model",
+            .usage = .{},
+            .stop_reason = .stop,
+            .timestamp = 7,
+        }));
+        try client.stream_complete_flags.put(sid, true);
+
+        owned = (try client.waitResultFor(sid, 1000)).?;
+
+        client.removeStreamState(sid);
+    }
+
+    defer owned.deinit(allocator);
+    try std.testing.expectEqualStrings("kept past cleanup", owned.message.content[0].text.text);
+    try std.testing.expectEqualStrings("test-model", owned.message.model);
+}
+
+test "waitResult hands back a result that outlives a reset of the legacy last result" {
+    const allocator = std.testing.allocator;
+
+    const content = [_]ai_types.AssistantContent{.{ .text = .{ .text = "kept past reset" } }};
+
+    var owned: ai_types.OwnedMessage = undefined;
+
+    {
+        var client = ProtocolClient.init(allocator, .{});
+        defer client.deinit();
+
+        client.last_result = try ai_types.cloneAssistantMessage(allocator, .{
+            .content = &content,
+            .api = "test-api",
+            .provider = "test-provider",
+            .model = "test-model",
+            .usage = .{},
+            .stop_reason = .stop,
+            .timestamp = 9,
+        });
+        client.stream_complete = true;
+
+        owned = (try client.waitResult(1000)).?;
+
+        client.reset();
+    }
+
+    defer owned.deinit(allocator);
+    try std.testing.expectEqualStrings("kept past reset", owned.message.content[0].text.text);
+    try std.testing.expectEqualStrings("test-model", owned.message.model);
 }
 
 test "isComplete tracks stream state" {
@@ -1607,16 +1677,16 @@ test "processEnvelope keeps interleaved terminal state isolated per stream" {
     try std.testing.expect(client.isCompleteFor(sid_error));
     try std.testing.expect(client.isCompleteFor(sid_done));
 
-    const got_result = try client.waitResultFor(sid_result, 1000);
-    try std.testing.expect(got_result != null);
-    try std.testing.expectEqualStrings("result-model", got_result.?.model);
+    var got_result = (try client.waitResultFor(sid_result, 1000)).?;
+    defer got_result.deinit(allocator);
+    try std.testing.expectEqualStrings("result-model", got_result.message.model);
 
     try std.testing.expectError(error.StreamError, client.waitResultFor(sid_error, 1000));
     try std.testing.expectEqualStrings("stream two failed", client.getLastErrorFor(sid_error).?);
 
-    const got_done = try client.waitResultFor(sid_done, 1000);
-    try std.testing.expect(got_done != null);
-    try std.testing.expectEqualStrings("done-model", got_done.?.model);
+    var got_done = (try client.waitResultFor(sid_done, 1000)).?;
+    defer got_done.deinit(allocator);
+    try std.testing.expectEqualStrings("done-model", got_done.message.model);
 }
 
 test "processEnvelope reconstructs streamed tool calls when terminal result omits them" {
@@ -1723,16 +1793,18 @@ test "processEnvelope reconstructs streamed tool calls when terminal result omit
     try client.processEnvelope(env_tool_end);
     try client.processEnvelope(env_result);
 
-    const got = (try client.waitResultFor(sid, 1000)).?;
-    try std.testing.expectEqual(ai_types.StopReason.tool_use, got.stop_reason);
-    try std.testing.expectEqual(@as(usize, 1), got.content.len);
-    try std.testing.expect(got.content[0] == .tool_call);
-    try std.testing.expectEqualStrings("call_shell", got.content[0].tool_call.id);
-    try std.testing.expectEqualStrings("shell_execute", got.content[0].tool_call.name);
-    try std.testing.expectEqualStrings("{\"command\":\"ls -al\"}", got.content[0].tool_call.arguments_json);
-    try std.testing.expectEqual(@as(u64, 11), got.usage.input);
-    try std.testing.expectEqual(@as(u64, 7), got.usage.output);
-    try std.testing.expectEqual(@as(f64, 0.025), got.usage.cost.total);
+    var got = (try client.waitResultFor(sid, 1000)).?;
+    defer got.deinit(allocator);
+    const message = got.borrow();
+    try std.testing.expectEqual(ai_types.StopReason.tool_use, message.stop_reason);
+    try std.testing.expectEqual(@as(usize, 1), message.content.len);
+    try std.testing.expect(message.content[0] == .tool_call);
+    try std.testing.expectEqualStrings("call_shell", message.content[0].tool_call.id);
+    try std.testing.expectEqualStrings("shell_execute", message.content[0].tool_call.name);
+    try std.testing.expectEqualStrings("{\"command\":\"ls -al\"}", message.content[0].tool_call.arguments_json);
+    try std.testing.expectEqual(@as(u64, 11), message.usage.input);
+    try std.testing.expectEqual(@as(u64, 7), message.usage.output);
+    try std.testing.expectEqual(@as(f64, 0.025), message.usage.cost.total);
 }
 
 test "sendStreamRequest without sender returns error" {
