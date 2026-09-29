@@ -320,6 +320,14 @@ pub fn wireForModel(provider_id: []const u8, model_id: []const u8) ?Wire {
     return firstImplementedWire(row);
 }
 
+pub fn declaresWire(provider_id: []const u8, wire: []const u8) bool {
+    const row = provider(provider_id) orelse return false;
+    for (row.wires) |declared| {
+        if (std.mem.eql(u8, declared, wire)) return true;
+    }
+    return false;
+}
+
 pub fn endpointCarriesVersion(provider_id: []const u8, base_url: []const u8) bool {
     const row = provider(provider_id) orelse return false;
     const wanted = std.mem.trimEnd(u8, base_url, "/");

@@ -106,6 +106,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   served something. The old guard asked only about Kimi and Anthropic, and with
   Kimi on the catalog path it could have fired while a dozen models were in
   hand.
+  `oapx -p` and the smoke demo ask the same catalog row for everything they used
+  to repeat: the region, its 262144-token window and its 16384-token output cap
+  were each written out again in the print path and in the request default, and
+  `oapx -p` carried a second copy of the region rules, synonyms included. A
+  Kimi row that declared a different region, or different limits, would have been
+  described correctly by the model list and wrongly by the path that sends the
+  request.
 
 - **`make build` and `make tui` build ReleaseSafe.** They built Debug, where Zig's debug allocator records a stack trace for every allocation: resuming a 50 MB session left the TUI unresponsive for over a minute, and a message sent later took 14 seconds to answer a keystroke. A ReleaseSafe build resumes the same session in about a second. `OPTIMIZE=Debug` still gives a debug build.
 
