@@ -89,6 +89,7 @@ pub const implemented = [_][]const u8{
     code_wrong_tool_owner,
     code_undisclosed_provide_limit,
     code_attachment_field_in_catalog,
+    code_session_state_mismatch,
 };
 
 pub fn isImplemented(code: []const u8) bool {
