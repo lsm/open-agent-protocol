@@ -3246,22 +3246,33 @@ fn runValidate(
     }
     if (paths.items.len == 0) return error.InvalidArgument;
 
-    var pack_dirs_seen = std.ArrayList([]const u8).empty;
-    defer pack_dirs_seen.deinit(allocator);
+    var pack_keys = std.ArrayList([:0]u8).empty;
+    defer {
+        for (pack_keys.items) |key| allocator.free(key);
+        pack_keys.deinit(allocator);
+    }
+    var pack_load = std.ArrayList([]const u8).empty;
+    defer pack_load.deinit(allocator);
     for (pack_dirs.items) |dir| {
+        const key = if (std.Io.Dir.cwd().realPathFileAlloc(compat.fs.defaultIo(), dir, allocator)) |canonical| canonical else |_| try allocator.dupeZ(u8, dir);
         var already = false;
-        for (pack_dirs_seen.items) |seen| already = already or std.mem.eql(u8, seen, dir);
-        if (!already) try pack_dirs_seen.append(allocator, dir);
+        for (pack_keys.items) |held| already = already or std.mem.eql(u8, held, key);
+        if (already) {
+            allocator.free(key);
+            continue;
+        }
+        try pack_keys.append(allocator, key);
+        try pack_load.append(allocator, dir);
     }
 
     var judge = validator.Validator.init(allocator, .{
         .mode = mode,
-        .pack_dirs = pack_dirs_seen.items,
+        .pack_dirs = pack_load.items,
         .io = compat.fs.defaultIo(),
     }) catch |err| {
         var buf: [512]u8 = undefined;
         const reason = std.fmt.bufPrint(&buf, "{s} did not load as a pack: {s}", .{
-            if (pack_dirs_seen.items.len == 1) pack_dirs_seen.items[0] else "a --pack directory",
+            if (pack_load.items.len == 1) pack_load.items[0] else "a --pack directory",
             @errorName(err),
         }) catch "a pack did not load";
         try unavailable(stderr, "validate", "--pack", reason);
@@ -10424,7 +10435,7 @@ test "two entries of one type are two adapters, each with its own executable" {
     try std.testing.expectEqualStrings("LITERAL=second", second_claude.config.backend.environment[0]);
 }
 
-test "naming one pack twice loads one pack, not two copies of its branch" {
+test "naming one pack twice, however it is spelled, loads one pack" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -10443,12 +10454,24 @@ test "naming one pack twice loads one pack, not two copies of its branch" {
     });
     const cwd = try std.process.currentPathAlloc(std.testing.io, allocator);
     defer allocator.free(cwd);
-    const pack = try std.fs.path.join(allocator, &.{ cwd[0..], ".zig-cache", "tmp", tmp.sub_path[0..], "pack" });
+    const base = try std.fmt.allocPrint(allocator, "{s}/.zig-cache/tmp/{s}", .{ cwd[0..], tmp.sub_path[0..] });
+    defer allocator.free(base);
+    const pack = try std.fmt.allocPrint(allocator, "{s}/pack", .{base});
     defer allocator.free(pack);
-    const trace = try std.fs.path.join(allocator, &.{ cwd[0..], ".zig-cache", "tmp", tmp.sub_path[0..], "trace.json" });
+    const trace = try std.fmt.allocPrint(allocator, "{s}/trace.json", .{base});
     defer allocator.free(trace);
+    const trailing = try std.fmt.allocPrint(allocator, "{s}/", .{pack});
+    defer allocator.free(trailing);
+    const dotted = try std.fmt.allocPrint(allocator, "{s}/./pack", .{base});
+    defer allocator.free(dotted);
 
-    const rounds = [_][]const []const u8{ &.{pack}, &.{ pack, pack }, &.{ pack, pack, pack } };
+    const rounds = [_][]const []const u8{
+        &.{pack},
+        &.{ pack, pack },
+        &.{ pack, trailing },
+        &.{ dotted, pack },
+        &.{ pack, trailing, dotted, pack },
+    };
     for (rounds, 0..) |named, round| {
         var args = std.ArrayList([]const u8).empty;
         defer args.deinit(allocator);
