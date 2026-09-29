@@ -1805,6 +1805,7 @@ pub const App = struct {
         }) catch return;
         defer self.allocator.free(message);
         self.state.appendTranscript(.system, message) catch {};
+        if (self.compactBeforeTurn(tui_auto_continue.continue_text) catch false) return;
         self.sendUserTurn(tui_auto_continue.continue_text) catch |err| self.recordError(@errorName(err)) catch {};
     }
 
@@ -2596,6 +2597,7 @@ pub const TuiModel = struct {
                             },
                             .escape => {
                                 app.decideApproval(false, false) catch |err| app.recordError(@errorName(err)) catch {};
+                                app.auto_continue.onUserTurn();
                                 decided = true;
                             },
                             else => {},
@@ -2618,7 +2620,7 @@ pub const TuiModel = struct {
                         .enter => {
                             app.resumeSelectedSession() catch |err| app.recordError(@errorName(err)) catch {};
                         },
-                        .escape => app.state.mode = .normal,
+                        .escape => closeModal(app),
                         else => {},
                     }
                     return .none;
@@ -2630,7 +2632,10 @@ pub const TuiModel = struct {
                             app.submitLoginInput(text);
                             app.state.composer.clear();
                         },
-                        .escape => app.cancelLogin(),
+                        .escape => {
+                            app.cancelLogin();
+                            app.auto_continue.onUserTurn();
+                        },
                         .backspace => _ = app.state.composer.deleteBeforeCursor(),
                         .char => |c| appendChar(app, c) catch {},
                         .paste => |text| app.state.composer.insertPaste(app.allocator, text) catch {},
@@ -2658,7 +2663,7 @@ pub const TuiModel = struct {
                             .login => app.applySelectedLogin() catch |err| app.recordError(@errorName(err)) catch {},
                             .permission => app.applySelectedPermission() catch |err| app.recordError(@errorName(err)) catch {},
                         },
-                        .escape => app.state.mode = .normal,
+                        .escape => closeModal(app),
                         else => {},
                     }
                     return .none;
@@ -2825,6 +2830,11 @@ pub const TuiModel = struct {
             return .none;
         }
         return self.quitCmd(app, ctx);
+    }
+
+    fn closeModal(app: *App) void {
+        app.state.mode = .normal;
+        app.auto_continue.onUserTurn();
     }
 
     fn handleEscape(self: *TuiModel, app: *App) void {
@@ -6843,6 +6853,25 @@ test "a follow-up already queued at the failure means no nudge is announced" {
     try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
 }
 
+test "the automatic continue waits for an automatic compaction like a typed one" {
+    var mock = MockAppSession{ .history_messages = &auto_compact_history };
+    defer mock.deinit();
+    var app = try autoCompactTestApp(&mock);
+    defer app.deinit();
+
+    try pushErrorRun(&app, &mock, "anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try std.testing.expect(app.auto_continue.pending());
+
+    app.pumpAutoContinue(compat.time.nowMillis() + @as(i64, @intCast(tui_auto_continue.default_delay_ms)));
+    try std.testing.expectEqual(@as(usize, 1), mock.compact_count);
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+    try std.testing.expect(app.pending_after_compaction != null);
+
+    try mock.eventStream().push(.{ .compaction_end = .{ .outcome = .completed } });
+    try app.drainEvents();
+    try std.testing.expectEqual(@as(usize, 1), mock.submit_count);
+}
+
 test "a picker open at the deadline defers the nudge rather than spending it" {
     var harness = try auto_continue_harness.init();
     defer harness.deinit();
@@ -6914,7 +6943,7 @@ test "resuming a session whose last run ended in an error does not nudge" {
     try std.testing.expectEqual(@as(usize, 0), app.runtime.?.steersConsumedCount());
 }
 
-test "Esc drops the pending continue without ending the run" {
+test "Esc while a run is going aborts it and drops the pending continue" {
     var mock = MockAppSession{};
     defer mock.deinit();
     var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
@@ -6928,11 +6957,37 @@ test "Esc drops the pending continue without ending the run" {
     try pushErrorRun(app, &mock, "anthropic request failed: HTTP 400 invalid_request_error", .@"error");
     try std.testing.expect(app.auto_continue.pending());
 
+    app.state.status.streaming = true;
     model.handleEscape(app);
+    try std.testing.expectEqual(@as(usize, 1), mock.cancel_count);
     try std.testing.expect(!app.auto_continue.pending());
 
     app.pumpAutoContinue(compat.time.nowMillis() + @as(i64, @intCast(tui_auto_continue.default_delay_ms)));
     try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+}
+
+test "Esc closing a picker drops the pending continue" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    const app = &model.app.?;
+    app.session = harness.mock.session();
+
+    try pushErrorRun(app, harness.mock, "anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    app.state.mode = .picker;
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+
+    _ = model.update(.{ .key = .{ .key = .escape } }, &tctx.ctx);
+    try std.testing.expectEqual(tui_state.AppMode.normal, app.state.mode);
+    try std.testing.expect(!app.auto_continue.pending());
+
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
 }
 
 test "Ctrl+C drops the pending continue" {

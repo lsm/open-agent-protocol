@@ -5,7 +5,6 @@ pub const continue_text = "continue";
 pub const default_delay_ms: u64 = 3_000;
 
 pub const Skip = enum {
-    user_cancelled,
     authentication,
     context_overflow,
     streak_exhausted,

@@ -362,9 +362,13 @@ to the user, and a clean run or a turn the user sends themselves starts a fresh
 streak. It never does it after an abort, after a 401 or 403 (the credential has
 to be fixed, not replayed), or when the error is a context overflow that
 `/compact` handles. Anything the user does inside the delay — submitting,
-steering, queueing a follow-up, `Esc` or `Ctrl+C` — drops the pending continue.
-It waits rather than expires while a run is streaming or a picker or approval
-is open, so the three seconds is a wait rather than a deadline. A follow-up
+steering, queueing a follow-up, `Esc` or `Ctrl+C` — drops the pending continue,
+`Esc` here meaning any of them, whether it clears the draft, aborts the run or
+closes a picker. It waits rather than expires while a run is streaming or a
+picker or approval is open, so the three seconds is a wait rather than a
+deadline. The continue goes out through the same path a typed one does, so an
+`/autocompact` session compacts first and holds the continue until the
+compaction ends. A follow-up
 already queued when the run fails suppresses it entirely, because an
 error-ended run does not resume the queue on its own, so the continue would be
 a promise nothing keeps. Replaying a saved session is not a fresh failure: a
