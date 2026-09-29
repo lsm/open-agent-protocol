@@ -98,7 +98,7 @@ func holdsURL(baseURL string, hasBaseURL bool, needle string) bool {
 }
 
 func isGitHubCopilotURL(baseURL string, hasBaseURL bool) bool {
-	return holdsURL(baseURL, hasBaseURL, "api.githubcopilot.com")
+	return isHostOrSubdomain(baseURL, hasBaseURL, "githubcopilot.com")
 }
 
 func isHostOrSubdomain(baseURL string, hasBaseURL bool, domain string) bool {
