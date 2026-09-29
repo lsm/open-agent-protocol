@@ -171,8 +171,8 @@ func TestAnErrorEventSettlesAFailureAndNothingFollowsIt(t *testing.T) {
 		t.Fatalf("got a %s, want inference.failed", all[len(all)-1].Type)
 	}
 	failure := body(t, all[len(all)-1])["error"].(map[string]any)
-	if failure["code"] != CodeEndpointError {
-		t.Errorf("the failure code = %v, want %s: the client hands over a reason string and nothing says the vendor was at fault, and provider_unavailable is a statement about a third party", failure["code"], CodeEndpointError)
+	if failure["code"] != CodeProviderUnavailable {
+		t.Errorf("the failure code = %v, want %s: an error with no reason is the stream failing, which is what the source settles (runtime.zig:149)", failure["code"], CodeProviderUnavailable)
 	}
 	after, err := Pump(state, provider.Event{Kind: provider.EventDone, Message: &provider.AssistantMessage{StopReason: "stop"}})
 	if err != nil {
@@ -230,11 +230,14 @@ func TestADeltaWithNoPartOpenOpensOneSoAClientThatNeverStartsPartsStillMaps(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(opened) != 1 || opened[0].Type != "inference.part.started" {
-		t.Fatalf("got %v, want the part opened before the delta", typesOf(opened))
+	if len(opened) != 2 || opened[0].Type != "inference.part.started" || opened[1].Type != "inference.part.delta" {
+		t.Fatalf("got %v, want the part opened and the delta that opened it: a consumer reading incrementally would never see the first fragment otherwise", typesOf(opened))
 	}
 	if got := body(t, opened[0])["part_kind"]; got != "text" {
 		t.Errorf("the implicit part kind = %v, want text", got)
+	}
+	if got := body(t, opened[1])["delta"]; got != "a" {
+		t.Errorf("the opening delta = %v, want a", got)
 	}
 	next, err := Pump(state, provider.Event{Kind: provider.EventTextDelta, ContentIndex: 0, Delta: "b"})
 	if err != nil {
@@ -595,16 +598,27 @@ func TestACancelledInferenceSettlesAbortedRatherThanBlamingTheVendor(t *testing.
 	}
 }
 
-func TestANonCancellationStreamFailureDoesNotBecomeAnOutage(t *testing.T) {
-	state := NewState(&Ids{}, "i1", "m")
-	all := runTrace(t, state, provider.Event{Kind: provider.EventError, Reason: "read error"})
-	validate(t, all)
-	failure := body(t, all[len(all)-1])["error"].(map[string]any)
-	if failure["code"] != CodeEndpointError {
-		t.Errorf("a read error settled as %v, want %s: the client hands over a string and nothing says the vendor was at fault", failure["code"], CodeEndpointError)
+func TestAStreamErrorIsClassifiedByWhoseFaultItIs(t *testing.T) {
+	cases := []struct {
+		reason string
+		code   string
+		why    string
+	}{
+		{"", CodeProviderUnavailable, "no reason at all is the stream failing, which is what the source settles"},
+		{"read error", CodeEndpointError, "a local read failure is the endpoint's own, and endpoint_error is the code for that"},
+		{"overloaded_error: the vendor is busy", CodeProviderUnavailable, "a vendor-reported message is the vendor's fault and says so"},
 	}
-	if !strings.Contains(failure["message"].(string), "read error") {
-		t.Errorf("the message = %v, want it to carry the client's reason", failure["message"])
+	for _, one := range cases {
+		state := NewState(&Ids{}, "i1", "m")
+		all := runTrace(t, state, provider.Event{Kind: provider.EventError, Reason: one.reason})
+		validate(t, all)
+		failure := body(t, all[len(all)-1])["error"].(map[string]any)
+		if failure["code"] != one.code {
+			t.Errorf("a %q settled as %v, want %s: %s", one.reason, failure["code"], one.code, one.why)
+		}
+		if one.reason != "" && !strings.Contains(failure["message"].(string), one.reason[:4]) {
+			t.Errorf("a %q settled with the message %v, want it to carry the reason", one.reason, failure["message"])
+		}
 	}
 }
 
@@ -725,5 +739,83 @@ func TestAVendorMessageMentioningCancelIsNotACancellation(t *testing.T) {
 	validate(t, cancelled)
 	if cancelled[len(cancelled)-1].Type != "inference.completed" {
 		t.Errorf("the repo's own cancel settled as %s, want a completed with stop_reason aborted", cancelled[len(cancelled)-1].Type)
+	}
+}
+
+func TestTextFollowedByAToolCallOnTheOpenaiWireLosesTheCallAtItsOwnIndex(t *testing.T) {
+	sink := &provider.EventSink{}
+	chunks := []string{
+		"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n",
+		"data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"tc1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{}\"}}]}}]}\n\n",
+		"data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+		"data: [DONE]\n\n",
+	}
+	next := 0
+	read := provider.ReadChunkFunc(func() ([]byte, error) {
+		if next >= len(chunks) {
+			return nil, nil
+		}
+		held := chunks[next]
+		next++
+		return []byte(held), nil
+	})
+	provider.Stream(sink, provider.Model{ID: "gpt-4o", API: "openai-completions", Provider: "openai", MaxTokens: 100, HasCompat: true},
+		provider.Context{}, provider.StreamOptions{}, read, nil)
+
+	state := NewState(&Ids{}, "i1", "openai/openai-completions@gpt-4o")
+	var started, ended int
+	var refused error
+	events := sink.Drain()
+	for _, event := range events {
+		_, err := Pump(state, event)
+		if err != nil {
+			refused = err
+			break
+		}
+		switch event.Kind {
+		case provider.EventTextDelta, provider.EventTextStart:
+			started++
+		case provider.EventToolCallEnd, provider.EventTextEnd:
+			ended++
+		}
+	}
+	if !errors.Is(refused, ErrPartIndexMismatch) {
+		t.Errorf("the call's end at its own index = %v, want a mismatch: the client numbers the start and the end of one call differently, and this layer will not guess which part the end belongs to", refused)
+	}
+	if started == 0 {
+		t.Error("the fixture produced no text, so it is not the script under test")
+	}
+}
+
+func TestACancelMidPartEndsThePartItWasStreaming(t *testing.T) {
+	state := NewState(&Ids{}, "i1", "openai/openai-completions@gpt-4o")
+	all := runTrace(t, state,
+		provider.Event{Kind: provider.EventTextStart, ContentIndex: 0},
+		provider.Event{Kind: provider.EventTextDelta, ContentIndex: 0, Delta: "half"},
+		provider.Event{Kind: provider.EventError, Reason: ReasonCancelled},
+	)
+	validate(t, all)
+	types := typesOf(all)
+	if types[len(types)-1] != "inference.completed" {
+		t.Fatalf("the trace ends in %v, want a completed", types)
+	}
+	var started, ended int
+	for _, typ := range types {
+		switch typ {
+		case "inference.part.started":
+			started++
+		case "inference.part.ended":
+			ended++
+		}
+	}
+	if started != ended {
+		t.Errorf("%d parts started and %d ended, want equal: a terminal over a part still open is an invariant the draft lists to refuse at emission", started, ended)
+	}
+	blocks, ok := body(t, all[len(all)-1])["message"].(map[string]any)["content"].([]any)
+	if !ok || len(blocks) != 1 {
+		t.Fatalf("the terminal content = %v, want the part the cancel interrupted", body(t, all[len(all)-1])["message"])
+	}
+	if blocks[0].(map[string]any)["text"] != "half" {
+		t.Errorf("the terminal text = %v, want half: text streamed before the cancel was streamed to the caller", blocks[0])
 	}
 }

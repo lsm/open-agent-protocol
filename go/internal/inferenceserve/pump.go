@@ -43,13 +43,29 @@ func Pump(state *State, event provider.Event) ([]Envelope, error) {
 			return nil, nil
 		}
 		if isCancellation(event.Reason) {
+			var out []Envelope
+			if state.open != nil {
+				held := state.takeImplicit(state.open.index, state.open.kind)
+				if held == nil {
+					empty := ""
+					held = &PartEnded{PartIndex: state.open.index, PartKind: state.open.kind, Text: &empty}
+				}
+				state.ended = append(state.ended, blockOf(*held))
+				envelope, err := state.emit("inference.part.ended", "", *held)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, envelope)
+				state.open = nil
+			}
 			envelope, err := state.Completed("aborted", state.ended)
 			if err != nil {
 				return nil, err
 			}
-			return []Envelope{envelope}, nil
+			return append(out, envelope), nil
 		}
-		envelope, err := settleFailed(state, CodeEndpointError, failureMessage(event.Reason))
+		code, message := classify(event.Reason)
+		envelope, err := settleFailed(state, code, message)
 		if err != nil {
 			return nil, err
 		}
@@ -67,7 +83,7 @@ func Pump(state *State, event provider.Event) ([]Envelope, error) {
 				}
 				return []Envelope{envelope}, nil
 			}
-			held := state.takeImplicit(state.open.index)
+			held := state.takeImplicit(state.open.index, state.open.kind)
 			state.open = nil
 			if held != nil {
 				state.ended = append(state.ended, blockOf(*held))
@@ -97,7 +113,23 @@ func Pump(state *State, event provider.Event) ([]Envelope, error) {
 
 	if isPartStart(event.Kind) {
 		if state.open != nil {
-			return nil, ErrPartAlreadyOpen
+			if !state.open.implicit {
+				return nil, ErrPartAlreadyOpen
+			}
+			held := state.takeImplicit(state.open.index, state.open.kind)
+			state.open = nil
+			if held == nil {
+				return nil, ErrPartAlreadyOpen
+			}
+			state.ended = append(state.ended, blockOf(*held))
+			envelope, err := state.emit("inference.part.ended", "", *held)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := state.emit("inference.part.started", "", PartStarted{PartIndex: event.ContentIndex, PartKind: partKindOf(event.Kind), ToolCallID: event.ID, Name: event.Name}); err != nil {
+				return []Envelope{envelope}, nil
+			}
+			return []Envelope{envelope}, nil
 		}
 		part := PartStarted{PartIndex: event.ContentIndex, PartKind: partKindOf(event.Kind)}
 		if part.PartKind == "tool_call" {
@@ -135,15 +167,13 @@ func Pump(state *State, event provider.Event) ([]Envelope, error) {
 		if err != nil {
 			return nil, err
 		}
-		if state.open.implicit {
-			state.appendImplicit(event.ContentIndex, event.Delta)
-		}
+		state.appendImplicit(event.ContentIndex, event.Delta)
 		return []Envelope{envelope}, nil
 	}
 
 	if isPartEnd(event.Kind) {
 		if state.open == nil {
-			if held := state.takeImplicit(event.ContentIndex); held != nil {
+			if held := state.takeImplicit(event.ContentIndex, partKindOf(event.Kind)); held != nil {
 				state.ended = append(state.ended, blockOf(*held))
 				envelope, err := state.emit("inference.part.ended", "", *held)
 				if err != nil {
@@ -252,17 +282,25 @@ func settleFailed(state *State, code, message string) (Envelope, error) {
 	return state.Failed(code, message)
 }
 
-const ReasonCancelled = "request cancelled"
-
 func isCancellation(reason string) bool {
 	return reason == ReasonCancelled
 }
 
-func failureMessage(reason string) string {
-	if reason == "" {
-		return "the provider stream failed"
+const (
+	ReasonCancelled  = "request cancelled"
+	ReasonReadFailed = "read error"
+)
+
+func classify(reason string) (string, string) {
+	switch reason {
+	case "":
+		return CodeProviderUnavailable, "the provider stream failed"
+	case ReasonCancelled:
+		return CodeAborted, "the request was cancelled"
+	case ReasonReadFailed:
+		return CodeEndpointError, "the endpoint could not read the provider stream"
 	}
-	return "the provider stream failed: " + reason
+	return CodeProviderUnavailable, reason
 }
 
 func partKindOf(event provider.EventKind) string {
@@ -313,10 +351,17 @@ func (s *State) openImplicitPart(event provider.Event) ([]Envelope, error) {
 		return nil, err
 	}
 	s.accumulates = append(s.accumulates, accumulated{index: event.ContentIndex, kind: kind, text: event.Delta})
-	return []Envelope{envelope}, nil
+	delta, err := s.emit("inference.part.delta", "", struct {
+		PartIndex int    `json:"part_index"`
+		Delta     string `json:"delta"`
+	}{PartIndex: event.ContentIndex, Delta: event.Delta})
+	if err != nil {
+		return nil, err
+	}
+	return []Envelope{envelope, delta}, nil
 }
 
-func (s *State) takeImplicit(contentIndex int) *PartEnded {
+func (s *State) takeImplicit(contentIndex int, kind string) *PartEnded {
 	for i := range s.accumulates {
 		if s.accumulates[i].index != contentIndex {
 			continue
@@ -324,7 +369,10 @@ func (s *State) takeImplicit(contentIndex int) *PartEnded {
 		held := s.accumulates[i]
 		s.accumulates = append(s.accumulates[:i], s.accumulates[i+1:]...)
 		text := held.text
-		return &PartEnded{PartIndex: contentIndex, PartKind: held.kind, Text: &text}
+		if kind == "" {
+			kind = held.kind
+		}
+		return &PartEnded{PartIndex: contentIndex, PartKind: kind, Text: &text}
 	}
 	return nil
 }

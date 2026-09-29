@@ -86,6 +86,7 @@ const (
 	CodeProtocolViolation   = "protocol_violation"
 	CodeEndpointError       = "endpoint_error"
 	CodeProviderUnavailable = "provider_unavailable"
+	CodeAborted             = "aborted"
 )
 
 var ErrRefused = fmt.Errorf("inferenceserve: a refused inference allocates nothing to scope to")
