@@ -95,8 +95,7 @@ pub fn isOpenAIHost(base_url: []const u8) bool {
 }
 
 pub fn isAnthropic(base_url: ?[]const u8) bool {
-    const url = base_url orelse return false;
-    return std.mem.find(u8, url, "api.anthropic.com") != null;
+    return isHostOrSubdomainOf(base_url, "anthropic.com");
 }
 
 pub fn detectProviderType(base_url: ?[]const u8) ProviderType {
@@ -207,6 +206,45 @@ test "isGitHubCopilot detection" {
     try std.testing.expect(isGitHubCopilot("https://api.githubcopilot.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot("https://api.openai.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot(null));
+}
+
+test "an anthropic host is anthropic.com or a subdomain of it" {
+    const hosts = [_][]const u8{
+        "https://api.anthropic.com",
+        "https://api.anthropic.com/v1",
+        "https://anthropic.com",
+        "https://API.ANTHROPIC.COM",
+    };
+    for (hosts) |url| {
+        try std.testing.expect(isAnthropic(url));
+    }
+
+    const not_hosts = [_][]const u8{
+        "https://myanthropic.com",
+        "https://notanthropic.com",
+        "https://anthropic.com.evil.example",
+        "https://evil.example/?next=api.anthropic.com",
+        "https://evil.example/v1/api.anthropic.com",
+        "https://gateway.example/proxy/api.anthropic.com",
+        "not a url at all",
+        "",
+    };
+    for (not_hosts) |url| {
+        try std.testing.expect(!isAnthropic(url));
+    }
+
+    try std.testing.expect(!isAnthropic(null));
+}
+
+test "the catalogued anthropic row still gets the anthropic caps" {
+    const url = "https://api.anthropic.com";
+    try std.testing.expect(isAnthropic(url));
+    try std.testing.expectEqual(ProviderType.anthropic, detectProviderType(url));
+    const caps = detectCapabilities(url);
+    try std.testing.expectEqual(ProviderType.anthropic, caps.provider_type);
+    try std.testing.expect(caps.extended_thinking);
+    try std.testing.expect(caps.prompt_caching);
+    try std.testing.expect(caps.vision);
 }
 
 test "an openrouter host is openrouter.ai or a subdomain of it" {
