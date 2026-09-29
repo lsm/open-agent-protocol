@@ -52,8 +52,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pushOwnedEvent` helpers are gone and their producers push directly and free
   their own event once the push returns. A producer that forgets to free now
   leaks rather than corrupting, which the allocator reports. `in_process` got
-  the same treatment, and its `forward` and `EventBridge` free conditionally
-  on the destination's setting.
+  the same treatment: `InProcessTransport.writeFn` frees after the push, and
+  both `ZeroCopyForwarder.forward` and `EventBridge.run` free
+  **conditionally** on the destination's setting, because a borrowed
+  destination holds the value it was handed rather than a copy of it. Freeing
+  unconditionally left the destination pointing at memory the allocator had
+  recycled — the same hazard, in the one function that copies between
+  streams.
 
   One test configuration could not work and the old unconditional clone hid
   it: `EventBridge`'s test built a *borrowed* destination, which cannot hold
