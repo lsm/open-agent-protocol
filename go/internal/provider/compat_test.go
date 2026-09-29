@@ -9,28 +9,43 @@ func hostModel(baseURL string) Model {
 	return Model{Provider: "openai", BaseURL: baseURL, HasBaseURL: true, HasCompat: true}
 }
 
-func TestTheTwoOpenAIPredicatesAreNotTheSameFunction(t *testing.T) {
-	cases := []struct {
-		url    string
-		native bool
-		isHost bool
-	}{
-		{"https://api.openai.com", true, true},
-		{"https://myopenai.com", false, false},
-		{"https://api.openai.com.evil.example", true, false},
-		{"https://evil.example/?next=api.openai.com", true, false},
-		{"https://OpenAI.com", false, true},
-		{"https://API.OPENAI.COM", false, true},
-		{"https://proxy.openai.com", false, true},
-		{"not a url at all", false, false},
+func TestAnOpenAIHostIsAHostEndingInOpenAIDotComOnALabelBoundary(t *testing.T) {
+	hosts := []string{
+		"https://api.openai.com",
+		"https://api.openai.com/v1",
+		"https://openai.com",
+		"https://eu.openai.com",
+		"https://OpenAI.com",
+		"https://API.OPENAI.COM",
+		"https://user:pass@api.openai.com/v1",
 	}
-	for _, c := range cases {
-		if got := IsOpenAINativeURL(c.url, true); got != c.native {
-			t.Errorf("IsOpenAINativeURL(%q) = %v, want %v", c.url, got, c.native)
+	for _, url := range hosts {
+		if !IsOpenAIHost(url, true) {
+			t.Errorf("IsOpenAIHost(%q) = false, want true", url)
 		}
-		if got := IsOpenAIHost(c.url, true); got != c.isHost {
-			t.Errorf("IsOpenAIHost(%q) = %v, want %v", c.url, got, c.isHost)
+		if got := DetectProviderType(url, true); got != ProviderOpenAINative {
+			t.Errorf("DetectProviderType(%q) = %q, want openai_native", url, got)
 		}
+	}
+
+	notHosts := []string{
+		"https://myopenai.com",
+		"https://notopenai.com",
+		"https://openai.com.evil.example",
+		"https://api.openai.com.evil.example",
+		"https://evil.example/?next=api.openai.com",
+		"https://evil.example/openai/api.openai.com/v1",
+		"https://gateway.example/proxy/api.openai.com/v1/chat/completions",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if IsOpenAIHost(url, true) {
+			t.Errorf("IsOpenAIHost(%q) = true, want false: the name is in a host suffix, a path or a query, not on a label boundary of the host", url)
+		}
+	}
+
+	if IsOpenAIHost("https://api.openai.com", false) {
+		t.Error("no base url is not an openai host")
 	}
 }
 
@@ -129,37 +144,40 @@ func TestTheDetectionGateDecidesWhetherTheNativeFlagsAreUsed(t *testing.T) {
 	}
 }
 
-func TestTheGateIsWhatDiscardsDetectedCapsForASpoofedHost(t *testing.T) {
+func TestASpoofedHostIsDetectedCompatibleSoThereIsNoGateLeftToDiscard(t *testing.T) {
 	const spoofed = "https://api.openai.com.evil.example"
-	if DetectProviderType(spoofed, true) != ProviderOpenAINative {
-		t.Fatalf("the spoofed url detects as %q, want openai_native: detection reads the substring", DetectProviderType(spoofed, true))
+	if got := DetectProviderType(spoofed, true); got != ProviderOpenAICompat {
+		t.Fatalf("the spoofed url detects as %q, want openai_compatible: a name in a host suffix is not on a label boundary", got)
 	}
 	merged := MergeCompat(hostModel(spoofed))
 	if merged.SupportsDeveloperRole || merged.SupportsReasoningEffort {
-		t.Errorf("merged = %+v, want the native flags discarded: the host is not openai.com", merged)
+		t.Errorf("merged = %+v, want the native flags off", merged)
 	}
 	if merged.MaxTokensField != MaxTokensPlain {
-		t.Errorf("max tokens field = %q, want the detection's completion field discarded for the plain one", merged.MaxTokensField)
+		t.Errorf("max tokens field = %q, want the plain spelling", merged.MaxTokensField)
 	}
 	if merged.SupportsStore || merged.SupportsStrictMode {
 		t.Errorf("merged = %+v, want store and strict off for a host that is not openai.com", merged)
 	}
 }
 
-func TestAHostThatIsOpenAIKeepsTheCapsDetectionFoundByTheSubstring(t *testing.T) {
+func TestAnOpenAIHostGetsTheNativeCapsFromDetectionAndFromTheMerge(t *testing.T) {
 	const suffixHost = "https://proxy.openai.com"
 	if !IsOpenAIHost(suffixHost, true) {
 		t.Fatalf("%q is an openai host", suffixHost)
 	}
-	if DetectProviderType(suffixHost, true) != ProviderOpenAICompat {
-		t.Fatalf("the suffix host detects as %q, want openai_compatible: no api.openai.com substring", DetectProviderType(suffixHost, true))
+	if got := DetectProviderType(suffixHost, true); got != ProviderOpenAINative {
+		t.Fatalf("the suffix host detects as %q, want openai_native: detection and use now read the same predicate", got)
 	}
 	merged := MergeCompat(hostModel(suffixHost))
-	if merged.MaxTokensField != MaxTokensPlain {
-		t.Errorf("max tokens field = %q, want the plain spelling: the gate is open but detection found no native caps", merged.MaxTokensField)
+	if !merged.SupportsDeveloperRole || !merged.SupportsReasoningEffort {
+		t.Errorf("merged = %+v, want the native flags: an openai.com subdomain is a host", merged)
+	}
+	if merged.MaxTokensField != MaxTokensCompletion {
+		t.Errorf("max tokens field = %q, want the completion spelling", merged.MaxTokensField)
 	}
 	if !merged.SupportsStore || !merged.SupportsStrictMode {
-		t.Errorf("merged = %+v, want store and strict on: both read the host directly, not the gate", merged)
+		t.Errorf("merged = %+v, want store and strict on", merged)
 	}
 }
 
