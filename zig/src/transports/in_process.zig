@@ -333,11 +333,14 @@ pub const EventBridge = struct {
 
     const Self = @This();
 
+    pub const Error = error{BorrowedDestination};
+
     pub fn init(
         source: *event_stream.AssistantMessageStream,
         dest: *event_stream.AssistantMessageStream,
         allocator: std.mem.Allocator,
-    ) Self {
+    ) Error!Self {
+        if (source.ownership.isOwned() and !dest.ownership.isOwned()) return error.BorrowedDestination;
         return .{
             .source = source,
             .dest = dest,
@@ -522,7 +525,7 @@ test "EventBridge forwards events" {
         .timestamp = 0,
     });
 
-    var bridge = EventBridge.init(&source_stream, &dest_stream, allocator);
+    var bridge = try EventBridge.init(&source_stream, &dest_stream, allocator);
     bridge.run();
     ai_types.deinitAssistantMessageEvent(allocator, &pushed);
 
@@ -596,7 +599,7 @@ test "EventBridge leaves a borrowed destination holding the event it was given" 
         .timestamp = 0,
     });
 
-    var bridge = EventBridge.init(&source_stream, &dest_stream, allocator);
+    var bridge = try EventBridge.init(&source_stream, &dest_stream, allocator);
     bridge.run();
 
     const received = dest_stream.poll().?;
@@ -639,7 +642,7 @@ test "EventBridge leaves a borrowed source's event to its producer and to the de
         .timestamp = 0,
     });
 
-    var bridge = EventBridge.init(&source_stream, &dest_stream, allocator);
+    var bridge = try EventBridge.init(&source_stream, &dest_stream, allocator);
     bridge.run();
     var pushed = event;
     ai_types.deinitAssistantMessageEvent(allocator, &pushed);
@@ -920,4 +923,20 @@ test "InProcessTransport concurrent write/read drains all events" {
 
     try std.testing.expect(!failed.load(.acquire));
     try std.testing.expectEqual(ctx.count, received);
+}
+
+test "EventBridge refuses an owned source feeding a borrowed destination" {
+    const allocator = std.testing.allocator;
+
+    var source_stream = event_stream.AssistantMessageStream.init(allocator);
+    source_stream.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
+    defer source_stream.deinit();
+
+    var dest_stream = event_stream.AssistantMessageStream.init(allocator);
+    defer dest_stream.deinit();
+
+    try std.testing.expectError(
+        error.BorrowedDestination,
+        EventBridge.init(&source_stream, &dest_stream, allocator),
+    );
 }
