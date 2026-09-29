@@ -2643,7 +2643,7 @@ pub const App = struct {
             .context, .model, .provider => self.applyContextWindow(),
             else => {},
         }
-        if (command.kind == .context and !result.is_error) self.persistContextWindow();
+        if (command.kind == .context and !result.is_error and command.arg != null) self.persistContextWindow();
         if (result.output.len > 0) {
             try self.state.appendTranscript(if (result.is_error) .@"error" else .system, result.output);
             if (result.is_error) try self.state.status.setError(self.allocator, result.output);
@@ -2687,7 +2687,9 @@ pub const App = struct {
         defer store.deinit();
         var cfg = try store.load();
         defer cfg.deinit(self.allocator);
-        cfg.mode = self.mode_settings;
+        var mode = self.mode_settings;
+        mode.context_window = cfg.mode.context_window;
+        cfg.mode = mode;
         try store.save(cfg);
     }
 
@@ -2716,6 +2718,7 @@ pub const App = struct {
         var cfg = store.load() catch return;
         defer cfg.deinit(self.allocator);
         const window = runtime.contextWindowOverride();
+        self.mode_settings.context_window = window;
         if (cfg.mode.context_window == window) return;
         cfg.mode.context_window = window;
         store.save(cfg) catch |err| self.recordError(@errorName(err)) catch {};
@@ -5804,6 +5807,48 @@ test "a persisted window the model in effect cannot take is dropped without rewr
     const after = try configFileBytes(std.testing.allocator, home);
     defer std.testing.allocator.free(after);
     try std.testing.expectEqualStrings(before, after);
+}
+
+test "a bare /context reports the window and leaves the persisted member alone" {
+    defer compat.clearTestEnv();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(home);
+    try compat.setTestEnv(std.testing.allocator, "HOME", home);
+
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{gpt_model, kimi_model} });
+    defer app.deinit();
+    if (app.store) |*owned| owned.deinit();
+    app.store = null;
+
+    try app.submit("/context 200000");
+    try expectConfiguredContextWindow(std.testing.allocator, home, 200_000);
+
+    try app.submit("/context");
+    try expectConfiguredContextWindow(std.testing.allocator, home, 200_000);
+}
+
+test "a settings toggle does not erase the persisted window" {
+    defer compat.clearTestEnv();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(home);
+    try compat.setTestEnv(std.testing.allocator, "HOME", home);
+
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{gpt_model, kimi_model} });
+    defer app.deinit();
+    if (app.store) |*owned| owned.deinit();
+    app.store = null;
+
+    try app.submit("/context 200000");
+    try expectConfiguredContextWindow(std.testing.allocator, home, 200_000);
+
+    try app.toggleSetting(0);
+    try expectConfiguredContextWindow(std.testing.allocator, home, 200_000);
+    try app.toggleSetting(1);
+    try expectConfiguredContextWindow(std.testing.allocator, home, 200_000);
 }
 
 test "App says so when a window the model in effect cannot take is dropped" {
