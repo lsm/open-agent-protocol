@@ -500,7 +500,14 @@ const Runner = struct {
         var recovered = self.request(.{
             .session_state_request = .{ .session_id = probe_session },
         }, null, line_deadline_ms) catch |err| {
-            try self.failReason("the endpoint stopped answering after a recoverable protocol error", err);
+            try self.failOwned(
+                name,
+                try std.fmt.allocPrint(
+                    self.allocator,
+                    "the endpoint stopped answering after a recoverable protocol error: {s}",
+                    .{@errorName(err)},
+                ),
+            );
             return;
         };
         defer recovered.deinit(self.allocator);
@@ -1015,4 +1022,35 @@ test "a revision this endpoint never issued is judged, not waved through" {
         "refused \"invalid_request\", want \"stale_capabilities\"",
         stale.detail,
     );
+}
+
+test "a recovery failure is reported under the check it belongs to" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const script =
+        \\while read -r line; do
+        \\  case "$line" in
+        \\  *protocol.initialize.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"protocol.initialize.response","id":"a1","in_reply_to":"conformance-request-1","payload":{"protocol_version":"0.1","profile":"open-agent-protocol.agent-control-core","endpoint":{"id":"fake"}}}' ;;
+        \\  *capabilities.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"a2","in_reply_to":"conformance-request-2","capability_revision":"rev-1","payload":{"endpoint":{"id":"fake"},"features":{}}}' ;;
+        \\  *session.open.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"a3","in_reply_to":"conformance-request-3","payload":{"session_id":"conformance","status":"idle"}}' ;;
+        \\  *session.message.submit.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"e1","sequence":1,"payload":{"session_id":"conformance","run_id":"run-1","status":"running"}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.completed","id":"e2","sequence":2,"payload":{"session_id":"conformance","run_id":"run-1","stop_reason":"end_turn","final_response":{"role":"assistant","content":"done"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"a4","in_reply_to":"conformance-request-4","payload":{"session_id":"conformance","accepted":true,"submission_id":"s1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"run-1"}}' ;;
+        \\  *run.cancel.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"c","in_reply_to":"%s","payload":{"error":{"code":"unsupported_feature","message":"x"}}}\n' "$rid" ;;
+        \\  *-stale*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"s","in_reply_to":"%s","payload":{"error":{"code":"stale_capabilities","message":"x"}}}\n' "$rid" ;;
+        \\  *conformance.not.a.real.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"u","in_reply_to":"%s","payload":{"error":{"code":"unknown_request","message":"x"}}}\n' "$rid" ;;
+        \\  *session.state.request*) exit 0 ;;
+        \\  esac
+        \\done
+    ;
+
+    var report = try run(std.testing.allocator, .{
+        .command = "/bin/sh",
+        .args = &.{ "-c", script },
+        .line_deadline_ms = 2000,
+    });
+    defer report.deinit();
+
+    try std.testing.expect(!report.passed());
+    const refused = report.verdict("an addressable envelope that is wrong draws a correlated refusal") orelse return error.CheckMissing;
+    try std.testing.expect(!refused.passed);
+    try std.testing.expect(std.mem.startsWith(u8, refused.detail, "the endpoint stopped answering after a recoverable protocol error: "));
+    try std.testing.expect(report.verdict("the endpoint stopped answering after a recoverable protocol error") == null);
 }
