@@ -209,6 +209,22 @@ func storedKey(value string) *StoredCredential {
 	return &StoredCredential{APIKey: &value}
 }
 
+func TestAnEnvironmentKeyOutranksAStoredLogin(t *testing.T) {
+	catalog := realCatalog(t)
+
+	held := []EnvironmentValue{{Name: "KIMI_API_KEY", Value: "from-the-environment"}}
+	credential, ok := LookupCredential(catalog, held, storedKey("from-a-login"), "kimi")
+	if !ok {
+		t.Fatal("kimi with an environment key and a stored login held found neither")
+	}
+	if credential.Source != SourceEnvironment {
+		t.Errorf("kimi credential came from %v, want the environment one: the row shares one key, and a stored login must not answer for a listing signed with the environment key", credential.Source)
+	}
+	if credential.Key != "from-the-environment" {
+		t.Errorf("kimi credential key = %q, want the environment one", credential.Key)
+	}
+}
+
 func TestTheSecondSourceIsTriedWhenTheFirstIsEmpty(t *testing.T) {
 	catalog := realCatalog(t)
 
