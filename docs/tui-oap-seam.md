@@ -114,8 +114,10 @@ already receives for each submit, and it never crosses the boundary. Filed as
 
 `action.permissions` and `user_input` are named as optional core features in the
 draft, and the endpoint has **neither in its capability list or its dispatch** —
-`server.zig` mentions neither. Both are more built out than that suggests, though,
-and the shape is worth stating precisely because it changes the sizing:
+`server.zig` mentions neither. Both sit in the same position, and it is not the
+position a missing optional unit is usually in: the payloads exist and
+`envelope.zig` already serialises and round-trips them, so what is missing is
+dispatch and advertisement, not a wire format.
 
 - `action.permission.resolve.request` / `.response` and
   `action.permission.requested` / `.resolved` are defined in `types.zig:1090` with
@@ -125,9 +127,9 @@ and the shape is worth stating precisely because it changes the sizing:
   `.resolved` are defined beside them at `types.zig:1088` and carried in
   `envelope.zig`.
 
-So the missing work is dispatch and advertisement, not a wire format. The TUI
-still cannot move `decide_tool_approval`, permission modes or the approval
-prompt until the endpoint answers them. Filed as #612.
+So #612 is dispatch and advertisement work. The TUI still cannot move
+`decide_tool_approval`, permission modes or the approval prompt until the
+endpoint answers them, and it is on the critical path for the tools step.
 
 A discrepancy in the draft is worth recording here, because a control layer
 reading only the capability-key list would get it wrong: `drafts/agent-control-core.md:679`
