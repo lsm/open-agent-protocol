@@ -372,11 +372,14 @@ pub const Hub = struct {
         self.adapters.appendAssumeCapacity(.{ .name = owned, .adapter = adapter, .revision = descriptor.capability_revision });
     }
 
-    pub fn load(self: *Hub, arena: std.mem.Allocator, file: config.File, builder: Builder) !void {
+    pub fn load(self: *Hub, arena: std.mem.Allocator, file: config.File, builder: Builder, diagnostic: *config.Diagnostic) !void {
         var taken = self.journal_capacity != default_journal_capacity;
         for (file.adapters) |entry| {
             if (entry.journal_capacity) |capacity| {
-                if (capacity < 0) return error.ConfigRefused;
+                if (capacity < 0) {
+                    diagnostic.message = std.fmt.allocPrint(arena, "config: adapter \"{s}\": \"journal_capacity\" must not be negative", .{entry.name}) catch "config: an adapter names a negative \"journal_capacity\"";
+                    return error.ConfigRefused;
+                }
                 if (!taken) {
                     if (capacity > 0) self.journal_capacity = @intCast(capacity);
                     taken = true;
@@ -1778,17 +1781,19 @@ test "a registry document's journal capacity is read, and its zero keeps the def
     var scratch = std.heap.ArenaAllocator.init(testing.allocator);
     defer scratch.deinit();
     const arena = scratch.allocator();
-    try hub.load(arena, config.File{ .adapters = &.{.{ .name = "memory", .kind = "memory", .journal_capacity = 12 }} }, .{ .context = &adapter, .make = scripted });
+    var diagnostic = config.Diagnostic{};
+    try hub.load(arena, config.File{ .adapters = &.{.{ .name = "memory", .kind = "memory", .journal_capacity = 12 }} }, .{ .context = &adapter, .make = scripted }, &diagnostic);
     try testing.expectEqual(@as(usize, 12), hub.journal_capacity);
 
     var zeroed = Hub.init(testing.allocator, testClock, .{});
     defer zeroed.deinit();
-    try zeroed.load(arena, config.File{ .adapters = &.{.{ .name = "memory", .kind = "memory", .journal_capacity = 0 }} }, .{ .context = &adapter, .make = scripted });
+    try zeroed.load(arena, config.File{ .adapters = &.{.{ .name = "memory", .kind = "memory", .journal_capacity = 0 }} }, .{ .context = &adapter, .make = scripted }, &diagnostic);
     try testing.expectEqual(@as(usize, default_journal_capacity), zeroed.journal_capacity);
 
     var refused = Hub.init(testing.allocator, testClock, .{});
     defer refused.deinit();
-    try testing.expectError(error.ConfigRefused, refused.load(arena, config.File{ .adapters = &.{.{ .name = "memory", .kind = "memory", .journal_capacity = -1 }} }, .{ .context = &adapter, .make = scripted }));
+    try testing.expectError(error.ConfigRefused, refused.load(arena, config.File{ .adapters = &.{.{ .name = "memory", .kind = "memory", .journal_capacity = -1 }} }, .{ .context = &adapter, .make = scripted }, &diagnostic));
+    try testing.expectEqualStrings("config: adapter \"memory\": \"journal_capacity\" must not be negative", diagnostic.message);
     try testing.expectEqual(@as(usize, 0), refused.sessionCount());
 }
 

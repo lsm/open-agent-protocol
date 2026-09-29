@@ -2549,7 +2549,12 @@ fn runHub(
         memory.* = memory_adapter.Adapter.init(allocator);
         try core.register("memory", memory.adapter());
     } else {
-        try core.load(arena, file, .{ .context = &registry, .make = HubRegistry.build });
+        var load_diagnostic = adapter_config.Diagnostic{};
+        core.load(arena, file, .{ .context = &registry, .make = HubRegistry.build }, &load_diagnostic) catch |failure| {
+            if (failure != error.ConfigRefused) return failure;
+            try surface.refuse("{s}", .{load_diagnostic.message});
+            return error.BackendRefused;
+        };
     }
 
     var sink = StdoutSink{ .file = stdout, .io = hubIo() };

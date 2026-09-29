@@ -189,7 +189,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     carries and the entry does not name is not in the child.
   - **An entry the hub cannot serve is refused before the hub serves
     anything**, named by its entry name, and the diagnostic names the hub
-    rather than the endpoint that shares the decoder.
+    rather than the endpoint that shares the decoder. That includes a
+    negative `journal_capacity`, which the loader used to answer as a bare
+    `error: ConfigRefused` naming neither the entry nor the problem; it now
+    says which entry and which member, as `goap hub` does.
   - **SIGINT and SIGTERM end every session inside a bounded sweep and exit
     zero**, as `goap hub` does. The stdio serve loop had no way to be
     interrupted, so a signal did nothing at all; it now takes a stop predicate
