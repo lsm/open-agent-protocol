@@ -7,7 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+
+- **The OAP endpoint client could not spawn an endpoint outside a test build.**
+  `endpoint_client.Client.spawn` handed `std.process.spawn` the io from
+  `std.Io.Threaded.global_single_threaded`, which has no thread to run a child's
+  pipes on, so every spawn outside a test binary failed with `OutOfMemory` from
+  `Threaded.spawnPosix` before a process existed. The client now owns its own
+  `std.Io.Threaded`, as `adapter/process.zig` and `tools/process_runner.zig`
+  already do, and spawns on that. Nothing caught it because the tests took the
+  other branch: `defaultIo` returned `std.testing.io` under `is_test`, so the
+  suite exercised a path the product never ran, and the branch is gone rather
+  than inverted, so the tests now drive the same io a release build does.
+
 ### Added
+
+- **The Zig semantic machine judges a published tool source that carries an
+  attachment-only member**, `attachment_field_in_catalog`, part of #367. A
+  source published in a catalog — a `capabilities.response`'s `sources` or any
+  `layers.*.sources`, an `action.tools.list.response`, a `session.open.response`
+  or a session state document — is a *description* of a tool source, and
+  `command`, `args` and `environment` belong to the attachment that *serves* it.
+  A catalog that names one is publishing the attachment as though it were part of
+  the source, which is the leak `descriptor-leaks-attachment-fields` and
+  `tools-catalog-leaks-attachment-env` are about: an environment entry carrying
+  a secret into a document every session reads. Go has judged this since the
+  rule landed; the Zig machine declared neither the code nor the check, so a
+  source carrying one earned no semantic finding. **`oapx validate` on either
+  fixture is unchanged by this, and was never passing it**: in strict mode the
+  schema phase refuses the member first — `toolSourceDescriptor` is closed — and
+  the semantic phase does not run at all. The rule is unreachable in strict mode
+  by construction, which is why the two fixtures are `mode: tolerant` in the
+  manifest and why the semantic gate skips them: only once #367's tolerant mode
+  exists is there a path that reaches this check, and judging the three tolerant
+  fixtures rather than skipping them is that step's work. A source list the
+  check cannot read is left unjudged, matching Go's decode rather than
+  judging the entries around a malformed one.
 
 - **A design note for the Go tree's native agent loop (#370).**
   [`docs/go-agent-loop.md`](docs/go-agent-loop.md) maps `zig/src/agent/`'s loop
@@ -32,6 +67,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   I/O, so it is the one piece of the loop that can be right or wrong on its own.
 
 ### Changed
+
+- **Zig stops escaping `<`, `>`, `&`, U+2028 and U+2029 the way
+  `encoding/json` does**, the last step of #417 under Decision 0038's amended
+  parity section, which compares the trees by parsed JSON. #319 and #330 made
+  `zig/src/json/writer.zig` and the ACP frame writer escape all five, so each
+  became six bytes on the wire -- in prompts and tool output that is mostly
+  code, where `if (a < b && c > d)` was being written as five escape
+  sequences. No ledger at any pin records a harness reading those bytes, so
+  under the amendment nothing earns the escaping; Decision 0032 says a Go
+  runtime quirk is not protocol behaviour until a decision says so, and none
+  did. The writer's own test now asserts the round trip rather than Go's
+  spelling, and a new one pins that a string carrying all five parses back to
+  itself.
+
+  **Those tests had never run.** `json_writer` was a module with no
+  `addTest` and no test root pulling it in, so its ten existing tests were
+  compiled by nothing -- the same class as `provider_caps` before #534, and
+  the reason a leak in the new one went unnoticed here. It is wired into
+  `test` and `test-unit-core` beside its sibling `json_encode`, so all
+  eleven run in CI now; the ten that had never executed pass unchanged.
+
+  **The ACP frame writer moves off `gomarshal` onto `json_encode`**, which is
+  already the module the adapter uses for the events it emits, rather than
+  having `gomarshal` itself stop escaping. That is the narrowest correct
+  change: `gomarshal` is shared with the OpenCode adapter, whose
+  `port-goldens.json` records what the Go adapter sends -- including a prompt
+  written as `a\u003cb\u003e\u0026c` -- and dropping the escaping there would
+  change bytes a recorded golden expects. ACP writes only what it builds
+  itself: ids are a string or an integer, because `parseMessage` refuses
+  `InvalidID` for anything else, and the parameters are assembled from strings
+  and integers, so no float reaches a frame and the two encoders cannot
+  differ on a number. `TestBackendsMatchOapx` and
+  `TestMemoryBackendMatchesOapx` pass against a freshly built `oapx`.
 
 - **Kimi is served by the generic catalog loader, and the catalog says which
   region it defaults to.** Kimi was the one row the loader could not take, so it
@@ -106,6 +174,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   served something. The old guard asked only about Kimi and Anthropic, and with
   Kimi on the catalog path it could have fired while a dozen models were in
   hand.
+  `oapx -p` and the smoke demo ask the same catalog row for everything they used
+  to repeat: the region, its 262144-token window and its 16384-token output cap
+  were each written out again in the print path and in the request default, and
+  `oapx -p` carried a second copy of the region rules, synonyms included. A
+  Kimi row that declared a different region, or different limits, would have been
+  described correctly by the model list and wrongly by the path that sends the
+  request.
 
 - **`make build` and `make tui` build ReleaseSafe.** They built Debug, where Zig's debug allocator records a stack trace for every allocation: resuming a 50 MB session left the TUI unresponsive for over a minute, and a message sent later took 14 seconds to answer a keystroke. A ReleaseSafe build resumes the same session in about a second. `OPTIMIZE=Debug` still gives a debug build.
 
@@ -168,6 +243,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   old shape under the debug allocator.
 
 ### Added
+
+- **`/resume` lists sessions by title, in local time.** A session was labelled with its model, provider and a UTC time, so switching models mid-session made it look like a different session. The label is now `title · local date and time · model`. The title starts as the first line of the session's first message; after the first reply, the current model is asked once, in the background, for a title of at most six words, which replaces it. Older sessions take their first message from the file.
+
 - **`go/internal/provider` gains the `anthropic-messages` client, part of #358
   step 3.** It reuses step 2's SSE parser, event types, json tree and
   pre-transform, and it is **a different client rather than a variant of the one
@@ -1156,6 +1234,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `oapx serve agent --backend codex` rebuilds a settled session's arena once it has grown 256 KiB past its last compaction, keeping the thread, the session state, each run's id, turn, status and sequence, and a stub per item and interaction, so a reused native item id is still ignored and its completion fails the run, and a late answer still reads as already resolved, as in `goap`. A Codex session held every frame and envelope until it closed.
 - The Hermes adapter no longer projects the gateway's `thinking.delta` as reasoning, in Go or Zig. The event carries the activity spinner (`"{face} {verb}..."`, or `""` to clear it), not model reasoning, so it is now observed-only; `reasoning.delta` is still projected. Recorded in [`research/hermes-thinking-delta-note.md`](research/hermes-thinking-delta-note.md).
 - **A tool result whose call is gone is now dropped wherever it falls, not only when it opens a run.** The `openai-completions` request builder drops such a result in its outer loop over messages, but that loop then hands a whole run of consecutive results to an inner loop that never repeated the check, so only the result that opened the run was ever examined. An orphan after an answered result was written into the body, where a `tool` message naming a call the request never made is an error the provider rejects — so the repair that exists was applied half the time, and the half that failed is the one a conversation of parallel tool calls answered out of order produces. The inner loop now applies the same guard. Dropping can never make a request worse, because the result is unusable either way, and the rule reads as absolute in the function that carries it; nothing in the code said the rule was positional. A result whose call is present is untouched, and a conversation with no tool call in it at all still keeps every result, since the guard stands down when there is nothing to match against. #513
+- **The Go `openai-completions` request builder drops an orphan wherever it falls in a run, as Zig does.** The port checked for a tool result whose call is not in the conversation in its outer loop over messages, and then collected a whole run of consecutive results into a slice and handed it to `toolResultRun` without repeating the check, so only the result that opened a run was ever examined. The inner loop now applies the same guard, which is what Zig's `openai_completions_api.zig` has done since #530. A run of nothing but orphans writes no tool message at all, and a conversation with no tool call anywhere still keeps every result.
+
+  One of the port's own tests was leaning on the gap without saying so: `TestAnEmptyAssistantIsWrittenAroundToolResultsOnlyWhenAsked` needed two consecutive written tool messages to observe the `requires_assistant_after_tool_result` filler, and got its second one from a result for a call nothing made. Its fixture now calls both tools, so it exercises the rule it is named for rather than the orphan. A test that passes because of a defect is the one kind of test that gets read as evidence for the defect.
+
+  **The Anthropic wire carried the same gap in both trees, and it is closed in both.** `anthropic_messages_api.zig` and `anthropic_request.go` each check for an orphan in the outer loop over messages and then collect a whole run of consecutive results to batch into one user message, without repeating the check — so an orphan sitting after an answered result in the same run went out as a `tool_result` block naming a `tool_use_id` the request never produced. Both inner loops now apply the same guard, so the two trees stay in step.
+
+  A run of **nothing but** orphans needed no code at all: the outer guard drops each of them one message at a time, so the run is never entered and no empty `content: []` is written. That outcome was already the tree's, and the first draft of this change added an empty-run check to each wire anyway; the tests showed the check was unreachable, so it is not in the diff. The test for that case stays regardless, because an all-orphan run writing an empty content array is the shape worth pinning, whichever loop turns out to enforce it.
 - **A chunk the runtime cannot read is still ignored rather than ending the response, and that is now pinned rather than assumed.** `parseChunk` returns on a chunk that does not parse, which leaves `canCompletePartialTextOnStreamError` reachable only from an exhausted allocator — the sole remaining way `parseChunk` can return an error. That was worth deciding rather than reading either way, so: the swallow is the policy, and it is the tree's, not this file's. `azure_openai_responses`, `openai_responses` (twice), `anthropic_messages` and `google_generative` each return on an unreadable chunk the same way, and only this wire ever wrote the partial-text rule, so the rule is the residue of one error path rather than evidence of a plan the others share. The rule stays as the allocator policy it is — on an OOM mid-stream, text already accumulated is finished with `length` rather than thrown away, but only while no tool call is open — and two tests now hold the swallow in place: one that a malformed chunk, a truncated one, and a valid non-object all leave every accumulator untouched, and one that a good chunk after a malformed one is still read.
 - **One predicate decides whether a base URL is an OpenAI host, and the two that disagreed are gone.** `provider_caps.isOpenAINative` looked for `api.openai.com` anywhere in the URL; `isOpenAIHost` parsed the URL and matched `openai.com` or a `.`-delimited suffix of it, case-insensitively. They were near-synonyms by name and were consulted at different depths: detection in `detectCapabilities` produced the native caps, and then `mergeCompat` discarded every one of them whenever its own predicate said no, so a URL carrying the vendor's name in a path or a query was detected native and then silently downgraded. There is now one `isOpenAIHost`, in `provider_caps`, holding the parse-the-host rule the request builders already shipped; `detectProviderType` and both `openai_completions` and `openai_responses` call it, and the verbatim copy at `openai_responses_api.zig` is gone.
 
