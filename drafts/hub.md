@@ -1254,6 +1254,16 @@ are "stamped with the revision the lister served it under", and both name
 | **Why it matters** | A `sessions` listing after such a refusal would show a session the host has no id for. Unreachable with today's registry — one adapter, an 18 MiB frame limit and a small state document — and live the moment a real adapter's state does not fit. |
 | **The fix** | Belongs with the `response_too_large` work, which is its own PR: the rollback needs the hub's own allocator and a shutdown-bounded close, which is the shape D6 gives hub-2 for #389. Recording it here so the follow-up PR starts from the rule rather than from this paragraph. |
 
+### D15 — a colliding session name is refused before the adapter ever runs
+
+| | |
+| --- | --- |
+| **The draft says** | `session_exists` (409) is one of `open`'s errors, and `unsupported_feature` (400) is another. The draft does not say which wins when a request is both. |
+| **Go does** | The adapter runs **first**. `hub.Open` opens the session and only detects a duplicate at `serve.go:102`, so the adapter's own refusals — an unattachable tool source, a bound it will not take — are what answer. Measured: opening `s1`, then opening `s1` naming three local tool sources answers `unsupported_feature` in Go. |
+| **Zig does** | `hub.open` pre-checks the name (`hub.zig:448`) and answers `session_exists` before the adapter is asked anything. The same input answers `session_exists`. |
+| **Why it matters** | The host is told its id is taken when the real reason its request cannot be served is that the adapter will not attach what it asked for. Fixing the name is then useless and the actual refusal is never reported. Reachable with both trees' own memory adapter, so it needs no exotic adapter to appear. |
+| **The fix, and why it is one change with four others** | Match Go: call `adapter.open`, then check for the duplicate, then close the session just opened. That is a **core** change, and it is the same one **D11** (admit a message, report `admitted_submit_requests`), **D12** (surface the `contract.Refusal` so `feature` and `reason` reach the wire), **D14** (roll an unnamed session back) and the ordering half of **D13** all want. Five rows, one change: `hub.open` should do what Go's `hub.Open` does — run the adapter, apply the checks in Go's order, and report *which* refusal and why. That belongs in its own PR before `submit`, and it is the reason `submit`'s PR is worth its size. |
+
 ### D4 — the registry's `journal_capacity` is hub-wide in Zig, per-adapter in Go
 
 | | |
