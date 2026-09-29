@@ -128,8 +128,11 @@ fn gather(
         }
 
         if (arrayField(descriptor, "envelope_types")) |declared_types| {
+            var seen_types = std.StringHashMap(void).init(allocator);
             for (declared_types.items) |entry| {
                 const name = stringField(entry, "type") orelse continue;
+                if (seen_types.contains(name)) return error.InvalidPackDescriptor;
+                try seen_types.put(name, {});
                 var refusals = std.ArrayList([]const u8).empty;
                 if (arrayField(entry, "refusals")) |listed| {
                     for (listed.items) |code| {

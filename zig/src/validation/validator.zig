@@ -281,6 +281,22 @@ test "a descriptor whose fields are the wrong shape is refused, not read past" {
     try std.testing.expectError(error.InvalidPackDescriptor, packs_mod.load(std.testing.io, allocator, &judge.registry, &dirs));
 }
 
+test "a descriptor declaring one type twice is refused, not loaded once" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "pack.json",
+        .data = "{\"id\":\"com.example.twice\",\"version\":\"1.0.0\",\"envelope_types\":[{\"type\":\"com.example.twice.ping\",\"role\":\"event\",\"schema\":\"note.schema.json#/$defs/thing\"},{\"type\":\"com.example.twice.ping\",\"role\":\"event\",\"schema\":\"note.schema.json#/$defs/thing\"}]}",
+    });
+    const dir = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(dir);
+    const dirs = [_][]const u8{dir};
+    var judge = try Validator.init(allocator, .{ .io = std.testing.io });
+    defer judge.deinit();
+    try std.testing.expectError(error.InvalidPackDescriptor, packs_mod.load(std.testing.io, allocator, &judge.registry, &dirs));
+}
+
 test "a pack's branches belong to the core envelope, and to no other document" {
     const allocator = std.testing.allocator;
     const dir = try storagePack(allocator);
