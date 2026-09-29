@@ -370,3 +370,34 @@ func TestTheTerminalKindsAreTheOnesThatEndARun(t *testing.T) {
 		}
 	}
 }
+
+func manyDeltaFrames() []string {
+	frames := make([]string, 0, 201)
+	for i := 0; i < 200; i++ {
+		frames = append(frames, frame(`{"choices":[{"delta":{"content":"x"}}]}`))
+	}
+	return append(frames, frame(`{"choices":[{"delta":{},"finish_reason":"stop"}]}`))
+}
+
+func TestARunNobodyReadsStillSettlesOnceItsContextIsCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	run := Start(ctx, Config{Model: completionsModel(), Streamer: &scripted{turns: []scriptedTurn{{frames: manyDeltaFrames()}}}}, prompts("hi"))
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	waited := make(chan Result, 1)
+	go func() { waited <- run.Wait() }()
+	select {
+	case <-waited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Wait did not return within five seconds of a run whose consumer walked away: the terminal send is blocked on a full buffer nobody will drain")
+	}
+}
+
+func TestATerminalReachesAConsumerThatIsStillReading(t *testing.T) {
+	script := &scripted{turns: []scriptedTurn{{frames: manyDeltaFrames()}}}
+	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("hi"))
+	terminal := terminalOf(t, drain(t, run))
+	if terminal.Kind != AgentEnd {
+		t.Errorf("a run whose event buffer filled ends with %q, want agent_end: the consumer was still reading", terminal.Kind)
+	}
+}

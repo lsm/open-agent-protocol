@@ -79,7 +79,15 @@ func (r *Run) emit(event Event) {
 		}
 		return
 	}
-	r.events <- event
+	select {
+	case r.events <- event:
+		return
+	default:
+	}
+	select {
+	case r.events <- event:
+	case <-r.ctx.Done():
+	}
 }
 
 func (r *Run) settle(result Result) {
