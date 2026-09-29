@@ -70,7 +70,7 @@ func TestHubStdioAnswersGoapAndOapxTheSame(t *testing.T) {
 	}
 }
 
-func TestHubStdioAnswersUnavailableForATransportItDoesNotCarry(t *testing.T) {
+func TestHubStdioRefusesAConfigItCannotReadAndNamesTheFile(t *testing.T) {
 	oapx := os.Getenv("OAP_OAPX_BIN")
 	if oapx == "" {
 		t.Skip("set OAP_OAPX_BIN to an oapx binary to check the flags it refuses")
@@ -79,8 +79,6 @@ func TestHubStdioAnswersUnavailableForATransportItDoesNotCarry(t *testing.T) {
 		argument string
 		wants    string
 	}{
-		// #389 gave --config a real reader, so it no longer answers "unavailable"
-		// for a file it cannot read; it names the file and refuses.
 		{argument: "--config=missing.json", wants: "missing.json"},
 	}
 	for _, each := range cases {
@@ -114,7 +112,7 @@ func TestHubStdioEndsCleanlyWhenTheHostClosesThePipe(t *testing.T) {
 	}
 }
 
-func TestHubAddrBindsAndEndsOnAnInterrupt(t *testing.T) {
+func TestHubStdioAddrBindsLoopbackAndEndsOnAnInterrupt(t *testing.T) {
 	oapx := os.Getenv("OAP_OAPX_BIN")
 	if oapx == "" {
 		t.Skip("set OAP_OAPX_BIN to an oapx binary to check its HTTP daemon")

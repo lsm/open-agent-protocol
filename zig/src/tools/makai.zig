@@ -2467,8 +2467,6 @@ fn hubConfiguredSources(
     return sources;
 }
 
-const hub_default_addr = "127.0.0.1:6270";
-
 fn hubBindRefusal(stderr: std.Io.File, message: []const u8) error{InvalidHubOption} {
     compat.stdio.writeAll(stderr, "oapx hub: ") catch {};
     compat.stdio.writeAll(stderr, message) catch {};
@@ -2531,12 +2529,13 @@ fn runHubHttp(
         var scratch_state = std.heap.ArenaAllocator.init(allocator);
         defer scratch_state.deinit();
         const scratch = scratch_state.allocator();
-        var request = hub_http.readRequest(scratch, &connection.stream, hub_http.header_read_ms, hub_http.idle_read_ms) catch |failure| {
-            hub_http.writeTransportFailure(&connection.stream, scratch, next_id, failure) catch {};
+        var body_allowed = true;
+        var request = hub_http.readRequest(scratch, &connection.stream, hub_http.header_read_ms, hub_http.idle_read_ms, &body_allowed) catch |failure| {
+            hub_http.writeTransportFailure(&connection.stream, scratch, next_id, failure, body_allowed) catch {};
             continue;
         };
         defer request.deinit(scratch);
-        hub_http.writeAnswer(&connection.stream, scratch, next_id, hub_http.answer(allow orelse &.{}, request), hub_http.bodyAllowedFor(request.method)) catch {};
+        hub_http.writeAnswer(&connection.stream, scratch, next_id, hub_http.answer(allow orelse &.{}, request), body_allowed) catch {};
     }
     try compat.stdio.writeAll(stderr, "oapx: shutting down\n");
     sweepHubSessions(core, stderr);
@@ -2643,7 +2642,7 @@ fn runHub(
     }
 
     const served = try std.mem.join(arena, ", ", try core.names(arena));
-    if (!over_stdio) return runHubHttp(allocator, arena, &core, addr orelse hub_default_addr, served, stdout, stderr);
+    if (!over_stdio) return runHubHttp(allocator, arena, &core, addr orelse hub_http.defaultBind(), served, stdout, stderr);
 
     var sink = StdoutSink{ .file = stdout, .io = hubIo() };
     var frontend = try hub_stdio.Frontend.init(allocator, &core, .{ .context = &sink, .write = StdoutSink.write }, .{});
