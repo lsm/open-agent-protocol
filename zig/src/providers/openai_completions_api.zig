@@ -514,6 +514,11 @@ fn writeMessagesArray(
             while (msg_idx < context.messages.len and context.messages[msg_idx] == .tool_result) {
                 const tr = context.messages[msg_idx].tool_result;
 
+                if (isOrphanedToolResult(context.messages[msg_idx], &tool_call_ids)) {
+                    msg_idx += 1;
+                    continue;
+                }
+
                 if (merged.requires_assistant_after_tool_result and std.mem.eql(u8, prev_role, "tool")) {
                     try writer.beginObject();
                     try writer.writeStringField("role", "assistant");
@@ -1995,6 +2000,171 @@ test "stream errors can finalize accumulated text but not partial tool calls" {
     try std.testing.expect(canCompletePartialTextOnStreamError(0, 1, 0));
     try std.testing.expect(!canCompletePartialTextOnStreamError(0, 0, 0));
     try std.testing.expect(!canCompletePartialTextOnStreamError(1, 0, 1));
+}
+
+test "parseChunk ignores a chunk that is not json and a json value that is not an object" {
+    const allocator = std.testing.allocator;
+
+    var text = std.ArrayList(u8).empty;
+    defer text.deinit(allocator);
+    var thinking = std.ArrayList(u8).empty;
+    defer thinking.deinit(allocator);
+    var usage = ai_types.Usage{};
+    var stop_reason: ai_types.StopReason = .content_filter;
+    var current_block: BlockType = .none;
+    var reasoning_signature: ?[]const u8 = null;
+    defer if (reasoning_signature) |sig| allocator.free(sig);
+    var tool_call_events = std.ArrayList(ToolCallEvent).empty;
+    defer {
+        for (tool_call_events.items) |*tce| {
+            @constCast(tce).deinit(allocator);
+        }
+        tool_call_events.deinit(allocator);
+    }
+    var reasoning_detail_events = std.ArrayList(ReasoningDetailEvent).empty;
+    defer {
+        for (reasoning_detail_events.items) |*rde| {
+            @constCast(rde).deinit(allocator);
+        }
+        reasoning_detail_events.deinit(allocator);
+    }
+
+    const chunks = [_][]const u8{
+        "{not json at all",
+        "{\"choices\":",
+        "[]",
+        "42",
+        "\"a string\"",
+        "null",
+    };
+    for (chunks) |chunk| {
+        try parseChunk(
+            chunk,
+            &text,
+            &thinking,
+            &usage,
+            &stop_reason,
+            &current_block,
+            &reasoning_signature,
+            &tool_call_events,
+            &reasoning_detail_events,
+            allocator,
+        );
+    }
+
+    try std.testing.expectEqual(@as(usize, 0), text.items.len);
+    try std.testing.expectEqual(@as(usize, 0), thinking.items.len);
+    try std.testing.expectEqual(@as(usize, 0), tool_call_events.items.len);
+    try std.testing.expectEqual(@as(usize, 0), reasoning_detail_events.items.len);
+    try std.testing.expectEqual(ai_types.Usage{}, usage);
+    try std.testing.expectEqual(ai_types.StopReason.content_filter, stop_reason);
+}
+
+test "parseChunk keeps reading after a chunk it could not read" {
+    const allocator = std.testing.allocator;
+
+    var text = std.ArrayList(u8).empty;
+    defer text.deinit(allocator);
+    var thinking = std.ArrayList(u8).empty;
+    defer thinking.deinit(allocator);
+    var usage = ai_types.Usage{};
+    var stop_reason: ai_types.StopReason = .content_filter;
+    var current_block: BlockType = .none;
+    var reasoning_signature: ?[]const u8 = null;
+    defer if (reasoning_signature) |sig| allocator.free(sig);
+    var tool_call_events = std.ArrayList(ToolCallEvent).empty;
+    defer {
+        for (tool_call_events.items) |*tce| {
+            @constCast(tce).deinit(allocator);
+        }
+        tool_call_events.deinit(allocator);
+    }
+    var reasoning_detail_events = std.ArrayList(ReasoningDetailEvent).empty;
+    defer {
+        for (reasoning_detail_events.items) |*rde| {
+            @constCast(rde).deinit(allocator);
+        }
+        reasoning_detail_events.deinit(allocator);
+    }
+
+    const args = [_][]const u8{
+        "not json",
+        "{\"choices\":[{\"delta\":{\"content\":\"kept\"}}]}",
+    };
+    for (args) |chunk| {
+        try parseChunk(
+            chunk,
+            &text,
+            &thinking,
+            &usage,
+            &stop_reason,
+            &current_block,
+            &reasoning_signature,
+            &tool_call_events,
+            &reasoning_detail_events,
+            allocator,
+        );
+    }
+
+    try std.testing.expectEqualStrings("kept", text.items);
+}
+
+test "writeMessagesArray drops an orphan wherever it falls in a run of results" {
+    const allocator = std.testing.allocator;
+
+    const model = ai_types.Model{
+        .id = "gpt-4o-mini",
+        .name = "GPT-4o Mini",
+        .api = "openai-completions",
+        .provider = "openai",
+        .base_url = "https://api.openai.com",
+        .reasoning = false,
+        .input = &[_][]const u8{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 128_000,
+        .max_tokens = 100,
+    };
+
+    const messages = [_]ai_types.Message{
+        .{ .assistant = .{
+            .content = &.{
+                .{ .tool_call = .{ .id = "call-1", .name = "read", .arguments_json = "{}" } },
+                .{ .tool_call = .{ .id = "call-2", .name = "read", .arguments_json = "{}" } },
+            },
+            .api = "openai-completions",
+            .provider = "openai",
+            .model = "gpt-4o-mini",
+            .usage = .{},
+            .stop_reason = .tool_use,
+            .timestamp = 0,
+        } },
+        .{ .tool_result = .{ .tool_call_id = "call-1", .tool_name = "read", .content = &.{.{ .text = .{ .text = "first" } }}, .is_error = false, .timestamp = 0 } },
+        .{ .tool_result = .{ .tool_call_id = "call-9", .tool_name = "read", .content = &.{.{ .text = .{ .text = "orphan" } }}, .is_error = false, .timestamp = 0 } },
+        .{ .tool_result = .{ .tool_call_id = "call-2", .tool_name = "read", .content = &.{.{ .text = .{ .text = "second" } }}, .is_error = false, .timestamp = 0 } },
+    };
+
+    const ctx = ai_types.Context{ .messages = &messages };
+
+    const body = try buildRequestBody(model, ctx, .{ .max_tokens = 100 }, allocator);
+    defer allocator.free(body);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+
+    const written = parsed.value.object.get("messages").?.array;
+    var tool_ids = std.ArrayList([]const u8).empty;
+    defer tool_ids.deinit(allocator);
+    for (written.items) |m| {
+        if (m.object.get("role")) |role| {
+            if (role.string.len == 4 and std.mem.eql(u8, role.string, "tool")) {
+                try tool_ids.append(allocator, m.object.get("tool_call_id").?.string);
+            }
+        }
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), tool_ids.items.len);
+    try std.testing.expectEqualStrings("call-1", tool_ids.items[0]);
+    try std.testing.expectEqualStrings("call-2", tool_ids.items[1]);
 }
 
 test "parseChunk does not leak memory with reasoning content" {
