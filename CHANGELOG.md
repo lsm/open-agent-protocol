@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`make build` and `make tui` build ReleaseSafe.** They built Debug, where Zig's debug allocator records a stack trace for every allocation: resuming a 50 MB session left the TUI unresponsive for over a minute, and a message sent later took 14 seconds to answer a keystroke. A ReleaseSafe build resumes the same session in about a second. `OPTIMIZE=Debug` still gives a debug build.
+
 - **The CI fixture auth provider is served only when a test asks for it by
   name.** `oapx auth providers` returns the catalog's rows and nothing else
   unless `OAPX_TEST_FIXTURE_PROVIDER` is set to `1` or `true`, so a user running
@@ -176,7 +178,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     out unnormalized. It also carries a defect of its own, **#514**: the pending
     calls are keyed by the normalized id and the answered ones by the original, so
     on a Mistral host — where every id is re-hashed — an answered call grows a
-    second, spurious error result. Transcribed rather than corrected, and pinned.
+    second, spurious error result. Transcribed rather than corrected, and pinned,
+    so the port held the defect in place while the Zig side decided it: #514 is
+    fixed in `pre_transform`, and this transcription follows under #358.
   - **The event stream's thirteen kinds are the union, and this client emits nine
     of them** — `start`, `text_delta`, `thinking_delta`, `toolcall_start`,
     `toolcall_delta`, `toolcall_end`, `done`, `error` and `keepalive`, each
@@ -1295,9 +1299,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   across two gates, `AttachmentGate` and `SubscribeGate`, and the draft's own line calls
   the second "the same comparison", so one check covers both; what differs between them
   is the support feature each then checks, and that half already exists as the open's
-  election check. `Failure.StaleCapabilities` had been
-  declared since the hub was written and **never returned by anything**: no code
-  compared a revision, and the request had no member to carry one. So a host that gated
+  election check. `Failure.StaleCapabilities` had been declared since the hub was
+  written and **never returned by anything**: no code compared a revision, and the
+  request had no member to carry one. So a host that gated
   its open on a revision got a session opened against whatever the adapter happened to
   be serving — a silent disagreement where the draft specifies a 409 — and the answer's
   `capability_revision` had no checked value to report, only the request's own, which is
@@ -1307,6 +1311,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   guard rather than a hole. The gate runs before the election check as well, so an open
   that both cites a stale revision and asks for an unadvertised feature answers
   `stale_capabilities`, as Go's wire order has it.
+
+### Fixed
+
+- **An unrecognised argument to `oapx validate` is no longer read as a path.**
+  `runValidate` appended any argument it did not recognise to the path list, so
+  `oapx validate --mode json manifest.json` reported `--mode: unreadable` and then
+  `json: unreadable` — two files that do not exist — and carried on. The verdict was
+  false about what had happened, and the user's intent was dropped without a word.
+  A flag oapx does not carry is now refused by name:
+  `oapx validate: --mode: unavailable: tolerant mode lands with the validator's own
+  mode, in #367`. The flag's value is never consumed, so one mistyped flag no longer
+  costs two phantom files, and the three flags `goap validate` has but oapx does not —
+  `--mode`, `--pack` and `--provider` — each name themselves rather than falling
+  through to a generic refusal. `unavailable` grew a `surface` parameter, because it
+  hardcoded `oapx hub:` into its message and would have answered
+  `oapx hub: --mode: unavailable` for a `validate` refusal; its `arena` parameter went
+  with that, having been discarded on entry (`_ = arena`) and the only reason `runHub`
+  still allocated an arena at all.
+
+- **An answered tool call no longer grows a second, synthetic `"No result
+  provided"` result when its id is rewritten.** `pre_transform` keys the set of
+  unanswered calls by the id the call is written out under and the set of answered
+  calls by the id the result arrived with, so the two only lined up when
+  normalization left the id alone. Every exchange that rewrites an id therefore put
+  one result on the wire per call and a duplicate error result beside it: **every
+  call against a Mistral endpoint**, whose ids are re-hashed to nine characters, and
+  any id over 40 bytes, carrying a `|`, or holding a byte that is not
+  alphanumeric, `_` or `-` on any other host. The answered set is now keyed the way
+  the pending set is, by the rewritten id, so a call that was answered is answered
+  once and an unanswered one still grows exactly one synthetic result — carrying the
+  rewritten id, so it still names the call it stands in for. The wire is unchanged
+  for every id normalization leaves alone, which is every id on a non-OpenAI,
+  non-Mistral host and every clean short id elsewhere. The Go transcription in
+  `go/internal/provider` still keys its answered set by the arrival id, and its
+  change is routed to #358. #514
 
 ## [0.2.0] - 2026-09-11
 
