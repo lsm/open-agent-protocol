@@ -68,8 +68,12 @@ const packed_type_without_id =
     \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"com.example.storage.objects.read","session_id":"s1","payload":{"session_id":"s1","bucket":"reports"}}
 ;
 
+const core_with_id =
+    "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"capabilities.request\",\"id\":\"q1\",\"payload\":{}}"
+;
+
 const core_without_id =
-    \\[{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.request","payload":{}}]
+    \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.request","payload":{}}
 ;
 
 fn accepts(allocator: std.mem.Allocator, mode: Mode, envelope: []const u8) !bool {
@@ -123,10 +127,11 @@ test "tolerance is not permissiveness: the envelope skeleton is still required" 
     try std.testing.expect(!try accepts(allocator, .tolerant, packed_type_without_id));
 }
 
-test "a core type is judged the same in either mode" {
+test "tolerance leaves a core envelope's own requirements alone" {
     const allocator = std.testing.allocator;
     try std.testing.expect(!try accepts(allocator, .strict, core_without_id));
     try std.testing.expect(!try accepts(allocator, .tolerant, core_without_id));
+    try std.testing.expect(try accepts(allocator, .tolerant, core_with_id));
 }
 
 test "a validator frees itself exactly once, on every allocation failure" {
