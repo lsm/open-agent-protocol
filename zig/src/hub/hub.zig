@@ -2365,7 +2365,7 @@ test "a subscribing open is gated on the revision the host asked for" {
     try testing.expectEqualStrings("reference-memory-v11", unstated.revision);
 }
 
-test "the revision gate is the open's own, and it does not fire without a subscription" {
+test "the revision gate fires for a subscribing or attaching open, and for no other" {
     var adapter = memory.Adapter.init(testing.allocator);
     var hub = Hub.init(testing.allocator, testClock, .{});
     defer hub.deinit();
