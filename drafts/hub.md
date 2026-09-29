@@ -1188,11 +1188,11 @@ are "stamped with the revision the lister served it under", and both name
 | | |
 | --- | --- |
 | **The draft says** | `session.open.request` carries `metadata`, and the schema has the member. |
-| **Go does** | `servehttp`'s and the stdio frontend's open paths do not read it into `base.OpenRequest`, so an open that arrives through an endpoint surface has its metadata dropped. |
+| **Go does** | Only the **endpoint** surface drops it: `serveendpoint`'s open path builds a `base.OpenRequest` with no `Metadata`. The other two frontends read it and enforce the draft's `invalid_payload` — `servehttp` and the stdio op both decode each value and refuse one that will not parse. |
 | **Zig does** | The same, and one layer deeper: `oap_types.SessionOpenRequest` has no `metadata` member either, so it cannot reach `endpoint.zig`'s `adapter.open` even now that D5 gave `contract.OpenRequest` one. |
 | **Why it matters** | D5 fixed the core's path, so a metadata-carrying open reaches an adapter when it is driven **through the core** and is still dropped when it is driven through an **endpoint**. Two paths to the same adapter, one of which silently discards a request member. |
 | **Why it is not fixed here** | **Both** trees do it. Fixing it on the Zig side alone would make the two *diverge* — the Zig endpoint would forward metadata and the Go one would not — which is the opposite of what Decision 0032 is for. It needs to be a change to both trees, and it is a change to the shared surface rather than to the hub. |
-| **The fix** | `oap_types.SessionOpenRequest` gains `metadata`, both trees' endpoint surfaces read it into their `OpenRequest`, and the two are fixed in one step. Until then an open's metadata is honoured by the core and not by an endpoint, and this says so rather than leaving the difference to be found. |
+| **The fix** | `oap_types.SessionOpenRequest` gains `metadata` and both trees' **endpoint** surfaces read it into their `OpenRequest`, in one step — the only two places either tree drops it. The Zig stdio `open` op, when it is written, has to read `metadata` off the wire the way Go's does, or the Zig line becomes a *third* dropper rather than a second reader. |
 
 
 ### D4 — the registry's `journal_capacity` is hub-wide in Zig, per-adapter in Go
