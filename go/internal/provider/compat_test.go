@@ -9,6 +9,177 @@ func hostModel(baseURL string) Model {
 	return Model{Provider: "openai", BaseURL: baseURL, HasBaseURL: true, HasCompat: true}
 }
 
+func TestAGoogleHostIsTheGeminiAPIHostOrAnAiplatformHostRegionalOrNot(t *testing.T) {
+	hosts := []string{
+		"https://generativelanguage.googleapis.com",
+		"https://generativelanguage.googleapis.com/v1beta",
+		"https://aiplatform.googleapis.com",
+		"https://us-central1-aiplatform.googleapis.com",
+		"https://europe-west4-aiplatform.googleapis.com/v1/projects/p/locations/l/publishers/google",
+		"https://US-CENTRAL1-AIPLATFORM.GOOGLEAPIS.COM",
+	}
+	for _, url := range hosts {
+		if !isGoogleURL(url, true) {
+			t.Errorf("isGoogleURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://googleapis.com",
+		"https://storage.googleapis.com",
+		"https://notgenerativelanguage.googleapis.com",
+		"https://evilgenerativelanguage.googleapis.com.attacker.test",
+		"https://evil-aiplatform.googleapis.com.attacker.test",
+		"https://generativelanguage.googleapis.com.evil.example",
+		"https://evil.example/?next=aiplatform.googleapis.com",
+		"https://evil.example/v1/generativelanguage.googleapis.com",
+		"https://gateway.example/proxy/aiplatform.googleapis.com",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isGoogleURL(url, true) {
+			t.Errorf("isGoogleURL(%q) = true, want false: googleapis.com on its own would claim every Google API, and the two api hosts are the only ones", url)
+		}
+	}
+
+	if isGoogleURL("https://generativelanguage.googleapis.com", false) {
+		t.Error("no base url is not a google host")
+	}
+}
+
+func TestTheCataloguedGoogleBaseStillDetectsAsGoogleWithItsCaps(t *testing.T) {
+	const url = "https://generativelanguage.googleapis.com"
+	if !isGoogleURL(url, true) {
+		t.Fatalf("isGoogleURL(%q) = false, want true", url)
+	}
+	if got := DetectProviderType(url, true); got != ProviderGoogle {
+		t.Errorf("DetectProviderType(%q) = %q, want google", url, got)
+	}
+	caps := DetectCapabilities(url, true)
+	if caps.ProviderType != ProviderGoogle {
+		t.Errorf("caps provider type = %q, want google", caps.ProviderType)
+	}
+	if !caps.Vision || !caps.FunctionCalling {
+		t.Errorf("caps = %+v, want vision and function calling", caps)
+	}
+}
+
+func TestAZaiHostIsZukijourneyDotComOrASubdomainOfIt(t *testing.T) {
+	hosts := []string{
+		"https://api.zukijourney.com",
+		"https://api.zukijourney.com/api/paas/v4",
+		"https://zukijourney.com",
+		"https://API.ZUKIJOURNEY.COM",
+	}
+	for _, url := range hosts {
+		if !isZaiURL(url, true) {
+			t.Errorf("isZaiURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://myzukijourney.com",
+		"https://zukijourney.com.evil.example",
+		"https://evil.example/?next=api.zukijourney.com",
+		"https://evil.example/v1/zai",
+		"https://gateway.example/proxy/zai",
+		"https://api.z.ai/api/coding/paas/v4",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isZaiURL(url, true) {
+			t.Errorf("isZaiURL(%q) = true, want false: the bare word zai is not a host, and z.ai is the gap filed as #580", url)
+		}
+	}
+
+	if isZaiURL("https://api.zukijourney.com", false) {
+		t.Error("no base url is not a zai host")
+	}
+}
+
+func TestAQwenHostIsDashscopeAliyuncsDotComOrASubdomainOfIt(t *testing.T) {
+	hosts := []string{
+		"https://dashscope.aliyuncs.com",
+		"https://coding-intl.dashscope.aliyuncs.com",
+		"https://coding-intl.dashscope.aliyuncs.com/v1",
+		"https://DASHSCOPE.ALIYUNCS.COM",
+		"https://dashscope-intl.aliyuncs.com",
+		"https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+	}
+	for _, url := range hosts {
+		if !isQwenURL(url, true) {
+			t.Errorf("isQwenURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://mydashscope.aliyuncs.com.attacker.example",
+		"https://aliyuncs.com",
+		"https://www.aliyuncs.com",
+		"https://notdashscope.aliyuncs.com",
+		"https://evil.example/?next=dashscope",
+		"https://evil.example/v1/qwen",
+		"https://gateway.example/proxy/dashscope.aliyuncs.com",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isQwenURL(url, true) {
+			t.Errorf("isQwenURL(%q) = true, want false: the domain is dashscope.aliyuncs.com, not aliyuncs.com, and the old rule matched the bare words dashscope and qwen anywhere", url)
+		}
+	}
+
+	if isQwenURL("https://dashscope.aliyuncs.com", false) {
+		t.Error("no base url is not a qwen host")
+	}
+}
+
+func TestAnAnthropicHostIsAnthropicDotComOrASubdomainOfIt(t *testing.T) {
+	hosts := []string{
+		"https://api.anthropic.com",
+		"https://api.anthropic.com/v1",
+		"https://anthropic.com",
+		"https://API.ANTHROPIC.COM",
+	}
+	for _, url := range hosts {
+		if !isAnthropicURL(url, true) {
+			t.Errorf("isAnthropicURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://myanthropic.com",
+		"https://notanthropic.com",
+		"https://anthropic.com.evil.example",
+		"https://evil.example/?next=api.anthropic.com",
+		"https://evil.example/v1/api.anthropic.com",
+		"https://gateway.example/proxy/api.anthropic.com",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isAnthropicURL(url, true) {
+			t.Errorf("isAnthropicURL(%q) = true, want false: the name is in a host suffix, a path or a query", url)
+		}
+	}
+
+	if isAnthropicURL("https://api.anthropic.com", false) {
+		t.Error("no base url is not an anthropic host")
+	}
+}
+
+func TestTheCataloguedAnthropicBaseStillGetsTheAnthropicCaps(t *testing.T) {
+	const url = "https://api.anthropic.com"
+	if got := DetectProviderType(url, true); got != ProviderAnthropic {
+		t.Errorf("DetectProviderType(%q) = %q, want anthropic", url, got)
+	}
+	caps := DetectCapabilities(url, true)
+	if caps.ProviderType != ProviderAnthropic {
+		t.Errorf("caps provider type = %q, want anthropic", caps.ProviderType)
+	}
+	if !caps.ExtendedThinking || !caps.PromptCaching || !caps.Vision {
+		t.Errorf("caps = %+v, want the anthropic set", caps)
+	}
+}
+
 func TestAnOpenRouterHostIsOpenrouterDotAIOrASubdomainOfIt(t *testing.T) {
 	hosts := []string{
 		"https://openrouter.ai",

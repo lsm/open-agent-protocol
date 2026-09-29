@@ -288,10 +288,14 @@ func (s *streamState) finish(sink *EventSink) {
 			continue
 		}
 		content = append(content, AssistantBlock{ToolCall: &completed})
+		index, ok := s.tracker.contentIndex(call.apiIndex)
+		if !ok {
+			continue
+		}
 		grown := append([]AssistantBlock{}, content[:len(content)-1]...)
 		sink.emit(Event{
 			Kind:         EventToolCallEnd,
-			ContentIndex: len(content) - 1,
+			ContentIndex: index,
 			ToolCall:     &completed,
 			Partial:      s.partial(grown),
 		})

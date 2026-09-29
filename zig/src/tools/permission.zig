@@ -110,6 +110,12 @@ pub const PermissionEngine = struct {
     const Self = @This();
     const MAX_PERMISSION_FILE_BYTES = 1024 * 1024;
 
+    pub fn setWorkspaceRoot(self: *Self, root: []const u8) !void {
+        const owned = try self.allocator.dupe(u8, root);
+        self.allocator.free(self.workspace_root);
+        self.workspace_root = owned;
+    }
+
     pub fn init(allocator: std.mem.Allocator, options: PermissionEngineOptions) !Self {
         const workspace_root = try allocator.dupe(u8, options.workspace_root);
         errdefer allocator.free(workspace_root);
@@ -796,4 +802,40 @@ test "persist failure degrades always decisions to one shot" {
     defer compat.fs.getCwd().deleteTree(std.testing.io, persistence_path) catch {};
 
     try std.testing.expectEqual(ApprovalDecision.approve, try engine.approve("file:write", "{\"path\":\"/workspace/file.txt\"}"));
+}
+
+test "the workspace boundary reaches read and write only, never shell or an unknown kind" {
+    var engine = try PermissionEngine.init(std.testing.allocator, .{
+        .workspace_root = "/workspace",
+        .persistence_path = "zig-cache/test-permissions-boundary.json",
+    });
+    defer engine.deinit();
+
+    try std.testing.expectEqual(PermissionDecision.deny, engine.evaluate("file:read", "{\"path\":\"/etc/passwd\"}"));
+    try std.testing.expectEqual(PermissionDecision.deny, engine.evaluate("file:write", "{\"path\":\"/etc/passwd\"}"));
+
+    try std.testing.expectEqual(PermissionDecision.prompt, engine.evaluate("shell", "{\"command\":\"cat /etc/passwd\"}"));
+    try std.testing.expectEqual(PermissionDecision.prompt, engine.evaluate("shell", "{\"workspace_root\":\"/etc\",\"command\":\"pwd\"}"));
+    try std.testing.expectEqual(PermissionDecision.prompt, engine.evaluate("frobnicate", "{\"command\":\"cat /etc/shadow\"}"));
+    try std.testing.expectEqual(PermissionDecision.prompt, engine.evaluate("frobnicate", "{\"path\":\"/etc/shadow\"}"));
+    try std.testing.expectEqual(PermissionDecision.prompt, engine.evaluate("frobnicate", "{\"path\":\"../../etc/shadow\"}"));
+
+    try std.testing.expectEqual(PermissionDecision.deny, engine.evaluate("shell", "{\"workspace_root\":\"/\",\"command\":\"rm -rf /\"}"));
+}
+
+test "a model-supplied workspace_root cannot widen the root the boundary is measured against" {
+    var engine = try PermissionEngine.init(std.testing.allocator, .{
+        .workspace_root = "/workspace",
+        .persistence_path = "zig-cache/test-permissions-root.json",
+    });
+    defer engine.deinit();
+
+    try std.testing.expectEqual(PermissionDecision.deny, engine.evaluate("file:read", "{\"workspace_root\":\"/etc\",\"path\":\"passwd\"}"));
+    try std.testing.expectEqual(PermissionDecision.deny, engine.evaluate("file:read", "{\"workspace_root\":\"/\",\"path\":\"etc/passwd\"}"));
+    try std.testing.expectEqual(PermissionDecision.deny, engine.evaluate("file:write", "{\"workspace_root\":\"/tmp\",\"path\":\"../../etc/shadow\"}"));
+    try std.testing.expectEqual(PermissionDecision.deny, engine.evaluate("file:read", "{\"workspace_root\":\"/etc\",\"path\":\"passwd\",\"command\":\"true\"}"));
+
+    try std.testing.expectEqual(PermissionDecision.allow, engine.evaluate("file:read", "{\"path\":\"src/main.zig\"}"));
+    try std.testing.expectEqual(PermissionDecision.allow, engine.evaluate("file:read", "{\"workspace_root\":\"/workspace\",\"path\":\"src/main.zig\"}"));
+    try std.testing.expectEqual(PermissionDecision.deny, engine.evaluate("file:read", "{\"path\":\"src/../../etc/passwd\"}"));
 }

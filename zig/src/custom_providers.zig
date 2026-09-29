@@ -27,6 +27,79 @@ pub const ConfigError = error{
     InvalidAuthMode,
 };
 
+pub const OverrideError = error{
+    InvalidConfig,
+    MissingProviderId,
+    UnknownProviderId,
+    MissingBaseUrl,
+    InvalidBaseUrl,
+    DuplicateOverride,
+    ForbiddenOverrideMember,
+    WrongTypedOverrideMember,
+};
+
+pub const override_allowed_members = [_][]const u8{
+    "base_url",
+    "carries_version",
+    "headers",
+    "id",
+    "models",
+};
+
+pub const override_forbidden_members = [_][]const u8{
+    "api",
+    "auth",
+    "capabilities",
+    "context_window",
+    "max_tokens",
+    "name",
+    "reasoning",
+    "wire",
+};
+
+pub const Override = struct {
+    id: []const u8,
+    base_url: ?[]const u8 = null,
+    carries_version: ?bool = null,
+    headers: []const ai_types.HeaderPair = &.{},
+    models: []const ModelSpec = &.{},
+
+    pub fn deinit(self: *Override, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        if (self.base_url) |url| allocator.free(url);
+        for (self.headers) |header| {
+            allocator.free(header.name);
+            allocator.free(header.value);
+        }
+        allocator.free(self.headers);
+        for (self.models) |*spec| {
+            var owned = spec.*;
+            owned.deinit(allocator);
+        }
+        allocator.free(self.models);
+        self.* = undefined;
+    }
+};
+
+pub const Config = struct {
+    providers: []CustomProvider = &.{},
+    overrides: []Override = &.{},
+
+    pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
+        deinitProviders(allocator, self.providers);
+        deinitOverrides(allocator, self.overrides);
+        self.* = undefined;
+    }
+
+    pub fn takeProviders(self: *Config, allocator: std.mem.Allocator) []CustomProvider {
+        const providers = self.providers;
+        self.providers = &.{};
+        deinitOverrides(allocator, self.overrides);
+        self.overrides = &.{};
+        return providers;
+    }
+};
+
 pub const ModelSpec = struct {
     id: []const u8,
     name: []const u8,
@@ -102,20 +175,35 @@ pub fn configPath(allocator: std.mem.Allocator) ![]u8 {
 }
 
 pub fn load(allocator: std.mem.Allocator, max_bytes: usize) ![]CustomProvider {
+    var config = try loadConfig(allocator, max_bytes);
+    return config.takeProviders(allocator);
+}
+
+pub fn loadConfig(allocator: std.mem.Allocator, max_bytes: usize) !Config {
     const path = configPath(allocator) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
-        else => return allocator.alloc(CustomProvider, 0),
+        else => return .{ .providers = try allocator.alloc(CustomProvider, 0), .overrides = try allocator.alloc(Override, 0) },
     };
     defer allocator.free(path);
     const data = compat_mod.fs.readFileAlloc(allocator, compat_mod.fs.getCwd(), path, max_bytes) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
-        else => return allocator.alloc(CustomProvider, 0),
+        else => return .{ .providers = try allocator.alloc(CustomProvider, 0), .overrides = try allocator.alloc(Override, 0) },
     };
     defer allocator.free(data);
-    return parse(allocator, data);
+    return parseConfig(allocator, data);
+}
+
+pub fn deinitOverrides(allocator: std.mem.Allocator, overrides: []Override) void {
+    for (overrides) |*override| override.deinit(allocator);
+    allocator.free(overrides);
 }
 
 pub fn parse(allocator: std.mem.Allocator, data: []const u8) ![]CustomProvider {
+    var config = try parseConfig(allocator, data);
+    return config.takeProviders(allocator);
+}
+
+pub fn parseConfig(allocator: std.mem.Allocator, data: []const u8) !Config {
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, data, .{}) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return ConfigError.InvalidConfig,
@@ -123,7 +211,21 @@ pub fn parse(allocator: std.mem.Allocator, data: []const u8) ![]CustomProvider {
     defer parsed.deinit();
     if (parsed.value != .object) return ConfigError.InvalidConfig;
 
-    const list = parsed.value.object.get("providers") orelse return allocator.alloc(CustomProvider, 0);
+    var config = Config{
+        .providers = try parseProviders(allocator, parsed.value.object),
+        .overrides = &.{},
+    };
+    errdefer config.deinit(allocator);
+
+    if (parsed.value.object.get("overrides")) |list| {
+        if (list != .array) return OverrideError.InvalidConfig;
+        config.overrides = try parseOverrides(allocator, list.array.items);
+    }
+    return config;
+}
+
+fn parseProviders(allocator: std.mem.Allocator, root: std.json.ObjectMap) ![]CustomProvider {
+    const list = root.get("providers") orelse return allocator.alloc(CustomProvider, 0);
     if (list != .array) return ConfigError.InvalidConfig;
 
     var providers = std.ArrayList(CustomProvider).empty;
@@ -146,6 +248,109 @@ pub fn parse(allocator: std.mem.Allocator, data: []const u8) ![]CustomProvider {
     }
 
     return providers.toOwnedSlice(allocator);
+}
+
+fn parseOverrides(allocator: std.mem.Allocator, items: []const std.json.Value) ![]Override {
+    var overrides = std.ArrayList(Override).empty;
+    errdefer {
+        for (overrides.items) |*override| override.deinit(allocator);
+        overrides.deinit(allocator);
+    }
+
+    for (items) |item| {
+        if (item != .object) return OverrideError.InvalidConfig;
+        const override = try parseOverride(allocator, &item.object);
+        errdefer {
+            var owned = override;
+            owned.deinit(allocator);
+        }
+        for (overrides.items) |existing| {
+            if (std.mem.eql(u8, existing.id, override.id)) return OverrideError.DuplicateOverride;
+        }
+        try overrides.append(allocator, override);
+    }
+
+    return overrides.toOwnedSlice(allocator);
+}
+
+fn namedIn(names: []const []const u8, value: []const u8) bool {
+    for (names) |name| {
+        if (std.mem.eql(u8, name, value)) return true;
+    }
+    return false;
+}
+
+fn typedString(obj: *const std.json.ObjectMap, key: []const u8) !?[]const u8 {
+    const value = obj.get(key) orelse return null;
+    if (value != .string) return OverrideError.WrongTypedOverrideMember;
+    return value.string;
+}
+
+fn typedBool(obj: *const std.json.ObjectMap, key: []const u8) !?bool {
+    const value = obj.get(key) orelse return null;
+    if (value != .bool) return OverrideError.WrongTypedOverrideMember;
+    return value.bool;
+}
+
+fn parseOverride(allocator: std.mem.Allocator, obj: *const std.json.ObjectMap) !Override {
+    var it = obj.iterator();
+    while (it.next()) |entry| {
+        if (namedIn(&override_forbidden_members, entry.key_ptr.*)) return OverrideError.ForbiddenOverrideMember;
+        if (!namedIn(&override_allowed_members, entry.key_ptr.*)) return OverrideError.ForbiddenOverrideMember;
+    }
+
+    const raw_id = try typedString(obj, "id") orelse return OverrideError.MissingProviderId;
+    if (provider_catalog.provider(raw_id) == null) return OverrideError.UnknownProviderId;
+
+    const base_url = if (try typedString(obj, "base_url")) |raw| url: {
+        const stated = try typedBool(obj, "carries_version");
+        const trimmed = if (stated orelse false)
+            std.mem.trimEnd(u8, raw, "/")
+        else
+            provider_base_url.normalizeVersionedBaseUrl(raw);
+        if (trimmed.len == 0) return OverrideError.MissingBaseUrl;
+        _ = std.Uri.parse(trimmed) catch return OverrideError.InvalidBaseUrl;
+        break :url try allocator.dupe(u8, trimmed);
+    } else null;
+    errdefer if (base_url) |url| allocator.free(url);
+
+    const id = try allocator.dupe(u8, raw_id);
+    errdefer allocator.free(id);
+
+    if (obj.get("headers") != null and obj.get("headers").? != .object) return OverrideError.WrongTypedOverrideMember;
+    if (obj.get("models") != null and obj.get("models").? != .array) return OverrideError.WrongTypedOverrideMember;
+    const headers = try parseHeaders(allocator, obj);
+    errdefer {
+        for (headers) |header| {
+            allocator.free(header.name);
+            allocator.free(header.value);
+        }
+        allocator.free(headers);
+    }
+
+    const models = try parseModels(allocator, obj);
+    errdefer {
+        for (models) |*spec| {
+            var owned = spec.*;
+            owned.deinit(allocator);
+        }
+        allocator.free(models);
+    }
+
+    return .{
+        .id = id,
+        .base_url = base_url,
+        .carries_version = try typedBool(obj, "carries_version"),
+        .headers = headers,
+        .models = models,
+    };
+}
+
+pub fn overrideFor(overrides: []const Override, id: []const u8) ?Override {
+    for (overrides) |override| {
+        if (std.mem.eql(u8, override.id, id)) return override;
+    }
+    return null;
 }
 
 fn parseProvider(allocator: std.mem.Allocator, obj: *const std.json.ObjectMap) !CustomProvider {
@@ -629,6 +834,177 @@ test "custom providers tolerate an absent or empty providers array" {
     }
 }
 
+test "an override may move a catalogued row's endpoint and states the fields it changed" {
+    var config = try parseConfig(testing.allocator,
+        \\{"overrides":[{"id":"deepseek","base_url":"https://proxy.example/api/v1",
+        \\ "carries_version":true,"headers":{"X-Tenant":"acme"},"models":["deepseek-chat"]}]}
+    );
+    defer config.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 0), config.providers.len);
+    try testing.expectEqual(@as(usize, 1), config.overrides.len);
+
+    const override = config.overrides[0];
+    try testing.expectEqualStrings("deepseek", override.id);
+    try testing.expectEqualStrings("https://proxy.example/api/v1", override.base_url.?);
+    try testing.expectEqual(@as(?bool, true), override.carries_version);
+    try testing.expectEqual(@as(usize, 1), override.headers.len);
+    try testing.expectEqualStrings("X-Tenant", override.headers[0].name);
+    try testing.expectEqualStrings("acme", override.headers[0].value);
+    try testing.expectEqual(@as(usize, 1), override.models.len);
+    try testing.expectEqualStrings("deepseek-chat", override.models[0].id);
+}
+
+test "an override may not change the id or the wire of the row it overrides" {
+    const cases = [_]struct { data: []const u8, want: OverrideError }{
+        .{ .data =
+        \\{"overrides":[{"id":"deepseek","base_url":"https://x.test","api":"anthropic-messages"}]}
+        , .want = OverrideError.ForbiddenOverrideMember },
+        .{ .data =
+        \\{"overrides":[{"id":"deepseek","base_url":"https://x.test","wire":"openai-completions"}]}
+        , .want = OverrideError.ForbiddenOverrideMember },
+        .{ .data =
+        \\{"overrides":[{"id":"deepseek","base_url":"https://x.test","auth":{"env":"K"}}]}
+        , .want = OverrideError.ForbiddenOverrideMember },
+        .{ .data =
+        \\{"overrides":[{"id":"deepseek","base_url":"https://x.test","name":"Mine"}]}
+        , .want = OverrideError.ForbiddenOverrideMember },
+        .{ .data =
+        \\{"overrides":[{"id":"deepseek","base_url":"https://x.test","capabilities":{"store":true}}]}
+        , .want = OverrideError.ForbiddenOverrideMember },
+        .{ .data =
+        \\{"overrides":[{"id":"deepseek","base_url":"https://x.test","context_window":4096}]}
+        , .want = OverrideError.ForbiddenOverrideMember },
+        .{ .data =
+        \\{"overrides":[{"id":"deepseek","base_url":"https://x.test","max_tokens":99}]}
+        , .want = OverrideError.ForbiddenOverrideMember },
+        .{ .data =
+        \\{"overrides":[{"id":"deepseek","base_url":"https://x.test","reasoning":true}]}
+        , .want = OverrideError.ForbiddenOverrideMember },
+        .{ .data =
+        \\{"overrides":[{"id":"deepseek","base_url":"https://x.test","headers":{"A":"1"},"passthrough":true}]}
+        , .want = OverrideError.ForbiddenOverrideMember },
+    };
+    for (cases) |case| {
+        try testing.expectError(case.want, parseConfig(testing.allocator, case.data));
+    }
+}
+
+test "an override must name a catalogued row and may not name one twice" {
+    const cases = [_]struct { data: []const u8, want: OverrideError }{
+        .{ .data =
+        \\{"overrides":[{"base_url":"https://x.test"}]}
+        , .want = OverrideError.MissingProviderId },
+        .{ .data =
+        \\{"overrides":[{"id":"not-a-catalog-row","base_url":"https://x.test"}]}
+        , .want = OverrideError.UnknownProviderId },
+        .{ .data =
+        \\{"overrides":[{"id":"deepseek","base_url":"https://x.test"},
+        \\ {"id":"deepseek","base_url":"https://y.test"}]}
+        , .want = OverrideError.DuplicateOverride },
+        .{ .data =
+        \\{"overrides":[{"id":"deepseek","base_url":"not a url"}]}
+        , .want = OverrideError.InvalidBaseUrl },
+        .{ .data =
+        \\{"overrides":["deepseek"]}
+        , .want = OverrideError.InvalidConfig },
+        .{ .data =
+        \\{"overrides":{"id":"deepseek"}}
+        , .want = OverrideError.InvalidConfig },
+    };
+    for (cases) |case| {
+        try testing.expectError(case.want, parseConfig(testing.allocator, case.data));
+    }
+}
+
+test "an override may change only its endpoint, so one that names no base url still parses" {
+    var narrowed = try parseConfig(testing.allocator,
+        \\{"overrides":[{"id":"deepseek","models":["deepseek-chat"]}]}
+    );
+    defer narrowed.deinit(testing.allocator);
+    try testing.expect(narrowed.overrides[0].base_url == null);
+    try testing.expectEqual(@as(usize, 1), narrowed.overrides[0].models.len);
+}
+
+test "an override states where its version sits, so no request URL is a guess" {
+    var stated = try parseConfig(testing.allocator,
+        \\{"overrides":[{"id":"deepseek","base_url":"https://proxy.example/api/v1","carries_version":true}]}
+    );
+    defer stated.deinit(testing.allocator);
+    try testing.expectEqualStrings("https://proxy.example/api/v1", stated.overrides[0].base_url.?);
+    try testing.expectEqual(@as(?bool, true), stated.overrides[0].carries_version);
+
+    var denied = try parseConfig(testing.allocator,
+        \\{"overrides":[{"id":"deepseek","base_url":"https://proxy.example/api/v1","carries_version":false}]}
+    );
+    defer denied.deinit(testing.allocator);
+    try testing.expectEqualStrings("https://proxy.example/api", denied.overrides[0].base_url.?);
+    try testing.expectEqual(@as(?bool, false), denied.overrides[0].carries_version);
+}
+
+test "a caller that reads only the providers leaves nothing behind" {
+    var config = try parseConfig(testing.allocator,
+        \\{"providers":[{"id":"gw","base_url":"https://gw.test"}],
+        \\ "overrides":[{"id":"deepseek","base_url":"https://proxy.example","headers":{"X-Tenant":"acme"},
+        \\ "models":["deepseek-chat"]}]}
+    );
+    const providers = config.takeProviders(testing.allocator);
+    defer deinitProviders(testing.allocator, providers);
+    try testing.expectEqual(@as(usize, 1), providers.len);
+    try testing.expectEqual(@as(usize, 0), providers[0].headers.len);
+    try testing.expectEqual(@as(usize, 0), config.overrides.len);
+
+    const from_parse = try parse(testing.allocator,
+        \\{"providers":[{"id":"gw","base_url":"https://gw.test"}],
+        \\ "overrides":[{"id":"deepseek","base_url":"https://proxy.example","headers":{"X-Tenant":"acme"}}]}
+    );
+    defer deinitProviders(testing.allocator, from_parse);
+    try testing.expectEqual(@as(usize, 1), from_parse.len);
+}
+
+test "an override member of the wrong type is refused rather than read as absent" {
+    const cases = [_][]const u8{
+        "{\"overrides\":[{\"id\":\"deepseek\",\"base_url\":123}]}",
+        "{\"overrides\":[{\"id\":\"deepseek\",\"base_url\":\"https://x.test\",\"carries_version\":\"yes\"}]}",
+        "{\"overrides\":[{\"id\":\"deepseek\",\"carries_version\":1}]}",
+        "{\"overrides\":[{\"id\":\"deepseek\",\"base_url\":\"https://x.test\",\"headers\":[{\"A\":\"1\"}]}]}",
+        "{\"overrides\":[{\"id\":123,\"base_url\":\"https://x.test\"}]}",
+        "{\"overrides\":[{\"id\":\"deepseek\",\"models\":\"deepseek-chat\"}]}",
+    };
+    for (cases) |data| {
+        try testing.expectError(OverrideError.WrongTypedOverrideMember, parseConfig(testing.allocator, data));
+    }
+}
+
+test "a wrong-typed member is refused rather than read as an unstated one" {
+    try testing.expectError(
+        OverrideError.WrongTypedOverrideMember,
+        parseConfig(testing.allocator, "{\"overrides\":[{\"id\":\"deepseek\",\"carries_version\":\"true\"}]}"),
+    );
+}
+
+test "an override is found by the row it names and by no other row" {
+    var config = try parseConfig(testing.allocator,
+        \\{"overrides":[{"id":"deepseek","base_url":"https://proxy.example"},
+        \\ {"id":"openai","base_url":"https://gw.example"}]}
+    );
+    defer config.deinit(testing.allocator);
+
+    const found = overrideFor(config.overrides, "deepseek") orelse return error.TestExpectedOverride;
+    try testing.expectEqualStrings("https://proxy.example", found.base_url.?);
+    try testing.expect(overrideFor(config.overrides, "openai") != null);
+    try testing.expect(overrideFor(config.overrides, "kimi") == null);
+    try testing.expect(overrideFor(&.{}, "deepseek") == null);
+}
+
+test "an absent or empty overrides array is not an error" {
+    for ([_][]const u8{ "{}", "{\"providers\":[]}", "{\"overrides\":[]}" }) |data| {
+        var config = try parseConfig(testing.allocator, data);
+        defer config.deinit(testing.allocator);
+        try testing.expectEqual(@as(usize, 0), config.overrides.len);
+    }
+}
+
 fn parseProbe(allocator: std.mem.Allocator) !void {
     const providers = try parse(allocator,
         \\{"providers":[
@@ -643,6 +1019,22 @@ fn parseProbe(allocator: std.mem.Allocator) !void {
 test "custom providers free every allocation when parsing fails midway" {
     try parseProbe(testing.allocator);
     try testing.checkAllAllocationFailures(testing.allocator, parseProbe, .{});
+}
+
+fn parseConfigProbe(allocator: std.mem.Allocator) !void {
+    var config = try parseConfig(allocator,
+        \\{"providers":[{"id":"gw","base_url":"https://gw.test"}],
+        \\ "overrides":[{"id":"deepseek","base_url":"https://proxy.example/api/v1","carries_version":true,
+        \\ "headers":{"X-Tenant":"acme"},"models":["deepseek-chat"]}]}
+    );
+    defer config.deinit(allocator);
+    try testing.expectEqual(@as(usize, 1), config.providers.len);
+    try testing.expectEqual(@as(usize, 1), config.overrides.len);
+}
+
+test "an override frees every allocation when parsing fails midway" {
+    try parseConfigProbe(testing.allocator);
+    try testing.checkAllAllocationFailures(testing.allocator, parseConfigProbe, .{});
 }
 
 test "custom providers normalise a versioned base url to the origin the providers expect" {

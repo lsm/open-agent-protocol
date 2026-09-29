@@ -166,7 +166,7 @@ func TestKimiThinkingIsNeverStreamedAsADelta(t *testing.T) {
 	}
 }
 
-func TestAToolCallEndCarriesItsPositionNotTheIndexItsStartUsed(t *testing.T) {
+func TestAToolCallEndsAtTheIndexItsStartUsed(t *testing.T) {
 	events := runStream(t, streamModel(),
 		sseFrame(`{"choices":[{"delta":{"content":"working"}}]}`),
 		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"read"}}]}}]}`),
@@ -177,8 +177,41 @@ func TestAToolCallEndCarriesItsPositionNotTheIndexItsStartUsed(t *testing.T) {
 	if start.ContentIndex != 0 {
 		t.Errorf("the start's content index = %d, want 0: it counted tool calls alone", start.ContentIndex)
 	}
-	if end.ContentIndex != 1 {
-		t.Errorf("the end's content index = %d, want 1: it is the position in the final array, which holds the text", end.ContentIndex)
+	if end.ContentIndex != start.ContentIndex {
+		t.Errorf("the end's content index = %d and the start's = %d: one call occupies one index, and a consumer that opened the part it started cannot end a part it never opened", end.ContentIndex, start.ContentIndex)
+	}
+}
+
+func TestEveryToolCallEndsAtItsOwnStartIndexWithSeveralCalls(t *testing.T) {
+	events := runStream(t, streamModel(),
+		sseFrame(`{"choices":[{"delta":{"content":"working"}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"read"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"c2","function":{"name":"write"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}},{"index":1,"function":{"arguments":"{}"}}]}}]}`),
+	)
+	starts := map[string]int{}
+	for _, event := range events {
+		if event.Kind == EventToolCallStart {
+			starts[event.ID] = event.ContentIndex
+		}
+	}
+	ends := 0
+	for _, event := range events {
+		if event.Kind != EventToolCallEnd {
+			continue
+		}
+		ends++
+		opened, known := starts[event.ToolCall.ID]
+		if !known {
+			t.Errorf("the call %q ended but never started", event.ToolCall.ID)
+			continue
+		}
+		if event.ContentIndex != opened {
+			t.Errorf("the call %q opened at %d and ended at %d", event.ToolCall.ID, opened, event.ContentIndex)
+		}
+	}
+	if ends != len(starts) {
+		t.Errorf("%d calls ended and %d started, want the same", ends, len(starts))
 	}
 }
 

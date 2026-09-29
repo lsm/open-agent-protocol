@@ -59,9 +59,25 @@ pub fn isCerebras(base_url: ?[]const u8) bool {
     return isHostOrSubdomainOf(base_url, "cerebras.ai");
 }
 
-pub fn isZai(base_url: ?[]const u8) bool {
+pub fn isHostEndingIn(base_url: ?[]const u8, suffix: []const u8) bool {
     const url = base_url orelse return false;
-    return std.mem.find(u8, url, "api.zukijourney.com") != null or std.mem.find(u8, url, "zai") != null;
+    const uri = std.Uri.parse(url) catch return false;
+    const host = uri.host orelse return false;
+    const value = host.percent_encoded;
+    if (std.ascii.eqlIgnoreCase(value, suffix)) return true;
+    if (value.len <= suffix.len) return false;
+    if (!std.ascii.eqlIgnoreCase(value[value.len - suffix.len ..], suffix)) return false;
+    const before = value[value.len - suffix.len - 1];
+    return before == '.' or before == '-';
+}
+
+pub fn isGoogle(base_url: ?[]const u8) bool {
+    return isHostOrSubdomainOf(base_url, "generativelanguage.googleapis.com") or
+        isHostEndingIn(base_url, "aiplatform.googleapis.com");
+}
+
+pub fn isZai(base_url: ?[]const u8) bool {
+    return isHostOrSubdomainOf(base_url, "zukijourney.com");
 }
 
 pub fn isOpenRouter(base_url: ?[]const u8) bool {
@@ -73,8 +89,8 @@ pub fn isChutes(base_url: ?[]const u8) bool {
 }
 
 pub fn isQwen(base_url: ?[]const u8) bool {
-    const url = base_url orelse return false;
-    return std.mem.find(u8, url, "dashscope") != null or std.mem.find(u8, url, "qwen") != null;
+    return isHostOrSubdomainOf(base_url, "dashscope.aliyuncs.com") or
+        isHostOrSubdomainOf(base_url, "dashscope-intl.aliyuncs.com");
 }
 
 pub fn isDeepSeek(base_url: ?[]const u8) bool {
@@ -95,8 +111,7 @@ pub fn isOpenAIHost(base_url: []const u8) bool {
 }
 
 pub fn isAnthropic(base_url: ?[]const u8) bool {
-    const url = base_url orelse return false;
-    return std.mem.find(u8, url, "api.anthropic.com") != null;
+    return isHostOrSubdomainOf(base_url, "anthropic.com");
 }
 
 pub fn detectProviderType(base_url: ?[]const u8) ProviderType {
@@ -110,8 +125,7 @@ pub fn detectProviderType(base_url: ?[]const u8) ProviderType {
     if (isCerebras(url)) return .openai_compatible;
     if (isZai(url)) return .openai_compatible;
     if (isOpenRouter(url)) return .openai_compatible;
-    if (std.mem.find(u8, url, "generativelanguage.googleapis.com") != null) return .google;
-    if (std.mem.find(u8, url, "aiplatform.googleapis.com") != null) return .google;
+    if (isGoogle(url)) return .google;
     if (std.mem.find(u8, url, "bedrock-runtime.") != null or std.mem.find(u8, url, "bedrock.") != null) return .bedrock;
     if (std.mem.find(u8, url, ".openai.azure.com") != null or std.mem.find(u8, url, "cognitiveservices.azure.com") != null) return .azure;
     if (std.mem.find(u8, url, "localhost:11434") != null or std.mem.find(u8, url, "127.0.0.1:11434") != null or std.mem.find(u8, url, "ollama") != null) return .ollama;
@@ -207,6 +221,159 @@ test "isGitHubCopilot detection" {
     try std.testing.expect(isGitHubCopilot("https://api.githubcopilot.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot("https://api.openai.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot(null));
+}
+
+test "a google host is the gemini api host or an aiplatform host, regional or not" {
+    const hosts = [_][]const u8{
+        "https://generativelanguage.googleapis.com",
+        "https://generativelanguage.googleapis.com/v1beta",
+        "https://aiplatform.googleapis.com",
+        "https://us-central1-aiplatform.googleapis.com",
+        "https://europe-west4-aiplatform.googleapis.com/v1/projects/p/locations/l/publishers/google",
+        "https://US-CENTRAL1-AIPLATFORM.GOOGLEAPIS.COM",
+    };
+    for (hosts) |url| {
+        try std.testing.expect(isGoogle(url));
+    }
+
+    const not_hosts = [_][]const u8{
+        "https://googleapis.com",
+        "https://storage.googleapis.com",
+        "https://notgenerativelanguage.googleapis.com",
+        "https://evilgenerativelanguage.googleapis.com.attacker.test",
+        "https://evil-aiplatform.googleapis.com.attacker.test",
+        "https://generativelanguage.googleapis.com.evil.example",
+        "https://evil.example/?next=aiplatform.googleapis.com",
+        "https://evil.example/v1/generativelanguage.googleapis.com",
+        "https://gateway.example/proxy/aiplatform.googleapis.com",
+        "not a url at all",
+        "",
+    };
+    for (not_hosts) |url| {
+        try std.testing.expect(!isGoogle(url));
+    }
+
+    try std.testing.expect(!isGoogle(null));
+}
+
+test "the catalogued google row still detects as google with its caps" {
+    const url = "https://generativelanguage.googleapis.com";
+    try std.testing.expect(isGoogle(url));
+    try std.testing.expectEqual(ProviderType.google, detectProviderType(url));
+    const caps = detectCapabilities(url);
+    try std.testing.expectEqual(ProviderType.google, caps.provider_type);
+    try std.testing.expect(caps.vision);
+    try std.testing.expect(caps.function_calling);
+}
+
+test "a zai host is zukijourney.com or a subdomain of it" {
+    const hosts = [_][]const u8{
+        "https://api.zukijourney.com",
+        "https://api.zukijourney.com/api/paas/v4",
+        "https://zukijourney.com",
+        "https://API.ZUKIJOURNEY.COM",
+    };
+    for (hosts) |url| {
+        try std.testing.expect(isZai(url));
+    }
+
+    const not_hosts = [_][]const u8{
+        "https://myzukijourney.com",
+        "https://zukijourney.com.evil.example",
+        "https://evil.example/?next=api.zukijourney.com",
+        "https://evil.example/v1/zai",
+        "https://gateway.example/proxy/zai",
+        "not a url at all",
+        "",
+    };
+    for (not_hosts) |url| {
+        try std.testing.expect(!isZai(url));
+    }
+
+    try std.testing.expect(!isZai(null));
+}
+
+test "the zai-coding-plan row is not detected as zai, and that is recorded rather than fixed here" {
+    const url = "https://api.z.ai/api/coding/paas/v4";
+    try std.testing.expect(!isZai(url));
+    try std.testing.expectEqual(.openai, detectCapabilities(url).thinking_format);
+}
+
+test "a qwen host is dashscope.aliyuncs.com or a subdomain of it" {
+    const hosts = [_][]const u8{
+        "https://dashscope.aliyuncs.com",
+        "https://coding-intl.dashscope.aliyuncs.com",
+        "https://coding-intl.dashscope.aliyuncs.com/v1",
+        "https://DASHSCOPE.ALIYUNCS.COM",
+        "https://dashscope-intl.aliyuncs.com",
+        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+    };
+    for (hosts) |url| {
+        try std.testing.expect(isQwen(url));
+    }
+
+    const not_hosts = [_][]const u8{
+        "https://mydashscope.aliyuncs.com.attacker.example",
+        "https://aliyuncs.com",
+        "https://www.aliyuncs.com",
+        "https://notdashscope.aliyuncs.com",
+        "https://evil.example/?next=dashscope",
+        "https://evil.example/v1/qwen",
+        "https://gateway.example/proxy/dashscope.aliyuncs.com",
+        "not a url at all",
+        "",
+    };
+    for (not_hosts) |url| {
+        try std.testing.expect(!isQwen(url));
+    }
+
+    try std.testing.expect(!isQwen(null));
+}
+
+test "the catalogued alibaba row still gets the qwen thinking format" {
+    const url = "https://coding-intl.dashscope.aliyuncs.com/v1";
+    try std.testing.expect(isQwen(url));
+    try std.testing.expectEqual(ProviderType.openai_compatible, detectProviderType(url));
+    try std.testing.expectEqual(.qwen, detectCapabilities(url).thinking_format);
+}
+
+test "an anthropic host is anthropic.com or a subdomain of it" {
+    const hosts = [_][]const u8{
+        "https://api.anthropic.com",
+        "https://api.anthropic.com/v1",
+        "https://anthropic.com",
+        "https://API.ANTHROPIC.COM",
+    };
+    for (hosts) |url| {
+        try std.testing.expect(isAnthropic(url));
+    }
+
+    const not_hosts = [_][]const u8{
+        "https://myanthropic.com",
+        "https://notanthropic.com",
+        "https://anthropic.com.evil.example",
+        "https://evil.example/?next=api.anthropic.com",
+        "https://evil.example/v1/api.anthropic.com",
+        "https://gateway.example/proxy/api.anthropic.com",
+        "not a url at all",
+        "",
+    };
+    for (not_hosts) |url| {
+        try std.testing.expect(!isAnthropic(url));
+    }
+
+    try std.testing.expect(!isAnthropic(null));
+}
+
+test "the catalogued anthropic row still gets the anthropic caps" {
+    const url = "https://api.anthropic.com";
+    try std.testing.expect(isAnthropic(url));
+    try std.testing.expectEqual(ProviderType.anthropic, detectProviderType(url));
+    const caps = detectCapabilities(url);
+    try std.testing.expectEqual(ProviderType.anthropic, caps.provider_type);
+    try std.testing.expect(caps.extended_thinking);
+    try std.testing.expect(caps.prompt_caching);
+    try std.testing.expect(caps.vision);
 }
 
 test "an openrouter host is openrouter.ai or a subdomain of it" {
