@@ -1282,7 +1282,7 @@ are "stamped with the revision the lister served it under", and both name
 | **The draft says** | The daemon's trust model: a host may not hand the hub a command to run. An attachment that names a `local` source, `args`, a `NAME=value` `environment` entry, or an unconfigured process id is refused, not attached. |
 | **Go does** | `ResolveAttachments` (`serve/attach.go:58-71`) applies the three checks before the attachment is admitted, and an open naming a `local` source answers `unsupported_feature`. Measured: a source with `kind: "local"` and a `command` is refused. |
 | **Zig does** | **Fixed.** `openSession` handed `tool_sources_json` straight to `hub.open` with no counterpart, so the same open **succeeded** and the command was silently dropped. `attachmentRefusal` now applies all four checks in the frontend, and consults the hub's **registry-configured** sources — not the adapter's advertised ones — for the member comparison, so a source the operator configured is named by id and not re-described from the wire. |
-| **Why it matters** | This is the one divergence found so far that is about a *host being untrusted* rather than about a host being misinformed. Every other row is a wrong code or a missing reason; this one is a session that reports a command it never ran. It is reachable today, with both trees' own memory adapter, and no differential scenario attaches a source, so nothing catches it. |
+| **Why it matters** | This is the one divergence found so far that is about a *host being untrusted* rather than about a host being misinformed. Every other row is a wrong code or a missing reason; this one is a session that reports a command it never ran. It is reachable today, with both trees' own memory adapter, and four differential scenarios now attach a source — the one named "an attachment that names something to run is refused by both" sends five — so both trees are held to the same four refusals. That scenario is what caught the substitution gap recorded as D19. |
 | **The fix** | The three checks belong in the frontend, before the attachment is admitted, because that is where the wire is untrusted: a `kind` that names an executable, `args`, a `NAME=value` `environment` entry, and a process id the registry has not configured. That is the same place Go puts them, and it is the reason the trust model is a frontend concern rather than a hub one. |
 
 ### D18 — the trust check answers before the revision gate
@@ -1293,6 +1293,24 @@ are "stamped with the revision the lister served it under", and both name
 | **Go does** | `AttachmentGate` runs the stale comparison at `ops.go:337`, and `ResolveAttachments` at `ops.go:359` — the gate first. |
 | **Zig does** | `openSession` calls `attachmentRefusal` **before** `hub.open`, where the revision gate lives, so an open that both cites a stale revision and names a `command` answers `unsupported_feature` where Go answers `stale_capabilities`. |
 | **Why it is not fixed here** | The gate is inside the hub and the check is in the frontend, so there is no order that puts one before the other without either duplicating the gate or moving the check into the hub. Both are the refusal PR's work — the hub reporting its refusals in this page's order is exactly what makes a frontend check orderable — and D11's precedence note is the same inversion. Reachable today with both memory adapters; no differential scenario sends a stale revision and an attachment together. |
+
+### D19 — a configured tool source is validated, then handed to the adapter as the wire wrote it
+
+| | |
+| --- | --- |
+| **The draft says** | A host names a tool source by the id the operator configured; the daemon substitutes what the operator declared and the adapter never sees the wire's own description. |
+| **Go does** | `ResolveAttachments` (`serve/attach.go:89`) replaces the wire entry with `hub.Registry().ToolSource` and merges the operator's `environment` before the adapter runs. |
+| **Zig does** | `openSession` hands the raw `tool_sources_json` to `hub.open`. `attachmentRefusal` now checks the wire against the registry, so naming a configured source by id — **the only form the check permits** — is refused by the memory adapter ("an attachment needs an id and a kind", mapped to `unsupported_feature`), and with a matching kind the operator's `endpoint` and `protocol` are still dropped. |
+| **Why it is not fixed here** | It is a second concern on top of the trust checks, and #549 has had nine rounds. Latent today because `oapx hub` refuses `--config`, so the registry is always empty; it becomes live the moment #389 registers sources. Carried as its own PR from main. |
+
+### D20 — `type_mismatch` is answered by no test in either tree
+
+| | |
+| --- | --- |
+| **The draft says** | An envelope whose payload is not a `session.open.request` is refused `type_mismatch`, distinct from `schema_invalid` (the envelope violates its schema) and from `invalid_request` (the request field is missing or the wrong type). |
+| **Go does** | Answered from `serve/servestdio/ops.go`, with no test that sends a schema-valid non-`open` payload to the `open` route. |
+| **Zig does** | Answered at `zig/src/hub/stdio.zig:505`, after the envelope is validated and before it is dispatched, and with no test that reaches it. `malformed_json` is covered by the Zig unit table; `type_mismatch` is not, in either tree. |
+| **Why it is not fixed here** | The line that reaches it does not exist yet in either tree, so the check is correct by inspection and unproven by execution. A row that claims coverage it does not have is the same defect as a name that claims an unexercised check, and the ledger is where that claim has to be visible. Renaming the differential scenario that claimed five gate refusals and exercised two is the other half of the same fix. |
 
 ### D4 — the registry's `journal_capacity` is hub-wide in Zig, per-adapter in Go
 

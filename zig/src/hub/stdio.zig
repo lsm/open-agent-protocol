@@ -540,7 +540,7 @@ pub const Frontend = struct {
                     }
                 }
             }
-            const configured = self.hub.configuredSource(id);
+            const configured = self.hub.toolSource(id);
             if (configured == null) {
                 if (fields.get("kind")) |value| {
                     if (value == .string and std.mem.eql(u8, value.string, "process")) {

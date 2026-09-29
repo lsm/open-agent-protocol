@@ -30,7 +30,7 @@ var hubParityScenarios = map[string][]string{
 		`{"id":5,"op":"adapters","session_id":"x"}`,
 		`{"id":6,"op":"close"}`,
 	},
-	"the open gate refuses the same five ways": {
+	"the open gate refuses the same two ways, and the same line is a success": {
 		`{"id":1,"op":"open","adapter":"memory"}`,
 		`{"id":2,"op":"open","request":{}}`,
 		`{"id":3,"op":"open","adapter":"memory","request":null}`,

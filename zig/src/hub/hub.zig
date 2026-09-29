@@ -433,13 +433,6 @@ pub const Hub = struct {
         return self.entries.items.len;
     }
 
-    pub fn configuredSource(self: *const Hub, id: []const u8) ?contract.ConfiguredSource {
-        for (self.tool_sources) |source| {
-            if (std.mem.eql(u8, source.id, id)) return source;
-        }
-        return null;
-    }
-
     pub fn open(self: *Hub, arena: std.mem.Allocator, adapter_name: []const u8, request: OpenRequest) Failure!Opened {
         const registered = self.find(adapter_name) orelse return error.UnknownAdapter;
         if (registered.revision.len == 0) return error.AdapterDescriptorUnbound;
