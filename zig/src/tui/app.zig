@@ -1772,6 +1772,13 @@ pub const App = struct {
         self.auto_continue.onUserTurn();
     }
 
+    pub fn userTookOver(self: *App) void {
+        const was_pending = self.auto_continue.pending();
+        self.auto_continue.onUserTurn();
+        if (!was_pending) return;
+        self.state.appendTranscript(.system, "the automatic continue was dropped.") catch {};
+    }
+
     pub fn discardReplayedError(self: *App) void {
         self.forgetRunError();
         self.auto_continue.onUserTurn();
@@ -1970,7 +1977,7 @@ pub const App = struct {
         self.state.transcript_scroll = 0;
         if (trimmed[0] == '/') return try self.submitCommand(trimmed);
         self.forgetRunError();
-        self.auto_continue.onUserTurn();
+        self.userTookOver();
         if (try self.compactBeforeTurn(trimmed)) return;
         try self.sendUserTurn(trimmed);
     }
@@ -2057,7 +2064,7 @@ pub const App = struct {
         const trimmed = std.mem.trim(u8, text, " \t\r\n");
         if (trimmed.len == 0) return;
         if (trimmed[0] == '/') return try self.submitCommand(trimmed);
-        self.auto_continue.onUserTurn();
+        self.userTookOver();
         self.applyPendingSessionResetSync() catch |err| {
             if (err == error.PendingSessionReset) {
                 try self.state.appendTranscript(.@"error", "Session reset pending; wait for the current run to finish.");
@@ -2112,7 +2119,7 @@ pub const App = struct {
 
         if (command.kind == .abort) {
             if (self.approval_waiter) |waiter| waiter.rejectPending();
-            self.auto_continue.onUserTurn();
+            self.userTookOver();
         }
 
         switch (result.action) {
@@ -2385,7 +2392,7 @@ pub const App = struct {
             return err;
         };
         try self.ensureSessionId();
-        self.auto_continue.onUserTurn();
+        self.userTookOver();
         if (self.session) |*session| {
             try session.followUp(trimmed);
             try self.state.appendQueuedFollowUp(trimmed);
@@ -2597,7 +2604,7 @@ pub const TuiModel = struct {
                             },
                             .escape => {
                                 app.decideApproval(false, false) catch |err| app.recordError(@errorName(err)) catch {};
-                                app.auto_continue.onUserTurn();
+                                app.userTookOver();
                                 decided = true;
                             },
                             else => {},
@@ -2634,7 +2641,7 @@ pub const TuiModel = struct {
                         },
                         .escape => {
                             app.cancelLogin();
-                            app.auto_continue.onUserTurn();
+                            app.userTookOver();
                         },
                         .backspace => _ = app.state.composer.deleteBeforeCursor(),
                         .char => |c| appendChar(app, c) catch {},
@@ -2808,7 +2815,7 @@ pub const TuiModel = struct {
     }
 
     fn handleInterrupt(self: *TuiModel, app: *App, ctx: *zz.Context) zz.Cmd(Msg) {
-        app.auto_continue.onUserTurn();
+        app.userTookOver();
         if (app.interrupt_armed_tick != null) return self.quitCmd(app, ctx);
         if (app.state.mode == .login_input) {
             app.cancelLogin();
@@ -2834,12 +2841,12 @@ pub const TuiModel = struct {
 
     fn closeModal(app: *App) void {
         app.state.mode = .normal;
-        app.auto_continue.onUserTurn();
+        app.userTookOver();
     }
 
     fn handleEscape(self: *TuiModel, app: *App) void {
         _ = self;
-        app.auto_continue.onUserTurn();
+        app.userTookOver();
         if (app.state.composer.buffer.items.len > 0) {
             app.state.composer.clear();
             return;
@@ -6810,6 +6817,29 @@ test "a context overflow never schedules a continue" {
     harness.pastDelay();
     try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
     try std.testing.expect(!harness.transcriptHas("Continuing in"));
+}
+
+test "a user turn inside the delay says the continue was dropped" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try std.testing.expect(harness.transcriptHas("Continuing in 3s"));
+
+    try harness.app.submit("never mind, I will retype it");
+    try std.testing.expect(harness.transcriptHas("the automatic continue was dropped"));
+
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 1), harness.mock.submit_count);
+}
+
+test "a clean run says nothing about a continue that was never armed" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 401 (check the key)", .@"error");
+    try harness.app.submit("let me fix the key");
+    try std.testing.expect(!harness.transcriptHas("dropped"));
 }
 
 test "an abort before the delay is up drops the pending continue" {

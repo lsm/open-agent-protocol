@@ -366,9 +366,10 @@ steering, queueing a follow-up, `Esc` or `Ctrl+C` — drops the pending continue
 `Esc` here meaning any of them, whether it clears the draft, aborts the run or
 closes a picker. It waits rather than expires while a run is streaming or a
 picker or approval is open, so the three seconds is a wait rather than a
-deadline. The continue goes out through the same path a typed one does, so an
-`/autocompact` session compacts first and holds the continue until the
-compaction ends. A follow-up
+deadline, and dropping it says so in the transcript rather than leaving the
+earlier announcement standing. The continue goes out through the same path a
+typed one does, so an `/autocompact` session compacts first and holds the
+continue until the compaction ends. A follow-up
 already queued when the run fails suppresses it entirely, because an
 error-ended run does not resume the queue on its own, so the continue would be
 a promise nothing keeps. Replaying a saved session is not a fresh failure: a
