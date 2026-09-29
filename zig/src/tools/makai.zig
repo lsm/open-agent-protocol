@@ -39,7 +39,6 @@ const oap_provider_http_policy = @import("oap_provider_http_policy");
 const pre_transform = @import("pre_transform");
 const semantic = @import("semantic");
 const provider_semantic = @import("provider_semantic");
-const jsonschema = @import("jsonschema");
 const validator = @import("validator");
 const oap_provider_types = @import("oap_provider_types");
 const oap_provider_envelope = @import("oap_provider_envelope");
