@@ -9439,6 +9439,24 @@
       "scope": "frame"
     },
     {
+      "id": "provider-model-facts-published-as-empty-strings",
+      "path": "provider/schema-invalid/model-facts-published-as-empty-strings.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "provider-core"
+      ],
+      "provenance": [
+        "decisions/0035-a-model-entry-publishes-its-facts-and-absence-means-unknown.md"
+      ],
+      "profile": "model-provider-core",
+      "scope": "frame"
+    },
+    {
       "id": "provider-model-facts-published-as-empty-lists",
       "path": "provider/schema-invalid/model-facts-published-as-empty-lists.json",
       "kind": "schema-invalid",

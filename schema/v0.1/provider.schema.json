@@ -274,7 +274,8 @@
           "$ref": "common.schema.json#/$defs/nonEmptyString"
         },
         "display_name": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1
         },
         "provider_id": {
           "$ref": "common.schema.json#/$defs/nonEmptyString"
@@ -333,10 +334,12 @@
           }
         },
         "release_date": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1
         },
         "family": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1
         }
       },
       "additionalProperties": false

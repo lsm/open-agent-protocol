@@ -1905,6 +1905,9 @@ test "a cost, a modality, a level and a listing are each refused outside what th
         "{\"models\":[{\"model_ref\":\"p/other:x@m\",\"model_id\":\"m\",\"provider_id\":\"p\",\"wire\":\"other\",\"reasoning_levels\":[]}]}",
         "{\"models\":[{\"model_ref\":\"p/other:x@m\",\"model_id\":\"m\",\"provider_id\":\"p\",\"wire\":\"other\"}],\"catalog\":{\"observed_at_ms\":1759100000000}}",
         "{\"models\":[],\"catalog\":{\"complete\":true,\"source_url\":\"https://example.invalid/v1/models\"}}",
+        "{\"models\":[{\"model_ref\":\"p/other:x@m\",\"model_id\":\"m\",\"display_name\":\"\",\"provider_id\":\"p\",\"wire\":\"other\"}]}",
+        "{\"models\":[{\"model_ref\":\"p/other:x@m\",\"model_id\":\"m\",\"provider_id\":\"p\",\"wire\":\"other\",\"release_date\":\"\"}]}",
+        "{\"models\":[{\"model_ref\":\"p/other:x@m\",\"model_id\":\"m\",\"provider_id\":\"p\",\"wire\":\"other\",\"family\":\"\"}]}",
     };
 
     for (payloads) |payload| {
