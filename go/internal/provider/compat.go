@@ -176,6 +176,26 @@ func isHostEndingIn(baseURL string, hasBaseURL bool, suffix string) bool {
 	return before == '.' || before == '-'
 }
 
+func isOllamaURL(baseURL string, hasBaseURL bool) bool {
+	if !hasBaseURL {
+		return false
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+	if parsed.Port() != "11434" {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	for _, candidate := range []string{"localhost", "127.0.0.1", "::1"} {
+		if host == candidate {
+			return true
+		}
+	}
+	return false
+}
+
 func isAzureOpenAIURL(baseURL string, hasBaseURL bool) bool {
 	return isHostOrSubdomain(baseURL, hasBaseURL, "openai.azure.com")
 }
@@ -247,9 +267,7 @@ func DetectProviderType(baseURL string, hasBaseURL bool) ProviderType {
 		return ProviderBedrock
 	case isAzureOpenAIURL(baseURL, hasBaseURL), holdsURL(baseURL, hasBaseURL, "cognitiveservices.azure.com"):
 		return ProviderAzure
-	case holdsURL(baseURL, hasBaseURL, "localhost:11434"),
-		holdsURL(baseURL, hasBaseURL, "127.0.0.1:11434"),
-		holdsURL(baseURL, hasBaseURL, "ollama"):
+	case isOllamaURL(baseURL, hasBaseURL):
 		return ProviderOllama
 	}
 	if len(baseURL) > 0 {

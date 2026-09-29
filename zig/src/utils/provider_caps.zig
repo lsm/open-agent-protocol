@@ -71,6 +71,26 @@ pub fn isHostEndingIn(base_url: ?[]const u8, suffix: []const u8) bool {
     return before == '.' or before == '-';
 }
 
+fn unbracket(host: []const u8) []const u8 {
+    if (host.len >= 2 and host[0] == '[' and host[host.len - 1] == ']') {
+        return host[1 .. host.len - 1];
+    }
+    return host;
+}
+
+pub fn isOllama(base_url: ?[]const u8) bool {
+    const url = base_url orelse return false;
+    const uri = std.Uri.parse(url) catch return false;
+    if (uri.port != 11434) return false;
+    const host = uri.host orelse return false;
+    const value = unbracket(host.percent_encoded);
+    const loopback = [_][]const u8{ "localhost", "127.0.0.1", "::1" };
+    for (loopback) |candidate| {
+        if (std.ascii.eqlIgnoreCase(value, candidate)) return true;
+    }
+    return false;
+}
+
 pub fn isAzureOpenAI(base_url: ?[]const u8) bool {
     return isHostOrSubdomainOf(base_url, "openai.azure.com");
 }
@@ -156,7 +176,7 @@ pub fn detectProviderType(base_url: ?[]const u8) ProviderType {
     if (isGoogle(url)) return .google;
     if (isBedrock(url)) return .bedrock;
     if (isAzureOpenAI(url) or std.mem.find(u8, url, "cognitiveservices.azure.com") != null) return .azure;
-    if (std.mem.find(u8, url, "localhost:11434") != null or std.mem.find(u8, url, "127.0.0.1:11434") != null or std.mem.find(u8, url, "ollama") != null) return .ollama;
+    if (isOllama(url)) return .ollama;
 
     if (url.len > 0) return .openai_compatible;
 
@@ -249,6 +269,48 @@ test "isGitHubCopilot detection" {
     try std.testing.expect(isGitHubCopilot("https://api.githubcopilot.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot("https://api.openai.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot(null));
+}
+
+test "an ollama host is loopback on 11434 and nothing else" {
+    const hosts = [_][]const u8{
+        "http://127.0.0.1:11434",
+        "http://127.0.0.1:11434/",
+        "http://127.0.0.1:11434/api/chat",
+        "http://localhost:11434",
+        "http://localhost:11434/api/chat",
+        "http://[::1]:11434",
+        "http://LOCALHOST:11434",
+    };
+    for (hosts) |url| {
+        try std.testing.expect(isOllama(url));
+    }
+
+    const not_hosts = [_][]const u8{
+        "http://127.0.0.1:11435",
+        "http://localhost:11435",
+        "http://localhost",
+        "http://127.0.0.1",
+        "https://ollama.internal:11434",
+        "https://my-ollama.example.com",
+        "http://ollama.internal:11434",
+        "https://ollama.example.com/v1",
+        "http://example.com:11434/ollama",
+        "http://notlocalhost:11434",
+        "http://127.0.0.2:11434",
+        "not a url at all",
+        "",
+    };
+    for (not_hosts) |url| {
+        try std.testing.expect(!isOllama(url));
+    }
+
+    try std.testing.expect(!isOllama(null));
+}
+
+test "the catalogued ollama local default still detects as ollama" {
+    const url = "http://127.0.0.1:11434";
+    try std.testing.expect(isOllama(url));
+    try std.testing.expectEqual(ProviderType.ollama, detectProviderType(url));
 }
 
 test "a bedrock host has bedrock or bedrock-runtime as its first label under amazonaws" {
