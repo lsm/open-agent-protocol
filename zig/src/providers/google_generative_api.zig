@@ -921,6 +921,12 @@ fn runThread(ctx: *ThreadCtx) void {
 
     var content_blocks = std.ArrayList(ai_types.AssistantContent).empty;
     defer content_blocks.deinit(allocator);
+    var pending_partial_frees = std.ArrayList([]ai_types.AssistantContent).empty;
+    defer {
+        for (pending_partial_frees.items) |s| allocator.free(s);
+        pending_partial_frees.deinit(allocator);
+    }
+    const stream_clones_events = stream.ownership.isOwned();
     var current_text = std.ArrayList(u8).empty;
     defer current_text.deinit(allocator);
     var current_thinking = std.ArrayList(u8).empty;
@@ -1027,13 +1033,17 @@ fn runThread(ctx: *ThreadCtx) void {
                                             .thinking_signature = sig_copy,
                                         } }) catch {};
                                         const think_at = content_blocks.items.len - 1;
-                                        const carried = ai_types.partialWithContent(allocator, partial, content_blocks.items, think_at);
+                                        const carried = ai_types.partialWithContent(allocator, partial, content_blocks.items, think_at) catch {
+                                            ctx.deinit();
+                                            stream.completeWithError("oom thinking");
+                                            return;
+                                        };
                                         _ = stream.pushBlocking(.{ .thinking_end = .{
                                             .content_index = think_at,
                                             .content = current_thinking.items,
                                             .partial = carried.partial,
                                         } });
-                                        carried.release(allocator, null);
+                                        carried.release(allocator, if (stream_clones_events) null else &pending_partial_frees);
                                         current_thinking.clearRetainingCapacity();
                                         current_thinking_signature.clearRetainingCapacity();
                                     },
@@ -1120,13 +1130,17 @@ fn runThread(ctx: *ThreadCtx) void {
                                             .thinking_signature = sig_copy,
                                         } }) catch {};
                                         const think_at = content_blocks.items.len - 1;
-                                        const carried = ai_types.partialWithContent(allocator, partial, content_blocks.items, think_at);
+                                        const carried = ai_types.partialWithContent(allocator, partial, content_blocks.items, think_at) catch {
+                                            ctx.deinit();
+                                            stream.completeWithError("oom thinking");
+                                            return;
+                                        };
                                         _ = stream.pushBlocking(.{ .thinking_end = .{
                                             .content_index = think_at,
                                             .content = current_thinking.items,
                                             .partial = carried.partial,
                                         } });
-                                        carried.release(allocator, null);
+                                        carried.release(allocator, if (stream_clones_events) null else &pending_partial_frees);
                                         current_thinking.clearRetainingCapacity();
                                         current_thinking_signature.clearRetainingCapacity();
                                     },
@@ -1240,13 +1254,17 @@ fn runThread(ctx: *ThreadCtx) void {
                     .thinking_signature = sig_copy,
                 } }) catch {};
                 const think_at = content_blocks.items.len - 1;
-                const carried = ai_types.partialWithContent(allocator, partial, content_blocks.items, think_at);
+                const carried = ai_types.partialWithContent(allocator, partial, content_blocks.items, think_at) catch {
+                    ctx.deinit();
+                    stream.completeWithError("oom thinking");
+                    return;
+                };
                 _ = stream.pushBlocking(.{ .thinking_end = .{
                     .content_index = think_at,
                     .content = current_thinking.items,
                     .partial = carried.partial,
                 } });
-                carried.release(allocator, null);
+                carried.release(allocator, if (stream_clones_events) null else &pending_partial_frees);
             },
             .none => {},
         }

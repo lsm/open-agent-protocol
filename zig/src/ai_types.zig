@@ -726,9 +726,9 @@ pub fn partialWithContent(
     base: AssistantMessage,
     content: []const AssistantContent,
     index: usize,
-) CarriedPartial {
+) error{OutOfMemory}!CarriedPartial {
     if (index >= content.len) return .{ .partial = base, .owned = null };
-    const slice = allocator.alloc(AssistantContent, index + 1) catch return .{ .partial = base, .owned = null };
+    const slice = try allocator.alloc(AssistantContent, index + 1);
     @memcpy(slice, content[0 .. index + 1]);
     var out = base;
     out.content = slice;
@@ -1591,7 +1591,7 @@ test "partialWithContent puts the block at the index it is asked for" {
         .{ .text = .{ .text = "before" } },
         .{ .thinking = .{ .thinking = "pondering", .thinking_signature = "sig-9" } },
     };
-    const carried = partialWithContent(allocator, .{
+    const carried = try partialWithContent(allocator, .{
         .content = &.{},
         .api = "anthropic-messages",
         .provider = "anthropic",
@@ -1611,7 +1611,7 @@ test "partialWithContent puts the block at the index it is asked for" {
 test "partialWithContent leaves the partial alone when the index is not there" {
     const allocator = std.testing.allocator;
     const content = [_]AssistantContent{.{ .text = .{ .text = "only" } }};
-    const carried = partialWithContent(allocator, .{
+    const carried = try partialWithContent(allocator, .{
         .content = &.{},
         .api = "anthropic-messages",
         .provider = "anthropic",

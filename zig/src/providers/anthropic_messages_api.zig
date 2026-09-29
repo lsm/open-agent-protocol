@@ -1097,16 +1097,18 @@ fn endThinkingBlock(
     pending: ?*std.ArrayList([]ai_types.AssistantContent),
 ) ThinkingEnd {
     const thinking_copy = allocator.dupe(u8, content) catch return .oom;
-    errdefer allocator.free(thinking_copy);
     const sig_copy = if (signature.len > 0) allocator.dupe(u8, signature) catch null else null;
-    errdefer if (sig_copy) |s| allocator.free(s);
 
     content_blocks.append(allocator, .{ .thinking = .{
         .thinking = thinking_copy,
         .thinking_signature = sig_copy,
-    } }) catch return .oom;
+    } }) catch {
+        allocator.free(thinking_copy);
+        if (sig_copy) |sig| allocator.free(sig);
+        return .oom;
+    };
 
-    const carried = ai_types.partialWithContent(allocator, partial, content_blocks.items, content_index);
+    const carried = ai_types.partialWithContent(allocator, partial, content_blocks.items, content_index) catch return .oom;
     _ = stream.pushBlocking(.{ .thinking_end = .{
         .content_index = content_index,
         .content = content,
@@ -2837,6 +2839,12 @@ fn newCloningStream(allocator: std.mem.Allocator) !*event_stream.AssistantMessag
     return stream;
 }
 
+fn newBorrowedStream(allocator: std.mem.Allocator) !*event_stream.AssistantMessageEventStream {
+    const stream = try allocator.create(event_stream.AssistantMessageEventStream);
+    stream.* = event_stream.AssistantMessageEventStream.init(allocator);
+    return stream;
+}
+
 test "a signed thinking block's thinking_end carries the signature it saw" {
     const allocator = std.testing.allocator;
     const stream = try newCloningStream(allocator);
@@ -2928,5 +2936,61 @@ test "the carried thinking part sits at the index the ended part holds" {
             }
         },
         else => return error.NotThinkingEnd,
+    }
+}
+
+test "a borrowed stream still holds the signature when the event is polled" {
+    const allocator = std.testing.allocator;
+    const stream = try newBorrowedStream(allocator);
+    defer _ = stream.deinitAndDestroy();
+
+    var content_blocks: std.ArrayList(ai_types.AssistantContent) = .empty;
+    defer freeThinkingBlocks(allocator, &content_blocks);
+    var pending: std.ArrayList([]ai_types.AssistantContent) = .empty;
+    defer {
+        for (pending.items) |slice| allocator.free(slice);
+        pending.deinit(allocator);
+    }
+
+    try std.testing.expectEqual(
+        ThinkingEnd.ended,
+        endThinkingBlock(allocator, stream, createPartialMessage(try signedThinkingTestModel()), &content_blocks, "pondering", "sig-9", 0, &pending),
+    );
+
+    const polled = stream.poll() orelse return error.NoEvent;
+    switch (polled) {
+        .thinking_end => |t| {
+            if (t.content_index >= t.partial.content.len) return error.PartNotCarried;
+            switch (t.partial.content[t.content_index]) {
+                .thinking => |thinking| try std.testing.expectEqualStrings("sig-9", thinking.thinking_signature orelse return error.SignatureNotCarried),
+                else => return error.PartNotCarried,
+            }
+        },
+        else => return error.NotThinkingEnd,
+    }
+}
+
+test "endThinkingBlock leaks nothing when an allocation fails part way" {
+    const allocator = std.testing.allocator;
+
+    const Case = struct {
+        fn run(failing: std.mem.Allocator, model: ai_types.Model) !void {
+            const stream = try std.testing.allocator.create(event_stream.AssistantMessageEventStream);
+            stream.* = event_stream.AssistantMessageEventStream.init(std.testing.allocator);
+            stream.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
+            defer _ = stream.deinitAndDestroy();
+
+            var content_blocks: std.ArrayList(ai_types.AssistantContent) = .empty;
+            defer freeThinkingBlocks(failing, &content_blocks);
+
+            _ = endThinkingBlock(failing, stream, createPartialMessage(model), &content_blocks, "pondering", "sig-9", 0, null);
+            while (stream.poll()) |event| stream.releaseEvent(event);
+        }
+    };
+
+    var fail_index: usize = 0;
+    while (fail_index <= 24) : (fail_index += 1) {
+        var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = fail_index });
+        try Case.run(failing.allocator(), try signedThinkingTestModel());
     }
 }
