@@ -563,6 +563,7 @@ pub const ProductionRuntime = struct {
     permission_engine: permission.PermissionEngine,
     models: []ai_types.Model,
     initial_model: ?SavedModelRef = null,
+    context_window: ?u32 = null,
 
     pub const InitOptions = struct {
         fixture: bool = false,
@@ -2090,6 +2091,16 @@ pub const App = struct {
         try replaceOwnedString(self.allocator, &cfg.provider, model.provider);
         try replaceOwnedString(self.allocator, &cfg.api, model.api);
         try store.save(cfg);
+    }
+
+    fn persistContextWindow(self: *App, window: ?u32) void {
+        var store = tui_config.Store.initDefault(self.allocator) catch return;
+        defer store.deinit();
+        var cfg = store.load() catch return;
+        defer cfg.deinit(self.allocator);
+        if (cfg.mode.context_window == window) return;
+        cfg.mode.context_window = window;
+        store.save(cfg) catch |err| self.recordError(@errorName(err)) catch {};
     }
 
     fn replaceOwnedString(allocator: std.mem.Allocator, field: *[]u8, value: []const u8) !void {
