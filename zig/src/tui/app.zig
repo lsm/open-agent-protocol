@@ -952,6 +952,8 @@ pub const App = struct {
     slash_index: usize = 0,
     slash_index_query: u64 = 0,
     compaction_transcripts: std.ArrayList([]u8) = .empty,
+    rate_model: []u8 = &.{},
+    rate_provider: []u8 = &.{},
     written_model: []u8 = &.{},
     written_provider: []u8 = &.{},
     session_written: bool = false,
@@ -1082,6 +1084,8 @@ pub const App = struct {
         if (self.written_provider.len > 0) self.allocator.free(self.written_provider);
         self.pending_thinking.deinit(self.allocator);
         if (self.pending_after_compaction) |pending| self.allocator.free(pending);
+        if (self.rate_model.len > 0) self.allocator.free(self.rate_model);
+        if (self.rate_provider.len > 0) self.allocator.free(self.rate_provider);
         if (self.session_title.len > 0) self.allocator.free(self.session_title);
         if (self.first_user_text.len > 0) self.allocator.free(self.first_user_text);
         if (self.title_session_id.len > 0) self.allocator.free(self.title_session_id);
@@ -1375,6 +1379,7 @@ pub const App = struct {
         for (loaded.events.items) |*event| {
             try self.applyRuntimeEvent(event.*);
         }
+        self.state.telemetry.rate = .{};
         self.discardReplayedError();
         try self.state.finalizeInterruptedTools();
         self.state.retireToolOccurrences();
@@ -2846,6 +2851,25 @@ pub const App = struct {
         const runtime = self.runtime orelse return;
         const model = runtime.currentModel() orelse return;
         self.state.telemetry.input_cost_per_million = model.cost.input;
+        if (self.rate_model.len > 0 and
+            std.mem.eql(u8, self.rate_model, model.id) and
+            std.mem.eql(u8, self.rate_provider, model.provider)) return;
+        self.adoptRateModel(model.id, model.provider);
+    }
+
+    fn adoptRateModel(self: *App, id: []const u8, provider: []const u8) void {
+        const next_model = self.allocator.dupe(u8, id) catch return;
+        const next_provider = self.allocator.dupe(u8, provider) catch {
+            self.allocator.free(next_model);
+            return;
+        };
+        if (self.rate_model.len > 0) {
+            self.state.telemetry.rate.resetForModel();
+            self.allocator.free(self.rate_model);
+        }
+        if (self.rate_provider.len > 0) self.allocator.free(self.rate_provider);
+        self.rate_model = next_model;
+        self.rate_provider = next_provider;
     }
 
     pub fn slashQuery(self: *const App) ?[]const u8 {
@@ -3335,7 +3359,9 @@ pub const TuiModel = struct {
                 app.pollLogin() catch {};
                 app.pollWorktree() catch |err| app.recordError(@errorName(err)) catch {};
                 app.pollWorktreeManagement() catch |err| app.recordError(@errorName(err)) catch {};
-                app.state.refreshStreamingElapsed(compat.time.nowMillis());
+                const now_ms = compat.time.nowMillis();
+                app.state.refreshStreamingElapsed(now_ms);
+                app.state.telemetry.rate.liveAt(now_ms);
                 if (app.interrupt_armed_tick) |armed| {
                     if (app.state.anim_tick -% armed > interrupt_window_ticks) app.interrupt_armed_tick = null;
                 }
@@ -5914,6 +5940,129 @@ test "App says so when a window the model in effect cannot take is dropped" {
     }
     try std.testing.expect(said_again);
     try std.testing.expectEqual(@as(u64, 262_144), app.runtime.?.contextWindow());
+}
+
+test "a failed adopt leaves the old model pair and the average in place" {
+    var app = App{ .allocator = std.testing.allocator, .state = tui_state.AppState.init(std.testing.allocator) };
+    defer app.state.deinit();
+    app.rate_model = try std.testing.allocator.dupe(u8, "first-model");
+    app.rate_provider = try std.testing.allocator.dupe(u8, "first-provider");
+    defer std.testing.allocator.free(app.rate_model);
+    defer std.testing.allocator.free(app.rate_provider);
+    app.state.telemetry.rate.measured_since_switch = .{ .output_tokens = 400, .stream_ms = 1_000 };
+
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    const held = app.allocator;
+    app.allocator = failing.allocator();
+    defer app.allocator = held;
+    app.adoptRateModel("second-model", "second-provider");
+
+    try std.testing.expectEqualStrings("first-model", app.rate_model);
+    try std.testing.expectEqualStrings("first-provider", app.rate_provider);
+    try std.testing.expectEqual(@as(u64, 400), app.state.telemetry.rate.measured_since_switch.output_tokens);
+}
+
+test "an adopt that succeeds replaces the pair and clears the average" {
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{gpt_model, kimi_model} });
+    defer app.deinit();
+    app.drainEvents() catch {};
+
+    try std.testing.expectEqualStrings(gpt_model.id, app.rate_model);
+    try std.testing.expectEqualStrings(gpt_model.provider, app.rate_provider);
+    app.state.telemetry.rate.measured_since_switch = .{ .output_tokens = 400, .stream_ms = 1_000 };
+
+    try app.runtime.?.switchModel("kimi-k2.7-code");
+    app.drainEvents() catch {};
+
+    try std.testing.expectEqualStrings(kimi_model.id, app.rate_model);
+    try std.testing.expectEqualStrings(kimi_model.provider, app.rate_provider);
+    try std.testing.expectEqual(@as(u64, 0), app.state.telemetry.rate.measured_since_switch.output_tokens);
+}
+
+test "a resumed session's replayed events leave the rate showing nothing" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+
+    var production = try ProductionRuntime.init(std.testing.allocator, .{});
+    defer production.deinit();
+    production.initBridge();
+    if (production.models.len == 0) return error.TestExpectedTarget;
+    const model_id = production.models[0].id;
+
+    var store = try session_store.Store.init(std.testing.allocator, base);
+    defer store.deinit();
+    var meta = session_store.SessionMetadata{
+        .session_id = try std.testing.allocator.dupe(u8, "replayed"),
+        .model = try std.testing.allocator.dupe(u8, model_id),
+        .provider = try std.testing.allocator.dupe(u8, production.models[0].provider),
+        .last_active = 1,
+    };
+    defer meta.deinit(std.testing.allocator);
+    const text = "replayed assistant text";
+    var delta = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, text));
+    defer delta.deinit(std.testing.allocator);
+    var ended = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, text));
+    defer ended.deinit(std.testing.allocator);
+    try store.save(meta, .{ .turn_start = .{} });
+    try store.save(meta, .{ .message_start = .{ .role = .assistant } });
+    try store.save(meta, .{ .text_delta = .{ .content_index = 0, .delta = delta } });
+    try store.save(meta, .{ .message_end = .{ .role = .assistant, .text = ended } });
+    try store.save(meta, .{ .turn_end = .{ .stop_reason = .stop } });
+
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    var app = try App.init(std.testing.allocator, production.options());
+    defer app.deinit();
+    if (app.store) |*owned| owned.deinit();
+    app.store = try session_store.Store.init(std.testing.allocator, base);
+    app.session = mock.session();
+    try app.loadSessions();
+    try std.testing.expectEqual(@as(usize, 1), app.state.sessions.items.len);
+    app.state.session_index = 0;
+
+    try app.resumeSelectedSession();
+
+    try std.testing.expectEqual(@as(u64, 0), app.state.telemetry.rate.turn().output_tokens);
+    try std.testing.expectEqual(@as(u64, 0), app.state.telemetry.rate.estimated_since_switch.output_tokens);
+    try std.testing.expectEqual(@as(u64, 0), app.state.telemetry.rate.measured_since_switch.output_tokens);
+    try std.testing.expect(!app.state.telemetry.rate.previous.hasFigure());
+    try std.testing.expect(!app.state.telemetry.rate.average.hasFigure());
+    try std.testing.expect(!app.state.telemetry.rate.live.hasFigure());
+}
+
+test "a model switch resets the rate average, including between two models that cost the same" {
+    const same_price = ai_types.Model{
+        .id = "gpt-5-codex-twin",
+        .name = "GPT-5 Codex Twin",
+        .api = "openai-responses",
+        .provider = "openai",
+        .base_url = "https://example.invalid",
+        .reasoning = true,
+        .input = &[_][]const u8{"text"},
+        .cost = .{ .input = 1.25, .output = 10, .cache_read = 0, .cache_write = 0 },
+        .context_window = 128_000,
+        .max_tokens = 16_384,
+    };
+    var twin = gpt_model;
+    twin.id = "gpt-5-codex-twin";
+    twin.cost = same_price.cost;
+    const models = [_]ai_types.Model{ gpt_model, twin };
+    var app = try App.init(std.testing.allocator, .{ .models = &models });
+    defer app.deinit();
+
+    app.state.telemetry.rate.measured_since_switch = .{ .output_tokens = 400, .stream_ms = 1_000 };
+    app.state.telemetry.rate.turnEnded();
+    app.drainEvents() catch {};
+    try std.testing.expect(app.state.telemetry.rate.measured_since_switch.hasFigure());
+
+    try app.runtime.?.switchModel("gpt-5-codex-twin");
+    app.drainEvents() catch {};
+
+    try std.testing.expectEqual(@as(u64, 0), app.state.telemetry.rate.measured_since_switch.output_tokens);
+    try std.testing.expect(!app.state.telemetry.rate.average.hasFigure());
+    try std.testing.expect(!app.state.telemetry.rate.previous.hasFigure());
 }
 
 test "App a model command leaves the gauge on the window in effect" {

@@ -397,6 +397,31 @@ error. That is stated because the four reasons are the whole set.
 | `POST /sessions/{id}/close` | `close` | `204 No Content`, no body | `unknown_session` 404, `run_active` 409, `session_closed` 409, `request_cancelled` 400, `internal` 500 |
 | `GET /sessions/{id}/events` | `events` | an SSE stream, adopting a held subscription when the request named no cursor | see [events](#events) |
 
+**The daemon serves a bounded number of connections at once, and a stream is
+not a connection to itself.** One connection at a time is enough for the
+read-only routes and wrong for `events`: a stream holds its connection for as
+long as the client listens, so a single-connection daemon answers exactly one
+SSE subscriber and then serves nothing else, forever. So the number of
+connections open at once is bounded, and the bound is a transport fact rather
+than a protocol one — the client cannot observe how many are open, only that
+its own was answered.
+
+**Reaching the bound does not get a new wire code**, and this is the part that
+was wrong in the first draft of this paragraph. The rule below is that a port
+may not invent an admission ceiling, and inventing one is exactly what a
+`busy` with a `Retry-After` would be: a client that receives it has no way to
+know whether to wait or to reconnect, because the draft's codes are the ones
+the core defines and none of them means "the daemon is full". A port that
+reaches its bound therefore refuses the connection the way it refuses anything
+else, and **what a client is told at the bound is not decided here** — it needs
+a code the core defines, which is [G13](#known-gaps). Until then a port may
+choose, and the choice is a divergence rather than a rule.
+
+Go has no bound of its own: `go/cmd/goap/serve.go` runs a plain `http.Server`
+over `net.Listen` and `servehttp` does no connection accounting, which the
+bounds section below already records. So this rule is new, it is this port's
+rule, and a reader sent to Go for the numbers will find none.
+
 Every route that reads a body requires `Content-Type: application/json`, and
 the body is read as UTF-8 whatever `charset` the header names. RFC 8259 §11
 records that no `charset` parameter is defined for `application/json` — the
@@ -500,7 +525,18 @@ subscription ceiling, and a connection that stops reading is ended by
 the body cap, a 30 s header read and a 2 min idle timeout, none of which is
 protocol. **A port may not invent an admission ceiling on the HTTP surface**,
 because a client that receives `busy` over HTTP would have no way to know
-whether to wait or to reconnect.
+whether to wait or to reconnect. That rule is about the **wire**, and it
+stands: no port may answer a client with a status the draft does not define.
+
+It is *not* a statement that a port may serve an unbounded number of
+connections. A port must bound them, because a stream holds its connection
+for as long as the client listens and a daemon that serves one connection at
+a time answers exactly one subscriber and then nothing else, forever. **The
+bound itself is a transport choice and belongs to the table below rather than
+to the wire**: a port picks the number, and what a client is told when the
+bound is reached is undefined until a code for it exists, which is
+[G13](#known-gaps). Neither half contradicts the other — a port bounds its
+concurrency and invents no code for having done so.
 
 | bound | value | pinned by |
 | --- | --- | --- |
@@ -509,6 +545,7 @@ whether to wait or to reconnect.
 | Accept poll | 50 ms, so a signal is noticed by an idle daemon | Zig: `hub_accept_poll_ms` and `the accept poll reports an idle listener as idle and a waiting one as waiting`, which drives a real listener. This is not protocol and is not in Go, whose `Serve` returns a listener a runtime polls for it |
 | Accept failure | A failure the peer caused is served past; a failure of the listener stops the daemon | Zig: `an accept a peer aborted before the call is served again, not obeyed` and `a client that resets a connection the listener had not taken yet does not stop the hub`. The rule is not cosmetic: a daemon that stops on any accept error can be stopped by any local process that opens a connection and resets it, which a port scanner or a health check does by accident and an attacker does on purpose — and stopping it sweeps every session |
 | Request headers | 16 KiB | Zig: `headers over the cap are refused rather than buffered`. Go's net/http carries its own default and names no rule, so this is a Zig choice within "a port may choose its own" |
+| Concurrent connections | a port's own number; not on the wire, and no code for reaching it | none — Go has no bound at all (`serve.go` runs a plain `http.Server`), and this draft has no code for it either. [G13](#known-gaps) names what a port does meanwhile |
 
 A 30 s header read and a 2 min idle timeout keep a socket from being held open
 forever. Neither is protocol — no client observes them, and a port may choose
@@ -1225,6 +1262,21 @@ here; each was a place a differential test would otherwise not see.
   `400` and the code. The differential job for #388 should still carry a
   truncated-request case: this test pins the code, not the parity.
 
+- **G13 — open.** A port must bound how many connections it serves at once,
+  because a stream holds its connection for as long as the client listens and
+  an unbounded daemon is one nobody can bound, but **nothing says what a client
+  is told when the bound is reached**. The draft's codes are the ones the core
+  defines and none of them means "the daemon is full", and the rule above
+  forbids inventing one — so a port that reaches its bound has no correct
+  answer available to it. Go has the same absence in a worse form: it has no
+  bound at all. What closes this is a code in the core for a daemon at its
+  connection bound, and a `Test` that pins it on both trees; until then a port
+  refuses the connection the way it refuses anything else and records the
+  choice as a divergence. The Zig daemon's own bound — one connection, polled
+  at 50 ms — is pinned by `the accept poll reports an idle listener as idle and
+  a waiting one as waiting` on the trust-model side of this work, and that test
+  pins the poll, not the bound.
+
 One asymmetry is deliberate and is **not** a gap: a cross-origin refusal exists
 on the HTTP transport alone. A stdio peer is a separate process on the far side
 of a pipe, so the `Origin` check is HTTP's alone — and what stdio carries in its
@@ -1251,7 +1303,7 @@ byte-for-byte comparison on their first request.
 stamped with the revision its *lister* served it under, which is what makes the
 draft's "refuse one that disagrees with the descriptor" check possible at all.
 
-**D13 — a chunked body is refused, where Go de-chunks it.** A request carrying
+**D21 — a chunked body is refused, where Go de-chunks it.** A request carrying
 any `Transfer-Encoding` is answered a bare `400`; `net/http` decodes chunked
 transparently, so a streaming client works against `goap hub` and not against
 `oapx hub`. This is a gap rather than a decision, and it is closed by the routes
@@ -1260,7 +1312,7 @@ the same 16 MiB cap, not in a reader with no consumer. Until then the refusal is
 the safe one: a body whose framing this daemon cannot read is not a body it
 should guess at. Pinned by `a chunked body is refused rather than guessed at`.
 
-**D14 — no `100 Continue` is sent, where Go sends one when the handler reads the
+**D22 — no `100 Continue` is sent, where Go sends one when the handler reads the
 body.** A client that sends `Expect: 100-continue` waits for the interim answer;
 `curl` waits about a second and sends anyway, a stricter client waits out the
 idle budget. Sending it here would be worse than not sending it, because no route

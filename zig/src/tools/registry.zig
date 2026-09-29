@@ -1,5 +1,6 @@
 const std = @import("std");
 const agent = @import("agent");
+const permission = @import("permission");
 const shell = @import("tools/shell");
 const file = @import("tools/file");
 const edit = @import("tools/edit");
@@ -91,4 +92,47 @@ test "registry registers resolves and lists defaults" {
     try registry.replaceOrRegister(std.testing.allocator, replacement);
     try std.testing.expectEqualStrings("Replacement Shell", registry.resolve("shell_execute").?.label);
     try std.testing.expectEqual(@as(usize, 12), registry.list().len);
+}
+
+test "each declared kind yields the decision its own schema args earn" {
+    var engine = try permission.PermissionEngine.initEmpty(std.testing.allocator, .{ .workspace_root = "/workspace" });
+    defer engine.deinit();
+
+    const Case = struct {
+        name: []const u8,
+        operation: permission.Operation,
+        args: []const u8,
+        decision: permission.PermissionDecision,
+    };
+    const cases = [_]Case{
+        .{ .name = "file_stat", .operation = .read, .args = "{\"description\":\"d\",\"workspace_root\":\"/workspace\",\"path\":\"src/main.zig\"}", .decision = .allow },
+        .{ .name = "file_stat", .operation = .read, .args = "{\"description\":\"d\",\"workspace_root\":\"/workspace\",\"path\":\"/etc/passwd\"}", .decision = .deny },
+        .{ .name = "workspace_git_status", .operation = .shell, .args = "{\"description\":\"d\",\"workspace_root\":\"/workspace\"}", .decision = .prompt },
+        .{ .name = "workspace_info", .operation = .read, .args = "{\"description\":\"d\",\"workspace_root\":\"/workspace\"}", .decision = .prompt },
+        .{ .name = "search_text", .operation = .read, .args = "{\"description\":\"d\",\"workspace_root\":\"/workspace\",\"query\":\"needle\"}", .decision = .prompt },
+        .{ .name = "artifact_retrieve", .operation = .read, .args = "{\"description\":\"d\",\"reference\":\"shell_execute:call\"}", .decision = .prompt },
+    };
+    for (cases) |case| {
+        const declared = declaredOperation(case.name) orelse return error.UnknownTool;
+        try std.testing.expectEqual(case.operation, declared);
+        try std.testing.expectEqual(case.decision, engine.evaluateTool(declared, case.name, case.args));
+    }
+}
+
+fn declaredOperation(name: []const u8) ?permission.Operation {
+    for (defaultTools()) |tool| {
+        if (std.mem.eql(u8, tool.name, name)) return tool.operation;
+    }
+    return null;
+}
+
+test "every built-in declares an operation kind, so no built-in resolves to unknown" {
+    for (defaultTools()) |tool| {
+        try std.testing.expect(
+            tool.operation != .unknown,
+        );
+        try std.testing.expect(
+            permission.resolveOperation(tool.operation, tool.name) == tool.operation,
+        );
+    }
 }

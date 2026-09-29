@@ -53,6 +53,7 @@ pub const TuiEvent = union(enum) {
         stop_reason: ai_types.StopReason = .stop,
         is_error: bool = false,
         steering: bool = false,
+        output_tokens: u64 = 0,
     },
     tool_approval_requested: struct {
         generation: u32 = 0,
