@@ -595,12 +595,23 @@ fi
 
 defer_fixture_bad="scripts/fixtures/defer_scope/guard-bad.zig"
 defer_fixture_good="scripts/fixtures/defer_scope/guard-good.zig"
+scanned_zig_files=0
+while IFS= read -r -d '' _; do
+  scanned_zig_files=$((scanned_zig_files + 1))
+done < <(find zig/src -name "*.zig" -print0)
+if [[ "$scanned_zig_files" -eq 0 ]]; then
+  echo "[patterns] the defer-scope scan saw no Zig files under zig/src:" >&2
+  echo "[patterns] the tree scan is vacuously green, and the fixture self-test below cannot see" >&2
+  echo "[patterns] that because it calls the scanner directly. Fail rather than pass on nothing." >&2
+  exit 1
+fi
 bad_fixture_hits="$(scan_defer_scope "$defer_fixture_bad")"
 good_fixture_hits="$(scan_defer_scope "$defer_fixture_good")"
 if [[ -z "$bad_fixture_hits" ]]; then
   echo "[patterns] the defer-scope check no longer reports its own bad fixture:" >&2
   echo "[patterns] $defer_fixture_bad holds the one shape this check exists to catch. A check that" >&2
-  echo "[patterns] has stopped catching it is not a check; see the self-test in this script." >&2
+  echo "[patterns] has stopped catching it is not a check. The fixtures are scanned directly, so the" >&2
+  echo "[patterns] count above is what keeps the tree scan from passing on nothing." >&2
   exit 1
 fi
 if [[ -n "$good_fixture_hits" ]]; then
