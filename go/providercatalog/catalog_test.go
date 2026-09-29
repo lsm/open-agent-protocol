@@ -87,10 +87,7 @@ func TestLoadReadsTheContextWindowCeilingAndOnlyTheRowsThatStateOneDo(t *testing
 				t.Errorf("%s states a ceiling of %d, and only the OpenAI rows record one", provider.ID, provider.MaxContextWindow)
 			}
 		}
-		if provider.ContextWindow == 0 || provider.MaxContextWindow == 0 {
-			continue
-		}
-		if provider.ContextWindow > provider.MaxContextWindow {
+		if provider.ContextWindow != 0 && provider.MaxContextWindow != 0 && provider.ContextWindow > provider.MaxContextWindow {
 			t.Errorf("%s records a window of %d above its own ceiling of %d", provider.ID, provider.ContextWindow, provider.MaxContextWindow)
 		}
 		for _, model := range provider.Models {
@@ -102,7 +99,7 @@ func TestLoadReadsTheContextWindowCeilingAndOnlyTheRowsThatStateOneDo(t *testing
 				continue
 			}
 			if model.ContextWindow > limit {
-				t.Errorf("%s model %s records a window of %d above its own ceiling of %d", provider.ID, model.ID, model.ContextWindow, limit)
+				t.Errorf("%s model %s records a window of %d above the ceiling of %d it resolves", provider.ID, model.ID, model.ContextWindow, limit)
 			}
 		}
 	}

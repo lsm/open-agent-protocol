@@ -3299,12 +3299,11 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
         }
         for (row.models) |model| {
             if (model.context_window) |window| {
-                if (model.max_context_window) |ceiling| {
-                    if (window > ceiling) std.debug.panic(
-                        "providers/catalog.json gives {s}'s model {s} a context_window of {d} above the {d} it records as max_context_window, so the window would be one the ceiling refuses",
-                        .{ row.id, model.id, window, ceiling },
-                    );
-                }
+                const ceiling = model.max_context_window orelse row.max_context_window orelse continue;
+                if (window > ceiling) std.debug.panic(
+                    "providers/catalog.json gives {s}'s model {s} a context_window of {d} above the {d} it resolves, so the window would be one the ceiling refuses",
+                    .{ row.id, model.id, window, ceiling },
+                );
             }
         }
     }
