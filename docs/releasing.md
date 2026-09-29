@@ -44,7 +44,7 @@ point.
 **2. Write the section.**
 
 ```sh
-node scripts/changelog-release.mjs --version 0.3.0 --date 2026-09-29 \
+node scripts/changelog-release.mjs --version 0.1.0-alpha.5 --date 2026-09-29 \
   --input prs.json --write
 ```
 
@@ -61,37 +61,45 @@ Two things it refuses, both worth knowing before you tag:
   happens if the tag line and the changelog have drifted apart;
 - a version that already has a section, so the same release cannot be cut twice.
 
-### Open: the tag line and the changelog do not agree
+### Resolved: the tag line and the changelog now agree
 
-**The next release cannot be cut until someone decides this.** It is the owner's
-call, not a bug in the script.
+**The alpha line continues, and the two untagged sections are gone.** This was
+the owner's call (2026-09-29), and it was the second of the two ways out; the
+first — tag forward to `v0.3.0` and retire `v0.1.0-alpha.N` as a naming
+accident — was not taken.
 
-The tags run `v0.1.0-alpha.1` through `v0.1.0-alpha.4` (2026-09-27). The
-changelog's newest released sections are `## [0.2.0] - 2026-09-11` and
-`## [0.1.0] - 2026-09-05`, and **neither was ever tagged** — there is no `v0.1.0`
-and no `v0.2.0` in the repository. `package.json` says `0.2.0`.
+What it cost, so nobody has to re-derive it: the tags ran
+`v0.1.0-alpha.1` through `v0.1.0-alpha.4` (2026-09-27) while the changelog's
+newest released sections were `## [0.2.0] - 2026-09-11` and
+`## [0.1.0] - 2026-09-05`, **neither of which was ever tagged**. There is no
+`v0.1.0` and no `v0.2.0` in the repository, so `[0.2.0]` described no release
+that anyone could install, and `v0.1.0-alpha.5` was a version the script
+**refused** to cut because it sorts below `[0.2.0]`.
 
-So the next alpha, `v0.1.0-alpha.5`, is a version the script **refuses** to cut:
-it is older than `[0.2.0]`, which the file already records. The tag that CI
-expects and the changelog that ships have been on different version lines, and
-the script will not paper over it.
+Those two sections are now deleted. They were the most complete release notes in
+the file, and deleting them is the price of the decision: keeping them would mean
+either tagging `v0.2.0` after four alphas already shipped past it, or leaving
+`[0.2.0]` above every version that exists, which is the disagreement itself.
+Their content is not lost — every entry describes work that is on `main` and in
+the repository's history, and the next `--write` re-collects from the last real
+tag (`v0.1.0-alpha.4`), so the next release section covers all of it again.
 
-The gate stays as it is — a tag with no matching section fails `release` and
-`publish-npm` — so this has to be resolved before the next tag, not worked
-around.
+`package.json` and `package-lock.json` are `0.1.0-alpha.5` so the declared
+version and the next tag agree. That value is not cosmetic:
 
-Two ways out, and the choice is the owner's:
+- the untagged `workflow_dispatch` path takes the npm version from
+  `package.json` (`node -p "require('./package.json').version"`), and
+  `scripts/package-npm.ts` falls back to it when no `--version` is passed;
+- a **tagged** run is the one case where `package.json` does *not* decide:
+  `${GITHUB_REF_NAME#v}` wins for the artifact names, and the packaging step
+  runs `npm version "$TAG_VERSION" --no-git-tag-version`, overwriting both files
+  in the runner's workspace.
 
-1. **Tag forward from the changelog.** The next release is `v0.3.0` or later,
-   which is above `[0.2.0]`, and the `v0.1.0-alpha.N` line is retired as a
-   naming accident. The changelog's account of what shipped in `[0.1.0]` and
-   `[0.2.0]` is already the better record, so this makes the tags agree with it.
-2. **Retract the untagged sections** and go back to the alpha line, so
-   `v0.1.0-alpha.5` becomes the next release. This discards the 0.1.0 and 0.2.0
-   release notes, which are the most complete ones in the file.
-
-Whichever is chosen, `package.json`'s version and the tag line should end up
-agreeing too, since the release workflow reads it for the npm package version.
+So a mismatch is only ever visible on a manual dispatch — and a manual dispatch
+that publishes under `0.2.0` while the repository is four alphals past that is
+exactly the drift this section exists to prevent. The `NPM_DIST_TAG` rule
+already sends a version containing `-` to `next`, so the alpha line publishes
+under the right tag with no further change.
 
 **3. Commit the changelog through a pull request.** This is an ordinary change to
 `CHANGELOG.md` on a branch, merged the usual way. It has to be on `main` *before*
@@ -101,13 +109,13 @@ there.
 **4. Tag.**
 
 ```sh
-git tag v0.3.0 && git push origin v0.3.0
+git tag v0.1.0-alpha.5 && git push origin v0.1.0-alpha.5
 ```
 
 To check step 2 landed before you tag:
 
 ```sh
-node scripts/changelog-release.mjs --version 0.3.0 --check
+node scripts/changelog-release.mjs --version 0.1.0-alpha.5 --check
 ```
 
 That is the same check the release workflow runs, and it is what fails the
