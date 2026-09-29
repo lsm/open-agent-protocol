@@ -95,11 +95,12 @@ in `.gitignore`, so nothing else would notice one. A workspace's own `.oapx`
 Three workflows run on `pull_request`: `ci.yml`, `ci-zig.yml` and
 `benchmark-report.yml`. Each takes one concurrency group per pull request, so a
 newer push to that pull request cancels the run the previous push started, and
-that is all the group ever cancels. A push takes no group it shares: `ci.yml`
-runs on every push, `ci-zig.yml` on pushes to `main`, and each push's run
-survives on its own — the key includes the event name and a run id, because
-GitHub drops the *pending* run of a shared group by default, so a group keyed on
-`github.ref` would have cancelled main's queued runs rather than none of them.
+that is all the group ever cancels. Both CI files push on `main` only, so a branch
+push produces one run rather than a `push` twin of the `pull_request` one, and a
+push takes no group it shares: each push's run survives on its own — the key
+includes the event name and a run id, because GitHub drops the *pending* run of a
+shared group by default, so a group keyed on `github.ref` would have cancelled
+main's queued runs rather than none of them.
 
 ## Zero comments
 
