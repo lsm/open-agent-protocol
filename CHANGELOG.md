@@ -1414,6 +1414,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TUI keys: `Esc` clears the draft, then aborts a running turn; `Ctrl+C` aborts or clears first and quits on a second press (immediately when idle with an empty composer); `Ctrl+D` quits on an empty idle composer; `Ctrl+A/E/U/K/W`, `Alt+Backspace`, `Ctrl`/`Alt`+arrows and `Alt+B/F` edit and move by word; `Delete` removes the character under the caret.
 - `scripts/tui-pty-driver.py` assertions follow the new rendering (raw-stream row breaks for the Shift+Enter draft, `✓`/`✗` tool glyphs, optional status-bar cut marker, double `Ctrl+C` semantics); the fixture provider accepts `<think>…</think>` in `text:` steps.
 
+### Added
+
+- **An open that subscribes or attaches is gated on the revision the host asked for.**
+  `hub.OpenRequest` carries a `capability_revision`, and an open that set `subscribe` or
+  carried tool sources compares it against the registered adapter's revision, answering
+  `error.StaleCapabilities` on a disagreement — the refusal the draft names, with
+  `expected_revision` and `current_revision` for the frontend to report. Go splits this
+  across two gates, `AttachmentGate` and `SubscribeGate`, and the draft's own line calls
+  the second "the same comparison", so one check covers both; what differs between them
+  is the support feature each then checks, and that half already exists as the open's
+  election check. `Failure.StaleCapabilities` had been declared since the hub was
+  written and **never returned by anything**: no code compared a revision, and the
+  request had no member to carry one. So a host that gated
+  its open on a revision got a session opened against whatever the adapter happened to
+  be serving — a silent disagreement where the draft specifies a 409 — and the answer's
+  `capability_revision` had no checked value to report, only the request's own, which is
+  the number the gate exists to verify. The comparison runs before the `session_exists`
+  lookup, so the gate wins over a name collision in the order Go's wire has it, and a
+  request that states no revision is not gated, which is Go's own `revision != ""`
+  guard rather than a hole. The gate runs before the election check as well, so an open
+  that both cites a stale revision and asks for an unadvertised feature answers
+  `stale_capabilities`, as Go's wire order has it. The gate and the open's two
+  attach elections key on whether the request **carries** entries, not on whether the
+  member is present: Go gates on `len(request.ToolSources) == 0`, so an open sending
+  `"tool_sources": []` attaches nothing and is admitted, where keying on the member's
+  mere presence called it an attachment and refused it as unadvertised.
+
 ### Fixed
 
 - **An unrecognised argument to `oapx validate` is no longer read as a path.**
@@ -1448,7 +1475,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   non-Mistral host and every clean short id elsewhere. The Go transcription in
   `go/internal/provider` still keys its answered set by the arrival id, and its
   change is routed to #358. #514
-
 
 ## [0.2.0] - 2026-09-11
 
