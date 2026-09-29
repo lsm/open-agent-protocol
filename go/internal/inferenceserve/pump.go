@@ -3,7 +3,6 @@ package inferenceserve
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/lsm/open-agent-protocol/go/internal/provider"
 )
@@ -17,8 +16,9 @@ var (
 )
 
 type openPart struct {
-	index int
-	kind  string
+	index    int
+	kind     string
+	implicit bool
 }
 
 func carriedSignature(partial provider.PartialMessage, contentIndex int) string {
@@ -59,12 +59,28 @@ func Pump(state *State, event provider.Event) ([]Envelope, error) {
 			return nil, nil
 		}
 		if state.open != nil {
-			envelope, err := settleFailed(state, CodeEndpointError,
-				"the endpoint could not deliver the terminal for this inference")
-			if err != nil {
-				return nil, err
+			if !state.open.implicit {
+				envelope, err := settleFailed(state, CodeEndpointError,
+					"the endpoint could not deliver the terminal for this inference")
+				if err != nil {
+					return nil, err
+				}
+				return []Envelope{envelope}, nil
 			}
-			return []Envelope{envelope}, nil
+			held := state.takeImplicit(state.open.index)
+			state.open = nil
+			if held != nil {
+				state.ended = append(state.ended, blockOf(*held))
+				ended, err := state.emit("inference.part.ended", "", *held)
+				if err != nil {
+					return nil, err
+				}
+				envelope, err := settleCompleted(state, event)
+				if err != nil {
+					return nil, err
+				}
+				return []Envelope{ended, envelope}, nil
+			}
 		}
 		envelope, err := settleCompleted(state, event)
 		if err != nil {
@@ -102,7 +118,14 @@ func Pump(state *State, event provider.Event) ([]Envelope, error) {
 	}
 
 	if isDelta(event.Kind) {
-		if state.open == nil || state.open.index != event.ContentIndex {
+		if state.open == nil {
+			opened, err := state.openImplicitPart(event)
+			if err != nil {
+				return nil, err
+			}
+			return opened, nil
+		}
+		if state.open.index != event.ContentIndex {
 			return nil, ErrPartIndexMismatch
 		}
 		envelope, err := state.emit("inference.part.delta", "", struct {
@@ -112,11 +135,25 @@ func Pump(state *State, event provider.Event) ([]Envelope, error) {
 		if err != nil {
 			return nil, err
 		}
+		if state.open.implicit {
+			state.appendImplicit(event.ContentIndex, event.Delta)
+		}
 		return []Envelope{envelope}, nil
 	}
 
 	if isPartEnd(event.Kind) {
-		if state.open == nil || state.open.index != event.ContentIndex {
+		if state.open == nil {
+			if held := state.takeImplicit(event.ContentIndex); held != nil {
+				state.ended = append(state.ended, blockOf(*held))
+				envelope, err := state.emit("inference.part.ended", "", *held)
+				if err != nil {
+					return nil, err
+				}
+				return []Envelope{envelope}, nil
+			}
+			return nil, ErrPartIndexMismatch
+		}
+		if state.open.index != event.ContentIndex {
 			return nil, ErrPartIndexMismatch
 		}
 		part := PartEnded{PartIndex: event.ContentIndex, PartKind: state.open.kind}
@@ -185,7 +222,29 @@ func settleCompleted(state *State, event provider.Event) (Envelope, error) {
 	if event.Message != nil && event.Message.StopReason != "" {
 		stopReason = string(event.Message.StopReason)
 	}
-	return state.Completed(stopReason, state.ended)
+	content := state.ended
+	if len(content) == 0 {
+		content = state.implicitContent()
+	}
+	return state.Completed(stopReason, content)
+}
+
+func (s *State) implicitContent() []TerminalBlock {
+	out := []TerminalBlock{}
+	for _, held := range s.accumulates {
+		block := TerminalBlock{Type: held.kind}
+		text := held.text
+		switch held.kind {
+		case "text":
+			block.Text = &text
+		case "reasoning":
+			block.Reasoning = &text
+		default:
+			continue
+		}
+		out = append(out, block)
+	}
+	return out
 }
 
 func settleFailed(state *State, code, message string) (Envelope, error) {
@@ -193,8 +252,10 @@ func settleFailed(state *State, code, message string) (Envelope, error) {
 	return state.Failed(code, message)
 }
 
+const ReasonCancelled = "request cancelled"
+
 func isCancellation(reason string) bool {
-	return strings.Contains(reason, "cancel")
+	return reason == ReasonCancelled
 }
 
 func failureMessage(reason string) string {
@@ -206,11 +267,11 @@ func failureMessage(reason string) string {
 
 func partKindOf(event provider.EventKind) string {
 	switch event {
-	case provider.EventTextStart, provider.EventTextEnd:
+	case provider.EventTextStart, provider.EventTextDelta, provider.EventTextEnd:
 		return "text"
-	case provider.EventThinkingStart, provider.EventThinkingEnd:
+	case provider.EventThinkingStart, provider.EventThinkingDelta, provider.EventThinkingEnd:
 		return "reasoning"
-	case provider.EventToolCallStart, provider.EventToolCallEnd:
+	case provider.EventToolCallStart, provider.EventToolCallDelta, provider.EventToolCallEnd:
 		return "tool_call"
 	}
 	return ""
@@ -238,4 +299,42 @@ func isPartEnd(event provider.EventKind) bool {
 		return true
 	}
 	return false
+}
+
+func (s *State) openImplicitPart(event provider.Event) ([]Envelope, error) {
+	kind := partKindOf(event.Kind)
+	if kind == "" {
+		return nil, ErrPartIndexMismatch
+	}
+	part := PartStarted{PartIndex: event.ContentIndex, PartKind: kind}
+	s.open = &openPart{index: event.ContentIndex, kind: kind, implicit: true}
+	envelope, err := s.emit("inference.part.started", "", part)
+	if err != nil {
+		return nil, err
+	}
+	s.accumulates = append(s.accumulates, accumulated{index: event.ContentIndex, kind: kind, text: event.Delta})
+	return []Envelope{envelope}, nil
+}
+
+func (s *State) takeImplicit(contentIndex int) *PartEnded {
+	for i := range s.accumulates {
+		if s.accumulates[i].index != contentIndex {
+			continue
+		}
+		held := s.accumulates[i]
+		s.accumulates = append(s.accumulates[:i], s.accumulates[i+1:]...)
+		text := held.text
+		return &PartEnded{PartIndex: contentIndex, PartKind: held.kind, Text: &text}
+	}
+	return nil
+}
+
+func (s *State) appendImplicit(contentIndex int, delta string) {
+	for i := range s.accumulates {
+		if s.accumulates[i].index == contentIndex {
+			s.accumulates[i].text += delta
+			return
+		}
+	}
+	s.accumulates = append(s.accumulates, accumulated{index: contentIndex, text: delta})
 }

@@ -208,16 +208,40 @@ func TestAKeepalivePumpEmitsNothingAndConsumesNoSequence(t *testing.T) {
 	}
 }
 
-func TestPumpRefusesAPartThatIsNotTheOneOpen(t *testing.T) {
+func TestPumpRefusesADeltaOrEndForAPartThatIsNotTheOneOpen(t *testing.T) {
 	state := NewState(&Ids{}, "i1", "m")
-	if _, err := Pump(state, provider.Event{Kind: provider.EventTextDelta, ContentIndex: 0, Delta: "a"}); err != ErrPartIndexMismatch {
-		t.Errorf("a delta with no part open = %v, want a mismatch", err)
+	if _, err := Pump(state, provider.Event{Kind: provider.EventToolCallEnd, ContentIndex: 0}); err != ErrPartIndexMismatch {
+		t.Errorf("a tool call end with no part open = %v, want a mismatch: nothing can be ended that was never opened", err)
 	}
 	if _, err := Pump(state, provider.Event{Kind: provider.EventTextStart, ContentIndex: 0}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Pump(state, provider.Event{Kind: provider.EventTextEnd, ContentIndex: 1, Delta: "a"}); err != ErrPartIndexMismatch {
 		t.Errorf("ending part 1 while 0 is open = %v, want a mismatch", err)
+	}
+	if _, err := Pump(state, provider.Event{Kind: provider.EventTextDelta, ContentIndex: 1, Delta: "a"}); err != ErrPartIndexMismatch {
+		t.Errorf("a delta for part 1 while 0 is open = %v, want a mismatch", err)
+	}
+}
+
+func TestADeltaWithNoPartOpenOpensOneSoAClientThatNeverStartsPartsStillMaps(t *testing.T) {
+	state := NewState(&Ids{}, "i1", "openai/openai-completions@gpt-4o")
+	opened, err := Pump(state, provider.Event{Kind: provider.EventTextDelta, ContentIndex: 0, Delta: "a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(opened) != 1 || opened[0].Type != "inference.part.started" {
+		t.Fatalf("got %v, want the part opened before the delta", typesOf(opened))
+	}
+	if got := body(t, opened[0])["part_kind"]; got != "text" {
+		t.Errorf("the implicit part kind = %v, want text", got)
+	}
+	next, err := Pump(state, provider.Event{Kind: provider.EventTextDelta, ContentIndex: 0, Delta: "b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(next) != 1 || next[0].Type != "inference.part.delta" {
+		t.Errorf("the second delta emitted %v, want a delta rather than a second open", typesOf(next))
 	}
 }
 
@@ -638,5 +662,68 @@ func TestACancellationAfterAPartEndedStillCarriesTheStreamedContent(t *testing.T
 	}
 	if blocks[0].(map[string]any)["text"] != "half a thought" {
 		t.Errorf("the terminal text = %v, want what the part ended with", blocks[0])
+	}
+}
+
+func TestTheOpenaiClientOutputThisLayerPumps(t *testing.T) {
+	sink := &provider.EventSink{}
+	chunks := []string{
+		"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hel\"}}]}\n\n",
+		"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"lo\"}}]}\n\n",
+		"data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+		"data: [DONE]\n\n",
+	}
+	next := 0
+	read := provider.ReadChunkFunc(func() ([]byte, error) {
+		if next >= len(chunks) {
+			return nil, nil
+		}
+		held := chunks[next]
+		next++
+		return []byte(held), nil
+	})
+	provider.Stream(sink, provider.Model{ID: "gpt-4o", API: "openai-completions", Provider: "openai", MaxTokens: 100, HasCompat: true},
+		provider.Context{}, provider.StreamOptions{}, read, nil)
+
+	state := NewState(&Ids{}, "i1", "openai/openai-completions@gpt-4o")
+	started, err := state.Started(1700000000000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := []Envelope{started}
+	for _, event := range sink.Drain() {
+		emitted, err := Pump(state, event)
+		if err != nil {
+			t.Fatalf("the %s event at index %d: %v", event.Kind, event.ContentIndex, err)
+		}
+		all = append(all, emitted...)
+	}
+	validate(t, all)
+	terminal := all[len(all)-1]
+	if terminal.Type != "inference.completed" {
+		t.Fatalf("got a %s, want inference.completed", terminal.Type)
+	}
+	message := body(t, terminal)["message"].(map[string]any)
+	blocks, ok := message["content"].([]any)
+	if !ok || len(blocks) != 1 {
+		t.Fatalf("the terminal content = %v, want the text this client streamed", message["content"])
+	}
+	if blocks[0].(map[string]any)["text"] != "hello" {
+		t.Errorf("the terminal text = %v, want hello: this client emits deltas with no part start, so the accumulated text has to reach the terminal", blocks[0])
+	}
+}
+
+func TestAVendorMessageMentioningCancelIsNotACancellation(t *testing.T) {
+	state := NewState(&Ids{}, "i1", "m")
+	all := runTrace(t, state, provider.Event{Kind: provider.EventError, Reason: "the model cancelled the request upstream"})
+	validate(t, all)
+	if all[len(all)-1].Type != "inference.failed" {
+		t.Errorf("got a %s, want inference.failed: the reason is vendor text that happens to contain cancel, and only this repo's own literal is a cancellation", all[len(all)-1].Type)
+	}
+	held := NewState(&Ids{}, "i2", "m")
+	cancelled := runTrace(t, held, provider.Event{Kind: provider.EventError, Reason: ReasonCancelled})
+	validate(t, cancelled)
+	if cancelled[len(cancelled)-1].Type != "inference.completed" {
+		t.Errorf("the repo's own cancel settled as %s, want a completed with stop_reason aborted", cancelled[len(cancelled)-1].Type)
 	}
 }

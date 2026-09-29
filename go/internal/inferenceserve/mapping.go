@@ -111,6 +111,13 @@ type State struct {
 	lastSettled bool
 	open        *openPart
 	ended       []TerminalBlock
+	accumulates []accumulated
+}
+
+type accumulated struct {
+	index int
+	kind  string
+	text  string
 }
 
 func NewState(ids *Ids, inferenceID, modelRef string) *State {
