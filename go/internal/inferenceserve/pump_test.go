@@ -274,11 +274,11 @@ func TestAFailureAbandonsTheOpenPartSoNothingScopedCanFollow(t *testing.T) {
 	)
 	validate(t, all)
 	after, err := Pump(state, provider.Event{Kind: provider.EventTextEnd, ContentIndex: 0, Delta: "a"})
-	if err != ErrPartIndexMismatch {
-		t.Fatalf("a part ending after the failure = %v, want a mismatch: the failure abandoned the open part, so this index is not open", err)
+	if err != nil {
+		t.Fatal(err)
 	}
 	if len(after) != 0 {
-		t.Errorf("a part ending after the failure emitted %v, want nothing: a stale open part would let scoped envelopes through after the terminal", typesOf(after))
+		t.Errorf("a part ending after the failure emitted %v, want nothing: the failure abandoned the open part and settled the inference, so this part belongs to neither", typesOf(after))
 	}
 }
 
@@ -493,4 +493,38 @@ func TestAStopReasonTheProfileDoesNotDefineSettlesAFailure(t *testing.T) {
 		}
 	}
 	validate(t, []Envelope{started, envelope})
+}
+
+func TestAPartAfterAMidStreamSettleIsRefused(t *testing.T) {
+	state := NewState(&Ids{}, "i1", "anthropic/anthropic-messages@claude")
+	broken := provider.ToolCall{ID: "tc1", Name: "lookup", Arguments: `{"city":`}
+	all := runTrace(t, state,
+		provider.Event{Kind: provider.EventToolCallStart, ContentIndex: 0, ID: "tc1", Name: "lookup"},
+		provider.Event{Kind: provider.EventToolCallEnd, ContentIndex: 0, ToolCall: &broken},
+	)
+	validate(t, all)
+	if all[len(all)-1].Type != "inference.failed" {
+		t.Fatalf("got a %s, want inference.failed", all[len(all)-1].Type)
+	}
+	after, err := Pump(state, provider.Event{Kind: provider.EventTextStart, ContentIndex: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != 0 {
+		t.Errorf("a part start after the mid-stream settle emitted %v, want nothing: the validator calls that event_after_terminal", typesOf(after))
+	}
+	delta, err := Pump(state, provider.Event{Kind: provider.EventTextDelta, ContentIndex: 1, Delta: "a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(delta) != 0 {
+		t.Errorf("a delta after the mid-stream settle emitted %v, want nothing", typesOf(delta))
+	}
+	end, err := Pump(state, provider.Event{Kind: provider.EventTextEnd, ContentIndex: 1, Delta: "a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(end) != 0 {
+		t.Errorf("a part end after the mid-stream settle emitted %v, want nothing", typesOf(end))
+	}
 }

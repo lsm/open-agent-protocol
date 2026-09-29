@@ -52,6 +52,12 @@ func Pump(state *State, event provider.Event) ([]Envelope, error) {
 		return []Envelope{settleCompleted(state, event)}, nil
 	}
 
+	if isPartStart(event.Kind) || isDelta(event.Kind) || isPartEnd(event.Kind) {
+		if state.settled() {
+			return nil, nil
+		}
+	}
+
 	if isPartStart(event.Kind) {
 		if state.open != nil {
 			return nil, ErrPartAlreadyOpen
