@@ -323,137 +323,201 @@ func TestARunWithNoTurnLimitIsNeverStoppedByTheLimit(t *testing.T) {
 	run.Wait()
 }
 
-func TestAReplyThatCallsAToolFailsTheRunRatherThanIgnoringIt(t *testing.T) {
-	script := &scripted{turns: []scriptedTurn{toolTurn("call_1", "read", "{}")}}
+func TestACallTheCallerAnswersBecomesAMessageAndTheRunKeepsGoing(t *testing.T) {
+	script := &scripted{turns: []scriptedTurn{toolTurn("call_1", "read", `{"path":"a"}`), textTurn("I read it.")}}
 	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("read a"))
-	terminal := terminalOf(t, drain(t, run))
-	if terminal.Kind != RunFailed {
-		t.Fatalf("a reply carrying a tool call ends with %q, want run_failed: this loop cannot run tools, and answering as if it had would be a lie", terminal.Kind)
-	}
-	if run.Err() == nil || !strings.Contains(run.Err().Error(), "nowhere to send them") {
-		t.Errorf("the failure says %v, want it to name the tool call it could not act on", run.Err())
-	}
-}
-
-func TestARunWithNoStreamerFailsRatherThanEndingQuietly(t *testing.T) {
-	run := Start(context.Background(), Config{Model: completionsModel()}, prompts("hi"))
-	events := drain(t, run)
-	if got := terminalOf(t, events).Kind; got != RunFailed {
-		t.Errorf("a run with no streamer ends with %q, want run_failed", got)
-	}
-	if run.Err() == nil {
-		t.Error("run_failed without an error is a failure a consumer cannot read")
-	}
-}
-
-func TestARunWithNoMessageFailsRatherThanAskingTheModel(t *testing.T) {
-	script := &scripted{turns: []scriptedTurn{textTurn("hi")}}
-	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, nil)
-	events := drain(t, run)
-	if got := terminalOf(t, events).Kind; got != RunFailed {
-		t.Errorf("a run with nothing to run ends with %q, want run_failed", got)
-	}
-	if script.turn != 0 {
-		t.Errorf("a run with nothing to run asked the model %d times, want 0", script.turn)
-	}
-}
-
-func TestTheTerminalKindsAreTheOnesThatEndARun(t *testing.T) {
-	for _, kind := range []EventKind{AgentEnd, RunFailed} {
-		if !(Event{Kind: kind}).IsTerminal() {
-			t.Errorf("%q ends a run, so IsTerminal must say so", kind)
+	events := drainActing(t, run, func(event Event) {
+		if event.Kind != ToolCallRequested {
+			return
 		}
-	}
-	for _, kind := range []EventKind{AgentStart, TurnStart, TurnEnd, TextDelta, ReasoningDelta, MessageStart, MessageEnd} {
-		if (Event{Kind: kind}).IsTerminal() {
-			t.Errorf("%q does not end a run, so IsTerminal must not claim it does", kind)
+		if err := run.ResolveTool(event.Call.ID, provider.ToolResult{
+			ToolName: event.Call.Name,
+			Parts:    []provider.ContentPart{{Text: &provider.TextPart{Text: "a"}}},
+		}); err != nil {
+			t.Errorf("resolving %q: %v", event.Call.ID, err)
 		}
-	}
-}
-
-func manyDeltaFrames() []string {
-	frames := make([]string, 0, 201)
-	for i := 0; i < 200; i++ {
-		frames = append(frames, frame(`{"choices":[{"delta":{"content":"x"}}]}`))
-	}
-	return append(frames, frame(`{"choices":[{"delta":{},"finish_reason":"stop"}]}`))
-}
-
-func TestTheTerminalLandsOnAFullBufferAfterACancelOnEveryAttempt(t *testing.T) {
-	for attempt := 0; attempt < 30; attempt++ {
-		run := Start(context.Background(), Config{
-			Model:    completionsModel(),
-			Streamer: &scripted{turns: []scriptedTurn{{frames: manyDeltaFrames()}}},
-		}, prompts("hi"))
-		settled := make(chan struct{})
-		go func() { run.Wait(); close(settled) }()
-		time.Sleep(150 * time.Millisecond)
-		run.Cancel()
-		select {
-		case <-settled:
-		case <-time.After(5 * time.Second):
-			t.Fatalf("attempt %d: Wait did not return after a cancel with a full buffer; buffered=%d", attempt, len(run.events))
-		}
-		var terminals int
-		var kinds []EventKind
-		for event := range run.Events() {
-			if event.IsTerminal() {
-				terminals++
-			}
-			kinds = append(kinds, event.Kind)
-		}
-		if terminals != 1 {
-			t.Fatalf("attempt %d: a cancelled run delivered %d terminals (%s), want exactly one: the last buffer slot is the terminal's, so a full buffer cannot cost the run its only terminal", attempt, terminals, joinKinds(kinds))
-		}
-	}
-}
-
-func TestANonTerminalNeverOccupiesTheSlotsReservedForTheTerminal(t *testing.T) {
-	run := Start(context.Background(), Config{
-		Model:    completionsModel(),
-		Streamer: &scripted{turns: []scriptedTurn{{frames: manyDeltaFrames()}}},
-	}, prompts("hi"))
-	for i := 0; i < 10; i++ {
-		time.Sleep(20 * time.Millisecond)
-		if held := len(run.events); held > eventBuffer-1 {
-			t.Fatalf("a running run held %d events, want at most %d: the last slot is the terminal's", held, eventBuffer-1)
-		}
-	}
-	run.Cancel()
-}
-
-func TestATerminalReachesAConsumerThatIsStillReading(t *testing.T) {
-	script := &scripted{turns: []scriptedTurn{{frames: manyDeltaFrames()}}}
-	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("hi"))
-	terminal := terminalOf(t, drain(t, run))
-	if terminal.Kind != AgentEnd {
-		t.Errorf("a run whose event buffer filled ends with %q, want agent_end: the consumer was still reading", terminal.Kind)
-	}
-}
-
-func TestAFinishedRunReleasesItsOwnContext(t *testing.T) {
-	for i := 0; i < 5; i++ {
-		script := &scripted{turns: []scriptedTurn{textTurn("done")}}
-		run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("hi"))
-		run.Wait()
-		for i := 0; i < 50 && run.ctx.Err() == nil; i++ {
-			time.Sleep(2 * time.Millisecond)
-		}
-		if run.ctx.Err() == nil {
-			t.Fatalf("a run that finished left its context live, so a parent starting many runs keeps one context per run")
-		}
-	}
-}
-
-func TestReleasingTheContextAtTheEndLeavesTheTerminalDelivered(t *testing.T) {
-	script := &scripted{turns: []scriptedTurn{{frames: manyDeltaFrames()}}}
-	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("hi"))
-	events := drain(t, run)
+	})
 	terminal := terminalOf(t, events)
 	if terminal.Kind != AgentEnd {
-		t.Errorf("a run that released its own context ends with %q, want agent_end", terminal.Kind)
+		t.Fatalf("a run that got its tool answered ends with %q, want agent_end", terminal.Kind)
 	}
-	if terminal.Termination != TerminationClean {
-		t.Errorf("a run that released its own context terminates %q, want a clean finish: releasing the context is not a cancellation", terminal.Termination)
+	result := run.Result()
+	if result.Turns != 2 {
+		t.Errorf("a call and then an answer is %d turns, want 2", result.Turns)
+	}
+	if result.Termination != TerminationClean {
+		t.Errorf("a run that got its tool answered terminates %q, want a clean finish", result.Termination)
+	}
+	if len(script.seen) != 2 {
+		t.Fatalf("the model was asked %d times, want 2", len(script.seen))
+	}
+	second := script.seen[1]
+	if len(second) != 3 {
+		t.Fatalf("the second turn carried %d messages, want the prompt, the reply and the result", len(second))
+	}
+	if second[2].ToolResult == nil || second[2].ToolResult.Parts[0].Text.Text != "a" {
+		t.Errorf("the second turn carried %+v, want the caller's own result as a message", second[2])
+	}
+}
+
+func TestTheAnswerIsAnnouncedOnTheCallItAnswers(t *testing.T) {
+	script := &scripted{turns: []scriptedTurn{toolTurn("call_1", "read", "{}"), textTurn("done")}}
+	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("read a"))
+	events := drainActing(t, run, func(event Event) {
+		if event.Kind == ToolCallRequested {
+			_ = run.ResolveTool(event.Call.ID, provider.ToolResult{Parts: []provider.ContentPart{{Text: &provider.TextPart{Text: "a"}}}})
+		}
+	})
+	var asked, resolved []string
+	for _, event := range events {
+		switch event.Kind {
+		case ToolCallRequested:
+			asked = append(asked, event.Call.ID)
+		case ToolCallResolved:
+			resolved = append(resolved, event.ToolResult.ToolCallID)
+		}
+	}
+	if strings.Join(asked, ",") != "call_1" {
+		t.Errorf("the loop asked for %v, want the call the model wrote", asked)
+	}
+	if strings.Join(resolved, ",") != "call_1" {
+		t.Errorf("the loop announced %v as resolved, want the call it asked about", resolved)
+	}
+}
+
+func TestTheAnswerTakesTheCallIdTheLoopAskedWith(t *testing.T) {
+	script := &scripted{turns: []scriptedTurn{toolTurn("call_1", "read", "{}"), textTurn("done")}}
+	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("read a"))
+	drainActing(t, run, func(event Event) {
+		if event.Kind != ToolCallRequested {
+			return
+		}
+		_ = run.ResolveTool(event.Call.ID, provider.ToolResult{ToolCallID: "something_else", Parts: []provider.ContentPart{{Text: &provider.TextPart{Text: "a"}}}})
+	})
+	for _, message := range run.Result().Messages {
+		if message.ToolResult == nil {
+			continue
+		}
+		if message.ToolResult.ToolCallID != "call_1" {
+			t.Errorf("the result answers %q, want call_1: a caller's own id would not correlate with the call the model made", message.ToolResult.ToolCallID)
+		}
+	}
+}
+
+func TestEveryCallInAReplyIsAskedForAndAnswered(t *testing.T) {
+	first := `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read","arguments":"{\"path\":\"a\"}"}}]}}]}`
+	second := `{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_2","function":{"name":"read","arguments":"{\"path\":\"b\"}"}}]}}]}`
+	turn := scriptedTurn{frames: []string{frame(first), frame(second), frame(`{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`)}}
+	script := &scripted{turns: []scriptedTurn{turn, textTurn("read both")}}
+	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("read a and b"))
+	events := drainActing(t, run, func(event Event) {
+		if event.Kind == ToolCallRequested {
+			_ = run.ResolveTool(event.Call.ID, provider.ToolResult{Parts: []provider.ContentPart{{Text: &provider.TextPart{Text: "ok"}}}})
+		}
+	})
+	var asked []string
+	for _, event := range events {
+		if event.Kind == ToolCallRequested {
+			asked = append(asked, event.Call.ID)
+		}
+	}
+	if strings.Join(asked, ",") != "call_1,call_2" {
+		t.Errorf("the loop asked for %v, want both calls in the order the model wrote them", asked)
+	}
+	if run.Result().Turns != 2 {
+		t.Errorf("two calls in one reply is %d turns, want 2", run.Result().Turns)
+	}
+}
+
+func TestResolvingACallNoOneIsWaitingOnIsRefusedByName(t *testing.T) {
+	script := &scripted{turns: []scriptedTurn{textTurn("hello")}}
+	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("hi"))
+	drain(t, run)
+	err := run.ResolveTool("call_nonexistent", provider.ToolResult{Parts: []provider.ContentPart{{Text: &provider.TextPart{}}}})
+	if err == nil {
+		t.Fatal("resolving a call no one is waiting on must be refused rather than silently dropped")
+	}
+	if !strings.Contains(err.Error(), "call_nonexistent") {
+		t.Errorf("the refusal says %q, want it to name the call it could not match", err)
+	}
+}
+
+func TestACutOffCallIsAnsweredWithoutAskingTheCaller(t *testing.T) {
+	cut := scriptedTurn{frames: []string{
+		frame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"write","arguments":"{\"text\":\"cut"}}]}}]}`),
+		frame(`{"choices":[{"delta":{},"finish_reason":"length"}]}`),
+	}}
+	script := &scripted{turns: []scriptedTurn{cut, textTurn("done")}}
+	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("write"))
+	events := drain(t, run)
+	for _, event := range events {
+		if event.Kind == ToolCallRequested {
+			t.Fatalf("a cut-off call asked the caller to run arguments that may be truncated: %s", joinKinds(kindsOf(events)))
+		}
+	}
+	var found bool
+	for _, message := range run.Result().Messages {
+		if message.ToolResult == nil {
+			continue
+		}
+		found = true
+		if !message.ToolResult.IsError {
+			t.Error("a cut-off call is an error result, so the model knows it did not run")
+		}
+		if message.ToolResult.ToolCallID != "call_1" {
+			t.Errorf("the cut-off call's result answers %q, want call_1", message.ToolResult.ToolCallID)
+		}
+	}
+	if !found {
+		t.Errorf("a cut-off call left no result in the run's history: %+v", run.Result().Messages)
+	}
+}
+
+func TestARunCancelledWhileACallIsWaitingSettlesCancelledNotFailed(t *testing.T) {
+	script := &scripted{turns: []scriptedTurn{toolTurn("call_1", "read", "{}")}}
+	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("read a"))
+	events := drainActing(t, run, func(event Event) {
+		if event.Kind == ToolCallRequested {
+			run.Cancel()
+		}
+	})
+	terminal := terminalOf(t, events)
+	if terminal.Kind != AgentEnd {
+		t.Fatalf("a run cancelled while a call was waiting ends with %q, want agent_end", terminal.Kind)
+	}
+	if terminal.Termination != TerminationCanceled {
+		t.Errorf("a cancelled run terminates %q, want cancelled", terminal.Termination)
+	}
+	if run.Err() != nil {
+		t.Errorf("a run the loop cancelled is not a failure, got %v", run.Err())
+	}
+	for _, message := range run.Result().Messages {
+		if message.ToolResult == nil || !message.ToolResult.IsError {
+			continue
+		}
+		if !strings.Contains(message.ToolResult.Parts[0].Text.Text, "cancelled") {
+			t.Errorf("the unanswered call's result says %q, want it to say the run was cancelled", message.ToolResult.Parts[0].Text.Text)
+		}
+	}
+}
+
+func TestAnAnswerArrivingAfterACancelIsRefusedRatherThanBlocking(t *testing.T) {
+	script := &scripted{turns: []scriptedTurn{toolTurn("call_1", "read", "{}")}}
+	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("read a"))
+	events := drainActing(t, run, func(event Event) {
+		if event.Kind == ToolCallRequested {
+			run.Cancel()
+		}
+	})
+	terminalOf(t, events)
+	settled := make(chan error, 1)
+	go func() { settled <- run.ResolveTool("call_1", provider.ToolResult{}) }()
+	select {
+	case err := <-settled:
+		if err == nil {
+			t.Error("an answer for a call whose run was cancelled must be refused: nothing is waiting for it and the run has ended")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("resolving a call after its run was cancelled blocked: the waiter is already gone")
 	}
 }

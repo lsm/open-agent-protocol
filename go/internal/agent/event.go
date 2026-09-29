@@ -5,16 +5,17 @@ import "github.com/lsm/open-agent-protocol/go/internal/provider"
 type EventKind string
 
 const (
-	AgentStart      EventKind = "agent_start"
-	TurnStart       EventKind = "turn_start"
-	TextDelta       EventKind = "text_delta"
-	ReasoningDelta  EventKind = "reasoning_delta"
-	MessageStart    EventKind = "message_start"
-	MessageEnd      EventKind = "message_end"
-	ToolCallStarted EventKind = "tool_call_started"
-	TurnEnd         EventKind = "turn_end"
-	AgentEnd        EventKind = "agent_end"
-	RunFailed       EventKind = "run_failed"
+	AgentStart        EventKind = "agent_start"
+	TurnStart         EventKind = "turn_start"
+	TextDelta         EventKind = "text_delta"
+	ReasoningDelta    EventKind = "reasoning_delta"
+	MessageStart      EventKind = "message_start"
+	MessageEnd        EventKind = "message_end"
+	ToolCallRequested EventKind = "tool_call_requested"
+	ToolCallResolved  EventKind = "tool_call_resolved"
+	TurnEnd           EventKind = "turn_end"
+	AgentEnd          EventKind = "agent_end"
+	RunFailed         EventKind = "run_failed"
 )
 
 type Termination string
@@ -32,6 +33,8 @@ type Event struct {
 	Termination Termination
 	Message     *provider.Message
 	Assistant   *provider.AssistantContent
+	Call        *provider.ToolCall
+	ToolResult  *provider.ToolResult
 	Result      Result
 }
 

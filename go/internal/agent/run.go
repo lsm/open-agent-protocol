@@ -39,16 +39,18 @@ type Run struct {
 	settled bool
 	result  Result
 	err     error
+	pending map[string]chan provider.ToolResult
 }
 
 func Start(ctx context.Context, config Config, prompts []provider.Message) *Run {
 	runCtx, cancel := context.WithCancel(ctx)
 	run := &Run{
-		config: config,
-		ctx:    runCtx,
-		cancel: cancel,
-		events: make(chan Event, eventBuffer),
-		done:   make(chan struct{}),
+		config:  config,
+		ctx:     runCtx,
+		cancel:  cancel,
+		events:  make(chan Event, eventBuffer),
+		done:    make(chan struct{}),
+		pending: map[string]chan provider.ToolResult{},
 	}
 	go func() {
 		defer close(run.done)
@@ -76,6 +78,22 @@ func (r *Run) Err() error {
 }
 
 func (r *Run) Cancel() { r.cancel() }
+
+func (r *Run) ResolveTool(toolCallID string, result provider.ToolResult) error {
+	r.mu.Lock()
+	waiter, found := r.pending[toolCallID]
+	if found {
+		delete(r.pending, toolCallID)
+	}
+	r.mu.Unlock()
+	if !found {
+		return fmt.Errorf("agent: no tool call %q is waiting for a result", toolCallID)
+	}
+	result.ToolCallID = toolCallID
+	waiter <- result
+	close(waiter)
+	return nil
+}
 
 func (r *Run) emit(event Event) {
 	if event.IsTerminal() {
@@ -189,9 +207,19 @@ func (r *Run) loop(prompts []provider.Message) {
 			r.emit(Event{Kind: TurnEnd, Assistant: &assistant})
 			ended = true
 		case OutcomeCalledTools:
+			results, live := r.runToolCalls(assistant)
 			r.emit(Event{Kind: TurnEnd, Assistant: &assistant})
-			r.fail("a reply asked for tools and this loop has nowhere to send them")
-			return
+			for index := range results {
+				result := results[index]
+				message := provider.Message{ToolResult: &result}
+				r.emit(Event{Kind: MessageStart, Message: &message})
+				history = append(history, message)
+				r.emit(Event{Kind: MessageEnd, Message: &message})
+			}
+			if !live {
+				r.settle(Result{Messages: history, FinalMessage: r.lastAssistant(history), Turns: turns, Termination: TerminationCanceled})
+				return
+			}
 		}
 
 		if ended {
@@ -206,6 +234,57 @@ func (r *Run) loop(prompts []provider.Message) {
 		termination = TerminationCanceled
 	}
 	r.settle(Result{Messages: history, FinalMessage: r.lastAssistant(history), Turns: turns, Termination: termination})
+}
+
+func (r *Run) runToolCalls(assistant provider.AssistantContent) ([]provider.ToolResult, bool) {
+	results := make([]provider.ToolResult, 0, len(assistant.Parts))
+	for _, part := range assistant.Parts {
+		if part.ToolCall == nil {
+			continue
+		}
+		call := *part.ToolCall
+		if assistant.StopReason == provider.StopLength {
+			results = append(results, cutOffResult(call))
+			continue
+		}
+		results = append(results, r.awaitToolResult(call))
+	}
+	return results, r.ctx.Err() == nil
+}
+
+func (r *Run) awaitToolResult(call provider.ToolCall) provider.ToolResult {
+	waiter := make(chan provider.ToolResult, 1)
+	r.mu.Lock()
+	r.pending[call.ID] = waiter
+	r.mu.Unlock()
+	r.emit(Event{Kind: ToolCallRequested, Call: &call})
+	select {
+	case result := <-waiter:
+		r.emit(Event{Kind: ToolCallResolved, Call: &call, ToolResult: &result})
+		return result
+	case <-r.ctx.Done():
+		r.mu.Lock()
+		delete(r.pending, call.ID)
+		r.mu.Unlock()
+		return cancelledResult(call)
+	}
+}
+
+func cutOffResult(call provider.ToolCall) provider.ToolResult {
+	return errorResult(call, fmt.Sprintf("Tool call %q was not run: the reply hit the output token limit, so its arguments may be cut off. Call the tool again with complete arguments.", call.Name))
+}
+
+func cancelledResult(call provider.ToolCall) provider.ToolResult {
+	return errorResult(call, fmt.Sprintf("Tool call %q was not run: the run was cancelled while it waited for a result.", call.Name))
+}
+
+func errorResult(call provider.ToolCall, reason string) provider.ToolResult {
+	return provider.ToolResult{
+		ToolCallID: call.ID,
+		ToolName:   call.Name,
+		Parts:      []provider.ContentPart{{Text: &provider.TextPart{Text: reason}}},
+		IsError:    true,
+	}
 }
 
 func (r *Run) lastAssistant(history []provider.Message) provider.AssistantContent {
