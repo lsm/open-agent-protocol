@@ -165,7 +165,7 @@ func TestEachAzureLabelIsAnchoredOnItsOwn(t *testing.T) {
 			matched++
 		}
 		if matched != 1 {
-			t.Errorf("%q matched %d of the three labels, want exactly 1", url, matched)
+			t.Errorf("%q matched %d labels, want exactly 1", url, matched)
 		}
 	}
 }
