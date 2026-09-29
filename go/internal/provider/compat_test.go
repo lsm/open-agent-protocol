@@ -110,12 +110,11 @@ func TestABedrockHostStillDetectsAsBedrock(t *testing.T) {
 	}
 }
 
-func TestAnAzureHostIsOneOfThreeLabelsAndNeverAzureCom(t *testing.T) {
+func TestAnAzureHostIsOneOfTwoLabelsAndNeverAzureCom(t *testing.T) {
 	hosts := []string{
 		"https://contoso.openai.azure.com",
 		"https://contoso.openai.azure.com/openai/deployments/gpt/chat/completions",
 		"https://contoso.cognitiveservices.azure.com",
-		"https://contoso.services.ai.azure.com",
 		"https://openai.azure.com",
 		"https://CONTOSO.COGNITIVESERVICES.AZURE.COM",
 	}
@@ -131,6 +130,7 @@ func TestAnAzureHostIsOneOfThreeLabelsAndNeverAzureCom(t *testing.T) {
 		"https://notopenai.azure.com",
 		"https://notcognitiveservices.azure.com",
 		"https://notservices.ai.azure.com",
+		"https://contoso.services.ai.azure.com",
 		"https://cognitiveservices.azure.com.evil.example",
 		"https://services.ai.azure.com.evil.example",
 		"https://openai.azure.com.evil.example",
@@ -154,7 +154,6 @@ func TestAnAzureHostIsOneOfThreeLabelsAndNeverAzureCom(t *testing.T) {
 func TestEachAzureLabelIsAnchoredOnItsOwn(t *testing.T) {
 	others := []string{
 		"https://contoso.cognitiveservices.azure.com",
-		"https://contoso.services.ai.azure.com",
 		"https://contoso.openai.azure.com",
 	}
 	for _, url := range others {
@@ -163,9 +162,6 @@ func TestEachAzureLabelIsAnchoredOnItsOwn(t *testing.T) {
 			matched++
 		}
 		if isHostOrSubdomain(url, true, "cognitiveservices.azure.com") {
-			matched++
-		}
-		if isHostOrSubdomain(url, true, "services.ai.azure.com") {
 			matched++
 		}
 		if matched != 1 {

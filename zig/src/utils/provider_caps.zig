@@ -79,7 +79,7 @@ pub fn isOllama(base_url: ?[]const u8) bool {
     return false;
 }
 
-const azure_labels = [_][]const u8{ "openai.azure.com", "cognitiveservices.azure.com", "services.ai.azure.com" };
+const azure_labels = [_][]const u8{ "openai.azure.com", "cognitiveservices.azure.com" };
 
 pub fn isAzure(base_url: ?[]const u8) bool {
     for (azure_labels) |label| {
@@ -353,12 +353,11 @@ test "a bedrock host still detects as bedrock" {
     try std.testing.expectEqual(ProviderType.bedrock, detectProviderType(url));
 }
 
-test "an azure host is one of three labels and never azure.com" {
+test "an azure host is one of two labels and never azure.com" {
     const hosts = [_][]const u8{
         "https://contoso.openai.azure.com",
         "https://contoso.openai.azure.com/openai/deployments/gpt/chat/completions",
         "https://contoso.cognitiveservices.azure.com",
-        "https://contoso.services.ai.azure.com",
         "https://openai.azure.com",
         "https://CONTOSO.COGNITIVESERVICES.AZURE.COM",
     };
@@ -372,6 +371,7 @@ test "an azure host is one of three labels and never azure.com" {
         "https://notopenai.azure.com",
         "https://notcognitiveservices.azure.com",
         "https://notservices.ai.azure.com",
+        "https://contoso.services.ai.azure.com",
         "https://cognitiveservices.azure.com.evil.example",
         "https://services.ai.azure.com.evil.example",
         "https://openai.azure.com.evil.example",
@@ -392,14 +392,12 @@ test "an azure host is one of three labels and never azure.com" {
 test "each azure label is anchored on its own" {
     const others = [_][]const u8{
         "https://contoso.cognitiveservices.azure.com",
-        "https://contoso.services.ai.azure.com",
         "https://contoso.openai.azure.com",
     };
     for (others) |url| {
         var matched: usize = 0;
         if (isHostOrSubdomainOf(url, "openai.azure.com")) matched += 1;
         if (isHostOrSubdomainOf(url, "cognitiveservices.azure.com")) matched += 1;
-        if (isHostOrSubdomainOf(url, "services.ai.azure.com")) matched += 1;
         try std.testing.expectEqual(@as(usize, 1), matched);
     }
 }
