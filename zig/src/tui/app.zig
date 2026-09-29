@@ -754,10 +754,7 @@ pub const App = struct {
         self.inline_flushed_rows = 0;
         if (self.session_id.len > 0) self.allocator.free(self.session_id);
         self.session_id = new_session_id;
-        self.clearCompactionTranscripts();
-        for (loaded.events.items) |event| {
-            if (event == .compaction_end and event.compaction_end.outcome == .completed) try self.recordCompactionTranscript(event.compaction_end.transcript.slice());
-        }
+        try self.restoreCompactionTranscripts(store, &loaded);
         try self.state.status.setSessionId(self.allocator, self.session_id);
         if (runtime.currentModel()) |model| {
             try self.state.status.setModelWithContext(self.allocator, model.id, model.provider, model.context_window);
@@ -1312,10 +1309,25 @@ pub const App = struct {
         self.written_provider = next_provider;
     }
 
+    fn restoreCompactionTranscripts(self: *App, store: session_store.Store, loaded: *const session_store.LoadedSession) !void {
+        self.clearCompactionTranscripts();
+        for (loaded.events.items) |event| {
+            if (event == .compaction_end and event.compaction_end.outcome == .completed) try self.recordCompactionTranscript(event.compaction_end.transcript.slice());
+        }
+        if (self.compaction_transcripts.items.len >= loaded.metadata.compactions) return;
+        self.clearCompactionTranscripts();
+        for (1..@as(usize, loaded.metadata.compactions) + 1) |index| {
+            const path = try store.transcriptPath(self.session_id, index);
+            errdefer self.allocator.free(path);
+            try self.compaction_transcripts.append(self.allocator, path);
+        }
+    }
+
     fn saveSessionIndex(self: *App, store: session_store.Store) void {
         var meta = self.currentSessionMetadata();
         meta.created_at = self.session_created_at;
         meta.compaction_offset = self.compaction_offset;
+        meta.compactions = @intCast(self.compaction_transcripts.items.len);
         store.saveIndex(meta) catch {};
     }
 
@@ -4999,6 +5011,57 @@ test "resume clears a compaction the saved session never finished" {
     try std.testing.expectEqualStrings("interrupted", app.session_id);
     try std.testing.expect(!app.state.status.compacting);
     try std.testing.expect(!app.state.status.streaming);
+}
+
+test "resume keeps every compaction transcript when it loads from the last compaction" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+
+    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    errdefer std.testing.allocator.destroy(runtime);
+    runtime.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = unusedStream } });
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.runtime = runtime;
+    app.store = try session_store.Store.init(std.testing.allocator, base);
+    const store = app.store.?;
+
+    var meta = session_store.SessionMetadata{
+        .session_id = try std.testing.allocator.dupe(u8, "two-compactions"),
+        .model = try std.testing.allocator.dupe(u8, ""),
+        .provider = try std.testing.allocator.dupe(u8, ""),
+        .last_active = 1,
+    };
+    defer meta.deinit(std.testing.allocator);
+    const summary = agent.compaction.header ++ " Summary follows.\n\n<summary>\nkept\n</summary>";
+    const first_path = try store.transcriptPath("two-compactions", 1);
+    defer std.testing.allocator.free(first_path);
+    var first = tui_runtime.TuiEvent{ .compaction_end = .{ .outcome = .completed, .text = OwnedSlice(u8).initBorrowed(summary), .transcript = OwnedSlice(u8).initBorrowed(first_path) } };
+    try store.save(meta, first);
+    const filler_text = try std.testing.allocator.alloc(u8, 16 * 1024);
+    defer std.testing.allocator.free(filler_text);
+    @memset(filler_text, 'x');
+    for (0..20) |_| try store.saveEvent("two-compactions", .{ .system_warning = .{ .message = OwnedSlice(u8).initBorrowed(filler_text) } });
+    const offset = try store.conversationBytes("two-compactions");
+    const second_path = try store.transcriptPath("two-compactions", 2);
+    defer std.testing.allocator.free(second_path);
+    first.compaction_end.transcript = OwnedSlice(u8).initBorrowed(second_path);
+    try store.save(meta, first);
+    meta.compaction_offset = offset;
+    meta.compactions = 2;
+    try store.saveIndex(meta);
+
+    try app.loadSessions();
+    try app.resumeSelectedSession();
+    try std.testing.expectEqual(@as(usize, 2), app.compaction_transcripts.items.len);
+    try std.testing.expectEqualStrings(first_path, app.compaction_transcripts.items[0]);
+    try std.testing.expectEqualStrings(second_path, app.compaction_transcripts.items[1]);
+
+    var index = try store.loadIndex("two-compactions");
+    defer index.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u32, 2), index.compactions);
 }
 
 test "resume selected session clears delete reset flags on success" {

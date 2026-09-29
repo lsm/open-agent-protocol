@@ -305,7 +305,8 @@ model and provider are written with the first record and again when they change,
 `<session>.meta.json` holds them with the creation and last-active times and the
 offset of the last completed compaction, so a resume starts there and reads up to
 256 KB before it for the screen. `/resume` lists sessions from these index files.
-Files written before this layout still load, skipping their chunk records unparsed.
+Files written before this layout still load, skipping their provider events, tool-call
+deltas and tool progress unparsed.
 
 Scrolling: while `transcript_scroll` is non-zero the inline body is a window over the
 full transcript rendered at the current width (rows already flushed into terminal

@@ -138,6 +138,7 @@ pub const SessionMetadata = struct {
     last_active: i64,
     created_at: i64 = 0,
     compaction_offset: u64 = 0,
+    compactions: u32 = 0,
 
     pub fn deinit(self: *SessionMetadata, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
@@ -398,6 +399,7 @@ fn serializeIndex(allocator: std.mem.Allocator, meta: SessionMetadata) ![]u8 {
     try w.writeIntField("created_at", meta.created_at);
     try w.writeIntField("last_active", meta.last_active);
     try w.writeIntField("compaction_offset", meta.compaction_offset);
+    try w.writeIntField("compactions", meta.compactions);
     try w.endObject();
     return buf.toOwnedSlice(allocator);
 }
@@ -416,6 +418,7 @@ fn parseIndex(allocator: std.mem.Allocator, session_id: []const u8, data: []cons
     meta.last_active = intField(obj, "last_active") orelse 0;
     meta.created_at = intField(obj, "created_at") orelse 0;
     meta.compaction_offset = if (uint64Field(obj, "compaction_offset")) |v| v else 0;
+    meta.compactions = uint32Field(obj, "compactions") orelse 0;
     return meta;
 }
 
@@ -1936,7 +1939,7 @@ test "list falls back to the first record's metadata when the tail has none" {
 }
 
 fn parseIndexProbe(allocator: std.mem.Allocator) !void {
-    var meta = try parseIndex(allocator, "s1", "{\"session_id\":\"s1\",\"model\":\"m\",\"provider\":\"p\",\"created_at\":1,\"last_active\":2,\"compaction_offset\":3}");
+    var meta = try parseIndex(allocator, "s1", "{\"session_id\":\"s1\",\"model\":\"m\",\"provider\":\"p\",\"created_at\":1,\"last_active\":2,\"compaction_offset\":3,\"compactions\":2}");
     meta.deinit(allocator);
 }
 
