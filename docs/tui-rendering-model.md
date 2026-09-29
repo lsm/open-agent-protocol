@@ -233,7 +233,12 @@ code paths; add a transcript row instead.
   login or `KIMI_REGION` names — with that key, caches the body under
   `~/.oapx/model_catalog/kimi.json` (`kimi-global.json` for the global region) on the
   same 24-hour window and stale-copy fallback as Anthropic's, and falls back to the
-  static `kimi-k2.7-code` when both fetch and cache are unusable. Each entry takes its
+  static `kimi-k2.7-code` when both fetch and cache are unusable. Kimi is a plan row, so
+  a 401 or 403 is a refusal rather than an outage: the row is dropped for that listing
+  and the fallbacks above are not consulted, because a plan row that refuses is one the
+  subscription does not open. The refusal is remembered as a marker for five minutes,
+  and only for a stored login — a key from `KIMI_API_KEY` is never covered by one — so
+  buying the plan or logging out brings the row back on the next listing. Each entry takes its
   display name, context window, reasoning flag and text/image input from the response's
   `display_name`, `context_length`, `supports_reasoning` and `supports_image_in`; the
   endpoint reports no output cap, so every entry keeps the 16 384 default. A selected
