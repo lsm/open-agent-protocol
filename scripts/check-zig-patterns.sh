@@ -562,13 +562,18 @@ undeclared_defer_scope="$(comm -13 \
 if [[ -n "$undeclared_defer_scope" ]]; then
   echo "[patterns] a defer sits in a block whose body is only that defer:" >&2
   echo "$undeclared_defer_scope" >&2
-  echo "[patterns] A defer runs when its block closes. A block whose only statement is a defer" >&2
-  echo "[patterns] cannot be protecting anything inside itself, so the defer is meant for the code" >&2
-  echo "[patterns] that follows - and it runs before it. If that code hands the value to something" >&2
-  echo "[patterns] that copies or frees it, the copy reads memory the defer has already released." >&2
-  echo "[patterns] Hold the call's result, do the free, and only then branch on the error, so the" >&2
-  echo "[patterns] free is on every path and none of them is the wrong one; see run() in" >&2
+  echo "[patterns] SCOPE, exactly: a plain \`if (cond) {\` block whose body is a single" >&2
+  echo "[patterns] \`defer\`, with the guarded call after the block. A defer runs when its block" >&2
+  echo "[patterns] closes, so here it runs before the call it was meant to outlive." >&2
+  echo "[patterns] Hold the call's result, do the free, then branch on the error; see run() in" >&2
   echo "[patterns] zig/src/transports/in_process.zig." >&2
+  echo "[patterns] This is a floor, not a detector, and it is a narrow floor. NOT SEEN: a defer in" >&2
+  echo "[patterns] a \`} else if (...) {\` or \`} else {\` branch, in a payload-capture head such as" >&2
+  echo "[patterns] \`if (x) |v| {\`, or nested one block deep. Each of those is the same defect and" >&2
+  echo "[patterns] none of them is caught; catching them needs brace-depth tracking, which reports" >&2
+  echo "[patterns] ten false positives on today's tree. Tracked in the issue named in the commit that" >&2
+  echo "[patterns] added the fixture, with that reproducer. Until then, read a defer in a conditional" >&2
+  echo "[patterns] as suspect by hand." >&2
   echo "[patterns] known_defer_scope is a backlog for sites that predate this check, not a list of" >&2
   echo "[patterns] approved ones. Adding to it needs a reason in the commit message saying why the" >&2
   echo "[patterns] defer is not meant to outlive its block. New code is expected to be fixed." >&2
@@ -582,6 +587,25 @@ if [[ -n "$stale_defer_scope" ]]; then
   echo "[patterns] known_defer_scope declares a site that no longer exists:" >&2
   echo "$stale_defer_scope" >&2
   echo "[patterns] a fixed site must be removed from the list" >&2
+  exit 1
+fi
+
+defer_fixture_bad="scripts/fixtures/defer_scope/guard-bad.zig"
+defer_fixture_good="scripts/fixtures/defer_scope/guard-good.zig"
+bad_fixture_hits="$(scan_defer_scope "$defer_fixture_bad")"
+good_fixture_hits="$(scan_defer_scope "$defer_fixture_good")"
+if [[ -z "$bad_fixture_hits" ]]; then
+  echo "[patterns] the defer-scope check no longer reports its own bad fixture:" >&2
+  echo "[patterns] $defer_fixture_bad holds the one shape this check exists to catch. A check that" >&2
+  echo "[patterns] has stopped catching it is not a check; see the self-test in this script." >&2
+  exit 1
+fi
+if [[ -n "$good_fixture_hits" ]]; then
+  echo "[patterns] the defer-scope check reports a fixture it must not:" >&2
+  echo "$good_fixture_hits" >&2
+  echo "[patterns] $defer_fixture_good holds the shapes that are correct today: a defer sharing a" >&2
+  echo "[patterns] block with the work it protects, one in a function body, one branch of an if/else," >&2
+  echo "[patterns] and one in a payload-capture block that also uses the value." >&2
   exit 1
 fi
 
