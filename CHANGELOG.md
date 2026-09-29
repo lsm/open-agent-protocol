@@ -178,7 +178,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     out unnormalized. It also carries a defect of its own, **#514**: the pending
     calls are keyed by the normalized id and the answered ones by the original, so
     on a Mistral host — where every id is re-hashed — an answered call grows a
-    second, spurious error result. Transcribed rather than corrected, and pinned.
+    second, spurious error result. Transcribed rather than corrected, and pinned,
+    so the port held the defect in place while the Zig side decided it: #514 is
+    fixed in `pre_transform`, and this transcription follows under #358.
   - **The event stream's thirteen kinds are the union, and this client emits nine
     of them** — `start`, `text_delta`, `thinking_delta`, `toolcall_start`,
     `toolcall_delta`, `toolcall_end`, `done`, `error` and `keepalive`, each
@@ -1304,6 +1306,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `oapx hub: --mode: unavailable` for a `validate` refusal; its `arena` parameter went
   with that, having been discarded on entry (`_ = arena`) and the only reason `runHub`
   still allocated an arena at all.
+
+- **An answered tool call no longer grows a second, synthetic `"No result
+  provided"` result when its id is rewritten.** `pre_transform` keys the set of
+  unanswered calls by the id the call is written out under and the set of answered
+  calls by the id the result arrived with, so the two only lined up when
+  normalization left the id alone. Every exchange that rewrites an id therefore put
+  one result on the wire per call and a duplicate error result beside it: **every
+  call against a Mistral endpoint**, whose ids are re-hashed to nine characters, and
+  any id over 40 bytes, carrying a `|`, or holding a byte that is not
+  alphanumeric, `_` or `-` on any other host. The answered set is now keyed the way
+  the pending set is, by the rewritten id, so a call that was answered is answered
+  once and an unanswered one still grows exactly one synthetic result — carrying the
+  rewritten id, so it still names the call it stands in for. The wire is unchanged
+  for every id normalization leaves alone, which is every id on a non-OpenAI,
+  non-Mistral host and every clean short id elsewhere. The Go transcription in
+  `go/internal/provider` still keys its answered set by the arrival id, and its
+  change is routed to #358. #514
 
 
 ## [0.2.0] - 2026-09-11
