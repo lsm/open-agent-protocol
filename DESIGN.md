@@ -122,6 +122,11 @@ For multiplexed provider streams, callers should use per-stream APIs explicitly:
 4. `closeStream(stream_id)` when terminating locally
 5. `removeStreamState(stream_id)` after terminal consumption to release per-stream state
 
+Step 3 returns a result the caller owns (`ai_types.OwnedMessage`, a deep copy),
+so step 5 may free the client's stored copy without invalidating what step 3
+handed back. That ordering is the contract: consume the owned result on any
+schedule, and the terminal query never returns a borrowed view of client state.
+
 This lifecycle keeps stream state isolated and prevents long-lived client state growth.
 
 ---
@@ -135,6 +140,11 @@ Canonical ownership rules:
 2. Protocol client paths that persist events must deep-copy (`clone*`) before queue ownership transfer.
 3. Any queue that owns events must explicitly opt into owned-event cleanup semantics.
 4. Never add blanket event-string deinit in generic `EventStream.deinit()`; this causes double-free in borrowed-string paths.
+5. A value handed to a caller across a lifetime boundary is owned by that caller
+   or it is not handed over. The provider protocol client's terminal query
+   returns `ai_types.OwnedMessage` for this reason: a bare `AssistantMessage`
+   carries no ownership in its type, so a caller cannot tell a copy from a view
+   of state the client frees on its own schedule.
 
 This ownership model is non-optional and must be preserved in future refactors.
 
