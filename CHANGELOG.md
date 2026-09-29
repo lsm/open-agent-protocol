@@ -93,7 +93,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one's close reaps the child and a cancel followed by a close is the same
   outcome; the memory adapter refuses, which is the one a test can drive. The
   draft's D6 row says so rather than claiming the row is closed for all eight.
-
 - **`go/internal/provider` gains the `anthropic-messages` client, part of #358
   step 3.** It reuses step 2's SSE parser, event types, json tree and
   pre-transform, and it is **a different client rather than a variant of the one
@@ -444,34 +443,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The coding plans, Xiaomi's rows and OpenAI are separate steps. Xiaomi waits for
   #352, because a pay-as-you-go key must not surface a token plan it cannot use.
 
-- The catalog loader serves the five coding-plan rows and OpenAI, each reachable
-  by exporting its own key and nothing else: `ZHIPU_API_KEY`,
-  `ALIBABA_CODING_PLAN_API_KEY`, `MINIMAX_API_KEY`, `TENCENT_CODING_PLAN_API_KEY`,
-  `ARK_CODING_PLAN_API_KEY` and `OPENAI_API_KEY`. Twelve of the sixteen rows the
-  loader could serve now are, with the gateways and DeepSeek. MiniMax is served on
-  `anthropic-messages` and the rest on `openai-completions`, each the wire its
-  catalog row records rather than a shape the loader assumed.
-  All five coding plans are the `carries_version` shape twice over: their base
-  ends in a version segment *and* their `models_endpoint` is `/models`, so the
-  version sits in the middle of the path. A listing that appended a second `/v1`
-  — as the override path does for a versioned base — would ask
-  `…/api/coding/paas/v4/v1/models` and get a 404, so the override test now walks
-  all ten versioned rows rather than the six it did.
-- **OpenAI's wire is chosen per model, and the reason is that the row has two
-  wires and the product already knew which one each model needs.** The catalog
-  lists `openai-completions` first, so a loader that took the row's first wire
-  would serve every OpenAI model as a chat completion — but the built-in
-  OpenAI descriptor has always served OpenAI on `openai-responses`, and the
-  responses-only models (`o1-pro`, `o3-pro`, `gpt-5-pro`, `gpt-5-codex`,
-  `gpt-5.1-codex-max`, `deep-research`, `computer-use-preview`) exist only on
-  that wire. Discovery sees the whole listing at once, so the wire is decided per
-  model id: responses for the models that need it, chat completions for the rest.
-  That list was a private function in `makai.zig`; it now lives in
-  `provider_catalog.zig` as `isResponsesOnlyModel` and `makai` calls it, so
-  there is one list of which models are responses-only rather than two that
-  could drift. A test asserts a single-wire row keeps its wire whatever the
-  model is called, and another asserts the loader and the per-model rule pick
-  the same wire for every row the loader can serve.
 - An opt-in live smoke gate per catalogued row, so a row can earn `status:
   current` against recorded evidence instead of against a probe that only
   checked a path exists. `zig build test-e2e-provider-smoke` runs the four cases
