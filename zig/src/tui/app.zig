@@ -1679,7 +1679,6 @@ pub const App = struct {
         defer self.allocator.free(msg);
         try self.state.appendTranscript(.system, msg);
         try self.startCompaction("");
-        if (self.pending_after_compaction) |earlier| self.allocator.free(earlier);
         self.pending_after_compaction = pending;
         return true;
     }
