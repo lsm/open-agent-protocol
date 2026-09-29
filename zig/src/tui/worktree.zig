@@ -530,6 +530,10 @@ test "worktreePath joins the base with the repo name and session id" {
     try std.testing.expectEqualStrings("/home/u/.oapx/worktrees/project-abc", path);
 }
 
+fn worktreeTestBase(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir) ![]u8 {
+    return std.fs.path.join(allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "worktrees" });
+}
+
 test "create reports a non-repo directory without adding a worktree" {
     var git: FakeGit = .{ .is_repo = false };
     defer git.deinit(std.testing.allocator);
@@ -539,43 +543,61 @@ test "create reports a non-repo directory without adding a worktree" {
 }
 
 test "create adds a worktree on a new branch named after the session" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try worktreeTestBase(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
     var git: FakeGit = .{};
     defer git.deinit(std.testing.allocator);
-    var outcome = try create(std.testing.allocator, git.runner(), "/repo", "/tmp/base", "abc");
+    var outcome = try create(std.testing.allocator, git.runner(), "/repo", base, "abc");
     defer outcome.deinit(std.testing.allocator);
+    const expected_path = try std.fs.path.join(std.testing.allocator, &.{ base, "repo-abc" });
+    defer std.testing.allocator.free(expected_path);
     switch (outcome) {
         .created => |created| {
-            try std.testing.expectEqualStrings("/tmp/base/repo-abc", created.info.path);
+            try std.testing.expectEqualStrings(expected_path, created.info.path);
             try std.testing.expectEqualStrings("tui/abc", created.info.branch);
             try std.testing.expectEqualStrings("/repo", created.info.repo_root);
         },
         else => return error.TestUnexpectedResult,
     }
     try std.testing.expectEqual(@as(usize, 4), git.calls.items.len);
-    try std.testing.expect(std.mem.indexOf(u8, git.calls.items[3], "worktree add /tmp/base/repo-abc -b tui/abc") != null);
+    const add_arg = try std.fmt.allocPrint(std.testing.allocator, "worktree add {s} -b tui/abc", .{expected_path});
+    defer std.testing.allocator.free(add_arg);
+    try std.testing.expect(std.mem.indexOf(u8, git.calls.items[3], add_arg) != null);
 }
 
 test "create counts uncommitted changes and keeps the launch prefix" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try worktreeTestBase(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
     var git: FakeGit = .{ .prefix = "zig/", .uncommitted_lines = 1 };
     defer git.deinit(std.testing.allocator);
-    var outcome = try create(std.testing.allocator, git.runner(), "/repo/zig", "/tmp/base", "abc");
+    var outcome = try create(std.testing.allocator, git.runner(), "/repo/zig", base, "abc");
     defer outcome.deinit(std.testing.allocator);
+    const expected_dir = try std.fs.path.join(std.testing.allocator, &.{ base, "repo-abc", "zig" });
+    defer std.testing.allocator.free(expected_dir);
     switch (outcome) {
         .created => |created| {
             try std.testing.expectEqual(@as(usize, 1), created.uncommitted);
             try std.testing.expectEqualStrings("zig/", created.info.prefix);
             const dir = try created.info.workingDir(std.testing.allocator);
             defer std.testing.allocator.free(dir);
-            try std.testing.expectEqualStrings("/tmp/base/repo-abc/zig", dir);
+            try std.testing.expectEqualStrings(expected_dir, dir);
         },
         else => return error.TestUnexpectedResult,
     }
 }
 
 test "create quotes git's refusal when the add fails" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try worktreeTestBase(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
     var git: FakeGit = .{ .fail_worktree_add = true };
     defer git.deinit(std.testing.allocator);
-    var outcome = try create(std.testing.allocator, git.runner(), "/repo", "/tmp/base", "abc");
+    var outcome = try create(std.testing.allocator, git.runner(), "/repo", base, "abc");
     defer outcome.deinit(std.testing.allocator);
     switch (outcome) {
         .failed => |message| try std.testing.expect(std.mem.indexOf(u8, message, "fatal: refused") != null),
@@ -584,9 +606,13 @@ test "create quotes git's refusal when the add fails" {
 }
 
 test "create job publishes its outcome once the thread finishes" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try worktreeTestBase(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
     var git: FakeGit = .{};
     defer git.deinit(std.testing.allocator);
-    const job = try CreateJob.start(std.testing.allocator, git.runner(), "/repo", "/tmp/base", "abc");
+    const job = try CreateJob.start(std.testing.allocator, git.runner(), "/repo", base, "abc");
     defer job.deinit();
     var maybe: ?CreateOutcome = null;
     while (maybe == null) {

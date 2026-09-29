@@ -1096,6 +1096,10 @@ pub const App = struct {
             try self.state.appendTranscript(.system, "Cannot delete the active session; resume another session first.");
             return;
         }
+        if (self.worktree_job != null) {
+            try self.state.appendTranscript(.system, "Wait for worktree setup to finish before deleting a session.");
+            return;
+        }
         if (self.worktree_management_job != null) return;
         if (try tui_worktree.readSidecar(self.allocator, store.base_dir, id)) |info_value| {
             var info = info_value;
@@ -1104,9 +1108,9 @@ pub const App = struct {
             errdefer job.deinit();
             const pending_id = try self.allocator.dupe(u8, id);
             errdefer self.allocator.free(pending_id);
+            try self.state.appendTranscript(.system, "Checking and removing the session worktree…");
             self.worktree_management_job = job;
             self.pending_delete_id = pending_id;
-            try self.state.appendTranscript(.system, "Checking and removing the session worktree…");
             return;
         }
         try self.finishDeleteSession(id);
@@ -1146,10 +1150,10 @@ pub const App = struct {
                 errdefer self.allocator.free(pending_id);
                 const pending_path = try self.allocator.dupe(u8, info.path);
                 errdefer self.allocator.free(pending_path);
+                try self.state.appendTranscript(.system, "Reattaching this session's Git worktree…");
                 self.worktree_management_job = job;
                 self.pending_resume_id = pending_id;
                 self.pending_resume_path = pending_path;
-                try self.state.appendTranscript(.system, "Reattaching this session's Git worktree…");
                 return;
             }
             const root = if (tui_worktree.pathExists(info.path))
@@ -1160,15 +1164,13 @@ pub const App = struct {
                 try self.allocator.dupe(u8, info.repo_root);
             defer self.allocator.free(root);
             try runtime.setWorkspaceRoot(root);
-            if (self.working_dir.len > 0) self.allocator.free(self.working_dir);
-            self.working_dir = try self.allocator.dupe(u8, root);
+            try replaceOwnedString(self.allocator, &self.working_dir, root);
             try self.refreshCwdDisplay();
         } else {
             self.worktree_attempted = false;
             if (self.launch_dir.len > 0) {
                 try runtime.setWorkspaceRoot(self.launch_dir);
-                if (self.working_dir.len > 0) self.allocator.free(self.working_dir);
-                self.working_dir = try self.allocator.dupe(u8, self.launch_dir);
+                try replaceOwnedString(self.allocator, &self.working_dir, self.launch_dir);
                 try self.refreshCwdDisplay();
             }
         }
@@ -1991,8 +1993,7 @@ pub const App = struct {
                 const new_dir = try created.info.workingDir(self.allocator);
                 defer self.allocator.free(new_dir);
                 try (self.runtime orelse return error.NoRuntimeConfigured).setWorkspaceRoot(new_dir);
-                if (self.working_dir.len > 0) self.allocator.free(self.working_dir);
-                self.working_dir = try self.allocator.dupe(u8, new_dir);
+                try replaceOwnedString(self.allocator, &self.working_dir, new_dir);
                 try self.refreshCwdDisplay();
                 if (self.store) |store| try tui_worktree.writeSidecar(self.allocator, store.base_dir, self.session_id, &created.info);
                 try self.state.appendTranscript(.system, "Git worktree ready for this session.");
@@ -2039,17 +2040,17 @@ pub const App = struct {
                     if (message) |text| {
                         try self.state.appendTranscript(.system, text);
                         if (!tui_worktree.pathExists(expected_path)) {
-                            self.resume_without_worktree_id = try self.allocator.dupe(u8, id);
+                            try self.setResumeWithoutWorktree(id);
                             try self.state.appendTranscript(.system, "The session worktree could not be reattached; resuming in the original repository.");
                         }
                     }
                 },
                 .missing_branch => {
-                    self.resume_without_worktree_id = try self.allocator.dupe(u8, id);
+                    try self.setResumeWithoutWorktree(id);
                     try self.state.appendTranscript(.system, "This session's Git worktree and branch are missing; resuming in the original repository.");
                 },
                 .failed => |message| {
-                    self.resume_without_worktree_id = try self.allocator.dupe(u8, id);
+                    try self.setResumeWithoutWorktree(id);
                     try self.state.appendTranscript(.@"error", message);
                     try self.state.appendTranscript(.system, "The session worktree could not be reattached; resuming in the original repository.");
                 },
@@ -2282,10 +2283,10 @@ pub const App = struct {
                     errdefer job.deinit();
                     const held = try self.allocator.dupe(u8, trimmed);
                     errdefer self.allocator.free(held);
+                    try self.state.appendTranscript(.system, "Setting up an isolated Git worktree for this session…");
                     self.worktree_job = job;
                     self.held_user_message = held;
                     self.worktree_attempted = true;
-                    try self.state.appendTranscript(.system, "Setting up an isolated Git worktree for this session…");
                     return;
                 }
             }
@@ -2518,6 +2519,10 @@ pub const App = struct {
         const next = try allocator.dupe(u8, value);
         allocator.free(field.*);
         field.* = next;
+    }
+
+    fn setResumeWithoutWorktree(self: *App, id: []const u8) !void {
+        try replaceOwnedString(self.allocator, &self.resume_without_worktree_id, id);
     }
 
     fn stageClipboard(self: *App, text: []const u8) void {
