@@ -178,14 +178,13 @@ compaction step waits on that decision.
 locks the mutex, checks `is_streaming` or a live thread, and blocks until the
 run ends. It appears 31 times in `zig/src/tui/runtime.zig`, but only **six of
 those are production code** — `stop`, `submitTurn`, `replaceMessages`,
-`history`, `compact` and `resumeSession`. The other 25 are test call sites,
-which is a correction to the number this gap was first filed with: the work is
-six joins, not thirty-one.
+`history`, `compact` and `resumeSession`. The other 25 are test call sites, so
+the work is six joins, not thirty-one.
 
-It is not a protocol call and no issue names it. On an endpoint, "has the run
-finished" is the terminal run event, so each of the six has to become an await
-instead. This is behaviour-visible and needs its own PR, before any run flow
-moves.
+It is not a protocol call, which is why neither #365 nor #375 names it. Filed
+as #617. On an endpoint, "has the run finished" is the terminal run event, so
+each of the six has to become an await instead. This is behaviour-visible and
+needs its own PR, before any run flow moves.
 
 The six fall into two groups. `history`, `stop` and `replaceMessages` are the
 TUI asking whether it may act or read; `submitTurn`, `compact` and
