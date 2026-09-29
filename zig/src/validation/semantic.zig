@@ -44,6 +44,9 @@ pub const code_pending_interaction_at_terminal = "pending_interaction_at_termina
 pub const code_resolution_payload_mismatch = "resolution_payload_mismatch";
 pub const code_wrong_tool_owner = "wrong_tool_owner";
 pub const code_undisclosed_provide_limit = "undisclosed_provide_limit";
+pub const code_attachment_field_in_catalog = "attachment_field_in_catalog";
+
+const attachment_only_members = [_][]const u8{ "command", "args", "environment" };
 
 pub const implemented = [_][]const u8{
     code_duplicate_envelope_id,
@@ -85,6 +88,7 @@ pub const implemented = [_][]const u8{
     code_resolution_payload_mismatch,
     code_wrong_tool_owner,
     code_undisclosed_provide_limit,
+    code_attachment_field_in_catalog,
 };
 
 pub fn isImplemented(code: []const u8) bool {
@@ -769,6 +773,7 @@ pub const Machine = struct {
             try self.checkListedToolSources(index, payload, if (request) |pending| pending.control != null else false);
             try self.checkSessionCatalog(index, payload);
             try self.servedCatalog(payload);
+            try self.checkPublishedSources(index, payload);
             return;
         }
         if (std.mem.eql(u8, declared, "action.call.resolve.request")) {
@@ -867,6 +872,7 @@ pub const Machine = struct {
         if (self.catalog_ambiguous) try self.add(code_duplicate_tool_name, index);
         try self.collectOwners(payload);
         try self.checkDescriptorToolSources(index, payload);
+        try self.checkPublishedSources(index, payload);
         try self.checkRefreshAgainstProvided(index);
     }
 
@@ -1697,6 +1703,33 @@ pub const Machine = struct {
         }
     }
 
+    fn checkPublishedSources(self: *Machine, index: usize, payload: std.json.Value) !void {
+        if (!publishedSourcesReadable(payload)) return;
+        try self.checkRawSources(index, member(payload, "sources"));
+        const layers = member(payload, "layers") orelse return;
+        if (layers != .object) return;
+        var names = std.ArrayList([]const u8).empty;
+        defer names.deinit(self.allocator);
+        var layer = layers.object.iterator();
+        while (layer.next()) |entry| try names.append(self.allocator, entry.key_ptr.*);
+        std.mem.sort([]const u8, names.items, {}, lessThanName);
+        for (names.items) |name| {
+            try self.checkRawSources(index, member(layers.object.get(name).?, "sources"));
+        }
+    }
+
+    fn checkRawSources(self: *Machine, index: usize, sources: ?std.json.Value) !void {
+        const listed = sources orelse return;
+        if (listed != .array) return;
+        for (listed.array.items) |source| {
+            if (source != .object) continue;
+            for (attachment_only_members) |held| {
+                if (source.object.get(held) == null) continue;
+                try self.add(code_attachment_field_in_catalog, index);
+            }
+        }
+    }
+
     fn collectSources(self: *Machine, payload: std.json.Value) !void {
         self.declared_sources.clearRetainingCapacity();
         self.duplicate_source = "";
@@ -2503,6 +2536,7 @@ pub const Machine = struct {
     fn openResponse(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
         const session_id = memberString(payload, "session_id");
         try self.gatedResponse(index, envelope, .open);
+        try self.checkPublishedSources(index, payload);
         const attachment_refused = if (self.submits.get(field(envelope, "in_reply_to"))) |opened|
             opened.attachment != null
         else
@@ -2710,6 +2744,7 @@ pub const Machine = struct {
             holder.current_known = true;
         }
         try self.checkPublishedUnion(index, session_id, member(payload, "sources"));
+        try self.checkPublishedSources(index, payload);
         const recovery = self.recoveries.get(session_id) orelse return;
         if (recovery.state_checked) return;
         recovery.state_checked = true;
@@ -3745,6 +3780,31 @@ fn isToolSourceKind(kind: []const u8) bool {
 
 fn lessThanName(_: void, a: []const u8, b: []const u8) bool {
     return std.mem.order(u8, a, b) == .lt;
+}
+
+fn sourceListReadable(sources: ?std.json.Value) bool {
+    const listed = sources orelse return true;
+    if (listed == .null) return true;
+    if (listed != .array) return false;
+    for (listed.array.items) |source| {
+        if (source == .null) continue;
+        if (source != .object) return false;
+    }
+    return true;
+}
+
+fn publishedSourcesReadable(payload: std.json.Value) bool {
+    if (!sourceListReadable(member(payload, "sources"))) return false;
+    const layers = member(payload, "layers") orelse return true;
+    if (layers == .null) return true;
+    if (layers != .object) return false;
+    var layer = layers.object.iterator();
+    while (layer.next()) |entry| {
+        if (entry.value_ptr.* == .null) continue;
+        if (entry.value_ptr.* != .object) return false;
+        if (!sourceListReadable(member(entry.value_ptr.*, "sources"))) return false;
+    }
+    return true;
 }
 
 fn cancellingHoldsItsPlace(entry: std.json.Value) bool {
@@ -5656,4 +5716,88 @@ test "a descriptor listing a tool twice records no owner for it" {
         \\"tools":[{"name":"grep","execution_owner":"agent","input_schema":{"type":"object"}},
         \\{"name":"grep","execution_owner":"control","input_schema":{"type":"object"}}]}},
     ++ started_run ++ comptime grepCall("bystander", "v1"), &.{"duplicate_tool_name"});
+}
+
+const attachment_free =
+    \\[{"type":"capabilities.request","id":"k0","payload":{}},
+    \\{"type":"capabilities.response","id":"k1","in_reply_to":"k0","capability_revision":"v1","payload":{"features":
+    \\{"tools":{"level":"native"},"action.tools.list":{"level":"native"},"session.open":{"level":"native"}},
+    \\"sources":[{"id":"native","kind":"native"}],
+    \\"layers":{"action":{"sources":[{"id":"files","kind":"process","protocol":"mcp"}]}}}}
+;
+
+test "a published source carrying an attachment member is a catalog defect" {
+    try expectCodes(
+        \\[{"type":"capabilities.request","id":"k0","payload":{}},
+        \\{"type":"capabilities.response","id":"k1","in_reply_to":"k0","capability_revision":"v1","payload":{"features":
+        \\{"tools":{"level":"native"}},
+        \\"sources":[{"id":"native","kind":"native","environment":["T=secret"]}]}}]
+    , &.{code_attachment_field_in_catalog});
+
+    try expectCodes(
+        \\[{"type":"capabilities.request","id":"k0","payload":{}},
+        \\{"type":"capabilities.response","id":"k1","in_reply_to":"k0","capability_revision":"v1","payload":{"features":
+        \\{"tools":{"level":"native"}},
+        \\"layers":{"action":{"sources":[{"id":"files","kind":"process","command":"/bin/tool"}]}}}}]
+    , &.{code_attachment_field_in_catalog});
+
+    try expectCodes(attachment_free ++
+        \\,
+        \\{"type":"action.tools.list.request","id":"l1","capability_revision":"v1","payload":{"session_id":"s"}},
+        \\{"type":"action.tools.list.response","id":"l2","in_reply_to":"l1","capability_revision":"v1","session_id":"s","payload":
+        \\{"session_id":"s","sources":[{"id":"native","kind":"native","args":["--flag"]}]}}]
+    , &.{code_attachment_field_in_catalog});
+
+    try expectCodes(attachment_free ++
+        \\,
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s"}},
+        \\{"type":"session.open.response","id":"o2","in_reply_to":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"sources":[{"id":"files","kind":"process","environment":["T=secret"]}]}}]
+    , &.{code_attachment_field_in_catalog});
+}
+
+test "a source with no attachment member is left alone in every published position" {
+    try expectCodes(attachment_free ++ "]", &.{});
+}
+
+test "a source list this rule cannot read is not judged, the way Go's decode is not" {
+    try expectCodes(
+        \\[{"type":"capabilities.request","id":"k0","payload":{}},
+        \\{"type":"capabilities.response","id":"k1","in_reply_to":"k0","capability_revision":"v1","payload":{"features":
+        \\{"tools":{"level":"native"}},
+        \\"sources":[{"id":"native","kind":"native"},"not-an-object"]}}]
+    , &.{});
+
+    try expectCodes(
+        \\[{"type":"capabilities.request","id":"k0","payload":{}},
+        \\{"type":"capabilities.response","id":"k1","in_reply_to":"k0","capability_revision":"v1","payload":{"features":
+        \\{"tools":{"level":"native"}},
+        \\"sources":[{"id":"native","kind":"native","command":"/bin/tool"}],
+        \\"layers":"not-an-object"}}]
+    , &.{});
+
+    try expectCodes(
+        attachment_free ++
+        \\,
+        \\{"type":"action.tools.list.request","id":"l1","capability_revision":"v1","payload":{"session_id":"s"}},
+        \\{"type":"action.tools.list.response","id":"l2","in_reply_to":"l1","capability_revision":"v1","session_id":"s","payload":
+        \\{"session_id":"s","sources":{"not":"an array"}}}]
+    , &.{});
+}
+
+test "a null container is an absent one, and the sources beside it are still judged" {
+    try expectCodes(
+        \\[{"type":"capabilities.request","id":"k0","payload":{}},
+        \\{"type":"capabilities.response","id":"k1","in_reply_to":"k0","capability_revision":"v1","payload":{"features":
+        \\{"tools":{"level":"native"}},
+        \\"sources":[{"id":"native","kind":"native","command":"/bin/tool"}],"layers":null}}]
+    , &.{code_attachment_field_in_catalog});
+
+    try expectCodes(
+        \\[{"type":"capabilities.request","id":"k0","payload":{}},
+        \\{"type":"capabilities.response","id":"k1","in_reply_to":"k0","capability_revision":"v1","payload":{"features":
+        \\{"tools":{"level":"native"}},
+        \\"sources":[{"id":"native","kind":"native","command":"/bin/tool"}],
+        \\"layers":{"action":null,"other":{"sources":[{"id":"files","kind":"process","args":["--f"]}]}}}}]
+    , &.{code_attachment_field_in_catalog, code_attachment_field_in_catalog});
 }

@@ -630,6 +630,20 @@ fn contextWindowFor(id: []const u8, model: DiscoveredModel) u32 {
     return provider_catalog.rowContextWindow(id) orelse catalog_context_window;
 }
 
+test "no catalogued row or model resolves a window above the ceiling it resolves" {
+    for (provider_catalog.all) |row| {
+        if (provider_catalog.rowMaxContextWindow(row.id)) |ceiling| {
+            const window = row.context_window orelse catalog_context_window;
+            try std.testing.expect(window <= ceiling);
+        }
+        for (row.models) |model| {
+            const ceiling = provider_catalog.modelMaxContextWindow(row.id, model.id) orelse continue;
+            const window = model.context_window orelse row.context_window orelse catalog_context_window;
+            try std.testing.expect(window <= ceiling);
+        }
+    }
+}
+
 fn maxTokensFor(id: []const u8, model: DiscoveredModel) u32 {
     if (model.max_tokens) |reported| return reported;
     if (provider_catalog.declaredModel(id, model.id)) |declared| {
@@ -723,6 +737,10 @@ fn testCatalogModels(allocator: std.mem.Allocator, id: []const u8, models_url: [
     return null;
 }
 
+fn isRefusalStatus(status: u16) bool {
+    return status == 401 or status == 403;
+}
+
 fn fetchCatalogModelsCatalog(allocator: std.mem.Allocator, target: CatalogEndpoint, token: []const u8) ![]u8 {
     var headers: std.ArrayList(std.http.Header) = .empty;
     defer headers.deinit(allocator);
@@ -747,6 +765,7 @@ fn fetchCatalogModelsCatalog(allocator: std.mem.Allocator, target: CatalogEndpoi
     }) catch return error.ModelCatalogFetchFailed;
     errdefer fetched.deinit(allocator);
 
+    if (isRefusalStatus(fetched.status)) return error.ModelCatalogRefused;
     if (fetched.status != 200) return error.ModelCatalogFetchFailed;
     return fetched.body;
 }
@@ -2152,6 +2171,14 @@ test "loadProductionModels omits Kimi model by default in tests" {
     for (models) |model| {
         try std.testing.expect(!std.mem.eql(u8, kimi_provider_id, model.provider));
     }
+}
+
+test "only a 401 or a 403 says the key was refused, and an outage does not" {
+    const refusals = [_]u16{ 401, 403 };
+    for (refusals) |status| try std.testing.expect(isRefusalStatus(status));
+
+    const others = [_]u16{ 200, 204, 400, 402, 404, 408, 409, 422, 429, 500, 502, 503, 504 };
+    for (others) |status| try std.testing.expect(!isRefusalStatus(status));
 }
 
 test "the region resolution a user chose at login reaches discovery and the model's base" {
