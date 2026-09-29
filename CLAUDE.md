@@ -225,12 +225,15 @@ Rules the source will not tell you:
   `owns_events` without cloning before push is a use-after-free. A stream ends
   via `complete`/`completeWithError`, never a `.done` event. Full contract:
   `docs/zig-stream-memory-ownership.md`.
-- **`ProtocolClient` is a separate contract, and those rules do not cover it.**
-  `waitResultFor` hands back a shallow copy of the message held in
-  `stream_results`, and `removeStreamState` deinits that stored message, so a
-  result kept past cleanup holds freed slices. `cloneAssistantMessage` it first
-  when it must outlive the call — `EventStream.cloneResult` is a different API
-  and does not apply here.
+- **`ProtocolClient` is a separate contract, and the stream rules do not cover
+  it.** Its terminal query hands back a deep copy the caller owns:
+  `waitResult`/`waitResultFor` return an `ai_types.OwnedMessage`, so the result
+  is still there after `removeStreamState` or `reset` frees the client's own
+  copy. There is no borrowed spelling to reach for, so nobody has to remember
+  to clone before cleanup. `deinit` it, or `intoMessage` it to hand the
+  message on — a `?OwnedMessage` with no `defer` is a leak the allocator
+  reports, not a silent one. `EventStream.cloneResult` is a different API and
+  returns a bare message, not an `OwnedMessage`.
 - **A run ends with exactly one event that ends it, and that is a type-level
   fact rather than a convention.** `AgentEvent.isTerminal` names them —
   `agent_end` and `run_failed` — and `runLoopThread` emits exactly one of the

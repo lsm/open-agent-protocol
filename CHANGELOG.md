@@ -54,6 +54,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the environment as a value, which is also what lets a test drive it with a
   literal rather than by mutating the process.
 
+- **`ProtocolClient.waitResultFor` and `waitResult` return a result the caller
+  owns.** Both handed back a shallow copy of the message the client holds in
+  `stream_results`, and `removeStreamState` deinits that message -- so a result
+  kept past cleanup, which is the order `DESIGN.md` section 5.1 prescribes,
+  held freed slices. `CLAUDE.md` warned about it and told callers to
+  `cloneAssistantMessage` first, which is a rule about a shape rather than a
+  fix: the return type is now `ai_types.OwnedMessage`, a deep copy with
+  `deinit` and `intoMessage`, and there is no borrowed spelling to forget.
+  The one production caller, the provider protocol bridge, cloned the result by
+  hand before handing it to `complete()`; it now hands the owned message on
+  directly. Two tests read the result *after* the client's own copy is gone --
+  one through `removeStreamState`, one through `reset` on the legacy
+  `last_result` path, which had the same aliasing -- and both fail against the
+  old shape under the debug allocator.
+
 ### Added
 - **`go/internal/provider` gains the `anthropic-messages` client, part of #358
   step 3.** It reuses step 2's SSE parser, event types, json tree and
