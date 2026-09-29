@@ -287,6 +287,41 @@ test "a descriptor whose fields are the wrong shape is refused, not read past" {
     try std.testing.expectError(error.InvalidPackDescriptor, packs_mod.load(std.testing.io, allocator, &judge.registry, &dirs));
 }
 
+test "one pack at two paths is one pack, and contributes one branch" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    for ([_][]const u8{ "a", "b" }) |name| {
+        try tmp.dir.createDir(std.testing.io, name, .default_dir);
+        const descriptor = try std.fmt.allocPrint(allocator, "{s}/pack.json", .{name});
+        defer allocator.free(descriptor);
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = descriptor,
+            .data =
+            \\{"id":"com.example.note","version":"1.0.0","schemas":[],"envelope_types":[{"type":"com.example.note.thing","role":"event","schema":"note.schema.json#/$defs/thing"}]}
+            ,
+        });
+    }
+    const first = try tmp.dir.realPathFileAlloc(std.testing.io, "a", allocator);
+    defer allocator.free(first);
+    const second = try tmp.dir.realPathFileAlloc(std.testing.io, "b", allocator);
+    defer allocator.free(second);
+    const dirs = [_][]const u8{ first, second };
+
+    var registry = try jsonschema.Registry.initFromBundled(allocator);
+    defer registry.deinit();
+    var judge = try Validator.init(allocator, .{ .io = std.testing.io });
+    defer judge.deinit();
+
+    var once = try packs_mod.load(std.testing.io, allocator, &judge.registry, &.{first});
+    defer once.deinit();
+    var twice = try packs_mod.load(std.testing.io, allocator, &judge.registry, &dirs);
+    defer twice.deinit();
+    try std.testing.expect(once.branches.len > 0);
+    try std.testing.expectEqual(once.branches.len, twice.branches.len);
+    try std.testing.expectEqual(once.types.len, twice.types.len);
+    try std.testing.expectEqual(once.members.len, twice.members.len);
+}
+
 test "a pack's members widen the core payload only, and no other document" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});

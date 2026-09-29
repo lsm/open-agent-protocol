@@ -89,6 +89,7 @@ fn gather(
     var branches = std.ArrayList(Branch).empty;
     var members = std.ArrayList(Member).empty;
     var types = std.ArrayList(Declared).empty;
+    var identities = std.StringHashMap(void).init(allocator);
 
     for (pack_dirs) |dir| {
         const descriptor_path = try std.fs.path.join(allocator, &.{ dir, "pack.json" });
@@ -97,6 +98,9 @@ fn gather(
         if (descriptor != .object) return error.InvalidPackDescriptor;
         const pack_id = stringField(descriptor, "id") orelse return error.InvalidPackDescriptor;
         const version = stringField(descriptor, "version") orelse return error.InvalidPackDescriptor;
+        const identity = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ pack_id, version });
+        if (identities.contains(identity)) continue;
+        try identities.put(identity, {});
 
         if (registry) |target| {
             if (arrayField(descriptor, "schemas")) |schemas| {

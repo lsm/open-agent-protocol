@@ -3246,33 +3246,14 @@ fn runValidate(
     }
     if (paths.items.len == 0) return error.InvalidArgument;
 
-    var pack_keys = std.ArrayList([:0]u8).empty;
-    defer {
-        for (pack_keys.items) |key| allocator.free(key);
-        pack_keys.deinit(allocator);
-    }
-    var pack_load = std.ArrayList([]const u8).empty;
-    defer pack_load.deinit(allocator);
-    for (pack_dirs.items) |dir| {
-        const key = if (std.Io.Dir.cwd().realPathFileAlloc(compat.fs.defaultIo(), dir, allocator)) |canonical| canonical else |_| try allocator.dupeZ(u8, dir);
-        var already = false;
-        for (pack_keys.items) |held| already = already or std.mem.eql(u8, held, key);
-        if (already) {
-            allocator.free(key);
-            continue;
-        }
-        try pack_keys.append(allocator, key);
-        try pack_load.append(allocator, dir);
-    }
-
     var judge = validator.Validator.init(allocator, .{
         .mode = mode,
-        .pack_dirs = pack_load.items,
+        .pack_dirs = pack_dirs.items,
         .io = compat.fs.defaultIo(),
     }) catch |err| {
         var buf: [512]u8 = undefined;
         const reason = std.fmt.bufPrint(&buf, "{s} did not load as a pack: {s}", .{
-            if (pack_load.items.len == 1) pack_load.items[0] else "a --pack directory",
+            if (pack_dirs.items.len == 1) pack_dirs.items[0] else "a --pack directory",
             @errorName(err),
         }) catch "a pack did not load";
         try unavailable(stderr, "validate", "--pack", reason);
