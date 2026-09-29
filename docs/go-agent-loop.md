@@ -1,0 +1,219 @@
+# The Go agent loop
+
+`zig/src/agent/` is a loop that runs turns, calls tools, checks permissions,
+takes a cancellation and compacts. This note says which parts of it the Go
+tree needs, in what order, and which one the first slice takes. It is the
+companion to [`go-library.md`](go-library.md): that one lists the packages
+`goap` has, this one covers the one it is about to grow.
+
+Decision 0038 makes the Go tree native, and #370 is its loop. Until that lands,
+`go/sdk`'s `Agent` runs a loop it does not own — it spawns `oapx serve
+agent,provider --stdio` and projects the other tree's envelopes
+(`go/sdk/oap.go:712`, `oapNext`). Every parity question about the Go loop is
+therefore a question about `oapx` today, and the step that removes the process
+is the one that makes the Go tree's answers its own. Nothing here claims a
+parity result: it says what the Go tree needs and what the first slice is.
+
+## What `oapx`'s loop actually is
+
+The loop is `runLoop` in `zig/src/agent/agent_loop.zig:1137`, and it is
+smaller than the surrounding files suggest. `agent.zig` (1903 lines) is the
+queued, steerable, resumable `Agent` façade over it; `types.zig` is the event
+and config vocabulary; `compaction.zig` is a summariser; the two provider
+bridges are how the loop reaches a model. The loop itself is one outer while, one
+inner while, and a `switch` on what a turn produced.
+
+| part | where | what it is |
+| --- | --- | --- |
+| turn loop | `runLoop`, the `outer`/`inner` whiles | stream a reply, then decide: run its tool calls, or end the run |
+| turn outcome | `turnOutcome` (`agent_loop.zig:1070`) | `failed` on `error`/`aborted`, `answered` on a reply with no tool call, `called_tools` otherwise |
+| cut-off calls | `max_cut_off_tool_turns` (`:1068`) | a `length` stop mid-tool-call is retried up to three times, then treated as answered |
+| tool execution | `executeToolCalls` (`:647`) | per call: find the tool, gate it, run it, measure it, append a result message |
+| permissions | `permission.PermissionEngine` (`zig/src/tools/permission.zig`) | `evaluate` first, a per-tool approval callback when the policy says prompt, persistence only where `canPersistDecision` allows it |
+| cancellation | `cancel_token`, checked at the top of the outer loop | the run ends, and `agent_end.termination` is `cancelled` |
+| compaction | `compaction.zig`, reached from the TUI and the overflow path | summarise, replace history, keep the transcripts on disk |
+| telemetry | `estimateContextUsage`, `emitContextUsage` | three `prompt_segment_usage` events and one `context_usage` per turn, from a `len/4` token estimate |
+
+Two facts about the loop are load-bearing and neither is obvious from the
+signature. The first is that **a run ends with exactly one terminal event**,
+and it is a type-level fact: `AgentEvent.isTerminal` names `agent_end` and
+`run_failed`, and `Agent.runLoopThread` (`agent.zig:956`) emits exactly one of
+the two from its `defer`, guarded by `terminal_sent` — `agent_end` sets the
+flag on the way out (`agent.zig:1136`), and the `defer` emits `run_failed` only
+if the flag is still clear (`agent.zig:968`). So every path out of the run ends
+it: the paths that return before the run starts (`NoModelConfigured`,
+`NothingToRun`), a failure inside it, and a failure *after* it has already
+ended, which must not end it twice. The lower `runLoopThread`
+(`agent_loop.zig:1412`) is not where that lives — its `catch` calls
+`stream.completeWithError`, which records an error on the stream and emits no
+event at all. The second fact is that **`AgentEndPayload.termination` is
+evidence of nothing**: it encodes only `max_turns` or `cancelled`, and is null
+on a clean finish *and* on a provider that refused the request. A provider
+failure is a normal `agent_end` whose `final_message.stop_reason` is `error`.
+
+The Go tree inherits both. The first is a rule about the Go loop's own
+structure; the second is a rule about what the Go loop may claim.
+
+## Where the Go tree stands
+
+The Go provider runtime (#358) is part-way: `go/internal/provider` builds
+request bodies for `openai-completions` and `anthropic-messages` and turns an
+SSE chunk into `provider.Event`s — steps 2 and 3, both merged. Step 5 is in
+progress in #528, which adds `OAPX_BASE_URL` and the per-provider base-URL
+overrides to the Go tree plus `MockProvider`, a loopback `openai-completions`
+endpoint that serves fixed frames and records what it was sent; the serving
+layer is the next piece of it. Step 4, model discovery, waits on #352.
+
+What the tree has none of is a loop. `provider.Message` is already the
+user/assistant/tool-result triple (`go/internal/provider/types.go:98`), so the
+slice reuses it rather than declaring a parallel one; what is missing is
+everything a *loop* needs around it: an `AgentEvent` union, a `StopReason`
+beyond `aborted`/`error` (`go/internal/provider/types.go:18`), a turn counter,
+and the per-run event stream that carries a terminal.
+
+The Go tree does have the half of the loop that is protocol rather than model:
+`go/serve/serveendpoint` (`dispatch.go:294` `submit`, `:332` `pump`) admits a
+run, stamps a per-run contiguous `sequence`, and streams a run's envelopes to
+the host. The memory adapter (`go/adapter/memory.go`) is a full agent loop in
+Go already, but a scripted one: it replays a fixed trace and its tool results
+are `{"ok":true}`. The Go loop's first job is to be the memory adapter's
+script-free counterpart, over the provider runtime.
+
+## The first slice
+
+**Text turns and client-executed tool calls, over `go/internal/provider`.**
+One package, `go/agent`, holding:
+
+- the loop's own history over `provider.Message` and `provider.Context` — the
+  types the provider runtime already takes, so a turn is a `provider.Context`
+  and nothing translates between the loop and the wire;
+- `TurnOutcome` with the same three cases and the same `max_cut_off_tool_turns`
+  rule as `turnOutcome`, because a Go reply that ends a run on a different
+  condition is a parity divergence the harness will report as an unexplained
+  order difference;
+- a `Run` whose `Events()` is a channel of a Go `Event` union whose terminal
+  members are `AgentEnd` and `RunFailed`, with `IsTerminal` the same predicate
+  `AgentEvent.isTerminal` is;
+- a tool call executed **by the caller**, not in-process. This is the
+  `action.call.*` lifecycle from Decision 0011, and it is the only tool
+  execution the first slice carries: the loop emits `action.call.requested`,
+  waits for `action.call.resolve.response`, and turns the answer into a tool
+  result message.
+
+Deliberately not in the first slice: permissions as a *policy engine*, steering
+and follow-up queues, compaction, and token accounting. Each is a few lines in
+the Zig loop and a real amount of policy in Go, and each is reachable only
+after the first slice's traces match. `max_iterations` is the one that lands
+with the loop rather than after it: it is one counter and one condition, and a
+loop without it spins on a model that keeps calling tools.
+
+## What the loop must be, whatever the slice
+
+Three rules carry over from the Zig loop and are worth stating here because
+each is easy to violate while writing Go.
+
+**A run ends with exactly one terminal event.** Zig spells it as a flag on the
+run's state, set when `agent_end` goes out and tested by the thread's `defer`.
+Go's structure differs — a `Run` is a goroutine writing into a channel, and a
+`select` on `ctx.Done()` gives the cancellation path somewhere to happen — so
+the natural spelling is a `sync.Once` on the run, but the requirement is the
+flag's: the terminal comes from one place every exit path reaches, and a run
+that ends twice is a defect rather than a duplicate. Those paths are normal
+finish, provider failure, cancellation, and a run that never started.
+`go/serve/serveendpoint` already knows the difference between "the run ended"
+and "the stream stopped reaching the host" (`reportLostStream`,
+`dispatch.go:354`); the loop's terminal is the former, and `run.failed` is a
+settlement while a lost stream is a control frame.
+
+**A provider failure is a normal `agent_end`, and the *endpoint* decides what
+that settles as.** These are two layers, and conflating them is the mistake.
+At the loop, `provider.Stream` reports a provider that refuses through
+`Event{Kind: EventError}` rather than a Go `error`, so the loop makes a final
+message with `StopReason: StopError` and an `agent_end` — the run got far
+enough to end, and `termination` is null, which is the CLAUDE.md rule written
+about. Above the loop, the OAP server turns that into the wire's settlement:
+`Bridge.settleFromEvidence` (`bridge.zig:285`) reads the stop reason, and
+`"error"` becomes `settleFailed` — a `run.failed` carrying
+`err.code: provider_error` (`server.zig:1515`). So `oapx` emits a `run.failed`
+on the wire for a provider refusal, and a Go loop that returned a Go `error`
+all the way to the endpoint would reach the same settlement by a different
+route, or — worse — a `run.failed` where `oapx` completes. The rule for the Go
+loop is the narrower one: **the terminal is the loop's own event, and what it
+settles as is the endpoint's decision, not the loop's.**
+
+**A tool call the loop cannot resolve is a tool result, not a run failure.**
+`executeToolCalls` produces an error result and carries on
+(`agent_loop.zig:700` onwards: a denied call, an unknown tool, an
+unparseable argument — each a result, each followed by the rest). The first
+slice's analogue is the resolve round trip: no answer, a refusal, and a
+malformed argument are three results, not three failures.
+
+## Where each loop concern lands
+
+| concern | first slice | after parity holds | note |
+| --- | --- | --- | --- |
+| turn loop, turn outcome, one terminal | yes | — | the shape of the loop; everything else hangs off it |
+| text turns over `provider.Stream` | yes | — | including `EventError` → `stop_reason: error` |
+| client-executed tool calls | yes | — | `action.call.*`, the Decision 0011 lifecycle |
+| `max_iterations` | yes | — | one counter; without it a tool-calling model spins |
+| streaming, per-run `sequence` | via `serveendpoint` | — | the endpoint already owns sequence and pump |
+| permissions as policy | — | yes | the Zig order is `evaluate`, then approval callback, then persistence where `canPersistDecision` allows; Go's version is OAP's `action.permission.requested`/`resolved` pair, and it is a *protocol* exchange, so it wants the endpoint in the loop rather than beside it |
+| steering, follow-up | — | yes | `get_steering_messages_fn` is a callback polled between turns and after each tool. A steering message re-enters the `inner` loop and a follow-up re-enters the `outer` one, which buys a fresh cancel-token check before the next turn; `state.iterations` is not reset on either path, so `max_iterations` keeps binding across follow-ups |
+| compaction | — | yes | `compaction.zig` plus the overflow detection in `zig/src/utils/overflow.zig`; it needs transcript files, so it is storage work as much as loop work |
+| token accounting, `context_usage` | — | yes | a `len/4` estimate; not worth carrying until something reads it |
+
+## Served as `goap serve agent` with no backend
+
+`oapx serve agent` without `--backend` builds a `StdioProtocolLoop`
+(`zig/src/tools/makai.zig:8886`) and runs its own loop; with `--backend` it
+runs an adapter. The Go `serve agent` always runs an adapter — the flag
+defaults to `memory` (`go/cmd/goap/endpoint.go:39`), so there is no
+no-backend case to fill. The third step gives it one: `goap serve agent` with
+no `--backend` serves the Go tree's own loop, so the parity harness can drive
+`goap serve agent` and `oapx serve agent` over the same scenario with no
+adapter in either, and compare the two loops' traces.
+
+That is the comparison worth making. The eight harness fixtures compare
+adapters, and the `memory` fixture compares two scripted loops; neither reaches
+a loop that decides. Driving two real loops over one scenario is the first check
+that can say the Go loop's *answers* are its own.
+
+The comparison is over the trace, so both trees have to be driven by the same
+deterministic model — and #528 is what makes that possible. It honours
+`OAPX_BASE_URL` in the Go tree and adds `MockProvider`: a loopback
+`openai-completions` endpoint serving fixed frames and recording the path,
+headers and body it was sent, with `TextTurn`, `ToolTurn`, `UsageTurn` and
+`ErrorTurn` building the frames a turn is made of. The parity scenario points
+both trees at that provider, and the recorded requests are a second diff
+alongside the traces — where `exchangeWithChild` compares what an endpoint
+wrote to its *child*, a native loop's equivalent is what it wrote to the
+provider, and only a second tree shows that.
+
+## And then the SDK
+
+`go/sdk`'s `Agent` keeps its OAP path (`oapBegin`, `oapStream`) as the shape a
+caller sees, and the fourth step swaps the delegation for the native loop: no
+`oapx` process, the loop in-process, the same `AgentService.Run` and
+`AgentService.Stream` signatures. `docs/go-library.md` says what
+`go/sdk` spawns today, so that page changes with it.
+
+The step is last because it is the one the parity claim rests on. Until the Go
+loop's traces match `oapx`'s, swapping the delegation would change what a Go
+program observes and nothing in the tree would say why.
+
+## What is not settled here
+
+- **Cancellation scope.** The Zig loop's `cancel_token` ends the run and sets
+  `termination: cancelled`; `oapx`'s OAP server advertises `run.cancel` as
+  `degraded` because its cancellation is a session-scoped teardown
+  (`zig/src/protocol/oap/server.zig:34`). Go's loop should be run-scoped and
+  advertise `native` — but that is a difference from `oapx` the parity harness
+  will report, so it needs the draft it touches updated in the same PR, not
+  left to a later reader.
+- **Whether the parity fixture is its own loop or a shared provider.** #528
+  answers what the model is, and the scenario above says the fixture drives
+  both trees at one loopback provider. What is still open is the ordering:
+  whether that provider is started per fixture like `startFakeOpenCode` is for
+  `opencode`, or is started once and shared. It is a fixture question with no
+  protocol content, and it is the first thing to settle when the second step
+  lands.
