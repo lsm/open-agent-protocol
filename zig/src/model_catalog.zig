@@ -456,7 +456,9 @@ fn catalogEndpointWithOverrides(
 ) !?CatalogEndpoint {
     const region = catalogRegion(allocator, null, id);
     const catalog = catalogTargetInRegion(id, region) orelse return null;
-    const base_url = try provider_base_url.baseUrlWithOverrides(allocator, id, catalog.wire, overrides);
+    var merged = overrides;
+    if (region) |resolved| merged.kimi_region = resolved;
+    const base_url = try provider_base_url.baseUrlWithOverrides(allocator, id, catalog.wire, merged);
     return try catalogEndpointWithBase(allocator, catalog, base_url);
 }
 
@@ -2124,6 +2126,28 @@ test "the Kimi row serves the China base by default and the global base when the
     const global_target = catalogTargetInRegion("kimi", "global") orelse return error.TestExpectedTarget;
     try std.testing.expectEqualStrings("https://api.moonshot.ai", global_target.base_url);
     try std.testing.expectEqualStrings("https://api.moonshot.ai/v1/models", global_target.models_url);
+}
+
+test "an endpoint's region, its base and the cache it writes all name the same region" {
+    const allocator = std.testing.allocator;
+    try compat.setTestEnv(allocator, kimi_region_env, "global");
+    defer compat.clearTestEnv();
+
+    var target = (try catalogEndpointWithOverrides(allocator, "kimi", .{})).?;
+    defer target.deinit(allocator);
+
+    try std.testing.expectEqualStrings("global", target.region.?);
+    try std.testing.expectEqualStrings("https://api.moonshot.ai", target.base_url);
+    try std.testing.expectEqualStrings("https://api.moonshot.ai/v1/models", target.models_url);
+
+    const name = try catalogRowCacheName(allocator, target.id, target.region);
+    defer allocator.free(name);
+    try std.testing.expectEqualStrings("catalog-kimi-global.json", name);
+
+    var explicit = (try catalogEndpointWithOverrides(allocator, "kimi", .{ .global = "https://proxy.example/api" })).?;
+    defer explicit.deinit(allocator);
+    try std.testing.expectEqualStrings("https://proxy.example/api", explicit.base_url);
+    try std.testing.expectEqualStrings("global", explicit.region.?);
 }
 
 test "KIMI_REGION chooses the region, and an unusable value falls back to the row's default" {

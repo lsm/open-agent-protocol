@@ -177,11 +177,12 @@ const CatalogTarget = struct { wire: []const u8, base_url: []const u8 };
 
 fn regionFor(allocator: std.mem.Allocator, id: []const u8) ?[]const u8 {
     const row = provider_catalog.provider(id) orelse return null;
-    if (row.endpoints.len == 0 or row.endpoints[0].region == null) return null;
-    const name = provider_catalog.regionEnv(id) orelse return row.endpoints[0].region;
-    const value = envOwned(allocator, name) orelse return row.endpoints[0].region;
+    if (row.endpoints.len == 0) return null;
+    const fallback = provider_catalog.defaultRegion(row.id) orelse row.endpoints[0].region;
+    const name = provider_catalog.regionEnv(id) orelse return fallback;
+    const value = envOwned(allocator, name) orelse return fallback;
     defer allocator.free(value);
-    return provider_catalog.regionFromValue(row.id, value) orelse row.endpoints[0].region;
+    return provider_catalog.regionFromValue(row.id, value) orelse fallback;
 }
 
 fn catalogTargetInRegion(id: []const u8, region: ?[]const u8) !?CatalogTarget {
@@ -385,6 +386,20 @@ test "the smoke gate lists every current row and no other" {
     try testing.expect(rowFor("google") == null);
     try testing.expect(rowFor("no-such-provider") == null);
     try testing.expect(catalogTargetFor("no-such-provider") == null);
+}
+
+test "a row with no region named falls back to the region the catalog names" {
+    for (rows) |row| {
+        const regions = provider_catalog.regionsFor(row.id);
+        if (regions.len == 0) {
+            try testing.expect(regionFor(testing.allocator, row.id) == null);
+            continue;
+        }
+        const named = provider_catalog.defaultRegion(row.id);
+        try testing.expect(named != null);
+        const chosen = regionFor(testing.allocator, row.id).?;
+        try testing.expectEqualStrings(named.?, chosen);
+    }
 }
 
 test "a regional row answers only for the region it is asked for" {
