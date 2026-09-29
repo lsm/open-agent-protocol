@@ -37,6 +37,15 @@ jobs:
           cache: true
 
       - name: Check out this pull request's head and its merge base
+        env:
+          # Both through the environment, for the same reason the description is:
+          # a branch name may legally contain quotes, $(...) and backticks, and
+          # this file already declines to let author-controlled text become
+          # script. Exploiting that needs write access, which is not the point --
+          # the standard is the standard, applied to every value, not only the
+          # one that happened to be a large body.
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/head" "$RUNNER_TEMP/base"
@@ -45,8 +54,7 @@ jobs:
           # *and* everything merged into the base since the two diverged, so
           # diffing against it charges this pull request with other people's
           # breaks -- which is what CI reported on the last push.
-          git worktree add --detach "$RUNNER_TEMP/head" \
-            "${{ github.event.pull_request.head.sha }}"
+          git worktree add --detach "$RUNNER_TEMP/head" "$HEAD_SHA"
           # The merge base of the base ref and this pull request's head commit.
           #
           # Not HEAD: actions/checkout with no ref gives refs/pull/N/merge, whose
@@ -59,8 +67,7 @@ jobs:
           # fetch-depth: 0 has already brought the whole history, which is why
           # the head commit is available here to name.
           git worktree add --detach "$RUNNER_TEMP/base" \
-            "$(git merge-base "origin/${{ github.event.pull_request.base.ref }}" \
-                            "${{ github.event.pull_request.head.sha }}")"
+            "$(git merge-base "origin/$BASE_REF" "$HEAD_SHA")"
 
       - name: Write the pull request description where the checker reads it
         env:
