@@ -4409,7 +4409,7 @@ test "a provider that ignores cancellation is abandoned, not freed underneath" {
     std.testing.allocator.destroy(SlowProviderState.created_cancel_flag.?);
 }
 
-test "the complete path cancels without forcing owned stream events" {
+test "the complete path cancels without waiting on the provider thread" {
     CancelMockState.reset();
     defer CancelMockState.reset();
 
