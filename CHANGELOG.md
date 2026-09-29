@@ -59,12 +59,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   behind the runs that replaced them.** `ci.yml`, `ci-zig.yml` and
   `benchmark-report.yml` all run on `pull_request` and `push` and none of the
   three set `concurrency`, so every push to a branch under review left its run
-  holding a runner while the next push queued behind it: at 2026-09-29 04:30Z
-  thirty-five runs were queued, seventeen of them already superseded by a newer
-  run for the same workflow and branch. Each of the three now takes one
-  concurrency group per pull request, so a newer push cancels the run the
-  previous push started, queued or in progress, and nothing outside a pull
-  request is touched.
+  holding a runner while the next push queued behind it: at 04:30Z on
+  2026-09-29 thirty-five runs were queued and seventeen of them were already
+  superseded by a newer run for the same workflow and head, and a later count of
+  the same backlog still had forty-one unfinished runs, thirteen superseded,
+  three of them on `main`. Each of the three now takes one concurrency group per
+  pull request, so a newer push cancels the run the previous push started, queued
+  or in progress, and nothing outside a pull request is touched.
 
   `cancel-in-progress` is an expression that holds only on `pull_request`, and a
   push carries no pull request number, so it falls back to its own run id --
