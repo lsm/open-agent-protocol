@@ -192,14 +192,18 @@ code paths; add a transcript row instead.
   fit. A second row under it shows the working directory on the left, muted, collapsed
   to `~` under the home directory and left-truncated with `…`, and the git branch at
   the right end; the row hides on terminals shorter than 12 rows. The branch is read
-  from the repository rather than from a `git` process: `.git/HEAD` is parsed directly,
-  following a `gitdir:` pointer file when `.git` is one so a linked worktree resolves
-  to its own HEAD, a `ref: refs/heads/` line gives the branch name and any other line
-  gives the first seven characters of the commit id. A directory with no repository, or
-  a `.git/HEAD` that cannot be read, leaves the right end empty. The read happens when
-  the working directory changes and on a slow tick — every 100th tick, five seconds —
-  so a `git checkout` shows up without a `git` process per render. When the row is too
-  narrow for both, the branch is dropped and the path takes the full width.
+  from the repository rather than from a `git` process: the working directory and each
+  of its ancestors are probed for `.git/HEAD` until one is found, nearest first, so a
+  subdirectory of a repository resolves the way `git` resolves it. A `.git` that is a
+  `gitdir:` pointer file — a linked worktree or a submodule — is followed, with a
+  relative target resolved against the directory holding the pointer, and that
+  directory's `HEAD` is read instead. A `ref: refs/heads/` line gives the branch name
+  and any other line gives the first seven characters of the commit id for a detached
+  HEAD. A working directory with no repository above it, or a `.git/HEAD` that cannot
+  be read, leaves the right end empty. The read happens when the working directory
+  changes and on a slow tick — every 100th tick, five seconds — so a `git checkout`
+  shows up without a `git` process per render. When the row is too narrow for both,
+  the branch is dropped and the path takes the full width.
 
 ## Credentials and the model catalog
 

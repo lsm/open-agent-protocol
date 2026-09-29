@@ -236,7 +236,9 @@ test "App cwd display neutralises control bytes in the working directory" {
 }
 
 fn branchRepoBase(allocator: std.mem.Allocator, tmp: *const std.testing.TmpDir) ![]u8 {
-    return std.fs.path.join(allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path });
+    const cwd = try currentPathOwned(allocator);
+    defer allocator.free(cwd);
+    return std.fs.path.join(allocator, &.{ cwd, ".zig-cache", "tmp", &tmp.sub_path });
 }
 
 const BranchRepo = struct {
@@ -333,9 +335,18 @@ test "App git branch follows a worktree gitdir file to the real HEAD" {
     try std.testing.expectEqualStrings("worktree-branch", app.state.git_branch);
 }
 
-test "App git branch is empty outside a repository" {
+test "App git branch follows a relative gitdir pointer against the working directory" {
     var repo = try BranchRepo.init(std.testing.allocator);
     defer repo.deinit(std.testing.allocator);
+    const real_git = try std.fs.path.join(std.testing.allocator, &.{ repo.repo, "..", "modules", "sub" });
+    defer std.testing.allocator.free(real_git);
+    try compat.fs.createDir(compat.fs.getCwd(), real_git);
+    const real_head = try std.fs.path.join(std.testing.allocator, &.{ real_git, "HEAD" });
+    defer std.testing.allocator.free(real_head);
+    try compat.fs.writeFile(compat.fs.getCwd(), real_head, "ref: refs/heads/submodule\n");
+    const pointer = try std.fmt.allocPrint(std.testing.allocator, "gitdir: ../modules/sub\n", .{});
+    defer std.testing.allocator.free(pointer);
+    try repo.makeDotGitAFile(std.testing.allocator, pointer);
 
     var app = App.initWithoutRuntime(std.testing.allocator);
     defer app.deinit();
@@ -343,7 +354,46 @@ test "App git branch is empty outside a repository" {
     app.working_dir = try std.testing.allocator.dupe(u8, repo.repo);
     try app.refreshCwdDisplay();
 
-    try std.testing.expectEqualStrings("", app.state.git_branch);
+    try std.testing.expectEqualStrings("submodule", app.state.git_branch);
+}
+
+test "App git branch walks up to the enclosing repository" {
+    var repo = try BranchRepo.init(std.testing.allocator);
+    defer repo.deinit(std.testing.allocator);
+    try repo.writeHead(std.testing.allocator, "ref: refs/heads/enclosing\n");
+    const nested = try std.fs.path.join(std.testing.allocator, &.{ repo.repo, "src", "deep" });
+    defer std.testing.allocator.free(nested);
+    try compat.fs.createDir(compat.fs.getCwd(), nested);
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, nested);
+    try app.refreshCwdDisplay();
+
+    try std.testing.expectEqualStrings("enclosing", app.state.git_branch);
+}
+
+test "App git branch takes the nearest repository rather than an enclosing one" {
+    var repo = try BranchRepo.init(std.testing.allocator);
+    defer repo.deinit(std.testing.allocator);
+    try repo.writeHead(std.testing.allocator, "ref: refs/heads/outer\n");
+    const inner = try std.fs.path.join(std.testing.allocator, &.{ repo.repo, "inner" });
+    defer std.testing.allocator.free(inner);
+    const inner_git = try std.fs.path.join(std.testing.allocator, &.{ inner, ".git" });
+    defer std.testing.allocator.free(inner_git);
+    try compat.fs.createDir(compat.fs.getCwd(), inner_git);
+    const inner_head = try std.fs.path.join(std.testing.allocator, &.{ inner_git, "HEAD" });
+    defer std.testing.allocator.free(inner_head);
+    try compat.fs.writeFile(compat.fs.getCwd(), inner_head, "ref: refs/heads/inner\n");
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, inner);
+    try app.refreshCwdDisplay();
+
+    try std.testing.expectEqualStrings("inner", app.state.git_branch);
 }
 
 test "App git branch neutralises control bytes read from HEAD" {
@@ -379,8 +429,16 @@ test "App slow tick re-reads the branch after the working directory changes" {
     try std.testing.expectEqualStrings("two", app.state.git_branch);
 }
 
+const filesystem_root = "/";
+
+test "App git branch is empty when no ancestor holds a repository" {
+    const label = try gitHeadLabel(std.testing.allocator, filesystem_root);
+    defer if (label) |value| std.testing.allocator.free(value);
+    try std.testing.expect(label == null);
+}
+
 fn refreshGitBranchProbe(allocator: std.mem.Allocator) !void {
-    const label = try gitHeadLabel(allocator, "/nonexistent-oap-git-probe");
+    const label = try gitHeadLabel(allocator, filesystem_root);
     if (label) |value| allocator.free(value);
 }
 
@@ -3034,10 +3092,25 @@ const detached_id_len = 7;
 
 fn gitHeadLabel(allocator: std.mem.Allocator, dir_path: []const u8) !?[]u8 {
     if (dir_path.len == 0) return null;
-    const head_path = try gitHeadPath(allocator, dir_path);
-    defer if (head_path) |value| allocator.free(value);
-    const path = head_path orelse return null;
-    const head = compat.fs.readFileAlloc(allocator, compat.fs.getCwd(), path, git_head_max_bytes) catch return null;
+    var current = try allocator.dupe(u8, dir_path);
+    defer allocator.free(current);
+    while (current.len > 0) {
+        const head_path = try gitHeadPath(allocator, current);
+        defer if (head_path) |value| allocator.free(value);
+        if (head_path) |path| {
+            if (try readGitBranchName(allocator, path)) |name| return name;
+        }
+        const parent = std.fs.path.dirname(current) orelse break;
+        if (parent.len == 0 or std.mem.eql(u8, parent, current)) break;
+        const next = try allocator.dupe(u8, parent);
+        allocator.free(current);
+        current = next;
+    }
+    return null;
+}
+
+fn readGitBranchName(allocator: std.mem.Allocator, head_path: []const u8) !?[]u8 {
+    const head = compat.fs.readFileAlloc(allocator, compat.fs.getCwd(), head_path, git_head_max_bytes) catch return null;
     defer allocator.free(head);
     const line = std.mem.trim(u8, head, " \t\r\n");
     if (std.mem.startsWith(u8, line, git_head_prefix)) {
@@ -3052,18 +3125,25 @@ fn gitHeadLabel(allocator: std.mem.Allocator, dir_path: []const u8) !?[]u8 {
 fn gitHeadPath(allocator: std.mem.Allocator, dir_path: []const u8) !?[]u8 {
     const dot_git = try std.fs.path.join(allocator, &.{ dir_path, ".git" });
     defer allocator.free(dot_git);
-    if (gitDirIsFile(dot_git)) {
-        const pointer = compat.fs.readFileAlloc(allocator, compat.fs.getCwd(), dot_git, git_head_max_bytes) catch return null;
-        defer allocator.free(pointer);
-        const target = gitDirTarget(pointer) orelse return null;
-        return try std.fs.path.join(allocator, &.{ target, "HEAD" });
-    }
+    if (!gitDirIsDirectory(dot_git)) return gitPointerHeadPath(allocator, dir_path, dot_git);
     return try std.fs.path.join(allocator, &.{ dot_git, "HEAD" });
 }
 
-fn gitDirIsFile(dot_git: []const u8) bool {
-    _ = compat.fs.directoryPermissions(dot_git) catch return true;
-    return false;
+fn gitPointerHeadPath(allocator: std.mem.Allocator, dir_path: []const u8, dot_git: []const u8) !?[]u8 {
+    const pointer = compat.fs.readFileAlloc(allocator, compat.fs.getCwd(), dot_git, git_head_max_bytes) catch return null;
+    defer allocator.free(pointer);
+    const target = gitDirTarget(pointer) orelse return null;
+    const resolved = if (std.fs.path.isAbsolute(target))
+        try allocator.dupe(u8, target)
+    else
+        try std.fs.path.join(allocator, &.{ dir_path, target });
+    defer allocator.free(resolved);
+    return try std.fs.path.join(allocator, &.{ resolved, "HEAD" });
+}
+
+fn gitDirIsDirectory(dot_git: []const u8) bool {
+    _ = compat.fs.directoryPermissions(dot_git) catch return false;
+    return true;
 }
 
 fn gitDirTarget(pointer: []const u8) ?[]const u8 {

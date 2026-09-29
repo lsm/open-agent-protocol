@@ -754,21 +754,23 @@ test "cwd row left-aligns the path when there is no branch" {
     try std.testing.expect(tui_text.visibleWidth(row[0..path_at]) == 0);
 }
 
-test "cwd row left-truncates a directory longer than the width" {
-    const row = try renderCwdRow(std.testing.allocator, "/Users/lsm/focus/open-agent-protocol", "main", 24);
-    defer std.testing.allocator.free(row);
-
-    try std.testing.expect(tui_text.visibleWidth(row) <= 24);
-    try std.testing.expect(std.mem.indexOf(u8, row, "…") != null);
-    try std.testing.expect(std.mem.endsWith(u8, row, "open-agent-protocol" ++ zz.ansi.reset));
-}
-
-test "cwd row left-truncates the path beside a branch that fits" {
+test "cwd row left-truncates a directory longer than the width and drops the branch" {
     const row = try renderCwdRow(std.testing.allocator, "/Users/lsm/focus/open-agent-protocol", "main", 24);
     defer std.testing.allocator.free(row);
 
     try std.testing.expect(tui_text.visibleWidth(row) == 24);
     try std.testing.expect(std.mem.indexOf(u8, row, "…") != null);
+    try std.testing.expect(std.mem.indexOf(u8, row, "main") == null);
+    try std.testing.expect(std.mem.endsWith(u8, row, "open-agent-protocol" ++ zz.ansi.reset));
+}
+
+test "cwd row keeps a path that only just fits beside the branch" {
+    const row = try renderCwdRow(std.testing.allocator, "~/a/b", "main", 12);
+    defer std.testing.allocator.free(row);
+
+    try std.testing.expect(tui_text.visibleWidth(row) == 12);
+    try std.testing.expect(std.mem.indexOf(u8, row, "…") == null);
+    try std.testing.expect(std.mem.endsWith(u8, row, "main" ++ zz.ansi.reset));
 }
 
 fn renderCwdRowProbe(allocator: std.mem.Allocator) !void {
