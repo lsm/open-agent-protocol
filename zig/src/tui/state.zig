@@ -470,6 +470,7 @@ pub const AppState = struct {
     telemetry: TelemetryState = .{},
     preview: PreviewState = .{},
     thinking_level: ai_types.ThinkingLevel = .low,
+    autocompact_percent: ?u8 = null,
     login_input_secret: bool = false,
     anim_tick: u64 = 0,
     transcript_scroll: usize = 0,
