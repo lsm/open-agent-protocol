@@ -2858,6 +2858,7 @@ fn lineOf(items: []const TraceItem, index: usize) usize {
 }
 
 const partial_semantic_note = "semantic rules partial: this validator has not ported every rule; goap validate checks them all";
+const partial_load_note = "pack load checks partial: a pack is gathered but not checked, and this validator runs none of goap's load checks, so a pack goap refuses may be accepted here";
 
 fn writeHumanReport(out: *std.ArrayList(u8), allocator: std.mem.Allocator, path: []const u8, verdict: ValidateVerdict) !void {
     switch (verdict) {
@@ -3009,6 +3010,7 @@ fn runValidate(
         return error.Unavailable;
     };
     defer judge.deinit();
+    if (pack_dirs.items.len != 0) try compat.stdio.writeAll(stderr, partial_load_note ++ "\n");
 
     var report = std.ArrayList(u8).empty;
     defer report.deinit(allocator);
@@ -10144,6 +10146,24 @@ test "two entries of one type are two adapters, each with its own executable" {
     try std.testing.expectEqualStrings("/bin/two", second_claude.config.backend.executable);
     try std.testing.expectEqualStrings("LITERAL=first", first_claude.config.backend.environment[0]);
     try std.testing.expectEqualStrings("LITERAL=second", second_claude.config.backend.environment[0]);
+}
+
+test "validate says the pack load checks are not the ones goap runs" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "pack/pack.json",
+        .data = "{\"id\":\"com.example.note\",\"version\":\"1.0.0\"}",
+    });
+    var out = try tmp.dir.createFile(std.testing.io, "stdout", .{});
+    var complained_on = try tmp.dir.createFile(std.testing.io, "stderr", .{});
+    try runValidate(allocator, &.{ "--pack", "pack", "--format=json", "t.json" }, out, complained_on);
+    out.close(std.testing.io);
+    complained_on.close(std.testing.io);
+    const said = try tmp.dir.readFileAlloc(std.testing.io, "stderr", allocator, .limited(4096));
+    defer allocator.free(said);
+    try std.testing.expectEqualStrings(partial_load_note ++ "\n", said);
 }
 
 test "validate names the pack directory that would not load, and judges no trace" {
