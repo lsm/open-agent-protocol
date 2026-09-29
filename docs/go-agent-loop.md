@@ -26,7 +26,7 @@ inner while, and a `switch` on what a turn produced.
 | part | where | what it is |
 | --- | --- | --- |
 | turn loop | `runLoop`, the `outer`/`inner` whiles | stream a reply, then decide: run its tool calls, or end the run |
-| turn outcome | `turnOutcome` (`agent_loop.zig:1070`) | `failed` on `error`/`aborted`, `answered` on a reply with no tool call, `called_tools` otherwise |
+| turn outcome | `turnOutcome` (`agent_loop.zig:1070`) | `failed` on `error`/`aborted`; `answered` on a reply with no tool call, on a `content_filter` reply whose calls are never run, or on a `length` reply once three cut-off turns have run; `called_tools` otherwise |
 | cut-off calls | `max_cut_off_tool_turns` (`:1068`) | a `length` stop mid-tool-call is retried up to three times, then treated as answered |
 | tool execution | `executeToolCalls` (`:647`) | per call: find the tool, gate it, run it, measure it, append a result message |
 | permissions | `permission.PermissionEngine` (`zig/src/tools/permission.zig`) | `evaluate` first, a per-tool approval callback when the policy says prompt, persistence only where `canPersistDecision` allows it |
@@ -82,7 +82,7 @@ script-free counterpart, over the provider runtime.
 ## The first slice
 
 **Text turns and client-executed tool calls, over `go/internal/provider`.**
-One package, `go/agent`, holding:
+One package, `go/internal/agent`, holding:
 
 - the loop's own history over `provider.Message` and `provider.Context` — the
   types the provider runtime already takes, so a turn is a `provider.Context`
@@ -99,6 +99,13 @@ One package, `go/agent`, holding:
   execution the first slice carries: the loop emits `action.call.requested`,
   waits for `action.call.resolve.response`, and turns the answer into a tool
   result message.
+
+It is `go/internal/agent` rather than `go/agent` while its API is spelled in
+the provider runtime's types. A public package cannot take
+`go/internal/provider`'s `Message` in its signatures, so a loop the first
+slice builds that way is not importable from outside this module at all;
+promoting it is a question for the public-set pass (#413) rather than one this
+slice settles by naming a directory.
 
 It lands as four PRs, each merged on its own from `main`, because the whole
 slice at once is four concerns in one review. The order is the order of

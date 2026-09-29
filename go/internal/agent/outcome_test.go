@@ -46,6 +46,12 @@ func TestTheToolCallsOfAFailedOrAbortedReplyNeverRun(t *testing.T) {
 	}
 }
 
+func TestAFilteredReplyEndsTheRunWithoutRunningItsToolCalls(t *testing.T) {
+	if got := TurnOutcome(reply("content_filter", call("call_1", "read")), 0); got != OutcomeAnswered {
+		t.Errorf("a filtered reply carrying a tool call: got %v, want the run to end without running it: a wire that keeps content_filter distinct reaches this path", got)
+	}
+}
+
 func TestACutOffToolCallIsRetriedThreeTimesAndThenTheRunEnds(t *testing.T) {
 	if MaxCutOffToolTurns != 3 {
 		t.Errorf("a cut-off call is retried %d times, want 3: a model that keeps truncating its arguments is answered rather than retried forever", MaxCutOffToolTurns)

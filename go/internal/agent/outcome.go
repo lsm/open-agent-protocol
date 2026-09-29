@@ -16,6 +16,8 @@ func TurnOutcome(assistant provider.AssistantContent, cutOffToolTurns int) Outco
 	switch assistant.StopReason {
 	case provider.StopError, provider.StopAborted:
 		return OutcomeFailed
+	case "content_filter":
+		return OutcomeAnswered
 	case "length":
 		if cutOffToolTurns >= MaxCutOffToolTurns {
 			return OutcomeAnswered
