@@ -297,6 +297,13 @@ refuse a request that size. A refusal is a limit on what this repository will as
 not a claim about what the provider accepts: a window above what a model reports still
 fails the turn with the provider's own overflow error, and `/compact` is the way out.
 
+The ceiling follows the model, so a window the model in effect cannot take is dropped
+rather than carried: `--context-window` above the first model's ceiling is dropped before
+the first turn, and so is a session's window when a model switch lands on a model whose
+ceiling is lower. Each drop is a System entry naming the window, the model and what it
+takes, and the model's own window is in effect from then on. Setting a window below what
+the model reports is never dropped.
+
 ## Compaction
 
 `/compact [focus]` replaces the agent's history with a summary the current model

@@ -209,6 +209,7 @@ pub const TuiRuntime = struct {
     permission_mode: PermissionMode = .bypass,
     thinking_level: ai_types.ThinkingLevel = .low,
     context_window: ?u32 = null,
+    context_window_refused: ?u32 = null,
     cancelled: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     completed: bool = false,
     started: bool = false,
@@ -328,6 +329,7 @@ pub const TuiRuntime = struct {
             runtime.wrapped_tools = next_wrapped_tools;
             runtime.approval_contexts = next_approval_contexts;
         }
+        runtime.dropContextWindowAboveCeiling();
         if (runtime.permission_engine) |engine| engine.setBypassAll(runtime.permission_mode == .bypass);
         runtime.rebuildWrappedTools();
         return runtime;
@@ -460,6 +462,7 @@ pub const TuiRuntime = struct {
         self.models = owned_next;
         owned_next = &.{};
         self.selected_model_index = next_selected;
+        self.dropContextWindowAboveCeiling();
 
         if (self.local_agent) |*local| {
             if (next_selected) |idx| local.setModel(self.effectiveModel(self.models[idx]));
@@ -536,9 +539,34 @@ pub const TuiRuntime = struct {
             if (!local.isIdle()) return error.AgentAlreadyStreaming;
         }
         self.context_window = window;
+        self.context_window_refused = null;
+        self.applyContextWindowToAgent();
+    }
+
+    pub fn contextWindowRefused(self: *const TuiRuntime) ?u32 {
+        return self.context_window_refused;
+    }
+
+    pub fn takeContextWindowRefused(self: *TuiRuntime) ?u32 {
+        const refused = self.context_window_refused;
+        self.context_window_refused = null;
+        return refused;
+    }
+
+    fn applyContextWindowToAgent(self: *TuiRuntime) void {
         if (self.selected_model_index) |idx| {
             if (self.local_agent) |*local| local.setModel(self.effectiveModel(self.models[idx]));
         }
+    }
+
+    fn dropContextWindowAboveCeiling(self: *TuiRuntime) void {
+        const held = self.context_window orelse return;
+        const index = self.selected_model_index orelse return;
+        const model = self.models[index];
+        const ceiling = model_catalog.contextWindowMaximum(model) orelse return;
+        if (held <= ceiling) return;
+        self.context_window = null;
+        self.context_window_refused = held;
     }
 
     pub fn availableTools(self: *TuiRuntime) []const agent.AgentTool {
@@ -579,7 +607,8 @@ pub const TuiRuntime = struct {
         for (self.models, 0..) |model, i| {
             if (std.mem.eql(u8, model.id, model_id)) {
                 self.selected_model_index = i;
-                if (self.local_agent) |*local| local.setModel(self.effectiveModel(model));
+                self.dropContextWindowAboveCeiling();
+                if (self.local_agent) |*local| local.setModel(self.effectiveModel(self.models[i]));
                 return;
             }
         }
@@ -597,7 +626,8 @@ pub const TuiRuntime = struct {
                 std.mem.eql(u8, model.api, selected.api))
             {
                 self.selected_model_index = i;
-                if (self.local_agent) |*local| local.setModel(self.effectiveModel(model));
+                self.dropContextWindowAboveCeiling();
+                if (self.local_agent) |*local| local.setModel(self.effectiveModel(self.models[i]));
                 return;
             }
         }
@@ -1750,13 +1780,13 @@ test "the window in effect is the model's own until a session sets one" {
     try std.testing.expectEqual(@as(u64, 8192), runtime.contextWindow());
     try std.testing.expectEqual(@as(u32, 8192), runtime.currentModel().?.context_window);
 
-    try runtime.setContextWindow(200_000);
-    try std.testing.expectEqual(@as(u64, 200_000), runtime.contextWindow());
-    try std.testing.expectEqual(@as(u32, 200_000), runtime.currentModel().?.context_window);
+    try runtime.setContextWindow(4_000);
+    try std.testing.expectEqual(@as(u64, 4_000), runtime.contextWindow());
+    try std.testing.expectEqual(@as(u32, 4_000), runtime.currentModel().?.context_window);
     try std.testing.expectEqual(@as(u32, 8192), runtime.availableModels()[0].context_window);
 
     try runtime.switchModel("model-b");
-    try std.testing.expectEqual(@as(u64, 200_000), runtime.contextWindow());
+    try std.testing.expectEqual(@as(u64, 4_000), runtime.contextWindow());
     try runtime.setContextWindow(null);
     try std.testing.expectEqual(@as(u32, test_model_b.context_window), runtime.currentModel().?.context_window);
 }
@@ -1767,8 +1797,8 @@ test "the model handed to the agent carries the window in effect" {
     defer runtime.deinit();
 
     try std.testing.expectEqual(@as(u32, 8192), runtime.effectiveModel(models[0]).context_window);
-    try runtime.setContextWindow(1_000_000);
-    try std.testing.expectEqual(@as(u32, 1_000_000), runtime.effectiveModel(models[0]).context_window);
+    try runtime.setContextWindow(4_000);
+    try std.testing.expectEqual(@as(u32, 4_000), runtime.effectiveModel(models[0]).context_window);
     try std.testing.expectEqual(@as(u32, 8192), models[0].context_window);
 }
 
@@ -1778,16 +1808,78 @@ test "a session's window set before the first turn survives the agent starting" 
     var runtime = try TuiRuntime.init(std.testing.allocator, .{
         .protocol = makeProtocol(&mock),
         .models = &models,
-        .context_window = 1_000_000,
+        .context_window = 4_000,
         .run_async = false,
     });
     defer runtime.deinit();
     try runtime.start();
     defer runtime.stop();
 
+    try std.testing.expectEqual(@as(u64, 4_000), runtime.contextWindow());
+    try runtime.setContextWindow(6_000);
+    try std.testing.expectEqual(@as(u64, 6_000), runtime.contextWindow());
+}
+
+const wide_ceiling_model = ai_types.Model{
+    .id = "gpt-5-codex",
+    .name = "GPT-5 Codex",
+    .api = "openai-responses",
+    .provider = "openai",
+    .base_url = "https://api.openai.com",
+    .reasoning = true,
+    .input = &.{"text"},
+    .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+    .context_window = 128_000,
+    .max_tokens = 16_384,
+};
+
+const narrow_ceiling_model = ai_types.Model{
+    .id = "kimi-k2.7-code",
+    .name = "Kimi K2.7 Code",
+    .api = "openai-completions",
+    .provider = "kimi",
+    .base_url = "https://api.kimi.com/coding",
+    .reasoning = false,
+    .input = &.{"text"},
+    .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+    .context_window = 262_144,
+    .max_tokens = 16_384,
+};
+
+test "a session's window the model in effect cannot take is dropped, and named" {
+    const models = [_]ai_types.Model{ wide_ceiling_model, narrow_ceiling_model };
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &models, .context_window = 1_000_000 });
+    defer runtime.deinit();
+
     try std.testing.expectEqual(@as(u64, 1_000_000), runtime.contextWindow());
-    try runtime.setContextWindow(64_000);
-    try std.testing.expectEqual(@as(u64, 64_000), runtime.contextWindow());
+    try std.testing.expect(runtime.contextWindowRefused() == null);
+
+    try runtime.switchModel("kimi-k2.7-code");
+
+    try std.testing.expectEqual(@as(u64, 262_144), runtime.contextWindow());
+    try std.testing.expectEqual(@as(?u32, 1_000_000), runtime.takeContextWindowRefused());
+    try std.testing.expect(runtime.contextWindowRefused() == null);
+}
+
+test "a startup window above the ceiling is dropped before the first turn" {
+    const models = [_]ai_types.Model{narrow_ceiling_model};
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &models, .context_window = 1_000_000 });
+    defer runtime.deinit();
+
+    try std.testing.expectEqual(@as(u64, 262_144), runtime.contextWindow());
+    try std.testing.expectEqual(@as(?u32, 1_000_000), runtime.takeContextWindowRefused());
+}
+
+test "a window the model in effect can take survives a switch to another that can" {
+    const models = [_]ai_types.Model{ wide_ceiling_model, narrow_ceiling_model };
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &models });
+    defer runtime.deinit();
+
+    try runtime.setContextWindow(200_000);
+    try runtime.switchModel("kimi-k2.7-code");
+
+    try std.testing.expectEqual(@as(u64, 200_000), runtime.contextWindow());
+    try std.testing.expect(runtime.contextWindowRefused() == null);
 }
 
 test "runtime registers default local tools and allows overrides" {
