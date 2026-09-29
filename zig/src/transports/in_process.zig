@@ -357,13 +357,13 @@ pub const EventBridge = struct {
         while (!self.cancel_token.load(.acquire)) {
             if (self.source.poll()) |ev| {
                 var mutable_ev = ev;
-                const bridge_owns = self.source.ownership.isOwned() and self.dest.ownership.isOwned();
+                if (self.source.ownership.isOwned()) {
+                    defer ai_types.deinitAssistantMessageEvent(self.source.allocator, &mutable_ev);
+                }
                 self.dest.push(ev) catch {
-                    if (bridge_owns) ai_types.deinitAssistantMessageEvent(self.allocator, &mutable_ev);
                     self.dest.completeWithError("Destination queue full");
                     return;
                 };
-                if (bridge_owns) ai_types.deinitAssistantMessageEvent(self.allocator, &mutable_ev);
             } else {
                 if (self.source.isDone()) {
                     if (self.source.getError()) |err| {
@@ -397,12 +397,15 @@ pub const EventBridge = struct {
 };
 
 pub const EventForwarder = struct {
-    dest: *event_stream.AssistantMessageStream,
+    dest: *event_stream.AssistantMessageEventStream,
     allocator: std.mem.Allocator,
 
     const Self = @This();
 
-    pub fn init(dest: *event_stream.AssistantMessageStream, allocator: std.mem.Allocator) Self {
+    pub const Error = error{BorrowedDestination};
+
+    pub fn init(dest: *event_stream.AssistantMessageEventStream, allocator: std.mem.Allocator) Error!Self {
+        if (!dest.ownership.isOwned()) return error.BorrowedDestination;
         return .{
             .dest = dest,
             .allocator = allocator,
@@ -410,8 +413,6 @@ pub const EventForwarder = struct {
     }
 
     pub fn forward(self: *Self, ev: ai_types.AssistantMessageEvent) !void {
-        var cleanup = ev;
-        defer if (self.dest.ownership.isOwned()) ai_types.deinitAssistantMessageEvent(self.allocator, &cleanup);
         try self.dest.push(ev);
     }
 
@@ -537,13 +538,14 @@ test "EventBridge forwards events" {
     ai_types.deinitAssistantMessageEvent(allocator, &mutable_ev);
 }
 
-test "EventForwarder forwards events" {
+test "EventForwarder copies into the destination and leaves the caller's event to the caller" {
     const allocator = std.testing.allocator;
 
     var dest_stream = event_stream.AssistantMessageStream.init(allocator);
+    dest_stream.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
     defer dest_stream.deinit();
 
-    var forwarder = EventForwarder.init(&dest_stream, allocator);
+    var forwarder = try EventForwarder.init(&dest_stream, allocator);
 
     const partial = ai_types.AssistantMessage{
         .content = &.{},
@@ -560,6 +562,8 @@ test "EventForwarder forwards events" {
     );
 
     try forwarder.forward(event);
+    var pushed = event;
+    ai_types.deinitAssistantMessageEvent(allocator, &pushed);
 
     const received = dest_stream.poll();
     try std.testing.expect(received != null);
@@ -938,5 +942,17 @@ test "EventBridge refuses an owned source feeding a borrowed destination" {
     try std.testing.expectError(
         error.BorrowedDestination,
         EventBridge.init(&source_stream, &dest_stream, allocator),
+    );
+}
+
+test "EventForwarder refuses a borrowed destination" {
+    const allocator = std.testing.allocator;
+
+    var dest_stream = event_stream.AssistantMessageStream.init(allocator);
+    defer dest_stream.deinit();
+
+    try std.testing.expectError(
+        error.BorrowedDestination,
+        EventForwarder.init(&dest_stream, allocator),
     );
 }
