@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const openEnvelopeFields = `"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.request"`
+const openEnvelopeFields = `"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.request",`
 
 var hubParityScenarios = map[string][]string{
 	"the five ops this wire serves": {
@@ -35,11 +35,11 @@ var hubParityScenarios = map[string][]string{
 		`{"id":2,"op":"open","request":{}}`,
 		`{"id":3,"op":"open","adapter":"memory","request":null}`,
 		`{"id":4,"op":"open","adapter":"memory","request":{"id":"x"}}`,
-		`{"id":5,"op":"open","adapter":"memory","request":` + openEnvelopeFields + `,"id":"o1"}}`,
+		`{"id":5,"op":"open","adapter":"memory","request":{` + openEnvelopeFields + `"id":"o1"}}`,
 	},
 	"a refused open leaves no session behind": {
-		`{"id":1,"op":"open","adapter":"absent","request":` + openEnvelopeFields + `,"id":"o1","payload":{"session_id":"s1"}}}`,
-		`{"id":2,"op":"open","adapter":"memory","request":` + openEnvelopeFields + `,"id":"o2","payload":{"session_id":"s1","metadata":7}}}`,
+		`{"id":1,"op":"open","adapter":"absent","request":{` + openEnvelopeFields + `"id":"o1","payload":{"session_id":"s1"}}}`,
+		`{"id":2,"op":"open","adapter":"memory","request":{` + openEnvelopeFields + `"id":"o2","payload":{"session_id":"s1","metadata":7}}}`,
 		`{"id":3,"op":"sessions"}`,
 	},
 	"the catalog ops refuse the same refusals": {
@@ -49,8 +49,6 @@ var hubParityScenarios = map[string][]string{
 		`{"id":4,"op":"tools"}`,
 		`{"id":5,"op":"models","run_id":"r1"}`,
 		`{"id":6,"op":"tools","adapter":"memory"}`,
-		`{"id":7,"op":"models","session_id":"absent","allow_degraded_features":"nope"}`,
-		`{"id":8,"op":"models","session_id":7}`,
 	},
 	"a null parameter is supplied, and a wrongly typed one is not read": {
 		`{"id":1,"op":"adapters","adapter":null}`,
@@ -61,6 +59,13 @@ var hubParityScenarios = map[string][]string{
 		`{"id":1,"op":"adapters"}`,
 		`not json`,
 		`{"id":2,"op":"sessions"}`,
+		`{"id":3,"op":"models","session_id":7}`,
+		`{"id":4,"op":"sessions"}`,
+	},
+	"a parameter of the wrong type is a framing defect, not a refusal": {
+		`{"id":1,"op":"adapters"}`,
+		`{"id":2,"op":"models","session_id":"absent","allow_degraded_features":"nope"}`,
+		`{"id":3,"op":"sessions"}`,
 	},
 }
 
@@ -77,7 +82,7 @@ func TestHubStdioAnswersGoapAndOapxTheSame(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			goAnswers := runHubScript(t, oapBinary(t), lines)
 			zigAnswers := runHubScript(t, oapx, lines)
-			assertSameHubAnswers(t, goAnswers, zigAnswers)
+			assertSameHubAnswers(t, name, lines, goAnswers, zigAnswers)
 		})
 	}
 }
@@ -198,13 +203,56 @@ func normaliseMinted(node any) {
 	}
 }
 
-func assertSameHubAnswers(t *testing.T, goAnswers, zigAnswers map[string]map[string]any) {
+// hubWireStops names the scenarios whose wire is *meant* to stop, and the index
+// of the last line expected to be answered. The line after it is the defect, and
+// everything from there on is legitimately unanswered, so the guard below must
+// not call those requests a hole.
+var hubWireStops = map[string]int{
+	"a framing defect stops the wire, and nothing after it is answered":            0,
+	"a parameter of the wrong type is a framing defect, not a refusal":              0,
+}
+
+func expectedHubIDs(lines []string, stopAt int) []string {
+	seen := map[string]bool{}
+	ids := make([]string, 0, len(lines))
+	for position, line := range lines {
+		if position > stopAt {
+			break
+		}
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
+			break
+		}
+		key, ok := parsed["id"].(float64)
+		if !ok {
+			continue
+		}
+		id := fmt.Sprintf("%d", int64(key))
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+func assertSameHubAnswers(t *testing.T, name string, lines []string, goAnswers, zigAnswers map[string]map[string]any) {
 	t.Helper()
 	if len(goAnswers) != len(zigAnswers) {
 		t.Errorf("goap answered %d requests and oapx answered %d", len(goAnswers), len(zigAnswers))
 	}
-	ids := make([]string, 0, len(goAnswers))
-	for id := range goAnswers {
+	stopAt := -1
+	if at, stops := hubWireStops[name]; stops {
+		stopAt = at
+	}
+	expected := expectedHubIDs(lines, stopAt)
+	ids := make([]string, 0, len(expected))
+	for _, id := range expected {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)

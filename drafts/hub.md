@@ -1222,6 +1222,16 @@ are "stamped with the revision the lister served it under", and both name
 | **The fix** | `hub.OpenRequest` gains `message_json`, the hub registers the subscription before running the submission, and the answer carries `admitted_submit_requests`. For the subscribing case, the `Frontend` needs a held subscription — the same thing `events` needs — so both unblock together. This is `submit`'s work, not `open`'s: the same PR that serves `submit` on the wire is the one that can admit a message at open time. |
 | **Also refused here** | **A subscribing open, for the same reason and a sharper one.** `hub.open` registers a `Subscription` when `subscribe` is set, and the stdio op discarded it — the wire accepted a subscription it cannot deliver, and once `submit` lands its envelopes would queue against a subscription nothing drains. Go holds the subscription in its `Frontend`; there is no equivalent here yet, so the honest answer is to refuse until `events` exists. **This is a second divergence from the same cause** and it is why `open`'s parity cases carry no `subscribe` at all. |
 
+### D12 — an open's `unsupported_feature` and `capability_degraded` carry no `feature`
+
+| | |
+| --- | --- |
+| **The draft says** | `open`'s errors include `unsupported_feature` (400, for a tool source it will not attach) and `capability_degraded` (400, for a feature the request did not opt into), both naming the feature. |
+| **Go does** | `ControlRefusal` turns the adapter's refusal into the code **and its details**, so both arms carry `feature` and `reason` on the wire. |
+| **Zig does** | The same two codes with no `details`. `hub.open` returns a bare error from its `Failure` set and the `contract.Refusal` — which is where the feature and reason live — is a local in the hub that never escapes. `catalogRefusal` in `stdio.zig` gets away without it because its caller already knows which feature it asked for; an open's elections are three features and the frontend does not know which one failed. |
+| **Why it matters** | The differential comparison keeps `details` and drops only `message`, so the two trees will disagree on the first open whose elections are unadvertised or degraded. Unreachable today — the only registered adapter advertises all three — and live the moment #389's registry registers a real one. |
+| **The fix** | The hub has to surface the refusal, not just the error: either a `Failure` that carries the `Refusal`, or a variant of `open` that returns it. That is a core change, and it is the same change `submit`, `resolve` and `cancel` will each want, so it belongs in the PR that serves the first of them. |
+
 ### D4 — the registry's `journal_capacity` is hub-wide in Zig, per-adapter in Go
 
 | | |

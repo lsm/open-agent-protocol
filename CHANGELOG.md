@@ -1593,6 +1593,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `drafts/hub.md`'s D5 note now states the rule for the whole request rather than for
   `metadata` alone, and names `adapter/memory` as the conforming reference.
 
+### Fixed
+
+- **The differential hub test no longer passes by comparing nothing.** A scenario built
+  from a Go const and a backtick literal sent the literal text `" + openEnvelopeFields + "`
+  rather than the const, so every such line was malformed JSON; both hubs stop the wire at
+  the first one, both are then absent for the rest, and the comparison found nothing to
+  disagree about. The const is now interpolated for real, and the comparison **fails when
+  neither hub answered a request the scenario sent** — so a scenario that goes inert cannot
+  pass again. That guard immediately found two lines in an existing scenario that had never
+  been compared: a wrongly typed `allow_degraded_features` is a framing defect in both trees,
+  not a refusal, so it moved to a scenario that says so. Scenarios whose wire is *meant* to
+  stop now declare where, so a real stop is not read as a hole.
+
+
 ## [0.2.0] - 2026-09-11
 
 ### Added
