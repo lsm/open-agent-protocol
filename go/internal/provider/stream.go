@@ -223,7 +223,10 @@ func canCarryPartial(s *streamState) bool {
 func (s *streamState) emitFor(sink *EventSink) {
 	partial := s.partial(nil)
 	if len(s.text) > s.prevText {
-		sink.emit(Event{Kind: EventTextDelta, ContentIndex: 0, Delta: s.text[s.prevText:], Partial: partial})
+		if s.prevText == 0 {
+			sink.emit(Event{Kind: EventTextStart, ContentIndex: s.textIndex, Partial: partial})
+		}
+		sink.emit(Event{Kind: EventTextDelta, ContentIndex: s.textIndex, Delta: s.text[s.prevText:], Partial: partial})
 	}
 	s.prevText = len(s.text)
 	if len(s.thinking) > s.prevThink && !IsKimiModel(s.model) {
@@ -281,6 +284,14 @@ func (s *streamState) finish(sink *EventSink) {
 	}
 	if hasText {
 		content = append(content, AssistantBlock{Text: &TextPart{Text: s.text}})
+	}
+	if hasText {
+		sink.emit(Event{
+			Kind:         EventTextEnd,
+			ContentIndex: s.textIndex,
+			Delta:        s.text,
+			Partial:      s.partial(nil),
+		})
 	}
 	for _, call := range s.tracker.inContentOrder() {
 		completed, ok := s.tracker.completeCall(call.apiIndex)

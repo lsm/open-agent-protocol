@@ -188,6 +188,7 @@ type streamState struct {
 	signature     string
 	hasSig        bool
 	nextIndex     int
+	textIndex     int
 	toolCalls     int
 	tracker       *toolTracker
 	prevText      int
