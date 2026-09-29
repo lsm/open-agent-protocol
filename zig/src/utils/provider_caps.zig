@@ -71,8 +71,7 @@ pub fn isOpenRouter(base_url: ?[]const u8) bool {
 }
 
 pub fn isChutes(base_url: ?[]const u8) bool {
-    const url = base_url orelse return false;
-    return std.mem.find(u8, url, "chutes.ai") != null;
+    return isHostOrSubdomainOf(base_url, "chutes.ai");
 }
 
 pub fn isQwen(base_url: ?[]const u8) bool {
@@ -211,6 +210,34 @@ test "isGitHubCopilot detection" {
     try std.testing.expect(isGitHubCopilot("https://api.githubcopilot.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot("https://api.openai.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot(null));
+}
+
+test "a chutes host is chutes.ai or a subdomain of it" {
+    const hosts = [_][]const u8{
+        "https://api.chutes.ai",
+        "https://api.chutes.ai/v1",
+        "https://chutes.ai",
+        "https://API.CHUTES.AI",
+    };
+    for (hosts) |url| {
+        try std.testing.expect(isChutes(url));
+    }
+
+    const not_hosts = [_][]const u8{
+        "https://mychutes.ai",
+        "https://notchutes.ai",
+        "https://chutes.ai.evil.example",
+        "https://evil.example/?next=chutes.ai",
+        "https://evil.example/v1/chutes.ai",
+        "https://gateway.example/proxy/chutes.ai",
+        "not a url at all",
+        "",
+    };
+    for (not_hosts) |url| {
+        try std.testing.expect(!isChutes(url));
+    }
+
+    try std.testing.expect(!isChutes(null));
 }
 
 test "a cerebras host is cerebras.ai or a subdomain of it" {

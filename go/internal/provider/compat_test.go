@@ -9,6 +9,39 @@ func hostModel(baseURL string) Model {
 	return Model{Provider: "openai", BaseURL: baseURL, HasBaseURL: true, HasCompat: true}
 }
 
+func TestAChutesHostIsChutesDotAIOrASubdomainOfIt(t *testing.T) {
+	hosts := []string{
+		"https://api.chutes.ai",
+		"https://api.chutes.ai/v1",
+		"https://chutes.ai",
+		"https://API.CHUTES.AI",
+	}
+	for _, url := range hosts {
+		if !isChutesURL(url, true) {
+			t.Errorf("isChutesURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://mychutes.ai",
+		"https://notchutes.ai",
+		"https://chutes.ai.evil.example",
+		"https://evil.example/?next=chutes.ai",
+		"https://evil.example/v1/chutes.ai",
+		"https://gateway.example/proxy/chutes.ai",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isChutesURL(url, true) {
+			t.Errorf("isChutesURL(%q) = true, want false: the name is in a host suffix, a path or a query", url)
+		}
+	}
+
+	if isChutesURL("https://api.chutes.ai", false) {
+		t.Error("no base url is not a chutes host")
+	}
+}
+
 func TestACerebrasHostIsCerebrasDotAIOrASubdomainOfIt(t *testing.T) {
 	hosts := []string{
 		"https://api.cerebras.ai",
