@@ -216,6 +216,12 @@ pub fn historyBudget(context_window: u32, fixed_tokens: u64, max_output: u32) ?u
     return usable -| (fixed_tokens + max_output);
 }
 
+pub fn isAtShare(estimated_tokens: u64, context_window: u32, share_percent: u8) bool {
+    if (context_window == 0 or share_percent == 0) return false;
+    const reached = (@as(u64, context_window) * share_percent + 99) / 100;
+    return estimated_tokens >= reached;
+}
+
 pub fn firstIncluded(messages: []const ai_types.Message, budget: ?u64) ?usize {
     const limit = budget orelse return 0;
     var total: u64 = 0;
@@ -364,4 +370,16 @@ test "historyBudget reserves the fixed prompt and the summary out of most of the
     try std.testing.expectEqual(@as(?u64, null), historyBudget(0, 100, 100));
     try std.testing.expectEqual(@as(?u64, 700), historyBudget(1000, 100, 100));
     try std.testing.expectEqual(@as(?u64, 0), historyBudget(1000, 900, 100));
+}
+
+test "isAtShare is at or above the share, and never for an unknown window" {
+    try std.testing.expect(!isAtShare(1_000_000, 0, 80));
+    try std.testing.expect(!isAtShare(1_000_000, 1_000_000, 0));
+    try std.testing.expect(!isAtShare(799_999, 1_000_000, 80));
+    try std.testing.expect(isAtShare(800_000, 1_000_000, 80));
+    try std.testing.expect(isAtShare(800_001, 1_000_000, 80));
+    try std.testing.expect(isAtShare(3, 3, 100));
+    try std.testing.expect(!isAtShare(2, 3, 100));
+    try std.testing.expect(!isAtShare(1, 3, 80));
+    try std.testing.expect(isAtShare(1_000_000_000, 2_000_000_000, 50));
 }

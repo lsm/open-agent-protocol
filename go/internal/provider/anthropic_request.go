@@ -106,6 +106,18 @@ func defaultThinkingBudget(level string, budgets map[string]int) int {
 	return fallbacks[level]
 }
 
+func AnthropicThinkingForLevel(level string, budgets map[string]int) AnthropicOptions {
+	if level == "" || level == "off" {
+		return AnthropicOptions{}
+	}
+	out := AnthropicOptions{ThinkingEnabled: true, ThinkingEffort: mapThinkingLevelToEffort(level)}
+	if budget := defaultThinkingBudget(level, budgets); budget > 0 {
+		out.ThinkingBudgetTokens = budget
+		out.HasThinkingBudget = true
+	}
+	return out
+}
+
 type CacheRetention string
 
 const (
@@ -425,6 +437,10 @@ func anthropicMessages(ctx Context, cc *cacheControl) jsonArray {
 		if msg.ToolResult != nil {
 			results := jsonArray{}
 			for i < len(ctx.Messages) && ctx.Messages[i].ToolResult != nil {
+				if isOrphanedToolResult(ctx.Messages[i], toolCallIDs) {
+					i++
+					continue
+				}
 				tr := ctx.Messages[i].ToolResult
 				entry := jsonObject{
 					member("type", jsonString("tool_result")),

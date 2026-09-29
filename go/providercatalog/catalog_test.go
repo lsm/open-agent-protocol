@@ -54,6 +54,61 @@ func TestLoadRefusesAnUnknownMemberAndAnEmptyCatalog(t *testing.T) {
 	}
 }
 
+func TestLoadReadsTheContextWindowCeilingAndOnlyTheRowsThatStateOneDo(t *testing.T) {
+	catalog, err := Load(providers.Files)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	ceiling := func(id string) int {
+		t.Helper()
+		provider, known := findProvider(catalog, id)
+		if !known {
+			t.Fatalf("no row for %s", id)
+		}
+		return provider.MaxContextWindow
+	}
+	if got := ceiling("openai"); got != 1000000 {
+		t.Errorf("openai max_context_window = %d, want 1000000", got)
+	}
+	if got := ceiling("openai-codex"); got != 1000000 {
+		t.Errorf("openai-codex max_context_window = %d, want 1000000", got)
+	}
+	if got := ceiling("anthropic"); got != 0 {
+		t.Errorf("anthropic states a ceiling of %d, want none", got)
+	}
+	for _, provider := range catalog.Providers {
+		switch provider.ID {
+		case "openai", "openai-codex":
+			if provider.MaxContextWindow == 0 {
+				t.Errorf("%s records no ceiling, want the one the owner's statement gives it", provider.ID)
+			}
+		default:
+			if provider.MaxContextWindow != 0 {
+				t.Errorf("%s states a ceiling of %d, and only the OpenAI rows record one", provider.ID, provider.MaxContextWindow)
+			}
+		}
+		if provider.ContextWindow != 0 && provider.MaxContextWindow != 0 && provider.ContextWindow > provider.MaxContextWindow {
+			t.Errorf("%s records a window of %d above its own ceiling of %d", provider.ID, provider.ContextWindow, provider.MaxContextWindow)
+		}
+		for _, model := range provider.Models {
+			window := model.ContextWindow
+			if window == 0 {
+				window = provider.ContextWindow
+			}
+			limit := model.MaxContextWindow
+			if limit == 0 {
+				limit = provider.MaxContextWindow
+			}
+			if window == 0 || limit == 0 {
+				continue
+			}
+			if window > limit {
+				t.Errorf("%s model %s resolves a window of %d above the ceiling of %d it resolves", provider.ID, model.ID, window, limit)
+			}
+		}
+	}
+}
+
 func TestLoadRefusesARepeatedMember(t *testing.T) {
 	if _, err := DecodeStrict([]byte(`{"providers":[],"providers":[]}`)); err == nil {
 		t.Fatal("a member spelled twice decoded")
