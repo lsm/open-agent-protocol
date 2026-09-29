@@ -845,6 +845,7 @@ pub const App = struct {
     worktree_attempted: bool = false,
     held_user_message: []u8 = &.{},
     queued_worktree_messages: std.ArrayList([]u8) = .empty,
+    session_turns: usize = 0,
     session_id: []u8 = &.{},
     working_dir: []u8 = &.{},
     launch_dir: []u8 = &.{},
@@ -1210,7 +1211,9 @@ pub const App = struct {
         self.refreshQueuedCounts();
         self.state.status.streaming = false;
         self.state.status.compacting = false;
+        self.state.confirm_session_delete = false;
         self.state.mode = .normal;
+        self.session_turns = if (loaded.events.items.len > 0) 1 else 0;
         try self.adoptLoadedSession(loaded.metadata);
         self.saveSessionIndex(store);
     }
@@ -2269,7 +2272,7 @@ pub const App = struct {
             }
             return;
         }
-        if (self.mode_settings.auto_worktree and self.working_dir.len > 0 and self.worktree_job == null and !self.worktree_attempted) {
+        if (self.mode_settings.auto_worktree and self.working_dir.len > 0 and self.worktree_job == null and !self.worktree_attempted and self.session_turns == 0) {
             const home = compat.getEnvVarOwned(self.allocator, "HOME") catch null;
             defer if (home) |value| self.allocator.free(value);
             if (home) |h| {
@@ -2279,7 +2282,7 @@ pub const App = struct {
                     self.worktree_attempted = true;
                     self.state.appendTranscript(.system, "Already in a managed session worktree; continuing here.") catch {};
                 } else {
-                    const job = try tui_worktree.CreateJob.start(self.allocator, tui_worktree.processRunner(), self.launch_dir, base, self.session_id);
+                    const job = try tui_worktree.CreateJob.start(self.allocator, tui_worktree.processRunner(), self.working_dir, base, self.session_id);
                     errdefer job.deinit();
                     const held = try self.allocator.dupe(u8, trimmed);
                     errdefer self.allocator.free(held);
@@ -2300,6 +2303,7 @@ pub const App = struct {
                 return;
             };
         }
+        self.session_turns += 1;
         try self.state.appendUserMessage(trimmed);
         self.refreshQueuedCounts();
     }
@@ -2435,6 +2439,7 @@ pub const App = struct {
                 try self.loadSessions();
                 self.state.session_index = 0;
                 self.state.session_scroll = 0;
+                self.state.confirm_session_delete = false;
                 self.state.mode = .session_picker;
             },
             .open_model_picker => self.openPicker(.model),

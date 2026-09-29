@@ -63,7 +63,12 @@ pub const WorktreeInfo = struct {
         if (self.prefix.len == 0) return allocator.dupe(u8, self.path);
         const prefix = std.mem.trimEnd(u8, self.prefix, &.{std.fs.path.sep});
         if (prefix.len == 0) return allocator.dupe(u8, self.path);
-        return std.fs.path.join(allocator, &.{ self.path, prefix });
+        const joined = try std.fs.path.join(allocator, &.{ self.path, prefix });
+        if (!pathExists(joined)) {
+            allocator.free(joined);
+            return allocator.dupe(u8, self.path);
+        }
+        return joined;
     }
 };
 
@@ -304,6 +309,7 @@ fn managementOperation(allocator: std.mem.Allocator, runner: Runner, info: *cons
         if (!try branchExists(allocator, runner, info.repo_root, info.branch)) return .{ .missing_branch = {} };
         return .{ .reattached = try reattach(allocator, runner, info) };
     }
+    if (!pathExists(info.repo_root)) return .{ .removed = null };
     if (!pathExists(info.path)) return .{ .removed = try removeOrphaned(allocator, runner, info) };
     const dirty = hasUncommitted(allocator, runner, info.path) catch return .{ .dirty = {} };
     if (dirty) return .{ .dirty = {} };
@@ -582,6 +588,7 @@ test "create counts uncommitted changes and keeps the launch prefix" {
     defer outcome.deinit(std.testing.allocator);
     const expected_dir = try std.fs.path.join(std.testing.allocator, &.{ base, "repo-abc", "zig" });
     defer std.testing.allocator.free(expected_dir);
+    try compat.fs.createDir(compat.fs.getCwd(), expected_dir);
     switch (outcome) {
         .created => |created| {
             try std.testing.expectEqual(@as(usize, 1), created.uncommitted);
@@ -592,6 +599,18 @@ test "create counts uncommitted changes and keeps the launch prefix" {
         },
         else => return error.TestUnexpectedResult,
     }
+}
+
+test "workingDir falls back to the worktree path when the launch subdirectory is missing" {
+    const info = WorktreeInfo{
+        .path = @constCast("/tmp/nonexistent-worktree-for-test"),
+        .branch = @constCast("tui/abc"),
+        .repo_root = @constCast("/repo"),
+        .prefix = @constCast("zig/"),
+    };
+    const dir = try info.workingDir(std.testing.allocator);
+    defer std.testing.allocator.free(dir);
+    try std.testing.expectEqualStrings("/tmp/nonexistent-worktree-for-test", dir);
 }
 
 test "create quotes git's refusal when the add fails" {
@@ -648,7 +667,7 @@ test "management job reports missing branch without blocking caller" {
 test "management job refuses to delete a dirty worktree" {
     var git: FakeGit = .{ .uncommitted_lines = 1 };
     defer git.deinit(std.testing.allocator);
-    const info = WorktreeInfo{ .path = @constCast("/tmp"), .branch = @constCast("tui/test"), .repo_root = @constCast("/repo"), .prefix = "" };
+    const info = WorktreeInfo{ .path = @constCast("/tmp"), .branch = @constCast("tui/test"), .repo_root = @constCast("/tmp"), .prefix = "" };
     const job = try ManagementJob.start(std.testing.allocator, git.runner(), &info, .remove);
     defer job.deinit();
     var maybe: ?ManagementOutcome = null;
@@ -664,7 +683,7 @@ test "management job refuses to delete a dirty worktree" {
 test "management job prunes an orphaned worktree whose directory is gone" {
     var git: FakeGit = .{};
     defer git.deinit(std.testing.allocator);
-    const info = WorktreeInfo{ .path = @constCast("/nonexistent/worktree/xyz"), .branch = @constCast("tui/test"), .repo_root = @constCast("/repo"), .prefix = "" };
+    const info = WorktreeInfo{ .path = @constCast("/nonexistent/worktree/xyz"), .branch = @constCast("tui/test"), .repo_root = @constCast("/tmp"), .prefix = "" };
     const job = try ManagementJob.start(std.testing.allocator, git.runner(), &info, .remove);
     defer job.deinit();
     var maybe: ?ManagementOutcome = null;
@@ -681,6 +700,23 @@ test "management job prunes an orphaned worktree whose directory is gone" {
         if (std.mem.indexOf(u8, call, "worktree prune") != null) saw_prune = true;
     }
     try std.testing.expect(saw_prune);
+}
+
+test "management job treats a vanished repository root as removable" {
+    var git: FakeGit = .{};
+    defer git.deinit(std.testing.allocator);
+    const info = WorktreeInfo{ .path = @constCast("/tmp"), .branch = @constCast("tui/test"), .repo_root = @constCast("/nonexistent/repo/root"), .prefix = "" };
+    const job = try ManagementJob.start(std.testing.allocator, git.runner(), &info, .remove);
+    defer job.deinit();
+    var maybe: ?ManagementOutcome = null;
+    while (maybe == null) {
+        maybe = job.poll();
+        if (maybe == null) std.atomic.spinLoopHint();
+    }
+    var outcome = maybe.?;
+    defer outcome.deinit(std.testing.allocator);
+    try std.testing.expect(outcome == .removed);
+    try std.testing.expect(outcome.removed == null);
 }
 
 test "sidecar round-trips the worktree record" {
