@@ -2158,6 +2158,7 @@ pub fn build(b: *std.Build) void {
 
     const oauth_pkce_test = b.addTest(.{ .root_module = oauth_pkce_mod });
     const oauth_utils_pkce_test = b.addTest(.{ .root_module = oauth_utils_pkce_mod });
+    const oauth_anthropic_test = b.addTest(.{ .root_module = oauth_anthropic_mod });
     const oauth_openai_codex_test = b.addTest(.{ .root_module = oauth_openai_codex_mod });
 
     const oauth_storage_test = b.addTest(.{ .root_module = oauth_storage_mod });
@@ -2816,6 +2817,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(ollama_api_test).step);
     test_step.dependOn(&b.addRunArtifact(oauth_pkce_test).step);
     test_step.dependOn(&b.addRunArtifact(oauth_utils_pkce_test).step);
+    test_step.dependOn(&b.addRunArtifact(oauth_anthropic_test).step);
     test_step.dependOn(&b.addRunArtifact(oauth_openai_codex_test).step);
     test_step.dependOn(&b.addRunArtifact(oauth_storage_test).step);
     test_step.dependOn(&b.addRunArtifact(refresh_lock_test).step);
@@ -3024,6 +3026,7 @@ pub fn build(b: *std.Build) void {
     test_unit_utils_step.dependOn(&b.addRunArtifact(github_copilot_test).step);
     test_unit_utils_step.dependOn(&b.addRunArtifact(oauth_pkce_test).step);
     test_unit_utils_step.dependOn(&b.addRunArtifact(oauth_utils_pkce_test).step);
+    test_unit_utils_step.dependOn(&b.addRunArtifact(oauth_anthropic_test).step);
     test_unit_utils_step.dependOn(&b.addRunArtifact(oauth_openai_codex_test).step);
     test_unit_utils_step.dependOn(&b.addRunArtifact(oauth_storage_test).step);
     test_unit_utils_step.dependOn(&b.addRunArtifact(refresh_lock_test).step);
