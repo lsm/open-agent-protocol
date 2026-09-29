@@ -62,9 +62,11 @@ as a `user.input` gate. `--config <path>` takes the entry of that name from a
 registry shaped like [`examples/oap-serve.json`](examples/oap-serve.json):
 unknown members are refused and `environment` is an explicit allowlist.
 `--backend memory` serves the in-memory reference script and answers exactly as
-`goap`'s does: CI runs `goap conformance` against it and a parity test that
-feeds both the same traffic and requires identical output. What each cannot do through this path is
-recorded in its ledger: [claude](research/claude-code-agent-sdk-2.1.282-mapping.md),
+`goap`'s does: CI runs `goap conformance` against it and a parity job that
+feeds both trees the same traffic and requires identical output. What that job
+is the last check on, and what the corpora cover instead, is written down in
+[docs/parity-job.md](docs/parity-job.md). What each cannot do through this path
+is recorded in its ledger: [claude](research/claude-code-agent-sdk-2.1.282-mapping.md),
 [codex](research/codex-app-server-0.157.0-mapping.md),
 [acp](research/acp-v1.9.1-mapping.md). Without `--config`, codex runs `codex`
 from `PATH` with only `HOME` and `PATH`; an ACP agent has no default and needs

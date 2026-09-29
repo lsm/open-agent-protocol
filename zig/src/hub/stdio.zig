@@ -59,6 +59,7 @@ pub const Supplied = struct {
 };
 
 const no_parameters: []const []const u8 = &.{};
+const session_and_degraded: []const []const u8 = &.{ "session_id", "allow_degraded_features" };
 const adapter_parameter: []const []const u8 = &.{"adapter"};
 const session_parameter: []const []const u8 = &.{"session_id"};
 const all_parameters = [_][]const u8{ "adapter", "session_id", "run_id", "after", "request", "allow_degraded_features" };
@@ -133,6 +134,14 @@ fn declares(parameters: []const []const u8, parameter: []const u8) bool {
 
 fn member(root: std.json.ObjectMap, name: []const u8) ?std.json.Value {
     return root.get(name);
+}
+fn refusalWith(
+    arena: std.mem.Allocator,
+    code: []const u8,
+    message: []const u8,
+    details: []const oap_types.DetailEntry,
+) std.mem.Allocator.Error!Refusal {
+    return Refusal{ .code = code, .message = message, .details = try arena.dupe(oap_types.DetailEntry, details) };
 }
 
 fn requireStringOrNull(root: std.json.ObjectMap, name: []const u8) Error!void {
@@ -336,6 +345,14 @@ pub const Frontend = struct {
             const session_id = request.session_id orelse "";
             return self.state(arena, session_id);
         }
+        if (std.mem.eql(u8, request.op, op_models)) {
+            if (try request.only(arena, session_and_degraded)) |refusal| return .{ .refused = refusal };
+            return self.models(arena, request.session_id orelse "", request.allow_degraded_features);
+        }
+        if (std.mem.eql(u8, request.op, op_tools)) {
+            if (try request.only(arena, session_and_degraded)) |refusal| return .{ .refused = refusal };
+            return self.tools(arena, request.session_id, request.allow_degraded_features);
+        }
         return .{ .refused = .{ .code = "unknown_op", .message = try std.fmt.allocPrint(arena, "no op \"{s}\"", .{request.op}) } };
     }
 
@@ -402,14 +419,14 @@ pub const Frontend = struct {
         self.next_envelope += 1;
         const answer_id = try std.fmt.allocPrint(arena, "oap-response-{d}", .{self.next_envelope});
         const declared = try declaredFeatures(arena, descriptor.features);
-        const tools = try arena.dupe(oap_types.ToolDefinition, descriptor.tools);
+        const definitions = try arena.dupe(oap_types.ToolDefinition, descriptor.tools);
         const sources = try arena.dupe(oap_types.ToolSourceDescriptor, descriptor.sources);
         const payload = oap_types.CapabilitiesResponse{
             .endpoint = descriptor.endpoint,
             .protocol_versions = &.{oap_types.VERSION},
             .profiles = &.{oap_types.PROFILE},
             .features = declared,
-            .tools = tools,
+            .tools = definitions,
             .sources = sources,
             .limits = descriptor.limits,
         };
@@ -439,12 +456,83 @@ pub const Frontend = struct {
         return .{ .answer_line = try oap_envelope.serializeEnvelope(envelope, arena) };
     }
 
+    fn models(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8, degraded: []const []const u8) !Outcome {
+        const catalog = self.hub.models(arena, session_id, &.{
+            .session_id = session_id,
+            .allow_degraded_features = degraded,
+        }) catch |err| {
+            return .{ .refused = try self.catalogRefusal(arena, err, session_id, contract.feature_models_list, "internal") };
+        };
+        self.next_envelope += 1;
+        const answer_id = try std.fmt.allocPrint(arena, "oap-response-{d}", .{self.next_envelope});
+        self.next_envelope += 1;
+        const correlation = try std.fmt.allocPrint(arena, "oap-request-{d}", .{self.next_envelope});
+        const envelope = oap_types.Envelope{
+            .id = answer_id,
+            .in_reply_to = correlation,
+            .session_id = session_id,
+            .capability_revision = catalog.revision,
+            .payload = .{ .models_response = catalog.models },
+        };
+        return .{ .answer_line = try oap_envelope.serializeEnvelope(envelope, arena) };
+    }
+
+    fn tools(self: *Frontend, arena: std.mem.Allocator, session_id: ?[]const u8, degraded: []const []const u8) !Outcome {
+        const served = self.hub.tools(arena, session_id orelse "", &.{
+            .session_id = session_id,
+            .allow_degraded_features = degraded,
+        }) catch |err| {
+            return .{ .refused = try self.catalogRefusal(arena, err, session_id orelse "", contract.feature_tools_list, "tools_failed") };
+        };
+        self.next_envelope += 1;
+        const answer_id = try std.fmt.allocPrint(arena, "oap-response-{d}", .{self.next_envelope});
+        self.next_envelope += 1;
+        const correlation = try std.fmt.allocPrint(arena, "oap-request-{d}", .{self.next_envelope});
+        const envelope = oap_types.Envelope{
+            .id = answer_id,
+            .in_reply_to = correlation,
+            .session_id = served.tools.session_id orelse (session_id orelse ""),
+            .capability_revision = served.revision,
+            .payload = .{ .tools_list_response = served.tools },
+        };
+        return .{ .answer_line = try oap_envelope.serializeEnvelope(envelope, arena) };
+    }
+
     fn closeSession(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8) !Outcome {
         self.hub.close(arena, session_id) catch |err| {
             return .{ .refused = try self.refusalFor(arena, err, session_id) };
         };
         return .{ .answer = .{ .null = {} } };
     }
+
+    fn catalogRefusal(
+        self: *Frontend,
+        arena: std.mem.Allocator,
+        err: hubmod.Failure,
+        session_id: []const u8,
+        feature: []const u8,
+        fallback: []const u8,
+    ) !Refusal {
+        _ = self;
+        return switch (err) {
+            error.UnknownSession => .{ .code = "unknown_session", .message = try std.fmt.allocPrint(arena, "no session \"{s}\"", .{session_id}) },
+            error.SessionClosed => .{ .code = "session_closed", .message = try std.fmt.allocPrint(arena, "no session \"{s}\"", .{session_id}) },
+            error.ScopeMismatch => .{ .code = "scope_mismatch", .message = try std.fmt.allocPrint(arena, "no session \"{s}\"", .{session_id}) },
+            error.UnsupportedFeature, error.ToolCatalogUnavailable => try refusalWith(arena, "unsupported_feature", @errorName(err), &.{
+                .{ .key = "feature", .value = feature },
+                .{ .key = "reason", .value = contract.reason_unadvertised },
+            }),
+            error.CapabilityDegraded => try refusalWith(arena, "capability_degraded", @errorName(err), &.{
+                .{ .key = "feature", .value = feature },
+            }),
+            error.ModelNotFound => try refusalWith(arena, "model_not_found", @errorName(err), &.{}),
+            error.CatalogMisScoped => .{ .code = fallback, .message = "the adapter served a catalog scoped to another session" },
+            error.CatalogUnlabelled => .{ .code = fallback, .message = "the adapter served a catalog with no capability revision" },
+            error.OutOfMemory => return error.OutOfMemory,
+            else => .{ .code = fallback, .message = @errorName(err) },
+        };
+    }
+
 
     fn refusalFor(self: *Frontend, arena: std.mem.Allocator, err: hubmod.Failure, session_id: []const u8) !Refusal {
         _ = self;
@@ -872,13 +960,22 @@ const Harness = struct {
         const body = answer.object.get("error") orelse return error.Shape;
         return textMember(self.arena(), body, "code");
     }
+
+    fn message(self: *Harness) ![]const u8 {
+        const answer = try self.lastValue();
+        const body = answer.object.get("error") orelse return error.Shape;
+        return textMember(self.arena(), body, "message");
+    }
 };
 
 const ReferenceState = struct {
     opened: usize = 0,
+    lister_revision: []const u8 = "reference-lister-v2",
+    has_lister: bool = true,
     last_id: []const u8 = "session-1",
     running: bool = false,
     state_fails: bool = false,
+    lister_closed: bool = false,
     closed: bool = false,
 };
 
@@ -911,6 +1008,8 @@ fn referenceOpen(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.Op
         .drain = referenceDrain,
         .activity = referenceActivity,
         .close = referenceClose,
+        .models = referenceModels,
+        .tools = referenceTools,
     } };
 }
 
@@ -918,6 +1017,28 @@ fn referenceId(ptr: *anyopaque) []const u8 {
     const state: *ReferenceState = @ptrCast(@alignCast(ptr));
     if (state.opened == 0) return "session-1";
     return state.last_id;
+}
+
+fn referenceModels(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ModelsRequest, refusal: *contract.Refusal) contract.Failure!contract.Catalog {
+    const state: *ReferenceState = @ptrCast(@alignCast(ptr));
+    _ = refusal;
+    if (state.lister_closed) return error.SessionClosed;
+    if (!state.has_lister) return error.UnsupportedFeature;
+    const models = try arena.dupe(oap_types.ModelDescriptor, &.{.{ .id = "reference-model", .default = true }});
+    return .{ .revision = state.lister_revision, .response = .{
+        .session_id = request.session_id,
+        .current_model_id = "reference-model",
+        .models = models,
+    } };
+}
+
+fn referenceTools(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ToolsListRequest, refusal: *contract.Refusal) contract.Failure!contract.ToolSet {
+    const state: *ReferenceState = @ptrCast(@alignCast(ptr));
+    _ = refusal;
+    _ = arena;
+    if (state.lister_closed) return error.SessionClosed;
+    if (!state.has_lister) return error.ToolCatalogUnavailable;
+    return .{ .revision = state.lister_revision, .response = .{ .session_id = request.session_id } };
 }
 
 fn referenceState(ptr: *anyopaque, arena: std.mem.Allocator, refusal: *contract.Refusal) contract.Failure!oap_types.SessionState {
@@ -1359,6 +1480,116 @@ test "the serve loop stops at a framing defect rather than answering the rest" {
     defer harness.deinit();
     try testing.expectError(error.StdinFailed, harness.run());
     try testing.expectEqual(@as(usize, 1), harness.backing.recorder.lines.items.len);
+}
+
+test "models and tools answer a catalog, stamped with the lister's revision" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const opened = try harness.hub.open(arena, "reference", .{ .session_id = "catalog" });
+
+    try harness.send("{\"id\":1,\"op\":\"models\",\"session_id\":\"catalog\"}");
+    const models = (try harness.lastValue()).object.get("result").?;
+    try testing.expectEqualStrings("models.response", try textMember(harness.arena(), models, "type"));
+    try testing.expectEqualStrings("oap-response-1", try textMember(harness.arena(), models, "id"));
+    try testing.expectEqualStrings("oap-request-2", try textMember(harness.arena(), models, "in_reply_to"));
+    try testing.expectEqualStrings("catalog", try textMember(harness.arena(), models, "session_id"));
+    try testing.expectEqualStrings("reference-lister-v2", try textMember(harness.arena(), models, "capability_revision"));
+    const models_payload = models.object.get("payload").?;
+    try testing.expectEqualStrings("catalog", try textMember(harness.arena(), models_payload, "session_id"));
+
+    try harness.send("{\"id\":2,\"op\":\"tools\",\"session_id\":\"catalog\"}");
+    const tools = (try harness.lastValue()).object.get("result").?;
+    try testing.expectEqualStrings("action.tools.list.response", try textMember(harness.arena(), tools, "type"));
+    try testing.expectEqualStrings("oap-response-3", try textMember(harness.arena(), tools, "id"));
+    try testing.expectEqualStrings("oap-request-4", try textMember(harness.arena(), tools, "in_reply_to"));
+    try testing.expectEqualStrings("reference-lister-v2", try textMember(harness.arena(), tools, "capability_revision"));
+    _ = opened;
+}
+
+test "a catalog refuses an unknown session, and names a parameter the op does not take" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send("{\"id\":1,\"op\":\"models\",\"session_id\":\"absent\"}");
+    try testing.expectEqualStrings("unknown_session", try harness.code());
+    try testing.expectEqualStrings("no session \"absent\"", try harness.message());
+
+    try harness.send("{\"id\":2,\"op\":\"models\",\"run_id\":\"r1\"}");
+    const refused = (try harness.lastValue()).object.get("error").?.object;
+    try testing.expectEqualStrings("invalid_request", refused.get("code").?.string);
+    try testing.expectEqualStrings("op \"models\" accepts no run_id parameter", refused.get("message").?.string);
+
+    try harness.send("{\"id\":3,\"op\":\"tools\"}");
+    try testing.expectEqualStrings("unknown_session", try harness.code());
+    try testing.expectEqualStrings("no session \"\"", try harness.message());
+}
+
+test "a catalog the lister serves with no revision is refused, not stamped" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    _ = try harness.hub.open(arena, "reference", .{ .session_id = "unlabelled" });
+    reference_holder.lister_revision = "";
+    defer reference_holder.lister_revision = "reference-lister-v2";
+    try harness.send("{\"id\":1,\"op\":\"models\",\"session_id\":\"unlabelled\"}");
+    try testing.expectEqualStrings("internal", try harness.code());
+    try testing.expectEqualStrings("the adapter served a catalog with no capability revision", try harness.message());
+}
+
+test "the two catalog ops fall back to their own code, not a shared one" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    _ = try harness.hub.open(arena, "reference", .{ .session_id = "unlabelled" });
+    reference_holder.lister_revision = "";
+    defer reference_holder.lister_revision = "reference-lister-v2";
+    try harness.send("{\"id\":1,\"op\":\"tools\",\"session_id\":\"unlabelled\"}");
+    try testing.expectEqualStrings("tools_failed", try harness.code());
+    try harness.send("{\"id\":2,\"op\":\"models\",\"session_id\":\"unlabelled\"}");
+    try testing.expectEqualStrings("internal", try harness.code());
+}
+
+test "an adapter with no lister is unsupported_feature, naming the feature each op asked for" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    _ = try harness.hub.open(arena, "reference", .{ .session_id = "bare" });
+    reference_holder.has_lister = false;
+    defer reference_holder.has_lister = true;
+
+    try harness.send("{\"id\":1,\"op\":\"models\",\"session_id\":\"bare\"}");
+    const models = try harness.lastValue();
+    const models_details = models.object.get("error").?.object.get("details").?;
+    try testing.expectEqualStrings("models.list", try textMember(harness.arena(), models_details, "feature"));
+    try testing.expectEqualStrings("unadvertised", try textMember(harness.arena(), models_details, "reason"));
+    try harness.send("{\"id\":2,\"op\":\"tools\",\"session_id\":\"bare\"}");
+    const tools = try harness.lastValue();
+    const tools_details = tools.object.get("error").?.object.get("details").?;
+    try testing.expectEqualStrings("action.tools.list", try textMember(harness.arena(), tools_details, "feature"));
+}
+
+test "a session that closes under a catalog is told session_closed, and is gone after" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    _ = try harness.hub.open(arena, "reference", .{ .session_id = "closing" });
+    reference_holder.lister_closed = true;
+    defer reference_holder.lister_closed = false;
+
+    try harness.send("{\"id\":1,\"op\":\"models\",\"session_id\":\"closing\"}");
+    try testing.expectEqualStrings("session_closed", try harness.code());
+    try harness.send("{\"id\":2,\"op\":\"tools\",\"session_id\":\"closing\"}");
+    try testing.expectEqualStrings("unknown_session", try harness.code());
 }
 
 test "a null parameter is supplied and refused, and a wrongly typed one is a defect" {

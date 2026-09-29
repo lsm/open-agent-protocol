@@ -53,7 +53,10 @@ it failed.
 
 Zig 0.16.0, with `build.zig` in `zig/`. A root `Makefile` wraps the everyday
 ones (`make build|tui|test|test-tui|check|clean|clean-all`) and configures local
-macOS codesigning. Release signing and notarization are configured separately,
+macOS codesigning. `make build` and `make tui` build ReleaseSafe; pass
+`OPTIMIZE=Debug` for a debug build, but not to use the TUI, because Zig's debug
+allocator records a stack trace for every allocation and a long session then
+freezes. Release signing and notarization are configured separately,
 in `.github/workflows/release-binaries.yml`, so a change to one is not a change
 to the other.
 
@@ -133,6 +136,7 @@ A strict stack; lower layers never import higher ones.
 | `adapter/{acp,claude,codex/appserver,deepseek,hermes,opencode,pi}` | One per pinned upstream harness |
 | `serve` | Registry + multi-session hub, bounded fan-out, cursor replay; adds no semantics, never validates |
 | `serve/{servehttp,servestdio}` | HTTP+SSE and newline-JSON over one hub; `parity_test.go` enforces the mirror |
+| `cmd/goap` parity fixtures | one per harness plus `memory`; what the job is for, and what the corpora cover instead, is [`docs/parity-job.md`](docs/parity-job.md) |
 | `serve/serveendpoint`, `conformance` | One agent loop over raw envelopes, and the runner that checks it |
 | `client`, `clients/ts` | Far-side conformance proofs, invisible SSE resume |
 | `sdk` | The Go client for a running endpoint: it spawns `oapx serve agent,provider --stdio` and exposes `Auth`, `Models`, `Provider`, `Agent` over profiled envelopes. Its own private `frame` is still the one place Go hand-rolls an envelope; replacing it with `protocol.Envelope` is the follow-up |

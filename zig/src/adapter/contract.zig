@@ -106,9 +106,20 @@ pub const ConfiguredSource = struct {
 pub const OpenRequest = struct {
     session_id: []const u8 = "",
     participant: []const u8,
+    metadata: ?std.json.Value = null,
     allow_degraded_features: []const []const u8 = &.{},
     tools_json: ?[]const u8 = null,
     tool_sources_json: ?[]const u8 = null,
+};
+
+pub const Catalog = struct {
+    revision: []const u8,
+    response: oap_types.ModelsResponse,
+};
+
+pub const ToolSet = struct {
+    revision: []const u8,
+    response: oap_types.ToolsListResponse,
 };
 
 pub const Resolution = union(enum) {
@@ -154,8 +165,8 @@ pub const Session = struct {
         drain: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, out: *std.ArrayList(Event)) Failure!void,
         activity: *const fn (ptr: *anyopaque) Activity,
         close: *const fn (ptr: *anyopaque) void,
-        tools: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ToolsListRequest, refusal: *Refusal) Failure!oap_types.ToolsListResponse = null,
-        models: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ModelsRequest, refusal: *Refusal) Failure!oap_types.ModelsResponse = null,
+        tools: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ToolsListRequest, refusal: *Refusal) Failure!ToolSet = null,
+        models: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ModelsRequest, refusal: *Refusal) Failure!Catalog = null,
         switch_model: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.SessionModelSwitchRequest, refusal: *Refusal) Failure!Switched = null,
         resolve_call: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request_id: []const u8, request: *const oap_types.CallResolveRequest, refusal: *Refusal) Failure!oap_types.CallResolveResponse = null,
         replay: ?*const fn (ptr: *anyopaque, allocator: std.mem.Allocator, run_id: []const u8, after: u64, refusal: *Refusal) Failure!Replay = null,

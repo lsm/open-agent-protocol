@@ -83,6 +83,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Kimi on the catalog path it could have fired while a dozen models were in
   hand.
 
+- **`make build` and `make tui` build ReleaseSafe.** They built Debug, where Zig's debug allocator records a stack trace for every allocation: resuming a 50 MB session left the TUI unresponsive for over a minute, and a message sent later took 14 seconds to answer a keystroke. A ReleaseSafe build resumes the same session in about a second. `OPTIMIZE=Debug` still gives a debug build.
+
 - **The CI fixture auth provider is served only when a test asks for it by
   name.** `oapx auth providers` returns the catalog's rows and nothing else
   unless `OAPX_TEST_FIXTURE_PROVIDER` is set to `1` or `true`, so a user running
@@ -127,6 +129,258 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   literal rather than by mutating the process.
 
 ### Added
+- **`go/internal/provider` gains the `anthropic-messages` client, part of #358
+  step 3.** It reuses step 2's SSE parser, event types, json tree and
+  pre-transform, and it is **a different client rather than a variant of the one
+  beside it**, so the parts that differ are called out rather than smoothed over:
+
+  - **The key goes out as `x-api-key`, not `Authorization`.** A bearer header
+    appears only under an oauth key -- one containing `sk-ant-oat` -- which is the
+    only case that also adds two extra `anthropic-beta` flags, a fixed `user-agent`
+    and `x-app: cli`. An **empty** key still sends `anthropic-beta`, so "no
+    credential" and "no auth header" are not the same thing. A model may not
+    displace a header the client already set.
+  - **The wire is block-indexed**, with a `content_block_start`, deltas and a
+    `content_block_stop` per block, so this client emits the four
+    `text_start`/`text_end`/`thinking_start`/`thinking_end` kinds the openai one
+    does not -- all thirteen of the union, against nine there. A block's content
+    index is assigned at **start** from the number of blocks that have already
+    completed, while the **wire** index only keys the map, so the two numbers
+    differ; a delta for an index the map has not seen is dropped, and a block type
+    the client does not model is skipped rather than failing.
+  - **Under an oauth key the system text is prepended, not replaced**: the Claude
+    Code sentence, a blank line, and then the caller's own prompt. A port that
+    replaces it drops the caller's instructions on every oauth request that has
+    one; the bare sentence is written only when there is no prompt at all.
+  - **An image part means one thing to both writers**: base64 `data` and a
+    `media_type`, as the oracle's single `ImageContent` does. The openai writer
+    builds `data:<media_type>;base64,<data>` from them and the anthropic writer
+    writes the two members directly, so one context serves both clients. The
+    earlier shape — a URL plus a fidelity knob — meant different things to each
+    and sent `media_type: ""` with a URL where base64 belonged.
+  - **A user message that has parts is always a block array**, never a joined
+    string — the openai writer flattens text-only parts and this one does not,
+    so a port that shares the rule sends a different shape than oapx. A message
+    with no parts at all is still a plain string.
+  - **An empty system prompt counts as absent**, so no empty text block is
+    written, and under oauth the bare sentence goes out with no trailing blank
+    line rather than one followed by nothing.
+  - **A tool call is a block inside the content array**, not a sibling member as
+    in the openai body, and a tool result is a **`user`** message -- a whole run of
+    consecutive results in one message -- whose `content` is a plain string for a
+    single text part, an array for several or an image, and `""` for none.
+  - **A signed thinking block is the only one that is not text**: without a
+    signature it is written as a text block, with one it carries `thinking` and
+    `signature`.
+  - **The default `max_tokens` is `min(model / 3, 32000)`** and the order is
+    `model`, `max_tokens`, `stream`. There is no `stream_options`: usage arrives
+    in `message_start`, and **its cache tokens are kept separate rather than
+    subtracted from the input**, which is the opposite of the openai path. The
+    `total_tokens` backfill adds the input and the output only.
+  - **An empty response is an error, not an empty text block** -- the openai client
+    emits one empty text part. The message is the raw body's own error text when it
+    is one, the byte count when it is not, and a fixed sentence otherwise.
+  - **After the loop a synthetic blank line is fed to the parser** so a final frame
+    that arrived without its trailing separator is recognised, and **only an error
+    in it is acted on** -- a trailing delta is parsed and discarded.
+  - **The anonymous rule excludes one vendor, `anthropic`**, where the openai rule
+    excludes four. The two lists are separate on purpose: reusing the openai one
+    here would let an anthropic model through anonymously.
+  - **A `ping` on this wire is not handled** and falls through to nothing;
+    keepalives come from the client's own interval.
+  - The `is_oauth` branch of the shared pre-transform, which step 2 added behind a
+    flag because its own path never sets it, is what canonicalises a tool name
+    against the declared tools here -- so **#514** and **#515** are inherited
+    directly by this client.
+  - **The cache ttl and the thinking branches are complete or absent**: a long
+    retention gets `ttl:"1h"` when the host is anthropic **or** the model's own
+    compat says so; an adaptive model declares `thinking:{"type":"adaptive"}`
+    before its `output_config.effort`; and a thinking budget is guarded by
+    `max_tokens > 1024`, defaulted to 1024, and clamped to
+    `[1024, max_tokens - 1]`, so a budget the api would reject cannot go out.
+- **`/think` is back in the TUI**, as `/think [off|low|medium|high|xhigh|max]`: with a level it sets it, and alone it shows the current one. Shift+Tab still cycles the levels, and the status line now shows `off` instead of hiding the level.
+
+- **A `max` thinking level, above `xhigh`.** It sends Anthropic's `max` effort, the effort `xhigh` already sent there; OpenAI's highest level, `xhigh`, or `high` on a model without it; and the largest budget or level elsewhere. The OAP provider profile has no `max`, so a provider reached through it gets `xhigh`.
+
+- **`go/internal/provider`: the `openai-completions` client, part of #358 step 2.**
+  A Go program can now drive an OpenAI-compatible endpoint without a Zig binary in
+  the path. The package is `internal` on purpose: it is not yet a public surface,
+  and `goap check` refuses an importable package that is in neither the public set
+  nor `go/internal`, because every exported name in one becomes public API the day
+  a program imports the module. It moves out when the serving layer that maps its
+  events to the profile's envelopes lands.
+
+  It is a **transcription of `zig/src/providers/openai_completions_api.zig`**, and
+  the awkward parts are transcribed rather than tidied, because the point is
+  parity in step 5:
+
+  - **The SSE parser** keeps four rules the obvious implementations get wrong. A
+    blank line is the separator and a line feed alone is not; a carriage return
+    followed by a line feed is **one** delimiter, including when the two bytes
+    land in different chunks; repeated `data:` lines are joined with a newline;
+    and an `event:` line with no `data` emits nothing **but still leaves its type
+    bound**, so a later `data:` inherits it. The limits are a mebibyte per line
+    and four per event, and the event limit counts the type, the data and the
+    separators between data lines.
+  - **`isOpenAINative` and `isOpenAIHost` are two different functions** and are
+    ported as two. The first matches the substring `api.openai.com` anywhere in
+    the base URL; the second parses the URL and compares the host to `openai.com`
+    with a label boundary, case-insensitively. They disagree for
+    `https://api.openai.com.evil.example` and for a proxy carrying the name in its
+    query. **#511 records the divergence and it is not fixed here** — it is a
+    behaviour change in Zig and therefore the provider agent's to decide. What the
+    port does is keep them apart: six decisions ride on the pair, and the
+    detection gate is what discards the native caps for a URL matching the
+    substring but not the host.
+  - **The thinking member is named `reasoning_content` unless a signature comes
+    back**, in which case the signature becomes the member's name. That is a wire
+    quirk — the field name is data from the previous turn — so it is spelled out
+    and tested rather than derived.
+  - **The credential order is the caller's key, then the environment, then the
+    anonymous rule**, and an empty value at either of the first two steps falls
+    through rather than winning. A variable that is set but empty is therefore not
+    an anonymous grant. The client takes an explicit key; the wider stored and
+    oauth lookup stays with the caller, which is what step 4's discovery needs.
+  - **The request runs the pre-transform before writing anything.** An unanswered
+    tool call grows a synthetic `"No result provided"` result marked as an error,
+    flushed before the next turn; a tool-call id is stripped at its `|`, truncated
+    and sanitized to 40 characters on an OpenAI host, or hashed to nine characters
+    for a Mistral host, with the matching result remapped so the pair still lines
+    up; an aborted or errored assistant is dropped; and a thinking block from a
+    **different** model becomes text while one from the same model keeps its
+    signature. Without this an unanswered call goes out dangling and a long id goes
+    out unnormalized. It also carries a defect of its own, **#514**: the pending
+    calls are keyed by the normalized id and the answered ones by the original, so
+    on a Mistral host — where every id is re-hashed — an answered call grows a
+    second, spurious error result. Transcribed rather than corrected, and pinned.
+  - **The event stream's thirteen kinds are the union, and this client emits nine
+    of them** — `start`, `text_delta`, `thinking_delta`, `toolcall_start`,
+    `toolcall_delta`, `toolcall_end`, `done`, `error` and `keepalive`, each
+    carrying a content index and a partial. The four `text_start`/`text_end`/
+    `thinking_start`/`thinking_end` kinds are the **anthropic-messages** client's,
+    which has a wire that carries them; this one's does not, so nothing here emits
+    them. The union is thirteen because the Go SDK's six `ProviderEvent`s cannot
+    express the starts and the ends, and a serving layer cannot map what is not
+    there. The SDK types are untouched: they remain the client API over the
+    profile's envelopes.
+  - **A keepalive is emitted on the ping interval, and every event is stamped.**
+    The first one always fires when pinging is on, because the last-ping time
+    starts at zero. The terminal message's usage also carries a **cost**, computed
+    from the model's own per-million rates.
+  - **A `usage` member that is present but is not an object leaves the accumulated
+    prompt and cache totals alone**, while `output` is still reassigned, because
+    that is the asymmetry in the source. Reading `usage` as a fresh struct per
+    chunk would drop the totals a server already reported.
+  - **`toolcall_end` carries a different content index than its `toolcall_start`
+    did.** The start counts tool calls alone; the end is the position in the final
+    array, which also holds the thinking and the text. The partial on that event is
+    the content accumulated *so far*, so it grows with each one.
+
+  Four behaviours are transcribed because Zig has them, and all four are pinned by
+  tests so a later reader knows they are deliberate rather than accidents. The orphan
+  check on a tool result runs only on the **first** of a run, so an orphan following
+  an answered one is still written. A malformed chunk is **swallowed** rather than
+  failing the stream, which is why the partial-text rule has no reachable caller here.
+  A `reasoning_details` blob is **escaped** where oapx splices it raw, which keeps
+  the body valid JSON when a signature carries a quote or a backslash — recorded as
+  **#515**, with what step 5's parity run has to do about it. And an answered tool
+  call growing a duplicate error result once its id is normalized is **#514**,
+  transcribed and pinned there rather than corrected here. The first two are filed
+  as **#513**; none of the four is fixed here.
+- `oapx hub --stdio` serves the two catalog operations, `models` and `tools`, over the
+  same transport objects `goap hub --stdio` serves. Both take `session_id` and
+  `allow_degraded_features`; both answer a `models.response` or
+  `action.tools.list.response` envelope stamped with the revision the **lister**
+  served the catalog under, and both mint a response id and an `oap-request-N`
+  correlation in that order, as the other ops do.
+  A catalog refused `unsupported_feature` now names the `feature` and `reason` in
+  `details`, an unlabelled one is `internal` — the code both trees answer, since
+  `catalog_unlabelled` is the core's name and has no wire code of its own — and a
+  mis-scoped one takes that op's own fallback, because it is the lister's
+  error and not the caller's.
+  `request_cancelled` is recorded as **D8** rather than mapped: `contract` has no
+  cancellation signal and `hub.Failure` has no error for one, so a cancelled lister
+  call arrives as whatever the adapter chose. Mapping it would have been a mapping
+  the hub cannot actually reach.
+  `tools` falls back to `tools_failed` and `models` to `internal`, each as Go's
+  `toolsError` and `modelsError` do, and each names the feature it asked for —
+  `action.tools.list` or `models.list` — rather than one shared answer for both. A
+  mis-scoped or unlabelled catalog takes the op's own fallback, because it is the
+  lister's error and not the caller's.
+  A session that closes under a catalog answers `session_closed` once and is gone
+  after, as Go does: it marks the session closed and still propagates the error.
+- **The contested settlement has a fixture: `pi-two-open-calls`.** A terminal
+  event sweeping several open calls at once had no fixture, and #433 step 4 was
+  parked waiting for a hub that could serve one. The memory backend structurally
+  cannot supply it — `resolvePermission` ends in `requestInput` and both adapters
+  hold a single pending interaction, so no memory fixture can open two — so this
+  is a second `pi` fixture whose scenario starts `read b` while `read a` is still
+  running and **neither** finishes. Both trees then emit
+  `action.call.requested`/`started` for the two calls, a `progress` for the first,
+  and settle both `action.call.failed`, the first-started one first.
+  To let a fixture name a backend other than its own directory, a fixture
+  directory may carry a `backend` file; without one the directory name is still
+  the backend, so every existing fixture is unchanged, and the subtest is now
+  named after the directory, which is what keeps two `pi` fixtures distinct.
+  This supersedes the note above that no fixture opens two interactions at once:
+  it was true of the tree, not of the protocol.
+- **`go/providercatalog` resolves a row's credentials, base and wire, the way the
+  Zig tree does.** The package joined a catalog row to its two URLs and stopped
+  there, so a Go provider runtime had a base and a key that each tree had to
+  find by its own rules. `LookupCredential(catalog, env, stored, id)` now answers
+  the key a request carries and where it came from: the row's own
+  `credential_env` variables first, **in the order the row records them** —
+  `anthropic` answers from `ANTHROPIC_AUTH_TOKEN` before `ANTHROPIC_API_KEY` —
+  a variable that is set and empty counting as unset, and the first value held
+  for a name deciding that name. A stored key answers next, and only for a row
+  whose `auth` lists `api_key`; a stored OAuth access only for a row that lists
+  `oauth`, so `openai-codex` and `github-copilot` are not handed an API key and
+  `openai` is not handed a token. `NeedsNoCredential` reports the row that
+  records `none`, which is how `ollama` says it. The row accessors beside it
+  answer what the row records: `Status`, which is `supported` for a row that
+  records none **and for an id the catalog does not hold**, `Offering`, which
+  for the same unknown id is nothing, `CredentialEnv`, `BaseURLEnv`, `RegionEnv`,
+  `ModelsEndpoint`, `OAuthOriginFor`, `Wires`, `Endpoints`. `BaseURL` and
+  `DefaultBaseURL` pick the row's own endpoint for a wire and a region, with the
+  rule that a region answers only an endpoint declaring that region and no region
+  answers only an endpoint declaring none, and the default answering nothing at
+  all for a row that records no `base_url_source` — the gate Zig's
+  `defaultBaseUrlOf` puts there, which no live row currently trips but which a
+  future row would, silently and in one tree only. `WireForModel` sends a model
+  only the responses wire serves — `gpt-5-pro`, `o1-pro`,
+  `computer-use-preview` and the rest — to `openai-responses` while every other
+  openai model takes the row's first implemented wire. The URL half was already pinned by
+  `providers/resolved_urls.json` in both trees; these rules are code, so they are
+  pinned here, each read out of the Zig function it mirrors, with the premise
+  asserted before the behaviour.
+- **`docs/parity-job.md` says what the parity job is for.** The job drives the same requests through both trees and fails when the bytes differ, which makes it the last check before a divergence has to be settled by hand against a decision, a draft or a corpus. The note says which divergences that is the last check on — a payload the two trees decode differently, an answer one refuses and the other admits, and above all **the order of a run's events and the settlement order of two open interactions** — the latter uncovered by any fixture, and added by the entry above: the memory backend holds one pending interaction at a time, so it cannot open two, and the contested settlement #475 was written for — a terminal event sweeping several open gates, as the claude adapter's `sweepRun` does — had no fixture until `pi-two-open-calls`. What the `memory` fixture contributes instead is the only run long enough to read as a stream, through `TestBackendsMatchOapx`; `TestMemoryBackendMatchesOapx` compares a *sorted* set and is order-blind by construction — and which are covered cheaper elsewhere, because the fixtures are the oracle for the wire, the corpora for each harness, and the per-adapter tests for each adapter's own error handling. It says that every fixture which submits streams its run's envelopes, because the submit handler subscribes and pumps the run itself rather than the session-open `subscribe` member, and that `memory` is neither unique in doing that nor identical in both trees by construction — the two memory adapters are separate implementations, which is why the comparison scrubs `id` and every `*_ms` member. It has a row for the one divergence the "covered cheaper elsewhere" rule cannot place — what each tree writes to the harness, which needs a second tree to see at all — and it says which test does what — seven fixtures drive a `child.sh`, `opencode` answers the in-test fake HTTP server, and only one of the two memory tests looks at order — and it runs both tests in its own command, because running one is running half the coverage, and names the three CI jobs that run them — `backend-parity`, `memory-conformance`, and the twenty-fold `pi-parity-repeat` determinism gate. It also says what the job is *not* for: it is not conformance, not the harness's coverage, and not a race detector — one deterministic script per fixture cannot schedule a race — though a parity flake that recurs is race evidence, which is how pi's cancel divergence was found and why `pi-parity-repeat` exists. Each fixture gets a row saying which divergence it is the last check on, and `CLAUDE.md` and the README's paragraph that already promised "identical output" link to it. It lives in `docs/` rather than beside the fixtures because the parity test globs that directory and would read a README as a tenth backend.
+
+
+- **`auth.providers.response` says how each provider accepts a credential.** The
+  row carried an id, a name, a status and an optional last error, which
+  describes a provider's *state* and not its *means*: an API-key-only provider
+  and an OAuth provider are both `login_required` before anything has been
+  entered, so a caller had no way to know which kind of login to start. Each row
+  now carries `auth_kinds`, a non-empty ordered list of `api_key`, `oauth` and
+  `none`. The first entry a caller can perform is the one to drive, and `none`
+  is how a provider that needs no credential — Ollama — says so rather than
+  omitting itself.
+  The values come from the catalog's own `auth` array, so a row's kinds cannot
+  disagree with the row it came from; the runtime reads one and sends it.
+  The field is **required** with a `minItems` of one, which reserves emptiness:
+  a conforming runtime never sends an empty list, so an empty one can only mean
+  a runtime predating the field, and never "needs no credential". All four SDKs
+  read a missing or unrecognised list as empty rather than failing the listing,
+  because V1 evolution is additive-only and a new client has to stay usable
+  against an older runtime — which is also what lets the two cases be told apart.
+  Decision 0029's `auth.providers.response` row is amended, with the reasoning in
+  [Decision 0043](decisions/0043-auth-providers-carry-how-they-accept-a-credential.md).
+  This is a wire change, so it is the kind that breaks a client paired with an
+  older binary. Each SDK was checked rather than assumed: the new field is
+  absent-tolerant on read, and the fixture manifest gained a schema-invalid
+  case so a runtime that omits it is caught at the boundary rather than in a
+  user's terminal.
+
 - **The duplicate-key JSON walk exists once.** Six adapters had their own copy — four byte-identical, two differing only in local names and where a `default` arm sat — plus a seventh call site that applied a different rule under the same name by delegating to a strict decode into a map. The walk is now `go/internal/jsonwalk.RejectDuplicateKeys`, the copies and the delegate are gone, and the **ten** call sites across nine entry points call it: each adapter's `ParseMessage` or `parseObject`, pi's and deepseek's `DecodeStrict`, opencode's event decoder and its HTTP response decoder, and deepseek's `carriesIntoATrace` — the one entry point with no wiring test of its own, because it asks whether a recorded trace is a wire the client can carry rather than whether a frame decodes. The property is tested once, in the package that owns the function, and is now **seeded from all seven harness corpora** rather than one adapter's; what each package keeps is a wiring test that its own entry point still refuses a key written twice, because a copy-paste regression would live in the call site and nowhere else. opencode's `native.RejectDuplicateKeys` export is gone with the copy — its one caller is in the same module and now calls the shared walk — and the weekly matrix runs the two shared targets in place of the thirteen that were per-adapter.
 
 - **The Go SDK's OAP path speaks `protocol.Envelope` instead of its own envelope struct.** The SDK had a private `frame` for both dialects, and the OAP half of it hand-rolled a vocabulary `go/protocol` already describes: `session.open.request`, `inference.create.request`, `models.request`, `auth.login.start.request` and the rest were built as a `frame` with string members. They are now built and read as `protocol.Envelope`, so the SDK's control-plane wire is the same type every other Go package uses and the validator can be pointed at it. **The legacy V1 wire keeps the frame**, which is the honest split rather than a compromise: a V1 envelope carries `inference_id`, `stream_id`, `message_id`, `protocol_version` and a numeric `version`, none of which `protocol.Envelope` has members for, and the SDK's streamed events read `inference_id` off the frame it receives. One request stays on the frame for the same reason — `inference.cancel.request` names its inference in a member the protocol envelope cannot carry — which is a gap in the protocol package's coverage of the provider profile rather than in the SDK. The transport's write path is now shared by both dialects, and the fake host in the wire tests emits frames while the SDK under test sends envelopes, so the asymmetry is what the suite exercises. The real-binary smoke tests pass against a freshly built `oapx`.
@@ -595,12 +849,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shrinking composer no longer leaves blank rows behind.
 
 ### Fixed
+- **A shell command's output under 10 KB now reaches the model whole.** With compact output on, which the TUI turns on by default, `shell_execute` stored every output as an artifact whatever its size and returned only a summary: about 430 bytes of retrieval instructions, then the first and last 512 bytes. Output under 1 KB came back about three times its size, output between 1 and 10 KB lost its middle, and the model often had to call `artifact_retrieve` next to read it. The shell tool no longer takes `compact_output`, and only output over its 10 KB limit is stored as an artifact.
+
+- `contract.Session`'s `models` and `tools` now report the revision the lister served
+  the catalog under, beside the catalog itself, as Go's `base.Catalog` and
+  `base.ToolCatalog` do. The hub stamped the answer with the **adapter descriptor's**
+  revision and never learned what the lister thought, so a lister serving a catalog
+  under one revision while its descriptor claimed another was silently restamped
+  with the descriptor's. An empty revision is refused, which is Go's own rule: an
+  adapter that serves a catalog with no capability revision is a backend failure.
+  Both trees answer `internal` for it — `catalog_unlabelled` is the core's name
+  for the condition and has no wire code of its own.
+  `endpoint` now stamps the lister's revision on the envelopes it forwards rather
+  than the descriptor's, and refuses an unlabelled catalog rather than passing one
+  through, so a session mediated by an endpoint is checked the same way a direct one is.
+  A lister that reports the session closed now releases the session and answers
+  `session_closed`, as Go does: it marks the session closed and still propagates the
+  error, so the answer is that once and `unknown_session` only on the next operation.
+- A session open's `metadata` now reaches the adapter. `contract.OpenRequest` and
+  `hub.OpenRequest` carry it and the hub forwards it, as a parsed value, which is
+  what Go hands an adapter. It could not be forwarded at all: the core had no
+  member to carry it, so a metadata-carrying open had nowhere to put it between
+  the wire and the adapter. Accepting one and dropping it is the endpoint's
+  behaviour, in both trees, and is recorded as D9.
 - **`docs/oap-system-map.html` is kept and made true.** The page was an orphan with nothing linking to it, and everything countable on it had drifted: it said 546 fixtures where `fixtures/manifest.json` lists 576, 53 diagnostic codes where `go/validation/diagnostic.go` declares 57, twelve schema documents where `schema/v0.1/` holds thirteen, and it showed eleven conformance units where `drafts/conformance.md` lists twelve — `+provider-attach` was missing from the chips. The status ladder was behind the tree: **semantic is complete** (`nothing_outstanding` in `zig/src/validation/semantic_gate.zig` is empty) and **all seven adapters are reachable behind `oapx serve agent --backend`**, so the page now carries a hub row instead — `oapx hub --stdio` serves `adapters`, `sessions`, `capabilities`, `state` and `close` and answers `unknown_op` for the rest — and names #496 for the differential. The commands table was wrong about the released binary: `oapx serve agent provider` is `oapx serve agent,provider --stdio`, `oapx run` only enters the agent loop with `--agent`, and `oapx hub --stdio` and `oapx validate` were missing; the hero now says `oapx` is the released binary and that `goap` is run with `go run ./go/cmd/goap` and never installed. The SVG's harnesses are pinned to catalogued versions rather than to one commit (Decision 0033), and the vendor box says it shows four of the catalog's 23 rows. The trace section and the `goap validate --format=json` transcript were checked against `fixtures/valid/tools-permission-completed.json` and the command's real output and are unchanged — every key and value the page shows is in the fixture, field for field. The README links the page and says to open it in a browser, and its SDK line now names three SDKs in `sdk/` and the Go one at `go/sdk/`.
-
 - **A run no longer stops by itself after 100 turns.** The agent loop capped a run at 100 model turns when its caller set no limit, and the TUI never sets one, so a long task ended right after a tool call, with no reply and no message. A run now goes on until the model answers without calling a tool or you cancel it, as pi-mono's loop does. `max_iterations` still sets a limit for a caller that wants one.
-
 - **The agent loop runs the tool calls a reply carries, whatever stop reason it reports.** It used to act on the stop reason alone, and the OpenAI Responses and Google providers never report `tool_use`, so a reply calling a tool through them ended the run without running it. A reply reporting `tool_use` with no tool call now ends the run instead of asking again. A tool call cut off at the output token limit is not run: the model gets an error asking it to call the tool again with complete arguments, and the run goes on. A fourth cut-off reply in a row ends the run, and the TUI now says when a run ends on a reply cut off at the output token limit.
-
 - **The duplicate-key JSON walk no longer refuses a valid message because of a number it cannot hold.** The walk exists to catch a wire that disagrees with itself, and `encoding/json`'s token reader turns a number into a `float64` by default — so a well-formed integer literal longer than a `float64` can represent (`1e999`, or 400 digits) made the walk return a range error and the adapter reject a message that is perfectly valid. The deepseek copies already asked for `UseNumber()`; acp, claude, codex, hermes, pi and opencode did not, so six adapters refused valid traffic in six slightly different ways, and opencode's copy is exported as `native.RejectDuplicateKeys`. All of them ask now, and the copies that remain are [#489](https://github.com/lsm/open-agent-protocol/issues/489)'s to collapse.
 
 - The Zig endpoint now **drains a session's events before it answers a `run.cancel`**, so everything an adapter emitted while handling the cancel — the `run.status.updated {status: cancelling}` announcement the Go adapters emit, and any terminal a harness settles inside the round-trip — reaches the stream before the acknowledgement, which is Go's order. The two trees disagreed here: goap announced `cancelling` and then answered, while oapx answered and then announced, which the order-aware parity comparison found as soon as it stopped sorting its input. Both orders are legal under [Decision 0041](decisions/0041-cancel-acceptance-is-judged-when-the-cancel-is-checked.md) — a cancel response is unordered against a run's stream — so nothing was wrong with either; aligning them is what makes the parity output comparable, and it is a change in `zig/src/adapter/endpoint.zig` rather than in an adapter, because the adapters' only flush point is the drain the host calls. The pre-drain defers a frame failure to the read loop that already owns it, so a cancel cannot turn a serialisation error into a serving error.

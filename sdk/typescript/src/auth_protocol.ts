@@ -32,9 +32,23 @@ export type AuthStatus = (typeof AUTH_STATUSES)[number];
 
 const VALID_AUTH_STATUSES = new Set<string>(AUTH_STATUSES);
 
+const AUTH_KINDS = ["api_key", "oauth", "none"] as const;
+
+export type AuthKind = (typeof AUTH_KINDS)[number];
+
+const VALID_AUTH_KINDS = new Set<string>(AUTH_KINDS);
+
+export { AUTH_KINDS };
+
+const knownKinds = (value: unknown): AuthKind[] =>
+  Array.isArray(value)
+    ? value.filter((kind): kind is AuthKind => typeof kind === "string" && VALID_AUTH_KINDS.has(kind))
+    : [];
+
 export interface ProviderAuthInfo {
   id: ProviderId;
   name: string;
+  auth_kinds: AuthKind[];
   auth_status: AuthStatus;
   last_error?: string;
 }
@@ -518,9 +532,11 @@ function parseProvider(entry: unknown, index: number): ProviderAuthInfo {
       { kind: "transport_error" },
     );
   }
+  const rawKinds = data["auth_kinds"];
   const provider: ProviderAuthInfo = {
     id,
     name,
+    auth_kinds: knownKinds(rawKinds),
     auth_status:
       typeof status === "string" && VALID_AUTH_STATUSES.has(status)
         ? (status as AuthStatus)

@@ -758,7 +758,8 @@ pub const AppState = struct {
             .low => .medium,
             .medium => .high,
             .high => .xhigh,
-            .xhigh => .off,
+            .xhigh => .max,
+            .max => .off,
         };
         return self.thinking_level;
     }
@@ -2461,6 +2462,7 @@ test "AppState cycles thinking levels for TUI shortcut" {
     try std.testing.expectEqual(ai_types.ThinkingLevel.medium, state.cycleThinkingLevel());
     try std.testing.expectEqual(ai_types.ThinkingLevel.high, state.cycleThinkingLevel());
     try std.testing.expectEqual(ai_types.ThinkingLevel.xhigh, state.cycleThinkingLevel());
+    try std.testing.expectEqual(ai_types.ThinkingLevel.max, state.cycleThinkingLevel());
     try std.testing.expectEqual(ai_types.ThinkingLevel.off, state.cycleThinkingLevel());
     try std.testing.expectEqual(ai_types.ThinkingLevel.low, state.cycleThinkingLevel());
 }

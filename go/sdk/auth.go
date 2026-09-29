@@ -5,12 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/lsm/open-agent-protocol/go/protocol"
 )
 
 type ProviderAuthInfo struct {
 	ID string
 
 	Name string
+
+	AuthKinds []protocol.CredentialKind
 
 	Status AuthStatus
 
@@ -287,10 +291,22 @@ func parseAuthEvent(f *frame, providerID, flowID string) (AuthEvent, error) {
 }
 
 type wireProviderAuthInfo struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	AuthStatus string `json:"auth_status"`
-	LastError  string `json:"last_error"`
+	ID         string                    `json:"id"`
+	Name       string                    `json:"name"`
+	AuthKinds  []protocol.CredentialKind `json:"auth_kinds"`
+	AuthStatus string                    `json:"auth_status"`
+	LastError  string                    `json:"last_error"`
+}
+
+func knownCredentialKinds(kinds []protocol.CredentialKind) []protocol.CredentialKind {
+	kept := make([]protocol.CredentialKind, 0, len(kinds))
+	for _, kind := range kinds {
+		switch kind {
+		case protocol.CredentialKindAPIKey, protocol.CredentialKindOAuth, protocol.CredentialKindNone:
+			kept = append(kept, kind)
+		}
+	}
+	return kept
 }
 
 func parseProviders(f *frame, streamID string) ([]ProviderAuthInfo, error) {
@@ -312,7 +328,7 @@ func parseProviders(f *frame, streamID string) ([]ProviderAuthInfo, error) {
 			status = AuthUnknown
 		}
 		providers = append(providers, ProviderAuthInfo{
-			ID: raw.ID, Name: raw.Name, Status: status, LastError: raw.LastError,
+			ID: raw.ID, Name: raw.Name, AuthKinds: knownCredentialKinds(raw.AuthKinds), Status: status, LastError: raw.LastError,
 		})
 	}
 	return providers, nil

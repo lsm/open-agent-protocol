@@ -28,6 +28,16 @@ var hubParityScenarios = map[string][]string{
 		`{"id":5,"op":"adapters","session_id":"x"}`,
 		`{"id":6,"op":"close"}`,
 	},
+	"the catalog ops refuse the same refusals": {
+		`{"id":1,"op":"models","session_id":"absent"}`,
+		`{"id":2,"op":"tools","session_id":"absent"}`,
+		`{"id":3,"op":"models"}`,
+		`{"id":4,"op":"tools"}`,
+		`{"id":5,"op":"models","run_id":"r1"}`,
+		`{"id":6,"op":"tools","adapter":"memory"}`,
+		`{"id":7,"op":"models","session_id":"absent","allow_degraded_features":"nope"}`,
+		`{"id":8,"op":"models","session_id":7}`,
+	},
 	"a null parameter is supplied, and a wrongly typed one is not read": {
 		`{"id":1,"op":"adapters","adapter":null}`,
 		`{"id":2,"op":"sessions","session_id":null}`,

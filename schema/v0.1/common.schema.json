@@ -14,6 +14,10 @@
         "unknown"
       ]
     },
+    "authKind": {
+      "description": "How a provider accepts a credential.",
+      "enum": ["api_key", "oauth", "none"]
+    },
     "nonEmptyString": { "type": "string", "minLength": 1 },
     "opaqueID": { "$ref": "#/$defs/nonEmptyString" },
     "toolSourceKind": { "enum": ["native", "local", "process", "remote", "hosted"] },

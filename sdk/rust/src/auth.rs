@@ -14,7 +14,7 @@ use serde_json::json;
 
 use crate::error::{AuthErrorKind, Error, Result};
 use crate::ids::new_ulid;
-use crate::models::AuthStatus;
+use crate::models::{AuthKind, AuthStatus};
 use crate::transport::Transport;
 use crate::wire::{Envelope, Frame, AGENT_PROFILE};
 
@@ -25,6 +25,14 @@ pub struct ProviderAuthInfo {
     pub id: String,
     /// A human-readable name.
     pub name: String,
+    /// How this provider accepts a credential, in preference order.
+    ///
+    /// The wire requires at least one entry, so an empty vector means a runtime
+    /// older than the field sent none — which is not the same as a provider
+    /// that needs no credential. V1 evolution is additive-only, so a new client
+    /// must not fail the whole listing against an older runtime.
+    #[serde(default)]
+    pub auth_kinds: Vec<AuthKind>,
     /// Whether its credentials are usable.
     #[serde(default = "unknown_status")]
     pub auth_status: AuthStatus,
@@ -709,6 +717,20 @@ fn parse_providers(frame: &Frame) -> Result<Vec<ProviderAuthInfo>> {
                     object.insert("auth_status".to_owned(), json!("unknown"));
                 }
             }
+            // The same for the credential kinds, which are additive in the same
+            // direction: a runtime naming a kind this build does not know must not
+            // cost the caller the whole listing. What survives is the kinds that
+            // parse, so a partly-new list is still useful.
+            if let Some(object) = raw.as_object_mut() {
+                let parsed: Vec<AuthKind> = object
+                    .get("auth_kinds")
+                    .and_then(|value| serde_json::from_value::<Vec<String>>(value.clone()).ok())
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|kind| serde_json::from_value::<AuthKind>(json!(kind)).ok())
+                    .collect();
+                object.insert("auth_kinds".to_owned(), json!(parsed));
+            }
             serde_json::from_value::<ProviderAuthInfo>(raw).map_err(|err| {
                 Error::auth(
                     AuthErrorKind::TransportError,
@@ -797,15 +819,46 @@ mod tests {
         let providers = parse_providers(&frame(json!({
             "type": "auth_providers_response",
             "payload": { "providers": [
-                { "id": "anthropic", "name": "Anthropic", "auth_status": "login_required" },
-                { "id": "openai-codex", "name": "OpenAI Codex", "auth_status": "authenticated" },
+                { "id": "anthropic", "name": "Anthropic", "auth_kinds": ["api_key", "oauth"], "auth_status": "login_required" },
+                { "id": "openai-codex", "name": "OpenAI Codex", "auth_kinds": ["oauth"], "auth_status": "authenticated" },
             ]}
         })))
         .expect("parses");
         assert_eq!(providers.len(), 2);
         assert_eq!(providers[0].auth_status, AuthStatus::LoginRequired);
         assert_eq!(providers[1].auth_status, AuthStatus::Authenticated);
+        assert_eq!(
+            providers[0].auth_kinds,
+            vec![AuthKind::ApiKey, AuthKind::OAuth]
+        );
+        assert_eq!(providers[1].auth_kinds, vec![AuthKind::OAuth]);
         assert_eq!(providers[0].last_error, None);
+    }
+
+    #[test]
+    fn an_unrecognised_kind_is_dropped_rather_than_failing_the_listing() {
+        let providers = parse_providers(&frame(json!({
+            "type": "auth_providers_response",
+            "payload": { "providers": [
+                { "id": "a", "name": "A", "auth_kinds": ["passkey", "api_key"], "auth_status": "login_required" },
+                { "id": "b", "name": "B", "auth_kinds": ["passkey"], "auth_status": "login_required" },
+            ]}
+        })))
+        .expect("parses");
+        assert_eq!(providers.len(), 2);
+        assert_eq!(providers[0].auth_kinds, vec![AuthKind::ApiKey]);
+        assert!(providers[1].auth_kinds.is_empty());
+    }
+
+    #[test]
+    fn a_runtime_that_predates_the_field_yields_no_kinds_rather_than_failing() {
+        let providers = parse_providers(&frame(json!({
+            "type": "auth_providers_response",
+            "payload": { "providers": [{ "id": "x", "name": "X", "auth_status": "login_required" }] }
+        })))
+        .expect("parses");
+        assert_eq!(providers.len(), 1);
+        assert!(providers[0].auth_kinds.is_empty());
     }
 
     #[test]

@@ -176,7 +176,7 @@ test "e2e: /help renders all command names into the transcript" {
     const expected = [_][]const u8{
         "/help",   "/model", "/provider",    "/status",
         "/resume", "/login", "/permissions", "/abort",
-        "/clear",  "/quit",
+        "/clear",  "/quit",  "/think",
     };
     for (expected) |needle| {
         if (std.mem.indexOf(u8, screen, needle) == null) {

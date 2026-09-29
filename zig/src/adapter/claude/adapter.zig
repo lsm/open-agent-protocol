@@ -563,13 +563,16 @@ pub const Session = struct {
         cast(ptr).destroy();
     }
 
-    fn tools(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ToolsListRequest, refusal: *contract.Refusal) contract.Failure!oap_types.ToolsListResponse {
+    fn tools(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ToolsListRequest, refusal: *contract.Refusal) contract.Failure!contract.ToolSet {
         const self = cast(ptr);
         if (!request.allowsDegraded(contract.feature_tools_list)) return refusal.degraded(contract.feature_tools_list);
         const reducer = &self.engine.reducer;
         if (request.session_id == null or !reducer.catalog_known) {
             const sources = try arena.dupe(oap_types.ToolSourceDescriptor, &native_sources);
-            return .{ .session_id = request.session_id, .sources = sources };
+            return .{ .revision = capability_revision, .response = .{
+                .session_id = request.session_id,
+                .sources = sources,
+            } };
         }
         const served = (reducer.listTools() catch |err| return lift(err)) orelse &.{};
         const sources = try arena.alloc(oap_types.ToolSourceDescriptor, 1 + reducer.servers.items.len);
@@ -592,7 +595,11 @@ pub const Session = struct {
                 .features = unexecuted,
             };
         }
-        return .{ .session_id = request.session_id, .sources = sources, .tools = definitions };
+        return .{ .revision = capability_revision, .response = .{
+            .session_id = request.session_id,
+            .sources = sources,
+            .tools = definitions,
+        } };
     }
 };
 
@@ -1156,23 +1163,24 @@ test "the tool catalog needs the degraded opt-in and lists the latest init once 
 
     const consented = oap_types.ToolsListRequest{ .session_id = "s1", .allow_degraded_features = &.{contract.feature_tools_list} };
     const before = try lister(probe.handle.?.ptr, probe.arena.allocator(), &consented, &refusal);
-    try testing.expectEqual(@as(usize, 0), before.tools.len);
-    try testing.expectEqual(@as(usize, 1), before.sources.len);
-    try testing.expectEqualStrings(native_source, before.sources[0].id);
+    try testing.expectEqual(@as(usize, 0), before.response.tools.len);
+    try testing.expectEqual(@as(usize, 1), before.response.sources.len);
+    try testing.expectEqualStrings(native_source, before.response.sources[0].id);
+    try testing.expectEqualStrings(capability_revision, before.revision);
 
     _ = try probe.submit("fix it", &refusal);
     var seen = std.ArrayList(contract.Event).empty;
     _ = try probe.pumpUntil("user.input.requested", &seen);
     const after = try lister(probe.handle.?.ptr, probe.arena.allocator(), &consented, &refusal);
-    try testing.expectEqual(@as(usize, 3), after.tools.len);
-    try testing.expectEqualStrings("Bash", after.tools[0].name);
-    try testing.expectEqualStrings(native_source, after.tools[0].source.?);
-    try testing.expectEqualStrings("mcp__files__read", after.tools[2].name);
-    try testing.expectEqualStrings("mcp:files", after.tools[2].source.?);
-    try testing.expectEqual(oap_types.SupportLevel.unavailable, after.tools[2].features[0].level);
-    try testing.expectEqual(@as(usize, 2), after.sources.len);
-    try testing.expectEqualStrings("mcp:files", after.sources[1].id);
-    try testing.expectEqualStrings("mcp", after.sources[1].protocol.?);
+    try testing.expectEqual(@as(usize, 3), after.response.tools.len);
+    try testing.expectEqualStrings("Bash", after.response.tools[0].name);
+    try testing.expectEqualStrings(native_source, after.response.tools[0].source.?);
+    try testing.expectEqualStrings("mcp__files__read", after.response.tools[2].name);
+    try testing.expectEqualStrings("mcp:files", after.response.tools[2].source.?);
+    try testing.expectEqual(oap_types.SupportLevel.unavailable, after.response.tools[2].features[0].level);
+    try testing.expectEqual(@as(usize, 2), after.response.sources.len);
+    try testing.expectEqualStrings("mcp:files", after.response.sources[1].id);
+    try testing.expectEqualStrings("mcp", after.response.sources[1].protocol.?);
 }
 
 test "state reports the live run, the model and native session the latest init named, and the last sequence as its cursor" {

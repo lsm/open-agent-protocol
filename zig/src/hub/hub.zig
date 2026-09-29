@@ -68,6 +68,7 @@ pub const SubscribeOptions = struct {
 pub const OpenRequest = struct {
     session_id: []const u8 = "",
     participant: []const u8 = default_participant,
+    metadata: ?std.json.Value = null,
     subscribe: bool = false,
     allow_degraded_features: []const []const u8 = &.{},
     tools_json: ?[]const u8 = null,
@@ -87,6 +88,7 @@ pub const OpenRequest = struct {
         return .{
             .session_id = self.session_id,
             .participant = self.participant,
+            .metadata = self.metadata,
             .allow_degraded_features = self.allow_degraded_features,
             .tools_json = self.tools_json,
             .tool_sources_json = self.tool_sources_json,
@@ -537,11 +539,16 @@ pub const Hub = struct {
         if (request.session_id.len > 0 and !std.mem.eql(u8, request.session_id, session_id)) return error.ScopeMismatch;
         const lister = entry.session.vtable.models orelse return error.UnsupportedFeature;
         var refusal = contract.Refusal{};
-        const served = try lister(entry.session.ptr, arena, request, &refusal);
-        if (!std.mem.eql(u8, served.session_id, session_id)) return error.CatalogMisScoped;
-        const stamped = try self.revision(entry.adapter_name);
-        if (stamped.len == 0) return error.CatalogUnlabelled;
-        return .{ .models = served, .revision = stamped };
+        const served = lister(entry.session.ptr, arena, request, &refusal) catch |err| switch (err) {
+            error.SessionClosed => {
+                self.releaseSession(entry);
+                return error.SessionClosed;
+            },
+            else => |failure| return failure,
+        };
+        if (!std.mem.eql(u8, served.response.session_id, session_id)) return error.CatalogMisScoped;
+        if (served.revision.len == 0) return error.CatalogUnlabelled;
+        return .{ .models = served.response, .revision = served.revision };
     }
 
     pub fn tools(self: *Hub, arena: std.mem.Allocator, session_id: []const u8, request: *const oap_types.ToolsListRequest) Failure!ToolSet {
@@ -551,13 +558,18 @@ pub const Hub = struct {
         }
         const lister = entry.session.vtable.tools orelse return error.ToolCatalogUnavailable;
         var refusal = contract.Refusal{};
-        const catalog = try lister(entry.session.ptr, arena, request, &refusal);
-        if (catalog.session_id) |named| {
+        const catalog = lister(entry.session.ptr, arena, request, &refusal) catch |err| switch (err) {
+            error.SessionClosed => {
+                self.releaseSession(entry);
+                return error.SessionClosed;
+            },
+            else => |failure| return failure,
+        };
+        if (catalog.response.session_id) |named| {
             if (!std.mem.eql(u8, named, session_id)) return error.CatalogMisScoped;
         }
-        const stamped = try self.revision(entry.adapter_name);
-        if (stamped.len == 0) return error.CatalogUnlabelled;
-        return .{ .tools = catalog, .revision = stamped };
+        if (catalog.revision.len == 0) return error.CatalogUnlabelled;
+        return .{ .tools = catalog.response, .revision = catalog.revision };
     }
 
     pub fn sessions(self: *Hub, arena: std.mem.Allocator) ![]Status {
@@ -2315,6 +2327,47 @@ test "a catalog is checked before it is served, and stamped with its revision" {
     try testing.expectError(error.ScopeMismatch, hub.tools(arena, opened.session_id, &.{ .session_id = "elsewhere" }));
 }
 
+test "an open's metadata reaches the adapter" {
+    var flaky = Flaky{ .allocator = testing.allocator };
+    flaky.keep = std.heap.ArenaAllocator.init(testing.allocator);
+    defer flaky.keep.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{});
+    defer hub.deinit();
+    try hub.register("flaky", flaky.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    try testing.expect(flaky.saw_metadata == null);
+    _ = try hub.open(arena, "flaky", .{ .session_id = "bare" });
+    try testing.expect(flaky.saw_metadata == null);
+
+    const metadata = try std.json.parseFromSlice(std.json.Value, arena, "{\"tenant\":\"acme\",\"attempt\":3}", .{});
+    _ = try hub.open(arena, "flaky", .{ .session_id = "labelled", .metadata = metadata.value });
+    const seen = flaky.saw_metadata.?;
+    try testing.expectEqualStrings("acme", seen.object.get("tenant").?.string);
+    try testing.expectEqual(@as(i64, 3), seen.object.get("attempt").?.integer);
+}
+
+test "a catalog is stamped with the revision its lister served it under" {
+    var flaky = Flaky{ .allocator = testing.allocator, .lister_revision = "lister-v9" };
+    flaky.keep = std.heap.ArenaAllocator.init(testing.allocator);
+    defer flaky.keep.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{});
+    defer hub.deinit();
+    try hub.register("flaky", flaky.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    const opened = try hub.open(arena, "flaky", .{ .session_id = "stamped" });
+    const models = try hub.models(arena, opened.session_id, &.{ .session_id = opened.session_id });
+    try testing.expectEqualStrings("lister-v9", models.revision);
+    const tools = try hub.tools(arena, opened.session_id, &.{ .session_id = opened.session_id });
+    try testing.expectEqualStrings("lister-v9", tools.revision);
+    flaky.lister_revision = "";
+    try testing.expectError(error.CatalogUnlabelled, hub.models(arena, opened.session_id, &.{ .session_id = opened.session_id }));
+    try testing.expectError(error.CatalogUnlabelled, hub.tools(arena, opened.session_id, &.{ .session_id = opened.session_id }));
+}
+
 test "the shutdown sweep cancels a live run before it releases the session" {
     var flaky = Flaky{ .allocator = testing.allocator, .active_run = "run-1" };
     flaky.keep = std.heap.ArenaAllocator.init(testing.allocator);
@@ -2487,6 +2540,8 @@ const Scripted = struct {
 
 const Flaky = struct {
     allocator: std.mem.Allocator,
+    lister_revision: []const u8 = "lister-v9",
+    saw_metadata: ?std.json.Value = null,
     keep: std.heap.ArenaAllocator = undefined,
     session: contract.Session = undefined,
     owned_id: []const u8 = "",
@@ -2509,6 +2564,24 @@ const Flaky = struct {
     }
 };
 
+fn flakyModels(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ModelsRequest, refusal: *contract.Refusal) contract.Failure!contract.Catalog {
+    const self: *Flaky = @ptrCast(@alignCast(ptr));
+    _ = refusal;
+    const models = try arena.dupe(oap_types.ModelDescriptor, &.{.{ .id = "flaky-model", .default = true }});
+    return .{ .revision = self.lister_revision, .response = .{
+        .session_id = request.session_id,
+        .current_model_id = "flaky-model",
+        .models = models,
+    } };
+}
+
+fn flakyTools(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ToolsListRequest, refusal: *contract.Refusal) contract.Failure!contract.ToolSet {
+    const self: *Flaky = @ptrCast(@alignCast(ptr));
+    _ = refusal;
+    _ = arena;
+    return .{ .revision = self.lister_revision, .response = .{ .session_id = request.session_id } };
+}
+
 fn flakyDescriptor() contract.Descriptor {
     return .{
         .endpoint = .{ .id = "flaky", .name = "Flaky", .version = "0.1", .adapter = "script" },
@@ -2527,6 +2600,7 @@ fn flakyOpen(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.OpenRe
     const self: *Flaky = @ptrCast(@alignCast(ptr));
     _ = arena;
     _ = refusal;
+    self.saw_metadata = request.metadata;
     const id = try self.keep.allocator().dupe(u8, if (request.session_id.len > 0) request.session_id else "flaky");
     self.session = .{ .ptr = self, .vtable = &.{
         .id = flakyId,
@@ -2539,6 +2613,8 @@ fn flakyOpen(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.OpenRe
         .activity = flakyActivity,
         .close = flakyClose,
         .readable = flakyReadable,
+        .models = flakyModels,
+        .tools = flakyTools,
     } };
     self.owned_id = id;
     return self.session;

@@ -119,7 +119,7 @@ fn reasoningEffort(level: ai_types.ThinkingLevel, model_id: []const u8) []const 
         .low => "low",
         .medium => "medium",
         .high => "high",
-        .xhigh => if (supportsXhighReasoning(model_id)) "xhigh" else "high",
+        .xhigh, .max => if (supportsXhighReasoning(model_id)) "xhigh" else "high",
     };
 }
 
@@ -147,7 +147,7 @@ fn thinkingEffort(level: ai_types.ThinkingLevel) []const u8 {
         .low => "low",
         .medium => "medium",
         .high => "high",
-        .xhigh => "max",
+        .xhigh, .max => "max",
     };
 }
 
@@ -161,6 +161,7 @@ fn thinkingBudget(level: ai_types.ThinkingLevel, budgets: ?ai_types.ThinkingBudg
             .medium => b.medium orelse 1024,
             .high => b.high orelse 2048,
             .xhigh => b.xhigh orelse 4096,
+            .max => b.max orelse 8192,
         };
     }
     return switch (level) {
@@ -170,6 +171,7 @@ fn thinkingBudget(level: ai_types.ThinkingLevel, budgets: ?ai_types.ThinkingBudg
         .medium => 1024,
         .high => 2048,
         .xhigh => 4096,
+        .max => 8192,
     };
 }
 
@@ -391,6 +393,21 @@ test "InProcessProviderProtocolBridge smoke test" {
     stream.result = null;
 
     try std.testing.expect(saw_start);
+}
+
+test "provider protocol bridge maps max to each provider's highest level" {
+    const claude = streamOptionsFromProtocolOptions(.{ .thinking_level = .max }, "claude-opus-4-6", null, null);
+    try std.testing.expectEqualStrings("max", claude.getThinkingEffort().?);
+    try std.testing.expectEqual(@as(?u32, 8192), claude.thinking_budget_tokens);
+
+    const budgeted = streamOptionsFromProtocolOptions(.{ .thinking_level = .max, .thinking_budgets = .{ .max = 16384 } }, "claude-opus-4-6", null, null);
+    try std.testing.expectEqual(@as(?u32, 16384), budgeted.thinking_budget_tokens);
+
+    const gpt52 = streamOptionsFromProtocolOptions(.{ .thinking_level = .max }, "gpt-5.2", null, null);
+    try std.testing.expectEqualStrings("xhigh", gpt52.getReasoningEffort().?);
+
+    const gpt51 = streamOptionsFromProtocolOptions(.{ .thinking_level = .max }, "gpt-5.1", null, null);
+    try std.testing.expectEqualStrings("high", gpt51.getReasoningEffort().?);
 }
 
 test "provider protocol bridge maps thinking level to stream options" {

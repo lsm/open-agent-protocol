@@ -19,6 +19,20 @@ const MAX_PROVIDER_ID_LEN: usize = 256;
 const MAX_MODEL_ID_LEN: usize = 256;
 const DEFAULT_CACHE_MAX_AGE_MS: u64 = 300_000;
 
+/// How a provider accepts a credential.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthKind {
+    /// A pasted API key.
+    ApiKey,
+    /// An interactive browser flow. Named per variant because `snake_case`
+    /// would spell this `o_auth`, which is not the wire's word for it.
+    #[serde(rename = "oauth")]
+    OAuth,
+    /// No credential; the provider is usable as it stands.
+    None,
+}
+
 /// Whether a provider's credentials are usable right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

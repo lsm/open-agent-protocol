@@ -3728,7 +3728,7 @@ test "multi-line /help output renders all lines into transcript view" {
     const expect = [_][]const u8{
         "/help",   "/model", "/provider",    "/status",
         "/resume", "/login", "/permissions", "/abort",
-        "/clear",  "/quit",
+        "/clear",  "/quit",  "/think",
     };
     for (expect) |needle| {
         if (std.mem.indexOf(u8, rendered, needle) == null) {

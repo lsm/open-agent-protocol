@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-from typing import Any, Dict, List, Mapping, Optional, cast
+from typing import Any, Dict, List, Mapping, Optional, Tuple, cast
 
 from ._diagnostics import TimeoutContext, build_diagnostics, format_timeout_message
 from ._ids import new_ulid
@@ -21,6 +21,7 @@ from .types import (
     AuthErrorEvent,
     AuthEvent,
     AuthFlowHandlers,
+    AuthKind,
     AuthProgressEvent,
     AuthPromptEvent,
     AuthStatus,
@@ -30,6 +31,22 @@ from .types import (
 )
 
 __all__ = ["AuthApi", "flatten_auth_event"]
+
+
+_VALID_AUTH_KINDS = frozenset({"api_key", "oauth", "none"})
+
+
+def _auth_kinds(value: object) -> Tuple[AuthKind, ...]:
+    """The row's credential kinds, or none from a runtime that predates the field.
+
+    The wire requires at least one entry, so an empty tuple means "did not say"
+    rather than "needs no credential"; the schema's minItems of one keeps those
+    apart. V1 evolution is additive-only, so a new client must not fail a whole
+    listing against an older runtime.
+    """
+    if not isinstance(value, list):
+        return ()
+    return tuple(cast(AuthKind, kind) for kind in value if isinstance(kind, str) and kind in _VALID_AUTH_KINDS)
 
 logger = logging.getLogger("oap_sdk.auth")
 
@@ -254,6 +271,7 @@ class AuthApi:
                 status = "unknown"
             result.append(ProviderAuthInfo(
                 id=str(item.get("id", "")), name=str(item.get("name", "")),
+                auth_kinds=_auth_kinds(item.get("auth_kinds")),
                 auth_status=cast(AuthStatus, status),
                 last_error=_optional_string_field(item, "last_error"),
             ))
@@ -499,6 +517,7 @@ def _parse_provider(entry: Any, index: int) -> ProviderAuthInfo:
     return ProviderAuthInfo(
         id=identifier,
         name=name,
+        auth_kinds=_auth_kinds(entry.get("auth_kinds")),
         auth_status=auth_status,
         last_error=last_error if isinstance(last_error, str) and last_error else None,
     )
