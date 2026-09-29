@@ -507,6 +507,7 @@ whether to wait or to reconnect.
 | Request body | 16 MiB | `TestRequestBudgetMatchesHTTP`; Zig: `a body over the cap is refused before it is read` |
 | Per-subscription mailbox | 64 envelopes, as the core defines it | `TestHubSubscriptionQueueOverflow` |
 | Accept poll | 50 ms, so a signal is noticed by an idle daemon | Zig: `hub_accept_poll_ms` and `the accept poll reports an idle listener as idle and a waiting one as waiting`, which drives a real listener. This is not protocol and is not in Go, whose `Serve` returns a listener a runtime polls for it |
+| Accept failure | A failure the peer caused is served past; a failure of the listener stops the daemon | Zig: `an accept a peer aborted before the call is served again, not obeyed` and `a client that resets a connection the listener had not taken yet does not stop the hub`. The rule is not cosmetic: a daemon that stops on any accept error can be stopped by any local process that opens a connection and resets it, which a port scanner or a health check does by accident and an attacker does on purpose — and stopping it sweeps every session |
 | Request headers | 16 KiB | Zig: `headers over the cap are refused rather than buffered`. Go's net/http carries its own default and names no rule, so this is a Zig choice within "a port may choose its own" |
 
 A 30 s header read and a 2 min idle timeout keep a socket from being held open

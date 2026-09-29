@@ -2514,10 +2514,17 @@ fn runHubHttp(
     var next_id: u64 = 0;
     while (!endpoint_signals.received()) {
         if (!hub_http.connectionPending(&listener, hub_accept_poll_ms)) continue;
-        var connection = compat.net.accept(&listener) catch |failure| {
-            sweepHubSessions(core, stderr);
-            try compat.stdio.writeAll(stderr, "oapx: stopped\n");
-            return failure;
+        var connection = compat.net.accept(&listener) catch |failure| switch (hub_http.classifyAccept(failure)) {
+            .serve_again => continue,
+            .back_off => {
+                compat.time.sleepMs(hub_http.accept_backoff_ms);
+                continue;
+            },
+            .stop => {
+                sweepHubSessions(core, stderr);
+                try compat.stdio.writeAll(stderr, "oapx: stopped\n");
+                return failure;
+            },
         };
         defer connection.stream.close();
         next_id += 1;

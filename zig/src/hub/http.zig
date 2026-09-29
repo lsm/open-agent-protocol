@@ -234,6 +234,28 @@ pub fn statusFor(failed: Failure) []const u8 {
     };
 }
 
+pub const AcceptOutcome = enum {
+    serve_again,
+    back_off,
+    stop,
+};
+
+pub const accept_backoff_ms: i32 = 100;
+
+pub fn classifyAccept(failure: std.Io.net.Server.AcceptError) AcceptOutcome {
+    return switch (failure) {
+        error.ConnectionAborted, error.WouldBlock => .serve_again,
+        error.ProcessFdQuotaExceeded, error.SystemFdQuotaExceeded, error.SystemResources => .back_off,
+        error.SocketNotListening,
+        error.NetworkDown,
+        error.BlockedByFirewall,
+        error.ProtocolFailure,
+        error.Unexpected,
+        error.Canceled,
+        => .stop,
+    };
+}
+
 pub const Bind = struct {
     host: []const u8,
     port: u16,
@@ -532,6 +554,51 @@ test "a header whose name merely starts with a known one is not that header" {
     try testing.expect(!request.origin);
     try testing.expect(request.content_type == null);
     try testing.expectEqual(@as(usize, 0), request.content_length);
+}
+
+test "an accept a peer aborted before the call is served again, not obeyed" {
+    try testing.expectEqual(AcceptOutcome.serve_again, classifyAccept(error.ConnectionAborted));
+    try testing.expectEqual(AcceptOutcome.serve_again, classifyAccept(error.WouldBlock));
+}
+
+test "running out of descriptors backs off rather than stopping, because a listener with no descriptors is not a dead listener" {
+    for ([_]std.Io.net.Server.AcceptError{ error.ProcessFdQuotaExceeded, error.SystemFdQuotaExceeded, error.SystemResources }) |each| {
+        try testing.expectEqual(AcceptOutcome.back_off, classifyAccept(each));
+    }
+    try testing.expect(accept_backoff_ms > 0);
+    try testing.expect(accept_backoff_ms <= 1000);
+}
+
+test "only a failure of the listener itself stops the daemon, and the set is written out so a new error has to be a decision" {
+    const fatal = [_]std.Io.net.Server.AcceptError{
+        error.SocketNotListening,
+        error.NetworkDown,
+        error.BlockedByFirewall,
+        error.ProtocolFailure,
+        error.Unexpected,
+        error.Canceled,
+    };
+    for (fatal) |each| try testing.expectEqual(AcceptOutcome.stop, classifyAccept(each));
+}
+
+test "a client that resets a connection the listener had not taken yet does not stop the hub" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const address = try compat.net.resolveAddress(testing.allocator, "127.0.0.1", 0);
+    var server = try compat.net.tcpListen(address, .{ .reuse_address = true });
+    defer compat.net.closeServer(&server);
+    for (0..8) |_| {
+        var client = try compat.net.tcpConnect(compat.net.listenAddress(&server));
+        const linger = std.posix.linger{ .onoff = 1, .linger = 0 };
+        std.posix.setsockopt(@intCast(client.inner.socket.handle), std.posix.SOL.SOCKET, std.posix.SO.LINGER, std.mem.asBytes(&linger)) catch break;
+        client.close();
+    }
+    var client = try compat.net.tcpConnect(compat.net.listenAddress(&server));
+    defer client.close();
+    try testing.expect(connectionPending(&server, 2000));
+    const connection = try compat.net.accept(&server);
+    var accepted = connection.stream;
+    accepted.close();
+    try testing.expect(compat.net.listenAddress(&server).getPort() != 0);
 }
 
 test "a bind is read as a host and a port, and a malformed one says which part it is" {
