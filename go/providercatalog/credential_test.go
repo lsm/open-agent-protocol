@@ -274,13 +274,9 @@ func TestTheSecondSourceIsTriedWhenTheFirstIsEmpty(t *testing.T) {
 			if !ok {
 				t.Fatalf("no credential found, want one from %q", c.want)
 			}
-			if credential.Source == c.want {
-				return
+			if credential.Source != c.want {
+				t.Errorf("credential = %+v, want source %q", credential, c.want)
 			}
-			if c.want == SourceEnvironment && credential.Key == "from-the-environment" {
-				return
-			}
-			t.Errorf("credential = %+v, want source %q", credential, c.want)
 		})
 	}
 }
