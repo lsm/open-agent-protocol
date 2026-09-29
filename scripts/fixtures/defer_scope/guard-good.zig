@@ -56,3 +56,12 @@ fn loop_frees_its_own_capture(found: ?[]const u8, value: *u8) void {
         consume(value);
     }
 }
+
+fn else_if_frees_its_own_capture(first: bool, found: ?u8) void {
+    if (first) {
+        noop();
+    } else if (found) |line| {
+        defer free(line);
+    }
+    _ = first;
+}

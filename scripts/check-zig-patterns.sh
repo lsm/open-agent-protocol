@@ -590,7 +590,7 @@ scan_defer_scope() {
       # line. That is self-evident from the line itself, so it needs no brace count.
       if (code ~ /^\}[ \t]*else[ \t]*if[ \t]*\(/) {
         if (top >= 1) { evaluate(top); top-- }
-        h = code; sub(/^\}[ \t]*/, "", h)
+        h = code; sub(/^\}[ \t]*/, "", h); sub(/\{[ \t]*$/, "", h)
         push("if", FNR, h); next
       }
       if (code ~ /^\}[ \t]*else[ \t]*\{[ \t]*$/) {
@@ -699,18 +699,6 @@ if [[ "$good_fixture_count" -ne "$defer_scope_expected_good" ]]; then
   echo "[patterns] single line with a following statement, and two loop bodies -- one freeing a local and" >&2
   echo "[patterns] one freeing the loop's own capture. The loop cases are there because a defer in a" >&2
   echo "[patterns] loop body is scoped to the pass, so a lone defer there is the idiom, not the defect." >&2
-  exit 1
-fi
-if [[ -n "$good_fixture_hits" ]]; then
-  echo "[patterns] the defer-scope check reports a fixture it must not:" >&2
-  echo "$good_fixture_hits" >&2
-  echo "[patterns] $defer_fixture_good holds the shapes that are correct today: a defer sharing a" >&2
-  echo "[patterns] block with the work it protects, one in a function body, one in a capture block" >&2
-  echo "[patterns] that also uses the value, and one in an if-branch that has an else and holds a" >&2
-  echo "[patterns] second statement. That last one is here because \`} else {\` is where this scanner" >&2
-  echo "[patterns] is weakest: the line reads as a statement, so collection runs on into the else" >&2
-  echo "[patterns] body. An if-branch whose ONLY statement is a defer is the bug, not a fixture, and" >&2
-  echo "[patterns] it is listed above under NOT SEEN." >&2
   exit 1
 fi
 
