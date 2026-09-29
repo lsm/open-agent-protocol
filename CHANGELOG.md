@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`check-zig-patterns.sh` fails when a `build.zig` module root carries test
+  blocks that no `addTest` compiles.** Six modules were in that state and no test
+  report could show it, because a report counts what ran and not what did not: a
+  file declared with `b.createModule` is its own Zig module, and only the root
+  source file of a test compilation runs test blocks, so importing one into
+  another module's `addTest` compiles none of them. The check pairs each declared
+  root with the root its `addTest` compiles and fails on a root with test blocks
+  and no `addTest`; a test compiled by an inline `createModule` counts, so a
+  module's tests are not demanded twice. It fails loud rather than quiet on an
+  `addTest` whose root module name it cannot resolve, so a `build.zig` that
+  outgrows the reader says so instead of passing. The floor is zero: no list and
+  no allowlist.
 - **A design note for the Go tree's native agent loop (#370).**
   [`docs/go-agent-loop.md`](docs/go-agent-loop.md) maps `zig/src/agent/`'s loop
   — turns, tool execution, permissions, cancellation, compaction — onto what

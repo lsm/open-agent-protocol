@@ -513,9 +513,10 @@ if [[ -n "$stale_multi_alloc" ]]; then
 fi
 
 build_zig="zig/build.zig"
+build_dir="$(dirname "$build_zig")/"
 
 module_test_scan() {
-  awk '
+  awk -v module_root="$build_dir" '
   function paren_delta(text,   tmp, opens, closes) {
     tmp = text; opens = gsub(/\(/, "", tmp)
     tmp = text; closes = gsub(/\)/, "", tmp)
@@ -537,7 +538,7 @@ module_test_scan() {
     return name
   }
   function has_test_block(path,   file, line) {
-    file = "zig/" path
+    file = module_root path
     while ((getline line < file) > 0) {
       if (line ~ /^[[:space:]]*test[[:space:]]*("|\{)/) { close(file); return 1 }
     }
@@ -586,7 +587,7 @@ module_test_scan() {
     }
     for (p in untested) print p
   }
-  ' zig/build.zig
+  ' "$build_zig"
 }
 
 echo "[patterns] checking every module root with test blocks has an addTest..."
@@ -603,7 +604,7 @@ fi
 module_roots_without_test_wiring="$(printf "%s\n" "$module_test_scan_result" | grep -v "^unresolved " | sort)"
 if [[ -n "$module_roots_without_test_wiring" ]]; then
   echo "[patterns] module root carries test blocks that nothing compiles:" >&2
-  printf "%s\n" "$module_roots_without_test_wiring" | sed "s|^|zig/|" >&2
+  printf "%s\n" "$module_roots_without_test_wiring" | sed "s|^|$build_dir|" >&2
   echo "[patterns] a b.createModule root is its own Zig module, and only the root source" >&2
   echo "[patterns] file of a test compilation runs test blocks, so importing one of these" >&2
   echo "[patterns] into another module's addTest compiles none of them and no failure will" >&2
