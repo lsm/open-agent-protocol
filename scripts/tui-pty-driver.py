@@ -786,6 +786,7 @@ RATIFIED_COMMANDS = (
     "/abort",
     "/clear",
     "/compact",
+    "/settings",
     "/quit",
 )
 
@@ -986,6 +987,10 @@ def scenario_commands(args):
         run.command("/resume", "no saved sessions")
         run.command("/abort", "Nothing to abort")
         run.command("/compact", "Nothing to compact yet")
+        run.command("/settings", "TUI settings")
+        if not run.seen("Automatic worktrees"):
+            raise ScenarioError("commands: /settings picker missing automatic worktrees option")
+        run.key(KEY_ESC, "Escape closes settings picker")
         run.command("/bogus", "unknown command: /bogus")
         run.command("/clear", "transcript cleared")
 

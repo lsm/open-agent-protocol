@@ -208,6 +208,36 @@ code paths; add a transcript row instead.
   `git checkout` shows up without a `git` process per render. When the row is too narrow
   for both, the branch is dropped and the path takes the full width.
 
+  The path is the directory the agent is working in, not the one the TUI started in.
+  `workspace_root` is a required, model-supplied argument on every workspace tool, and
+  the agent loop forwards the model's arguments unchanged, so the last absolute
+  `workspace_root` a tool call names is the directory that call is for. The TUI reads it
+  off `tool_execution_start`, whose `args_json` the runtime already carries. That event is
+  pushed before the permission engine evaluates the call, so the row leads the call
+  rather than following it, and it moves to the directory a refused call named even
+  though the call then never ran there — the row is where the agent is working, which is
+  what the model's next call will build on, not a receipt for what already happened. A
+  call with no `workspace_root`, or a relative one, leaves the last known value alone,
+  and the initial value is the directory the TUI started in. `/clear` and a session
+  resume return the row to the session root; resume suppresses the follow while it
+  replays the session's persisted events, so a directory from before the resume does not
+  come back with them.
+
+  A path outside the session root is shown, not hidden, and rendered bold in the warning
+  colour instead of muted — leaving the session's workspace is worth seeing. Both paths
+  are resolved with `std.fs.path.resolve` before that comparison, so a `workspace_root`
+  that climbs out with `..` is judged on where it lands rather than on how it is
+  spelled; the row still shows the path as the tool call wrote it. This is a label and
+  nothing more: it is never read by `PermissionEngine`, whose `workspace_root` is fixed
+  when the app initialises and continues to be what `isInsideWorkspace` checks against,
+  so the row cannot widen what a tool call is allowed to reach. Note the two are
+  genuinely different, since the engine's boundary test covers only `.read` and `.write`
+  and a relative path is joined against the model-supplied root — tracked in #587.
+
+  There is no directory the agent changes itself: each call names its own root, so a `cd`
+  does not persist and nothing needs reporting a resulting directory. #586 carries that
+  and the design question behind it.
+
 ## Credentials and the model catalog
 
 - Credentials stay in the macOS keychain (item label "makai credentials", service
@@ -243,14 +273,15 @@ code paths; add a transcript row instead.
   remembered: only a fetch that answers clears it, which is what the refresh the TUI
   runs after a `/login` is. A listing served from the on-disk cache is not an answer and
   does not clear it, so the models a refusal removed cannot come back for the
-  twenty-four hours the cached copy survives. A row that does not drop on refusal keeps
-  the five-minute window instead, its marker being a short-term reading of one listing
-  rather than a verdict on the subscription. The marker is keyed by row and region, not
-  by the login that earned it, so it is deliberately not derived from the credential
-  and nothing derived from a credential reaches disk. The cost of that is one bounded
-  case: replacing a stored login with a different one leaves the new key suppressed
-  until a forced refresh re-probes. Nothing is written that would let the marker tell
-  the two logins apart, so the marker is cleared by a re-probe rather than made exact.
+  twenty-four hours the cached copy survives. There is no age on a marker to lapse: only
+  a plan row records one, since only a plan row turns a 401 into a refusal rather than a
+  fallback to its cache, so a marker's age decides nothing and the code does not read it.
+  The marker is keyed by row and region, not by the login that earned it, so it is
+  deliberately not derived from the credential and nothing derived from a credential
+  reaches disk. The cost of that is one bounded case: replacing a stored login with a
+  different one leaves the new key suppressed until a forced refresh re-probes. Nothing
+  is written that would let the marker tell the two logins apart, so the marker is
+  cleared by a re-probe rather than made exact.
   Each entry takes its
   display name, context window, reasoning flag and text/image input from the response's
   `display_name`, `context_length`, `supports_reasoning` and `supports_image_in`; the
@@ -329,6 +360,15 @@ than a statement about the model — the reply says so, and with it that the pro
 refuse a request that size. A refusal is a limit on what this repository will ask for,
 not a claim about what the provider accepts: a window above what a model reports still
 fails the turn with the provider's own overflow error, and `/compact` is the way out.
+
+A window the user sets is kept in `~/.oapx/config.json` under `mode.context_window`, so
+it is still there next session, and `/context default` removes the member rather than
+writing the model's own number back — an absent member means the catalog's window, which is
+what a session that never set one uses. A value above a model's ceiling that is found in
+the file on startup is dropped for that session and reported the same way a switch reports
+it, and the file is left exactly as it was: a window this repository will not ask for is
+not a reason to edit the user's settings. A window refused at the prompt changes nothing
+either, so what is written is always a window the user chose.
 
 The ceiling follows the model, so a window the model in effect cannot take is dropped
 rather than carried: `--context-window` above the first model's ceiling is dropped before

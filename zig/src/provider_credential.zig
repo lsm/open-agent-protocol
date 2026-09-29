@@ -53,40 +53,8 @@ pub fn lookup(
     id: []const u8,
 ) std.mem.Allocator.Error!?Credential {
     const row = provider_catalog.provider(id) orelse return null;
-    const order = precedence(row);
-    for (order.sources[0..order.len]) |source| {
-        switch (source) {
-            .stored => if (try storedCredential(allocator, auth_storage, row)) |found| return found,
-            .environment => if (try environmentCredential(allocator, environment, row)) |found| return found,
-        }
-    }
-    return null;
-}
-
-const SourceOrder = enum { stored, environment };
-
-const Precedence = struct {
-    sources: [2]SourceOrder,
-    len: usize,
-};
-
-fn precedence(row: provider_catalog.Provider) Precedence {
-    if (row.credential_precedence.len == 0) {
-        return .{ .sources = .{ .environment, .stored }, .len = 2 };
-    }
-    var out: Precedence = .{ .sources = undefined, .len = 0 };
-    for (row.credential_precedence) |name| {
-        if (out.len == out.sources.len) break;
-        if (std.mem.eql(u8, name, "stored")) {
-            out.sources[out.len] = .stored;
-            out.len += 1;
-        } else if (std.mem.eql(u8, name, "environment")) {
-            out.sources[out.len] = .environment;
-            out.len += 1;
-        }
-    }
-    if (out.len == 0) return .{ .sources = .{ .environment, .stored }, .len = 2 };
-    return out;
+    if (try environmentCredential(allocator, environment, row)) |found| return found;
+    return storedCredential(allocator, auth_storage, row);
 }
 
 fn environmentCredential(
@@ -155,7 +123,7 @@ fn emptyStorage(allocator: std.mem.Allocator) AuthStorage {
 
 const testing = std.testing;
 
-test "a row that says stored first lists under the login a request will sign with" {
+test "kimi lists under the environment key even when a login is stored" {
     var store = emptyStorage(testing.allocator);
     defer store.deinit();
     try store.providers.put(try testing.allocator.dupe(u8, "kimi"), .{ .oauth = .{
@@ -168,13 +136,19 @@ test "a row that says stored first lists under the login a request will sign wit
 
     var found = (try lookup(testing.allocator, &environment, &store, "kimi")).?;
     defer found.deinit(testing.allocator);
-    try testing.expectEqual(Source.stored, found.source);
-    try testing.expectEqualStrings("sk-stored", found.key);
+    try testing.expectEqual(Source.environment, found.source);
+    try testing.expectEqualStrings("sk-env", found.key);
 
     var without_login = (try lookup(testing.allocator, &environment, null, "kimi")).?;
     defer without_login.deinit(testing.allocator);
     try testing.expectEqual(Source.environment, without_login.source);
     try testing.expectEqualStrings("sk-env", without_login.key);
+
+    const none = [_]EnvironmentValue{};
+    var stored_only = (try lookup(testing.allocator, &none, &store, "kimi")).?;
+    defer stored_only.deinit(testing.allocator);
+    try testing.expectEqual(Source.stored, stored_only.source);
+    try testing.expectEqualStrings("sk-stored", stored_only.key);
 }
 
 test "an environment variable wins over a stored key" {

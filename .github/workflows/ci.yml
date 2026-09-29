@@ -3,8 +3,8 @@ name: CI
 on:
   # Pushes run only on main, as ci-zig.yml already does. An unfiltered push gave
   # every in-repo pull request branch a second, push-event run of this workflow on
-  # the same sha as its pull_request run: the same `test`, the same `go-sdk-smoke`,
-  # the same `ts` and `compatibility`, all of them duplicated. A branch push with
+  # the same sha as its pull_request run: the same `test`, the same `go-sdk-smoke`
+  # and the same `ts`, all of them duplicated. A branch push with
   # no pull request open got the run with nothing waiting on it, which is the
   # common case while a lane is mid-stack.
   #
@@ -14,6 +14,9 @@ on:
   # checked when the pull request opens.
   push:
     branches: [main]
+  # No `edited` here: a title or body edit would re-run all of this workflow,
+  # and the only job that reads the description is the compatibility gate, which
+  # lives in compatibility.yml so that it re-runs on an edit for its own cost.
   pull_request:
 
 permissions:
@@ -76,19 +79,6 @@ jobs:
       - name: Tests leave no credential store in the checkout
         if: always()
         run: ./scripts/check-no-test-litter.sh
-
-  compatibility:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.27.x'
-          cache: true
-      - name: Incompatible changes to a public package must be recorded
-        run: go run ./go/cmd/apidiffcheck
 
   ts:
     runs-on: ubuntu-latest

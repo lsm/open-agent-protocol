@@ -9,6 +9,7 @@ const custom_providers = @import("custom_providers");
 const github_copilot = @import("oauth/github_copilot");
 const provider_catalog = @import("provider_catalog");
 const provider_credential = @import("provider_credential");
+const auth_resolver = @import("auth_resolver");
 const provider_base_url = @import("provider_base_url");
 const anthropic_messages_api = @import("anthropic_messages_api");
 const openai_completions_api = @import("openai_completions_api");
@@ -41,7 +42,6 @@ const catalog_max_output_tokens: u32 = 8_192;
 pub const catalog_fetch_timeout_ms: u64 = 20_000;
 
 const anthropic_catalog_max_age_ms: i64 = 24 * 60 * 60 * 1000;
-const refusal_marker_max_age_ms: i64 = 5 * 60 * 1000;
 const default_codex_client_version = "0.0.0";
 const default_max_output_tokens: u32 = 16_384;
 
@@ -365,7 +365,6 @@ var test_catalog_discovery: ?[]const CatalogDiscovery = null;
 var test_catalog_environment: ?[]const provider_credential.EnvironmentValue = null;
 var test_catalog_base_urls: ?provider_base_url.BaseUrlOverrides = null;
 var test_catalog_refusal_markers: bool = false;
-var test_refusal_marker_age_ms: ?i64 = null;
 
 const CatalogListing = struct {
     models: ?[]DiscoveredModel,
@@ -462,7 +461,7 @@ fn catalogEndpointWithOverrides(
     id: []const u8,
     overrides: provider_base_url.BaseUrlOverrides,
 ) !?CatalogEndpoint {
-    const region = catalogRegion(allocator, null, id);
+    const region = try catalogRegion(allocator, null, id);
     const catalog = catalogTargetInRegion(id, region) orelse return null;
     var merged = overrides;
     if (region) |resolved| merged.kimi_region = resolved;
@@ -475,13 +474,13 @@ fn catalogEndpointFromEnvironment(
     storage: ?*oauth_storage.AuthStorage,
     id: []const u8,
 ) !?CatalogEndpoint {
-    const region = catalogRegion(allocator, storage, id);
+    const region = try catalogRegion(allocator, storage, id);
     const catalog = catalogTargetInRegion(id, region) orelse return null;
     const base_url = try provider_base_url.defaultBaseUrlForRefWithRegion(allocator, id, catalog.wire, region);
     return try catalogEndpointWithBase(allocator, catalog, base_url);
 }
 
-fn catalogRegion(allocator: std.mem.Allocator, storage: ?*oauth_storage.AuthStorage, id: []const u8) ?[]const u8 {
+fn catalogRegion(allocator: std.mem.Allocator, storage: ?*oauth_storage.AuthStorage, id: []const u8) !?[]const u8 {
     const fallback = provider_catalog.defaultRegion(id);
     if (provider_catalog.regionEnv(id)) |name| {
         if (compat.getEnvVarOwned(allocator, name) catch null) |value| {
@@ -489,7 +488,9 @@ fn catalogRegion(allocator: std.mem.Allocator, storage: ?*oauth_storage.AuthStor
             if (provider_catalog.regionFromValue(id, value)) |resolved| return resolved;
         }
     }
-    if (catalogStoredRegion(id, storage)) |stored| return stored;
+    if (!try provider_catalog.credentialEnvIsSet(allocator, id)) {
+        if (catalogStoredRegion(id, storage)) |stored| return stored;
+    }
     return fallback;
 }
 
@@ -753,14 +754,6 @@ fn refusalMarkerName(allocator: std.mem.Allocator, id: []const u8, region: ?[]co
     return std.fmt.allocPrint(allocator, "{s}.refused", .{base});
 }
 
-fn refusalIsFresh(allocator: std.mem.Allocator, name: []const u8, max_age_ms: i64) bool {
-    const path = makaiCatalogPath(allocator, name) catch return false;
-    defer allocator.free(path);
-    const modified = compat.fs.modifiedMillis(compat.fs.getCwd(), path) catch return false;
-    const now = if (test_refusal_marker_age_ms) |age| modified + age else compat.time.nowMillis();
-    return catalogIsFresh(modified, now, max_age_ms);
-}
-
 fn refusalIsRemembered(allocator: std.mem.Allocator, name: []const u8) bool {
     const path = makaiCatalogPath(allocator, name) catch return false;
     defer allocator.free(path);
@@ -792,7 +785,7 @@ fn discoverCatalogModels(
     const marker = try refusalMarkerName(allocator, target.id, target.region);
     defer allocator.free(marker);
     if (honour_marker and refusalMarkersEnabled() and mode == .allow_cache and
-        refusalMarkerHolds(allocator, marker, rowDropsOnRefusal(target.id)))
+        refusalIsRemembered(allocator, marker))
     {
         return error.ModelCatalogRefused;
     }
@@ -807,11 +800,6 @@ fn discoverCatalogModels(
     if (listing.models != null and listing.fetched and honour_marker and refusalMarkersEnabled())
         forgetRefusal(allocator, marker);
     return listing.models;
-}
-
-fn refusalMarkerHolds(allocator: std.mem.Allocator, marker: []const u8, drops_on_refusal: bool) bool {
-    if (drops_on_refusal) return refusalIsRemembered(allocator, marker);
-    return refusalIsFresh(allocator, marker, refusal_marker_max_age_ms);
 }
 
 fn discoverCatalogModelsCacheThenProbe(
@@ -2241,7 +2229,7 @@ test "loadProductionModels includes the Kimi model, discovered like any other ro
 test "the Kimi row serves the China base by default and the global base when the region says so" {
     try provider_catalog.blankEnvironment(std.testing.allocator);
     defer compat.clearTestEnv();
-    const china = catalogRegion(std.testing.allocator, null, "kimi");
+    const china = try catalogRegion(std.testing.allocator, null, "kimi");
     try std.testing.expectEqualStrings("china", china.?);
     const china_target = catalogTargetInRegion("kimi", china) orelse return error.TestExpectedTarget;
     try std.testing.expectEqualStrings("https://api.kimi.com/coding", china_target.base_url);
@@ -2290,7 +2278,7 @@ test "KIMI_REGION chooses the region, and an unusable value falls back to the ro
     };
     for (cases) |case| {
         try compat.setTestEnv(std.testing.allocator, kimi_region_env, case.set);
-        const got = catalogRegion(std.testing.allocator, null, "kimi");
+        const got = try catalogRegion(std.testing.allocator, null, "kimi");
         if (!std.mem.eql(u8, case.want, got orelse "")) {
             std.debug.print("\nKIMI_REGION={s} should resolve to {s}\n", .{ case.set, case.want });
         }
@@ -2300,7 +2288,7 @@ test "KIMI_REGION chooses the region, and an unusable value falls back to the ro
 
     try compat.setTestEnv(std.testing.allocator, "KIMI_REGION", "global");
     defer compat.clearTestEnv();
-    const chosen = catalogRegion(std.testing.allocator, null, "kimi");
+    const chosen = try catalogRegion(std.testing.allocator, null, "kimi");
     try std.testing.expectEqualStrings("global", chosen.?);
     const target = catalogTargetInRegion("kimi", chosen) orelse return error.TestExpectedTarget;
     try std.testing.expectEqualStrings("https://api.moonshot.ai", target.base_url);
@@ -2468,7 +2456,7 @@ test "a remembered refusal is forgotten once the row answers again" {
     try std.testing.expect(!refusalIsRemembered(allocator, marker));
 }
 
-test "a remembered refusal still drops the row once the freshness window has passed" {
+test "a remembered refusal still drops the row when the next listing would answer" {
     const allocator = std.testing.allocator;
     try provider_catalog.blankEnvironment(allocator);
     defer compat.clearTestEnv();
@@ -2499,10 +2487,7 @@ test "a remembered refusal still drops the row once the freshness window has pas
 
     const marker = try refusalMarkerName(allocator, plan, null);
     defer allocator.free(marker);
-    try std.testing.expect(refusalIsFresh(allocator, marker, refusal_marker_max_age_ms));
-    test_refusal_marker_age_ms = refusal_marker_max_age_ms + 60_000;
-    defer test_refusal_marker_age_ms = null;
-    try std.testing.expect(!refusalIsFresh(allocator, marker, refusal_marker_max_age_ms));
+    try std.testing.expect(refusalIsRemembered(allocator, marker));
 
     const answering = [_]CatalogDiscovery{
         .{ .id = plan, .models_url = target.models_url, .model_ids = &.{"plan-model"} },
@@ -2562,13 +2547,6 @@ test "a refusal recorded for a stored key does not drop the row once an environm
     try std.testing.expectEqualStrings("plan-model", listed[0].id);
 
 }
-
-test "a refusal marker is not honoured an hour after it was recorded" {
-    const now = compat.time.nowMillis();
-    try std.testing.expect(catalogIsFresh(now - 60 * 1000, now, refusal_marker_max_age_ms));
-    try std.testing.expect(!catalogIsFresh(now - 60 * 60 * 1000, now, refusal_marker_max_age_ms));
-}
-
 
 test "a refusal taken under an environment key does not suppress a stored key" {
     const allocator = std.testing.allocator;
@@ -2696,6 +2674,110 @@ test "a key every plan answers keeps all four rows, the plans first" {
     try std.testing.expectEqualStrings("xiaomi", models[3].provider);
 }
 
+test "a Kimi listing and the requests that follow use the same credential and the same region" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+
+    const cases = [_]struct { env_key: ?[]const u8, env_region: ?[]const u8, stored: ?[]const u8, stored_region: ?[]const u8, want_key: ?[]const u8, want_region: []const u8 }{
+        .{ .env_key = null, .env_region = null, .stored = "sk-stored", .stored_region = "global", .want_key = "sk-stored", .want_region = "global" },
+        .{ .env_key = null, .env_region = null, .stored = "sk-stored", .stored_region = null, .want_key = "sk-stored", .want_region = "china" },
+        .{ .env_key = "sk-env", .env_region = null, .stored = "sk-stored", .stored_region = "global", .want_key = "sk-env", .want_region = "china" },
+        .{ .env_key = "sk-env", .env_region = "global", .stored = "sk-stored", .stored_region = "china", .want_key = "sk-env", .want_region = "global" },
+        .{ .env_key = "sk-env", .env_region = "china", .stored = "sk-stored", .stored_region = "global", .want_key = "sk-env", .want_region = "china" },
+        .{ .env_key = "sk-env", .env_region = "mars", .stored = "sk-stored", .stored_region = "global", .want_key = "sk-env", .want_region = "china" },
+        .{ .env_key = null, .env_region = null, .stored = null, .stored_region = null, .want_key = null, .want_region = "china" },
+    };
+
+    for (cases) |case| {
+        var storage = oauth_storage.AuthStorage{
+            .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(allocator),
+            .allocator = allocator,
+        };
+        defer storage.deinit();
+        if (case.stored) |key| {
+            const data = if (case.stored_region) |region|
+                try std.fmt.allocPrint(allocator, "region:{s}", .{region})
+            else
+                try allocator.dupe(u8, "no region");
+            try storage.providers.put(try allocator.dupe(u8, kimi_provider_id), .{ .oauth = .{
+                .access = try allocator.dupe(u8, key),
+                .refresh = try allocator.dupe(u8, ""),
+                .expires = std.math.maxInt(i64),
+                .provider_data = data,
+            } });
+        }
+
+        try compat.setTestEnv(allocator, kimi_env_key, case.env_key orelse "");
+        try compat.setTestEnv(allocator, kimi_region_env, case.env_region orelse "");
+
+        var environment: [2]provider_credential.EnvironmentValue = undefined;
+        var held: usize = 0;
+        for (provider_catalog.credentialEnv(kimi_provider_id)) |name| {
+            const value = compat.getEnvVarOwned(allocator, name) catch continue;
+            environment[held] = .{ .name = name, .value = value };
+            held += 1;
+        }
+        test_catalog_environment = environment[0..held];
+        defer {
+            for (environment[0..held]) |entry| allocator.free(entry.value);
+            test_catalog_environment = null;
+        }
+
+        var listed = (try provider_credential.lookup(allocator, environment[0..held], &storage, kimi_provider_id));
+        defer if (listed) |*found| found.deinit(allocator);
+        if (case.want_key) |want| {
+            try std.testing.expectEqualStrings(want, listed.?.key);
+        } else {
+            try std.testing.expect(listed == null);
+        }
+
+        if (case.want_key) |want| {
+            var sent = try auth_resolver.resolveApiKeyOfKind(allocator, &storage, kimi_provider_id, null, .any);
+            defer sent.deinit(allocator);
+            try std.testing.expectEqualStrings(want, sent.api_key);
+        } else {
+            try std.testing.expectError(
+                error.AuthRequired,
+                auth_resolver.resolveApiKeyOfKind(allocator, &storage, kimi_provider_id, null, .any),
+            );
+        }
+
+        const region = try catalogRegion(allocator, &storage, kimi_provider_id);
+        try std.testing.expectEqualStrings(case.want_region, region.?);
+
+        var listed_base = (try catalogEndpointFromEnvironment(allocator, &storage, kimi_provider_id)).?;
+        defer listed_base.deinit(allocator);
+        try std.testing.expectEqualStrings(case.want_region, listed_base.region.?);
+
+        const request_base = try provider_base_url.defaultBaseUrlForRefWithRegion(
+            allocator,
+            kimi_provider_id,
+            kimi_api_id,
+            region,
+        );
+        defer allocator.free(request_base);
+        try std.testing.expectEqualStrings(listed_base.base_url, request_base);
+
+        const stored_for_request = catalogStoredRegion(kimi_provider_id, &storage);
+        const bare_ref_base = try provider_base_url.defaultBaseUrlForRefWithRegion(
+            allocator,
+            kimi_provider_id,
+            kimi_api_id,
+            stored_for_request,
+        );
+        defer allocator.free(bare_ref_base);
+        try std.testing.expectEqualStrings(listed_base.base_url, bare_ref_base);
+
+        const want_base = if (std.mem.eql(u8, case.want_region, "global"))
+            "https://api.moonshot.ai"
+        else
+            "https://api.kimi.com/coding";
+        try std.testing.expectEqualStrings(want_base, listed_base.base_url);
+        try std.testing.expectEqualStrings(want_base, request_base);
+    }
+}
+
 test "only a 401 or a 403 says the key was refused, and an outage does not" {
     const refusals = [_]u16{ 401, 403 };
     for (refusals) |status| try std.testing.expect(isRefusalStatus(status));
@@ -2720,7 +2802,7 @@ test "the region resolution a user chose at login reaches discovery and the mode
         .provider_data = try allocator.dupe(u8, "region:global"),
     } });
 
-    const region = catalogRegion(allocator, &storage, "kimi");
+    const region = try catalogRegion(allocator, &storage, "kimi");
     try std.testing.expectEqualStrings("global", region.?);
     const target = catalogTargetInRegion("kimi", region) orelse return error.TestExpectedTarget;
     try std.testing.expectEqualStrings("https://api.moonshot.ai", target.base_url);
@@ -2749,7 +2831,7 @@ test "an environment region still wins over the one chosen at login" {
     try compat.setTestEnv(allocator, kimi_region_env, "china");
     defer compat.clearTestEnv();
 
-    const region = catalogRegion(allocator, &storage, "kimi");
+    const region = try catalogRegion(allocator, &storage, "kimi");
     try std.testing.expectEqualStrings("china", region.?);
 }
 
@@ -2971,7 +3053,7 @@ test "a row the override machinery does not know falls back to the catalog base"
 
 test "the row's base-url override moves both the base and the models url" {
     var endpoint = (try catalogEndpointWithOverrides(std.testing.allocator, "deepseek", .{
-        .deepseek = "https://proxy.example/api",
+        .row = "https://proxy.example/api",
     })).?;
     defer endpoint.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("https://proxy.example/api", endpoint.base_url);
@@ -2980,7 +3062,7 @@ test "the row's base-url override moves both the base and the models url" {
 
 test "a versioned base-url override loses the trailing version the wire would re-add" {
     var endpoint = (try catalogEndpointWithOverrides(std.testing.allocator, "deepseek", .{
-        .deepseek = "https://proxy.example/api/v1/",
+        .row = "https://proxy.example/api/v1/",
     })).?;
     defer endpoint.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("https://proxy.example/api", endpoint.base_url);
@@ -2990,7 +3072,7 @@ test "a versioned base-url override loses the trailing version the wire would re
 test "the global base-url override outranks the row's own" {
     var endpoint = (try catalogEndpointWithOverrides(std.testing.allocator, "deepseek", .{
         .global = "https://everywhere.example",
-        .deepseek = "https://proxy.example/api",
+        .row = "https://proxy.example/api",
     })).?;
     defer endpoint.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("https://everywhere.example", endpoint.base_url);
@@ -3004,7 +3086,7 @@ test "a discovered model carries the overridden base rather than the catalog's" 
     test_catalog_environment = &[_]provider_credential.EnvironmentValue{
         .{ .name = "DEEPSEEK_API_KEY", .value = "row-key" },
     };
-    test_catalog_base_urls = .{ .deepseek = "https://proxy.example/api" };
+    test_catalog_base_urls = .{ .row = "https://proxy.example/api" };
     defer {
         test_catalog_discovery = null;
         test_catalog_environment = null;
@@ -3026,7 +3108,7 @@ test "a row's discovery is read from its overridden models url, not the catalog'
     test_catalog_environment = &[_]provider_credential.EnvironmentValue{
         .{ .name = "DEEPSEEK_API_KEY", .value = "row-key" },
     };
-    test_catalog_base_urls = .{ .deepseek = "https://proxy.example/api" };
+    test_catalog_base_urls = .{ .row = "https://proxy.example/api" };
     defer {
         test_catalog_discovery = null;
         test_catalog_environment = null;
@@ -3891,7 +3973,7 @@ fn overriddenCatalogLoadProbe(allocator: std.mem.Allocator) !void {
     test_catalog_environment = &[_]provider_credential.EnvironmentValue{
         .{ .name = "DEEPSEEK_API_KEY", .value = "row-key" },
     };
-    test_catalog_base_urls = .{ .deepseek = "https://proxy.example/api" };
+    test_catalog_base_urls = .{ .row = "https://proxy.example/api" };
     defer {
         test_catalog_discovery = null;
         test_catalog_environment = null;

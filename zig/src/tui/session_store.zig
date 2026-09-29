@@ -316,6 +316,30 @@ pub const Store = struct {
         return result;
     }
 
+    pub fn deleteSession(self: Store, session_id: []const u8) !void {
+        try validateSessionId(session_id);
+        const path = try sessionPath(self.allocator, self.base_dir, session_id);
+        defer self.allocator.free(path);
+        compat.fs.getCwd().deleteFile(defaultIo(), path) catch |err| switch (err) {
+            error.FileNotFound => {},
+            else => return err,
+        };
+        inline for (.{ stream_suffix, index_suffix }) |suffix| {
+            const auxiliary_path = try sessionFilePath(self.allocator, self.base_dir, session_id, suffix);
+            defer self.allocator.free(auxiliary_path);
+            compat.fs.getCwd().deleteFile(defaultIo(), auxiliary_path) catch |err| switch (err) {
+                error.FileNotFound => {},
+                else => return err,
+            };
+        }
+        const dir_path = try std.fs.path.join(self.allocator, &.{ self.base_dir, session_id });
+        defer self.allocator.free(dir_path);
+        if (compat.fs.getCwd().openDir(defaultIo(), dir_path, .{})) |dir| {
+            dir.close(defaultIo());
+            try compat.fs.getCwd().deleteTree(defaultIo(), dir_path);
+        } else |_| {}
+    }
+
     fn loadMetadata(self: Store, session_id: []const u8) !SessionMetadata {
         const path = try sessionPath(self.allocator, self.base_dir, session_id);
         defer self.allocator.free(path);
@@ -2261,6 +2285,44 @@ test "load replays a completed compaction as its summary turn and acknowledgemen
     try std.testing.expectEqual(tui_session.TuiEvent.CompactionOutcome.completed, replayed.outcome);
     try std.testing.expectEqualStrings("/s/compacted/compaction-1.jsonl", replayed.transcript.slice());
     try std.testing.expectEqual(@as(u64, 2), replayed.messages_before);
+}
+
+test "deleteSession removes the JSONL and sidecar directory" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try tmpBase(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+    var store = try Store.init(std.testing.allocator, base);
+    defer store.deinit();
+    var meta = try testMeta("delete-me");
+    defer meta.deinit(std.testing.allocator);
+    try saveText(store, meta, .user, "question");
+    var chunk = tui_session.TuiEvent{ .message_end = .{ .role = .user, .text = try owned(std.testing.allocator, "stream") } };
+    defer chunk.deinit(std.testing.allocator);
+    try store.saveChunk("delete-me", chunk);
+    try store.saveIndex(meta);
+    const stream_path = try sessionFilePath(std.testing.allocator, base, "delete-me", stream_suffix);
+    defer std.testing.allocator.free(stream_path);
+    const index_path = try sessionFilePath(std.testing.allocator, base, "delete-me", index_suffix);
+    defer std.testing.allocator.free(index_path);
+    const sidecar_dir = try std.fs.path.join(std.testing.allocator, &.{ base, "delete-me" });
+    defer std.testing.allocator.free(sidecar_dir);
+    try compat.fs.createDir(compat.fs.getCwd(), sidecar_dir);
+    const marker = try std.fs.path.join(std.testing.allocator, &.{ sidecar_dir, "worktree.json" });
+    defer std.testing.allocator.free(marker);
+    try compat.fs.writeFile(compat.fs.getCwd(), marker, "{}");
+
+    try store.deleteSession("delete-me");
+    const listed = try store.list();
+    defer {
+        for (listed.items) |*entry| entry.deinit(std.testing.allocator);
+        var mutable = listed;
+        mutable.deinit(std.testing.allocator);
+    }
+    try std.testing.expectEqual(@as(usize, 0), listed.items.len);
+    try std.testing.expectError(error.FileNotFound, compat.fs.readFileAlloc(std.testing.allocator, compat.fs.getCwd(), marker, 1024));
+    try std.testing.expectError(error.FileNotFound, compat.fs.readFileAlloc(std.testing.allocator, compat.fs.getCwd(), stream_path, 1024));
+    try std.testing.expectError(error.FileNotFound, compat.fs.readFileAlloc(std.testing.allocator, compat.fs.getCwd(), index_path, 1024));
 }
 
 test "saveTranscript writes one message per line beside the session files without adding a session" {

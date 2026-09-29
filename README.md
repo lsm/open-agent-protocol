@@ -292,9 +292,11 @@ model gate already enforces.
 ### Local daemon (`goap hub`)
 
 `goap hub` is this repository's own command and is **not installed**: run it
-with `go run`. The same verb is `oapx hub` on the released binary, which today
-carries the stdio transport and answers `unavailable` for `--addr` and
-`--config`, naming which. [Decision 0038](decisions/0038-one-released-binary-and-a-library-for-every-language.md)
+with `go run`. The same verb is `oapx hub` on the released binary. It carries
+the stdio transport and the registry config (`--config`), and its HTTP daemon
+(`--addr`) binds, holds the trust model below, and answers every route with a
+plain `404` until the routes themselves land — so what the two share is the
+registry, the refusals and the shutdown, not the route table. [Decision 0038](decisions/0038-one-released-binary-and-a-library-for-every-language.md)
 is why there is one released binary, and a library for every language.
 
 `goap hub` exposes the adapter registry over HTTP + Server-Sent Events so any

@@ -117,7 +117,36 @@ fn writeModelEntry(w: *json_writer.JsonWriter, entry: types.ModelEntry) !void {
     try w.writeStringField("source", @tagName(entry.source));
     if (entry.reasoning_default) |value| try w.writeStringField("reasoning_default", @tagName(value));
     try w.writeStringField("auth_status", @tagName(entry.auth_status));
+    if (entry.cost) |cost| try writeModelCost(w, cost);
+    try writeModalityList(w, "input_modalities", entry.input_modalities);
+    try writeModalityList(w, "output_modalities", entry.output_modalities);
+    if (entry.reasoning_levels.len != 0) {
+        try w.writeKey("reasoning_levels");
+        try w.beginArray();
+        for (entry.reasoning_levels) |level| try w.writeString(@tagName(level));
+        try w.endArray();
+    }
+    if (entry.release_date) |value| try w.writeStringField("release_date", value);
+    if (entry.family) |value| try w.writeStringField("family", value);
     try w.endObject();
+}
+
+fn writeModelCost(w: *json_writer.JsonWriter, cost: types.ModelCost) !void {
+    try w.writeKey("cost");
+    try w.beginObject();
+    if (cost.input) |value| try w.writeFloatField("input", value);
+    if (cost.output) |value| try w.writeFloatField("output", value);
+    if (cost.cache_read) |value| try w.writeFloatField("cache_read", value);
+    if (cost.cache_write) |value| try w.writeFloatField("cache_write", value);
+    try w.endObject();
+}
+
+fn writeModalityList(w: *json_writer.JsonWriter, key: []const u8, modalities: []const types.Modality) !void {
+    if (modalities.len == 0) return;
+    try w.writeKey(key);
+    try w.beginArray();
+    for (modalities) |modality| try w.writeString(@tagName(modality));
+    try w.endArray();
 }
 
 fn writeProtocolError(w: *json_writer.JsonWriter, err: types.ProtocolError) !void {
@@ -204,6 +233,13 @@ fn serializePayload(w: *json_writer.JsonWriter, payload: types.Payload) !void {
             try w.beginArray();
             for (value.models) |entry| try writeModelEntry(w, entry);
             try w.endArray();
+            if (value.catalog) |state| {
+                try w.writeKey("catalog");
+                try w.beginObject();
+                if (state.observed_at_ms) |at_ms| try w.writeIntField("observed_at_ms", at_ms);
+                try w.writeBoolField("complete", state.complete);
+                try w.endObject();
+            }
             try w.endObject();
         },
         .provider_credential_grant_request => |value| {
@@ -680,7 +716,7 @@ fn allowedPayloadMembers(tag: std.meta.Tag(types.Payload)) []const []const u8 {
         .provider_describe_request => &.{},
         .provider_describe_response => &.{ "profile_revision", "protocol_versions", "providers" },
         .provider_models_list_request => &.{"provider_id"},
-        .provider_models_list_response => &.{"models"},
+        .provider_models_list_response => &.{ "catalog", "models" },
         .provider_credential_grant_request => &.{ "nonce", "provider_id", "ttl_ms", "value" },
         .provider_credential_grant_response => &.{ "accepted", "credential_ref", "error", "expires_at_ms" },
         .provider_credential_grant_channel => &.{ "channel", "nonce" },
@@ -1184,6 +1220,18 @@ fn deserializeModelsListResponse(obj: std.json.ObjectMap, allocator: std.mem.All
         const source = try oap_envelope.optionalEnum(types.ModelSource, entry_obj, "source") orelse .discovered;
         const reasoning_default = try oap_envelope.optionalEnum(types.ReasoningLevel, entry_obj, "reasoning_default");
         const auth_status = try oap_envelope.optionalEnum(types.AuthStatus, entry_obj, "auth_status") orelse .unknown;
+        const cost = try deserializeModelCost(entry_obj.get("cost"));
+        const input_modalities = try decodePublishedEnumList(types.Modality, entry_obj, "input_modalities", allocator);
+        errdefer allocator.free(input_modalities);
+        const output_modalities = try decodePublishedEnumList(types.Modality, entry_obj, "output_modalities", allocator);
+        errdefer allocator.free(output_modalities);
+        const owned_reasoning_levels = try decodePublishedEnumList(types.ReasoningLevel, entry_obj, "reasoning_levels", allocator);
+        errdefer allocator.free(owned_reasoning_levels);
+
+        const release_date = try oap_envelope.optionalOwnedString(entry_obj, "release_date", allocator);
+        errdefer if (release_date) |value| allocator.free(value);
+        const family = try oap_envelope.optionalOwnedString(entry_obj, "family", allocator);
+        errdefer if (family) |value| allocator.free(value);
         const owned_capabilities = try capabilities.toOwnedSlice(allocator);
         errdefer allocator.free(owned_capabilities);
 
@@ -1200,12 +1248,71 @@ fn deserializeModelsListResponse(obj: std.json.ObjectMap, allocator: std.mem.All
             .source = source,
             .reasoning_default = reasoning_default,
             .auth_status = auth_status,
+            .cost = cost,
+            .input_modalities = input_modalities,
+            .output_modalities = output_modalities,
+            .reasoning_levels = owned_reasoning_levels,
+            .release_date = release_date,
+            .family = family,
         });
     }
 
+    const catalog = try deserializeModelCatalogState(obj.get("catalog"));
+    const owned_models = try models.toOwnedSlice(allocator);
     return types.Payload{ .provider_models_list_response = .{
-        .models = try models.toOwnedSlice(allocator),
+        .models = owned_models,
+        .catalog = catalog,
     } };
+}
+
+fn decodePublishedEnumList(
+    comptime T: type,
+    obj: std.json.ObjectMap,
+    key: []const u8,
+    allocator: std.mem.Allocator,
+) ![]const T {
+    if (obj.get(key)) |value| {
+        if (value != .array or value.array.items.len == 0) return DecodeError.InvalidField;
+    }
+    return oap_envelope.decodeEnumList(T, obj, key, allocator);
+}
+
+fn deserializeModelCost(value: ?std.json.Value) !?types.ModelCost {
+    const held = value orelse return null;
+    if (held != .object) return DecodeError.InvalidField;
+    try rejectUnknownMembers(held.object, &.{ "cache_read", "cache_write", "input", "output" });
+    const cost: types.ModelCost = .{
+        .input = try optionalNumber(held.object, "input"),
+        .output = try optionalNumber(held.object, "output"),
+        .cache_read = try optionalNumber(held.object, "cache_read"),
+        .cache_write = try optionalNumber(held.object, "cache_write"),
+    };
+    return cost;
+}
+
+fn optionalNumber(container: std.json.ObjectMap, name: []const u8) !?f64 {
+    const value = container.get(name) orelse return null;
+    return switch (value) {
+        .integer => |held| @floatFromInt(held),
+        .float => |held| held,
+        else => DecodeError.InvalidField,
+    };
+}
+
+fn deserializeModelCatalogState(value: ?std.json.Value) !?types.ModelCatalogState {
+    const held = value orelse return null;
+    if (held != .object) return DecodeError.InvalidField;
+    try rejectUnknownMembers(held.object, &.{ "complete", "observed_at_ms" });
+    const complete_value = held.object.get("complete") orelse return DecodeError.MissingField;
+    if (complete_value != .bool) return DecodeError.InvalidField;
+    var observed_at_ms: ?i64 = null;
+    if (held.object.get("observed_at_ms")) |at_ms| {
+        observed_at_ms = switch (at_ms) {
+            .integer => |held_ms| held_ms,
+            else => return DecodeError.InvalidField,
+        };
+    }
+    return types.ModelCatalogState{ .observed_at_ms = observed_at_ms, .complete = complete_value.bool };
 }
 
 fn expectRoundTrip(allocator: std.mem.Allocator, env: types.Envelope) !types.Envelope {
@@ -1647,7 +1754,11 @@ const MODELS_LIST_RESPONSE_LINE =
     "\"model_ref\":\"gw/other:ollama-chat@llama3\",\"model_id\":\"llama3\",\"display_name\":\"Llama 3\"," ++
     "\"provider_id\":\"gw\",\"wire\":\"other\",\"context_window\":128000,\"max_output_tokens\":8192," ++
     "\"capabilities\":[\"chat\",\"streaming\"],\"lifecycle\":\"stable\",\"source\":\"discovered\"," ++
-    "\"reasoning_default\":\"medium\",\"auth_status\":\"authenticated\"}]}}";
+    "\"reasoning_default\":\"medium\",\"auth_status\":\"authenticated\",\"cost\":{\"input\":3,\"output\":15}," ++
+    "\"input_modalities\":[\"text\",\"image\"],\"output_modalities\":[\"text\"]," ++
+    "\"reasoning_levels\":[\"off\",\"medium\",\"high\"],\"release_date\":\"2025-09-29\"," ++
+    "\"family\":\"llama\"}]," ++
+    "\"catalog\":{\"observed_at_ms\":1759100000000,\"complete\":false}}}";
 
 test "a describe response decode leaks nothing when an allocation fails" {
     try expectNoLeakUnderAllocationFailure(DESCRIBE_RESPONSE_LINE);
@@ -1655,6 +1766,166 @@ test "a describe response decode leaks nothing when an allocation fails" {
 
 test "a models list decode leaks nothing when an allocation fails" {
     try expectNoLeakUnderAllocationFailure(MODELS_LIST_RESPONSE_LINE);
+}
+
+fn modelsListLine(allocator: std.mem.Allocator, payload: []const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator, "{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"{s}\",\"type\":\"provider.models.list.response\",\"id\":\"m\",\"payload\":{s}}}", .{ types.PROFILE, payload });
+}
+
+fn expectModelsListRoundTrip(allocator: std.mem.Allocator, line: []const u8) !types.Envelope {
+    var first = try deserializeEnvelope(line, allocator);
+    defer first.deinit(allocator);
+    return try expectRoundTrip(allocator, first);
+}
+
+
+
+test "every fact a model entry publishes survives a round trip" {
+    const allocator = std.testing.allocator;
+
+    const line = try modelsListLine(
+        allocator,
+        "{\"models\":[{\"model_ref\":\"anthropic/anthropic-messages@claude-sonnet-4-5\",\"model_id\":\"claude-sonnet-4-5\"," ++
+            "\"provider_id\":\"anthropic\",\"wire\":\"anthropic-messages\",\"cost\":{\"input\":3,\"output\":15," ++
+            "\"cache_read\":0.3,\"cache_write\":3.75},\"input_modalities\":[\"text\",\"image\",\"document\"]," ++
+            "\"output_modalities\":[\"text\"],\"reasoning_levels\":[\"off\",\"medium\",\"high\"]," ++
+            "\"reasoning_default\":\"medium\",\"release_date\":\"2025-09-29\",\"family\":\"claude-sonnet\"}]," ++
+            "\"catalog\":{\"observed_at_ms\":1759100000000,\"complete\":true}}",
+    );
+    defer allocator.free(line);
+
+    var round_trip = try expectModelsListRoundTrip(allocator, line);
+    defer round_trip.deinit(allocator);
+
+    const response = round_trip.payload.provider_models_list_response;
+    try std.testing.expectEqual(@as(usize, 1), response.models.len);
+    const entry = response.models[0];
+
+    const cost = entry.cost orelse return error.CostDropped;
+    try std.testing.expectEqual(@as(?f64, 3), cost.input);
+    try std.testing.expectEqual(@as(?f64, 15), cost.output);
+    try std.testing.expectEqual(@as(?f64, 0.3), cost.cache_read);
+    try std.testing.expectEqual(@as(?f64, 3.75), cost.cache_write);
+    try std.testing.expectEqualSlices(types.Modality, &.{ .text, .image, .document }, entry.input_modalities);
+    try std.testing.expectEqualSlices(types.Modality, &.{.text}, entry.output_modalities);
+    try std.testing.expectEqualSlices(types.ReasoningLevel, &.{ .off, .medium, .high }, entry.reasoning_levels);
+    try std.testing.expectEqualStrings("2025-09-29", entry.release_date.?);
+    try std.testing.expectEqualStrings("claude-sonnet", entry.family.?);
+
+    const catalog = response.catalog orelse return error.CatalogStateDropped;
+    try std.testing.expectEqual(@as(?i64, 1759100000000), catalog.observed_at_ms);
+    try std.testing.expect(catalog.complete);
+
+    const encoded = try serializeEnvelope(round_trip, allocator);
+    defer allocator.free(encoded);
+    try std.testing.expect(std.mem.indexOf(u8, encoded, "\"cache_read\":0.3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, encoded, "\"input_modalities\":[\"text\",\"image\",\"document\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, encoded, "\"catalog\":{\"observed_at_ms\":1759100000000,\"complete\":true}") != null);
+}
+
+test "an absent fact stays absent rather than becoming a default" {
+    const allocator = std.testing.allocator;
+
+    const line = try modelsListLine(
+        allocator,
+        "{\"models\":[{\"model_ref\":\"ollama/other:ollama-chat@llama3\",\"model_id\":\"llama3\"," ++
+            "\"provider_id\":\"ollama\",\"wire\":\"other\"}]}",
+    );
+    defer allocator.free(line);
+
+    var decoded = try deserializeEnvelope(line, allocator);
+    defer decoded.deinit(allocator);
+
+    const response = decoded.payload.provider_models_list_response;
+    const entry = response.models[0];
+    try std.testing.expect(entry.cost == null);
+    try std.testing.expectEqual(@as(usize, 0), entry.input_modalities.len);
+    try std.testing.expectEqual(@as(usize, 0), entry.output_modalities.len);
+    try std.testing.expectEqual(@as(usize, 0), entry.reasoning_levels.len);
+    try std.testing.expect(entry.release_date == null);
+    try std.testing.expect(entry.family == null);
+    try std.testing.expect(response.catalog == null);
+}
+
+test "a listing may publish a partial catalog and a partial catalog is still a listing" {
+    const allocator = std.testing.allocator;
+
+    const line = try modelsListLine(
+        allocator,
+        "{\"models\":[{\"model_ref\":\"kimi/openai-chat-completions@kimi-k2\",\"model_id\":\"kimi-k2\"," ++
+            "\"provider_id\":\"kimi\",\"wire\":\"openai-chat-completions\"}]," ++
+            "\"catalog\":{\"observed_at_ms\":1756400000000,\"complete\":false}}",
+    );
+    defer allocator.free(line);
+
+    var round_trip = try expectModelsListRoundTrip(allocator, line);
+    defer round_trip.deinit(allocator);
+
+    const catalog = round_trip.payload.provider_models_list_response.catalog orelse return error.CatalogStateDropped;
+    try std.testing.expect(!catalog.complete);
+    try std.testing.expectEqual(@as(?i64, 1756400000000), catalog.observed_at_ms);
+}
+
+test "a published set is never empty, so a list and an absent member stay different" {
+    const allocator = std.testing.allocator;
+
+    const empty = try modelsListLine(
+        allocator,
+        "{\"models\":[{\"model_ref\":\"p/other:x@m\",\"model_id\":\"m\",\"provider_id\":\"p\",\"wire\":\"other\",\"input_modalities\":[]}]}",
+    );
+    defer allocator.free(empty);
+    try std.testing.expectError(DecodeError.InvalidField, deserializeEnvelope(empty, allocator));
+
+    const published = try modelsListLine(
+        allocator,
+        "{\"models\":[{\"model_ref\":\"p/other:x@m\",\"model_id\":\"m\",\"provider_id\":\"p\",\"wire\":\"other\",\"input_modalities\":[\"text\"]}]}",
+    );
+    defer allocator.free(published);
+
+    var decoded = try deserializeEnvelope(published, allocator);
+    defer decoded.deinit(allocator);
+    const entry = decoded.payload.provider_models_list_response.models[0];
+    try std.testing.expectEqualSlices(types.Modality, &.{.text}, entry.input_modalities);
+
+    const encoded = try serializeEnvelope(decoded, allocator);
+    defer allocator.free(encoded);
+    try std.testing.expect(std.mem.indexOf(u8, encoded, "\"input_modalities\":[\"text\"]") != null);
+}
+
+test "a cost, a modality, a level and a listing are each refused outside what they declare" {
+    const allocator = std.testing.allocator;
+
+    const payloads = [_][]const u8{
+        "{\"models\":[{\"model_ref\":\"p/other:x@m\",\"model_id\":\"m\",\"provider_id\":\"p\",\"wire\":\"other\",\"cost\":{\"context_over_200k\":6}}]}",
+        "{\"models\":[{\"model_ref\":\"p/other:x@m\",\"model_id\":\"m\",\"provider_id\":\"p\",\"wire\":\"other\",\"cost\":{\"input\":\"free\"}}]}",
+        "{\"models\":[{\"model_ref\":\"p/other:x@m\",\"model_id\":\"m\",\"provider_id\":\"p\",\"wire\":\"other\",\"input_modalities\":[\"text\",\"braille\"]}]}",
+        "{\"models\":[{\"model_ref\":\"p/other:x@m\",\"model_id\":\"m\",\"provider_id\":\"p\",\"wire\":\"other\",\"reasoning_levels\":[\"off\",\"extreme\"]}]}",
+        "{\"models\":[{\"model_ref\":\"p/other:x@m\",\"model_id\":\"m\",\"provider_id\":\"p\",\"wire\":\"other\",\"input_modalities\":[]}]}",
+        "{\"models\":[{\"model_ref\":\"p/other:x@m\",\"model_id\":\"m\",\"provider_id\":\"p\",\"wire\":\"other\",\"output_modalities\":[]}]}",
+        "{\"models\":[{\"model_ref\":\"p/other:x@m\",\"model_id\":\"m\",\"provider_id\":\"p\",\"wire\":\"other\",\"reasoning_levels\":[]}]}",
+        "{\"models\":[{\"model_ref\":\"p/other:x@m\",\"model_id\":\"m\",\"provider_id\":\"p\",\"wire\":\"other\"}],\"catalog\":{\"observed_at_ms\":1759100000000}}",
+        "{\"models\":[],\"catalog\":{\"complete\":true,\"source_url\":\"https://example.invalid/v1/models\"}}",
+        "{\"models\":[{\"model_ref\":\"p/other:x@m\",\"model_id\":\"m\",\"display_name\":\"\",\"provider_id\":\"p\",\"wire\":\"other\"}]}",
+        "{\"models\":[{\"model_ref\":\"p/other:x@m\",\"model_id\":\"m\",\"provider_id\":\"p\",\"wire\":\"other\",\"release_date\":\"\"}]}",
+        "{\"models\":[{\"model_ref\":\"p/other:x@m\",\"model_id\":\"m\",\"provider_id\":\"p\",\"wire\":\"other\",\"family\":\"\"}]}",
+    };
+
+    for (payloads) |payload| {
+        const line = try modelsListLine(allocator, payload);
+        defer allocator.free(line);
+        const decoded = deserializeEnvelope(line, allocator);
+        if (decoded) |env| {
+            var owned = env;
+            owned.deinit(allocator);
+            std.debug.print("\naccepted a frame the profile forbids: {s}\n", .{line});
+            return error.MalformedFrameAccepted;
+        } else |err| {
+            if (err != DecodeError.InvalidField and err != DecodeError.MissingField and err != DecodeError.UnknownField) {
+                std.debug.print("\n{s}\n  expected a field refusal, found {s}\n", .{ line, @errorName(err) });
+                return error.WrongRefusal;
+            }
+        }
+    }
 }
 
 test "a field of the wrong json type is refused rather than reached into" {

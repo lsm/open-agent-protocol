@@ -41,7 +41,8 @@ pub fn render(allocator: std.mem.Allocator, state: *const tui_state.AppState, op
             try writer.writeAll(styled);
         }
     }
-    const footer = try tui_theme.keyHint().render(allocator, tui_theme.key.up_down ++ " move · " ++ tui_theme.key.enter ++ " resume · esc close");
+    const footer_text = if (state.confirm_session_delete) "Delete this session? y/enter confirm · n/esc cancel" else tui_theme.key.up_down ++ " move · " ++ tui_theme.key.enter ++ " resume · d delete · esc close";
+    const footer = try tui_theme.keyHint().render(allocator, footer_text);
     defer allocator.free(footer);
     try writer.writeByte('\n');
     try writer.writeAll(footer);
