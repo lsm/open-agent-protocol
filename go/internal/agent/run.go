@@ -51,9 +51,9 @@ func Start(ctx context.Context, config Config, prompts []provider.Message) *Run 
 		done:   make(chan struct{}),
 	}
 	go func() {
-		defer cancel()
-		defer close(run.events)
 		defer close(run.done)
+		defer close(run.events)
+		defer cancel()
 		run.loop(prompts)
 	}()
 	return run

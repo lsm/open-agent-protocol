@@ -436,8 +436,11 @@ func TestAFinishedRunReleasesItsOwnContext(t *testing.T) {
 		script := &scripted{turns: []scriptedTurn{textTurn("done")}}
 		run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("hi"))
 		run.Wait()
+		for i := 0; i < 50 && run.ctx.Err() == nil; i++ {
+			time.Sleep(2 * time.Millisecond)
+		}
 		if run.ctx.Err() == nil {
-			t.Fatalf("a run that finished left its context live, so a parent starting many runs keeps one context per run: %v", run.ctx.Err())
+			t.Fatalf("a run that finished left its context live, so a parent starting many runs keeps one context per run")
 		}
 	}
 }
