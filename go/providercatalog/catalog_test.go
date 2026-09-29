@@ -77,24 +77,28 @@ func TestLoadReadsTheContextWindowCeilingAndOnlyTheRowsThatStateOneDo(t *testing
 		t.Errorf("anthropic states a ceiling of %d, want none", got)
 	}
 	for _, provider := range catalog.Providers {
-		if provider.ContextWindow == 0 {
-			continue
+		switch provider.ID {
+		case "openai", "openai-codex":
+			if provider.MaxContextWindow == 0 {
+				t.Errorf("%s records no ceiling, want the one the owner's statement gives it", provider.ID)
+			}
+		default:
+			if provider.MaxContextWindow != 0 {
+				t.Errorf("%s states a ceiling of %d, and only the OpenAI rows record one", provider.ID, provider.MaxContextWindow)
+			}
 		}
-		if provider.MaxContextWindow == 0 {
+		if provider.ContextWindow == 0 || provider.MaxContextWindow == 0 {
 			continue
 		}
 		if provider.ContextWindow > provider.MaxContextWindow {
 			t.Errorf("%s records a window of %d above its own ceiling of %d", provider.ID, provider.ContextWindow, provider.MaxContextWindow)
 		}
 		for _, model := range provider.Models {
-			if model.ContextWindow == 0 {
-				continue
-			}
 			limit := model.MaxContextWindow
 			if limit == 0 {
 				limit = provider.MaxContextWindow
 			}
-			if limit == 0 {
+			if model.ContextWindow == 0 || limit == 0 {
 				continue
 			}
 			if model.ContextWindow > limit {

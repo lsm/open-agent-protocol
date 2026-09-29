@@ -629,6 +629,14 @@ test "a models listing is an absolute path appended to a base that does not end 
 }
 
 test "a row records the largest context window its models can be given, and only the rows that state one do" {
+    const with_ceiling = [_][]const u8{ "openai", "openai-codex" };
+    for (all) |row| {
+        var expected = false;
+        for (with_ceiling) |id| {
+            if (std.mem.eql(u8, row.id, id)) expected = true;
+        }
+        try std.testing.expectEqual(expected, rowMaxContextWindow(row.id) != null);
+    }
     try std.testing.expectEqual(@as(?u32, 1_000_000), rowMaxContextWindow("openai"));
     try std.testing.expectEqual(@as(?u32, 1_000_000), rowMaxContextWindow("openai-codex"));
     try std.testing.expectEqual(@as(?u32, 1_000_000), modelMaxContextWindow("openai", "gpt-5-codex"));
