@@ -88,25 +88,23 @@ merged *since the last real tag*, so **none of those 37 is in the list it will
 build**; checked, zero of the 37 appear in the 142 pull requests a
 `0.1.0-alpha.5` release actually collects. The re-collection is not a recovery
 path for this content. What survives is the work itself, on `main` and in the
-history, and the notes in the commit that removed them.
-
-That search returns three commits, because the string was added, merged and
-removed; the **newest** is the one that removed it, and its parent has the
-sections intact:
+history — and the notes verbatim, in the last real tag:
 
 ```sh
-removed=$(git log --format=%H -S'## [0.2.0] - 2026-09-11' -- CHANGELOG.md | head -1)
-git show "$removed"^:CHANGELOG.md
+git show v0.1.0-alpha.4:CHANGELOG.md
 ```
 
-Read the *newest* on purpose. `-S` reports commits where the string's **count**
-changed, so the two commits that *added* it come back too: `9f351fe1` (the
-`v0.2.0` prep) and `4a523bf3` (the makai merge). Neither is the removal, and
-neither of their parents has an `[0.2.0]` section at all — so picking one of them
-looks right and yields a file with nothing in it.
+That tag predates the deletion, so the `[0.2.0]` and `[0.1.0]` sections are
+still in its copy of the file — byte-identical to the text this section removed,
+verified by diffing the two. It is a good pointer to leave behind because it
+cannot rot: a tag is not rewritten by a squash, and reading a file *at* a tag
+needs no history walk, so it works in a shallow clone and in any future state of
+this branch. A `git log -S` search for the heading would be the obvious
+alternative and is the wrong tool here — the string's count changed in three
+commits, not one, and which of them a given clone can see depends on its depth.
 
-If those notes are ever wanted back, that is where they are — a deliberate
-revert of one commit, not a regeneration.
+If those notes are ever wanted back into the file, that is where they are — a
+deliberate revert of one commit, not a regeneration.
 
 `package.json` and `package-lock.json` are `0.1.0-alpha.5` so the declared
 version and the next tag agree. That value is not cosmetic:
