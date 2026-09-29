@@ -110,31 +110,34 @@ Hub.Subscribe: signature changed
 	}
 }
 
-func TestOnlyTheUnreleasedSectionCounts(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "CHANGELOG.md")
-	changelog := "## Unreleased\n\n### Fixed\n\n- nothing here\n\n## [0.2.0] - 2026-09-23\n\n### Fixed\n\n- `go/providercatalog` changed its signature\n"
-	if err := os.WriteFile(path, []byte(changelog), 0o644); err != nil {
-		t.Fatal(err)
+func TestOnlyTheBreakingChangesSectionCounts(t *testing.T) {
+	description := "## What changed and why\n\nProse that names `go/providercatalog` in passing.\n\n## Breaking changes\n\n- `schema` lost a field\n\n## Notes for reviewers\n\n- `go/serve` is fine\n"
+	section := recordedChanges(description)
+	if strings.Contains(section, "in passing") {
+		t.Fatalf("the section reached above its own heading: %q", section)
 	}
-	section, err := unreleasedSection(path)
-	if err != nil {
-		t.Fatal(err)
+	if strings.Contains(section, "is fine") {
+		t.Fatalf("the section reached into the next one: %q", section)
 	}
-	if strings.Contains(section, "changed its signature") {
-		t.Fatalf("the Unreleased section reached into a released one: %q", section)
+	if !strings.Contains(section, "lost a field") {
+		t.Fatalf("breaking changes = %q", section)
 	}
-	if !strings.Contains(section, "nothing here") {
-		t.Fatalf("unreleased section = %q", section)
+	if strings.Contains(section, "go/serve") {
+		t.Fatalf("a package named only in a later section is not recorded: %q", section)
 	}
 }
 
-func TestAChangelogWithNoUnreleasedSectionIsAnError(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "CHANGELOG.md")
-	if err := os.WriteFile(path, []byte("## [0.2.0] - 2026-09-23\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := unreleasedSection(path); err == nil {
-		t.Fatal("a changelog with no Unreleased section was accepted")
+func TestADescriptionWithNoBreakingChangesSectionRecordsNothing(t *testing.T) {
+	for _, description := range []string{
+		"",
+		"## What changed and why\n\n- `go/providercatalog` in a bullet list\n",
+		"## Notes for reviewers\n\n## breaking changes\n\n- `go/providercatalog` is named in a lower-case heading\n",
+		"### Breaking changes\n\n- `go/providercatalog` is named in a level-three heading\n",
+		"##BREAKING CHANGES\n\n- `go/providercatalog` is named in an upper-case heading\n",
+	} {
+		if section := recordedChanges(description); strings.Contains(section, "go/providercatalog") {
+			t.Fatalf("recorded %q from a description with no Breaking changes heading", section)
+		}
 	}
 }
 
@@ -149,5 +152,34 @@ func TestTheModuleNameComesFromGoMod(t *testing.T) {
 	}
 	if got != "example.com/thing" {
 		t.Fatalf("module path %q", got)
+	}
+}
+
+func TestADescriptionFileIsReadAsTheRecord(t *testing.T) {
+	report := `# github.com/lsm/open-agent-protocol/go/providercatalog
+## incompatible changes
+ModelsURL: removed
+`
+	path := filepath.Join(t.TempDir(), "body.md")
+	if err := os.WriteFile(path, []byte("## Breaking changes\n\n- `go/providercatalog` now answers Models().\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := unrecorded(report, module, recordedChanges(string(data))); len(got) != 0 {
+		t.Fatalf("unrecorded %v, want none: the description's Breaking changes section names the package", got)
+	}
+	empty := filepath.Join(t.TempDir(), "empty.md")
+	if err := os.WriteFile(empty, []byte("## What changed and why\n\n- `go/providercatalog` in prose only\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	data, err = os.ReadFile(empty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := unrecorded(report, module, recordedChanges(string(data))); len(got) != 1 {
+		t.Fatalf("unrecorded %v, want go/providercatalog: a name in prose is not a record", got)
 	}
 }

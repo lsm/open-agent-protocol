@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path"
-	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -29,21 +28,29 @@ func run(args []string, stdout io.Writer) error {
 	flags := flag.NewFlagSet("apidiffcheck", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	base := flags.String("base", "", "the release tag to compare against (default: the newest v* tag)")
-	changelog := flags.String("changelog", "CHANGELOG.md", "the changelog an incompatible change must be recorded in")
+	description := flags.String("description", "", "a file holding the pull request description, whose Breaking changes section records an incompatible change (default: PR_BODY, which the workflow sets from the event payload)")
 	root := flags.String("root", ".", "the module root")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if !filepath.IsAbs(*changelog) {
-		*changelog = filepath.Join(*root, *changelog)
+	if *description == "" {
+		*description = os.Getenv("PR_BODY")
 	}
-	if err := check(*root, *base, *changelog, stdout); err != nil {
+	var recorded string
+	if *description != "" {
+		data, err := os.ReadFile(*description)
+		if err != nil {
+			return fmt.Errorf("reading the pull request description: %w", err)
+		}
+		recorded = string(data)
+	}
+	if err := check(*root, *base, recorded, stdout); err != nil {
 		return err
 	}
 	return nil
 }
 
-func check(root, base, changelogPath string, stdout io.Writer) error {
+func check(root, base, description string, stdout io.Writer) error {
 	module, err := modulePath(root)
 	if err != nil {
 		return err
@@ -57,13 +64,9 @@ func check(root, base, changelogPath string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	unreleased, err := unreleasedSection(changelogPath)
-	if err != nil {
-		return err
-	}
-	missing := unrecorded(report, module, unreleased)
+	missing := unrecorded(report, module, recordedChanges(description))
 	if len(missing) > 0 {
-		return fmt.Errorf("these packages changed incompatibly against %s without the Unreleased section naming them in backticks: %s. Record each one, or say why the break is intended. A package that is gone counts: removing a public package is the most incompatible change there is", base, strings.Join(missing, ", "))
+		return fmt.Errorf("these packages changed incompatibly against %s without the pull request's Breaking changes section naming them in backticks: %s. Add a '## Breaking changes' section to the pull request description naming each one, or say why the break is intended. A package that is gone counts: removing a public package is the most incompatible change there is", base, strings.Join(missing, ", "))
 	}
 	fmt.Fprintf(stdout, "PASS compatibility: no unrecorded incompatible change against %s\n", base)
 	return nil
@@ -146,20 +149,19 @@ func unrecorded(report, module, unreleased string) []string {
 	return missing
 }
 
-func unreleasedSection(changelogPath string) (string, error) {
-	data, err := os.ReadFile(changelogPath)
-	if err != nil {
-		return "", err
+var breakingHeading = regexp.MustCompile(`(?m)^##[ \t]+Breaking changes[ \t]*$`)
+
+func recordedChanges(description string) string {
+	if description == "" {
+		return ""
 	}
-	text := string(data)
-	const heading = "## Unreleased"
-	start := strings.Index(text, heading)
-	if start < 0 {
-		return "", fmt.Errorf("%s has no Unreleased section", changelogPath)
+	match := breakingHeading.FindStringIndex(description)
+	if match == nil {
+		return ""
 	}
-	rest := text[start+len(heading):]
-	if end := strings.Index(rest, "\n## "); end >= 0 {
-		rest = rest[:end]
+	rest := description[match[1]:]
+	if end := regexp.MustCompile(`(?m)^##\s`).FindStringIndex(rest); end != nil {
+		rest = rest[:end[0]]
 	}
-	return rest, nil
+	return rest
 }

@@ -78,6 +78,11 @@ jobs:
         run: ./scripts/check-no-test-litter.sh
 
   compatibility:
+    # pull_request only: the record an incompatible change has to appear in is
+    # the pull request description, and a push to main carries no description.
+    # On a push the change has already been reviewed and recorded, so there is
+    # nothing for this job to check that the pull request run did not.
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -87,8 +92,15 @@ jobs:
         with:
           go-version: '1.27.x'
           cache: true
+      - name: Write the pull request description where the checker reads it
+        env:
+          # The description is the record now that a PR does not edit
+          # CHANGELOG.md, so the gate reads the body's Breaking changes section
+          # instead of that file's Unreleased section.
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body.md"
       - name: Incompatible changes to a public package must be recorded
-        run: go run ./go/cmd/apidiffcheck
+        run: go run ./go/cmd/apidiffcheck -description "$RUNNER_TEMP/pr-body.md"
 
   ts:
     runs-on: ubuntu-latest
