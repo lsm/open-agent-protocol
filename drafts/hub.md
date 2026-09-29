@@ -1139,9 +1139,10 @@ stamped with the revision its *lister* served it under, which is what makes the
 draft's "refuse one that disagrees with the descriptor" check possible at all.
 
 **D5 is fixed** ([#516](https://github.com/lsm/open-agent-protocol/pull/516)): a session
-open's `metadata` reaches an adapter through the core, so a Zig hub no longer accepts a
-request member the draft specifies and then discards it. D9 is the rest of that member's
-path and is **not** a Zig-side gap.
+open's `metadata` reaches an adapter through the core, which before it **had no member to
+carry it** — so the member could not arrive rather than arriving and being dropped. The
+one surface that did accept a metadata-carrying open and discard it is the endpoint, in
+**both** trees, and that is D9.
 
 **D4, D6, D7, D8 and D9 are what is left.** Four of them are the Zig side and all of one
 kind: each names something the Zig tree cannot carry that the draft specifies — a member
@@ -1212,9 +1213,35 @@ are "stamped with the revision the lister served it under", and both name
 member and the hub forwards it, so a session open's metadata is a value an
 adapter receives rather than one the core drops. It is a `std.json.Value`, which
 is what Go hands an adapter: `base.OpenRequest.Metadata` is a `map[string]any`,
-parsed, not raw text. A host that sent metadata to a Zig hub had it silently
-discarded, which is what this names — a Zig hub accepted a request member the
-draft specifies and then did nothing with it.
+parsed, not raw text. What this names is that the core had nowhere to put it: a
+host that sent metadata to a Zig hub could not have it delivered, because the
+member the draft specifies did not exist between the wire and the adapter. The
+one surface that *did* accept such an open and drop it is the endpoint, in both
+trees, and that is D9 rather than this row.
+
+**The value's lifetime is the call's, and that is a rule rather than an accident.**
+`metadata` is a `std.json.Value`, which is a *shallow* copy: its `.object` is a
+pointer into the arena the value was parsed in, so the value is only as long as
+that arena. The repo has no deep-copy helper for one — the idiom is to re-parse —
+which makes the rule simple to state and easy to break: **an adapter may read
+`request.metadata` for the duration of the call and must not retain it**, and the
+hub forwards without retaining.
+
+Nothing dangles today, and it is worth being precise about why. The hub core hands
+the value straight through and holds nothing, and the one test double that *does*
+retain it (`Flaky.saw_metadata`) is read back inside its caller's own scratch
+arena, so the read is in lifetime. The trap is ahead, not behind: the stdio
+frontend parses each line into a scratch arena that is `defer`-deinit'd when the
+line is done, so **the `open` wire op has to decide this deliberately** — either
+re-parse for the adapter, which is the repo's idiom and costs one parse, or hold
+the line's arena for as long as the session lives. Writing that op without
+deciding is how a use-after-free gets in, and it would be invisible in every test
+that keeps the caller alive.
+
+Whether the contract should instead offer a *clone path*, so an adapter can keep a
+metadata value past the call, is a contract question rather than an `open` one, and
+a contract change belongs in [#407](https://github.com/lsm/open-agent-protocol/issues/407)
+rather than in a hub PR.
 
 The draft's `invalid_payload` for a value that is not JSON is enforced where the
 value is read, which is the wire op and not the core: the core's member is
