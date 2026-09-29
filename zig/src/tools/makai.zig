@@ -2374,6 +2374,94 @@ fn unavailable(
     return error.Unavailable;
 }
 
+const HubRegistry = struct {
+    allocator: std.mem.Allocator,
+    environ: *const std.process.Environ.Map,
+    surface: ConfigSurface,
+    claude: claude_adapter.Adapter = undefined,
+    codex: codex_adapter.Adapter = undefined,
+    pi: pi_adapter.Adapter = undefined,
+    acp: acp_adapter.Adapter = undefined,
+    deepseek: deepseek_adapter.Adapter = undefined,
+    opencode: opencode_adapter.Adapter = undefined,
+    hermes: hermes_adapter.Adapter = undefined,
+    memory: memory_adapter.Adapter = undefined,
+
+    fn build(context: *anyopaque, arena: std.mem.Allocator, entry: adapter_config.AdapterEntry) adapter_contract.Failure!adapter_contract.Adapter {
+        const self: *HubRegistry = @ptrCast(@alignCast(context));
+        if (std.mem.eql(u8, entry.kind, "claude")) {
+            self.claude = claude_adapter.Adapter.init(self.allocator, claudeBackendConfig(self.surface, arena, entry, self.environ) catch return error.Unavailable);
+            return self.claude.adapter();
+        }
+        if (std.mem.eql(u8, entry.kind, "codex")) {
+            self.codex = codex_adapter.Adapter.init(self.allocator, codexBackendConfig(self.surface, arena, entry, self.environ) catch return error.Unavailable);
+            return self.codex.adapter();
+        }
+        if (std.mem.eql(u8, entry.kind, "pi")) {
+            self.pi = pi_adapter.Adapter.init(self.allocator, piBackendConfig(self.surface, arena, entry, self.environ) catch return error.Unavailable);
+            return self.pi.adapter();
+        }
+        if (std.mem.eql(u8, entry.kind, "acp")) {
+            self.acp = acp_adapter.Adapter.init(self.allocator, acpBackendConfig(self.surface, arena, entry, self.environ) catch return error.Unavailable);
+            return self.acp.adapter();
+        }
+        if (std.mem.eql(u8, entry.kind, "deepseek")) {
+            self.deepseek = deepseek_adapter.Adapter.init(self.allocator, deepseekBackendConfig(self.surface, arena, entry, self.environ) catch return error.Unavailable);
+            return self.deepseek.adapter();
+        }
+        if (std.mem.eql(u8, entry.kind, "opencode")) {
+            self.opencode = opencode_adapter.Adapter.init(self.allocator, opencodeBackendConfig(self.surface, arena, entry) catch return error.Unavailable);
+            return self.opencode.adapter();
+        }
+        if (std.mem.eql(u8, entry.kind, "hermes")) {
+            self.hermes = hermes_adapter.Adapter.init(self.allocator, hermesBackendConfig(self.surface, arena, entry, self.environ) catch return error.Unavailable);
+            return self.hermes.adapter();
+        }
+        if (std.mem.eql(u8, entry.kind, "memory")) {
+            self.memory = memory_adapter.Adapter.init(self.allocator);
+            return self.memory.adapter();
+        }
+        return self.refuse(entry);
+    }
+
+    fn refuse(self: *HubRegistry, entry: adapter_config.AdapterEntry) adapter_contract.Failure {
+        self.surface.refuse("{s} \"{s}\" is of type \"{s}\", which oapx does not know; it serves claude, codex, pi, acp, hermes, deepseek, opencode and memory", .{ self.surface.noun, entry.name, entry.kind }) catch {};
+        return error.Unavailable;
+    }
+};
+
+fn hubConfiguredSources(
+    arena: std.mem.Allocator,
+    configured: []const adapter_config.ToolSource,
+) ![]const adapter_contract.ConfiguredSource {
+    const sources = try arena.alloc(adapter_contract.ConfiguredSource, configured.len);
+    for (configured, sources) |source, *slot| {
+        slot.* = .{
+            .id = source.id,
+            .kind = source.kind,
+            .display_name = source.display_name,
+            .protocol = source.protocol,
+            .endpoint = source.endpoint,
+            .command = source.command,
+            .args = source.args,
+            .environment = source.environment,
+        };
+    }
+    return sources;
+}
+
+fn sweepHubSessions(core: *hub.Hub, stderr: std.Io.File) void {
+    const summary = core.closeSessions();
+    if (summary.clean()) return;
+    var buffer: [192]u8 = undefined;
+    const message = std.fmt.bufPrint(&buffer, "oapx: shutdown: {d} of {d} sessions still held a run after {d} attempts; each was torn down\n", .{
+        summary.unfinished,
+        summary.sessions,
+        summary.attempts,
+    }) catch "oapx: shutdown: a session was not closed cleanly\n";
+    compat.stdio.writeAll(stderr, message) catch {};
+}
+
 fn runHub(
     allocator: std.mem.Allocator,
     args: []const []const u8,
@@ -2410,28 +2498,58 @@ fn runHub(
         try compat.stdio.writeAll(stderr, "oapx hub: --stdio takes no listen address; --addr and --stdio are mutually exclusive\n");
         return error.InvalidHubOption;
     }
-    if (config != null) return unavailable(stderr, "hub", "--config", "the hub's registry config lands with #389");
     if (!over_stdio) {
         if (addr != null) return unavailable(stderr, "hub", "--addr", "the HTTP and SSE transport lands with #388");
         return unavailable(stderr, "hub", "--stdio", "a hub with no transport has nothing to serve");
     }
 
-    var memory: memory_adapter.Adapter = undefined;
-    memory = memory_adapter.Adapter.init(allocator);
-    var core = hub.Hub.init(allocator, wallClockNanoseconds, .{});
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var environ = try compat.createEnvMap(arena);
+    const surface = withSurface(hub_config_surface, arena, stderr);
+    var file = adapter_config.File{};
+    if (config) |path| {
+        const bytes = compat.fs.readFileAlloc(arena, compat.fs.getCwd(), path, backend_config_read_limit) catch |err| {
+            try surface.refuse("cannot read --config {s}: {s}", .{ path, @errorName(err) });
+            return error.BackendRefused;
+        };
+        var diagnostic = adapter_config.Diagnostic{};
+        file = adapter_config.parse(arena, bytes, &environ, &diagnostic) catch |err| {
+            if (err != error.ConfigInvalid) return err;
+            try surface.refuse("{s}: {s}", .{ path, diagnostic.message });
+            return error.BackendRefused;
+        };
+    }
+    const tool_sources = try hubConfiguredSources(arena, file.tool_sources);
+    var registry = HubRegistry{ .allocator = allocator, .environ = &environ, .surface = surface };
+    var core = hub.Hub.init(allocator, wallClockNanoseconds, .{ .tool_sources = tool_sources });
     defer core.deinit();
-    try core.register("memory", memory.adapter());
+    if (config == null) {
+        registry.memory = memory_adapter.Adapter.init(allocator);
+        try core.register("memory", registry.memory.adapter());
+    } else {
+        try core.load(arena, file, .{ .context = &registry, .make = HubRegistry.build });
+    }
 
     var sink = StdoutSink{ .file = stdout, .io = hubIo() };
     var frontend = try hub_stdio.Frontend.init(allocator, &core, .{ .context = &sink, .write = StdoutSink.write }, .{});
     defer frontend.deinit();
 
-    try compat.stdio.writeAll(stderr, "oapx: serving adapters over stdio: memory (exit kills all sessions)\n");
+    endpoint_signals.install() catch {
+        try compat.stdio.writeAll(stderr, "oapx hub: the process cannot take a signal handler; refusing to serve a hub that cannot be stopped\n");
+        return error.BackendRefused;
+    };
+    const served = try std.mem.join(arena, ", ", try core.names(arena));
+    try compat.stdio.writeAll(stderr, "oapx: serving adapters over stdio: ");
+    try compat.stdio.writeAll(stderr, served);
+    try compat.stdio.writeAll(stderr, " (exit kills all sessions)\n");
     var input = stdin;
     hub_stdio.serve(allocator, &frontend, .{
         .read = readStdin,
         .context = &input,
         .readable = if (@import("builtin").os.tag == .windows) null else input.handle,
+        .stop = endpoint_signals.received,
     }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.StdinFailed, error.FrameLimitTooSmall => {
@@ -2445,22 +2563,23 @@ fn runHub(
             } else {
                 compat.stdio.writeAll(stderr, "oapx: framing defect, stopped serving\n") catch {};
             }
-            core.closeSessions();
+            sweepHubSessions(&core, stderr);
             return error.FramingDefect;
         },
         error.InputFailed => {
-            core.closeSessions();
+            sweepHubSessions(&core, stderr);
             try compat.stdio.writeAll(stderr, "oapx: the request stream failed, stopped serving\n");
             return error.InputFailed;
         },
         error.OutputStalled => {
-            core.closeSessions();
+            sweepHubSessions(&core, stderr);
             try compat.stdio.writeAll(stderr, "oapx: the host stopped reading, stopped serving\n");
             return error.OutputStalled;
         },
         else => return err,
     };
-    core.closeSessions();
+    if (endpoint_signals.received()) try compat.stdio.writeAll(stderr, "oapx: shutting down\n");
+    sweepHubSessions(&core, stderr);
     try compat.stdio.writeAll(stderr, "oapx: stopped\n");
 }
 
@@ -9122,21 +9241,36 @@ fn backendClock() u64 {
     return compat.time.monotonicNanos() catch 0;
 }
 
+
 fn backendIo() std.Io {
     return if (@import("builtin").is_test) std.testing.io else std.Io.Threaded.global_single_threaded.io();
 }
 
-fn writeBackendRefusal(stderr: std.Io.File, arena: std.mem.Allocator, comptime format: []const u8, args: anytype) !void {
-    const message = try std.fmt.allocPrint(arena, "oapx serve agent: " ++ format ++ "\n", args);
-    try compat.stdio.writeAll(stderr, message);
+const ConfigSurface = struct {
+    label: []const u8,
+    noun: []const u8,
+    stderr: std.Io.File = undefined,
+    arena: std.mem.Allocator = undefined,
+
+    fn refuse(self: ConfigSurface, comptime format: []const u8, args: anytype) !void {
+        const message = try std.fmt.allocPrint(self.arena, "{s}: " ++ format ++ "\n", .{self.label} ++ args);
+        try compat.stdio.writeAll(self.stderr, message);
+    }
+};
+
+const endpoint_config_surface = ConfigSurface{ .label = "oapx serve agent", .noun = "backend" };
+const hub_config_surface = ConfigSurface{ .label = "oapx hub", .noun = "adapter" };
+
+fn withSurface(base: ConfigSurface, arena: std.mem.Allocator, stderr: std.Io.File) ConfigSurface {
+    return .{ .label = base.label, .noun = base.noun, .stderr = stderr, .arena = arena };
 }
 
 fn backendEntry(
+    surface: ConfigSurface,
     arena: std.mem.Allocator,
     name: []const u8,
     config_path: ?[]const u8,
     environ: *const std.process.Environ.Map,
-    stderr: std.Io.File,
     sources: *[]const adapter_config.ToolSource,
 ) !adapter_config.AdapterEntry {
     const path = config_path orelse {
@@ -9146,37 +9280,37 @@ fn backendEntry(
         return .{ .name = name, .kind = name };
     };
     const bytes = compat.fs.readFileAlloc(arena, compat.fs.getCwd(), path, backend_config_read_limit) catch |err| {
-        try writeBackendRefusal(stderr, arena, "cannot read --config {s}: {s}", .{ path, @errorName(err) });
+        try surface.refuse("cannot read --config {s}: {s}", .{ path, @errorName(err) });
         return error.BackendRefused;
     };
     var diagnostic = adapter_config.Diagnostic{};
     const file = adapter_config.parse(arena, bytes, environ, &diagnostic) catch |err| {
         if (err != error.ConfigInvalid) return err;
-        try writeBackendRefusal(stderr, arena, "{s}: {s}", .{ path, diagnostic.message });
+        try surface.refuse("{s}: {s}", .{ path, diagnostic.message });
         return error.BackendRefused;
     };
     sources.* = file.tool_sources;
     return file.adapter(name) orelse {
-        try writeBackendRefusal(stderr, arena, "--config {s} names no adapter \"{s}\"", .{ path, name });
+        try surface.refuse("--config {s} names no adapter \"{s}\"", .{ path, name });
         return error.BackendRefused;
     };
 }
 
 fn claudeBackendConfig(
+    surface: ConfigSurface,
     arena: std.mem.Allocator,
     entry: adapter_config.AdapterEntry,
     environ: *const std.process.Environ.Map,
-    stderr: std.Io.File,
 ) !claude_adapter.Config {
     var diagnostic = adapter_config.Diagnostic{};
     const posture = adapter_config.toolPosture(arena, entry, &diagnostic) catch |err| {
         if (err != error.ConfigInvalid) return err;
-        try writeBackendRefusal(stderr, arena, "{s}", .{diagnostic.message});
+        try surface.refuse("{s}", .{diagnostic.message});
         return error.BackendRefused;
     };
     const wanted = if (entry.executable.len > 0) entry.executable else "claude";
     const executable = try adapter_config.resolveExecutable(arena, backendIo(), wanted, environ.get("PATH") orelse "") orelse {
-        try writeBackendRefusal(stderr, arena, "no executable \"{s}\" on PATH for backend \"{s}\"; name one with \"executable\" in a --config entry", .{ wanted, entry.name });
+        try surface.refuse("no executable \"{s}\" on PATH for {s} \"{s}\"; name one with \"executable\" in a --config entry", .{ wanted, surface.noun, entry.name });
         return error.BackendRefused;
     };
     return .{ .backend = .{
@@ -9193,14 +9327,14 @@ fn claudeBackendConfig(
 }
 
 fn codexBackendConfig(
+    surface: ConfigSurface,
     arena: std.mem.Allocator,
     entry: adapter_config.AdapterEntry,
     environ: *const std.process.Environ.Map,
-    stderr: std.Io.File,
 ) !codex_adapter.Config {
     const wanted = if (entry.executable.len > 0) entry.executable else "codex";
     const executable = try adapter_config.resolveExecutable(arena, backendIo(), wanted, environ.get("PATH") orelse "") orelse {
-        try writeBackendRefusal(stderr, arena, "no executable \"{s}\" on PATH for backend \"{s}\"; name one with \"executable\" in a --config entry", .{ wanted, entry.name });
+        try surface.refuse("no executable \"{s}\" on PATH for {s} \"{s}\"; name one with \"executable\" in a --config entry", .{ wanted, surface.noun, entry.name });
         return error.BackendRefused;
     };
     return .{
@@ -9215,14 +9349,14 @@ fn codexBackendConfig(
 }
 
 fn piBackendConfig(
+    surface: ConfigSurface,
     arena: std.mem.Allocator,
     entry: adapter_config.AdapterEntry,
     environ: *const std.process.Environ.Map,
-    stderr: std.Io.File,
 ) !pi_adapter.Config {
     const wanted = if (entry.executable.len > 0) entry.executable else "pi";
     const executable = try adapter_config.resolveExecutable(arena, backendIo(), wanted, environ.get("PATH") orelse "") orelse {
-        try writeBackendRefusal(stderr, arena, "no executable \"{s}\" on PATH for backend \"{s}\"; name one with \"executable\" in a --config entry", .{ wanted, entry.name });
+        try surface.refuse("no executable \"{s}\" on PATH for {s} \"{s}\"; name one with \"executable\" in a --config entry", .{ wanted, surface.noun, entry.name });
         return error.BackendRefused;
     };
     return .{
@@ -9234,22 +9368,22 @@ fn piBackendConfig(
 }
 
 fn acpBackendConfig(
+    surface: ConfigSurface,
     arena: std.mem.Allocator,
     entry: adapter_config.AdapterEntry,
     environ: *const std.process.Environ.Map,
-    stderr: std.Io.File,
 ) !acp_adapter.Config {
     if (entry.executable.len == 0) {
-        try writeBackendRefusal(stderr, arena, "backend \"{s}\" is an ACP agent and needs a --config entry naming its \"executable\"", .{entry.name});
+        try surface.refuse("{s} \"{s}\" is an ACP agent and needs a --config entry naming its \"executable\"", .{ surface.noun, entry.name });
         return error.BackendRefused;
     }
     const executable = try adapter_config.resolveExecutable(arena, backendIo(), entry.executable, environ.get("PATH") orelse "") orelse {
-        try writeBackendRefusal(stderr, arena, "no executable \"{s}\" on PATH for backend \"{s}\"", .{ entry.executable, entry.name });
+        try surface.refuse("no executable \"{s}\" on PATH for {s} \"{s}\"", .{ entry.executable, surface.noun, entry.name });
         return error.BackendRefused;
     };
     const working_directory = entry.working_directory orelse try std.process.currentPathAlloc(backendIo(), arena);
     if (!std.fs.path.isAbsolute(working_directory)) {
-        try writeBackendRefusal(stderr, arena, "backend \"{s}\" needs an absolute \"working_directory\"", .{entry.name});
+        try surface.refuse("{s} \"{s}\" needs an absolute \"working_directory\"", .{ surface.noun, entry.name });
         return error.BackendRefused;
     }
     return .{
@@ -9261,22 +9395,22 @@ fn acpBackendConfig(
 }
 
 fn hermesBackendConfig(
+    surface: ConfigSurface,
     arena: std.mem.Allocator,
     entry: adapter_config.AdapterEntry,
     environ: *const std.process.Environ.Map,
-    stderr: std.Io.File,
 ) !hermes_adapter.Config {
     if (entry.executable.len == 0) {
-        try writeBackendRefusal(stderr, arena, "backend \"{s}\" is a Hermes gateway and needs a --config entry naming its \"executable\"", .{entry.name});
+        try surface.refuse("{s} \"{s}\" is a Hermes gateway and needs a --config entry naming its \"executable\"", .{ surface.noun, entry.name });
         return error.BackendRefused;
     }
     const executable = try adapter_config.resolveExecutable(arena, backendIo(), entry.executable, environ.get("PATH") orelse "") orelse {
-        try writeBackendRefusal(stderr, arena, "no executable \"{s}\" on PATH for backend \"{s}\"", .{ entry.executable, entry.name });
+        try surface.refuse("no executable \"{s}\" on PATH for {s} \"{s}\"", .{ entry.executable, surface.noun, entry.name });
         return error.BackendRefused;
     };
     const working_directory = entry.working_directory orelse try std.process.currentPathAlloc(backendIo(), arena);
     if (!std.fs.path.isAbsolute(working_directory)) {
-        try writeBackendRefusal(stderr, arena, "backend \"{s}\" needs an absolute \"working_directory\"", .{entry.name});
+        try surface.refuse("{s} \"{s}\" needs an absolute \"working_directory\"", .{ surface.noun, entry.name });
         return error.BackendRefused;
     }
     return .{
@@ -9289,22 +9423,22 @@ fn hermesBackendConfig(
 }
 
 fn deepseekBackendConfig(
+    surface: ConfigSurface,
     arena: std.mem.Allocator,
     entry: adapter_config.AdapterEntry,
     environ: *const std.process.Environ.Map,
-    stderr: std.Io.File,
 ) !deepseek_adapter.Config {
     if (entry.executable.len == 0 or entry.provider.len == 0 or entry.model.len == 0) {
-        try writeBackendRefusal(stderr, arena, "backend \"{s}\" is a DeepSeek harness and needs a --config entry naming its \"executable\", \"provider\" and \"model\"", .{entry.name});
+        try surface.refuse("{s} \"{s}\" is a DeepSeek harness and needs a --config entry naming its \"executable\", \"provider\" and \"model\"", .{ surface.noun, entry.name });
         return error.BackendRefused;
     }
     const executable = try adapter_config.resolveExecutable(arena, backendIo(), entry.executable, environ.get("PATH") orelse "") orelse {
-        try writeBackendRefusal(stderr, arena, "no executable \"{s}\" on PATH for backend \"{s}\"", .{ entry.executable, entry.name });
+        try surface.refuse("no executable \"{s}\" on PATH for {s} \"{s}\"", .{ entry.executable, surface.noun, entry.name });
         return error.BackendRefused;
     };
     const working_directory = entry.working_directory orelse try std.process.currentPathAlloc(backendIo(), arena);
     if (!std.fs.path.isAbsolute(working_directory)) {
-        try writeBackendRefusal(stderr, arena, "backend \"{s}\" needs an absolute \"working_directory\"", .{entry.name});
+        try surface.refuse("{s} \"{s}\" needs an absolute \"working_directory\"", .{ surface.noun, entry.name });
         return error.BackendRefused;
     }
     return .{
@@ -9319,12 +9453,13 @@ fn deepseekBackendConfig(
 }
 
 fn opencodeBackendConfig(
+    surface: ConfigSurface,
     arena: std.mem.Allocator,
     entry: adapter_config.AdapterEntry,
-    stderr: std.Io.File,
 ) !opencode_adapter.Config {
+    _ = arena;
     if (entry.endpoint.len == 0) {
-        try writeBackendRefusal(stderr, arena, "backend \"{s}\" is an OpenCode server and needs a --config entry naming its \"endpoint\"", .{entry.name});
+        try surface.refuse("{s} \"{s}\" is an OpenCode server and needs a --config entry naming its \"endpoint\"", .{ surface.noun, entry.name });
         return error.BackendRefused;
     }
     return .{ .endpoint = entry.endpoint, .agent = entry.agent };
@@ -9373,7 +9508,8 @@ fn runBackendMode(
     const arena = arena_state.allocator();
     var environ = try compat.createEnvMap(arena);
     var configured_sources: []const adapter_config.ToolSource = &.{};
-    const entry = try backendEntry(arena, name, config_path, &environ, stderr, &configured_sources);
+    const surface = withSurface(endpoint_config_surface, arena, stderr);
+    const entry = try backendEntry(surface, arena, name, config_path, &environ, &configured_sources);
     const tool_sources = try arena.alloc(adapter_contract.ConfiguredSource, configured_sources.len);
     for (configured_sources, tool_sources) |source, *slot| {
         slot.* = .{ .id = source.id, .kind = source.kind, .display_name = source.display_name, .protocol = source.protocol, .endpoint = source.endpoint, .command = source.command, .args = source.args, .environment = source.environment };
@@ -9388,31 +9524,31 @@ fn runBackendMode(
     var hermes: hermes_adapter.Adapter = undefined;
     var memory: memory_adapter.Adapter = undefined;
     const served = if (std.mem.eql(u8, entry.kind, "claude")) claude_served: {
-        claude = claude_adapter.Adapter.init(allocator, try claudeBackendConfig(arena, entry, &environ, stderr));
+        claude = claude_adapter.Adapter.init(allocator, try claudeBackendConfig(surface, arena, entry, &environ));
         break :claude_served claude.adapter();
     } else if (std.mem.eql(u8, entry.kind, "codex")) codex_served: {
-        codex = codex_adapter.Adapter.init(allocator, try codexBackendConfig(arena, entry, &environ, stderr));
+        codex = codex_adapter.Adapter.init(allocator, try codexBackendConfig(surface, arena, entry, &environ));
         break :codex_served codex.adapter();
     } else if (std.mem.eql(u8, entry.kind, "pi")) pi_served: {
-        pi = pi_adapter.Adapter.init(allocator, try piBackendConfig(arena, entry, &environ, stderr));
+        pi = pi_adapter.Adapter.init(allocator, try piBackendConfig(surface, arena, entry, &environ));
         break :pi_served pi.adapter();
     } else if (std.mem.eql(u8, entry.kind, "acp")) acp_served: {
-        acp = acp_adapter.Adapter.init(allocator, try acpBackendConfig(arena, entry, &environ, stderr));
+        acp = acp_adapter.Adapter.init(allocator, try acpBackendConfig(surface, arena, entry, &environ));
         break :acp_served acp.adapter();
     } else if (std.mem.eql(u8, entry.kind, "deepseek")) deepseek_served: {
-        deepseek = deepseek_adapter.Adapter.init(allocator, try deepseekBackendConfig(arena, entry, &environ, stderr));
+        deepseek = deepseek_adapter.Adapter.init(allocator, try deepseekBackendConfig(surface, arena, entry, &environ));
         break :deepseek_served deepseek.adapter();
     } else if (std.mem.eql(u8, entry.kind, "opencode")) opencode_served: {
-        opencode = opencode_adapter.Adapter.init(allocator, try opencodeBackendConfig(arena, entry, stderr));
+        opencode = opencode_adapter.Adapter.init(allocator, try opencodeBackendConfig(surface, arena, entry));
         break :opencode_served opencode.adapter();
     } else if (std.mem.eql(u8, entry.kind, "hermes")) hermes_served: {
-        hermes = hermes_adapter.Adapter.init(allocator, try hermesBackendConfig(arena, entry, &environ, stderr));
+        hermes = hermes_adapter.Adapter.init(allocator, try hermesBackendConfig(surface, arena, entry, &environ));
         break :hermes_served hermes.adapter();
     } else if (std.mem.eql(u8, entry.kind, "memory")) memory_served: {
         memory = memory_adapter.Adapter.init(allocator);
         break :memory_served memory.adapter();
     } else {
-        try writeBackendRefusal(stderr, arena, "backend \"{s}\" is of type \"{s}\", which oapx does not know; it serves claude, codex, pi, acp, hermes, deepseek, opencode and memory", .{ name, entry.kind });
+        try surface.refuse("{s} \"{s}\" is of type \"{s}\", which oapx does not know; it serves claude, codex, pi, acp, hermes, deepseek, opencode and memory", .{ surface.noun, name, entry.kind });
         return error.BackendRefused;
     };
 
@@ -9451,7 +9587,7 @@ fn runBackendMode(
                 try compat.stdio.writeAll(stderr, BACKEND_FRAME_TOO_LARGE_MESSAGE);
                 return error.FrameTooLarge;
             }
-            try writeBackendRefusal(stderr, arena, "stdin failed: {s}", .{failure});
+            try surface.refuse("stdin failed: {s}", .{failure});
             return error.StdinFailed;
         }
         if (endpoint.sessionCount() > 0) {
@@ -9738,6 +9874,85 @@ fn refusedBackend(allocator: std.mem.Allocator, name: []const u8, config_path: ?
     return complained;
 }
 
+test "the hub's registry builds every entry a document names, and a child inherits only the variables its entry lists" {
+    const allocator = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var complained_on = try tmp.dir.createFile(std.testing.io, "stderr", .{});
+    defer complained_on.close(std.testing.io);
+
+    var environ = std.process.Environ.Map.init(arena);
+    try environ.put("HOME", "/home/me");
+    try environ.put("AWS_SECRET_ACCESS_KEY", "secret");
+    const document =
+        "{\"adapters\":{" ++
+        "\"claude\":{\"type\":\"claude\",\"executable\":\"/bin/echo\",\"allowed_tools\":[\"Read\"],\"environment\":[\"LITERAL=kept\",\"HOME\",\"UNSET_NAME\"]}," ++
+        "\"memory\":{\"type\":\"memory\"}" ++
+        "}}";
+    var diagnostic = adapter_config.Diagnostic{};
+    const file = try adapter_config.parse(arena, document, &environ, &diagnostic);
+    try std.testing.expectEqual(@as(usize, 2), file.adapters.len);
+    try std.testing.expectEqualStrings("claude", file.adapters[0].name);
+    try std.testing.expectEqualStrings("memory", file.adapters[1].name);
+
+    var registry = HubRegistry{ .allocator = allocator, .environ = &environ, .surface = withSurface(hub_config_surface, arena, complained_on) };
+    const claude = try HubRegistry.build(&registry, arena, file.adapter("claude").?);
+    const inherited = registry.claude.config.backend.environment;
+    try std.testing.expectEqual(@as(usize, 2), inherited.len);
+    try std.testing.expectEqualStrings("LITERAL=kept", inherited[0]);
+    try std.testing.expectEqualStrings("HOME=/home/me", inherited[1]);
+    var refusal = adapter_contract.Refusal{};
+    const claude_descriptor = try claude.probe(&refusal);
+    try std.testing.expect(claude_descriptor.capability_revision.len > 0);
+
+    const memory = try HubRegistry.build(&registry, arena, file.adapter("memory").?);
+    const memory_descriptor = try memory.probe(&refusal);
+    try std.testing.expectEqualStrings("reference.memory", memory_descriptor.endpoint.id);
+}
+
+test "the hub's registry refuses an entry of a type it does not know, naming the entry and the type" {
+    const allocator = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var complained_on = try tmp.dir.createFile(std.testing.io, "stderr", .{});
+
+    var environ = std.process.Environ.Map.init(arena);
+    var diagnostic = adapter_config.Diagnostic{};
+    const file = try adapter_config.parse(arena, "{\"adapters\":{\"ghost\":{\"type\":\"ghost\"}}}", &environ, &diagnostic);
+    var registry = HubRegistry{ .allocator = allocator, .environ = &environ, .surface = withSurface(hub_config_surface, arena, complained_on) };
+    try std.testing.expectError(error.Unavailable, HubRegistry.build(&registry, arena, file.adapter("ghost").?));
+    complained_on.close(std.testing.io);
+    const complained = try tmp.dir.readFileAlloc(std.testing.io, "stderr", allocator, .limited(4096));
+    defer allocator.free(complained);
+    try std.testing.expectEqualStrings("oapx hub: adapter \"ghost\" is of type \"ghost\", which oapx does not know; it serves claude, codex, pi, acp, hermes, deepseek, opencode and memory\n", complained);
+}
+
+test "the hub's registry reports a known adapter's own requirement once, not as an unknown type" {
+    const allocator = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var complained_on = try tmp.dir.createFile(std.testing.io, "stderr", .{});
+
+    var environ = std.process.Environ.Map.init(arena);
+    var diagnostic = adapter_config.Diagnostic{};
+    const file = try adapter_config.parse(arena, "{\"adapters\":{\"a\":{\"type\":\"opencode\"}}}", &environ, &diagnostic);
+    var registry = HubRegistry{ .allocator = allocator, .environ = &environ, .surface = withSurface(hub_config_surface, arena, complained_on) };
+    try std.testing.expectError(error.Unavailable, HubRegistry.build(&registry, arena, file.adapter("a").?));
+    complained_on.close(std.testing.io);
+    const complained = try tmp.dir.readFileAlloc(std.testing.io, "stderr", allocator, .limited(4096));
+    defer allocator.free(complained);
+    try std.testing.expectEqualStrings("oapx hub: adapter \"a\" is an OpenCode server and needs a --config entry naming its \"endpoint\"\n", complained);
+}
+
 test "validate refuses a flag goap carries, and never reads its value as a path" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
@@ -9789,11 +10004,11 @@ test "unavailable names the surface it was called for" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var complained_on = try tmp.dir.createFile(std.testing.io, "stderr", .{});
-    try std.testing.expectError(error.Unavailable, unavailable(complained_on, "hub", "--config", "the hub's registry config lands with #389"));
+    try std.testing.expectError(error.Unavailable, unavailable(complained_on, "hub", "--addr", "the HTTP and SSE transport lands with #388"));
     complained_on.close(std.testing.io);
     const complained = try tmp.dir.readFileAlloc(std.testing.io, "stderr", allocator, .limited(4096));
     defer allocator.free(complained);
-    try std.testing.expectEqualStrings("oapx hub: --config: unavailable: the hub's registry config lands with #389\n", complained);
+    try std.testing.expectEqualStrings("oapx hub: --addr: unavailable: the HTTP and SSE transport lands with #388\n", complained);
 }
 
 test "a backend oapx does not know, or a --config entry it cannot serve, is refused on stderr before any request is read" {

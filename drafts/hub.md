@@ -67,7 +67,7 @@ security posture, and a port carries all of them or is not conformant.
 | **No authentication** | There is no credential, token or session cookie on either transport. Over stdio, spawning the process *is* the authorization. | structural: no auth code path exists on either transport, which is how the rule is kept — a test asserting an absence would only say the tree had not grown one yet |
 | **`Host` allowlisted on a loopback bind** | When the bind address names `localhost`, `127.0.0.1` or `::1`, only requests whose `Host` header names one of those three are served; anything else is refused `403`. Comparison is case-insensitive and the port is stripped. A non-loopback bind has no allowlist. | `TestHostAllowlist`, `TestLoopbackHosts` |
 | **`Origin` refused on every route** | A request carrying any `Origin` header is refused `403 cross_origin_request`. The check wraps the whole mux rather than living in the routes that read a body, so it covers `close` and every route not yet written. | `TestEveryRouteRefusesABrowserOrigin`, `TestReadRequestRefusesBrowserOrigins`, `TestTheOriginBoundaryHoldsWithoutAHostAllowlist` |
-| **`environment` is an allowlist** | A child process inherits nothing ambient. An adapter entry's `environment` names the variables forwarded: a bare `NAME` forwards the daemon's own value (an unset name is omitted), `NAME=value` passes through literally. A tool source's `environment` takes the same form with one stricter rule — a bare `NAME` the daemon does not carry fails at startup, naming the source and the variable, because that entry is the credential list of one executable the daemon itself launches. | `TestResolveEnvironment`, `TestLoadRegistryToolSourceNeedsEveryNameItLists`, `TestCallerEnvironmentNeverNamesAVariableTwice` |
+| **`environment` is an allowlist** | A child process inherits nothing ambient. An adapter entry's `environment` names the variables forwarded: a bare `NAME` forwards the daemon's own value (an unset name is omitted), `NAME=value` passes through literally. A tool source's `environment` takes the same form with one stricter rule — a bare `NAME` the daemon does not carry fails at startup, naming the source and the variable, because that entry is the credential list of one executable the daemon itself launches. | `TestResolveEnvironment`, `TestLoadRegistryToolSourceNeedsEveryNameItLists`, `TestCallerEnvironmentNeverNamesAVariableTwice`. Zig: the transport builds the child's environment from the list alone rather than from its own, pinned by `the child sees exactly the environment it was given and nothing ambient`, and the hub's registry hands each adapter exactly what the document resolved, pinned by `the hub's registry builds every entry a document names, and a child inherits only the variables its entry lists` |
 | **A restart ends every live session** | Run children are per-session and no adapter survives the process, so a restart ends every harness process. Under [Decision 0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md) a session outlives its process and close releases it, so no entry accumulates; reopening one is staged as T7, and until it lands a client that reconnects to a restarted hub finds no session. | The restart: `TestServeSessionsClosedOnShutdown`. The release: none yet — `TestHubSessionCloseSemantics` and `TestSessionsListingAcrossLifecycle` still pin the kept entry, which D2 records. |
 | **A binding record holds no credential** | `--bindings <path>` appends one record per open: the session id, the adapter and its pin, the home, the working directory the adapter entry was configured with (omitted when the hub does not know one — never the daemon's own), the model, and the tool source ids. It never records the request's environment, a credential, or a resolved environment value — a record of what was asked must not become a copy of what was secret — and the file is created `0o600`. History is appended rather than replaced, and a torn tail is truncated on the next write or the next open, keeping the longest prefix of records that decode, so one crash cannot leave the log permanently unreadable | `TestAnOpenIsRecordedAsABindingAndNothingSensitiveIs` (opens a session and asserts the written bytes carry neither), `TestTheStoreFileIsNotWorldReadable` (the mode), `TestATornTailIsTruncatedSoTheStoreKeepsWorking`, `TestATornTailIsTruncatedWhenTheStoreIsOpenedAgain`, `TestACorruptLineThatKeepsItsNewlineIsTruncatedToo` and `TestACorruptLineIsTruncatedWhenTheStoreIsOpenedAgain` (the repair), `TestACloseAndADuplicateOpenCannotInterleaveTheirRecords` (a close never lands between an open and its registration), and `TestARolledBackOpenIsRecordedAsOpenedAndThenClosed` and `TestARefusedDuplicateOpenIsRecordedAsARefusalAndNothingElse` and `TestTheRecordsDirectoryIsTheAdaptersOwnAndIsOmittedWhenUnknown` (what a record claims) |
 | **No payload or environment logging** | The hub, its codecs and its clients never log envelope payloads or resolved environment values. | `TestDaemonOutputNeverCarriesEnvironmentValues` (environment values, through the listing and a load failure); no test pins the payload half |
@@ -80,6 +80,12 @@ differs from the documented spelling only by case is refused, a duplicated
 member is refused, and the refusal names the first unknown member in sorted
 order so it does not depend on map iteration. Trailing data after the object is
 refused.
+
+`oapx hub` reads the same document through the same decoder, so the two trees
+judge one document the same way. Without `--config` the hub serves the built-in
+memory reference adapter alone; with it, every entry is constructed at startup
+and an entry whose own requirements are not met is refused before the hub
+serves anything, named by its entry name.
 
 ```
 { "adapters": { "<name>": { ... } }, "tool_sources": { "<id>": { ... } } }
@@ -964,18 +970,32 @@ session whose run is still active is cancelled before it is closed, up to three
 attempts, because a harness that refuses `Close` while a run is in flight must
 first be asked to stop.
 
+**One rule here is where the trees differ in kind, not in answer.** Go's
+`CloseSessions` can only wait: it holds a context, so a session it is waiting on
+gives the budget back. The Zig sweep is not waiting on anything — a Zig
+`Session.close` is synchronous — so its bound is a deadline checked per session
+rather than a cancellation, and the wait it does do between two attempts is the
+adapter's own `pump`, capped at the share that session was given. A sweep that
+has used its window stops and says so, and a session that refused every attempt
+is **torn down** rather than left open: a refusal is a live run the cancel did
+not settle, and a child that outlived three cancels inside a bounded window is
+reaped rather than orphaned. That last step is a consequence of freeing one's
+own memory, where Go exits the process and the operating system reclaims it.
+
 | rule | pinned by |
 | --- | --- |
-| Every session is attempted, not just the first | `TestCloseSessionsAttemptsEverySession` |
-| The budget is split per session | `TestCloseSessionsSplitsBudgetPerSession` |
-| The total sweep is bounded | `TestCloseSessionsBoundsTotalSweep` |
-| Active runs are settled before a close | `TestCloseSessionsSettlesActiveRuns` |
-| A close that refuses because a run is active is retried through a cancel | `TestCloseRetriesThroughAsyncCancel` |
-| A close stops at its context deadline | `TestCloseStopsAtContextDeadline` |
+| Every session is attempted, not just the first | `TestCloseSessionsAttemptsEverySession`; Zig: `closeSessions settles every session` |
+| The budget is split per session | `TestCloseSessionsSplitsBudgetPerSession`; Zig: `one wedged session is given a share of the window, and the session beside it is still closed` |
+| The total sweep is bounded | `TestCloseSessionsBoundsTotalSweep`; Zig: `the sweep waits no longer than the window it was given` |
+| Active runs are settled before a close | `TestCloseSessionsSettlesActiveRuns`; Zig: `the shutdown sweep cancels a live run before it releases the session` |
+| A close that refuses because a run is active is retried through a cancel | `TestCloseRetriesThroughAsyncCancel`; Zig: `a close that refuses while a run is live is retried through a cancel until it lands` |
+| A close that never stops refusing is given the attempts, and the session is torn down and reported | Zig: `a close that never stops refusing is given the attempts the draft names, and the session is torn down rather than left behind` — no Go test, because Go's answer is that its entry is left and the process exits |
+| A close stops at its context deadline | `TestCloseStopsAtContextDeadline`; Zig: the same per-session deadline, `the sweep waits no longer than the window it was given` |
 | The reservations a snapshot names are cancelled | `TestCloseCancelsReservationsTheSnapshotNames` |
 | Every run a snapshot lists is cancelled | `TestCloseCancelsEveryRunTheSnapshotLists` |
 | A run named only as the active run is still cancelled | `TestCloseFallsBackToTheNamedActiveRun` |
 | The window is 10 s for the hub, 5 s per stdio stage | every shutdown test drives a short custom window (`TestShutdownBoundedWhileWorkerStuck`, `TestTeardownStopsWhenAWriteParksForever`); **gap G8** — only the defaults are unpinned |
+| SIGINT and SIGTERM end every session inside that window and exit zero | Go: `runHub` returns nil on either. Zig: `oapx hub` installs both handlers before it serves, and the serve loop ends on either, so the sweep runs on the signal path exactly as it runs on a hangup |
 
 ## Known gaps
 
@@ -1144,16 +1164,18 @@ carry it** — so the member could not arrive rather than arriving and being dro
 one surface that did accept a metadata-carrying open and discard it is the endpoint, in
 **both** trees, and that is D9.
 
-**D4, D6, D7, D8 and D9 are what is left.** Four of them are the Zig side and all of one
+**D4, D7, D8 and D9 are what is left.** Three of them are the Zig side and all of one
 kind: each names something the Zig tree cannot carry that the draft specifies — a member
 that does not exist, or a signal with nowhere to report it. None of them changes a byte
 on the wire today, and each is a small contract change rather than a re-decision, so they
-are queued rather than fixed here: D6, D7, D8 and D9 in
+are queued rather than fixed here: D7, D8 and D9 in
 [#407](https://github.com/lsm/open-agent-protocol/issues/407). D7 is the per-run exposure
 a stream failure needs; D8 is that `request_cancelled` has no signal to come from; D9 is
 a gap **both** trees share, which is why fixing it on one side would be the wrong move.
 D4 is different in one respect: its negative-capacity half is a Go change, queued in
-[#406](https://github.com/lsm/open-agent-protocol/issues/406).
+[#406](https://github.com/lsm/open-agent-protocol/issues/406). **D6 is fixed**, and the
+one place the two trees' shutdowns still differ in kind rather than in answer is written
+down in [Shutdown](#shutdown).
 
 ### D3 — a served catalog's revision comes from the lister
 
@@ -1251,13 +1273,43 @@ recorded rather than left implied, because "the core does not validate it" and
 
 ### D6 — the Zig shutdown sweep cannot retry a close that refuses
 
+**Fixed.** `contract.Session.close` reports whether a run is still live — it
+answers `error.RunActive` and does not destroy — and the sweep cancels the runs
+it can see and tries again, up to `close_attempts`, waiting between attempts on
+the adapter's own `pump` capped at that session's share of the window.
+`Hub.closeSessions` returns what it managed, so a caller can say what it did
+not.
+
+Two things the fix had to add that the recorded version did not name, and both
+are stated in [Shutdown](#shutdown) rather than only here:
+
+- **A refusal must be escapable.** A Zig adapter's refusal destroys nothing, so
+  the sweep's last resort tears the session down whether it closed or not. Go
+  can leave the entry and exit, because the process exit reclaims everything; a
+  Zig caller has to free it itself, and leaving an adapter session alive is
+  exactly the orphaned child the rule exists to prevent.
+- **Only one adapter refuses today.** The contract can now report a live run and
+  the sweep can act on it, and the memory adapter does — its `close` refuses
+  while `active` or `reserved` holds a live run, which is Go's rule. The seven
+  process-backed adapters still close unconditionally: each one's `close` is a
+  `destroy` that reaps the child, and a cancel followed by a close is the same
+  outcome, so a refusal there would only spend the bound. A harness that grows a
+  graceful close can refuse from here without a contract change.
+
 | | |
 | --- | --- |
 | **The draft says** | `closeSessions` divides its window across the sessions it still has to close, and a close that refuses because a run is active is retried through a cancel — up to three attempts — because a harness that refuses `Close` while a run is in flight must first be asked to stop. |
-| **Zig does** | The sweep reads each session's state, cancels every run in `active_runs` and the `active_run_id` that is not already among them, then closes. It does not retry, and it does not split the window. |
-| **Why the retry is not portable** | Go's `closeForShutdown` retries because `Session.Close` can answer `ErrRunActive`. `contract.Session.close` is infallible and terminal — there is no refusal to observe — so a Zig adapter's close always succeeds, and the retry Go needs has nothing to retry. Cancelling first is therefore the whole of the rule that is portable, and the Zig sweep does it. |
-| **Why the split is not portable** | The window exists to bound *waiting*. Zig's close returns immediately once the runs are cancelled, so there is no wait to divide; the deadline is still checked per session, so a slow `state` or `cancel` cannot make the sweep run past its budget. |
-| **The fix** | `contract`'s close reports whether a run is active, as Go's does, and the sweep retries as the draft says. |
+| **Go does** | `Session.Close` answers `base.ErrRunActive` while a run is live and does not close, and `closeForShutdown` retries: close, and on that answer read the state, cancel every live run, wait 100 ms, close again, three times. Every Go adapter can refuse. |
+| **Zig does** | `contract.Session.close` takes a `force` flag and may answer `error.RunActive`; the sweep cancels, pumps within the session's share, and closes again, three attempts in all. `Session.teardown` is the same call with `force`, and it is what the hub's own teardown uses, so a refusal can never leak. The memory adapter refuses while a run is live; the seven process-backed adapters destroy unconditionally. |
+| **Why it mattered** | Before this, the Zig sweep cancelled and released in one pass, so a harness that needed a moment to stop was released anyway and the retry the draft names had nowhere to live. |
+| **Where the two still differ** | Go's window is a context it can cancel; Zig's is a deadline it checks, because a Zig `close` is synchronous and returns rather than waiting. A sweep that has used its window stops and reports what it did not close, where Go's `CloseSessions` breaks and logs one session id. Both then exit, and both reap the child. |
+
+Pinned in Zig by `a close that refuses while a run is live is retried through a
+cancel until it lands`, `a close that never stops refusing is given the attempts
+the draft names, and the session is torn down rather than left behind`, `one
+wedged session is given a share of the window, and the session beside it is still
+closed` and `the sweep waits no longer than the window it was given`, all four in
+`zig/src/hub/hub.zig`.
 
 ### D7 — a stream failure ends the whole session in Zig, not the subscribers exposed to the run
 

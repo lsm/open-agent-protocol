@@ -164,7 +164,7 @@ pub const Session = struct {
         pump: *const fn (ptr: *anyopaque, wait_ns: u64) Failure!bool,
         drain: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator, out: *std.ArrayList(Event)) Failure!void,
         activity: *const fn (ptr: *anyopaque) Activity,
-        close: *const fn (ptr: *anyopaque) void,
+        close: *const fn (ptr: *anyopaque, force: bool) Failure!void,
         tools: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ToolsListRequest, refusal: *Refusal) Failure!ToolSet = null,
         models: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ModelsRequest, refusal: *Refusal) Failure!Catalog = null,
         switch_model: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.SessionModelSwitchRequest, refusal: *Refusal) Failure!Switched = null,
@@ -205,8 +205,12 @@ pub const Session = struct {
         return self.vtable.activity(self.ptr);
     }
 
-    pub fn close(self: Session) void {
-        self.vtable.close(self.ptr);
+    pub fn close(self: Session) Failure!void {
+        return self.vtable.close(self.ptr, false);
+    }
+
+    pub fn teardown(self: Session) void {
+        self.vtable.close(self.ptr, true) catch {};
     }
 };
 

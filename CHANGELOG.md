@@ -55,6 +55,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   literal rather than by mutating the process.
 
 ### Added
+- **`oapx hub` reads `--config`, and a signal ends every session inside the
+  bound** (#389, and #407's D6). `oapx hub --config <path>` used to answer
+  `unavailable: the hub's registry config lands with #389` and served the
+  built-in memory adapter whatever the document said. It now decodes the
+  document the same way `goap hub` does and constructs every entry at startup:
+
+  - **The decode is strict and the refusal is deterministic.** An unknown
+    member, a member whose name differs from the documented spelling only by
+    case, a member written twice, and trailing data after the object are each
+    refused, and the refusal now names the **first unknown member in sorted
+    order**. It named the first in *document* order, so which member a
+    malformed document was reported against depended on how the operator had
+    typed it — the one thing the draft's rule exists to prevent. A tool source
+    entry naming a bare variable the daemon does not carry still fails at
+    startup, naming the source and the variable.
+  - **`environment` is an allowlist, end to end.** A bare `NAME` forwards the
+    daemon's own value, an unset name is omitted, `NAME=value` passes through
+    literally, and a child is handed exactly that list — a variable the daemon
+    carries and the entry does not name is not in the child.
+  - **An entry the hub cannot serve is refused before the hub serves
+    anything**, named by its entry name, and the diagnostic names the hub
+    rather than the endpoint that shares the decoder.
+  - **SIGINT and SIGTERM end every session inside a bounded sweep and exit
+    zero**, as `goap hub` does. The stdio serve loop had no way to be
+    interrupted, so a signal did nothing at all; it now takes a stop predicate
+    and the sweep runs on the signal path exactly as it runs on a hangup.
+  - **The sweep retries a close that refuses** (D6). `contract.Session.close`
+    reports a live run as `error.RunActive` without destroying, and the sweep
+    cancels, waits inside that session's share of the window, and closes again
+    — three attempts, the draft's number. A session that refused every attempt
+    is torn down and the sweep reports what it did not close, so a refusal can
+    never leave an orphaned child or leak. `Hub.closeSessions` returns a count
+    of what it managed instead of nothing.
+
+  The seven process-backed adapters still close unconditionally, because each
+  one's close reaps the child and a cancel followed by a close is the same
+  outcome; the memory adapter refuses, which is the one a test can drive. The
+  draft's D6 row says so rather than claiming the row is closed for all eight.
+
 - **`go/internal/provider` gains the `anthropic-messages` client, part of #358
   step 3.** It reuses step 2's SSE parser, event types, json tree and
   pre-transform, and it is **a different client rather than a variant of the one
