@@ -47,7 +47,7 @@ scenario doubles as a regression gate.
 subdirectory with `transcript.bin`, `batches.jsonl`, `frames.jsonl` (named
 ANSI-stripped screen checkpoints), and `notes.json` (observed findings):
 
-- `commands` — every ratified slash command: `/help` (asserts all eleven usage
+- `commands` — every ratified slash command: `/help` (asserts all twelve usage
   strings render), `/status`, `/provider`, `/model` (picker + explicit switch),
   `/login` (picker, escape without triggering a real OAuth flow), `/permissions`
   (picker + `ask`/`bypass`/invalid-arg), `/resume` on an empty store, `/abort`

@@ -110,6 +110,12 @@ pub const PermissionEngine = struct {
     const Self = @This();
     const MAX_PERMISSION_FILE_BYTES = 1024 * 1024;
 
+    pub fn setWorkspaceRoot(self: *Self, root: []const u8) !void {
+        const owned = try self.allocator.dupe(u8, root);
+        self.allocator.free(self.workspace_root);
+        self.workspace_root = owned;
+    }
+
     pub fn init(allocator: std.mem.Allocator, options: PermissionEngineOptions) !Self {
         const workspace_root = try allocator.dupe(u8, options.workspace_root);
         errdefer allocator.free(workspace_root);

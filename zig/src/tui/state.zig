@@ -16,6 +16,7 @@ pub const PickerKind = enum {
     model,
     login,
     permission,
+    settings,
 };
 
 pub const TranscriptKind = enum {
@@ -476,6 +477,7 @@ pub const AppState = struct {
     transcript_scroll: usize = 0,
     session_index: usize = 0,
     session_scroll: usize = 0,
+    confirm_session_delete: bool = false,
     menu_index: usize = 0,
     menu_scroll: usize = 0,
     picker_kind: PickerKind = .model,

@@ -65,6 +65,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a different condition would be a parity divergence the harness reports as an
   unexplained order difference. It reads `provider.AssistantContent` and does no
   I/O, so it is the one piece of the loop that can be right or wrong on its own.
+- **TUI session settings and isolated worktrees.** `/settings` toggles persisted
+  compact tool output and automatic per-session Git worktrees. When enabled,
+  the first user message waits for worktree setup; saved sessions can reattach
+  their worktree, and session deletion refuses to discard uncommitted changes.
+
 
 ### Changed
 

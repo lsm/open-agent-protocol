@@ -63,6 +63,7 @@ pub const TuiRuntimeOptions = struct {
     permission_mode: PermissionMode = .bypass,
     thinking_level: ai_types.ThinkingLevel = .low,
     compact_output: bool = false,
+    auto_worktree: bool = false,
     run_async: bool = true,
     generate_titles: bool = false,
     context_window: ?u32 = null,
@@ -216,6 +217,7 @@ pub const TuiRuntime = struct {
     stream_active: bool = false,
     last_turn_stop_reason: ?ai_types.StopReason = null,
     compact_output: bool = false,
+    auto_worktree: bool = false,
     run_async: bool = true,
     compaction_transcript: []u8 = &.{},
     dropped_event_count: u64 = 0,
@@ -602,6 +604,26 @@ pub const TuiRuntime = struct {
         }
         self.tool_protocol.server.tools.clearRetainingCapacity();
         try self.tool_protocol.server.registerTools(self.wrapped_tools);
+    }
+
+    pub fn setWorkspaceRoot(self: *TuiRuntime, root: []const u8) !void {
+        if (self.local_agent) |*local| {
+            if (!local.isIdle()) return error.AgentAlreadyStreaming;
+        }
+        const owned = try self.allocator.dupe(u8, root);
+        self.allocator.free(self.workspace_root);
+        self.workspace_root = owned;
+        if (self.permission_engine) |engine| try engine.setWorkspaceRoot(root);
+        if (self.local_agent) |*local| {
+            const system_prompt = try self.workspaceSystemPrompt();
+            defer self.allocator.free(system_prompt);
+            try local.setSystemPrompt(system_prompt);
+        }
+    }
+
+    pub fn setCompactOutput(self: *TuiRuntime, enabled: bool) void {
+        self.compact_output = enabled;
+        if (self.local_agent) |*local| local.setCompactToolOutput(enabled);
     }
 
     pub fn switchModel(self: *TuiRuntime, model_id: []const u8) !void {
