@@ -14,21 +14,32 @@ you find out at the end of a long run rather than at the start.
 
 ## The steps
 
-Do these on `main`, in order. The date in step 1 is the date of the **last
-release tag**, which is the boundary the notes start from.
+Do these on `main`, in order. The boundary in step 1 is the **exact commit time
+of the last release tag**, which is where the notes start.
 
 **1. Collect the pull requests merged since the last tag.**
 
 ```sh
+gh api repos/lsm/open-agent-protocol/commits/v0.1.0-alpha.4 \
+  --jq .commit.committer.date
+# 2026-09-27T13:02:38Z
+
 gh pr list --repo lsm/open-agent-protocol --state merged \
-  --search "merged:>=2026-09-27" \
+  --search "merged:>2026-09-27T13:02:38Z" \
   --json number,title,body,mergedAt,url > prs.json
 ```
 
-The date is whatever the previous tag was made (`v0.1.0-alpha.4` here). Using
-the *tag's* date rather than the previous release's date is what keeps a pull
-request from appearing in two sections: one merged after the tag belongs to the
-next release.
+**Use the full timestamp, not a date.** A calendar day is not a boundary: this
+release merges its changelog pull request and tags on the same day, so a bare
+`merged:>=2026-09-27` would re-collect everything merged earlier that day,
+including the pull requests the section you are about to write already listed.
+Use `>` and the tag's commit time to the second.
+
+**The changelog pull request from step 3 will be collected by the next release,
+and that is correct.** It is a real change to the repository. Do not try to
+exclude it, and do not copy this section's entries forward by hand — the next
+release re-collects everything since the tag you are about to push, which is the
+point.
 
 **2. Write the section.**
 
@@ -40,7 +51,9 @@ node scripts/changelog-release.mjs --version 0.3.0 --date 2026-09-29 \
 `--version` is the version you are about to tag, without the `v`. `--date` is
 the release date. The script carries `## Unreleased` forward into the new
 section, so nothing written by hand is lost, and leaves `## Unreleased` empty on
-top for the next cycle.
+top for the next cycle. The version must sort **above** the newest section in the
+file, or the script refuses — which is the check that catches a tag line that has
+drifted behind the changelog.
 
 Two things it refuses, both worth knowing before you tag:
 

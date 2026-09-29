@@ -5,10 +5,11 @@
 // The pull request list is read from a file or stdin as a JSON array of
 // {number, title, body, mergedAt, url}. Nothing here reaches the network, so the
 // same command runs on a maintainer's machine and on a runner. Collect the list
-// with:
+// with the last tag's exact commit time as the boundary -- docs/releasing.md is
+// the procedure, and the timestamp matters:
 //
 //   gh pr list --repo lsm/open-agent-protocol --state merged \
-//     --search "merged:>=<date of the last tag>" \
+//     --search "merged:>2026-09-27T13:02:38Z" \
 //     --json number,title,body,mergedAt,url > prs.json
 //   node scripts/changelog-release.mjs --version 0.2.1 --input prs.json --write
 //
