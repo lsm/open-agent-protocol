@@ -2027,6 +2027,25 @@ test "describe answers with the configured providers and the versions it speaks"
     try std.testing.expectEqualStrings("0.1", payload.protocol_versions[0]);
 }
 
+fn modelsListUnderFailure(allocator: std.mem.Allocator) !void {
+    var server = try testServer(allocator, .{});
+    defer server.deinit();
+
+    const asked = try makeRequest(allocator, "provider.models.list.request", "{}", "q1");
+    defer allocator.free(asked);
+    try server.handleLine(asked);
+
+    while (server.popOutbound()) |line| allocator.free(line);
+}
+
+test "listing a catalog frees nothing twice and leaks nothing under allocation failure" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        modelsListUnderFailure,
+        .{},
+    );
+}
+
 test "a listing publishes its own completeness and the facts each entry learned" {
     const allocator = std.testing.allocator;
     var partial = try testServer(allocator, .{ .catalog = .{ .observed_at_ms = 1756400000000, .complete = false } });
