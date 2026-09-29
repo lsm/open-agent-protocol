@@ -52,7 +52,25 @@ export interface ModelDescriptor {
   context_window?: number;
   max_output_tokens?: number;
   reasoning_default?: ReasoningLevel;
+  cost?: ModelCost;
+  input_modalities?: string[];
+  output_modalities?: string[];
+  reasoning_levels?: ReasoningLevel[];
+  release_date?: string;
+  family?: string;
   metadata?: Record<string, string>;
+}
+
+export interface ModelCost {
+  input?: number;
+  output?: number;
+  cache_read?: number;
+  cache_write?: number;
+}
+
+export interface ModelCatalog {
+  observed_at_ms?: number;
+  complete?: boolean;
 }
 
 export interface ListModelsRequest {
@@ -66,6 +84,7 @@ export interface ListModelsRequest {
 
 export interface ListModelsResponse {
   models: ModelDescriptor[];
+  catalog?: ModelCatalog;
   fetched_at_ms: number;
   cache_max_age_ms: number;
 }

@@ -5,7 +5,7 @@ import { resolveMakaiBinary } from "./binary_resolver";
 import { isAbortError, raceWithAbort } from "./abort_signal";
 import { AUTH_KINDS, AUTH_STATUSES, MakaiAuthError, type AuthFlowHandlers, type AuthKind, type MakaiAuthApi, type MakaiAuthEvent, type ProviderAuthInfo } from "./auth_protocol";
 import { MakaiAuthRequiredError, MakaiStreamError, type AgentRunRequest, type AgentRunResponse, type AgentStreamEvent, type ChatMessage, type CompletionResponse, type ContentPart, type MakaiProviderApi, type ProviderCompleteRequest, type ProviderStreamEvent, type UsageSummary } from "./execution_types";
-import { MakaiProtocolError, type ListModelsRequest, type ListModelsResponse, type MakaiModelsApi, type ModelDescriptor, type ResolveModelRequest, type ResolveModelResponse } from "./models_types";
+import { MakaiProtocolError, type ListModelsRequest, type ListModelsResponse, type MakaiModelsApi, type ModelDescriptor, type ModelCost, type ResolveModelRequest, type ResolveModelResponse } from "./models_types";
 import type { CreateMakaiClientOptions, MakaiAgentModelsApi, MakaiClient } from "./execution_client";
 
 export const OAP_PROTOCOL = "open-agent-protocol";
@@ -276,6 +276,15 @@ function usage(value: unknown): UsageSummary | undefined {
   return { input: typeof value.input_tokens === "number" ? value.input_tokens : 0, output: typeof value.output_tokens === "number" ? value.output_tokens : 0 };
 }
 
+function modelCost(raw: Record<string, unknown>): ModelCost {
+  return {
+    ...(typeof raw.input === "number" ? { input: raw.input } : {}),
+    ...(typeof raw.output === "number" ? { output: raw.output } : {}),
+    ...(typeof raw.cache_read === "number" ? { cache_read: raw.cache_read } : {}),
+    ...(typeof raw.cache_write === "number" ? { cache_write: raw.cache_write } : {}),
+  };
+}
+
 function modelParts(modelRef: string): { provider_id: string; api: string; model_id: string } {
   const match = /^([^/]+)\/([^@]+)@(.+)$/.exec(modelRef);
   if (!match) throw new TypeError("model_ref must be provider_id/wire@model_id");
@@ -408,8 +417,20 @@ class OapModelsApi implements MakaiModelsApi {
       source: raw.source === "fallback" || raw.source === "static_fallback" ? "static_fallback" as const : "dynamic" as const,
       ...(typeof raw.context_window === "number" ? { context_window: raw.context_window } : {}),
       ...(typeof raw.max_output_tokens === "number" ? { max_output_tokens: raw.max_output_tokens } : {}),
+      ...(isRecord(raw.cost) ? { cost: modelCost(raw.cost) } : {}),
+      ...(Array.isArray(raw.input_modalities) ? { input_modalities: raw.input_modalities.filter((v): v is string => typeof v === "string") } : {}),
+      ...(Array.isArray(raw.output_modalities) ? { output_modalities: raw.output_modalities.filter((v): v is string => typeof v === "string") } : {}),
+      ...(Array.isArray(raw.reasoning_levels) ? { reasoning_levels: raw.reasoning_levels.filter((v): v is string => typeof v === "string") as NonNullable<ModelDescriptor["reasoning_levels"]> } : {}),
+      ...(typeof raw.release_date === "string" ? { release_date: raw.release_date } : {}),
+      ...(typeof raw.family === "string" ? { family: raw.family } : {}),
     })).filter((model) => (!request.api || model.api === request.api) && (!request.model_id || model.model_id === request.model_id) && (request.include_deprecated || model.lifecycle !== "deprecated") && (request.include_login_required || model.auth_status !== "login_required"));
-    return { models, fetched_at_ms: Date.now(), cache_max_age_ms: 0 };
+    const catalog = isRecord(frame.payload.catalog)
+      ? {
+          ...(typeof frame.payload.catalog.observed_at_ms === "number" ? { observed_at_ms: frame.payload.catalog.observed_at_ms } : {}),
+          ...(typeof frame.payload.catalog.complete === "boolean" ? { complete: frame.payload.catalog.complete } : {}),
+        }
+      : undefined;
+    return { models, ...(catalog ? { catalog } : {}), fetched_at_ms: Date.now(), cache_max_age_ms: 0 };
   }
   async resolve(request: ResolveModelRequest): Promise<ResolveModelResponse> {
     const listed = await this.list({ provider_id: request.provider_id, api: request.api, model_id: request.model_id, include_deprecated: true, include_login_required: true });

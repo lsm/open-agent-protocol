@@ -50,7 +50,10 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       send(request, "provider.describe.response", { providers: [], protocol_versions: ["0.1"] });
       break;
     case `${provider}:provider.models.list.request`:
-      send(request, "provider.models.list.response", { models: [{ model_ref: "fixture/openai-responses@mock", model_id: "mock", provider_id: "fixture", wire: "openai-responses", capabilities: ["chat", "streaming"], lifecycle: "stable", source: "discovered", auth_status: "authenticated" }] });
+      send(request, "provider.models.list.response", {
+        models: [{ model_ref: "fixture/openai-responses@mock", model_id: "mock", provider_id: "fixture", wire: "openai-responses", capabilities: ["chat", "streaming"], lifecycle: "stable", source: "discovered", auth_status: "authenticated", cost: { input: 3, output: 15, cache_read: 0.3, cache_write: 3.75 }, input_modalities: ["text", "image"], reasoning_levels: ["off", "medium", "high"], release_date: "2025-09-29", family: "mock-family" }],
+        catalog: { observed_at_ms: 1_759_100_000_000, complete: true },
+      });
       break;
     case `${provider}:inference.create.request`:
       if (request.payload.model_ref.endsWith("@malformed-frame")) {
