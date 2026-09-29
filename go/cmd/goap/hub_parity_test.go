@@ -35,7 +35,7 @@ var hubParityScenarios = map[string][]string{
 		`{"id":2,"op":"open","request":{}}`,
 		`{"id":3,"op":"open","adapter":"memory","request":null}`,
 		`{"id":4,"op":"open","adapter":"memory","request":{"id":"x"}}`,
-		`{"id":5,"op":"open","adapter":"memory","request":{` + openEnvelopeFields + `"id":"o1"}}`,
+		`{"id":5,"op":"open","adapter":"memory","request":{` + openEnvelopeFields + `"id":"o5","payload":{"session_id":"s5"}}}`,
 	},
 	"an attachment that names something to run is refused by both": {
 		`{"id":1,"op":"open","adapter":"memory","request":{` + openEnvelopeFields + `"id":"o1","payload":{"session_id":"s1","tool_sources":[{"id":"l1","kind":"local","command":"/bin/sh"}]}}}`,
@@ -208,7 +208,7 @@ func normaliseMinted(node any) {
 					value[key] = "<minted>"
 					continue
 				}
-			case "timestamp", "sequence":
+			case "timestamp", "sequence", "updated_at_ms":
 				if _, isNumber := child.(float64); isNumber {
 					value[key] = float64(0)
 					continue
