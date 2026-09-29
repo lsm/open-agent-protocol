@@ -268,6 +268,19 @@ test "a packed member is admitted by its own schema and held to it, and by no pa
     try std.testing.expect(!try admits(allocator, &with_pack, packed_member_mistyped));
 }
 
+test "a descriptor whose fields are the wrong shape is refused, not read past" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "pack.json", .data = "{\"id\":7,\"version\":\"1.0.0\"}" });
+    const dir = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(dir);
+    const dirs = [_][]const u8{dir};
+    var judge = try Validator.init(allocator, .{ .io = std.testing.io });
+    defer judge.deinit();
+    try std.testing.expectError(error.InvalidPackDescriptor, packs_mod.load(std.testing.io, allocator, &judge.registry, &dirs));
+}
+
 test "a pack's branches belong to the core envelope, and to no other document" {
     const allocator = std.testing.allocator;
     const dir = try storagePack(allocator);

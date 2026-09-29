@@ -40,6 +40,25 @@ pub const Loaded = struct {
     }
 };
 
+fn field(value: std.json.Value, key: []const u8) ?std.json.Value {
+    if (value != .object) return null;
+    return value.object.get(key);
+}
+
+fn stringField(value: std.json.Value, key: []const u8) ?[]const u8 {
+    const held = field(value, key) orelse return null;
+    return if (held == .string) held.string else null;
+}
+
+fn arrayField(value: std.json.Value, key: []const u8) ?std.json.Array {
+    const held = field(value, key) orelse return null;
+    return if (held == .array) held.array else null;
+}
+
+fn asString(value: std.json.Value) ?[]const u8 {
+    return if (value == .string) value.string else null;
+}
+
 fn readAll(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     return std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(8 * 1024 * 1024));
 }
@@ -76,13 +95,13 @@ fn gather(
         const descriptor_bytes = try readAll(io, allocator, descriptor_path);
         const descriptor = try std.json.parseFromSliceLeaky(std.json.Value, allocator, descriptor_bytes, .{});
         if (descriptor != .object) return error.InvalidPackDescriptor;
-        const pack_id = (descriptor.object.get("id") orelse return error.InvalidPackDescriptor).string;
-        const version = (descriptor.object.get("version") orelse return error.InvalidPackDescriptor).string;
+        const pack_id = stringField(descriptor, "id") orelse return error.InvalidPackDescriptor;
+        const version = stringField(descriptor, "version") orelse return error.InvalidPackDescriptor;
 
         if (registry) |target| {
-            if (descriptor.object.get("schemas")) |schemas| {
-                for (schemas.array.items) |schema_name| {
-                    const file = schema_name.string;
+            if (arrayField(descriptor, "schemas")) |schemas| {
+                for (schemas.items) |schema_name| {
+                    const file = asString(schema_name) orelse return error.InvalidPackDescriptor;
                     const schema_path = try std.fs.path.join(allocator, &.{ dir, file });
                     const schema_bytes = try readAll(io, allocator, schema_path);
                     const key = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/{s}", .{ pack_base_uri, pack_id, version, file });
@@ -91,46 +110,46 @@ fn gather(
             }
         }
 
-        const gates = descriptor.object.get("gates");
+        const gates = field(descriptor, "gates");
 
-        if (descriptor.object.get("payload_members")) |declared_members| {
-            for (declared_members.array.items) |entry| {
-                const payload_type = (entry.object.get("payload_type") orelse continue).string;
-                const name = (entry.object.get("member") orelse continue).string;
+        if (arrayField(descriptor, "payload_members")) |declared_members| {
+            for (declared_members.items) |entry| {
+                const payload_type = stringField(entry, "payload_type") orelse continue;
+                const name = stringField(entry, "member") orelse continue;
+                const member_schema = field(entry, "schema") orelse continue;
+                if (member_schema != .object) continue;
                 try members.append(allocator, .{
                     .payload_type = payload_type,
                     .name = name,
-                    .schema = entry.object.get("schema") orelse continue,
+                    .schema = member_schema,
                     .capability = memberCapability(gates, payload_type, name),
                 });
             }
         }
 
-        if (descriptor.object.get("envelope_types")) |declared_types| {
-            for (declared_types.array.items) |entry| {
-                const name = (entry.object.get("type") orelse continue).string;
+        if (arrayField(descriptor, "envelope_types")) |declared_types| {
+            for (declared_types.items) |entry| {
+                const name = stringField(entry, "type") orelse continue;
                 var refusals = std.ArrayList([]const u8).empty;
-                if (entry.object.get("refusals")) |listed| {
-                    if (listed == .array) {
-                        for (listed.array.items) |code| {
-                            if (code == .string) try refusals.append(allocator, code.string);
-                        }
+                if (arrayField(entry, "refusals")) |listed| {
+                    for (listed.items) |code| {
+                        if (asString(code)) |held| try refusals.append(allocator, held);
                     }
                 }
                 try types.append(allocator, .{
                     .name = name,
-                    .role = if (entry.object.get("role")) |role| role.string else "",
+                    .role = stringField(entry, "role") orelse "",
                     .capability = typeCapability(gates, name),
-                    .response = responseFor(declared_types, name),
+                    .response = responseFor(.{ .array = declared_types }, name),
                     .refusals = try refusals.toOwnedSlice(allocator),
                 });
             }
         }
 
-        const declared = descriptor.object.get("envelope_types") orelse continue;
-        for (declared.array.items) |entry| {
-            const declared_type = (entry.object.get("type") orelse continue).string;
-            const schema_ref = (entry.object.get("schema") orelse continue).string;
+        const declared = arrayField(descriptor, "envelope_types") orelse continue;
+        for (declared.items) |entry| {
+            const declared_type = stringField(entry, "type") orelse continue;
+            const schema_ref = stringField(entry, "schema") orelse continue;
             const hash = std.mem.indexOfScalar(u8, schema_ref, '#') orelse continue;
             const ref = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/{s}", .{ pack_base_uri, pack_id, version, schema_ref });
             _ = hash;
