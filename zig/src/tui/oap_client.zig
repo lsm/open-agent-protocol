@@ -144,18 +144,21 @@ pub const Client = struct {
     }
 
     pub fn rememberSessionId(self: *Client, id: []const u8) !void {
+        const owned = try self.allocator.dupe(u8, id);
         if (self.session_id) |old| self.allocator.free(old);
-        self.session_id = try self.allocator.dupe(u8, id);
+        self.session_id = owned;
     }
 
     pub fn rememberRevision(self: *Client, revision: []const u8) !void {
+        const owned = try self.allocator.dupe(u8, revision);
         if (self.capability_revision) |old| self.allocator.free(old);
-        self.capability_revision = try self.allocator.dupe(u8, revision);
+        self.capability_revision = owned;
     }
 
     pub fn rememberRunId(self: *Client, id: []const u8) !void {
+        const owned = try self.allocator.dupe(u8, id);
         if (self.pending_run_id) |old| self.allocator.free(old);
-        self.pending_run_id = try self.allocator.dupe(u8, id);
+        self.pending_run_id = owned;
     }
 
     pub fn forgetRun(self: *Client) void {
@@ -253,6 +256,29 @@ test "a submit before a session is opened is refused without a request on the wi
     try std.testing.expectError(Error.NoSession, client.switchModel("test/model"));
     try std.testing.expectError(Error.NoSession, client.cancel());
     try std.testing.expectError(Error.NotInitialized, client.openSession());
+
+    var inbound = pipe.serverReceiver();
+    try std.testing.expect((try inbound.readLine(allocator)) == null);
+}
+
+fn rememberProbe(allocator: std.mem.Allocator) !void {
+    var pipe = in_process.createSerializedPipe(std.testing.allocator);
+    defer pipe.deinit();
+    var client = Client.init(allocator, &pipe);
+    defer client.deinit();
+
+    try client.rememberRevision("rev-1");
+    try client.rememberRevision("rev-2");
+    try client.rememberSessionId("sess-1");
+    try client.rememberSessionId("sess-2");
+    try client.rememberRunId("run-1");
+    try client.rememberRunId("run-2");
+    client.forgetRun();
+    try client.rememberRunId("run-3");
+}
+
+test "the client's remembered fields survive an allocation failure at every step" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, rememberProbe, .{});
 }
 
 test "a session is opened only after initialize" {
