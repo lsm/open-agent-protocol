@@ -949,8 +949,9 @@ pub const App = struct {
                 var outcome = outcome_value;
                 defer outcome.deinit(self.allocator);
                 switch (outcome) {
-                    .created => |created| if (self.store) |store| {
-                        tui_worktree.writeSidecar(self.allocator, store.base_dir, self.session_id, &created.info) catch {};
+                    .created => |created| {
+                        var info = created.info;
+                        self.persistOrDiscardCreatedWorktree(&info);
                     },
                     else => {},
                 }
@@ -1115,6 +1116,18 @@ pub const App = struct {
             return;
         }
         try self.finishDeleteSession(id);
+    }
+
+    fn persistOrDiscardCreatedWorktree(self: *App, info: *const tui_worktree.WorktreeInfo) void {
+        const store = self.store orelse return;
+        const recorded = (store.conversationBytes(self.session_id) catch 0) > 0;
+        if (recorded) {
+            tui_worktree.writeSidecar(self.allocator, store.base_dir, self.session_id, info) catch {};
+            return;
+        }
+        if (tui_worktree.remove(self.allocator, tui_worktree.processRunner(), info)) |message| {
+            if (message) |text| self.allocator.free(text);
+        } else |_| {}
     }
 
     fn finishDeleteSession(self: *App, id: []const u8) !void {

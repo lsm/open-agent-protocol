@@ -434,6 +434,7 @@ fn validateSessionId(session_id: []const u8) !void {
     for (session_id) |c| {
         if (c == '/' or c == '\\' or c == 0) return error.InvalidSessionId;
     }
+    if (std.mem.indexOf(u8, session_id, "..") != null) return error.InvalidSessionId;
 }
 
 fn parseSidecar(allocator: std.mem.Allocator, data: []const u8) !?WorktreeInfo {
