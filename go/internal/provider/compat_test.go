@@ -9,6 +9,51 @@ func hostModel(baseURL string) Model {
 	return Model{Provider: "openai", BaseURL: baseURL, HasBaseURL: true, HasCompat: true}
 }
 
+func TestAnAzureOpenAIHostIsOpenaiAzureComOrASubdomainNeverAzureCom(t *testing.T) {
+	hosts := []string{
+		"https://contoso.openai.azure.com",
+		"https://contoso.openai.azure.com/openai/deployments/gpt/chat/completions",
+		"https://openai.azure.com",
+		"https://CONTOSO.OPENAI.AZURE.COM",
+	}
+	for _, url := range hosts {
+		if !isAzureOpenAIURL(url, true) {
+			t.Errorf("isAzureOpenAIURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://azure.com",
+		"https://contoso.azure.com",
+		"https://notopenai.azure.com",
+		"https://openai.azure.com.evil.example",
+		"https://evilcontoso.openai.azure.co",
+		"https://evil.example/?next=contoso.openai.azure.com",
+		"https://evil.example/v1/contoso.openai.azure.com",
+		"https://gateway.example/proxy/contoso.openai.azure.com",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isAzureOpenAIURL(url, true) {
+			t.Errorf("isAzureOpenAIURL(%q) = true, want false: azure.com on its own would claim every Azure host, and the label must be openai", url)
+		}
+	}
+
+	if isAzureOpenAIURL("https://contoso.openai.azure.com", false) {
+		t.Error("no base url is not an azure openai host")
+	}
+}
+
+func TestAnAzureOpenAIHostStillDetectsAsAzure(t *testing.T) {
+	const url = "https://contoso.openai.azure.com"
+	if !isAzureOpenAIURL(url, true) {
+		t.Fatalf("isAzureOpenAIURL(%q) = false, want true", url)
+	}
+	if got := DetectProviderType(url, true); got != ProviderAzure {
+		t.Errorf("DetectProviderType(%q) = %q, want azure", url, got)
+	}
+}
+
 func TestAGoogleHostIsTheGeminiAPIHostOrAnAiplatformHostRegionalOrNot(t *testing.T) {
 	hosts := []string{
 		"https://generativelanguage.googleapis.com",

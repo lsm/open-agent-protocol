@@ -71,6 +71,10 @@ pub fn isHostEndingIn(base_url: ?[]const u8, suffix: []const u8) bool {
     return before == '.' or before == '-';
 }
 
+pub fn isAzureOpenAI(base_url: ?[]const u8) bool {
+    return isHostOrSubdomainOf(base_url, "openai.azure.com");
+}
+
 pub fn isGoogle(base_url: ?[]const u8) bool {
     return isHostOrSubdomainOf(base_url, "generativelanguage.googleapis.com") or
         isHostEndingIn(base_url, "aiplatform.googleapis.com");
@@ -127,7 +131,7 @@ pub fn detectProviderType(base_url: ?[]const u8) ProviderType {
     if (isOpenRouter(url)) return .openai_compatible;
     if (isGoogle(url)) return .google;
     if (std.mem.find(u8, url, "bedrock-runtime.") != null or std.mem.find(u8, url, "bedrock.") != null) return .bedrock;
-    if (std.mem.find(u8, url, ".openai.azure.com") != null or std.mem.find(u8, url, "cognitiveservices.azure.com") != null) return .azure;
+    if (isAzureOpenAI(url) or std.mem.find(u8, url, "cognitiveservices.azure.com") != null) return .azure;
     if (std.mem.find(u8, url, "localhost:11434") != null or std.mem.find(u8, url, "127.0.0.1:11434") != null or std.mem.find(u8, url, "ollama") != null) return .ollama;
 
     if (url.len > 0) return .openai_compatible;
@@ -221,6 +225,42 @@ test "isGitHubCopilot detection" {
     try std.testing.expect(isGitHubCopilot("https://api.githubcopilot.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot("https://api.openai.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot(null));
+}
+
+test "an azure openai host is openai.azure.com or a subdomain, never azure.com" {
+    const hosts = [_][]const u8{
+        "https://contoso.openai.azure.com",
+        "https://contoso.openai.azure.com/openai/deployments/gpt/chat/completions",
+        "https://openai.azure.com",
+        "https://CONTOSO.OPENAI.AZURE.COM",
+    };
+    for (hosts) |url| {
+        try std.testing.expect(isAzureOpenAI(url));
+    }
+
+    const not_hosts = [_][]const u8{
+        "https://azure.com",
+        "https://contoso.azure.com",
+        "https://notopenai.azure.com",
+        "https://openai.azure.com.evil.example",
+        "https://evilcontoso.openai.azure.co",
+        "https://evil.example/?next=contoso.openai.azure.com",
+        "https://evil.example/v1/contoso.openai.azure.com",
+        "https://gateway.example/proxy/contoso.openai.azure.com",
+        "not a url at all",
+        "",
+    };
+    for (not_hosts) |url| {
+        try std.testing.expect(!isAzureOpenAI(url));
+    }
+
+    try std.testing.expect(!isAzureOpenAI(null));
+}
+
+test "an azure openai host still detects as azure" {
+    const url = "https://contoso.openai.azure.com";
+    try std.testing.expect(isAzureOpenAI(url));
+    try std.testing.expectEqual(ProviderType.azure, detectProviderType(url));
 }
 
 test "a google host is the gemini api host or an aiplatform host, regional or not" {
