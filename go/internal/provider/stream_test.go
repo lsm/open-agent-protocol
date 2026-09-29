@@ -27,7 +27,7 @@ func runStream(t *testing.T, model Model, frames ...string) []Event {
 	t.Helper()
 	sink := &EventSink{}
 	Stream(sink, model, Context{}, StreamOptions{}, chunkReader(frames), nil)
-	return sink.take()
+	return sink.Drain()
 }
 
 func kindsOf(events []Event) []EventKind {
@@ -328,12 +328,12 @@ func TestCachedTokensComeOutOfTheInputAndReasoningIntoTheOutput(t *testing.T) {
 }
 
 func TestTheFinishReasonIsMappedToTheRuntimesOwn(t *testing.T) {
-	cases := map[string]string{
-		"stop":           "stop",
-		"length":         "length",
-		"tool_calls":     "tool_use",
-		"content_filter": "error",
-		"anything else":  "stop",
+	cases := map[string]StopReason{
+		"stop":           StopStop,
+		"length":         StopLength,
+		"tool_calls":     StopToolUse,
+		"content_filter": StopError,
+		"anything else":  StopStop,
 	}
 	for finish, want := range cases {
 		payload := fmt.Sprintf(`{"choices":[{"finish_reason":%q}]}`, finish)
@@ -425,7 +425,7 @@ func TestCancellationEndsTheStreamWithTheCancelsReason(t *testing.T) {
 		read = true
 		return nil, nil
 	}, func() bool { return true })
-	events := sink.take()
+	events := sink.Drain()
 	if read {
 		t.Error("a cancelled call must not read")
 	}
@@ -445,7 +445,7 @@ func TestCancellationMidStreamEndsWithTheCancelsReason(t *testing.T) {
 		calls++
 		return []byte(sseFrame(`{"choices":[{"delta":{"content":"x"}}]}`)), nil
 	}, func() bool { return calls > 1 })
-	events := sink.take()
+	events := sink.Drain()
 	last := events[len(events)-1]
 	if last.Kind != EventError || last.Reason != "request cancelled" {
 		t.Errorf("the terminal = %+v, want the cancel reason once a chunk has been read", last)
@@ -468,7 +468,7 @@ func TestAMalformedChunkIsSwallowedAndTheStreamStillCompletes(t *testing.T) {
 		sseFrame(`{"choices":[{"delta":{"content":"kept"}}]}`),
 		sseFrame("not json at all"),
 	}), nil)
-	events := sink.take()
+	events := sink.Drain()
 	if countKind(events, EventError) != 0 {
 		t.Error("zig's parseChunk swallows a malformed chunk with catch return, so no error reaches the stream")
 	}
@@ -503,7 +503,7 @@ func TestAStreamErrorCompletesAsLengthOnlyWhenTheRuleHolds(t *testing.T) {
 	if !state.completeOnStreamError(sink) {
 		t.Fatal("with text and no tool call the partial completes")
 	}
-	done := findEvent(t, sink.take(), EventDone)
+	done := findEvent(t, sink.Drain(), EventDone)
 	if done.Message.StopReason != "length" {
 		t.Errorf("the stop reason = %q, want length", done.Message.StopReason)
 	}
@@ -523,7 +523,7 @@ func TestAStreamErrorCompletesAsLengthOnlyWhenTheRuleHolds(t *testing.T) {
 func TestTheParserErrorSpellingReachesTheStream(t *testing.T) {
 	sink := &EventSink{}
 	Stream(sink, streamModel(), Context{}, StreamOptions{}, chunkReader([]string{strings.Repeat("x", 1024*1024+1)}), nil)
-	events := sink.take()
+	events := sink.Drain()
 	last := events[len(events)-1]
 	if last.Kind != EventError || last.Reason != "sse line too large" {
 		t.Errorf("the terminal = %+v, want the line too large spelling", last)

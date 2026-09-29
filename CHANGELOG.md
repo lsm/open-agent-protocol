@@ -30,6 +30,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a different condition would be a parity divergence the harness reports as an
   unexplained order difference. It reads `provider.AssistantContent` and does no
   I/O, so it is the one piece of the loop that can be right or wrong on its own.
+- **`go/internal/agent` gains a turn as a channel (#370, second of four), and
+  the provider runtime's stop reasons gain names.** The loop's one dependency on
+  a model is a `Streamer`: given a `TurnRequest`, it returns the provider
+  runtime's own `provider.Event` values on a channel and closes it, so a reply
+  arrives as the runtime produced it rather than as something the loop
+  reshapes. `ChunkStreamer` is that dependency over a byte reader, and it picks
+  the completions or the anthropic-messages client from the model's API — the
+  two paths a wire that is not the completions one would otherwise be read by
+  the wrong parser and produce nothing.
+  A stop reason was a bare string, so the loop compared `TurnOutcome` against
+  `"content_filter"` and `"length"` and a typo there would have been a rule that
+  quietly never fired. `StopStop`, `StopLength`, `StopToolUse`,
+  `StopContentFilter`, `StopAborted` and `StopError` are now the six names,
+  and `provider.StopReason` is the type a reply carries — which means a
+  `PartialMessage` or `AssistantMessage` that reaches a caller is typed rather
+  than a `string` any caller can spell either way.
+  `EventSink.Drain` is the sink's reader, renamed from an unexported `take`, so
+  a package outside the runtime can consume a stream. It was the one thing
+  standing between a turn and the loop that will drive it.
 
 ### Changed
 

@@ -43,7 +43,7 @@ type PartialMessage struct {
 	Provider   string
 	Model      string
 	Usage      Usage
-	StopReason string
+	StopReason StopReason
 	Timestamp  int64
 }
 
@@ -65,7 +65,7 @@ type AssistantMessage struct {
 	Provider   string
 	Model      string
 	Usage      Usage
-	StopReason string
+	StopReason StopReason
 	Timestamp  int64
 }
 
@@ -79,7 +79,7 @@ func (s *EventSink) emit(event Event) {
 	s.events = append(s.events, event)
 }
 
-func (s *EventSink) take() []Event {
+func (s *EventSink) Drain() []Event {
 	out := s.events
 	s.events = nil
 	return out
@@ -176,7 +176,7 @@ type streamState struct {
 	model         Model
 	clock         *streamClock
 	usage         Usage
-	stopReason    string
+	stopReason    StopReason
 	thinking      string
 	text          string
 	signature     string
@@ -222,7 +222,7 @@ type reasoningDetail struct {
 
 type chunkResult struct {
 	usage           *Usage
-	stopReason      string
+	stopReason      StopReason
 	hasStop         bool
 	toolCalls       []toolCallEvent
 	details         []reasoningDetail

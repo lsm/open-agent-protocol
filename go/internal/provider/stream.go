@@ -72,16 +72,16 @@ func parseUsageInto(container map[string]any, usage *Usage) {
 	}
 }
 
-func stopReasonFor(finish string) string {
+func stopReasonFor(finish string) StopReason {
 	switch finish {
 	case "length":
-		return "length"
+		return StopLength
 	case "tool_calls":
-		return "tool_use"
+		return StopToolUse
 	case "content_filter":
-		return "error"
+		return StopError
 	}
-	return "stop"
+	return StopStop
 }
 
 func parseToolCallEvents(delta map[string]any) []toolCallEvent {
@@ -317,7 +317,7 @@ func (s *streamState) startEvent() Event {
 			API:        s.model.API,
 			Provider:   s.model.Provider,
 			Model:      s.model.ID,
-			StopReason: "stop",
+			StopReason: StopStop,
 			Timestamp:  s.clock.millis(),
 		},
 	}
@@ -327,7 +327,7 @@ func (s *streamState) completeOnStreamError(sink *EventSink) bool {
 	if !CanCompletePartialTextOnStreamError(len(s.text), len(s.thinking), s.toolCalls) {
 		return false
 	}
-	s.stopReason = "length"
+	s.stopReason = StopLength
 	s.finish(sink)
 	return true
 }

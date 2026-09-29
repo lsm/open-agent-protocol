@@ -76,7 +76,7 @@ func TestEveryEventIsStampedWithTheClock(t *testing.T) {
 		ticks += 7
 		return ticks
 	}}, chunkReader([]string{sseFrame(`{"choices":[{"delta":{"content":"x"}}]}`)}), nil)
-	events := sink.take()
+	events := sink.Drain()
 	if len(events) == 0 {
 		t.Fatal("no events")
 	}
@@ -108,7 +108,7 @@ func TestAKeepaliveIsEmittedOnThePingInterval(t *testing.T) {
 		}
 		return []byte(sseFrame(`{"choices":[{"delta":{"content":"x"}}]}`)), nil
 	}, nil)
-	events := sink.take()
+	events := sink.Drain()
 	if countKind(events, EventKeepalive) == 0 {
 		t.Fatalf("got %v, want a keepalive once the interval elapsed", kindsOf(events))
 	}
@@ -120,7 +120,7 @@ func TestTheFirstPingFiresBecauseTheLastPingStartsAtZero(t *testing.T) {
 		Now:        func() int64 { return 1_700_000_000_000 },
 		PingMillis: 5000,
 	}, chunkReader([]string{sseFrame(`{"choices":[{"delta":{"content":"x"}}]}`)}), nil)
-	events := sink.take()
+	events := sink.Drain()
 	if events[1].Kind != EventKeepalive {
 		t.Errorf("events = %v, want a keepalive on the first loop: zig's last_ping_time starts at 0", kindsOf(events))
 	}
