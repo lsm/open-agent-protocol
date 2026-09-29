@@ -563,8 +563,9 @@ and it is a published fact with no unit behind it. A rate is true of the
 response that carried it, which is what makes publishing it safe and judging it
 separate: an implementation that quotes a rate it does not honour has published
 a falsehood rather than a wrong price, and this draft judges neither. What the
-schema does judge is the shape — four numbers, no tier — so a `cost` is either
-the four members or absent. A listing's `catalog.complete: false` is likewise
+schema does judge is the shape — four numbers, no tier, and no member beyond
+those four — so a `cost` is a subset of them or absent. A listing's
+`catalog.complete: false` is likewise
 published and unjudged; a caller told the listing is a subset decides for
 itself what to publish in its own catalog, and that is judged under that
 catalog's own unit.

@@ -100,10 +100,10 @@ Facts a listing learned (Normative):
   ([Decision 0035](../../decisions/0035-a-model-entry-publishes-its-facts-and-absence-means-unknown.md))
   on the SDK's descriptor, so an implementation that serves the provider profile
   has one shape to fill them in. The members above are the shape, not a claim
-  that a shipped SDK populates every one of them today: `sdk/typescript` and
-  `go/sdk` do not yet carry these fields, and a client that leaves one absent
-  reads the absence as unknown under the rule above, exactly as it does on the
-  wire.
+  that a shipped SDK populates every one of them today: `sdk/typescript`,
+  `go/sdk` and `zig/src/protocol/model_catalog_types.zig` do not yet carry these
+  fields, and a client that leaves one absent reads the absence as unknown under
+  the rule above, exactly as it does on the wire.
 
 Auth for listing:
 - Providers that require auth for model listing must return `auth_status = "login_required"` (or `"expired"` / `"failed"`).
@@ -697,9 +697,9 @@ pub const ModelDescriptor = struct {
     max_output_tokens: ?u32 = null,
     reasoning_default: ?ReasoningLevel = null,
     cost: ?ModelCost = null,
-    input_modalities: OwnedSlice(Modality) = OwnedSlice(Modality).initBorrowed(""),
-    output_modalities: OwnedSlice(Modality) = OwnedSlice(Modality).initBorrowed(""),
-    reasoning_levels: OwnedSlice(ReasoningLevel) = OwnedSlice(ReasoningLevel).initBorrowed(""),
+    input_modalities: OwnedSlice(Modality) = OwnedSlice(Modality).initBorrowed(&.{}),
+    output_modalities: OwnedSlice(Modality) = OwnedSlice(Modality).initBorrowed(&.{}),
+    reasoning_levels: OwnedSlice(ReasoningLevel) = OwnedSlice(ReasoningLevel).initBorrowed(&.{}),
     release_date: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
     family: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
     metadata: ?OwnedSlice(MetadataEntry) = null,
