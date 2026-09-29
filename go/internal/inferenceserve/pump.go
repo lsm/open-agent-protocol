@@ -43,7 +43,7 @@ func Pump(state *State, event provider.Event) ([]Envelope, error) {
 			return nil, nil
 		}
 		if isCancellation(event.Reason) {
-			envelope, err := state.Completed("aborted", nil)
+			envelope, err := state.Completed("aborted", state.ended)
 			if err != nil {
 				return nil, err
 			}

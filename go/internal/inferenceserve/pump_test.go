@@ -611,3 +611,32 @@ func TestASettleThatCannotBeBuiltReturnsTheErrorRatherThanAnEnvelope(t *testing.
 		t.Errorf("got a %+v, want the error from the completed path too", completed)
 	}
 }
+
+func TestACancellationAfterAPartEndedStillCarriesTheStreamedContent(t *testing.T) {
+	state := NewState(&Ids{}, "i1", "anthropic/anthropic-messages@claude")
+	all := runTrace(t, state,
+		provider.Event{Kind: provider.EventTextStart, ContentIndex: 0},
+		provider.Event{Kind: provider.EventTextDelta, ContentIndex: 0, Delta: "half a thought"},
+		provider.Event{Kind: provider.EventTextEnd, ContentIndex: 0, Delta: "half a thought"},
+		provider.Event{Kind: provider.EventError, Reason: "request cancelled"},
+	)
+	validate(t, all)
+	terminal := all[len(all)-1]
+	if terminal.Type != "inference.completed" {
+		t.Fatalf("got a %s, want inference.completed", terminal.Type)
+	}
+	if got := body(t, terminal)["stop_reason"]; got != "aborted" {
+		t.Errorf("the stop reason = %v, want aborted", got)
+	}
+	message, ok := body(t, terminal)["message"].(map[string]any)
+	if !ok {
+		t.Fatalf("the terminal payload = %s, want a message", terminal.Payload)
+	}
+	blocks, ok := message["content"].([]any)
+	if !ok || len(blocks) != 1 {
+		t.Fatalf("the terminal content = %v, want the ended part: content that was streamed and ended cannot vanish from the one message callers replay", message["content"])
+	}
+	if blocks[0].(map[string]any)["text"] != "half a thought" {
+		t.Errorf("the terminal text = %v, want what the part ended with", blocks[0])
+	}
+}
