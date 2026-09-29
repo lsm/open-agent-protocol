@@ -78,7 +78,11 @@ func check(root, baseRoot, description string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	removed, added := setDifference(base, head), setDifference(head, base)
+	removed, err := removalSet(baseRoot, head)
+	if err != nil {
+		return err
+	}
+	added := setDifference(head, base)
 	report, err := apidiffReport(root, baseRoot, module, head, added)
 	if err != nil {
 		return err
@@ -156,6 +160,33 @@ func publicPackages(root string) ([]string, error) {
 	}
 	sort.Strings(public)
 	return public, nil
+}
+
+func removalSet(baseRoot string, head []string) ([]string, error) {
+	dirs, err := publicDirectories(baseRoot)
+	if err != nil {
+		return nil, err
+	}
+	return setDifference(dirs, head), nil
+}
+
+func publicDirectories(root string) ([]string, error) {
+	dirs, err := packageDirs(root)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, dir := range dirs {
+		relative, found := strings.CutPrefix(dir, strings.TrimSuffix(root, "/")+"/")
+		if found && !publicset.Internal(relative) {
+			names = append(names, relative)
+		}
+	}
+	if len(names) == 0 {
+		return nil, fmt.Errorf("no public package directory found under %s", root)
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 func packageDirs(root string) ([]string, error) {

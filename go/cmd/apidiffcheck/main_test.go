@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/lsm/open-agent-protocol/go/internal/publicset"
 )
 
 const testModule = "github.com/lsm/open-agent-protocol"
@@ -219,5 +221,60 @@ func TestAnAddedPackageIsSkippedRatherThanDiffedAgainstAStaleExport(t *testing.T
 func TestABaseExportFailureIsAnErrorRatherThanASkippedPackage(t *testing.T) {
 	if _, err := apidiffReport(t.TempDir(), filepath.Join(t.TempDir(), "absent"), testModule, []string{"go/protocol"}, nil); err == nil {
 		t.Fatal("a base checkout that cannot be loaded was accepted, which would skip the comparison and let a real break through")
+	}
+}
+
+func TestAPackageThePublicSetDoesNotNameIsStillADirectoryTheBaseHad(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module "+testModule+"\n\ngo 1.27\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pkg := filepath.Join(root, "gone")
+	if err := os.MkdirAll(pkg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkg, "gone.go"), []byte("package gone\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if publicset.Public("gone") {
+		t.Skip("this package is in the public set, so it does not exercise the difference")
+	}
+	public, err := publicPackages(root)
+	if err != nil {
+		if !strings.Contains(err.Error(), "no public package found") {
+			t.Fatal(err)
+		}
+		public = nil
+	}
+	for _, name := range public {
+		if name == "gone" {
+			t.Fatal("publicPackages returned a package the public set does not name")
+		}
+	}
+	dirs, err := publicDirectories(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, name := range dirs {
+		if name == "gone" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("publicDirectories did not return a package the public set does not name, so a removal would go unreported")
+	}
+	removed, err := removalSet(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 1 || removed[0] != "gone" {
+		t.Fatalf("removed %v, want the unmapped package the public set does not name", removed)
+	}
+	if got := missingFrom(removed, "## Breaking changes\n\n- `gone` is gone"); len(got) != 0 {
+		t.Fatalf("missing %v, want none: the removal is recorded", got)
+	}
+	if got := missingFrom(removed, ""); len(got) != 1 {
+		t.Fatalf("missing %v, want one: nothing records the removal", got)
 	}
 }
