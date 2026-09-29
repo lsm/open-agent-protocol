@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/lsm/open-agent-protocol/go/internal/agent"
 	"github.com/lsm/open-agent-protocol/go/internal/provider"
@@ -230,10 +231,11 @@ func failureText(assistant provider.AssistantContent) string {
 }
 
 func finalText(assistant provider.AssistantContent) string {
+	var out strings.Builder
 	for _, part := range assistant.Parts {
 		if part.Text != nil && part.Text.Text != "" {
-			return part.Text.Text
+			out.WriteString(part.Text.Text)
 		}
 	}
-	return ""
+	return out.String()
 }

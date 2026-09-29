@@ -593,3 +593,41 @@ func TestACallMissingItsNameOrIdReachesNoEnvelope(t *testing.T) {
 		t.Errorf("the sequence reached %d, want 1: a refused call must not consume a sequence number a later envelope would then skip", tr.sequence)
 	}
 }
+
+func TestEveryTextBlockOfTheFinalMessageReachesTheCompletionInOrder(t *testing.T) {
+	tr := trace(t, nil)
+	call := provider.ToolCall{ID: "call_1", Name: "read", Arguments: "{}"}
+	interleaved := provider.AssistantContent{
+		Parts: []provider.ContentPart{
+			{Text: &provider.TextPart{Text: "before "}},
+			{ToolCall: &call},
+			{Text: &provider.TextPart{Text: "the call"}},
+			{Thinking: &provider.ThinkingPart{Thinking: "not text"}},
+			{Text: &provider.TextPart{Text: " and after"}},
+		},
+		StopReason: provider.StopStop,
+	}
+	envelopes := tr.Envelopes(agent.Event{Kind: agent.AgentEnd, Result: agent.Result{FinalMessage: interleaved}})
+	var completed protocol.RunCompletedPayload
+	if err := json.Unmarshal(mustJSON(t, last(envelopes)), &completed); err != nil {
+		t.Fatal(err)
+	}
+	text, ok := completed.FinalResponse.Content.Text()
+	if !ok {
+		t.Fatalf("the completion carries %s, want text", completed.FinalResponse.Content)
+	}
+	if text != "before the call and after" {
+		t.Errorf("the completion reads %q, want every text block in order with nothing between: the anthropic wire emits one block per text block, and oapx appends them all at collectResultText", text)
+	}
+	failed := tr.Envelopes(agent.Event{Kind: agent.AgentEnd, Result: agent.Result{FinalMessage: provider.AssistantContent{
+		Parts:      interleaved.Parts,
+		StopReason: provider.StopError,
+	}}})
+	var failure protocol.RunFailedPayload
+	if err := json.Unmarshal(mustJSON(t, last(failed)), &failure); err != nil {
+		t.Fatal(err)
+	}
+	if failure.Error.Message != "before the call and after" {
+		t.Errorf("the failure carries %q, want the same whole text a completion would", failure.Error.Message)
+	}
+}
