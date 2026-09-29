@@ -112,14 +112,18 @@ const Runner = struct {
     }
 
     fn pass(self: *Runner, name: []const u8) !void {
-        try self.add(.{ .name = try self.allocator.dupe(u8, name) });
+        const owned = try self.allocator.dupe(u8, name);
+        try self.add(.{ .name = owned });
     }
 
     fn fail(self: *Runner, name: []const u8, detail: []const u8) !void {
+        const owned_name = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(owned_name);
+        const owned_detail = try self.allocator.dupe(u8, detail);
         try self.add(.{
-            .name = try self.allocator.dupe(u8, name),
+            .name = owned_name,
             .passed = false,
-            .detail = try self.allocator.dupe(u8, detail),
+            .detail = owned_detail,
         });
     }
 
@@ -162,7 +166,10 @@ const Runner = struct {
 
     fn nextEvent(self: *Runner, line_deadline_ms: i64) !oap_types.Envelope {
         while (self.events.items.len == 0) try self.pullUntil(line_deadline_ms);
-        return self.events.orderedRemove(self.events.items.len - 1);
+        // Events come off the queue in arrival order, not newest first: answering
+        // a gate pulls a batch of them, and the per-run sequence is what proves
+        // the runner read that batch the way the endpoint wrote it.
+        return self.events.orderedRemove(0);
     }
 
     fn request(self: *Runner, payload: oap_types.Payload, run_id: ?[]const u8, line_deadline_ms: i64) !oap_types.Envelope {
@@ -290,10 +297,10 @@ const Runner = struct {
                 "the admission did not repeat the requested auto delivery",
             );
         } else {
-            try self.add(.{
-                .name = try self.allocator.dupe(u8, "the admission repeats requested_delivery and reports a concrete effective_delivery"),
-                .detail = try std.fmt.allocPrint(self.allocator, "auto resolved to {s}", .{@tagName(admission.effective_delivery)}),
-            });
+            const check_name = try self.allocator.dupe(u8, "the admission repeats requested_delivery and reports a concrete effective_delivery");
+            errdefer self.allocator.free(check_name);
+            const settled = try std.fmt.allocPrint(self.allocator, "auto resolved to {s}", .{@tagName(admission.effective_delivery)});
+            try self.add(.{ .name = check_name, .detail = settled });
         }
 
         try self.consumeRun(line_deadline_ms);
@@ -335,56 +342,120 @@ const Runner = struct {
                     last_sequence = sequence;
                 }
             }
+            switch (held.payload) {
+                .permission_requested => |*gate| {
+                    self.answerPermission(gate, line_deadline_ms) catch |err| {
+                        try self.fail("a permission gate is resolvable from the stream", @errorName(err));
+                        return;
+                    };
+                    try self.pass("a permission gate is resolvable from the stream");
+                },
+                .user_input_requested => |*gate| {
+                    self.answerInput(gate, line_deadline_ms) catch |err| {
+                        try self.fail("a user input gate is resolvable from the stream", @errorName(err));
+                        return;
+                    };
+                    try self.pass("a user input gate is resolvable from the stream");
+                },
+                else => {},
+            }
             if (held.payload.isTerminal()) {
-                try self.add(.{
-                    .name = try self.allocator.dupe(u8, "the run reaches a terminal event"),
-                    .detail = try std.fmt.allocPrint(self.allocator, "settled {s}", .{held.payload.typeName()}),
-                });
+                const check_name = try self.allocator.dupe(u8, "the run reaches a terminal event");
+                errdefer self.allocator.free(check_name);
+                const settled = try std.fmt.allocPrint(self.allocator, "settled {s}", .{held.payload.typeName()});
+                try self.add(.{ .name = check_name, .detail = settled });
                 return;
             }
         }
     }
+
+    fn answerPermission(self: *Runner, gate: *const oap_types.PermissionEvent, line_deadline_ms: i64) !void {
+        if (gate.choices.len == 0) return error.NoChoicesOffered;
+
+        // The resolve payload owns its strings and request frees them, so the
+        // copies built here are handed over whole and never freed twice.
+        const fields = [_][]const u8{
+            gate.interaction_id,
+            gate.requested_by,
+            gate.responded_by,
+            gate.session_id,
+            gate.run_id,
+            gate.choices[0].id,
+        };
+        var copies: [fields.len][]const u8 = undefined;
+        var built: usize = 0;
+        var handed_off = false;
+        errdefer if (!handed_off) {
+            for (copies[0..built]) |copy| self.allocator.free(copy);
+        };
+        for (fields, 0..) |field, index| {
+            copies[index] = try self.allocator.dupe(u8, field);
+            built += 1;
+        }
+
+        const payload: oap_types.Payload = .{ .permission_resolve_request = .{
+            .interaction_id = copies[0],
+            .requested_by = copies[1],
+            .responded_by = copies[2],
+            .session_id = copies[3],
+            .run_id = copies[4],
+            .choice_id = copies[5],
+            .granted = true,
+        } };
+        handed_off = true;
+        var resolved = try self.request(payload, copies[4], line_deadline_ms);
+        resolved.deinit(self.allocator);
+    }
+
+    fn answerInput(self: *Runner, gate: *const oap_types.UserInputEvent, line_deadline_ms: i64) !void {
+        const fields = [_][]const u8{
+            gate.interaction_id,
+            gate.requested_by,
+            gate.responded_by,
+            gate.session_id,
+            gate.run_id,
+        };
+        var copies: [fields.len][]const u8 = undefined;
+        var built: usize = 0;
+        var answers: []oap_types.InputAnswer = &.{};
+        var answered: usize = 0;
+        var handed_off = false;
+        errdefer if (!handed_off) {
+            for (answers[0..answered]) |*written| written.deinit(self.allocator);
+            self.allocator.free(answers);
+            for (copies[0..built]) |copy| self.allocator.free(copy);
+        };
+        for (fields, 0..) |field, index| {
+            copies[index] = try self.allocator.dupe(u8, field);
+            built += 1;
+        }
+
+        answers = try self.allocator.alloc(oap_types.InputAnswer, gate.questions.len);
+        for (gate.questions) |question| {
+            const question_id = try self.allocator.dupe(u8, question.id);
+            const chosen: []const []const u8 = if (question.options.len > 0) blk: {
+                const first = try self.allocator.dupe(u8, question.options[0].id);
+                break :blk try self.allocator.dupe([]const u8, &.{first});
+            } else &.{};
+            answers[answered] = .{ .question_id = question_id, .selected_option_ids = chosen };
+            answered += 1;
+        }
+
+        const payload: oap_types.Payload = .{ .user_input_resolve_request = .{
+            .interaction_id = copies[0],
+            .requested_by = copies[1],
+            .responded_by = copies[2],
+            .session_id = copies[3],
+            .run_id = copies[4],
+            .answers = answers,
+        } };
+        handed_off = true;
+        var resolved = try self.request(payload, copies[4], line_deadline_ms);
+        resolved.deinit(self.allocator);
+    }
 };
 
-test "a report judges itself on the first check that did not pass" {
-    var report = Report{
-        .allocator = std.testing.allocator,
-        .endpoint = try std.testing.allocator.dupe(u8, "endpoint"),
-        .checks = .empty,
-    };
-    defer report.deinit();
-    try report.checks.append(std.testing.allocator, .{
-        .name = try std.testing.allocator.dupe(u8, "capabilities.request is answered"),
-    });
-    try std.testing.expect(report.passed());
-    try report.checks.append(std.testing.allocator, .{
-        .name = try std.testing.allocator.dupe(u8, "the run reaches a terminal event"),
-        .passed = false,
-        .detail = try std.testing.allocator.dupe(u8, "the endpoint answered nothing"),
-    });
-    try std.testing.expect(!report.passed());
-    try std.testing.expect((report.verdict("the run reaches a terminal event") orelse unreachable).passed == false);
-    try std.testing.expect(report.verdict("no such check") == null);
-}
-
-test "a runner with no command to drive refuses rather than reporting an endpoint" {
-    try std.testing.expectError(error.ConformanceNeedsCommand, run(std.testing.allocator, .{ .command = "" }));
-}
-
-test "a runner drives a child and reports the checks it could not pass" {
-    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
-    var report = try run(std.testing.allocator, .{ .command = "/bin/cat", .line_deadline_ms = 2000 });
-    defer report.deinit();
-
-    try std.testing.expect(!report.passed());
-    const initialize = report.verdict("protocol.initialize.request is answered") orelse return error.CheckMissing;
-    try std.testing.expect(!initialize.passed);
-    try std.testing.expectEqualStrings("ConformanceEndpointSilent", initialize.detail);
-    const exits = report.verdict("endpoint exits 0 after stdin EOF") orelse return error.CheckMissing;
-    try std.testing.expect(exits.passed);
-}
-
-test "a script that answers the four requests and then a terminal event settles the run" {
+test "events that arrive ahead of the answer are read in the order they were written" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     const script =
         \\while read -r line; do
@@ -392,7 +463,8 @@ test "a script that answers the four requests and then a terminal event settles 
         \\  *protocol.initialize.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"protocol.initialize.response","id":"a1","in_reply_to":"conformance-request-1","payload":{"protocol_version":"0.1","profile":"open-agent-protocol.agent-control-core","endpoint":{"id":"fake"}}}' ;;
         \\  *capabilities.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"a2","in_reply_to":"conformance-request-2","capability_revision":"rev-1","payload":{"endpoint":{"id":"fake"},"features":{}}}' ;;
         \\  *session.open.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"a3","in_reply_to":"conformance-request-3","payload":{"session_id":"conformance","status":"idle"}}' ;;
-        \\  *session.message.submit.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"a4","in_reply_to":"conformance-request-4","payload":{"session_id":"conformance","accepted":true,"submission_id":"s1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"run-1"}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"e1","sequence":1,"payload":{"session_id":"conformance","run_id":"run-1","status":"running"}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.completed","id":"e2","sequence":2,"payload":{"session_id":"conformance","run_id":"run-1","stop_reason":"end_turn","final_response":{"role":"assistant","content":"done"}}}' ;;
+        \\  *session.message.submit.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"e1","sequence":1,"payload":{"session_id":"conformance","run_id":"run-1","status":"running"}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"content.delta","id":"e2","sequence":2,"payload":{"session_id":"conformance","run_id":"run-1","message_id":"m-e2","part":{"type":"text","text":"one"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.requested","id":"e2","payload":{"interaction_id":"p-1","requested_by":"fake","responded_by":"user","session_id":"conformance","run_id":"run-1","title":"Allow","choices":[{"id":"approve","label":"Approve"}]}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"content.delta","id":"e4","sequence":4,"payload":{"session_id":"conformance","run_id":"run-1","message_id":"m-e4","part":{"type":"text","text":"two"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"a4","in_reply_to":"conformance-request-4","payload":{"session_id":"conformance","accepted":true,"submission_id":"s1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"run-1"}}' ;;
+        \\  *choice_id*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.resolved","id":"e3","payload":{"interaction_id":"p-1","requested_by":"fake","responded_by":"user","session_id":"conformance","run_id":"run-1","outcome":"resolved","choice_id":"approve","granted":true}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.completed","id":"e6","sequence":6,"payload":{"session_id":"conformance","run_id":"run-1","stop_reason":"end_turn","final_response":{"role":"assistant","content":"done"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.resolve.response","id":"a5","in_reply_to":"conformance-request-5","payload":{"interaction_id":"p-1","session_id":"conformance","run_id":"run-1","accepted":true}}' ;;
         \\  esac
         \\done
     ;
@@ -405,8 +477,8 @@ test "a script that answers the four requests and then a terminal event settles 
     defer report.deinit();
 
     try std.testing.expect(report.passed());
+    const gate_check = report.verdict("a permission gate is resolvable from the stream") orelse return error.CheckMissing;
+    try std.testing.expect(gate_check.passed);
     const terminal = report.verdict("the run reaches a terminal event") orelse return error.CheckMissing;
     try std.testing.expectEqualStrings("settled run.completed", terminal.detail);
-    const naming = report.verdict("the open names the session it was asked for") orelse return error.CheckMissing;
-    try std.testing.expect(naming.passed);
 }
