@@ -154,6 +154,19 @@ consumer stops reading blocks on the next event until its context is
 cancelled. There is no abandoned-turn case to recover from, so a consumer that
 might stop reading early has to cancel the context rather than walk away.
 
+**Calls are asked for one at a time.** A reply carrying several tool calls has
+them asked in the order the model wrote them, and the loop waits for the
+answer to the first before asking for the second. A client therefore cannot
+run two of a turn's calls in parallel, which `oapx` can — it opens every call
+in a reply and settles them in the order the run settles. That is a
+difference in what a client *may* do rather than in what the wire carries, so
+it shows up in a trace only as one call's `action.call.requested` where two
+would be open at once. It is deliberate for the first slice: asking in order
+makes the cancellation rule simple to state, since only one call is ever
+outstanding. Parallel calls are the change to make when a client needs them,
+and `pi-two-open-calls` is the fixture that would catch it going the other
+way.
+
 A run's terminal is the exception, and it is the exception by construction
 rather than by luck: the event buffer's last slot is reserved for it, so a
 non-terminal send never takes it and a cancelled run's terminal lands even
