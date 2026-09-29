@@ -146,6 +146,10 @@ func isHostEndingIn(baseURL string, hasBaseURL bool, suffix string) bool {
 	return before == '.' || before == '-'
 }
 
+func isAzureOpenAIURL(baseURL string, hasBaseURL bool) bool {
+	return isHostOrSubdomain(baseURL, hasBaseURL, "openai.azure.com")
+}
+
 func isGoogleURL(baseURL string, hasBaseURL bool) bool {
 	return isHostOrSubdomain(baseURL, hasBaseURL, "generativelanguage.googleapis.com") ||
 		isHostEndingIn(baseURL, hasBaseURL, "aiplatform.googleapis.com")
@@ -211,7 +215,7 @@ func DetectProviderType(baseURL string, hasBaseURL bool) ProviderType {
 		return ProviderGoogle
 	case holdsURL(baseURL, hasBaseURL, "bedrock-runtime."), holdsURL(baseURL, hasBaseURL, "bedrock."):
 		return ProviderBedrock
-	case holdsURL(baseURL, hasBaseURL, ".openai.azure.com"), holdsURL(baseURL, hasBaseURL, "cognitiveservices.azure.com"):
+	case isAzureOpenAIURL(baseURL, hasBaseURL), holdsURL(baseURL, hasBaseURL, "cognitiveservices.azure.com"):
 		return ProviderAzure
 	case holdsURL(baseURL, hasBaseURL, "localhost:11434"),
 		holdsURL(baseURL, hasBaseURL, "127.0.0.1:11434"),
