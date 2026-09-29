@@ -9,6 +9,39 @@ func hostModel(baseURL string) Model {
 	return Model{Provider: "openai", BaseURL: baseURL, HasBaseURL: true, HasCompat: true}
 }
 
+func TestACerebrasHostIsCerebrasDotAIOrASubdomainOfIt(t *testing.T) {
+	hosts := []string{
+		"https://api.cerebras.ai",
+		"https://api.cerebras.ai/v1",
+		"https://cerebras.ai",
+		"https://API.CEREBRAS.AI",
+	}
+	for _, url := range hosts {
+		if !isCerebrasURL(url, true) {
+			t.Errorf("isCerebrasURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://mycerebras.ai",
+		"https://notcerebras.ai",
+		"https://cerebras.ai.evil.example",
+		"https://evil.example/?next=api.cerebras.ai",
+		"https://evil.example/v1/api.cerebras.ai",
+		"https://gateway.example/proxy/api.cerebras.ai",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isCerebrasURL(url, true) {
+			t.Errorf("isCerebrasURL(%q) = true, want false: the name is in a host suffix, a path or a query", url)
+		}
+	}
+
+	if isCerebrasURL("https://api.cerebras.ai", false) {
+		t.Error("no base url is not a cerebras host")
+	}
+}
+
 func TestAGroqHostIsGroqDotComOrASubdomainOfIt(t *testing.T) {
 	hosts := []string{
 		"https://api.groq.com",
