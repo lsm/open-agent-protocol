@@ -10,13 +10,16 @@ pub const schema_execute =
 
 const end_directory_script =
     \\__oap_cmd=$1
-    \\__oap_nonce=$2
     \\set --
     \\eval "$__oap_cmd"
     \\__oap_rc=$?
-    \\printf '\n%s%s\n' "$__oap_nonce" "$(pwd)"
+    \\printf '\nOAPNONCE%s\n' "$(pwd)"
     \\exit $__oap_rc
 ;
+
+fn buildEndDirectoryScript(allocator: std.mem.Allocator, nonce: [16]u8) ![]u8 {
+    return std.mem.replaceOwned(u8, allocator, end_directory_script, "OAPNONCE", &nonce);
+}
 
 const EndDirectory = struct {
     before: []const u8,
@@ -41,7 +44,10 @@ fn splitEndDirectory(stdout: []const u8, nonce: [16]u8) EndDirectory {
 }
 
 fn restoredNewline(split: EndDirectory) []const u8 {
-    return if (split.found) "\n" else "";
+    if (!split.found) return "";
+    if (split.before.len == 0) return "";
+    if (split.before[split.before.len - 1] == '\n') return "";
+    return "\n";
 }
 
 fn reportDirectory(term: std.process.Child.Term, parsed: ?[]const u8, start: []const u8) []const u8 {
@@ -84,13 +90,20 @@ pub fn execute(
     const nonce = common.hash16(tool_call_id);
     const start_directory = try std.Io.Dir.path.resolve(allocator, &.{workspace_root});
     defer allocator.free(start_directory);
+    const script = if (@import("builtin").os.tag == .windows)
+        try allocator.dupe(u8, "")
+    else
+        try buildEndDirectoryScript(allocator, nonce);
+    defer allocator.free(script);
     const argv = if (@import("builtin").os.tag == .windows)
         [_][]const u8{ "cmd.exe", "/C", command }
     else
-        [_][]const u8{ "/bin/sh", "-c", end_directory_script, "sh", command, &nonce };
+        [_][]const u8{ "/bin/sh", "-c", script, "sh", command };
     const result = process_runner.run(allocator, &argv, .{ .dir = dir }, timeout_ms, cancel_token) catch |err| {
         if (err == error.Cancelled) return err;
         const duration_ms = common.durationMs(start_ms);
+        const owned_directory = try allocator.dupe(u8, start_directory);
+        errdefer allocator.free(owned_directory);
         const details = try common.jsonString(allocator, .{
             .ok = false,
             .err = @errorName(err),
@@ -100,12 +113,10 @@ pub fn execute(
             .raw_bytes = 0,
             .working_directory = start_directory,
         });
-        errdefer allocator.free(details);
         const text = try std.fmt.allocPrint(allocator, "shell command failed: {s}", .{@errorName(err)});
-        errdefer allocator.free(text);
         var failed = try common.makeTextResultOwned(allocator, text, details);
         errdefer failed.deinit(allocator);
-        failed.working_directory = ai_types.OwnedSlice(u8).initOwned(try allocator.dupe(u8, start_directory));
+        failed.working_directory = ai_types.OwnedSlice(u8).initOwned(owned_directory);
         return failed;
     };
     defer allocator.free(result.stdout);
@@ -113,6 +124,8 @@ pub fn execute(
 
     const captured = splitEndDirectory(result.stdout, nonce);
     const end_directory = reportDirectory(result.term, captured.directory, start_directory);
+    const owned_directory = try allocator.dupe(u8, end_directory);
+    errdefer allocator.free(owned_directory);
 
     const exit_code: ?u8 = switch (result.term) {
         .exited => |code| code,
@@ -147,27 +160,27 @@ pub fn execute(
     defer allocator.free(text);
     var made = try common.makeTextResultWithArtifact(allocator, .{ .tool_name = "shell_execute", .call_id = tool_call_id, .text = text, .details_json = details });
     defer if (made.artifact_path) |path| allocator.free(path);
-    errdefer made.result.deinit(allocator);
-    made.result.working_directory = ai_types.OwnedSlice(u8).initOwned(try allocator.dupe(u8, end_directory));
+    made.result.working_directory = ai_types.OwnedSlice(u8).initOwned(owned_directory);
     return made.result;
 }
 
 test "shell execute reports the directory the command ended in" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
     const cwd = try std.process.currentPathAlloc(common.defaultIo(), std.testing.allocator);
     defer std.testing.allocator.free(cwd);
-    const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"command\":\"mkdir -p oap-cd-test && cd oap-cd-test && pwd\"}}", .{cwd});
+    const root = try std.Io.Dir.path.join(std.testing.allocator, &.{ cwd, ".zig-cache", "tmp", tmp.sub_path[0..] });
+    defer std.testing.allocator.free(root);
+    const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"command\":\"mkdir -p sub && cd sub && pwd\"}}", .{root});
     defer std.testing.allocator.free(args);
-    var dir = try common.openWorkspace(cwd, false);
-    defer dir.close(common.defaultIo());
-    dir.deleteTree(common.defaultIo(), "oap-cd-test") catch {};
     var result = try execute("call-cd", args, null, null, null, std.testing.allocator);
     defer result.deinit(std.testing.allocator);
-    const expected = try std.Io.Dir.path.resolve(std.testing.allocator, &.{ cwd, "oap-cd-test" });
+    const expected = try std.Io.Dir.path.resolve(std.testing.allocator, &.{ root, "sub" });
     defer std.testing.allocator.free(expected);
     try std.testing.expectEqualStrings(expected, result.workingDirectory().?);
     try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, expected) != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, "oap-cwd-") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, &common.hash16("call-cd")) == null);
 }
 
 test "shell execute reports the start directory when the command does not move" {
@@ -238,7 +251,7 @@ test "an exit trap's output survives, because it runs after the marker" {
     defer result.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings(expected, result.workingDirectory().?);
     try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, "from-the-trap") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, "oap-cwd-") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, &common.hash16("call-trap")) == null);
 }
 
 test "a command whose output hits the cap reports the start directory and the failure" {
@@ -254,7 +267,6 @@ test "a command whose output hits the cap reports the start directory and the fa
     try std.testing.expectEqualStrings(expected, result.workingDirectory().?);
     try std.testing.expect(std.mem.indexOf(u8, result.getDetailsJson().?, "StreamTooLong") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, "shell command failed") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, "oap-cwd-") == null);
 }
 
 test "the reported directory stops at the first newline after the marker" {
@@ -284,6 +296,22 @@ test "a missing or empty marker reports no directory" {
     try std.testing.expectEqualStrings("out\n", joined);
 }
 
+test "the marker is gone and the reported byte count matches the command's own output" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const cwd = try std.process.currentPathAlloc(common.defaultIo(), std.testing.allocator);
+    defer std.testing.allocator.free(cwd);
+    const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"command\":\"echo ok\"}}", .{cwd});
+    defer std.testing.allocator.free(args);
+    var result = try execute("call-nl", args, null, null, null, std.testing.allocator);
+    defer result.deinit(std.testing.allocator);
+    const text = result.content.slice()[0].text.text;
+    try std.testing.expect(std.mem.indexOf(u8, text, &common.hash16("call-nl")) == null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "ok") != null);
+    const counted = try std.fmt.allocPrint(std.testing.allocator, "\"stdout_bytes\":3", .{});
+    defer std.testing.allocator.free(counted);
+    try std.testing.expect(std.mem.indexOf(u8, result.getDetailsJson().?, counted) != null);
+}
+
 test "the command sees no positional parameters, as it did before the wrapper" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     const cwd = try std.process.currentPathAlloc(common.defaultIo(), std.testing.allocator);
@@ -293,7 +321,7 @@ test "the command sees no positional parameters, as it did before the wrapper" {
     var result = try execute("call-args", args, null, null, null, std.testing.allocator);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, "[]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, "oap-cwd-") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, &common.hash16("call-args")) == null);
 }
 
 test "a command that reassigns the positional parameters still reports its directory" {
