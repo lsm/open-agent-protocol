@@ -596,6 +596,7 @@ pub const App = struct {
     title_session_id: []u8 = &.{},
     run_error_text: []u8 = &.{},
     auto_continue: tui_auto_continue.Streak = .{},
+    replaying_history: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, options: tui_runtime.TuiRuntimeOptions) !App {
         var runtime_options = options;
@@ -787,6 +788,8 @@ pub const App = struct {
         } else {
             try self.state.status.setModelWithContext(self.allocator, loaded.metadata.model, loaded.metadata.provider, 0);
         }
+        self.replaying_history = true;
+        defer self.replaying_history = false;
         for (loaded.events.items) |*event| {
             try self.applyRuntimeEvent(event.*);
         }
@@ -1604,13 +1607,15 @@ pub const App = struct {
     }
 
     fn applyRuntimeEvent(self: *App, event: tui_runtime.TuiEvent) !void {
-        switch (event) {
-            .@"error" => |payload| try self.rememberRunError(payload.message.slice()),
-            .agent_end => |payload| switch (payload.reason) {
-                .@"error" => self.scheduleAutoContinue(),
-                .completed, .cancelled => self.runFinishedWithoutProviderError(),
-            },
-            else => {},
+        if (!self.replaying_history) {
+            switch (event) {
+                .@"error" => |payload| try self.rememberRunError(payload.message.slice()),
+                .agent_end => |payload| switch (payload.reason) {
+                    .@"error" => self.scheduleAutoContinue(),
+                    .completed, .cancelled => self.runFinishedWithoutProviderError(),
+                },
+                else => {},
+            }
         }
         switch (event) {
             .message_start => |payload| {
@@ -6117,6 +6122,9 @@ test "resuming a session whose last run ended in an error does not nudge" {
 
     try std.testing.expect(!app.auto_continue.pending());
     try std.testing.expectEqualStrings("", app.run_error_text);
+    for (app.state.transcript.items) |entry| {
+        try std.testing.expect(std.mem.indexOf(u8, entry.text.items, "Continuing in") == null);
+    }
     app.pumpAutoContinue(compat.time.nowMillis() + @as(i64, @intCast(tui_auto_continue.default_delay_ms)));
     try std.testing.expectEqual(@as(usize, 0), app.runtime.?.steersConsumedCount());
 }
