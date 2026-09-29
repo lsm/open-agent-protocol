@@ -806,6 +806,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shrinking composer no longer leaves blank rows behind.
 
 ### Fixed
+- **Resuming a long TUI session no longer reads every streamed chunk, and no longer stops at 64 MB.** A session file held every text, tool-call and provider chunk, each line repeating the session's details: one 50 MB session was 84% chunks, a resume parsed all of it, and a file over 64 MB refused to load. Chunks now go to `<session>.stream.jsonl`, which a resume does not read; the details are written only when they change; and `<session>.meta.json` records the last completed compaction, so a resume starts there, with up to 256 KB before it for the screen, and reads the whole file when that compaction's record does not load. Older files still load, skipping their provider events, tool-call deltas and tool progress unparsed, and nothing that was written before is dropped.
+
 - **A shell command's output under 10 KB now reaches the model whole.** With compact output on, which the TUI turns on by default, `shell_execute` stored every output as an artifact whatever its size and returned only a summary: about 430 bytes of retrieval instructions, then the first and last 512 bytes. Output under 1 KB came back about three times its size, output between 1 and 10 KB lost its middle, and the model often had to call `artifact_retrieve` next to read it. The shell tool no longer takes `compact_output`, and only output over its 10 KB limit is stored as an artifact.
 
 - `contract.Session`'s `models` and `tools` now report the revision the lister served
