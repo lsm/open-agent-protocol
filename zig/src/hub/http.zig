@@ -17,6 +17,7 @@ pub const Failure = error{
     Truncated,
     Malformed,
     BodyTooLarge,
+    BodyTruncated,
     ReadFailed,
     Timeout,
     UnsupportedTransferEncoding,
@@ -164,7 +165,7 @@ pub fn readRequest(allocator: std.mem.Allocator, stream: *compat.net.Stream, hea
     var filled: usize = 0;
     while (filled < request.body.len) {
         const n = try readUntil(stream, request.body[filled..], (elapsedMs() catch 0) + idle_ms);
-        if (n == 0) return error.Truncated;
+        if (n == 0) return error.BodyTruncated;
         filled += n;
     }
     return request;
@@ -214,7 +215,7 @@ pub fn refusalEnvelope(arena: std.mem.Allocator, next_id: u64, refused: Refusal)
 pub fn transportRefusal(failed: Failure) ?Refusal {
     return switch (failed) {
         error.BodyTooLarge => too_large,
-        error.ReadFailed => read_failed,
+        error.ReadFailed, error.BodyTruncated => read_failed,
         else => null,
     };
 }
@@ -439,6 +440,25 @@ test "a body over the cap is refused before it is read" {
     try testing.expectError(error.BodyTooLarge, readRequest(testing.allocator, &pipe.accepted, header_read_ms, idle_read_ms));
 }
 
+test "a client that hangs up mid-body is refused request_read, as the draft pins it" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var pipe = try Pipe.open();
+    defer pipe.close();
+    try pipe.client.writeAll("POST /adapters/a/sessions HTTP/1.1\r\nHost: a\r\nContent-Length: 64\r\n\r\n\"{\"a\":");
+    const io = if (@import("builtin").is_test) std.testing.io else std.Io.Threaded.global_single_threaded.io();
+    pipe.client.inner.shutdown(io, .send) catch return error.NoHalfClose;
+    try testing.expectError(error.BodyTruncated, readRequest(testing.allocator, &pipe.accepted, header_read_ms, idle_read_ms));
+    var scratch_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch_state.deinit();
+    try writeTransportFailure(&pipe.accepted, scratch_state.allocator(), 4, error.BodyTruncated);
+    pipe.closeAccepted();
+    var spoken: [4096]u8 = undefined;
+    const said = try readToEnd(&pipe.client, &spoken);
+    try testing.expect(std.mem.startsWith(u8, said, "HTTP/1.1 400 Bad Request"));
+    try testing.expect(std.mem.indexOf(u8, said, "request_read") != null);
+    try testing.expect(std.mem.indexOf(u8, said, "error.response") != null);
+}
+
 test "a host that hangs up mid-request is truncated, not answered" {
     const address = try compat.net.resolveAddress(testing.allocator, "127.0.0.1", 0);
     var server = try compat.net.tcpListen(address, .{ .reuse_address = true });
@@ -599,6 +619,7 @@ test "a request that could not be read is answered as a transport failure, never
     const cases = [_]struct { failure: Failure, want: []const u8, envelope: bool }{
         .{ .failure = error.BodyTooLarge, .want = "413", .envelope = true },
         .{ .failure = error.ReadFailed, .want = "request_read", .envelope = true },
+        .{ .failure = error.BodyTruncated, .want = "request_read", .envelope = true },
         .{ .failure = error.Malformed, .want = "400", .envelope = false },
         .{ .failure = error.Timeout, .want = "408", .envelope = false },
         .{ .failure = error.HeaderTooLarge, .want = "431", .envelope = false },
