@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+
+- **The OAP endpoint client could not spawn an endpoint outside a test build.**
+  `endpoint_client.Client.spawn` handed `std.process.spawn` the io from
+  `std.Io.Threaded.global_single_threaded`, which has no thread to run a child's
+  pipes on, so every spawn outside a test binary failed with `OutOfMemory` from
+  `Threaded.spawnPosix` before a process existed. The client now owns its own
+  `std.Io.Threaded`, as `adapter/process.zig` and `tools/process_runner.zig`
+  already do, and spawns on that. Nothing caught it because the tests took the
+  other branch: `defaultIo` returned `std.testing.io` under `is_test`, so the
+  suite exercised a path the product never ran, and the branch is gone rather
+  than inverted, so the tests now drive the same io a release build does.
+
 ### Added
 
 - **A provider catalog row records the largest context window its models can be
@@ -22,6 +35,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model stands in its place. The build refuses a row or model whose own
   `context_window` is above the ceiling it states, because a default window the
   ceiling would refuse is a contradiction rather than a default.
+- **The Zig semantic machine judges a published tool source that carries an
+  attachment-only member**, `attachment_field_in_catalog`, part of #367. A
+  source published in a catalog — a `capabilities.response`'s `sources` or any
+  `layers.*.sources`, an `action.tools.list.response`, a `session.open.response`
+  or a session state document — is a *description* of a tool source, and
+  `command`, `args` and `environment` belong to the attachment that *serves* it.
+  A catalog that names one is publishing the attachment as though it were part of
+  the source, which is the leak `descriptor-leaks-attachment-fields` and
+  `tools-catalog-leaks-attachment-env` are about: an environment entry carrying
+  a secret into a document every session reads. Go has judged this since the
+  rule landed; the Zig machine declared neither the code nor the check, so a
+  source carrying one earned no semantic finding. **`oapx validate` on either
+  fixture is unchanged by this, and was never passing it**: in strict mode the
+  schema phase refuses the member first — `toolSourceDescriptor` is closed — and
+  the semantic phase does not run at all. The rule is unreachable in strict mode
+  by construction, which is why the two fixtures are `mode: tolerant` in the
+  manifest and why the semantic gate skips them: only once #367's tolerant mode
+  exists is there a path that reaches this check, and judging the three tolerant
+  fixtures rather than skipping them is that step's work. A source list the
+  check cannot read is left unjudged, matching Go's decode rather than
+  judging the entries around a malformed one.
+
 - **A design note for the Go tree's native agent loop (#370).**
   [`docs/go-agent-loop.md`](docs/go-agent-loop.md) maps `zig/src/agent/`'s loop
   — turns, tool execution, permissions, cancellation, compaction — onto what
@@ -1215,6 +1250,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The Go `openai-completions` request builder drops an orphan wherever it falls in a run, as Zig does.** The port checked for a tool result whose call is not in the conversation in its outer loop over messages, and then collected a whole run of consecutive results into a slice and handed it to `toolResultRun` without repeating the check, so only the result that opened a run was ever examined. The inner loop now applies the same guard, which is what Zig's `openai_completions_api.zig` has done since #530. A run of nothing but orphans writes no tool message at all, and a conversation with no tool call anywhere still keeps every result.
 
   One of the port's own tests was leaning on the gap without saying so: `TestAnEmptyAssistantIsWrittenAroundToolResultsOnlyWhenAsked` needed two consecutive written tool messages to observe the `requires_assistant_after_tool_result` filler, and got its second one from a result for a call nothing made. Its fixture now calls both tools, so it exercises the rule it is named for rather than the orphan. A test that passes because of a defect is the one kind of test that gets read as evidence for the defect.
+
+  **The Anthropic wire carried the same gap in both trees, and it is closed in both.** `anthropic_messages_api.zig` and `anthropic_request.go` each check for an orphan in the outer loop over messages and then collect a whole run of consecutive results to batch into one user message, without repeating the check — so an orphan sitting after an answered result in the same run went out as a `tool_result` block naming a `tool_use_id` the request never produced. Both inner loops now apply the same guard, so the two trees stay in step.
+
+  A run of **nothing but** orphans needed no code at all: the outer guard drops each of them one message at a time, so the run is never entered and no empty `content: []` is written. That outcome was already the tree's, and the first draft of this change added an empty-run check to each wire anyway; the tests showed the check was unreachable, so it is not in the diff. The test for that case stays regardless, because an all-orphan run writing an empty content array is the shape worth pinning, whichever loop turns out to enforce it.
 - **A chunk the runtime cannot read is still ignored rather than ending the response, and that is now pinned rather than assumed.** `parseChunk` returns on a chunk that does not parse, which leaves `canCompletePartialTextOnStreamError` reachable only from an exhausted allocator — the sole remaining way `parseChunk` can return an error. That was worth deciding rather than reading either way, so: the swallow is the policy, and it is the tree's, not this file's. `azure_openai_responses`, `openai_responses` (twice), `anthropic_messages` and `google_generative` each return on an unreadable chunk the same way, and only this wire ever wrote the partial-text rule, so the rule is the residue of one error path rather than evidence of a plan the others share. The rule stays as the allocator policy it is — on an OOM mid-stream, text already accumulated is finished with `length` rather than thrown away, but only while no tool call is open — and two tests now hold the swallow in place: one that a malformed chunk, a truncated one, and a valid non-object all leave every accumulator untouched, and one that a good chunk after a malformed one is still read.
 - **One predicate decides whether a base URL is an OpenAI host, and the two that disagreed are gone.** `provider_caps.isOpenAINative` looked for `api.openai.com` anywhere in the URL; `isOpenAIHost` parsed the URL and matched `openai.com` or a `.`-delimited suffix of it, case-insensitively. They were near-synonyms by name and were consulted at different depths: detection in `detectCapabilities` produced the native caps, and then `mergeCompat` discarded every one of them whenever its own predicate said no, so a URL carrying the vendor's name in a path or a query was detected native and then silently downgraded. There is now one `isOpenAIHost`, in `provider_caps`, holding the parse-the-host rule the request builders already shipped; `detectProviderType` and both `openai_completions` and `openai_responses` call it, and the verbatim copy at `openai_responses_api.zig` is gone.
 

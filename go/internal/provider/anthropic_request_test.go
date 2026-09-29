@@ -199,6 +199,72 @@ func anthropicBody(t *testing.T, model Model, ctx Context, options AnthropicOpti
 	return out
 }
 
+func anthropicToolResult(id string) Message {
+	return Message{ToolResult: &ToolResult{ToolCallID: id, ToolName: "bash", Parts: []ContentPart{{Text: &TextPart{Text: "output"}}}}}
+}
+
+func anthropicToolUsesInBody(t *testing.T, ctx Context) []string {
+	t.Helper()
+	raw, _ := BuildAnthropicRequestBody(anthropicModel(), ctx, AnthropicOptions{}, "")
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("the body is not json: %v\n%s", err, raw)
+	}
+	var ids []string
+	for _, rawMsg := range out["messages"].([]any) {
+		msg := rawMsg.(map[string]any)
+		content, ok := msg["content"].([]any)
+		if !ok {
+			continue
+		}
+		if len(content) == 0 {
+			t.Errorf("a message carries an empty content array: an all-orphan run writes no message at all\n%s", raw)
+		}
+		for _, rawBlock := range content {
+			block := rawBlock.(map[string]any)
+			if block["type"] != "tool_result" {
+				continue
+			}
+			ids = append(ids, block["tool_use_id"].(string))
+		}
+	}
+	return ids
+}
+
+func TestARunOfOnlyOrphanedResultsWritesNoMessageAtAll(t *testing.T) {
+	ctx := Context{Messages: []Message{
+		{User: &UserContent{Text: "go", HasText: true}},
+		{Assistant: &AssistantContent{API: AnthropicWire, Provider: "anthropic", Model: "claude-sonnet-4-5", StopReason: "tool_use", Parts: []ContentPart{
+			{ToolCall: &ToolCall{ID: "toolu_1", Name: "bash", Arguments: "{}"}},
+		}}},
+		anthropicToolResult("toolu_1"),
+		{User: &UserContent{Text: "carry on", HasText: true}},
+		anthropicToolResult("toolu_8"),
+		anthropicToolResult("toolu_9"),
+	}}
+	got := anthropicToolUsesInBody(t, ctx)
+	if len(got) != 1 || got[0] != "toolu_1" {
+		t.Errorf("got %v, want only the answered one: the second run is entirely orphans, and the call it could have stood in for is already answered so no synthetic result is grown", got)
+	}
+}
+
+func TestAMixedRunKeepsOnlyTheResultsWhoseCallIsInTheConversation(t *testing.T) {
+	ctx := Context{Messages: []Message{
+		{User: &UserContent{Text: "go", HasText: true}},
+		{Assistant: &AssistantContent{API: AnthropicWire, Provider: "anthropic", Model: "claude-sonnet-4-5", StopReason: "tool_use", Parts: []ContentPart{
+			{ToolCall: &ToolCall{ID: "toolu_1", Name: "bash", Arguments: "{}"}},
+			{ToolCall: &ToolCall{ID: "toolu_2", Name: "bash", Arguments: "{}"}},
+		}}},
+		anthropicToolResult("toolu_1"),
+		anthropicToolResult("toolu_9"),
+		anthropicToolResult("toolu_2"),
+	}}
+	got := anthropicToolUsesInBody(t, ctx)
+	if len(got) != 2 || got[0] != "toolu_1" || got[1] != "toolu_2" {
+		t.Errorf("got %v, want [toolu_1 toolu_2]", got)
+	}
+}
+
 func TestTheBodyOrderIsModelThenMaxTokensThenStream(t *testing.T) {
 	raw, _ := BuildAnthropicRequestBody(anthropicModel(), Context{}, AnthropicOptions{}, "")
 	order := []string{"\"model\":", "\"max_tokens\":", "\"stream\":"}
