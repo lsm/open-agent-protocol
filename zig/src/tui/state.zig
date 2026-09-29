@@ -258,6 +258,7 @@ pub const TokenRateSet = struct {
 
     pub fn runStarted(self: *TokenRateSet) void {
         self.run_active = true;
+        self.previous = .{};
     }
 
     pub fn runEnded(self: *TokenRateSet) void {
@@ -2192,8 +2193,26 @@ test "a run that measured nothing yet falls back to the average rather than noth
     rate.runEnded();
 
     rate.runStarted();
-    try std.testing.expect(!rate.previous.hasFigure() or rate.previous.output_tokens != 900);
+    try std.testing.expect(!rate.previous.hasFigure());
+    try std.testing.expectEqual(@as(u64, 100), rate.average.output_tokens);
     try std.testing.expectEqual(@as(u64, 100), rate.shown().output_tokens);
+    try std.testing.expectEqual(@as(u64, 1_000), rate.shown().stream_ms);
+}
+
+test "a new run does not open showing the run before it" {
+    var rate = TokenRateSet{};
+    rate.runStarted();
+    rate.produced(400, 1_000);
+    rate.messageEnded(2_000, 900);
+    rate.turnEnded();
+    rate.runEnded();
+    try std.testing.expectEqual(@as(u64, 900), rate.previous.output_tokens);
+
+    rate.runStarted();
+    try std.testing.expect(!rate.previous.hasFigure());
+    try std.testing.expectEqual(@as(u64, 900), rate.average.output_tokens);
+    try std.testing.expectEqual(@as(u64, 900), rate.shown().output_tokens);
+    try std.testing.expectEqual(@as(u64, 1_000), rate.shown().stream_ms);
 }
 
 test "a turn that produced nothing reports nothing" {

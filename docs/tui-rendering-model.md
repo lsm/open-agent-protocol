@@ -228,7 +228,7 @@ code paths; add a transcript row instead.
 - The cost segment beside it is **computed, not reported**: it is the model's
   `cost.input` multiplied by the prompt estimate, so the row now carries one figure from
   what the provider reported (the rate) beside one this repository worked out (the cost).
- A second row under it shows the working directory on the left, muted, collapsed
+- A second row under it shows the working directory on the left, muted, collapsed
   to `~` under the home directory and left-truncated with `…`, and the git branch at
   the right end; the row hides on terminals shorter than 12 rows. The branch is read
   from the repository rather than from a `git` process: the working directory and each
