@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -68,24 +70,30 @@ func TestHubStdioAnswersGoapAndOapxTheSame(t *testing.T) {
 	}
 }
 
-func TestHubStdioAnswersUnavailableForATransportItDoesNotCarry(t *testing.T) {
+func TestHubRefusesAConfigItCannotReadAndNamesTheFile(t *testing.T) {
 	oapx := os.Getenv("OAP_OAPX_BIN")
 	if oapx == "" {
-		t.Skip("set OAP_OAPX_BIN to an oapx binary to check its unavailable answers")
+		t.Skip("set OAP_OAPX_BIN to an oapx binary to check the flags it refuses")
 	}
-	for _, argument := range []string{"--addr=127.0.0.1:0", "--config=missing.json"} {
-		t.Run(argument, func(t *testing.T) {
-			command := exec.Command(oapx, "hub", argument)
+	cases := []struct {
+		argument string
+		wants    string
+	}{
+		{argument: "--config=missing.json", wants: "missing.json"},
+	}
+	for _, each := range cases {
+		t.Run(each.argument, func(t *testing.T) {
+			command := exec.Command(oapx, "hub", each.argument)
 			command.Stdin = strings.NewReader("")
 			output, err := command.CombinedOutput()
 			if err == nil {
-				t.Errorf("oapx hub %s exited 0; a transport it does not carry must exit non-zero", argument)
+				t.Errorf("oapx hub %s exited 0; a flag it cannot honour must exit non-zero", each.argument)
 			}
-			if !strings.Contains(string(output), "unavailable") {
-				t.Errorf("oapx hub %s did not answer unavailable:\n%s", argument, output)
+			if !strings.Contains(string(output), each.wants) {
+				t.Errorf("oapx hub %s did not name %q in its refusal:\n%s", each.argument, each.wants, output)
 			}
 			if strings.Contains(string(output), "{\"id\"") {
-				t.Errorf("oapx hub %s answered a request rather than refusing the flag", argument)
+				t.Errorf("oapx hub %s answered a request rather than refusing the flag", each.argument)
 			}
 		})
 	}
@@ -101,6 +109,64 @@ func TestHubStdioEndsCleanlyWhenTheHostClosesThePipe(t *testing.T) {
 	command.Stderr = os.Stderr
 	if err := command.Run(); err != nil {
 		t.Fatalf("oapx hub --stdio with a host that sent nothing and closed: %v", err)
+	}
+}
+
+func TestHubAddrBindsLoopbackAndEndsOnAnInterrupt(t *testing.T) {
+	oapx := os.Getenv("OAP_OAPX_BIN")
+	if oapx == "" {
+		t.Skip("set OAP_OAPX_BIN to an oapx binary to check its HTTP daemon")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, oapx, "hub", "--addr=127.0.0.1:0")
+	command.Stdin = strings.NewReader("")
+	var stderr strings.Builder
+	command.Stderr = &stderr
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	bound := make(chan string, 1)
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.HasPrefix(line, "listening on http://") {
+				bound <- strings.TrimPrefix(line, "listening on ")
+				return
+			}
+		}
+		bound <- ""
+	}()
+	var address string
+	select {
+	case address = <-bound:
+	case <-ctx.Done():
+		_ = command.Process.Kill()
+		t.Fatalf("oapx hub --addr never reported a bound address:\n%s", stderr.String())
+	}
+	if address == "" {
+		_ = command.Process.Kill()
+		t.Fatalf("oapx hub --addr bound nothing:\n%s", stderr.String())
+	}
+	if err := command.Process.Signal(os.Interrupt); err != nil {
+		_ = command.Process.Kill()
+		t.Fatalf("oapx hub --addr could not be interrupted: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- command.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("oapx hub --addr ended on an interrupt with %v:\n%s", err, stderr.String())
+		}
+	case <-time.After(30 * time.Second):
+		_ = command.Process.Kill()
+		t.Fatalf("oapx hub --addr ignored an interrupt:\n%s", stderr.String())
 	}
 }
 

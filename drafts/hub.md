@@ -63,10 +63,10 @@ security posture, and a port carries all of them or is not conformant.
 
 | rule | detail | pinned by |
 | --- | --- | --- |
-| **Loopback bind by default** | The HTTP daemon binds `127.0.0.1:6270`. Pointing it at an external interface is explicitly unsupported and opts out of the single-user model. | `TestServeDefaultAddrIsLoopback` |
+| **Loopback bind by default** | The HTTP daemon binds `127.0.0.1:6270`. Pointing it at an external interface is explicitly unsupported and opts out of the single-user model. | `TestServeDefaultAddrIsLoopback`. Zig: `oapx hub` with no transport flag binds `127.0.0.1:6270`, pinned by `the default bind is loopback, so every default user keeps the allowlist`; `the loopback allowlist is the three loopback spellings and nothing else` pins which binds are loopback at all, `a bind is read as a host and a port, and a malformed one says which part it is` pins every `--addr` refusal, and `the banner names the bound address, IPv4 plainly and IPv6 bracketed` pins what the banner prints |
 | **No authentication** | There is no credential, token or session cookie on either transport. Over stdio, spawning the process *is* the authorization. | structural: no auth code path exists on either transport, which is how the rule is kept — a test asserting an absence would only say the tree had not grown one yet |
-| **`Host` allowlisted on a loopback bind** | When the bind address names `localhost`, `127.0.0.1` or `::1`, only requests whose `Host` header names one of those three are served; anything else is refused `403`. Comparison is case-insensitive and the port is stripped. A non-loopback bind has no allowlist. | `TestHostAllowlist`, `TestLoopbackHosts` |
-| **`Origin` refused on every route** | A request carrying any `Origin` header is refused `403 cross_origin_request`. The check wraps the whole mux rather than living in the routes that read a body, so it covers `close` and every route not yet written. | `TestEveryRouteRefusesABrowserOrigin`, `TestReadRequestRefusesBrowserOrigins`, `TestTheOriginBoundaryHoldsWithoutAHostAllowlist` |
+| **`Host` allowlisted on a loopback bind** | When the bind address names `localhost`, `127.0.0.1` or `::1`, only requests whose `Host` header names one of those three are served; anything else is refused `403`. Comparison is case-insensitive and the port is stripped, and **a bracketed host has to carry a port**, which is what Go's split produces: `Host: [::1]` with no port is refused, and so is one that opens a bracket it never closes. A non-loopback bind has no allowlist. | `TestHostAllowlist`, `TestLoopbackHosts`. Zig: `a Host header is compared without its port and without case` and `a bind that is not loopback has no allowlist, so nothing is refused`, against a real listener — refused as an `error.response` carrying `unrecognized_host`, which is what `D1` fixed in Go |
+| **`Origin` refused on every route** | A request carrying any `Origin` header is refused `403 cross_origin_request`. The check wraps the whole mux rather than living in the routes that read a body, so it covers `close` and every route not yet written. | `TestEveryRouteRefusesABrowserOrigin`, `TestReadRequestRefusesBrowserOrigins`, `TestTheOriginBoundaryHoldsWithoutAHostAllowlist`. Zig: `a request carrying both an Origin and a foreign Host is refused the Origin first` and `the daemon answers over a real socket, and the bytes say which refusal it was` — both over a real listener, so the order and the bytes on the wire are pinned rather than asserted |
 | **`environment` is an allowlist** | A child process inherits nothing ambient. An adapter entry's `environment` names the variables forwarded: a bare `NAME` forwards the daemon's own value (an unset name is omitted), `NAME=value` passes through literally. A tool source's `environment` takes the same form with one stricter rule — a bare `NAME` the daemon does not carry fails at startup, naming the source and the variable, because that entry is the credential list of one executable the daemon itself launches. | `TestResolveEnvironment`, `TestLoadRegistryToolSourceNeedsEveryNameItLists`, `TestCallerEnvironmentNeverNamesAVariableTwice`. Zig: the transport builds the child's environment from the list alone rather than from its own, pinned by `the child sees exactly the environment it was given and nothing ambient`, and the hub's registry hands each adapter exactly what the document resolved, pinned by `the hub's registry builds every entry a document names, and a child inherits only the variables its entry lists` |
 | **A restart ends every live session** | Run children are per-session and no adapter survives the process, so a restart ends every harness process. Under [Decision 0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md) a session outlives its process and close releases it, so no entry accumulates; reopening one is staged as T7, and until it lands a client that reconnects to a restarted hub finds no session. | The restart: `TestServeSessionsClosedOnShutdown`. The release: none yet — `TestHubSessionCloseSemantics` and `TestSessionsListingAcrossLifecycle` still pin the kept entry, which D2 records. |
 | **A binding record holds no credential** | `--bindings <path>` appends one record per open: the session id, the adapter and its pin, the home, the working directory the adapter entry was configured with (omitted when the hub does not know one — never the daemon's own), the model, and the tool source ids. It never records the request's environment, a credential, or a resolved environment value — a record of what was asked must not become a copy of what was secret — and the file is created `0o600`. History is appended rather than replaced, and a torn tail is truncated on the next write or the next open, keeping the longest prefix of records that decode, so one crash cannot leave the log permanently unreadable | `TestAnOpenIsRecordedAsABindingAndNothingSensitiveIs` (opens a session and asserts the written bytes carry neither), `TestTheStoreFileIsNotWorldReadable` (the mode), `TestATornTailIsTruncatedSoTheStoreKeepsWorking`, `TestATornTailIsTruncatedWhenTheStoreIsOpenedAgain`, `TestACorruptLineThatKeepsItsNewlineIsTruncatedToo` and `TestACorruptLineIsTruncatedWhenTheStoreIsOpenedAgain` (the repair), `TestACloseAndADuplicateOpenCannotInterleaveTheirRecords` (a close never lands between an open and its registration), and `TestARolledBackOpenIsRecordedAsOpenedAndThenClosed` and `TestARefusedDuplicateOpenIsRecordedAsARefusalAndNothingElse` and `TestTheRecordsDirectoryIsTheAdaptersOwnAndIsOmittedWhenUnknown` (what a record claims) |
@@ -436,7 +436,7 @@ both answers, at the budget and one byte over it.
 | A wrong `Content-Type` is refused `415` | `TestReadRequestRefusesBrowserOrigins` (the status), `TestARequestTheDaemonWillNotParseIsRefusedWithItsCode` (the code, and the absent `Content-Type`; a `charset` is no longer a reason to refuse, and the row below says which test pins that) |
 | Any `charset` is admitted and the body is read as UTF-8 — no `charset` means UTF-8, and `utf-8`, `utf8`, `UTF-8`, `latin1`, `us-ascii`, `iso-8859-1` and a name that is not a charset all behave alike | `TestAnyCharsetIsAdmittedAndTheBodyIsReadAsUTF8` — each case's body names a session whose id carries non-ASCII text, and the answer must echo those characters unchanged, so a body transcoded per the header could not pass |
 | A body that is not valid UTF-8 is read with the replacement character, whatever `charset` it claims | `TestABodyThatIsNotUTF8IsReadWithTheReplacementCharacter` — a body with a raw invalid byte is admitted and the echoed id carries U+FFFD. The gate does not police UTF-8 validity; refusing it would be the new refusal the charset decision removed |
-| A body that cannot be read at all is refused `400 request_read` | `TestATruncatedRequestBodyIsRefusedWithItsOwnCode` — a client that hangs up mid-body over a raw connection, so the daemon's read fails rather than the client's write |
+| A body that cannot be read at all is refused `400 request_read` | `TestATruncatedRequestBodyIsRefusedWithItsOwnCode` — a client that hangs up mid-body over a raw connection, so the daemon's read fails rather than the client's write. Zig: `a client that hangs up mid-body is refused request_read, as the draft pins it`, which half-closes a real socket after a short prefix and reads the answer. A hangup **mid-header** is a different thing and gets a bare `400`, because no body was promised and there is nothing to have failed to read |
 | A body over 16 MiB is refused `413 request_too_large` | `TestRequestBudgetMatchesHTTP` (which pins the stdio `request_too_large` for the same budget) |
 | A body's refusing status and code match the stdio op's | `TestRequestBudgetMatchesHTTP`, `TestOpErrorCodesMirrorHTTP` |
 | A `GET /adapters/{name}/capabilities` response cites a daemon-minted correlation id | `TestCapabilitiesEndpoint` |
@@ -504,12 +504,92 @@ whether to wait or to reconnect.
 
 | bound | value | pinned by |
 | --- | --- | --- |
-| Request body | 16 MiB | `TestRequestBudgetMatchesHTTP` |
+| Request body | 16 MiB | `TestRequestBudgetMatchesHTTP`; Zig: `a body over the cap is refused before it is read` |
 | Per-subscription mailbox | 64 envelopes, as the core defines it | `TestHubSubscriptionQueueOverflow` |
+| Accept poll | 50 ms, so a signal is noticed by an idle daemon | Zig: `hub_accept_poll_ms` and `the accept poll reports an idle listener as idle and a waiting one as waiting`, which drives a real listener. This is not protocol and is not in Go, whose `Serve` returns a listener a runtime polls for it |
+| Accept failure | A failure the peer caused is served past; a failure of the listener stops the daemon | Zig: `an accept a peer aborted before the call is served again, not obeyed` and `a client that resets a connection the listener had not taken yet does not stop the hub`. The rule is not cosmetic: a daemon that stops on any accept error can be stopped by any local process that opens a connection and resets it, which a port scanner or a health check does by accident and an attacker does on purpose — and stopping it sweeps every session |
+| Request headers | 16 KiB | Zig: `headers over the cap are refused rather than buffered`. Go's net/http carries its own default and names no rule, so this is a Zig choice within "a port may choose its own" |
 
 A 30 s header read and a 2 min idle timeout keep a socket from being held open
 forever. Neither is protocol — no client observes them, and a port may choose
-its own — so they are named here only so a port knows they exist.
+its own — so they are named here only so a port knows they exist. Zig takes both
+numbers as written, and the one that matters is the header: **a peer that
+connects and then says nothing is given up on rather than waited on**, because
+the daemon serves connections one at a time and a stalled read would otherwise
+wedge every other client and leave a signal unobserved. Pinned by `a peer that
+connects and never sends a request is given up on, not waited on forever`;
+Go's bound is `ReadHeaderTimeout` on the same server.
+
+**Both bounds are a property of a platform that can wait on a socket**, and
+Zig's is a `poll`, so neither holds on Windows: a read there blocks with no
+deadline, and a peer that connects and stays silent wedges the daemon. Rather
+than claim a bound it does not have, the Zig daemon says so on stderr when it
+starts there, and the two tests that pin the bound skip. Closing it is #460's
+work, not this route's; the macOS and Linux builds are the ones the release
+covers.
+
+**The header budget is absolute, and the body budget is not.** Go's
+`ReadHeaderTimeout` runs from the first byte, so a peer that sends one byte
+per window never completes a request; the `IdleTimeout` restarts on every read,
+so a body read the same way can go on for as long as the peer keeps dribbling.
+Zig takes that split as it stands — a per-read budget on the header would let
+exactly the wedge the bound exists to prevent — and `the header budget is the
+whole request's, not a fresh one per byte` pins the first half. The second half
+is a hole the draft names rather than closes, and a port that wants it closed
+needs a whole-body deadline, which is not what either tree has.
+
+**A route that is not written yet answers a plain `404`, not a refusal.** Go's
+mux does the same for a path no pattern matches, and the draft's codes are
+`invalid_request`, `unknown_adapter` and `unknown_session` — none of which is
+"this URL does not exist". So a port that has written three of the twelve
+routes answers `404` for the other nine rather than inventing a code for them,
+and the answer carries no `error.response` envelope. Pinned in Zig by the
+daemon's own 404 while no route is written; Go pins the same thing by
+`TestTheRouteTableIsComplete`, which fails when a path is added to neither the
+mux nor a list of the routes still to come.
+
+**A body the daemon refused to read is drained before the socket closes.** A
+`403` or a `413` is answered without reading the body the head declared, and a
+close on a socket whose receive queue still holds those bytes is answered with a
+reset, which on Linux can discard the refusal the client has not read yet — the
+client sees a connection error rather than the reason. So every path that
+answers without consuming a body drains what the head declared, bounded at 64 KiB
+and one poll cycle, and gives up rather than waiting on a peer that sends nothing
+more. Zig: `a body the daemon refused to read is drained before the socket closes,
+or the close resets the answer away` and `a drain gives up rather than waiting on a
+peer that sends nothing more`; measured, forty consecutive refused POSTs with
+their bodies sent in full all arrive as `403`.
+
+**A read in flight is bounded, and a signal is noticed inside the bound.** The
+daemon polls a connection for at most 50 ms at a time and re-checks whether it
+should stop between polls, so an interrupt during a slow or stalled request ends
+the daemon in well under a second rather than at the end of the request's own
+budget. A read also returns **whatever has arrived** rather than waiting for its
+buffer to fill: a client that promises 4 KiB and sends 5 bytes must not hold the
+one connection the daemon serves until it sends the rest. Zig: `a poll waiting
+on a silent peer is re-checked inside its cycle, not held to its deadline` and
+`a body that arrives in part is taken as it comes, and never waited on for the
+rest`, plus the same two measured against the built binary.
+
+**The trust model is decided on the head, before any body is read.** A
+cross-origin or foreign-`Host` request that declares a body and withholds it is
+refused as soon as its head is parsed, which is what Go's middleware does — so it
+neither spends the 16 MiB scratch on a request the posture exists to refuse, nor
+holds the single serve slot for the idle budget. A body is read only by a route
+that will consume one. Zig: `the trust model is decided on the head, so a refused
+request never waits on a body it will not read`, and measured: a refused
+cross-origin POST that declares 4 KiB and sends 5 bytes is answered `403` in
+under a millisecond.
+
+**A `HEAD` is answered with the headers a `GET` would send and no body.** RFC
+9110 forbids a body in a HEAD response and net/http suppresses one, so a port
+that sends one is wrong rather than merely different — and the `Content-Length`
+still says what a `GET` would return, which is the only reason a client sends
+a HEAD at all. This holds for a read that failed after the method was parsed
+too, so a `HEAD` with a body over the cap gets a bare `413` and a `HEAD` with
+a duplicate header gets a bare `400`. Zig: `a HEAD is answered with the length
+a GET would send and no body at all` and `a HEAD whose read fails after its
+method gets no body either`.
 
 ## Cursor and replay
 
@@ -1170,6 +1250,24 @@ byte-for-byte comparison on their first request.
 **D3 is fixed** ([#500](https://github.com/lsm/open-agent-protocol/pull/500)): a catalog is
 stamped with the revision its *lister* served it under, which is what makes the
 draft's "refuse one that disagrees with the descriptor" check possible at all.
+
+**D13 — a chunked body is refused, where Go de-chunks it.** A request carrying
+any `Transfer-Encoding` is answered a bare `400`; `net/http` decodes chunked
+transparently, so a streaming client works against `goap hub` and not against
+`oapx hub`. This is a gap rather than a decision, and it is closed by the routes
+that read a body — the decoder belongs beside the first `readBody` caller, under
+the same 16 MiB cap, not in a reader with no consumer. Until then the refusal is
+the safe one: a body whose framing this daemon cannot read is not a body it
+should guess at. Pinned by `a chunked body is refused rather than guessed at`.
+
+**D14 — no `100 Continue` is sent, where Go sends one when the handler reads the
+body.** A client that sends `Expect: 100-continue` waits for the interim answer;
+`curl` waits about a second and sends anyway, a stricter client waits out the
+idle budget. Sending it here would be worse than not sending it, because no route
+in this daemon consumes a body yet — an interim answer would invite a body the
+daemon is about to refuse. The routes that read a body answer `100 Continue`
+first, and a route that refuses the head answers the refusal instead. Noted here
+so the difference is a recorded one rather than a surprise in a differential run.
 
 **D5 is fixed** ([#516](https://github.com/lsm/open-agent-protocol/pull/516)): a session
 open's `metadata` reaches an adapter through the core, which before it **had no member to

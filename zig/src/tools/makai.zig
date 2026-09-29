@@ -64,6 +64,7 @@ const hermes_adapter = @import("hermes_adapter");
 const memory_adapter = @import("memory_adapter");
 const hub = @import("hub");
 const hub_stdio = @import("hub_stdio");
+const hub_http = @import("hub_http");
 const bounded_output = @import("bounded_output");
 const endpoint_signals = @import("endpoint_signals");
 
@@ -2467,6 +2468,105 @@ fn hubConfiguredSources(
     return sources;
 }
 
+fn hubBindRefusal(stderr: std.Io.File, message: []const u8) error{InvalidHubOption} {
+    compat.stdio.writeAll(stderr, "oapx hub: ") catch {};
+    compat.stdio.writeAll(stderr, message) catch {};
+    compat.stdio.writeAll(stderr, "\n") catch {};
+    return error.InvalidHubOption;
+}
+const hub_accept_poll_ms: i32 = 50;
+const hub_io_cycle_ms: i32 = 50;
+
+const keepGoing = hub_http.KeepGoing{ .context = undefined, .check = hubSignalled };
+
+fn hubSignalled(_: *const anyopaque) bool {
+    return !endpoint_signals.received();
+}
+
+
+fn runHubHttp(
+    allocator: std.mem.Allocator,
+    arena: std.mem.Allocator,
+    core: *hub.Hub,
+    bind: []const u8,
+    served: []const u8,
+    stdout: std.Io.File,
+    stderr: std.Io.File,
+) !void {
+    const wanted = hub_http.parseBind(bind) catch |failure| return hubBindRefusal(stderr, switch (failure) {
+        error.NoPort => "--addr names no port; write host:port, as 127.0.0.1:6270",
+        error.NoHost => "--addr names no host; write one, as 127.0.0.1:6270 or [::1]:6270",
+        error.UnclosedBracket => "--addr opens a bracket and closes none; write an IPv6 host as [::1]:6270",
+        error.UnbracketedIpv6 => "--addr cannot tell its port from an unbracketed IPv6 host; write it as [::1]:6270",
+        error.NotAPort => "--addr names a port that is not a number; write host:port, as 127.0.0.1:6270",
+    });
+    const allow = hub_http.loopbackHosts(bind);
+    const address = try compat.net.resolveAddress(arena, wanted.host, wanted.port);
+    var listener = try compat.net.tcpListen(address, .{ .reuse_address = true });
+    defer compat.net.closeServer(&listener);
+    try compat.stdio.writeAll(stdout, "listening on http://");
+    try compat.stdio.writeAll(stdout, try hub_http.addressText(arena, compat.net.listenAddress(&listener)));
+    try compat.stdio.writeAll(stdout, "\n");
+    try compat.stdio.writeAll(stderr, "oapx: serving adapters: ");
+    try compat.stdio.writeAll(stderr, served);
+    try compat.stdio.writeAll(stderr, " (restart kills all sessions)\n");
+    if (allow == null) {
+        try compat.stdio.writeAll(stderr, "oapx: this bind is not loopback; the single-user model is opted out of\n");
+    }
+    if (comptime !hub_http.pollable) {
+        try compat.stdio.writeAll(stderr, "oapx: this platform cannot wait on a socket, so a stalled client is not given up on and a signal ends the process rather than the hub; the Windows path is #460\n");
+    }
+
+    var next_id: u64 = 0;
+    while (!endpoint_signals.received()) {
+        if (!hub_http.connectionPending(&listener, hub_accept_poll_ms)) continue;
+        var connection = compat.net.accept(&listener) catch |failure| switch (hub_http.classifyAccept(failure)) {
+            .serve_again => continue,
+            .back_off => {
+                compat.time.sleepMs(hub_http.accept_backoff_ms);
+                continue;
+            },
+            .stop => {
+                sweepHubSessions(core, stderr);
+                try compat.stdio.writeAll(stderr, "oapx: stopped\n");
+                return failure;
+            },
+        };
+        defer connection.stream.close();
+        next_id += 1;
+        var scratch_state = std.heap.ArenaAllocator.init(allocator);
+        defer scratch_state.deinit();
+        const scratch = scratch_state.allocator();
+        var body_allowed = true;
+        var declared: usize = 0;
+        var request = hub_http.readHead(scratch, &connection.stream, hub_http.header_read_ms, hub_io_cycle_ms, keepGoing, &body_allowed, &declared) catch |failure| {
+            if (failure == error.Stopped) break;
+            hub_http.writeTransportFailure(&connection.stream, scratch, next_id, failure, body_allowed) catch {};
+            hub_http.drain(&connection.stream, declared, keepGoing);
+            continue;
+        };
+        defer request.deinit(scratch);
+        const answered = hub_http.answer(allow orelse &.{}, request);
+        if (answered != .not_found) {
+            hub_http.writeAnswer(&connection.stream, scratch, next_id, answered, body_allowed) catch {};
+            hub_http.drain(&connection.stream, request.content_length, keepGoing);
+            continue;
+        }
+        try compat.stdio.writeAll(stderr, "\n");
+        hub_http.readBody(scratch, &connection.stream, &request, hub_http.idle_read_ms, hub_io_cycle_ms, keepGoing) catch |failure| {
+            try compat.stdio.writeAll(stderr, "\n");
+            if (failure == error.Stopped) break;
+            hub_http.writeTransportFailure(&connection.stream, scratch, next_id, failure, body_allowed) catch {};
+            hub_http.drain(&connection.stream, request.content_length -| request.filled, keepGoing);
+            continue;
+        };
+        hub_http.writeAnswer(&connection.stream, scratch, next_id, answered, body_allowed) catch {};
+    }
+    try compat.stdio.writeAll(stderr, "oapx: shutting down\n");
+    sweepHubSessions(core, stderr);
+    try compat.stdio.writeAll(stderr, "oapx: stopped\n");
+}
+
 fn hubTakesSignals() bool {
     return @import("builtin").os.tag != .windows;
 }
@@ -2521,10 +2621,6 @@ fn runHub(
         try compat.stdio.writeAll(stderr, "oapx hub: --stdio takes no listen address; --addr and --stdio are mutually exclusive\n");
         return error.InvalidHubOption;
     }
-    if (!over_stdio) {
-        if (addr != null) return unavailable(stderr, "hub", "--addr", "the HTTP and SSE transport lands with #388");
-        return unavailable(stderr, "hub", "--stdio", "a hub with no transport has nothing to serve");
-    }
 
     var arena_state = std.heap.ArenaAllocator.init(allocator);
     defer arena_state.deinit();
@@ -2561,10 +2657,6 @@ fn runHub(
         };
     }
 
-    var sink = StdoutSink{ .file = stdout, .io = hubIo() };
-    var frontend = try hub_stdio.Frontend.init(allocator, &core, .{ .context = &sink, .write = StdoutSink.write }, .{});
-    defer frontend.deinit();
-
     if (hubTakesSignals()) {
         endpoint_signals.install() catch {
             try compat.stdio.writeAll(stderr, "oapx hub: the process cannot take a signal handler; refusing to serve a hub that cannot be stopped\n");
@@ -2573,7 +2665,13 @@ fn runHub(
     } else {
         try compat.stdio.writeAll(stderr, "oapx hub: a console interrupt ends this process rather than the hub; the Windows path is #460\n");
     }
+
     const served = try std.mem.join(arena, ", ", try core.names(arena));
+    if (!over_stdio) return runHubHttp(allocator, arena, &core, addr orelse hub_http.defaultBind(), served, stdout, stderr);
+
+    var sink = StdoutSink{ .file = stdout, .io = hubIo() };
+    var frontend = try hub_stdio.Frontend.init(allocator, &core, .{ .context = &sink, .write = StdoutSink.write }, .{});
+    defer frontend.deinit();
     try compat.stdio.writeAll(stderr, "oapx: serving adapters over stdio: ");
     try compat.stdio.writeAll(stderr, served);
     try compat.stdio.writeAll(stderr, " (exit kills all sessions)\n");
