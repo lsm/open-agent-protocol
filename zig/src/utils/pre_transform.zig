@@ -308,13 +308,13 @@ pub fn preTransform(
                 try result_messages.append(allocator, .{ .assistant = new_msg });
             },
             .tool_result => |tr| {
-                try pending_result_ids.put(tr.tool_call_id, {});
-
                 if (tool_id_map.get(tr.tool_call_id)) |normalized_id| {
+                    try pending_result_ids.put(normalized_id, {});
                     var new_tr = tr;
                     new_tr.tool_call_id = normalized_id;
                     try result_messages.append(allocator, .{ .tool_result = new_tr });
                 } else {
+                    try pending_result_ids.put(tr.tool_call_id, {});
                     try result_messages.append(allocator, msg);
                 }
             },
@@ -605,6 +605,121 @@ test "preTransform normalizes tool IDs with pipe" {
     const tc = result.messages[0].assistant.content[0].tool_call;
     try std.testing.expectEqualStrings("call_123", tc.id);
     try std.testing.expectEqualStrings("call_123", result.messages[1].tool_result.tool_call_id);
+    try std.testing.expectEqual(@as(usize, 2), result.messages.len);
+}
+
+test "preTransform answers a mistral call once under its rewritten id" {
+    const allocator = std.testing.allocator;
+    const messages = [_]ai_types.Message{
+        .{ .assistant = .{
+            .content = &.{
+                .{ .tool_call = .{ .id = "call_original", .name = "bash", .arguments_json = "{}" } },
+            },
+            .api = "openai-completions",
+            .provider = "mistral",
+            .model = "mistral-large",
+            .usage = .{},
+            .stop_reason = .tool_use,
+            .timestamp = 0,
+        } },
+        .{ .tool_result = .{
+            .tool_call_id = "call_original",
+            .tool_name = "bash",
+            .content = &.{.{ .text = .{ .text = "ok" } }},
+            .is_error = false,
+            .timestamp = 0,
+        } },
+        .{ .user = .{ .content = .{ .text = "next" }, .timestamp = 0 } },
+    };
+
+    var result = try preTransform(allocator, &messages, .{
+        .mistral_tool_ids = true,
+        .target_api = "openai-completions",
+        .target_provider = "mistral",
+        .target_model_id = "mistral-large",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), result.messages.len);
+    const call_id = result.messages[0].assistant.content[0].tool_call.id;
+    try std.testing.expect(!std.mem.eql(u8, call_id, "call_original"));
+    try std.testing.expect(result.messages[1] == .tool_result);
+    try std.testing.expectEqualStrings(call_id, result.messages[1].tool_result.tool_call_id);
+    try std.testing.expect(result.messages[2] == .user);
+}
+
+test "preTransform answers a truncated call once under its truncated id" {
+    const allocator = std.testing.allocator;
+    const long = "abcdefghijklmnopqrstuvwxyz1234567890ABCDEFGHIJ";
+    const messages = [_]ai_types.Message{
+        .{ .assistant = .{
+            .content = &.{
+                .{ .tool_call = .{ .id = long, .name = "bash", .arguments_json = "{}" } },
+            },
+            .api = "openai-completions",
+            .provider = "openai",
+            .model = "gpt-4o",
+            .usage = .{},
+            .stop_reason = .tool_use,
+            .timestamp = 0,
+        } },
+        .{ .tool_result = .{
+            .tool_call_id = long,
+            .tool_name = "bash",
+            .content = &.{.{ .text = .{ .text = "ok" } }},
+            .is_error = false,
+            .timestamp = 0,
+        } },
+        .{ .user = .{ .content = .{ .text = "next" }, .timestamp = 0 } },
+    };
+
+    var result = try preTransform(allocator, &messages, .{
+        .max_tool_id_len = 40,
+        .target_api = "openai-completions",
+        .target_provider = "openai",
+        .target_model_id = "gpt-4o",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), result.messages.len);
+    const call_id = result.messages[0].assistant.content[0].tool_call.id;
+    try std.testing.expectEqual(@as(usize, 40), call_id.len);
+    try std.testing.expect(result.messages[1] == .tool_result);
+    try std.testing.expectEqualStrings(call_id, result.messages[1].tool_result.tool_call_id);
+    try std.testing.expect(result.messages[2] == .user);
+}
+
+test "preTransform still grows one synthetic result for an unanswered rewritten call" {
+    const allocator = std.testing.allocator;
+    const messages = [_]ai_types.Message{
+        .{ .assistant = .{
+            .content = &.{
+                .{ .tool_call = .{ .id = "call_original", .name = "bash", .arguments_json = "{}" } },
+            },
+            .api = "openai-completions",
+            .provider = "mistral",
+            .model = "mistral-large",
+            .usage = .{},
+            .stop_reason = .tool_use,
+            .timestamp = 0,
+        } },
+        .{ .user = .{ .content = .{ .text = "next" }, .timestamp = 0 } },
+    };
+
+    var result = try preTransform(allocator, &messages, .{
+        .mistral_tool_ids = true,
+        .target_api = "openai-completions",
+        .target_provider = "mistral",
+        .target_model_id = "mistral-large",
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), result.messages.len);
+    const call_id = result.messages[0].assistant.content[0].tool_call.id;
+    try std.testing.expect(result.messages[1] == .tool_result);
+    try std.testing.expect(result.messages[1].tool_result.is_error);
+    try std.testing.expectEqualStrings(call_id, result.messages[1].tool_result.tool_call_id);
+    try std.testing.expect(result.messages[2] == .user);
 }
 
 test "preTransform strips thought_signature for cross-model tool calls" {

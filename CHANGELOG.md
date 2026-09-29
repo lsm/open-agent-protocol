@@ -1305,6 +1305,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with that, having been discarded on entry (`_ = arena`) and the only reason `runHub`
   still allocated an arena at all.
 
+### Fixed
+
+- **An answered tool call no longer grows a second, synthetic `"No result
+  provided"` result when its id is rewritten.** `pre_transform` keys the set of
+  unanswered calls by the id the call is written out under and the set of answered
+  calls by the id the result arrived with, so the two only lined up when
+  normalization left the id alone. Every exchange that rewrites an id therefore put
+  one result on the wire per call and a duplicate error result beside it: **every
+  call against a Mistral endpoint**, whose ids are re-hashed to nine characters, and
+  any id over 40 bytes, carrying a `|`, or holding a byte that is not
+  alphanumeric, `_` or `-` on any other host. The answered set is now keyed the way
+  the pending set is, by the rewritten id, so a call that was answered is answered
+  once and an unanswered one still grows exactly one synthetic result — carrying the
+  rewritten id, so it still names the call it stands in for. The wire is unchanged
+  for every id normalization leaves alone, which is every id on a non-OpenAI,
+  non-Mistral host and every clean short id elsewhere. #514
+
 
 ## [0.2.0] - 2026-09-11
 
