@@ -107,21 +107,47 @@ If those notes are ever wanted back into the file, that is where they are — a
 deliberate revert of one commit, not a regeneration.
 
 `package.json` and `package-lock.json` are `0.1.0-alpha.5` so the declared
-version and the next tag agree. That value is not cosmetic:
+version and the next tag agree. That value is not cosmetic, but it decides
+something narrower than it looks:
 
-- the untagged `workflow_dispatch` path takes the npm version from
-  `package.json` (`node -p "require('./package.json').version"`), and
-  `scripts/package-npm.ts` falls back to it when no `--version` is passed;
-- a **tagged** run is the one case where `package.json` does *not* decide:
-  `${GITHUB_REF_NAME#v}` wins for the artifact names, and the packaging step
-  runs `npm version "$TAG_VERSION" --no-git-tag-version`, overwriting both files
-  in the runner's workspace.
+- **a tagged run ignores it.** `changelog`, `package-npm` and `publish-npm` are
+  all `if: startsWith(github.ref, 'refs/tags/v')`, and they take
+  `${GITHUB_REF_NAME#v}` — `package-npm` also runs `npm version "$TAG_VERSION"
+  --no-git-tag-version`, overwriting both files in the runner's workspace. So the
+  tag decides what npm publishes, every time, and `package.json` cannot
+  contradict it.
+- **an untagged `workflow_dispatch` is governed by it.** `build-binaries` and
+  `checksums` carry no `if`, so they run on one, and three steps in
+  `build-binaries` read `package.json`: `-Dversion` for the binary's compiled-in
+  version, and the `oapx-<version>-<os>-<arch>` names of the `.tar.gz` and the
+  `.zip`.
 
-So a mismatch is only ever visible on a manual dispatch — and a manual dispatch
-that publishes under `0.2.0` while the repository is four alphals past that is
-exactly the drift this section exists to prevent. The `NPM_DIST_TAG` rule
-already sends a version containing `-` to `next`, so the alpha line publishes
-under the right tag with no further change.
+One more surface, which the workflow never reads but a local build does:
+`zig/build.zig.zon`'s `.version` is the *default* for `-Dversion`
+(`zig/build.zig:13`, `orelse manifest.version`), so it is what `oapx --version`
+prints for anyone who runs `zig build` themselves. It is on the alpha line now
+for the same reason `package.json` is — a manifest left saying `0.2.0` after the
+retraction is the disagreement again, one file over. Nothing validates it; the
+only workflow reference is a `hashFiles` cache key, which a correct bump
+invalidates.
+
+That second bullet is the whole reason this value is worth setting, and it is
+worth being exact about what it is: a dispatch builds binaries and names
+artifacts. It does not publish to npm. So the drift to fear is not "the wrong
+version reaches the registry" — the tag makes that impossible — it is an
+artifact and an `oapx --version` line labelled `0.2.0` when the tree is four
+alphas past it, handed to whoever asked for a build. `scripts/package-npm.ts`
+also falls back to `package.json` when no `--version` is passed, which is
+reachable from a local shell but not from CI, since the workflow always passes
+it.
+
+`clients/ts/package.json` (`oap-client`) is deliberately **not** moved. It is a
+separate package on its own `0.1.0` line, and no workflow in this repository
+releases it — `release-binaries.yml` does not mention it — so it is not part of
+the tag line this decision is about.
+
+The `NPM_DIST_TAG` rule already sends a version containing `-` to `next`, so
+the alpha line publishes under the right tag with no further change.
 
 **3. Commit the changelog through a pull request.** This is an ordinary change to
 `CHANGELOG.md` on a branch, merged the usual way. It has to be on `main` *before*
