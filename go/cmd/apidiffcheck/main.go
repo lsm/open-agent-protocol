@@ -66,11 +66,11 @@ func check(root, baseRoot, description string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	head, err := publicPackages(root, module)
+	head, err := publicPackages(root)
 	if err != nil {
 		return err
 	}
-	base, err := publicPackages(baseRoot, module)
+	base, err := publicPackages(baseRoot)
 	if err != nil {
 		return err
 	}
@@ -132,7 +132,7 @@ func setDifference(from, other []string) []string {
 	return difference
 }
 
-func publicPackages(root, module string) ([]string, error) {
+func publicPackages(root string) ([]string, error) {
 	dirs, err := packageDirs(root)
 	if err != nil {
 		return nil, err

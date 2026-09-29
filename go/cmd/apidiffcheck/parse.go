@@ -1,6 +1,10 @@
 package main
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/lsm/open-agent-protocol/go/internal/publicset"
+)
 
 func incompatible(report, module string) []string {
 	var names []string
@@ -13,7 +17,7 @@ func incompatible(report, module string) []string {
 		if !isPackage {
 			name = header
 		}
-		if internal(name) {
+		if publicset.Internal(name) {
 			continue
 		}
 		if !hasIncompatibleEntry(rest) {
@@ -35,15 +39,6 @@ func hasIncompatibleEntry(rest string) bool {
 	}
 	for _, line := range strings.Split(tail, "\n") {
 		if strings.HasPrefix(strings.TrimSpace(line), "- ") {
-			return true
-		}
-	}
-	return false
-}
-
-func internal(name string) bool {
-	for _, element := range strings.Split(name, "/") {
-		if element == "internal" {
 			return true
 		}
 	}
