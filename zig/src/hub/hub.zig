@@ -142,8 +142,8 @@ pub const Sweep = struct {
     sessions: usize = 0,
     closed: usize = 0,
     refused: usize = 0,
+    refused_attempts: usize = 0,
     unattempted: usize = 0,
-    attempts: usize = 0,
 
     pub fn clean(self: Sweep) bool {
         return self.refused == 0 and self.unattempted == 0;
@@ -809,9 +809,13 @@ pub const Hub = struct {
             var scratch = std.heap.ArenaAllocator.init(self.allocator);
             defer scratch.deinit();
             const outcome = self.settle(&self.entries.items[0], scratch.allocator(), now + share);
-            summary.attempts += outcome.attempts;
             summary.closed += @intFromBool(outcome.closed);
-            summary.refused += @intFromBool(!outcome.closed);
+            if (outcome.closed) {
+                summary.refused += 0;
+            } else {
+                summary.refused += 1;
+                summary.refused_attempts += outcome.attempts;
+            }
         }
         summary.sessions = summary.closed + summary.refused + summary.unattempted;
         return summary;
@@ -3048,6 +3052,7 @@ test "one wedged session is given a share of the window, and the session beside 
     try testing.expectEqual(@as(usize, 1), summary.closed);
     try testing.expectEqual(@as(usize, 1), summary.refused);
     try testing.expectEqual(@as(usize, 0), summary.unattempted);
+    try testing.expectEqual(@as(usize, close_attempts - 1), summary.refused_attempts);
     try testing.expectEqual(@as(usize, 0), hub.sessionCount());
     try testing.expectError(error.UnknownSession, hub.state(arena, "settles"));
     try testing.expectEqual(window / 2, stubborn.pumped_ns);

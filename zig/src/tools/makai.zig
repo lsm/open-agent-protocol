@@ -2475,7 +2475,7 @@ fn sweepHubSessions(core: *hub.Hub, stderr: std.Io.File) void {
         summary.closed,
         summary.sessions,
         summary.refused,
-        summary.attempts,
+        summary.refused_attempts,
         summary.unattempted,
     }) catch "oapx: shutdown: a session was not closed cleanly\n";
     compat.stdio.writeAll(stderr, message) catch {};
