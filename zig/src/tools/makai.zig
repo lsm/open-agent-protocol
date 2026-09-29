@@ -2552,9 +2552,7 @@ fn runHubHttp(
             hub_http.drain(&connection.stream, request.content_length, keepGoing);
             continue;
         }
-        try compat.stdio.writeAll(stderr, "\n");
         hub_http.readBody(scratch, &connection.stream, &request, hub_http.idle_read_ms, hub_io_cycle_ms, keepGoing) catch |failure| {
-            try compat.stdio.writeAll(stderr, "\n");
             if (failure == error.Stopped) break;
             hub_http.writeTransportFailure(&connection.stream, scratch, next_id, failure, body_allowed) catch {};
             hub_http.drain(&connection.stream, request.content_length -| request.filled, keepGoing);
