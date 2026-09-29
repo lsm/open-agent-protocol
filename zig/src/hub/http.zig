@@ -138,6 +138,8 @@ pub fn readRequest(allocator: std.mem.Allocator, stream: *compat.net.Stream, hea
     request.split = try splitTarget(allocator, target);
 
     var seen_host = false;
+    var seen_type = false;
+    var seen_length = false;
     while (lines.next()) |line| {
         if (line.len == 0) break;
         const at = std.mem.indexOfScalar(u8, line, ':') orelse continue;
@@ -150,8 +152,12 @@ pub fn readRequest(allocator: std.mem.Allocator, stream: *compat.net.Stream, hea
         } else if (std.ascii.eqlIgnoreCase(name, "origin")) {
             request.origin = true;
         } else if (std.ascii.eqlIgnoreCase(name, "content-type")) {
+            if (seen_type) return error.Malformed;
+            seen_type = true;
             request.content_type = try allocator.dupe(u8, value);
         } else if (std.ascii.eqlIgnoreCase(name, "content-length")) {
+            if (seen_length) return error.Malformed;
+            seen_length = true;
             request.content_length = std.fmt.parseInt(usize, value, 10) catch return error.Malformed;
         } else if (std.ascii.eqlIgnoreCase(name, "transfer-encoding")) {
             return error.UnsupportedTransferEncoding;
@@ -419,6 +425,15 @@ test "a second Host header, an unknown version and a missing version are each re
     try testing.expectError(error.Malformed, requestOver("GET /adapters HTTP/2.0\r\nHost: a\r\n\r\n"));
     try testing.expectError(error.Malformed, requestOver("GET /adapters\r\n\r\n"));
     try testing.expectError(error.Malformed, requestOver("GET /adapters HTTP/1.1\r\nContent-Length: nine\r\n\r\n"));
+}
+
+test "every header this reader owns is taken once, so a second copy is refused rather than kept" {
+    const cases = [_][]const u8{
+        "POST /a HTTP/1.1\r\nHost: a\r\nContent-Type: application/json\r\nContent-Type: text/plain\r\n\r\n",
+        "POST /a HTTP/1.1\r\nHost: a\r\nContent-Length: 0\r\nContent-Length: 2\r\n\r\n",
+        "POST /a HTTP/1.1\r\nHost: a\r\ncontent-type: application/json\r\nContent-Type: text/plain\r\n\r\n",
+    };
+    for (cases) |raw| try testing.expectError(error.Malformed, requestOver(raw));
 }
 
 test "a chunked body is refused rather than guessed at" {
