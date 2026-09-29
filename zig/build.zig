@@ -1876,6 +1876,28 @@ pub fn build(b: *std.Build) void {
     const tools_mcp_bridge_mod = b.createModule(.{ .root_source_file = b.path("src/tools/mcp_bridge.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "compat", .module = compat_mod }, .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent", .module = agent_mod }, .{ .name = "tools/common", .module = tools_common_mod }, .{ .name = "build_options", .module = version_module }, .{ .name = "json_encode", .module = json_encode_mod } } });
     const tools_registry_mod = b.createModule(.{ .root_source_file = b.path("src/tools/registry.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "agent", .module = agent_mod }, .{ .name = "tools/shell", .module = tools_shell_mod }, .{ .name = "tools/file", .module = tools_file_mod }, .{ .name = "tools/edit", .module = tools_edit_mod }, .{ .name = "tools/hashline", .module = tools_hashline_mod }, .{ .name = "tools/search", .module = tools_search_mod }, .{ .name = "tools/workspace", .module = tools_workspace_mod }, .{ .name = "tools/artifact", .module = tools_artifact_mod }, .{ .name = "tools/mcp_bridge", .module = tools_mcp_bridge_mod } } });
 
+    const model_catalog_mod = b.createModule(.{
+        .root_source_file = b.path("src/model_catalog.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "compat", .module = compat_mod },
+            .{ .name = "ai_types", .module = ai_types_mod },
+            .{ .name = "oauth/storage", .module = oauth_storage_mod },
+            .{ .name = "oauth/openai_codex", .module = oauth_openai_codex_mod },
+            .{ .name = "oauth/anthropic", .module = oauth_anthropic_mod },
+            .{ .name = "custom_providers", .module = custom_providers_mod },
+            .{ .name = "oauth/github_copilot", .module = github_copilot_mod },
+            .{ .name = "provider_catalog", .module = provider_catalog_mod },
+            .{ .name = "provider_credential", .module = provider_credential_mod },
+            .{ .name = "provider_base_url", .module = provider_base_url_mod },
+            .{ .name = "anthropic_messages_api", .module = anthropic_messages_api_mod },
+            .{ .name = "openai_completions_api", .module = openai_completions_api_mod },
+            .{ .name = "openai_responses_api", .module = openai_responses_api_mod },
+            .{ .name = "ollama_api", .module = ollama_api_mod },
+        },
+    });
+
     const tui_runtime_mod = b.createModule(.{
         .root_source_file = b.path("src/tui/runtime.zig"),
         .target = target,
@@ -1886,6 +1908,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "event_stream", .module = event_stream_mod },
             .{ .name = "agent", .module = agent_mod },
             .{ .name = "agent_types", .module = agent_types_mod },
+            .{ .name = "model_catalog", .module = model_catalog_mod },
             .{ .name = "permission", .module = permission_mod },
             .{ .name = "transport", .module = transport_mod },
             .{ .name = "json_writer", .module = json_writer_mod },
@@ -1964,27 +1987,6 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    const model_catalog_mod = b.createModule(.{
-        .root_source_file = b.path("src/model_catalog.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "compat", .module = compat_mod },
-            .{ .name = "ai_types", .module = ai_types_mod },
-            .{ .name = "oauth/storage", .module = oauth_storage_mod },
-            .{ .name = "oauth/openai_codex", .module = oauth_openai_codex_mod },
-            .{ .name = "oauth/anthropic", .module = oauth_anthropic_mod },
-            .{ .name = "custom_providers", .module = custom_providers_mod },
-            .{ .name = "oauth/github_copilot", .module = github_copilot_mod },
-            .{ .name = "provider_catalog", .module = provider_catalog_mod },
-            .{ .name = "provider_credential", .module = provider_credential_mod },
-            .{ .name = "provider_base_url", .module = provider_base_url_mod },
-            .{ .name = "anthropic_messages_api", .module = anthropic_messages_api_mod },
-            .{ .name = "openai_completions_api", .module = openai_completions_api_mod },
-            .{ .name = "openai_responses_api", .module = openai_responses_api_mod },
-            .{ .name = "ollama_api", .module = ollama_api_mod },
-        },
-    });
 
     const tui_fixture_mod = b.createModule(.{
         .root_source_file = b.path("src/tui/fixture_provider.zig"),

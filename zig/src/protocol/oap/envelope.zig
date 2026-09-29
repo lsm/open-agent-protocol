@@ -284,6 +284,119 @@ fn serializeInteractionScope(
     try w.writeStringField("run_id", run_id);
 }
 
+fn serializeCallEvent(w: *json_writer.JsonWriter, value: oap_types.CallEvent) !void {
+    if (value.interaction_id) |id| try w.writeStringField("interaction_id", id);
+    if (value.request_id) |id| try w.writeStringField("request_id", id);
+    try w.writeStringField("session_id", value.session_id);
+    try w.writeStringField("run_id", value.run_id);
+    try w.writeStringField("tool_call_id", value.tool_call_id);
+    if (value.requested_by) |by| try w.writeStringField("requested_by", by);
+    if (value.responded_by) |by| try w.writeStringField("responded_by", by);
+    try w.writeStringField("execution_owner", value.execution_owner);
+    if (value.source) |source| try w.writeStringField("source", source);
+    if (value.name) |name| try w.writeStringField("name", name);
+    if (value.arguments_json) |arguments| {
+        try w.writeKey("arguments_json");
+        try writeJsonValueOrString(w, arguments);
+    }
+    if (value.progress) |progress| {
+        try w.writeKey("progress");
+        try writeJsonValueOrString(w, progress);
+    }
+    if (value.result) |result| {
+        try w.writeKey("result");
+        try writeJsonValueOrString(w, result);
+    }
+    if (value.err) |raised| {
+        try w.writeKey("error");
+        try serializeProtocolError(w, raised);
+    }
+}
+
+fn serializeChoices(w: *json_writer.JsonWriter, choices: []const oap_types.PermissionChoice) !void {
+    try w.writeKey("choices");
+    try w.beginArray();
+    for (choices) |choice| {
+        try w.beginObject();
+        try w.writeStringField("id", choice.id);
+        try w.writeStringField("label", choice.label);
+        if (choice.description) |description| try w.writeStringField("description", description);
+        try w.endObject();
+    }
+    try w.endArray();
+}
+
+fn serializeQuestions(w: *json_writer.JsonWriter, questions: []const oap_types.InputQuestion) !void {
+    try w.writeKey("questions");
+    try w.beginArray();
+    for (questions) |question| {
+        try w.beginObject();
+        try w.writeStringField("id", question.id);
+        if (question.prompt) |prompt| try w.writeStringField("prompt", prompt);
+        if (question.kind) |kind| try w.writeStringField("kind", kind);
+        if (question.required) |required| try w.writeBoolField("required", required);
+        if (question.options.len > 0) {
+            try w.writeKey("options");
+            try w.beginArray();
+            for (question.options) |option| {
+                try w.beginObject();
+                try w.writeStringField("id", option.id);
+                try w.writeStringField("label", option.label);
+                if (option.description) |description| try w.writeStringField("description", description);
+                try w.endObject();
+            }
+            try w.endArray();
+        }
+        try w.endObject();
+    }
+    try w.endArray();
+}
+
+fn serializeAnswers(w: *json_writer.JsonWriter, key: []const u8, answers: []const oap_types.InputAnswer) !void {
+    if (answers.len == 0) return;
+    try w.writeKey(key);
+    try w.beginArray();
+    for (answers) |answer| {
+        try w.beginObject();
+        try w.writeStringField("question_id", answer.question_id);
+        if (answer.text) |text| try w.writeStringField("text", text);
+        if (answer.selected_option_ids.len > 0) try serializeStringArray(w, "selected_option_ids", answer.selected_option_ids);
+        try w.endObject();
+    }
+    try w.endArray();
+}
+
+fn serializePermissionEvent(w: *json_writer.JsonWriter, value: oap_types.PermissionEvent) !void {
+    try serializeInteractionScope(w, value.interaction_id, value.requested_by, value.responded_by, value.session_id, value.run_id);
+    if (value.tool_call_id) |id| try w.writeStringField("tool_call_id", id);
+    if (value.title.len != 0) try w.writeStringField("title", value.title);
+    if (value.description) |description| try w.writeStringField("description", description);
+    if (value.choices.len > 0) try serializeChoices(w, value.choices);
+    if (value.arguments_json) |arguments| {
+        try w.writeKey("arguments_json");
+        try writeJsonValueOrString(w, arguments);
+    }
+    if (value.outcome) |outcome| try w.writeStringField("outcome", @tagName(outcome));
+    if (value.choice_id) |choice| try w.writeStringField("choice_id", choice);
+    if (value.granted) |granted| try w.writeBoolField("granted", granted);
+    if (value.reason) |reason| {
+        try w.writeKey("reason");
+        try serializeProtocolError(w, reason);
+    }
+}
+
+fn serializeUserInputEvent(w: *json_writer.JsonWriter, value: oap_types.UserInputEvent) !void {
+    try serializeInteractionScope(w, value.interaction_id, value.requested_by, value.responded_by, value.session_id, value.run_id);
+    if (value.tool_call_id) |id| try w.writeStringField("tool_call_id", id);
+    if (value.title.len != 0) try w.writeStringField("title", value.title);
+    if (value.description) |description| try w.writeStringField("description", description);
+    if (value.questions.len > 0) try serializeQuestions(w, value.questions);
+    if (value.allow_cancel) |allow| try w.writeBoolField("allow_cancel", allow);
+    try serializeAnswers(w, "draft_answers", value.draft_answers);
+    if (value.status) |status| try w.writeStringField("status", @tagName(status));
+    try serializeAnswers(w, "answers", value.answers);
+}
+
 fn serializePayload(w: *json_writer.JsonWriter, payload: oap_types.Payload) !void {
     try w.beginObject();
     switch (payload) {
@@ -571,6 +684,23 @@ fn serializePayload(w: *json_writer.JsonWriter, payload: oap_types.Payload) !voi
                 try w.writeKey("updated_arguments_json");
                 try writeJsonValueOrString(w, arguments);
             }
+        },
+        .call_requested,
+        .call_started,
+        .call_progress,
+        .call_completed,
+        .call_failed,
+        .call_cancelled,
+        => |value| try serializeCallEvent(w, value),
+        .permission_requested,
+        .permission_resolved,
+        => |value| try serializePermissionEvent(w, value),
+        .user_input_requested,
+        .user_input_resolved,
+        => |value| try serializeUserInputEvent(w, value),
+        .capabilities_updated => |value| {
+            try w.writeStringField("previous_revision", value.previous_revision);
+            if (value.reason) |reason| try w.writeStringField("reason", reason);
         },
         .call_resolve_request => |value| {
             try w.writeStringField("interaction_id", value.interaction_id);
@@ -900,6 +1030,235 @@ pub fn deserializeMessage(value: std.json.Value, allocator: std.mem.Allocator) !
     const content_value = obj.get("content") orelse return DecodeError.MissingField;
     const content = try deserializeContent(content_value, allocator);
     return .{ .id = id, .role = role, .content = content };
+}
+
+fn deserializeCallEvent(obj: std.json.ObjectMap, allocator: std.mem.Allocator) !oap_types.CallEvent {
+    const session_id = try requiredOwnedString(obj, "session_id", allocator);
+    errdefer allocator.free(session_id);
+    const run_id = try requiredOwnedString(obj, "run_id", allocator);
+    errdefer allocator.free(run_id);
+    const tool_call_id = try requiredOwnedString(obj, "tool_call_id", allocator);
+    errdefer allocator.free(tool_call_id);
+    const execution_owner = try requiredOwnedString(obj, "execution_owner", allocator);
+    errdefer allocator.free(execution_owner);
+    const interaction_id = try optionalOwnedString(obj, "interaction_id", allocator);
+    errdefer if (interaction_id) |owned| allocator.free(owned);
+    const request_id = try optionalOwnedString(obj, "request_id", allocator);
+    errdefer if (request_id) |owned| allocator.free(owned);
+    const requested_by = try optionalOwnedString(obj, "requested_by", allocator);
+    errdefer if (requested_by) |owned| allocator.free(owned);
+    const responded_by = try optionalOwnedString(obj, "responded_by", allocator);
+    errdefer if (responded_by) |owned| allocator.free(owned);
+    const source = try optionalOwnedString(obj, "source", allocator);
+    errdefer if (source) |owned| allocator.free(owned);
+    const name = try optionalOwnedString(obj, "name", allocator);
+    errdefer if (name) |owned| allocator.free(owned);
+    const arguments_json = if (obj.get("arguments_json")) |value| try json_encode.valueAlloc(allocator, value) else null;
+    errdefer if (arguments_json) |owned| allocator.free(owned);
+    const progress = if (obj.get("progress")) |value| try json_encode.valueAlloc(allocator, value) else null;
+    errdefer if (progress) |owned| allocator.free(owned);
+    const result = if (obj.get("result")) |value| try json_encode.valueAlloc(allocator, value) else null;
+    errdefer if (result) |owned| allocator.free(owned);
+    const failure: ?oap_types.ProtocolError = if (obj.get("error")) |raised|
+        try deserializeProtocolError(raised, allocator)
+    else
+        null;
+    return .{
+        .interaction_id = interaction_id,
+        .request_id = request_id,
+        .session_id = session_id,
+        .run_id = run_id,
+        .tool_call_id = tool_call_id,
+        .requested_by = requested_by,
+        .responded_by = responded_by,
+        .execution_owner = execution_owner,
+        .source = source,
+        .name = name,
+        .arguments_json = arguments_json,
+        .progress = progress,
+        .result = result,
+        .err = failure,
+    };
+}
+
+fn deserializeChoices(obj: std.json.ObjectMap, allocator: std.mem.Allocator) ![]oap_types.PermissionChoice {
+    const raw = obj.get("choices") orelse return &.{};
+    if (raw != .array) return DecodeError.InvalidField;
+    const choices = try allocator.alloc(oap_types.PermissionChoice, raw.array.items.len);
+    var filled: usize = 0;
+    errdefer {
+        for (choices[0..filled]) |*choice| choice.deinit(allocator);
+        allocator.free(choices);
+    }
+    for (raw.array.items) |entry| {
+        if (entry != .object) return DecodeError.InvalidField;
+        const id = try requiredOwnedString(entry.object, "id", allocator);
+        errdefer allocator.free(id);
+        const label = try requiredOwnedString(entry.object, "label", allocator);
+        errdefer allocator.free(label);
+        const description = try optionalOwnedString(entry.object, "description", allocator);
+        choices[filled] = .{ .id = id, .label = label, .description = description };
+        filled += 1;
+    }
+    return choices;
+}
+
+fn deserializeOptions(obj: std.json.ObjectMap, allocator: std.mem.Allocator) ![]oap_types.InputOption {
+    const raw = obj.get("options") orelse return &.{};
+    if (raw != .array) return DecodeError.InvalidField;
+    const options = try allocator.alloc(oap_types.InputOption, raw.array.items.len);
+    var filled: usize = 0;
+    errdefer {
+        for (options[0..filled]) |*option| option.deinit(allocator);
+        allocator.free(options);
+    }
+    for (raw.array.items) |entry| {
+        if (entry != .object) return DecodeError.InvalidField;
+        const id = try requiredOwnedString(entry.object, "id", allocator);
+        errdefer allocator.free(id);
+        const label = try requiredOwnedString(entry.object, "label", allocator);
+        errdefer allocator.free(label);
+        const description = try optionalOwnedString(entry.object, "description", allocator);
+        options[filled] = .{ .id = id, .label = label, .description = description };
+        filled += 1;
+    }
+    return options;
+}
+
+fn deserializeQuestions(obj: std.json.ObjectMap, allocator: std.mem.Allocator) ![]oap_types.InputQuestion {
+    const raw = obj.get("questions") orelse return &.{};
+    if (raw != .array) return DecodeError.InvalidField;
+    const questions = try allocator.alloc(oap_types.InputQuestion, raw.array.items.len);
+    var filled: usize = 0;
+    errdefer {
+        for (questions[0..filled]) |*question| question.deinit(allocator);
+        allocator.free(questions);
+    }
+    for (raw.array.items) |entry| {
+        if (entry != .object) return DecodeError.InvalidField;
+        const id = try requiredOwnedString(entry.object, "id", allocator);
+        errdefer allocator.free(id);
+        const prompt = try optionalOwnedString(entry.object, "prompt", allocator);
+        errdefer if (prompt) |owned| allocator.free(owned);
+        const kind = try optionalOwnedString(entry.object, "kind", allocator);
+        errdefer if (kind) |owned| allocator.free(owned);
+        const required = try optionalBool(entry.object, "required");
+        const options = try deserializeOptions(entry.object, allocator);
+        questions[filled] = .{ .id = id, .prompt = prompt, .kind = kind, .required = required, .options = options };
+        filled += 1;
+    }
+    return questions;
+}
+
+
+fn deserializePermissionEvent(obj: std.json.ObjectMap, allocator: std.mem.Allocator) !oap_types.PermissionEvent {
+    const interaction_id = try requiredOwnedString(obj, "interaction_id", allocator);
+    errdefer allocator.free(interaction_id);
+    const requested_by = try requiredOwnedString(obj, "requested_by", allocator);
+    errdefer allocator.free(requested_by);
+    const responded_by = try requiredOwnedString(obj, "responded_by", allocator);
+    errdefer allocator.free(responded_by);
+    const session_id = try requiredOwnedString(obj, "session_id", allocator);
+    errdefer allocator.free(session_id);
+    const run_id = try requiredOwnedString(obj, "run_id", allocator);
+    errdefer allocator.free(run_id);
+    const tool_call_id = try optionalOwnedString(obj, "tool_call_id", allocator);
+    errdefer if (tool_call_id) |owned| allocator.free(owned);
+    const title = try optionalOwnedString(obj, "title", allocator);
+    errdefer if (title) |owned| allocator.free(owned);
+    const description = try optionalOwnedString(obj, "description", allocator);
+    errdefer if (description) |owned| allocator.free(owned);
+    const choices = try deserializeChoices(obj, allocator);
+    errdefer {
+        for (choices) |*choice| choice.deinit(allocator);
+        allocator.free(choices);
+    }
+    const arguments_json = if (obj.get("arguments_json")) |value| try json_encode.valueAlloc(allocator, value) else null;
+    errdefer if (arguments_json) |owned| allocator.free(owned);
+    const outcome: ?oap_types.InteractionOutcome = if (obj.get("outcome")) |raw| blk: {
+        if (raw != .string) return DecodeError.InvalidField;
+        break :blk oap_types.InteractionOutcome.parse(raw.string) orelse return DecodeError.InvalidField;
+    } else null;
+    const choice_id = try optionalOwnedString(obj, "choice_id", allocator);
+    errdefer if (choice_id) |owned| allocator.free(owned);
+    const granted = try optionalBool(obj, "granted");
+    const reason: ?oap_types.ProtocolError = if (obj.get("reason")) |raised|
+        try deserializeProtocolError(raised, allocator)
+    else
+        null;
+    return .{
+        .interaction_id = interaction_id,
+        .requested_by = requested_by,
+        .responded_by = responded_by,
+        .session_id = session_id,
+        .run_id = run_id,
+        .tool_call_id = tool_call_id,
+        .title = title orelse "",
+        .description = description,
+        .choices = choices,
+        .arguments_json = arguments_json,
+        .outcome = outcome,
+        .choice_id = choice_id,
+        .granted = granted,
+        .reason = reason,
+    };
+}
+
+fn deserializeUserInputEvent(obj: std.json.ObjectMap, allocator: std.mem.Allocator) !oap_types.UserInputEvent {
+    const interaction_id = try requiredOwnedString(obj, "interaction_id", allocator);
+    errdefer allocator.free(interaction_id);
+    const requested_by = try requiredOwnedString(obj, "requested_by", allocator);
+    errdefer allocator.free(requested_by);
+    const responded_by = try requiredOwnedString(obj, "responded_by", allocator);
+    errdefer allocator.free(responded_by);
+    const session_id = try requiredOwnedString(obj, "session_id", allocator);
+    errdefer allocator.free(session_id);
+    const run_id = try requiredOwnedString(obj, "run_id", allocator);
+    errdefer allocator.free(run_id);
+    const tool_call_id = try optionalOwnedString(obj, "tool_call_id", allocator);
+    errdefer if (tool_call_id) |owned| allocator.free(owned);
+    const title = try optionalOwnedString(obj, "title", allocator);
+    errdefer if (title) |owned| allocator.free(owned);
+    const description = try optionalOwnedString(obj, "description", allocator);
+    errdefer if (description) |owned| allocator.free(owned);
+    const questions = try deserializeQuestions(obj, allocator);
+    errdefer {
+        for (questions) |*question| question.deinit(allocator);
+        allocator.free(questions);
+    }
+    const allow_cancel = try optionalBool(obj, "allow_cancel");
+    const no_answers: []oap_types.InputAnswer = &.{};
+    const draft_answers = if (obj.get("draft_answers")) |value|
+        try deserializeAnswers(value, allocator)
+    else
+        no_answers;
+    errdefer {
+        for (draft_answers) |*answer| answer.deinit(allocator);
+        allocator.free(draft_answers);
+    }
+    const status: ?oap_types.InputResolutionStatus = if (obj.get("status")) |raw| blk: {
+        if (raw != .string) return DecodeError.InvalidField;
+        break :blk oap_types.InputResolutionStatus.parse(raw.string) orelse return DecodeError.InvalidField;
+    } else null;
+    const answers = if (obj.get("answers")) |value|
+        try deserializeAnswers(value, allocator)
+    else
+        no_answers;
+    return .{
+        .interaction_id = interaction_id,
+        .requested_by = requested_by,
+        .responded_by = responded_by,
+        .session_id = session_id,
+        .run_id = run_id,
+        .tool_call_id = tool_call_id,
+        .title = title orelse "",
+        .description = description,
+        .questions = questions,
+        .allow_cancel = allow_cancel,
+        .draft_answers = draft_answers,
+        .status = status,
+        .answers = answers,
+    };
 }
 
 fn deserializeProtocolError(value: std.json.Value, allocator: std.mem.Allocator) !oap_types.ProtocolError {
@@ -1406,6 +1765,43 @@ fn deserializePayload(
     if (std.mem.eql(u8, type_str, "action.call.resolve.response")) {
         return .{ .call_resolve_response = try deserializeCallResolveResponse(obj, allocator) };
     }
+    if (std.mem.eql(u8, type_str, "action.call.requested")) {
+        return .{ .call_requested = try deserializeCallEvent(obj, allocator) };
+    }
+    if (std.mem.eql(u8, type_str, "action.call.started")) {
+        return .{ .call_started = try deserializeCallEvent(obj, allocator) };
+    }
+    if (std.mem.eql(u8, type_str, "action.call.progress")) {
+        return .{ .call_progress = try deserializeCallEvent(obj, allocator) };
+    }
+    if (std.mem.eql(u8, type_str, "action.call.completed")) {
+        return .{ .call_completed = try deserializeCallEvent(obj, allocator) };
+    }
+    if (std.mem.eql(u8, type_str, "action.call.failed")) {
+        return .{ .call_failed = try deserializeCallEvent(obj, allocator) };
+    }
+    if (std.mem.eql(u8, type_str, "action.call.cancelled")) {
+        return .{ .call_cancelled = try deserializeCallEvent(obj, allocator) };
+    }
+    if (std.mem.eql(u8, type_str, "action.permission.requested")) {
+        return .{ .permission_requested = try deserializePermissionEvent(obj, allocator) };
+    }
+    if (std.mem.eql(u8, type_str, "action.permission.resolved")) {
+        return .{ .permission_resolved = try deserializePermissionEvent(obj, allocator) };
+    }
+    if (std.mem.eql(u8, type_str, "user.input.requested")) {
+        return .{ .user_input_requested = try deserializeUserInputEvent(obj, allocator) };
+    }
+    if (std.mem.eql(u8, type_str, "user.input.resolved")) {
+        return .{ .user_input_resolved = try deserializeUserInputEvent(obj, allocator) };
+    }
+    if (std.mem.eql(u8, type_str, "capabilities.updated")) {
+        const previous_revision = try requiredOwnedString(obj, "previous_revision", allocator);
+        errdefer allocator.free(previous_revision);
+        const reason = try optionalOwnedString(obj, "reason", allocator);
+        errdefer if (reason) |owned| allocator.free(owned);
+        return .{ .capabilities_updated = .{ .previous_revision = previous_revision, .reason = reason } };
+    }
     if (std.mem.eql(u8, type_str, "action.tools.list.request")) {
         const session_id = try optionalOwnedString(obj, "session_id", allocator);
         errdefer if (session_id) |owned| allocator.free(owned);
@@ -1602,7 +1998,8 @@ fn deserializeToolsList(obj: std.json.ObjectMap, allocator: std.mem.Allocator) !
 }
 
 fn deserializeAnswers(value: std.json.Value, allocator: std.mem.Allocator) ![]oap_types.InputAnswer {
-    if (value != .array or value.array.items.len == 0) return DecodeError.InvalidField;
+    if (value != .array) return DecodeError.InvalidField;
+    if (value.array.items.len == 0) return &.{};
     const answers = try allocator.alloc(oap_types.InputAnswer, value.array.items.len);
     var filled: usize = 0;
     errdefer {
@@ -1665,6 +2062,7 @@ const InteractionScope = struct {
 
 fn deserializeInputResolve(obj: std.json.ObjectMap, allocator: std.mem.Allocator) !oap_types.UserInputResolveRequest {
     const listed = obj.get("answers") orelse return DecodeError.MissingField;
+    if (listed != .array or listed.array.items.len == 0) return DecodeError.InvalidField;
     const scope = try InteractionScope.decode(obj, allocator);
     errdefer scope.deinit(allocator);
     const answers = try deserializeAnswers(listed, allocator);
@@ -2360,7 +2758,7 @@ test "a user input resolution round trips every answer shape" {
     try std.testing.expectEqual(@as(usize, 0), resolution.answers[1].selected_option_ids.len);
 }
 
-test "a user input resolution with no answers is refused rather than decoded empty" {
+test "a resolve request still needs its answers, and a requested event may carry an empty draft" {
     const allocator = std.testing.allocator;
     try std.testing.expectError(DecodeError.InvalidField, deserializeEnvelope(
         "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"" ++ oap_types.PROFILE ++
@@ -2368,6 +2766,16 @@ test "a user input resolution with no answers is refused rather than decoded emp
             "\"requested_by\":\"e\",\"responded_by\":\"u\",\"session_id\":\"s\",\"run_id\":\"r\",\"answers\":[]}}",
         allocator,
     ));
+
+    var requested = try deserializeEnvelope(
+        "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"" ++ oap_types.PROFILE ++
+            "\",\"type\":\"user.input.requested\",\"id\":\"a\",\"payload\":{\"interaction_id\":\"i\"," ++
+            "\"requested_by\":\"e\",\"responded_by\":\"u\",\"session_id\":\"s\",\"run_id\":\"r\"," ++
+            "\"title\":\"t\",\"questions\":[],\"draft_answers\":[]}}",
+        allocator,
+    );
+    defer requested.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 0), requested.payload.user_input_requested.draft_answers.len);
 }
 
 test "a permission resolution round trips its optional members" {
@@ -2608,6 +3016,25 @@ test "every new payload decoder frees what it built when an allocation fails" {
             "\"providers\":[{\"id\":\"p\",\"display_name\":\"P\",\"wire\":\"w\",\"kind\":\"direct\"}]}}",
         prefix ++ "capabilities.response\",\"payload\":{\"endpoint\":{\"id\":\"e\"},\"features\":{\"a\":{\"level\":\"emulated\",\"modes\":[\"session_open\"]," ++
             "\"constraints\":{\"fixed_result\":{\"ok\":true}},\"limits\":{\"max_sources\":2}}},\"tools\":[{\"name\":\"t\",\"input_schema\":{},\"execution_owner\":\"o\"}]}}",
+        prefix ++ "action.call.requested\",\"payload\":{\"interaction_id\":\"i\",\"request_id\":\"q\",\"session_id\":\"s\",\"run_id\":\"r" ++
+            "\",\"tool_call_id\":\"t\",\"requested_by\":\"e\",\"responded_by\":\"u\",\"execution_owner\":\"o\",\"source\":\"n\",\"name\"" ++
+            ":\"Tool\",\"arguments_json\":{\"a\":1},\"progress\":{\"done\":1},\"result\":{\"hits\":2}}}",
+        prefix ++ "action.call.failed\",\"payload\":{\"session_id\":\"s\",\"run_id\":\"r\",\"tool_call_id\":\"t\",\"execution_owner\":\"o" ++
+            "\",\"error\":{\"code\":\"tool_failed\",\"message\":\"m\",\"details\":{\"k\":\"v\"}}}}",
+        prefix ++ "action.permission.requested\",\"payload\":{\"interaction_id\":\"i\",\"requested_by\":\"e\",\"responded_by\":\"u\",\"" ++
+            "session_id\":\"s\",\"run_id\":\"r\",\"tool_call_id\":\"t\",\"title\":\"T\",\"description\":\"d\",\"choices\":[{\"id\":\"a\",\"" ++
+            "label\":\"A\",\"description\":\"x\"},{\"id\":\"b\",\"label\":\"B\"}],\"arguments_json\":{\"a\":1}}}",
+        prefix ++ "action.permission.resolved\",\"payload\":{\"interaction_id\":\"i\",\"requested_by\":\"e\",\"responded_by\":\"u\",\"s" ++
+            "ession_id\":\"s\",\"run_id\":\"r\",\"tool_call_id\":\"t\",\"outcome\":\"rejected\",\"choice_id\":\"c\",\"granted\":false," ++
+            "\"reason\":{\"code\":\"tool_failed\",\"message\":\"m\",\"details\":{\"k\":\"v\"}}}}",
+        prefix ++ "user.input.requested\",\"payload\":{\"interaction_id\":\"i\",\"requested_by\":\"e\",\"responded_by\":\"u\",\"session" ++
+            "_id\":\"s\",\"run_id\":\"r\",\"tool_call_id\":\"t\",\"title\":\"T\",\"description\":\"d\",\"allow_cancel\":true,\"question" ++
+            "s\":[{\"id\":\"q\",\"prompt\":\"p\",\"kind\":\"single_choice\",\"required\":true,\"options\":[{\"id\":\"o\",\"label\":\"O\",\"" ++
+            "description\":\"x\"}]},{\"id\":\"r\",\"prompt\":\"p2\"}],\"draft_answers\":[{\"question_id\":\"q\",\"selected_option_i" ++
+            "ds\":[\"o\"]},{\"question_id\":\"r\",\"text\":\"t\"}]}}",
+        prefix ++ "user.input.resolved\",\"payload\":{\"interaction_id\":\"i\",\"requested_by\":\"e\",\"responded_by\":\"u\",\"session_" ++
+            "id\":\"s\",\"run_id\":\"r\",\"status\":\"cancelled\",\"answers\":[{\"question_id\":\"q\",\"text\":\"t\"}]}}",
+        prefix ++ "capabilities.updated\",\"payload\":{\"previous_revision\":\"r0\",\"reason\":\"why\"}}",
     };
     for (lines) |line| {
         try std.testing.checkAllAllocationFailures(std.testing.allocator, decodeAndRelease, .{line});
@@ -2685,4 +3112,129 @@ test "a call resolve's result keeps its numbers as written" {
     , allocator);
     defer decoded.deinit(allocator);
     try std.testing.expectEqualStrings("{\"price\":1.50,\"big\":1e2}", decoded.payload.call_resolve_request.result_json.?);
+}
+
+fn roundTripFixture(comptime label: []const u8, line: []const u8, comptime want_type: []const u8) !void {
+    const allocator = std.testing.allocator;
+    var decoded = try deserializeEnvelope(line, allocator);
+    defer decoded.deinit(allocator);
+    try std.testing.expectEqualStrings(want_type, decoded.payload.typeName());
+    try std.testing.expectEqualStrings(label, decoded.payload.typeName());
+
+    const written = try serializeEnvelope(decoded, allocator);
+    defer allocator.free(written);
+
+    var again = try deserializeEnvelope(written, allocator);
+    defer again.deinit(allocator);
+    try std.testing.expectEqualStrings(want_type, again.payload.typeName());
+}
+
+test "the memory endpoint's action.call.requested decodes and round trips" {
+    try roundTripFixture("action.call.requested",
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.call.requested","id":"event-10","payload":{"session_id":"s1","run_id":"run-1","tool_call_id":"tool-call-4","requested_by":"reference.memory","execution_owner":"reference-adapter","source":"reference-native","name":"scripted_tool","arguments_json":{"operation":"golden"}},"sequence":3,"timestamp_ms":1000,"session_id":"s1","run_id":"run-1","tool_call_id":"tool-call-4","capability_revision":"reference-memory-v11"}
+    , "action.call.requested");
+}
+
+test "the memory endpoint's action.call.started decodes and round trips" {
+    try roundTripFixture("action.call.started",
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.call.started","id":"event-13","payload":{"session_id":"s1","run_id":"run-1","tool_call_id":"tool-call-4","requested_by":"reference.memory","execution_owner":"reference-adapter","source":"reference-native","name":"scripted_tool","arguments_json":{"operation":"golden"}},"sequence":6,"timestamp_ms":1000,"session_id":"s1","run_id":"run-1","tool_call_id":"tool-call-4","capability_revision":"reference-memory-v11"}
+    , "action.call.started");
+}
+
+test "the memory endpoint's action.call.completed decodes and round trips" {
+    try roundTripFixture("action.call.completed",
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.call.completed","id":"event-14","payload":{"session_id":"s1","run_id":"run-1","tool_call_id":"tool-call-4","requested_by":"reference.memory","execution_owner":"reference-adapter","source":"reference-native","name":"scripted_tool","result":{"ok":true}},"sequence":7,"timestamp_ms":1000,"session_id":"s1","run_id":"run-1","tool_call_id":"tool-call-4","capability_revision":"reference-memory-v11"}
+    , "action.call.completed");
+}
+
+test "the memory endpoint's action.permission.requested decodes and round trips" {
+    try roundTripFixture("action.permission.requested",
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.requested","id":"event-11","payload":{"interaction_id":"permission-2","requested_by":"reference.memory","responded_by":"user","session_id":"s1","run_id":"run-1","tool_call_id":"tool-call-4","title":"Allow scripted tool","description":"The golden script requires approval.","choices":[{"id":"approve","label":"Approve"},{"id":"deny","label":"Deny"}],"arguments_json":{"operation":"golden"}},"sequence":4,"timestamp_ms":1000,"session_id":"s1","run_id":"run-1","tool_call_id":"tool-call-4","capability_revision":"reference-memory-v11"}
+    , "action.permission.requested");
+}
+
+test "the memory endpoint's action.permission.resolved decodes and round trips" {
+    try roundTripFixture("action.permission.resolved",
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.resolved","id":"event-12","payload":{"interaction_id":"permission-2","requested_by":"reference.memory","responded_by":"user","session_id":"s1","run_id":"run-1","tool_call_id":"tool-call-4","outcome":"resolved","choice_id":"approve","granted":true},"sequence":5,"timestamp_ms":1000,"session_id":"s1","run_id":"run-1","capability_revision":"reference-memory-v11"}
+    , "action.permission.resolved");
+}
+
+test "the memory endpoint's user.input.requested decodes and round trips" {
+    try roundTripFixture("user.input.requested",
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"user.input.requested","id":"event-15","payload":{"interaction_id":"input-3","requested_by":"reference.memory","responded_by":"user","session_id":"s1","run_id":"run-1","tool_call_id":"tool-call-4","title":"Golden input","description":"Choose the deterministic answer.","questions":[{"id":"choice","prompt":"Continue?","kind":"single_choice","required":true,"options":[{"id":"yes","label":"Yes"}]}]},"sequence":8,"timestamp_ms":1000,"session_id":"s1","run_id":"run-1","tool_call_id":"tool-call-4","capability_revision":"reference-memory-v11"}
+    , "user.input.requested");
+}
+
+test "the memory endpoint's user.input.resolved decodes and round trips" {
+    try roundTripFixture("user.input.resolved",
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"user.input.resolved","id":"event-17","payload":{"interaction_id":"input-3","requested_by":"reference.memory","responded_by":"user","session_id":"s1","run_id":"run-1","status":"submitted","answers":[{"question_id":"choice","selected_option_ids":["yes"]}]},"sequence":10,"timestamp_ms":1000,"session_id":"s1","run_id":"run-1","capability_revision":"reference-memory-v11"}
+    , "user.input.resolved");
+}
+
+test "action.call.progress carries progress and action.call.failed carries the error" {
+    try roundTripFixture("action.call.progress",
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.call.progress","id":"event-14","payload":{"session_id":"s1","run_id":"run-1","tool_call_id":"tool-call-4","execution_owner":"reference-adapter","name":"scripted_tool","progress":{"done":1}},"sequence":7,"timestamp_ms":1000}
+    , "action.call.progress");
+    try roundTripFixture("action.call.failed",
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.call.failed","id":"event-15","payload":{"session_id":"s1","run_id":"run-1","tool_call_id":"tool-call-4","execution_owner":"reference-adapter","name":"scripted_tool","error":{"code":"tool_failed","message":"no hits"}},"sequence":8,"timestamp_ms":1000}
+    , "action.call.failed");
+}
+
+test "action.call.cancelled carries no result and capabilities.updated names the revision it replaced" {
+    try roundTripFixture("action.call.cancelled",
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.call.cancelled","id":"event-16","payload":{"session_id":"s1","run_id":"run-1","tool_call_id":"tool-call-4","execution_owner":"reference-adapter","name":"scripted_tool"},"sequence":9,"timestamp_ms":1000}
+    , "action.call.cancelled");
+    try roundTripFixture("capabilities.updated",
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.updated","id":"event-1","payload":{"previous_revision":"reference-memory-v10","reason":"descriptor changed"},"capability_revision":"reference-memory-v11","sequence":1,"timestamp_ms":1000}
+    , "capabilities.updated");
+}
+
+test "a call event carrying a result keeps the result as json rather than as a string" {
+    const allocator = std.testing.allocator;
+    var decoded = try deserializeEnvelope(
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.call.completed","id":"e","payload":{"session_id":"s1","run_id":"run-1","tool_call_id":"t","execution_owner":"o","result":{"hits":2,"nested":{"ok":true}}}}
+    , allocator);
+    defer decoded.deinit(allocator);
+    try std.testing.expectEqualStrings("{\"hits\":2,\"nested\":{\"ok\":true}}", decoded.payload.call_completed.result.?);
+
+    const written = try serializeEnvelope(decoded, allocator);
+    defer allocator.free(written);
+    try std.testing.expect(std.mem.indexOf(u8, written, "\"result\":{\"hits\":2") != null);
+}
+
+test "a requested event does not grow an outcome or a status its schema forbids" {
+    const allocator = std.testing.allocator;
+    var requested = try deserializeEnvelope(
+        "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"" ++ oap_types.PROFILE ++
+            "\",\"id\":\"p\",\"type\":\"action.permission.requested\",\"payload\":{\"interaction_id\":\"i\",\"requested_by\":\"e\"," ++
+            "\"responded_by\":\"u\",\"session_id\":\"s\",\"run_id\":\"r\",\"title\":\"T\",\"choices\":[{\"id\":\"a\",\"label\":\"A\"}]}}",
+        allocator,
+    );
+    defer requested.deinit(allocator);
+    const written = try serializeEnvelope(requested, allocator);
+    defer allocator.free(written);
+    try std.testing.expect(std.mem.indexOf(u8, written, "\"outcome\"") == null);
+
+    var gate = try deserializeEnvelope(
+        "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"" ++ oap_types.PROFILE ++
+            "\",\"id\":\"i1\",\"type\":\"user.input.requested\",\"payload\":{\"interaction_id\":\"i\",\"requested_by\":\"e\"," ++
+            "\"responded_by\":\"u\",\"session_id\":\"s\",\"run_id\":\"r\",\"title\":\"T\",\"questions\":[]}}",
+        allocator,
+    );
+    defer gate.deinit(allocator);
+    const gate_written = try serializeEnvelope(gate, allocator);
+    defer allocator.free(gate_written);
+    try std.testing.expect(std.mem.indexOf(u8, gate_written, "\"status\"") == null);
+
+    var settled = try deserializeEnvelope(
+        "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"" ++ oap_types.PROFILE ++
+            "\",\"id\":\"p2\",\"type\":\"action.permission.resolved\",\"payload\":{\"interaction_id\":\"i\",\"requested_by\":\"e\"," ++
+            "\"responded_by\":\"u\",\"session_id\":\"s\",\"run_id\":\"r\",\"outcome\":\"rejected\",\"granted\":false}}",
+        allocator,
+    );
+    defer settled.deinit(allocator);
+    const settled_written = try serializeEnvelope(settled, allocator);
+    defer allocator.free(settled_written);
+    try std.testing.expect(std.mem.indexOf(u8, settled_written, "\"outcome\":\"rejected\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, settled_written, "\"granted\":false") != null);
 }

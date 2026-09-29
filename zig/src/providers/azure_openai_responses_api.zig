@@ -429,8 +429,7 @@ pub fn streamAzureOpenAIResponses(model: ai_types.Model, context: ai_types.Conte
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
     s.wait_for_thread_on_deinit = true;
     if (o.requires_owned_stream_events) {
-        s.owns_events = true;
-        s.clone_event_fn = ai_types.cloneAssistantMessageEvent;
+        s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
     }
 
     const ctx = try allocator.create(ThreadCtx);

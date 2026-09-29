@@ -379,6 +379,176 @@ pub const InputAnswer = struct {
     }
 };
 
+pub const InputOption = struct {
+    id: []const u8,
+    label: []const u8,
+    description: ?[]const u8 = null,
+
+    pub fn deinit(self: *InputOption, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.label);
+        if (self.description) |value| allocator.free(value);
+    }
+};
+
+pub const InputQuestion = struct {
+    id: []const u8,
+    prompt: ?[]const u8 = null,
+    kind: ?[]const u8 = null,
+    required: ?bool = null,
+    options: []InputOption = &.{},
+
+    pub fn deinit(self: *InputQuestion, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        if (self.prompt) |value| allocator.free(value);
+        if (self.kind) |value| allocator.free(value);
+        for (self.options) |*option| option.deinit(allocator);
+        allocator.free(self.options);
+    }
+};
+
+pub const PermissionChoice = struct {
+    id: []const u8,
+    label: []const u8,
+    description: ?[]const u8 = null,
+
+    pub fn deinit(self: *PermissionChoice, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.label);
+        if (self.description) |value| allocator.free(value);
+    }
+};
+
+pub const InteractionOutcome = enum {
+    resolved,
+    rejected,
+    cancelled,
+    failed,
+
+    pub fn parse(text: []const u8) ?InteractionOutcome {
+        return std.meta.stringToEnum(InteractionOutcome, text);
+    }
+};
+
+pub const InputResolutionStatus = enum {
+    submitted,
+    cancelled,
+
+    pub fn parse(text: []const u8) ?InputResolutionStatus {
+        return std.meta.stringToEnum(InputResolutionStatus, text);
+    }
+};
+
+pub const CallEvent = struct {
+    interaction_id: ?[]const u8 = null,
+    request_id: ?[]const u8 = null,
+    session_id: []const u8,
+    run_id: []const u8,
+    tool_call_id: []const u8,
+    requested_by: ?[]const u8 = null,
+    responded_by: ?[]const u8 = null,
+    execution_owner: []const u8,
+    source: ?[]const u8 = null,
+    name: ?[]const u8 = null,
+    arguments_json: ?[]const u8 = null,
+    progress: ?[]const u8 = null,
+    result: ?[]const u8 = null,
+    err: ?ProtocolError = null,
+
+    pub fn deinit(self: *CallEvent, allocator: std.mem.Allocator) void {
+        if (self.interaction_id) |value| allocator.free(value);
+        if (self.request_id) |value| allocator.free(value);
+        allocator.free(self.session_id);
+        allocator.free(self.run_id);
+        allocator.free(self.tool_call_id);
+        if (self.requested_by) |value| allocator.free(value);
+        if (self.responded_by) |value| allocator.free(value);
+        allocator.free(self.execution_owner);
+        if (self.source) |value| allocator.free(value);
+        if (self.name) |value| allocator.free(value);
+        if (self.arguments_json) |value| allocator.free(value);
+        if (self.progress) |value| allocator.free(value);
+        if (self.result) |value| allocator.free(value);
+        if (self.err) |*raised| raised.deinit(allocator);
+    }
+};
+
+pub const PermissionEvent = struct {
+    interaction_id: []const u8,
+    requested_by: []const u8,
+    responded_by: []const u8,
+    session_id: []const u8,
+    run_id: []const u8,
+    tool_call_id: ?[]const u8 = null,
+    title: []const u8 = "",
+    description: ?[]const u8 = null,
+    choices: []PermissionChoice = &.{},
+    arguments_json: ?[]const u8 = null,
+    outcome: ?InteractionOutcome = null,
+    choice_id: ?[]const u8 = null,
+    granted: ?bool = null,
+    reason: ?ProtocolError = null,
+
+    pub fn deinit(self: *PermissionEvent, allocator: std.mem.Allocator) void {
+        allocator.free(self.interaction_id);
+        allocator.free(self.requested_by);
+        allocator.free(self.responded_by);
+        allocator.free(self.session_id);
+        allocator.free(self.run_id);
+        if (self.tool_call_id) |value| allocator.free(value);
+        allocator.free(self.title);
+        if (self.description) |value| allocator.free(value);
+        for (self.choices) |*choice| choice.deinit(allocator);
+        allocator.free(self.choices);
+        if (self.arguments_json) |value| allocator.free(value);
+        if (self.choice_id) |value| allocator.free(value);
+        if (self.reason) |*raised| raised.deinit(allocator);
+    }
+};
+
+pub const UserInputEvent = struct {
+    interaction_id: []const u8,
+    requested_by: []const u8,
+    responded_by: []const u8,
+    session_id: []const u8,
+    run_id: []const u8,
+    tool_call_id: ?[]const u8 = null,
+    title: []const u8 = "",
+    description: ?[]const u8 = null,
+    questions: []InputQuestion = &.{},
+    allow_cancel: ?bool = null,
+    draft_answers: []InputAnswer = &.{},
+    status: ?InputResolutionStatus = null,
+    answers: []InputAnswer = &.{},
+
+    pub fn deinit(self: *UserInputEvent, allocator: std.mem.Allocator) void {
+        allocator.free(self.interaction_id);
+        allocator.free(self.requested_by);
+        allocator.free(self.responded_by);
+        allocator.free(self.session_id);
+        allocator.free(self.run_id);
+        if (self.tool_call_id) |value| allocator.free(value);
+        allocator.free(self.title);
+        if (self.description) |value| allocator.free(value);
+        for (self.questions) |*question| question.deinit(allocator);
+        allocator.free(self.questions);
+        for (self.draft_answers) |*answer| answer.deinit(allocator);
+        allocator.free(self.draft_answers);
+        for (self.answers) |*answer| answer.deinit(allocator);
+        allocator.free(self.answers);
+    }
+};
+
+pub const CapabilitiesUpdated = struct {
+    previous_revision: []const u8,
+    reason: ?[]const u8 = null,
+
+    pub fn deinit(self: *CapabilitiesUpdated, allocator: std.mem.Allocator) void {
+        allocator.free(self.previous_revision);
+        if (self.reason) |value| allocator.free(value);
+    }
+};
+
 pub const UserInputResolveRequest = struct {
     interaction_id: []const u8,
     requested_by: []const u8,
@@ -921,6 +1091,17 @@ pub const Payload = union(enum) {
     permission_resolve_response: InteractionResolveResponse,
     call_resolve_request: CallResolveRequest,
     call_resolve_response: CallResolveResponse,
+    call_requested: CallEvent,
+    call_started: CallEvent,
+    call_progress: CallEvent,
+    call_completed: CallEvent,
+    call_failed: CallEvent,
+    call_cancelled: CallEvent,
+    permission_requested: PermissionEvent,
+    permission_resolved: PermissionEvent,
+    user_input_requested: UserInputEvent,
+    user_input_resolved: UserInputEvent,
+    capabilities_updated: CapabilitiesUpdated,
     tools_list_request: ToolsListRequest,
     tools_list_response: ToolsListResponse,
     error_response: ProtocolError,
@@ -956,6 +1137,17 @@ pub const Payload = union(enum) {
             .permission_resolve_response => |*value| value.deinit(allocator),
             .call_resolve_request => |*value| value.deinit(allocator),
             .call_resolve_response => |*value| value.deinit(allocator),
+            .call_requested => |*value| value.deinit(allocator),
+            .call_started => |*value| value.deinit(allocator),
+            .call_progress => |*value| value.deinit(allocator),
+            .call_completed => |*value| value.deinit(allocator),
+            .call_failed => |*value| value.deinit(allocator),
+            .call_cancelled => |*value| value.deinit(allocator),
+            .permission_requested => |*value| value.deinit(allocator),
+            .permission_resolved => |*value| value.deinit(allocator),
+            .user_input_requested => |*value| value.deinit(allocator),
+            .user_input_resolved => |*value| value.deinit(allocator),
+            .capabilities_updated => |*value| value.deinit(allocator),
             .tools_list_request => |*value| value.deinit(allocator),
             .tools_list_response => |*value| value.deinit(allocator),
             .error_response => |*value| value.deinit(allocator),
@@ -993,6 +1185,17 @@ pub const Payload = union(enum) {
             .permission_resolve_response => "action.permission.resolve.response",
             .call_resolve_request => "action.call.resolve.request",
             .call_resolve_response => "action.call.resolve.response",
+            .call_requested => "action.call.requested",
+            .call_started => "action.call.started",
+            .call_progress => "action.call.progress",
+            .call_completed => "action.call.completed",
+            .call_failed => "action.call.failed",
+            .call_cancelled => "action.call.cancelled",
+            .permission_requested => "action.permission.requested",
+            .permission_resolved => "action.permission.resolved",
+            .user_input_requested => "user.input.requested",
+            .user_input_resolved => "user.input.resolved",
+            .capabilities_updated => "capabilities.updated",
             .tools_list_request => "action.tools.list.request",
             .tools_list_response => "action.tools.list.response",
             .error_response => "error.response",
@@ -1007,6 +1210,16 @@ pub const Payload = union(enum) {
             .run_completed,
             .run_failed,
             .run_cancelled,
+            .call_requested,
+            .call_started,
+            .call_progress,
+            .call_completed,
+            .call_failed,
+            .call_cancelled,
+            .permission_requested,
+            .permission_resolved,
+            .user_input_requested,
+            .user_input_resolved,
             => true,
             else => false,
         };
