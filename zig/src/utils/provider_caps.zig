@@ -57,8 +57,7 @@ pub fn isGroq(base_url: ?[]const u8) bool {
 }
 
 pub fn isCerebras(base_url: ?[]const u8) bool {
-    const url = base_url orelse return false;
-    return std.mem.find(u8, url, "api.cerebras.ai") != null;
+    return isHostOrSubdomainOf(base_url, "cerebras.ai");
 }
 
 pub fn isZai(base_url: ?[]const u8) bool {
@@ -212,6 +211,34 @@ test "isGitHubCopilot detection" {
     try std.testing.expect(isGitHubCopilot("https://api.githubcopilot.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot("https://api.openai.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot(null));
+}
+
+test "a cerebras host is cerebras.ai or a subdomain of it" {
+    const hosts = [_][]const u8{
+        "https://api.cerebras.ai",
+        "https://api.cerebras.ai/v1",
+        "https://cerebras.ai",
+        "https://API.CEREBRAS.AI",
+    };
+    for (hosts) |url| {
+        try std.testing.expect(isCerebras(url));
+    }
+
+    const not_hosts = [_][]const u8{
+        "https://mycerebras.ai",
+        "https://notcerebras.ai",
+        "https://cerebras.ai.evil.example",
+        "https://evil.example/?next=api.cerebras.ai",
+        "https://evil.example/v1/api.cerebras.ai",
+        "https://gateway.example/proxy/api.cerebras.ai",
+        "not a url at all",
+        "",
+    };
+    for (not_hosts) |url| {
+        try std.testing.expect(!isCerebras(url));
+    }
+
+    try std.testing.expect(!isCerebras(null));
 }
 
 test "a groq host is groq.com or a subdomain of it" {

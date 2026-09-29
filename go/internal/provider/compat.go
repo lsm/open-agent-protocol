@@ -123,7 +123,7 @@ func isGroqURL(baseURL string, hasBaseURL bool) bool {
 }
 
 func isCerebrasURL(baseURL string, hasBaseURL bool) bool {
-	return holdsURL(baseURL, hasBaseURL, "api.cerebras.ai")
+	return isHostOrSubdomain(baseURL, hasBaseURL, "cerebras.ai")
 }
 
 func isZaiURL(baseURL string, hasBaseURL bool) bool {
