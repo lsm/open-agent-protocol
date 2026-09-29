@@ -300,7 +300,7 @@ pub fn carriesEntries(raw: ?[]const u8) bool {
     if (std.mem.eql(u8, text, "[]")) return false;
     if (std.mem.eql(u8, text, "{}")) return false;
     if (std.mem.eql(u8, text, "null")) return false;
-    return false;
+    return true;
 }
 
 pub fn refuseUnadvertisedOpenElections(descriptor: Descriptor, request: *const oap_types.SessionOpenRequest, refusal: *Refusal) Failure!void {
