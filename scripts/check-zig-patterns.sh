@@ -696,9 +696,11 @@ if [[ "$good_fixture_count" -ne "$defer_scope_expected_good" ]]; then
   echo "[patterns] guard-good.zig holds the shapes that are correct: a defer sharing a block with the" >&2
   echo "[patterns] work it protects, one in a function body, one in a capture block that also uses the" >&2
   echo "[patterns] value, one in an if-branch with an else and a second statement, two written on a" >&2
-  echo "[patterns] single line with a following statement, and two loop bodies -- one freeing a local and" >&2
-  echo "[patterns] one freeing the loop's own capture. The loop cases are there because a defer in a" >&2
-  echo "[patterns] loop body is scoped to the pass, so a lone defer there is the idiom, not the defect." >&2
+  echo "[patterns] single line with a following statement, two loop bodies -- one freeing a local and" >&2
+  echo "[patterns] one freeing the loop's own capture -- and one freeing a capture in an \`} else if\`" >&2
+  echo "[patterns] head, which is the same exemption as the plain \`if\` spelled the other way. The loop" >&2
+  echo "[patterns] and capture cases are there because that value dies with its block, so a defer that" >&2
+  echo "[patterns] frees it is scoped correctly; a lone defer in a loop body is the idiom, not a defect." >&2
   exit 1
 fi
 
