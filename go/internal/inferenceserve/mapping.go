@@ -3,6 +3,7 @@ package inferenceserve
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	"github.com/lsm/open-agent-protocol/go/internal/provider"
 )
@@ -81,23 +82,39 @@ type Honoured struct {
 	IncludeSnapshot string `json:"include_snapshot"`
 }
 
+const (
+	CodeProtocolViolation   = "protocol_violation"
+	CodeProviderUnavailable = "provider_unavailable"
+)
+
 var ErrRefused = fmt.Errorf("inferenceserve: a refused inference allocates nothing to scope to")
 
+type Ids struct {
+	mu  sync.Mutex
+	seq int
+}
+
+func (i *Ids) next() string {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.seq++
+	return fmt.Sprintf("e%d", i.seq)
+}
+
 type State struct {
+	ids         *Ids
 	inferenceID string
 	modelRef    string
 	sequence    int
-	ids         int
 	refused     bool
 }
 
-func NewState(inferenceID, modelRef string) *State {
-	return &State{inferenceID: inferenceID, modelRef: modelRef}
+func NewState(ids *Ids, inferenceID, modelRef string) *State {
+	return &State{ids: ids, inferenceID: inferenceID, modelRef: modelRef}
 }
 
 func (s *State) nextID() string {
-	s.ids++
-	return fmt.Sprintf("e%d", s.ids)
+	return s.ids.next()
 }
 
 func (s *State) emit(typ string, inReplyTo string, payload any) (Envelope, error) {
@@ -173,6 +190,14 @@ func (s *State) Refused(requestID, code, message string) (Envelope, error) {
 }
 
 func (s *State) Completed(stopReason string, content []TerminalBlock) (Envelope, error) {
+	for _, block := range content {
+		if block.ArgumentsJSON == nil {
+			continue
+		}
+		if !json.Valid(block.ArgumentsJSON) {
+			return s.Failed(CodeProtocolViolation, "the provider streamed a tool call whose arguments_json is not json")
+		}
+	}
 	return s.emit("inference.completed", "", struct {
 		StopReason string          `json:"stop_reason"`
 		Message    TerminalMessage `json:"message"`

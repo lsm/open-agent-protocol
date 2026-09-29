@@ -101,8 +101,21 @@ func isGitHubCopilotURL(baseURL string, hasBaseURL bool) bool {
 	return holdsURL(baseURL, hasBaseURL, "api.githubcopilot.com")
 }
 
+func isHostOrSubdomain(baseURL string, hasBaseURL bool, domain string) bool {
+	if !hasBaseURL {
+		return false
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	d := strings.ToLower(domain)
+	return host == d || (len(host) > len(d) && strings.HasSuffix(host, d) && host[len(host)-len(d)-1] == '.')
+}
+
 func isMistralURL(baseURL string, hasBaseURL bool) bool {
-	return holdsURL(baseURL, hasBaseURL, "api.mistral.ai")
+	return isHostOrSubdomain(baseURL, hasBaseURL, "mistral.ai")
 }
 
 func isGroqURL(baseURL string, hasBaseURL bool) bool {
