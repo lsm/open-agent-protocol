@@ -17,6 +17,21 @@ const retry_util = @import("retry");
 const pre_transform = @import("pre_transform");
 const StringBuilder = @import("string_builder").StringBuilder;
 
+fn googleErrorDetail(allocator: std.mem.Allocator, body: []const u8) !?[]u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const err_value = parsed.value.object.get("error") orelse return null;
+    if (err_value != .object) return null;
+    const message = err_value.object.get("message") orelse return null;
+    if (message != .string or message.string.len == 0) return null;
+    const status = err_value.object.get("status");
+    if (status != null and status.? == .string and status.?.string.len > 0) {
+        return try std.fmt.allocPrint(allocator, " ({s}: {s})", .{ status.?.string, message.string });
+    }
+    return try std.fmt.allocPrint(allocator, " ({s})", .{message.string});
+}
+
 fn shouldSkipAssistant(msg: ai_types.Message) bool {
     switch (msg) {
         .assistant => |a| {
@@ -878,8 +893,21 @@ fn runThread(ctx: *ThreadCtx) void {
     }
 
     if (response.head.status != .ok) {
+        const status_code = @intFromEnum(response.head.status);
+        var error_transfer_buf: [4096]u8 = undefined;
+        const error_reader = compat.http.responseReader(&response, &error_transfer_buf);
+        const error_body = compat.http.allocRemainingResponse(allocator, error_reader, 8192) catch null;
+        defer if (error_body) |text| allocator.free(text);
+        const detail = if (error_body) |text| googleErrorDetail(allocator, text) catch null else null;
+        defer if (detail) |text| allocator.free(text);
+        const message = std.fmt.allocPrint(allocator, "google request failed: HTTP {d}{s}", .{
+            status_code,
+            detail orelse "",
+        }) catch null;
+        defer if (message) |text| allocator.free(text);
+
         ctx.deinit();
-        stream.completeWithError("google request failed");
+        stream.completeWithError(message orelse "google request failed");
         stream.markThreadDone();
         return;
     }
@@ -1646,4 +1674,16 @@ test "streamGoogleGenerativeAI withholds vendor env key from non-google provider
         error.MissingApiKey,
         streamGoogleGenerativeAI(model, context, null, allocator),
     );
+}
+
+test "googleErrorDetail surfaces the API status and message, and nothing else" {
+    const detail = (try googleErrorDetail(std.testing.allocator, "{\"error\":{\"code\":401,\"message\":\"API key not valid. Please pass a valid API key.\",\"status\":\"UNAUTHENTICATED\"}}")).?;
+    defer std.testing.allocator.free(detail);
+    try std.testing.expectEqualStrings(" (UNAUTHENTICATED: API key not valid. Please pass a valid API key.)", detail);
+    const bare = (try googleErrorDetail(std.testing.allocator, "{\"error\":{\"code\":400,\"message\":\"bad\"}}")).?;
+    defer std.testing.allocator.free(bare);
+    try std.testing.expectEqualStrings(" (bad)", bare);
+    try std.testing.expect((try googleErrorDetail(std.testing.allocator, "<html>oops</html>")) == null);
+    try std.testing.expect((try googleErrorDetail(std.testing.allocator, "{\"error\":\"plain\"}")) == null);
+    try std.testing.expect((try googleErrorDetail(std.testing.allocator, "{\"error\":{\"message\":\"\"}}")) == null);
 }
