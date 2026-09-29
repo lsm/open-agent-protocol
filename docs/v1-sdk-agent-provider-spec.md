@@ -100,10 +100,13 @@ Facts a listing learned (Normative):
   ([Decision 0035](../../decisions/0035-a-model-entry-publishes-its-facts-and-absence-means-unknown.md))
   on the SDK's descriptor, so an implementation that serves the provider profile
   has one shape to fill them in. The members above are the shape, not a claim
-  that a shipped SDK populates every one of them today: `sdk/typescript`,
-  `go/sdk` and `zig/src/protocol/model_catalog_types.zig` do not yet carry these
-  fields, and a client that leaves one absent reads the absence as unknown under
-  the rule above, exactly as it does on the wire.
+  that a shipped SDK populates every one of them today: `go/sdk` and
+  `sdk/typescript` carry these fields as of #632, while
+  `zig/src/protocol/model_catalog_types.zig` does not, because the agent-side
+  catalog in `providers/catalog.json` publishes no such facts and adding the
+  members there would declare a shape nothing fills. A client that leaves one
+  absent reads the absence as unknown under the rule above, exactly as it does
+  on the wire.
 
 Auth for listing:
 - Providers that require auth for model listing must return `auth_status = "login_required"` (or `"expired"` / `"failed"`).
@@ -254,8 +257,15 @@ export interface ListModelsRequest {
 
 export interface ListModelsResponse {
   models: ModelDescriptor[];
+  /** What the listing knows about itself; absent when the provider published none. */
+  catalog?: ModelCatalog;
   fetched_at_ms: number;
   cache_max_age_ms: number;
+}
+
+export interface ModelCatalog {
+  observed_at_ms?: number;
+  complete?: boolean;
 }
 
 export interface ResolveModelRequest {

@@ -34,6 +34,8 @@ export type ModelCapability =
   | "audio_input"
   | "audio_output";
 
+export type Modality = "text" | "image" | "audio" | "video" | "document";
+
 export type ModelSource = "dynamic" | "static_fallback";
 
 export type ReasoningLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
@@ -53,8 +55,8 @@ export interface ModelDescriptor {
   max_output_tokens?: number;
   reasoning_default?: ReasoningLevel;
   cost?: ModelCost;
-  input_modalities?: string[];
-  output_modalities?: string[];
+  input_modalities?: Modality[];
+  output_modalities?: Modality[];
   reasoning_levels?: ReasoningLevel[];
   release_date?: string;
   family?: string;
