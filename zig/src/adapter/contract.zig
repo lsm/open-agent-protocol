@@ -288,11 +288,19 @@ fn deliveryFeature(delivery: oap_types.RequestedDelivery) ?[]const u8 {
 }
 
 pub fn carriesEntries(raw: ?[]const u8) bool {
-    const text = std.mem.trim(u8, raw orelse return false, " \t\r\n");
+    var bare: [8]u8 = undefined;
+    var kept: usize = 0;
+    for (raw orelse return false) |byte| {
+        if (std.ascii.isWhitespace(byte)) continue;
+        if (kept == bare.len) return true;
+        bare[kept] = byte;
+        kept += 1;
+    }
+    const text = bare[0..kept];
     if (std.mem.eql(u8, text, "[]")) return false;
     if (std.mem.eql(u8, text, "{}")) return false;
     if (std.mem.eql(u8, text, "null")) return false;
-    return text.len > 0;
+    return false;
 }
 
 pub fn refuseUnadvertisedOpenElections(descriptor: Descriptor, request: *const oap_types.SessionOpenRequest, refusal: *Refusal) Failure!void {

@@ -2394,12 +2394,17 @@ test "the revision gate fires for a subscribing or attaching open, and for no ot
     }));
     try testing.expect(hub.findSession("attaching") == null);
 
-    const empty = try hub.open(arena, "memory", .{
-        .session_id = "empty",
-        .tool_sources_json = "[]",
-        .capability_revision = "reference-memory-v10",
-    });
-    try testing.expectEqualStrings("empty", empty.session_id);
+    const spellings = [_][]const u8{ "[]", "[ ]", "[\n]", "[\r\n \t]", " [ ] " };
+    for (spellings, 0..) |spelling, index| {
+        var name_buffer: [16]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buffer, "empty-{d}", .{index});
+        const empty = try hub.open(arena, "memory", .{
+            .session_id = name,
+            .tool_sources_json = spelling,
+            .capability_revision = "reference-memory-v10",
+        });
+        try testing.expectEqualStrings(name, empty.session_id);
+    }
 
 }
 
