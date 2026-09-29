@@ -3,6 +3,7 @@ package inferenceserve
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/lsm/open-agent-protocol/go/internal/provider"
@@ -307,26 +308,56 @@ func TestATextPartEndedCarriesItsTextAndNoCall(t *testing.T) {
 	}
 }
 
-func TestNoPayloadAnywhereCarriesAThoughtSignature(t *testing.T) {
-	terminal := partsOf([]provider.AssistantBlock{{ToolCall: &provider.ToolCall{
-		ID: "tc1", Name: "lookup", Arguments: `{"city":"Kyoto"}`, ThoughtSig: "sig-1",
-	}}})
-	if len(terminal) != 1 {
-		t.Fatalf("the terminal content = %v, want one block", terminal)
+func TestNoPayloadThisLayerCanEmitCarriesAThoughtSignature(t *testing.T) {
+	call := provider.ToolCall{ID: "tc1", Name: "lookup", Arguments: `{"city":"Kyoto"}`, ThoughtSig: "sig-1"}
+	thinking := provider.ThinkingPart{Thinking: "think", Signature: "sig-1"}
+	text := "hello"
+	state := NewState("i1", "m")
+	var envelopes []Envelope
+	add := func(envelope Envelope, err error) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		envelopes = append(envelopes, envelope)
 	}
-	block := terminal[0]
+	add(state.Accepted("c0", Honoured{IncludeSnapshot: "never"}))
+	add(state.Started(1))
+	add(state.emit("inference.part.started", "", PartStarted{PartIndex: 0, PartKind: "text"}))
+	add(state.emit("inference.part.started", "", PartStarted{PartIndex: 0, PartKind: "tool_call", ToolCallID: "tc1", Name: "lookup"}))
+	add(state.emit("inference.part.delta", "", struct {
+		PartIndex int    `json:"part_index"`
+		Delta     string `json:"delta"`
+	}{PartIndex: 0, Delta: "a"}))
+	add(state.emit("inference.part.ended", "", PartEnded{PartIndex: 0, PartKind: "text", Text: &text}))
+	add(state.emit("inference.part.ended", "", PartEnded{PartIndex: 1, PartKind: "reasoning", Text: &thinking.Thinking, Carry: thinking.Signature}))
+	add(state.emit("inference.part.ended", "", PartEnded{PartIndex: 2, PartKind: "tool_call", ToolCall: &EndedToolCall{
+		ToolCallID: call.ID, Name: call.Name, ArgumentsJSON: json.RawMessage(call.Arguments),
+	}}))
+	add(state.Completed("tool_use", partsOf([]provider.AssistantBlock{
+		{Thinking: &thinking}, {Text: &provider.TextPart{Text: text}}, {ToolCall: &call},
+	})))
+	add(state.Failed("provider_unavailable", "the provider stream failed"))
+	refused, err := state.Refused("c1", "model_not_found", "no such model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelopes = append(envelopes, refused)
+
+	if len(envelopes) < 10 {
+		t.Fatalf("only %d envelopes were built, want the whole set: a scan of a subset is not a scan", len(envelopes))
+	}
+	for _, envelope := range envelopes {
+		raw := string(envelope.Payload)
+		if strings.Contains(raw, "thought_signature") {
+			t.Errorf("%s carries a thought_signature: %s", envelope.Type, raw)
+		}
+	}
+	block := partsOf([]provider.AssistantBlock{{ToolCall: &call}})[0]
 	if block.Carry != "sig-1" {
-		t.Errorf("carry = %q, want the signature: the schema has no thought_signature member and a signature that does not round-trip is lost", block.Carry)
+		t.Errorf("carry = %q, want the signature: no schema has a thought_signature, and a signature that does not round trip is lost", block.Carry)
 	}
-	names := keysOf(t, block)
-	if has(names, "thought_signature") {
-		t.Errorf("a terminal tool_call block = %v, want no thought_signature: no schema defines one", names)
-	}
-	if stray := only(names, "type", "tool_call_id", "name", "arguments_json", "carry"); stray != "" {
+	if stray := only(keysOf(t, block), "type", "tool_call_id", "name", "arguments_json", "carry"); stray != "" {
 		t.Errorf("a terminal tool_call block carries %q, which the schema forbids", stray)
-	}
-	if block.ArgumentsJSON == nil {
-		t.Error("a terminal tool_call block omits arguments_json: the schema requires it")
 	}
 }
 
@@ -408,13 +439,4 @@ func decode(t *testing.T, raw json.RawMessage) any {
 		t.Fatalf("not json: %v", err)
 	}
 	return value
-}
-
-func contains(haystack, needle string) bool {
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return true
-		}
-	}
-	return false
 }
