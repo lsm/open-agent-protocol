@@ -843,6 +843,7 @@ pub const App = struct {
     worktree_job: ?*tui_worktree.CreateJob = null,
     worktree_attempted: bool = false,
     held_user_message: []u8 = &.{},
+    queued_worktree_messages: std.ArrayList([]u8) = .empty,
     session_id: []u8 = &.{},
     working_dir: []u8 = &.{},
     launch_dir: []u8 = &.{},
@@ -929,10 +930,23 @@ pub const App = struct {
             self.login = null;
         }
         if (self.worktree_job) |job| {
+            job.wait();
+            if (job.poll()) |outcome_value| {
+                var outcome = outcome_value;
+                defer outcome.deinit(self.allocator);
+                switch (outcome) {
+                    .created => |created| if (self.store) |store| {
+                        tui_worktree.writeSidecar(self.allocator, store.base_dir, self.session_id, &created.info) catch {};
+                    },
+                    else => {},
+                }
+            }
             job.deinit();
             self.worktree_job = null;
         }
         if (self.held_user_message.len > 0) self.allocator.free(self.held_user_message);
+        for (self.queued_worktree_messages.items) |message| self.allocator.free(message);
+        self.queued_worktree_messages.deinit(self.allocator);
         if (self.approval_waiter) |waiter| waiter.cancel();
         if (self.runtime) |runtime| {
             runtime.deinit();
@@ -1470,12 +1484,6 @@ pub const App = struct {
             session.deinit();
             self.login = null;
         }
-        if (self.worktree_job) |job| {
-            job.deinit();
-            self.worktree_job = null;
-        }
-        if (self.held_user_message.len > 0) self.allocator.free(self.held_user_message);
-        self.held_user_message = &.{};
         if (self.state.mode == .login_input) self.state.mode = .normal;
     }
 
@@ -1926,6 +1934,11 @@ pub const App = struct {
             defer self.allocator.free(message);
             try self.submit(message);
         }
+        while (self.queued_worktree_messages.items.len > 0) {
+            const message = self.queued_worktree_messages.orderedRemove(0);
+            defer self.allocator.free(message);
+            try self.submit(message);
+        }
     }
 
     pub fn drainEvents(self: *App) !void {
@@ -2108,7 +2121,10 @@ pub const App = struct {
                 self.held_user_message = try self.allocator.dupe(u8, trimmed);
                 try self.state.appendTranscript(.system, "Setting up this session's Git worktree; your message will be sent when ready.");
             } else {
-                try self.state.appendTranscript(.system, "Worktree setup is still running; the first message will be sent when ready.");
+                const queued = try self.allocator.dupe(u8, trimmed);
+                errdefer self.allocator.free(queued);
+                try self.queued_worktree_messages.append(self.allocator, queued);
+                try self.state.appendTranscript(.system, "Worktree setup is still running; your message is queued and will be sent when ready.");
             }
             return;
         }
@@ -2844,7 +2860,7 @@ pub const TuiModel = struct {
                             .model => app.applySelectedModel() catch |err| app.recordError(@errorName(err)) catch {},
                             .login => app.applySelectedLogin() catch |err| app.recordError(@errorName(err)) catch {},
                             .permission => app.applySelectedPermission() catch |err| app.recordError(@errorName(err)) catch {},
-                            .settings => app.toggleSetting(app.state.menu_index) catch |err| app.recordError(@errorName(err)) catch {},
+                            .settings => if (app.pickerSourceIndex(app.state.menu_index)) |index| app.toggleSetting(index) catch |err| app.recordError(@errorName(err)) catch {},
                         },
                         .escape => closeModal(app),
                         else => {},
@@ -4394,6 +4410,16 @@ test "TuiModel picker filters by typing and applies the filtered choice" {
     try std.testing.expectEqualStrings("ASK", model.app.?.state.pickerFilter());
     model.app.?.openPicker(.permission);
     try std.testing.expectEqualStrings("", model.app.?.state.pickerFilter());
+}
+
+test "settings picker resolves filtered selection to the visible setting" {
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.openPicker(.settings);
+    try app.state.appendPickerFilter("worktrees");
+    try std.testing.expectEqual(@as(usize, 1), app.pickerMatchCount());
+    try std.testing.expectEqual(@as(?usize, 1), app.pickerSourceIndex(0));
+    try std.testing.expect(app.pickerSourceIndex(1) == null);
 }
 
 test "filterMatches needs every term in the label or the detail" {

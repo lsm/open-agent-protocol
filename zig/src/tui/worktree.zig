@@ -213,6 +213,7 @@ pub const CreateJob = struct {
     base: []u8,
     session_id: []u8,
     thread: std.Thread = undefined,
+    joined: bool = false,
     mutex: std.atomic.Mutex = .unlocked,
     finished: bool = false,
     outcome: ?CreateOutcome = null,
@@ -237,6 +238,13 @@ pub const CreateJob = struct {
         return self;
     }
 
+    pub fn wait(self: *CreateJob) void {
+        if (!self.joined) {
+            self.thread.join();
+            self.joined = true;
+        }
+    }
+
     pub fn poll(self: *CreateJob) ?CreateOutcome {
         while (!self.mutex.tryLock()) std.atomic.spinLoopHint();
         defer self.mutex.unlock();
@@ -247,7 +255,7 @@ pub const CreateJob = struct {
     }
 
     pub fn deinit(self: *CreateJob) void {
-        self.thread.join();
+        self.wait();
         if (self.outcome) |*outcome| outcome.deinit(self.allocator);
         self.allocator.free(self.dir);
         self.allocator.free(self.base);
