@@ -79,8 +79,13 @@ pub fn isOllama(base_url: ?[]const u8) bool {
     return false;
 }
 
-pub fn isAzureOpenAI(base_url: ?[]const u8) bool {
-    return isHostOrSubdomainOf(base_url, "openai.azure.com");
+const azure_labels = [_][]const u8{ "openai.azure.com", "cognitiveservices.azure.com", "services.ai.azure.com" };
+
+pub fn isAzure(base_url: ?[]const u8) bool {
+    for (azure_labels) |label| {
+        if (isHostOrSubdomainOf(base_url, label)) return true;
+    }
+    return false;
 }
 
 pub fn isGoogle(base_url: ?[]const u8) bool {
@@ -169,7 +174,7 @@ pub fn detectProviderType(base_url: ?[]const u8) ProviderType {
     if (isOpenRouter(url)) return .openai_compatible;
     if (isGoogle(url)) return .google;
     if (isBedrock(url)) return .bedrock;
-    if (isAzureOpenAI(url) or std.mem.find(u8, url, "cognitiveservices.azure.com") != null) return .azure;
+    if (isAzure(url)) return .azure;
     if (isOllama(url)) return .ollama;
 
     if (url.len > 0) return .openai_compatible;
@@ -348,39 +353,60 @@ test "a bedrock host still detects as bedrock" {
     try std.testing.expectEqual(ProviderType.bedrock, detectProviderType(url));
 }
 
-test "an azure openai host is openai.azure.com or a subdomain, never azure.com" {
+test "an azure host is one of three labels and never azure.com" {
     const hosts = [_][]const u8{
         "https://contoso.openai.azure.com",
         "https://contoso.openai.azure.com/openai/deployments/gpt/chat/completions",
+        "https://contoso.cognitiveservices.azure.com",
+        "https://contoso.services.ai.azure.com",
         "https://openai.azure.com",
-        "https://CONTOSO.OPENAI.AZURE.COM",
+        "https://CONTOSO.COGNITIVESERVICES.AZURE.COM",
     };
     for (hosts) |url| {
-        try std.testing.expect(isAzureOpenAI(url));
+        try std.testing.expect(isAzure(url));
     }
 
     const not_hosts = [_][]const u8{
         "https://azure.com",
         "https://contoso.azure.com",
         "https://notopenai.azure.com",
+        "https://notcognitiveservices.azure.com",
+        "https://notservices.ai.azure.com",
+        "https://cognitiveservices.azure.com.evil.example",
+        "https://services.ai.azure.com.evil.example",
         "https://openai.azure.com.evil.example",
         "https://evilcontoso.openai.azure.co",
-        "https://evil.example/?next=contoso.openai.azure.com",
-        "https://evil.example/v1/contoso.openai.azure.com",
+        "https://evil.example/?next=contoso.cognitiveservices.azure.com",
+        "https://evil.example/v1/contoso.services.ai.azure.com",
         "https://gateway.example/proxy/contoso.openai.azure.com",
         "not a url at all",
         "",
     };
     for (not_hosts) |url| {
-        try std.testing.expect(!isAzureOpenAI(url));
+        try std.testing.expect(!isAzure(url));
     }
 
-    try std.testing.expect(!isAzureOpenAI(null));
+    try std.testing.expect(!isAzure(null));
+}
+
+test "each azure label is anchored on its own" {
+    const others = [_][]const u8{
+        "https://contoso.cognitiveservices.azure.com",
+        "https://contoso.services.ai.azure.com",
+        "https://contoso.openai.azure.com",
+    };
+    for (others) |url| {
+        var matched: usize = 0;
+        if (isHostOrSubdomainOf(url, "openai.azure.com")) matched += 1;
+        if (isHostOrSubdomainOf(url, "cognitiveservices.azure.com")) matched += 1;
+        if (isHostOrSubdomainOf(url, "services.ai.azure.com")) matched += 1;
+        try std.testing.expectEqual(@as(usize, 1), matched);
+    }
 }
 
 test "an azure openai host still detects as azure" {
     const url = "https://contoso.openai.azure.com";
-    try std.testing.expect(isAzureOpenAI(url));
+    try std.testing.expect(isAzure(url));
     try std.testing.expectEqual(ProviderType.azure, detectProviderType(url));
 }
 
