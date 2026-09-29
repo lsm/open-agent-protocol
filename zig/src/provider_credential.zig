@@ -53,7 +53,8 @@ pub fn lookup(
     id: []const u8,
 ) std.mem.Allocator.Error!?Credential {
     const row = provider_catalog.provider(id) orelse return null;
-    for (precedence(row)) |source| {
+    const order = precedence(row);
+    for (order.sources[0..order.len]) |source| {
         switch (source) {
             .stored => if (try storedCredential(allocator, auth_storage, row)) |found| return found,
             .environment => if (try environmentCredential(allocator, environment, row)) |found| return found,
@@ -64,22 +65,28 @@ pub fn lookup(
 
 const SourceOrder = enum { stored, environment };
 
-fn precedence(row: provider_catalog.Provider) []const SourceOrder {
-    if (row.credential_precedence.len == 0) return &.{ .environment, .stored };
-    var out: [2]SourceOrder = undefined;
-    var filled: usize = 0;
+const Precedence = struct {
+    sources: [2]SourceOrder,
+    len: usize,
+};
+
+fn precedence(row: provider_catalog.Provider) Precedence {
+    if (row.credential_precedence.len == 0) {
+        return .{ .sources = .{ .environment, .stored }, .len = 2 };
+    }
+    var out: Precedence = .{ .sources = undefined, .len = 0 };
     for (row.credential_precedence) |name| {
-        if (filled == out.len) break;
+        if (out.len == out.sources.len) break;
         if (std.mem.eql(u8, name, "stored")) {
-            out[filled] = .stored;
-            filled += 1;
+            out.sources[out.len] = .stored;
+            out.len += 1;
         } else if (std.mem.eql(u8, name, "environment")) {
-            out[filled] = .environment;
-            filled += 1;
+            out.sources[out.len] = .environment;
+            out.len += 1;
         }
     }
-    if (filled == 0) return &.{ .environment, .stored };
-    return out[0..filled];
+    if (out.len == 0) return .{ .sources = .{ .environment, .stored }, .len = 2 };
+    return out;
 }
 
 fn environmentCredential(
