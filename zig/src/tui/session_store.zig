@@ -324,6 +324,14 @@ pub const Store = struct {
             error.FileNotFound => {},
             else => return err,
         };
+        inline for (.{ stream_suffix, index_suffix }) |suffix| {
+            const auxiliary_path = try sessionFilePath(self.allocator, self.base_dir, session_id, suffix);
+            defer self.allocator.free(auxiliary_path);
+            compat.fs.getCwd().deleteFile(defaultIo(), auxiliary_path) catch |err| switch (err) {
+                error.FileNotFound => {},
+                else => return err,
+            };
+        }
         const dir_path = try std.fs.path.join(self.allocator, &.{ self.base_dir, session_id });
         defer self.allocator.free(dir_path);
         if (compat.fs.getCwd().openDir(defaultIo(), dir_path, .{})) |dir| {
@@ -2289,6 +2297,14 @@ test "deleteSession removes the JSONL and sidecar directory" {
     var meta = try testMeta("delete-me");
     defer meta.deinit(std.testing.allocator);
     try saveText(store, meta, .user, "question");
+    var chunk = tui_session.TuiEvent{ .message_end = .{ .role = .user, .text = try owned(std.testing.allocator, "stream") } };
+    defer chunk.deinit(std.testing.allocator);
+    try store.saveChunk("delete-me", chunk);
+    try store.saveIndex(meta);
+    const stream_path = try sessionFilePath(std.testing.allocator, base, "delete-me", stream_suffix);
+    defer std.testing.allocator.free(stream_path);
+    const index_path = try sessionFilePath(std.testing.allocator, base, "delete-me", index_suffix);
+    defer std.testing.allocator.free(index_path);
     const sidecar_dir = try std.fs.path.join(std.testing.allocator, &.{ base, "delete-me" });
     defer std.testing.allocator.free(sidecar_dir);
     try compat.fs.createDir(compat.fs.getCwd(), sidecar_dir);
@@ -2305,6 +2321,8 @@ test "deleteSession removes the JSONL and sidecar directory" {
     }
     try std.testing.expectEqual(@as(usize, 0), listed.items.len);
     try std.testing.expectError(error.FileNotFound, compat.fs.readFileAlloc(std.testing.allocator, compat.fs.getCwd(), marker, 1024));
+    try std.testing.expectError(error.FileNotFound, compat.fs.readFileAlloc(std.testing.allocator, compat.fs.getCwd(), stream_path, 1024));
+    try std.testing.expectError(error.FileNotFound, compat.fs.readFileAlloc(std.testing.allocator, compat.fs.getCwd(), index_path, 1024));
 }
 
 test "saveTranscript writes one message per line beside the session files without adding a session" {

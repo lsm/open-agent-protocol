@@ -892,7 +892,7 @@ pub const App = struct {
         };
         var app = App{
             .allocator = allocator,
-            .mode_settings = .{ .compact_output = options.compact_output, .auto_worktree = options.auto_worktree },
+            .mode_settings = .{ .compact_output = options.compact_output },
             .state = tui_state.AppState.init(allocator),
             .runtime = runtime_ptr,
             .approval_waiter = approval_waiter,
@@ -1066,6 +1066,10 @@ pub const App = struct {
         const store = self.store orelse return error.NoStoreConfigured;
         if (self.state.session_index >= self.state.sessions.items.len) return;
         const id = self.state.sessions.items[self.state.session_index].id;
+        if (std.mem.eql(u8, id, self.session_id)) {
+            try self.state.appendTranscript(.system, "Cannot delete the active session; resume another session first.");
+            return;
+        }
         if (try tui_worktree.readSidecar(self.allocator, store.base_dir, id)) |info_value| {
             var info = info_value;
             defer info.deinit(self.allocator);
@@ -1093,6 +1097,10 @@ pub const App = struct {
     }
 
     pub fn resumeSelectedSession(self: *App) !void {
+        if (self.worktree_job != null) {
+            try self.state.appendTranscript(.system, "Wait for worktree setup to finish before resuming another session.");
+            return;
+        }
         const store = self.store orelse return error.NoStoreConfigured;
         try self.dropPendingAfterCompaction("the session was resumed before the compaction finished");
         if (self.state.session_index >= self.state.sessions.items.len) return;
@@ -1932,13 +1940,20 @@ pub const App = struct {
             const message = self.held_user_message;
             self.held_user_message = &.{};
             defer self.allocator.free(message);
+            if (outcome != .created) try self.appendRuntimeUserMessage(message);
             try self.submit(message);
         }
-        while (self.queued_worktree_messages.items.len > 0) {
-            const message = self.queued_worktree_messages.orderedRemove(0);
-            defer self.allocator.free(message);
-            try self.submit(message);
-        }
+        self.drainQueuedWorktreeMessageIfIdle() catch |err| {
+            try self.state.status.setError(self.allocator, @errorName(err));
+            try self.state.appendTranscript(.@"error", @errorName(err));
+        };
+    }
+
+    fn drainQueuedWorktreeMessageIfIdle(self: *App) !void {
+        if (self.state.status.streaming or self.queued_worktree_messages.items.len == 0) return;
+        const message = self.queued_worktree_messages.orderedRemove(0);
+        defer self.allocator.free(message);
+        try self.submit(message);
     }
 
     pub fn drainEvents(self: *App) !void {
@@ -2021,6 +2036,7 @@ pub const App = struct {
             self.compaction_just_ended = null;
             try self.sendPendingAfterCompaction(completed, resumed_run or self.state.status.streaming);
         }
+        if (!completed_agent_end or self.state.queue.total() == 0) try self.drainQueuedWorktreeMessageIfIdle();
     }
 
     fn applyRuntimeEvent(self: *App, event: tui_runtime.TuiEvent) !void {
@@ -2096,6 +2112,12 @@ pub const App = struct {
         self.pending_session_reset = false;
     }
 
+    fn enqueueWorktreeMessage(self: *App, text: []const u8) !void {
+        const queued = try self.allocator.dupe(u8, text);
+        errdefer self.allocator.free(queued);
+        try self.queued_worktree_messages.append(self.allocator, queued);
+    }
+
     pub fn submit(self: *App, text: []const u8) !void {
         const trimmed = std.mem.trim(u8, text, " \t\r\n");
         if (trimmed.len == 0) return;
@@ -2121,9 +2143,7 @@ pub const App = struct {
                 self.held_user_message = try self.allocator.dupe(u8, trimmed);
                 try self.state.appendTranscript(.system, "Setting up this session's Git worktree; your message will be sent when ready.");
             } else {
-                const queued = try self.allocator.dupe(u8, trimmed);
-                errdefer self.allocator.free(queued);
-                try self.queued_worktree_messages.append(self.allocator, queued);
+                try self.enqueueWorktreeMessage(trimmed);
                 try self.state.appendTranscript(.system, "Worktree setup is still running; your message is queued and will be sent when ready.");
             }
             return;
@@ -6243,6 +6263,22 @@ test "session picker navigation pages through hidden rows" {
     try std.testing.expectEqual(@as(usize, 4), app.state.session_index);
     try std.testing.expectEqual(@as(usize, 1), app.state.session_scroll);
     try std.testing.expectEqual(@as(usize, 4), TuiModel.visibleSessionCount(&app));
+}
+
+test "session deletion refuses to remove the active session" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "sessions" });
+    defer std.testing.allocator.free(base);
+    try compat.fs.createDir(compat.fs.getCwd(), base);
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.store = try session_store.Store.init(std.testing.allocator, base);
+    app.session_id = try std.testing.allocator.dupe(u8, "active");
+    try app.state.addSession("active", "Active session");
+    try app.deleteSelectedSession();
+    try std.testing.expectEqual(@as(usize, 1), app.state.sessions.items.len);
+    try std.testing.expect(std.mem.indexOf(u8, app.state.transcript.items[0].text.items, "active session") != null);
 }
 
 test "session picker typing characters does not edit anything" {
