@@ -153,15 +153,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **A listing that reports a zero is treated as saying nothing**, for a context
   window or an output cap: a model served a zero-token budget cannot be used, and
   the row's own figures are a better guess than a provider's empty field.
-  **One credential order for every row, and a region that follows the credential in
-  use.** When a key is both in the environment and stored, the environment variable
-  wins — for every row, and a request is signed with the same credential the models
-  were listed under. A region chosen at login belongs to that login's key: with an
-  environment key set, the region comes from the region's own variable or the row's
-  `default_region`, never from a region recorded for a different key, so a China key
-  is not listed and sent at `api.moonshot.ai`. Rows with no `credential_env` of
-  their own are unaffected. A row no longer records which source outranks which;
-  the rule is the rule.
+  **A row may now say which credential outranks which.** The environment has been
+  read before a stored login since the generic loader began, and a request is
+  signed with the stored credential first, so a user with both a Kimi login and
+  `KIMI_API_KEY` had their models listed under one key and their requests signed
+  with the other, at the region the other one chose. `kimi` records
+  `["stored", "environment"]`, which is the order its own loader used before the
+  generic one; every other row keeps the default. `goap check` refuses a source
+  it does not know, or the same one twice.
   **A Kimi login made in the TUI keeps working, which it very nearly did not.**
   The TUI stores an API key with its region as an *oauth* entry, because the
   api-key entry has nowhere to put a region. The old Kimi code accepted either
