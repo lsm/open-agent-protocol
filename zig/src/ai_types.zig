@@ -714,7 +714,7 @@ pub const CarriedPartial = struct {
     pub fn release(self: CarriedPartial, allocator: std.mem.Allocator, pending: ?*std.ArrayList([]AssistantContent)) void {
         const owned = self.owned orelse return;
         if (pending) |list| {
-            list.append(allocator, owned) catch allocator.free(owned);
+            list.append(allocator, owned) catch {};
             return;
         }
         allocator.free(owned);
@@ -1622,4 +1622,28 @@ test "partialWithContent leaves the partial alone when the index is not there" {
     }, &content, 4);
     try std.testing.expectEqual(@as(?[]AssistantContent, null), carried.owned);
     try std.testing.expectEqual(@as(usize, 0), carried.partial.content.len);
+}
+
+test "release does not free a carried array it could not retire" {
+    const allocator = std.testing.allocator;
+    const content = [_]AssistantContent{.{ .text = .{ .text = "held" } }};
+    const carried = try partialWithContent(allocator, .{
+        .content = &.{},
+        .api = "anthropic-messages",
+        .provider = "anthropic",
+        .model = "claude",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+    }, &content, 0);
+    const slice = carried.owned.?;
+
+    var pending: std.ArrayList([]AssistantContent) = .empty;
+    defer pending.deinit(allocator);
+
+    var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 0 });
+    carried.release(failing.allocator(), &pending);
+
+    try std.testing.expectEqual(@as(usize, 0), pending.items.len);
+    allocator.free(slice);
 }

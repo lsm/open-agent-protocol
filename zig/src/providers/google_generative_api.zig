@@ -1036,6 +1036,7 @@ fn runThread(ctx: *ThreadCtx) void {
                                         const carried = ai_types.partialWithContent(allocator, partial, content_blocks.items, think_at) catch {
                                             ctx.deinit();
                                             stream.completeWithError("oom thinking");
+                                            stream.markThreadDone();
                                             return;
                                         };
                                         _ = stream.pushBlocking(.{ .thinking_end = .{
@@ -1133,6 +1134,7 @@ fn runThread(ctx: *ThreadCtx) void {
                                         const carried = ai_types.partialWithContent(allocator, partial, content_blocks.items, think_at) catch {
                                             ctx.deinit();
                                             stream.completeWithError("oom thinking");
+                                            stream.markThreadDone();
                                             return;
                                         };
                                         _ = stream.pushBlocking(.{ .thinking_end = .{
@@ -1257,6 +1259,7 @@ fn runThread(ctx: *ThreadCtx) void {
                 const carried = ai_types.partialWithContent(allocator, partial, content_blocks.items, think_at) catch {
                     ctx.deinit();
                     stream.completeWithError("oom thinking");
+                    stream.markThreadDone();
                     return;
                 };
                 _ = stream.pushBlocking(.{ .thinking_end = .{
