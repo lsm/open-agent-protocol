@@ -436,7 +436,7 @@ pub const Hub = struct {
     pub fn open(self: *Hub, arena: std.mem.Allocator, adapter_name: []const u8, request: OpenRequest) Failure!Opened {
         const registered = self.find(adapter_name) orelse return error.UnknownAdapter;
         if (registered.revision.len == 0) return error.AdapterDescriptorUnbound;
-        if (request.subscribe or request.tool_sources_json != null) {
+        if (request.subscribe or contract.carriesEntries(request.tool_sources_json)) {
             if (request.capability_revision) |wanted| {
                 if (wanted.len > 0 and !std.mem.eql(u8, wanted, registered.revision)) {
                     return error.StaleCapabilities;
@@ -2393,6 +2393,14 @@ test "the revision gate fires for a subscribing or attaching open, and for no ot
         .capability_revision = "reference-memory-v10",
     }));
     try testing.expect(hub.findSession("attaching") == null);
+
+    const empty = try hub.open(arena, "memory", .{
+        .session_id = "empty",
+        .tool_sources_json = "[]",
+        .capability_revision = "reference-memory-v10",
+    });
+    try testing.expectEqualStrings("empty", empty.session_id);
+
 }
 
 test "an open's metadata reaches the adapter" {

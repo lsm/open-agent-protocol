@@ -1310,7 +1310,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request that states no revision is not gated, which is Go's own `revision != ""`
   guard rather than a hole. The gate runs before the election check as well, so an open
   that both cites a stale revision and asks for an unadvertised feature answers
-  `stale_capabilities`, as Go's wire order has it.
+  `stale_capabilities`, as Go's wire order has it. The gate and the open's two
+  attach elections key on whether the request **carries** entries, not on whether the
+  member is present: Go gates on `len(request.ToolSources) == 0`, so an open sending
+  `"tool_sources": []` attaches nothing and is admitted, where keying on the member's
+  mere presence called it an attachment and refused it as unadvertised.
 
 ### Fixed
 
