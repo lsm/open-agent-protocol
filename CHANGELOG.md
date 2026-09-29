@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   spelling, and a new one pins that a string carrying all five parses back to
   itself.
 
+  **Those tests had never run.** `json_writer` was a module with no
+  `addTest` and no test root pulling it in, so its ten existing tests were
+  compiled by nothing -- the same class as `provider_caps` before #534, and
+  the reason a leak in the new one went unnoticed here. It is wired into
+  `test` and `test-unit-core` beside its sibling `json_encode`, so all
+  eleven run in CI now; the ten that had never executed pass unchanged.
+
   **The ACP frame writer moves off `gomarshal` onto `json_encode`**, which is
   already the module the adapter uses for the events it emits, rather than
   having `gomarshal` itself stop escaping. That is the narrowest correct

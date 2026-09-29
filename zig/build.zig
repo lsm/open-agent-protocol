@@ -207,6 +207,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const json_writer_test = b.addTest(.{ .root_module = json_writer_mod });
     const json_encode_mod = b.createModule(.{
         .root_source_file = b.path("src/json/encode.zig"),
         .target = target,
@@ -2764,6 +2765,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(string_builder_test).step);
     test_step.dependOn(&b.addRunArtifact(hive_array_test).step);
     test_step.dependOn(&b.addRunArtifact(compat_test).step);
+    test_step.dependOn(&b.addRunArtifact(json_writer_test).step);
     test_step.dependOn(&b.addRunArtifact(json_encode_test).step);
     test_step.dependOn(&b.addRunArtifact(artifact_store_test).step);
     test_step.dependOn(&b.addRunArtifact(provider_base_url_test).step);
@@ -2947,6 +2949,7 @@ pub fn build(b: *std.Build) void {
     test_unit_core_step.dependOn(&b.addRunArtifact(string_builder_test).step);
     test_unit_core_step.dependOn(&b.addRunArtifact(hive_array_test).step);
     test_unit_core_step.dependOn(&b.addRunArtifact(compat_test).step);
+    test_unit_core_step.dependOn(&b.addRunArtifact(json_writer_test).step);
     test_unit_core_step.dependOn(&b.addRunArtifact(json_encode_test).step);
     test_unit_core_step.dependOn(&b.addRunArtifact(artifact_store_test).step);
     test_unit_core_step.dependOn(&b.addRunArtifact(counting_allocator_test).step);

@@ -257,8 +257,9 @@ test "a string carrying all five still parses to the value it was written from" 
     try writer.writeStringField("text", value);
     try writer.endObject();
 
-    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, allocator, getResult(&writer), .{});
-    try std.testing.expectEqualStrings(value, parsed.object.get("text").?.string);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, getResult(&writer), .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings(value, parsed.value.object.get("text").?.string);
 }
 
 test "nested objects and arrays" {
