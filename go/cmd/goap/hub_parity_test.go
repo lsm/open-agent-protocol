@@ -208,8 +208,8 @@ func normaliseMinted(node any) {
 // everything from there on is legitimately unanswered, so the guard below must
 // not call those requests a hole.
 var hubWireStops = map[string]int{
-	"a framing defect stops the wire, and nothing after it is answered":            0,
-	"a parameter of the wrong type is a framing defect, not a refusal":              0,
+	"a framing defect stops the wire, and nothing after it is answered": 0,
+	"a parameter of the wrong type is a framing defect, not a refusal":  0,
 }
 
 func expectedHubIDs(lines []string, stopAt int) []string {

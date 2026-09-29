@@ -676,7 +676,6 @@ pub const Frontend = struct {
         };
     }
 
-
     fn refusalFor(self: *Frontend, arena: std.mem.Allocator, err: hubmod.Failure, session_id: []const u8) !Refusal {
         _ = self;
         return switch (err) {
@@ -1127,7 +1126,7 @@ const ReferenceState = struct {
 var reference_holder: ReferenceState = .{};
 
 fn reference() contract.Adapter {
-    return .{ .ptr = @constCast(@ptrCast(&reference_holder)), .vtable = &.{ .probe = referenceProbe, .open = referenceOpen } };
+    return .{ .ptr = @ptrCast(@constCast(&reference_holder)), .vtable = &.{ .probe = referenceProbe, .open = referenceOpen } };
 }
 
 fn referenceProbe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {
@@ -1301,7 +1300,6 @@ test "a refusal that will not fit is reduced, then refused as too large" {
     const answer = (try harness.lastValue()).object.get("error").?.object;
     try testing.expectEqualStrings("response_too_large", answer.get("code").?.string);
     try testing.expectEqualStrings("the encoded response exceeds the frame limit", answer.get("message").?.string);
-
 }
 
 test "a line over the frame limit is a defect, and the limit is not negotiable below the floor" {
@@ -1968,7 +1966,7 @@ const Fading = struct {
 var fading_holder: Fading = .{};
 
 fn fading() contract.Adapter {
-    return .{ .ptr = @constCast(@ptrCast(&fading_holder)), .vtable = &.{ .probe = fadingProbe, .open = referenceOpen } };
+    return .{ .ptr = @ptrCast(@constCast(&fading_holder)), .vtable = &.{ .probe = fadingProbe, .open = referenceOpen } };
 }
 
 fn fadingProbe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {
