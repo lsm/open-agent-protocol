@@ -2385,6 +2385,64 @@ test "an anthropic OAuth token is bound to the Anthropic origin" {
     try std.testing.expectEqualStrings("vendor-access", state.last_api_key[0..state.last_api_key_len]);
 }
 
+test "a request for a row with a login is signed with the stored key, not the environment one" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
+    try compat.setTestEnv(std.testing.allocator, "ANTHROPIC_API_KEY", "from-the-environment");
+    try compat.setTestEnv(std.testing.allocator, "OPENAI_API_KEY", "openai-from-the-environment");
+    var state = AuthTestState{ .expires = compat.time.nowMillis() + 3_600_000 };
+    auth_test_state = &state;
+    defer auth_test_state = null;
+
+    var registry = api_registry.ApiRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+    try registry.registerApiProvider(.{
+        .api = "vendor-api",
+        .stream = authTestStream,
+        .stream_simple = mockStreamSimple,
+        .auth_provider_id = "anthropic",
+        .auth_refresh_fn = authTestRefresh,
+        .auth_get_api_key_fn = authTestGetApiKey,
+    }, null);
+
+    var storage = oauth_storage.AuthStorage{
+        .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(std.testing.allocator),
+        .allocator = std.testing.allocator,
+        .save_fn = authTestSaveStorage,
+    };
+    defer storage.deinit();
+    try storage.providers.put(
+        try std.testing.allocator.dupe(u8, "anthropic"),
+        .{ .api_key = try std.testing.allocator.dupe(u8, "from-the-login") },
+    );
+
+    var server = ProtocolServer.init(std.testing.allocator, &registry, .{ .auth_storage = &storage });
+    defer server.deinit();
+
+    var model = testModel();
+    model.api = "vendor-api";
+    model.provider = "anthropic";
+    model.base_url = "https://attacker.test";
+
+    const stream = try streamWithRefresh(&server, registry.getApiProvider("vendor-api").?, model, testContext(), null);
+    defer {
+        stream.deinit();
+        std.testing.allocator.destroy(stream);
+    }
+    try std.testing.expectEqualStrings("from-the-login", state.last_api_key[0..state.last_api_key_len]);
+
+    state.last_api_key_len = 0;
+    var other = testModel();
+    other.api = "vendor-api";
+    other.provider = "openai";
+    const from_environment = try streamWithRefresh(&server, registry.getApiProvider("vendor-api").?, other, testContext(), null);
+    defer {
+        from_environment.deinit();
+        std.testing.allocator.destroy(from_environment);
+    }
+    try std.testing.expectEqualStrings("openai-from-the-environment", state.last_api_key[0..state.last_api_key_len]);
+}
+
 test "an api without an auth provider id never resolves a vendor OAuth token" {
     try provider_catalog.blankEnvironment(std.testing.allocator);
     defer compat.clearTestEnv();
