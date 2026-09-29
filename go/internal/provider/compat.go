@@ -137,10 +137,6 @@ func isAnthropicURL(baseURL string, hasBaseURL bool) bool {
 	return holdsURL(baseURL, hasBaseURL, "api.anthropic.com")
 }
 
-func IsOpenAINativeURL(baseURL string, hasBaseURL bool) bool {
-	return holdsURL(baseURL, hasBaseURL, "api.openai.com")
-}
-
 func IsOpenAIHost(baseURL string, hasBaseURL bool) bool {
 	if !hasBaseURL {
 		return false
@@ -163,7 +159,7 @@ func DetectProviderType(baseURL string, hasBaseURL bool) ProviderType {
 	switch {
 	case isAnthropicURL(baseURL, hasBaseURL):
 		return ProviderAnthropic
-	case IsOpenAINativeURL(baseURL, hasBaseURL):
+	case IsOpenAIHost(baseURL, hasBaseURL):
 		return ProviderOpenAINative
 	case isGitHubCopilotURL(baseURL, hasBaseURL),
 		isMistralURL(baseURL, hasBaseURL),
