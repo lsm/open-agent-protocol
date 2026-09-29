@@ -256,20 +256,27 @@ pub const Store = struct {
     pub fn load(self: Store, session_id: []const u8) !LoadedSession {
         const path = try sessionPath(self.allocator, self.base_dir, session_id);
         defer self.allocator.free(path);
-        const metadata = self.loadIndex(session_id) catch |err| switch (err) {
-            error.OutOfMemory => return err,
-            else => try defaultMetadata(self.allocator, session_id),
-        };
-        var loaded = LoadedSession{ .metadata = metadata };
-        errdefer loaded.deinit(self.allocator);
-        var replay = ReplayState{};
-        defer replay.deinit(self.allocator);
-        var ctx = LoadLineContext{ .allocator = self.allocator, .loaded = &loaded, .replay = &replay };
-        const start: u64 = if (startsCompaction(path, loaded.metadata.compaction_offset)) loaded.metadata.compaction_offset else 0;
-        if (start > 0) try readDisplayTail(self.allocator, path, start, &ctx);
-        try readJsonlRecords(self.allocator, path, start, &ctx, loadLine);
-        loaded.metadata.compaction_offset = ctx.last_compaction;
-        return loaded;
+        var windowed = true;
+        while (true) : (windowed = false) {
+            const metadata = self.loadIndex(session_id) catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                else => try defaultMetadata(self.allocator, session_id),
+            };
+            var loaded = LoadedSession{ .metadata = metadata };
+            errdefer loaded.deinit(self.allocator);
+            var replay = ReplayState{};
+            defer replay.deinit(self.allocator);
+            var ctx = LoadLineContext{ .allocator = self.allocator, .loaded = &loaded, .replay = &replay };
+            const start: u64 = if (windowed and startsCompaction(path, loaded.metadata.compaction_offset)) loaded.metadata.compaction_offset else 0;
+            if (start > 0) try readDisplayTail(self.allocator, path, start, &ctx);
+            try readJsonlRecords(self.allocator, path, start, &ctx, loadLine);
+            if (start > 0 and ctx.last_compaction == 0) {
+                loaded.deinit(self.allocator);
+                continue;
+            }
+            loaded.metadata.compaction_offset = ctx.last_compaction;
+            return loaded;
+        }
     }
 
     pub fn list(self: Store) !std.ArrayList(SessionMetadata) {
@@ -538,7 +545,7 @@ fn loadLine(ctx: *LoadLineContext, offset: u64, line: []const u8) !void {
     };
     if (ctx.loaded.events.items.len == events_before) return;
     switch (ctx.loaded.events.items[ctx.loaded.events.items.len - 1]) {
-        .compaction_end => |payload| if (payload.outcome == .completed) {
+        .compaction_end => |payload| if (payload.outcome == .completed and payload.text.slice().len > 0) {
             ctx.last_compaction = offset;
         },
         else => {},
@@ -1877,6 +1884,52 @@ test "load reads the whole file when the indexed offset does not start a compact
     try std.testing.expectEqual(@as(usize, 2), loaded.events.items.len);
     try std.testing.expectEqual(@as(usize, 2), loaded.messages.items.len);
     try std.testing.expectEqual(@as(u64, 0), loaded.metadata.compaction_offset);
+}
+
+test "load reads the whole file when the indexed compaction record is torn" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try tmpBase(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+    var store = try Store.init(std.testing.allocator, base);
+    defer store.deinit();
+    var meta = try testMeta("torn");
+    defer meta.deinit(std.testing.allocator);
+
+    var first = tui_session.TuiEvent{ .message_end = .{ .role = .user, .text = try owned(std.testing.allocator, "first question") } };
+    defer first.deinit(std.testing.allocator);
+    try store.save(meta, first);
+    const filler_text = try std.testing.allocator.alloc(u8, 16 * 1024);
+    defer std.testing.allocator.free(filler_text);
+    @memset(filler_text, 'x');
+    const filler = tui_session.TuiEvent{ .system_warning = .{ .message = OwnedSlice(u8).initBorrowed(filler_text) } };
+    for (0..20) |_| try store.saveEvent("torn", filler);
+
+    const offset = try store.conversationBytes("torn");
+    var compacted = tui_session.TuiEvent{ .compaction_end = .{
+        .outcome = .completed,
+        .text = try owned(std.testing.allocator, agent.compaction.header ++ " Summary follows.\n\n<summary>\nkept state\n</summary>"),
+        .messages_before = 21,
+    } };
+    defer compacted.deinit(std.testing.allocator);
+    const record = try serializeEventRecord(std.testing.allocator, meta, compacted);
+    defer std.testing.allocator.free(record);
+    const path = try sessionPath(std.testing.allocator, base, "torn");
+    defer std.testing.allocator.free(path);
+    try appendFile(path, record[0 .. record.len - 8]);
+    try std.testing.expect(startsCompaction(path, offset));
+    var after = tui_session.TuiEvent{ .message_end = .{ .role = .user, .text = try owned(std.testing.allocator, "after compaction") } };
+    defer after.deinit(std.testing.allocator);
+    try store.saveEvent("torn", after);
+    meta.compaction_offset = offset;
+    try store.saveIndex(meta);
+
+    var loaded = try store.load("torn");
+    defer loaded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u64, 0), loaded.metadata.compaction_offset);
+    try std.testing.expectEqual(@as(usize, 21), loaded.events.items.len);
+    try std.testing.expectEqual(@as(usize, 1), loaded.messages.items.len);
+    try std.testing.expectEqualStrings("first question", loaded.messages.items[0].user.content.text);
 }
 
 test "list reads a session's details from its index and skips its stream file" {

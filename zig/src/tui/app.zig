@@ -1269,8 +1269,9 @@ pub const App = struct {
             else => {},
         }
         const compaction = event == .compaction_end and event.compaction_end.outcome == .completed;
-        if (compaction) self.compaction_offset = store.conversationBytes(self.session_id) catch self.compaction_offset;
+        const offset: ?u64 = if (compaction) store.conversationBytes(self.session_id) catch null else null;
         const wrote_metadata = self.saveConversationEvent(store, event, compaction);
+        if (wrote_metadata) self.compaction_offset = offset orelse self.compaction_offset;
         if (wrote_metadata or event == .agent_end) self.saveSessionIndex(store);
     }
 
@@ -3766,6 +3767,39 @@ test "App indexes where a completed compaction starts" {
     try std.testing.expectEqual(offset, loaded.metadata.compaction_offset);
     try std.testing.expectEqual(@as(usize, 2), loaded.messages.items.len);
     try std.testing.expect(loaded.events.items[0] == .message_end);
+}
+
+test "App keeps the last compaction offset when a compaction record is not written" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "sessions" });
+    defer std.testing.allocator.free(base);
+    var app = try sessionTestApp(base, "unwritten-compaction");
+    defer app.deinit();
+
+    var before = tui_runtime.TuiEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "before")) } };
+    defer before.deinit(std.testing.allocator);
+    app.saveEvent(before);
+    const offset = try app.store.?.conversationBytes("unwritten-compaction");
+    var compacted = tui_runtime.TuiEvent{ .compaction_end = .{
+        .outcome = .completed,
+        .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, agent.compaction.header ++ " Summary follows.\n\n<summary>\nkept\n</summary>")),
+    } };
+    defer compacted.deinit(std.testing.allocator);
+    app.saveEvent(compacted);
+    try std.testing.expectEqual(offset, app.compaction_offset);
+
+    const path = try std.fs.path.join(std.testing.allocator, &.{ base, "unwritten-compaction.jsonl" });
+    defer std.testing.allocator.free(path);
+    try compat.fs.getCwd().deleteFile(defaultIo(), path);
+    try compat.fs.createDir(compat.fs.getCwd(), path);
+    try std.testing.expect(try app.store.?.conversationBytes("unwritten-compaction") != offset);
+    app.saveEvent(compacted);
+    app.saveEvent(.{ .agent_end = .{ .reason = .completed } });
+
+    var index = try app.store.?.loadIndex("unwritten-compaction");
+    defer index.deinit(std.testing.allocator);
+    try std.testing.expectEqual(offset, index.compaction_offset);
 }
 
 test "App clear_transcript clears the tool registry" {
