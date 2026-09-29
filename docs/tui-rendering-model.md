@@ -271,11 +271,12 @@ code paths; add a transcript row instead.
   never clears one; logging out brings the row back on the next listing. Because the row
   is one the subscription does not open, a marker younger than the listing cache's own
   twenty-four hours answers the row without a request. An older one does not answer: the
-  row probes instead, and while any marker is remembered the row is kept off its cached
-  listing, so the cache can never bring the models back however old the marker is. A probe
-  that refuses writes the marker again, and a probe that answers clears it — which is also
-  what the refresh after a `/login` does, and the reason one bad 401 or 403 from a WAF
-  challenge costs a day rather than the session. The bound is the cache's lifetime on
+  row probes instead, and a remembered marker takes the row off the catalog altogether
+  rather than only off its cached listing — no cached models and none of the row's declared
+  ones, however old the marker is and whatever the probe returns. A probe that refuses writes
+  the marker again, and a probe that answers clears it, which is also what the refresh after
+  a `/login` does; the two together are why one bad 401 or 403 from a WAF challenge costs a
+  day rather than the session, and why it is not permanent. The bound is the cache's lifetime on
   purpose: a marker outliving the copy it outranks would be a verdict with nothing behind
   it, and a marker perishing with that copy would be one that could not be renewed. The
   marker is keyed by row and region, not by the login that earned it, so it is

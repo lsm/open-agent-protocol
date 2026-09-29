@@ -594,7 +594,7 @@ fn appendCatalogTargetModels(
 
     const honour_marker = credential.source == .stored;
     const discovered = discoverCatalogModels(allocator, target, credential.key, mode, honour_marker) catch |err| switch (err) {
-        error.ModelCatalogRefused => return,
+        error.ModelCatalogRefused, error.ModelCatalogRemembered => return,
         else => return err,
     };
     defer if (discovered) |models| freeDiscoveredModels(allocator, models);
@@ -808,6 +808,7 @@ fn discoverCatalogModels(
         else => return err,
     };
     if (listing.models != null and listing.fetched and honouring) forgetRefusal(allocator, marker);
+    if (marked and !listing.fetched) return error.ModelCatalogRemembered;
     return listing.models;
 }
 
@@ -2587,6 +2588,44 @@ test "a marker older than the listing cache makes the row probe, and an answer c
     try std.testing.expectEqual(@as(usize, 1), listed.len);
     try std.testing.expectEqualStrings("plan-model", listed[0].id);
     try std.testing.expect(!refusalIsRemembered(allocator, marker));
+}
+
+test "a stale marker keeps a plan row off its declared models when the probe does not answer" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+    test_catalog_refusal_markers = true;
+    defer test_catalog_refusal_markers = false;
+    var tmp = try tempHome(allocator);
+    defer tmp.cleanup();
+
+    const region: []const u8 = "china";
+    var target = catalogTargetInRegion(kimi_provider_id, region) orelse return error.TestExpectedTarget;
+    defer target.deinit(allocator);
+
+    var storage = oauth_storage.AuthStorage{
+        .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(allocator),
+        .allocator = allocator,
+    };
+    defer storage.deinit();
+    try putStoredKey(&storage, allocator, kimi_provider_id);
+
+    const marker = try refusalMarkerName(allocator, kimi_provider_id, region);
+    defer allocator.free(marker);
+
+    test_catalog_discovery = null;
+    defer test_catalog_discovery = null;
+    const unmarked = try loadCatalogModelsWithRows(allocator, &[_][]const u8{kimi_provider_id}, &storage, .allow_cache);
+    defer deinitModels(allocator, unmarked);
+    try std.testing.expect(unmarked.len > 0);
+
+    rememberRefusal(allocator, marker);
+    test_refusal_marker_age_ms = anthropic_catalog_max_age_ms + 60_000;
+    defer test_refusal_marker_age_ms = null;
+    const stale = try loadCatalogModelsWithRows(allocator, &[_][]const u8{kimi_provider_id}, &storage, .allow_cache);
+    defer deinitModels(allocator, stale);
+    try std.testing.expectEqual(@as(usize, 0), stale.len);
+    try std.testing.expect(refusalIsRemembered(allocator, marker));
 }
 
 test "a probe that refuses again writes the marker, so a re-probe cannot lapse the row open" {
