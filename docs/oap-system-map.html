@@ -606,7 +606,7 @@ goap: validation failed           <span class="cmt">(on stderr; exit status 1)</
           <tr><td class="cmdcell">oapx run "fix the failing test"</td><td class="note">One shot, no server. Add <code>--agent</code> to run the full agent loop rather than a single print-mode call.</td></tr>
           <tr><td class="cmdcell">oapx serve agent,provider --stdio</td><td class="note">Both profiles on one pipe.</td></tr>
           <tr><td class="cmdcell">oapx hub --stdio</td><td class="note">The multi-session daemon over newline JSON. It serves <code>adapters</code>, <code>sessions</code>, <code>capabilities</code>, <code>state</code> and <code>close</code>; any other op answers <code>unknown_op</code>.</td></tr>
-          <tr><td class="cmdcell">oapx validate trace.json</td><td class="note">Judge a trace: decode, schema, then the ported semantic rules. <code>--format human|json</code>, <code>--mode strict|tolerant</code>.</td></tr>
+          <tr><td class="cmdcell">oapx validate trace.json</td><td class="note">Judge a trace: decode, schema, then the ported semantic rules. <code>--format human|json</code>, <code>--mode strict|tolerant</code>, <code>--pack DIR</code> (repeatable) to load an extension pack. A pack is gathered but not checked: none of Decision 0004's load refusals run here, so a pack <code>goap validate</code> refuses may be accepted, and the command says so on stderr whenever a pack is loaded.</td></tr>
         </tbody>
       </table>
     </div>
