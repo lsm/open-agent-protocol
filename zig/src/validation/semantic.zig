@@ -1704,9 +1704,9 @@ pub const Machine = struct {
     }
 
     fn checkPublishedSources(self: *Machine, index: usize, payload: std.json.Value) !void {
+        if (!publishedSourcesReadable(payload)) return;
         try self.checkRawSources(index, member(payload, "sources"));
         const layers = member(payload, "layers") orelse return;
-        if (layers != .object) return;
         var names = std.ArrayList([]const u8).empty;
         defer names.deinit(self.allocator);
         var layer = layers.object.iterator();
@@ -1719,9 +1719,7 @@ pub const Machine = struct {
 
     fn checkRawSources(self: *Machine, index: usize, sources: ?std.json.Value) !void {
         const listed = sources orelse return;
-        if (listed != .array) return;
         for (listed.array.items) |source| {
-            if (source != .object) continue;
             for (attachment_only_members) |held| {
                 if (source.object.get(held) == null) continue;
                 try self.add(code_attachment_field_in_catalog, index);
@@ -3781,6 +3779,27 @@ fn lessThanName(_: void, a: []const u8, b: []const u8) bool {
     return std.mem.order(u8, a, b) == .lt;
 }
 
+fn sourceListReadable(sources: ?std.json.Value) bool {
+    const listed = sources orelse return true;
+    if (listed != .array) return false;
+    for (listed.array.items) |source| {
+        if (source != .object) return false;
+    }
+    return true;
+}
+
+fn publishedSourcesReadable(payload: std.json.Value) bool {
+    if (!sourceListReadable(member(payload, "sources"))) return false;
+    const layers = member(payload, "layers") orelse return true;
+    if (layers != .object) return false;
+    var layer = layers.object.iterator();
+    while (layer.next()) |entry| {
+        if (entry.value_ptr.* != .object) return false;
+        if (!sourceListReadable(member(entry.value_ptr.*, "sources"))) return false;
+    }
+    return true;
+}
+
 fn cancellingHoldsItsPlace(entry: std.json.Value) bool {
     return member(entry, "as_of_sequence") == null or member(entry, "queue_position") != null;
 }
@@ -5732,4 +5751,29 @@ test "a published source carrying an attachment member is a catalog defect" {
 
 test "a source with no attachment member is left alone in every published position" {
     try expectCodes(attachment_free ++ "]", &.{});
+}
+
+test "a source list this rule cannot read is not judged, the way Go's decode is not" {
+    try expectCodes(
+        \\[{"type":"capabilities.request","id":"k0","payload":{}},
+        \\{"type":"capabilities.response","id":"k1","in_reply_to":"k0","capability_revision":"v1","payload":{"features":
+        \\{"tools":{"level":"native"}},
+        \\"sources":[{"id":"native","kind":"native"},"not-an-object"]}}]
+    , &.{});
+
+    try expectCodes(
+        \\[{"type":"capabilities.request","id":"k0","payload":{}},
+        \\{"type":"capabilities.response","id":"k1","in_reply_to":"k0","capability_revision":"v1","payload":{"features":
+        \\{"tools":{"level":"native"}},
+        \\"sources":[{"id":"native","kind":"native","command":"/bin/tool"}],
+        \\"layers":"not-an-object"}}]
+    , &.{});
+
+    try expectCodes(
+        attachment_free ++
+        \\,
+        \\{"type":"action.tools.list.request","id":"l1","capability_revision":"v1","payload":{"session_id":"s"}},
+        \\{"type":"action.tools.list.response","id":"l2","in_reply_to":"l1","capability_revision":"v1","session_id":"s","payload":
+        \\{"session_id":"s","sources":{"not":"an array"}}}]
+    , &.{});
 }

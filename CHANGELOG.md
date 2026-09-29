@@ -19,11 +19,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the source, which is the leak `descriptor-leaks-attachment-fields` and
   `tools-catalog-leaks-attachment-env` are about: an environment entry carrying
   a secret into a document every session reads. Go has judged this since the
-  rule landed; the Zig machine had the code declared nowhere, so
-  `oapx validate` passed both fixtures, and in strict mode it passed them for a
-  second reason as well — the schema refuses the member before the semantic
-  phase runs, so only tolerant mode reaches the rule at all. Porting it is what
-  lets the two tolerant fixtures be judged rather than skipped.
+  rule landed; the Zig machine declared neither the code nor the check, so a
+  source carrying one earned no semantic finding. **`oapx validate` on either
+  fixture is unchanged by this, and was never passing it**: in strict mode the
+  schema phase refuses the member first — `toolSourceDescriptor` is closed — and
+  the semantic phase does not run at all. The rule is unreachable in strict mode
+  by construction, which is why the two fixtures are `mode: tolerant` in the
+  manifest and why the semantic gate skips them: only once #367's tolerant mode
+  exists is there a path that reaches this check, and judging the three tolerant
+  fixtures rather than skipping them is that step's work. A source list the
+  check cannot read is left unjudged, matching Go's decode rather than
+  judging the entries around a malformed one.
 
 - **A design note for the Go tree's native agent loop (#370).**
   [`docs/go-agent-loop.md`](docs/go-agent-loop.md) maps `zig/src/agent/`'s loop
