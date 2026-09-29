@@ -3080,7 +3080,7 @@ fn validateTrace(allocator: std.mem.Allocator, judge: *validator.Validator, sour
             try appendFinding(allocator, out, .decode, "duplicate_key", index, item.line);
             continue;
         }
-        if (try compiled.validateWithBranches(schema_document, item.value, judge.branches()) != null) {
+        if (try compiled.validateWithBranches(schema_document, item.value, judge.branchesFor(schema_document)) != null) {
             try appendFinding(allocator, out, .schema, "schema_invalid", index, item.line);
         }
     }
@@ -3246,14 +3246,22 @@ fn runValidate(
     }
     if (paths.items.len == 0) return error.InvalidArgument;
 
+    var pack_dirs_seen = std.ArrayList([]const u8).empty;
+    defer pack_dirs_seen.deinit(allocator);
+    for (pack_dirs.items) |dir| {
+        var already = false;
+        for (pack_dirs_seen.items) |seen| already = already or std.mem.eql(u8, seen, dir);
+        if (!already) try pack_dirs_seen.append(allocator, dir);
+    }
+
     var judge = validator.Validator.init(allocator, .{
         .mode = mode,
-        .pack_dirs = pack_dirs.items,
+        .pack_dirs = pack_dirs_seen.items,
         .io = compat.fs.defaultIo(),
     }) catch |err| {
         var buf: [512]u8 = undefined;
         const reason = std.fmt.bufPrint(&buf, "{s} did not load as a pack: {s}", .{
-            if (pack_dirs.items.len == 1) pack_dirs.items[0] else "a --pack directory",
+            if (pack_dirs_seen.items.len == 1) pack_dirs_seen.items[0] else "a --pack directory",
             @errorName(err),
         }) catch "a pack did not load";
         try unavailable(stderr, "validate", "--pack", reason);
@@ -10414,6 +10422,53 @@ test "two entries of one type are two adapters, each with its own executable" {
     try std.testing.expectEqualStrings("/bin/two", second_claude.config.backend.executable);
     try std.testing.expectEqualStrings("LITERAL=first", first_claude.config.backend.environment[0]);
     try std.testing.expectEqualStrings("LITERAL=second", second_claude.config.backend.environment[0]);
+}
+
+test "naming one pack twice loads one pack, not two copies of its branch" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(std.testing.io, "pack", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "pack/pack.json",
+        .data = "{\"id\":\"com.example.note\",\"version\":\"1.0.0\",\"schemas\":[\"note.schema.json\"],\"envelope_types\":[{\"type\":\"com.example.note.thing\",\"role\":\"event\",\"schema\":\"note.schema.json#/$defs/thing\"}]}",
+    });
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "pack/note.schema.json",
+        .data = "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"$defs\":{\"thing\":{\"type\":\"object\",\"required\":[\"type\",\"id\",\"payload\"],\"properties\":{\"type\":{\"const\":\"com.example.note.thing\"},\"id\":{\"type\":\"string\"},\"payload\":{\"type\":\"object\"}}}}}",
+    });
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "trace.json",
+        .data = "[{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"com.example.note.thing\",\"id\":\"n1\",\"payload\":{}}]",
+    });
+    const cwd = try std.process.currentPathAlloc(std.testing.io, allocator);
+    defer allocator.free(cwd);
+    const pack = try std.fs.path.join(allocator, &.{ cwd[0..], ".zig-cache", "tmp", tmp.sub_path[0..], "pack" });
+    defer allocator.free(pack);
+    const trace = try std.fs.path.join(allocator, &.{ cwd[0..], ".zig-cache", "tmp", tmp.sub_path[0..], "trace.json" });
+    defer allocator.free(trace);
+
+    const rounds = [_][]const []const u8{ &.{pack}, &.{ pack, pack }, &.{ pack, pack, pack } };
+    for (rounds, 0..) |named, round| {
+        var args = std.ArrayList([]const u8).empty;
+        defer args.deinit(allocator);
+        for (named) |dir| {
+            try args.append(allocator, "--pack");
+            try args.append(allocator, dir);
+        }
+        try args.append(allocator, "--format=json");
+        try args.append(allocator, trace);
+        const name = try std.fmt.allocPrint(allocator, "out{d}", .{round});
+        defer allocator.free(name);
+        var out = try tmp.dir.createFile(std.testing.io, name, .{});
+        var complained_on = try tmp.dir.createFile(std.testing.io, "stderr", .{});
+        _ = try runValidate(allocator, args.items, out, complained_on);
+        out.close(std.testing.io);
+        complained_on.close(std.testing.io);
+        const judged = try tmp.dir.readFileAlloc(std.testing.io, name, allocator, .limited(1 << 20));
+        defer allocator.free(judged);
+        try std.testing.expect(std.mem.indexOf(u8, judged, "schema_invalid") == null);
+    }
 }
 
 test "validate says the pack load checks are not the ones goap runs" {

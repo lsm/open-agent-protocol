@@ -104,7 +104,8 @@ pub const Validator = struct {
         }
     }
 
-    pub fn branches(self: *const Validator) []const jsonschema.Alternative {
+    pub fn branchesFor(self: *const Validator, document: []const u8) []const jsonschema.Alternative {
+        if (!std.mem.eql(u8, document, envelope_document)) return &.{};
         return self.loaded.branches;
     }
 
@@ -233,7 +234,7 @@ fn admits(allocator: std.mem.Allocator, judge: *Validator, envelope: []const u8)
     defer document.deinit();
     var compiled = try judge.schema(envelope_document);
     defer compiled.deinit();
-    return (try compiled.validateWithBranches(envelope_document, document.value, judge.branches())) == null;
+    return (try compiled.validateWithBranches(envelope_document, document.value, judge.branchesFor(envelope_document))) == null;
 }
 
 test "a packed type is judged through the branch its pack declares, and refused without it" {
@@ -244,11 +245,11 @@ test "a packed type is judged through the branch its pack declares, and refused 
     var unpacked = try Validator.init(allocator, .{ .io = std.testing.io });
     defer unpacked.deinit();
     try std.testing.expect(!try admits(allocator, &unpacked, packed_type_declared));
-    try std.testing.expect(unpacked.branches().len == 0);
+    try std.testing.expect(unpacked.branchesFor(envelope_document).len == 0);
 
     var with_pack = try Validator.init(allocator, .{ .pack_dirs = &.{dir}, .io = std.testing.io });
     defer with_pack.deinit();
-    try std.testing.expect(with_pack.branches().len > 0);
+    try std.testing.expect(with_pack.branchesFor(envelope_document).len > 0);
     try std.testing.expect(try admits(allocator, &with_pack, packed_type_declared));
 }
 
@@ -265,6 +266,17 @@ test "a packed member is admitted by its own schema and held to it, and by no pa
     defer with_pack.deinit();
     try std.testing.expect(try admits(allocator, &with_pack, packed_member_typed));
     try std.testing.expect(!try admits(allocator, &with_pack, packed_member_mistyped));
+}
+
+test "a pack's branches belong to the core envelope, and to no other document" {
+    const allocator = std.testing.allocator;
+    const dir = try storagePack(allocator);
+    defer allocator.free(dir);
+    var judge = try Validator.init(allocator, .{ .pack_dirs = &.{dir}, .io = std.testing.io });
+    defer judge.deinit();
+    try std.testing.expect(judge.branchesFor(envelope_document).len > 0);
+    try std.testing.expectEqual(@as(usize, 0), judge.branchesFor("provider-envelope.schema.json").len);
+    try std.testing.expectEqual(@as(usize, 0), judge.branchesFor("common.schema.json").len);
 }
 
 test "the pack's own vocabulary is what the semantic machine is handed" {
