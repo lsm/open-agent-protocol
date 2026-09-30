@@ -1869,7 +1869,6 @@ unrecognised literal is a malformed response and is rejected. Only an absent
 key reads as unknown. The vocabulary normalisation is unchanged: `discovered`
 reads as the SDK's dynamic value and `fallback` as its static-fallback value.
 
-
 `lifecycle` follows the same shape in a later change, and the native
 protocol `ModelDescriptor` declared earlier in this document is a separate
 contract that keeps its required members.
@@ -1883,15 +1882,14 @@ An optional key is not a nullable one, so a `lifecycle` that is **present**
 must be one of `stable`, `preview` or `deprecated`, and `null`, a number or
 an unrecognised literal is a malformed response.
 
-That is the target for all three SDKs. It is implemented in Rust, merged as
-#709, and in TypeScript by this change; **Go does not satisfy it yet**,
-still rejecting an absent lifecycle on its shared path. That reader is #710
-and is not on main. Following the rule the `source` section above states, a
-reader that has not been changed must not be described as if it had.
+That is the target for all three SDKs and all three now implement it: Rust
+merged as #709, Go merged as #710, and TypeScript by this change. Each
+records an omitted `lifecycle` as unknown and omits the member rather than
+setting a value, and each refuses a present `null`, a number or an
+unrecognised literal as a malformed response.
 
 One consequence is worth stating because it is a filtering decision rather
-than a parsing one. A listing filters a model out as deprecated only when
-the listing **stated** `deprecated`. A model whose lifecycle is unknown is
+than a parsing one. A listing filters a model out as deprecated only when the
+listing **stated** `deprecated`. A model whose lifecycle is unknown is
 kept, because dropping it would silently exclude a model for failing to
 answer a question it was never asked.
-

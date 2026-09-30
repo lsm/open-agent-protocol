@@ -62,7 +62,7 @@ type ModelDescriptor struct {
 
 	AuthStatus AuthStatus
 
-	Lifecycle ModelLifecycle
+	Lifecycle *ModelLifecycle
 
 	Capabilities []ModelCapability
 
@@ -283,7 +283,7 @@ type wireModelDescriptor struct {
 	API              string            `json:"api"`
 	BaseURL          string            `json:"base_url"`
 	AuthStatus       string            `json:"auth_status"`
-	Lifecycle        string            `json:"lifecycle"`
+	Lifecycle        json.RawMessage   `json:"lifecycle"`
 	Capabilities     *[]string         `json:"capabilities"`
 	Source           json.RawMessage   `json:"source"`
 	ContextWindow    *float64          `json:"context_window"`
@@ -328,6 +328,27 @@ func (w *wireModelCost) descriptor() *ModelCost {
 		cost.CacheWrite = *w.CacheWrite
 	}
 	return cost
+}
+
+func modelLifecycle(raw json.RawMessage) (*ModelLifecycle, string, bool) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
+		return nil, "", true
+	}
+	if trimmed == "null" {
+		return nil, "lifecycle must be a string when present, not null", false
+	}
+	var name string
+	if err := json.Unmarshal(raw, &name); err != nil || name == "" {
+		return nil, "lifecycle must be a non-empty string when present", false
+	}
+	switch ModelLifecycle(name) {
+	case LifecycleStable, LifecyclePreview, LifecycleDeprecated:
+		mapped := ModelLifecycle(name)
+		return &mapped, "", true
+	default:
+		return nil, "lifecycle has unknown value: " + name, false
+	}
 }
 
 func modelSource(raw json.RawMessage) (*ModelSource, string, bool) {
@@ -445,8 +466,9 @@ func parseModelDescriptor(raw wireModelDescriptor, index int, streamID string) (
 	if !knownAuthStatuses[AuthStatus(raw.AuthStatus)] {
 		return ModelDescriptor{}, malformed("models[%d].auth_status has unknown value: %q", index, raw.AuthStatus)
 	}
-	if !knownLifecycles[ModelLifecycle(raw.Lifecycle)] {
-		return ModelDescriptor{}, malformed("models[%d].lifecycle has unknown value: %q", index, raw.Lifecycle)
+	lifecycle, lifecycleMessage, lifecycleOK := modelLifecycle(raw.Lifecycle)
+	if !lifecycleOK {
+		return ModelDescriptor{}, malformed("models[%d].%s", index, lifecycleMessage)
 	}
 	source, message, ok := modelSource(raw.Source)
 	if !ok {
@@ -472,7 +494,7 @@ func parseModelDescriptor(raw wireModelDescriptor, index int, streamID string) (
 		API:              raw.API,
 		BaseURL:          raw.BaseURL,
 		AuthStatus:       AuthStatus(raw.AuthStatus),
-		Lifecycle:        ModelLifecycle(raw.Lifecycle),
+		Lifecycle:        lifecycle,
 		Capabilities:     capabilities,
 		Source:           source,
 		Metadata:         raw.Metadata,
@@ -502,9 +524,6 @@ var (
 	knownAuthStatuses = map[AuthStatus]bool{
 		AuthAuthenticated: true, AuthLoginRequired: true, AuthExpired: true,
 		AuthRefreshing: true, AuthLoginInProgress: true, AuthFailed: true, AuthUnknown: true,
-	}
-	knownLifecycles = map[ModelLifecycle]bool{
-		LifecycleStable: true, LifecyclePreview: true, LifecycleDeprecated: true,
 	}
 	knownSources = map[ModelSource]bool{
 		SourceDynamic: true, SourceStaticFallback: true,
