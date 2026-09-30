@@ -3582,20 +3582,13 @@ test "a streamed text thinking and tool call reports indices that diverge from t
     try std.testing.expectEqualStrings("{\"command\":\"ls\"}", result.content[2].tool_call.arguments_json);
 }
 
-<<<<<<< HEAD
-
-=======
->>>>>>> 6a5d3eb24d0bc65fc0d357fd198802218b0e7107
 var cleanup_hold: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
 var cleanup_held: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
 var cleanup_gate: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
 var cleanup_window: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
 var cleanup_paused: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
-<<<<<<< HEAD
 var cleanup_waits: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
 var cleanup_paused_gate: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
-=======
->>>>>>> 6a5d3eb24d0bc65fc0d357fd198802218b0e7107
 
 fn defaultIo() std.Io {
     return if (@import("builtin").is_test) std.testing.io else std.Io.Threaded.global_single_threaded.io();
@@ -3608,24 +3601,13 @@ fn awaitCleanupRelease() void {
     const io = defaultIo();
     while (true) {
         const seen = cleanup_gate.load(.acquire);
-<<<<<<< HEAD
         if (cleanup_window.load(.acquire) == 1) awaitCleanupWindow(io);
         if (cleanup_hold.load(.acquire) == 0) break;
         _ = cleanup_waits.fetchAdd(1, .release);
-=======
-        if (cleanup_hold.load(.acquire) == 0) break;
-        if (cleanup_window.load(.acquire) == 1) {
-            _ = cleanup_paused.store(true, .release);
-            while (cleanup_window.load(.acquire) == 1) {
-                io.futexWaitTimeout(u32, &cleanup_window.raw, cleanup_window.load(.acquire), boundedWait()) catch {};
-            }
-        }
->>>>>>> 6a5d3eb24d0bc65fc0d357fd198802218b0e7107
         io.futexWaitTimeout(u32, &cleanup_gate.raw, seen, boundedWait()) catch {};
     }
 }
 
-<<<<<<< HEAD
 fn awaitCleanupWindow(io: std.Io) void {
     _ = cleanup_paused_gate.fetchAdd(1, .release);
     _ = cleanup_paused.store(true, .release);
@@ -3635,8 +3617,21 @@ fn awaitCleanupWindow(io: std.Io) void {
     }
 }
 
-=======
->>>>>>> 6a5d3eb24d0bc65fc0d357fd198802218b0e7107
+fn expectCleanupPaused() !void {
+    const io = defaultIo();
+    var rounds: usize = 0;
+    while (!cleanup_paused.load(.acquire) and rounds < 200) : (rounds += 1) {
+        io.futexWaitTimeout(u32, &cleanup_paused_gate.raw, cleanup_paused_gate.load(.acquire), boundedWait()) catch {};
+    }
+    if (!cleanup_paused.load(.acquire)) {
+        std.debug.print("producer never reached the held publish: held={d} paused={any} window={d} waits={d}\n", .{
+            cleanup_held.load(.acquire), cleanup_paused.load(.acquire),
+            cleanup_window.load(.acquire), cleanup_waits.load(.acquire),
+        });
+        return error.TestUnexpectedResult;
+    }
+}
+
 fn boundedWait() std.Io.Timeout {
     return .{ .duration = .{
         .raw = .fromMilliseconds(25),
@@ -3668,16 +3663,13 @@ test "a release inside the snapshot-to-wait window still reaches the producer" {
     const allocator = std.testing.allocator;
     cleanup_held.store(0, .release);
     cleanup_paused.store(false, .release);
-<<<<<<< HEAD
     cleanup_waits.store(0, .release);
-=======
->>>>>>> 6a5d3eb24d0bc65fc0d357fd198802218b0e7107
     holdCleanup();
-    cleanup_window.store(1, .release);
     defer {
         cleanup_window.store(0, .release);
         releaseCleanupGate();
     }
+    cleanup_window.store(1, .release);
 
     var mock = try MockCompletionsServer.listen(MockCompletionsServer.complete_stream);
     defer mock.stop();
@@ -3703,29 +3695,16 @@ test "a release inside the snapshot-to-wait window still reaches the producer" {
         defer ai_types.deinitAssistantMessageEvent(allocator, &polled);
     }
 
-<<<<<<< HEAD
     try expectCleanupPaused();
     try std.testing.expect(!stream.waitForThread(100));
 
     const waits_before_release = cleanup_waits.load(.acquire);
-=======
-    var spins: usize = 0;
-    while (!cleanup_paused.load(.acquire) and spins < 400) : (spins += 1) {
-        std.Thread.yield() catch {};
-    }
-    try std.testing.expect(cleanup_paused.load(.acquire));
-    try std.testing.expect(!stream.waitForThread(100));
-
->>>>>>> 6a5d3eb24d0bc65fc0d357fd198802218b0e7107
     releaseCleanupGate();
     cleanup_window.store(0, .release);
     wakeCleanupWaiters();
 
     try std.testing.expect(stream.waitForThread(5_000));
-<<<<<<< HEAD
     try std.testing.expectEqual(waits_before_release, cleanup_waits.load(.acquire));
-=======
->>>>>>> 6a5d3eb24d0bc65fc0d357fd198802218b0e7107
     try std.testing.expect(stream.getError() == null);
 }
 
@@ -3812,26 +3791,6 @@ test "a release that lands before the producer waits is still observed" {
     try std.testing.expect(stream.getError() == null);
 }
 
-<<<<<<< HEAD
-fn expectCleanupPaused() !void {
-    const io = defaultIo();
-    var rounds: usize = 0;
-    while (!cleanup_paused.load(.acquire) and rounds < 200) : (rounds += 1) {
-        io.futexWaitTimeout(u32, &cleanup_paused_gate.raw, cleanup_paused_gate.load(.acquire), boundedWait()) catch {};
-    }
-    if (!cleanup_paused.load(.acquire)) {
-        std.debug.print("producer never reached the held publish: held={d} paused={any} window={d} waits={d}\n", .{
-            cleanup_held.load(.acquire),
-            cleanup_paused.load(.acquire),
-            cleanup_window.load(.acquire),
-            cleanup_waits.load(.acquire),
-        });
-        return error.TestUnexpectedResult;
-    }
-}
-
-=======
->>>>>>> 6a5d3eb24d0bc65fc0d357fd198802218b0e7107
 test "the producer does not publish done while its own cleanup is unfinished" {
     const allocator = std.testing.allocator;
     cleanup_held.store(0, .release);
