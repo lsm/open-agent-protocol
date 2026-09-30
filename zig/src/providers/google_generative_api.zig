@@ -1777,7 +1777,6 @@ test "google_generative_api producer does not publish done while its own cleanup
         ai_types.deinitAssistantMessageEvent(allocator, &mutable_ev);
     }
 
-    // The producer's final publish is held, so done must not be observable.
     try std.testing.expect(!stream.waitForThread(250));
     google_generative_api_releaseCleanupGate();
     try std.testing.expect(stream.waitForThread(5_000));
