@@ -1395,18 +1395,8 @@ pub const App = struct {
         self.saveSessionIndex(store);
     }
 
-    const login_discovery_rows = [_][]const u8{
-        "deepseek",              "openrouter",          "opencode",            "vercel",              "zenmux",                 "deepinfra",
-        "zai-coding-plan",       "alibaba-coding-plan", "minimax-coding-plan", "tencent-coding-plan", "volcengine-coding-plan", "openai",
-        "kimi",                  "anthropic",           "openai-codex",        "github-copilot",      "xiaomi-token-plan-cn",   "xiaomi-token-plan-sgp",
-        "xiaomi-token-plan-ams", "xiaomi",              "ollama",              "azure",
-    };
-
     fn loginDiscoveryAvailable(id: []const u8) bool {
-        for (login_discovery_rows) |supported| {
-            if (std.mem.eql(u8, supported, id)) return true;
-        }
-        return false;
+        return model_catalog.supportsCatalogModelDiscovery(id);
     }
 
     fn loginProviderGroupLabel(row: provider_catalog.Provider) []const u8 {
@@ -5799,6 +5789,15 @@ test "App saves one Xiaomi login for every catalog row sharing its key" {
             .oauth => return error.ExpectedApiKeyAuth,
         }
     }
+}
+
+test "App login discovery availability follows the model catalog loader" {
+    for (provider_catalog.all) |row| {
+        try std.testing.expectEqual(model_catalog.supportsCatalogModelDiscovery(row.id), App.loginDiscoveryAvailable(row.id));
+    }
+    try std.testing.expect(!App.loginDiscoveryAvailable("google"));
+    try std.testing.expect(!App.loginDiscoveryAvailable("ollama"));
+    try std.testing.expect(!App.loginDiscoveryAvailable("azure"));
 }
 
 test "App login picker follows catalog order and groups shared credentials" {
