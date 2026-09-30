@@ -595,9 +595,11 @@ was settled by #656 either.
   `.not_found` at `:382`, so on this tree an unrouted path carrying a body and a non-JSON
   `Content-Type` is answered `415 unsupported_media_type`, **not** the plain `404` the paragraph
   above describes. Go cannot reach the same answer: its media check is at
-  `servehttp/server.go:749`, inside `readRequest`, which is called only from the twelve handlers
-  registered on the mux at `:68`-`:69`, and a path matching no pattern is answered by the mux before
-  any handler runs. So the two trees disagree on one request, and the paragraph above is right about
+  `servehttp/server.go:749`, inside `readRequest`, which is called from the **four**
+  body-reading handlers at `:191`, `:321`, `:382` and `:496` — four of the twelve operations
+  registered on the mux across `:69`-`:80`, `:68` being the `http.NewServeMux()` construction rather
+  than a registration. So a path matching no pattern is answered by the mux before any handler runs,
+  and the other eight registrations read no body at all. So the two trees disagree on one request, and the paragraph above is right about
   the rule and incomplete about the case. **Neither tree is wrong against the draft**: the draft
   states the media rule for routes that read a body, and states no rule for a path that does not
   exist. Which answer an unrouted path should give is **not decided here**. The `415`-on-unrouted
@@ -624,7 +626,7 @@ was settled by #656 either.
   `drain_total_cap_bytes = 1 MiB` (`:207`) while `max_body_bytes` is 16 MiB (`:7`), so a request
   declaring between 1 MiB and 16 MiB with a non-JSON `Content-Type` is refused `415` by the gate and
   then drained **short**, leaving bytes unread at close — which is the condition the drain paragraph
-  above identifies as able to reset the connection and discard the refusal. **No test exercises that
+  below, at `:637`-`:640`, identifies as able to reset the connection and discard the refusal. **No test exercises that
   case.** The `415` proof sends bodies of `"xx"`, `"{}"` and `""`; the over-cap declared sizes in
   `hub_toobig_test.go` are the `413` path, not this one. One correction to the reason this gap was
   previously carried with: it used to be blamed on a test helper that capped writes at 256 KiB, and
