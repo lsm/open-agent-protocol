@@ -347,6 +347,7 @@ test "a child that ignores SIGTERM is still taken down" {
         compat.time.sleepMs(20);
     }
     const was_there = observed orelse return error.TestUnexpectedResult;
+    defer std.posix.kill(was_there, std.posix.SIG.KILL) catch {};
 
     const gone_by = common.nowMs() + 5_000;
     while (common.nowMs() < gone_by) {
@@ -359,11 +360,7 @@ test "a child that ignores SIGTERM is still taken down" {
     }
     switch (probeRecordedChild(dir)) {
         .dead => {},
-        else => |status| {
-            defer std.posix.kill(was_there, std.posix.SIG.KILL) catch {};
-            _ = status;
-            return error.TestUnexpectedResult;
-        },
+        else => return error.TestUnexpectedResult,
     }
 }
 
