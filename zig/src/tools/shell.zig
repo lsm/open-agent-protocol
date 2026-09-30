@@ -420,18 +420,18 @@ test "a command whose output exceeds the cap fails promptly, unobserved, without
     try std.testing.expect(elapsed_ms < 20_000);
 }
 const MarkerCase = struct {
-    /// The private directory is built for real, so it exists on disk, and the next
-    /// allocation is the one that fails. That is the window where the directory has a
-    /// name and a path and no owner, which is the only thing this case is about;
-    /// failing an earlier allocation would not reach it.
     fn run(failing: std.mem.Allocator) !void {
-        const created = try MarkerDir.create(std.testing.allocator);
+        var created = try MarkerDir.create(std.testing.allocator);
+        errdefer {
+            created.remove(common.defaultIo());
+            created.deinit(std.testing.allocator);
+        }
         var marker_path: []u8 = &.{};
         defer failing.free(marker_path);
-        const made = try created.markerPath(failing);
-        marker_path = made;
+        marker_path = try created.markerPath(failing);
         created.remove(common.defaultIo());
         created.deinit(std.testing.allocator);
+        created = undefined;
     }
 };
 
