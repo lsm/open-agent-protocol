@@ -50,7 +50,7 @@ export interface ModelDescriptor {
   auth_status: AuthStatus;
   lifecycle: ModelLifecycle;
   capabilities: ModelCapability[];
-  source: ModelSource;
+  source?: ModelSource;
   context_window?: number;
   max_output_tokens?: number;
   reasoning_default?: ReasoningLevel;
