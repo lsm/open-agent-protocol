@@ -77,10 +77,10 @@ fn lexicalRelative(allocator: std.mem.Allocator, entry: []const u8) ![]const u8 
 }
 
 fn toSlash(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
-    if (std.mem.indexOfScalar(u8, name, std.Io.Dir.path.sep_windows) == null) return name;
+    if (std.mem.indexOfScalar(u8, name, std.Io.Dir.path.sep) == null) return name;
     const slashed = try allocator.dupe(u8, name);
     for (slashed) |*byte| {
-        if (byte.* == std.Io.Dir.path.sep_windows) byte.* = '/';
+        if (byte.* == std.Io.Dir.path.sep) byte.* = '/';
     }
     return slashed;
 }
@@ -191,7 +191,8 @@ fn gather(
             const declared_type = (entry.object.get("type") orelse continue).string;
             const schema_ref = (entry.object.get("schema") orelse continue).string;
             const hash = std.mem.indexOfScalar(u8, schema_ref, '#') orelse continue;
-            const cited = (try cleanRelative(allocator, schema_ref[0..hash])) orelse schema_ref[0..hash];
+            const cleaned = (try cleanRelative(allocator, schema_ref[0..hash])) orelse schema_ref[0..hash];
+            const cited = try toSlash(allocator, cleaned);
             const ref = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/{s}{s}", .{ pack_base_uri, pack_id, version, cited, schema_ref[hash..] });
             try branches.append(allocator, .{
                 .declared_type = try allocator.dupe(u8, declared_type),
@@ -295,7 +296,7 @@ test "a loaded pack's schemas are registered under keys its own refs resolve" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    for ([_][]const u8{ "staying", "aliased", "cleaned", "nested" }) |name| {
+    for ([_][]const u8{ "staying", "aliased", "cleaned", "nested", "literal" }) |name| {
         try tmp.dir.createDir(std.testing.io, name, .default_dir);
     }
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "staying/note.schema.json", .data =
@@ -334,6 +335,15 @@ test "a loaded pack's schemas are registered under keys its own refs resolve" {
         ,
     });
 
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "literal/back\\slash.schema.json", .data =
+            \\{"$schema": "https://json-schema.org/draft/2020-12/schema", "$defs": {"thing": {"type": "object", "required": ["type", "session_id"], "properties": {"type": {"const": "com.example.literal.thing"}, "session_id": {"type": "string"}}}}}
+        ,
+    });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "literal/pack.json", .data =
+            \\{"id": "com.example.literal", "version": "1.0.0", "schemas": ["back\\slash.schema.json"], "envelope_types": [{"type": "com.example.literal.thing", "role": "event", "schema": "back\\slash.schema.json#/$defs/thing"}]}
+        ,
+    });
+
     var registry = try jsonschema.Registry.initFromBundled(allocator);
     defer registry.deinit();
 
@@ -342,6 +352,7 @@ test "a loaded pack's schemas are registered under keys its own refs resolve" {
         .{ .dir = "aliased", .declared = "com.example.alias.thing" },
         .{ .dir = "cleaned", .declared = "com.example.clean.thing" },
         .{ .dir = "nested", .declared = "com.example.nested.thing" },
+        .{ .dir = "literal", .declared = "com.example.literal.thing" },
     };
 
     for (cases) |case| {
@@ -360,6 +371,8 @@ test "a loaded pack's schemas are registered under keys its own refs resolve" {
         try std.testing.expect(try judgesAsAccepted(allocator, &registry, read.branches, complete));
         try std.testing.expect(!try judgesAsAccepted(allocator, &registry, read.branches, short));
     }
+
+    try std.testing.expect(registry.root("https://open-agent-protocol.local/ext/com.example.literal/1.0.0/back\\slash.schema.json") != null);
 }
 
 test "a descriptor schema path is read only when it lands beneath the pack root" {
