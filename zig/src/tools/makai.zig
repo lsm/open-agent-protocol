@@ -1813,20 +1813,20 @@ fn runHubHttp(
         var request = hub_http.readHead(scratch, &connection.stream, hub_http.header_read_ms, hub_io_cycle_ms, keepGoing, &body_allowed, &declared) catch |failure| {
             if (failure == error.Stopped) break;
             hub_http.writeTransportFailure(&connection.stream, scratch, next_id, failure, body_allowed) catch {};
-            hub_http.drain(&connection.stream, declared, keepGoing);
+            _ = hub_http.drain(&connection.stream, declared, keepGoing);
             continue;
         };
         defer request.deinit(scratch);
         const answered = hub_http.answer(allow orelse &.{}, request);
         if (answered != .not_found) {
             hub_http.writeAnswer(&connection.stream, scratch, next_id, answered, body_allowed) catch {};
-            hub_http.drain(&connection.stream, request.content_length, keepGoing);
+            _ = hub_http.drain(&connection.stream, request.content_length, keepGoing);
             continue;
         }
         hub_http.readBody(scratch, &connection.stream, &request, hub_http.idle_read_ms, hub_io_cycle_ms, keepGoing) catch |failure| {
             if (failure == error.Stopped) break;
             hub_http.writeTransportFailure(&connection.stream, scratch, next_id, failure, body_allowed) catch {};
-            hub_http.drain(&connection.stream, request.content_length -| request.filled, keepGoing);
+            _ = hub_http.drain(&connection.stream, request.content_length -| request.filled, keepGoing);
             continue;
         };
         hub_http.writeAnswer(&connection.stream, scratch, next_id, answered, body_allowed) catch {};
