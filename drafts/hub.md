@@ -644,14 +644,14 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   dials under a bound and **fails if the daemon still accepts**. It does **not** show the custom
   `SIGINT` handler stopped the daemon — the default disposition of `SIGINT` terminates the process
   regardless, so removing the handler changes nothing observable. That exit proof is only worth
-  something if it can tell cooperation from a kill, so
-  `TestHubAddrSignalProofReportsADaemonThatIgnoresTheSignalAsAlive` runs `testdata/fakehub`, a
-  separate program that installs `signal.Ignore`, announces its address, and never exits on its
-  own: the test confirms it is **accepting before the signal**, sends the same `SIGINT`, and
-  requires the proof to report it alive, failing **before any kill**. Three mutations fail it —
-  cleanup running first (the defect fixed here), a proof reporting an exit when the bound elapses,
-  and the helper no longer ignoring `SIGINT`. A **test binary** dies on `SIGINT` despite the ignore
-  and a standalone one survives, which is why the helper is a separate program.
+  something if it can tell cooperation from a kill, so `TestHubAddrSignalProofReportsADaemonThatIgnoresTheSignalAsAlive`
+  runs `testdata/fakehub`, a separate program that installs `signal.Ignore`, announces its address, and
+  never exits on its own: the test confirms it is **accepting before the signal**, sends the same `SIGINT`,
+  and requires the proof to report it alive, failing **before any kill**, and then asserts it **waited
+  the bound out** and logs the elapsed figure. **Four** mutations fail it — cleanup running first (the
+  defect fixed here), a proof reporting an exit when the bound elapses, the helper no longer ignoring
+  `SIGINT`, and a proof returning "alive" without waiting, which the elapsed assertion catches and which
+  nothing else here would. A **test binary** dies on `SIGINT` despite the ignore and a standalone one survives, which is why the helper is a separate program.
 
 The two pre-existing tests — `a body the daemon refused to read is drained before
 the socket closes, or the close resets the answer away` and `a drain gives up
