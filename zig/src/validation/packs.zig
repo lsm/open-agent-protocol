@@ -611,6 +611,58 @@ test "a descriptor schema path is read only when it lands beneath the pack root"
     try std.testing.expectError(error.InvalidPackDescriptor, load(std.testing.io, allocator, &registry, &malformed));
 }
 
+test "a schema ref naming nothing the pack contributes is registered, and no refusal says so" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cases = [_]struct { dir: []const u8, ref: []const u8, registered: bool, resolves: bool }{
+        .{ .dir = "resolves", .ref = "note.schema.json#/$defs/thing", .registered = true, .resolves = true },
+        .{ .dir = "absent-file", .ref = "absent.schema.json#/$defs/thing", .registered = true, .resolves = false },
+        .{ .dir = "absent-pointer", .ref = "note.schema.json#/$defs/absent", .registered = true, .resolves = false },
+        .{ .dir = "no-fragment", .ref = "note.schema.json", .registered = false, .resolves = false },
+    };
+    for (cases) |c| {
+        try tmp.dir.createDir(std.testing.io, c.dir, .default_dir);
+        const name = try std.fmt.allocPrint(allocator, "{s}/note.schema.json", .{c.dir});
+        defer allocator.free(name);
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = name, .data =
+                \\{"$schema": "https://json-schema.org/draft/2020-12/schema", "$defs": {"thing": {"type": "object", "required": ["type", "id", "session_id"], "properties": {"type": {"const": "com.example.ref.thing"}, "id": {"type": "string"}, "session_id": {"type": "string"}}}}}
+            ,
+        });
+        const descriptor = try std.fmt.allocPrint(allocator,
+            \\{{"id": "com.example.ref", "version": "1.0.0", "schemas": ["note.schema.json"], "envelope_types": [{{"type": "com.example.ref.thing", "role": "event", "schema": "{s}"}}]}}
+        , .{c.ref});
+        defer allocator.free(descriptor);
+        const pack = try std.fmt.allocPrint(allocator, "{s}/pack.json", .{c.dir});
+        defer allocator.free(pack);
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = pack, .data = descriptor });
+    }
+    const envelope =
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"com.example.ref.thing","id":"e1","session_id":"s","payload":{}}
+    ;
+    for (cases) |c| {
+        var registry = try jsonschema.Registry.initFromBundled(allocator);
+        defer registry.deinit();
+        const root = try tmp.dir.realPathFileAlloc(std.testing.io, c.dir, allocator);
+        defer allocator.free(root);
+        const one = [_][]const u8{root};
+        var read = try load(std.testing.io, allocator, &registry, &one);
+        defer read.deinit();
+        try std.testing.expectEqual(@as(usize, 0), read.refusals.len);
+        const want: usize = if (c.registered) 1 else 0;
+        try std.testing.expectEqual(want, read.branches.len);
+        if (c.registered) {
+            const key = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/{s}", .{ pack_base_uri, "com.example.ref", "1.0.0", c.ref });
+            defer allocator.free(key);
+            try std.testing.expectEqualStrings(key, read.branches[0].ref);
+            if (c.resolves) {
+                try std.testing.expect(try judgesAsAccepted(allocator, &registry, read.branches, envelope));
+            } else {
+                try std.testing.expectError(error.UnresolvableRef, judgesAsAccepted(allocator, &registry, read.branches, envelope));
+            }
+        }
+    }
+}
 test "a schema path cleans without an arena, and a failed allocation does not leak" {
     const Runner = struct {
         fn run(allocator: std.mem.Allocator) !void {
