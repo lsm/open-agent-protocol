@@ -619,8 +619,8 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   the comparison, not the guard's presence:** neutralising the guard is green, so a deleted time bound
   would go unnoticed **by that test**. The stall case stays covered by `a drain gives up rather than
   waiting on a peer that sends nothing more`. **The guard's presence is pinned separately, by
-  `a drain whose elapsed budget is already spent consumes nothing, and a budget it does not have would
-  read`, recorded below; this row and that one are complementary, and neither alone closes the other.**
+  `a drain whose elapsed budget is already spent consumes nothing, though the bytes are buffered and
+  reachable`, recorded below; this row and that one are complementary, and neither alone closes the other.**
 - **stop on an unreadable clock — NO exercising test, recorded as a gap.** The port returns the
   bytes consumed from `drain` and its existing `Timeout` from the read helpers, rather than reading
   an unreadable clock as `0`. Nothing reaches it: the clock is `std.Io.Timestamp` against a monotonic
@@ -686,8 +686,8 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
 - **the total-time guard's presence, through the injected callback that already exists** — the row at
   `:615-621` pins that the 2500 ms budget is **elapsed rather than uptime** and is explicit that it does
   **not** pin the guard's presence, because that test's bytes are already buffered when `drain` starts.
-  `a drain whose elapsed budget is already spent consumes nothing, and a budget it does not have would
-  read` pins the presence, through the **existing public `KeepGoing`** at `:104-110` and the injection
+  `a drain whose elapsed budget is already spent consumes nothing, though the bytes are buffered and
+  reachable` pins the presence, through the **existing public `KeepGoing`** at `:104-110` and the injection
   pattern the other test already uses. `drain` takes `started` at `:214`, calls `keep_going.yes()` at
   `:216`, checks the guard at `:218`, and only then computes the round `deadline` at `:220` — so an
   injected callback can **spend the budget and then leave bytes where the inner read will find them**.

@@ -1443,7 +1443,7 @@ const spends_the_budget = struct {
     }
 };
 
-test "a drain whose elapsed budget is already spent consumes nothing, and a budget it does not have would read" {
+test "a drain whose elapsed budget is already spent consumes nothing, though the bytes are buffered and reachable" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var pipe = try Pipe.open();
     defer pipe.close();
