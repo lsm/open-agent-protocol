@@ -680,9 +680,12 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   Two things a reader might assume are covered here are not: this site's drain amount, and the
   existence of the time bound.
 - **the refusal order, decided outside the process** — `answer()` at `http.zig:378-383` checks
-  **Origin, then Host, then the media type**, and the first of those had no real-process proof: the
-  cases at `:1163` are in-process `Pipe` sockets inside one test binary, not a daemon answering a
-  socket, and no `go/cmd/goap` test named `cross_origin_request`. Two tests now settle it over a real
+  **Origin, then Host, then the media type**, and what was missing was a **separate daemon process**
+  deciding it over a socket. Two in-process tests already covered the ordering inside one test binary:
+  the test at `:1155` calls `answer()` directly on hand-built `Request` values and uses **no sockets at
+  all**, and the test at `:1169` does use real sockets, with its `cross_origin_request` cases at
+  `:1175-1176`. No `go/cmd/goap` test named `cross_origin_request`, so nothing outside the test binary
+  had ever seen this refusal. Two tests now settle it over a real
   socket. `TestHubAddrRefusesAnOriginHeaderBeforeItLooksAtTheHostOrTheMediaType` sends four requests
   that each carry an `Origin` header and asserts a **complete** 403 — status, `Content-Length` match,
   `error.response`, `cross_origin_request`, the fixed `open-agent-protocol` / `0.1` /
