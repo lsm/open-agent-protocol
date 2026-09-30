@@ -27,10 +27,19 @@ changes: an entry that states nothing now publishes nothing.
 
 ## What this does not fix
 
-**`lifecycle` is not touched here.** On this base it still defaults to
-`.stable` at `types.zig:436`, and its correction is a separate change. The
-two are adjacent lines, not one concern, and folding them together would
-put a serving-behaviour change and a provenance change behind one review.
+**`lifecycle` was not touched by the change this document describes.** When
+this document was written, `lifecycle` still defaulted to `.stable` at
+`types.zig:436` on the base of the original `source` change, and its
+correction was deliberately a separate review: the two are adjacent lines,
+but folding them together would have put a serving-behaviour change and a
+provenance change behind one review.
+
+That separation held, and it is now history rather than a plan. #673 landed
+the `source` half first; this document's companion change, the `lifecycle`
+half, is what follows it. On this branch both members are
+`?ModelLifecycle = null` and `?ModelSource = null`, and the `lifecycle`
+correction described in `drafts/oap-model-entry-absence.md` is the one landing
+here.
 
 **The SDK readers were decided separately, and they have now landed.** When
 this was written, `sdk/typescript` still mapped the OAP wire into the native
@@ -85,9 +94,13 @@ encode and the initial-decode halves respectively. The mutation evidence
 above is real and each mutation was run, but it is evidence for those three
 distinct halves — not three re-decode round-trips.
 
-## Reader behaviour across the SDKs, and the unresolved choice
+## Reader behaviour across the SDKs: historical, then current
 
-Measured or read on this base:
+### Historical measurement — before the reader migrations
+
+Measured on this branch's original base, which predates #688, #690, #705,
+#709, #710 and #712. **Kept as evidence of what the gap was**, not as a
+description of any current tree; the row for every migrated SDK is now false.
 
 | SDK | absent lifecycle | absent source | mode |
 |---|---|---|---|
@@ -96,20 +109,62 @@ Measured or read on this base:
 | Go | empty string through a native enum (`oap.go:336-343`) | invents `dynamic` | invention plus an unrepresentable value |
 | Python | invents `stable` (`_oap.py:237-246`) | invents `dynamic` | silent invention |
 
-The Rust row is executed, not inspected: through the public
+The Rust row was executed, not inspected: through the public
 `ClientBuilder`/`oap-protocol-fake` process seam, a payload with `source`
 and `lifecycle` present yields `lifecycle=Stable source=Dynamic` and
 `lifecycle=Stable source=StaticFallback`, while removing either member
-produces `OAP model entry is malformed: missing field \`lifecycle\`` /
+produced `OAP model entry is malformed: missing field \`lifecycle\`` /
 `` `source` `` on both `list` and `resolve`. Two `resolve` cells for the
-present shapes are unmeasured — a harness artefact I did not fix, recorded
-rather than papered over.
+present shapes were unmeasured — a harness artefact, recorded rather than
+papered over.
 
-**This PR does not decide what any reader should do about absence.** The
-owner has been asked to choose between shared SDK catalog results with
-optional `lifecycle`/`source` and separate public OAP result/client types,
-with the native wire keeping its validation either way. No answer yet, so
-no reader change is proposed here: this PR makes the wire able to be sparse
-truthfully, and the readers must be able to accept both shapes before it
-merges. Until then this is a wire-side change with a known reader gap, and
-that gap is deliberate rather than overlooked.
+### The owner decision, and what landed
+
+There is no longer an open question here, and this document previously said
+otherwise. That was the error: it carried "no answer yet" and "the readers
+must accept both shapes before it merges" in a section directly above one
+describing the same decision as settled.
+
+The owner chose **shared SDK catalog results carrying optional `lifecycle`
+and `source`**, with no separate OAP result type and no invented default. An
+absent member reads as unknown; a member that is present must be a string
+naming a known value, so a present `null`, a wrong type or an unrecognised
+literal is a malformed response. The native envelope contracts keep their own
+required members as a separate concern.
+
+Migrated and on main:
+
+| SDK | `source` | `lifecycle` |
+|---|---|---|
+| Rust | #688 | #709 |
+| Go | #690 | #710 |
+| TypeScript | #705 | #712 |
+
+### Python is still a gap, and it is not small
+
+Audited on current main. Python has the same defect class in **both** of its
+readers, and neither is fixed:
+
+- `sdk/python/src/oap_sdk/_oap.py:244` — `lifecycle=item.get("lifecycle", "stable")`
+  invents `stable` for an absent member, and a member present as `null`
+  arrives as `None` rather than being refused.
+- `sdk/python/src/oap_sdk/_oap.py:246` —
+  `"static_fallback" if item.get("source") == "fallback" else "dynamic"`
+  invents `dynamic` for an absent member **and** for any unrecognised literal,
+  and it accepts the shared aliases `dynamic`/`static_fallback` on the wire
+  where the `modelSource` enum permits only `discovered` and `fallback`.
+- `sdk/python/src/oap_sdk/models.py:317,321` — the shared reader calls
+  `_require_known` on both members, so an absent one is rejected outright
+  rather than read as unknown.
+- `sdk/python/src/oap_sdk/types.py:395,397` — both members are required on the
+  shared descriptor.
+
+The OAP reader's deprecation filter at `_oap.py:233` is already correct: it
+compares against the literal `"deprecated"`, so an absent member does not
+match and the model stays in the listing.
+
+Python is being migrated as its own reader cut from fresh main, under the same
+absence-versus-present-null policy as the three reviewed readers. It is
+recorded here as an open gap rather than folded into this change, which is
+wire-side: a sparse wire is already legal, so a reader lagging behind it is a
+separate defect with a separate review.
