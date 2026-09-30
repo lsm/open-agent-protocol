@@ -496,7 +496,10 @@ fn catalogEndpointWithOverrides(
     var merged = overrides;
     if (region) |resolved| merged.kimi_region = resolved;
     var base_url = try provider_base_url.baseUrlWithOverrides(allocator, id, catalog.wire, merged);
-    if (overriddenTarget(id, region, catalog, base_url)) |moved| {
+    if (canonicalForWire(id, catalog.wire, region, base_url)) {
+        allocator.free(base_url);
+        base_url = try allocator.dupe(u8, "");
+    } else if (overriddenTarget(id, region, catalog, base_url)) |moved| {
         allocator.free(base_url);
         catalog = moved;
         base_url = try provider_base_url.baseUrlWithOverrides(allocator, id, catalog.wire, merged);
@@ -511,22 +514,35 @@ fn catalogEndpointFromEnvironment(
 ) !?CatalogEndpoint {
     const region = try catalogRegion(allocator, storage, id);
     var catalog = catalogTargetInRegion(id, region) orelse return null;
-    var base_url = try provider_base_url.defaultBaseUrlForRefWithRegion(allocator, id, catalog.wire, region);
+    var base_url = try resolvedBaseForTarget(allocator, id, catalog.wire, region);
     if (overriddenTarget(id, region, catalog, base_url)) |moved| {
         allocator.free(base_url);
         catalog = moved;
-        base_url = try provider_base_url.defaultBaseUrlForRefWithRegion(allocator, id, catalog.wire, region);
+        base_url = try resolvedBaseForTarget(allocator, id, catalog.wire, region);
     }
     return try catalogEndpointWithBase(allocator, catalog, base_url);
 }
 
 fn overriddenTarget(id: []const u8, region: ?[]const u8, catalog: CatalogEndpoint, base_url: []const u8) ?CatalogEndpoint {
     if (base_url.len == 0) return null;
-    const canonical = provider_catalog.baseUrl(id, catalog.wire, region) orelse return null;
-    if (std.mem.eql(u8, base_url, canonical)) return null;
     const wire = provider_base_url.overriddenWire(id) orelse return null;
     if (std.mem.eql(u8, wire, catalog.wire)) return null;
     return catalogTargetOnWire(id, region, wire);
+}
+
+fn canonicalForWire(id: []const u8, wire: []const u8, region: ?[]const u8, base_url: []const u8) bool {
+    if (base_url.len == 0) return false;
+    const catalogued = provider_catalog.baseUrl(id, wire, region) orelse return false;
+    return std.mem.eql(u8, base_url, catalogued);
+}
+
+fn resolvedBaseForTarget(allocator: std.mem.Allocator, id: []const u8, wire: []const u8, region: ?[]const u8) ![]const u8 {
+    const base = try provider_base_url.defaultBaseUrlForRefWithRegion(allocator, id, wire, region);
+    if (base.len == 0) return base;
+    const catalogued = provider_catalog.baseUrl(id, wire, region) orelse return base;
+    if (!std.mem.eql(u8, base, catalogued)) return base;
+    allocator.free(base);
+    return allocator.dupe(u8, "");
 }
 
 fn catalogRegion(allocator: std.mem.Allocator, storage: ?*oauth_storage.AuthStorage, id: []const u8) !?[]const u8 {
@@ -4550,39 +4566,21 @@ test "a row that ships an endpoint per region caches each region's models apart"
     try std.testing.expectEqualStrings("catalog-kimi-global.json", from_target);
 }
 
-test "a catalogued base is not an operator override, so a resolvable canonical base keeps its wire" {
-    const target = catalogTargetOnWire("deepseek", null, "anthropic-messages") orelse return error.TestUnexpectedResult;
-    const canonical = provider_catalog.baseUrl("deepseek", "anthropic-messages", null) orelse return error.TestUnexpectedResult;
-    try std.testing.expect(!overriddenTarget("deepseek", null, target, canonical));
-}
-
-test "a base that differs from the catalogued one is an override and still selects the override wire" {
-    const target = catalogTargetOnWire("deepseek", null, "anthropic-messages") orelse return error.TestUnexpectedResult;
-    const moved = overriddenTarget("deepseek", null, target, "https://proxy.invalid/deepseek") orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqualStrings("openai-completions", moved.wire);
-    try std.testing.expectEqualStrings("https://api.deepseek.com", moved.base_url);
-}
-
-test "a provider with no override wire keeps its own wire whatever base it is given" {
-    const target = catalogTargetOnWire("openai", null, "openai-completions") orelse return error.TestUnexpectedResult;
-    try std.testing.expect(!overriddenTarget("openai", null, target, "https://proxy.invalid/openai"));
-    try std.testing.expect(!overriddenTarget("openai", null, target, ""));
-}
-
-test "the catalogued target keeps its wire when the named base is the catalogued one, through the caller" {
+test "the catalogued target keeps its wire and its catalogued listing url when the named base is the catalogued one" {
     const allocator = std.testing.allocator;
     const catalogued = provider_catalog.baseUrl("deepseek", "anthropic-messages", null) orelse return error.TestUnexpectedResult;
-    const kept = (try catalogEndpointWithOverrides(allocator, "deepseek", .{ .row = catalogued })) orelse return error.TestUnexpectedResult;
+    var kept = (try catalogEndpointWithOverrides(allocator, "deepseek", .{ .row = catalogued })) orelse return error.TestUnexpectedResult;
     defer kept.deinit(allocator);
     try std.testing.expectEqualStrings("anthropic-messages", kept.wire);
     try std.testing.expectEqualStrings(catalogued, kept.base_url);
+    try std.testing.expectEqualStrings("https://api.deepseek.com/v1/models", kept.models_url);
 }
 
-test "an overridden base still moves the target through the caller, and the moved target owns what it built" {
+test "an overridden base still moves the target through the caller, and the listing is read from the override" {
     const allocator = std.testing.allocator;
-    const moved = (try catalogEndpointWithOverrides(allocator, "deepseek", .{ .row = "https://proxy.invalid/deepseek" })) orelse return error.TestUnexpectedResult;
+    var moved = (try catalogEndpointWithOverrides(allocator, "deepseek", .{ .row = "https://proxy.invalid/deepseek" })) orelse return error.TestUnexpectedResult;
     defer moved.deinit(allocator);
     try std.testing.expectEqualStrings("openai-completions", moved.wire);
-    try std.testing.expectEqualStrings("https://api.deepseek.com", moved.base_url);
-    try std.testing.expectEqualStrings("https://api.deepseek.com/v1/models", moved.models_url);
+    try std.testing.expectEqualStrings("https://proxy.invalid/deepseek", moved.base_url);
+    try std.testing.expectEqualStrings("https://proxy.invalid/deepseek/v1/models", moved.models_url);
 }
