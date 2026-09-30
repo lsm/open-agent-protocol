@@ -21,8 +21,8 @@ already legal and no schema change is needed.
 ## Serving behaviour: none for the built-in rows
 
 `populateOapProviderCatalog` already sets `.source = .fallback` explicitly
-on every built-in row. Those rows state their provenance, so this change
-alters nothing about what they publish. It is the *unspecified* case that
+on every built-in row. Those rows state their provenance, so the
+`source` change alters nothing about what they publish. It is the *unspecified* case that
 changes: an entry that states nothing now publishes nothing.
 
 ## What this does not fix
@@ -139,11 +139,11 @@ Migrated and on main:
 | Rust | #688 | #709 |
 | Go | #690 | #710 |
 | TypeScript | #705 | #712 |
-| Python | this change | this change |
+| Python | #724 | #724 |
 
 ### Python: the gap, and what closed it
 
-Audited on the base of this change, Python had the same defect class in
+Audited on the base of the `source` change, Python had the same defect class in
 **both** of its readers, and neither was fixed:
 
 - `sdk/python/src/oap_sdk/_oap.py:244` — `lifecycle=item.get("lifecycle", "stable")`
@@ -165,7 +165,7 @@ compares against the literal `"deprecated"`, so an absent member does not
 match and the model stays in the listing.
 
 That audit is kept as the record of what the gap was. **Python is now
-migrated in this change**, under the same absence-versus-present-null policy
+migrated in #724**, under the same absence-versus-present-null policy
 as the three readers above: both members are optional on the shared
 descriptor, both readers tell an absent key from a present value, and a
 present `null`, wrong type or unrecognised literal is a malformed response
