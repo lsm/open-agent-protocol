@@ -551,6 +551,27 @@ test "a request with no body names no media type and is not refused for it" {
     try testing.expectEqual(Answer.not_found, answer(loopback, listing));
 }
 
+test "a zero-length body with a wrong media type is not gated, because the gate reads length" {
+    const loopback: []const []const u8 = &.{};
+    var posted = try requestOver("POST /sessions/s1/close HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: text/plain\r\nContent-Length: 0\r\n\r\n");
+    defer posted.deinit(testing.allocator);
+    try testing.expect(!carriesBody(posted));
+    try testing.expectEqual(Answer.not_found, answer(loopback, posted));
+
+    var empty = try requestOver("POST /sessions/s1/close HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: text/plain\r\n\r\n");
+    defer empty.deinit(testing.allocator);
+    try testing.expect(!carriesBody(empty));
+    try testing.expectEqual(Answer.not_found, answer(loopback, empty));
+}
+
+test "a listing carrying a body with a wrong media type is gated, because the gate reads the head" {
+    const loopback: []const []const u8 = &.{};
+    var listing = try requestOver("GET /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: text/plain\r\nContent-Length: 4\r\n\r\nbody");
+    defer listing.deinit(testing.allocator);
+    try testing.expect(carriesBody(listing));
+    try testing.expectEqualStrings("unsupported_media_type", answer(loopback, listing).refusal.code);
+}
+
 test "the Origin refusal is still the one that comes first" {
     var request = try requestOver("POST /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nOrigin: http://elsewhere.test\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\n{}");
     defer request.deinit(testing.allocator);
