@@ -365,7 +365,7 @@ func selectedCatalogModel() (map[string]any, bool) {
 	if sourceShape != "" {
 		switch sourceShape {
 		case "absent":
-		case "discovered", "fallback", "dynamic", "static_fallback":
+		case "discovered", "fallback":
 			model["source"] = sourceShape
 		case "null":
 			model["source"] = nil
@@ -375,6 +375,10 @@ func selectedCatalogModel() (map[string]any, bool) {
 			model["source"] = float64(7)
 		case "invented":
 			model["source"] = "invented-source"
+		case "shared-alias-dynamic":
+			model["source"] = "dynamic"
+		case "shared-alias-static-fallback":
+			model["source"] = "static_fallback"
 		}
 	}
 	return model, true

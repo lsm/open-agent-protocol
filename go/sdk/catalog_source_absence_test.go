@@ -50,7 +50,7 @@ func TestAStatedSourceKeepsItsMappingThroughThePublicSeam(t *testing.T) {
 }
 
 func TestAPresentButInvalidSourceIsRefusedThroughThePublicSeam(t *testing.T) {
-	for _, shape := range []string{"invented", "empty", "null", "wrong-type"} {
+	for _, shape := range []string{"invented", "empty", "null", "wrong-type", "shared-alias-dynamic", "shared-alias-static-fallback"} {
 		if _, err := listSelected(t, shape); err == nil {
 			t.Errorf("%s: a present but invalid source must be refused, not read as absent", shape)
 		}
