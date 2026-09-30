@@ -28,11 +28,6 @@ async def _list(fake: FakeServerFactory, entry: Dict[str, Any]) -> Any:
     return await client.models.list()
 
 
-async def _resolve(fake: FakeServerFactory, entry: Dict[str, Any]) -> Any:
-    client = await fake.client(models_config([entry]))
-    return await client.models.resolve(provider_id="anthropic", model_id=entry["model_id"])
-
-
 @pytest.mark.asyncio
 async def test_missing_members_read_as_unknown(fake: FakeServerFactory) -> None:
     listed = await _list(fake, model())
@@ -43,7 +38,8 @@ async def test_missing_members_read_as_unknown(fake: FakeServerFactory) -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_reads_missing_members_as_unknown(fake: FakeServerFactory) -> None:
-    resolved = await _resolve(fake, model())
+    client = await fake.client(models_config([model()]))
+    resolved = await client.models.resolve(provider_id="anthropic", model_id="claude-sonnet-4-5")
     assert resolved.lifecycle is None
     assert resolved.source is None
 
