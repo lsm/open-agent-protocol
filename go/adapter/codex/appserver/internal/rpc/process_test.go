@@ -18,6 +18,8 @@ import (
 
 const surviveBackstop = 5 * time.Minute
 
+const gracefulExitAllowance = 5 * time.Second
+
 func TestHelperProcess(t *testing.T) {
 
 	if os.Getenv("OAP_CODEX_RPC_HOLDER") == "1" {
@@ -240,7 +242,7 @@ func TestProcessConcurrentCloseReturnsSameResult(t *testing.T) {
 
 func TestCloseRejectsAHelperThatLeavesOnStdinEOF(t *testing.T) {
 	config := helperConfig("exits-on-eof")
-	config.ShutdownTimeout = time.Millisecond
+	config.ShutdownTimeout = gracefulExitAllowance
 	process, err := Start(context.Background(), config)
 	if err != nil {
 		t.Fatal(err)
