@@ -233,7 +233,8 @@ export interface ModelDescriptor {
   auth_status: AuthStatus;
   lifecycle: ModelLifecycle;
   capabilities: ModelCapability[];
-  source: ModelSource;
+  /** Absent means the listing did not state a source. Never defaulted. */
+  source?: ModelSource;
   context_window?: number;
   max_output_tokens?: number;
   reasoning_default?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
@@ -1829,3 +1830,27 @@ resolve them because no frame carries a registration or run generation
 may rely on. Two are exceptions, recorded because mishandling them is silent:
 `RESIDUAL-2`, locally solvable from `in_reply_to`, and `RESIDUAL-6`, a
 mechanism-COVERAGE gap on the SSE transport that needs no wire change at all.
+
+## Catalog result: an optional `source`
+
+The shared catalog result carries `source` as optional. The owner selected
+this shape: absent is read as **unknown**, and no SDK fabricates
+`dynamic`/`discovered` for a value the listing did not state.
+
+This is the target for all three SDKs; it is **implemented in Rust only** so
+far. On the Go and TypeScript SDKs, a listing that omits `source` still
+fabricates a value. Those are tracked as follow-ups and are not covered by
+the Rust change: Go in #690, and the TypeScript reader in its own cut. A
+reader that has not been changed yet must not be described as if it had.
+
+This does not weaken the wire. `schema/v0.1/provider.schema.json` defines
+`modelEntry.source` as an optional key over the `modelSource` enum, and an
+optional key is not a nullable one: a `source` that is **present** must be a
+string naming `discovered` or `fallback`. `null`, a number, or an
+unrecognised literal is a malformed response and is rejected. Only an absent
+key reads as unknown. The vocabulary normalisation is unchanged: `discovered`
+reads as the SDK's dynamic value and `fallback` as its static-fallback value.
+
+`lifecycle` follows the same shape in a later change, and the native
+protocol `ModelDescriptor` declared earlier in this document is a separate
+contract that keeps its required members.
