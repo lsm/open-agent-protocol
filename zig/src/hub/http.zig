@@ -388,6 +388,7 @@ fn parametersWellFormed(parameters: []const u8) bool {
         if (rest[0] != ';') return false;
         rest = std.mem.trimStart(u8, rest[1..], " \t");
         if (rest.len == 0) return true;
+        if (rest[0] == ';') return false;
         const name_end = std.mem.indexOfScalar(u8, rest, '=') orelse return false;
         const name = std.mem.trim(u8, rest[0..name_end], " \t");
         if (!isToken(name)) return false;
@@ -607,6 +608,8 @@ test "a parameter list that is not well formed is refused, as the header grammar
         "application/json; =utf-8",
         "application/json; charset=utf-8; x",
         "application/json; x=\"unterminated",
+        "application/json;;",
+        "application/json; ;",
     }) |declared| {
         const raw = try std.fmt.allocPrint(testing.allocator, "POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: {s}\r\nContent-Length: 2\r\n\r\n{{}}", .{declared});
         defer testing.allocator.free(raw);
