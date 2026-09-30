@@ -144,6 +144,8 @@ func TestHubAddrFinishesTheRefusalAndStopsTheBodyWhenItsSignalArrives(t *testing
 	awaitDaemonGone(t, address, 15*time.Second)
 }
 
+const aliveProofBound = 3 * time.Second
+
 func TestHubAddrSignalProofReportsADaemonThatIgnoresTheSignalAsAlive(t *testing.T) {
 	binary := filepath.Join(t.TempDir(), "fakehub")
 	build := exec.Command("go", "build", "-o", binary, "./testdata/fakehub")
@@ -194,15 +196,20 @@ func TestHubAddrSignalProofReportsADaemonThatIgnoresTheSignalAsAlive(t *testing.
 	}
 	_ = conn.Close()
 	proof := &ownedHub{command: command, exited: done, cancelCtx: func() {}}
-	if proof.signalAndAwaitExit(10 * time.Second) {
+	waited := time.Now()
+	if proof.signalAndAwaitExit(aliveProofBound) {
 		t.Fatal("the proof reported an exit for a daemon that ignores SIGINT, so it cannot tell the two apart")
+	}
+	observed := time.Since(waited)
+	if observed < aliveProofBound-time.Second {
+		t.Fatalf("the proof returned after %v, not the full %v bound, so it did not wait out the signal", observed, aliveProofBound)
 	}
 	again, err := net.DialTimeout("tcp", address, 5*time.Second)
 	if err != nil {
 		t.Fatalf("the proof reported it alive but %s no longer accepts: %v; it said %s", address, err, stderr.String())
 	}
 	_ = again.Close()
-	t.Logf("the fake daemon ignored SIGINT, the proof reported it alive under the bound, and it was still accepting on %s afterwards", address)
+	t.Logf("the fake daemon ignored SIGINT, the proof reported it alive after waiting out the full %v bound, and it was still accepting on %s afterwards", observed, address)
 	cleanup()
 }
 
