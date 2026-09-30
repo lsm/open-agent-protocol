@@ -48,7 +48,7 @@ export interface ModelDescriptor {
   api: ApiId;
   base_url?: string;
   auth_status: AuthStatus;
-  lifecycle: ModelLifecycle;
+  lifecycle?: ModelLifecycle;
   capabilities: ModelCapability[];
   source: ModelSource;
   context_window?: number;

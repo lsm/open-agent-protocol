@@ -320,11 +320,7 @@ function parseModelDescriptor(raw: unknown, idx: number): ModelDescriptor {
     `models[${idx}].auth_status`,
     KNOWN_AUTH_STATUSES,
   ) as AuthStatus;
-  const lifecycle = requireKnownString(
-    raw.lifecycle,
-    `models[${idx}].lifecycle`,
-    KNOWN_LIFECYCLES,
-  ) as ModelLifecycle;
+  const lifecycle = optionalModelLifecycle(raw.lifecycle, `models[${idx}].lifecycle`);
   const source = requireKnownString(
     raw.source,
     `models[${idx}].source`,
@@ -355,7 +351,7 @@ function parseModelDescriptor(raw: unknown, idx: number): ModelDescriptor {
     provider_id: providerId,
     api,
     auth_status: authStatus,
-    lifecycle,
+    ...(lifecycle === undefined ? {} : { lifecycle }),
     capabilities,
     source,
   };
@@ -398,6 +394,16 @@ function requireString(value: unknown, fieldName: string): string {
     throw malformedResponseError(`${fieldName} must be a string`);
   }
   return value;
+}
+
+function optionalModelLifecycle(
+  value: unknown,
+  fieldName: string,
+): ModelLifecycle | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  return requireKnownString(value, fieldName, KNOWN_LIFECYCLES) as ModelLifecycle;
 }
 
 function requireKnownString(

@@ -1,0 +1,187 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import {
+  createMakaiModelsApi,
+  createOapClient,
+  MakaiStdioClient,
+  type MakaiModelsApi,
+} from "../src";
+
+const sourceFixturesDir = path.resolve(__dirname, "../../sdk/typescript/test/fixtures");
+const oapFixtureScript = path.join(sourceFixturesDir, "oap-server.js");
+const legacyFixtureScript = path.join(sourceFixturesDir, "models-server.js");
+
+function descriptor(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    model_ref: "anthropic/anthropic-messages@claude-sonnet-4-5",
+    model_id: "claude-sonnet-4-5",
+    display_name: "Claude Sonnet 4.5",
+    provider_id: "anthropic",
+    api: "anthropic-messages",
+    auth_status: "authenticated",
+    capabilities: ["chat"],
+    source: "static_fallback",
+    ...overrides,
+  };
+}
+
+async function withLegacyModels<T>(
+  model: Record<string, unknown>,
+  use: (api: MakaiModelsApi) => Promise<T>,
+): Promise<T> {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "oap-lifecycle-test-"));
+  const responsePath = path.join(tmpDir, "response.json");
+  fs.writeFileSync(
+    responsePath,
+    JSON.stringify({
+      models: [model],
+      fetched_at_ms: 1_760_000_000_198,
+      cache_max_age_ms: 300_000,
+    }),
+  );
+  const client = new MakaiStdioClient({
+    command: process.execPath,
+    args: [legacyFixtureScript],
+    env: { ...process.env, OAP_SDK_TEST_RESPONSE_PATH: responsePath },
+    handshakeTimeoutMs: 5000,
+  });
+  try {
+    await client.connect();
+    return await use(createMakaiModelsApi(client));
+  } finally {
+    await client.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+async function withOapModels<T>(
+  stating: string,
+  use: (api: MakaiModelsApi) => Promise<T>,
+): Promise<T> {
+  const client = await createOapClient({
+    command: process.execPath,
+    args: [oapFixtureScript],
+    env: { ...process.env, OAP_FIXTURE_LIFECYCLE: stating },
+  });
+  try {
+    return await use(client.models);
+  } finally {
+    await client.close();
+  }
+}
+
+test("the shared reader records an absent lifecycle as unknown", async () => {
+  const models = await withLegacyModels(
+    descriptor({ lifecycle: "stable" }),
+    async (api) => (await api.list({ include_deprecated: true })).models,
+  );
+  const absent = descriptor();
+  delete absent.lifecycle;
+  const listed = await withLegacyModels(
+    absent,
+    async (api) => (await api.list({ include_deprecated: true })).models,
+  );
+  assert.equal(models[0].lifecycle, "stable", "a stated lifecycle keeps its value");
+  assert.equal(
+    listed[0].lifecycle,
+    undefined,
+    "an omitted lifecycle must stay unknown, not become a chosen value",
+  );
+  assert.ok(!("lifecycle" in listed[0]), "an unknown lifecycle must not be written at all");
+});
+
+test("the shared reader keeps each stated lifecycle", async () => {
+  for (const stated of ["stable", "preview", "deprecated"] as const) {
+    const models = await withLegacyModels(
+      descriptor({ lifecycle: stated }),
+      async (api) => (await api.list({ include_deprecated: true })).models,
+    );
+    assert.equal(models[0].lifecycle, stated, `a stated ${stated} must keep its value`);
+  }
+});
+
+test("the shared reader refuses a present null or wrong-typed lifecycle", async () => {
+  for (const [value, what] of [
+    [null, "an explicit null"],
+    [7, "a number"],
+    ["retired", "an invented literal"],
+  ] as const) {
+    await assert.rejects(
+      () =>
+        withLegacyModels(descriptor({ lifecycle: value }), async (api) => {
+          await api.list({ include_deprecated: true });
+          return null;
+        }),
+      (error: unknown) => {
+        assert.ok(
+          error instanceof Error && /models\[0\]\.lifecycle/.test(error.message),
+          `${what} must be refused naming the field, got: ${String(error)}`,
+        );
+        return true;
+      },
+      `${what} must be a malformed response, not an unknown lifecycle`,
+    );
+  }
+});
+
+test("the OAP reader records an absent lifecycle as unknown", async () => {
+  const models = await withOapModels("absent", async (api) => (await api.list()).models);
+  assert.equal(models[0].lifecycle, undefined, "an unstated lifecycle must stay unknown");
+  assert.ok(!("lifecycle" in models[0]), "no value may be invented for the descriptor");
+});
+
+test("the OAP reader keeps a stated lifecycle", async () => {
+  for (const stated of ["stable", "preview"] as const) {
+    const models = await withOapModels(stated, async (api) => (await api.list()).models);
+    assert.equal(models[0].lifecycle, stated, `${stated} must read as ${stated}`);
+  }
+});
+
+test("the OAP reader refuses a present null or unknown lifecycle", async () => {
+  for (const [stating, what] of [
+    ["null", "an explicit null"],
+    ["number", "a number"],
+    ["invented", "an invented literal"],
+  ] as const) {
+    await assert.rejects(
+      () =>
+        withOapModels(stating, async (api) => {
+          await api.list();
+          return null;
+        }),
+      (error: unknown) => {
+        assert.ok(
+          error instanceof Error && /lifecycle/.test(error.message),
+          `${what} must be refused naming lifecycle, got: ${String(error)}`,
+        );
+        return true;
+      },
+      `${what} must be a malformed response on the OAP path too`,
+    );
+  }
+});
+
+test("a model that stated deprecated is filtered out unless asked for", async () => {
+  const filtered = await withOapModels("deprecated", async (api) => (await api.list()).models);
+  assert.equal(
+    filtered.length,
+    0,
+    "a stated deprecated lifecycle must still be filtered from a default listing",
+  );
+  const included = await withOapModels("deprecated", async (api) =>
+    (await api.list({ include_deprecated: true })).models,
+  );
+  assert.equal(included.length, 1, "and included when the listing asks for it");
+});
+
+test("a model that did not state a lifecycle is not filtered out", async () => {
+  const models = await withOapModels("absent", async (api) => (await api.list()).models);
+  assert.equal(
+    models.length,
+    1,
+    "an unknown lifecycle must not silently drop the model from the listing",
+  );
+});
