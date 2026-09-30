@@ -234,7 +234,7 @@ fn runStreamThread(ctx: *StreamThreadContext) void {
         return;
     }
 
-    _ = client.sendStreamRequest(request_model, request_context, stream_options) catch |err| {
+    const stream_id = client.sendStreamRequest(request_model, request_context, stream_options) catch |err| {
         ctx.out_stream.completeWithError(@errorName(err));
         return;
     };
@@ -244,8 +244,9 @@ fn runStreamThread(ctx: *StreamThreadContext) void {
 
     while (!client.isComplete()) {
         if (!abort_sent and tokenCancelled(ctx.options.cancel_token)) {
-            abort_sent = true;
-            client.sendAbortRequest("request cancelled") catch {};
+            if (client.sendAbortRequestFor(stream_id, "request cancelled")) |_| {
+                abort_sent = true;
+            } else |_| {}
         }
         _ = runtime.pumpOnce(&client) catch |err| {
             ctx.out_stream.completeWithError(@errorName(err));
