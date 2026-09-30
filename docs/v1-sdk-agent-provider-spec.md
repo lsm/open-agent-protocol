@@ -234,7 +234,8 @@ export interface ModelDescriptor {
   api: ApiId;
   base_url?: string;
   auth_status: AuthStatus;
-  lifecycle: ModelLifecycle;
+  /** Absent means the listing did not state a lifecycle. Never defaulted. */
+  lifecycle?: ModelLifecycle;
   capabilities: ModelCapability[];
   /** Absent means the listing did not state a source. Never defaulted. */
   source?: ModelSource;
