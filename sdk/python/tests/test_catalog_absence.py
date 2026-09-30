@@ -147,5 +147,65 @@ class CatalogAbsence(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(resolved.lifecycle)
 
 
+
+class CatalogValidationPrecedesFiltering(unittest.IsolatedAsyncioTestCase):
+    async def _list(self, key: str, lifecycle: _Member, source: _Member,
+                    include_deprecated: Optional[bool] = None,
+                    api: Optional[str] = None,
+                    model_id: Optional[str] = None,
+                    include_login_required: Optional[bool] = None) -> ListModelsResponse:
+        env = dict(os.environ)
+        env["OAP_PY_FIXTURE_SHAPE"] = key
+        stamped: List[str] = []
+        for member, raw in (("lifecycle", lifecycle), ("source", source)):
+            if raw is not _ABSENT:
+                env[f"{member}_{key}"] = str(raw)
+                stamped.append(f"{member}_{key}")
+        env["OAP_PY_FIXTURE_SET"] = ",".join(stamped)
+        async with connect(command=sys.executable, args=["-u", "-c", HOST],
+                           legacy_wire=False, env=env) as client:
+            return await client.models.list(include_deprecated=include_deprecated, api=api,
+                                            model_id=model_id,
+                                            include_login_required=include_login_required)
+
+    async def test_an_invalid_source_is_refused_even_when_the_row_is_filtered_out(self) -> None:
+        with self.assertRaises(MakaiProtocolError) as caught:
+            await self._list("byp-dep", '"deprecated"', "null", include_deprecated=False)
+        self.assertEqual(caught.exception.code, "malformed_response")
+        self.assertIn("source", str(caught.exception).lower())
+
+    async def test_an_invalid_member_is_refused_even_when_another_filter_skips_it(self) -> None:
+        cases = (
+            ("api", {"api": "other"}),
+            ("model", {"model_id": "nope"}),
+            ("auth", {"include_login_required": False}),
+        )
+        for key, kwargs in cases:
+            with self.assertRaises(MakaiProtocolError) as caught:
+                await self._list(f"byp-{key}", "null", _ABSENT, **kwargs)  # type: ignore[arg-type]
+            self.assertEqual(caught.exception.code, "malformed_response", key)
+            self.assertIn("lifecycle", str(caught.exception).lower())
+            with self.assertRaises(MakaiProtocolError) as caught:
+                await self._list(f"byp-{key}-src", _ABSENT, "null", **kwargs)  # type: ignore[arg-type]
+            self.assertEqual(caught.exception.code, "malformed_response", key)
+            self.assertIn("source", str(caught.exception).lower())
+
+    async def test_a_valid_row_is_still_filtered_as_before(self) -> None:
+        dropped = await self._list("filt-dep", '"deprecated"', '"fallback"',
+                                   include_deprecated=False)
+        self.assertEqual(dropped.models, [])
+        kept = await self._list("filt-dep-keep", '"deprecated"', '"fallback"',
+                                include_deprecated=True)
+        self.assertEqual(len(kept.models), 1)
+        by_api = await self._list("filt-api", '"stable"', '"fallback"', api="nothing")
+        self.assertEqual(by_api.models, [])
+
+    async def test_an_absent_member_on_a_filtered_row_is_still_unknown_not_refused(self) -> None:
+        unknown = await self._list("filt-absent", _ABSENT, _ABSENT, include_deprecated=False)
+        self.assertEqual(len(unknown.models), 1)
+        self.assertIsNone(unknown.models[0].lifecycle)
+        self.assertIsNone(unknown.models[0].source)
+
+
 if __name__ == "__main__":
     unittest.main()

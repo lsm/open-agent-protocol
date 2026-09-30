@@ -256,11 +256,13 @@ class OAPModelsApi:
         for item in raw:
             if not isinstance(item, dict):
                 raise MakaiProtocolError("model entry must be an object", "malformed_response")
+            lifecycle = _oap_lifecycle(item)
+            source = _oap_source(item)
             if api and item.get("wire") != api:
                 continue
             if model_id and item.get("model_id") != model_id:
                 continue
-            if include_deprecated is False and item.get("lifecycle") == "deprecated":
+            if include_deprecated is False and lifecycle == "deprecated":
                 continue
             if include_login_required is False and item.get("auth_status") == "login_required":
                 continue
@@ -271,9 +273,9 @@ class OAPModelsApi:
                 provider_id=str(item.get("provider_id", "")),
                 api=str(item.get("wire", "")),
                 auth_status=item.get("auth_status", "unknown"),
-                lifecycle=_oap_lifecycle(item),
+                lifecycle=lifecycle,
                 capabilities=item.get("capabilities", []),
-                source=_oap_source(item),
+                source=source,
                 context_window=item.get("context_window"),
                 max_output_tokens=item.get("max_output_tokens"),
                 reasoning_default=item.get("reasoning_default"),

@@ -139,6 +139,7 @@ Migrated and on main:
 | Rust | #688 | #709 |
 | Go | #690 | #710 |
 | TypeScript | #705 | #712 |
+| Python | this change | this change |
 
 ### Python: the gap, and what closed it
 
@@ -176,3 +177,15 @@ locally, because asserting that it filters would be asserting behaviour it
 never had.
 
 All four SDK readers now implement the owner decision, so no reader is open.
+
+**One ordering rule this work had to learn the hard way.** Validating these two
+members is not the same as validating them before the reader's own filters run.
+The OAP reader skips an entry whose `api`, `model_id`, `lifecycle` or
+`auth_status` does not match the request, and if validation happened only where
+the descriptor is constructed, a row skipped by any of those filters would never
+be validated at all — so `lifecycle="deprecated"` with a present `null` source
+would return an empty list rather than a malformed response. The owner contract
+has no filter exemption: a present `null`, wrong type or unrecognised literal is
+refused for **every** received entry, and only then may the reader decide to
+skip it. The Python change validates once per entry before any local `continue`,
+and a negative control reinstates the old ordering to show the cases fail.
