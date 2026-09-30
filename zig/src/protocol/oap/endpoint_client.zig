@@ -522,3 +522,117 @@ test "the budget arithmetic keeps sub-millisecond precision without a live clock
     try std.testing.expect(std.meta.activeTag(spent.timeout()) == .duration);
     try std.testing.expect(std.meta.activeTag(Budget.unbounded().timeout()) == .none);
 }
+
+const late_tail =
+    \\sleep 0.4; echo '{"control":"late"}'
+;
+
+const partial_tail =
+    \\printf partial; cat
+;
+
+const blank_tail =
+    \\echo; echo; echo; cat
+;
+
+fn stopChild(client: *Client) void {
+    _ = client.waitExit(300) catch {};
+}
+
+fn readUnder(allocator: std.mem.Allocator, tail: []const u8, budget: Budget) !?Frame {
+    var client = try Client.spawn(allocator, .{ .command = "/bin/sh", .args = &.{ "-c", tail } });
+    defer client.deinit();
+    defer stopChild(&client);
+    var attempts: usize = 0;
+    var seen: ?Frame = null;
+    while (seen == null and attempts < 8) : (attempts += 1) {
+        seen = try client.nextBounded(budget);
+    }
+    return seen;
+}
+
+test "none, duration and deadline each read the same frame from one child" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var client = try Client.spawn(std.testing.allocator, .{ .command = "/bin/cat" });
+    defer client.deinit();
+    const io = client.io();
+    const sent = "{\"protocol\":\"open-agent-protocol\",\"id\":\"q1\"}";
+
+    const shapes = [_]Budget{
+        Budget.unbounded(),
+        Budget.fromTimeout(
+            .{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(60000), .clock = .awake } },
+            io,
+        ),
+        Budget.fromTimeout(
+            .{ .deadline = std.Io.Clock.Timestamp.now(io, .awake).addDuration(.{ .raw = std.Io.Duration.fromMilliseconds(60000), .clock = .awake }) },
+            io,
+        ),
+    };
+
+    for (shapes) |budget| {
+        try client.write(sent);
+        var attempts: usize = 0;
+        var seen: ?Frame = null;
+        while (seen == null and attempts < 20) : (attempts += 1) {
+            seen = try client.nextBounded(budget);
+        }
+        try std.testing.expect(seen != null);
+        try std.testing.expect(seen.? == .envelope);
+        try std.testing.expectEqualStrings(sent, seen.?.envelope);
+    }
+
+    try std.testing.expect(shapes[0].limit == null);
+    try std.testing.expect(shapes[0].timeout() == .none);
+    try std.testing.expect(shapes[0].expired() == false);
+    try std.testing.expect(shapes[2].limit.?.clock == .awake);
+    try std.testing.expect(shapes[2].timeout() == .duration);
+}
+
+test "a bounded budget gives up on a late frame where an unbounded one still reads it" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+    var bounded_client = try Client.spawn(std.testing.allocator, .{ .command = "/bin/sh", .args = &.{ "-c", late_tail } });
+    defer bounded_client.deinit();
+    defer stopChild(&bounded_client);
+    const bounded = Budget.until(bounded_client.io(), 120);
+    var bounded_attempts: usize = 0;
+    while (bounded_attempts < 8) : (bounded_attempts += 1) {
+        if (try bounded_client.nextBounded(bounded) != null) break;
+    }
+    try std.testing.expect(bounded.expired());
+
+    const late = try readUnder(std.testing.allocator, late_tail, Budget.unbounded());
+    try std.testing.expect(late != null);
+    try std.testing.expect(late.? == .control);
+}
+
+test "partial traffic and blank traffic both expire inside one overall budget" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+    var partial_client = try Client.spawn(std.testing.allocator, .{ .command = "/bin/sh", .args = &.{ "-c", partial_tail } });
+    defer partial_client.deinit();
+    defer stopChild(&partial_client);
+    const partial_budget = Budget.until(partial_client.io(), 800);
+    var partial_attempts: usize = 0;
+    var partial_frame: ?Frame = null;
+    while (partial_attempts < 40) : (partial_attempts += 1) {
+        partial_frame = try partial_client.nextBounded(partial_budget);
+        if (partial_frame != null) break;
+    }
+    try std.testing.expect(partial_frame == null);
+    try std.testing.expect(partial_budget.expired());
+
+    var blank_client = try Client.spawn(std.testing.allocator, .{ .command = "/bin/sh", .args = &.{ "-c", blank_tail } });
+    defer blank_client.deinit();
+    defer stopChild(&blank_client);
+    const blank_budget = Budget.until(blank_client.io(), 800);
+    var blank_attempts: usize = 0;
+    var blank_frame: ?Frame = null;
+    while (blank_attempts < 40) : (blank_attempts += 1) {
+        blank_frame = try blank_client.nextBounded(blank_budget);
+        if (blank_frame != null) break;
+    }
+    try std.testing.expect(blank_frame == null);
+    try std.testing.expect(blank_budget.expired());
+}
