@@ -494,19 +494,30 @@ rule. The two envelopes have different requiredness on this member, and
 conflating them would either excuse a native omission or over-refuse an OAP
 one.
 
-**Each reader reaches that judgement on its own, and two ways of writing it
-are not the same reader.** A reader that reads the member as
-`str(value) || "unknown"` and one that tests it against the seven literals
-disagree on three inputs at once: a present `null` and a present number both
-become the string `unknown` under the first and are `malformed_response` under
-the second, and a literal outside the enum passes through the first as though a
-type assertion had checked it. The lenient form is not a different policy that
-some readers were left free to choose — it is a coercion that cannot
-distinguish "the provider said `unknown`" from "the provider said something we
-could not read", and the seven literals are the closed set that makes those two
-distinguishable. A reader conforms here when absent reads as the existing
-`unknown` and a present value outside the seven is refused, whatever its
-intermediate representation.
+**A reader that judges a present value, and one that coerces it, are not
+measuring the same thing.** A reader that reads the member as
+`str(value) || "unknown"` and one that tests it against a closed set disagree
+on three inputs at once: a present `null` and a present number both become the
+string `unknown` under the first and are `malformed_response` under the second,
+and a literal outside the set passes through the first as though a type
+assertion had checked it. The coercion cannot distinguish "the provider said
+`unknown`" from "the provider said something we could not read", which is the
+distinction this member exists to carry.
+
+**What the tree does today, measured, without settling which set is
+conforming.** `common.schema.json` publishes seven literals — `authenticated`,
+`login_required`, `expired`, `refreshing`, `login_in_progress`, `failed`,
+`unknown` — and the OAP readers validate a present value against that set, so
+`refreshing` and `login_in_progress` are accepted and carried through today.
+The paragraph above excludes those two from this profile as transient states.
+**That disagreement is open, and nothing here resolves it**: this profile, the
+schema, and the readers do not currently agree on the vocabulary, and which of
+them should change is a separate decision. The reader repairs that have landed
+do not depend on the answer, because each adds no literal and removes none —
+they judge a present value against the set the schema already publishes, and
+read an absent one as the existing `unknown`. A reader is conformant on the
+point recorded here — absent reads as `unknown`, and a present value outside
+the set it validates against is refused — whichever set that turns out to be.
 
 ### One inference call
 
