@@ -418,7 +418,11 @@ test "a loaded pack's schemas are registered under keys its own refs resolve" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    for ([_][]const u8{ "staying", "aliased", "cleaned", "nested", "literal" }) |name| {
+    const dirs = if (comptime std.Io.Dir.path.sep == '/')
+        [_][]const u8{ "staying", "aliased", "cleaned", "nested", "literal" }
+    else
+        [_][]const u8{ "staying", "aliased", "cleaned", "nested" };
+    for (dirs) |name| {
         try tmp.dir.createDir(std.testing.io, name, .default_dir);
     }
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "staying/note.schema.json", .data =
@@ -469,13 +473,21 @@ test "a loaded pack's schemas are registered under keys its own refs resolve" {
     var registry = try jsonschema.Registry.initFromBundled(allocator);
     defer registry.deinit();
 
-    const cases = [_]struct { dir: []const u8, declared: []const u8 }{
+    const Case = struct { dir: []const u8, declared: []const u8 };
+    const portable = [_]Case{
+        .{ .dir = "staying", .declared = "com.example.ok.thing" },
+        .{ .dir = "aliased", .declared = "com.example.alias.thing" },
+        .{ .dir = "cleaned", .declared = "com.example.clean.thing" },
+        .{ .dir = "nested", .declared = "com.example.nested.thing" },
+    };
+    const with_literal = [_]Case{
         .{ .dir = "staying", .declared = "com.example.ok.thing" },
         .{ .dir = "aliased", .declared = "com.example.alias.thing" },
         .{ .dir = "cleaned", .declared = "com.example.clean.thing" },
         .{ .dir = "nested", .declared = "com.example.nested.thing" },
         .{ .dir = "literal", .declared = "com.example.literal.thing" },
     };
+    const cases = if (comptime std.Io.Dir.path.sep == '/') with_literal else portable;
 
     for (cases) |case| {
         const root = try tmp.dir.realPathFileAlloc(std.testing.io, case.dir, allocator);
@@ -494,7 +506,11 @@ test "a loaded pack's schemas are registered under keys its own refs resolve" {
         try std.testing.expect(!try judgesAsAccepted(allocator, &registry, read.branches, short));
     }
 
-    try std.testing.expect(registry.root("https://open-agent-protocol.local/ext/com.example.literal/1.0.0/back\\slash.schema.json") != null);
+    if (comptime std.Io.Dir.path.sep == '/') {
+        try std.testing.expect(registry.root("https://open-agent-protocol.local/ext/com.example.literal/1.0.0/back\\slash.schema.json") != null);
+    }
+    try std.testing.expect(registry.root("https://open-agent-protocol.local/ext/com.example.nested/1.0.0/sub/note.schema.json") != null);
+    try std.testing.expect(registry.root("https://open-agent-protocol.local/ext/com.example.nested/1.0.0/sub\\note.schema.json") == null);
 }
 
 test "a descriptor schema path is read only when it lands beneath the pack root" {
