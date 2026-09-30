@@ -16,6 +16,12 @@ function event(profile, type, payload, scope = {}) {
   send({ profile }, type, payload, scope);
 }
 
+const SUPPORTED_AUTH = new Set([
+  "absent", "null", "number", "empty", "invented",
+  "authenticated", "login_required", "expired",
+  "refreshing", "login_in_progress", "failed", "unknown",
+]);
+
 function fixtureModel() {
   const model = { model_ref: "fixture/openai-responses@mock", model_id: "mock", provider_id: "fixture", wire: "openai-responses", capabilities: ["chat", "streaming"], lifecycle: "stable", source: "discovered", auth_status: "authenticated", cost: { input: 3, output: 15, cache_read: 0.3, cache_write: 3.75 }, input_modalities: ["text", "image"], reasoning_levels: ["off", "medium", "high"], release_date: "2025-09-29", family: "mock-family" };
   switch (process.env.OAP_FIXTURE_SOURCE) {
@@ -53,6 +59,10 @@ function fixtureModel() {
     case "failed": model.auth_status = "failed"; break;
     case "unknown": model.auth_status = "unknown"; break;
     default: break;
+  }
+  const selector = process.env.OAP_FIXTURE_AUTH;
+  if (selector && !SUPPORTED_AUTH.has(selector)) {
+    throw new Error(`unsupported OAP_FIXTURE_AUTH selector: ${selector}`);
   }
   return model;
 }

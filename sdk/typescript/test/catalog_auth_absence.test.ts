@@ -13,11 +13,12 @@ const oapFixtureScript = path.join(fixturesDir, "oap-server.js");
 async function withOapModels<T>(
   auth: string,
   use: (api: MakaiModelsApi) => Promise<T>,
+  lifecycle?: string,
 ): Promise<T> {
   const client = await createOapClient({
     command: process.execPath,
     args: [oapFixtureScript],
-    env: { ...process.env, OAP_FIXTURE_AUTH: auth },
+    env: { ...process.env, OAP_FIXTURE_AUTH: auth, OAP_FIXTURE_LIFECYCLE: lifecycle ?? "" },
   });
   try {
     return await use(client.models);
@@ -101,7 +102,53 @@ test("a malformed auth_status is refused even when a local filter would skip the
   await refusesMalformedAuthStatus("null", (api) =>
     api.list({ model_id: "no-such-model" }),
   );
-  await refusesMalformedAuthStatus("invented", (api) =>
-    api.list({ include_deprecated: false }),
+});
+
+test("the include_deprecated filter really does skip a deprecated row", async () => {
+  const kept = await withOapModels(
+    "authenticated",
+    async (api) => (await api.list({ include_deprecated: true })).models,
+    "deprecated",
   );
+  assert.equal(kept.length, 1, "a deprecated row survives when the filter allows it");
+  assert.equal(kept[0].lifecycle, "deprecated");
+
+  const dropped = await withOapModels(
+    "authenticated",
+    async (api) => (await api.list({ include_deprecated: false })).models,
+    "deprecated",
+  );
+  assert.equal(
+    dropped.length,
+    0,
+    "include_deprecated: false must skip the deprecated row",
+  );
+});
+
+test("an unrecognized OAP_FIXTURE_AUTH selector fails the fixture, not the reader", async () => {
+  for (const selector of ["stated:expired", "no-such-selector", "expired "]) {
+    await assert.rejects(
+      () => withOapModels(selector, (api) => api.list()),
+      /OAP process exited/,
+      `selector ${selector} must be reported by the fixture, never silently defaulted`,
+    );
+  }
+});
+
+test("a malformed auth_status is refused even when include_deprecated would skip it", async () => {
+  let caught: unknown;
+  try {
+    await withOapModels(
+      "invented",
+      (api) => api.list({ include_deprecated: false }),
+      "deprecated",
+    );
+  } catch (error) {
+    caught = error;
+  }
+  assert.ok(
+    caught instanceof MakaiProtocolError,
+    `a malformed auth_status must be refused under an excluding filter, got ${String(caught)}`,
+  );
+  assert.equal((caught as MakaiProtocolError).code, "malformed_response");
 });
