@@ -44,10 +44,12 @@ pub const Validator = struct {
         if (self.loaded.refusals.len != 0) {
             if (options.codes) |sink| {
                 for (self.loaded.refusals) |refusal| {
-                    try sink.appendSlice(allocator, try std.fmt.allocPrint(allocator, " {s} in {s}", .{
+                    var line: [256]u8 = undefined;
+                    const rendered = std.fmt.bufPrint(&line, " {s} in {s}", .{
                         if (refusal.code.len == 0) "unresolved-schema-reference" else refusal.code,
                         refusal.pack,
-                    }));
+                    }) catch continue;
+                    try sink.appendSlice(allocator, rendered);
                 }
             }
             return error.PackLoadRefused;

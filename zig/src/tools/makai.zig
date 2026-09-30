@@ -10609,3 +10609,119 @@ test "a served backend whose stdout nobody reads stops once the stall bound pass
     try std.testing.expectEqualStrings(BACKEND_OUTPUT_STALLED_MESSAGE, complained);
 }
 
+const CliCase = struct {
+    good: [:0]u8,
+    malformed: [:0]u8,
+    core: [:0]u8,
+    invalid: [:0]u8,
+    base: [:0]u8,
+};
+
+fn cliCases(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir) !CliCase {
+    try tmp.dir.createDir(std.testing.io, "good", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "good/pack.json",
+        .data = "{\"id\":\"com.example.note\",\"version\":\"1.0.0\",\"schemas\":[\"note.schema.json\"],\"envelope_types\":[{\"type\":\"com.example.note.ping\",\"role\":\"event\",\"schema\":\"note.schema.json#/$defs/ping\"}]}",
+    });
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "good/note.schema.json",
+        .data = "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"$defs\":{\"ping\":{\"type\":\"object\",\"required\":[\"type\",\"session_id\"],\"properties\":{\"type\":{\"const\":\"com.example.note.ping\"},\"session_id\":{\"type\":\"string\"}}}}}",
+    });
+    try tmp.dir.createDir(std.testing.io, "malformed", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "malformed/pack.json",
+        .data = "{\"id\":\"com.example.malformed\",\"version\":\"1.0.0\",\"schemas\":\"note.schema.json\",\"envelope_types\":[]}",
+    });
+    const cwd = try std.process.currentPathAlloc(std.testing.io, allocator);
+    defer allocator.free(cwd);
+    const base = try std.fmt.allocPrintSentinel(allocator, "{s}/.zig-cache/tmp/{s}", .{ cwd[0..], tmp.sub_path[0..] }, 0);
+    const good = try std.fmt.allocPrintSentinel(allocator, "{s}/good", .{base}, 0);
+    const malformed = try std.fmt.allocPrintSentinel(allocator, "{s}/malformed", .{base}, 0);
+    const core = try std.fmt.allocPrintSentinel(allocator, "{s}/fixtures/valid/core-completed.json", .{cwd[0..]}, 0);
+    const invalid = try std.fmt.allocPrintSentinel(allocator, "{s}/fixtures/packs/bad-unprefixed-name", .{cwd[0..]}, 0);
+    return .{ .good = good, .malformed = malformed, .core = core, .invalid = invalid, .base = base };
+}
+
+fn freeCliCases(allocator: std.mem.Allocator, cases: CliCase) void {
+    allocator.free(cases.good);
+    allocator.free(cases.malformed);
+    allocator.free(cases.core);
+    allocator.free(cases.invalid);
+    allocator.free(cases.base);
+}
+
+fn runCliCase(
+    allocator: std.mem.Allocator,
+    tmp: *std.testing.TmpDir,
+    stem: []const u8,
+    packs: []const []const u8,
+    trace: []const u8,
+) !struct { refused: bool, said: []u8, judged: []u8 } {
+    var args = std.ArrayList([]const u8).empty;
+    defer args.deinit(allocator);
+    for (packs) |dir| {
+        try args.append(allocator, "--pack");
+        try args.append(allocator, dir);
+    }
+    try args.append(allocator, "--format=json");
+    try args.append(allocator, trace);
+    const out_name = try std.fmt.allocPrint(allocator, "{s}out", .{stem});
+    defer allocator.free(out_name);
+    const err_name = try std.fmt.allocPrint(allocator, "{s}err", .{stem});
+    defer allocator.free(err_name);
+    var out = try tmp.dir.createFile(std.testing.io, out_name, .{});
+    var complained = try tmp.dir.createFile(std.testing.io, err_name, .{});
+    var refused = false;
+    _ = runValidate(allocator, args.items, out, complained) catch |err| {
+        try std.testing.expectEqual(error.Unavailable, err);
+        refused = true;
+    };
+    out.close(std.testing.io);
+    complained.close(std.testing.io);
+    return .{
+        .refused = refused,
+        .said = try tmp.dir.readFileAlloc(std.testing.io, err_name, allocator, .limited(1 << 20)),
+        .judged = try tmp.dir.readFileAlloc(std.testing.io, out_name, allocator, .limited(1 << 20)),
+    };
+}
+
+test "validate judges a pure core trace and a contributed type with no refusal" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cases = try cliCases(allocator, &tmp);
+    defer freeCliCases(allocator, cases);
+
+    const core = try runCliCase(allocator, &tmp, "core", &.{}, cases.core);
+    defer allocator.free(core.said);
+    defer allocator.free(core.judged);
+    try std.testing.expect(!core.refused);
+    try std.testing.expect(std.mem.indexOf(u8, core.judged, "schema_invalid") == null);
+
+    const contributed = try runCliCase(allocator, &tmp, "contributed", &.{cases.good}, cases.core);
+    defer allocator.free(contributed.said);
+    defer allocator.free(contributed.judged);
+    try std.testing.expect(!contributed.refused);
+    try std.testing.expect(std.mem.indexOf(u8, contributed.judged, "schema_invalid") == null);
+}
+
+test "validate refuses the load when a pack is invalid, and says which code" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cases = try cliCases(allocator, &tmp);
+    defer freeCliCases(allocator, cases);
+
+    const mixed = try runCliCase(allocator, &tmp, "mixed", &.{ cases.good, cases.invalid }, cases.core);
+    defer allocator.free(mixed.said);
+    defer allocator.free(mixed.judged);
+    try std.testing.expect(mixed.refused);
+    try std.testing.expect(std.mem.indexOf(u8, mixed.said, "pack_unprefixed_name") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mixed.judged, "\"valid\": true") == null);
+
+    const malformed = try runCliCase(allocator, &tmp, "malformed", &.{cases.malformed}, cases.core);
+    defer allocator.free(malformed.said);
+    defer allocator.free(malformed.judged);
+    try std.testing.expect(malformed.refused);
+    try std.testing.expect(std.mem.indexOf(u8, malformed.judged, "\"valid\": true") == null);
+}
