@@ -807,6 +807,28 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   `SIGINT`, and a proof returning "alive" without waiting, which the elapsed assertion catches and which
   nothing else here would. A **test binary** dies on `SIGINT` despite the ignore and a standalone one survives, which is why the helper is a separate program.
 
+- **the shutdown sweep is not abandoned, so the session it was opened for is actually closed —
+  pinned, and this was the wiring nothing covered.** `TestServeSessionsClosedOnShutdown` opened a
+  session, asserted it appeared in `/sessions` **before** shutdown, called `cancel()` and then
+  `expectServeExit` — which checks only that `runHub` returned `nil`. It never asserted anything
+  about the session being **closed**, so the test's name claimed a fact its body never looked at. The
+  production line it exists to cover is `serve.go:120`, `hub.CloseSessions(sessionShutdown)`, and
+  nothing in the tree constrained it. `startServe` also sent `runHub`'s stderr to `io.Discard`, so
+  even the sweep's own abandonment log — `serve.go:251`, "shutdown budget exhausted before closing
+  session" — was invisible to every test. **The mutation, run:** giving that site a
+  `context.WithTimeout(context.Background(), 0)`, so the sweep context is born expired and
+  `CloseSessions` closes **zero** sessions. It **compiles**, and on `main` as it stood
+  `TestServeSessionsClosedOnShutdown` was **green** with that defect in place. `startServe` now
+  returns a captured `*syncBuffer` for stderr, and the test fails if the sweep was abandoned, so the
+  same mutation now fails it. **What this proves, stated at its limit:** it pins that the shutdown
+  sweep is **not abandoned** — that is the one thing the `serve.go:118`-`:120` wiring decides, and it
+  is what the log reports. It does **not** prove every session reached a closed state; a session that
+  failed to close for some other reason would not emit that line, and no assertion here would see it.
+  Every layer **below** `runHub` is covered elsewhere — `CloseSessions` directly in
+  `go/serve/session_test.go` — so the sweep's own per-session behaviour was never the gap. The gap
+  was the wiring, and that is what is now pinned. The stdio sibling at `serve.go:138` uses the same
+  pattern and is **not** covered by this test; it is recorded here rather than left implied.
+
 The two pre-existing tests — `a body the daemon refused to read is drained before
 the socket closes, or the close resets the answer away` and `a drain gives up
 rather than waiting on a peer that sends nothing more` — pin the qualitative rule
