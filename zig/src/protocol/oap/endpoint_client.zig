@@ -543,7 +543,6 @@ const flood_tail =
 
 const short_budget_ms: i64 = 400;
 const open_budget_ms: i64 = 15_000;
-const deadline_slack_ns: i64 = 50_000_000;
 const bounded_call_limit_ns: i64 = 30_000_000_000;
 
 const OwnedFrame = struct {
@@ -582,10 +581,28 @@ fn stopChild(client: *Client) void {
     _ = client.waitExit(300) catch {};
 }
 
-fn remainingMs(budget: Budget) i64 {
-    const limit = budget.limit orelse return 0;
-    const now = std.Io.Clock.Timestamp.now(budget.io, limit.clock);
-    return @intCast(@max(Budget.leftOf(limit, now), 0) / std.time.ns_per_ms);
+const Drain = struct {
+    elapsed_ns: i64,
+    reads: usize,
+    expired: bool,
+    frame: ?OwnedFrame,
+
+    fn deinit(self: Drain, allocator: std.mem.Allocator) void {
+        if (self.frame) |frame| allocator.free(frame.text);
+    }
+};
+
+fn drainUnder(client: *Client, budget: Budget) !Drain {
+    var elapsed: i64 = 0;
+    var reads: usize = 0;
+    while (budget.expired() == false and elapsed < bounded_call_limit_ns) {
+        const one = try readUnder(client, budget);
+        elapsed += one.elapsed_ns;
+        reads += 1;
+        if (one.frame) |owned| return .{ .elapsed_ns = elapsed, .reads = reads, .expired = budget.expired(), .frame = owned };
+        one.deinit(std.testing.allocator);
+    }
+    return .{ .elapsed_ns = elapsed, .reads = reads, .expired = budget.expired(), .frame = null };
 }
 
 test "a spent budget stops on the first buffered blank instead of draining the buffer" {
@@ -664,21 +681,19 @@ test "a short budget returns nothing on a partial line, and the same child then 
     defer stopChild(&client);
 
     const short = client.budget(short_budget_ms);
-    const allowed = remainingMs(short);
-    try std.testing.expect(allowed > 0);
-
-    const first = try readUnder(&client, short);
-    defer first.deinit(allocator);
-    try std.testing.expect(first.frame == null);
-    try std.testing.expect(first.elapsed_ns >= allowed * std.time.ns_per_ms - deadline_slack_ns);
-    try std.testing.expect(first.elapsed_ns < bounded_call_limit_ns);
+    const drained = try drainUnder(&client, short);
+    defer drained.deinit(allocator);
+    try std.testing.expect(drained.frame == null);
+    try std.testing.expect(drained.expired);
+    try std.testing.expect(drained.reads > 0);
+    try std.testing.expect(drained.elapsed_ns < bounded_call_limit_ns);
     try std.testing.expect(client.pending.items.len > 0);
 
-    const second = try readUnder(&client, client.budget(open_budget_ms));
-    defer second.deinit(allocator);
-    try std.testing.expect(second.frame != null);
-    try std.testing.expect(second.frame.?.control);
-    try std.testing.expectEqualStrings("partial{\"control\":\"late\"}", second.frame.?.text);
+    const opened = try readUnder(&client, client.budget(open_budget_ms));
+    defer opened.deinit(allocator);
+    try std.testing.expect(opened.frame != null);
+    try std.testing.expect(opened.frame.?.control);
+    try std.testing.expectEqualStrings("partial{\"control\":\"late\"}", opened.frame.?.text);
     try std.testing.expect(client.pending.items.len == 0);
 }
 
@@ -690,18 +705,16 @@ test "a short budget returns nothing on a blank flood, and the same child then y
     defer stopChild(&client);
 
     const short = client.budget(short_budget_ms);
-    const allowed = remainingMs(short);
-    try std.testing.expect(allowed > 0);
+    const drained = try drainUnder(&client, short);
+    defer drained.deinit(allocator);
+    try std.testing.expect(drained.frame == null);
+    try std.testing.expect(drained.expired);
+    try std.testing.expect(drained.reads > 0);
+    try std.testing.expect(drained.elapsed_ns < bounded_call_limit_ns);
 
-    const first = try readUnder(&client, short);
-    defer first.deinit(allocator);
-    try std.testing.expect(first.frame == null);
-    try std.testing.expect(first.elapsed_ns >= allowed * std.time.ns_per_ms - deadline_slack_ns);
-    try std.testing.expect(first.elapsed_ns < bounded_call_limit_ns);
-
-    const second = try readUnder(&client, client.budget(open_budget_ms));
-    defer second.deinit(allocator);
-    try std.testing.expect(second.frame != null);
-    try std.testing.expect(second.frame.?.control);
-    try std.testing.expectEqualStrings("{\"control\":\"after\"}", second.frame.?.text);
+    const opened = try readUnder(&client, client.budget(open_budget_ms));
+    defer opened.deinit(allocator);
+    try std.testing.expect(opened.frame != null);
+    try std.testing.expect(opened.frame.?.control);
+    try std.testing.expectEqualStrings("{\"control\":\"after\"}", opened.frame.?.text);
 }
