@@ -76,7 +76,6 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     case `${provider}:provider.models.list.request`:
       send(request, "provider.models.list.response", {
         models: [fixtureModel()],
-        models: [fixtureModel()],
         catalog: { observed_at_ms: 1_759_100_000_000, complete: true },
       });
       break;
