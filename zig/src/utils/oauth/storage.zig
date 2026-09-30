@@ -1781,7 +1781,7 @@ test "replacing a granted credential cannot lose both on an allocation failure" 
             try std.testing.expectEqual(@as(usize, 1), storage.ephemeralCount());
         }
     };
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, Case.run, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, Case.run, .{});
 }
 
 test "refreshing a granted credential under allocation failure frees it exactly once" {
@@ -1814,5 +1814,5 @@ test "refreshing a granted credential under allocation failure frees it exactly 
             try std.testing.expectEqualStrings("refreshed-access", key);
         }
     };
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, Case.run, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, Case.run, .{});
 }

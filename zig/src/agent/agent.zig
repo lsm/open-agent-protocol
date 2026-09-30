@@ -1970,7 +1970,7 @@ fn summarizeHistoryProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "summarizeHistory survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, summarizeHistoryProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, summarizeHistoryProbe, .{});
 }
 
 test "Agent compactAsync replaces the history with the model's summary and an acknowledgement" {

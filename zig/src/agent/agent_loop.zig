@@ -433,7 +433,7 @@ fn buildAndFreeTruncatedToolCallResult(allocator: std.mem.Allocator, tool_name: 
 }
 
 test "truncatedToolCallResult frees what it built when an allocation fails" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, buildAndFreeTruncatedToolCallResult, .{"write"});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, buildAndFreeTruncatedToolCallResult, .{"write"});
 }
 
 fn rejectedToolResult(allocator: std.mem.Allocator) !AgentToolResult {
@@ -1311,7 +1311,7 @@ test "turnOutcome marks a finished reply that holds only reasoning" {
 }
 
 test "answerRequest survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, answerRequestProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, answerRequestProbe, .{});
 }
 
 fn answerRequestProbe(allocator: std.mem.Allocator) !void {
@@ -2797,7 +2797,7 @@ test "a message already in the results list is not freed again when the stream c
 
 test "an exhausted allocator loses nothing across the tool handoff" {
     if (@import("builtin").os.tag == .wasi) return error.SkipZigTest;
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, HandoffCase.run, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, HandoffCase.run, .{});
 }
 
 test "a tool result's working directory survives the loop and is freed with the message" {

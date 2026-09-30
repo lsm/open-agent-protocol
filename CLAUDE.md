@@ -282,6 +282,15 @@ Rules the source will not tell you:
   declared site that disappears fails the check too.
 - Artifact-store tests must open `common.TestArtifactRoot`; reaching the store
   without one panics in test builds rather than using the real cwd.
+- An allocation-failure sweep runs its probe once per allocation, and the
+  testing allocator unwinds a DWARF stack trace on every allocation, so a sweep
+  over a large load is quadratic in that cost: pass `std.heap.smp_allocator` as
+  the backing allocator. The sweep's leak check is the failing allocator's own
+  byte count, so it loses nothing.
+- Every TUI test binary runs with `HOME` set to its own
+  `zig/.zig-cache/test-home/<step>/<binary>`, wiped before each run
+  (`isolatedHomeRun` in `build.zig`). Before that, `App.init` and the settings
+  commands read and wrote the developer's real `~/.oapx`.
 - Public constructors must not take `std.Io`
   (`docs/zig-0.16.0-io-architecture-decision.md`).
 

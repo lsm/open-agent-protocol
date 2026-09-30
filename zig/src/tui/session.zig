@@ -528,5 +528,5 @@ fn cloneProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "TuiEvent.clone survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, cloneProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, cloneProbe, .{});
 }

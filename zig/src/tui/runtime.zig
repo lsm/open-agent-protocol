@@ -2525,7 +2525,7 @@ fn compactionEndPayloadProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "compactionEndPayload survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, compactionEndPayloadProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, compactionEndPayloadProbe, .{});
 }
 
 const CompactionSeen = struct {

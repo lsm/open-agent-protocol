@@ -171,7 +171,7 @@ fn runtimeModelsFoldProbe(allocator: std.mem.Allocator) !void {
 
 test "runtime models fold the catalog's default alias into the fallback and keep one owner per model" {
     try runtimeModelsFoldProbe(std.testing.allocator);
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, runtimeModelsFoldProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, runtimeModelsFoldProbe, .{});
 }
 
 fn isDatedVariantOf(id: []const u8, base: []const u8) bool {
@@ -577,7 +577,7 @@ fn refreshGitBranchProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "gitHeadLabel survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, refreshGitBranchProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, refreshGitBranchProbe, .{});
 }
 
 test "collapseHome shortens the home directory only on a path component boundary" {
@@ -600,7 +600,7 @@ fn collapseHomeProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "collapseHome survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, collapseHomeProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, collapseHomeProbe, .{});
 }
 
 test "Context requestClearScreen discards history queued before the request" {

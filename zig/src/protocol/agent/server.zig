@@ -1559,5 +1559,5 @@ fn modelsTestDelegateProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "modelsTestDelegate survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, modelsTestDelegateProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, modelsTestDelegateProbe, .{});
 }

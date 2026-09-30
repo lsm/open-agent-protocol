@@ -1094,7 +1094,7 @@ fn pathWithinProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "pathWithin survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, pathWithinProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, pathWithinProbe, .{});
 }
 
 fn agentCwdFromArgsProbe(allocator: std.mem.Allocator) !void {
@@ -1103,7 +1103,7 @@ fn agentCwdFromArgsProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "agentCwdFromArgs survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, agentCwdFromArgsProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, agentCwdFromArgsProbe, .{});
 }
 
 fn renderCwdRowProbe(allocator: std.mem.Allocator) !void {
@@ -1114,7 +1114,7 @@ fn renderCwdRowProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "renderCwdRow survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, renderCwdRowProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, renderCwdRowProbe, .{});
 }
 
 fn renderProbe(allocator: std.mem.Allocator) !void {
@@ -1130,5 +1130,5 @@ fn renderProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "status bar render survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, renderProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, renderProbe, .{});
 }

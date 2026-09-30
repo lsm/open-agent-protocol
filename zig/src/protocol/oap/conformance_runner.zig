@@ -1143,7 +1143,7 @@ fn runAllocationProbe(allocator: std.mem.Allocator) !void {
 
 test "a run that is refused part way through frees what it built exactly once" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, runAllocationProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, runAllocationProbe, .{});
 }
 
 fn refusalAllocationProbe(allocator: std.mem.Allocator) !void {
@@ -1159,7 +1159,7 @@ fn refusalAllocationProbe(allocator: std.mem.Allocator) !void {
 
 test "a refusal frees its own envelope, and the reason, exactly once" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, refusalAllocationProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, refusalAllocationProbe, .{});
 }
 
 test "a frame the endpoint writes after the terminal event is recorded, not swallowed" {

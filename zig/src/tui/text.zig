@@ -290,7 +290,7 @@ fn takeTrailingWidthProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "takeTrailingWidth survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, takeTrailingWidthProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, takeTrailingWidthProbe, .{});
 }
 
 pub fn wrapTextWithAnsi(allocator: std.mem.Allocator, text: []const u8, max_width: usize) ![]u8 {
@@ -514,7 +514,7 @@ test "layoutRows counts control bytes by their visible form" {
 }
 
 test "layoutRows survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, struct {
         fn run(allocator: std.mem.Allocator) !void {
             const rows = try layoutRows(allocator, "ab\ncdef\n\ngh", 3);
             defer allocator.free(rows);

@@ -2065,7 +2065,7 @@ fn parseIndexProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "parseIndex survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, parseIndexProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, parseIndexProbe, .{});
 }
 
 fn parseArtifactsProbe(allocator: std.mem.Allocator) !void {
@@ -2080,7 +2080,7 @@ fn parseArtifactsProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "parseArtifacts survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, parseArtifactsProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, parseArtifactsProbe, .{});
 }
 
 fn parseToolResultFromPayloadProbe(allocator: std.mem.Allocator) !void {
@@ -2104,7 +2104,7 @@ fn parseToolResultFromPayloadProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "parseToolResultFromPayload survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, parseToolResultFromPayloadProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, parseToolResultFromPayloadProbe, .{});
 }
 
 fn parseEventProbe(allocator: std.mem.Allocator) !void {
@@ -2133,7 +2133,7 @@ fn parseEventProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "parseEvent survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, parseEventProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, parseEventProbe, .{});
 }
 
 fn toolResultFromFieldsProbe(allocator: std.mem.Allocator) !void {
@@ -2149,7 +2149,7 @@ fn toolResultFromFieldsProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "toolResultFromFields survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, toolResultFromFieldsProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, toolResultFromFieldsProbe, .{});
 }
 
 fn parseMessageToolResultProbe(allocator: std.mem.Allocator) !void {
@@ -2165,7 +2165,7 @@ fn parseMessageToolResultProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "parseMessage tool_result survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, parseMessageToolResultProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, parseMessageToolResultProbe, .{});
 }
 
 fn parseAssistantContentProbe(allocator: std.mem.Allocator) !void {
@@ -2190,7 +2190,7 @@ fn parseAssistantContentProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "parseAssistantContent survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, parseAssistantContentProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, parseAssistantContentProbe, .{});
 }
 
 fn parseUserContentPartProbe(allocator: std.mem.Allocator) !void {
@@ -2211,7 +2211,7 @@ fn parseUserContentPartProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "parseUserContentPart survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, parseUserContentPartProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, parseUserContentPartProbe, .{});
 }
 
 fn assistantMessageBuildersProbe(allocator: std.mem.Allocator) !void {
@@ -2237,7 +2237,7 @@ fn assistantMessageBuildersProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "assistant message builders survive an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, assistantMessageBuildersProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, assistantMessageBuildersProbe, .{});
 }
 
 fn saveText(store: Store, meta: SessionMetadata, role: tui_session.TuiEvent.MessageRole, text: []const u8) !void {
@@ -2414,9 +2414,9 @@ test "saveTranscript survives an allocation failure at every step" {
     defer tmp.cleanup();
     const base = try tmpBase(std.testing.allocator, &tmp);
     defer std.testing.allocator.free(base);
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, saveTranscriptProbe, .{base});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, saveTranscriptProbe, .{base});
 }
 
 test "serializeTranscript survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, serializeTranscriptProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, serializeTranscriptProbe, .{});
 }

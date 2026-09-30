@@ -2002,7 +2002,7 @@ fn modelSwitchAllocationProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "model switching preserves ownership and state across allocation failures" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, modelSwitchAllocationProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, modelSwitchAllocationProbe, .{});
 }
 
 fn modelsAllocationProbe(allocator: std.mem.Allocator) !void {
@@ -2019,7 +2019,7 @@ fn modelsAllocationProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "model listing preserves ownership across allocation failures" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, modelsAllocationProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, modelsAllocationProbe, .{});
 }
 
 test "a core model switch refuses a model outside the catalog" {
@@ -2780,7 +2780,7 @@ fn buildCapabilitiesProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "buildCapabilities survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, buildCapabilitiesProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, buildCapabilitiesProbe, .{});
 }
 
 fn cloneDetailsProbe(allocator: std.mem.Allocator) !void {
@@ -2793,7 +2793,7 @@ fn cloneDetailsProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "cloneDetails survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, cloneDetailsProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, cloneDetailsProbe, .{});
 }
 
 fn settleTerminalProbe(allocator: std.mem.Allocator) !void {
@@ -2833,7 +2833,7 @@ fn settleTerminalProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "every terminal settle survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, settleTerminalProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, settleTerminalProbe, .{});
 }
 
 test "a syntactically invalid model selection is refused before admission" {
@@ -3259,7 +3259,7 @@ fn unsupportedControlProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "an unsupported control answer survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, unsupportedControlProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, unsupportedControlProbe, .{});
 }
 
 test "a line that is not json is a framing defect rather than an error response" {
