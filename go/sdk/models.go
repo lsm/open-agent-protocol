@@ -62,11 +62,11 @@ type ModelDescriptor struct {
 
 	AuthStatus AuthStatus
 
-	Lifecycle *ModelLifecycle
+	Lifecycle *ModelLifecycle `json:",omitempty"`
 
 	Capabilities []ModelCapability
 
-	Source *ModelSource
+	Source *ModelSource `json:",omitempty"`
 
 	ContextWindow   int
 	MaxOutputTokens int
