@@ -223,15 +223,8 @@ fn pointerAt(allocator: std.mem.Allocator, root: std.json.Value, pointer: []cons
         const raw = if (slash) |at| rest[0..at] else rest;
         rest = if (slash) |at| rest[at + 1 ..] else "";
         const token = try unescapeToken(allocator, raw);
-        switch (current) {
-            .object => |members| current = members.get(token) orelse return null,
-            .array => |list| {
-                const index = std.fmt.parseInt(usize, token, 10) catch return null;
-                if (index >= list.items.len) return null;
-                current = list.items[index];
-            },
-            else => return null,
-        }
+        if (current != .object) return null;
+        current = current.object.get(token) orelse return null;
         if (rest.len == 0) return current;
     }
 }
@@ -409,7 +402,7 @@ fn gather(
                 resolved = try pointerAt(allocator, document.value, pointer);
                 break;
             }
-            if (resolved == null) {
+            if (resolved == null or resolved.? != .object) {
                 try load_refusals.append(allocator, .{ .code = "", .pack = pack_id, .detail = declared_type });
                 continue;
             }
@@ -756,6 +749,64 @@ test "a schema ref that resolves to nothing is refused, and the same ref made to
     }
 }
 
+test "a branch pointer resolves through objects only, as goap's loader resolves it" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const Outcome = enum { accepted, uncoded, coded };
+    const cases = [_]struct { dir: []const u8, ref: []const u8, outcome: Outcome, code: []const u8 }{
+        .{ .dir = "object", .ref = "types.schema.json#/$defs/thing", .outcome = .accepted, .code = "" },
+        .{ .dir = "array-index", .ref = "types.schema.json#/$defs/arr/0", .outcome = .uncoded, .code = "" },
+        .{ .dir = "array-escaped", .ref = "types.schema.json#/$defs/deep~1arr/0", .outcome = .uncoded, .code = "" },
+        .{ .dir = "array-parent", .ref = "types.schema.json#/$defs/list/0", .outcome = .uncoded, .code = "" },
+        .{ .dir = "string-node", .ref = "types.schema.json#/$schema", .outcome = .uncoded, .code = "" },
+        .{ .dir = "const-node", .ref = "types.schema.json#/$defs/thing/properties/type/const", .outcome = .uncoded, .code = "" },
+        .{ .dir = "absent-node", .ref = "types.schema.json#/$defs/absent", .outcome = .uncoded, .code = "" },
+        .{ .dir = "whole-document", .ref = "types.schema.json", .outcome = .coded, .code = pack_branch_unpinned },
+        .{ .dir = "object-no-const", .ref = "types.schema.json#/$defs/plain", .outcome = .coded, .code = pack_branch_unpinned },
+    };
+    const document =
+        \\{"$schema": "https://json-schema.org/draft/2020-12/schema", "$defs": {"thing": {"type": "object", "required": ["type", "id", "session_id"], "properties": {"type": {"const": "com.example.ptr.thing"}, "id": {"type": "string"}, "session_id": {"type": "string"}}}, "plain": {"type": "object", "required": ["type"], "properties": {"type": {"type": "string"}}}, "arr": [{"type": "object", "required": ["type", "id", "session_id"], "properties": {"type": {"const": "com.example.ptr.thing"}, "id": {"type": "string"}, "session_id": {"type": "string"}}}], "deep/arr": [{"type": "object", "required": ["type"], "properties": {"type": {"const": "com.example.ptr.thing"}}}], "list": {"type": "array", "items": {"$ref": "#/$defs/thing"}}}}
+    ;
+    for (cases) |c| {
+        try tmp.dir.createDir(std.testing.io, c.dir, .default_dir);
+        const document_path = try std.fmt.allocPrint(allocator, "{s}/types.schema.json", .{c.dir});
+        defer allocator.free(document_path);
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = document_path, .data = document });
+        const descriptor = try std.fmt.allocPrint(allocator,
+            \\{{"id": "com.example.ptr", "version": "1.0.0", "schemas": ["types.schema.json"], "envelope_types": [{{"type": "com.example.ptr.thing", "role": "event", "schema": "{s}"}}]}}
+        , .{c.ref});
+        defer allocator.free(descriptor);
+        const pack = try std.fmt.allocPrint(allocator, "{s}/pack.json", .{c.dir});
+        defer allocator.free(pack);
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = pack, .data = descriptor });
+    }
+    for (cases) |c| {
+        var registry = try jsonschema.Registry.initFromBundled(allocator);
+        defer registry.deinit();
+        const root = try tmp.dir.realPathFileAlloc(std.testing.io, c.dir, allocator);
+        defer allocator.free(root);
+        const one = [_][]const u8{root};
+        var read = try load(std.testing.io, allocator, &registry, &one);
+        defer read.deinit();
+        switch (c.outcome) {
+            .accepted => {
+                try std.testing.expectEqual(@as(usize, 0), read.refusals.len);
+                try std.testing.expectEqual(@as(usize, 1), read.branches.len);
+            },
+            .uncoded => {
+                try std.testing.expectEqual(@as(usize, 1), read.refusals.len);
+                try std.testing.expectEqualStrings("", read.refusals[0].code);
+                try std.testing.expectEqual(@as(usize, 0), read.branches.len);
+            },
+            .coded => {
+                try std.testing.expectEqual(@as(usize, 1), read.refusals.len);
+                try std.testing.expectEqualStrings(c.code, read.refusals[0].code);
+                try std.testing.expectEqual(@as(usize, 0), read.branches.len);
+            },
+        }
+    }
+}
 test "a cited name is cleaned and its pointer unescaped, so the ref matches the key it registered" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
