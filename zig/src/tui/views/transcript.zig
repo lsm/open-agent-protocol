@@ -1302,6 +1302,14 @@ fn safeLinkTarget(target: []const u8) ?[]const u8 {
     return target;
 }
 
+fn nextLinkMarker(text: []const u8, from: usize) ?usize {
+    var i = from;
+    while (i < text.len) : (i += 1) {
+        if (isLinkMarkerAt(text, i)) return i;
+    }
+    return null;
+}
+
 fn isLinkMarkerAt(text: []const u8, i: usize) bool {
     return std.mem.startsWith(u8, text[i..], link_open) or std.mem.startsWith(u8, text[i..], link_close);
 }
@@ -1429,7 +1437,8 @@ fn writeInlineStyled(allocator: std.mem.Allocator, writer: *std.Io.Writer, row: 
         if (row[i] == '`') {
             var run: usize = 0;
             while (i + run < row.len and row[i + run] == '`') run += 1;
-            if (findCodeClose(row, i + run, run)) |close| {
+            const bound = nextLinkMarker(row, i + run) orelse row.len;
+            if (findCodeClose(row[0..bound], i + run, run)) |close| {
                 try flushLiteral(allocator, writer, row[literal_start..i], base_style, links);
                 const inner = std.mem.trim(u8, row[i + run .. close], " ");
                 if (inner.len > 0) {
@@ -2093,6 +2102,19 @@ test "a marker character inside a link label cannot shift a later link's target"
     const plain = try stripEscapesForTest(std.testing.allocator, styled);
     defer std.testing.allocator.free(plain);
     try std.testing.expectEqualStrings("a\u{FFFD}b c", plain);
+}
+
+test "a backtick inside a link label cannot pair with one outside the link" {
+    const styled = try renderAssistantStyled(std.testing.allocator, "see [apt`](https://example.com/a) and `git` info", 80);
+    defer std.testing.allocator.free(styled);
+    try std.testing.expect(std.mem.indexOf(u8, styled, link_open) == null and std.mem.indexOf(u8, styled, link_close) == null);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, styled, ";https://example.com/a\x1b\\"));
+    const probe = try tui_theme.inlineCode().render(std.testing.allocator, "git");
+    defer std.testing.allocator.free(probe);
+    try std.testing.expect(std.mem.indexOf(u8, styled, probe) != null);
+    const plain = try stripEscapesForTest(std.testing.allocator, styled);
+    defer std.testing.allocator.free(plain);
+    try std.testing.expectEqualStrings("see apt` and git info", plain);
 }
 
 test "a link that wraps keeps its target on every row it spans" {
