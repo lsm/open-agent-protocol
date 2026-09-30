@@ -100,10 +100,13 @@ Facts a listing learned (Normative):
   ([Decision 0035](../../decisions/0035-a-model-entry-publishes-its-facts-and-absence-means-unknown.md))
   on the SDK's descriptor, so an implementation that serves the provider profile
   has one shape to fill them in. The members above are the shape, not a claim
-  that a shipped SDK populates every one of them today: `sdk/typescript`,
-  `go/sdk` and `zig/src/protocol/model_catalog_types.zig` do not yet carry these
-  fields, and a client that leaves one absent reads the absence as unknown under
-  the rule above, exactly as it does on the wire.
+  that a shipped SDK populates every one of them today: `go/sdk` and
+  `sdk/typescript` carry these fields as of #632, while
+  `zig/src/protocol/model_catalog_types.zig` does not, because the agent-side
+  catalog in `providers/catalog.json` publishes no such facts and adding the
+  members there would declare a shape nothing fills. A client that leaves one
+  absent reads the absence as unknown under the rule above, exactly as it does
+  on the wire.
 
 Auth for listing:
 - Providers that require auth for model listing must return `auth_status = "login_required"` (or `"expired"` / `"failed"`).
@@ -254,8 +257,15 @@ export interface ListModelsRequest {
 
 export interface ListModelsResponse {
   models: ModelDescriptor[];
+  /** What the listing knows about itself; absent when the provider published none. */
+  catalog?: ModelCatalog;
   fetched_at_ms: number;
   cache_max_age_ms: number;
+}
+
+export interface ModelCatalog {
+  observed_at_ms?: number;
+  complete?: boolean;
 }
 
 export interface ResolveModelRequest {
@@ -525,6 +535,8 @@ Provider stream rules:
 - `message_start` may include resolved `provider_id`, `api`, and `model_id` metadata when available.
 - `message_end` should include `usage` and `stop_reason` when available from upstream provider.
 - `tool_call` is emitted after full argument buffering in V1; incremental tool-call delta streaming is deferred (planned future shape: `tool_call_start` / `tool_call_delta` / `tool_call_end`).
+- A provider that deep-copies each queued event **must not** publish a terminal that silently omits one. If an event's copy could not be allocated, the turn settles through the error path rather than as a completed message, because a consumer cannot tell a complete turn from one missing an event.
+- Settlement is first-writer-wins. A caller that already settled the stream — a cancellation, for instance — keeps its own outcome: a provider that finishes afterwards must not overwrite a terminal the caller established, and the message it built is released rather than published.
 
 Agent stream rules:
 - Agent streams wrap one or more provider turns and may emit `turn_start` / `turn_end` plus tool execution lifecycle events.

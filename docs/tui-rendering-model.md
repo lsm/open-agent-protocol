@@ -183,13 +183,84 @@ code paths; add a transcript row instead.
 - Status line: `provider/model`, context gauge with a usage percentage coloured by
   band (green below 60%, yellow 60–75, orange 75–85, red 85 and up), `queue`, a bare
   permission value (`ask`/`bypass`/`pending`), cost (once tokens are known), a bare
-  thinking level (`off` included), `turns:`, and the state (`idle` or spinner +
-  elapsed) last, plus a right-aligned key hint. When the row overflows, the context
+  thinking level (`off` included), `turns:`, the state (`idle` or spinner + elapsed),
+  and the token rate, plus a right-aligned key hint. When the row overflows, the context
   segment first shrinks to just the coloured percentage, then segments drop whole by
-  priority (turns, thinking, cost, the hint, `ask` permission, queue, drops, model,
-  backpressure, context) behind one trailing `…`; the state segment — and `bypass` or
-  `pending` — are never dropped, and the row is clipped with `…` if even they do not
-  fit. A second row under it shows the working directory on the left, muted, collapsed
+  priority (the rate, turns, thinking, cost, the hint, `ask` permission, queue, drops,
+  model, backpressure, context) behind one trailing `…`; the state segment — and
+  `bypass` or `pending` — are never dropped, and the row is clipped with `…` if even
+  they do not fit. The rate is first to go because it is the most transient figure in
+  the row; the second row below carries the path and never competes with it, so nothing
+  in the rate's drop order can be said to drop before the path does.
+- The rate is a `~`-marked estimate or an unmarked measurement, and the mark always
+  means the same thing: **a mark means an estimate, an unmarked figure is measured.**
+  The row carries two segments, joined like every other pair by `│`: the turn figure and
+  the average since the last model switch, as `84 tok/s │ avg 79 tok/s`, so the last
+  turn's speed is still visible once the run is over.
+  The turn figure is the live one while a message streams — necessarily an estimate,
+  because usage only arrives at `message_end` — then the turn in progress, which reads
+  its own accumulated figure so a tool phase shows the message just streamed rather
+  than an average that will not fold it in until the turn ends, and once the run ends
+  the last turn that produced anything, which is why a run of two or more turns still
+  shows the last turn that actually produced tokens. A run begins at `agent_start` and
+  clears that standing figure once per run, not once per turn, so a turn that is
+  thinking shows the turn before it rather than a blank. The average is the mean since
+  the last model
+  switch, so an idle line answers how fast this model is rather than what one reply
+  managed. When the row is short the average is dropped first and the turn figure
+  second, the way the context segment shrinks, so the row loses the summary before it
+  loses the current number.
+  The live figure is withheld for the first second of a message: a few deltas over a
+  few milliseconds read as thousands of tokens a second, which is an artefact of the
+  divisor rather than a property of the model, and the turn figure stands in until the
+  denominator means something.
+  The denominator starts at the assistant `message_start`, not at the first visible
+  delta. A reasoning model spends its time before any text appears, and `Usage` has no
+  reasoning count while the provider's `output` includes those tokens, so a clock
+  begun at the first delta reads a thirty-second think and four seconds of text as
+  over a thousand tokens a second — unmarked, on the owner's own main models. Counting
+  the thinking time in the denominator keeps the reported figure honest and keeps it
+  measured, which matters more here than precision: there is no way to know how many
+  tokens were hidden, so the alternative — falling back to the byte estimate whenever
+  the two disagree — would mark ordinary messages as estimates and throw away an exact
+  count to avoid a problem that a correct clock already solves.
+  The average never mixes the two kinds: it is the mean
+  of the measured turns alone, and only when the model has produced no measured turn at
+  all does it fall back to the mean of the estimates, marked. So a provider that
+  reports no usage leaves the average measuring nothing rather than reading as slow, and
+  a provider that reports usage is never diluted by a guessed sample.
+- The rate's denominator is **the time the stream was actually producing**, which is not
+  the status bar's elapsed: that clock starts at `turn_start` and includes tool calls.
+  The rate runs a second clock from an assistant message's `message_start` to its
+  `message_end`, summed over the turn's assistant messages, so time spent in tools never
+  counts as slow generation. A tool call is production, so `tool_call_delta` starts the
+  clock as well: a reply that is only a tool call is measured over the span it was
+  generated in, not dropped. A message that arrives whole with no stream at all — the
+  non-streaming result fallback, which emits a `message_end` and no `message_start` —
+  contributes neither tokens nor time, because no `message_start` means the clock never
+  began and there is no span to divide by, and counting its tokens with no time would
+  inflate the figure several-fold while showing it unmarked. A message that does begin
+  but streams nothing visible is a different case and is measured: its clock is already
+  running, so a turn that thinks and emits no text still reports the speed it really
+  took. A turn is marked `~` when *any* of its messages
+  was estimated, and its measured and estimated parts are pooled separately, so a
+  multi-message turn cannot present a mixed total as measured. The runtime always pushes
+  `agent_end` immediately after the final `turn_end`, so a turn end that finds its
+  accumulators already empty does not clear the standing figure: the previous turn keeps
+  its number, and a run of two or more turns still shows the last turn that actually
+  produced tokens rather than falling through to the average. Bytes convert at the
+  agent's own divisor, `(bytes + 3) / 4`.
+  The averages reset when the model in effect changes, which is what `/model` and
+  `/provider` do, and when a session is resumed, which is why an unchanged model can
+  show no figure at all after `/resume`: a replayed transcript carries no spans, so
+  there is nothing honest to divide. A model switch mid-stream is the one case that
+  keeps more than a reset — the message being streamed at the time keeps its clock and
+  its bytes, so its tokens are divided by the span they were really produced in rather
+  than by the time after the switch.
+- The cost segment beside it is **computed, not reported**: it is the model's
+  `cost.input` multiplied by the prompt estimate, so the row now carries one figure from
+  what the provider reported (the rate) beside one this repository worked out (the cost).
+- A second row under it shows the working directory on the left, muted, collapsed
   to `~` under the home directory and left-truncated with `…`, and the git branch at
   the right end; the row hides on terminals shorter than 12 rows. The branch is read
   from the repository rather than from a `git` process: the working directory and each
@@ -261,9 +332,32 @@ code paths; add a transcript row instead.
   kimi` or `KIMI_API_KEY`, the stored one first): it fetches `GET /v1/models` on the
   region's own host — `api.kimi.com/coding` or `api.moonshot.ai`, whichever the stored
   login or `KIMI_REGION` names — with that key, caches the body under
-  `~/.oapx/model_catalog/kimi.json` (`kimi-global.json` for the global region) on the
+  `~/.oapx/model_catalog/catalog-kimi.json` (`catalog-kimi-global.json` for the global
+  region) on the
   same 24-hour window and stale-copy fallback as Anthropic's, and falls back to the
-  static `kimi-k2.7-code` when both fetch and cache are unusable. Each entry takes its
+  static `kimi-k2.7-code` when both fetch and cache are unusable. Kimi is a plan row, so
+  a 401 or 403 is a refusal rather than an outage: the row is dropped for that listing
+  and the fallbacks above are not consulted, because a plan row that refuses is one the
+  subscription does not open. The refusal is remembered as a marker, and only for a
+  stored login — a key from `KIMI_API_KEY` is never covered by one, never earns one, and
+  never clears one; logging out brings the row back on the next listing. Because the row
+  is one the subscription does not open, a marker younger than the listing cache's own
+  twenty-four hours answers the row without a request. An older one does not answer: the
+  row probes instead, and a remembered marker takes the row off the catalog altogether
+  rather than only off its cached listing — no cached models and none of the row's declared
+  ones, however old the marker is and whatever the probe returns. A probe that refuses writes
+  the marker again, and a probe that answers clears it, which is also what the refresh after
+  a `/login` does; the two together are why one bad 401 or 403 from a WAF challenge costs a
+  day rather than the session, and why it is not permanent. The bound is the cache's lifetime on
+  purpose: a marker outliving the copy it outranks would be a verdict with nothing behind
+  it, and a marker perishing with that copy would be one that could not be renewed. The
+  marker is keyed by row and region, not by the login that earned it, so it is
+  deliberately not derived from the credential and nothing derived from a credential
+  reaches disk. The cost of that is one bounded case: replacing a stored login with a
+  different one leaves the new key suppressed until a forced refresh re-probes. Nothing
+  is written that would let the marker tell the two logins apart, so the marker is
+  cleared by a re-probe rather than made exact.
+  Each entry takes its
   display name, context window, reasoning flag and text/image input from the response's
   `display_name`, `context_length`, `supports_reasoning` and `supports_image_in`; the
   endpoint reports no output cap, so every entry keeps the 16 384 default. A selected

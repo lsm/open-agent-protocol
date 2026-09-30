@@ -1,7 +1,3 @@
-/**
- * Parser unit tests, one per WHATWG rule that matters on this wire — the
- * TypeScript port of the Go client's sse_test.go scenarios.
- */
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -9,7 +5,6 @@ import { SSEParser, type SSEFrame } from '../src/sse.js';
 
 const encoder = new TextEncoder();
 
-/** Parses a whole document in one chunk the way the daemon writes them. */
 function scanFrames(document: string): SSEFrame[] {
   const parser = new SSEParser();
   const frames = parser.push(encoder.encode(document));
@@ -17,7 +12,6 @@ function scanFrames(document: string): SSEFrame[] {
   return frames;
 }
 
-/** Parses a document one byte at a time: every rule must survive chunk splits. */
 function scanFramesByteWise(document: string): SSEFrame[] {
   const parser = new SSEParser();
   const bytes = encoder.encode(document);
@@ -53,7 +47,6 @@ test('named events and ids set, then reset between frames', () => {
   assert.equal(first.event, 'oap-overflow');
   assert.equal(first.lastId, '42');
   assert.ok(first.hasId);
-  // Event name and id reset between frames; the default name returns.
   const second = frames[1];
   assert.equal(second.event, 'message');
   assert.ok(!second.hasId);
@@ -121,7 +114,7 @@ test('every rule survives byte-at-a-time chunking', () => {
 test('multi-byte UTF-8 split across chunks decodes correctly', () => {
   const parser = new SSEParser();
   const bytes = encoder.encode('data: héllo ✓\n\n');
-  const split = 8; // inside the é sequence
+  const split = 8;
   const first = parser.push(bytes.slice(0, split));
   const second = parser.push(bytes.slice(split));
   parser.finish();

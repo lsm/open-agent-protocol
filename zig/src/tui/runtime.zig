@@ -909,6 +909,7 @@ pub const TuiRuntime = struct {
                 .short_description = tool.short_description,
                 .parameters_schema_json = tool.parameters_schema_json,
                 .execute = tool.execute,
+                .operation = tool.operation,
                 .runtime_ctx = tool.runtime_ctx,
                 .runtime_execute = tool.runtime_execute,
                 .approval_ctx = if (bypass) null else &self.approval_contexts[i],
@@ -1084,6 +1085,7 @@ pub const TuiRuntime = struct {
                 payload.content_json = try self.dupeOwned(content_json);
             },
             .assistant => |m| {
+                payload.output_tokens = m.usage.output;
                 payload.text = try self.dupeOwned(assistantText(m.content));
                 const content_json = try serializeAssistantContent(self.allocator, m.content);
                 defer self.allocator.free(content_json);
@@ -3165,6 +3167,19 @@ test "runtime warns before ending a run whose last reply hit the output token li
     defer if (ended.warning) |text| std.testing.allocator.free(text);
     try std.testing.expectEqualStrings(output_limit_warning, ended.warning.?);
     try std.testing.expectEqual(@as(?TuiEndReason, .completed), ended.reason);
+}
+
+test "wrapping a tool preserves the operation kind its definition declares" {
+    const owned = try std.testing.allocator.dupe(agent.AgentTool, local_tools.defaultTools());
+    defer std.testing.allocator.free(owned);
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .tools = owned, .workspace_root = "/workspace" });
+    defer runtime.deinit();
+    runtime.rebuildWrappedTools();
+    try std.testing.expectEqual(owned.len, runtime.wrapped_tools.len);
+    for (runtime.wrapped_tools, owned) |wrapped, original| {
+        try std.testing.expectEqualStrings(original.name, wrapped.name);
+        try std.testing.expectEqual(original.operation, wrapped.operation);
+    }
 }
 
 test "runtime ends a run whose last reply finished without an output-limit warning" {

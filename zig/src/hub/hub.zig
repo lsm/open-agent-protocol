@@ -31,6 +31,12 @@ pub const Failure = error{
     ConfigRefused,
 } || contract.Failure;
 
+pub const OpenRefusal = struct {
+    reason: contract.Refusal = .{},
+    expected_revision: []const u8 = "",
+    current_revision: []const u8 = "",
+};
+
 pub const Options = struct {
     max_subscriptions: usize = 0,
     stream_queue: usize = default_stream_queue,
@@ -457,24 +463,31 @@ pub const Hub = struct {
     }
 
     pub fn open(self: *Hub, arena: std.mem.Allocator, adapter_name: []const u8, request: OpenRequest) Failure!Opened {
+        return self.openReporting(arena, adapter_name, request, null);
+    }
+
+    pub fn openReporting(self: *Hub, arena: std.mem.Allocator, adapter_name: []const u8, request: OpenRequest, reported: ?*OpenRefusal) Failure!Opened {
         const registered = self.find(adapter_name) orelse return error.UnknownAdapter;
         if (registered.revision.len == 0) return error.AdapterDescriptorUnbound;
-        var refusal = contract.Refusal{};
-        const descriptor = try registered.adapter.probe(&refusal);
+        var local: OpenRefusal = .{};
+        const refused = reported orelse &local;
+        const descriptor = try registered.adapter.probe(&refused.reason);
         if (request.subscribe or contract.carriesEntries(request.tool_sources_json)) {
             if (request.capability_revision) |wanted| {
                 if (wanted.len > 0 and !std.mem.eql(u8, wanted, registered.revision)) {
+                    refused.expected_revision = registered.revision;
+                    refused.current_revision = wanted;
                     return error.StaleCapabilities;
                 }
             }
         }
         if (request.session_id.len > 0 and self.findSession(request.session_id) != null) return error.SessionExists;
-        try contract.refuseUnadvertisedOpenElections(descriptor, &request.payload(), &refusal);
-        var session = try registered.adapter.open(arena, request.contractRequest(), &refusal);
+        try contract.refuseUnadvertisedOpenElections(descriptor, &request.payload(), &refused.reason);
+        var session = try registered.adapter.open(arena, request.contractRequest(), &refused.reason);
         var adopted = false;
         errdefer if (!adopted) session.teardown();
         if (self.findSession(session.id()) != null) return error.SessionExists;
-        const opened_state = try session.state(arena, &refusal);
+        const opened_state = try session.state(arena, &refused.reason);
         const entry = try self.adopt(adapter_name, session, @intCast(self.clock() / std.time.ns_per_ms));
         adopted = true;
         var opened = Opened{ .session_id = entry.session_id, .state = opened_state, .revision = registered.revision };

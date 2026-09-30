@@ -1652,32 +1652,35 @@ fn runThread(ctx: *ThreadCtx) void {
         return;
     };
 
-    const out = ai_types.AssistantMessage{
+    var result_content = ai_types.AssistantMessage{
         .content = content_slice,
-        .api = allocator.dupe(u8, model.api) catch {
-            ctx.deinit();
-            stream.completeWithError("oom");
-            return;
-        },
-        .provider = allocator.dupe(u8, model.provider) catch {
-            ctx.deinit();
-            stream.completeWithError("oom");
-            return;
-        },
-        .model = allocator.dupe(u8, model.id) catch {
-            ctx.deinit();
-            stream.completeWithError("oom");
-            return;
-        },
-        .usage = usage,
-        .stop_reason = stop_reason,
-        .timestamp = compat.time.nowMillis(),
+        .api = "",
+        .provider = "",
+        .model = "",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
         .is_owned = true,
+    };
+    const out = ai_types.buildOwnedMessage(
+        allocator,
+        content_slice,
+        model.api,
+        model.provider,
+        model.id,
+        usage,
+        stop_reason,
+        compat.time.nowMillis(),
+    ) catch {
+        result_content.deinit(allocator);
+        ctx.deinit();
+        stream.completeWithError("oom");
+        return;
     };
 
     ctx.deinit();
 
-    stream.complete(out);
+    ai_types.settleProviderOutcome(stream, out);
 }
 
 fn createPartialMessage(model: ai_types.Model) ai_types.AssistantMessage {
@@ -2773,7 +2776,7 @@ test "every row this wire serves finds its key from the row, not a list of vendo
     try std.testing.expect(served >= 2);
 }
 
-fn signedThinkingTestModel() !ai_types.Model {
+fn lostCloneTestModel() !ai_types.Model {
     return .{
         .id = "claude",
         .name = "claude",
@@ -2787,6 +2790,197 @@ fn signedThinkingTestModel() !ai_types.Model {
         .context_window = 200000,
         .max_tokens = 16,
     };
+}
+
+fn emptyAnthropicMessage() ai_types.AssistantMessage {
+    return .{
+        .content = &.{},
+        .api = "anthropic-messages",
+        .provider = "anthropic",
+        .model = "claude",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+    };
+}
+
+test "a clone that cannot be allocated marks the stream rather than losing an event" {
+    const allocator = std.testing.allocator;
+    var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 1 });
+    const stream = try failing.allocator().create(event_stream.AssistantMessageEventStream);
+    stream.* = event_stream.AssistantMessageEventStream.init(failing.allocator());
+    stream.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
+    defer {
+        _ = stream.deinitAndDestroy();
+    }
+    try std.testing.expect(!stream.pushFailed());
+
+    const queued = stream.pushBlocking(.{ .text_delta = .{
+        .content_index = 0,
+        .delta = "x",
+        .partial = createPartialMessage(try lostCloneTestModel()),
+    } });
+
+    try std.testing.expect(!queued);
+    try std.testing.expect(stream.pushFailed());
+    try std.testing.expect(!stream.isDone());
+}
+
+test "a stream that was already cancelled keeps its terminal and is not marked failed" {
+    const allocator = std.testing.allocator;
+    const stream = try allocator.create(event_stream.AssistantMessageEventStream);
+    stream.* = event_stream.AssistantMessageEventStream.init(allocator);
+    stream.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+    stream.completeWithError("cancelled by the caller");
+
+    const queued = stream.pushBlocking(.{ .text_delta = .{
+        .content_index = 0,
+        .delta = "x",
+        .partial = createPartialMessage(try lostCloneTestModel()),
+    } });
+
+    try std.testing.expect(!queued);
+    try std.testing.expect(!stream.pushFailed());
+    try std.testing.expect(stream.getResult() == null);
+    try std.testing.expectEqualStrings("cancelled by the caller", stream.getError() orelse return error.NoErrorRecorded);
+}
+
+test "a stream that lost a clone settles as a failure, not a clean terminal" {
+    const allocator = std.testing.allocator;
+    var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 1 });
+    const stream = try failing.allocator().create(event_stream.AssistantMessageEventStream);
+    stream.* = event_stream.AssistantMessageEventStream.init(failing.allocator());
+    stream.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
+    defer {
+        _ = stream.deinitAndDestroy();
+    }
+    _ = stream.pushBlocking(.{ .text_delta = .{
+        .content_index = 0,
+        .delta = "x",
+        .partial = createPartialMessage(try lostCloneTestModel()),
+    } });
+    try std.testing.expect(stream.pushFailed());
+
+    ai_types.settleProviderOutcome(stream, .{
+        .content = &.{},
+        .api = try allocator.dupe(u8, "anthropic-messages"),
+        .provider = try allocator.dupe(u8, "anthropic"),
+        .model = try allocator.dupe(u8, "claude"),
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+        .is_owned = true,
+    });
+
+    try std.testing.expect(stream.getResult() == null);
+    if (stream.getError() == null) return error.NoErrorRecorded;
+}
+
+test "a stream that lost nothing settles with the message the provider built" {
+    const allocator = std.testing.allocator;
+    const stream = try allocator.create(event_stream.AssistantMessageEventStream);
+    stream.* = event_stream.AssistantMessageEventStream.init(allocator);
+    stream.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+
+    ai_types.settleProviderOutcome(stream, emptyAnthropicMessage());
+
+    const result = stream.getResult() orelse return error.NoResult;
+    try std.testing.expectEqualStrings("claude", result.model);
+    try std.testing.expect(stream.getError() == null);
+}
+
+test "a cancellation before settlement survives, and the refused result is freed" {
+    const allocator = std.testing.allocator;
+    const stream = try allocator.create(event_stream.AssistantMessageEventStream);
+    stream.* = event_stream.AssistantMessageEventStream.init(allocator);
+    stream.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+    stream.completeWithError("cancelled by the caller");
+
+    ai_types.settleProviderOutcome(stream, .{
+        .content = &.{},
+        .api = try allocator.dupe(u8, "anthropic-messages"),
+        .provider = try allocator.dupe(u8, "anthropic"),
+        .model = try allocator.dupe(u8, "claude"),
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+        .is_owned = true,
+    });
+
+    try std.testing.expect(stream.getResult() == null);
+    try std.testing.expectEqualStrings("cancelled by the caller", stream.getError() orelse return error.NoErrorRecorded);
+}
+
+test "a lost clone followed by a cancellation keeps the cancellation" {
+    const allocator = std.testing.allocator;
+    var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 1 });
+    const stream = try failing.allocator().create(event_stream.AssistantMessageEventStream);
+    stream.* = event_stream.AssistantMessageEventStream.init(failing.allocator());
+    stream.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
+    defer {
+        _ = stream.deinitAndDestroy();
+    }
+    _ = stream.pushBlocking(.{ .text_delta = .{
+        .content_index = 0,
+        .delta = "x",
+        .partial = createPartialMessage(try lostCloneTestModel()),
+    } });
+    try std.testing.expect(stream.pushFailed());
+
+    failing.fail_index = std.math.maxInt(usize);
+    stream.completeWithError("cancelled by the caller");
+
+    ai_types.settleProviderOutcome(stream, emptyAnthropicMessage());
+
+    try std.testing.expect(stream.getResult() == null);
+    try std.testing.expectEqualStrings("cancelled by the caller", stream.getError() orelse return error.NoErrorRecorded);
+}
+
+test "a stream that settled with its own result keeps it against a later provider result" {
+    const allocator = std.testing.allocator;
+    const stream = try allocator.create(event_stream.AssistantMessageEventStream);
+    stream.* = event_stream.AssistantMessageEventStream.init(allocator);
+    stream.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+    stream.complete(.{
+        .content = &.{},
+        .api = try allocator.dupe(u8, "caller-api"),
+        .provider = try allocator.dupe(u8, "caller"),
+        .model = try allocator.dupe(u8, "caller-model"),
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+        .is_owned = true,
+    });
+
+    ai_types.settleProviderOutcome(stream, .{
+        .content = &.{},
+        .api = try allocator.dupe(u8, "anthropic-messages"),
+        .provider = try allocator.dupe(u8, "anthropic"),
+        .model = try allocator.dupe(u8, "claude"),
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+        .is_owned = true,
+    });
+
+    const result = stream.getResult() orelse return error.NoResult;
+    try std.testing.expectEqualStrings("caller-model", result.model);
 }
 
 fn freeThinkingBlocks(allocator: std.mem.Allocator, blocks: *std.ArrayList(ai_types.AssistantContent)) void {
@@ -2820,7 +3014,7 @@ test "a signed thinking block's thinking_end carries the signature it saw" {
 
     try std.testing.expectEqual(
         ThinkingEnd.ended,
-        endThinkingBlock(allocator, stream, createPartialMessage(try signedThinkingTestModel()), &content_blocks, "pondering", "sig-9", 0),
+        endThinkingBlock(allocator, stream, createPartialMessage(try lostCloneTestModel()), &content_blocks, "pondering", "sig-9", 0),
     );
 
     const polled = stream.poll() orelse return error.NoEvent;
@@ -2852,7 +3046,7 @@ test "a thinking block that saw no signature carries the part without one" {
 
     try std.testing.expectEqual(
         ThinkingEnd.ended,
-        endThinkingBlock(allocator, stream, createPartialMessage(try signedThinkingTestModel()), &content_blocks, "pondering", "", 0),
+        endThinkingBlock(allocator, stream, createPartialMessage(try lostCloneTestModel()), &content_blocks, "pondering", "", 0),
     );
 
     const polled = stream.poll() orelse return error.NoEvent;
@@ -2883,7 +3077,7 @@ test "the carried thinking part sits at the index the ended part holds" {
 
     try std.testing.expectEqual(
         ThinkingEnd.ended,
-        endThinkingBlock(allocator, stream, createPartialMessage(try signedThinkingTestModel()), &content_blocks, "pondering", "sig-9", 1),
+        endThinkingBlock(allocator, stream, createPartialMessage(try lostCloneTestModel()), &content_blocks, "pondering", "sig-9", 1),
     );
 
     const polled = stream.poll() orelse return error.NoEvent;
@@ -2924,7 +3118,7 @@ test "endThinkingBlock loses no signature and leaks nothing when an allocation f
         }
     };
 
-    try std.testing.checkAllAllocationFailures(allocator, Case.run, .{try signedThinkingTestModel()});
+    try std.testing.checkAllAllocationFailures(allocator, Case.run, .{try lostCloneTestModel()});
 }
 
 test "an allocation failure never ends a signed block unsigned" {
@@ -2941,7 +3135,7 @@ test "an allocation failure never ends a signed block unsigned" {
         defer freeThinkingBlocks(allocator, &content_blocks);
 
         var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = fail_index });
-        if (endThinkingBlock(failing.allocator(), stream, createPartialMessage(try signedThinkingTestModel()), &content_blocks, "pondering", "sig-9", 0) == .oom) {
+        if (endThinkingBlock(failing.allocator(), stream, createPartialMessage(try lostCloneTestModel()), &content_blocks, "pondering", "sig-9", 0) == .oom) {
             continue;
         }
         while (stream.poll()) |event| {
@@ -2973,7 +3167,7 @@ test "a consumer that drains after the producing thread exits still reads the si
 
     try std.testing.expectEqual(
         ThinkingEnd.ended,
-        endThinkingBlock(allocator, stream, createPartialMessage(try signedThinkingTestModel()), &content_blocks, "pondering", "sig-9", 0),
+        endThinkingBlock(allocator, stream, createPartialMessage(try lostCloneTestModel()), &content_blocks, "pondering", "sig-9", 0),
     );
 
     const polled = stream.poll() orelse return error.NoEvent;

@@ -1,8 +1,3 @@
-/**
- * Event-stream tests over the scripted transport: the cursor integrity
- * rules, the terminal signals, and the invisible-resume machinery, one
- * scenario each — the TypeScript port of the Go client's e2e stream tests.
- */
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -27,7 +22,6 @@ const BASE = 'http://127.0.0.1:6270';
 const SESSION = 's-1';
 const RUN = 'r-1';
 
-/** The bare /events connection, with no cursor attached. */
 const LIVE = /\/events$/;
 
 function sessionWith(script: ScriptedResponse[], options: { strict?: boolean } = {}): { session: OapSession; transport: FakeTransport } {
@@ -149,7 +143,7 @@ test('the overflow signal surfaces the consumed run and its own cursor', { timeo
     },
   ]);
   await rejectsWith(collect(session.events()), OverflowError, (err) => {
-    assert.equal(err.runId, RUN); // the run this stream consumed, not the hub's current run
+    assert.equal(err.runId, RUN);
     assert.equal(err.lastSequence, 5);
     assert.equal(err.signalMessage, 'fell behind');
   });
@@ -295,9 +289,6 @@ test('an envelope without a run id is malformed', { timeout: 10000 }, async () =
 });
 
 test('session-scoped events deliver without disturbing the run cursor', { timeout: 10000 }, async () => {
-  // session.state.updated is schema-valid with sequence but no run id, and
-  // appears in the spec's own core-run-stream example; the stream must
-  // deliver it and continue the run's sequence space right where it was.
   const stateUpdated = testEnvelope({
     type: EnvelopeType.SessionStateUpdated,
     sequence: 4,

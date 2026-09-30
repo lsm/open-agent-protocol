@@ -1104,7 +1104,7 @@ fn runThread(ctx: *ThreadCtx) void {
 
     ctx.deinit();
 
-    stream.complete(out);
+    ai_types.settleProviderOutcome(stream, out);
 }
 
 pub fn streamOllama(
