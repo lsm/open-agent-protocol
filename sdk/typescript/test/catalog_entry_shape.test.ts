@@ -55,12 +55,21 @@ test("a malformed entry after a valid one is still refused", async () => {
   await refusesNonObjectEntry("trailing-nonobject", (api) => api.list());
 });
 
-test("a non-object entry is refused even when a filter would have skipped it", async () => {
-  await refusesNonObjectEntry("nonobject", (api) =>
-    api.list({ provider_id: "no-such-provider" }),
+test("the model_id filter really does skip the valid fixture row", async () => {
+  const models = await withOapModels(
+    "default",
+    async (api) => (await api.list({ model_id: "no-such-model" })).models,
   );
+  assert.equal(
+    models.length,
+    0,
+    "a local model_id filter matching nothing must yield no models",
+  );
+});
+
+test("a malformed entry is refused even when a local filter skipped the valid row", async () => {
   await refusesNonObjectEntry("trailing-nonobject", (api) =>
-    api.list({ provider_id: "no-such-provider", include_deprecated: false }),
+    api.list({ model_id: "no-such-model" }),
   );
 });
 
