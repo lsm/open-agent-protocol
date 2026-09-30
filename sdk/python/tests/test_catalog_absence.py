@@ -15,7 +15,8 @@ import json, os, sys
 A = "open-agent-protocol.agent-control-core"
 P = "open-agent-protocol.model-provider-core"
 model = {"model_ref": "fixture/other:abs@ok", "model_id": "ok", "provider_id": "fixture",
-         "wire": "other", "auth_status": "authenticated",
+         "wire": "other",
+         "auth_status": json.loads(os.environ.get("OAP_PY_AUTH_STATUS", '"authenticated"')),
          "capabilities": ["chat", "streaming"]}
 shape = os.environ.get("OAP_PY_FIXTURE_SHAPE", "")
 stamped = os.environ.get("OAP_PY_FIXTURE_SET", "")
@@ -68,6 +69,7 @@ class CatalogAbsence(unittest.IsolatedAsyncioTestCase):
         api: Optional[str] = None,
         model_id: Optional[str] = None,
         include_login_required: Optional[bool] = None,
+        auth_status: Optional[str] = None,
     ) -> ListModelsResponse:
         env = dict(os.environ)
         env["OAP_PY_FIXTURE_SHAPE"] = key
@@ -78,6 +80,8 @@ class CatalogAbsence(unittest.IsolatedAsyncioTestCase):
                 env[f"{member}_{key}"] = str(raw)
                 stamped.append(f"{member}_{key}")
         env["OAP_PY_FIXTURE_SET"] = ",".join(stamped)
+        if auth_status is not None:
+            env["OAP_PY_AUTH_STATUS"] = auth_status
         async with connect(command=sys.executable, args=["-u", "-c", HOST],
                            legacy_wire=False, env=env) as client:
             return await client.models.list(include_deprecated=include_deprecated, api=api,
@@ -142,19 +146,22 @@ class CatalogAbsence(unittest.IsolatedAsyncioTestCase):
 
     async def test_an_invalid_member_is_refused_even_when_another_filter_skips_it(self) -> None:
         cases = (
-            ("api", {"api": "other"}),
-            ("model", {"model_id": "nope"}),
-            ("auth", {"include_login_required": False}),
+            ("api", {"api": "not-other"}, {}),
+            ("model", {"model_id": "nope"}, {}),
+            ("auth", {"include_login_required": False}, {"auth_status": '"login_required"'}),
         )
-        for key, kwargs in cases:
-            with self.assertRaises(MakaiProtocolError) as caught:
-                await self._list(f"byp-{key}", "null", _ABSENT, **kwargs)
-            self.assertEqual(caught.exception.code, "malformed_response", key)
-            self.assertIn("lifecycle", str(caught.exception).lower())
-            with self.assertRaises(MakaiProtocolError) as caught:
-                await self._list(f"byp-{key}-src", _ABSENT, "null", **kwargs)
-            self.assertEqual(caught.exception.code, "malformed_response", key)
-            self.assertIn("source", str(caught.exception).lower())
+        for key, kwargs, extra in cases:
+            for member, lifecycle, source in (
+                ("lifecycle", "null", _ABSENT), ("source", _ABSENT, "null")):
+                with self.subTest(filter=key, member=member):
+                    survivor = await self._list(f"keep-{key}", '"stable"', '"fallback"',
+                                                **kwargs, **extra)
+                    self.assertEqual(survivor.models, [], "filter must actually skip the row")
+                    with self.assertRaises(MakaiProtocolError) as caught:
+                        await self._list(f"byp-{key}-{member}", lifecycle, source,
+                                         **kwargs, **extra)
+                    self.assertEqual(caught.exception.code, "malformed_response")
+                    self.assertIn(member, str(caught.exception).lower())
 
     async def test_a_valid_row_is_still_filtered_as_before(self) -> None:
         dropped = await self._list("filt-dep", '"deprecated"', '"fallback"',
