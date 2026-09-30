@@ -20,21 +20,17 @@ way, which is exactly how a table drifts. There is now one copy, in the
 module that already owns provider capability facts, and the two writers
 call it. Adding a third caller cannot introduce a fourth table.
 
-`anthropic_messages_api` does not import `provider_caps`, so this cut's
-source will not compile until `zig/build.zig` gains one line for that
-module. **That line is not in this cut.** `zig/build.zig` is shared and
-serialised, and a named integrator applies changes to it, so the edit is
-handed over rather than made here:
+`anthropic_messages_api` did not import `provider_caps`, so this cut adds
+the one line it needs, in the same commit:
 
-- file: `zig/build.zig`
-- inside `anthropic_messages_api_mod` (defined at line 797), in its
-  `.imports` list, add
-  `.{ .name = "provider_caps", .module = provider_caps_mod },`
-- `provider_caps_mod` is declared at line 707, before that use, so no
-  reordering is needed.
+    zig/build.zig, inside anthropic_messages_api_mod (line 797), .imports:
+    .{ .name = "provider_caps", .module = provider_caps_mod },
 
-This is a one-line addition and nothing else. Until it lands, treat the
-source change as not yet buildable, and do not assume it compiles.
+`provider_caps_mod` is declared at line 707, above that use, so nothing
+needs reordering. This is the whole of the build change, and it is here
+so the cut builds on its own rather than depending on an unpublished
+commit. Shared-file edits to `zig/build.zig` are coordinated; this one is
+the lane's own and was not made while other lanes were mid-change.
 
 ## The mapping
 
@@ -50,11 +46,20 @@ table puts `xhigh` with `medium` and `high`, and reserves `max` for
 `max` and `ultra`. `ultra` was previously unhandled and fell into a
 catch-all; it is now `max` rather than a guess.
 
-An unrecognised string maps to **nothing**, not to a default level. The
-previous catch-all returned `high` for every unknown input, which meant a
-typo and a deliberate request produced the same bytes. The caller omits
-the field when the mapping is empty, so an unmapped level is visible as
-absent rather than silently upgraded.
+An unrecognised string keeps the **pre-existing** fallback, `high`. This
+cut does not decide that case. An earlier draft of this record claimed
+the unknown arm maps to nothing and that the caller would then omit the
+field; that was wrong, and implementing it would have written an empty
+string into `output_config.effort` and `reasoning_effort` at the two call
+sites, which is an invalid value rather than an absent one. The table is
+therefore scoped to the seven known non-off levels, and the unknown arm is
+left exactly as it was.
+
+What that leaves open, and is not decided here: what `off`, `none` and an
+unrecognised string should mean on a vendor whose default is to think.
+Both writers send the field unconditionally, so an omitted field is not
+currently reachable without changing the request shape, and changing that
+shape is a separate decision. It is owner-pending.
 
 ## Identity scope, and its remaining gap
 
@@ -67,8 +72,11 @@ its name.
 
 The gap that remains: a model that names some *other* vendor but is
 served by DeepSeek is not recognised, and neither is a DeepSeek model
-whose vendor id is spelled with a case difference. Those need a catalog
-answer, which is the owner's, and the schema choice is not made here.
+whose vendor id is spelled with a case difference. That is a vendor-label
+question and it is separate from, and does not wait on, the catalog
+question about which models a vendor is allowed to claim. The label gap
+is closed by a label change; the catalog question is a schema decision
+and is not made here.
 
 ## Not decided here
 
@@ -86,7 +94,7 @@ and is left where it is.
 ## What these controls establish
 
 The three controls in `provider_caps` pin the identity predicate, the
-seven-level mapping, and the empty result for an unmapped level. They are
+seven-level mapping, and the unchanged fallback for an unmapped level. They are
 source-level controls in the module that owns the facts. They are not
 evidence that any endpoint accepts these values, and nothing here has been
 sent to a live endpoint.

@@ -132,7 +132,7 @@ pub fn deepSeekEffort(effort: []const u8) []const u8 {
     if (std.mem.eql(u8, effort, "minimal") or std.mem.eql(u8, effort, "low")) return "low";
     if (std.mem.eql(u8, effort, "max") or std.mem.eql(u8, effort, "ultra")) return "max";
     if (std.mem.eql(u8, effort, "medium") or std.mem.eql(u8, effort, "high") or std.mem.eql(u8, effort, "xhigh")) return "high";
-    return "";
+    return "high";
 }
 
 fn hostIsOrSubdomainOf(host: []const u8, domain: []const u8) bool {
@@ -945,8 +945,10 @@ test "the deepseek level table follows the published mapping" {
     try std.testing.expectEqualStrings("max", deepSeekEffort("ultra"));
 }
 
-test "an effort with no published deepseek level maps to nothing rather than to a guess" {
-    try std.testing.expectEqualStrings("", deepSeekEffort("nonsense"));
-    try std.testing.expectEqualStrings("", deepSeekEffort(""));
+test "an unrecognised effort keeps the pre-existing fallback rather than becoming an empty value" {
+    try std.testing.expectEqualStrings("high", deepSeekEffort("nonsense"));
+    try std.testing.expectEqualStrings("high", deepSeekEffort(""));
+    try std.testing.expectEqualStrings("high", deepSeekEffort("off"));
+    try std.testing.expectEqualStrings("high", deepSeekEffort("none"));
 }
 
