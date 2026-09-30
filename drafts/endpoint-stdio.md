@@ -301,13 +301,21 @@ settled — and those exchanges are kept out of the assembled trace, because the
 endpoint's answer is what is under test and the request is a fault the runner
 committed on purpose.
 
-The runner judges each correlation inside one absolute probe budget rather than
-a fresh allowance per frame, so an endpoint that keeps writing frames nobody
-asked for cannot hold a correlation open indefinitely; `--timeout-ms` sets it.
-Two rules keep such a verdict about the endpoint rather than about scheduling.
-A frame the endpoint has already delivered is handed to the correlation even
-when the budget expires before it is looked at, because that frame is the
-endpoint's answer rather than a late one. And a control left unanswered because
-the budget ran out is reported as exactly that, naming the budget, rather than
-as silence: an endpoint that answered thousands of unrelated frames and then ran
-out of time has not answered nothing.
+`oapx conformance` judges each correlation inside one absolute probe budget
+rather than a fresh allowance per frame, so an endpoint that keeps writing
+frames nobody asked for cannot hold a correlation open indefinitely;
+`--timeout-ms` sets it. Two rules keep such a verdict about the endpoint rather
+than about scheduling. A frame it has already parsed out of the reader and into
+the waiting correlation is handed to that correlation even when the budget
+expires before it is looked at, because the frame is the endpoint's answer
+rather than a late one. And a control left unanswered because the budget ran out
+is reported as that, naming the budget, rather than as silence: an endpoint that
+answered thousands of unrelated frames and then ran out of time has not answered
+nothing.
+
+That bound is `oapx`'s alone for now. `goap conformance` still re-arms
+`--timeout` for every line it pulls, so a chatty endpoint holds its
+correlations open there indefinitely, and it does not yet report a spent budget
+as distinct from silence. Both sides are held to this section, so that
+divergence is a gap in the Go runner rather than a difference between the
+bindings, and it is closed by the Go runner adopting the same budget.
