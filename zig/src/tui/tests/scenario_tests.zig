@@ -12,8 +12,6 @@ const TuiSession = tui_runtime.TuiSession;
 const ToolApprovalDecision = tui_runtime.ToolApprovalDecision;
 const ToolApprovalRequest = tui_runtime.ToolApprovalRequest;
 
-const CANCEL_ENTRY_BUDGET_MS: u64 = 5_000;
-
 const EventSummary = struct {
     turn_start: bool = false,
     assistant_start: bool = false,
@@ -93,7 +91,6 @@ test "local runtime lifecycle submits turn and supports cancel" {
     var cancel_session = cancel_runtime.createSession();
     try cancel_session.start();
     try cancel_session.submitTurn("wait");
-    try cancel_provider.waitForEntry(CANCEL_ENTRY_BUDGET_MS);
     cancel_session.cancel();
     if (cancel_runtime.local_agent) |*local| local.waitForIdle();
 

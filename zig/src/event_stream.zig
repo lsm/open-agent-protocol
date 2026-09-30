@@ -2,6 +2,7 @@ const std = @import("std");
 const ai_types = @import("ai_types");
 
 pub fn EventStream(comptime T: type, comptime R: type) type {
+    const Retention = if (@typeInfo(R) == .@"struct" and @hasDecl(R, "Retention")) R.Retention else void;
     return struct {
         const Self = @This();
         pub const DEINIT_THREAD_JOIN_TIMEOUT_MS = 120_000;
@@ -36,6 +37,7 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
         wait_for_thread_on_deinit: bool = false,
         join_timeout_ms: u64 = DEINIT_THREAD_JOIN_TIMEOUT_MS,
         ownership: Ownership = .borrowed,
+        retention: Retention,
 
         pub fn init(allocator: std.mem.Allocator) Self {
             var published: [RING_BUFFER_SIZE]std.atomic.Value(bool) = undefined;
@@ -52,6 +54,7 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
                 .thread_done = std.atomic.Value(bool).init(false),
                 .abandoned = std.atomic.Value(bool).init(false),
                 .allocator = allocator,
+                .retention = if (Retention == void) {} else Retention.init(allocator),
             };
         }
 
@@ -164,6 +167,8 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
             if (self.err_msg) |msg| {
                 if (!self.err_msg_static) self.allocator.free(msg);
             }
+
+            if (Retention != void) self.retention.deinit();
 
             self.* = undefined;
         }

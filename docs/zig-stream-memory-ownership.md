@@ -72,23 +72,30 @@ decide what to persist and re-validate it.
 
 A turn can end `.aborted`, in error, or on a failure part-way through — and a
 consumer can complete the stream mid-run, so the final publication itself can be
-rejected. In every case the messages already published are **borrowed**, and a
-consumer drains them after the producer has returned. Three lifetimes follow.
+rejected. The events already published are **borrowed**, and a consumer drains
+them after the producer has returned, so three backings have to outlive the run.
 
-- **Successful.** The message reaches the results list, which owns it from the
-  append.
-- **Failed turn.** It is never appended, so it is *parked* in a holder the caller
-  owns and handed to `AgentLoopResult.abandoned_messages`, whose `deinit` releases
-  every one. Parking it in the loop's own state is not enough: that state is torn
-  down on the same error return, while the queue still borrows the strings.
-- **Publication rejected.** The final `agent_end` push can fail once a consumer has
-  completed the stream. A tail guard covers the result until it is handed over, and
-  the holder publishes what the run parked, so the last step leaves every borrowed
-  event readable too.
+- **Successful.** The result owns them, and `AgentLoopResult.deinit` releases it.
+- **Failed turn.** The assistant message, and the `final_message` clone that a
+  `turn_end` borrowed, are *parked* on `StreamRetention`, which the agent stream
+  keeps and `StreamRetention.deinit` releases. Parking them in the loop's own
+  state is not enough: `LoopState.deinit` runs on the same error return.
+- **Publication rejected.** A rejected `agent_end` hands the whole result to that
+  same retention instead of releasing it, so the earlier events stay readable.
 
-`AgentLoopResult.deinit` is public and is the only thing that releases a parked
-message. Every regression drains the queue and *reads* the borrowed fields, since
-freeing an event is not evidence; the controls fail on freed memory in a drain.
+`AgentEventStream.deinit` reaches both, and only after a consumer has drained;
+nothing on the producing thread frees either. The retention is declared by the
+result type (`AgentLoopResult.Retention`), so a stream whose result declares none
+is unchanged.
+
+Parking never allocates: at most two messages are ever parked and three slots are
+reserved. That is deliberate. The hand-off runs *after* a borrowed publication,
+where the only memory-safe answers to an exhausted allocator are to keep the
+memory or to panic — freeing would leave a queued event pointing at freed strings.
+
+`AgentEvent.deinit` frees nothing for `message_end` or `turn_end`, so a
+regression that only drains proves nothing: each one here reads the borrowed
+field it is about, and its control fails as a leak attributed to that test.
 
 ## The safe consumer pattern
 

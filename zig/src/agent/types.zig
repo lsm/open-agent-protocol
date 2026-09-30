@@ -499,25 +499,52 @@ pub const AgentState = struct {
 };
 
 pub const AgentLoopResult = struct {
+    pub const Retention = StreamRetention;
     messages: OwnedSlice(ai_types.Message),
     final_message: ai_types.AssistantMessage,
     iterations: u32,
     termination: ?AgentTermination = null,
-    abandoned_messages: std.ArrayList(ai_types.AssistantMessage) = .empty,
 
     pub fn deinit(self: *AgentLoopResult, allocator: std.mem.Allocator) void {
         self.messages.deinit(allocator);
         var final = self.final_message;
         final.deinit(allocator);
-        for (self.abandoned_messages.items) |*message| message.deinit(allocator);
-        self.abandoned_messages.deinit(allocator);
+    }
+};
+
+pub const StreamRetention = struct {
+    allocator: std.mem.Allocator,
+    parked: [3]?ai_types.AssistantMessage = .{ null, null, null },
+    result: ?AgentLoopResult = null,
+
+    pub fn init(allocator: std.mem.Allocator) StreamRetention {
+        return .{ .allocator = allocator };
     }
 
-    pub fn takeAbandoned(self: *AgentLoopResult, allocator: std.mem.Allocator) ![]ai_types.AssistantMessage {
-        const out = try allocator.alloc(ai_types.AssistantMessage, self.abandoned_messages.items.len);
-        @memcpy(out, self.abandoned_messages.items);
-        self.abandoned_messages.clearRetainingCapacity();
-        return out;
+    pub fn park(self: *StreamRetention, message: ai_types.AssistantMessage) void {
+        for (&self.parked) |*slot| {
+            if (slot.* == null) {
+                slot.* = message;
+                return;
+            }
+        }
+        unreachable;
+    }
+
+    pub fn retainResult(self: *StreamRetention, result: AgentLoopResult) void {
+        self.result = result;
+    }
+
+    pub fn deinit(self: *StreamRetention) void {
+        for (&self.parked) |*slot| {
+            if (slot.*) |*message| message.deinit(self.allocator);
+            slot.* = null;
+        }
+        if (self.result) |result| {
+            var owned = result;
+            owned.deinit(self.allocator);
+            self.result = null;
+        }
     }
 };
 
