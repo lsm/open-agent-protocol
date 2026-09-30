@@ -484,8 +484,11 @@ same request) and the share must be between 1 and 100: `0`, `101`, a sign, a dec
 anything that is not digits are refused. `/status` carries the setting on its own line, so
 the value is visible without a second command.
 
-The point is measured against the same figure the context gauge shows — the prompt estimate the
-provider was last sent — plus the message about to be sent, against the window in effect.
+The point is measured against the larger of two counts: the prompt estimate the context gauge
+shows, and the prompt the provider last reported plus an estimate of what came after it (the
+count the output limit uses). The message about to be sent is added to that, against the
+window in effect. When the provider reports more than the estimate, compaction can fire while
+the gauge still reads below the point.
 It fires before a turn is submitted rather than during one, because a turn that has already
 overflowed is the failure this avoids. A message typed while a turn is streaming or a
 compaction is running takes the normal path, and the next submit is the one that measures
