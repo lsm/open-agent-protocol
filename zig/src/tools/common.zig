@@ -404,7 +404,7 @@ pub fn makeTextResultWithArtifact(allocator: std.mem.Allocator, options: TextRes
     const artifact_path = if (options.store == null) try allocator.dupe(u8, artifact_uri) else null;
     errdefer if (artifact_path) |path| allocator.free(path);
 
-    const summary = try summarizeArtifactBackedOutput(allocator, options.text, options.stderr, artifact_uri);
+    const summary = try summarizeArtifactBackedOutput(allocator, full_output, options.text, options.stderr, artifact_uri);
     defer allocator.free(summary);
     const details = if (options.details_json.len > 0)
         try std.fmt.allocPrint(allocator, "{{\"raw_bytes\":{d},\"returned_bytes\":{d},\"saved_bytes\":{d},\"compressed\":true,\"artifact_path\":\"{s}\",\"details\":{s}}}", .{ raw_bytes, summary.len, raw_bytes -| summary.len, artifact_uri, options.details_json })
@@ -448,7 +448,7 @@ fn cloneArtifactReference(allocator: std.mem.Allocator, reference: ai_types.Arti
     return cloned;
 }
 
-fn summarizeArtifactBackedOutput(allocator: std.mem.Allocator, text: []const u8, stderr: []const u8, artifact_path: []const u8) ![]u8 {
+fn summarizeArtifactBackedOutput(allocator: std.mem.Allocator, combined: []const u8, text: []const u8, stderr: []const u8, artifact_path: []const u8) ![]u8 {
     const head = text[0..@min(text.len, snippet_bytes)];
     const tail_start = if (text.len > snippet_bytes) text.len - snippet_bytes else 0;
     const tail = text[tail_start..];
@@ -459,23 +459,24 @@ fn summarizeArtifactBackedOutput(allocator: std.mem.Allocator, text: []const u8,
         return std.fmt.allocPrint(
             allocator,
             "output stored as artifact\nbytes: {d}\nlines: {d}\nartifact_reference: {s}\nmodel_safe_retrieval: use artifact_retrieve mode \"preview\" (default), \"range\", or \"grep\" with this reference. Use \"full_for_context\" only when the complete output is required by the model.\ndisplay: the full output stays on disk at the artifact path; the transcript shows a capped preview only.\nhead:\n{s}\ntail:\n{s}\nstderr head:\n{s}\nstderr tail:\n{s}",
-            .{ combinedOutputLen(text, stderr), countLines(text) + countLines(stderr), artifact_path, head, tail, stderr_head, stderr_tail },
+            .{ combined.len, countLines(combined), artifact_path, head, tail, stderr_head, stderr_tail },
         );
     }
     return std.fmt.allocPrint(
         allocator,
         "output stored as artifact\nbytes: {d}\nlines: {d}\nartifact_reference: {s}\nmodel_safe_retrieval: use artifact_retrieve mode \"preview\" (default), \"range\", or \"grep\" with this reference. Use \"full_for_context\" only when the complete output is required by the model.\ndisplay: the full output stays on disk at the artifact path; the transcript shows a capped preview only.\nhead:\n{s}\ntail:\n{s}",
-        .{ text.len, countLines(text), artifact_path, head, tail },
+        .{ combined.len, countLines(combined), artifact_path, head, tail },
     );
 }
 
 test "artifact-backed summary points the model at capped retrieval modes" {
-    const summary = try summarizeArtifactBackedOutput(std.testing.allocator, "line 1\nline 2\n", "", ".oapx/tool-artifacts/test.txt");
+    const summary = try summarizeArtifactBackedOutput(std.testing.allocator, "line 1\nline 2\n", "line 1\nline 2\n", "", ".oapx/tool-artifacts/test.txt");
     defer std.testing.allocator.free(summary);
     try std.testing.expect(std.mem.indexOf(u8, summary, "artifact_reference: .oapx/tool-artifacts/test.txt") != null);
     try std.testing.expect(std.mem.indexOf(u8, summary, "mode \"preview\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, summary, "full_for_context") != null);
     try std.testing.expect(std.mem.indexOf(u8, summary, "retrieve_full_output") == null);
+    try std.testing.expect(std.mem.indexOf(u8, summary, "bytes: 14\nlines: 2\n") != null);
 }
 
 fn sanitizeKey(allocator: std.mem.Allocator, key: []const u8) ![]u8 {
@@ -648,6 +649,7 @@ test "artifact backs combined stdout and stderr and byte_size counts the stored 
     const summary_bytes = try std.fmt.allocPrint(std.testing.allocator, "bytes: {d}\n", .{expected.len});
     defer std.testing.allocator.free(summary_bytes);
     try std.testing.expect(std.mem.indexOf(u8, summary, summary_bytes) != null);
+    try std.testing.expect(std.mem.indexOf(u8, summary, "lines: 6\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, summary, "stderr head:\nstderr marker line") != null);
     try std.testing.expect(std.mem.indexOf(u8, summary, "stderr tail:") != null);
     try std.testing.expect(std.mem.indexOf(u8, summary, "stdout marker line") != null);
@@ -675,6 +677,7 @@ test "artifact summary bounds a large stderr preview and keeps the whole stderr 
     try std.testing.expect(std.mem.indexOf(u8, summary, stderr_fill) == null);
     try std.testing.expect(summary.len < stderr_fill.len);
     try std.testing.expect(std.mem.indexOf(u8, summary, "stderr head:\nee") != null);
+    try std.testing.expect(std.mem.indexOf(u8, summary, "lines: 4\n") != null);
 
     const path = made.artifact_path orelse return error.MissingArtifactPath;
     const retrieved = try retrieveArtifact(std.testing.allocator, path, 8192);
@@ -705,10 +708,21 @@ test "stderr-only artifact retrieves from the ArtifactStore backend with matchin
     const reference = made.result.artifacts.slice()[0];
     const expected = "\nstderr:\nstderr marker\n";
     try std.testing.expectEqual(@as(?u64, expected.len), reference.byte_size);
+    try std.testing.expect(std.mem.indexOf(u8, made.result.content.slice()[0].text.text, "lines: 3\n") != null);
     var stored = try store.read(reference.artifact_id);
     defer stored.deinit(allocator);
     try std.testing.expectEqualStrings(expected, stored.content);
     try std.testing.expectEqual(@as(?u64, expected.len), stored.reference.byte_size);
+
+    var empty = try makeTextResultWithArtifact(allocator, .{ .tool_name = "search_text", .call_id = "empty", .text = "", .stderr = "", .force_artifact = true, .store = &store });
+    defer empty.deinit(allocator);
+    try std.testing.expect(empty.compressed);
+    const empty_reference = empty.result.artifacts.slice()[0];
+    try std.testing.expectEqual(@as(?u64, 0), empty_reference.byte_size);
+    try std.testing.expect(std.mem.indexOf(u8, empty.result.content.slice()[0].text.text, "bytes: 0\nlines: 0\n") != null);
+    var empty_stored = try store.read(empty_reference.artifact_id);
+    defer empty_stored.deinit(allocator);
+    try std.testing.expectEqualStrings("", empty_stored.content);
 }
 
 test "empty stderr stores exactly the stdout bytes and the inline control stays artifact-free" {

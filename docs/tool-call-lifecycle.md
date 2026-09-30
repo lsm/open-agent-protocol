@@ -148,14 +148,25 @@ receives a summary in its place. Three properties of that hand-off are contracts
   combined output — stdout, then `stderr:`, then stderr — the same shape the inline path
   returns, so a stderr-only result stores the `stderr:` section alone.
 - **The reported size describes the stored bytes.** `raw_bytes`, the artifact reference's
-  `byte_size` and the summary's `bytes:` line all count the combined output, so what a
-  later retrieval reads back is what the result claimed to have stored.
+  `byte_size`, the summary's `bytes:` line and its `lines:` line all count the stored
+  combined output, separator included, so what a later retrieval reads back is what the
+  result claimed to have stored.
 - **The summary preview is bounded on both streams.** stdout and stderr each contribute a
   head and a tail of at most `snippet_bytes`, so an artifact-backed summary cannot grow
-  with the output that produced it, and `artifact_retrieve` stays the way to read the rest.
+  with the output that produced it.
 
-The inline limit itself is unchanged by this section: it still measures stdout alone, so a
-result whose stderr alone would cross the limit stays inline with both streams in the body.
+Two boundaries are worth stating because they are not the helper's to decide:
+
+- **Which bytes the limit measures.** The limit reads `TextResultOptions.text`, the
+  helper's own separate `stderr` field is not part of that measurement, so a caller that
+  passes stderr separately only crosses the limit on its stdout. Today's shell caller
+  packs both streams into `text` before calling, so for shell the limit already covers
+  both; the other callers pass no stderr at all. Changing that split is a caller decision.
+- **How the stored bytes are read back.** A file-backed artifact is referenced by its
+  `.oapx/tool-artifacts/…` path, which is what `artifact_retrieve` takes, so the summary's
+  `artifact_retrieve` advice holds for those. A store-backed artifact is referenced by a
+  `makai-artifact://` URI that the tool's path-based reader refuses, and is read through
+  the artifact store instead. Both routes exist; the tool covers only the first.
 
 ## Slices
 
