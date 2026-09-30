@@ -35,7 +35,7 @@ fn mergeCompat(model: ai_types.Model) MergedCompat {
     const is_openai_native = provider_caps.isOpenAIHost(model.base_url);
     const honors_native_caps = is_openai_native or isTransparentOpenAIProxy(model);
     const detected_developer_role = if (honors_native_caps) caps.supports_developer_role else false;
-    const detected_reasoning_effort = if (honors_native_caps) caps.supports_reasoning_effort else false;
+    const detected_reasoning_effort = if (honors_native_caps or provider_caps.isDeepSeek(model.base_url)) caps.supports_reasoning_effort else false;
     const detected_max_tokens_field: []const u8 = if (honors_native_caps) caps.max_tokens_field else "max_tokens";
 
     return .{
@@ -354,6 +354,7 @@ fn writeMessagesArray(
             };
 
             if (!has_text and !has_thinking and !has_tool_calls) continue;
+            const thinking_as_text = merged.requires_thinking_as_text or (has_thinking and !has_text and !has_tool_calls);
 
             try writer.beginObject();
             try writer.writeStringField("role", "assistant");
@@ -401,7 +402,7 @@ fn writeMessagesArray(
                     };
                     try writer.endArray();
                 }
-            } else if (merged.requires_thinking_as_text and has_thinking) {
+            } else if (thinking_as_text and has_thinking) {
                 try writer.writeKey("content");
                 try writer.beginArray();
                 for (a.content) |c| switch (c) {
@@ -425,7 +426,7 @@ fn writeMessagesArray(
                 }
             }
 
-            if (has_thinking and !merged.requires_thinking_as_text) {
+            if (has_thinking and !thinking_as_text) {
                 var reasoning_field: []const u8 = "reasoning_content";
                 for (a.content) |c| switch (c) {
                     .thinking => |t| {
@@ -644,7 +645,7 @@ fn buildRequestBody(
     }
     if (options.getReasoningEffort()) |effort| {
         if (model.reasoning and merged.supports_reasoning_effort) {
-            try w.writeStringField("reasoning_effort", effort);
+            try w.writeStringField("reasoning_effort", if (provider_caps.isDeepSeek(model.base_url)) deepSeekEffort(effort) else effort);
         }
     }
     if (context.tools) |tools| {
@@ -1737,6 +1738,12 @@ pub fn streamOpenAICompletions(
     return s;
 }
 
+fn deepSeekEffort(effort: []const u8) []const u8 {
+    if (std.mem.eql(u8, effort, "minimal") or std.mem.eql(u8, effort, "low")) return "low";
+    if (std.mem.eql(u8, effort, "xhigh") or std.mem.eql(u8, effort, "max")) return "max";
+    return "high";
+}
+
 fn thinkingLevelToString(level: ai_types.ThinkingLevel) []const u8 {
     return switch (level) {
         .off => "off",
@@ -2053,6 +2060,151 @@ test "parseChunk keeps reading after a chunk it could not read" {
     }
 
     try std.testing.expectEqualStrings("kept", text.items);
+}
+
+test "a deepseek request sends past reasoning back as reasoning_content, never as the answer" {
+    const allocator = std.testing.allocator;
+    const model = ai_types.Model{
+        .id = "deepseek-flash",
+        .name = "DeepSeek Flash",
+        .api = "openai-completions",
+        .provider = "deepseek",
+        .base_url = "https://api.deepseek.com",
+        .reasoning = true,
+        .input = &[_][]const u8{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1_048_576,
+        .max_tokens = 100,
+    };
+
+    const messages = [_]ai_types.Message{
+        .{ .user = .{ .content = .{ .text = "list the files" }, .timestamp = 0 } },
+        .{ .assistant = .{
+            .content = &.{
+                .{ .thinking = .{ .thinking = "plan the listing", .thinking_signature = "reasoning_content" } },
+                .{ .tool_call = .{ .id = "call-1", .name = "ls", .arguments_json = "{}" } },
+            },
+            .api = "openai-completions",
+            .provider = "deepseek",
+            .model = "deepseek-flash",
+            .usage = .{},
+            .stop_reason = .tool_use,
+            .timestamp = 0,
+        } },
+        .{ .tool_result = .{ .tool_call_id = "call-1", .tool_name = "ls", .content = &.{.{ .text = .{ .text = "a.zig" } }}, .is_error = false, .timestamp = 0 } },
+        .{ .assistant = .{
+            .content = &.{
+                .{ .thinking = .{ .thinking = "one file", .thinking_signature = "reasoning_content" } },
+                .{ .text = .{ .text = "There is a.zig." } },
+            },
+            .api = "openai-completions",
+            .provider = "deepseek",
+            .model = "deepseek-flash",
+            .usage = .{},
+            .stop_reason = .stop,
+            .timestamp = 0,
+        } },
+    };
+
+    const body = try buildRequestBody(model, .{ .messages = &messages }, .{ .max_tokens = 100 }, allocator);
+    defer allocator.free(body);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+
+    var assistants: usize = 0;
+    for (parsed.value.object.get("messages").?.array.items) |m| {
+        if (!std.mem.eql(u8, m.object.get("role").?.string, "assistant")) continue;
+        assistants += 1;
+        const reasoning = m.object.get("reasoning_content") orelse return error.TestExpectedReasoningContent;
+        const content = m.object.get("content").?;
+        if (assistants == 1) {
+            try std.testing.expectEqualStrings("plan the listing", reasoning.string);
+            try std.testing.expect(content == .null);
+        } else {
+            try std.testing.expectEqualStrings("one file", reasoning.string);
+            try std.testing.expectEqual(@as(usize, 1), content.array.items.len);
+            try std.testing.expectEqualStrings("There is a.zig.", content.array.items[0].object.get("text").?.string);
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), assistants);
+}
+
+test "a reply that holds only reasoning goes back to deepseek as its content, since deepseek refuses one with neither content nor tool calls" {
+    const allocator = std.testing.allocator;
+    const model = ai_types.Model{
+        .id = "deepseek-flash",
+        .name = "DeepSeek Flash",
+        .api = "openai-completions",
+        .provider = "deepseek",
+        .base_url = "https://api.deepseek.com",
+        .reasoning = true,
+        .input = &[_][]const u8{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1_048_576,
+        .max_tokens = 100,
+    };
+    const messages = [_]ai_types.Message{
+        .{ .user = .{ .content = .{ .text = "what is the plan?" }, .timestamp = 0 } },
+        .{ .assistant = .{
+            .content = &.{.{ .thinking = .{ .thinking = "the plan, written as reasoning", .thinking_signature = "reasoning_content" } }},
+            .api = "openai-completions",
+            .provider = "deepseek",
+            .model = "deepseek-flash",
+            .usage = .{},
+            .stop_reason = .stop,
+            .timestamp = 0,
+        } },
+        .{ .user = .{ .content = .{ .text = "write the answer" }, .timestamp = 0 } },
+    };
+
+    const body = try buildRequestBody(model, .{ .messages = &messages }, .{ .max_tokens = 100 }, allocator);
+    defer allocator.free(body);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+
+    const written = parsed.value.object.get("messages").?.array.items;
+    try std.testing.expectEqual(@as(usize, 3), written.len);
+    const reply = written[1].object;
+    try std.testing.expectEqualStrings("assistant", reply.get("role").?.string);
+    try std.testing.expect(reply.get("reasoning_content") == null);
+    try std.testing.expect(reply.get("tool_calls") == null);
+    const content = reply.get("content").?.array.items;
+    try std.testing.expectEqual(@as(usize, 1), content.len);
+    try std.testing.expectEqualStrings("the plan, written as reasoning", content[0].object.get("text").?.string);
+}
+
+test "a deepseek request carries the thinking level as one of deepseek's three efforts" {
+    const allocator = std.testing.allocator;
+    const model = ai_types.Model{
+        .id = "deepseek-flash",
+        .name = "DeepSeek Flash",
+        .api = "openai-completions",
+        .provider = "deepseek",
+        .base_url = "https://api.deepseek.com",
+        .reasoning = true,
+        .input = &[_][]const u8{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1_048_576,
+        .max_tokens = 100,
+    };
+    const messages = [_]ai_types.Message{.{ .user = .{ .content = .{ .text = "hi" }, .timestamp = 0 } }};
+    const cases = [_]struct { level: []const u8, sent: []const u8 }{
+        .{ .level = "minimal", .sent = "low" },
+        .{ .level = "low", .sent = "low" },
+        .{ .level = "medium", .sent = "high" },
+        .{ .level = "high", .sent = "high" },
+        .{ .level = "xhigh", .sent = "max" },
+    };
+    for (cases) |case| {
+        const body = try buildRequestBody(model, .{ .messages = &messages }, .{
+            .max_tokens = 100,
+            .reasoning_effort = ai_types.OwnedSlice(u8).initBorrowed(case.level),
+        }, allocator);
+        defer allocator.free(body);
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+        defer parsed.deinit();
+        try std.testing.expectEqualStrings(case.sent, parsed.value.object.get("reasoning_effort").?.string);
+    }
 }
 
 test "writeMessagesArray drops an orphan wherever it falls in a run of results" {
@@ -3430,14 +3582,20 @@ test "a streamed text thinking and tool call reports indices that diverge from t
     try std.testing.expectEqualStrings("{\"command\":\"ls\"}", result.content[2].tool_call.arguments_json);
 }
 
+<<<<<<< HEAD
 
+=======
+>>>>>>> 6a5d3eb24d0bc65fc0d357fd198802218b0e7107
 var cleanup_hold: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
 var cleanup_held: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
 var cleanup_gate: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
 var cleanup_window: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
 var cleanup_paused: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
+<<<<<<< HEAD
 var cleanup_waits: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
 var cleanup_paused_gate: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
+=======
+>>>>>>> 6a5d3eb24d0bc65fc0d357fd198802218b0e7107
 
 fn defaultIo() std.Io {
     return if (@import("builtin").is_test) std.testing.io else std.Io.Threaded.global_single_threaded.io();
@@ -3450,13 +3608,24 @@ fn awaitCleanupRelease() void {
     const io = defaultIo();
     while (true) {
         const seen = cleanup_gate.load(.acquire);
+<<<<<<< HEAD
         if (cleanup_window.load(.acquire) == 1) awaitCleanupWindow(io);
         if (cleanup_hold.load(.acquire) == 0) break;
         _ = cleanup_waits.fetchAdd(1, .release);
+=======
+        if (cleanup_hold.load(.acquire) == 0) break;
+        if (cleanup_window.load(.acquire) == 1) {
+            _ = cleanup_paused.store(true, .release);
+            while (cleanup_window.load(.acquire) == 1) {
+                io.futexWaitTimeout(u32, &cleanup_window.raw, cleanup_window.load(.acquire), boundedWait()) catch {};
+            }
+        }
+>>>>>>> 6a5d3eb24d0bc65fc0d357fd198802218b0e7107
         io.futexWaitTimeout(u32, &cleanup_gate.raw, seen, boundedWait()) catch {};
     }
 }
 
+<<<<<<< HEAD
 fn awaitCleanupWindow(io: std.Io) void {
     _ = cleanup_paused_gate.fetchAdd(1, .release);
     _ = cleanup_paused.store(true, .release);
@@ -3466,6 +3635,8 @@ fn awaitCleanupWindow(io: std.Io) void {
     }
 }
 
+=======
+>>>>>>> 6a5d3eb24d0bc65fc0d357fd198802218b0e7107
 fn boundedWait() std.Io.Timeout {
     return .{ .duration = .{
         .raw = .fromMilliseconds(25),
@@ -3497,7 +3668,10 @@ test "a release inside the snapshot-to-wait window still reaches the producer" {
     const allocator = std.testing.allocator;
     cleanup_held.store(0, .release);
     cleanup_paused.store(false, .release);
+<<<<<<< HEAD
     cleanup_waits.store(0, .release);
+=======
+>>>>>>> 6a5d3eb24d0bc65fc0d357fd198802218b0e7107
     holdCleanup();
     cleanup_window.store(1, .release);
     defer {
@@ -3529,16 +3703,29 @@ test "a release inside the snapshot-to-wait window still reaches the producer" {
         defer ai_types.deinitAssistantMessageEvent(allocator, &polled);
     }
 
+<<<<<<< HEAD
     try expectCleanupPaused();
     try std.testing.expect(!stream.waitForThread(100));
 
     const waits_before_release = cleanup_waits.load(.acquire);
+=======
+    var spins: usize = 0;
+    while (!cleanup_paused.load(.acquire) and spins < 400) : (spins += 1) {
+        std.Thread.yield() catch {};
+    }
+    try std.testing.expect(cleanup_paused.load(.acquire));
+    try std.testing.expect(!stream.waitForThread(100));
+
+>>>>>>> 6a5d3eb24d0bc65fc0d357fd198802218b0e7107
     releaseCleanupGate();
     cleanup_window.store(0, .release);
     wakeCleanupWaiters();
 
     try std.testing.expect(stream.waitForThread(5_000));
+<<<<<<< HEAD
     try std.testing.expectEqual(waits_before_release, cleanup_waits.load(.acquire));
+=======
+>>>>>>> 6a5d3eb24d0bc65fc0d357fd198802218b0e7107
     try std.testing.expect(stream.getError() == null);
 }
 
@@ -3625,6 +3812,7 @@ test "a release that lands before the producer waits is still observed" {
     try std.testing.expect(stream.getError() == null);
 }
 
+<<<<<<< HEAD
 fn expectCleanupPaused() !void {
     const io = defaultIo();
     var rounds: usize = 0;
@@ -3642,6 +3830,8 @@ fn expectCleanupPaused() !void {
     }
 }
 
+=======
+>>>>>>> 6a5d3eb24d0bc65fc0d357fd198802218b0e7107
 test "the producer does not publish done while its own cleanup is unfinished" {
     const allocator = std.testing.allocator;
     cleanup_held.store(0, .release);

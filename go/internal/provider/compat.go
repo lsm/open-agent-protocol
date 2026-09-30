@@ -309,7 +309,7 @@ func DetectCapabilities(baseURL string, hasBaseURL bool) Capabilities {
 		caps.ThinkingFormat = ThinkingQwen
 	}
 	if isDeepSeekURL(baseURL, hasBaseURL) {
-		caps.RequiresThinkingAsText = true
+		caps.SupportsReasoningEffort = true
 	}
 	return caps
 }
@@ -329,7 +329,7 @@ func IsTransparentOpenAIProxy(model Model) bool {
 
 var OpenAIAnonymousBlocked = []string{"openai", "deepseek", "kimi", "github-copilot"}
 
-var AnthropicAnonymousBlocked = []string{"anthropic"}
+var AnthropicAnonymousBlocked = []string{"anthropic", "deepseek"}
 
 func AllowsAnonymousWith(model Model, blocked []string) bool {
 	if !model.AllowsAnonymous {
@@ -360,6 +360,9 @@ func MergeCompat(model Model) MergedCompat {
 		detectedDeveloperRole = caps.SupportsDeveloperRole
 		detectedReasoningEffort = caps.SupportsReasoningEffort
 		detectedMaxTokensField = caps.MaxTokensField
+	}
+	if isDeepSeekURL(model.BaseURL, model.HasBaseURL) {
+		detectedReasoningEffort = caps.SupportsReasoningEffort
 	}
 
 	merged := MergedCompat{

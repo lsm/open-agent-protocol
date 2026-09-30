@@ -167,6 +167,86 @@ pub fn estimateMessageTokens(message: ai_types.Message) u64 {
     return estimateMessage(message).estimated_tokens;
 }
 
+const full_window_output_tokens: u64 = 1024;
+
+fn inflated(estimate: u64) u64 {
+    return estimate + estimate / 3;
+}
+
+fn promptTokens(context: ai_types.Context) u64 {
+    const messages = context.messages;
+    var index = messages.len;
+    while (index > 0) {
+        index -= 1;
+        if (messages[index] != .assistant) continue;
+        const usage = messages[index].assistant.usage;
+        const reported = usage.input + usage.cache_read + usage.cache_write;
+        if (reported == 0) continue;
+        return reported + usage.output + inflated(estimateMessages(messages[index + 1 ..]).estimated_tokens);
+    }
+    return inflated(estimatePromptTokens(context));
+}
+
+pub fn outputLimit(model: ai_types.Model, requested: ?u32, context: ai_types.Context) ?u32 {
+    const wanted: u64 = requested orelse model.max_tokens;
+    if (model.context_window == 0 or wanted == 0) return requested;
+    const prompt = promptTokens(context);
+    if (model.context_window <= prompt) return @intCast(@min(wanted, full_window_output_tokens));
+    const room = model.context_window - prompt;
+    if (room >= wanted) return requested;
+    return @intCast(room);
+}
+
+fn outputLimitModel(context_window: u32, max_tokens: u32) ai_types.Model {
+    return .{
+        .id = "test-model",
+        .name = "Test",
+        .api = "test-api",
+        .provider = "test-provider",
+        .base_url = "",
+        .reasoning = false,
+        .input = &.{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = context_window,
+        .max_tokens = max_tokens,
+    };
+}
+
+test "outputLimit asks for no more output than the context window leaves after an estimated prompt, and leaves an unset limit unset when it fits" {
+    const text = "a" ** 3000;
+    const messages = [_]ai_types.Message{.{ .user = .{ .content = .{ .text = text }, .timestamp = 0 } }};
+    const context: ai_types.Context = .{ .messages = &messages };
+    const prompt = inflated(estimatePromptTokens(context));
+
+    try std.testing.expectEqual(@as(?u32, @intCast(10_000 - prompt)), outputLimit(outputLimitModel(10_000, 9_000), null, context));
+    try std.testing.expectEqual(@as(?u32, 500), outputLimit(outputLimitModel(10_000, 9_000), 500, context));
+    try std.testing.expectEqual(@as(?u32, 1024), outputLimit(outputLimitModel(@intCast(prompt), 9_000), null, context));
+    try std.testing.expectEqual(@as(?u32, 700), outputLimit(outputLimitModel(@intCast(prompt), 700), null, context));
+    try std.testing.expectEqual(@as(?u32, 500), outputLimit(outputLimitModel(@intCast(prompt + 500), 9_000), null, context));
+    try std.testing.expectEqual(@as(?u32, 9_000), outputLimit(outputLimitModel(0, 9_000), 9_000, context));
+    try std.testing.expectEqual(@as(?u32, null), outputLimit(outputLimitModel(1_000_000, 9_000), null, context));
+}
+
+test "outputLimit counts the prompt from the provider's last report when a reply carries one" {
+    const messages = [_]ai_types.Message{
+        .{ .user = .{ .content = .{ .text = "a" ** 40_000 }, .timestamp = 0 } },
+        .{ .assistant = .{
+            .content = &.{.{ .text = .{ .text = "ok" } }},
+            .api = "test-api",
+            .provider = "test-provider",
+            .model = "test-model",
+            .usage = .{ .input = 6_000, .output = 200, .cache_read = 3_000, .cache_write = 800 },
+            .stop_reason = .stop,
+            .timestamp = 0,
+        } },
+        .{ .user = .{ .content = .{ .text = "b" ** 400 }, .timestamp = 0 } },
+    };
+    const context: ai_types.Context = .{ .messages = &messages };
+    const prompt = 6_000 + 3_000 + 800 + 200 + inflated(estimateMessages(messages[2..]).estimated_tokens);
+
+    try std.testing.expectEqual(@as(?u32, @intCast(20_000 - prompt)), outputLimit(outputLimitModel(20_000, 19_000), null, context));
+}
+
 fn pushAgentEvent(event_stream: *AgentEventStream, event: AgentEvent) !void {
     if (!event_stream.pushBlocking(event)) {
         return error.StreamCompleted;
@@ -912,7 +992,7 @@ fn streamAssistantResponse(
         .thinking_budgets = config.thinking_budgets,
         .max_retry_delay_ms = config.max_retry_delay_ms orelse 60_000,
         .temperature = config.temperature,
-        .max_tokens = config.max_tokens,
+        .max_tokens = outputLimit(config.model, config.max_tokens, llm_context),
     };
 
     const provider_stream = try config.protocol.stream(
@@ -1005,8 +1085,7 @@ fn streamAssistantResponse(
                 } });
                 final_transferred = true;
             },
-            .keepalive => {
-            },
+            .keepalive => {},
         }
     }
 
@@ -1098,7 +1177,27 @@ fn withinTurnLimit(iterations: u32, max_iterations: ?u32) bool {
     return iterations < limit;
 }
 
-const TurnOutcome = enum { failed, answered, called_tools };
+const TurnOutcome = enum { failed, answered, called_tools, reasoned_only };
+
+pub const answer_request_text = "Your last reply held only reasoning and no answer. Write your answer now.";
+
+fn reasonedWithoutAnswer(content: []const ai_types.AssistantContent) bool {
+    var reasoned = false;
+    for (content) |block| switch (block) {
+        .text => |t| if (std.mem.trim(u8, t.text, " \t\r\n").len > 0) return false,
+        .thinking => |t| {
+            if (std.mem.trim(u8, t.thinking, " \t\r\n").len > 0) reasoned = true;
+        },
+        .tool_call => return false,
+        .image => {},
+    };
+    return reasoned;
+}
+
+fn answerRequest(allocator: std.mem.Allocator) !ai_types.Message {
+    const text = try allocator.dupe(u8, answer_request_text);
+    return .{ .user = .{ .content = .{ .text = text }, .timestamp = compat.time.nowMillis() } };
+}
 
 const max_cut_off_tool_turns: u32 = 3;
 
@@ -1112,6 +1211,7 @@ fn turnOutcome(message: ai_types.AssistantMessage, cut_off_tool_turns: u32) Turn
     for (message.content) |block| {
         if (block == .tool_call) return .called_tools;
     }
+    if (message.stop_reason == .stop and reasonedWithoutAnswer(message.content)) return .reasoned_only;
     return .answered;
 }
 
@@ -1160,6 +1260,33 @@ test "turnOutcome never runs the tool calls of a failed, aborted or filtered rep
     try std.testing.expectEqual(TurnOutcome.answered, outcomeOf(.content_filter, &calls, 0));
 }
 
+test "turnOutcome marks a finished reply that holds only reasoning" {
+    const reasoning = [_]ai_types.AssistantContent{.{ .thinking = .{ .thinking = "the answer, written as reasoning" } }};
+    try std.testing.expectEqual(TurnOutcome.reasoned_only, outcomeOf(.stop, &reasoning, 0));
+    try std.testing.expectEqual(TurnOutcome.answered, outcomeOf(.length, &reasoning, 0));
+
+    const answered = [_]ai_types.AssistantContent{
+        .{ .thinking = .{ .thinking = "plan" } },
+        .{ .text = .{ .text = "the answer" } },
+    };
+    try std.testing.expectEqual(TurnOutcome.answered, outcomeOf(.stop, &answered, 0));
+
+    const blank = [_]ai_types.AssistantContent{
+        .{ .thinking = .{ .thinking = " \n" } },
+        .{ .text = .{ .text = "\n" } },
+    };
+    try std.testing.expectEqual(TurnOutcome.answered, outcomeOf(.stop, &blank, 0));
+}
+
+test "answerRequest survives an allocation failure at every step" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, answerRequestProbe, .{});
+}
+
+fn answerRequestProbe(allocator: std.mem.Allocator) !void {
+    var message = try answerRequest(allocator);
+    message.deinit(allocator);
+}
+
 test "turnOutcome ends the run on a cut-off tool call once three in a row were answered" {
     const calls = [_]ai_types.AssistantContent{
         .{ .tool_call = .{ .id = "call_1", .name = "write", .arguments_json = "{\"text\":\"cut" } },
@@ -1203,6 +1330,7 @@ fn runLoop(
     var ended_before_cap = false;
     var cancelled_run = false;
     var cut_off_tool_turns: u32 = 0;
+    var asked_for_answer = false;
 
     outer: while (withinTurnLimit(state.iterations, config.max_iterations)) {
         if (config.cancel_token) |token| {
@@ -1276,7 +1404,10 @@ fn runLoop(
             try setFinalMessage(&state, allocator, assistant_message);
             try appendClonedStateMessage(&state.messages, allocator, .{ .assistant = assistant_message });
 
-            const outcome = turnOutcome(assistant_message, cut_off_tool_turns);
+            const outcome = switch (turnOutcome(assistant_message, cut_off_tool_turns)) {
+                .reasoned_only => if (asked_for_answer) TurnOutcome.answered else TurnOutcome.reasoned_only,
+                else => |value| value,
+            };
             cut_off_tool_turns = if (outcome == .called_tools and assistant_message.stop_reason == .length) cut_off_tool_turns + 1 else 0;
             switch (outcome) {
                 .failed => {
@@ -1342,6 +1473,28 @@ fn runLoop(
 
                     ended_before_cap = true;
                     break :outer;
+                },
+                .reasoned_only => {
+                    asked_for_answer = true;
+                    try pushAgentEvent(event_stream, .{ .turn_end = .{
+                        .message = assistant_message,
+                        .tool_results = types.OwnedSlice(ai_types.ToolResultMessage).initBorrowed(&.{}),
+                    } });
+                    try context.appendMessage(.{ .assistant = assistant_message });
+
+                    const request = try answerRequest(context.allocator);
+                    context.appendMessage(request) catch |err| {
+                        var owned = request;
+                        owned.deinit(context.allocator);
+                        return err;
+                    };
+                    try pushAgentEvent(event_stream, .{ .message_start = .{
+                        .message = request,
+                    } });
+                    try pushAgentEvent(event_stream, .{ .message_end = .{
+                        .message = request,
+                    } });
+                    try appendClonedStateMessage(&state.messages, allocator, request);
                 },
                 .called_tools => {
                     var tool_result = try executeToolCalls(
