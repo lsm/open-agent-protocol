@@ -376,7 +376,43 @@ pub fn declaresJson(content_type: ?[]const u8) bool {
     const named = content_type orelse return false;
     const media = std.mem.trim(u8, named, " \t");
     const cut = std.mem.indexOfScalar(u8, media, ';') orelse media.len;
-    return std.ascii.eqlIgnoreCase(std.mem.trim(u8, media[0..cut], " \t"), "application/json");
+    if (!std.ascii.eqlIgnoreCase(std.mem.trim(u8, media[0..cut], " \t"), "application/json")) return false;
+    return parametersWellFormed(media[cut..]);
+}
+
+fn parametersWellFormed(parameters: []const u8) bool {
+    var rest = std.mem.trim(u8, parameters, " \t");
+    while (true) {
+        rest = std.mem.trimStart(u8, rest, " \t");
+        if (rest.len == 0) return true;
+        if (rest[0] != ';') return false;
+        rest = std.mem.trimStart(u8, rest[1..], " \t");
+        if (rest.len == 0) return true;
+        const name_end = std.mem.indexOfScalar(u8, rest, '=') orelse return false;
+        const name = std.mem.trim(u8, rest[0..name_end], " \t");
+        if (!isToken(name)) return false;
+        var after = rest[name_end + 1 ..];
+        if (after.len > 0 and after[0] == '"') {
+            const closed = std.mem.indexOfScalarPos(u8, after, 1, '"') orelse return false;
+            after = after[closed + 1 ..];
+        } else {
+            const next = std.mem.indexOfScalar(u8, after, ';') orelse after.len;
+            if (!isToken(std.mem.trim(u8, after[0..next], " \t"))) return false;
+            after = after[next..];
+        }
+        const semi = std.mem.indexOfScalar(u8, after, ';') orelse after.len;
+        if (semi == after.len and std.mem.trim(u8, after, " \t").len != 0) return false;
+        rest = if (semi == after.len) "" else after[semi..];
+    }
+}
+
+fn isToken(text: []const u8) bool {
+    if (text.len == 0) return false;
+    for (text) |byte| {
+        if (std.ascii.isAlphanumeric(byte)) continue;
+        if (std.mem.indexOfScalar(u8, "!#$%&'*+-.^_`|~", byte) == null) return false;
+    }
+    return true;
 }
 
 pub fn writeAnswer(stream: *compat.net.Stream, arena: std.mem.Allocator, next_id: u64, given: Answer, body_allowed: bool) !void {
@@ -551,14 +587,44 @@ test "a request with no body names no media type and is not refused for it" {
     try testing.expectEqual(Answer.not_found, answer(loopback, listing));
 }
 
+test "a parameter list that is not well formed is refused, as the header grammar requires" {
+    const loopback: []const []const u8 = &.{};
+    for ([_][]const u8{
+        "application/json; charset",
+        "application/json; charset=",
+        "application/json; =utf-8",
+        "application/json; charset=utf-8; x",
+        "application/json; x=\"unterminated",
+    }) |declared| {
+        const raw = try std.fmt.allocPrint(testing.allocator, "POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: {s}\r\nContent-Length: 2\r\n\r\n{{}}", .{declared});
+        defer testing.allocator.free(raw);
+        var request = try requestOver(raw);
+        defer request.deinit(testing.allocator);
+        try testing.expectEqualStrings("unsupported_media_type", answer(loopback, request).refusal.code);
+    }
+    for ([_][]const u8{
+        "application/json",
+        "application/json;",
+        "application/json ; charset=utf-8",
+        "application/json;charset=utf-8;x=1",
+        "application/json; charset=\"utf-8\"",
+    }) |declared| {
+        const raw = try std.fmt.allocPrint(testing.allocator, "POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: {s}\r\nContent-Length: 2\r\n\r\n{{}}", .{declared});
+        defer testing.allocator.free(raw);
+        var request = try requestOver(raw);
+        defer request.deinit(testing.allocator);
+        try testing.expectEqual(Answer.not_found, answer(loopback, request));
+    }
+}
+
 test "a zero-length body with a wrong media type is not gated, because the gate reads length" {
     const loopback: []const []const u8 = &.{};
-    var posted = try requestOver("POST /sessions/s1/close HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: text/plain\r\nContent-Length: 0\r\n\r\n");
+    var posted = try requestOver("POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: text/plain\r\nContent-Length: 0\r\n\r\n");
     defer posted.deinit(testing.allocator);
     try testing.expect(!carriesBody(posted));
     try testing.expectEqual(Answer.not_found, answer(loopback, posted));
 
-    var empty = try requestOver("POST /sessions/s1/close HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: text/plain\r\n\r\n");
+    var empty = try requestOver("POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: text/plain\r\n\r\n");
     defer empty.deinit(testing.allocator);
     try testing.expect(!carriesBody(empty));
     try testing.expectEqual(Answer.not_found, answer(loopback, empty));
