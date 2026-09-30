@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -87,8 +88,23 @@ func TestTheSharedResultSeesAMissingSourceAsNilAndStillRejectsABadOne(t *testing
 	}
 	bogus := json.RawMessage(`"invented-source"`)
 	raw.Source = bogus
-	if _, err := parseModelDescriptor(raw, 0, "s"); err == nil {
+	_, err = parseModelDescriptor(raw, 0, "stream-7")
+	if err == nil {
 		t.Error("an invalid stated source must still be rejected, not defaulted")
+	} else {
+		protocol, isProtocol := err.(*ProtocolError)
+		if !isProtocol {
+			t.Fatalf("error is %T, want *ProtocolError", err)
+		}
+		if !strings.Contains(protocol.Message, "models[0].source has unknown value") {
+			t.Errorf("Message = %q, want the field path and the offending value", protocol.Message)
+		}
+		if strings.Contains(protocol.Message, "oap sdk") {
+			t.Errorf("Message = %q, must carry the field path, not the rendered error", protocol.Message)
+		}
+		if protocol.StreamID != "stream-7" {
+			t.Errorf("StreamID = %q, want stream-7: the closure must keep it", protocol.StreamID)
+		}
 	}
 	raw.Source = json.RawMessage(`null`)
 	if _, err := parseModelDescriptor(raw, 0, "s"); err == nil {
