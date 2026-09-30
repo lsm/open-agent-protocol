@@ -35,6 +35,14 @@ fn documentFor(profile: []const u8) []const u8 {
     return "envelope.schema.json";
 }
 
+fn installToleratedOverrides(allocator: std.mem.Allocator, scope: *const jsonschema.Registry, validator: *jsonschema.Validator, arena: std.mem.Allocator) !void {
+    for (scope.documents.keys()) |name| {
+        if (tolerate.isMetaSchema(name)) continue;
+        const held = scope.root(name) orelse return error.GateDocumentMissing;
+        try validator.overrides.put(allocator, name, try tolerate.document(arena, held));
+    }
+}
+
 test "the Zig schema phase agrees with the manifest on every fixture it can judge" {
     const allocator = std.testing.allocator;
     const root = build_options.repository_root;
@@ -128,11 +136,7 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
         defer validator.deinit();
 
         if (tolerant) {
-            for (scope.documents.keys()) |name| {
-                if (tolerate.isMetaSchema(name)) continue;
-                const tolerated = try tolerate.document(override_arena.allocator(), registry.root(name).?);
-                try validator.overrides.put(allocator, name, tolerated);
-            }
+            try installToleratedOverrides(allocator, scope, &validator, override_arena.allocator());
         }
 
         for (loaded.members) |member| {
@@ -316,4 +320,27 @@ test "a pack claims its type back from the tolerant fallback" {
         const failure = try validator.validateWithBranches("envelope.schema.json", parsed.value, &branches);
         try std.testing.expectEqual(case.accepted, failure == null);
     }
+}
+
+test "tolerated overrides resolve through the registry that holds the pack" {
+    const allocator = std.testing.allocator;
+    var shared = try jsonschema.Registry.initFromBundled(allocator);
+    defer shared.deinit();
+
+    var scope = try jsonschema.Registry.initFromBundled(allocator);
+    defer scope.deinit();
+    try scope.addDocument("pack/storage.schema.json",
+        \\{"$id":"pack/storage.schema.json","$defs":{"objectsRead":{"type":"object",
+        \\"required":["session_id"],"properties":{"type":{"const":"com.example.storage.objects.read"}}}}}
+    );
+
+    try std.testing.expect(scope.root("pack/storage.schema.json") != null);
+    try std.testing.expect(shared.root("pack/storage.schema.json") == null);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var validator = jsonschema.Validator.init(allocator, &scope);
+    defer validator.deinit();
+    try installToleratedOverrides(allocator, &scope, &validator, arena.allocator());
+    try std.testing.expect(validator.overrides.get("pack/storage.schema.json") != null);
 }
