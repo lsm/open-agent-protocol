@@ -30,12 +30,16 @@ not a second product.
 | `check` | the repository's own schemas, fixtures and reference path | not yet | yes |
 | `run`, `auth`, the TUI (bare invocation) | the product's own loop and credentials | yes | — |
 
-`conformance` gives each wait one budget for the whole wait, not one per line: the
-`--timeout` bounds a single response, event or control answer from the moment the
-runner starts looking for it, and a frame the runner did not ask for spends that
-budget rather than renewing it. An endpoint that keeps talking but never answers is
-judged on the deadline instead of waited on forever; a match already buffered is
-still returned, and a control frame the endpoint does not implement still skips.
+In `goap`, `--timeout` gives one answer wait one budget for the whole wait, not one
+per line: a response, event or control answer is judged on the deadline from the
+moment the runner starts looking, a frame it did not ask for spends that budget
+rather than renewing it, a match already buffered is still returned, and a control
+frame the endpoint does not implement still skips. Two things are outside that rule
+today, and neither is claimed fixed: the end-of-stream drain renews per line on
+purpose, because it is waiting for the endpoint to stop talking rather than for an
+answer; and `oapx` still renews per line in its runner, so `oapx conformance
+--timeout-ms` waits on a chatty endpoint indefinitely until the Zig side carries the
+same absolute budget.
 
 The hub is its own verb in both binaries: `goap hub` and `oapx hub`. It is a layer
 above an endpoint, not a different spelling of one, and giving it its own verb is
