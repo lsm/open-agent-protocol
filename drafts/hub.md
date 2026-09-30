@@ -629,6 +629,22 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   cited the long-lived test as pinning it; that was a coverage claim with no test behind it. Closing
   it needs a seam substituting a failing clock, a redesign rather than a test, so it stays a gap
   rather than invented.
+- **the 413 path is refused whole, and its drain is bounded only where a unit test can see it** —
+  `TestHubAddrRefusesAnOversizedDeclaredLengthAndReadsOnlyPartOfIt` drives the branch a plain media
+  refusal does not reach: `readHead` refuses `413 request_too_large` on the declared length alone,
+  and the daemon writes that refusal and then drains what the head declared. Against declarations of
+  16 MiB+1 and 16 GiB it is answered 413 with a **complete, parsed** body, and the client pushed
+  1.7–3.1 MB of the declaration when the writer stopped, so the declaration is demonstrably **not read
+  whole**. That is the whole claim. **It does not pin the drain's cap or budget on this path, and the
+  mutation says so:** lifting `drain_total_cap_bytes` to 8 MiB, lifting `drain_total_ms` to 60000, and
+  lifting **both together** all leave the test **green**. The transferred bytes do move — 1.7–3.1 MB
+  bounded against 9.2–10.8 MB unbounded — but that is a **client write count**, which bounds when the
+  writer stopped and not how much the daemon read, and the same build produced 1.70 MB and 3.13 MB on
+  two runs, so a threshold on it would be a machine-dependent constant rather than a bound. The cap and
+  the budget are pinned by the `drain` unit tests at `http.zig:1369` and `:1412`; what is **not** pinned
+  is that the 413 path reaches `drain` at all, and a client cannot observe that without the threshold
+  just rejected. An earlier revision of this work claimed the mutation failed when both bounds were
+  removed. It does not, and that claim is withdrawn.
 - **the bound holding against a real process** —
   `TestHubAddrRefusesALargeRefusedHeadOverARealSocket` transfers 1,052,672 /
   1,719,800 / 1,799,224 bytes against declarations of 1 MiB+4096, 4 MiB and 16 MiB
