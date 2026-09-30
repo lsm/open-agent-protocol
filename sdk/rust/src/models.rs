@@ -7,7 +7,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+use serde::de::{self, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Map, Value};
 
 use crate::error::{Error, Result};
@@ -87,6 +88,56 @@ pub enum ModelCapability {
     AudioOutput,
 }
 
+/// Reads an optional `source` in a way that tells absence from a present null.
+///
+/// `#[serde(default)]` alone cannot: serde maps an explicit `null` and a
+/// missing key to the same `None`, so a listing stating `"source": null`
+/// would read as unknown here even though the OAP adaptor refuses it.
+/// `default` supplies `None` for the missing key and this runs only when the
+/// key is there, so reaching `visit_unit` means the listing stated a null and
+/// that is the case worth refusing. A `source` that is present must name a
+/// value; a wrong type lands on serde's own invalid-type error, whose message
+/// is this visitor's.
+fn optional_model_source<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<ModelSource>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct SourceVisitor;
+
+    impl<'de> Visitor<'de> for SourceVisitor {
+        type Value = Option<ModelSource>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a model source string when the key is present")
+        }
+
+        fn visit_str<E: de::Error>(self, value: &str) -> std::result::Result<Self::Value, E> {
+            <ModelSource as Deserialize>::deserialize(de::value::StrDeserializer::<E>::new(value))
+                .map(Some)
+        }
+
+        fn visit_string<E: de::Error>(self, value: String) -> std::result::Result<Self::Value, E> {
+            self.visit_str(&value)
+        }
+
+        fn visit_unit<E: de::Error>(self) -> std::result::Result<Self::Value, E> {
+            Err(E::custom(
+                "model source must be a string when present, not null",
+            ))
+        }
+
+        fn visit_none<E: de::Error>(self) -> std::result::Result<Self::Value, E> {
+            Err(E::custom(
+                "model source must be a string when present, not null",
+            ))
+        }
+    }
+
+    deserializer.deserialize_any(SourceVisitor)
+}
+
 /// Whether the descriptor came from the provider or from the built-in catalog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -137,8 +188,13 @@ pub struct ModelDescriptor {
     pub lifecycle: ModelLifecycle,
     /// What the model can do.
     pub capabilities: Vec<ModelCapability>,
-    /// Where this descriptor came from.
-    pub source: ModelSource,
+    /// Where this descriptor came from. Absent means the listing did not say.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "optional_model_source"
+    )]
+    pub source: Option<ModelSource>,
     /// The context window, in tokens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u32>,
@@ -289,6 +345,23 @@ impl ModelsApi {
                     .cloned()
                     .unwrap_or(Value::String(String::new()));
                 obj.insert("display_name".to_owned(), model_id);
+            }
+            match obj.get("source") {
+                None => {}
+                Some(Value::String(name)) => {
+                    if name != "discovered" && name != "fallback" {
+                        return Err(Error::protocol(
+                            format!("OAP model entry has an unknown source: {name}"),
+                            Some("malformed_response"),
+                        ));
+                    }
+                }
+                Some(_) => {
+                    return Err(Error::protocol(
+                        "OAP model entry source must be a string when present".to_owned(),
+                        Some("malformed_response"),
+                    ))
+                }
             }
             if obj.get("source").and_then(Value::as_str) == Some("discovered") {
                 obj.insert("source".to_owned(), Value::String("dynamic".to_owned()));
@@ -569,7 +642,7 @@ mod tests {
         .expect("parses");
         assert_eq!(response.models.len(), 1);
         assert_eq!(response.models[0].auth_status, AuthStatus::Authenticated);
-        assert_eq!(response.models[0].source, ModelSource::StaticFallback);
+        assert_eq!(response.models[0].source, Some(ModelSource::StaticFallback));
         assert_eq!(
             response.models[0].capabilities,
             vec![
