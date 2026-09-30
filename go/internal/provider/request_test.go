@@ -537,11 +537,11 @@ func TestADeepSeekAssistantPassesItsReasoningBackAsReasoningContent(t *testing.T
 	}
 }
 
-func TestADeepSeekRequestSendsOneOfItsThreeEfforts(t *testing.T) {
+func TestADeepSeekRequestSendsOneOfItsDocumentedEfforts(t *testing.T) {
 	model := loopbackModel()
 	model.BaseURL = "https://api.deepseek.com"
 	model.Reasoning = true
-	for level, sent := range map[string]string{"minimal": "low", "low": "low", "medium": "high", "high": "high", "xhigh": "max"} {
+	for level, sent := range map[string]string{"minimal": "low", "low": "low", "medium": "high", "high": "high", "xhigh": "high", "max": "max", "ultra": "max"} {
 		got := decode(t, BuildRequestBody(model, Context{}, StreamOptions{ReasoningEffort: level}))
 		if got["reasoning_effort"] != sent {
 			t.Errorf("level %q sent %v, want %q", level, got["reasoning_effort"], sent)
