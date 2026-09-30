@@ -8,11 +8,15 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
+
+const surviveBackstop = 5 * time.Minute
 
 func TestHelperProcess(t *testing.T) {
 
@@ -75,7 +79,7 @@ func TestHelperProcess(t *testing.T) {
 		message, err = reader.Decode()
 		if err != nil {
 			if mode == "stay-alive" {
-				select {}
+				surviveStdinClosed()
 			}
 			os.Exit(0)
 		}
@@ -92,6 +96,16 @@ func TestHelperProcess(t *testing.T) {
 			}
 			os.Exit(0)
 		}
+	}
+}
+
+func surviveStdinClosed() {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	select {
+	case <-signals:
+	case <-time.After(surviveBackstop):
 	}
 }
 
@@ -218,6 +232,23 @@ func TestProcessConcurrentCloseReturnsSameResult(t *testing.T) {
 	}
 	if err := process.Close(context.Background()); err == nil || err.Error() != first {
 		t.Fatalf("repeated close=%v want=%q", err, first)
+	}
+	if !strings.Contains(first, "shutdown timed out") {
+		t.Fatalf("close reported %q, so the helper answered stdin EOF instead of staying alive until the shutdown timeout forced a kill", first)
+	}
+}
+
+func TestCloseRejectsAHelperThatLeavesOnStdinEOF(t *testing.T) {
+	config := helperConfig("exits-on-eof")
+	config.ShutdownTimeout = time.Millisecond
+	process, err := Start(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer process.Close(context.Background())
+	err = process.Close(context.Background())
+	if err != nil && strings.Contains(err.Error(), "shutdown timed out") {
+		t.Fatalf("close reported %q for a helper that left on stdin EOF, so the two are indistinguishable", err)
 	}
 }
 
