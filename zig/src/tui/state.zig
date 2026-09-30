@@ -1119,12 +1119,10 @@ pub const AppState = struct {
                 self.backpressure_active = payload.active;
                 self.dropped_event_count = payload.dropped_count;
             },
-            .compaction_start => |payload| {
+            .compaction_start => {
                 self.status.compacting = true;
-                if (!payload.in_run) {
-                    self.status.streaming = true;
-                    self.markStreamingStarted();
-                }
+                self.status.streaming = true;
+                self.markStreamingStarted();
             },
             .compaction_end => |payload| {
                 self.status.compacting = false;

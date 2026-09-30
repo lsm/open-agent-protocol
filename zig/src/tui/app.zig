@@ -7709,13 +7709,15 @@ test "App /compact archives the history and hands the model every transcript so 
     try std.testing.expect(std.mem.indexOf(u8, notice.text.items, "kept state") != null);
 }
 
-test "App keeps a run going through a compaction made inside it and records its transcript" {
+test "App holds a run as streaming through a compaction made inside it, even after the turn before it ended, and records its transcript" {
     var app = App.initWithoutRuntime(std.testing.allocator);
     defer app.deinit();
     var mock = MockAppSession{ .history_messages = &compaction_history };
     defer mock.deinit();
     app.session = mock.session();
-    app.state.status.streaming = true;
+    try mock.eventStream().push(.{ .turn_end = .{ .stop_reason = .tool_use } });
+    try app.drainEvents();
+    try std.testing.expect(!app.state.status.streaming);
 
     try mock.eventStream().push(.{ .compaction_start = .{ .in_run = true } });
     try app.drainEvents();
