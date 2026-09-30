@@ -234,7 +234,8 @@ export interface ModelDescriptor {
   api: ApiId;
   base_url?: string;
   auth_status: AuthStatus;
-  lifecycle: ModelLifecycle;
+  /** Absent means the listing did not state a lifecycle. Never defaulted. */
+  lifecycle?: ModelLifecycle;
   capabilities: ModelCapability[];
   /** Absent means the listing did not state a source. Never defaulted. */
   source?: ModelSource;
@@ -1871,3 +1872,25 @@ reads as the SDK's dynamic value and `fallback` as its static-fallback value.
 `lifecycle` follows the same shape in a later change, and the native
 protocol `ModelDescriptor` declared earlier in this document is a separate
 contract that keeps its required members.
+
+## Catalog result: an optional `lifecycle`
+
+`lifecycle` is the same shape as `source` above: the shared catalog result
+carries it as optional, an absent key reads as **unknown**, and no reader
+invents `stable` or any other value for a listing that did not state one.
+An optional key is not a nullable one, so a `lifecycle` that is **present**
+must be one of `stable`, `preview` or `deprecated`, and `null`, a number or
+an unrecognised literal is a malformed response.
+
+That is the target for all three SDKs and it is **implemented in Rust
+only** so far. Go still rejects an absent lifecycle on its shared path and
+TypeScript still fabricates `stable` for an absent one on the OAP path;
+those are #710 and #712, and neither is on main yet. Following the rule the
+`source` section above states, a reader that has not been changed must not
+be described as if it had.
+
+One consequence is worth stating because it is a filtering decision rather
+than a parsing one. A listing filters a model out as deprecated only when
+the listing **stated** `deprecated`. A model whose lifecycle is unknown is
+kept, because dropping it would silently exclude a model for failing to
+answer a question it was never asked.
