@@ -22,10 +22,6 @@ stamped = os.environ.get("OAP_PY_FIXTURE_SET", "")
 for member in ("lifecycle", "source"):
     if f"{member}_{shape}" in stamped:
         model[member] = json.loads(os.environ[f"{member}_{shape}"])
-    elif f"absent-{member}" == shape:
-        pass
-    elif f"null-{member}" == shape:
-        model[member] = None
 
 
 def emit(profile, kind, rid, payload, scope=None):
