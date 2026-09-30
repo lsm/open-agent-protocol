@@ -97,6 +97,7 @@ pub const Agent = struct {
     _compact_tool_output: bool,
     _auto_compact_at: ?u64 = null,
     _compaction_host: ?CompactionHost = null,
+    _retired_messages: std.ArrayList(ai_types.Message) = .empty,
     _permission_engine: ?*types.permission.PermissionEngine,
 
     _thread: ?std.Thread,
@@ -159,6 +160,8 @@ pub const Agent = struct {
 
         self._listeners.deinit(self._allocator);
 
+        self.freeRetiredMessages();
+        self._retired_messages.deinit(self._allocator);
         self._state.deinit();
 
         if (self._session_id) |sid| {
@@ -297,9 +300,14 @@ pub const Agent = struct {
             .result = compaction.failure(self._allocator, @errorName(err)),
         };
         if (summary.replacement) |*replacement| {
-            self.installHistory(&context.messages, replacement) catch |err| {
+            self.retireHistory(&context.messages, replacement) catch |err| {
                 summary.result.deinit(self._allocator);
-                return err;
+                var failed: AgentEvent = .{ .compaction_end = .{ .outcome = .failed, .message = types.OwnedSlice(u8).initBorrowed(@errorName(err)) } };
+                if (!event_stream.pushBlocking(failed)) {
+                    failed.deinit(self._allocator);
+                    return error.StreamCompleted;
+                }
+                return false;
             };
         }
         var event: AgentEvent = .{ .compaction_end = switch (summary.result) {
@@ -444,6 +452,20 @@ pub const Agent = struct {
             };
         }
         return summary.result;
+    }
+
+    fn retireHistory(self: *Agent, messages: *std.ArrayList(ai_types.Message), replacement: *[2]ai_types.Message) !void {
+        errdefer for (replacement) |*message| message.deinit(self._allocator);
+        try self._retired_messages.ensureUnusedCapacity(self._allocator, messages.items.len);
+        try messages.ensureTotalCapacity(self._allocator, replacement.len);
+        self._retired_messages.appendSliceAssumeCapacity(messages.items);
+        messages.clearRetainingCapacity();
+        messages.appendSliceAssumeCapacity(replacement);
+    }
+
+    fn freeRetiredMessages(self: *Agent) void {
+        for (self._retired_messages.items) |*message| message.deinit(self._allocator);
+        self._retired_messages.clearRetainingCapacity();
     }
 
     fn installHistory(self: *Agent, messages: *std.ArrayList(ai_types.Message), replacement: *[2]ai_types.Message) !void {
@@ -1189,7 +1211,7 @@ pub const Agent = struct {
             try agent_loop.agentLoopContinue(self._allocator, &context, config);
 
         defer {
-            _ = stream.deinitAndDestroy();
+            if (stream.deinitAndDestroy()) self.freeRetiredMessages();
         }
 
         while (stream.wait()) |event| {

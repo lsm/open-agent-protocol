@@ -1159,6 +1159,7 @@ pub const AppState = struct {
                 self.telemetry.rate.turnEnded();
                 self.telemetry.rate.runEnded();
                 self.status.streaming = false;
+                self.status.compacting = false;
                 self.markStreamingStopped();
                 self.stream_aborted = false;
                 try self.finalizeInterruptedTools();

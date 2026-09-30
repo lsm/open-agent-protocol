@@ -826,6 +826,13 @@ pub const TuiRuntime = struct {
         local.setAutoCompact(at, .{ .ctx = self, .transcripts_fn = runTranscripts });
     }
 
+    fn dropUnusedRunTranscript(self: *TuiRuntime) void {
+        if (self.run_transcript_saved.len == 0) return;
+        const items = self.run_transcripts.items;
+        if (items.len == 0 or items[items.len - 1].ptr != self.run_transcript_saved.ptr) return;
+        self.allocator.free(self.run_transcripts.pop().?);
+    }
+
     fn clearRunTranscripts(self: *TuiRuntime) void {
         for (self.run_transcripts.items) |path| self.allocator.free(path);
         self.run_transcripts.clearRetainingCapacity();
@@ -1423,6 +1430,7 @@ pub const TuiRuntime = struct {
 
     fn pushRunCompactionEnd(self: *TuiRuntime, payload: agent_types.CompactionEndPayload) !void {
         const saved = if (payload.outcome == .completed) self.run_transcript_saved else "";
+        if (payload.outcome != .completed) self.dropUnusedRunTranscript();
         self.run_transcript_saved = "";
         const text = try self.dupeOwned(payload.text.slice());
         errdefer {
@@ -3174,6 +3182,41 @@ test "failed turns emit error end reason" {
     }
     try std.testing.expect(saw_error_detail);
     try std.testing.expect(saw_error_end);
+}
+
+fn saveNumberedTranscript(ctx: ?*anyopaque, allocator: std.mem.Allocator, index: usize, history: []const ai_types.Message) ?[]u8 {
+    _ = ctx;
+    _ = history;
+    return std.fmt.allocPrint(allocator, "/t/compaction-{d}.jsonl", .{index}) catch null;
+}
+
+test "a compaction inside a run that does not complete gives back the transcript slot it saved" {
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{test_model_a}, .run_async = false });
+    defer runtime.deinit();
+    try runtime.run_transcripts.append(std.testing.allocator, try std.testing.allocator.dupe(u8, "/t/compaction-1.jsonl"));
+    runtime.transcript_writer = .{ .ctx = null, .save_fn = saveNumberedTranscript };
+
+    const first = TuiRuntime.runTranscripts(&runtime, &.{});
+    try std.testing.expectEqual(@as(usize, 2), first.paths.len);
+    try std.testing.expectEqualStrings("/t/compaction-2.jsonl", first.paths[1]);
+
+    try runtime.pushRunCompactionEnd(.{ .outcome = .failed });
+    try std.testing.expectEqual(@as(usize, 1), runtime.run_transcripts.items.len);
+
+    const second = TuiRuntime.runTranscripts(&runtime, &.{});
+    try std.testing.expectEqualStrings("/t/compaction-2.jsonl", second.paths[1]);
+    try runtime.pushRunCompactionEnd(.{ .outcome = .completed, .text = OwnedSlice(u8).initBorrowed("summary") });
+    try std.testing.expectEqual(@as(usize, 2), runtime.run_transcripts.items.len);
+
+    var completed_with_slot = false;
+    while (runtime.event_stream.poll()) |event| {
+        var ev = event;
+        defer ev.deinit(std.testing.allocator);
+        if (ev == .compaction_end and ev.compaction_end.outcome == .completed) {
+            completed_with_slot = std.mem.eql(u8, ev.compaction_end.transcript.slice(), "/t/compaction-2.jsonl");
+        }
+    }
+    try std.testing.expect(completed_with_slot);
 }
 
 test "runtime push preserves newest event when event stream is full" {
