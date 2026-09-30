@@ -6,7 +6,6 @@ const oap_envelope = @import("envelope");
 const endpoint_client = @import("endpoint_client");
 const json_writer = @import("json_writer");
 
-pub const default_line_deadline_ms: u64 = 300_000;
 
 pub const default_exit_grace_ms: i64 = 30_000;
 pub const default_probe_budget_ms: i64 = 30_000;

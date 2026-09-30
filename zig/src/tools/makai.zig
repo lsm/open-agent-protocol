@@ -1883,7 +1883,7 @@ fn runConformance(
     var environment = std.ArrayList([]const u8).empty;
     defer environment.deinit(allocator);
     var session: []const u8 = "conformance";
-    var line_deadline_ms: i64 = @intCast(oap_conformance.default_line_deadline_ms);
+    var probe_budget_ms: i64 = oap_conformance.default_probe_budget_ms;
     var exit_grace_ms: i64 = oap_conformance.default_exit_grace_ms;
 
     var index: usize = 0;
@@ -1942,15 +1942,15 @@ fn runConformance(
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--timeout-ms=")) {
-            line_deadline_ms = std.fmt.parseInt(i64, arg["--timeout-ms=".len..], 10) catch return error.InvalidArgument;
-            if (line_deadline_ms <= 0) return error.InvalidArgument;
+            probe_budget_ms = std.fmt.parseInt(i64, arg["--timeout-ms=".len..], 10) catch return error.InvalidArgument;
+            if (probe_budget_ms <= 0) return error.InvalidArgument;
             continue;
         }
         if (std.mem.eql(u8, arg, "--timeout-ms")) {
             index += 1;
             if (index >= args.len) return error.InvalidArgument;
-            line_deadline_ms = std.fmt.parseInt(i64, args[index], 10) catch return error.InvalidArgument;
-            if (line_deadline_ms <= 0) return error.InvalidArgument;
+            probe_budget_ms = std.fmt.parseInt(i64, args[index], 10) catch return error.InvalidArgument;
+            if (probe_budget_ms <= 0) return error.InvalidArgument;
             continue;
         }
         try endpoint_args.append(allocator, arg);
@@ -1966,7 +1966,7 @@ fn runConformance(
         .args = endpoint_args.items,
         .environment = environment.items,
         .session_id = session,
-        .probe_budget_ms = line_deadline_ms,
+        .probe_budget_ms = probe_budget_ms,
         .exit_grace_ms = exit_grace_ms,
     }) catch |err| {
         try compat.stdio.writeAll(stderr, try std.fmt.allocPrint(allocator, "conformance: {s}\n", .{@errorName(err)}));
