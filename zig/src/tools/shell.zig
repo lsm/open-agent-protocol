@@ -130,21 +130,16 @@ pub fn execute(
     var marker: ?MarkerDir = null;
     defer if (marker) |created| created.deinit(allocator);
     defer if (marker) |created| created.remove(common.defaultIo());
+    const windows = @import("builtin").os.tag == .windows;
     var marker_path: []u8 = &.{};
     defer allocator.free(marker_path);
-    const windows = @import("builtin").os.tag == .windows;
-    var argv_storage: [6][]const u8 = if (windows)
-        .{ "cmd.exe", "/C", command } ++ .{ "", "", "" }
+    const prepared: ?[]u8 = if (windows) null else try prepareMarker(allocator, &marker, &marker_path);
+    const argv: []const []const u8 = if (prepared) |marker_file|
+        &.{ "/bin/sh", "-c", end_directory_script, "sh", command, marker_file }
+    else if (windows)
+        &.{ "cmd.exe", "/C", command }
     else
-        .{ "/bin/sh", "-c", command } ++ .{ "", "", "" };
-    var argv: []const []const u8 = argv_storage[0..3];
-    if (!windows) {
-        const prepared = try prepareMarker(allocator, &marker, &marker_path);
-        if (prepared) |path| {
-            argv_storage = .{ "/bin/sh", "-c", end_directory_script, "sh", command, path };
-            argv = &argv_storage;
-        }
-    }
+        &.{ "/bin/sh", "-c", command };
 
     const result = process_runner.run(allocator, argv, .{ .dir = dir }, timeout_ms, cancel_token) catch |err| {
         if (err == error.Cancelled) return err;
@@ -193,14 +188,13 @@ pub fn execute(
         else => null,
     };
     const duration_ms = common.durationMs(start_ms);
-    const stdout_bytes = result.stdout.len;
-    const raw_bytes = stdout_bytes + result.stderr.len;
+    const raw_bytes = result.stdout.len + result.stderr.len;
     const details = try common.jsonString(allocator, .{
         .ok = exit_code == 0,
         .exit_code = exit_code,
         .signal = signal,
         .duration_ms = duration_ms,
-        .stdout_bytes = stdout_bytes,
+        .stdout_bytes = result.stdout.len,
         .stderr_bytes = result.stderr.len,
         .raw_bytes = raw_bytes,
         .working_directory = end_directory,
@@ -238,7 +232,7 @@ test "shell execute reports the directory the command ended in" {
     defer std.testing.allocator.free(expected);
     try std.testing.expectEqualStrings(expected, result.workingDirectory().?);
     try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, expected) != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, &common.hash16("call-cd")) == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, "call-cd") == null);
 }
 
 test "the reported directory is the shell's logical path, not a resolved one" {
@@ -302,7 +296,7 @@ test "an exit trap's output reaches the model" {
     defer result.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings(expected, result.workingDirectory().?);
     try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, "from-the-trap") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, &common.hash16("call-trap")) == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, "call-trap") == null);
 }
 
 
@@ -317,7 +311,7 @@ test "the marker is gone and the reported byte count matches the command's own o
     var result = try execute("call-nl", args, null, null, null, std.testing.allocator);
     defer result.deinit(std.testing.allocator);
     const text = result.content.slice()[0].text.text;
-    try std.testing.expect(std.mem.indexOf(u8, text, &common.hash16("call-nl")) == null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "call-nl") == null);
     try std.testing.expect(std.mem.indexOf(u8, text, "ok") != null);
     const counted = try std.fmt.allocPrint(std.testing.allocator, "\"stdout_bytes\":3", .{});
     defer std.testing.allocator.free(counted);
@@ -333,7 +327,7 @@ test "the command sees no positional parameters, as it did before the wrapper" {
     var result = try execute("call-args", args, null, null, null, std.testing.allocator);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, "[]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, &common.hash16("call-args")) == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, "call-args") == null);
 }
 
 test "a command that reassigns the positional parameters still reports its directory" {

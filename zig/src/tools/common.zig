@@ -256,14 +256,10 @@ pub fn isBinary(data: []const u8) bool {
     return std.mem.indexOfScalar(u8, data[0..limit], 0) != null;
 }
 
-pub fn hash16(bytes: []const u8) [16]u8 {
-    var hasher = std.hash.Wyhash.init(0);
-    hasher.update(bytes);
-    return hexU64(hasher.final());
-}
-
 pub fn lineHash(line: []const u8) [16]u8 {
-    return hash16(line);
+    var hasher = std.hash.Wyhash.init(0);
+    hasher.update(line);
+    return hexU64(hasher.final());
 }
 
 pub fn countLines(text: []const u8) usize {
