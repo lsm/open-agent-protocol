@@ -2510,14 +2510,15 @@ var openai_responses_api_cleanup_hold: std.atomic.Value(usize) = std.atomic.Valu
 var openai_responses_api_cleanup_held: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
 var openai_responses_api_cleanup_gate: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
 
-fn openai_responses_api_testIo() std.Io {
+fn openai_responses_api_defaultIo() std.Io {
     return if (@import("builtin").is_test) std.testing.io else std.Io.Threaded.global_single_threaded.io();
 }
 
 fn openai_responses_api_awaitCleanupRelease() void {
+    if (!@import("builtin").is_test) return;
     if (openai_responses_api_cleanup_hold.load(.acquire) == 0) return;
     _ = openai_responses_api_cleanup_held.fetchAdd(1, .release);
-    const io = openai_responses_api_testIo();
+    const io = openai_responses_api_defaultIo();
     while (openai_responses_api_cleanup_hold.load(.acquire) != 0) {
         io.futexWaitUncancelable(u32, &openai_responses_api_cleanup_gate.raw, openai_responses_api_cleanup_gate.load(.acquire));
     }
@@ -2526,13 +2527,13 @@ fn openai_responses_api_awaitCleanupRelease() void {
 fn openai_responses_api_holdCleanup() void {
     _ = openai_responses_api_cleanup_hold.store(1, .release);
     _ = openai_responses_api_cleanup_gate.fetchAdd(1, .release);
-    openai_responses_api_testIo().futexWake(u32, &openai_responses_api_cleanup_gate.raw, std.math.maxInt(u32));
+    openai_responses_api_defaultIo().futexWake(u32, &openai_responses_api_cleanup_gate.raw, std.math.maxInt(u32));
 }
 
 fn openai_responses_api_releaseCleanupGate() void {
     _ = openai_responses_api_cleanup_hold.store(0, .release);
     _ = openai_responses_api_cleanup_gate.fetchAdd(1, .release);
-    openai_responses_api_testIo().futexWake(u32, &openai_responses_api_cleanup_gate.raw, std.math.maxInt(u32));
+    openai_responses_api_defaultIo().futexWake(u32, &openai_responses_api_cleanup_gate.raw, std.math.maxInt(u32));
 }
 
 test "openai_responses_api producer does not publish done while its own cleanup is unfinished" {
