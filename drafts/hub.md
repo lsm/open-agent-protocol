@@ -1571,17 +1571,24 @@ are "stamped with the revision the lister served it under", and both name
   **after unescaping quoted-pairs**, because a raw slice comparison diverges from Go on exactly those
   spellings. **Go still has no test for any of these** — the parity is established by executing its parser,
   not by a Go test, which is the same gap D20 records for `type_mismatch`. |
-| **A fourth corner, deliberately divergent** | A parameter value longer than **256 bytes** is **refused** by the
-  Zig gate; Go admits it, and I measured a 300-character value being admitted. The reason is memory safety:
-  the duplicate check compares **decoded** values, so a decoded value must be materialised, and the
-  materialisation buffer is 256 bytes. Without a length check the bare-token branch indexes past the end
-  of it — a panic in a safe build, which in the daemon is an abort and every session with it. So the Zig
-  gate **refuses rather than overflows**, and `a parameter value longer than the decoded buffer is refused
-  rather than overflowing it` pins both sides of the boundary: 257 characters refused, exactly 256 admitted.
-  This is a real divergence from Go, recorded here rather than hidden, and it is a defensive bound rather
-  than a claim about the protocol. **It could be narrowed** — the buffer could grow, and the header cap is
-  16 KiB — but a larger stack buffer per parameter is a cost, and no test exercises the long-value path
-  beyond the boundary. |
+| **Storage, and the bound that replaced two bad ones** | The duplicate check compares **decoded** values, so each
+  parameter is appended to one store as two big-endian u16 lengths, the name, and the decoded value. The
+  store is `2 * max_header_bytes` — 32 KiB — which is the only bound there is, and it is the header bound
+  the draft already states. **An earlier revision imposed two refusals of its own: a 64-parameter cap and a
+  256-byte value limit.** Both were mine, neither is in the draft, and both refused requests Go accepts, so
+  both are gone. The 256-byte one existed only because the buffer was 256 bytes and the bare-token branch
+  copied into it unchecked, so a 257-character token indexed past the end — a **panic in the daemon's request
+  path**, which is an abort and every session with it. Sizing the store from the header removes the overflow
+  *and* the refusal at the same time, rather than trading one for the other. `sixty-five parameters and a long
+  value are admitted, because the header bound is the limit` pins 64, 65 and 200 parameters and a 2048-character
+  value, each **executed against Go 1.27 first**. |
+| **A quoted-pair escape is consumed with the byte it escapes** | `unescapeInto` discarded each backslash and let the
+  escaped byte through as an ordinary character, so `x\\` decoded to `x` rather than `x\`, and two values Go treats
+  as different came out equal. Decoding now consumes the pair: an escape emits the byte it escapes and skips
+  two input bytes. `an escaped backslash decodes with the byte it escapes, not dropped` pins seven spellings —
+  four admitted, three refused, including `a="x\\"; a=x` and `a="\\"; a="\\\\"`, which are duplicates to Go and
+  would have been admitted. **The mutation is the defect itself:** making the decoder drop the escaped byte
+  fails both that test and the main one. |
 
 ### D20 — `type_mismatch` is answered by no test in either tree
 

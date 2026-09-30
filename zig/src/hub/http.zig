@@ -382,17 +382,11 @@ pub fn declaresJson(content_type: ?[]const u8) bool {
 
 const max_media_parameters = 64;
 
-const max_parameter_bytes = 256;
-
-const SeenParameter = struct {
-    name: []const u8,
-    value: [max_parameter_bytes]u8,
-    value_len: usize,
-};
+const parameter_store_bytes = 2 * max_header_bytes;
 
 fn parametersWellFormed(parameters: []const u8) bool {
-    var seen: [max_media_parameters]SeenParameter = undefined;
-    var count: usize = 0;
+    var store: [parameter_store_bytes]u8 = undefined;
+    var used: usize = 0;
     var rest = std.mem.trim(u8, parameters, " \t");
     while (true) {
         rest = std.mem.trimStart(u8, rest, " \t");
@@ -405,38 +399,24 @@ fn parametersWellFormed(parameters: []const u8) bool {
         const name = std.mem.trim(u8, rest[0..name_end], " \t");
         if (!isToken(name)) return false;
         var after = std.mem.trimStart(u8, rest[name_end + 1 ..], " \t");
-        var decoded: [max_parameter_bytes]u8 = undefined;
-        var decoded_len: usize = 0;
-        var quoted = false;
+        const entry = used;
+        if (entry + 4 + name.len >= store[0..].len) return false;
         if (after.len > 0 and after[0] == '"') {
-            quoted = true;
             const closed = closingQuote(after) orelse return false;
             const raw = after[1..closed];
-            if (raw.len > decoded.len) return false;
-            decoded_len = unescapeInto(raw, &decoded);
+            if (entry + 4 + name.len + raw.len > store[0..].len) return false;
+            used = appendQuoted(store[0..], entry, name, raw);
             after = std.mem.trim(u8, after[closed + 1 ..], " \t");
+            if (after.len != 0 and after[0] != ';') return false;
         } else {
             const next = std.mem.indexOfScalar(u8, after, ';') orelse after.len;
             const value = std.mem.trim(u8, after[0..next], " \t");
             if (!isToken(value)) return false;
-            if (value.len > decoded.len) return false;
-            decoded_len = value.len;
-            @memcpy(decoded[0..decoded_len], value);
+            if (entry + 4 + name.len + value.len > store[0..].len) return false;
+            used = appendToken(store[0..], entry, name, value);
             after = after[next..];
         }
-        if (count == max_media_parameters) return false;
-        for (seen[0..count]) |prior| {
-            if (!std.ascii.eqlIgnoreCase(prior.name, name)) continue;
-            if (!std.mem.eql(u8, prior.value[0..prior.value_len], decoded[0..decoded_len])) return false;
-        }
-        seen[count] = .{ .name = name, .value = decoded, .value_len = decoded_len };
-        count += 1;
-        if (quoted) {
-            if (after.len == 0) return true;
-            if (after[0] != ';') return false;
-            rest = after;
-            continue;
-        }
+        if (entryHasConflict(store[0..used], entry, name)) return false;
         const semi = std.mem.indexOfScalar(u8, after, ';') orelse after.len;
         if (semi == after.len) {
             if (std.mem.trim(u8, after, " \t").len != 0) return false;
@@ -446,15 +426,64 @@ fn parametersWellFormed(parameters: []const u8) bool {
     }
 }
 
-fn unescapeInto(quoted: []const u8, into: []u8) usize {
-    std.debug.assert(quoted.len <= into.len);
+fn writeHeader(store: []u8, entry: usize, name_len: usize, value_len: usize) void {
+    std.mem.writeInt(u16, store[entry..][0..2], @intCast(name_len), .big);
+    std.mem.writeInt(u16, store[entry + 2 ..][0..2], @intCast(value_len), .big);
+}
+
+fn appendToken(store: []u8, entry: usize, name: []const u8, value: []const u8) usize {
+    writeHeader(store, entry, name.len, value.len);
+    var cursor = entry + 4;
+    @memcpy(store[cursor..][0..name.len], name);
+    cursor += name.len;
+    @memcpy(store[cursor..][0..value.len], value);
+    return cursor + value.len;
+}
+
+fn appendQuoted(store: []u8, entry: usize, name: []const u8, raw: []const u8) usize {
+    var decoded: usize = 0;
     var at: usize = 0;
-    for (quoted) |byte| {
-        if (byte == '\\' and at + 1 < into.len) continue;
-        into[at] = byte;
-        at += 1;
+    while (at < raw.len) : (at += 1) {
+        if (raw[at] == '\\' and at + 1 < raw.len) {
+            at += 1;
+        }
+        decoded += 1;
     }
-    return at;
+    writeHeader(store, entry, name.len, decoded);
+    var cursor = entry + 4;
+    @memcpy(store[cursor..][0..name.len], name);
+    cursor += name.len;
+    at = 0;
+    while (at < raw.len) : (at += 1) {
+        if (raw[at] == '\\' and at + 1 < raw.len) {
+            store[cursor] = raw[at + 1];
+            cursor += 1;
+            at += 1;
+            continue;
+        }
+        store[cursor] = raw[at];
+        cursor += 1;
+    }
+    return cursor;
+}
+
+fn entryHasConflict(store: []u8, entry: usize, name: []const u8) bool {
+    const this_value_len = std.mem.readInt(u16, store[entry + 2 ..][0..2], .big);
+    const this_value = store[entry + 4 + name.len ..][0..this_value_len];
+    var at: usize = 0;
+    while (at < entry) {
+        const prior_name_len = std.mem.readInt(u16, store[at..][0..2], .big);
+        const prior_value_len = std.mem.readInt(u16, store[at + 2 ..][0..2], .big);
+        const prior_name = store[at + 4 ..][0..prior_name_len];
+        const prior_value = store[at + 4 + prior_name_len ..][0..prior_value_len];
+        if (std.ascii.eqlIgnoreCase(prior_name, name) and
+            (prior_value_len != this_value.len or !std.mem.eql(u8, prior_value, this_value)))
+        {
+            return true;
+        }
+        at += 4 + prior_name_len + prior_value_len;
+    }
+    return false;
 }
 
 fn closingQuote(quoted: []const u8) ?usize {
@@ -703,13 +732,49 @@ test "a parameter list that Go refuses is refused here too, and one it admits is
     }
 }
 
-test "a parameter value longer than the decoded buffer is refused rather than overflowing it" {
+test "sixty-five parameters and a long value are admitted, because the header bound is the limit" {
     const loopback: []const []const u8 = &.{};
-    const long_token = "x" ** (max_parameter_bytes + 1);
-    const long_quoted = "y" ** (max_parameter_bytes + 1);
+    for ([_]usize{ 64, 65, 200 }) |count| {
+        var list: std.ArrayListUnmanaged(u8) = .empty;
+        defer list.deinit(testing.allocator);
+        try list.appendSlice(testing.allocator, "application/json");
+        for (0..count) |index| {
+            const piece = try std.fmt.allocPrint(testing.allocator, "; p{d}={d}", .{ index, index });
+            defer testing.allocator.free(piece);
+            try list.appendSlice(testing.allocator, piece);
+        }
+        const raw = try std.fmt.allocPrint(testing.allocator, "POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: {s}\r\nContent-Length: 2\r\n\r\n{{}}", .{list.items});
+        defer testing.allocator.free(raw);
+        var request = try requestOver(raw);
+        defer request.deinit(testing.allocator);
+        try testing.expectEqual(Answer.not_found, answer(loopback, request));
+    }
+    const long_value = "x" ** 2048;
+    const long_raw = try std.fmt.allocPrint(testing.allocator, "POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: application/json; a={s}\r\nContent-Length: 2\r\n\r\n{{}}", .{long_value});
+    defer testing.allocator.free(long_raw);
+    var long_request = try requestOver(long_raw);
+    defer long_request.deinit(testing.allocator);
+    try testing.expectEqual(Answer.not_found, answer(loopback, long_request));
+}
+
+test "an escaped backslash decodes with the byte it escapes, not dropped" {
+    const loopback: []const []const u8 = &.{};
     for ([_][]const u8{
-        "application/json; a=" ++ long_token,
-        "application/json; a=\"" ++ long_quoted ++ "\"",
+        "application/json; a=\"x\\\\\"; a=\"x\\\\\"",
+        "application/json; a=\"x\\\\y\"; a=\"x\\\\y\"",
+        "application/json; a=\"\\\\\"",
+        "application/json; a=\"x\\\"y\"; a=\"x\\\"y\"",
+    }) |declared| {
+        const raw = try std.fmt.allocPrint(testing.allocator, "POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: {s}\r\nContent-Length: 2\r\n\r\n{{}}", .{declared});
+        defer testing.allocator.free(raw);
+        var request = try requestOver(raw);
+        defer request.deinit(testing.allocator);
+        try testing.expectEqual(Answer.not_found, answer(loopback, request));
+    }
+    for ([_][]const u8{
+        "application/json; a=\"x\\\\\"; a=x",
+        "application/json; a=\"\\\\\"; a=\"\\\\\\\\\"",
+        "application/json; a=\"x\\\"y\"; a=\"x\\\\y\"",
     }) |declared| {
         const raw = try std.fmt.allocPrint(testing.allocator, "POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: {s}\r\nContent-Length: 2\r\n\r\n{{}}", .{declared});
         defer testing.allocator.free(raw);
@@ -717,12 +782,6 @@ test "a parameter value longer than the decoded buffer is refused rather than ov
         defer request.deinit(testing.allocator);
         try testing.expectEqualStrings("unsupported_media_type", answer(loopback, request).refusal.code);
     }
-    const exact = "x" ** max_parameter_bytes;
-    const fits = try std.fmt.allocPrint(testing.allocator, "POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: application/json; a={s}\r\nContent-Length: 2\r\n\r\n{{}}", .{exact});
-    defer testing.allocator.free(fits);
-    var fitting = try requestOver(fits);
-    defer fitting.deinit(testing.allocator);
-    try testing.expectEqual(Answer.not_found, answer(loopback, fitting));
 }
 
 test "a zero-length body with a wrong media type is not gated, because the gate reads length" {
