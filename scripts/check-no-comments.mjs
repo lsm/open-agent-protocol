@@ -496,7 +496,15 @@ function listFiles(args) {
   if (filesIdx !== -1) {
     const rest = args.slice(filesIdx + 1);
     const end = rest.findIndex((a) => a.startsWith("--"));
-    return rest.slice(0, end === -1 ? rest.length : end).filter(Boolean);
+    // An explicit --files that selects nothing judged nothing, and the run
+    // would exit 0 looking like a clean pass. That is the outcome a typo, a
+    // shell that lost an argument, or a glob that matched no tracked file all
+    // produce, so it is refused here rather than reported as coverage.
+    const explicit = rest.slice(0, end === -1 ? rest.length : end).filter(Boolean);
+    if (explicit.length === 0) {
+      throw new Error("--files selected no paths, so nothing was judged — refusing a vacuous check");
+    }
+    return explicit;
   }
   // -z emits NUL-delimited names without C-quoting non-ASCII paths or
   // touching embedded whitespace, so every tracked filename reads exactly.
@@ -513,7 +521,15 @@ function main() {
   const allowlistPath = allowlistIdx !== -1 ? args[allowlistIdx + 1] : DEFAULT_ALLOWLIST;
   const baseIdx = args.indexOf("--base");
   const baseRev = baseIdx !== -1 ? args[baseIdx + 1] : null;
-  const files = listFiles(args);
+  let files;
+  try {
+    files = listFiles(args);
+  } catch (err) {
+    // Same shape as the base-commit and ratchet refusals below: the message,
+    // then exit 1, rather than a stack trace from an unwrapped throw.
+    process.stdout.write(`${err.message}\n`);
+    process.exit(1);
+  }
   const allowlist = loadAllowlist(allowlistPath);
 
   if (check) {
