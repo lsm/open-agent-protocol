@@ -2829,6 +2829,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(adapter_config_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_config_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(deepseek_rpc_test).step);
+    test_step.dependOn(&b.addRunArtifact(packs_test).step);
     test_step.dependOn(&b.addRunArtifact(schema_bytes_test).step);
     test_step.dependOn(&b.addRunArtifact(jsonschema_test).step);
     test_step.dependOn(&b.addRunArtifact(tolerate_test).step);
