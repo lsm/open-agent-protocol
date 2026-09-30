@@ -1,12 +1,6 @@
-/**
- * Typed client errors. Each class names the exact wire condition that raised
- * it; `instanceof` discriminates them. The client never logs and carries no
- * credentials: the daemon is a single-user local service.
- */
 
 import type { Envelope } from './protocol.js';
 
-/** Base class of every client error, carrying an optional cause. */
 export class OapError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
     super(message, options);
@@ -14,22 +8,11 @@ export class OapError extends Error {
   }
 }
 
-/** A daemon error.response for one request: a correlated, schema-valid envelope describing why it was refused. */
 export class ServerError extends OapError {
-  /** HTTP status code. */
   readonly status: number;
-  /** The error.response code, e.g. "unknown_session"; empty when the daemon answered with a non-envelope body. */
   readonly code: string;
-  /** The daemon's error message on its own; `message` carries the full rendered text. */
   readonly serverMessage: string;
-  /**
-   * The error's typed details, when it carries any. A refused run control
-   * names what to change there: `feature` and `reason` on
-   * `unsupported_feature`, `feature` on `capability_degraded`, `model_id` on
-   * `model_not_found`.
-   */
   readonly details?: Record<string, unknown>;
-  /** The full error envelope; absent when the body carried none. */
   readonly envelope?: Envelope;
 
   constructor(
@@ -52,16 +35,10 @@ export class ServerError extends OapError {
   }
 }
 
-/** Reports the daemon error code carried by err, or null when err carries no coded ServerError. */
 export function serverCode(err: unknown): string | null {
   return err instanceof ServerError && err.code !== '' ? err.code : null;
 }
 
-/**
- * The daemon's oap-overflow signal: this connection's bounded buffer fell
- * behind. `lastSequence` is the last sequence delivered on the stream; resume
- * with `session.eventsAfter(runId, lastSequence)`.
- */
 export class OverflowError extends OapError {
   readonly runId: string;
   readonly lastSequence: number;
@@ -77,12 +54,6 @@ export class OverflowError extends OapError {
   }
 }
 
-/**
- * The daemon's oap-replay-gap signal: the requested cursor is no longer
- * retained. `oldestAvailable`/`latestAvailable` bound what is; a consumer
- * that accepts the loss resumes with a cursor at or after
- * `oldestAvailable - 1`, bound to `runId` when the stream knew it.
- */
 export class ReplayGapError extends OapError {
   readonly runId: string;
   readonly requestedAfter: number;
@@ -109,12 +80,6 @@ export class ReplayGapError extends OapError {
   }
 }
 
-/**
- * A dropped event stream that was not resumed: strict mode reports every
- * drop, and auto-resume reports a stream that ends repeatedly without
- * events. `runId`/`lastSequence` are the stream's last observed position;
- * resume with `session.eventsAfter(runId, lastSequence)`.
- */
 export class DisconnectError extends OapError {
   readonly runId: string;
   readonly lastSequence: number;
@@ -128,7 +93,6 @@ export class DisconnectError extends OapError {
   }
 }
 
-/** A stream frame the client cannot interpret: a non-envelope message frame, an undecodable signal, or an id field disagreeing with the envelope it frames. */
 export class MalformedFrameError extends OapError {
   readonly detail: string;
 
@@ -143,7 +107,6 @@ export class MalformedFrameError extends OapError {
   }
 }
 
-/** An envelope whose (run, sequence) position was already delivered: a resumed stream replayed what the consumer already saw. */
 export class DuplicateSequenceError extends OapError {
   readonly runId: string;
   readonly sequence: number;
@@ -155,7 +118,6 @@ export class DuplicateSequenceError extends OapError {
   }
 }
 
-/** An envelope that skipped one or more sequences in its run: an envelope was lost in transit or never published. */
 export class SequenceGapError extends OapError {
   readonly runId: string;
   readonly expected: number;
@@ -169,7 +131,6 @@ export class SequenceGapError extends OapError {
   }
 }
 
-/** A replayed suffix that does not continue the stream it was asked to: the run changed under the cursor, or the first replayed sequence is not the cursor plus one. */
 export class ResumeMismatchError extends OapError {
   readonly afterSequence: number;
   readonly expectedRunId: string;
@@ -187,7 +148,6 @@ export class ResumeMismatchError extends OapError {
   }
 }
 
-/** The operation was cancelled through its AbortSignal (the counterpart of Go's context.Canceled). */
 export class AbortedError extends OapError {
   constructor(detail = 'operation aborted') {
     super(`client: ${detail}`);
