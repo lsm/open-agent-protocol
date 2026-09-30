@@ -475,11 +475,12 @@ switched to later is lowered to that maximum when the request is made, so no req
 for more than the model writes. Whatever is asked for is lowered again to what the context
 window leaves.
 
-Under the default, a reply cut off below the model's maximum raises the limit to that maximum
-for the rest of the run; a count set with `/output` is kept as the user's bound and never
-raised: a cut-off tool call is answered with the usual error and retried, and
-cut-off text is followed by one request to continue from where it stopped. A reply cut off
-at the maximum ends as before. The setting is kept in `~/.oapx/config.json` under
+Only under the default, and only when the default is below the model's maximum, does a
+reply cut off at the limit raise it to that maximum for the rest of the run: a cut-off tool
+call is answered with the usual error and retried, and cut-off text is followed by one
+request to continue from where it stopped. `/output` reports this only when it applies. A
+count set with `/output`, `/output max`, a model that reports no maximum, and a reply cut
+off at the maximum all end the run as before. The setting is kept in `~/.oapx/config.json` under
 `mode.output`, as `"max"` or a count, and absent for the default.
 
 ## Automatic compaction

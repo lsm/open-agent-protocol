@@ -418,7 +418,10 @@ fn outputReport(allocator: std.mem.Allocator, runtime: *tui_runtime.TuiRuntime) 
         .tokens => "set",
     }, agent.outputRequest(model, setting), model.id });
     if (model.max_tokens > 0) {
-        try writer.print(", up to {d}. A reply cut off below that is continued once at {d}", .{ model.max_tokens, model.max_tokens });
+        try writer.print(", up to {d}", .{model.max_tokens});
+        if (setting == .auto and agent.outputRequest(model, setting) < model.max_tokens) {
+            try writer.print(". A reply cut off below that is continued once at {d}", .{model.max_tokens});
+        }
     } else {
         try writer.writeAll(", and the model reports no maximum of its own");
     }
@@ -637,6 +640,8 @@ test "output sets how much a reply asks for, and refuses more than the model wri
     try std.testing.expect(!set.is_error);
     try std.testing.expectEqual(agent.OutputSetting{ .tokens = 8_000 }, runtime.outputSetting());
     try std.testing.expect(std.mem.indexOf(u8, set.output, "output: set, 8000 tokens a reply") != null);
+    try std.testing.expect(std.mem.indexOf(u8, set.output, "continued") == null);
+    try std.testing.expect(std.mem.indexOf(u8, shown.output, "continued") == null);
 
     var refused = try dispatch(ctx, .{ .kind = .output, .arg = "20k" });
     defer refused.deinit(std.testing.allocator);
