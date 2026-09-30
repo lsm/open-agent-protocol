@@ -36,7 +36,7 @@ provenance change behind one review.
 
 That separation held, and it is now history rather than a plan. #673 landed
 the `source` half first; this document's companion change, the `lifecycle`
-half, is what follows it. On this branch both members are
+half, is what follows it. After both, both members are
 `?ModelLifecycle = null` and `?ModelSource = null`, and the `lifecycle`
 correction described in `drafts/oap-model-entry-absence.md` is the one landing
 here.
@@ -98,7 +98,7 @@ distinct halves — not three re-decode round-trips.
 
 ### Historical measurement — before the reader migrations
 
-Measured on this branch's original base, which predates #688, #690, #705,
+Measured on the `source` change's original base, which predates #688, #690,
 #709, #710 and #712. **Kept as evidence of what the gap was**, not as a
 description of any current tree; the row for every migrated SDK is now false.
 
