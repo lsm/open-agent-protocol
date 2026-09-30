@@ -5,6 +5,20 @@ pub const pack_base_uri = "https://open-agent-protocol.local/ext/";
 
 pub const Branch = jsonschema.Alternative;
 
+pub const pack_branch_unpinned = "pack_branch_unpinned";
+pub const pack_branch_undeclared_type = "pack_branch_undeclared_type";
+
+pub const Refusal = struct {
+    code: []const u8,
+    pack: []const u8,
+    detail: []const u8 = "",
+};
+
+const Document = struct {
+    name: []const u8,
+    value: std.json.Value,
+};
+
 pub const Member = struct {
     payload_type: []const u8,
     name: []const u8,
@@ -25,11 +39,46 @@ pub const Loaded = struct {
     branches: []Branch,
     members: []Member,
     types: []Declared = &.{},
+    refusals: []Refusal = &.{},
 
     pub fn deinit(self: *Loaded) void {
         self.arena.deinit();
     }
 };
+
+fn pointerAt(root: std.json.Value, fragment: []const u8) ?std.json.Value {
+    var current = root;
+    var rest = fragment;
+    if (std.mem.startsWith(u8, rest, "/")) rest = rest[1 ..];
+    while (std.mem.indexOfScalar(u8, rest, '/')) |slash| {
+        const token = rest[0..slash];
+        rest = rest[slash + 1 ..];
+        switch (current) {
+            .object => |members| current = members.get(token) orelse return null,
+            .array => |list| {
+                const index = std.fmt.parseInt(usize, token, 10) catch return null;
+                if (index >= list.items.len) return null;
+                current = list.items[index];
+            },
+            else => return null,
+        }
+    }
+    if (rest.len == 0) return current;
+    return switch (current) {
+        .object => |members| members.get(rest),
+        else => null,
+    };
+}
+
+fn pinnedTypeOf(branch: std.json.Value) ?[]const u8 {
+    if (branch != .object) return null;
+    const properties = branch.object.get("properties") orelse return null;
+    if (properties != .object) return null;
+    const type_schema = properties.object.get("type") orelse return null;
+    if (type_schema != .object) return null;
+    const held = type_schema.object.get("const") orelse return null;
+    return if (held == .string) held.string else null;
+}
 
 fn readAll(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     return std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(8 * 1024 * 1024));
@@ -61,6 +110,7 @@ fn gather(
     var branches = std.ArrayList(Branch).empty;
     var members = std.ArrayList(Member).empty;
     var types = std.ArrayList(Declared).empty;
+    var load_refusals = std.ArrayList(Refusal).empty;
 
     for (pack_dirs) |dir| {
         const descriptor_path = try std.fs.path.join(allocator, &.{ dir, "pack.json" });
@@ -70,15 +120,20 @@ fn gather(
         const pack_id = (descriptor.object.get("id") orelse return error.InvalidPackDescriptor).string;
         const version = (descriptor.object.get("version") orelse return error.InvalidPackDescriptor).string;
 
-        if (registry) |target| {
-            if (descriptor.object.get("schemas")) |schemas| {
-                for (schemas.array.items) |schema_name| {
-                    const file = schema_name.string;
-                    const schema_path = try std.fs.path.join(allocator, &.{ dir, file });
-                    const schema_bytes = try readAll(io, allocator, schema_path);
-                    const key = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/{s}", .{ pack_base_uri, pack_id, version, file });
-                    try target.addDocument(key, schema_bytes);
-                }
+        var pack_documents: std.ArrayList(Document) = .empty;
+        if (descriptor.object.get("schemas")) |schemas| {
+            if (schemas != .array) return error.InvalidPackDescriptor;
+            for (schemas.array.items) |schema_name| {
+                if (schema_name != .string) return error.InvalidPackDescriptor;
+                const file = schema_name.string;
+                const schema_path = try std.fs.path.join(allocator, &.{ dir, file });
+                const schema_bytes = try readAll(io, allocator, schema_path);
+                const key = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/{s}", .{ pack_base_uri, pack_id, version, file });
+                try pack_documents.append(allocator, .{
+                    .name = file,
+                    .value = try std.json.parseFromSliceLeaky(std.json.Value, allocator, schema_bytes, .{}),
+                });
+                if (registry) |target| try target.addDocument(key, schema_bytes);
             }
         }
 
@@ -123,8 +178,27 @@ fn gather(
             const declared_type = (entry.object.get("type") orelse continue).string;
             const schema_ref = (entry.object.get("schema") orelse continue).string;
             const hash = std.mem.indexOfScalar(u8, schema_ref, '#') orelse continue;
+            const cited = schema_ref[0..hash];
+            var resolved: ?std.json.Value = null;
+            for (pack_documents.items) |document| {
+                if (!std.mem.eql(u8, document.name, cited)) continue;
+                resolved = pointerAt(document.value, schema_ref[hash + 1 ..]);
+                break;
+            }
+            if (resolved == null) {
+                try load_refusals.append(allocator, .{ .code = "", .pack = pack_id, .detail = declared_type });
+                continue;
+            }
+            const pinned = pinnedTypeOf(resolved.?);
+            if (pinned == null) {
+                try load_refusals.append(allocator, .{ .code = pack_branch_unpinned, .pack = pack_id, .detail = declared_type });
+                continue;
+            }
+            if (!std.mem.eql(u8, pinned.?, declared_type)) {
+                try load_refusals.append(allocator, .{ .code = pack_branch_undeclared_type, .pack = pack_id, .detail = declared_type });
+                continue;
+            }
             const ref = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/{s}", .{ pack_base_uri, pack_id, version, schema_ref });
-            _ = hash;
             try branches.append(allocator, .{
                 .declared_type = try allocator.dupe(u8, declared_type),
                 .ref = ref,
@@ -138,11 +212,22 @@ fn gather(
         }
     }.lessThan);
 
+    if (load_refusals.items.len != 0) {
+        return .{
+            .arena = arena,
+            .branches = &.{},
+            .members = &.{},
+            .types = &.{},
+            .refusals = try load_refusals.toOwnedSlice(allocator),
+        };
+    }
+
     return .{
         .arena = arena,
         .branches = try branches.toOwnedSlice(allocator),
         .members = try members.toOwnedSlice(allocator),
         .types = try types.toOwnedSlice(allocator),
+        .refusals = &.{},
     };
 }
 
@@ -212,4 +297,106 @@ pub fn payloadTarget(
         .document = if (file.len == 0) envelope_document else file,
         .definition = fragment[marker.len..],
     };
+}
+
+fn judgesAsAccepted(allocator: std.mem.Allocator, registry: *jsonschema.Registry, branches: []const Branch, line: []const u8) !bool {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
+    defer parsed.deinit();
+    var validator = jsonschema.Validator.init(allocator, registry);
+    defer validator.deinit();
+    const failure = try validator.validateWithBranches("envelope.schema.json", parsed.value, branches);
+    return failure == null;
+}
+
+fn carriesCode(refusals: []const Refusal, code: []const u8) bool {
+    for (refusals) |refusal| {
+        if (std.mem.eql(u8, refusal.code, code)) return true;
+    }
+    return false;
+}
+
+fn writePack(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir, dir: []const u8, schema: []const u8, descriptor: []const u8) ![:0]u8 {
+    try tmp.dir.createDir(std.testing.io, dir, .default_dir);
+    const schema_path = try std.fmt.allocPrint(allocator, "{s}/types.schema.json", .{dir});
+    defer allocator.free(schema_path);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = schema_path, .data = schema });
+    const descriptor_path = try std.fmt.allocPrint(allocator, "{s}/pack.json", .{dir});
+    defer allocator.free(descriptor_path);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = descriptor_path, .data = descriptor });
+    return tmp.dir.realPathFileAlloc(std.testing.io, dir, allocator);
+}
+
+test "a contributed branch must pin type to a const naming its own declared type" {
+    const allocator = std.testing.allocator;
+    var registry = try jsonschema.Registry.initFromBundled(allocator);
+    defer registry.deinit();
+
+    const fixtures = [_]struct { dir: []const u8, code: []const u8 }{
+        .{ .dir = "fixtures/packs/bad-branch-unpinned", .code = pack_branch_unpinned },
+        .{ .dir = "fixtures/packs/bad-branch-undeclared-type", .code = pack_branch_undeclared_type },
+    };
+
+    for (fixtures) |fixture| {
+        const one = [_][]const u8{fixture.dir};
+        var refused = try load(std.testing.io, allocator, &registry, &one);
+        defer refused.deinit();
+        try std.testing.expect(carriesCode(refused.refusals, fixture.code));
+        try std.testing.expectEqual(@as(usize, 0), refused.branches.len);
+    }
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const pinned: [:0]u8 = try writePack(allocator, &tmp, "pinned",
+        \\{"$defs": {"ping": {"type": "object", "required": ["type", "session_id"], "properties": {"type": {"const": "com.example.pinned.ping"}, "session_id": {"type": "string"}}}}}
+    ,
+        \\{"id": "com.example.pinned", "version": "1.0.0", "schemas": ["types.schema.json"], "envelope_types": [{"type": "com.example.pinned.ping", "role": "event", "schema": "types.schema.json#/$defs/ping"}]}
+    ,
+    );
+    defer allocator.free(pinned);
+    const pinned_dirs = [_][]const u8{pinned};
+    var good = try load(std.testing.io, allocator, &registry, &pinned_dirs);
+    defer good.deinit();
+    try std.testing.expectEqual(@as(usize, 0), good.refusals.len);
+    try std.testing.expectEqual(@as(usize, 1), good.branches.len);
+
+    const complete =
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core",
+        \\"type":"com.example.pinned.ping","id":"e1","session_id":"s","payload":{}}
+    ;
+    const short =
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core",
+        \\"type":"com.example.pinned.ping","id":"e1","payload":{}}
+    ;
+    try std.testing.expect(try judgesAsAccepted(allocator, &registry, good.branches, complete));
+    try std.testing.expect(!try judgesAsAccepted(allocator, &registry, good.branches, short));
+
+    const mixed: [:0]u8 = try writePack(allocator, &tmp, "mixed",
+        \\{"$defs": {"good": {"type": "object", "properties": {"type": {"const": "com.example.mixed.good"}}}, "bad": {"type": "object", "properties": {"type": {"type": "string"}}}}}
+    ,
+        \\{"id": "com.example.mixed", "version": "1.0.0", "schemas": ["types.schema.json"], "envelope_types": [{"type": "com.example.mixed.good", "role": "event", "schema": "types.schema.json#/$defs/good"}, {"type": "com.example.mixed.bad", "role": "event", "schema": "types.schema.json#/$defs/bad"}]}
+    ,
+    );
+    defer allocator.free(mixed);
+    const mixed_dirs = [_][]const u8{mixed};
+    var partial = try load(std.testing.io, allocator, &registry, &mixed_dirs);
+    defer partial.deinit();
+    try std.testing.expectEqual(@as(usize, 1), partial.refusals.len);
+    try std.testing.expectEqualStrings(pack_branch_unpinned, partial.refusals[0].code);
+    try std.testing.expectEqualStrings("com.example.mixed.bad", partial.refusals[0].detail);
+    try std.testing.expectEqual(@as(usize, 0), partial.branches.len);
+
+    const dangling: [:0]u8 = try writePack(allocator, &tmp, "dangling",
+        \\{"$defs": {"ping": {"type": "object", "properties": {"type": {"const": "com.example.dangling.ping"}}}}}
+    ,
+        \\{"id": "com.example.dangling", "version": "1.0.0", "schemas": ["types.schema.json"], "envelope_types": [{"type": "com.example.dangling.ping", "role": "event", "schema": "types.schema.json#/$defs/absent"}]}
+    ,
+    );
+    defer allocator.free(dangling);
+    const dangling_dirs = [_][]const u8{dangling};
+    var unresolved = try load(std.testing.io, allocator, &registry, &dangling_dirs);
+    defer unresolved.deinit();
+    try std.testing.expectEqual(@as(usize, 1), unresolved.refusals.len);
+    try std.testing.expectEqualStrings("", unresolved.refusals[0].code);
+    try std.testing.expectEqual(@as(usize, 0), unresolved.branches.len);
 }
