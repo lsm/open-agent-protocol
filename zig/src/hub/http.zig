@@ -1009,12 +1009,14 @@ test "a drain stops at its byte cap and reports what it consumed" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var pipe = try Pipe.open();
     defer pipe.close();
-    const owed: usize = drain_total_cap_bytes + 512 * 1024;
+    const wanted_cap: usize = 1024 * 1024;
+    try testing.expectEqual(wanted_cap, drain_total_cap_bytes);
+    const owed: usize = wanted_cap + 512 * 1024;
     var writer = try std.Thread.spawn(.{}, flood, .{ &pipe.client, owed });
     const spent = drain(&pipe.accepted, owed, always_going);
     pipe.closeAccepted();
     writer.join();
-    try testing.expectEqual(drain_total_cap_bytes, spent);
+    try testing.expectEqual(wanted_cap, spent);
     try testing.expect(spent < owed);
 }
 
