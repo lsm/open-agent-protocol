@@ -31,7 +31,7 @@ not a second product.
 | `run`, `auth`, the TUI (bare invocation) | the product's own loop and credentials | yes | — |
 
 `conformance` gives each wait one budget for the whole wait, not one per line: the
-line deadline bounds a single response, event or control answer from the moment the
+`--timeout` bounds a single response, event or control answer from the moment the
 runner starts looking for it, and a frame the runner did not ask for spends that
 budget rather than renewing it. An endpoint that keeps talking but never answers is
 judged on the deadline instead of waited on forever; a match already buffered is
