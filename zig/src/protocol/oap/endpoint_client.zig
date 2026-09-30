@@ -19,6 +19,35 @@ pub const Spawn = struct {
     environment: []const []const u8 = &.{},
 };
 
+pub const Budget = struct {
+    io: std.Io,
+    started: std.Io.Timestamp,
+    budget_ms: i64,
+
+    pub fn until(io: std.Io, budget_ms: i64) Budget {
+        return .{
+            .io = io,
+            .started = std.Io.Timestamp.now(io, .awake),
+            .budget_ms = @max(budget_ms, 0),
+        };
+    }
+
+    pub fn remainingMs(self: Budget) i64 {
+        const spent = self.started.durationTo(std.Io.Timestamp.now(self.io, .awake));
+        return self.budget_ms - @as(i64, @intCast(@divTrunc(spent.toNanoseconds(), std.time.ns_per_ms)));
+    }
+
+    pub fn expired(self: Budget) bool {
+        return self.remainingMs() <= 0;
+    }
+
+    pub fn timeout(self: Budget) std.Io.Timeout {
+        return .{
+            .duration = .{ .raw = std.Io.Duration.fromMilliseconds(@max(self.remainingMs(), 1)), .clock = .boot },
+        };
+    }
+};
+
 pub const Frame = union(enum) {
     envelope: []const u8,
     control: []const u8,
@@ -36,7 +65,7 @@ pub const Client = struct {
         return .{ .allocator = allocator, .threaded = std.Io.Threaded.init(allocator, .{}) };
     }
 
-    fn io(self: *Client) std.Io {
+    pub fn io(self: *Client) std.Io {
         return self.threaded.io();
     }
 
@@ -123,13 +152,25 @@ pub const Client = struct {
     }
 
     pub fn next(self: *Client, timeout: std.Io.Timeout) !?Frame {
+        const handle = self.io();
+        const now = std.Io.Timestamp.now(handle, .awake);
+        return self.nextBounded(.{
+            .io = handle,
+            .started = now,
+            .budget_ms = @as(i64, @intCast(@divTrunc(timeout.duration.raw.nanoseconds, std.time.ns_per_ms))),
+        });
+    }
+
+    pub fn nextBounded(self: *Client, budget: Budget) !?Frame {
         while (true) {
+            if (budget.expired()) return null;
             if (try self.takeLine()) |line| {
                 const trimmed = std.mem.trim(u8, line, " \t\r");
                 if (trimmed.len == 0) continue;
                 return try classify(trimmed);
             }
-            const filled = try self.fill(timeout);
+            if (budget.expired()) return null;
+            const filled = try self.fill(budget.timeout());
             if (!filled) return null;
         }
     }
