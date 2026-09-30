@@ -14,6 +14,7 @@ pub const default_shell_limit: usize = 10 * 1024;
 pub const default_file_limit: usize = 20 * 1024;
 pub const default_search_limit: usize = 15 * 1024;
 pub const default_fallback_limit: usize = 4 * 1024;
+pub const default_hashline_limit: usize = 20 * 1024;
 pub const tool_output_threshold: usize = default_fallback_limit;
 pub const snippet_bytes: usize = 512;
 
