@@ -192,7 +192,9 @@ pub fn outputLimit(model: ai_types.Model, requested: ?u32, context: ai_types.Con
     if (model.context_window == 0 or wanted == 0) return requested;
     const prompt = promptTokens(context);
     if (model.context_window <= prompt) return @intCast(@min(wanted, full_window_output_tokens));
-    return @intCast(@min(wanted, model.context_window - prompt));
+    const room = model.context_window - prompt;
+    if (room >= wanted) return requested;
+    return @intCast(room);
 }
 
 fn outputLimitModel(context_window: u32, max_tokens: u32) ai_types.Model {
@@ -210,7 +212,7 @@ fn outputLimitModel(context_window: u32, max_tokens: u32) ai_types.Model {
     };
 }
 
-test "outputLimit asks for no more output than the context window leaves after an estimated prompt" {
+test "outputLimit asks for no more output than the context window leaves after an estimated prompt, and leaves an unset limit unset when it fits" {
     const text = "a" ** 3000;
     const messages = [_]ai_types.Message{.{ .user = .{ .content = .{ .text = text }, .timestamp = 0 } }};
     const context: ai_types.Context = .{ .messages = &messages };
@@ -222,6 +224,7 @@ test "outputLimit asks for no more output than the context window leaves after a
     try std.testing.expectEqual(@as(?u32, 700), outputLimit(outputLimitModel(@intCast(prompt), 700), null, context));
     try std.testing.expectEqual(@as(?u32, 500), outputLimit(outputLimitModel(@intCast(prompt + 500), 9_000), null, context));
     try std.testing.expectEqual(@as(?u32, 9_000), outputLimit(outputLimitModel(0, 9_000), 9_000, context));
+    try std.testing.expectEqual(@as(?u32, null), outputLimit(outputLimitModel(1_000_000, 9_000), null, context));
 }
 
 test "outputLimit counts the prompt from the provider's last report when a reply carries one" {
