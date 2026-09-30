@@ -167,6 +167,80 @@ pub fn estimateMessageTokens(message: ai_types.Message) u64 {
     return estimateMessage(message).estimated_tokens;
 }
 
+const min_output_tokens: u64 = 1024;
+
+fn promptTokens(context: ai_types.Context) u64 {
+    const messages = context.messages;
+    var index = messages.len;
+    while (index > 0) {
+        index -= 1;
+        if (messages[index] != .assistant) continue;
+        const usage = messages[index].assistant.usage;
+        const reported = usage.input + usage.cache_read + usage.cache_write;
+        if (reported == 0) continue;
+        return reported + usage.output + estimateMessages(messages[index + 1 ..]).estimated_tokens;
+    }
+    const estimated = estimatePromptTokens(context);
+    return estimated + estimated / 3;
+}
+
+pub fn outputLimit(model: ai_types.Model, requested: ?u32, context: ai_types.Context) ?u32 {
+    const wanted: u64 = requested orelse model.max_tokens;
+    if (model.context_window == 0 or wanted == 0) return requested;
+    const prompt = promptTokens(context);
+    const room: u64 = if (model.context_window > prompt) model.context_window - prompt else 0;
+    return @intCast(@max(@min(wanted, room), @min(wanted, min_output_tokens)));
+}
+
+fn outputLimitModel(context_window: u32, max_tokens: u32) ai_types.Model {
+    return .{
+        .id = "test-model",
+        .name = "Test",
+        .api = "test-api",
+        .provider = "test-provider",
+        .base_url = "",
+        .reasoning = false,
+        .input = &.{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = context_window,
+        .max_tokens = max_tokens,
+    };
+}
+
+test "outputLimit asks for no more output than the context window leaves after an estimated prompt" {
+    const text = "a" ** 3000;
+    const messages = [_]ai_types.Message{.{ .user = .{ .content = .{ .text = text }, .timestamp = 0 } }};
+    const context: ai_types.Context = .{ .messages = &messages };
+    const estimated = estimatePromptTokens(context);
+    const prompt = estimated + estimated / 3;
+
+    try std.testing.expectEqual(@as(?u32, @intCast(10_000 - prompt)), outputLimit(outputLimitModel(10_000, 9_000), null, context));
+    try std.testing.expectEqual(@as(?u32, 500), outputLimit(outputLimitModel(10_000, 9_000), 500, context));
+    try std.testing.expectEqual(@as(?u32, 1024), outputLimit(outputLimitModel(prompt, 9_000), null, context));
+    try std.testing.expectEqual(@as(?u32, 700), outputLimit(outputLimitModel(prompt, 700), null, context));
+    try std.testing.expectEqual(@as(?u32, 9_000), outputLimit(outputLimitModel(0, 9_000), 9_000, context));
+}
+
+test "outputLimit counts the prompt from the provider's last report when a reply carries one" {
+    const messages = [_]ai_types.Message{
+        .{ .user = .{ .content = .{ .text = "a" ** 40_000 }, .timestamp = 0 } },
+        .{ .assistant = .{
+            .content = &.{.{ .text = .{ .text = "ok" } }},
+            .api = "test-api",
+            .provider = "test-provider",
+            .model = "test-model",
+            .usage = .{ .input = 6_000, .output = 200, .cache_read = 3_000, .cache_write = 800 },
+            .stop_reason = .stop,
+            .timestamp = 0,
+        } },
+        .{ .user = .{ .content = .{ .text = "b" ** 400 }, .timestamp = 0 } },
+    };
+    const context: ai_types.Context = .{ .messages = &messages };
+    const prompt = 6_000 + 3_000 + 800 + 200 + estimateMessages(messages[2..]).estimated_tokens;
+
+    try std.testing.expectEqual(@as(?u32, @intCast(20_000 - prompt)), outputLimit(outputLimitModel(20_000, 19_000), null, context));
+}
+
 fn pushAgentEvent(event_stream: *AgentEventStream, event: AgentEvent) !void {
     if (!event_stream.pushBlocking(event)) {
         return error.StreamCompleted;
@@ -912,7 +986,7 @@ fn streamAssistantResponse(
         .thinking_budgets = config.thinking_budgets,
         .max_retry_delay_ms = config.max_retry_delay_ms orelse 60_000,
         .temperature = config.temperature,
-        .max_tokens = config.max_tokens,
+        .max_tokens = outputLimit(config.model, config.max_tokens, llm_context),
     };
 
     const provider_stream = try config.protocol.stream(

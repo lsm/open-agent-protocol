@@ -1498,6 +1498,7 @@ test "Agent passes model max_tokens to protocol" {
     defer agent.deinit();
     var model = test_model;
     model.max_tokens = 8192;
+    model.context_window = 1_000_000;
     agent.setModel(model);
 
     const text = try std.testing.allocator.dupe(u8, "hello");
@@ -1505,6 +1506,24 @@ test "Agent passes model max_tokens to protocol" {
     try agent.prompt(@as([]const ai_types.Message, &.{message}));
 
     try std.testing.expectEqual(@as(?u32, 8192), capture.max_tokens);
+}
+
+test "Agent asks for less output when the prompt leaves less room in the context window" {
+    var capture = CaptureOptionsCtx{};
+    var agent = Agent.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = captureOptionsStreamFn, .ctx = &capture } });
+    defer agent.deinit();
+    var model = test_model;
+    model.max_tokens = 8192;
+    model.context_window = 10_000;
+    agent.setModel(model);
+
+    const text = try std.testing.allocator.dupe(u8, "a" ** 8000);
+    const message = ai_types.Message{ .user = .{ .content = .{ .text = text }, .timestamp = 0 } };
+    const expected = agent_loop.outputLimit(model, model.max_tokens, .{ .messages = &.{message} }).?;
+    try std.testing.expect(expected < 8192);
+    try agent.prompt(@as([]const ai_types.Message, &.{message}));
+
+    try std.testing.expectEqual(@as(?u32, expected), capture.max_tokens);
 }
 
 test "Agent validateContinueFromContext reports resume errors" {
