@@ -81,10 +81,11 @@ fn gather(
                 const pack_root = std.Io.Dir.cwd().realPathFileAlloc(io, dir, allocator) catch try std.fs.path.resolve(allocator, &.{dir});
                 for (schemas.array.items) |schema_name| {
                     const file = schema_name.string;
+                    if (file.len == 0 or std.fs.path.isAbsolute(file)) return error.InvalidPackDescriptor;
                     const schema_path = try std.fs.path.join(allocator, &.{ dir, file });
                     const resolved = std.Io.Dir.cwd().realPathFileAlloc(io, schema_path, allocator) catch return error.InvalidPackDescriptor;
                     if (!beneath(pack_root, resolved)) return error.InvalidPackDescriptor;
-                    const schema_bytes = try readAll(io, allocator, schema_path);
+                    const schema_bytes = try readAll(io, allocator, resolved);
                     const key = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/{s}", .{ pack_base_uri, pack_id, version, file });
                     try target.addDocument(key, schema_bytes);
                 }
@@ -227,7 +228,7 @@ test "a descriptor schema path is read only when it lands beneath the pack root"
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    for ([_][]const u8{ "staying", "aliased", "upward", "absolute", "linked" }) |name| {
+    for ([_][]const u8{ "staying", "aliased", "upward", "absolute", "absoluteinside", "linked" }) |name| {
         try tmp.dir.createDir(std.testing.io, name, .default_dir);
     }
     try tmp.dir.createDir(std.testing.io, "outside", .default_dir);
@@ -257,7 +258,15 @@ test "a descriptor schema path is read only when it lands beneath the pack root"
             \\{"id": "com.example.abs", "version": "1.0.0", "schemas": ["/etc/hosts"], "envelope_types": []}
         ,
     });
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "outside/away.schema.json", .data =
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "absoluteinside/note.schema.json", .data =
+            \\{"$schema": "https://json-schema.org/draft/2020-12/schema"}
+        ,
+    });
+    const absolute_root = try tmp.dir.realPathFileAlloc(std.testing.io, "absoluteinside", allocator);
+    defer allocator.free(absolute_root);
+    const absolute_inside = try std.fmt.allocPrint(allocator, "{{\"id\":\"com.example.absin\",\"version\":\"1.0.0\",\"schemas\":[\"{s}/note.schema.json\"],\"envelope_types\":[]}}", .{absolute_root});
+    defer allocator.free(absolute_inside);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "absoluteinside/pack.json", .data = absolute_inside });    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "outside/away.schema.json", .data =
             \\{"$schema": "https://json-schema.org/draft/2020-12/schema", "$defs": {"thing": {"type": "object", "required": ["type"], "properties": {"type": {"const": "com.example.ok.thing"}}}}}
         ,
     });
@@ -284,7 +293,7 @@ test "a descriptor schema path is read only when it lands beneath the pack root"
     defer symlinked.deinit();
     try std.testing.expectEqual(@as(usize, 1), symlinked.branches.len);
 
-    for ([_][]const u8{ "upward", "absolute", "linked" }) |name| {
+    for ([_][]const u8{ "upward", "absolute", "absoluteinside", "linked" }) |name| {
         const dir = try tmp.dir.realPathFileAlloc(std.testing.io, name, allocator);
         defer allocator.free(dir);
         const escaping = [_][]const u8{dir};
