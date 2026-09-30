@@ -1,9 +1,38 @@
+const SESSION_SWEEP_INTERVAL_MS: i64 = 1_000;
+
+pub const Driver = struct {
+    runs: std.ArrayList(Run),
+    last_session_sweep_mono_ms: i64 = 0,
+
+    pub fn init() Driver {
+        return .{ .runs = std.ArrayList(Run).empty };
+    }
+
+    pub fn deinit(self: *Driver, allocator: std.mem.Allocator) void {
+        for (self.runs.items) |*run| run.deinit(allocator);
+        self.runs.deinit(allocator);
+        self.* = undefined;
+    }
+
+    pub fn len(self: *Driver) usize {
+        return self.runs.items.len;
+    }
+};
+
+pub const STDIO_DISCONNECT_TOOL_WAIT_MESSAGE = "client disconnected while the run waited for a distributed tool_result";
+pub const STDIO_EVENT_PUBLICATION_FAILED_MESSAGE = "run event publication failed; event stream truncated before settlement";
+pub const STDIO_RUN_WITHOUT_OUTCOME_MESSAGE = "run ended without a deliverable outcome (terminal lost to allocation failure)";
+
 const std = @import("std");
 const agent_types = @import("agent_types");
 const ai_types = @import("ai_types");
 const agent_loop = @import("agent_loop");
 const json_writer = @import("json_writer");
 const transport = @import("transport");
+const compat = @import("compat");
+const agent_server_module = @import("agent_server");
+
+const AgentProtocolServer = agent_server_module.AgentProtocolServer;
 const AgentToolBridge = @import("tools/agent_tool_bridge");
 
 pub const SessionId = agent_types.SessionId;
@@ -86,8 +115,8 @@ pub const Run = struct {
     }
 };
 
-pub fn hasRunForGeneration(table: *const std.ArrayList(Run), session_id: SessionId, generation: u64) bool {
-    for (table.items) |run| {
+pub fn hasRunForGeneration(driver: *const Driver, session_id: SessionId, generation: u64) bool {
+    for (driver.runs.items) |run| {
         if (run.settlement_frame_published) continue;
         if (run.generation == generation and std.mem.eql(u8, run.session_id[0..], session_id[0..])) return true;
     }
@@ -96,11 +125,11 @@ pub fn hasRunForGeneration(table: *const std.ArrayList(Run), session_id: Session
 
 pub fn cancelRun(
     allocator: std.mem.Allocator,
-    table: *std.ArrayList(Run),
+    driver: *Driver,
     bridge: *AgentToolBridge.Bridge,
     session_id: SessionId,
 ) void {
-    for (table.items) |*run| {
+    for (driver.runs.items) |*run| {
         if (std.mem.eql(u8, run.session_id[0..], session_id[0..])) run.cancel();
     }
     bridge.discardSession(allocator, session_id);
@@ -121,7 +150,7 @@ pub fn deinitToolFields(allocator: std.mem.Allocator, tool: *agent_loop.AgentToo
 
 pub fn admit(
     allocator: std.mem.Allocator,
-    table: *std.ArrayList(Run),
+    driver: *Driver,
     bridge: *AgentToolBridge.Bridge,
     prepared: *Prepared,
     session_id: SessionId,
@@ -203,7 +232,7 @@ pub fn admit(
 
     var appended = false;
     errdefer if (!appended) run.deinit(allocator);
-    try table.append(allocator, run);
+    try driver.runs.append(allocator, run);
     appended = true;
 }
 
@@ -386,4 +415,257 @@ fn writeUsageField(w: *json_writer.JsonWriter, usage: ai_types.Usage) !void {
     try w.writeIntField("cache_read", usage.cache_read);
     try w.writeIntField("cache_write", usage.cache_write);
     try w.endObject();
+}
+
+pub fn publishRunFailurePair(
+    server: *AgentProtocolServer,
+    allocator: std.mem.Allocator,
+    run: *Run,
+    code: agent_types.AgentErrorCode,
+    message: []const u8,
+) !void {
+    if (!run.failure_event_published) {
+        const event_json = try serializeAgentErrorEvent(allocator, message, @tagName(code));
+        defer allocator.free(event_json);
+        server.publishAgentEvent(run.session_id, event_json) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => {},
+        };
+        run.failure_event_published = true;
+    }
+    server.publishAgentError(run.session_id, code, message) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => {},
+    };
+    run.settlement_frame_published = true;
+}
+
+pub fn dropTerminalProjection(allocator: std.mem.Allocator, run: *Run) void {
+    if (run.terminal_event_json) |event_json| allocator.free(event_json);
+    run.terminal_event_json = null;
+}
+
+pub fn publishAgentLoopError(
+    server: *AgentProtocolServer,
+    allocator: std.mem.Allocator,
+    session_id: SessionId,
+    code: agent_types.AgentErrorCode,
+    message: []const u8,
+) !void {
+    const event_json = try serializeAgentErrorEvent(allocator, message, @tagName(code));
+    defer allocator.free(event_json);
+    server.publishAgentEvent(session_id, event_json) catch |err| {
+        if (err == error.OutOfMemory) return err;
+    };
+    server.publishAgentError(session_id, code, message) catch |err| {
+        if (err == error.OutOfMemory) return err;
+    };
+}
+
+pub fn publishPendingToolRequests(
+    server: *AgentProtocolServer,
+    allocator: std.mem.Allocator,
+    bridge: *AgentToolBridge.Bridge,
+) !usize {
+    var published: usize = 0;
+    while (true) {
+        const request = bridge.peekFrontRequest() orelse break;
+
+        const registration_current = blk: {
+            const current = server.sessionGeneration(request.session_id);
+            break :blk current != null and current.? == request.generation;
+        };
+        if (!registration_current) {
+            bridge.popFrontRequest(allocator);
+            continue;
+        }
+        if (bridge.isDisconnected()) {
+            bridge.popFrontRequest(allocator);
+            continue;
+        }
+
+        var payload_owned_by_env = false;
+        const owned_tool_call_id = try allocator.dupe(u8, request.tool_call_id);
+        errdefer if (!payload_owned_by_env) allocator.free(owned_tool_call_id);
+        const owned_tool_name = try allocator.dupe(u8, request.tool_name);
+        errdefer if (!payload_owned_by_env) allocator.free(owned_tool_name);
+        const owned_args_json = try allocator.dupe(u8, request.args_json);
+        errdefer if (!payload_owned_by_env) allocator.free(owned_args_json);
+
+        var env = agent_types.Envelope{
+            .session_id = request.session_id,
+            .message_id = agent_types.generateUlid(),
+            .sequence = try server.nextOutgoingSequence(request.session_id),
+            .timestamp = compat.time.nowMillis(),
+            .payload = .{ .tool_execute = .{
+                .tool_call_id = owned_tool_call_id,
+                .tool_name = owned_tool_name,
+                .args_json = owned_args_json,
+            } },
+        };
+        errdefer env.deinit(allocator);
+        payload_owned_by_env = true;
+
+        try bridge.markInFlight(allocator, request.session_id, request.tool_call_id, env.message_id, request.generation);
+        errdefer bridge.discardInFlight(allocator, request.session_id, request.tool_call_id);
+        try server.enqueueEnvelope(env);
+        bridge.popFrontRequest(allocator);
+        published += 1;
+    }
+    return published;
+}
+
+fn serializeAgentErrorEvent(allocator: std.mem.Allocator, message: []const u8, code: []const u8) ![]u8 {
+    var buffer = std.ArrayList(u8).empty;
+    errdefer buffer.deinit(allocator);
+    var w = json_writer.JsonWriter.init(&buffer, allocator);
+    try w.beginObject();
+    try w.writeStringField("type", "error");
+    try w.writeStringField("message", message);
+    try w.writeStringField("code", code);
+    try w.endObject();
+    const out = try allocator.dupe(u8, buffer.items);
+    buffer.deinit(allocator);
+    return out;
+}
+
+pub fn pump(allocator: std.mem.Allocator, driver: *Driver, server: *AgentProtocolServer) !usize {
+    var forwarded: usize = 0;
+    var idx: usize = 0;
+    while (idx < driver.runs.items.len) {
+        var run = &driver.runs.items[idx];
+
+        const registration_current = blk: {
+            const generation = server.sessionGeneration(run.session_id);
+            break :blk generation != null and generation.? == run.generation;
+        };
+        if (!registration_current) run.cancel();
+
+        while (run.stream.poll()) |event| {
+            var owned_event = event;
+            errdefer deinitStdioAgentEvent(allocator, &owned_event);
+
+            if (!registration_current) {
+                deinitStdioAgentEvent(allocator, &owned_event);
+                continue;
+            }
+
+            if (std.meta.activeTag(event) == .agent_end) {
+                run.terminal_event_json = serializeAgentLoopEvent(allocator, run.session_id, event) catch |err| {
+                    run.event_publication_failed = true;
+                    return err;
+                };
+                deinitStdioAgentEvent(allocator, &owned_event);
+                continue;
+            }
+
+            const event_json = serializeAgentLoopEvent(allocator, run.session_id, event) catch |err| {
+                run.event_publication_failed = true;
+                return err;
+            };
+            defer allocator.free(event_json);
+            server.publishAgentEvent(run.session_id, event_json) catch |err| {
+                run.event_publication_failed = true;
+                if (err == error.OutOfMemory) return err;
+            };
+            deinitStdioAgentEvent(allocator, &owned_event);
+            forwarded += 1;
+        }
+
+        if (!run.stream.isDone()) {
+            idx += 1;
+            continue;
+        }
+
+        if (registration_current) {
+            if (!run.settlement_frame_published) {
+                if (run.disconnect_failed.load(.acquire)) {
+                    dropTerminalProjection(allocator, run);
+                    try publishRunFailurePair(server, allocator, run, .tool_execution_error, STDIO_DISCONNECT_TOOL_WAIT_MESSAGE);
+                    forwarded += 1;
+                } else if (run.stream.getError()) |msg| {
+                    dropTerminalProjection(allocator, run);
+                    try publishRunFailurePair(server, allocator, run, .internal_error, msg);
+                    forwarded += 1;
+                } else if (run.event_publication_failed) {
+                    dropTerminalProjection(allocator, run);
+                    try publishRunFailurePair(server, allocator, run, .internal_error, STDIO_EVENT_PUBLICATION_FAILED_MESSAGE);
+                    forwarded += 1;
+                } else if (run.stream.getResult()) |result| {
+                    const result_reason: []const u8 = if (result.termination) |termination|
+                        @tagName(termination)
+                    else
+                        @tagName(result.final_message.stop_reason);
+                    const result_json = try transport.serializeResultWithStopReason(result.final_message, result_reason, allocator);
+                    defer allocator.free(result_json);
+                    server.publishAgentResult(run.session_id, result_json) catch |err| switch (err) {
+                        error.OutOfMemory => return err,
+                        else => {},
+                    };
+                    run.settlement_frame_published = true;
+                    forwarded += 1;
+                } else {
+                    dropTerminalProjection(allocator, run);
+                    try publishRunFailurePair(server, allocator, run, .internal_error, STDIO_RUN_WITHOUT_OUTCOME_MESSAGE);
+                    forwarded += 1;
+                }
+            }
+
+            if (run.settlement_frame_published) {
+                if (run.terminal_event_json) |event_json| {
+                    server.publishAgentEvent(run.session_id, event_json) catch |err| switch (err) {
+                        error.OutOfMemory => return err,
+                        else => {},
+                    };
+                    allocator.free(event_json);
+                    run.terminal_event_json = null;
+                    forwarded += 1;
+                }
+                var removed = driver.runs.orderedRemove(idx);
+                removed.deinit(allocator);
+                continue;
+            }
+        } else {
+            var removed = driver.runs.orderedRemove(idx);
+            removed.deinit(allocator);
+            continue;
+        }
+
+        idx += 1;
+    }
+    return forwarded;
+}
+
+pub fn sweepIdleAgentSessions(
+    allocator: std.mem.Allocator,
+    driver: *Driver,
+    server: *AgentProtocolServer,
+    bridge: *AgentToolBridge.Bridge,
+) !void {
+    const now_mono_ms = try compat.time.monotonicMillis();
+    if (now_mono_ms - driver.last_session_sweep_mono_ms < SESSION_SWEEP_INTERVAL_MS) return;
+    driver.last_session_sweep_mono_ms = now_mono_ms;
+
+    var evicted = std.ArrayList(SessionId).empty;
+    defer evicted.deinit(allocator);
+    const sweep_result = server.evictIdleSessions(now_mono_ms, &evicted);
+    for (evicted.items) |session_id| {
+        bridge.discardSession(allocator, session_id);
+    }
+    _ = try sweep_result;
+}
+
+pub fn finishStopCancellation(
+    allocator: std.mem.Allocator,
+    server: *AgentProtocolServer,
+    driver: *Driver,
+    bridge: *AgentToolBridge.Bridge,
+    stopped_session: ?SessionId,
+    had_stop_session: bool,
+) void {
+    if (stopped_session) |session_id| {
+        if (had_stop_session and !server.hasSession(session_id)) {
+            cancelRun(allocator, driver, bridge, session_id);
+        }
+    }
 }

@@ -87,6 +87,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     packs_mod.addImport("jsonschema", jsonschema_mod);
+    packs_mod.addImport("schema_bytes", schema_bytes_mod);
     fixture_gate_mod.addImport("packs", packs_mod);
     const tolerate_mod = b.createModule(.{
         .root_source_file = b.path("src/validation/tolerate.zig"),
@@ -113,6 +114,7 @@ pub fn build(b: *std.Build) void {
     });
     validator_mod.addImport("jsonschema", jsonschema_mod);
     validator_mod.addImport("tolerate", tolerate_mod);
+    const packs_test = b.addTest(.{ .root_module = packs_mod });
     const validator_test = b.addTest(.{ .root_module = validator_mod });
     const semantic_gate_mod = b.createModule(.{
         .root_source_file = b.path("src/validation/semantic_gate.zig"),
@@ -169,6 +171,7 @@ pub fn build(b: *std.Build) void {
     test_unit_validation_step.dependOn(&b.addRunArtifact(schema_bytes_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(jsonschema_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(tolerate_test).step);
+    test_unit_validation_step.dependOn(&b.addRunArtifact(packs_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(validator_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(fixture_gate_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(semantic_test).step);
@@ -1579,6 +1582,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "oap_provider_types", .module = protocol_oap_provider_types_mod },
             .{ .name = "provider_catalog", .module = provider_catalog_mod },
+            .{ .name = "ai_types", .module = ai_types_mod },
         },
     });
 
@@ -1909,7 +1913,7 @@ pub fn build(b: *std.Build) void {
     const tools_mcp_bridge_mod = b.createModule(.{ .root_source_file = b.path("src/tools/mcp_bridge.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "compat", .module = compat_mod }, .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent", .module = agent_mod }, .{ .name = "tools/common", .module = tools_common_mod }, .{ .name = "build_options", .module = version_module }, .{ .name = "json_encode", .module = json_encode_mod } } });
     const tools_agent_tool_bridge_mod = b.createModule(.{ .root_source_file = b.path("src/tools/agent_tool_bridge.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "agent_types", .module = protocol_agent_types_mod }, .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent_loop", .module = agent_loop_mod }, .{ .name = "compat", .module = compat_mod } } });
     const tools_agent_tool_bridge_test = b.addTest(.{ .root_module = tools_agent_tool_bridge_mod });
-    const tools_agent_run_mod = b.createModule(.{ .root_source_file = b.path("src/tools/agent_run.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "agent_types", .module = protocol_agent_types_mod }, .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent_loop", .module = agent_loop_mod }, .{ .name = "tools/agent_tool_bridge", .module = tools_agent_tool_bridge_mod }, .{ .name = "json_writer", .module = json_writer_mod }, .{ .name = "transport", .module = transport_mod } } });
+    const tools_agent_run_mod = b.createModule(.{ .root_source_file = b.path("src/tools/agent_run.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "agent_types", .module = protocol_agent_types_mod }, .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent_loop", .module = agent_loop_mod }, .{ .name = "tools/agent_tool_bridge", .module = tools_agent_tool_bridge_mod }, .{ .name = "json_writer", .module = json_writer_mod }, .{ .name = "transport", .module = transport_mod }, .{ .name = "compat", .module = compat_mod }, .{ .name = "agent_server", .module = protocol_agent_server_mod } } });
     const tools_agent_run_test = b.addTest(.{ .root_module = tools_agent_run_mod });
     const tools_registry_mod = b.createModule(.{ .root_source_file = b.path("src/tools/registry.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "agent", .module = agent_mod }, .{ .name = "permission", .module = permission_mod }, .{ .name = "tools/shell", .module = tools_shell_mod }, .{ .name = "tools/file", .module = tools_file_mod }, .{ .name = "tools/edit", .module = tools_edit_mod }, .{ .name = "tools/hashline", .module = tools_hashline_mod }, .{ .name = "tools/search", .module = tools_search_mod }, .{ .name = "tools/workspace", .module = tools_workspace_mod }, .{ .name = "tools/artifact", .module = tools_artifact_mod }, .{ .name = "tools/mcp_bridge", .module = tools_mcp_bridge_mod } } });
 
@@ -2831,6 +2835,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(adapter_config_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_config_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(deepseek_rpc_test).step);
+    test_step.dependOn(&b.addRunArtifact(packs_test).step);
     test_step.dependOn(&b.addRunArtifact(schema_bytes_test).step);
     test_step.dependOn(&b.addRunArtifact(jsonschema_test).step);
     test_step.dependOn(&b.addRunArtifact(tolerate_test).step);

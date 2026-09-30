@@ -164,6 +164,11 @@ jobs:
           clients/ts/test/transport.ts
           clients/ts/src/protocol.ts
           clients/ts/src/events.ts
+          clients/ts/src/session.ts
+          clients/ts/src/client.ts
+          clients/ts/src/errors.ts
+          clients/ts/src/sse.ts
+          clients/ts/src/index.ts
           )
           # An empty selection exits 0 having judged nothing, and a missing path is
           # skipped silently, so both are refused here rather than reported green.
