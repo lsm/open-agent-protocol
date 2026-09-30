@@ -11,6 +11,7 @@ fn defaultIo() std.Io {
 pub const Address = std.Io.net.IpAddress;
 pub const ListenOptions = Address.ListenOptions;
 pub const Server = std.Io.net.Server;
+pub const ShutdownHow = std.Io.net.ShutdownHow;
 
 pub const AddressList = struct {
     addrs: []Address,
@@ -53,6 +54,10 @@ pub const Stream = struct {
 
     pub fn shutdown(self: *Stream) void {
         self.inner.shutdown(defaultIo(), .both) catch {};
+    }
+
+    pub fn shutdownHow(self: *Stream, how: ShutdownHow) void {
+        self.inner.shutdown(defaultIo(), how) catch {};
     }
 
     pub fn close(self: *Stream) void {
@@ -237,6 +242,45 @@ test "compat networking can listen on loopback" {
     defer server.deinit(defaultIo());
 
     try std.testing.expect(listenAddress(&server).getPort() != 0);
+}
+
+test "a send shutdown ends the peer read of us" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const address = try resolveAddress(std.testing.allocator, "127.0.0.1", 0);
+    var server = try tcpListen(address, .{ .reuse_address = true });
+    defer server.deinit(defaultIo());
+    var client = try tcpConnect(listenAddress(&server));
+    defer client.close();
+    var connection = try accept(&server);
+    defer connection.stream.close();
+
+    try connection.stream.writeAll("from-server");
+    connection.stream.shutdownHow(.send);
+
+    var seen: [64]u8 = undefined;
+    const n = try client.read(&seen);
+    try std.testing.expectEqualStrings("from-server", seen[0..n]);
+    var after: [64]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 0), try client.read(&after));
+}
+
+test "the unnamed shutdown still ends the peer read of us" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const address = try resolveAddress(std.testing.allocator, "127.0.0.1", 0);
+    var server = try tcpListen(address, .{ .reuse_address = true });
+    defer server.deinit(defaultIo());
+    var client = try tcpConnect(listenAddress(&server));
+    defer client.close();
+    var connection = try accept(&server);
+    defer connection.stream.close();
+
+    try connection.stream.writeAll("from-server");
+    connection.stream.shutdown();
+    var seen: [64]u8 = undefined;
+    const n = try client.read(&seen);
+    try std.testing.expectEqualStrings("from-server", seen[0..n]);
+    var after: [64]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 0), try client.read(&after));
 }
 
 test "compat networking loopback connect read write round trip" {

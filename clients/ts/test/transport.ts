@@ -1,8 +1,3 @@
-/**
- * A scripted fake transport for the unit tests: responses queue up and match
- * by URL, SSE bodies stream as chunk sequences, and a response can reject or
- * end mid-stream to exercise the resume logic. No server, no sockets.
- */
 
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -12,21 +7,14 @@ import { PROTOCOL, PROFILE, VERSION, type Envelope } from '../src/protocol.js';
 const encoder = new TextEncoder();
 
 export interface ScriptedResponse {
-  /** Matches by substring, anchored RegExp, or predicate; a missing match matches any URL. */
   match?: string | RegExp | ((url: string) => boolean);
   status?: number;
   headers?: Record<string, string>;
-  /** A complete (non-streaming) body; the function form sees the request, so it can echo the correlation id the client minted. */
   body?: string | ((call: { url: string; init?: FetchInit }) => string);
-  /** Streamed chunks; implies content type text/event-stream. */
   chunks?: (string | Uint8Array)[];
-  /** Wait between streamed chunks. */
   chunkDelayMs?: number;
-  /** The body stream rejects with this error once the chunks are exhausted. */
   streamError?: Error;
-  /** The fetch itself rejects with this error. */
   rejectWith?: Error;
-  /** Wait before the response resolves. */
   delayMs?: number;
 }
 
@@ -59,7 +47,6 @@ class FakeReader implements StreamReader {
     }));
     const signal = this.signal;
     if (!signal) return delivery;
-    // A real fetch stream rejects once its request is aborted.
     return Promise.race([
       delivery,
       new Promise<never>((_, reject) => {
@@ -81,7 +68,6 @@ class FakeReader implements StreamReader {
 }
 
 export class FakeTransport {
-  /** Every request the transport saw, in order. */
   readonly calls: Array<{ url: string; init?: FetchInit }> = [];
   private script: ScriptedResponse[];
 
@@ -120,7 +106,6 @@ export class FakeTransport {
     return response;
   };
 
-  /** The requests whose URL contains fragment, in order. */
   callsFor(fragment: string): Array<{ url: string; init?: FetchInit }> {
     return this.calls.filter((call) => call.url.includes(fragment));
   }
@@ -132,8 +117,6 @@ function matches(match: ScriptedResponse['match'], url: string): boolean {
   if (typeof match === 'function') return match(url);
   return match.test(url);
 }
-
-// --- envelope and frame builders ---
 
 export interface TestEnvelopeInput {
   type: string;
@@ -168,7 +151,6 @@ export function testEnvelope(input: TestEnvelopeInput): Envelope {
   return envelope;
 }
 
-/** One SSE message frame: the sequence as the id field (as the daemon writes it) plus the envelope as data. */
 export function eventFrame(envelope: Envelope): string {
   const id = envelope.sequence !== undefined ? `id: ${envelope.sequence}\n` : '';
   return `${id}data: ${JSON.stringify(envelope)}\n\n`;
@@ -178,12 +160,10 @@ export function signalFrame(event: string, data: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
-/** Extracts the request envelope id a recorded call carried. */
 export function sentEnvelopeId(call: { init?: FetchInit }): string {
   return (JSON.parse(call.init?.body ?? '{}') as { id?: string }).id ?? '';
 }
 
-/** The event types of the reference adapter's golden run, in delivery order. */
 export const GOLDEN_RUN = [
   'run.started',
   'content.delta',
@@ -199,7 +179,6 @@ export const GOLDEN_RUN = [
   'run.completed',
 ] as const;
 
-/** Frames for the golden run's envelopes between sequences from and to inclusive. */
 export function goldenFrames(sessionId: string, runId: string, from: number, to: number): string[] {
   const frames: string[] = [];
   for (let sequence = from; sequence <= to; sequence += 1) {
@@ -220,7 +199,6 @@ export function goldenFrames(sessionId: string, runId: string, from: number, to:
   return frames;
 }
 
-/** Walks up from this file (compiled: dist/test) to the repository root, marked by go.mod. */
 export function findRepoRoot(fromDir: string): string {
   let dir = fromDir;
   for (;;) {
