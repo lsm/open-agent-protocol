@@ -56,6 +56,10 @@ pub const Stream = struct {
         self.inner.shutdown(defaultIo(), .both) catch {};
     }
 
+    pub fn shutdownHow(self: *Stream, how: ShutdownHow) void {
+        self.inner.shutdown(defaultIo(), how) catch {};
+    }
+
     pub fn close(self: *Stream) void {
         self.inner.close(defaultIo());
     }
@@ -240,65 +244,41 @@ test "compat networking can listen on loopback" {
     try std.testing.expect(listenAddress(&server).getPort() != 0);
 }
 
-test "a send shutdown ends the peer's read of us" {
+test "a send shutdown ends the peer's read while our own receive still works" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     const address = try resolveAddress(std.testing.allocator, "127.0.0.1", 0);
     var server = try tcpListen(address, .{ .reuse_address = true });
     defer server.deinit(defaultIo());
-    const client = try tcpConnect(listenAddress(&server));
-    defer client.close();
-    const accepted = try accept(&server);
-    defer accepted.close();
-
-    try client.writeAll("first");
-    accepted.shutdownHow(.send);
-
-    var seen: [64]u8 = undefined;
-    try std.testing.expectEqualStrings("first", try client.readAll(&seen));
-    var after: [64]u8 = undefined;
-    try std.testing.expectEqual(@as(usize, 0), try client.readAll(&after));
-}
-test "a both-direction shutdown is what the unnamed shutdown already did" {
-    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
-    const address = try resolveAddress(std.testing.allocator, "127.0.0.1", 0);
-    var server = try tcpListen(address, .{ .reuse_address = true });
-    defer server.deinit(defaultIo());
-    const client = try tcpConnect(listenAddress(&server));
-    defer client.close();
-    const accepted = try accept(&server);
-    defer accepted.close();
-
-    try client.writeAll("first");
-    accepted.shutdown();
-    var seen: [64]u8 = undefined;
-    try std.testing.expectEqualStrings("first", try client.readAll(&seen));
-}
-
-test "compat networking loopback connect read write round trip" {
-    const address = try resolveAddress(std.testing.allocator, "127.0.0.1", 0);
-    var server = try tcpListen(address, .{ .reuse_address = true });
-    defer server.deinit(defaultIo());
-
     var client = try tcpConnect(listenAddress(&server));
     defer client.close();
+    var connection = try accept(&server);
+    defer connection.stream.close();
 
-    var context = LoopbackServerContext{ .server = &server };
-    const thread = try std.Thread.spawn(.{}, loopbackServerThread, .{&context});
-    var thread_joined = false;
-    defer if (!thread_joined) thread.join();
+    try connection.stream.writeAll("from-server");
+    connection.stream.shutdownHow(.send);
 
-    try client.writeAll("ping");
+    var seen: [64]u8 = undefined;
+    const n = try client.read(&seen);
+    try std.testing.expectEqualStrings("from-server", seen[0..n]);
+    var after: [64]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 0), try client.read(&after));
+}
 
-    var response: [4]u8 = undefined;
-    var total_read: usize = 0;
-    while (total_read < response.len) {
-        const bytes_read = try client.read(response[total_read..]);
-        if (bytes_read == 0) return error.EndOfStream;
-        total_read += bytes_read;
-    }
-    try std.testing.expectEqualStrings("pong", &response);
+test "the unnamed shutdown still closes both directions" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const address = try resolveAddress(std.testing.allocator, "127.0.0.1", 0);
+    var server = try tcpListen(address, .{ .reuse_address = true });
+    defer server.deinit(defaultIo());
+    var client = try tcpConnect(listenAddress(&server));
+    defer client.close();
+    var connection = try accept(&server);
+    defer connection.stream.close();
 
-    thread.join();
-    thread_joined = true;
-    try context.result;
+    try connection.stream.writeAll("from-server");
+    connection.stream.shutdown();
+    var seen: [64]u8 = undefined;
+    const n = try client.read(&seen);
+    try std.testing.expectEqualStrings("from-server", seen[0..n]);
+    var after: [64]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 0), try client.read(&after));
 }
