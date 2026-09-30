@@ -417,6 +417,19 @@ function oapModelLifecycle(value: unknown): { lifecycle?: ModelLifecycle } {
   );
 }
 
+function oapModelAuthStatus(value: unknown): { auth_status: ModelDescriptor["auth_status"] } {
+  if (value === undefined) {
+    return { auth_status: "unknown" };
+  }
+  if (typeof value === "string" && (AUTH_STATUSES as readonly string[]).includes(value)) {
+    return { auth_status: value as ModelDescriptor["auth_status"] };
+  }
+  throw new MakaiProtocolError(
+    "provider model entry auth_status must be one of authenticated, login_required, expired, refreshing, login_in_progress, failed or unknown when present",
+    "malformed_response",
+  );
+}
+
 function oapModelSource(value: unknown): { source?: ModelSource } {
   if (value === undefined) {
     return {};
@@ -442,7 +455,7 @@ class OapModelsApi implements MakaiModelsApi {
       if (!isRecord(raw)) throw new MakaiProtocolError("provider model entry must be an object", "malformed_response");
       return ({
       model_ref: str(raw.model_ref), model_id: str(raw.model_id), display_name: str(raw.display_name) || str(raw.model_id),
-      provider_id: str(raw.provider_id), api: str(raw.wire), auth_status: (str(raw.auth_status) || "unknown") as ModelDescriptor["auth_status"],
+      provider_id: str(raw.provider_id), api: str(raw.wire), ...oapModelAuthStatus(raw.auth_status),
       ...oapModelLifecycle(raw.lifecycle),
       capabilities: Array.isArray(raw.capabilities) ? raw.capabilities.filter((v): v is ModelDescriptor["capabilities"][number] => typeof v === "string") : [],
       ...oapModelSource(raw.source),

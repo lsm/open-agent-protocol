@@ -1,0 +1,99 @@
+import assert from "node:assert/strict";
+import path from "node:path";
+import test from "node:test";
+import {
+  createOapClient,
+  MakaiProtocolError,
+  type MakaiModelsApi,
+} from "../src";
+
+const fixturesDir = path.resolve(__dirname, "../../sdk/typescript/test/fixtures");
+const oapFixtureScript = path.join(fixturesDir, "oap-server.js");
+
+async function withOapModels<T>(
+  auth: string,
+  use: (api: MakaiModelsApi) => Promise<T>,
+): Promise<T> {
+  const client = await createOapClient({
+    command: process.execPath,
+    args: [oapFixtureScript],
+    env: { ...process.env, OAP_FIXTURE_AUTH: auth },
+  });
+  try {
+    return await use(client.models);
+  } finally {
+    await client.close();
+  }
+}
+
+async function refusesMalformedAuthStatus(
+  auth: string,
+  use: (api: MakaiModelsApi) => Promise<unknown>,
+): Promise<void> {
+  let caught: unknown;
+  try {
+    await withOapModels(auth, use);
+  } catch (error) {
+    caught = error;
+  }
+  assert.ok(
+    caught instanceof MakaiProtocolError,
+    `a present but invalid auth_status must be refused, got ${String(caught)}`,
+  );
+  assert.equal(
+    (caught as MakaiProtocolError).code,
+    "malformed_response",
+    "a refusal must carry the malformed_response code",
+  );
+  assert.match(
+    (caught as MakaiProtocolError).message,
+    /auth_status must be one of/,
+  );
+}
+
+test("an absent OAP auth_status reads as the existing unknown value", async () => {
+  const models = await withOapModels("absent", async (api) => (await api.list()).models);
+  assert.equal(models.length, 1);
+  assert.equal(models[0].auth_status, "unknown");
+});
+
+test("every stated OAP auth_status reaches the reader as itself", async () => {
+  for (const [fixture, want] of [
+    ["expired", "expired"],
+    ["login-required", "login_required"],
+  ] as const) {
+    const models = await withOapModels(
+      fixture,
+      async (api) => (await api.list({ include_login_required: true })).models,
+    );
+    assert.equal(models.length, 1, `${fixture} must survive the reader`);
+    assert.equal(models[0].auth_status, want);
+  }
+});
+
+test("the model_id filter really does skip the valid fixture row", async () => {
+  const models = await withOapModels(
+    "default",
+    async (api) => (await api.list({ model_id: "no-such-model" })).models,
+  );
+  assert.equal(
+    models.length,
+    0,
+    "a local model_id filter matching nothing must yield no models",
+  );
+});
+
+test("a present but invalid OAP auth_status is refused", async () => {
+  for (const shape of ["null", "number", "invented"]) {
+    await refusesMalformedAuthStatus(shape, (api) => api.list());
+  }
+});
+
+test("a malformed auth_status is refused even when a local filter would skip the row", async () => {
+  await refusesMalformedAuthStatus("invented", (api) =>
+    api.list({ model_id: "no-such-model" }),
+  );
+  await refusesMalformedAuthStatus("null", (api) =>
+    api.list({ include_login_required: false }),
+  );
+});
