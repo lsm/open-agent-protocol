@@ -1321,8 +1321,15 @@ fn safeLinkTarget(target: []const u8) ?[]const u8 {
 
 fn nextLinkBoundary(text: []const u8, from: usize) ?usize {
     var i = from;
-    while (i < text.len) : (i += 1) {
-        if (isLinkMarkerAt(text, i) or std.mem.startsWith(u8, text[i..], link_escape)) return i;
+    while (i < text.len) {
+        if (std.mem.startsWith(u8, text[i..], link_escape)) {
+            const next_i = i + link_escape.len;
+            const next_len = std.unicode.utf8ByteSequenceLength(text[next_i]) catch 1;
+            i = @min(next_i + next_len, text.len);
+            continue;
+        }
+        if (isLinkMarkerAt(text, i)) return i;
+        i += 1;
     }
     return null;
 }
@@ -1471,11 +1478,14 @@ fn writeInlineStyled(allocator: std.mem.Allocator, writer: *std.Io.Writer, row: 
                 literal.clearRetainingCapacity();
                 const inner = std.mem.trim(u8, row[i + run .. close], " ");
                 if (inner.len > 0) {
-                    try flushLinked(allocator, writer, inner, tui_theme.inlineCode(), links);
+                    const decoded = try decodeEscapes(allocator, inner);
+                    defer if (decoded.ptr != inner.ptr) allocator.free(decoded);
+                    try flushLinked(allocator, writer, decoded, tui_theme.inlineCode(), links);
                 }
                 i = close + run;
                 continue;
             }
+            try literal.appendSlice(allocator, row[i .. i + run]);
             i += run;
             continue;
         }
@@ -1517,6 +1527,26 @@ fn flushLinked(allocator: std.mem.Allocator, writer: *std.Io.Writer, text: []con
     } else {
         try writer.writeAll(styled);
     }
+}
+
+fn decodeEscapes(allocator: std.mem.Allocator, text: []const u8) ![]const u8 {
+    if (std.mem.indexOf(u8, text, link_escape) == null) return text;
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    var i: usize = 0;
+    while (i < text.len) {
+        if (std.mem.startsWith(u8, text[i..], link_escape)) {
+            const next_i = i + link_escape.len;
+            const next_len = std.unicode.utf8ByteSequenceLength(text[next_i]) catch 1;
+            if (next_i + next_len > text.len) break;
+            try out.appendSlice(allocator, text[next_i .. next_i + next_len]);
+            i = next_i + next_len;
+            continue;
+        }
+        try out.append(allocator, text[i]);
+        i += 1;
+    }
+    return out.toOwnedSlice(allocator);
 }
 
 fn findCodeClose(row: []const u8, from: usize, run: usize) ?usize {
@@ -2184,6 +2214,44 @@ test "a marker character inside a code span stays inside it and shifts no link" 
     const plain = try stripEscapesForTest(std.testing.allocator, styled);
     defer std.testing.allocator.free(plain);
     try std.testing.expectEqualStrings("x\u{E000}y and k", plain);
+}
+
+test "an inline code span in a link label keeps the link, whole and mixed" {
+    const styled = try renderAssistantStyled(std.testing.allocator, "[`code`](https://c.example) and [pre `mid` post](https://d.example)", 80);
+    defer std.testing.allocator.free(styled);
+    try std.testing.expect(std.mem.indexOf(u8, styled, ";https://c.example\x1b\\") != null);
+    try std.testing.expect(std.mem.indexOf(u8, styled, ";https://d.example\x1b\\") != null);
+    const opens = std.mem.count(u8, styled, "\x1b]8;id=");
+    const closes = std.mem.count(u8, styled, "\x1b]8;;\x1b\\");
+    try std.testing.expectEqual(opens, closes);
+    try std.testing.expect(opens >= 2);
+    const plain = try stripEscapesForTest(std.testing.allocator, styled);
+    defer std.testing.allocator.free(plain);
+    try std.testing.expectEqualStrings("code and pre mid post", plain);
+}
+
+test "an inline code span in a link label outside a link keeps no hyperlink" {
+    const styled = try renderAssistantStyled(std.testing.allocator, "outer `[x](https://e.example)` tail", 80);
+    defer std.testing.allocator.free(styled);
+    try std.testing.expect(std.mem.indexOf(u8, styled, "\x1b]8;id=") == null);
+    const plain = try stripEscapesForTest(std.testing.allocator, styled);
+    defer std.testing.allocator.free(plain);
+    try std.testing.expectEqualStrings("outer [x](https://e.example) tail", plain);
+}
+
+test "a link whose visible label exactly fills the width stays on one row" {
+    const styled = try renderAssistantStyled(std.testing.allocator, "[abcdefgh](https://e.example)", 8);
+    defer std.testing.allocator.free(styled);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, styled, "\n") + 1 - std.mem.count(u8, styled, "\n"));
+    var rows = std.mem.splitScalar(u8, styled, '\n');
+    var count: usize = 0;
+    while (rows.next()) |row| : (count += 1) {
+        try std.testing.expect(std.mem.indexOf(u8, row, ";https://e.example\x1b\\") != null);
+    }
+    try std.testing.expectEqual(@as(usize, 1), count);
+    const plain = try stripEscapesForTest(std.testing.allocator, styled);
+    defer std.testing.allocator.free(plain);
+    try std.testing.expectEqualStrings("abcdefgh", plain);
 }
 
 test "a link target keeps its balanced parentheses" {
