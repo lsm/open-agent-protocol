@@ -615,11 +615,14 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
 - **the 64 KiB round cap, and the round's own deadline — pinned as _configuration_ at this head, which is
   a weaker claim than the bullets around it and is not a removal proof.** Of the four
   bounds the row above names, the 64 KiB round cap was **the one no bullet covered**: that row says the
-  port "reads in 64 KiB rounds" and nothing more about a round, and until now `drain_cap_bytes` was named
-  only at its definition (`:205`) and its use (`:219`), so the ledger asserted a bound no test would
-  notice losing. The round's time bound is a **fifth bound the row above never names**: `drain_cycle_ms`
-  is what `drain` builds the round deadline from at `:220`
-  (`const deadline = now + ...drain_cycle_ms...`), and it was pinned by nothing either. `a drain stops at its byte cap and reports what it consumed` now
+  port "reads in 64 KiB rounds". It does discuss the round deadline at `:601` — that the deadline
+  **reuses the `now` that round already read** — but only as a property of the clock; it never gives a
+  round a **time bound of its own**, where it names the 1 MiB and the 2500 ms outright. So the narrow
+  claim is that `drain_cap_bytes` and `drain_cycle_ms` are two bounds the row leaves **unnamed**, and
+  until now each was named only in the source: `drain_cap_bytes` at its definition (`:205`) and its use
+  (`:219`), `drain_cycle_ms` where `drain` builds the round deadline from it at `:220`
+  (`const deadline = now + ...drain_cycle_ms...`). Neither was asserted anywhere, so the ledger stated
+  a bound no test would notice losing. `a drain stops at its byte cap and reports what it consumed` now
   carries `wanted_round = 64 * 1024` and `expectEqual(@as(i32, 50), drain_cycle_ms)` beside the
   1 MiB assertion it already had, in the same carrying-its-own-literal shape, so the constant and the
   expectation cannot move together. `a drain gives up rather than waiting on a peer that sends nothing
