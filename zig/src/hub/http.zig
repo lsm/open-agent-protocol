@@ -1419,6 +1419,44 @@ test "a drain reads on a long-lived process, because its budget is elapsed not u
     try testing.expectEqual(@as(usize, 4096), drain(&pipe.accepted, 4096, always_going));
 }
 
+const spends_the_budget = struct {
+    client: *compat.net.Stream,
+    started: u64,
+    observed: u64 = 0,
+    buffered: usize = 0,
+    polls: usize = 0,
+
+    fn check(context: *const anyopaque) bool {
+        const self: *@This() = @ptrCast(@alignCast(@constCast(context)));
+        _ = self.polls;
+        self.polls += 1;
+        if (self.buffered != 0) return true;
+        var now = elapsedMs() catch return true;
+        while (now -| self.started < @as(u64, @intCast(@max(drain_total_ms, 0)))) {
+            compat.time.sleepMs(5);
+            now = elapsedMs() catch return true;
+        }
+        self.observed = now -| self.started;
+        self.client.writeAll("q" ** 4096) catch {};
+        self.buffered = 4096;
+        return true;
+    }
+};
+
+test "a drain whose elapsed budget is already spent consumes nothing, and a budget it does not have would read" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var pipe = try Pipe.open();
+    defer pipe.close();
+    const before = try elapsedMs();
+    var spender = spends_the_budget{ .client = &pipe.client, .started = before };
+    const keeping: KeepGoing = .{ .context = &spender, .check = spends_the_budget.check };
+    const spent = drain(&pipe.accepted, 8192, keeping);
+    try testing.expect(spender.observed >= @as(u64, @intCast(@max(drain_total_ms, 0))));
+    try testing.expectEqual(@as(usize, 4096), spender.buffered);
+    try testing.expectEqual(@as(usize, 0), spent);
+    try testing.expectEqual(@as(usize, 1), spender.polls);
+}
+
 const stop_after_one = struct {
     asked: std.atomic.Value(bool) = .init(false),
     asks: std.atomic.Value(usize) = .init(0),

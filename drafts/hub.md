@@ -617,8 +617,10 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   `drain_total_ms + 200` under a bound, asserts the clock is past the budget, and drains again;
   restoring the old `elapsedMs() catch 0 -| started` fails it with `expected 4096, found 0`. **It pins
   the comparison, not the guard's presence:** neutralising the guard is green, so a deleted time bound
-  would go unnoticed. The stall case stays covered by `a drain gives up rather than waiting on a peer
-  that sends nothing more`
+  would go unnoticed **by that test**. The stall case stays covered by `a drain gives up rather than
+  waiting on a peer that sends nothing more`. **The guard's presence is pinned separately, by
+  `a drain whose elapsed budget is already spent consumes nothing, and a budget it does not have would
+  read`, recorded below; this row and that one are complementary, and neither alone closes the other.**
 - **stop on an unreadable clock — NO exercising test, recorded as a gap.** The port returns the
   bytes consumed from `drain` and its existing `Timeout` from the read helpers, rather than reading
   an unreadable clock as `0`. Nothing reaches it: the clock is `std.Io.Timestamp` against a monotonic
@@ -648,7 +650,8 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   them:** `http.zig:1369` pins the **byte cap** — it asserts `drain_total_cap_bytes` against its own
   literal and drains past it — while `http.zig:1412` pins only that the budget is **elapsed rather
   than uptime**, exactly as the row above records, and that row's finding stands unchanged:
-  **neutralising the time guard leaves it green, so the time bound's presence is still a gap.** What
+  **neutralising the time guard leaves it green, so the time bound's presence was a gap until the
+  already-spent-budget proof below closed it.** What
   is **not** pinned anywhere is that the 413 path *reaches* `drain` at all, and no client can observe
   that without the threshold just declined. An earlier revision of this work claimed the mutation
   failed when both bounds were removed, and a second claimed the budget was pinned at `:1412`. The
@@ -676,9 +679,34 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   threshold is inferred from transferred bytes to stand in for them. **Of the two drain bounds, the
   byte cap is pinned** — `:1369` asserts `drain_total_cap_bytes` against its own literal and drains
   past it — and the **elapsed-versus-uptime comparison is pinned** at `:1412`, but **the time guard's
-  presence is NOT pinned anywhere**, exactly as the row above states, and this row adds nothing to it.
+  presence was NOT pinned by this row**, exactly as the row above then stated; it is now pinned by the
+  already-spent-budget proof, which is about the guard itself and not about any client's drain amount.
   Two things a reader might assume are covered here are not: this site's drain amount, and the
   existence of the time bound.
+- **the total-time guard's presence, through the injected callback that already exists** — the row at
+  `:615-621` pins that the 2500 ms budget is **elapsed rather than uptime** and is explicit that it does
+  **not** pin the guard's presence, because that test's bytes are already buffered when `drain` starts.
+  `a drain whose elapsed budget is already spent consumes nothing, and a budget it does not have would
+  read` pins the presence, through the **existing public `KeepGoing`** at `:104-110` and the injection
+  pattern the other test already uses. `drain` takes `started` at `:214`, calls `keep_going.yes()` at
+  `:216`, checks the guard at `:218`, and only then computes the round `deadline` at `:220` — so an
+  injected callback can **spend the budget and then leave bytes where the inner read will find them**.
+  The callback waits past `drain_total_ms`, writes 4096 bytes to the peer, and returns true; the guard
+  on that same iteration returns before any read, so `drain` returns **0** with the bytes unread. The
+  test asserts its own precondition rather than trusting it: the observed elapsed is at least
+  `drain_total_ms`, exactly 4096 bytes were left buffered, and the callback was polled **once**. The
+  **negative control is the whole point**: making the budget unreachable
+  (`now -| started >= std.math.maxInt(u64)`) leaves the same test failing with `expected 0, found 4096`,
+  so the 0 is attributable to the guard rather than to a starved reader, and the inner deadline being
+  computed *after* the callback is what lets the un-guarded build read at all. Teardown is bounded by
+  construction: the callback writes to the peer itself, so there is no writer thread to join.
+  **What this is not.** It is an **already-spent wall-clock-budget** test. It does **not** show a
+  continuous daemon giving up on a trickling peer, does **not** exercise the budget elapsing across
+  rounds of real I/O, and makes **no** claim about `drain_total_ms`, `drain_cycle_ms` or
+  `drain_total_cap_bytes` — all three are unchanged, and no clock seam was added. An earlier revision of
+  this work claimed the guard was "structurally unreachable" from a bound on the requested I/O round
+  deadlines; that was **withdrawn**, because those deadlines bound requested waits and not elapsed
+  execution across preemption, inter-round scheduling, or the work an injected callback does.
 - **the bound holding against a real process** —
   `TestHubAddrRefusesALargeRefusedHeadOverARealSocket` transfers 1,052,672 /
   1,719,800 / 1,799,224 bytes against declarations of 1 MiB+4096, 4 MiB and 16 MiB
