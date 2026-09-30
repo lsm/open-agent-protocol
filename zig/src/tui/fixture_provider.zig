@@ -40,9 +40,23 @@ pub const MockProvider = struct {
     call_count: usize = 0,
     last_model_id: []const u8 = "",
     last_message_count: usize = 0,
+    entered: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     pub fn init(scenario: Scenario) MockProvider {
         return .{ .scenario = scenario };
+    }
+
+    pub fn hasEntered(self: *MockProvider) bool {
+        return self.entered.load(.acquire);
+    }
+
+    pub fn waitForEntry(self: *MockProvider, budget_ms: u64) !void {
+        var waited: u64 = 0;
+        while (!self.hasEntered()) {
+            if (waited >= budget_ms) return error.ProviderNeverEntered;
+            compat.time.sleepMs(1);
+            waited += 1;
+        }
     }
 
     pub fn protocolClient(self: *MockProvider) agent.ProtocolClient {
@@ -57,6 +71,7 @@ pub const MockProvider = struct {
         allocator: std.mem.Allocator,
     ) anyerror!*event_stream.AssistantMessageEventStream {
         const self: *MockProvider = @ptrCast(@alignCast(ctx.?));
+        self.entered.store(true, .release);
         self.last_model_id = model.id;
         self.last_message_count = context.messages.len;
 

@@ -1151,6 +1151,76 @@ test "turnOutcome ends the run on a reply without tool calls, even one reporting
     try std.testing.expectEqual(TurnOutcome.answered, outcomeOf(.length, &.{}, 0));
 }
 
+fn abortedStream(
+    ctx: ?*anyopaque,
+    model: ai_types.Model,
+    context: ai_types.Context,
+    options: types.ProtocolOptions,
+    allocator: std.mem.Allocator,
+) anyerror!*event_stream_module.AssistantMessageEventStream {
+    _ = ctx;
+    _ = context;
+    _ = options;
+    const stream_ptr = try allocator.create(event_stream_module.AssistantMessageEventStream);
+    errdefer allocator.destroy(stream_ptr);
+    stream_ptr.* = event_stream_module.AssistantMessageEventStream.init(allocator);
+    const blocks = try allocator.alloc(ai_types.AssistantContent, 1);
+    errdefer allocator.free(blocks);
+    blocks[0] = .{ .text = .{ .text = try allocator.dupe(u8, "partial") } };
+    const api = try allocator.dupe(u8, model.api);
+    errdefer allocator.free(api);
+    const provider = try allocator.dupe(u8, model.provider);
+    errdefer allocator.free(provider);
+    const owned_model = try allocator.dupe(u8, model.id);
+    errdefer allocator.free(owned_model);
+    stream_ptr.complete(.{
+        .content = blocks,
+        .api = api,
+        .provider = provider,
+        .model = owned_model,
+        .usage = .{},
+        .stop_reason = .aborted,
+        .timestamp = 0,
+        .is_owned = true,
+    });
+    return stream_ptr;
+}
+
+test "an aborted turn frees the message the stream handed over" {
+    const model = ai_types.Model{
+        .id = "test-model",
+        .name = "Test",
+        .api = "test-api",
+        .provider = "test-provider",
+        .base_url = "",
+        .reasoning = false,
+        .input = &.{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1024,
+        .max_tokens = 256,
+    };
+    var events_storage: AgentEventStream = undefined;
+    const events = &events_storage;
+    events.* = AgentEventStream.init(std.testing.allocator);
+    defer events.deinit();
+
+    var context = AgentContext.init(std.testing.allocator);
+    defer context.deinit();
+    const config = AgentLoopConfig{
+        .model = model,
+        .protocol = .{ .stream_fn = abortedStream },
+        .max_iterations = 1,
+    };
+    try runLoop(std.testing.allocator, &.{}, &context, config, events);
+    var saw_turn_end = false;
+    while (events.poll()) |event| {
+        var ev = event;
+        defer ev.deinit(std.testing.allocator);
+        if (ev == .turn_end) saw_turn_end = true;
+    }
+    try std.testing.expect(saw_turn_end);
+}
+
 test "turnOutcome never runs the tool calls of a failed, aborted or filtered reply" {
     const calls = [_]ai_types.AssistantContent{
         .{ .tool_call = .{ .id = "call_1", .name = "read", .arguments_json = "{}" } },
@@ -1273,6 +1343,9 @@ fn runLoop(
             };
 
             state.iterations += 1;
+            const loop_owns_message = assistant_message.is_owned or assistant_message.error_message.is_owned;
+            var unsent_message = assistant_message;
+            errdefer if (loop_owns_message) unsent_message.deinit(allocator);
             try setFinalMessage(&state, allocator, assistant_message);
             try appendClonedStateMessage(&state.messages, allocator, .{ .assistant = assistant_message });
 
@@ -1285,7 +1358,7 @@ fn runLoop(
                         .message = final_error_msg,
                         .tool_results = types.OwnedSlice(ai_types.ToolResultMessage).initBorrowed(&.{}),
                     } });
-                    if (assistant_message.error_message.is_owned) {
+                    if (loop_owns_message) {
                         var owned_assistant_message = assistant_message;
                         owned_assistant_message.deinit(allocator);
                     }
