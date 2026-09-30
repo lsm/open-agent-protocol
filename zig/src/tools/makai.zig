@@ -330,7 +330,7 @@ const StdioProtocolLoop = struct {
         };
         forwarded += try self.startPendingAgentRuns();
         forwarded += try self.pumpAgentRuns();
-        forwarded += try self.publishPendingToolRequests();
+        forwarded += try AgentRun.publishPendingToolRequests(&self.agent_server, self.allocator, &self.tool_bridge);
         forwarded += try agent_runtime.pumpServerOutbox();
         try self.sweepIdleAgentSessions();
 
@@ -390,7 +390,7 @@ const StdioProtocolLoop = struct {
             self.startAgentRun(owned_pending) catch |err| {
                 if (err == error.OutOfMemory) return err;
                 self.agent_server.markSessionError(owned_pending.session_id) catch {};
-                try self.publishAgentLoopError(owned_pending.session_id, .internal_error, @errorName(err));
+                try AgentRun.publishAgentLoopError(&self.agent_server, self.allocator, owned_pending.session_id, .internal_error, @errorName(err));
                 continue;
             };
             started += 1;
@@ -476,16 +476,16 @@ const StdioProtocolLoop = struct {
             if (registration_current) {
                 if (!run.settlement_frame_published) {
                     if (run.disconnect_failed.load(.acquire)) {
-                        self.dropTerminalProjection(run);
-                        try self.publishRunFailurePair(run, .tool_execution_error, STDIO_DISCONNECT_TOOL_WAIT_MESSAGE);
+                        AgentRun.dropTerminalProjection(self.allocator, run);
+                        try AgentRun.publishRunFailurePair(&self.agent_server, self.allocator, run, .tool_execution_error, STDIO_DISCONNECT_TOOL_WAIT_MESSAGE);
                         forwarded += 1;
                     } else if (run.stream.getError()) |msg| {
-                        self.dropTerminalProjection(run);
-                        try self.publishRunFailurePair(run, .internal_error, msg);
+                        AgentRun.dropTerminalProjection(self.allocator, run);
+                        try AgentRun.publishRunFailurePair(&self.agent_server, self.allocator, run, .internal_error, msg);
                         forwarded += 1;
                     } else if (run.event_publication_failed) {
-                        self.dropTerminalProjection(run);
-                        try self.publishRunFailurePair(run, .internal_error, STDIO_EVENT_PUBLICATION_FAILED_MESSAGE);
+                        AgentRun.dropTerminalProjection(self.allocator, run);
+                        try AgentRun.publishRunFailurePair(&self.agent_server, self.allocator, run, .internal_error, STDIO_EVENT_PUBLICATION_FAILED_MESSAGE);
                         forwarded += 1;
                     } else if (run.stream.getResult()) |result| {
                         const result_reason: []const u8 = if (result.termination) |termination|
@@ -501,8 +501,8 @@ const StdioProtocolLoop = struct {
                         run.settlement_frame_published = true;
                         forwarded += 1;
                     } else {
-                        self.dropTerminalProjection(run);
-                        try self.publishRunFailurePair(run, .internal_error, STDIO_RUN_WITHOUT_OUTCOME_MESSAGE);
+                        AgentRun.dropTerminalProjection(self.allocator, run);
+                        try AgentRun.publishRunFailurePair(&self.agent_server, self.allocator, run, .internal_error, STDIO_RUN_WITHOUT_OUTCOME_MESSAGE);
                         forwarded += 1;
                     }
                 }
@@ -532,33 +532,6 @@ const StdioProtocolLoop = struct {
         return forwarded;
     }
 
-    fn publishRunFailurePair(
-        self: *Self,
-        run: *ActiveAgentRun,
-        code: AgentProtocolTypes.AgentErrorCode,
-        message: []const u8,
-    ) !void {
-        if (!run.failure_event_published) {
-            const event_json = try serializeAgentErrorEvent(self.allocator, message, @tagName(code));
-            defer self.allocator.free(event_json);
-            self.agent_server.publishAgentEvent(run.session_id, event_json) catch |err| switch (err) {
-                error.OutOfMemory => return err,
-                else => {},
-            };
-            run.failure_event_published = true;
-        }
-        self.agent_server.publishAgentError(run.session_id, code, message) catch |err| switch (err) {
-            error.OutOfMemory => return err,
-            else => {},
-        };
-        run.settlement_frame_published = true;
-    }
-
-    fn dropTerminalProjection(self: *Self, run: *ActiveAgentRun) void {
-        if (run.terminal_event_json) |event_json| self.allocator.free(event_json);
-        run.terminal_event_json = null;
-    }
-
     fn finishAgentStopCancellation(
         self: *Self,
         stopped_session: ?AgentProtocolTypes.SessionId,
@@ -569,66 +542,6 @@ const StdioProtocolLoop = struct {
                 AgentRun.cancelRun(self.allocator, &self.active_agent_runs, &self.tool_bridge, session_id);
             }
         }
-    }
-
-    fn publishAgentLoopError(self: *Self, session_id: AgentProtocolTypes.SessionId, code: AgentProtocolTypes.AgentErrorCode, message: []const u8) !void {
-        const event_json = try serializeAgentErrorEvent(self.allocator, message, @tagName(code));
-        defer self.allocator.free(event_json);
-        self.agent_server.publishAgentEvent(session_id, event_json) catch |err| {
-            if (err == error.OutOfMemory) return err;
-        };
-        self.agent_server.publishAgentError(session_id, code, message) catch |err| {
-            if (err == error.OutOfMemory) return err;
-        };
-    }
-
-    fn publishPendingToolRequests(self: *Self) !usize {
-        var published: usize = 0;
-        while (true) {
-            const request = self.tool_bridge.peekFrontRequest() orelse break;
-
-            const registration_current = blk: {
-                const current = self.agent_server.sessionGeneration(request.session_id);
-                break :blk current != null and current.? == request.generation;
-            };
-            if (!registration_current) {
-                self.tool_bridge.popFrontRequest(self.allocator);
-                continue;
-            }
-            if (self.tool_bridge.isDisconnected()) {
-                self.tool_bridge.popFrontRequest(self.allocator);
-                continue;
-            }
-
-            var payload_owned_by_env = false;
-            const owned_tool_call_id = try self.allocator.dupe(u8, request.tool_call_id);
-            errdefer if (!payload_owned_by_env) self.allocator.free(owned_tool_call_id);
-            const owned_tool_name = try self.allocator.dupe(u8, request.tool_name);
-            errdefer if (!payload_owned_by_env) self.allocator.free(owned_tool_name);
-            const owned_args_json = try self.allocator.dupe(u8, request.args_json);
-            errdefer if (!payload_owned_by_env) self.allocator.free(owned_args_json);
-
-            var env = AgentProtocolTypes.Envelope{
-                .session_id = request.session_id,
-                .message_id = AgentProtocolTypes.generateUlid(),
-                .sequence = try self.agent_server.nextOutgoingSequence(request.session_id),
-                .timestamp = compat.time.nowMillis(),
-                .payload = .{ .tool_execute = .{
-                    .tool_call_id = owned_tool_call_id,
-                    .tool_name = owned_tool_name,
-                    .args_json = owned_args_json,
-                } },
-            };
-            errdefer env.deinit(self.allocator);
-            payload_owned_by_env = true;
-
-            try self.tool_bridge.markInFlight(self.allocator, request.session_id, request.tool_call_id, env.message_id, request.generation);
-            errdefer self.tool_bridge.discardInFlight(self.allocator, request.session_id, request.tool_call_id);
-            try self.agent_server.enqueueEnvelope(env);
-            self.tool_bridge.popFrontRequest(self.allocator);
-            published += 1;
-        }
-        return published;
     }
 
     fn detectDispatchTarget(self: *Self, line: []const u8) ?DispatchTarget {
@@ -1324,20 +1237,6 @@ fn appendSystemPromptText(builder: *std.ArrayList(u8), allocator: std.mem.Alloca
     if (text.len == 0) return;
     if (builder.items.len > 0) try builder.append(allocator, '\n');
     try builder.appendSlice(allocator, text);
-}
-
-fn serializeAgentErrorEvent(allocator: std.mem.Allocator, message: []const u8, code: []const u8) ![]u8 {
-    var buffer = std.ArrayList(u8).empty;
-    errdefer buffer.deinit(allocator);
-    var w = json_writer.JsonWriter.init(&buffer, allocator);
-    try w.beginObject();
-    try w.writeStringField("type", "error");
-    try w.writeStringField("message", message);
-    try w.writeStringField("code", code);
-    try w.endObject();
-    const out = try allocator.dupe(u8, buffer.items);
-    buffer.deinit(allocator);
-    return out;
 }
 
 fn getBoolField(obj: std.json.ObjectMap, key: []const u8) ?bool {
@@ -4295,7 +4194,7 @@ test "stdio tool bridge publishes tool requests and consumes tool results" {
     clearOwnedLines(allocator, &outbound);
 
     try stdio_loop.tool_bridge.enqueueRequest(allocator, session_id, stdio_loop.agent_server.sessionGeneration(session_id).?, "call-1", "lookup", "{\"query\":\"zig\"}");
-    try std.testing.expectEqual(@as(usize, 1), try stdio_loop.publishPendingToolRequests());
+    try std.testing.expectEqual(@as(usize, 1), try AgentRun.publishPendingToolRequests(&stdio_loop.agent_server, stdio_loop.allocator, &stdio_loop.tool_bridge));
     _ = try stdio_loop.pumpBackground();
     _ = try stdio_loop.drainOutbound(&outbound);
     try std.testing.expectEqual(@as(usize, 1), outbound.items.len);
@@ -4438,7 +4337,7 @@ test "stdio tool bridge drops queued requests for stopped sessions" {
 
     const session_id = AgentProtocolTypes.generateSessionId();
     try stdio_loop.tool_bridge.enqueueRequest(allocator, session_id, 0, "call-1", "lookup", "{}");
-    try std.testing.expectEqual(@as(usize, 0), try stdio_loop.publishPendingToolRequests());
+    try std.testing.expectEqual(@as(usize, 0), try AgentRun.publishPendingToolRequests(&stdio_loop.agent_server, stdio_loop.allocator, &stdio_loop.tool_bridge));
     try std.testing.expectEqual(@as(usize, 0), stdio_loop.tool_bridge.requests.items.len);
     try std.testing.expectEqual(@as(usize, 0), stdio_loop.tool_bridge.in_flight.items.len);
 }
@@ -4469,12 +4368,12 @@ test "publishPendingToolRequests drops stale-generation requests after id re-reg
     try std.testing.expect(second_generation > first_generation);
 
     try stdio_loop.tool_bridge.enqueueRequest(allocator, session_id, first_generation, "stale-call", "lookup", "{}");
-    try std.testing.expectEqual(@as(usize, 0), try stdio_loop.publishPendingToolRequests());
+    try std.testing.expectEqual(@as(usize, 0), try AgentRun.publishPendingToolRequests(&stdio_loop.agent_server, stdio_loop.allocator, &stdio_loop.tool_bridge));
     try std.testing.expectEqual(@as(usize, 0), stdio_loop.tool_bridge.requests.items.len);
     try std.testing.expectEqual(@as(usize, 0), stdio_loop.tool_bridge.in_flight.items.len);
 
     try stdio_loop.tool_bridge.enqueueRequest(allocator, session_id, second_generation, "fresh-call", "lookup", "{}");
-    try std.testing.expectEqual(@as(usize, 1), try stdio_loop.publishPendingToolRequests());
+    try std.testing.expectEqual(@as(usize, 1), try AgentRun.publishPendingToolRequests(&stdio_loop.agent_server, stdio_loop.allocator, &stdio_loop.tool_bridge));
 }
 
 test "stale tool_result for a reused tool_call_id is rejected by in_reply_to correlation" {
@@ -4500,7 +4399,7 @@ test "stale tool_result for a reused tool_call_id is rejected by in_reply_to cor
     clearOwnedLines(allocator, &outbound);
 
     try stdio_loop.tool_bridge.enqueueRequest(allocator, session_id, stdio_loop.agent_server.sessionGeneration(session_id).?, "dup-call", "lookup", "{}");
-    try std.testing.expectEqual(@as(usize, 1), try stdio_loop.publishPendingToolRequests());
+    try std.testing.expectEqual(@as(usize, 1), try AgentRun.publishPendingToolRequests(&stdio_loop.agent_server, stdio_loop.allocator, &stdio_loop.tool_bridge));
     try pumpAndDrainStdioLoop(&stdio_loop, &outbound);
     var first_env = try agent_protocol_envelope.deserializeEnvelope(outbound.items[0], allocator);
     defer first_env.deinit(allocator);
@@ -4511,7 +4410,7 @@ test "stale tool_result for a reused tool_call_id is rejected by in_reply_to cor
     consumed.deinit(allocator);
 
     try stdio_loop.tool_bridge.enqueueRequest(allocator, session_id, stdio_loop.agent_server.sessionGeneration(session_id).?, "dup-call", "lookup", "{}");
-    try std.testing.expectEqual(@as(usize, 1), try stdio_loop.publishPendingToolRequests());
+    try std.testing.expectEqual(@as(usize, 1), try AgentRun.publishPendingToolRequests(&stdio_loop.agent_server, stdio_loop.allocator, &stdio_loop.tool_bridge));
     try pumpAndDrainStdioLoop(&stdio_loop, &outbound);
     var second_env = try agent_protocol_envelope.deserializeEnvelope(outbound.items[1], allocator);
     defer second_env.deinit(allocator);
@@ -5127,14 +5026,14 @@ test "tool-request publication failure keeps the request queued and retries exac
         try stdio_loop.tool_bridge.enqueueRequest(allocator, session_id, generation, "call-1", "lookup", "{}");
 
         failing.fail_index = failing.alloc_index + k;
-        if (stdio_loop.publishPendingToolRequests()) |_| {} else |err| {
+        if (AgentRun.publishPendingToolRequests(&stdio_loop.agent_server, stdio_loop.allocator, &stdio_loop.tool_bridge)) |_| {} else |err| {
             try std.testing.expectEqual(error.OutOfMemory, err);
             try std.testing.expectEqual(@as(usize, 1), stdio_loop.tool_bridge.requests.items.len);
             try std.testing.expectEqual(@as(usize, 0), stdio_loop.tool_bridge.in_flight.items.len);
         }
 
         failing.fail_index = std.math.maxInt(usize);
-        _ = try stdio_loop.publishPendingToolRequests();
+        _ = try AgentRun.publishPendingToolRequests(&stdio_loop.agent_server, stdio_loop.allocator, &stdio_loop.tool_bridge);
         try std.testing.expectEqual(@as(usize, 0), stdio_loop.tool_bridge.requests.items.len);
         try std.testing.expectEqual(@as(usize, 1), stdio_loop.tool_bridge.in_flight.items.len);
         _ = try stdio_loop.pumpBackground();

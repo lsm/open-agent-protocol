@@ -4,6 +4,10 @@ const ai_types = @import("ai_types");
 const agent_loop = @import("agent_loop");
 const json_writer = @import("json_writer");
 const transport = @import("transport");
+const compat = @import("compat");
+const agent_server_module = @import("agent_server");
+
+const AgentProtocolServer = agent_server_module.AgentProtocolServer;
 const AgentToolBridge = @import("tools/agent_tool_bridge");
 
 pub const SessionId = agent_types.SessionId;
@@ -386,4 +390,116 @@ fn writeUsageField(w: *json_writer.JsonWriter, usage: ai_types.Usage) !void {
     try w.writeIntField("cache_read", usage.cache_read);
     try w.writeIntField("cache_write", usage.cache_write);
     try w.endObject();
+}
+
+pub fn publishRunFailurePair(
+    server: *AgentProtocolServer,
+    allocator: std.mem.Allocator,
+    run: *Run,
+    code: agent_types.AgentErrorCode,
+    message: []const u8,
+) !void {
+    if (!run.failure_event_published) {
+        const event_json = try serializeAgentErrorEvent(allocator, message, @tagName(code));
+        defer allocator.free(event_json);
+        server.publishAgentEvent(run.session_id, event_json) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => {},
+        };
+        run.failure_event_published = true;
+    }
+    server.publishAgentError(run.session_id, code, message) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => {},
+    };
+    run.settlement_frame_published = true;
+}
+
+pub fn dropTerminalProjection(allocator: std.mem.Allocator, run: *Run) void {
+    if (run.terminal_event_json) |event_json| allocator.free(event_json);
+    run.terminal_event_json = null;
+}
+
+pub fn publishAgentLoopError(
+    server: *AgentProtocolServer,
+    allocator: std.mem.Allocator,
+    session_id: SessionId,
+    code: agent_types.AgentErrorCode,
+    message: []const u8,
+) !void {
+    const event_json = try serializeAgentErrorEvent(allocator, message, @tagName(code));
+    defer allocator.free(event_json);
+    server.publishAgentEvent(session_id, event_json) catch |err| {
+        if (err == error.OutOfMemory) return err;
+    };
+    server.publishAgentError(session_id, code, message) catch |err| {
+        if (err == error.OutOfMemory) return err;
+    };
+}
+
+pub fn publishPendingToolRequests(
+    server: *AgentProtocolServer,
+    allocator: std.mem.Allocator,
+    bridge: *AgentToolBridge.Bridge,
+) !usize {
+    var published: usize = 0;
+    while (true) {
+        const request = bridge.peekFrontRequest() orelse break;
+
+        const registration_current = blk: {
+            const current = server.sessionGeneration(request.session_id);
+            break :blk current != null and current.? == request.generation;
+        };
+        if (!registration_current) {
+            bridge.popFrontRequest(allocator);
+            continue;
+        }
+        if (bridge.isDisconnected()) {
+            bridge.popFrontRequest(allocator);
+            continue;
+        }
+
+        var payload_owned_by_env = false;
+        const owned_tool_call_id = try allocator.dupe(u8, request.tool_call_id);
+        errdefer if (!payload_owned_by_env) allocator.free(owned_tool_call_id);
+        const owned_tool_name = try allocator.dupe(u8, request.tool_name);
+        errdefer if (!payload_owned_by_env) allocator.free(owned_tool_name);
+        const owned_args_json = try allocator.dupe(u8, request.args_json);
+        errdefer if (!payload_owned_by_env) allocator.free(owned_args_json);
+
+        var env = agent_types.Envelope{
+            .session_id = request.session_id,
+            .message_id = agent_types.generateUlid(),
+            .sequence = try server.nextOutgoingSequence(request.session_id),
+            .timestamp = compat.time.nowMillis(),
+            .payload = .{ .tool_execute = .{
+                .tool_call_id = owned_tool_call_id,
+                .tool_name = owned_tool_name,
+                .args_json = owned_args_json,
+            } },
+        };
+        errdefer env.deinit(allocator);
+        payload_owned_by_env = true;
+
+        try bridge.markInFlight(allocator, request.session_id, request.tool_call_id, env.message_id, request.generation);
+        errdefer bridge.discardInFlight(allocator, request.session_id, request.tool_call_id);
+        try server.enqueueEnvelope(env);
+        bridge.popFrontRequest(allocator);
+        published += 1;
+    }
+    return published;
+}
+
+fn serializeAgentErrorEvent(allocator: std.mem.Allocator, message: []const u8, code: []const u8) ![]u8 {
+    var buffer = std.ArrayList(u8).empty;
+    errdefer buffer.deinit(allocator);
+    var w = json_writer.JsonWriter.init(&buffer, allocator);
+    try w.beginObject();
+    try w.writeStringField("type", "error");
+    try w.writeStringField("message", message);
+    try w.writeStringField("code", code);
+    try w.endObject();
+    const out = try allocator.dupe(u8, buffer.items);
+    buffer.deinit(allocator);
+    return out;
 }
