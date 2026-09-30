@@ -3387,7 +3387,7 @@ fn traceContext() ai_types.Context {
     return .{ .messages = messages };
 }
 
-test "a streamed text thinking and tool call reports the part index the terminal is assembled by" {
+test "a streamed text thinking and tool call reports indices that diverge from the terminal assembly order" {
     const allocator = std.testing.allocator;
 
     var mock = try MockCompletionsServer.listen(MockCompletionsServer.complete_stream);
