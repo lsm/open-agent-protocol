@@ -466,16 +466,29 @@ the model reports is never dropped.
 
 ## Automatic compaction
 
-`/autocompact <percent>` sets the share of the context window at which the session compacts
-itself, `/autocompact off` turns that off, and `/autocompact` with no argument reports the
-share in effect. `off` is what a session starts with, so nothing compacts on its own until
-it is asked to. A percent sign is optional (`80` and `80%` are the same request) and the
-share must be between 1 and 100: `0`, `101`, a sign, a decimal and anything that is not
-digits are refused. `/status` carries the share on its own line, so the value is visible
-without a second command.
+A session compacts itself before a turn once its context reaches a point set by the model.
+`auto`, which a session starts with, puts that point where the window still holds a reserve:
+a fifth of the window, or room for the 20,000-token summary plus one reply (the model's
+output limit, capped at 32,000) when that is more, but never more than half the window. On a
+1M window that is 80%; on 200k with a 64k output limit, 74%; on 128k with 16k, 72%; on 64k
+with 8k, 56%; on 32k, 50%. The window and the output limit are the model's own, from its
+provider's model list, and the catalog's conservative defaults (a 128k window, 8,192 output
+tokens) stand in when the list does not say.
 
-The share measures the same figure the context gauge shows — the prompt estimate the
-provider was last sent — plus the message about to be sent, against the window in effect.
+`/autocompact <percent>` sets a share of the window instead, `/autocompact off` turns it
+off, `/autocompact auto` returns to the default, and `/autocompact` with no argument reports
+the setting and, for `auto`, the token count it compacts at. The setting is saved in
+`config.json` under `mode.autocompact` as `"auto"`, `"off"` or a whole number, and a value
+that is none of those reads as `auto`. A percent sign is optional (`80` and `80%` are the
+same request) and the share must be between 1 and 100: `0`, `101`, a sign, a decimal and
+anything that is not digits are refused. `/status` carries the setting on its own line, so
+the value is visible without a second command.
+
+The point is measured against the larger of two counts: the prompt estimate the context gauge
+shows, and the prompt the provider last reported plus an estimate of what came after it (the
+count the output limit uses). The message about to be sent is added to that, against the
+window in effect. When the provider reports more than the estimate, compaction can fire while
+the gauge still reads below the point.
 It fires before a turn is submitted rather than during one, because a turn that has already
 overflowed is the failure this avoids. A message typed while a turn is streaming or a
 compaction is running takes the normal path, and the next submit is the one that measures

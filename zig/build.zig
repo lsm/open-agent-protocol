@@ -2030,6 +2030,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "ai_types", .module = ai_types_mod },
             .{ .name = "tui_runtime", .module = tui_runtime_mod },
             .{ .name = "owned_slice", .module = owned_slice_mod },
+            .{ .name = "tui_config", .module = tui_config_mod },
         },
     });
 
