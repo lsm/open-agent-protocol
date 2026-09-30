@@ -284,7 +284,6 @@ pub const refusal_statuses = [_]struct { code: []const u8, status: []const u8 }{
     .{ .code = "model_not_found", .status = "400 Bad Request" },
     .{ .code = "state_failed", .status = "500 Internal Server Error" },
     .{ .code = "tools_failed", .status = "502 Bad Gateway" },
-    .{ .code = "invalid_request", .status = "400 Bad Request" },
     .{ .code = "schema_invalid", .status = "400 Bad Request" },
     .{ .code = "malformed_json", .status = "400 Bad Request" },
     .{ .code = "type_mismatch", .status = "400 Bad Request" },
@@ -2389,22 +2388,24 @@ test "every refusal the transport emits has a status, or is one the draft leaves
         "busy",
         "unknown_op",
         "response_too_large",
+        "invalid_request",
     };
     for (emitted) |code| {
         try testing.expect(statusForRefusal(code) == null);
     }
     const named = [_][]const u8{
-        "capability_degraded", "internal",             "invalid_cursor",     "invalid_payload",     "invalid_request",
-        "invalid_submission",  "malformed_json",       "model_not_found",    "no_run_to_resume",    "open_failed",
-        "probe_failed",        "replay_cursor_future", "request_cancelled",  "request_too_large",   "resolution_rejected",
-        "run_active",          "run_not_found",        "run_terminal",       "schema_invalid",      "scope_mismatch",
-        "session_closed",      "session_exists",       "stale_capabilities", "state_failed",        "tools_failed",
-        "type_mismatch",       "unknown_adapter",      "unknown_session",    "unsupported_feature",
+        "capability_degraded", "internal",            "invalid_cursor",       "invalid_payload",
+        "invalid_submission",  "malformed_json",      "model_not_found",      "no_run_to_resume",
+        "open_failed",         "probe_failed",        "replay_cursor_future", "request_cancelled",
+        "request_too_large",   "resolution_rejected", "run_active",           "run_not_found",
+        "run_terminal",        "schema_invalid",      "scope_mismatch",       "session_closed",
+        "session_exists",      "stale_capabilities",  "state_failed",         "tools_failed",
+        "type_mismatch",       "unknown_adapter",     "unknown_session",      "unsupported_feature",
     };
     for (named) |code| {
         try testing.expect(statusForRefusal(code) != null);
     }
-    try testing.expectEqual(@as(usize, 29), refusal_statuses.len);
+    try testing.expectEqual(@as(usize, 28), refusal_statuses.len);
 }
 
 test "an unnamed refusal code carries no status, so the wire rule can refuse it" {
@@ -2425,7 +2426,6 @@ test "every code the transport can answer carries the status the draft pins" {
         .{ .code = "scope_mismatch", .status = "400 Bad Request" },
         .{ .code = "request_cancelled", .status = "400 Bad Request" },
         .{ .code = "model_not_found", .status = "400 Bad Request" },
-        .{ .code = "invalid_request", .status = "400 Bad Request" },
         .{ .code = "schema_invalid", .status = "400 Bad Request" },
         .{ .code = "malformed_json", .status = "400 Bad Request" },
         .{ .code = "type_mismatch", .status = "400 Bad Request" },
@@ -2447,8 +2447,8 @@ test "every code the transport can answer carries the status the draft pins" {
     for (named) |entry| {
         try testing.expectEqualStrings(entry.status, statusForRefusal(entry.code).?);
     }
-    try testing.expectEqual(@as(usize, 29), refusal_statuses.len);
-    try testing.expectEqual(@as(usize, 29), named.len);
+    try testing.expectEqual(@as(usize, 28), refusal_statuses.len);
+    try testing.expectEqual(@as(usize, 28), named.len);
 }
 
 test "refusal details render as the object the envelope carries" {
