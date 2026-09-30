@@ -526,11 +526,11 @@ test "the budget arithmetic keeps sub-millisecond precision without a live clock
 }
 
 const partial_tail =
-    \\printf 'partial'; sleep 0.5; echo '{"control":"late"}'
+    \\printf 'partial'; sleep 1.5; echo '{"control":"late"}'
 ;
 
 const flood_tail =
-    \\i=0; while [ $i -lt 60 ]; do echo; i=$((i+1)); sleep 0.02; done; echo '{"control":"after"}'
+    \\i=0; while [ $i -lt 100 ]; do echo; i=$((i+1)); sleep 0.02; done; echo '{"control":"after"}'
 ;
 
 const short_budget_ms: i64 = 400;
@@ -570,28 +570,14 @@ fn readUnder(client: *Client, budget: Budget) !Reading {
     };
 }
 
-const Pair = struct {
-    short: Reading,
-    open: Reading,
-
-    fn deinit(self: Pair, allocator: std.mem.Allocator) void {
-        self.short.deinit(allocator);
-        self.open.deinit(allocator);
-    }
-};
-
-fn readTwice(allocator: std.mem.Allocator, tail: []const u8) !Pair {
-    const short = Budget.until(std.testing.io, short_budget_ms);
-    var client = try Client.spawn(allocator, .{ .command = "/bin/sh", .args = &.{ "-c", tail } });
-    defer client.deinit();
-    defer stopChild(&client);
-    const first = try readUnder(&client, short);
-    const second = try readUnder(&client, Budget.until(std.testing.io, open_budget_ms));
-    return .{ .short = first, .open = second };
-}
-
 fn stopChild(client: *Client) void {
     _ = client.waitExit(300) catch {};
+}
+
+fn remainingMs(budget: Budget) i64 {
+    const limit = budget.limit orelse return 0;
+    const now = std.Io.Clock.Timestamp.now(budget.io, limit.clock);
+    return @intCast(@max(Budget.leftOf(limit, now), 0) / std.time.ns_per_ms);
 }
 
 test "a spent budget stops on the first buffered blank instead of draining the buffer" {
@@ -664,28 +650,50 @@ test "a complete frame already buffered is returned even when the budget is spen
 
 test "a short budget returns nothing on a partial line, and the same child then yields its frame" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
-    const pair = try readTwice(std.testing.allocator, partial_tail);
-    defer pair.deinit(std.testing.allocator);
+    const allocator = std.testing.allocator;
+    var client = try Client.spawn(allocator, .{ .command = "/bin/sh", .args = &.{ "-c", partial_tail } });
+    defer client.deinit();
+    defer stopChild(&client);
 
-    try std.testing.expect(pair.short.frame == null);
-    try std.testing.expect(pair.short.elapsed_ns >= short_budget_ms * std.time.ns_per_ms - deadline_slack_ns);
-    try std.testing.expect(pair.short.elapsed_ns < bounded_call_limit_ns);
+    const short = Budget.until(client.io(), short_budget_ms);
+    const allowed = remainingMs(short);
+    try std.testing.expect(allowed > 0);
 
-    try std.testing.expect(pair.open.frame != null);
-    try std.testing.expect(pair.open.frame.?.control);
-    try std.testing.expectEqualStrings("partial{\"control\":\"late\"}", pair.open.frame.?.text);
+    const first = try readUnder(&client, short);
+    defer first.deinit(allocator);
+    try std.testing.expect(first.frame == null);
+    try std.testing.expect(first.elapsed_ns >= allowed * std.time.ns_per_ms - deadline_slack_ns);
+    try std.testing.expect(first.elapsed_ns < bounded_call_limit_ns);
+    try std.testing.expect(client.pending.items.len > 0);
+
+    const second = try readUnder(&client, Budget.until(client.io(), open_budget_ms));
+    defer second.deinit(allocator);
+    try std.testing.expect(second.frame != null);
+    try std.testing.expect(second.frame.?.control);
+    try std.testing.expectEqualStrings("partial{\"control\":\"late\"}", second.frame.?.text);
+    try std.testing.expect(client.pending.items.len == 0);
 }
 
 test "a short budget returns nothing on a blank flood, and the same child then yields its frame" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
-    const pair = try readTwice(std.testing.allocator, flood_tail);
-    defer pair.deinit(std.testing.allocator);
+    const allocator = std.testing.allocator;
+    var client = try Client.spawn(allocator, .{ .command = "/bin/sh", .args = &.{ "-c", flood_tail } });
+    defer client.deinit();
+    defer stopChild(&client);
 
-    try std.testing.expect(pair.short.frame == null);
-    try std.testing.expect(pair.short.elapsed_ns >= short_budget_ms * std.time.ns_per_ms - deadline_slack_ns);
-    try std.testing.expect(pair.short.elapsed_ns < bounded_call_limit_ns);
+    const short = Budget.until(client.io(), short_budget_ms);
+    const allowed = remainingMs(short);
+    try std.testing.expect(allowed > 0);
 
-    try std.testing.expect(pair.open.frame != null);
-    try std.testing.expect(pair.open.frame.?.control);
-    try std.testing.expectEqualStrings("{\"control\":\"after\"}", pair.open.frame.?.text);
+    const first = try readUnder(&client, short);
+    defer first.deinit(allocator);
+    try std.testing.expect(first.frame == null);
+    try std.testing.expect(first.elapsed_ns >= allowed * std.time.ns_per_ms - deadline_slack_ns);
+    try std.testing.expect(first.elapsed_ns < bounded_call_limit_ns);
+
+    const second = try readUnder(&client, Budget.until(client.io(), open_budget_ms));
+    defer second.deinit(allocator);
+    try std.testing.expect(second.frame != null);
+    try std.testing.expect(second.frame.?.control);
+    try std.testing.expectEqualStrings("{\"control\":\"after\"}", second.frame.?.text);
 }
