@@ -600,20 +600,23 @@ for hours still drains. A drain that cannot read its own clock stops rather than
 draining without a bound.
 
 An earlier revision of this row said each of the four bounds is pinned by a test
-that would fail if the bound were removed. **That is false, and it was checked
-rather than assumed.** Neutralising the 2500 ms guard leaves the suite green
-(`9/9` steps, `179/179`, `EXIT=0`), and raising `drain_total_cap_bytes` to 1 GiB
-also leaves it green. So what follows is the pinning that exists, which is
-narrower than removal-pinning for the first two clauses:
+that would fail if the bound was removed. **That was false, and it was checked
+rather than assumed.** What follows is the pinning that exists, measured on this
+head, and it is not uniform: the byte cap is removal-pinned, the time budget is
+not.
 
-- **the 1 MiB total** — `a drain stops at its byte cap and reports what it consumed`
-  asserts the returned count against a larger declared length, written from a
-  thread so the writer cannot deadlock on a full socket buffer. **It does not pin
-  the number by removal:** the expectation is read from `drain_total_cap_bytes`,
-  so raising the constant to 1 GiB keeps the suite green, as measured above. The
-  unit test pins *that a cap is enforced and reported*; the real-socket test pins
-  that a cap is *observable from outside the process*, and asserts only a lower
-  bound on transferred bytes plus a complete 403 — never an upper one
+- **the 1 MiB total — pinned by removal at this head.** `a drain stops at its byte
+  cap and reports what it consumed` carries its own literal, `wanted_cap =
+  1024 * 1024`, asserts the production constant equals it, and uses the literal for
+  both the declared length and the expected count, so the constant and the
+  expectation cannot move together. Raising `drain_total_cap_bytes` to 1 GiB fails
+  it with `expected 1048576, found 1073741824` (`7/9` steps, `EXIT=1`). An earlier
+  revision of this row said the opposite — the expectation was read from the
+  production constant, so raising it left the suite green — and that was measured
+  before the literal was added. The writer is a thread so it cannot deadlock on a
+  full socket buffer. The real-socket test separately pins that a cap is
+  *observable from outside the process*, and asserts only a lower bound on
+  transferred bytes plus a complete 403 — never an upper one
 - **the 2500 ms elapsed budget, and that it is elapsed rather than uptime** —
   `a drain reads on a long-lived process, because its budget is elapsed not uptime`
   seeds the clock, drains, waits `drain_total_ms + 200` under a bound, asserts the
