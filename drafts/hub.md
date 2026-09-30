@@ -1559,18 +1559,29 @@ are "stamped with the revision the lister served it under", and both name
 | **Why they are not rows here** | Neither tree is wrong against the draft: `:461` pins the status for a wrong `Content-Type` and is silent on the predicate, so both answers are consistent with the text. Deciding which predicate is correct would be **choosing a precedence the draft does not state**, and this table does not make that choice. A draft row naming the predicate — "a request whose method reads a body" or "a request that carries one" — would settle it, and that is a spec change and unaccepted. |
 | **What is recorded instead** | The divergence itself, in both directions and with both call sites, so a reader comparing the trees sees two answers and knows the cause is an unpinned predicate rather than a bug in either. |
 | **What is now pinned, on the Zig side** | Both corners are executable rather than described. `a zero-length body with a wrong media type is not gated, because the gate reads length` sends a `POST /adapters/a/sessions` with `Content-Type: text/plain` at both `Content-Length: 0` and with the header absent, asserts `carriesBody` is false and that the answer is `.not_found` — **Go answers 415 for both.** `a listing carrying a body with a wrong media type is gated, because the gate reads the head` sends a `GET /adapters` with `Content-Length: 4` and `text/plain`, asserts `carriesBody` is true and that the answer is `unsupported_media_type` — Go serves the listing. Changing `carriesBody` from `content_length > 0` to `content_type != null` makes the first fail, so the tests pin the predicate rather than restate it. **Go still has no test for either corner**, which is the same gap D20 records for `type_mismatch`; these tests fix the Zig half and leave the Go half recorded rather than silently equal. |
-pins **thirteen refused and twenty admitted** spellings. Every one of the
-  thirty-three was **executed against Go 1.27's `mime.ParseMediaType` and matched against what it
-  answered**, not against a reading of it — which is how five of my own defects were found.
-  Go admits whitespace after `=` and a quoted value there; refuses non-whitespace between a
-  closing quote and the next `;`; refuses a duplicate parameter name whose *decoded* value
-  differs while admitting one whose value is identical, including a quoted and a bare spelling
-  of the same value (`a="x"; a=x` and `a=1; a="1"` are both fine), names differing only in case,
-  and values differing only in how their quotes are escaped (`a="x\"y"; a="x\\y"` is a duplicate,
-  `a="x\"y"; a="x\"y"` is not); and admits `{` and `}` as token characters. Duplicate names
-  compare case-insensitively and values compare **after unescaping quoted-pairs**, because a raw
-  slice comparison diverges from Go on exactly those spellings. The test is named for that
-  agreement, not for a grammar the parser does not implement.
+| **A third corner, closed rather than recorded** | `declaresJson` used to cut at the first `;` and never look at the
+  parameter section, so `application/json; charset` — a parameter with no `=` — was admitted, while Go's
+  `mime.ParseMediaType` errors on it and the gate answers 415. **The Zig gate now validates the parameter
+  section.** The authority it is aligned to is **Go's `mime.ParseMediaType`, not the bare grammar of
+  RFC 9110 §5.6.6** — the two are not the same, and citing the grammar would misdescribe the result. Go's
+  parser **admits optional whitespace around `=`** and **quoted-pairs**, which the bare grammar does not.
+  The test, `a parameter list that Go refuses is refused here too, and one it admits is admitted`, pins
+  **thirteen refused and twenty admitted** spellings, each **executed against Go 1.27's parser and
+  matched against what it answered**. Duplicate names compare case-insensitively and values compare
+  **after unescaping quoted-pairs**, because a raw slice comparison diverges from Go on exactly those
+  spellings. **Go still has no test for any of these** — the parity is established by executing its parser,
+  not by a Go test, which is the same gap D20 records for `type_mismatch`. |
+| **A fourth corner, deliberately divergent** | A parameter value longer than **256 bytes** is **refused** by the
+  Zig gate; Go admits it, and I measured a 300-character value being admitted. The reason is memory safety:
+  the duplicate check compares **decoded** values, so a decoded value must be materialised, and the
+  materialisation buffer is 256 bytes. Without a length check the bare-token branch indexes past the end
+  of it — a panic in a safe build, which in the daemon is an abort and every session with it. So the Zig
+  gate **refuses rather than overflows**, and `a parameter value longer than the decoded buffer is refused
+  rather than overflowing it` pins both sides of the boundary: 257 characters refused, exactly 256 admitted.
+  This is a real divergence from Go, recorded here rather than hidden, and it is a defensive bound rather
+  than a claim about the protocol. **It could be narrowed** — the buffer could grow, and the header cap is
+  16 KiB — but a larger stack buffer per parameter is a cost, and no test exercises the long-value path
+  beyond the boundary. |
 
 ### D20 — `type_mismatch` is answered by no test in either tree
 

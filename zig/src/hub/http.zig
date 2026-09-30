@@ -411,12 +411,15 @@ fn parametersWellFormed(parameters: []const u8) bool {
         if (after.len > 0 and after[0] == '"') {
             quoted = true;
             const closed = closingQuote(after) orelse return false;
-            decoded_len = unescapeInto(after[1..closed], &decoded);
+            const raw = after[1..closed];
+            if (raw.len > decoded.len) return false;
+            decoded_len = unescapeInto(raw, &decoded);
             after = std.mem.trim(u8, after[closed + 1 ..], " \t");
         } else {
             const next = std.mem.indexOfScalar(u8, after, ';') orelse after.len;
             const value = std.mem.trim(u8, after[0..next], " \t");
             if (!isToken(value)) return false;
+            if (value.len > decoded.len) return false;
             decoded_len = value.len;
             @memcpy(decoded[0..decoded_len], value);
             after = after[next..];
@@ -444,9 +447,9 @@ fn parametersWellFormed(parameters: []const u8) bool {
 }
 
 fn unescapeInto(quoted: []const u8, into: []u8) usize {
+    std.debug.assert(quoted.len <= into.len);
     var at: usize = 0;
     for (quoted) |byte| {
-        if (at == into.len) return into.len;
         if (byte == '\\' and at + 1 < into.len) continue;
         into[at] = byte;
         at += 1;
@@ -660,6 +663,7 @@ test "a parameter list that Go refuses is refused here too, and one it admits is
         "application/json;charset=\"utf-8\" junk; x=1",
         "application/json; a=1; a=2",
         "application/json; CHARSET=utf-8; charset=UTF-8",
+        "application/json; a=\"x\\\"y\"; a=\"x\\\\y\"",
         "application/json; a=1; a=\"2\"",
         "application/json; a=\"x\"; a=\"y\"",
     }) |declared| {
@@ -697,6 +701,28 @@ test "a parameter list that Go refuses is refused here too, and one it admits is
         defer request.deinit(testing.allocator);
         try testing.expectEqual(Answer.not_found, answer(loopback, request));
     }
+}
+
+test "a parameter value longer than the decoded buffer is refused rather than overflowing it" {
+    const loopback: []const []const u8 = &.{};
+    const long_token = "x" ** (max_parameter_bytes + 1);
+    const long_quoted = "y" ** (max_parameter_bytes + 1);
+    for ([_][]const u8{
+        "application/json; a=" ++ long_token,
+        "application/json; a=\"" ++ long_quoted ++ "\"",
+    }) |declared| {
+        const raw = try std.fmt.allocPrint(testing.allocator, "POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: {s}\r\nContent-Length: 2\r\n\r\n{{}}", .{declared});
+        defer testing.allocator.free(raw);
+        var request = try requestOver(raw);
+        defer request.deinit(testing.allocator);
+        try testing.expectEqualStrings("unsupported_media_type", answer(loopback, request).refusal.code);
+    }
+    const exact = "x" ** max_parameter_bytes;
+    const fits = try std.fmt.allocPrint(testing.allocator, "POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: application/json; a={s}\r\nContent-Length: 2\r\n\r\n{{}}", .{exact});
+    defer testing.allocator.free(fits);
+    var fitting = try requestOver(fits);
+    defer fitting.deinit(testing.allocator);
+    try testing.expectEqual(Answer.not_found, answer(loopback, fitting));
 }
 
 test "a zero-length body with a wrong media type is not gated, because the gate reads length" {
