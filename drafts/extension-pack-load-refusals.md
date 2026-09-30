@@ -127,15 +127,30 @@ These shapes load and **contribute**, so they are not on the skipped list:
   spelling and the registered key are the same string after normalisation and the
   lookup succeeds; the branch is appended and the pack contributes it.
 
-  What is defective is the **spelling's identity**: the descriptor's `schemas`
-  lists `types.schema.json`, and the citation is `/types.schema.json`, which is not
-  a spelling that appears anywhere in the descriptor. A reader auditing the pack by
-  its own text cannot find the resource the branch uses, and nothing in the load
-  says the citation was rewritten. Whether a citation must *be* one of the
-  descriptor's own spellings is a **registered-resource identity question against
-  Decision 0004**, and it is not answered here. Measured on `7dd74dd30d`:
-  `valid:true`, exit 0, no refusal. (A *climbing* name is different: `..` is refused
-  uncoded, as measured above.)
+  **This is a recorded divergence from `goap`, not a shared outcome.** `goap`
+  *refuses* the same citation, uncoded, and the whole load fails. Registration
+  there keys the document by `p.Base + filepath.ToSlash(filepath.Clean(rel))`
+  (`go/validation/pack.go:736`), and `filepath.Clean("types.schema.json")` keeps no
+  leading slash, so the registered key is `…/types.schema.json`. The lookup builds
+  the uri with `p.Base + path.Clean(filepath.ToSlash(file))`
+  (`go/validation/pack.go:996`), and `path.Clean("/types.schema.json")` **retains**
+  the leading slash, so the key misses and `resolveBranch` returns the uncoded
+  "schema is not one the descriptor contributes" refusal
+  (`go/validation/pack.go:997-1000`), which `LoadPacks` turns into a failed load
+  (`go/validation/pack.go:204-205`). oapx accepts where `goap` refuses; this
+  asymmetry is the divergence Decision 0032 requires recording here, and it is
+  recorded rather than aligned in this cut.
+
+  What is defective on the oapx side is the **spelling's identity**: the
+  descriptor's `schemas` lists `types.schema.json`, and the citation is
+  `/types.schema.json`, which is not a spelling that appears anywhere in the
+  descriptor. A reader auditing the pack by its own text cannot find the resource
+  the branch uses, and nothing in the load says the citation was rewritten. Whether
+  a citation must *be* one of the descriptor's own spellings is a
+  **registered-resource identity question against Decision 0004**, and it is not
+  answered here. oapx measured on `7dd74dd30d`: `valid:true`, exit 0, no refusal.
+  (A *climbing* name is different: `..` is refused uncoded on both loaders, as
+  measured above.)
 
 ## Skipped, not refused
 
