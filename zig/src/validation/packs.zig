@@ -177,8 +177,9 @@ fn gather(
         if (descriptor != .object) return error.InvalidPackDescriptor;
         const pack_id = stringField(descriptor, "id") orelse return error.InvalidPackDescriptor;
         const version = stringField(descriptor, "version") orelse return error.InvalidPackDescriptor;
-        if (named.contains(dir)) continue;
-        try named.put(dir, {});
+        const canonical = std.Io.Dir.cwd().realPathFileAlloc(io, dir, allocator) catch dir;
+        if (named.contains(canonical)) continue;
+        try named.put(canonical, {});
         try ids.append(allocator, pack_id);
 
         if (field(descriptor, "capability_keys")) |keys| {
