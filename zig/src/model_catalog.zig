@@ -4363,7 +4363,7 @@ test "loadProductionModels carries a catalog row's discovered models" {
 
     try std.testing.expectEqual(@as(usize, 1), models.len);
     try std.testing.expectEqualStrings("deepseek", models[0].provider);
-    try std.testing.expectEqualStrings("openai-completions", models[0].api);
+    try std.testing.expectEqualStrings("anthropic-messages", models[0].api);
 }
 
 fn catalogLoadProbe(allocator: std.mem.Allocator) !void {
