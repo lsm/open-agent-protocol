@@ -661,8 +661,11 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   sees `n == 0`, returns `error.BodyTruncated`, and the loop writes the transport failure and drains
   `request.content_length -| request.filled`. What is pinned, all of it observable: a **complete**
   answer — status `400`, `Content-Length` matching the 265-byte body, `type: error.response`,
-  `code: request_read`, and both `in_reply_to` and `protocol` populated — delivered while the client
-  had sent **4096 of the 8 MiB it declared**. The answer arriving at all is the "gave up" claim: a
+  `code: request_read`, `protocol: open-agent-protocol`, `version: 0.1`,
+  `profile: open-agent-protocol.agent-control-core`, and the synthetic correlation `oap-error-1`
+  replying to `oap-request-1` that `refusalEnvelope` builds at `http.zig:292-298` and the existing
+  unit test at `:1561` already pins for all four refusals — delivered while the client had sent
+  **4096 of the 8 MiB it declared**. The answer arriving at all is the "gave up" claim: a
   daemon waiting for the declared body would have said nothing and the read would have timed out.
   **Two negative controls fail it:** `readBody` treating a short body as complete answers `404`, and
   mapping `BodyTruncated` to a different refusal answers `413`. **The drain on this path is NOT
@@ -670,8 +673,12 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   green, because after a half-close the drain's first read returns EOF immediately, so nothing about
   the drain reaches this client. So the **`content_length -| filled` arithmetic and this site's
   reachability are unproved** by this test, by the rows above, and by anything else on main, and no
-  threshold is inferred from transferred bytes to stand in for them. The cap and the budget remain
-  pinned exactly where `:615-621` and the `drain` unit tests say, **time-bound presence among them.**
+  threshold is inferred from transferred bytes to stand in for them. **Of the two drain bounds, the
+  byte cap is pinned** — `:1369` asserts `drain_total_cap_bytes` against its own literal and drains
+  past it — and the **elapsed-versus-uptime comparison is pinned** at `:1412`, but **the time guard's
+  presence is NOT pinned anywhere**, exactly as the row above states, and this row adds nothing to it.
+  Two things a reader might assume are covered here are not: this site's drain amount, and the
+  existence of the time bound.
 - **the bound holding against a real process** —
   `TestHubAddrRefusesALargeRefusedHeadOverARealSocket` transfers 1,052,672 /
   1,719,800 / 1,799,224 bytes against declarations of 1 MiB+4096, 4 MiB and 16 MiB

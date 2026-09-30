@@ -65,14 +65,17 @@ func TestHubAddrAnswersACompleteTransportFailureWhenTheBodyStopsShort(t *testing
 		t.Fatalf("the client sent all %d declared bytes, so this run cannot show the daemon answered before the body arrived", declared)
 	}
 	var envelope struct {
-		Type    string `json:"type"`
-		InReply string `json:"in_reply_to"`
-		Payload struct {
+		Type     string `json:"type"`
+		Protocol string `json:"protocol"`
+		Version  string `json:"version"`
+		Profile  string `json:"profile"`
+		ID       string `json:"id"`
+		InReply  string `json:"in_reply_to"`
+		Payload  struct {
 			Error struct {
 				Code string `json:"code"`
 			} `json:"error"`
 		} `json:"payload"`
-		Protocol string `json:"protocol"`
 	}
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		t.Fatalf("the answer is not parseable JSON (%v): %s", err, body)
@@ -80,8 +83,11 @@ func TestHubAddrAnswersACompleteTransportFailureWhenTheBodyStopsShort(t *testing
 	if envelope.Type != "error.response" || envelope.Payload.Error.Code != "request_read" {
 		t.Fatalf("the answer was %s / %s, want error.response / request_read", envelope.Type, envelope.Payload.Error.Code)
 	}
-	if envelope.InReply == "" || envelope.Protocol == "" {
-		t.Fatalf("the answer was not correlated to the request: in_reply_to %q, protocol %q", envelope.InReply, envelope.Protocol)
+	if envelope.InReply != "oap-request-1" || envelope.ID != "oap-error-1" {
+		t.Fatalf("the answer was correlated as %q replying to %q, want oap-error-1 replying to oap-request-1", envelope.ID, envelope.InReply)
 	}
-	t.Logf("declared %d, sent %d then stopped, and the daemon answered a complete %d-byte %s / %s correlated to %s without waiting for the rest", declared, sent, len(body), envelope.Type, envelope.Payload.Error.Code, envelope.InReply)
+	if envelope.Protocol != "open-agent-protocol" || envelope.Version != "0.1" || envelope.Profile != "open-agent-protocol.agent-control-core" {
+		t.Fatalf("the answer was %s %s %s, want open-agent-protocol 0.1 open-agent-protocol.agent-control-core", envelope.Protocol, envelope.Version, envelope.Profile)
+	}
+	t.Logf("declared %d, sent %d then stopped, and the daemon answered a complete %d-byte %s / %s from %s %s, correlated as %s replying to %s, without waiting for the rest", declared, sent, len(body), envelope.Type, envelope.Payload.Error.Code, envelope.Protocol, envelope.Version, envelope.ID, envelope.InReply)
 }
