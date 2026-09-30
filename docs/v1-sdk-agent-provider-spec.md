@@ -72,7 +72,10 @@ Caching rules:
 - `cache_max_age_ms` is required for all responses.
 - Clients treat cached data as stale when `now_ms > fetched_at_ms + cache_max_age_ms`.
 - If `cache_max_age_ms` is missing from a non-conformant server response, clients should default to `300_000` (5 minutes).
-- `source` is per-model metadata: `"dynamic"` or `"static_fallback"`.
+- `source` is per-model metadata: `"dynamic"` or `"static_fallback"`. It is an optional
+  key: when a listing omits it the reader records it as unknown rather than choosing
+  one. An optional key is not a nullable one, so a `source` that is present must be
+  one of those two strings; `null` or another value is a malformed response.
 - `fetched_at_ms` is response-generation time (not per-model last-verified time).
 - Recommended server defaults:
   - dynamic source: `cache_max_age_ms = 300_000` (5 minutes),
@@ -233,7 +236,8 @@ export interface ModelDescriptor {
   auth_status: AuthStatus;
   lifecycle: ModelLifecycle;
   capabilities: ModelCapability[];
-  source: ModelSource;
+  /** Absent means the listing did not state one; readers must not invent a value. */
+  source?: ModelSource;
   context_window?: number;
   max_output_tokens?: number;
   reasoning_default?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
