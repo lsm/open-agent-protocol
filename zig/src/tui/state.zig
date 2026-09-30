@@ -1119,16 +1119,20 @@ pub const AppState = struct {
                 self.backpressure_active = payload.active;
                 self.dropped_event_count = payload.dropped_count;
             },
-            .compaction_start => {
-                self.status.streaming = true;
+            .compaction_start => |payload| {
                 self.status.compacting = true;
-                self.markStreamingStarted();
+                if (!payload.in_run) {
+                    self.status.streaming = true;
+                    self.markStreamingStarted();
+                }
             },
             .compaction_end => |payload| {
-                self.status.streaming = false;
                 self.status.compacting = false;
-                self.markStreamingStopped();
-                self.stream_aborted = false;
+                if (!payload.in_run) {
+                    self.status.streaming = false;
+                    self.markStreamingStopped();
+                    self.stream_aborted = false;
+                }
                 switch (payload.outcome) {
                     .completed => {
                         self.telemetry.estimated_tokens = payload.tokens_after;

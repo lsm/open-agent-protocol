@@ -220,6 +220,9 @@ pub const TuiRuntime = struct {
     compact_output: bool = false,
     run_async: bool = true,
     compaction_transcript: []u8 = &.{},
+    transcript_writer: ?TranscriptWriter = null,
+    run_transcripts: std.ArrayList([]u8) = .empty,
+    run_transcript_saved: []const u8 = "",
     dropped_event_count: u64 = 0,
     dropped_since_warning: u64 = 0,
     steering_tagged_count: u64 = 0,
@@ -357,6 +360,8 @@ pub const TuiRuntime = struct {
         self.tool_protocol.deinit();
         self.allocator.free(self.workspace_root);
         self.allocator.free(self.compaction_transcript);
+        self.clearRunTranscripts();
+        self.run_transcripts.deinit(self.allocator);
         self.allocator.free(self.approval_contexts);
         self.allocator.free(self.wrapped_tools);
         self.allocator.free(self.original_tools);
@@ -796,6 +801,48 @@ pub const TuiRuntime = struct {
         local.compactAsync(.{ .focus = options.focus, .transcripts = options.transcripts }, self, onCompaction) catch |err| {
             self.finishCompaction(.{ .outcome = .failed, .message = OwnedSlice(u8).initBorrowed(@errorName(err)) });
         };
+    }
+
+    pub const TranscriptWriter = struct {
+        ctx: ?*anyopaque,
+        save_fn: *const fn (ctx: ?*anyopaque, allocator: std.mem.Allocator, index: usize, history: []const ai_types.Message) ?[]u8,
+    };
+
+    pub fn armAutoCompact(self: *TuiRuntime, at: ?u64, transcripts: []const []const u8, writer: ?TranscriptWriter) !void {
+        if (!self.started) try self.start();
+        const local = &(self.local_agent orelse return error.RuntimeNotStarted);
+        if (!local.isIdle()) return error.AgentAlreadyStreaming;
+        var copies: std.ArrayList([]u8) = .empty;
+        errdefer {
+            for (copies.items) |path| self.allocator.free(path);
+            copies.deinit(self.allocator);
+        }
+        try copies.ensureTotalCapacity(self.allocator, transcripts.len);
+        for (transcripts) |path| copies.appendAssumeCapacity(try self.allocator.dupe(u8, path));
+        self.clearRunTranscripts();
+        self.run_transcripts.deinit(self.allocator);
+        self.run_transcripts = copies;
+        self.transcript_writer = writer;
+        local.setAutoCompact(at, .{ .ctx = self, .transcripts_fn = runTranscripts });
+    }
+
+    fn clearRunTranscripts(self: *TuiRuntime) void {
+        for (self.run_transcripts.items) |path| self.allocator.free(path);
+        self.run_transcripts.clearRetainingCapacity();
+        self.run_transcript_saved = "";
+    }
+
+    fn runTranscripts(ctx: ?*anyopaque, messages: []const ai_types.Message) agent.Agent.CompactionTranscripts {
+        const self: *TuiRuntime = @ptrCast(@alignCast(ctx.?));
+        self.run_transcript_saved = "";
+        const writer = self.transcript_writer orelse return .{ .paths = self.run_transcripts.items };
+        const path = writer.save_fn(writer.ctx, self.allocator, self.run_transcripts.items.len + 1, messages) orelse return .{ .paths = self.run_transcripts.items };
+        self.run_transcripts.append(self.allocator, path) catch {
+            self.allocator.free(path);
+            return .{ .paths = self.run_transcripts.items };
+        };
+        self.run_transcript_saved = path;
+        return .{ .paths = self.run_transcripts.items };
     }
 
     fn onCompaction(ctx: ?*anyopaque, result: *const agent.compaction.Result) void {
@@ -1369,7 +1416,39 @@ pub const TuiRuntime = struct {
                 .estimated_tokens = payload.estimated_tokens,
                 .item_count = payload.item_count,
             } }),
+            .compaction_start => self.push(.{ .compaction_start = .{ .in_run = true } }),
+            .compaction_end => |payload| try self.pushRunCompactionEnd(payload),
         }
+    }
+
+    fn pushRunCompactionEnd(self: *TuiRuntime, payload: agent_types.CompactionEndPayload) !void {
+        const saved = if (payload.outcome == .completed) self.run_transcript_saved else "";
+        self.run_transcript_saved = "";
+        const text = try self.dupeOwned(payload.text.slice());
+        errdefer {
+            var owned = text;
+            owned.deinit(self.allocator);
+        }
+        const transcript = try self.dupeOwned(saved);
+        errdefer {
+            var owned = transcript;
+            owned.deinit(self.allocator);
+        }
+        const message = try self.dupeOwned(payload.message.slice());
+        self.push(.{ .compaction_end = .{
+            .in_run = true,
+            .outcome = switch (payload.outcome) {
+                .completed => .completed,
+                .cancelled => .cancelled,
+                .failed => .failed,
+            },
+            .text = text,
+            .transcript = transcript,
+            .message = message,
+            .messages_before = payload.messages_before,
+            .tokens_before = payload.tokens_before,
+            .tokens_after = payload.tokens_after,
+        } });
     }
 
     fn formatArtifactRefs(self: *TuiRuntime, artifacts: []const ai_types.ArtifactReference) !OwnedSlice(u8) {

@@ -108,9 +108,10 @@ pub const TuiEvent = union(enum) {
     agent_end: struct { generation: u32 = 0, reason: TuiEndReason },
     system_warning: struct { generation: u32 = 0, message: OwnedSlice(u8) },
     backpressure_status: struct { generation: u32 = 0, active: bool, dropped_count: u64 },
-    compaction_start: struct { generation: u32 = 0 },
+    compaction_start: struct { generation: u32 = 0, in_run: bool = false },
     compaction_end: struct {
         generation: u32 = 0,
+        in_run: bool = false,
         outcome: CompactionOutcome,
         text: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
         transcript: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
