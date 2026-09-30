@@ -11,19 +11,12 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"os/signal"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
-
-func init() {
-	if os.Getenv("OAP_FAKE_HUB_AS_CHILD") == "1" {
-		signal.Ignore(os.Interrupt)
-	}
-}
 
 func TestHubAddrFinishesTheRefusalAndStopsTheBodyWhenItsSignalArrives(t *testing.T) {
 	daemon := startOwnedHub(t)
