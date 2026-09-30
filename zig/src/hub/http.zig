@@ -119,7 +119,7 @@ pub const always_going = KeepGoing{ .context = undefined, .check = struct {
 fn readUntil(stream: *compat.net.Stream, buffer: []u8, deadline_ms: u64, cycle_ms: i32, keep_going: KeepGoing) Failure!usize {
     while (true) {
         if (!keep_going.yes()) return error.Stopped;
-        const left_ms: i64 = @as(i64, @intCast(deadline_ms)) - @as(i64, @intCast(elapsedMs() catch 0));
+        const left_ms: i64 = @as(i64, @intCast(deadline_ms)) - @as(i64, @intCast(elapsedMs() catch return error.Timeout));
         if (left_ms <= 0) return error.Timeout;
         if (comptime !pollable) return stream.read(buffer) catch error.ReadFailed;
         const wait: i32 = @intCast(@min(left_ms, @as(i64, @max(@as(i64, cycle_ms), 1))));
@@ -144,7 +144,7 @@ pub fn readHead(allocator: std.mem.Allocator, stream: *compat.net.Stream, header
     var head = std.ArrayList(u8).empty;
     defer head.deinit(allocator);
     var byte: [1]u8 = undefined;
-    const headers_done = (elapsedMs() catch 0) + @as(u64, @intCast(@max(header_wait_ms, 0)));
+    const headers_done = (elapsedMs() catch return error.Timeout) + @as(u64, @intCast(@max(header_wait_ms, 0)));
     while (head.items.len < max_header_bytes) {
         const n = try readUntil(stream, &byte, headers_done, cycle_ms, keep_going);
         if (n == 0) return error.Truncated;
@@ -204,19 +204,32 @@ pub fn readHead(allocator: std.mem.Allocator, stream: *compat.net.Stream, header
 
 pub const drain_cap_bytes = 64 * 1024;
 pub const drain_cycle_ms: i32 = 50;
+pub const drain_total_cap_bytes = 1024 * 1024;
+pub const drain_total_ms: i32 = 2500;
 
-pub fn drain(stream: *compat.net.Stream, remaining: usize, keep_going: KeepGoing) void {
-    if (remaining == 0) return;
+pub fn drain(stream: *compat.net.Stream, remaining_in: usize, keep_going: KeepGoing) usize {
+    var remaining: usize = @min(remaining_in, drain_total_cap_bytes);
+    var spent: usize = 0;
     var scratch: [1024]u8 = undefined;
-    var owed: usize = @min(remaining, drain_cap_bytes);
-    const deadline = (elapsedMs() catch 0) + drain_cycle_ms;
-    while (owed > 0) {
-        if (!keep_going.yes()) return;
-        const chunk = @min(owed, scratch.len);
-        const n = readUntil(stream, scratch[0..chunk], deadline, drain_cycle_ms, keep_going) catch return;
-        if (n == 0) return;
-        owed -= n;
+    const started = elapsedMs() catch return spent;
+    while (remaining > 0) {
+        if (!keep_going.yes()) return spent;
+        const now = elapsedMs() catch return spent;
+        if (now -| started >= drain_total_ms) return spent;
+        var owed: usize = @min(remaining, drain_cap_bytes);
+        const deadline = now + @as(u64, @intCast(@max(drain_cycle_ms, 0)));
+        while (owed > 0) {
+            if (!keep_going.yes()) return spent;
+            const chunk = @min(owed, scratch.len);
+            const n: usize = @intCast(readUntil(stream, scratch[0..chunk], deadline, drain_cycle_ms, keep_going) catch return spent);
+            if (n == 0) return spent;
+            owed -= n;
+            remaining -= n;
+            spent += n;
+            if (spent >= drain_total_cap_bytes) return spent;
+        }
     }
+    return spent;
 }
 
 pub fn readBody(allocator: std.mem.Allocator, stream: *compat.net.Stream, request: *Request, idle_wait_ms: i32, cycle_ms: i32, keep_going: KeepGoing) Failure!void {
@@ -224,7 +237,8 @@ pub fn readBody(allocator: std.mem.Allocator, stream: *compat.net.Stream, reques
     request.body = try allocator.alloc(u8, request.content_length);
     const idle_ms: u64 = @intCast(@max(idle_wait_ms, 0));
     while (request.filled < request.body.len) {
-        const n = try readUntil(stream, request.body[request.filled..], (elapsedMs() catch 0) + idle_ms, cycle_ms, keep_going);
+        const round_deadline = (elapsedMs() catch return error.Timeout) + idle_ms;
+        const n = try readUntil(stream, request.body[request.filled..], round_deadline, cycle_ms, keep_going);
         if (n == 0) return error.BodyTruncated;
         request.filled += n;
     }
@@ -630,9 +644,9 @@ test "the header budget is the whole request's, not a fresh one per byte" {
     var pipe = try Pipe.open();
     defer pipe.close();
     try pipe.client.writeAll("G");
-    const started = elapsedMs() catch 0;
+    const started = elapsedMs() catch return error.TestUnexpectedResult;
     try testing.expectError(error.Timeout, readRequest(testing.allocator, &pipe.accepted, 120, idle_read_ms, test_cycle_ms, always_going, fresh()));
-    try testing.expect((elapsedMs() catch 0) - started < 2000);
+    try testing.expect((elapsedMs() catch return error.TestUnexpectedResult) - started < 2000);
 }
 
 test "a header whose name merely starts with a known one is not that header" {
@@ -937,7 +951,7 @@ test "a read in flight gives up when the daemon is told to stop, rather than wai
     var pipe = try Pipe.open();
     defer pipe.close();
     try pipe.client.writeAll("POST /adapters/a/sessions HTTP/1.1\r\nHost: a\r\nContent-Length: 8\r\n\r\n{\"a\":");
-    const started = elapsedMs() catch 0;
+    const started = elapsedMs() catch return error.TestUnexpectedResult;
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -950,7 +964,7 @@ test "a read in flight gives up when the daemon is told to stop, rather than wai
             }
         }.stop,
     }));
-    try testing.expect((elapsedMs() catch 0) - started < 500);
+    try testing.expect((elapsedMs() catch return error.TestUnexpectedResult) - started < 500);
 }
 
 fn bodyOf(allocator: std.mem.Allocator, length: usize) Failure!Request {
@@ -975,7 +989,7 @@ test "a body the daemon refused to read is drained before the socket closes, or 
     var scratch_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer scratch_state.deinit();
     try writeAnswer(&pipe.accepted, scratch_state.allocator(), 3, answer(loopbackHosts("127.0.0.1:0").?, head), body_allowed);
-    drain(&pipe.accepted, head.content_length, always_going);
+    _ = drain(&pipe.accepted, head.content_length, always_going);
     pipe.closeAccepted();
     var spoken: [4096]u8 = undefined;
     const said = try readToEnd(&pipe.client, &spoken);
@@ -988,9 +1002,80 @@ test "a drain gives up rather than waiting on a peer that sends nothing more" {
     var pipe = try Pipe.open();
     defer pipe.close();
     const started = compat.time.nowMillis();
-    drain(&pipe.accepted, 4096, always_going);
+    _ = drain(&pipe.accepted, 4096, always_going);
     try testing.expect(compat.time.nowMillis() - started < 2000);
 }
+
+test "a drain stops at its byte cap and reports what it consumed" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var pipe = try Pipe.open();
+    defer pipe.close();
+    const wanted_cap: usize = 1024 * 1024;
+    try testing.expectEqual(wanted_cap, drain_total_cap_bytes);
+    const owed: usize = wanted_cap + 512 * 1024;
+    var writer = try std.Thread.spawn(.{}, flood, .{ &pipe.client, owed });
+    const spent = drain(&pipe.accepted, owed, always_going);
+    pipe.closeAccepted();
+    writer.join();
+    try testing.expectEqual(wanted_cap, spent);
+    try testing.expect(spent < owed);
+}
+
+fn flood(client: *compat.net.Stream, total: usize) void {
+    const block = "z" ** 4096;
+    var sent: usize = 0;
+    while (sent < total) {
+        const take = @min(block.len, total - sent);
+        client.writeAll(block[0..take]) catch return;
+        sent += take;
+    }
+}
+
+test "a drain reads a positive number of bytes, and stops when keepGoing says stop" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var pipe = try Pipe.open();
+    defer pipe.close();
+    try pipe.client.writeAll("u" ** 4096);
+    var one = stop_after_one{};
+    const keeping: KeepGoing = .{ .context = &one, .check = stop_after_one.check };
+    const first = drain(&pipe.accepted, 4096, always_going);
+    try testing.expectEqual(@as(usize, 4096), first);
+    const spent = drain(&pipe.accepted, 4096, keeping);
+    try testing.expectEqual(@as(usize, 0), spent);
+    try testing.expect(one.asked.load(.seq_cst));
+    try testing.expect(one.asks.load(.seq_cst) >= 2);
+}
+
+test "a drain reads on a long-lived process, because its budget is elapsed not uptime" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const origin = elapsedMs() catch return error.TestUnexpectedResult;
+    var pipe = try Pipe.open();
+    defer pipe.close();
+    try pipe.client.writeAll("u" ** 4096);
+    try testing.expectEqual(@as(usize, 4096), drain(&pipe.accepted, 4096, always_going));
+
+    const wait_ms: u64 = @intCast(@as(u64, @intCast(drain_total_ms)) + 200);
+    compat.time.sleepMs(wait_ms);
+
+    const up = elapsedMs() catch return error.TestUnexpectedResult;
+    try testing.expect(up -| origin >= wait_ms);
+    try testing.expect(up > @as(u64, @intCast(drain_total_ms)));
+    try pipe.client.writeAll("v" ** 4096);
+    try testing.expectEqual(@as(usize, 4096), drain(&pipe.accepted, 4096, always_going));
+}
+
+const stop_after_one = struct {
+    asked: std.atomic.Value(bool) = .init(false),
+    asks: std.atomic.Value(usize) = .init(0),
+
+    fn check(context: *const anyopaque) bool {
+        const self: *@This() = @ptrCast(@alignCast(@constCast(context)));
+        _ = self.asks.fetchAdd(1, .seq_cst);
+        if (self.asked.load(.seq_cst)) return false;
+        self.asked.store(true, .seq_cst);
+        return true;
+    }
+};
 
 test "the trust model is decided on the head, so a refused request never waits on a body it will not read" {
     var pipe = try Pipe.open();

@@ -83,11 +83,6 @@ const READY_FRAME = "{\"type\":\"ready\",\"protocol_version\":\"1\"}\n";
 const STDIO_PROTOCOL_VERSION = "1";
 const STDIO_IDLE_SLEEP_NS = std.time.ns_per_ms;
 const STDIO_THREAD_JOIN_TIMEOUT_MS: u64 = 5_000;
-const SESSION_SWEEP_INTERVAL_MS: i64 = 1_000;
-const STDIO_DISCONNECT_TOOL_WAIT_MESSAGE = "client disconnected while the run waited for a distributed tool_result";
-const STDIO_EVENT_PUBLICATION_FAILED_MESSAGE = "run event publication failed; event stream truncated before settlement";
-const STDIO_RUN_WITHOUT_OUTCOME_MESSAGE = "run ended without a deliverable outcome (terminal lost to allocation failure)";
-
 const TEST_AUTH_POLL_ITERS_SHORT: usize = 20;
 const TEST_AUTH_POLL_ITERS_DEFAULT: usize = 600;
 const TEST_AUTH_POLL_ITERS_FAILURE: usize = 200;
@@ -144,48 +139,6 @@ const RuntimeErrorCode = enum {
     input_stream_error,
 };
 
-const AgentRunOptions = struct {
-    temperature: ?f32 = null,
-    max_tokens: ?u32 = null,
-    max_iterations: ?u32 = null,
-    thinking_level: ai_types.ThinkingLevel = .low,
-    has_explicit_thinking_level: bool = false,
-    api_key: ?[]u8 = null,
-
-    fn deinit(self: *AgentRunOptions, allocator: std.mem.Allocator) void {
-        if (self.api_key) |key| allocator.free(key);
-        self.api_key = null;
-    }
-};
-
-const PreparedAgentRun = struct {
-    model: ai_types.Model,
-    prompts: []ai_types.Message,
-    system_prompt: []u8,
-    tools: []agent_loop.AgentTool,
-    options: AgentRunOptions,
-
-    fn deinit(self: *PreparedAgentRun, allocator: std.mem.Allocator) void {
-        self.model.deinit(allocator);
-        for (self.prompts) |*message| {
-            message.deinit(allocator);
-        }
-        allocator.free(self.prompts);
-        allocator.free(self.system_prompt);
-        deinitAgentTools(allocator, self.tools);
-        self.options.deinit(allocator);
-        self.* = undefined;
-    }
-
-    fn disarm(self: *PreparedAgentRun) void {
-        self.model.is_owned = false;
-        self.prompts = &.{};
-        self.system_prompt = &.{};
-        self.tools = &.{};
-        self.options.api_key = null;
-    }
-};
-
 const AgentToolBridge = @import("tools/agent_tool_bridge");
 
 const StdioToolRequest = AgentToolBridge.Request;
@@ -197,43 +150,18 @@ const StdioAgentToolExecutor = AgentToolBridge.Executor;
 const executeStdioToolViaAgentProtocol = AgentToolBridge.executeViaAgentProtocol;
 const parseToolResultContentParts = AgentToolBridge.parseToolResultContentParts;
 const parseUserContentPart = AgentToolBridge.parseUserContentPart;
+const AgentRun = @import("tools/agent_run");
+const AgentRunOptions = AgentRun.Options;
+const STDIO_DISCONNECT_TOOL_WAIT_MESSAGE = AgentRun.STDIO_DISCONNECT_TOOL_WAIT_MESSAGE;
+const STDIO_EVENT_PUBLICATION_FAILED_MESSAGE = AgentRun.STDIO_EVENT_PUBLICATION_FAILED_MESSAGE;
+const STDIO_RUN_WITHOUT_OUTCOME_MESSAGE = AgentRun.STDIO_RUN_WITHOUT_OUTCOME_MESSAGE;
+const PreparedAgentRun = AgentRun.Prepared;
+const ActiveAgentRun = AgentRun.Run;
+const deinitAgentTools = AgentRun.deinitTools;
+const deinitAgentToolFields = AgentRun.deinitToolFields;
+const deinitSerializedStdioAgentEvent = AgentRun.deinitStdioAgentEvent;
+const serializeAgentLoopEvent = AgentRun.serializeAgentLoopEvent;
 const getStringField = AgentToolBridge.getStringField;
-
-const ActiveAgentRun = struct {
-    session_id: AgentProtocolTypes.SessionId,
-    generation: u64,
-    stream: *agent_loop.AgentEventStream,
-    context: *agent_loop.AgentContext,
-    model: ai_types.Model,
-    prompts: []ai_types.Message,
-    tools: []agent_loop.AgentTool,
-    cancel_flag: *std.atomic.Value(bool),
-    disconnect_failed: *std.atomic.Value(bool),
-    tool_executor: *StdioAgentToolExecutor,
-    terminal_event_json: ?[]u8 = null,
-    settlement_frame_published: bool = false,
-    failure_event_published: bool = false,
-    event_publication_failed: bool = false,
-
-    fn cancel(self: *ActiveAgentRun) void {
-        self.cancel_flag.store(true, .release);
-    }
-
-    fn deinit(self: *ActiveAgentRun, allocator: std.mem.Allocator) void {
-        self.cancel();
-        if (!self.stream.deinitAndDestroy()) return;
-        self.context.deinit();
-        allocator.destroy(self.context);
-        self.model.deinit(allocator);
-        allocator.free(self.prompts);
-        deinitAgentTools(allocator, self.tools);
-        allocator.destroy(self.cancel_flag);
-        allocator.destroy(self.disconnect_failed);
-        allocator.destroy(self.tool_executor);
-        if (self.terminal_event_json) |event_json| allocator.free(event_json);
-        self.* = undefined;
-    }
-};
 
 const StdioProtocolLoop = struct {
     allocator: std.mem.Allocator,
@@ -245,11 +173,10 @@ const StdioProtocolLoop = struct {
     agent_pipe: in_process.SerializedPipe,
     provider_bridge: agent_bridge.InProcessProviderProtocolBridge,
     oap_provider_bridge: ?agent_oap_provider_bridge.InProcessOapProviderBridge = null,
-    active_agent_runs: std.ArrayList(ActiveAgentRun),
+    agent_runs: AgentRun.Driver,
     tool_bridge: StdioToolBridge,
     auth_server: AuthProtocolServer,
     auth_pipe: in_process.SerializedPipe,
-    last_session_sweep_mono_ms: i64 = 0,
 
     const Self = @This();
     const DispatchTarget = enum { provider, agent, auth };
@@ -270,7 +197,7 @@ const StdioProtocolLoop = struct {
             .agent_server = AgentProtocolServer.initWithOptions(allocator, agent_options),
             .agent_pipe = in_process.createSerializedPipe(allocator),
             .provider_bridge = agent_bridge.InProcessProviderProtocolBridge.init(registry),
-            .active_agent_runs = std.ArrayList(ActiveAgentRun).empty,
+            .agent_runs = AgentRun.Driver.init(),
             .tool_bridge = .{},
             .auth_server = AuthProtocolServer.init(allocator, auth_options),
             .auth_pipe = in_process.createSerializedPipe(allocator),
@@ -298,8 +225,7 @@ const StdioProtocolLoop = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        for (self.active_agent_runs.items) |*run| run.deinit(self.allocator);
-        self.active_agent_runs.deinit(self.allocator);
+        self.agent_runs.deinit(self.allocator);
         self.tool_bridge.deinit(self.allocator);
         self.provider_server.deinit();
         self.provider_pipe.deinit();
@@ -361,10 +287,10 @@ const StdioProtocolLoop = struct {
                     .allocator = self.allocator,
                 };
                 runtime.pumpClientMessages() catch |err| {
-                    self.finishAgentStopCancellation(stopped_session, had_stop_session);
+                    AgentRun.finishStopCancellation(self.allocator, &self.agent_server, &self.agent_runs, &self.tool_bridge, stopped_session, had_stop_session);
                     return err;
                 };
-                self.finishAgentStopCancellation(stopped_session, had_stop_session);
+                AgentRun.finishStopCancellation(self.allocator, &self.agent_server, &self.agent_runs, &self.tool_bridge, stopped_session, had_stop_session);
             },
             .auth => {
                 var sender = self.auth_pipe.clientSender();
@@ -399,10 +325,10 @@ const StdioProtocolLoop = struct {
             .allocator = self.allocator,
         };
         forwarded += try self.startPendingAgentRuns();
-        forwarded += try self.pumpAgentRuns();
-        forwarded += try self.publishPendingToolRequests();
+        forwarded += try AgentRun.pump(self.allocator, &self.agent_runs, &self.agent_server);
+        forwarded += try AgentRun.publishPendingToolRequests(&self.agent_server, self.allocator, &self.tool_bridge);
         forwarded += try agent_runtime.pumpServerOutbox();
-        try self.sweepIdleAgentSessions();
+        try AgentRun.sweepIdleAgentSessions(self.allocator, &self.agent_runs, &self.agent_server, &self.tool_bridge);
 
         var auth_runtime = AuthProtocolRuntime{
             .server = &self.auth_server,
@@ -411,20 +337,6 @@ const StdioProtocolLoop = struct {
         };
         forwarded += try auth_runtime.pumpServerOutbox();
         return forwarded;
-    }
-
-    fn sweepIdleAgentSessions(self: *Self) !void {
-        const now_mono_ms = try compat.time.monotonicMillis();
-        if (now_mono_ms - self.last_session_sweep_mono_ms < SESSION_SWEEP_INTERVAL_MS) return;
-        self.last_session_sweep_mono_ms = now_mono_ms;
-
-        var evicted = std.ArrayList(AgentProtocolTypes.SessionId).empty;
-        defer evicted.deinit(self.allocator);
-        const sweep_result = self.agent_server.evictIdleSessions(now_mono_ms, &evicted);
-        for (evicted.items) |session_id| {
-            self.tool_bridge.discardSession(self.allocator, session_id);
-        }
-        _ = try sweep_result;
     }
 
     pub fn drainOutbound(self: *Self, lines: *std.ArrayList([]const u8)) !usize {
@@ -440,7 +352,7 @@ const StdioProtocolLoop = struct {
     }
 
     pub fn hasActiveAgentRuns(self: *Self) bool {
-        return self.active_agent_runs.items.len > 0;
+        return self.agent_runs.len() > 0;
     }
 
     pub fn hasActiveAuthFlows(self: *Self) bool {
@@ -460,7 +372,7 @@ const StdioProtocolLoop = struct {
             self.startAgentRun(owned_pending) catch |err| {
                 if (err == error.OutOfMemory) return err;
                 self.agent_server.markSessionError(owned_pending.session_id) catch {};
-                try self.publishAgentLoopError(owned_pending.session_id, .internal_error, @errorName(err));
+                try AgentRun.publishAgentLoopError(&self.agent_server, self.allocator, owned_pending.session_id, .internal_error, @errorName(err));
                 continue;
             };
             started += 1;
@@ -472,314 +384,27 @@ const StdioProtocolLoop = struct {
         const generation = self.agent_server.sessionGeneration(pending.session_id) orelse {
             return error.SessionNotFound;
         };
-        if (self.hasActiveRunForGeneration(pending.session_id, generation)) return error.AgentBusy;
+        if (AgentRun.hasRunForGeneration(&self.agent_runs, pending.session_id, generation)) return error.AgentBusy;
 
         var prepared = try prepareAgentRun(self.allocator, pending);
         errdefer prepared.deinit(self.allocator);
 
         self.agent_server.updateSessionModel(pending.session_id, prepared.model.id) catch {};
 
-        const context = try self.allocator.create(agent_loop.AgentContext);
-        var context_owned_by_run = false;
-        errdefer if (!context_owned_by_run) self.allocator.destroy(context);
-        context.* = agent_loop.AgentContext.init(self.allocator);
-        errdefer if (!context_owned_by_run) context.deinit();
-        context.system_prompt = ai_types.OwnedSlice(u8).initOwned(prepared.system_prompt);
-        prepared.system_prompt = &.{};
-        context.tools = prepared.tools;
+        const protocol_client = if (self.oap_provider_bridge) |*provider_bridge|
+            provider_bridge.protocolClient()
+        else
+            (&self.provider_bridge).protocolClient();
 
-        const cancel_flag = try self.allocator.create(std.atomic.Value(bool));
-        var cancel_owned_by_run = false;
-        errdefer if (!cancel_owned_by_run) self.allocator.destroy(cancel_flag);
-        cancel_flag.* = std.atomic.Value(bool).init(false);
-
-        const disconnect_failed = try self.allocator.create(std.atomic.Value(bool));
-        var disconnect_owned_by_run = false;
-        errdefer if (!disconnect_owned_by_run) self.allocator.destroy(disconnect_failed);
-        disconnect_failed.* = std.atomic.Value(bool).init(false);
-
-        const tool_executor = try self.allocator.create(StdioAgentToolExecutor);
-        var tool_executor_owned_by_run = false;
-        errdefer if (!tool_executor_owned_by_run) self.allocator.destroy(tool_executor);
-        tool_executor.* = .{
-            .bridge = &self.tool_bridge,
-            .session_id = pending.session_id,
-            .generation = generation,
-            .disconnect_failed = disconnect_failed,
-        };
-
-        const session_id_text = try AgentProtocolTypes.sessionIdToString(pending.session_id, self.allocator);
-        defer self.allocator.free(session_id_text);
-
-        const config = agent_loop.AgentLoopConfig{
-            .model = prepared.model,
-            .protocol = if (self.oap_provider_bridge) |*provider_bridge|
-                provider_bridge.protocolClient()
-            else
-                (&self.provider_bridge).protocolClient(),
-            .tools = prepared.tools,
-            .execute_tool_via_protocol_fn = executeStdioToolViaAgentProtocol,
-            .execute_tool_via_protocol_ctx = tool_executor,
-            .temperature = prepared.options.temperature,
-            .max_tokens = prepared.options.max_tokens,
-            .max_iterations = prepared.options.max_iterations,
-            .thinking_level = prepared.options.thinking_level,
-            .session_id = session_id_text,
-            .api_key = prepared.options.api_key,
-            .cancel_token = .{ .cancelled = cancel_flag },
-        };
-
-        const stream = try agent_loop.agentLoop(self.allocator, prepared.prompts, context, config);
-        var stream_owned_by_run = false;
-        errdefer if (!stream_owned_by_run) {
-            _ = stream.deinitAndDestroy();
-        };
-
-        var run = ActiveAgentRun{
-            .session_id = pending.session_id,
-            .generation = generation,
-            .stream = stream,
-            .context = context,
-            .model = prepared.model,
-            .prompts = prepared.prompts,
-            .tools = prepared.tools,
-            .cancel_flag = cancel_flag,
-            .disconnect_failed = disconnect_failed,
-            .tool_executor = tool_executor,
-        };
-        prepared.options.deinit(self.allocator);
-        context_owned_by_run = true;
-        cancel_owned_by_run = true;
-        disconnect_owned_by_run = true;
-        tool_executor_owned_by_run = true;
-        stream_owned_by_run = true;
-        prepared.disarm();
-
-        var appended = false;
-        errdefer if (!appended) run.deinit(self.allocator);
-        try self.active_agent_runs.append(self.allocator, run);
-        appended = true;
-    }
-
-    fn pumpAgentRuns(self: *Self) !usize {
-        var forwarded: usize = 0;
-        var idx: usize = 0;
-        while (idx < self.active_agent_runs.items.len) {
-            var run = &self.active_agent_runs.items[idx];
-
-            const registration_current = blk: {
-                const generation = self.agent_server.sessionGeneration(run.session_id);
-                break :blk generation != null and generation.? == run.generation;
-            };
-            if (!registration_current) run.cancel();
-
-            while (run.stream.poll()) |event| {
-                var owned_event = event;
-                errdefer deinitSerializedStdioAgentEvent(self.allocator, &owned_event);
-
-                if (!registration_current) {
-                    deinitSerializedStdioAgentEvent(self.allocator, &owned_event);
-                    continue;
-                }
-
-                if (std.meta.activeTag(event) == .agent_end) {
-                    run.terminal_event_json = serializeAgentLoopEvent(self.allocator, run.session_id, event) catch |err| {
-                        run.event_publication_failed = true;
-                        return err;
-                    };
-                    deinitSerializedStdioAgentEvent(self.allocator, &owned_event);
-                    continue;
-                }
-
-                const event_json = serializeAgentLoopEvent(self.allocator, run.session_id, event) catch |err| {
-                    run.event_publication_failed = true;
-                    return err;
-                };
-                defer self.allocator.free(event_json);
-                self.agent_server.publishAgentEvent(run.session_id, event_json) catch |err| {
-                    run.event_publication_failed = true;
-                    if (err == error.OutOfMemory) return err;
-                };
-                deinitSerializedStdioAgentEvent(self.allocator, &owned_event);
-                forwarded += 1;
-            }
-
-            if (!run.stream.isDone()) {
-                idx += 1;
-                continue;
-            }
-
-            if (registration_current) {
-                if (!run.settlement_frame_published) {
-                    if (run.disconnect_failed.load(.acquire)) {
-                        self.dropTerminalProjection(run);
-                        try self.publishRunFailurePair(run, .tool_execution_error, STDIO_DISCONNECT_TOOL_WAIT_MESSAGE);
-                        forwarded += 1;
-                    } else if (run.stream.getError()) |msg| {
-                        self.dropTerminalProjection(run);
-                        try self.publishRunFailurePair(run, .internal_error, msg);
-                        forwarded += 1;
-                    } else if (run.event_publication_failed) {
-                        self.dropTerminalProjection(run);
-                        try self.publishRunFailurePair(run, .internal_error, STDIO_EVENT_PUBLICATION_FAILED_MESSAGE);
-                        forwarded += 1;
-                    } else if (run.stream.getResult()) |result| {
-                        const result_reason: []const u8 = if (result.termination) |termination|
-                            @tagName(termination)
-                        else
-                            @tagName(result.final_message.stop_reason);
-                        const result_json = try transport.serializeResultWithStopReason(result.final_message, result_reason, self.allocator);
-                        defer self.allocator.free(result_json);
-                        self.agent_server.publishAgentResult(run.session_id, result_json) catch |err| switch (err) {
-                            error.OutOfMemory => return err,
-                            else => {},
-                        };
-                        run.settlement_frame_published = true;
-                        forwarded += 1;
-                    } else {
-                        self.dropTerminalProjection(run);
-                        try self.publishRunFailurePair(run, .internal_error, STDIO_RUN_WITHOUT_OUTCOME_MESSAGE);
-                        forwarded += 1;
-                    }
-                }
-
-                if (run.settlement_frame_published) {
-                    if (run.terminal_event_json) |event_json| {
-                        self.agent_server.publishAgentEvent(run.session_id, event_json) catch |err| switch (err) {
-                            error.OutOfMemory => return err,
-                            else => {},
-                        };
-                        self.allocator.free(event_json);
-                        run.terminal_event_json = null;
-                        forwarded += 1;
-                    }
-                    var removed = self.active_agent_runs.orderedRemove(idx);
-                    removed.deinit(self.allocator);
-                    continue;
-                }
-            } else {
-                var removed = self.active_agent_runs.orderedRemove(idx);
-                removed.deinit(self.allocator);
-                continue;
-            }
-
-            idx += 1;
-        }
-        return forwarded;
-    }
-
-    fn publishRunFailurePair(
-        self: *Self,
-        run: *ActiveAgentRun,
-        code: AgentProtocolTypes.AgentErrorCode,
-        message: []const u8,
-    ) !void {
-        if (!run.failure_event_published) {
-            const event_json = try serializeAgentErrorEvent(self.allocator, message, @tagName(code));
-            defer self.allocator.free(event_json);
-            self.agent_server.publishAgentEvent(run.session_id, event_json) catch |err| switch (err) {
-                error.OutOfMemory => return err,
-                else => {},
-            };
-            run.failure_event_published = true;
-        }
-        self.agent_server.publishAgentError(run.session_id, code, message) catch |err| switch (err) {
-            error.OutOfMemory => return err,
-            else => {},
-        };
-        run.settlement_frame_published = true;
-    }
-
-    fn dropTerminalProjection(self: *Self, run: *ActiveAgentRun) void {
-        if (run.terminal_event_json) |event_json| self.allocator.free(event_json);
-        run.terminal_event_json = null;
-    }
-
-    fn hasActiveRunForGeneration(self: *Self, session_id: AgentProtocolTypes.SessionId, generation: u64) bool {
-        for (self.active_agent_runs.items) |run| {
-            if (run.settlement_frame_published) continue;
-            if (run.generation == generation and std.mem.eql(u8, run.session_id[0..], session_id[0..])) return true;
-        }
-        return false;
-    }
-
-    fn finishAgentStopCancellation(
-        self: *Self,
-        stopped_session: ?AgentProtocolTypes.SessionId,
-        had_stop_session: bool,
-    ) void {
-        if (stopped_session) |session_id| {
-            if (had_stop_session and !self.agent_server.hasSession(session_id)) {
-                self.cancelAgentRun(session_id);
-            }
-        }
-    }
-
-    fn cancelAgentRun(self: *Self, session_id: AgentProtocolTypes.SessionId) void {
-        for (self.active_agent_runs.items) |*run| {
-            if (std.mem.eql(u8, run.session_id[0..], session_id[0..])) run.cancel();
-        }
-        self.tool_bridge.discardSession(self.allocator, session_id);
-    }
-
-    fn publishAgentLoopError(self: *Self, session_id: AgentProtocolTypes.SessionId, code: AgentProtocolTypes.AgentErrorCode, message: []const u8) !void {
-        const event_json = try serializeAgentErrorEvent(self.allocator, message, @tagName(code));
-        defer self.allocator.free(event_json);
-        self.agent_server.publishAgentEvent(session_id, event_json) catch |err| {
-            if (err == error.OutOfMemory) return err;
-        };
-        self.agent_server.publishAgentError(session_id, code, message) catch |err| {
-            if (err == error.OutOfMemory) return err;
-        };
-    }
-
-    fn publishPendingToolRequests(self: *Self) !usize {
-        var published: usize = 0;
-        while (true) {
-            const request = self.tool_bridge.peekFrontRequest() orelse break;
-
-            const registration_current = blk: {
-                const current = self.agent_server.sessionGeneration(request.session_id);
-                break :blk current != null and current.? == request.generation;
-            };
-            if (!registration_current) {
-                self.tool_bridge.popFrontRequest(self.allocator);
-                continue;
-            }
-            if (self.tool_bridge.isDisconnected()) {
-                self.tool_bridge.popFrontRequest(self.allocator);
-                continue;
-            }
-
-            var payload_owned_by_env = false;
-            const owned_tool_call_id = try self.allocator.dupe(u8, request.tool_call_id);
-            errdefer if (!payload_owned_by_env) self.allocator.free(owned_tool_call_id);
-            const owned_tool_name = try self.allocator.dupe(u8, request.tool_name);
-            errdefer if (!payload_owned_by_env) self.allocator.free(owned_tool_name);
-            const owned_args_json = try self.allocator.dupe(u8, request.args_json);
-            errdefer if (!payload_owned_by_env) self.allocator.free(owned_args_json);
-
-            var env = AgentProtocolTypes.Envelope{
-                .session_id = request.session_id,
-                .message_id = AgentProtocolTypes.generateUlid(),
-                .sequence = try self.agent_server.nextOutgoingSequence(request.session_id),
-                .timestamp = compat.time.nowMillis(),
-                .payload = .{ .tool_execute = .{
-                    .tool_call_id = owned_tool_call_id,
-                    .tool_name = owned_tool_name,
-                    .args_json = owned_args_json,
-                } },
-            };
-            errdefer env.deinit(self.allocator);
-            payload_owned_by_env = true;
-
-            try self.tool_bridge.markInFlight(self.allocator, request.session_id, request.tool_call_id, env.message_id, request.generation);
-            errdefer self.tool_bridge.discardInFlight(self.allocator, request.session_id, request.tool_call_id);
-            try self.agent_server.enqueueEnvelope(env);
-            self.tool_bridge.popFrontRequest(self.allocator);
-            published += 1;
-        }
-        return published;
+        try AgentRun.admit(
+            self.allocator,
+            &self.agent_runs,
+            &self.tool_bridge,
+            &prepared,
+            pending.session_id,
+            generation,
+            protocol_client,
+        );
     }
 
     fn detectDispatchTarget(self: *Self, line: []const u8) ?DispatchTarget {
@@ -834,10 +459,6 @@ const StdioProtocolLoop = struct {
         return drained;
     }
 };
-
-fn deinitSerializedStdioAgentEvent(allocator: std.mem.Allocator, event: *agent_loop.AgentEvent) void {
-    event.deinit(allocator);
-}
 
 fn prepareAgentRun(
     allocator: std.mem.Allocator,
@@ -1178,19 +799,6 @@ fn parseToolSchemaJson(allocator: std.mem.Allocator, obj: std.json.ObjectMap) ![
     return try allocator.dupe(u8, "{}");
 }
 
-fn deinitAgentTools(allocator: std.mem.Allocator, tools: []agent_loop.AgentTool) void {
-    for (tools) |*tool| deinitAgentToolFields(allocator, tool);
-    allocator.free(tools);
-}
-
-fn deinitAgentToolFields(allocator: std.mem.Allocator, tool: *agent_loop.AgentTool) void {
-    allocator.free(tool.label);
-    allocator.free(tool.name);
-    allocator.free(tool.description);
-    if (tool.short_description) |short| allocator.free(short);
-    allocator.free(tool.parameters_schema_json);
-}
-
 fn unavailableAgentToolExecute(
     tool_call_id: []const u8,
     args_json: []const u8,
@@ -1492,197 +1100,6 @@ fn appendSystemPromptText(builder: *std.ArrayList(u8), allocator: std.mem.Alloca
     if (text.len == 0) return;
     if (builder.items.len > 0) try builder.append(allocator, '\n');
     try builder.appendSlice(allocator, text);
-}
-
-fn serializeAgentLoopEvent(
-    allocator: std.mem.Allocator,
-    session_id: AgentProtocolTypes.SessionId,
-    event: agent_loop.AgentEvent,
-) ![]u8 {
-    var buffer = std.ArrayList(u8).empty;
-    errdefer buffer.deinit(allocator);
-    var w = json_writer.JsonWriter.init(&buffer, allocator);
-
-    try w.beginObject();
-    switch (event) {
-        .agent_start => {
-            const session_text = try AgentProtocolTypes.sessionIdToString(session_id, allocator);
-            defer allocator.free(session_text);
-            try w.writeStringField("type", "agent_start");
-            try w.writeStringField("session_id", session_text);
-        },
-        .run_failed => |payload| {
-            try w.writeStringField("type", "run_failed");
-            try w.writeStringField("reason", payload.reason.slice());
-        },
-        .agent_end => |payload| {
-            try w.writeStringField("type", "agent_end");
-            var terminal: ?ai_types.AssistantMessage = payload.final_message;
-            if (terminal == null) {
-                const messages = payload.messages.slice();
-                var idx = messages.len;
-                while (idx > 0) {
-                    idx -= 1;
-                    if (messages[idx] == .assistant) {
-                        terminal = messages[idx].assistant;
-                        break;
-                    }
-                }
-            }
-            const agent_stop_reason: ?[]const u8 = if (payload.termination) |termination|
-                @tagName(termination)
-            else if (terminal) |message|
-                @tagName(message.stop_reason)
-            else
-                null;
-            if (agent_stop_reason) |reason| {
-                try w.writeStringField("stop_reason", reason);
-            }
-            if (terminal) |message| {
-                if (message.provider.len > 0) {
-                    try w.writeStringField("provider_id", message.provider);
-                }
-                if (message.api.len > 0) {
-                    try w.writeStringField("api", message.api);
-                }
-                if (message.error_message.slice().len > 0) {
-                    try w.writeStringField("error_message", message.error_message.slice());
-                }
-            }
-        },
-        .turn_start => {
-            try w.writeStringField("type", "turn_start");
-        },
-        .turn_end => |payload| {
-            try w.writeStringField("type", "turn_end");
-            try w.writeStringField("stop_reason", @tagName(payload.message.stop_reason));
-            if (payload.message.error_message.slice().len > 0) {
-                try w.writeStringField("error_message", payload.message.error_message.slice());
-            }
-        },
-        .message_start => |payload| {
-            try w.writeStringField("type", "message_start");
-            writeMessageMetadata(&w, payload.message) catch {};
-        },
-        .message_update => |payload| {
-            const provider_event_json = try transport.serializeEvent(payload.event, allocator);
-            defer allocator.free(provider_event_json);
-            try w.writeStringField("type", "message_update");
-            try w.writeKey("event");
-            try w.writeRawJson(provider_event_json);
-        },
-        .message_end => |payload| {
-            try w.writeStringField("type", "message_end");
-            if (payload.message == .assistant) {
-                try w.writeStringField("stop_reason", @tagName(payload.message.assistant.stop_reason));
-                if (payload.message.assistant.error_message.slice().len > 0) {
-                    try w.writeStringField("error_message", payload.message.assistant.error_message.slice());
-                }
-                try writeUsageField(&w, payload.message.assistant.usage);
-            }
-        },
-        .context_usage => |payload| {
-            try w.writeStringField("type", "context_usage");
-            try w.writeIntField("system_prompt_bytes", payload.system_prompt_bytes);
-            try w.writeIntField("message_bytes", payload.message_bytes);
-            try w.writeIntField("tool_definition_bytes", payload.tool_definition_bytes);
-            try w.writeIntField("total_bytes", payload.total_bytes);
-            try w.writeIntField("estimated_tokens", payload.estimated_tokens);
-            try w.writeIntField("message_count", payload.message_count);
-            try w.writeIntField("tool_count", payload.tool_count);
-        },
-        .prompt_segment_usage => |payload| {
-            try w.writeStringField("type", "prompt_segment_usage");
-            try w.writeStringField("segment", @tagName(payload.segment));
-            try w.writeStringField("cache_role", @tagName(payload.cache_role));
-            try w.writeIntField("bytes", payload.bytes);
-            try w.writeIntField("estimated_tokens", payload.estimated_tokens);
-            try w.writeIntField("item_count", payload.item_count);
-        },
-        .tool_execution_start => |payload| {
-            try w.writeStringField("type", "tool_execution_start");
-            try w.writeStringField("tool_call_id", payload.tool_call_id);
-            try w.writeStringField("tool_name", payload.tool_name);
-            try w.writeStringField("args_json", payload.args_json);
-        },
-        .tool_execution_update => |payload| {
-            try w.writeStringField("type", "tool_execution_update");
-            try w.writeStringField("tool_call_id", payload.tool_call_id);
-            try w.writeStringField("tool_name", payload.tool_name);
-            try w.writeStringField("partial_result_json", payload.partial_result_json);
-        },
-        .tool_execution_end => |payload| {
-            try w.writeStringField("type", "tool_execution_end");
-            try w.writeStringField("tool_call_id", payload.tool_call_id);
-            try w.writeStringField("tool_name", payload.tool_name);
-            try w.writeStringField("result_json", payload.result_json);
-            if (payload.content_json.len > 0) try w.writeStringField("content_json", payload.content_json);
-            try w.writeBoolField("is_error", payload.is_error);
-            try w.writeIntField("args_bytes", payload.args_bytes);
-            try w.writeIntField("raw_result_bytes", payload.raw_result_bytes);
-            try w.writeIntField("returned_result_bytes", payload.returned_result_bytes);
-            try w.writeIntField("raw_details_bytes", payload.raw_details_bytes);
-            try w.writeIntField("returned_details_bytes", payload.returned_details_bytes);
-            try w.writeIntField("raw_total_bytes", payload.raw_total_bytes);
-            try w.writeIntField("returned_total_bytes", payload.returned_total_bytes);
-            try w.writeIntField("estimated_returned_tokens", payload.estimated_returned_tokens);
-            try w.writeIntField("artifact_count", payload.artifact_count);
-            try writeArtifactReferences(&w, payload.artifacts);
-        },
-    }
-    try w.endObject();
-
-    const out = try allocator.dupe(u8, buffer.items);
-    buffer.deinit(allocator);
-    return out;
-}
-
-fn writeArtifactReferences(w: *json_writer.JsonWriter, artifacts: []const ai_types.ArtifactReference) !void {
-    if (artifacts.len == 0) return;
-    try w.writeKey("artifacts");
-    try w.beginArray();
-    for (artifacts) |artifact| {
-        try w.beginObject();
-        try w.writeStringField("artifact_id", artifact.artifact_id);
-        if (artifact.getUri()) |uri| try w.writeStringField("uri", uri);
-        if (artifact.getMimeType()) |mime_type| try w.writeStringField("mime_type", mime_type);
-        if (artifact.byte_size) |byte_size| try w.writeIntField("byte_size", byte_size);
-        if (artifact.getSha256()) |sha256| try w.writeStringField("sha256", sha256);
-        if (artifact.getDescription()) |description| try w.writeStringField("description", description);
-        try w.endObject();
-    }
-    try w.endArray();
-}
-
-fn serializeAgentErrorEvent(allocator: std.mem.Allocator, message: []const u8, code: []const u8) ![]u8 {
-    var buffer = std.ArrayList(u8).empty;
-    errdefer buffer.deinit(allocator);
-    var w = json_writer.JsonWriter.init(&buffer, allocator);
-    try w.beginObject();
-    try w.writeStringField("type", "error");
-    try w.writeStringField("message", message);
-    try w.writeStringField("code", code);
-    try w.endObject();
-    const out = try allocator.dupe(u8, buffer.items);
-    buffer.deinit(allocator);
-    return out;
-}
-
-fn writeMessageMetadata(w: *json_writer.JsonWriter, message: ai_types.Message) !void {
-    if (message != .assistant) return;
-    try w.writeStringField("api", message.assistant.api);
-    try w.writeStringField("provider", message.assistant.provider);
-    try w.writeStringField("model", message.assistant.model);
-}
-
-fn writeUsageField(w: *json_writer.JsonWriter, usage: ai_types.Usage) !void {
-    try w.writeKey("usage");
-    try w.beginObject();
-    try w.writeIntField("input", usage.input);
-    try w.writeIntField("output", usage.output);
-    try w.writeIntField("cache_read", usage.cache_read);
-    try w.writeIntField("cache_write", usage.cache_write);
-    try w.endObject();
 }
 
 fn getBoolField(obj: std.json.ObjectMap, key: []const u8) ?bool {
@@ -2158,20 +1575,20 @@ fn runHubHttp(
         var request = hub_http.readHead(scratch, &connection.stream, hub_http.header_read_ms, hub_io_cycle_ms, keepGoing, &body_allowed, &declared) catch |failure| {
             if (failure == error.Stopped) break;
             hub_http.writeTransportFailure(&connection.stream, scratch, next_id, failure, body_allowed) catch {};
-            hub_http.drain(&connection.stream, declared, keepGoing);
+            _ = hub_http.drain(&connection.stream, declared, keepGoing);
             continue;
         };
         defer request.deinit(scratch);
         const answered = hub_http.answer(allow orelse &.{}, request);
         if (answered != .not_found) {
             hub_http.writeAnswer(&connection.stream, scratch, next_id, answered, body_allowed) catch {};
-            hub_http.drain(&connection.stream, request.content_length, keepGoing);
+            _ = hub_http.drain(&connection.stream, request.content_length, keepGoing);
             continue;
         }
         hub_http.readBody(scratch, &connection.stream, &request, hub_http.idle_read_ms, hub_io_cycle_ms, keepGoing) catch |failure| {
             if (failure == error.Stopped) break;
             hub_http.writeTransportFailure(&connection.stream, scratch, next_id, failure, body_allowed) catch {};
-            hub_http.drain(&connection.stream, request.content_length -| request.filled, keepGoing);
+            _ = hub_http.drain(&connection.stream, request.content_length -| request.filled, keepGoing);
             continue;
         };
         hub_http.writeAnswer(&connection.stream, scratch, next_id, answered, body_allowed) catch {};
@@ -2999,7 +2416,7 @@ test "the tui takes a context window and refuses anything else" {
     try std.testing.expectError(error.MissingContextWindow, parseTuiArgs(&.{"--context-window"}));
     try std.testing.expectError(error.ContextWindowNotATokenCount, parseTuiArgs(&.{ "--context-window", "loads" }));
     try std.testing.expectError(error.ContextWindowNotATokenCount, parseTuiArgs(&.{ "--context-window", "0" }));
-    try std.testing.expectError(error.UnknownOption, parseTuiArgs(&.{"--model", "gpt-5-codex"}));
+    try std.testing.expectError(error.UnknownOption, parseTuiArgs(&.{ "--model", "gpt-5-codex" }));
 }
 
 const DEFAULT_PRINT_MODEL_ID = "kimi-k2.7-code";
@@ -4378,7 +3795,7 @@ test "stdio protocol loop ignores malformed agent_stop for cancellation" {
     const tool_executor = try allocator.create(StdioAgentToolExecutor);
     tool_executor.* = .{ .bridge = &stdio_loop.tool_bridge, .session_id = session_id, .generation = 0, .disconnect_failed = disconnect_flag };
 
-    try stdio_loop.active_agent_runs.append(allocator, .{
+    try stdio_loop.agent_runs.runs.append(allocator, .{
         .session_id = session_id,
         .generation = 0,
         .stream = stream,
@@ -4640,7 +4057,7 @@ test "stdio tool bridge publishes tool requests and consumes tool results" {
     clearOwnedLines(allocator, &outbound);
 
     try stdio_loop.tool_bridge.enqueueRequest(allocator, session_id, stdio_loop.agent_server.sessionGeneration(session_id).?, "call-1", "lookup", "{\"query\":\"zig\"}");
-    try std.testing.expectEqual(@as(usize, 1), try stdio_loop.publishPendingToolRequests());
+    try std.testing.expectEqual(@as(usize, 1), try AgentRun.publishPendingToolRequests(&stdio_loop.agent_server, stdio_loop.allocator, &stdio_loop.tool_bridge));
     _ = try stdio_loop.pumpBackground();
     _ = try stdio_loop.drainOutbound(&outbound);
     try std.testing.expectEqual(@as(usize, 1), outbound.items.len);
@@ -4751,7 +4168,7 @@ test "stdio tool bridge clears queued and in-flight calls when cancelling sessio
     try std.testing.expectEqual(@as(usize, 1), stdio_loop.tool_bridge.requests.items.len);
     try std.testing.expectEqual(@as(usize, 1), stdio_loop.tool_bridge.in_flight.items.len);
 
-    stdio_loop.cancelAgentRun(session_id);
+    AgentRun.cancelRun(stdio_loop.allocator, &stdio_loop.agent_runs, &stdio_loop.tool_bridge, session_id);
     try std.testing.expectEqual(@as(usize, 0), stdio_loop.tool_bridge.requests.items.len);
     try std.testing.expectEqual(@as(usize, 0), stdio_loop.tool_bridge.in_flight.items.len);
 
@@ -4783,7 +4200,7 @@ test "stdio tool bridge drops queued requests for stopped sessions" {
 
     const session_id = AgentProtocolTypes.generateSessionId();
     try stdio_loop.tool_bridge.enqueueRequest(allocator, session_id, 0, "call-1", "lookup", "{}");
-    try std.testing.expectEqual(@as(usize, 0), try stdio_loop.publishPendingToolRequests());
+    try std.testing.expectEqual(@as(usize, 0), try AgentRun.publishPendingToolRequests(&stdio_loop.agent_server, stdio_loop.allocator, &stdio_loop.tool_bridge));
     try std.testing.expectEqual(@as(usize, 0), stdio_loop.tool_bridge.requests.items.len);
     try std.testing.expectEqual(@as(usize, 0), stdio_loop.tool_bridge.in_flight.items.len);
 }
@@ -4814,12 +4231,12 @@ test "publishPendingToolRequests drops stale-generation requests after id re-reg
     try std.testing.expect(second_generation > first_generation);
 
     try stdio_loop.tool_bridge.enqueueRequest(allocator, session_id, first_generation, "stale-call", "lookup", "{}");
-    try std.testing.expectEqual(@as(usize, 0), try stdio_loop.publishPendingToolRequests());
+    try std.testing.expectEqual(@as(usize, 0), try AgentRun.publishPendingToolRequests(&stdio_loop.agent_server, stdio_loop.allocator, &stdio_loop.tool_bridge));
     try std.testing.expectEqual(@as(usize, 0), stdio_loop.tool_bridge.requests.items.len);
     try std.testing.expectEqual(@as(usize, 0), stdio_loop.tool_bridge.in_flight.items.len);
 
     try stdio_loop.tool_bridge.enqueueRequest(allocator, session_id, second_generation, "fresh-call", "lookup", "{}");
-    try std.testing.expectEqual(@as(usize, 1), try stdio_loop.publishPendingToolRequests());
+    try std.testing.expectEqual(@as(usize, 1), try AgentRun.publishPendingToolRequests(&stdio_loop.agent_server, stdio_loop.allocator, &stdio_loop.tool_bridge));
 }
 
 test "stale tool_result for a reused tool_call_id is rejected by in_reply_to correlation" {
@@ -4845,7 +4262,7 @@ test "stale tool_result for a reused tool_call_id is rejected by in_reply_to cor
     clearOwnedLines(allocator, &outbound);
 
     try stdio_loop.tool_bridge.enqueueRequest(allocator, session_id, stdio_loop.agent_server.sessionGeneration(session_id).?, "dup-call", "lookup", "{}");
-    try std.testing.expectEqual(@as(usize, 1), try stdio_loop.publishPendingToolRequests());
+    try std.testing.expectEqual(@as(usize, 1), try AgentRun.publishPendingToolRequests(&stdio_loop.agent_server, stdio_loop.allocator, &stdio_loop.tool_bridge));
     try pumpAndDrainStdioLoop(&stdio_loop, &outbound);
     var first_env = try agent_protocol_envelope.deserializeEnvelope(outbound.items[0], allocator);
     defer first_env.deinit(allocator);
@@ -4856,7 +4273,7 @@ test "stale tool_result for a reused tool_call_id is rejected by in_reply_to cor
     consumed.deinit(allocator);
 
     try stdio_loop.tool_bridge.enqueueRequest(allocator, session_id, stdio_loop.agent_server.sessionGeneration(session_id).?, "dup-call", "lookup", "{}");
-    try std.testing.expectEqual(@as(usize, 1), try stdio_loop.publishPendingToolRequests());
+    try std.testing.expectEqual(@as(usize, 1), try AgentRun.publishPendingToolRequests(&stdio_loop.agent_server, stdio_loop.allocator, &stdio_loop.tool_bridge));
     try pumpAndDrainStdioLoop(&stdio_loop, &outbound);
     var second_env = try agent_protocol_envelope.deserializeEnvelope(outbound.items[1], allocator);
     defer second_env.deinit(allocator);
@@ -5169,7 +4586,7 @@ fn appendManualAgentRun(
         .generation = generation,
         .disconnect_failed = disconnect_failed,
     };
-    try loop.active_agent_runs.append(allocator, .{
+    try loop.agent_runs.runs.append(allocator, .{
         .session_id = session_id,
         .generation = generation,
         .stream = stream,
@@ -5192,7 +4609,7 @@ fn appendManualAgentRun(
         .disconnect_failed = disconnect_failed,
         .tool_executor = tool_executor,
     });
-    return &loop.active_agent_runs.items[loop.active_agent_runs.items.len - 1];
+    return &loop.agent_runs.runs.items[loop.agent_runs.runs.items.len - 1];
 }
 
 fn completeManualRunWithResult(run: *ActiveAgentRun) void {
@@ -5425,10 +4842,10 @@ test "event publication failure marks the stream truncated and converts the sett
     completeManualRunWithResult(run);
 
     failing.fail_index = failing.alloc_index;
-    try std.testing.expectError(error.OutOfMemory, stdio_loop.pumpAgentRuns());
+    try std.testing.expectError(error.OutOfMemory, AgentRun.pump(stdio_loop.allocator, &stdio_loop.agent_runs, &stdio_loop.agent_server));
     failing.fail_index = std.math.maxInt(usize);
-    try std.testing.expectEqual(@as(usize, 1), stdio_loop.active_agent_runs.items.len);
-    try std.testing.expect(stdio_loop.active_agent_runs.items[0].event_publication_failed);
+    try std.testing.expectEqual(@as(usize, 1), stdio_loop.agent_runs.runs.items.len);
+    try std.testing.expect(stdio_loop.agent_runs.runs.items[0].event_publication_failed);
 
     _ = try stdio_loop.pumpBackground();
     _ = try stdio_loop.drainOutbound(&outbound);
@@ -5472,14 +4889,14 @@ test "tool-request publication failure keeps the request queued and retries exac
         try stdio_loop.tool_bridge.enqueueRequest(allocator, session_id, generation, "call-1", "lookup", "{}");
 
         failing.fail_index = failing.alloc_index + k;
-        if (stdio_loop.publishPendingToolRequests()) |_| {} else |err| {
+        if (AgentRun.publishPendingToolRequests(&stdio_loop.agent_server, stdio_loop.allocator, &stdio_loop.tool_bridge)) |_| {} else |err| {
             try std.testing.expectEqual(error.OutOfMemory, err);
             try std.testing.expectEqual(@as(usize, 1), stdio_loop.tool_bridge.requests.items.len);
             try std.testing.expectEqual(@as(usize, 0), stdio_loop.tool_bridge.in_flight.items.len);
         }
 
         failing.fail_index = std.math.maxInt(usize);
-        _ = try stdio_loop.publishPendingToolRequests();
+        _ = try AgentRun.publishPendingToolRequests(&stdio_loop.agent_server, stdio_loop.allocator, &stdio_loop.tool_bridge);
         try std.testing.expectEqual(@as(usize, 0), stdio_loop.tool_bridge.requests.items.len);
         try std.testing.expectEqual(@as(usize, 1), stdio_loop.tool_bridge.in_flight.items.len);
         _ = try stdio_loop.pumpBackground();
@@ -5547,7 +4964,7 @@ test "stop-reply publication failure still cancels runs and discards tool-bridge
         if (!stdio_loop.agent_server.hasSession(session_id)) {
             try std.testing.expectEqual(@as(usize, 0), stdio_loop.tool_bridge.requests.items.len);
             try std.testing.expectEqual(@as(usize, 0), stdio_loop.tool_bridge.in_flight.items.len);
-            for (stdio_loop.active_agent_runs.items) |*listed| {
+            for (stdio_loop.agent_runs.runs.items) |*listed| {
                 try std.testing.expect(listed.cancel_flag.load(.acquire));
             }
             if (dispatch_errored) saw_failed_reply_with_session_removed = true;
@@ -6315,7 +5732,7 @@ test "stdio protocol loop emits terminal agent_error when active run fails" {
     const tool_executor = try allocator.create(StdioAgentToolExecutor);
     tool_executor.* = .{ .bridge = &stdio_loop.tool_bridge, .session_id = session_id, .generation = stdio_loop.agent_server.sessionGeneration(session_id).?, .disconnect_failed = disconnect_flag };
 
-    try stdio_loop.active_agent_runs.append(allocator, .{
+    try stdio_loop.agent_runs.runs.append(allocator, .{
         .session_id = session_id,
         .generation = stdio_loop.agent_server.sessionGeneration(session_id).?,
         .stream = stream,
@@ -6384,7 +5801,7 @@ test "stopped session's late run publications are discarded after id re-registra
     const tool_executor = try allocator.create(StdioAgentToolExecutor);
     tool_executor.* = .{ .bridge = &stdio_loop.tool_bridge, .session_id = session_id, .generation = first_generation, .disconnect_failed = disconnect_flag };
 
-    try stdio_loop.active_agent_runs.append(allocator, .{
+    try stdio_loop.agent_runs.runs.append(allocator, .{
         .session_id = session_id,
         .generation = first_generation,
         .stream = stream,
@@ -6466,7 +5883,7 @@ test "re-created session's admitted run is not failed by the stopped registratio
     const tool_executor = try allocator.create(StdioAgentToolExecutor);
     tool_executor.* = .{ .bridge = &stdio_loop.tool_bridge, .session_id = session_id, .generation = first_generation, .disconnect_failed = disconnect_flag };
 
-    try stdio_loop.active_agent_runs.append(allocator, .{
+    try stdio_loop.agent_runs.runs.append(allocator, .{
         .session_id = session_id,
         .generation = first_generation,
         .stream = stream,
@@ -6547,7 +5964,7 @@ test "agent_stop cancels every listed run for the id, including the current regi
         context.* = agent_loop.AgentContext.init(allocator);
         const tool_executor = try allocator.create(StdioAgentToolExecutor);
         tool_executor.* = .{ .bridge = &stdio_loop.tool_bridge, .session_id = session_id, .generation = first_generation, .disconnect_failed = stale_disconnect_flag };
-        try stdio_loop.active_agent_runs.append(allocator, .{
+        try stdio_loop.agent_runs.runs.append(allocator, .{
             .session_id = session_id,
             .generation = first_generation,
             .stream = stream,
@@ -6582,7 +5999,7 @@ test "agent_stop cancels every listed run for the id, including the current regi
         context.* = agent_loop.AgentContext.init(allocator);
         const tool_executor = try allocator.create(StdioAgentToolExecutor);
         tool_executor.* = .{ .bridge = &stdio_loop.tool_bridge, .session_id = session_id, .generation = second_generation, .disconnect_failed = current_disconnect_flag };
-        try stdio_loop.active_agent_runs.append(allocator, .{
+        try stdio_loop.agent_runs.runs.append(allocator, .{
             .session_id = session_id,
             .generation = second_generation,
             .stream = stream,
@@ -6602,7 +6019,7 @@ test "agent_stop cancels every listed run for the id, including the current regi
     try std.testing.expect(stale_flag.load(.acquire));
     try std.testing.expect(current_flag.load(.acquire));
     try std.testing.expect(!stdio_loop.agent_server.hasSession(session_id));
-    try std.testing.expectEqual(@as(usize, 2), stdio_loop.active_agent_runs.items.len);
+    try std.testing.expectEqual(@as(usize, 2), stdio_loop.agent_runs.runs.items.len);
 }
 
 test "writeOwnedLinesAndClear clears owned lines on write failure" {
@@ -7887,7 +7304,6 @@ fn startOapInference(
     cancelled.* = std.atomic.Value(bool).init(false);
 
     var options: ai_types.StreamOptions = .{};
-    options.requires_owned_stream_events = true;
     var resolved_credential: ?auth_resolver.ResolvedKey = null;
     defer if (resolved_credential) |*key| key.deinit(allocator);
 
@@ -10054,7 +9470,7 @@ test "a mode oapx does not carry is refused by name, and never read as a path" {
     var out = try tmp.dir.createFile(std.testing.io, "stdout", .{});
     var complained_on = try tmp.dir.createFile(std.testing.io, "stderr", .{});
     try std.testing.expectError(error.UnsupportedMode, runValidate(allocator, &.{ "--mode", "lenient", "t.json" }, out, complained_on));
-    try std.testing.expectError(error.UnsupportedMode, runValidate(allocator, &.{"--mode=lenient", "t.json"}, out, complained_on));
+    try std.testing.expectError(error.UnsupportedMode, runValidate(allocator, &.{ "--mode=lenient", "t.json" }, out, complained_on));
     try std.testing.expectError(error.UnsupportedMode, runValidate(allocator, &.{"--mode"}, out, complained_on));
     out.close(std.testing.io);
     complained_on.close(std.testing.io);

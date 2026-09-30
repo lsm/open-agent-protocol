@@ -48,7 +48,7 @@ test "github_copilot e2e: basic text generation" {
     defer _ = stream.deinitAndDestroy();
 
     while (!stream.isDone()) {
-        _ = stream.poll();
+        test_helpers.drainOne(stream);
         compat.time.sleepNs(10 * std.time.ns_per_ms);
     }
 
@@ -112,7 +112,9 @@ test "github_copilot e2e: streaming events sequence" {
 
     while (true) {
         if (stream.poll()) |event| {
-            switch (event) {
+            const polled = event;
+            defer stream.releaseEvent(polled);
+            switch (polled) {
                 .start => saw_start = true,
                 .text_delta => |d| {
                     saw_text_delta = true;

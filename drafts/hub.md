@@ -590,11 +590,57 @@ mux nor a list of the routes still to come.
 close on a socket whose receive queue still holds those bytes is answered with a
 reset, which on Linux can discard the refusal the client has not read yet — the
 client sees a connection error rather than the reason. So every path that
-answers without consuming a body drains what the head declared, bounded at 64 KiB
-and one poll cycle, and gives up rather than waiting on a peer that sends nothing
-more. Zig: `a body the daemon refused to read is drained before the socket closes,
-or the close resets the answer away` and `a drain gives up rather than waiting on a
-peer that sends nothing more`; measured, forty consecutive refused POSTs with
+answers without consuming a body drains what the head declared, and gives up rather
+than waiting on a peer that sends nothing more. The bound is **both** a byte cap and an
+elapsed-time budget, and it is the *total* over the whole drain that bounds it: a per-round cap
+with an unbounded round count is not a bound. The Zig port reads in 64 KiB rounds, stops at
+**1 MiB in total**, and stops at **2500 ms elapsed from that drain's own start** — elapsed, not the process's uptime, so a daemon that has been up
+for hours still drains. A drain that cannot read its own clock stops rather than draining without a
+bound, and that rule covers the **whole helper path**: `readUntil` returns its existing `Timeout` rather
+than substituting `0` for a clock it could not read, which kept `left_ms` positive and renewed the
+silent-socket poll forever; `readHead` and `readBody` do the same; and the round deadline **reuses the
+`now` that round already read**. The classification is unchanged — a clock it cannot
+read is a wait it cannot honour, which is the `Timeout` those sites already had — so no wire code or
+status is added.
+
+An earlier revision claimed each of the four bounds is pinned by a test that fails if the bound is
+removed. **That was false, and was measured rather than assumed.** The pinning that exists is not uniform:
+
+- **the 1 MiB total — pinned by removal at this head.** `a drain stops at its byte cap and reports
+  what it consumed` carries its own `wanted_cap = 1024 * 1024`, asserts the production constant
+  equals it, and uses the literal throughout, so constant and expectation cannot move together;
+  raising `drain_total_cap_bytes` to 1 GiB fails it with `expected 1048576, found 1073741824`. The real-socket test separately pins that a cap
+  is *observable from outside the process*, asserting a lower bound on transferred bytes plus a
+  complete 403 — never an upper one
+- **the 2500 ms elapsed budget, and that it is elapsed rather than uptime** — `a drain reads on a
+  long-lived process, because its budget is elapsed not uptime` seeds the clock, waits
+  `drain_total_ms + 200` under a bound, asserts the clock is past the budget, and drains again;
+  restoring the old `elapsedMs() catch 0 -| started` fails it with `expected 4096, found 0`. **It pins
+  the comparison, not the guard's presence:** neutralising the guard is green, so a deleted time bound
+  would go unnoticed. The stall case stays covered by `a drain gives up rather than waiting on a peer
+  that sends nothing more`
+- **stop on an unreadable clock — NO exercising test, recorded as a gap.** The port returns the
+  bytes consumed from `drain` and its existing `Timeout` from the read helpers, rather than reading
+  an unreadable clock as `0`. Nothing reaches it: the clock is `std.Io.Timestamp` against a monotonic
+  source and, per the owner's check of `compat/time.zig:25-35`, is currently **infallible**, so no test
+  can reach the branch on this platform, in CI, or on the others this port runs on. **This is a latent
+  error-contract mismatch, not a reproduced clock failure.** Stated by the port and unproven by
+  execution, the same shape as the `type_mismatch` gap D20 records. An earlier revision of this row
+  cited the long-lived test as pinning it; that was a coverage claim with no test behind it. Closing
+  it needs a seam substituting a failing clock, a redesign rather than a test, so it stays a gap
+  rather than invented.
+- **the bound holding against a real process** —
+  `TestHubAddrRefusesALargeRefusedHeadOverARealSocket` transfers 1,052,672 /
+  1,719,800 / 1,799,224 bytes against declarations of 1 MiB+4096, 4 MiB and 16 MiB
+  and is answered 403 with a complete body each time, so the cap is visible from
+  outside the process. Its clock is seeded through a **refused** request, which is
+  the only shape that reaches a drain, and `boundAt` is taken after that
+
+The two pre-existing tests — `a body the daemon refused to read is drained before
+the socket closes, or the close resets the answer away` and `a drain gives up
+rather than waiting on a peer that sends nothing more` — pin the qualitative rule
+that a refused body is drained and that a silent peer is given up on. They do not
+pin any of the four numbers above. Measured, forty consecutive refused POSTs with
 their bodies sent in full all arrive as `403`.
 
 **A read in flight is bounded, and a signal is noticed inside the bound.** The
@@ -1544,6 +1590,26 @@ are "stamped with the revision the lister served it under", and both name
 | **Go does** | Answered from `serve/servestdio/ops.go`, with no test that sends a schema-valid non-`open` payload to the `open` route. |
 | **Zig does** | Answered at `zig/src/hub/stdio.zig:505`, after the envelope is validated and before it is dispatched, and with no test that reaches it. `malformed_json` is covered by the Zig unit table; `type_mismatch` is not, in either tree. |
 | **Why it is not fixed here** | The line that reaches it does not exist yet in either tree, so the check is correct by inspection and unproven by execution. A row that claims coverage it does not have is the same defect as a name that claims an unexercised check, and the ledger is where that claim has to be visible. Renaming the differential scenario that claimed five gate refusals and exercised two is the other half of the same fix. |
+
+### D24 — five codes the operation rows name without a status a port may use
+
+| | |
+| --- | --- |
+| **The rule, which is not in doubt** | `drafts/hub.md:743-748`: the stdio transport "answers four codes no HTTP route can" — `unknown_op`, `invalid_request`, `busy`, `response_too_large` — and "a port must not produce any of them over HTTP". The HTTP refusal table therefore carries no row for those four, and asserts all four null. |
+| **The scope that overlaps it** | `adapters` at `:769`, `capabilities` at `:778` and `open` at `:839` name `invalid_request`, `malformed_json`, `schema_invalid`, `type_mismatch` and `invalid_payload` in their error lists **with no status attached**; the first status any of those lists pins belongs to a later code, `unknown_adapter` (404) at `:841`. Naming a code in an operation's error list says what the operation refuses, not what status a port may answer. |
+| **The emission path, for the code both scopes name** | **Every `invalid_request` either hub frontend emits is from the stdio dispatcher** — `go/serve/servestdio/ops.go:1067, 130, 187, 257` — and `servehttp` emits none, handling invalid payload, unreadable and malformed bodies, and schema failures at `server.go:197, 245, 327, 749-775` instead. Outside the hub frontends the endpoint surface emits it too, at `go/serve/serveendpoint/dispatch.go:46, 52, 522` and `replay.go:58`; those are a different role and a different table, and an earlier revision of this row claimed a universal "every `invalid_request` Go emits", which is false at those sites. The parameter-shape check that produces it is a property of a stdio request object where an op declares which parameters it takes; a port declares a path and a method. |
+| **The current scope of this table** | **Eight** distinct codes are named by operation rows without a status and are therefore **not rows here**, asserted null: the four of `:743-748` plus `malformed_json`, `schema_invalid`, `type_mismatch` and `invalid_payload`. `invalid_request` appears in both halves of that sum and is counted once, which is why five operation-row names plus four stdio-only names is five and eight, not nine. A table row is an authorisation to emit, and the draft has authorised none of the eight. Go's `servehttp` answers three of the four decode codes at 400 (`server.go:764-779`) and `invalid_payload` at 400 separately (`server.go:197`), which is evidence about Go and not a pin — Decision 0032 does not count it as protocol behaviour. |
+| **A proposed change, unaccepted** | Anyone wanting a port to answer any of these eight would be **changing the spec**, by pinning statuses in the operation rows and relaxing `:743-748` for the four it names. **That change is unaccepted**, and nothing in this table authorises emitting any of the eight while the present text stands. This row records the current scope and the fact that a change would be needed; it asks the owner for nothing the existing rule leaves open. |
+
+### D25 — four decode codes are answered 400 by Go and pinned by nothing, and one has no Zig hub emission
+
+| | |
+| --- | --- |
+| **What the draft says** | `malformed_json`, `schema_invalid`, `type_mismatch` and `invalid_payload` are named bare in the operation error lists at `:839-841`, `:931`, `:951` and `:970`, where the `(400)` parenthetical attaches to `scope_mismatch`, a later entry. **No status is pinned for any of the four.** |
+| **What Go does** | `servehttp/server.go:764-779` answers `malformed_json`, `schema_invalid` and `type_mismatch` at 400, and `invalid_payload` at 400 from a separate site, `server.go:197`, which is the payload decode in `handleOpen` and not the shared reader. |
+| **What Zig does, and the gap** | The Zig hub answers the first three — `zig/src/hub/stdio.zig:655-671` — and has **no `invalid_payload` emission site anywhere under `zig/src/hub/`**: the only `invalid_payload` **emission sites** in the Zig tree are in the endpoint-role adapter at `zig/src/adapter/endpoint.zig:243, 349, 355`, which is a different role. The literal also appears in test and assertion code — `endpoint.zig:1435` and this ledger's own null-assertion list at `zig/src/hub/stdio.zig:2396` — so the claim is about emission, not about the string; an earlier revision said "the only in the Zig tree", which is false at head. Go's stdio dispatcher does emit it (`go/serve/servestdio/ops.go:332`). So a payload that will not decode as a `session.open.request` is answered by Go and **not** by the Zig hub. That is an implementation gap on the Zig side, recorded rather than closed: emitting it over HTTP would be a port producing a code this table does not authorise, which is the change D24's last row says is unaccepted. The gap is named so it is not silent, and no behaviour is invented to fill it. |
+| **Why they are not rows here** | A row authorises a port to answer, and the draft pins no status, so the four are asserted null like the stdio-only set — see D24. Go's behaviour is the evidence and the draft is the decision, so following Go here would be following a tree rather than the page. |
+| **What would close it** | Pinning the four in the operation error lists, which is a spec change and unaccepted. Until then the gap is here rather than silent, and a port that needs to answer them cannot without that change. |
 
 ### D4 — the registry's `journal_capacity` is hub-wide in Zig, per-adapter in Go
 
