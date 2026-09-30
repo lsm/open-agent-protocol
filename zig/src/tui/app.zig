@@ -6241,6 +6241,23 @@ test "App a model command leaves the gauge on the window in effect" {
     try std.testing.expectEqual(@as(usize, 200_000), app.state.status.context_limit);
 }
 
+test "App restores a model's one-million context window after switching back" {
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ gpt_model, kimi_model } });
+    defer app.deinit();
+
+    try app.submit("/context 1m");
+    try std.testing.expectEqual(@as(usize, 1_000_000), app.state.status.context_limit);
+
+    try app.submit("/model kimi-k2.7-code");
+    try std.testing.expectEqual(@as(usize, 262_144), app.state.status.context_limit);
+    try std.testing.expectEqual(@as(u64, 262_144), app.state.telemetry.context_window);
+
+    try app.submit("/model gpt-5-codex");
+    try std.testing.expectEqual(@as(usize, 1_000_000), app.state.status.context_limit);
+    try std.testing.expectEqual(@as(u64, 1_000_000), app.state.telemetry.context_window);
+    try std.testing.expectEqual(@as(u32, 1_000_000), app.runtime.?.currentModel().?.context_window);
+}
+
 test "App a catalog refresh that drops the window leaves the gauge on the model's own" {
     var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ gpt_model, kimi_model } });
     defer app.deinit();

@@ -629,6 +629,73 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   cited the long-lived test as pinning it; that was a coverage claim with no test behind it. Closing
   it needs a seam substituting a failing clock, a redesign rather than a test, so it stays a gap
   rather than invented.
+- **the 413 path answers completely, before the whole declared body is sent** —
+  `TestHubAddrAnswersAComplete413BeforeTheWholeDeclaredBodyIsSent` drives the branch a plain media
+  refusal does not reach: `readHead` refuses `413 request_too_large` on the declared length alone,
+  and the daemon writes that refusal and then drains what the head declared. Against declarations of
+  16 MiB+1 and 16 GiB it is answered 413 with a **complete, parsed** envelope — status,
+  `Content-Length` match, envelope type and the `request_too_large` code — and the client was **still
+  writing** when the writer stopped, having sent only a fraction of what it declared. That is the
+  whole claim, and it is phrased in what a client can observe on purpose: **every number this test
+  reports is a client write count**, which bounds when the writer stopped and not how many bytes the
+  daemon read, because what the client pushes before the close lands is kernel buffering and
+  scheduling. **It does not pin the drain's cap or budget on this path, and the mutation says so:**
+  lifting `drain_total_cap_bytes` to 8 MiB, lifting `drain_total_ms` to 60000, and lifting **both
+  together** all leave the test **green**. The transferred bytes do move — 1.7–3.1 MB bounded against
+  9.2–10.8 MB unbounded — but a threshold on them would be a machine-dependent constant rather than a
+  bound, and the same build produced 1.70 MB and 3.13 MB on two runs of one case, so none is asserted.
+  **What the existing unit tests do and do not cover, stated precisely so this row does not overstate
+  them:** `http.zig:1369` pins the **byte cap** — it asserts `drain_total_cap_bytes` against its own
+  literal and drains past it — while `http.zig:1412` pins only that the budget is **elapsed rather
+  than uptime**, exactly as the row above records, and that row's finding stands unchanged:
+  **neutralising the time guard leaves it green, so the time bound's presence is still a gap.** What
+  is **not** pinned anywhere is that the 413 path *reaches* `drain` at all, and no client can observe
+  that without the threshold just declined. An earlier revision of this work claimed the mutation
+  failed when both bounds were removed, and a second claimed the budget was pinned at `:1412`. The
+  first does not hold and the second contradicts the row above. Both are withdrawn.
+- **the `readBody` failure path answers completely, and the daemon gives up on a peer that stops** —
+  `makai.zig:1591` is the third and last `drain` call site, and the only one none of the rows above
+  reached. `TestHubAddrAnswersACompleteTransportFailureWhenTheBodyStopsShort` reaches it with a head
+  the gate admits (`Content-Type: application/json`, so `answer()` does not refuse and the request goes
+  on to `readBody`), a declared 8 MiB, 4096 body bytes sent, and then a **TCP half-close**. `readBody`
+  sees `n == 0`, returns `error.BodyTruncated`, and the loop writes the transport failure and drains
+  `request.content_length -| request.filled`. What is pinned, all of it observable: a **complete**
+  answer — status `400`, `Content-Length` matching the 265-byte body, `type: error.response`,
+  `code: request_read`, `protocol: open-agent-protocol`, `version: 0.1`,
+  `profile: open-agent-protocol.agent-control-core`, and the synthetic correlation `oap-error-1`
+  replying to `oap-request-1` that `refusalEnvelope` builds at `http.zig:292-298` and the existing
+  unit test at `:1561` already pins for all four refusals — delivered while the client had sent
+  **4096 of the 8 MiB it declared**. The answer arriving at all is the "gave up" claim: a
+  daemon waiting for the declared body would have said nothing and the read would have timed out.
+  **Two negative controls fail it:** `readBody` treating a short body as complete answers `404`, and
+  mapping `BodyTruncated` to a different refusal answers `413`. **The drain on this path is NOT
+  pinned, and the mutation says so: deleting `makai.zig:1591` outright leaves the test `EXIT=0`**
+  green, because after a half-close the drain's first read returns EOF immediately, so nothing about
+  the drain reaches this client. So the **`content_length -| filled` arithmetic and this site's
+  reachability are unproved** by this test, by the rows above, and by anything else on main, and no
+  threshold is inferred from transferred bytes to stand in for them. **Of the two drain bounds, the
+  byte cap is pinned** — `:1369` asserts `drain_total_cap_bytes` against its own literal and drains
+  past it — and the **elapsed-versus-uptime comparison is pinned** at `:1412`, but **the time guard's
+  presence is NOT pinned anywhere**, exactly as the row above states, and this row adds nothing to it.
+  Two things a reader might assume are covered here are not: this site's drain amount, and the
+  existence of the time bound.
+- **the media gate answered by the daemon itself, with nothing else wrong** — the third gate in
+  `answer()` and the only refusal no `go/cmd/goap` test named, so the parity D26 records was pinned
+  in-process only. `TestHubAddrRefusesABodyWhoseMediaTypeIsNotJSONAndNothingElseIsWrong` sends five
+  requests over a real socket, each with a **Host the hub accepts and no `Origin` at all**, so nothing
+  but the media type can decide the answer. `text/plain` with a body is refused a **complete 415** —
+  status, `Content-Length` match, `error.response`, `unsupported_media_type`, the fixed
+  `open-agent-protocol` / `0.1` / `open-agent-protocol.agent-control-core` triple, and the synthetic
+  correlation `oap-error-N` replying to `oap-request-N`. **Three of the five are counterexamples**, and
+  they are what keep the first from passing on a build that refuses everything: `application/json` with
+  a body is not media-refused, `application/json; charset=utf-8` with a body is not media-refused —
+  so the real daemon agrees with the parameter parity D26 pinned against Go — and `text/plain` with **no
+  body declared** is not media-refused, because the gate reads length. **Three mutations fail it, each
+  on the case it should:** neutralising the gate answers `404` on the refused case, keying the gate on
+  the header instead of the length answers `415` on the body-less case, and admitting a parameter with
+  no `=` again answers `404` on `application/json; charset`. That third one is why that case is here —
+  without it, dropping the parameter validation was **invisible to this test**, which I found by running
+  the mutation rather than by assuming it would be caught.
 - **the bound holding against a real process** —
   `TestHubAddrRefusesALargeRefusedHeadOverARealSocket` transfers 1,052,672 /
   1,719,800 / 1,799,224 bytes against declarations of 1 MiB+4096, 4 MiB and 16 MiB
