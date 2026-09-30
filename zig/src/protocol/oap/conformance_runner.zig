@@ -185,7 +185,9 @@ fn parseControl(allocator: std.mem.Allocator, line: []const u8) !ControlFrame {
         }
         const number = switch (found) {
             .integer => |number| if (number < 0) return error.InvalidControlFrame else @as(u64, @intCast(number)),
-            else => continue,
+            .float => return error.InvalidControlFrame,
+            .number_string => return error.InvalidControlFrame,
+            else => return error.InvalidControlFrame,
         };
         if (std.mem.eql(u8, field.key, "after")) {
             frame.after = number;
@@ -1320,4 +1322,17 @@ test "a negative number in a control frame is judged, not fatal" {
 test "a control frame that is not JSON is judged, not fatal" {
     try std.testing.expectError(error.InvalidControlFrame, parseControl(std.testing.allocator, "not json"));
     try std.testing.expectError(error.InvalidControlFrame, parseControl(std.testing.allocator, "[1,2,3]"));
+}
+
+test "a cursor that is not a whole non-negative number is judged, not swallowed" {
+    const cases = [_][]const u8{
+        "{\"control\":\"replay.gap\",\"id\":\"r1\",\"requested_after\":5.5}",
+        "{\"control\":\"replay.gap\",\"id\":\"r1\",\"requested_after\":5.0}",
+        "{\"control\":\"replay.gap\",\"id\":\"r1\",\"requested_after\":\"5\"}",
+        "{\"control\":\"replay.gap\",\"id\":\"r1\",\"requested_after\":true}",
+        "{\"control\":\"replay.gap\",\"id\":\"r1\",\"requested_after\":[5]}",
+    };
+    for (cases) |line| {
+        try std.testing.expectError(error.InvalidControlFrame, parseControl(std.testing.allocator, line));
+    }
 }
