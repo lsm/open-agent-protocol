@@ -662,6 +662,14 @@ const CurrentBlock = enum {
     thinking,
 };
 
+fn settleOrFailLost(stream: *event_stream.AssistantMessageEventStream, out: ai_types.AssistantMessage) void {
+    if (stream.pushFailed()) {
+        stream.completeWithError("an event could not be queued: out of memory");
+        return;
+    }
+    stream.complete(out);
+}
+
 fn createPartialMessage(model: ai_types.Model) ai_types.AssistantMessage {
     return ai_types.AssistantMessage{
         .content = &.{},
@@ -1295,7 +1303,7 @@ fn runThread(ctx: *ThreadCtx) void {
 
     ctx.deinit();
 
-    stream.complete(out);
+    settleOrFailLost(stream, out);
     stream.markThreadDone();
 }
 

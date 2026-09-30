@@ -1670,6 +1670,14 @@ fn runThread(ctx: *ThreadCtx) void {
 
     ctx.deinit();
 
+    settleOrFailLost(stream, out);
+}
+
+fn settleOrFailLost(stream: *event_stream.AssistantMessageEventStream, out: ai_types.AssistantMessage) void {
+    if (stream.pushFailed()) {
+        stream.completeWithError("an event could not be queued: out of memory");
+        return;
+    }
     stream.complete(out);
 }
 
@@ -2769,4 +2777,116 @@ test "every row this wire serves finds its key from the row, not a list of vendo
         try std.testing.expectEqualStrings(row.credential_env[0], recorded.asked.items[0]);
     }
     try std.testing.expect(served >= 2);
+}
+
+fn lostCloneTestModel() !ai_types.Model {
+    return .{
+        .id = "claude",
+        .name = "claude",
+        .api = "anthropic-messages",
+        .provider = "anthropic",
+        .base_url = provider_catalog.baseUrl("anthropic", "anthropic-messages", null) orelse
+            return error.NoAnthropicBaseUrl,
+        .reasoning = false,
+        .input = &.{},
+        .cost = .{ .input = 3.0, .output = 15.0, .cache_read = 0.3, .cache_write = 3.75 },
+        .context_window = 200000,
+        .max_tokens = 16,
+    };
+}
+
+fn emptyAnthropicMessage() ai_types.AssistantMessage {
+    return .{
+        .content = &.{},
+        .api = "anthropic-messages",
+        .provider = "anthropic",
+        .model = "claude",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+    };
+}
+
+test "a clone that cannot be allocated marks the stream rather than losing an event" {
+    const allocator = std.testing.allocator;
+    var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 1 });
+    const stream = try failing.allocator().create(event_stream.AssistantMessageEventStream);
+    stream.* = event_stream.AssistantMessageEventStream.init(failing.allocator());
+    stream.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
+    defer {
+        _ = stream.deinitAndDestroy();
+    }
+    try std.testing.expect(!stream.pushFailed());
+
+    const queued = stream.pushBlocking(.{ .text_delta = .{
+        .content_index = 0,
+        .delta = "x",
+        .partial = createPartialMessage(try lostCloneTestModel()),
+    } });
+
+    try std.testing.expect(!queued);
+    try std.testing.expect(stream.pushFailed());
+    try std.testing.expect(!stream.isDone());
+}
+
+test "a stream that was already cancelled keeps its terminal and is not marked failed" {
+    const allocator = std.testing.allocator;
+    const stream = try allocator.create(event_stream.AssistantMessageEventStream);
+    stream.* = event_stream.AssistantMessageEventStream.init(allocator);
+    stream.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+    stream.completeWithError("cancelled by the caller");
+
+    const queued = stream.pushBlocking(.{ .text_delta = .{
+        .content_index = 0,
+        .delta = "x",
+        .partial = createPartialMessage(try lostCloneTestModel()),
+    } });
+
+    try std.testing.expect(!queued);
+    try std.testing.expect(!stream.pushFailed());
+    try std.testing.expect(stream.getResult() == null);
+    try std.testing.expectEqualStrings("cancelled by the caller", stream.getError() orelse return error.NoErrorRecorded);
+}
+
+test "a stream that lost a clone settles as a failure, not a clean terminal" {
+    const allocator = std.testing.allocator;
+    var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 1 });
+    const stream = try failing.allocator().create(event_stream.AssistantMessageEventStream);
+    stream.* = event_stream.AssistantMessageEventStream.init(failing.allocator());
+    stream.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
+    defer {
+        _ = stream.deinitAndDestroy();
+    }
+    _ = stream.pushBlocking(.{ .text_delta = .{
+        .content_index = 0,
+        .delta = "x",
+        .partial = createPartialMessage(try lostCloneTestModel()),
+    } });
+    try std.testing.expect(stream.pushFailed());
+
+    settleOrFailLost(stream, emptyAnthropicMessage());
+
+    try std.testing.expect(stream.getResult() == null);
+    if (stream.getError() == null) return error.NoErrorRecorded;
+}
+
+test "a stream that lost nothing settles with the message the provider built" {
+    const allocator = std.testing.allocator;
+    const stream = try allocator.create(event_stream.AssistantMessageEventStream);
+    stream.* = event_stream.AssistantMessageEventStream.init(allocator);
+    stream.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+
+    settleOrFailLost(stream, emptyAnthropicMessage());
+
+    const result = stream.getResult() orelse return error.NoResult;
+    try std.testing.expectEqualStrings("claude", result.model);
+    try std.testing.expect(stream.getError() == null);
 }

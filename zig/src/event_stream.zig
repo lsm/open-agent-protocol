@@ -30,6 +30,7 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
         mutex: std.Io.Mutex = .init,
         futex: std.atomic.Value(u32),
         thread_done: std.atomic.Value(bool),
+        push_failed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
         abandoned: std.atomic.Value(bool),
         allocator: std.mem.Allocator,
         wait_for_thread_on_deinit: bool = false,
@@ -224,7 +225,11 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
                         waitTimeoutMs(self, self.futex.load(.acquire), 1);
                         continue;
                     },
-                    error.StreamCompleted, error.OutOfMemory => return false,
+                    error.StreamCompleted => return false,
+                    error.OutOfMemory => {
+                        self.push_failed.store(true, .release);
+                        return false;
+                    },
                 };
                 return true;
             }
@@ -414,6 +419,10 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
                 self.waitUncancelable(futex_value);
                 futex_value = self.futex.load(.acquire);
             }
+        }
+
+        pub fn pushFailed(self: *Self) bool {
+            return self.push_failed.load(.acquire);
         }
 
         pub fn isDone(self: *Self) bool {
