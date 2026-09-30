@@ -71,6 +71,17 @@ const MarkerDir = struct {
     }
 };
 
+fn prepareMarker(allocator: std.mem.Allocator, marker: *?MarkerDir, path: *[]u8) !?[]u8 {
+    const created = MarkerDir.create(allocator) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return null,
+    };
+    const made = try created.markerPath(allocator);
+    marker.* = created;
+    path.* = made;
+    return made;
+}
+
 const ReportDirectory = struct {
     directory: []const u8,
     observed: bool,
@@ -121,14 +132,21 @@ pub fn execute(
     defer if (marker) |created| created.remove(common.defaultIo());
     var marker_path: []u8 = &.{};
     defer allocator.free(marker_path);
-    const argv = if (@import("builtin").os.tag == .windows)
-        [_][]const u8{ "cmd.exe", "/C", command }
-    else blk: {
-        marker = try MarkerDir.create(allocator);
-        marker_path = try marker.?.markerPath(allocator);
-        break :blk [_][]const u8{ "/bin/sh", "-c", end_directory_script, "sh", command, marker_path };
-    };
-    const result = process_runner.run(allocator, &argv, .{ .dir = dir }, timeout_ms, cancel_token) catch |err| {
+    const windows = @import("builtin").os.tag == .windows;
+    var argv_storage: [6][]const u8 = if (windows)
+        .{ "cmd.exe", "/C", command } ++ .{ "", "", "" }
+    else
+        .{ "/bin/sh", "-c", command } ++ .{ "", "", "" };
+    var argv: []const []const u8 = argv_storage[0..3];
+    if (!windows) {
+        const prepared = try prepareMarker(allocator, &marker, &marker_path);
+        if (prepared) |path| {
+            argv_storage = .{ "/bin/sh", "-c", end_directory_script, "sh", command, path };
+            argv = &argv_storage;
+        }
+    }
+
+    const result = process_runner.run(allocator, argv, .{ .dir = dir }, timeout_ms, cancel_token) catch |err| {
         if (err == error.Cancelled) return err;
         const duration_ms = common.durationMs(start_ms);
         const owned_directory = try allocator.dupe(u8, start_directory);
@@ -423,6 +441,28 @@ test "a command whose output exceeds the cap fails promptly, unobserved, without
     try std.testing.expect(std.mem.indexOf(u8, result.getDetailsJson().?, "StreamTooLong") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.getDetailsJson().?, "\"working_directory_observed\":false") != null);
     try std.testing.expect(elapsed_ms < 20_000);
+}
+
+test "a command still runs when no private directory can be made" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const cwd = try std.process.currentPathAlloc(common.defaultIo(), std.testing.allocator);
+    defer std.testing.allocator.free(cwd);
+    const expected = try std.Io.Dir.path.resolve(std.testing.allocator, &.{cwd});
+    defer std.testing.allocator.free(expected);
+    const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"command\":\"echo still-runs\"}}", .{cwd});
+    defer std.testing.allocator.free(args);
+    var unusable: ?MarkerDir = null;
+    var unusable_path: []u8 = &.{};
+    const prepared = try prepareMarker(std.testing.allocator, &unusable, &unusable_path);
+    if (prepared == null) return error.SkipZigTest;
+    defer unusable.?.deinit(std.testing.allocator);
+    defer unusable.?.remove(common.defaultIo());
+    defer std.testing.allocator.free(unusable_path);
+
+    var result = try execute("call-notemp", args, null, null, null, std.testing.allocator);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, "still-runs") != null);
+    try std.testing.expect(result.working_directory_observed);
 }
 
 test "shell execute captures stdout" {
