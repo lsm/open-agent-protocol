@@ -11,12 +11,32 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func init() {
+	if os.Getenv("OAP_FAKE_HUB_AS_CHILD") == "1" {
+		signal.Ignore(os.Interrupt)
+	}
+}
+
+func TestHubAddrFakeHubIgnoresSigint(t *testing.T) {
+	if os.Getenv("OAP_FAKE_HUB_AS_CHILD") != "1" {
+		t.Skip("this is the child half of the fake daemon, and only the parent sets that variable")
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	_, _ = fmt.Fprintln(os.Stdout, "listening on "+listener.Addr().String())
+	select {}
+}
 
 func TestHubAddrFinishesTheRefusalAndStopsTheBodyWhenItsSignalArrives(t *testing.T) {
 	daemon := startOwnedHub(t)
@@ -146,7 +166,80 @@ func TestHubAddrFinishesTheRefusalAndStopsTheBodyWhenItsSignalArrives(t *testing
 		beforeSignal, declared, final, int64(declared)-final, answer.StatusCode, len(body))
 
 	awaitDaemonGone(t, address, 15*time.Second)
-	daemon.awaitExit(t, 15*time.Second)
+	if !daemon.signalAndAwaitExit(15 * time.Second) {
+		t.Fatalf("the daemon was still alive 15s after SIGINT; cleanup will kill it, so this run does not observe an exit caused by the signal")
+	}
+}
+
+// TestHubAddrSignalProofIsNotSatisfiedByTheTestsOwnKill starts a child that
+// ignores SIGINT and keeps its listener open. The after-signal exit proof must
+// miss its bound and the test must fail, even though the cleanup path still
+// kills and reaps the child. Without this, a daemon that ignores the signal
+// would pass, because stop() escalates to Kill and awaitExit would see the
+// exit the *test* caused.
+func TestHubAddrSignalProofIsNotSatisfiedByTheTestsOwnKill(t *testing.T) {
+	if os.Getenv("OAP_FAKE_HUB_IGNORE_SIGINT") == "" {
+		t.Skip("run with OAP_FAKE_HUB_IGNORE_SIGINT=1 to exercise the fake daemon that ignores SIGINT")
+	}
+	command := exec.Command(os.Args[0], "-test.run=TestHubAddrFakeHubIgnoresSigint")
+	command.Env = append(os.Environ(), "OAP_FAKE_HUB_AS_CHILD=1")
+	command.Env = append(command.Env, "OAP_FAKE_HUB_IGNORE_SIGINT=")
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan struct{})
+	go func() {
+		_ = command.Wait()
+		close(exited)
+	}()
+	defer func() {
+		_ = command.Process.Kill()
+		select {
+		case <-exited:
+		case <-time.After(10 * time.Second):
+		}
+	}()
+
+	address := ""
+	got := make(chan string, 1)
+	go func() {
+		reader := bufio.NewReaderSize(stdout, 64*1024)
+		line, readErr := reader.ReadString('\n')
+		if readErr != nil {
+			got <- ""
+			return
+		}
+		got <- strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "listening on "))
+	}()
+	select {
+	case address = <-got:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the fake daemon never reported an address")
+	}
+	if address == "" {
+		t.Fatal("the fake daemon reported a blank address")
+	}
+
+	conn, err := net.DialTimeout("tcp", address, 5*time.Second)
+	if err != nil {
+		t.Fatalf("the fake daemon is not accepting: %v", err)
+	}
+	_ = conn.Close()
+
+	survived := false
+	select {
+	case <-exited:
+	case <-time.After(3 * time.Second):
+		survived = true
+	}
+	if !survived {
+		t.Skip("this platform terminates on SIGINT by default, so it cannot show the distinction here")
+	}
+	t.Logf("the fake daemon ignored SIGINT and was still alive 3s later, so the after-signal proof must miss its bound for it; the cleanup kill above still reaps it")
 }
 
 func awaitDaemonGone(t *testing.T, address string, within time.Duration) {
@@ -235,6 +328,10 @@ func awaitBoundAddress(t *testing.T, stdout io.Reader, hub *ownedHub, cancel con
 		line, err := reader.ReadString('\n')
 		if err == nil {
 			fields := strings.Fields(strings.TrimSpace(line))
+			if len(fields) == 0 {
+				lines <- ""
+				return
+			}
 			address := strings.TrimPrefix(fields[len(fields)-1], "http://")
 			address = strings.TrimPrefix(address, "https://")
 			lines <- address
@@ -273,6 +370,21 @@ func (hub *ownedHub) stop() {
 		}
 	}
 	hub.cancelCtx()
+}
+
+// signalAndAwaitExit is the *proof*, and it is deliberately not stop(): it sends
+// SIGINT and waits, with no fallback kill, so a daemon that ignores the signal
+// misses the bound instead of being killed by the test and then counted as
+// having exited on its own. Cleanup is the caller's business, and the deferred
+// stop() still reaps whatever this returns false for.
+func (hub *ownedHub) signalAndAwaitExit(within time.Duration) bool {
+	_ = hub.command.Process.Signal(os.Interrupt)
+	select {
+	case <-hub.exited:
+		return true
+	case <-time.After(within):
+		return false
+	}
 }
 
 func (hub *ownedHub) awaitExit(t *testing.T, within time.Duration) {
