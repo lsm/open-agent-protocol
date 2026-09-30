@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -170,6 +171,7 @@ type ownedHub struct {
 	cancelCtx context.CancelFunc
 	exited    chan struct{}
 	stopped   bool
+	stderr    *lockedBuffer
 }
 
 func startOwnedHub(t *testing.T) *ownedHub {
@@ -181,8 +183,8 @@ func startOwnedHub(t *testing.T) *ownedHub {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	command := exec.CommandContext(ctx, oapx, "hub", "--addr=127.0.0.1:0")
 	command.Stdin = strings.NewReader("")
-	var stderr bytes.Buffer
-	command.Stderr = &stderr
+	stderr := &lockedBuffer{}
+	command.Stderr = stderr
 	stdout, err := command.StdoutPipe()
 	if err != nil {
 		cancel()
@@ -192,16 +194,40 @@ func startOwnedHub(t *testing.T) *ownedHub {
 		cancel()
 		t.Fatal(err)
 	}
-	hub := &ownedHub{command: command, cancelCtx: cancel, exited: make(chan struct{})}
+	hub := &ownedHub{command: command, cancelCtx: cancel, exited: make(chan struct{}), stderr: stderr}
 	go func() {
 		defer close(hub.exited)
 		_ = command.Wait()
 	}()
-	hub.address = awaitBoundAddress(t, stdout, stderr.String, cancel)
+	hub.address = awaitBoundAddress(t, stdout, hub, cancel)
 	return hub
 }
 
-func awaitBoundAddress(t *testing.T, stdout io.Reader, reported func() string, cancel context.CancelFunc) string {
+type lockedBuffer struct {
+	mutex  sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+	return b.buffer.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+	return b.buffer.String()
+}
+
+func (hub *ownedHub) shutDownForDiagnostics(t *testing.T) string {
+	t.Helper()
+	hub.stop()
+	hub.awaitExit(t, 15*time.Second)
+	return hub.stderr.String()
+}
+
+func awaitBoundAddress(t *testing.T, stdout io.Reader, hub *ownedHub, cancel context.CancelFunc) string {
 	t.Helper()
 	lines := make(chan string, 1)
 	go func() {
@@ -222,11 +248,11 @@ func awaitBoundAddress(t *testing.T, stdout io.Reader, reported func() string, c
 			return address
 		}
 		cancel()
-		t.Fatalf("oapx hub --addr reported no address:\n%s", reported())
+		t.Fatalf("oapx hub --addr reported no address:\n%s", hub.shutDownForDiagnostics(t))
 		return ""
 	case <-time.After(30 * time.Second):
 		cancel()
-		t.Fatalf("oapx hub --addr never reported a bound address within 30s:\n%s", reported())
+		t.Fatalf("oapx hub --addr never reported a bound address within 30s:\n%s", hub.shutDownForDiagnostics(t))
 		return ""
 	}
 }
