@@ -3435,14 +3435,15 @@ var cleanup_hold: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
 var cleanup_held: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
 var cleanup_gate: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
 
-fn testIo() std.Io {
+fn defaultIo() std.Io {
     return if (@import("builtin").is_test) std.testing.io else std.Io.Threaded.global_single_threaded.io();
 }
 
 fn awaitCleanupRelease() void {
+    if (!@import("builtin").is_test) return;
     if (cleanup_hold.load(.acquire) == 0) return;
     _ = cleanup_held.fetchAdd(1, .release);
-    const io = testIo();
+    const io = defaultIo();
     while (cleanup_hold.load(.acquire) != 0) {
         io.futexWaitUncancelable(u32, &cleanup_gate.raw, cleanup_gate.load(.acquire));
     }
@@ -3451,13 +3452,13 @@ fn awaitCleanupRelease() void {
 fn holdCleanup() void {
     _ = cleanup_hold.store(1, .release);
     _ = cleanup_gate.fetchAdd(1, .release);
-    testIo().futexWake(u32, &cleanup_gate.raw, std.math.maxInt(u32));
+    defaultIo().futexWake(u32, &cleanup_gate.raw, std.math.maxInt(u32));
 }
 
 fn releaseCleanupGate() void {
     _ = cleanup_hold.store(0, .release);
     _ = cleanup_gate.fetchAdd(1, .release);
-    testIo().futexWake(u32, &cleanup_gate.raw, std.math.maxInt(u32));
+    defaultIo().futexWake(u32, &cleanup_gate.raw, std.math.maxInt(u32));
 }
 
 test "the producer does not publish done while its own cleanup is unfinished" {
