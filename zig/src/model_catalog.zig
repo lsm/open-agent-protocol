@@ -589,10 +589,11 @@ fn loadCatalogSnapshotWithRows(
     var provenance = std.ArrayList(ModelProvenance).empty;
     errdefer provenance.deinit(allocator);
     const models = try loadRowsWithProvenance(allocator, ids, storage, mode, &provenance);
-    return .{
-        .models = models,
-        .provenance = try provenance.toOwnedSlice(allocator),
-    };
+    var models_owned = true;
+    errdefer if (models_owned) deinitModels(allocator, models);
+    const tags = try provenance.toOwnedSlice(allocator);
+    models_owned = false;
+    return .{ .models = models, .provenance = tags };
 }
 
 fn loadRowsWithProvenance(
@@ -648,8 +649,10 @@ fn appendCatalogTargetModels(
         if (models.len > 0) {
             for (models) |model| {
                 var built = try catalogModel(allocator, target, model);
-                errdefer built.deinit(allocator);
+                var built_owned = true;
+                errdefer if (built_owned) built.deinit(allocator);
                 try out.append(allocator, built);
+                built_owned = false;
                 if (provenance) |tags| try tags.append(allocator, .discovered);
             }
             return;
@@ -658,8 +661,10 @@ fn appendCatalogTargetModels(
 
     for (provider_catalog.modelsFor(target.id)) |declared| {
         var built = try catalogModel(allocator, target, .{ .id = declared.id });
-        errdefer built.deinit(allocator);
+        var built_owned = true;
+        errdefer if (built_owned) built.deinit(allocator);
         try out.append(allocator, built);
+        built_owned = false;
         if (provenance) |tags| try tags.append(allocator, .declared);
     }
 }
@@ -2448,8 +2453,7 @@ test "a snapshot tells a discovered entry from a declared one" {
     };
     defer storage.deinit();
     for ([_][]const u8{ "xiaomi", "xiaomi-token-plan-cn" }) |id| {
-        const key = try allocator.dupe(u8, id);
-        try storage.providers.put(key, .{ .api_key = try allocator.dupe(u8, "stored-key") });
+        try putStoredKey(&storage, allocator, id);
     }
 
     const discovered_row = "xiaomi";
@@ -2514,10 +2518,7 @@ test "a row with no listing is tagged declared, and a mixed snapshot keeps both 
     };
     const declared_ids = provider_catalog.modelsFor(plan_row);
     try std.testing.expect(declared_ids.len > 0);
-    {
-        const key = try allocator.dupe(u8, plan_row);
-        try storage.providers.put(key, .{ .api_key = try allocator.dupe(u8, "stored-key") });
-    }
+    try putStoredKey(&storage, allocator, plan_row);
 
     var snapshot = try loadCatalogSnapshotWithRows(
         allocator,
@@ -2533,9 +2534,11 @@ test "a row with no listing is tagged declared, and a mixed snapshot keeps both 
         const tag = snapshot.provenanceOf(declared.id) orelse return error.DeclaredEntryMissing;
         try std.testing.expectEqual(ModelProvenance.declared, tag);
     }
+    var saw_discovered = false;
     for (snapshot.provenance) |tag| {
-        try std.testing.expect(tag != .discovered or true);
+        if (tag == .discovered) saw_discovered = true;
     }
+    try std.testing.expect(saw_discovered);
     var saw_declared = false;
     for (snapshot.provenance) |tag| {
         if (tag == .declared) saw_declared = true;
@@ -2554,9 +2557,8 @@ test "the plain loader still returns the same models, with no provenance asked f
         .allocator = allocator,
     };
     defer storage.deinit();
-    {
-        const key = try allocator.dupe(u8, "xiaomi");
-        try storage.providers.put(key, .{ .api_key = try allocator.dupe(u8, "stored-key") });
+    for ([_][]const u8{ "xiaomi", "xiaomi-token-plan-cn" }) |id| {
+        try putStoredKey(&storage, allocator, id);
     }
 
     const row = "xiaomi";
