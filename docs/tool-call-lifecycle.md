@@ -159,7 +159,7 @@ Two boundaries are worth stating because they are not the helper's to decide:
 
 - **Which bytes the limit measures.** The limit reads `TextResultOptions.text`, the
   helper's own separate `stderr` field is not part of that measurement, so a caller that
-  passes stderr separately only crosses the limit on its stdout. Today's shell caller
+  passes stderr separately only crosses the limit on its stdout. The shell caller
   packs both streams into `text` before calling, so for shell the limit already covers
   both; the other callers pass no stderr at all. Changing that split is a caller decision.
 - **How the stored bytes are read back.** A file-backed artifact is referenced by its
