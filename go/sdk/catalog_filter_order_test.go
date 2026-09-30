@@ -11,9 +11,6 @@ func selectedList(t *testing.T, envs []string, request ListModelsRequest) (*List
 	return client.Models.List(testContext(t), request)
 }
 
-// Each case names the filter that must skip the row and the env that puts the
-// row in a state that filter will skip. The malformed member is separate, so a
-// case cannot reach the assertion with its filter still having kept the row.
 func TestAnInvalidMemberIsRefusedEvenWhenALocalFilterSkipsTheRow(t *testing.T) {
 	cases := []struct {
 		name    string
