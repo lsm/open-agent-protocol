@@ -168,7 +168,9 @@ func (c *Client) send(envelope protocol.Envelope, record bool) error {
 	return nil
 }
 
-func (c *Client) pull() error { return c.pullWithin(c.deadline, c.deadline, true) }
+func (c *Client) pull() error {
+	return c.pullWithin(c.deadline, "the endpoint produced no line", c.deadline, true)
+}
 
 var ErrControlUnanswered = errors.New("conformance: the endpoint answered no control frame")
 
@@ -208,11 +210,11 @@ func (c *Client) ingest(l line, ok bool) error {
 	return nil
 }
 
-func (c *Client) expire(total time.Duration, fatal bool) error {
+func (c *Client) expire(total time.Duration, noun string, fatal bool) error {
 	if !fatal {
 		return ErrControlUnanswered
 	}
-	err := fmt.Errorf("conformance: no matching answer arrived within %s", total)
+	err := fmt.Errorf("conformance: %s within %s", noun, total)
 	c.mu.Lock()
 	c.dead = err
 	c.mu.Unlock()
@@ -234,7 +236,7 @@ func (c *Client) drainBuffered() error {
 	return nil
 }
 
-func (c *Client) pullWithin(remaining, total time.Duration, fatal bool) error {
+func (c *Client) pullWithin(remaining time.Duration, noun string, total time.Duration, fatal bool) error {
 	c.mu.Lock()
 	dead := c.dead
 	c.mu.Unlock()
@@ -245,7 +247,7 @@ func (c *Client) pullWithin(remaining, total time.Duration, fatal bool) error {
 	case l, ok := <-c.lines:
 		return c.ingest(l, ok)
 	case <-time.After(remaining):
-		return c.expire(total, fatal)
+		return c.expire(total, noun, fatal)
 	}
 }
 
@@ -268,7 +270,7 @@ func (c *Client) Response(inReplyTo protocol.EnvelopeID) (protocol.Envelope, err
 		c.mu.Unlock()
 		if budget.remaining() <= 0 {
 			if scanned {
-				return protocol.Envelope{}, fail(c.expire(total, true))
+				return protocol.Envelope{}, fail(c.expire(total, "no matching answer arrived", true))
 			}
 			scanned = true
 			if err := c.drainBuffered(); err != nil {
@@ -276,7 +278,7 @@ func (c *Client) Response(inReplyTo protocol.EnvelopeID) (protocol.Envelope, err
 			}
 			continue
 		}
-		if err := c.pullWithin(budget.remaining(), total, true); err != nil {
+		if err := c.pullWithin(budget.remaining(), "no matching answer arrived", total, true); err != nil {
 			return protocol.Envelope{}, fail(err)
 		}
 	}
@@ -297,7 +299,7 @@ func (c *Client) Event() (protocol.Envelope, error) {
 		c.mu.Unlock()
 		if budget.remaining() <= 0 {
 			if scanned {
-				return protocol.Envelope{}, c.expire(total, true)
+				return protocol.Envelope{}, c.expire(total, "no event arrived", true)
 			}
 			scanned = true
 			if err := c.drainBuffered(); err != nil {
@@ -305,7 +307,7 @@ func (c *Client) Event() (protocol.Envelope, error) {
 			}
 			continue
 		}
-		if err := c.pullWithin(budget.remaining(), total, true); err != nil {
+		if err := c.pullWithin(budget.remaining(), "no matching answer arrived", total, true); err != nil {
 			return protocol.Envelope{}, err
 		}
 	}
@@ -339,7 +341,7 @@ func (c *Client) Control(id string) (ControlFrame, error) {
 		c.mu.Unlock()
 		if budget.remaining() <= 0 {
 			if scanned {
-				return ControlFrame{}, fail(c.expire(total, false))
+				return ControlFrame{}, fail(c.expire(total, "no matching answer arrived", false))
 			}
 			scanned = true
 			if err := c.drainBuffered(); err != nil {
@@ -347,7 +349,7 @@ func (c *Client) Control(id string) (ControlFrame, error) {
 			}
 			continue
 		}
-		if err := c.pullWithin(budget.remaining(), total, false); err != nil {
+		if err := c.pullWithin(budget.remaining(), "no matching answer arrived", total, false); err != nil {
 			if errors.Is(err, ErrControlUnanswered) {
 				return ControlFrame{}, ErrControlUnanswered
 			}

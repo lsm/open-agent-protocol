@@ -420,13 +420,6 @@ func handleHelperRequest(request protocol.Envelope, revision, mode string, emit 
 			}, seq(n))
 		}
 
-		if mode == "answers-each" {
-
-			emit(protocol.TypeCapabilitiesResponse, protocol.CapabilityDescriptor{
-				Endpoint: protocol.EndpointDescriptor{ID: "helper.answers", Name: "Answering endpoint"},
-			}, reply)
-			return
-		}
 		if mode == "early-events" {
 
 			started()

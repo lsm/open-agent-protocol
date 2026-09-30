@@ -112,7 +112,7 @@ func TestAControlWaitIsNotRenewedByRealUnrelatedControlFrames(t *testing.T) {
 }
 
 func TestAMatchingAnswerAlreadyBufferedIsReturnedWithoutSpendingTheBudget(t *testing.T) {
-	client := shortDeadlineClient(t, "answers-each")
+	client := shortDeadlineClient(t, "answers")
 	firstID := ask(t, client, "budget-buf-1")
 	secondID := ask(t, client, "budget-buf-2")
 	if _, err := client.Response(secondID); err != nil {
