@@ -1,5 +1,10 @@
 const std = @import("std");
 const agent_types = @import("agent_types");
+const ai_types = @import("ai_types");
+const agent_loop = @import("agent_loop");
+const compat = @import("compat");
+
+const IDLE_SLEEP_NS = std.time.ns_per_ms;
 
 pub const SessionId = agent_types.SessionId;
 pub const Ulid = agent_types.Ulid;
@@ -242,3 +247,160 @@ pub const Bridge = struct {
         }
     }
 };
+
+pub const Executor = struct {
+    bridge: *Bridge,
+    session_id: SessionId,
+    generation: u64,
+    disconnect_failed: *std.atomic.Value(bool),
+};
+
+pub fn executeViaAgentProtocol(
+    ctx: ?*anyopaque,
+    tool_call_id: []const u8,
+    tool_name: []const u8,
+    args_json: []const u8,
+    cancel_token: ?ai_types.CancelToken,
+    on_update_ctx: ?*anyopaque,
+    on_update: ?*const fn (?*anyopaque, []const u8, []const u8, []const u8) void,
+    allocator: std.mem.Allocator,
+) anyerror!agent_loop.AgentToolResult {
+    _ = on_update_ctx;
+    _ = on_update;
+    const executor: *Executor = @ptrCast(@alignCast(ctx.?));
+    try executor.bridge.enqueueRequest(allocator, executor.session_id, executor.generation, tool_call_id, tool_name, args_json);
+
+    const popAndBuild = struct {
+        fn run(
+            bridge: *Bridge,
+            alloc: std.mem.Allocator,
+            pop_session_id: SessionId,
+            pop_tool_call_id: []const u8,
+            pop_generation: u64,
+        ) !?agent_loop.AgentToolResult {
+            const result = bridge.popResult(alloc, pop_session_id, pop_tool_call_id, pop_generation) orelse return null;
+            var owned_result = result;
+            defer owned_result.deinit(alloc);
+            const content = try parseToolResultContentPartsJson(alloc, owned_result.result_json);
+            errdefer deinitUserContentParts(alloc, content);
+            const details_json = try alloc.dupe(u8, owned_result.details_json);
+            errdefer alloc.free(details_json);
+            return .{
+                .content = ai_types.OwnedSlice(ai_types.UserContentPart).initOwned(content),
+                .details_json = ai_types.OwnedSlice(u8).initOwned(details_json),
+                .is_error = owned_result.is_error,
+            };
+        }
+    }.run;
+
+    while (true) {
+        if (cancel_token) |token| {
+            if (token.isCancelled()) return error.Cancelled;
+        }
+        if (try popAndBuild(executor.bridge, allocator, executor.session_id, tool_call_id, executor.generation)) |tool_result| return tool_result;
+        if (executor.bridge.isDisconnected()) {
+            if (try popAndBuild(executor.bridge, allocator, executor.session_id, tool_call_id, executor.generation)) |tool_result| return tool_result;
+            executor.disconnect_failed.store(true, .release);
+            if (cancel_token) |token| token.cancelled.store(true, .release);
+            return error.ClientDisconnected;
+        }
+        compat.time.sleepNs(IDLE_SLEEP_NS);
+    }
+}
+
+pub fn parseToolResultContentParts(allocator: std.mem.Allocator, value: std.json.Value) ![]ai_types.UserContentPart {
+    var parts = std.ArrayList(ai_types.UserContentPart).empty;
+    errdefer {
+        for (parts.items) |*part| part.deinit(allocator);
+        parts.deinit(allocator);
+    }
+
+    try appendToolResultContentParts(allocator, &parts, value);
+    if (parts.items.len == 0) try appendTextContentPart(allocator, &parts, "");
+    return parts.toOwnedSlice(allocator);
+}
+
+fn parseToolResultContentPartsJson(allocator: std.mem.Allocator, result_json: []const u8) ![]ai_types.UserContentPart {
+    if (result_json.len == 0) {
+        const content = try allocator.alloc(ai_types.UserContentPart, 0);
+        return content;
+    }
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result_json, .{});
+    defer parsed.deinit();
+    return parseToolResultContentParts(allocator, parsed.value);
+}
+
+fn deinitUserContentParts(allocator: std.mem.Allocator, parts: []ai_types.UserContentPart) void {
+    for (parts) |*part| part.deinit(allocator);
+    allocator.free(parts);
+}
+
+fn appendToolResultContentParts(
+    allocator: std.mem.Allocator,
+    parts: *std.ArrayList(ai_types.UserContentPart),
+    value: std.json.Value,
+) !void {
+    switch (value) {
+        .string => |text| try appendTextContentPart(allocator, parts, text),
+        .array => |array| {
+            for (array.items) |item| {
+                try appendToolResultContentParts(allocator, parts, item);
+            }
+        },
+        .object => |obj| {
+            if (std.mem.eql(u8, getStringField(obj, "type") orelse "", "tool_result")) {
+                if (obj.get("content")) |content| {
+                    try appendToolResultContentParts(allocator, parts, content);
+                }
+                return;
+            }
+
+            if (try parseUserContentPart(allocator, value)) |part| {
+                parts.append(allocator, part) catch |err| {
+                    var owned = part;
+                    owned.deinit(allocator);
+                    return err;
+                };
+            }
+        },
+        else => {},
+    }
+}
+
+fn appendTextContentPart(
+    allocator: std.mem.Allocator,
+    parts: *std.ArrayList(ai_types.UserContentPart),
+    text: []const u8,
+) !void {
+    const owned = try allocator.dupe(u8, text);
+    errdefer allocator.free(owned);
+    try parts.append(allocator, .{ .text = .{ .text = owned } });
+}
+
+pub fn parseUserContentPart(allocator: std.mem.Allocator, value: std.json.Value) !?ai_types.UserContentPart {
+    if (value != .object) return null;
+    const obj = value.object;
+    const ty = getStringField(obj, "type") orelse return null;
+    if (std.mem.eql(u8, ty, "text")) {
+        return .{ .text = .{
+            .text = try allocator.dupe(u8, getStringField(obj, "text") orelse ""),
+        } };
+    }
+    if (std.mem.eql(u8, ty, "image")) {
+        const data = try allocator.dupe(u8, getStringField(obj, "data") orelse "");
+        errdefer allocator.free(data);
+        const mime_type = try allocator.dupe(u8, getStringField(obj, "mime_type") orelse "application/octet-stream");
+        errdefer allocator.free(mime_type);
+        return .{ .image = .{
+            .data = data,
+            .mime_type = mime_type,
+        } };
+    }
+    return null;
+}
+
+pub fn getStringField(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
+    const value = obj.get(key) orelse return null;
+    return if (value == .string) value.string else null;
+}
