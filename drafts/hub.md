@@ -1582,13 +1582,17 @@ are "stamped with the revision the lister served it under", and both name
   *and* the refusal at the same time, rather than trading one for the other. `sixty-five parameters and a long
   value are admitted, because the header bound is the limit` pins 64, 65 and 200 parameters and a 2048-character
   value, each **executed against Go 1.27 first**. |
-| **A quoted-pair escape is consumed with the byte it escapes** | `unescapeInto` discarded each backslash and let the
-  escaped byte through as an ordinary character, so `x\\` decoded to `x` rather than `x\`, and two values Go treats
-  as different came out equal. Decoding now consumes the pair: an escape emits the byte it escapes and skips
-  two input bytes. `an escaped backslash decodes with the byte it escapes, not dropped` pins seven spellings —
-  four admitted, three refused, including `a="x\\"; a=x` and `a="\\"; a="\\\\"`, which are duplicates to Go and
-  would have been admitted. **The mutation is the defect itself:** making the decoder drop the escaped byte
-  fails both that test and the main one. |
+| **A backslash is an escape only before a tspecial** | The decoder is aligned to `mime/mediatype.go:304-312`, which
+  consumes a backslash **only when the byte it precedes is a tspecial** — `( ) < > @ , ; : \ " / [ ] ? =` —
+  and deliberately preserves a backslash before a letter or digit, so an MSIE path survives a round trip. Two
+  earlier attempts got this wrong in opposite directions: one dropped every escaped byte, the next consumed
+  every backslash pair. **Both make values Go treats as different compare equal**, which admits a duplicate the
+  draft-facing gate should refuse, and the second is the one an MSIE path hits.
+  `a backslash is consumed only before a tspecial, which is what Go does` pins **eight spellings — two admitted,
+  six refused** — including `a="C:\path\x"; a=C:pathx` and `a="x\qy"; a="xqy"`, which are duplicates to Go
+  because the backslash is literal, and `a="x\""; a="x\""` and `a="a\;b=c"; a="a;b=c"`, which are identical
+  because `\"` and `\;` *are* tspecial escapes. **Both mutations fail it:** consuming every pair, and never
+  consuming one. |
 
 ### D20 — `type_mismatch` is answered by no test in either tree
 

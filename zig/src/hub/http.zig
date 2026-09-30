@@ -438,13 +438,19 @@ fn appendToken(store: []u8, entry: usize, name: []const u8, value: []const u8) u
     return cursor + value.len;
 }
 
+fn escapeAt(raw: []const u8, at: usize) bool {
+    return raw[at] == '\\' and at + 1 < raw.len and isTspecial(raw[at + 1]);
+}
+
+fn isTspecial(byte: u8) bool {
+    return std.mem.indexOfScalar(u8, "()<>@,;:\\\"/[]?=", byte) != null;
+}
+
 fn appendQuoted(store: []u8, entry: usize, name: []const u8, raw: []const u8) usize {
     var decoded: usize = 0;
     var at: usize = 0;
     while (at < raw.len) : (at += 1) {
-        if (raw[at] == '\\' and at + 1 < raw.len) {
-            at += 1;
-        }
+        if (escapeAt(raw, at)) at += 1;
         decoded += 1;
     }
     writeHeader(store, entry, name.len, decoded);
@@ -453,7 +459,7 @@ fn appendQuoted(store: []u8, entry: usize, name: []const u8, raw: []const u8) us
     cursor += name.len;
     at = 0;
     while (at < raw.len) : (at += 1) {
-        if (raw[at] == '\\' and at + 1 < raw.len) {
+        if (escapeAt(raw, at)) {
             store[cursor] = raw[at + 1];
             cursor += 1;
             at += 1;
@@ -755,13 +761,11 @@ test "sixty-five parameters and a long value are admitted, because the header bo
     try testing.expectEqual(Answer.not_found, answer(loopback, long_request));
 }
 
-test "an escaped backslash decodes with the byte it escapes, not dropped" {
+test "a backslash is consumed only before a tspecial, which is what Go does" {
     const loopback: []const []const u8 = &.{};
     for ([_][]const u8{
-        "application/json; a=\"x\\\\\"; a=\"x\\\\\"",
-        "application/json; a=\"x\\\\y\"; a=\"x\\\\y\"",
-        "application/json; a=\"\\\\\"",
-        "application/json; a=\"x\\\"y\"; a=\"x\\\"y\"",
+        "application/json; a=\"C:\\\\path\"; a=\"C:\\\\path\"",
+        "application/json; a=\"x\\\\qy\"; a=\"x\\\\qy\"",
     }) |declared| {
         const raw = try std.fmt.allocPrint(testing.allocator, "POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: {s}\r\nContent-Length: 2\r\n\r\n{{}}", .{declared});
         defer testing.allocator.free(raw);
@@ -770,9 +774,15 @@ test "an escaped backslash decodes with the byte it escapes, not dropped" {
         try testing.expectEqual(Answer.not_found, answer(loopback, request));
     }
     for ([_][]const u8{
-        "application/json; a=\"x\\\\\"; a=x",
-        "application/json; a=\"\\\\\"; a=\"\\\\\\\\\"",
-        "application/json; a=\"x\\\"y\"; a=\"x\\\\y\"",
+        "application/json; a=\"C:\\\\path\\\\x\"; a=C:pathx",
+        "application/json; a=\"C:\\\\path\"; a=\"C:path\"",
+        "application/json; a=\"x\\\\qy\"; a=\"xqy\"",
+        "application/json; a=\"x\\\\1\"; a=\"x1\"",
+        "application/json; a=\"x\\\\\\\\\"; a=\"x\\\\\"",
+        "application/json; a=\"x\\\\\\\"\"; a=\"x\\\"\"",
+        "application/json; a=\"x\\\\ \"; a=\"x \"",
+        "application/json; a=\"x\\\\\\\"\"; a=x\\\"",
+        "application/json; a=\"a\\\\;b=c\"; a=\"a;b=c\"",
     }) |declared| {
         const raw = try std.fmt.allocPrint(testing.allocator, "POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: {s}\r\nContent-Length: 2\r\n\r\n{{}}", .{declared});
         defer testing.allocator.free(raw);
