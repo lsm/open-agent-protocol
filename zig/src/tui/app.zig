@@ -1443,10 +1443,13 @@ pub const App = struct {
 
     fn loginProviderAt(index: usize) ?provider_catalog.Provider {
         var visible_index: usize = 0;
-        for (provider_catalog.all, 0..) |row, catalog_index| {
-            if (!supportsLogin(row) or hasEarlierSharedCredential(catalog_index)) continue;
-            if (visible_index == index) return row;
-            visible_index += 1;
+        for (0..2) |availability_pass| {
+            for (provider_catalog.all, 0..) |row, catalog_index| {
+                if (!supportsLogin(row) or hasEarlierSharedCredential(catalog_index)) continue;
+                if (loginDiscoveryAvailable(row.id) != (availability_pass == 0)) continue;
+                if (visible_index == index) return row;
+                visible_index += 1;
+            }
         }
         return null;
     }
