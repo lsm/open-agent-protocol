@@ -37,6 +37,8 @@ function fixtureModel() {
     case "deprecated": model.lifecycle = "deprecated"; break;
     default: break;
   }
+  if (process.env.OAP_FIXTURE_ENTRY === "nonobject") return "not-an-object";
+  if (process.env.OAP_FIXTURE_ENTRY === "trailing-nonobject") return [model, 7];
   return model;
 }
 createInterface({ input: process.stdin }).on("line", (line) => {
@@ -75,7 +77,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       break;
     case `${provider}:provider.models.list.request`:
       send(request, "provider.models.list.response", {
-        models: [fixtureModel()],
+        models: Array.isArray(fixtureModel()) ? fixtureModel() : [fixtureModel()],
         catalog: { observed_at_ms: 1_759_100_000_000, complete: true },
       });
       break;
