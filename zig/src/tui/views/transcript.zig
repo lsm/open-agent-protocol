@@ -1494,7 +1494,7 @@ fn flushLiteral(allocator: std.mem.Allocator, writer: *std.Io.Writer, text: []co
         try writer.writeAll(styled);
         return;
     };
-    const styled = try tui_theme.link().render(allocator, text);
+    const styled = try tui_theme.link().inherit(style).render(allocator, text);
     defer allocator.free(styled);
     const target = if (index < links.urls.len) links.urls[index] else null;
     if (target) |url| {
@@ -1532,18 +1532,29 @@ fn matchEmphasis(row: []const u8, i: usize) ?EmphasisSpan {
     const marker_len: usize = if (strong) 2 else 1;
     const content_start = i + marker_len;
     if (content_start >= row.len or row[content_start] == ' ' or row[content_start] == c) return null;
-    if (i > 0 and isWordChar(row[i - 1])) return null;
+    if (wordCharBefore(row, i)) return null;
     var j = content_start;
     while (j < row.len) : (j += 1) {
         if (row[j] != c) continue;
         if (strong and (j + 1 >= row.len or row[j + 1] != c)) continue;
         if (row[j - 1] == ' ') continue;
         const after = j + marker_len;
-        if (after < row.len and isWordChar(row[after])) continue;
+        if (wordCharAt(row, after)) continue;
         if (j == content_start) return null;
         return .{ .marker_len = marker_len, .close = j, .strong = strong };
     }
     return null;
+}
+
+fn wordCharBefore(row: []const u8, i: usize) bool {
+    if (i == 0) return false;
+    if (i >= link_open.len and isLinkMarkerAt(row, i - link_open.len)) return false;
+    return isWordChar(row[i - 1]);
+}
+
+fn wordCharAt(row: []const u8, i: usize) bool {
+    if (i >= row.len or isLinkMarkerAt(row, i)) return false;
+    return isWordChar(row[i]);
 }
 
 fn isWordChar(c: u8) bool {
@@ -2152,6 +2163,21 @@ test "a link target keeps its balanced parentheses" {
     const plain = try stripEscapesForTest(std.testing.allocator, styled);
     defer std.testing.allocator.free(plain);
     try std.testing.expectEqualStrings("wiki done", plain);
+}
+
+test "emphasis inside or around a link label styles the link text" {
+    const styled = try renderAssistantStyled(std.testing.allocator, "[**x**](https://e.example) and [a *b* c](https://f.example)", 80);
+    defer std.testing.allocator.free(styled);
+    try std.testing.expect(std.mem.indexOf(u8, styled, "*") == null);
+    const bold = try tui_theme.link().inherit(tui_theme.base().bold(true)).render(std.testing.allocator, "x");
+    defer std.testing.allocator.free(bold);
+    try std.testing.expect(std.mem.indexOf(u8, styled, bold) != null);
+    const italic = try tui_theme.link().inherit(tui_theme.base().italic(true)).render(std.testing.allocator, "b");
+    defer std.testing.allocator.free(italic);
+    try std.testing.expect(std.mem.indexOf(u8, styled, italic) != null);
+    const plain = try stripEscapesForTest(std.testing.allocator, styled);
+    defer std.testing.allocator.free(plain);
+    try std.testing.expectEqualStrings("x and a b c", plain);
 }
 
 test "a link that wraps keeps its target on every row it spans" {
