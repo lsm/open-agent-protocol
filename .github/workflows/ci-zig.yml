@@ -134,24 +134,48 @@ jobs:
           # caught. Empty falls through to the checker's HEAD^1 comparison.
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
 
-      # The default scope still excludes clients/ts/** while that package is
-      # cleaned in stages. These eleven paths are already clean without any
-      # sibling PR, so the unmodified checker gates them by explicit selection:
-      # --files bypasses the scope at scripts/check-no-comments.mjs:492 rather
-      # than widening it. The two paths cleaned by the sibling cut A
-      # (protocol.ts, events.ts) are deliberately absent here, because they are
-      # only clean once that PR merges. No pathspec is removed, no skip or
-      # allowlist is added, and the checker itself is not touched.
       - name: Check zero-comments policy on the cleaned oap-client files
-        run: >-
-          node scripts/check-no-comments.mjs --check --base "$BASE_SHA"
-          --files clients/ts/test/client.test.ts clients/ts/test/events.test.ts
-          clients/ts/test/integration.test.ts clients/ts/test/schema.test.ts
-          clients/ts/test/sse.test.ts clients/ts/test/transport.ts
-          clients/ts/src/session.ts clients/ts/src/client.ts
-          clients/ts/src/errors.ts clients/ts/src/sse.ts clients/ts/src/index.ts
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          BASE_REF: ${ github.event.pull_request.base.ref }
+          BASE_SHA: ${ github.event.pull_request.base.sha || github.event.before }
+          HEAD_ROOT: ${ github.workspace }
+        run: |
+          set -euo pipefail
+          # The checker runs from the base tip, not from this pull request's head,
+          # for the reason compatibility.yml gives for apidiffcheck: the tool that
+          # judges a change must not be part of the change. Judged contents are
+          # the head checkout's, because the command runs in HEAD_ROOT and
+          # --files resolves against the working directory.
+          git worktree add --detach "$RUNNER_TEMP/cleaned" "origin/$BASE_REF"
+          ln -s "$HEAD_ROOT/node_modules" "$RUNNER_TEMP/cleaned/node_modules"
+          files=(
+          clients/ts/test/client.test.ts
+          clients/ts/test/events.test.ts
+          clients/ts/test/integration.test.ts
+          clients/ts/test/schema.test.ts
+          clients/ts/test/sse.test.ts
+          clients/ts/test/transport.ts
+          clients/ts/src/session.ts
+          clients/ts/src/client.ts
+          clients/ts/src/errors.ts
+          clients/ts/src/sse.ts
+          clients/ts/src/index.ts
+          )
+          # An empty selection exits 0 having judged nothing, and a missing path is
+          # skipped silently, so both are refused here rather than reported green.
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "no paths selected: refusing a vacuous check" >&2
+            exit 1
+          fi
+          for f in "${files[@]}"; do
+            if [ ! -f "$HEAD_ROOT/$f" ]; then
+              echo "selected path absent from the head checkout: $f" >&2
+              exit 1
+            fi
+          done
+          cd "$HEAD_ROOT"
+          node "$RUNNER_TEMP/cleaned/scripts/check-no-comments.mjs" \
+            --check --base "$BASE_SHA" --files "${files[@]}"
 
   ts-sdk-e2e:
     name: TS SDK E2E
