@@ -275,12 +275,20 @@ pub const Agent = struct {
 
     pub const CompactionTranscripts = struct {
         paths: []const []const u8 = &.{},
+        saved: []const u8 = "",
     };
 
     pub const CompactionHost = struct {
         ctx: ?*anyopaque = null,
         transcripts_fn: *const fn (ctx: ?*anyopaque, history: []const ai_types.Message) CompactionTranscripts,
+        settled_fn: ?*const fn (ctx: ?*anyopaque, completed: bool) void = null,
     };
+
+    fn settleTranscripts(self: *Agent, completed: bool) void {
+        const host = self._compaction_host orelse return;
+        const settled = host.settled_fn orelse return;
+        settled(host.ctx, completed);
+    }
 
     pub fn setAutoCompact(self: *Agent, at: ?u64, host: ?CompactionHost) void {
         self._auto_compact_at = at;
@@ -302,6 +310,7 @@ pub const Agent = struct {
         if (summary.replacement) |*replacement| {
             self.retireHistory(&context.messages, replacement) catch |err| {
                 summary.result.deinit(self._allocator);
+                self.settleTranscripts(false);
                 var failed: AgentEvent = .{ .compaction_end = .{ .outcome = .failed, .message = types.OwnedSlice(u8).initBorrowed(@errorName(err)) } };
                 if (!event_stream.pushBlocking(failed)) {
                     failed.deinit(self._allocator);
@@ -310,10 +319,17 @@ pub const Agent = struct {
                 return false;
             };
         }
+        const completed = summary.replacement != null;
+        const transcript: types.OwnedSlice(u8) = if (completed and transcripts.saved.len > 0)
+            (if (self._allocator.dupe(u8, transcripts.saved)) |copy| types.OwnedSlice(u8).initOwned(copy) else |_| types.OwnedSlice(u8).initBorrowed(""))
+        else
+            types.OwnedSlice(u8).initBorrowed("");
+        self.settleTranscripts(completed);
         var event: AgentEvent = .{ .compaction_end = switch (summary.result) {
             .completed => |done| .{
                 .outcome = .completed,
                 .text = types.OwnedSlice(u8).initOwned(done.text),
+                .transcript = transcript,
                 .messages_before = done.messages_before,
                 .tokens_before = done.tokens_before,
                 .tokens_after = done.tokens_after,
@@ -325,7 +341,7 @@ pub const Agent = struct {
             event.deinit(self._allocator);
             return error.StreamCompleted;
         }
-        return summary.replacement != null;
+        return completed;
     }
 
     fn adoptCompactedHistory(self: *Agent, text: []const u8, model: ai_types.Model) !void {
@@ -2163,6 +2179,7 @@ const CompactionEvents = struct {
     started: usize = 0,
     completed: usize = 0,
     history_len: usize = 0,
+    reported_transcript: bool = false,
 
     fn onEvent(ctx: ?*anyopaque, event: AgentEvent) void {
         const self: *CompactionEvents = @ptrCast(@alignCast(ctx.?));
@@ -2170,6 +2187,7 @@ const CompactionEvents = struct {
             .compaction_start => self.started += 1,
             .compaction_end => |payload| {
                 if (payload.outcome == .completed) self.completed += 1;
+                if (std.mem.eql(u8, payload.transcript.slice(), "/sessions/s1/compaction-1.jsonl")) self.reported_transcript = true;
             },
             else => {},
         }
@@ -2181,7 +2199,7 @@ const CompactionEvents = struct {
         const paths = struct {
             const list = [_][]const u8{"/sessions/s1/compaction-1.jsonl"};
         };
-        return .{ .paths = &paths.list };
+        return .{ .paths = &paths.list, .saved = paths.list[0] };
     }
 };
 
@@ -2209,6 +2227,7 @@ test "a run past the threshold compacts between turns and carries on from the su
     try std.testing.expectEqual(@as(usize, 1), events.started);
     try std.testing.expectEqual(@as(usize, 1), events.completed);
     try std.testing.expectEqual(@as(usize, 3), events.history_len);
+    try std.testing.expect(events.reported_transcript);
 
     const messages = agent._state.messages.items;
     try std.testing.expectEqual(@as(usize, 4), messages.len);

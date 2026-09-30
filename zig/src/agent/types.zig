@@ -28,6 +28,7 @@ pub const CompactionOutcome = enum { completed, cancelled, failed };
 pub const CompactionEndPayload = struct {
     outcome: CompactionOutcome,
     text: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+    transcript: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
     message: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
     messages_before: u64 = 0,
     tokens_before: u64 = 0,
@@ -35,6 +36,7 @@ pub const CompactionEndPayload = struct {
 
     pub fn deinit(self: *CompactionEndPayload, allocator: std.mem.Allocator) void {
         self.text.deinit(allocator);
+        self.transcript.deinit(allocator);
         self.message.deinit(allocator);
     }
 };

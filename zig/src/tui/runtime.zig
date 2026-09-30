@@ -824,11 +824,13 @@ pub const TuiRuntime = struct {
         self.run_transcripts.deinit(self.allocator);
         self.run_transcripts = copies;
         self.transcript_writer = writer;
-        local.setAutoCompact(at, .{ .ctx = self, .transcripts_fn = runTranscripts });
+        local.setAutoCompact(at, .{ .ctx = self, .transcripts_fn = runTranscripts, .settled_fn = settleRunTranscript });
     }
 
-    fn dropUnusedRunTranscript(self: *TuiRuntime) void {
-        if (self.run_transcript_saved.len == 0) return;
+    fn settleRunTranscript(ctx: ?*anyopaque, completed: bool) void {
+        const self: *TuiRuntime = @ptrCast(@alignCast(ctx.?));
+        defer self.run_transcript_saved = "";
+        if (completed or self.run_transcript_saved.len == 0) return;
         const items = self.run_transcripts.items;
         if (items.len == 0 or items[items.len - 1].ptr != self.run_transcript_saved.ptr) return;
         self.allocator.free(self.run_transcripts.pop().?);
@@ -850,7 +852,7 @@ pub const TuiRuntime = struct {
             return .{ .paths = self.run_transcripts.items };
         };
         self.run_transcript_saved = path;
-        return .{ .paths = self.run_transcripts.items };
+        return .{ .paths = self.run_transcripts.items, .saved = path };
     }
 
     fn onCompaction(ctx: ?*anyopaque, result: *const agent.compaction.Result) void {
@@ -1460,15 +1462,12 @@ pub const TuiRuntime = struct {
     }
 
     fn pushRunCompactionEnd(self: *TuiRuntime, payload: agent_types.CompactionEndPayload) !void {
-        const saved = if (payload.outcome == .completed) self.run_transcript_saved else "";
-        if (payload.outcome != .completed) self.dropUnusedRunTranscript();
-        self.run_transcript_saved = "";
         const text = try self.dupeOwned(payload.text.slice());
         errdefer {
             var owned = text;
             owned.deinit(self.allocator);
         }
-        const transcript = try self.dupeOwned(saved);
+        const transcript = try self.dupeOwned(payload.transcript.slice());
         errdefer {
             var owned = transcript;
             owned.deinit(self.allocator);
@@ -3237,14 +3236,17 @@ test "a compaction inside a run that does not complete gives back the transcript
     const first = TuiRuntime.runTranscripts(&runtime, &.{});
     try std.testing.expectEqual(@as(usize, 2), first.paths.len);
     try std.testing.expectEqualStrings("/t/compaction-2.jsonl", first.paths[1]);
+    try std.testing.expectEqualStrings("/t/compaction-2.jsonl", first.saved);
 
-    try runtime.pushRunCompactionEnd(.{ .outcome = .failed });
+    TuiRuntime.settleRunTranscript(&runtime, false);
     try std.testing.expectEqual(@as(usize, 1), runtime.run_transcripts.items.len);
+    try runtime.pushRunCompactionEnd(.{ .outcome = .failed });
 
     const second = TuiRuntime.runTranscripts(&runtime, &.{});
     try std.testing.expectEqualStrings("/t/compaction-2.jsonl", second.paths[1]);
-    try runtime.pushRunCompactionEnd(.{ .outcome = .completed, .text = OwnedSlice(u8).initBorrowed("summary") });
+    TuiRuntime.settleRunTranscript(&runtime, true);
     try std.testing.expectEqual(@as(usize, 2), runtime.run_transcripts.items.len);
+    try runtime.pushRunCompactionEnd(.{ .outcome = .completed, .text = OwnedSlice(u8).initBorrowed("summary"), .transcript = OwnedSlice(u8).initBorrowed(second.saved) });
 
     var completed_with_slot = false;
     while (runtime.event_stream.poll()) |event| {
