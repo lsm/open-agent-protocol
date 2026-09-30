@@ -367,15 +367,23 @@ pub fn jsonString(allocator: std.mem.Allocator, value: anytype) ![]u8 {
     return std.json.Stringify.valueAlloc(allocator, value, .{});
 }
 
+const stderr_section_prefix = "\nstderr:\n";
+
+fn combinedOutput(allocator: std.mem.Allocator, text: []const u8, stderr: []const u8) ![]u8 {
+    if (stderr.len == 0) return allocator.dupe(u8, text);
+    return std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ text, stderr_section_prefix, stderr });
+}
+
+fn combinedOutputLen(text: []const u8, stderr: []const u8) usize {
+    return text.len + (if (stderr.len > 0) stderr_section_prefix.len + stderr.len else 0);
+}
+
 pub fn makeTextResultWithArtifact(allocator: std.mem.Allocator, options: TextResultOptions) !TextResult {
-    const raw_bytes = options.text.len + options.stderr.len;
+    const raw_bytes = combinedOutputLen(options.text, options.stderr);
     const limit = options.limits.forTool(options.tool_name);
     const should_store = options.force_artifact or options.text.len > limit;
     if (!should_store) {
-        const body = if (options.stderr.len > 0)
-            try std.fmt.allocPrint(allocator, "{s}\nstderr:\n{s}", .{ options.text, options.stderr })
-        else
-            try allocator.dupe(u8, options.text);
+        const body = try combinedOutput(allocator, options.text, options.stderr);
         defer allocator.free(body);
         const result = try makeTextResult(allocator, body, options.details_json);
         const returned_bytes = body.len + options.details_json.len;
@@ -385,17 +393,19 @@ pub fn makeTextResultWithArtifact(allocator: std.mem.Allocator, options: TextRes
     const key = try std.fmt.allocPrint(allocator, "{s}:{s}", .{ options.tool_name, options.call_id });
     defer allocator.free(key);
 
+    const full_output = try combinedOutput(allocator, options.text, options.stderr);
+    defer allocator.free(full_output);
     var reference = if (options.store) |store|
-        try store.write(.{ .content = options.text, .mime_type = "text/plain", .description = key })
+        try store.write(.{ .content = full_output, .mime_type = "text/plain", .description = key })
     else
-        try makeFileArtifactReference(allocator, key, options.text, raw_bytes);
+        try makeFileArtifactReference(allocator, key, full_output, full_output.len);
     errdefer reference.deinit(if (options.store) |store| store.allocator else allocator);
 
     const artifact_uri = reference.getUri() orelse reference.artifact_id;
     const artifact_path = if (options.store == null) try allocator.dupe(u8, artifact_uri) else null;
     errdefer if (artifact_path) |path| allocator.free(path);
 
-    const summary = try summarizeArtifactBackedOutput(allocator, options.text, options.stderr, artifact_uri);
+    const summary = try summarizeArtifactBackedOutput(allocator, full_output, options.text, options.stderr, artifact_uri);
     defer allocator.free(summary);
     const details = if (options.details_json.len > 0)
         try std.fmt.allocPrint(allocator, "{{\"raw_bytes\":{d},\"returned_bytes\":{d},\"saved_bytes\":{d},\"compressed\":true,\"artifact_path\":\"{s}\",\"details\":{s}}}", .{ raw_bytes, summary.len, raw_bytes -| summary.len, artifact_uri, options.details_json })
@@ -439,31 +449,35 @@ fn cloneArtifactReference(allocator: std.mem.Allocator, reference: ai_types.Arti
     return cloned;
 }
 
-fn summarizeArtifactBackedOutput(allocator: std.mem.Allocator, text: []const u8, stderr: []const u8, artifact_path: []const u8) ![]u8 {
+fn summarizeArtifactBackedOutput(allocator: std.mem.Allocator, combined: []const u8, text: []const u8, stderr: []const u8, artifact_path: []const u8) ![]u8 {
     const head = text[0..@min(text.len, snippet_bytes)];
     const tail_start = if (text.len > snippet_bytes) text.len - snippet_bytes else 0;
     const tail = text[tail_start..];
     if (stderr.len > 0) {
+        const stderr_head = stderr[0..@min(stderr.len, snippet_bytes)];
+        const stderr_tail_start = if (stderr.len > snippet_bytes) stderr.len - snippet_bytes else 0;
+        const stderr_tail = stderr[stderr_tail_start..];
         return std.fmt.allocPrint(
             allocator,
-            "output stored as artifact\nbytes: {d}\nlines: {d}\nartifact_reference: {s}\nmodel_safe_retrieval: use artifact_retrieve mode \"preview\" (default), \"range\", or \"grep\" with this reference. Use \"full_for_context\" only when the complete output is required by the model.\ndisplay: the full output stays on disk at the artifact path; the transcript shows a capped preview only.\nhead:\n{s}\ntail:\n{s}\nstderr:\n{s}",
-            .{ text.len, countLines(text), artifact_path, head, tail, stderr },
+            "output stored as artifact\nbytes: {d}\nlines: {d}\nartifact_reference: {s}\nmodel_safe_retrieval: use artifact_retrieve mode \"preview\" (default), \"range\", or \"grep\" with this reference. Use \"full_for_context\" only when the complete output is required by the model.\ndisplay: the full output stays on disk at the artifact path; the transcript shows a capped preview only.\nhead:\n{s}\ntail:\n{s}\nstderr head:\n{s}\nstderr tail:\n{s}",
+            .{ combined.len, countLines(combined), artifact_path, head, tail, stderr_head, stderr_tail },
         );
     }
     return std.fmt.allocPrint(
         allocator,
         "output stored as artifact\nbytes: {d}\nlines: {d}\nartifact_reference: {s}\nmodel_safe_retrieval: use artifact_retrieve mode \"preview\" (default), \"range\", or \"grep\" with this reference. Use \"full_for_context\" only when the complete output is required by the model.\ndisplay: the full output stays on disk at the artifact path; the transcript shows a capped preview only.\nhead:\n{s}\ntail:\n{s}",
-        .{ text.len, countLines(text), artifact_path, head, tail },
+        .{ combined.len, countLines(combined), artifact_path, head, tail },
     );
 }
 
 test "artifact-backed summary points the model at capped retrieval modes" {
-    const summary = try summarizeArtifactBackedOutput(std.testing.allocator, "line 1\nline 2\n", "", ".oapx/tool-artifacts/test.txt");
+    const summary = try summarizeArtifactBackedOutput(std.testing.allocator, "line 1\nline 2\n", "line 1\nline 2\n", "", ".oapx/tool-artifacts/test.txt");
     defer std.testing.allocator.free(summary);
     try std.testing.expect(std.mem.indexOf(u8, summary, "artifact_reference: .oapx/tool-artifacts/test.txt") != null);
     try std.testing.expect(std.mem.indexOf(u8, summary, "mode \"preview\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, summary, "full_for_context") != null);
     try std.testing.expect(std.mem.indexOf(u8, summary, "retrieve_full_output") == null);
+    try std.testing.expect(std.mem.indexOf(u8, summary, "bytes: 14\nlines: 2\n") != null);
 }
 
 fn sanitizeKey(allocator: std.mem.Allocator, key: []const u8) ![]u8 {
@@ -601,6 +615,144 @@ test "artifact helper uses ArtifactStore backend when provided" {
     var stored = try store.read(artifact.artifact_id);
     defer stored.deinit(allocator);
     try std.testing.expectEqualStrings("abcdefghijklmnopqrstuvwxyz", stored.content);
+}
+
+test "artifact backs combined stdout and stderr and byte_size counts the stored bytes" {
+    var artifact_root = TestArtifactRoot.init();
+    defer artifact_root.deinit();
+
+    const stdout_marker = "stdout marker line\nsecond stdout line\n";
+    const stderr_marker = "stderr marker line\nsecond stderr line\n";
+    var made = try makeTextResultWithArtifact(std.testing.allocator, .{
+        .tool_name = "shell_execute",
+        .call_id = "combined",
+        .text = stdout_marker,
+        .stderr = stderr_marker,
+        .limits = .{ .shell = 4 },
+    });
+    defer made.deinit(std.testing.allocator);
+    try std.testing.expect(made.compressed);
+
+    const path = made.artifact_path orelse return error.MissingArtifactPath;
+    const retrieved = try retrieveArtifact(std.testing.allocator, path, 4096);
+    defer std.testing.allocator.free(retrieved);
+    const expected = "stdout marker line\nsecond stdout line\n\nstderr:\nstderr marker line\nsecond stderr line\n";
+    try std.testing.expectEqualStrings(expected, retrieved);
+    try std.testing.expectEqual(@as(?u64, expected.len), made.result.artifacts.slice()[0].byte_size);
+    try std.testing.expectEqual(expected.len, made.raw_bytes);
+
+    const details = made.result.getDetailsJson().?;
+    const details_prefix = try std.fmt.allocPrint(std.testing.allocator, "{{\"raw_bytes\":{d},", .{expected.len});
+    defer std.testing.allocator.free(details_prefix);
+    try std.testing.expectEqualStrings(details_prefix, details[0..details_prefix.len]);
+
+    const summary = made.result.content.slice()[0].text.text;
+    const summary_bytes = try std.fmt.allocPrint(std.testing.allocator, "bytes: {d}\n", .{expected.len});
+    defer std.testing.allocator.free(summary_bytes);
+    try std.testing.expect(std.mem.indexOf(u8, summary, summary_bytes) != null);
+    try std.testing.expect(std.mem.indexOf(u8, summary, "lines: 6\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, summary, "stderr head:\nstderr marker line") != null);
+    try std.testing.expect(std.mem.indexOf(u8, summary, "stderr tail:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, summary, "stdout marker line") != null);
+    try std.testing.expect(std.mem.indexOf(u8, summary, "second stderr line") != null);
+}
+
+test "artifact summary bounds a large stderr preview and keeps the whole stderr retrievable" {
+    var artifact_root = TestArtifactRoot.init();
+    defer artifact_root.deinit();
+
+    const stderr_fill = try std.testing.allocator.alloc(u8, 4096);
+    defer std.testing.allocator.free(stderr_fill);
+    @memset(stderr_fill, 'e');
+    var made = try makeTextResultWithArtifact(std.testing.allocator, .{
+        .tool_name = "shell_execute",
+        .call_id = "large-stderr",
+        .text = "tiny stdout\n",
+        .stderr = stderr_fill,
+        .limits = .{ .shell = 4 },
+    });
+    defer made.deinit(std.testing.allocator);
+    try std.testing.expect(made.compressed);
+
+    const summary = made.result.content.slice()[0].text.text;
+    try std.testing.expect(std.mem.indexOf(u8, summary, stderr_fill) == null);
+    try std.testing.expect(summary.len < stderr_fill.len);
+    try std.testing.expect(std.mem.indexOf(u8, summary, "stderr head:\nee") != null);
+    try std.testing.expect(std.mem.indexOf(u8, summary, "lines: 4\n") != null);
+
+    const path = made.artifact_path orelse return error.MissingArtifactPath;
+    const retrieved = try retrieveArtifact(std.testing.allocator, path, 8192);
+    defer std.testing.allocator.free(retrieved);
+    const prefix = "tiny stdout\n\nstderr:\n";
+    try std.testing.expectEqualStrings(prefix, retrieved[0..prefix.len]);
+    try std.testing.expectEqual(prefix.len + stderr_fill.len, retrieved.len);
+    try std.testing.expectEqual(@as(?u64, retrieved.len), made.result.artifacts.slice()[0].byte_size);
+}
+
+test "stderr-only artifact retrieves from the ArtifactStore backend with matching byte_size" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    const root_path = try std.fs.path.join(allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "artifacts" });
+    defer allocator.free(root_path);
+    try compat.fs.createDir(compat.fs.getCwd(), root_path);
+    var store = try artifact_store.ArtifactStore.initWithPath(allocator, root_path, null);
+    defer {
+        store.deinit();
+        tmp.cleanup();
+    }
+
+    var made = try makeTextResultWithArtifact(allocator, .{ .tool_name = "search_text", .call_id = "stderr-only", .text = "", .stderr = "stderr marker\n", .force_artifact = true, .store = &store });
+    defer made.deinit(allocator);
+    try std.testing.expect(made.compressed);
+    try std.testing.expectEqual(@as(?[]const u8, null), made.artifact_path);
+
+    const reference = made.result.artifacts.slice()[0];
+    const expected = "\nstderr:\nstderr marker\n";
+    try std.testing.expectEqual(@as(?u64, expected.len), reference.byte_size);
+    try std.testing.expect(std.mem.indexOf(u8, made.result.content.slice()[0].text.text, "lines: 3\n") != null);
+    var stored = try store.read(reference.artifact_id);
+    defer stored.deinit(allocator);
+    try std.testing.expectEqualStrings(expected, stored.content);
+    try std.testing.expectEqual(@as(?u64, expected.len), stored.reference.byte_size);
+
+    var empty = try makeTextResultWithArtifact(allocator, .{ .tool_name = "search_text", .call_id = "empty", .text = "", .stderr = "", .force_artifact = true, .store = &store });
+    defer empty.deinit(allocator);
+    try std.testing.expect(empty.compressed);
+    const empty_reference = empty.result.artifacts.slice()[0];
+    try std.testing.expectEqual(@as(?u64, 0), empty_reference.byte_size);
+    try std.testing.expect(std.mem.indexOf(u8, empty.result.content.slice()[0].text.text, "bytes: 0\nlines: 0\n") != null);
+    var empty_stored = try store.read(empty_reference.artifact_id);
+    defer empty_stored.deinit(allocator);
+    try std.testing.expectEqualStrings("", empty_stored.content);
+}
+
+test "empty stderr stores exactly the stdout bytes and the inline control stays artifact-free" {
+    var artifact_root = TestArtifactRoot.init();
+    defer artifact_root.deinit();
+
+    const stdout_only = "only stdout\n";
+    var stored_result = try makeTextResultWithArtifact(std.testing.allocator, .{ .tool_name = "file_read", .call_id = "stdout-only", .text = stdout_only, .limits = .{ .file = 4 } });
+    defer stored_result.deinit(std.testing.allocator);
+    try std.testing.expect(stored_result.compressed);
+    const path = stored_result.artifact_path orelse return error.MissingArtifactPath;
+    const retrieved = try retrieveArtifact(std.testing.allocator, path, 1024);
+    defer std.testing.allocator.free(retrieved);
+    try std.testing.expectEqualStrings(stdout_only, retrieved);
+    try std.testing.expect(std.mem.indexOf(u8, retrieved, "stderr") == null);
+    try std.testing.expectEqual(@as(?u64, stdout_only.len), stored_result.result.artifacts.slice()[0].byte_size);
+
+    var inline_result = try makeTextResultWithArtifact(std.testing.allocator, .{ .tool_name = "file_read", .call_id = "inline", .text = "inline stdout\n", .stderr = "inline stderr\n", .limits = .{ .file = 1024 } });
+    defer inline_result.deinit(std.testing.allocator);
+    try std.testing.expect(!inline_result.compressed);
+    try std.testing.expectEqual(@as(usize, 0), inline_result.result.artifacts.slice().len);
+    try std.testing.expectEqualStrings("inline stdout\n\nstderr:\ninline stderr\n", inline_result.result.content.slice()[0].text.text);
+
+    var stderr_only_inline = try makeTextResultWithArtifact(std.testing.allocator, .{ .tool_name = "file_read", .call_id = "stderr-inline", .text = "", .stderr = "kept inline\n", .limits = .{ .file = 1024 } });
+    defer stderr_only_inline.deinit(std.testing.allocator);
+    try std.testing.expect(!stderr_only_inline.compressed);
+    try std.testing.expectEqual(@as(usize, 0), stderr_only_inline.result.artifacts.slice().len);
+    try std.testing.expectEqual(stderr_only_inline.raw_bytes, stderr_only_inline.result.content.slice()[0].text.text.len);
+    try std.testing.expect(std.mem.indexOf(u8, stderr_only_inline.result.content.slice()[0].text.text, "kept inline\n") != null);
 }
 
 test "artifact retrieval rejects symlink targets" {
