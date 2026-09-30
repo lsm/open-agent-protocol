@@ -71,6 +71,9 @@ class CatalogAbsence(unittest.IsolatedAsyncioTestCase):
         lifecycle: _Member,
         source: _Member,
         include_deprecated: Optional[bool] = None,
+        api: Optional[str] = None,
+        model_id: Optional[str] = None,
+        include_login_required: Optional[bool] = None,
     ) -> ListModelsResponse:
         env = dict(os.environ)
         env["OAP_PY_FIXTURE_SHAPE"] = key
@@ -83,7 +86,9 @@ class CatalogAbsence(unittest.IsolatedAsyncioTestCase):
         env["OAP_PY_FIXTURE_SET"] = ",".join(stamped)
         async with connect(command=sys.executable, args=["-u", "-c", HOST],
                            legacy_wire=False, env=env) as client:
-            return await client.models.list(include_deprecated=include_deprecated)
+            return await client.models.list(include_deprecated=include_deprecated, api=api,
+                                            model_id=model_id,
+                                            include_login_required=include_login_required)
 
     async def test_absent_members_read_as_unknown(self) -> None:
         listed = await self._list("absent", _ABSENT, _ABSENT)
@@ -145,29 +150,6 @@ class CatalogAbsence(unittest.IsolatedAsyncioTestCase):
             resolved = await client.models.resolve(provider_id="fixture", model_id="ok")
             self.assertIsNone(resolved.source)
             self.assertIsNone(resolved.lifecycle)
-
-
-
-class CatalogValidationPrecedesFiltering(unittest.IsolatedAsyncioTestCase):
-    async def _list(self, key: str, lifecycle: _Member, source: _Member,
-                    include_deprecated: Optional[bool] = None,
-                    api: Optional[str] = None,
-                    model_id: Optional[str] = None,
-                    include_login_required: Optional[bool] = None) -> ListModelsResponse:
-        env = dict(os.environ)
-        env["OAP_PY_FIXTURE_SHAPE"] = key
-        stamped: List[str] = []
-        for member, raw in (("lifecycle", lifecycle), ("source", source)):
-            if raw is not _ABSENT:
-                env[f"{member}_{key}"] = str(raw)
-                stamped.append(f"{member}_{key}")
-        env["OAP_PY_FIXTURE_SET"] = ",".join(stamped)
-        async with connect(command=sys.executable, args=["-u", "-c", HOST],
-                           legacy_wire=False, env=env) as client:
-            return await client.models.list(include_deprecated=include_deprecated, api=api,
-                                            model_id=model_id,
-                                            include_login_required=include_login_required)
-
     async def test_an_invalid_source_is_refused_even_when_the_row_is_filtered_out(self) -> None:
         with self.assertRaises(MakaiProtocolError) as caught:
             await self._list("byp-dep", '"deprecated"', "null", include_deprecated=False)
@@ -182,11 +164,11 @@ class CatalogValidationPrecedesFiltering(unittest.IsolatedAsyncioTestCase):
         )
         for key, kwargs in cases:
             with self.assertRaises(MakaiProtocolError) as caught:
-                await self._list(f"byp-{key}", "null", _ABSENT, **kwargs)  # type: ignore[arg-type]
+                await self._list(f"byp-{key}", "null", _ABSENT, **kwargs)
             self.assertEqual(caught.exception.code, "malformed_response", key)
             self.assertIn("lifecycle", str(caught.exception).lower())
             with self.assertRaises(MakaiProtocolError) as caught:
-                await self._list(f"byp-{key}-src", _ABSENT, "null", **kwargs)  # type: ignore[arg-type]
+                await self._list(f"byp-{key}-src", _ABSENT, "null", **kwargs)
             self.assertEqual(caught.exception.code, "malformed_response", key)
             self.assertIn("source", str(caught.exception).lower())
 
