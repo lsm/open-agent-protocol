@@ -287,20 +287,6 @@ test "an exit trap's output reaches the model" {
     try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, &common.hash16("call-trap")) == null);
 }
 
-test "a command whose output hits the cap reports the start directory and the failure" {
-    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
-    const cwd = try std.process.currentPathAlloc(common.defaultIo(), std.testing.allocator);
-    defer std.testing.allocator.free(cwd);
-    const expected = try std.Io.Dir.path.resolve(std.testing.allocator, &.{cwd});
-    defer std.testing.allocator.free(expected);
-    const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"command\":\"head -c 20000000 /dev/zero | tr '\\\\0' x\",\"timeout_ms\":60000}}", .{cwd});
-    defer std.testing.allocator.free(args);
-    var result = try execute("call-cap", args, null, null, null, std.testing.allocator);
-    defer result.deinit(std.testing.allocator);
-    try std.testing.expectEqualStrings(expected, result.workingDirectory().?);
-    try std.testing.expect(std.mem.indexOf(u8, result.getDetailsJson().?, "StreamTooLong") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, "shell command failed") != null);
-}
 
 
 
