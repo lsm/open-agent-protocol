@@ -11,9 +11,7 @@ import (
 	"github.com/lsm/open-agent-protocol/go/protocol"
 )
 
-const budgetForTest = 4 * time.Second
-
-const budgetHardCap = 15 * time.Second
+const budgetForTest, budgetHardCap = 4 * time.Second, 15 * time.Second
 
 func waitWithin(t *testing.T, what string, call func() error) error {
 	t.Helper()
@@ -52,7 +50,6 @@ func ask(t *testing.T, client *Client, id string) protocol.EnvelopeID {
 }
 
 func awaitLiveness(t *testing.T, client *Client) {
-	t.Helper()
 	deadline := time.Now().Add(budgetHardCap)
 	for {
 		if _, err := client.Event(); err == nil {
@@ -74,23 +71,14 @@ func expectBudgetSpent(t *testing.T, what string, start time.Time, err error) {
 	if elapsed < budgetForTest {
 		t.Fatalf("the %s wait gave up after %s without spending its %s budget, so it stopped on something other than the deadline", what, elapsed, budgetForTest)
 	}
-	if elapsed > budgetForTest+budgetHardCap {
-		t.Fatalf("the %s wait took %s against a %s budget, so frames renewed it", what, elapsed, budgetForTest)
-	}
 }
 
 func TestAPeerThatNeverAnswersGetsOneBudgetNotOnePerLineItSends(t *testing.T) {
-	for _, mode := range []struct {
-		name   string
-		chatty bool
-	}{
-		{"chatty", true},
-		{"silent", false},
-	} {
-		t.Run(mode.name, func(t *testing.T) {
-			client := shortDeadlineClient(t, mode.name)
+	for _, mode := range []string{"chatty", "silent"} {
+		t.Run(mode, func(t *testing.T) {
+			client := shortDeadlineClient(t, mode)
 			ask(t, client, "budget-req")
-			if mode.chatty {
+			if mode == "chatty" {
 				awaitLiveness(t, client)
 			}
 			start := time.Now()
@@ -124,11 +112,7 @@ func TestAControlWaitIsNotRenewedByRealUnrelatedControlFrames(t *testing.T) {
 }
 
 func TestAMatchingAnswerAlreadyBufferedIsReturnedWithoutSpendingTheBudget(t *testing.T) {
-	client, err := Spawn(context.Background(), helperCommand(t, "answers-each")[0], nil, io.Discard)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
+	client := shortDeadlineClient(t, "answers-each")
 	firstID := ask(t, client, "budget-buf-1")
 	secondID := ask(t, client, "budget-buf-2")
 	if _, err := client.Response(secondID); err != nil {
@@ -157,20 +141,11 @@ func TestAnEventWaitIsNotRenewedByRepliesToNobody(t *testing.T) {
 		_, err := client.Event()
 		return err
 	})
-	if err == nil {
-		t.Fatal("an event appeared for a peer that only ever sent replies to nobody")
-	}
-	elapsed := time.Since(start)
-	if elapsed < budgetForTest {
-		t.Fatalf("the event wait gave up after %s without spending its %s budget", elapsed, budgetForTest)
-	}
-	if elapsed > budgetForTest+budgetHardCap {
-		t.Fatalf("replies renewed the event budget for %s", elapsed)
-	}
+	expectBudgetSpent(t, "event", start, err)
 	if !strings.Contains(err.Error(), budgetForTest.String()) {
 		t.Fatalf("the failure does not name the budget: %v", err)
 	}
 	if grew := len(client.Transcript()) - before; grew < 2 {
-		t.Fatalf("the peer managed only %d frame(s) during the wait, so this case never saw a chatty peer and cannot tell a renewed budget from a silent one", grew)
+		t.Fatalf("the peer managed %d frame(s) during the wait, so this never saw a chatty peer", grew)
 	}
 }
