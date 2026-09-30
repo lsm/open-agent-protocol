@@ -156,6 +156,17 @@ func runHelperEndpoint(mode string) int {
 		time.Sleep(time.Hour)
 		return 0
 	}
+	if mode == "silent" {
+
+		bufio.NewReader(os.Stdin).ReadString('\n')
+		time.Sleep(time.Hour)
+		return 0
+	}
+	if mode == "chatty" {
+
+		floodWithoutAnswering()
+		return 0
+	}
 	out := bufio.NewWriter(os.Stdout)
 	defer out.Flush()
 	ids := 0
@@ -265,6 +276,35 @@ func runHelperEndpoint(mode string) int {
 		if err != nil {
 			return 0
 		}
+	}
+}
+
+func floodWithoutAnswering() {
+	out := bufio.NewWriter(os.Stdout)
+	defer out.Flush()
+	if _, err := bufio.NewReader(os.Stdin).ReadString('\n'); err != nil {
+		return
+	}
+	n := 0
+	for {
+		n++
+		envelope, err := protocol.NewEnvelope(protocol.TypeCapabilitiesResponse,
+			protocol.EnvelopeID(fmt.Sprintf("chatty-%d", n)), protocol.CapabilityDescriptor{
+				Endpoint: protocol.EndpointDescriptor{ID: "helper.chatty", Name: "Chatty endpoint"},
+			})
+		if err != nil {
+			return
+		}
+		envelope.SessionID = "chatty"
+		data, err := json.Marshal(envelope)
+		if err != nil {
+			return
+		}
+		if _, err := out.Write(append(data, '\n')); err != nil {
+			return
+		}
+		out.Flush()
+		time.Sleep(150 * time.Millisecond)
 	}
 }
 
