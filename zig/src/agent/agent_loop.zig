@@ -1249,6 +1249,191 @@ test "a message the context already owns is not freed again when a later callbac
     }
 }
 
+fn erroredStream(
+    ctx: ?*anyopaque,
+    model: ai_types.Model,
+    context: ai_types.Context,
+    options: types.ProtocolOptions,
+    allocator: std.mem.Allocator,
+) anyerror!*event_stream_module.AssistantMessageEventStream {
+    _ = ctx;
+    _ = model;
+    _ = context;
+    _ = options;
+    const stream_ptr = try allocator.create(event_stream_module.AssistantMessageEventStream);
+    errdefer allocator.destroy(stream_ptr);
+    stream_ptr.* = event_stream_module.AssistantMessageEventStream.init(allocator);
+    stream_ptr.completeWithError("provider said no");
+    return stream_ptr;
+}
+
+fn toolCallingStream(
+    ctx: ?*anyopaque,
+    model: ai_types.Model,
+    context: ai_types.Context,
+    options: types.ProtocolOptions,
+    allocator: std.mem.Allocator,
+) anyerror!*event_stream_module.AssistantMessageEventStream {
+    _ = ctx;
+    _ = model;
+    _ = context;
+    _ = options;
+    const stream_ptr = try allocator.create(event_stream_module.AssistantMessageEventStream);
+    errdefer allocator.destroy(stream_ptr);
+    stream_ptr.* = event_stream_module.AssistantMessageEventStream.init(allocator);
+    const calls = try allocator.alloc(ai_types.AssistantContent, 1);
+    errdefer allocator.free(calls);
+    const id = try allocator.dupe(u8, "call-1");
+    errdefer allocator.free(id);
+    const name = try allocator.dupe(u8, "dirtool");
+    errdefer allocator.free(name);
+    const arguments_json = try allocator.dupe(u8, "{}");
+    errdefer allocator.free(arguments_json);
+    calls[0] = .{ .tool_call = .{ .id = id, .name = name, .arguments_json = arguments_json } };
+    const api = try allocator.dupe(u8, "test-api");
+    errdefer allocator.free(api);
+    const provider = try allocator.dupe(u8, "test-provider");
+    errdefer allocator.free(provider);
+    const owned_model = try allocator.dupe(u8, "test-model");
+    errdefer allocator.free(owned_model);
+    stream_ptr.complete(.{
+        .content = calls,
+        .api = api,
+        .provider = provider,
+        .model = owned_model,
+        .usage = .{},
+        .stop_reason = .tool_use,
+        .timestamp = 0,
+        .is_owned = true,
+    });
+    return stream_ptr;
+}
+
+fn failingToolExecutor(
+    ctx: ?*anyopaque,
+    tool_call_id: []const u8,
+    tool_name: []const u8,
+    args_json: []const u8,
+    cancel_token: ?ai_types.CancelToken,
+    on_update_ctx: ?*anyopaque,
+    on_update: ?types.ToolUpdateCallback,
+    allocator: std.mem.Allocator,
+) anyerror!types.AgentToolResult {
+    _ = ctx;
+    _ = tool_call_id;
+    _ = tool_name;
+    _ = args_json;
+    _ = cancel_token;
+    _ = on_update_ctx;
+    _ = on_update;
+    _ = allocator;
+    return error.ToolRefused;
+}
+
+test "a failed tool turn's events stay readable after the message is released" {
+    const model = ai_types.Model{
+        .id = "test-model",
+        .name = "Test",
+        .api = "test-api",
+        .provider = "test-provider",
+        .base_url = "",
+        .reasoning = false,
+        .input = &.{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1024,
+        .max_tokens = 256,
+    };
+    const tool = types.AgentTool{
+        .label = "Refusing",
+        .name = "dirtool",
+        .description = "Refuses to run.",
+        .parameters_schema_json = "{\"type\":\"object\",\"properties\":{},\"required\":[],\"additionalProperties\":false}",
+        .execute = undefined,
+    };
+    const tools = [_]types.AgentTool{tool};
+
+    var events_storage: AgentEventStream = undefined;
+    const events = &events_storage;
+    events.* = AgentEventStream.init(std.testing.allocator);
+    defer events.deinit();
+
+    var context = AgentContext.init(std.testing.allocator);
+    defer context.deinit();
+
+    try runLoop(std.testing.allocator, &.{}, &context, .{
+        .model = model,
+        .protocol = .{ .stream_fn = toolCallingStream },
+        .tools = &tools,
+        .execute_tool_via_protocol_fn = failingToolExecutor,
+        .max_iterations = 1,
+    }, events);
+
+    var saw_tool_start = false;
+    var saw_message_end = false;
+    while (events.poll()) |event| {
+        var mutable = event;
+        defer mutable.deinit(std.testing.allocator);
+        switch (mutable) {
+            .tool_execution_start => |payload| {
+                saw_tool_start = true;
+                try std.testing.expectEqualStrings("call-1", payload.tool_call_id);
+            },
+            .message_end => |payload| switch (payload.message) {
+                .assistant => |assistant| {
+                    saw_message_end = true;
+                    try std.testing.expectEqualStrings("call-1", assistant.content[0].tool_call.id);
+                },
+                else => {},
+            },
+            else => {},
+        }
+    }
+    try std.testing.expect(saw_tool_start);
+    try std.testing.expect(saw_message_end);
+}
+
+test "an errored turn's events stay readable after the message is released" {
+    const model = ai_types.Model{
+        .id = "test-model",
+        .name = "Test",
+        .api = "test-api",
+        .provider = "test-provider",
+        .base_url = "",
+        .reasoning = false,
+        .input = &.{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1024,
+        .max_tokens = 256,
+    };
+    var events_storage: AgentEventStream = undefined;
+    const events = &events_storage;
+    events.* = AgentEventStream.init(std.testing.allocator);
+    defer events.deinit();
+
+    var context = AgentContext.init(std.testing.allocator);
+    defer context.deinit();
+
+    try runLoop(std.testing.allocator, &.{}, &context, .{
+        .model = model,
+        .protocol = .{ .stream_fn = erroredStream },
+        .max_iterations = 1,
+    }, events);
+
+    var saw_turn_end = false;
+    while (events.poll()) |event| {
+        var mutable = event;
+        defer mutable.deinit(std.testing.allocator);
+        switch (mutable) {
+            .turn_end => |payload| {
+                saw_turn_end = true;
+                try std.testing.expectEqualStrings("provider said no", payload.message.error_message.slice());
+            },
+            else => {},
+        }
+    }
+    try std.testing.expect(saw_turn_end);
+}
+
 test "an aborted turn's events stay readable after the message is released" {
     const model = ai_types.Model{
         .id = "test-model",
