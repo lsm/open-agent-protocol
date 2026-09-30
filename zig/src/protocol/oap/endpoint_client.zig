@@ -173,7 +173,10 @@ pub const Client = struct {
         while (true) {
             if (try self.takeLine()) |line| {
                 const trimmed = std.mem.trim(u8, line, " \t\r");
-                if (trimmed.len == 0) continue;
+                if (trimmed.len == 0) {
+                    if (budget.expired()) return null;
+                    continue;
+                }
                 return try classify(trimmed);
             }
             if (budget.expired()) return null;
@@ -527,7 +530,7 @@ const partial_tail =
 ;
 
 const flood_tail =
-    \\while :; do echo; done
+    \\yes ''
 ;
 
 const bounded_call_limit_ns: i64 = 30_000_000_000;
@@ -588,6 +591,19 @@ test "a complete frame already buffered is returned even when the budget is spen
     try std.testing.expect(frame != null);
     try std.testing.expect(frame.? == .envelope);
     try std.testing.expectEqualStrings(sent, frame.?.envelope);
+}
+
+test "a spent budget stops on the first buffered blank instead of draining the buffer" {
+    var client = Client.init(std.testing.allocator);
+    defer client.deinit();
+    try client.pending.appendNTimes(std.testing.allocator, '\n', 4096);
+
+    const spent: Budget = .{ .io = client.io(), .limit = std.Io.Clock.Timestamp.now(client.io(), .awake).subDuration(.{ .raw = .fromMilliseconds(5), .clock = .awake }) };
+    try std.testing.expect(spent.expired());
+
+    const frame = try client.nextBounded(spent);
+    try std.testing.expect(frame == null);
+    try std.testing.expect(client.pending.items.len > 0);
 }
 
 test "one call under a budget stops on a trickling partial line instead of renewing" {
