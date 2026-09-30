@@ -1588,28 +1588,15 @@ are "stamped with the revision the lister served it under", and both name
   earlier attempts got this wrong in opposite directions: one dropped every escaped byte, the next consumed
   every backslash pair. **Both make values Go treats as different compare equal**, which admits a duplicate the
   draft-facing gate should refuse, and the second is the one an MSIE path hits.
-  `a backslash is consumed only before a tspecial, which is what Go does` pins **eleven header
-  spellings, two admitted and nine refused**, each reproduced against Go 1.27 and matched against
-  what it answered. The bytes below are the **runtime header bytes**, not the Zig source:
-
-  - `a="C:\\path"; a="C:\\path"` and `a="x\\qy"; a="x\\qy"` — **admitted**: the same
-    spelling on both sides, with a doubled backslash before a letter, which decodes to one literal
-    backslash on each side alike
-  - the same two compared against a **shorter** value — `a="C:\\path"; a="C:path"` and
-    `a="x\\qy"; a="xqy"` — **refused**: a doubled backslash before a letter is not the same as
-    no backslash at all, which is the whole point of preserving it
-  - `a="C:\\path\\x"; a=C:pathx` — **refused**, the same literal-backslash case with two of them
-  - `a="x\\1"; a="x1"` and `a="x\\ "; a="x "` — **refused**: a literal backslash before a
-    digit and before a space, neither of which is a tspecial
-  - `a="x\\\\"; a="x\\"`, `a="x\\\""; a="x\""` and `a="x\\\""; a=x\"` — **refused**:
-    a doubled backslash against a single one, quoted or bare, which is the escaped-backslash case
-  - `a="a\\;b=c"; a="a;b=c"` — **refused**, and note the `a` **is** part of each value: the
-    doubled backslash leaves a literal `\` after decoding while the other side has none
-
-  **Both mutations fail it:** consuming every pair regardless of `isTspecial`, and never consuming
-  one. An earlier revision of this row described the decoded values; it was wrong on the quoted
-  forms, and the runtime bytes plus Go's own verdict are what the test pins, so the row states
-  those rather than a decode the reader would have to trust. |
+  `a backslash is consumed only before a tspecial, which is what Go does` pins **eleven header spellings,
+  two admitted and nine refused**, each reproduced against Go 1.27 and matched against what it answered. The
+  bytes are **runtime header bytes**, not Zig source. Admitted: `a="C:\\path"; a="C:\\path"` and
+  `a="x\\qy"; a="x\\qy"`, the same spelling on both sides. Refused: those two against a shorter value
+  (`a="C:path"`, `a="xqy"`), a second literal backslash (`a="C:\\path\\x"; a=C:pathx`), a literal one before a
+  digit or space (`a="x\\1"; a="x1"`, `a="x\\ "; a="x "`), a doubled against a single one quoted or bare
+  (`a="x\\\\"; a="x\\"`, `a="x\\\""; a="x\""`, `a="x\\\""; a=x\"`), and `a="a\\;b=c"; a="a;b=c"`, where
+  the doubled backslash leaves a literal one after decoding. **Both mutations fail it:** consuming every pair
+  regardless of `isTspecial`, and never consuming one. |
 
 ### D20 — `type_mismatch` is answered by no test in either tree
 
