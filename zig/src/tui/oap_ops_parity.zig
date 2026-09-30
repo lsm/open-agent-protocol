@@ -115,6 +115,7 @@ const Exchange = struct {
     fn drain(self: *Exchange) !usize {
         var seen: usize = 0;
         while (try self.client.recv()) |env| {
+            errdefer env.deinit(self.allocator);
             try self.client.absorb(env);
             try self.replies.append(self.allocator, env);
             seen += 1;
