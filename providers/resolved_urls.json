@@ -43,6 +43,13 @@
       "request_url": "https://api.deepseek.com/v1/chat/completions"
     },
     {
+      "id": "deepseek",
+      "wire": "anthropic-messages",
+      "base_url": "https://api.deepseek.com/anthropic",
+      "models_url": "https://api.deepseek.com/anthropic/v1/models",
+      "request_url": "https://api.deepseek.com/anthropic/v1/messages"
+    },
+    {
       "id": "zai-coding-plan",
       "wire": "openai-completions",
       "base_url": "https://api.z.ai/api/coding/paas/v4",
