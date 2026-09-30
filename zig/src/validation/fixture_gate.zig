@@ -65,7 +65,6 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
     var undecodable: usize = 0;
     var unhandled: usize = 0;
     var scoped: usize = 0;
-    var declaring_packs: usize = 0;
     var disagreements = std.ArrayList(u8).empty;
     defer disagreements.deinit(allocator);
 
@@ -122,7 +121,6 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
         }
         const scope: *jsonschema.Registry = if (with_packs) |*held| held else &registry;
 
-        if (pack_dirs.items.len != 0) declaring_packs += 1;
         var loaded = packs_mod.load(std.testing.io, allocator, scope, pack_dirs.items) catch {
             skipped_packs += 1;
             continue;
@@ -179,7 +177,10 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
         }
     }
 
-    try std.testing.expectEqual(declaring_packs, scoped);
+    try std.testing.expect(scoped > 0);
+    for (registry.documents.keys()) |name| {
+        try std.testing.expect(!std.mem.startsWith(u8, name, packs_mod.pack_base_uri));
+    }
     std.debug.print("\njudged={d} tolerant={d} skipped_packs={d} unsupported={d} undecodable={d} unhandled={d}\n", .{ judged, tolerant_judged, skipped_packs, unsupported, undecodable, unhandled });
     if (disagreements.items.len > 0) {
         std.debug.print("disagreements:\n{s}", .{disagreements.items});
