@@ -33,25 +33,45 @@ pub const Loaded = struct {
 
 fn beneath(root: []const u8, path: []const u8) bool {
     var base = root;
-    while (base.len > 1 and base[base.len - 1] == std.fs.path.sep) base = base[0 .. base.len - 1];
+    while (base.len > 1 and base[base.len - 1] == std.Io.Dir.path.sep) base = base[0 .. base.len - 1];
     if (std.mem.eql(u8, base, path)) return true;
     if (!std.mem.startsWith(u8, path, base)) return false;
-    if (base.len == 1 and base[0] == std.fs.path.sep) return true;
-    return path[base.len] == std.fs.path.sep;
+    if (base.len == 1 and base[0] == std.Io.Dir.path.sep) return true;
+    return path[base.len] == std.Io.Dir.path.sep;
 }
 
-const lexical_root = "/.pack-root";
-
-fn cleanedUnder(allocator: std.mem.Allocator, entry: []const u8) !?[]const u8 {
-    const cleaned = try std.fs.path.resolve(allocator, &.{ lexical_root, entry });
-    if (std.mem.eql(u8, cleaned, lexical_root)) return "";
-    if (!std.mem.startsWith(u8, cleaned, lexical_root ++ "/")) return null;
-    return cleaned[lexical_root.len + 1 ..];
+fn cleanRelative(allocator: std.mem.Allocator, entry: []const u8) !?[]const u8 {
+    var parts: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (parts.items) |part| allocator.free(part);
+        parts.deinit(allocator);
+    }
+    var start: usize = 0;
+    var index: usize = 0;
+    while (index <= entry.len) : (index += 1) {
+        if (index < entry.len and !std.Io.Dir.path.isSep(entry[index])) continue;
+        const part = entry[start..index];
+        start = index + 1;
+        if (part.len == 0 or std.mem.eql(u8, part, ".")) continue;
+        if (std.mem.eql(u8, part, "..")) {
+            if (parts.items.len == 0) return null;
+            allocator.free(parts.pop().?);
+            continue;
+        }
+        try parts.append(allocator, try allocator.dupe(u8, part));
+    }
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    for (parts.items, 0..) |part, position| {
+        if (position != 0) try out.append(allocator, std.Io.Dir.path.sep);
+        try out.appendSlice(allocator, part);
+    }
+    return try out.toOwnedSlice(allocator);
 }
 
 fn lexicalRelative(allocator: std.mem.Allocator, entry: []const u8) ![]const u8 {
-    if (entry.len == 0 or std.fs.path.isAbsolute(entry)) return error.InvalidPackDescriptor;
-    return (try cleanedUnder(allocator, entry)) orelse error.InvalidPackDescriptor;
+    if (entry.len == 0 or std.Io.Dir.path.isAbsolute(entry)) return error.InvalidPackDescriptor;
+    return (try cleanRelative(allocator, entry)) orelse error.InvalidPackDescriptor;
 }
 
 fn readAll(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]u8 {
@@ -103,7 +123,7 @@ fn gather(
                 for (entries, 0..) |schema_name, index| {
                     if (schema_name != .string) return error.InvalidPackDescriptor;
                     const file = schema_name.string;
-                    if (file.len == 0 or std.fs.path.isAbsolute(file)) return error.InvalidPackDescriptor;
+                    if (file.len == 0 or std.Io.Dir.path.isAbsolute(file)) return error.InvalidPackDescriptor;
                     const relative = try lexicalRelative(allocator, file);
                     const schema_path = try std.fs.path.join(allocator, &.{ dir, relative });
                     const resolved = std.Io.Dir.cwd().realPathFileAlloc(io, schema_path, allocator) catch return error.InvalidPackDescriptor;
@@ -160,7 +180,7 @@ fn gather(
             const declared_type = (entry.object.get("type") orelse continue).string;
             const schema_ref = (entry.object.get("schema") orelse continue).string;
             const hash = std.mem.indexOfScalar(u8, schema_ref, '#') orelse continue;
-            const cited = (try cleanedUnder(allocator, schema_ref[0..hash])) orelse schema_ref[0..hash];
+            const cited = (try cleanRelative(allocator, schema_ref[0..hash])) orelse schema_ref[0..hash];
             const ref = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/{s}{s}", .{ pack_base_uri, pack_id, version, cited, schema_ref[hash..] });
             try branches.append(allocator, .{
                 .declared_type = try allocator.dupe(u8, declared_type),
