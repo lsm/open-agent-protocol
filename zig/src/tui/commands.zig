@@ -422,6 +422,9 @@ fn handleAbort(ctx: CommandContext, command: Command) !CommandResult {
     }
     const active = ctx.state.status.streaming or
         (ctx.runtime != null and ctx.runtime.?.stream_active);
+    if (active and ctx.state.stream_aborted and !ctx.state.status.streaming) {
+        return .{ .output = try ctx.allocator.dupe(u8, "Still stopping: the step that was running when you aborted is ending.") };
+    }
     if (active) {
         if (ctx.session) |session| {
             session.cancel();
@@ -878,6 +881,25 @@ test "abort cancels active turn before streaming status is set" {
     try std.testing.expect(!state.status.streaming);
     try std.testing.expect(state.stream_aborted);
     try std.testing.expect(runtime.cancelled.load(.acquire));
+}
+
+test "a second abort while the run winds down says it is stopping instead of aborting again" {
+    var runtime = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{});
+    defer runtime.deinit();
+    runtime.stream_active = true;
+
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    const ctx = CommandContext{ .allocator = std.testing.allocator, .state = &state, .runtime = &runtime };
+
+    var first = try dispatch(ctx, .{ .kind = .abort });
+    defer first.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("Turn aborted.", first.output);
+
+    var second = try dispatch(ctx, .{ .kind = .abort });
+    defer second.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.startsWith(u8, second.output, "Still stopping"));
+    try std.testing.expect(state.stream_aborted);
 }
 
 test "abort during approval clears approval state" {

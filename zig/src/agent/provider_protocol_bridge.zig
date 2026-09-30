@@ -191,6 +191,11 @@ fn streamOptionsFromProtocolOptions(options: agent_types.ProtocolOptions, model_
     };
 }
 
+fn tokenCancelled(token: ?ai_types.CancelToken) bool {
+    const held = token orelse return false;
+    return held.isCancelled();
+}
+
 fn runStreamThread(ctx: *StreamThreadContext) void {
     defer {
         const out_stream = ctx.out_stream;
@@ -224,14 +229,24 @@ fn runStreamThread(ctx: *StreamThreadContext) void {
     request_context.is_owned = false;
     request_context.system_prompt = ai_types.OwnedSlice(u8).initBorrowed(ctx.context.system_prompt.slice());
 
+    if (tokenCancelled(ctx.options.cancel_token)) {
+        ctx.out_stream.completeWithError("request cancelled");
+        return;
+    }
+
     _ = client.sendStreamRequest(request_model, request_context, stream_options) catch |err| {
         ctx.out_stream.completeWithError(@errorName(err));
         return;
     };
 
     var last_progress_ms = compat.time.nowMillis();
+    var abort_sent = false;
 
     while (!client.isComplete()) {
+        if (!abort_sent and tokenCancelled(ctx.options.cancel_token)) {
+            abort_sent = true;
+            client.sendAbortRequest("request cancelled") catch {};
+        }
         _ = runtime.pumpOnce(&client) catch |err| {
             ctx.out_stream.completeWithError(@errorName(err));
             return;
@@ -568,6 +583,7 @@ const PacedProvider = struct {
     var deltas: usize = 0;
     var gap_ms: u64 = 0;
     var hold_ms: u64 = 0;
+    var started: usize = 0;
 
     const Job = struct {
         stream: *event_stream.AssistantMessageEventStream,
@@ -647,6 +663,7 @@ const PacedProvider = struct {
     ) anyerror!*event_stream.AssistantMessageEventStream {
         _ = model;
         _ = context;
+        started += 1;
 
         const s = try a.create(event_stream.AssistantMessageEventStream);
         errdefer a.destroy(s);
@@ -741,6 +758,87 @@ test "a stream that keeps delivering outlives the idle window" {
     }
     try std.testing.expectEqual(@as(usize, 1), result.content.len);
     try std.testing.expectEqual(PacedProvider.deltas, result.content[0].text.text.len);
+}
+
+fn pacedBridge(registry: *api_registry.ApiRegistry) !InProcessProviderProtocolBridge {
+    try registry.registerApiProvider(.{
+        .api = "paced-api",
+        .stream = PacedProvider.stream,
+        .stream_simple = PacedProvider.streamSimple,
+    }, null);
+    var bridge = InProcessProviderProtocolBridge.init(registry);
+    bridge.idle_timeout_ms = 30_000;
+    return bridge;
+}
+
+const CancelLater = struct {
+    fn run(flag: *std.atomic.Value(bool)) void {
+        compat.time.sleepMs(50);
+        flag.store(true, .release);
+    }
+};
+
+test "a cancel while a reply streams aborts the provider's stream instead of waiting it out" {
+    const allocator = std.testing.allocator;
+    PacedProvider.deltas = 0;
+    PacedProvider.gap_ms = 0;
+    PacedProvider.hold_ms = 10_000;
+
+    var registry = api_registry.ApiRegistry.init(allocator);
+    defer registry.deinit();
+    var bridge = try pacedBridge(&registry);
+    const protocol = bridge.protocolClient();
+
+    const user = ai_types.Message{ .user = .{ .content = .{ .text = "take your time" }, .timestamp = 0 } };
+    const ctx = ai_types.Context{ .messages = &[_]ai_types.Message{user} };
+    var flag = std.atomic.Value(bool).init(false);
+
+    const started_ms = compat.time.nowMillis();
+    const stream = try protocol.stream(PacedProvider.paced_model, ctx, .{ .api_key = "test-key", .cancel_token = .{ .cancelled = &flag } }, allocator);
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+    const canceller = try std.Thread.spawn(.{}, CancelLater.run, .{&flag});
+    defer canceller.join();
+
+    while (stream.wait()) |ev| {
+        var owned_ev = ev;
+        ai_types.deinitAssistantMessageEvent(allocator, &owned_ev);
+    }
+
+    try std.testing.expect(stream.getError() != null);
+    try std.testing.expect(compat.time.nowMillis() - started_ms < 5_000);
+}
+
+test "a request made after its run was cancelled never reaches the provider" {
+    const allocator = std.testing.allocator;
+    PacedProvider.deltas = 1;
+    PacedProvider.gap_ms = 0;
+    PacedProvider.hold_ms = 0;
+    PacedProvider.started = 0;
+
+    var registry = api_registry.ApiRegistry.init(allocator);
+    defer registry.deinit();
+    var bridge = try pacedBridge(&registry);
+    const protocol = bridge.protocolClient();
+
+    const user = ai_types.Message{ .user = .{ .content = .{ .text = "anything" }, .timestamp = 0 } };
+    const ctx = ai_types.Context{ .messages = &[_]ai_types.Message{user} };
+    var flag = std.atomic.Value(bool).init(true);
+
+    const stream = try protocol.stream(PacedProvider.paced_model, ctx, .{ .api_key = "test-key", .cancel_token = .{ .cancelled = &flag } }, allocator);
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+    while (stream.wait()) |ev| {
+        var owned_ev = ev;
+        ai_types.deinitAssistantMessageEvent(allocator, &owned_ev);
+    }
+
+    try std.testing.expectEqualStrings("request cancelled", stream.getError() orelse "");
+    try std.testing.expectEqual(@as(usize, 0), PacedProvider.started);
 }
 
 test "a stream that goes silent for the idle window fails as timed out" {
