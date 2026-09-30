@@ -2497,20 +2497,34 @@ test "a refusal detail borrows its key and value rather than copying them" {
     const arena = arena_state.allocator();
     const feature = "action.tls_attach";
     const source = "x1";
-    const backing = try arena.alloc(u8, feature.len + source.len);
-    @memcpy(backing[0..feature.len], feature);
-    @memcpy(backing[feature.len..], source);
-    kept[0] = .{ .key = "feature", .value = backing[0..feature.len] };
-    kept[1] = .{ .key = "source", .value = backing[feature.len..] };
+    const feature_key = "feature";
+    const source_key = "source";
+    const keys_at = try arena.alloc(u8, feature_key.len + source_key.len);
+    @memcpy(keys_at[0..feature_key.len], feature_key);
+    @memcpy(keys_at[feature_key.len..], source_key);
+    const values_at = try arena.alloc(u8, feature.len + source.len);
+    @memcpy(values_at[0..feature.len], feature);
+    @memcpy(values_at[feature.len..], source);
+    kept[0] = .{ .key = keys_at[0..feature_key.len], .value = values_at[0..feature.len] };
+    kept[1] = .{ .key = keys_at[feature_key.len..], .value = values_at[feature.len..] };
     var rendered = try detailsJson(arena, &kept);
     defer rendered.object.deinit(arena);
-    try testing.expectEqualStrings(feature, rendered.object.get("feature").?.string);
-    try testing.expectEqualStrings("x1", rendered.object.get("source").?.string);
     try testing.expectEqual(@as(usize, 2), rendered.object.count());
-    try testing.expect(rendered.object.get("feature").?.string.ptr == kept[0].value.ptr);
-    try testing.expect(rendered.object.get("source").?.string.ptr == kept[1].value.ptr);
-    try testing.expect(rendered.object.get("feature").?.string.len == kept[0].value.len);
-    try testing.expect(rendered.object.get("source").?.string.len == kept[1].value.len);
+    for (kept) |entry| {
+        const stored = rendered.object.getPtr(entry.key).?;
+        try testing.expectEqualStrings(entry.value, stored.string);
+        try testing.expect(stored.string.ptr == entry.value.ptr);
+        try testing.expectEqual(entry.value.len, stored.string.len);
+    }
+    var borrowed_keys: usize = 0;
+    for (rendered.object.keys()) |key| {
+        for (kept) |entry| {
+            if (key.ptr == entry.key.ptr and key.len == entry.key.len) {
+                borrowed_keys += 1;
+            }
+        }
+    }
+    try testing.expectEqual(@as(usize, 2), borrowed_keys);
 }
 
 test "refusal details render as the object the envelope carries" {
