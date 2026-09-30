@@ -9,9 +9,11 @@
 // `//` inside any literal is never a comment. `//`, `///`, and `//!`
 // outside literals are comments; only `// zig fmt: off|on` is exempt
 // (formatter control). Modes: `--check` (exit 1 on any comment in a
-// non-allowlisted file, and on a selected path that cannot be read so it
-// was never judged — CI), `--stats` (per-file counts), and write
-// mode (default, or `--write`: strip + tidy orphaned blank lines).
+// non-allowlisted file — CI), `--stats` (per-file counts), and write
+// mode (default, or `--write`: strip + tidy orphaned blank lines). Every
+// mode exits 1 on a selected path that cannot be read, in check mode only
+// when the path is not allowlisted: a path that was not read was not
+// judged, and reporting it as done would claim coverage that never ran.
 // `--check` is ratcheted by scripts/no-comments-allowlist.txt: files
 // seeded there pass while the gap-7 series lands, and the list may only
 // shrink — entries whose file is clean or untracked are stale, entries
@@ -557,9 +559,14 @@ function main() {
   let stripped = 0;
   let removed = 0;
   let failed = false;
+  let missing = 0;
   for (const file of files) {
     const text = readIfExists(file);
-    if (text === null) continue;
+    if (text === null) {
+      process.stdout.write(`selected path not found, so it was not judged: ${file}\n`);
+      missing++;
+      continue;
+    }
     let out;
     try {
       out = stripComments(text, file);
@@ -576,9 +583,13 @@ function main() {
     if (!stats) writeFileSync(file, out);
   }
   process.stdout.write(
-    `${stats ? "files with comments" : "files stripped"}: ${stripped}, comments: ${removed}\n`,
+    `${stats ? "files with comments" : "files stripped"}: ${stripped}, comments: ${removed}` +
+      `${missing ? `, missing: ${missing}` : ""}\n`,
   );
+  // A path that was not read was not judged, so counting it as done would
+  // report a coverage that did not happen — the same trap --check refuses.
   if (failed) process.exit(2);
+  if (missing > 0) process.exit(1);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
