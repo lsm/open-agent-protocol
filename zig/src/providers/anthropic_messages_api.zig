@@ -3189,7 +3189,7 @@ test "an allocation failure never ends a signed block unsigned" {
     }
 }
 
-test "a consumer that drains after the producing thread exits still reads the signature" {
+test "draining after endThinkingBlock returns still reads the signature" {
     const allocator = std.testing.allocator;
     const stream = try newCloningStream(allocator);
     defer _ = stream.deinitAndDestroy();
