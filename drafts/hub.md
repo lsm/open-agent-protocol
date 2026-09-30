@@ -612,7 +612,8 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   raising `drain_total_cap_bytes` to 1 GiB fails it with `expected 1048576, found 1073741824`. The real-socket test separately pins that a cap
   is *observable from outside the process*, asserting a lower bound on transferred bytes plus a
   complete 403 — never an upper one
-- **the 64 KiB round cap, and the round's own deadline — pinned by removal at this head.** Of the four
+- **the 64 KiB round cap, and the round's own deadline — pinned as _configuration_ at this head, which is
+  a weaker claim than the bullets around it and is not a removal proof.** Of the four
   bounds the row above names, the 64 KiB round cap was **the one no bullet covered**: that row says the
   port "reads in 64 KiB rounds" and nothing more about a round, and until now `drain_cap_bytes` was named
   only at its definition (`:205`) and its use (`:219`), so the ledger asserted a bound no test would
@@ -624,7 +625,17 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   expectation cannot move together. `a drain gives up rather than waiting on a peer that sends nothing
   more` no longer accepts any elapsed time under 2000 ms for a silent peer, which was 40× the 50 ms
   round it is supposed to honour and let a 1500 ms cycle pass; it now requires the drain back within
-  **10 round cycles** of the constant, so the bound tracks the constant instead of drifting from it.
+  **10 round cycles** of the constant, so the bound tracks the constant instead of drifting from it —
+  a response-time bound **derived** from the constant, not evidence that the per-round deadline is read.
+  **What these equalities do not prove, stated plainly because it is the limit of the evidence:** they
+  pin the two constants' **values**, not that `drain` *uses* them. Bypassing the use while keeping the
+  constants — taking `owed` from `drain_total_cap_bytes` instead of `drain_cap_bytes` at `:219`, or
+  building the round deadline from something other than `drain_cycle_ms` at `:220` — **compiles and leaves
+  every assertion here green**, and no such control is presented, because the per-round cap is not
+  independently observable through `drain`'s surface: the 1 MiB total and the 2500 ms total both dominate
+  it, so a wider round changes no observable byte count. So this bullet says only that the ledger's
+  64 KiB and one-cycle figures are now **asserted rather than merely stated**, and it does not close the
+  per-round cap or the per-round deadline the way the 1 MiB bullet and the guard-presence row do theirs.
   **Both measured, not assumed:** against `main` as it stood, raising `drain_cap_bytes` to 1 MiB left
   the suite `EXIT=0` and raising `drain_cycle_ms` to 1500 left it `EXIT=0` — both compile, and neither
   was caught. With these assertions the same two mutations fail, with `expected 65536, found 1048576`
