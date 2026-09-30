@@ -1284,6 +1284,66 @@ test "a message the context already owns is not freed again when a later callbac
     }
 }
 
+fn erroredStream(
+    ctx: ?*anyopaque,
+    model: ai_types.Model,
+    context: ai_types.Context,
+    options: types.ProtocolOptions,
+    allocator: std.mem.Allocator,
+) anyerror!*event_stream_module.AssistantMessageEventStream {
+    _ = ctx;
+    _ = model;
+    _ = context;
+    _ = options;
+    const stream_ptr = try allocator.create(event_stream_module.AssistantMessageEventStream);
+    errdefer allocator.destroy(stream_ptr);
+    stream_ptr.* = event_stream_module.AssistantMessageEventStream.init(allocator);
+    stream_ptr.completeWithError("provider said no");
+    return stream_ptr;
+}
+
+test "an errored turn's events stay readable after the message is released" {
+    const model = ai_types.Model{
+        .id = "test-model",
+        .name = "Test",
+        .api = "test-api",
+        .provider = "test-provider",
+        .base_url = "",
+        .reasoning = false,
+        .input = &.{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1024,
+        .max_tokens = 256,
+    };
+    var events_storage: AgentEventStream = undefined;
+    const events = &events_storage;
+    events.* = AgentEventStream.init(std.testing.allocator);
+    defer events.deinit();
+
+    var context = AgentContext.init(std.testing.allocator);
+    defer context.deinit();
+
+    try runLoop(std.testing.allocator, &.{}, &context, .{
+        .model = model,
+        .protocol = .{ .stream_fn = erroredStream },
+        .max_iterations = 1,
+    }, events);
+
+    var saw_turn_end = false;
+    while (events.poll()) |event| {
+        var mutable = event;
+        defer mutable.deinit(std.testing.allocator);
+        switch (mutable) {
+            .turn_end => |payload| {
+                saw_turn_end = true;
+                try std.testing.expectEqualStrings("provider said no", payload.message.error_message.slice());
+            },
+            else => {},
+        }
+    }
+    try std.testing.expect(saw_turn_end);
+}
+
 test "an aborted turn's events stay readable after the message is released" {
     const model = ai_types.Model{
         .id = "test-model",
