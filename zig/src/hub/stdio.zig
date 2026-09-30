@@ -2459,15 +2459,31 @@ test "every code the transport can answer carries the status the draft pins" {
     try testing.expectEqual(@as(usize, 28), named.len);
 }
 
+const many_detail_keys = [_][]const u8{
+    "feature", "source",   "revision",          "session_id", "run_id",
+    "cursor",  "expected", "current",           "attachment", "subscription",
+    "limit",   "oldest",   "newest",            "resolution", "interaction",
+    "reason",  "detail",   "expected_revision", "capability", "mode",
+};
+
+fn manyDetailEntries(buf: []u8) [many_detail_keys.len]oap_types.DetailEntry {
+    var entries: [many_detail_keys.len]oap_types.DetailEntry = undefined;
+    var at: usize = 0;
+    for (many_detail_keys, 0..) |key, index| {
+        const slot = buf[at..][0..key.len];
+        @memcpy(slot, key);
+        entries[index] = .{ .key = key, .value = slot };
+        at += key.len;
+    }
+    return entries;
+}
+
 fn detailsUnderFailure(arena: std.mem.Allocator) !void {
-    const details = [_]oap_types.DetailEntry{
-        .{ .key = "feature", .value = "action.tool_sources.attach" },
-        .{ .key = "source", .value = "x1" },
-        .{ .key = "revision", .value = "r7" },
-    };
-    var rendered = try detailsJson(arena, &details);
+    var backing: [256]u8 = undefined;
+    const entries = manyDetailEntries(&backing);
+    var rendered = try detailsJson(arena, &entries);
     defer rendered.object.deinit(arena);
-    try std.testing.expectEqual(@as(usize, 3), rendered.object.count());
+    try std.testing.expectEqual(@as(usize, many_detail_keys.len), rendered.object.count());
 }
 
 test "a refusal detail that cannot be put releases the map it had already grown" {
@@ -2491,6 +2507,10 @@ test "a refusal detail borrows its key and value rather than copying them" {
     try testing.expectEqualStrings(feature, rendered.object.get("feature").?.string);
     try testing.expectEqualStrings("x1", rendered.object.get("source").?.string);
     try testing.expectEqual(@as(usize, 2), rendered.object.count());
+    try testing.expect(rendered.object.get("feature").?.string.ptr == kept[0].value.ptr);
+    try testing.expect(rendered.object.get("source").?.string.ptr == kept[1].value.ptr);
+    try testing.expect(rendered.object.get("feature").?.string.len == kept[0].value.len);
+    try testing.expect(rendered.object.get("source").?.string.len == kept[1].value.len);
 }
 
 test "refusal details render as the object the envelope carries" {
