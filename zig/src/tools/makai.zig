@@ -7304,7 +7304,6 @@ fn startOapInference(
     cancelled.* = std.atomic.Value(bool).init(false);
 
     var options: ai_types.StreamOptions = .{};
-    options.requires_owned_stream_events = true;
     var resolved_credential: ?auth_resolver.ResolvedKey = null;
     defer if (resolved_credential) |*key| key.deinit(allocator);
 

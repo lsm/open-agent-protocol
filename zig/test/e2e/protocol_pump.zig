@@ -1,4 +1,3 @@
-
 const std = @import("std");
 const compat = @import("compat");
 const protocol_server = @import("protocol_server");
@@ -25,13 +24,15 @@ pub const ProtocolPump = struct {
             const stream_id = entry.stream_id;
 
             while (active_stream.event_stream.poll()) |event| {
+                const polled = event;
+                defer active_stream.event_stream.releaseEvent(polled);
                 const seq = self.server.getNextSequence(stream_id);
                 const env = protocol_types.Envelope{
                     .stream_id = stream_id,
                     .message_id = protocol_types.generateUlid(),
                     .sequence = seq,
                     .timestamp = compat.time.nowMillis(),
-                    .payload = .{ .event = event },
+                    .payload = .{ .event = polled },
                 };
 
                 const json = try envelope.serializeEnvelope(env, self.allocator);
