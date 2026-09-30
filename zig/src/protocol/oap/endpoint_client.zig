@@ -57,8 +57,7 @@ pub const Budget = struct {
 
     pub fn timeout(self: Budget) std.Io.Timeout {
         const limit = self.limit orelse return .none;
-        const left = self.leftNanoseconds() orelse return .none;
-        const spend = @max(left, 1);
+        const spend = @max(leftOf(limit, std.Io.Clock.Timestamp.now(self.io, limit.clock)), 1);
         return .{ .duration = .{ .raw = .fromNanoseconds(spend), .clock = limit.clock } };
     }
 };
@@ -517,4 +516,9 @@ test "the budget arithmetic keeps sub-millisecond precision without a live clock
     try std.testing.expectEqual(@as(i64, 1), @as(i64, @intCast(Budget.leftOf(one_nanosecond, base))));
     const past = base.subDuration(.{ .raw = .fromMilliseconds(5), .clock = .awake });
     try std.testing.expect(Budget.leftOf(past, base) < 0);
+
+    const spent: Budget = .{ .io = io, .limit = past };
+    try std.testing.expect(spent.expired());
+    try std.testing.expect(std.meta.activeTag(spent.timeout()) == .duration);
+    try std.testing.expect(std.meta.activeTag(Budget.unbounded().timeout()) == .none);
 }
