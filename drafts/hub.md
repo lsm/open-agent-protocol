@@ -687,14 +687,14 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   9.2–10.8 MB unbounded — but a threshold on them would be a machine-dependent constant rather than a
   bound, and the same build produced 1.70 MB and 3.13 MB on two runs of one case, so none is asserted.
   **What the existing unit tests do and do not cover, stated precisely so this row does not overstate
-  them:** `http.zig:1369` pins the **byte cap** — it asserts `drain_total_cap_bytes` against its own
-  literal and drains past it — while `http.zig:1412` pins only that the budget is **elapsed rather
+  them:** `http.zig:1371` pins the **byte cap** — it asserts `drain_total_cap_bytes` against its own
+  literal and drains past it — while `http.zig:1417` pins only that the budget is **elapsed rather
   than uptime**, exactly as the row above records, and that row's finding stands unchanged:
   **neutralising the time guard leaves it green, so the time bound's presence was a gap until the
   already-spent-budget proof below closed it.** What
   is **not** pinned anywhere is that the 413 path *reaches* `drain` at all, and no client can observe
   that without the threshold just declined. An earlier revision of this work claimed the mutation
-  failed when both bounds were removed, and a second claimed the budget was pinned at `:1412`. The
+  failed when both bounds were removed, and a second claimed the budget was pinned at `:1417`. The
   first does not hold and the second contradicts the row above. Both are withdrawn.
 - **the `readBody` failure path answers completely, and the daemon gives up on a peer that stops** —
   `makai.zig:1591` is the third and last `drain` call site, and the only one none of the rows above
@@ -707,7 +707,7 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   `code: request_read`, `protocol: open-agent-protocol`, `version: 0.1`,
   `profile: open-agent-protocol.agent-control-core`, and the synthetic correlation `oap-error-1`
   replying to `oap-request-1` that `refusalEnvelope` builds at `http.zig:292-298` and the existing
-  unit test at `:1561` already pins for all four refusals — delivered while the client had sent
+  unit test at `:1566` already pins for all four refusals — delivered while the client had sent
   **4096 of the 8 MiB it declared**. The answer arriving at all is the "gave up" claim: a
   daemon waiting for the declared body would have said nothing and the read would have timed out.
   **Two negative controls fail it:** `readBody` treating a short body as complete answers `404`, and
@@ -717,8 +717,8 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   the drain reaches this client. So the **`content_length -| filled` arithmetic and this site's
   reachability are unproved** by this test, by the rows above, and by anything else on main, and no
   threshold is inferred from transferred bytes to stand in for them. **Of the two drain bounds, the
-  byte cap is pinned** — `:1369` asserts `drain_total_cap_bytes` against its own literal and drains
-  past it — and the **elapsed-versus-uptime comparison is pinned** at `:1412`, but **the time guard's
+  byte cap is pinned** — `:1371` asserts `drain_total_cap_bytes` against its own literal and drains
+  past it — and the **elapsed-versus-uptime comparison is pinned** at `:1417`, but **the time guard's
   presence was NOT pinned by this row**, exactly as the row above then stated; it is now pinned by the
   already-spent-budget proof, which is about the guard itself and not about any client's drain amount.
   Two things a reader might assume are covered here are not: this site's drain amount, and the
