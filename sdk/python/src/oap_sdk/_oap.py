@@ -12,7 +12,7 @@ import contextlib
 import json
 import time
 from dataclasses import replace
-from typing import Any, AsyncGenerator, Dict, List, Mapping, Optional, Sequence
+from typing import Any, AsyncGenerator, Dict, List, Mapping, Optional, Sequence, cast
 
 from ._ids import new_ulid
 from .errors import MakaiAuthRequiredError, MakaiProtocolError, MakaiStreamError
@@ -20,7 +20,8 @@ from .transport import Frame, FrameRoute, StdioTransport
 from .types import (
     AgentEnd, AgentStart, AgentStreamEvent, AssistantMessage, ChatMessage,
     CompletionResponse, ContentPart, ListModelsResponse, MessageEnd, MessageStart,
-    ModelDescriptor, ProviderStreamEvent, RunOptions, StreamError, TextDelta,
+    ModelDescriptor, ModelLifecycle, ModelSource, ProviderStreamEvent, RunOptions,
+    StreamError, TextDelta,
     ThinkingDelta, ToolCall, ToolDefinition, Usage,
 )
 
@@ -207,6 +208,35 @@ async def _request(transport: StdioTransport, profile: str, kind: str,
     return response
 
 
+_OAP_LIFECYCLES = ("stable", "preview", "deprecated")
+
+
+def _oap_lifecycle(item: Any) -> Optional[ModelLifecycle]:
+    if "lifecycle" not in item:
+        return None
+    value = item["lifecycle"]
+    if value not in _OAP_LIFECYCLES:
+        raise MakaiProtocolError(
+            "OAP model entry lifecycle must be stable, preview or deprecated when present",
+            "malformed_response",
+        )
+    return cast(ModelLifecycle, value)
+
+
+def _oap_source(item: Any) -> Optional[ModelSource]:
+    if "source" not in item:
+        return None
+    value = item["source"]
+    if value == "discovered":
+        return "dynamic"
+    if value == "fallback":
+        return "static_fallback"
+    raise MakaiProtocolError(
+        "OAP model entry source must be discovered or fallback when present",
+        "malformed_response",
+    )
+
+
 class OAPModelsApi:
     def __init__(self, transport: StdioTransport, *, response_timeout: float = 5.0) -> None:
         self._transport = transport
@@ -241,9 +271,9 @@ class OAPModelsApi:
                 provider_id=str(item.get("provider_id", "")),
                 api=str(item.get("wire", "")),
                 auth_status=item.get("auth_status", "unknown"),
-                lifecycle=item.get("lifecycle", "stable"),
+                lifecycle=_oap_lifecycle(item),
                 capabilities=item.get("capabilities", []),
-                source="static_fallback" if item.get("source") == "fallback" else "dynamic",
+                source=_oap_source(item),
                 context_window=item.get("context_window"),
                 max_output_tokens=item.get("max_output_tokens"),
                 reasoning_default=item.get("reasoning_default"),
