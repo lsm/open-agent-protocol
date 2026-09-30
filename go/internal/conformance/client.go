@@ -225,8 +225,9 @@ func (c *Client) expire(total time.Duration, fatal bool) error {
 }
 
 func (c *Client) drainBuffered() (bool, error) {
+	available := len(c.lines)
 	ingested := false
-	for {
+	for i := 0; i < available; i++ {
 		select {
 		case l, ok := <-c.lines:
 			if err := c.ingest(l, ok); err != nil {
@@ -237,6 +238,7 @@ func (c *Client) drainBuffered() (bool, error) {
 			return ingested, nil
 		}
 	}
+	return ingested, nil
 }
 
 func (c *Client) pullWithin(remaining, total time.Duration, fatal bool) error {

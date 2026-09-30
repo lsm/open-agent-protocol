@@ -164,7 +164,17 @@ func runHelperEndpoint(mode string) int {
 	}
 	if mode == "chatty" {
 
-		floodWithoutAnswering()
+		floodWithoutAnswering(false)
+		return 0
+	}
+	if mode == "chatty-controls" {
+
+		answerControlsForOtherIDs()
+		return 0
+	}
+	if mode == "chatty-responses" {
+
+		floodWithoutAnswering(true)
 		return 0
 	}
 	out := bufio.NewWriter(os.Stdout)
@@ -279,7 +289,32 @@ func runHelperEndpoint(mode string) int {
 	}
 }
 
-func floodWithoutAnswering() {
+func answerControlsForOtherIDs() {
+	reader := bufio.NewReader(os.Stdin)
+	out := bufio.NewWriter(os.Stdout)
+	defer out.Flush()
+	if _, err := reader.ReadString('\n'); err != nil {
+		return
+	}
+	n := 0
+	for {
+		n++
+		frame, err := json.Marshal(ControlFrame{
+			Control: "replay.accepted", ID: fmt.Sprintf("other-%d", n),
+			OldestAvailable: 1, LatestAvailable: uint64(n),
+		})
+		if err != nil {
+			return
+		}
+		if _, err := out.Write(append(frame, '\n')); err != nil {
+			return
+		}
+		out.Flush()
+		time.Sleep(150 * time.Millisecond)
+	}
+}
+
+func floodWithoutAnswering(asReply bool) {
 	out := bufio.NewWriter(os.Stdout)
 	defer out.Flush()
 	if _, err := bufio.NewReader(os.Stdin).ReadString('\n'); err != nil {
@@ -296,6 +331,9 @@ func floodWithoutAnswering() {
 			return
 		}
 		envelope.SessionID = "chatty"
+		if asReply {
+			envelope.InReplyTo = protocol.EnvelopeID(fmt.Sprintf("nobody-%d", n))
+		}
 		data, err := json.Marshal(envelope)
 		if err != nil {
 			return
@@ -382,6 +420,13 @@ func handleHelperRequest(request protocol.Envelope, revision, mode string, emit 
 			}, seq(n))
 		}
 
+		if mode == "answers-each" {
+
+			emit(protocol.TypeCapabilitiesResponse, protocol.CapabilityDescriptor{
+				Endpoint: protocol.EndpointDescriptor{ID: "helper.answers", Name: "Answering endpoint"},
+			}, reply)
+			return
+		}
 		if mode == "early-events" {
 
 			started()

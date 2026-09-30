@@ -38,6 +38,33 @@ func shortDeadlineClient(t *testing.T, mode string) *Client {
 	return client
 }
 
+func ask(t *testing.T, client *Client, id string) protocol.EnvelopeID {
+	t.Helper()
+	request, err := protocol.NewEnvelope(protocol.TypeCapabilitiesRequest, protocol.EnvelopeID(id), protocol.CapabilitiesRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.SessionID = "budget"
+	if err = client.Send(request); err != nil {
+		t.Fatal(err)
+	}
+	return request.ID
+}
+
+func expectBudgetSpent(t *testing.T, what string, start time.Time, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("a peer that never answered the %s was reported as having answered it", what)
+	}
+	elapsed := time.Since(start)
+	if elapsed < budgetForTest {
+		t.Fatalf("the %s wait gave up after %s without spending its %s budget, so it stopped on something other than the deadline", what, elapsed, budgetForTest)
+	}
+	if elapsed > budgetForTest+budgetHardCap {
+		t.Fatalf("the %s wait took %s against a %s budget, so frames renewed it", what, elapsed, budgetForTest)
+	}
+}
+
 func awaitLiveness(t *testing.T, client *Client) {
 	t.Helper()
 	deadline := time.Now().Add(budgetHardCap)
@@ -52,110 +79,71 @@ func awaitLiveness(t *testing.T, client *Client) {
 	}
 }
 
-func TestAChattyPeerCannotRenewTheWaitForAnUnansweredResponse(t *testing.T) {
-	client := shortDeadlineClient(t, "chatty")
-	open, err := protocol.NewEnvelope(protocol.TypeCapabilitiesRequest, "budget-req-1", protocol.CapabilitiesRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	open.SessionID = "budget"
-	if err := client.Send(open); err != nil {
-		t.Fatal(err)
-	}
-	awaitLiveness(t, client)
-	start := time.Now()
-	err = waitWithin(t, "response", func() error {
-		_, err := client.Response("budget-req-1")
-		return err
-	})
-	elapsed := time.Since(start)
-	if err == nil {
-		t.Fatal("a peer that never answered was reported as having answered")
-	}
-	if !strings.Contains(err.Error(), budgetForTest.String()) {
-		t.Fatalf("the failure does not name the budget the peer was given: %v", err)
-	}
-	if elapsed < budgetForTest {
-		t.Fatalf("the wait gave up after %s without spending its %s budget, so it stopped on something other than the deadline", elapsed, budgetForTest)
-	}
-	if elapsed > budgetForTest+10*time.Second {
-		t.Fatalf("the wait took %s against a %s budget, so frames renewed it", elapsed, budgetForTest)
+func TestAPeerThatNeverAnswersGetsOneBudgetNotOnePerLineItSends(t *testing.T) {
+	for _, mode := range []struct {
+		name   string
+		chatty bool
+	}{
+		{"chatty", true},
+		{"silent", false},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			client := shortDeadlineClient(t, mode.name)
+			ask(t, client, "budget-req")
+			if mode.chatty {
+				awaitLiveness(t, client)
+			}
+			start := time.Now()
+			err := waitWithin(t, "response", func() error {
+				_, err := client.Response("budget-req")
+				return err
+			})
+			expectBudgetSpent(t, "response", start, err)
+			if !strings.Contains(err.Error(), budgetForTest.String()) {
+				t.Fatalf("the failure does not name the budget the peer was given: %v", err)
+			}
+		})
 	}
 }
 
-func TestASilentPeerEndsTheWaitOnItsBudget(t *testing.T) {
-	client := shortDeadlineClient(t, "silent")
-	open, err := protocol.NewEnvelope(protocol.TypeCapabilitiesRequest, "budget-req-2", protocol.CapabilitiesRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	open.SessionID = "budget"
-	if err := client.Send(open); err != nil {
-		t.Fatal(err)
-	}
-	start := time.Now()
-	err = waitWithin(t, "response", func() error {
-		_, err := client.Response("budget-req-2")
-		return err
-	})
-	if err == nil {
-		t.Fatal("a silent peer was reported as having answered")
-	}
-	if !strings.Contains(err.Error(), budgetForTest.String()) {
-		t.Fatalf("the failure does not name the budget: %v", err)
-	}
-	elapsed := time.Since(start)
-	if elapsed < budgetForTest {
-		t.Fatalf("the wait gave up after %s without spending its %s budget", elapsed, budgetForTest)
-	}
-	if elapsed > budgetForTest+10*time.Second {
-		t.Fatalf("a silent peer held the wait for %s against a %s budget", elapsed, budgetForTest)
-	}
-}
-
-func TestAControlWaitIsNotRenewedByUnrelatedControlFrames(t *testing.T) {
-	client := shortDeadlineClient(t, "chatty")
-	open, err := protocol.NewEnvelope(protocol.TypeCapabilitiesRequest, "budget-req-3", protocol.CapabilitiesRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	open.SessionID = "budget"
-	if err := client.Send(open); err != nil {
-		t.Fatal(err)
-	}
+func TestAControlWaitIsNotRenewedByRealUnrelatedControlFrames(t *testing.T) {
+	client := shortDeadlineClient(t, "chatty-controls")
 	after := uint64(0)
-	if err := client.SendControl(ControlFrame{Control: "replay", ID: "budget-ctl-1", SessionID: "budget", RunID: "run-x", After: &after}); err != nil {
+	if err := client.SendControl(ControlFrame{Control: "replay", ID: "budget-ctl-2", SessionID: "budget", RunID: "run-y", After: &after}); err != nil {
 		t.Fatal(err)
 	}
-	awaitLiveness(t, client)
 	start := time.Now()
-	err = waitWithin(t, "control", func() error {
-		_, err := client.Control("budget-ctl-1")
+	err := waitWithin(t, "control", func() error {
+		_, err := client.Control("budget-ctl-2")
 		return err
 	})
 	if !errors.Is(err, ErrControlUnanswered) {
 		t.Fatalf("an unanswered control is %v, want ErrControlUnanswered so the runner can still skip it", err)
 	}
-	if elapsed := time.Since(start); elapsed > ControlAnswerBudget+10*time.Second {
-		t.Fatalf("unrelated frames renewed the control budget for %s", elapsed)
-	}
+	expectBudgetSpent(t, "control", start, err)
 }
 
-func TestAnAnswerThatIsAlreadyBufferedIsStillReturned(t *testing.T) {
-	client, err := Spawn(context.Background(), helperCommand(t, "early-events")[0], nil, io.Discard)
+func TestAMatchingAnswerAlreadyBufferedIsReturnedWithoutSpendingTheBudget(t *testing.T) {
+	client, err := Spawn(context.Background(), helperCommand(t, "answers-each")[0], nil, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	open, err := protocol.NewEnvelope(protocol.TypeSessionOpenRequest, "budget-req-4", protocol.SessionOpenRequest{SessionID: "budget"})
+	firstID := ask(t, client, "budget-buf-1")
+	secondID := ask(t, client, "budget-buf-2")
+	if _, err := client.Response(secondID); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	answer, err := client.Response("budget-buf-1")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("an answer the peer had already sent was not returned from the buffer: %v", err)
 	}
-	open.SessionID = "budget"
-	if err := client.Send(open); err != nil {
-		t.Fatal(err)
+	elapsed := time.Since(start)
+	if answer.InReplyTo != firstID {
+		t.Fatalf("the buffered answer is in reply to %q, not the request that drew it", answer.InReplyTo)
 	}
-	if _, err := client.Response(open.ID); err != nil {
-		t.Fatalf("an answer the helper had already sent was not returned: %v", err)
+	if elapsed > budgetForTest/2 {
+		t.Fatalf("a buffered match took %s, so it was not served from the buffer", elapsed)
 	}
 }

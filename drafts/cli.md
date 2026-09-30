@@ -34,9 +34,8 @@ not a second product.
 line deadline bounds a single response, event or control answer from the moment the
 runner starts looking for it, and a frame the runner did not ask for spends that
 budget rather than renewing it. An endpoint that keeps talking but never answers is
-therefore judged on the deadline instead of being waited on forever. A match already
-buffered is still returned, and a control frame the endpoint does not implement still
-skips rather than failing, because neither is the endpoint answering late.
+judged on the deadline instead of waited on forever; a match already buffered is
+still returned, and a control frame the endpoint does not implement still skips.
 
 The hub is its own verb in both binaries: `goap hub` and `oapx hub`. It is a layer
 above an endpoint, not a different spelling of one, and giving it its own verb is
