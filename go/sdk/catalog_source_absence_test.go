@@ -49,6 +49,55 @@ func TestAStatedSourceKeepsItsMappingThroughThePublicSeam(t *testing.T) {
 	}
 }
 
+func TestEachAuthSelectorActuallyChangesTheRow(t *testing.T) {
+	for _, want := range []AuthStatus{AuthAuthenticated, AuthLoginRequired, AuthExpired,
+		AuthRefreshing, AuthLoginInProgress, AuthFailed, AuthUnknown} {
+		client := newTestClient(t, scenarioOAP, "OAPX_TEST_CATALOG_AUTH="+string(want))
+		listed, err := client.Models.List(testContext(t), ListModelsRequest{IncludeLoginRequired: boolPtr(true)})
+		if err != nil {
+			t.Fatalf("auth selector %q must list: %v", want, err)
+		}
+		if len(listed.Models) != 1 {
+			t.Fatalf("auth selector %q must publish exactly one row, got %d", want, len(listed.Models))
+		}
+		if listed.Models[0].AuthStatus != want {
+			t.Errorf("auth selector %q produced AuthStatus %q: the selector did not take effect",
+				want, listed.Models[0].AuthStatus)
+		}
+	}
+}
+
+func TestAnAuthSelectorThatIsNotAValidValueReachesTheRowUnchanged(t *testing.T) {
+	for _, shape := range []string{"null", "number", "invented"} {
+		client := newTestClient(t, scenarioOAP, "OAPX_TEST_CATALOG_AUTH="+shape)
+		listed, err := client.Models.List(testContext(t), ListModelsRequest{IncludeLoginRequired: boolPtr(true)})
+		if err != nil {
+			t.Fatalf("auth selector %q must list: %v", shape, err)
+		}
+		if len(listed.Models) != 1 {
+			t.Fatalf("auth selector %q must publish one row, got %d", shape, len(listed.Models))
+		}
+		if got := listed.Models[0].AuthStatus; got == AuthAuthenticated {
+			t.Errorf("auth selector %q left the row at %q: the selector did not take effect", shape, got)
+		}
+	}
+}
+
+func TestAnOmittedAuthStatusReadsAsEmptyRatherThanAuthenticated(t *testing.T) {
+	client := newTestClient(t, scenarioOAP, "OAPX_TEST_CATALOG_AUTH=absent")
+	defer client.Close()
+	listed, err := client.Models.List(testContext(t), ListModelsRequest{IncludeLoginRequired: boolPtr(true)})
+	if err != nil {
+		t.Fatalf("an omitted auth_status must not be refused: %v", err)
+	}
+	if len(listed.Models) != 1 {
+		t.Fatalf("an omitted auth_status must publish one row, got %d", len(listed.Models))
+	}
+	if got := listed.Models[0].AuthStatus; got == AuthAuthenticated {
+		t.Errorf("an omitted auth_status read as %q: the fixture's default leaked through", got)
+	}
+}
+
 func TestAnAuthOnlyShapeStillNamesItsRow(t *testing.T) {
 	client := newTestClient(t, scenarioOAP, "OAPX_TEST_CATALOG_AUTH=login_required")
 	defer client.Close()

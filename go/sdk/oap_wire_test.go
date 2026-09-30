@@ -344,8 +344,29 @@ func selectedCatalogModel() (map[string]any, bool) {
 		"capabilities": []string{"chat", "streaming"},
 	}
 	if authShape != "" {
-		if authShape == "login_required" {
+		switch authShape {
+		case "authenticated":
+			model["auth_status"] = "authenticated"
+		case "login_required":
 			model["auth_status"] = "login_required"
+		case "expired":
+			model["auth_status"] = "expired"
+		case "refreshing":
+			model["auth_status"] = "refreshing"
+		case "login_in_progress":
+			model["auth_status"] = "login_in_progress"
+		case "failed":
+			model["auth_status"] = "failed"
+		case "unknown":
+			model["auth_status"] = "unknown"
+		case "absent":
+			delete(model, "auth_status")
+		case "null":
+			model["auth_status"] = nil
+		case "number":
+			model["auth_status"] = float64(7)
+		case "invented":
+			model["auth_status"] = "retired"
 		}
 		model["model_ref"] = "fixture/other:selected@" + identity
 	}
