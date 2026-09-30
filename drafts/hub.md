@@ -598,8 +598,8 @@ with an unbounded round count is not a bound. The Zig port reads in 64 KiB round
 for hours still drains. A drain that cannot read its own clock stops rather than draining without a
 bound, and that rule covers the **whole helper path**: `readUntil` returns its existing `Timeout` rather
 than substituting `0` for a clock it could not read, which kept `left_ms` positive and renewed the
-silent-socket poll forever; `readHead` and `readBody` do the same for their budgets; and the drain round
-deadline **reuses the `now` that round already read**. The classification is unchanged — a clock it cannot
+silent-socket poll forever; `readHead` and `readBody` do the same; and the round deadline **reuses the
+`now` that round already read**. The classification is unchanged — a clock it cannot
 read is a wait it cannot honour, which is the `Timeout` those sites already had — so no wire code or
 status is added.
 
