@@ -1862,6 +1862,15 @@ unrecognised literal is a malformed response and is rejected. Only an absent
 key reads as unknown. The vocabulary normalisation is unchanged: `discovered`
 reads as the SDK's dynamic value and `fallback` as its static-fallback value.
 
-`lifecycle` follows the same shape in a later change, and the native
-protocol `ModelDescriptor` declared earlier in this document is a separate
-contract that keeps its required members.
+`lifecycle` follows the same shape: the shared catalog result carries it as
+optional, an absent key reads as **unknown**, no reader invents `stable` for
+a listing that stated none, and a `lifecycle` that is present must be
+`stable`, `preview` or `deprecated`, with `null`, a number or an
+unrecognised literal a malformed response. A listing filters a model out as
+deprecated only when it **stated** `deprecated`; a model whose lifecycle is
+unknown stays in the listing, because dropping it would exclude a model for
+failing to answer a question it was never asked.
+
+Rust landed as #709 and Go as #710; this change is the TypeScript reader,
+completing the three. The native protocol `ModelDescriptor` declared earlier
+in this document is a separate contract that keeps its required members.
