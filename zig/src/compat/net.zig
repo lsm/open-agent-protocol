@@ -264,7 +264,7 @@ test "a send shutdown ends the peer read of us" {
     try std.testing.expectEqual(@as(usize, 0), try client.read(&after));
 }
 
-test "the unnamed shutdown still closes both directions" {
+test "the unnamed shutdown still ends the peer read of us" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     const address = try resolveAddress(std.testing.allocator, "127.0.0.1", 0);
     var server = try tcpListen(address, .{ .reuse_address = true });
