@@ -167,6 +167,86 @@ pub fn estimateMessageTokens(message: ai_types.Message) u64 {
     return estimateMessage(message).estimated_tokens;
 }
 
+const full_window_output_tokens: u64 = 1024;
+
+fn inflated(estimate: u64) u64 {
+    return estimate + estimate / 3;
+}
+
+fn promptTokens(context: ai_types.Context) u64 {
+    const messages = context.messages;
+    var index = messages.len;
+    while (index > 0) {
+        index -= 1;
+        if (messages[index] != .assistant) continue;
+        const usage = messages[index].assistant.usage;
+        const reported = usage.input + usage.cache_read + usage.cache_write;
+        if (reported == 0) continue;
+        return reported + usage.output + inflated(estimateMessages(messages[index + 1 ..]).estimated_tokens);
+    }
+    return inflated(estimatePromptTokens(context));
+}
+
+pub fn outputLimit(model: ai_types.Model, requested: ?u32, context: ai_types.Context) ?u32 {
+    const wanted: u64 = requested orelse model.max_tokens;
+    if (model.context_window == 0 or wanted == 0) return requested;
+    const prompt = promptTokens(context);
+    if (model.context_window <= prompt) return @intCast(@min(wanted, full_window_output_tokens));
+    const room = model.context_window - prompt;
+    if (room >= wanted) return requested;
+    return @intCast(room);
+}
+
+fn outputLimitModel(context_window: u32, max_tokens: u32) ai_types.Model {
+    return .{
+        .id = "test-model",
+        .name = "Test",
+        .api = "test-api",
+        .provider = "test-provider",
+        .base_url = "",
+        .reasoning = false,
+        .input = &.{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = context_window,
+        .max_tokens = max_tokens,
+    };
+}
+
+test "outputLimit asks for no more output than the context window leaves after an estimated prompt, and leaves an unset limit unset when it fits" {
+    const text = "a" ** 3000;
+    const messages = [_]ai_types.Message{.{ .user = .{ .content = .{ .text = text }, .timestamp = 0 } }};
+    const context: ai_types.Context = .{ .messages = &messages };
+    const prompt = inflated(estimatePromptTokens(context));
+
+    try std.testing.expectEqual(@as(?u32, @intCast(10_000 - prompt)), outputLimit(outputLimitModel(10_000, 9_000), null, context));
+    try std.testing.expectEqual(@as(?u32, 500), outputLimit(outputLimitModel(10_000, 9_000), 500, context));
+    try std.testing.expectEqual(@as(?u32, 1024), outputLimit(outputLimitModel(@intCast(prompt), 9_000), null, context));
+    try std.testing.expectEqual(@as(?u32, 700), outputLimit(outputLimitModel(@intCast(prompt), 700), null, context));
+    try std.testing.expectEqual(@as(?u32, 500), outputLimit(outputLimitModel(@intCast(prompt + 500), 9_000), null, context));
+    try std.testing.expectEqual(@as(?u32, 9_000), outputLimit(outputLimitModel(0, 9_000), 9_000, context));
+    try std.testing.expectEqual(@as(?u32, null), outputLimit(outputLimitModel(1_000_000, 9_000), null, context));
+}
+
+test "outputLimit counts the prompt from the provider's last report when a reply carries one" {
+    const messages = [_]ai_types.Message{
+        .{ .user = .{ .content = .{ .text = "a" ** 40_000 }, .timestamp = 0 } },
+        .{ .assistant = .{
+            .content = &.{.{ .text = .{ .text = "ok" } }},
+            .api = "test-api",
+            .provider = "test-provider",
+            .model = "test-model",
+            .usage = .{ .input = 6_000, .output = 200, .cache_read = 3_000, .cache_write = 800 },
+            .stop_reason = .stop,
+            .timestamp = 0,
+        } },
+        .{ .user = .{ .content = .{ .text = "b" ** 400 }, .timestamp = 0 } },
+    };
+    const context: ai_types.Context = .{ .messages = &messages };
+    const prompt = 6_000 + 3_000 + 800 + 200 + inflated(estimateMessages(messages[2..]).estimated_tokens);
+
+    try std.testing.expectEqual(@as(?u32, @intCast(20_000 - prompt)), outputLimit(outputLimitModel(20_000, 19_000), null, context));
+}
+
 fn pushAgentEvent(event_stream: *AgentEventStream, event: AgentEvent) !void {
     if (!event_stream.pushBlocking(event)) {
         return error.StreamCompleted;
@@ -912,7 +992,7 @@ fn streamAssistantResponse(
         .thinking_budgets = config.thinking_budgets,
         .max_retry_delay_ms = config.max_retry_delay_ms orelse 60_000,
         .temperature = config.temperature,
-        .max_tokens = config.max_tokens,
+        .max_tokens = outputLimit(config.model, config.max_tokens, llm_context),
     };
 
     const provider_stream = try config.protocol.stream(
@@ -1090,6 +1170,11 @@ fn setFinalMessage(state: *LoopState, allocator: std.mem.Allocator, msg: ai_type
     }
 
     state.final_message = cloned;
+}
+
+fn runCancelled(config: AgentLoopConfig) bool {
+    const token = config.cancel_token orelse return false;
+    return token.isCancelled();
 }
 
 fn withinTurnLimit(iterations: u32, max_iterations: ?u32) bool {
@@ -1578,6 +1663,11 @@ fn runLoop(
         }
 
         while (withinTurnLimit(state.iterations, config.max_iterations)) {
+            if (runCancelled(config)) {
+                ended_before_cap = true;
+                cancelled_run = true;
+                break :outer;
+            }
             var steering_messages: ?[]const ai_types.Message = null;
             if (config.get_steering_messages_fn) |get_steering| {
                 steering_messages = try get_steering(config.get_steering_messages_ctx, allocator);
@@ -1633,6 +1723,7 @@ fn runLoop(
                 } });
 
                 ended_before_cap = true;
+                cancelled_run = runCancelled(config);
                 break :outer;
             };
 
@@ -1650,6 +1741,7 @@ fn runLoop(
             cut_off_tool_turns = if (outcome == .called_tools and assistant_message.stop_reason == .length) cut_off_tool_turns + 1 else 0;
             switch (outcome) {
                 .failed => {
+                    cancelled_run = runCancelled(config);
                     const final_error_msg = state.final_message orelse assistant_message;
                     try pushAgentEvent(event_stream, .{ .turn_end = .{
                         .message = final_error_msg,
