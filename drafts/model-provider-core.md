@@ -1888,8 +1888,8 @@ two kinds of redirect. Makai already does: a base-URL override alone means
 "different endpoint, assume nothing", while an explicit proxy assertion means
 "same vendor behind a proxy, the vendor's facts still hold" — and the
 distinction is load-bearing there, gating assertions about OpenAI's
-`max_completion_tokens` and developer role, DeepSeek's thinking-as-text
-requirement, and Anthropic's cache TTL. A conformance harness pointing at a mock
+`max_completion_tokens` and developer role, DeepSeek's token-limit field and
+strict mode, and Anthropic's cache TTL. A conformance harness pointing at a mock
 is emphatically not a transparent proxy.
 
 The reason it stays a recommendation is stronger than "not yet decided": the

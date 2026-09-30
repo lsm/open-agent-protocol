@@ -520,7 +520,7 @@ func TestTextOnlyPartsAreJoinedWithANewlineWhenThereAreNoImages(t *testing.T) {
 	}
 }
 
-func TestAnAssistantWithThinkingAsTextWritesItInsideTheContentArray(t *testing.T) {
+func TestADeepSeekAssistantPassesItsReasoningBackAsReasoningContent(t *testing.T) {
 	model := loopbackModel()
 	model.BaseURL = "https://api.deepseek.com"
 	ctx := Context{Messages: []Message{{Assistant: &AssistantContent{API: "openai-completions", Provider: "local", Model: "local-model", Parts: []ContentPart{
@@ -528,8 +528,37 @@ func TestAnAssistantWithThinkingAsTextWritesItInsideTheContentArray(t *testing.T
 		{Text: &TextPart{Text: "answer"}},
 	}}}}}
 	got := messages(t, BuildRequestBody(model, ctx, StreamOptions{}))[0].(map[string]any)
+	if got["reasoning_content"] != "step" {
+		t.Errorf("reasoning_content = %v, want the thinking passed back as reasoning", got["reasoning_content"])
+	}
+	parts := got["content"].([]any)
+	if len(parts) != 1 || parts[0].(map[string]any)["text"] != "answer" {
+		t.Errorf("content = %v, want only the answer", parts)
+	}
+}
+
+func TestADeepSeekRequestSendsOneOfItsThreeEfforts(t *testing.T) {
+	model := loopbackModel()
+	model.BaseURL = "https://api.deepseek.com"
+	model.Reasoning = true
+	for level, sent := range map[string]string{"minimal": "low", "low": "low", "medium": "high", "high": "high", "xhigh": "max"} {
+		got := decode(t, BuildRequestBody(model, Context{}, StreamOptions{ReasoningEffort: level}))
+		if got["reasoning_effort"] != sent {
+			t.Errorf("level %q sent %v, want %q", level, got["reasoning_effort"], sent)
+		}
+	}
+}
+
+func TestAnAssistantWithThinkingAsTextWritesItInsideTheContentArray(t *testing.T) {
+	model := loopbackModel()
+	model.Compat = CompatOptions{RequiresThinkingAsText: boolPtr(true)}
+	ctx := Context{Messages: []Message{{Assistant: &AssistantContent{API: "openai-completions", Provider: "local", Model: "local-model", Parts: []ContentPart{
+		{Thinking: &ThinkingPart{Thinking: "step"}},
+		{Text: &TextPart{Text: "answer"}},
+	}}}}}
+	got := messages(t, BuildRequestBody(model, ctx, StreamOptions{}))[0].(map[string]any)
 	if _, ok := got["reasoning_content"]; ok {
-		t.Errorf("deepseek wants the thinking as text, so there is no separate member: %v", got)
+		t.Errorf("the model asks for its thinking as text, so there is no separate member: %v", got)
 	}
 	parts := got["content"].([]any)
 	if len(parts) != 2 {
