@@ -1563,6 +1563,18 @@ test "a run whose events name no run is reported by the replay check, through th
 }
 
 
+const flood_while_driven =
+    \\( while true; do printf '%s\n' '{"control":"heartbeat"}'; sleep 0.005; done ) &
+;
+
+const blank_flood_while_driven =
+    \\( while true; do printf '\n\n\n\n\n\n\n\n'; sleep 0.005; done ) &
+;
+
+const backlog_while_driven =
+    \\( i=0; while [ $i -lt 4000 ]; do printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"content.delta","id":"b'"$i"'","run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","message_id":"m","part":{"type":"text","text":"x"}}}'; i=$((i+1)); done ) &
+;
+
 const scripted_session =
     \\while read -r line; do
     \\  case "$line" in
@@ -1574,9 +1586,7 @@ const scripted_session =
     \\done
 ;
 
-const chatty_script = scripted_session ++ "\n" ++
-    \\while true; do printf '%s\n' '{"control":"heartbeat"}'; done
-;
+const chatty_script = flood_while_driven ++ scripted_session ++ "\nwait\n";
 
 test "a child that writes unrelated frames forever cannot outlive the probe budget" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
@@ -1711,9 +1721,7 @@ test "a probe deadline only ever runs down" {
     try std.testing.expect(d.remainingMs() < 0);
 }
 
-const blank_line_flood_script = scripted_session ++ "\n" ++
-    \\while true; do printf '\n\n\n\n\n\n\n\n'; done
-;
+const blank_line_flood_script = blank_flood_while_driven ++ scripted_session ++ "\nwait\n";
 
 const partial_line_trickle_script = scripted_session ++ "\n" ++
     \\while true; do printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agen'; sleep 0.05; done
@@ -1739,9 +1747,15 @@ test "a blank-line flood cannot keep a correlation inside next" {
 
     try std.testing.expect(spent >= 0);
     try std.testing.expect(spent < 15_000);
+    const replay = report.verdict("a cursor replay is accepted and re-delivers the run") orelse return error.CheckMissing;
+    try std.testing.expect(!replay.passed);
+    try std.testing.expectEqualStrings(
+        "the 1200ms probe budget ran out before the endpoint answered the replay control; raise it with --timeout-ms",
+        replay.detail,
+    );
 }
 
-test "a partial line trickled in forever cannot keep a correlation inside next" {
+test "a partial line trickled in forever cannot hold the run past the budget" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     const io = std.testing.io;
     const before = std.Io.Timestamp.now(io, .awake);
@@ -1758,9 +1772,7 @@ test "a partial line trickled in forever cannot keep a correlation inside next" 
     try std.testing.expect(spent < 15_000);
 }
 
-const backlog_script = scripted_session ++ "\n" ++
-    \\i=0; while [ $i -lt 4000 ]; do printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"content.delta","id":"b'"$i"'","run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","message_id":"m","part":{"type":"text","text":"x"}}}'; i=$((i+1)); done
-;
+const backlog_script = backlog_while_driven ++ scripted_session ++ "\nwait\n";
 
 test "a backlog queued before the budget ran out is still judged inside it" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
