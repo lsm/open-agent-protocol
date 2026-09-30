@@ -204,8 +204,11 @@ fn gather(
             }
         }
 
-        if (registry) |target| {
-            if (arrayField(descriptor, "schemas")) |schemas| {
+        const declared_schemas = field(descriptor, "schemas");
+        if (declared_schemas) |held| {
+            if (held != .array) return error.InvalidPackDescriptor;
+            if (registry) |target| {
+                const schemas = held.array;
                 const pack_root = std.Io.Dir.cwd().realPathFileAlloc(io, dir, allocator) catch try std.fs.path.resolve(allocator, &.{dir});
                 for (schemas.items) |schema_name| {
                     const file = asString(schema_name) orelse return error.InvalidPackDescriptor;

@@ -2138,7 +2138,7 @@ fn lineOf(items: []const TraceItem, index: usize) usize {
 }
 
 const partial_semantic_note = "semantic rules partial: this validator has not ported every rule; goap validate checks them all";
-const partial_load_note = "pack load checks partial: only a schemas path is checked to stay relative and beneath the pack root with symlinks resolved; Decision 0004's other load refusals do not run, and a pack's payload members are not widened, so a pack goap refuses may be accepted here and a trace carrying a declared member is refused schema_invalid";
+const partial_load_note = "pack load checks partial: a descriptor of the wrong shape is refused, a schemas path is checked to stay relative, lexically contained and beneath the pack root with symlinks resolved, and a declared name outside the pack's own id or an id overlapping another's is refused; a refusal now fails the whole load and prints its codes, so no pack is silently dropped. The rest of Decision 0004's load refusals do not run, and a pack's payload members are not widened, so a pack goap refuses may be accepted here and a trace carrying a declared member is refused schema_invalid";
 
 fn writeHumanReport(out: *std.ArrayList(u8), allocator: std.mem.Allocator, path: []const u8, verdict: ValidateVerdict) !void {
     switch (verdict) {
@@ -2276,11 +2276,19 @@ fn runValidate(
     }
     if (paths.items.len == 0) return error.InvalidArgument;
 
+    var load_codes: std.ArrayList(u8) = .empty;
+    defer load_codes.deinit(allocator);
     var judge = validator.Validator.init(allocator, .{
         .mode = mode,
         .pack_dirs = pack_dirs.items,
         .io = compat.fs.defaultIo(),
+        .codes = &load_codes,
     }) catch |err| {
+        if (load_codes.items.len != 0) {
+            try compat.stdio.writeAll(stderr, "pack load refused:");
+            try compat.stdio.writeAll(stderr, load_codes.items);
+            try compat.stdio.writeAll(stderr, "\n");
+        }
         var buf: [512]u8 = undefined;
         const reason = std.fmt.bufPrint(&buf, "{s} did not load as a pack: {s}", .{
             if (pack_dirs.items.len == 1) pack_dirs.items[0] else "a --pack directory",
@@ -10600,3 +10608,4 @@ test "a served backend whose stdout nobody reads stops once the stall bound pass
     try std.testing.expectEqual(@as(?anyerror, error.OutputStalled), runner.err);
     try std.testing.expectEqualStrings(BACKEND_OUTPUT_STALLED_MESSAGE, complained);
 }
+

@@ -7,10 +7,13 @@ const build_options = @import("build_options");
 
 pub const Mode = enum { strict, tolerant };
 
+pub const PackRefusal = packs_mod.Refusal;
+
 pub const Options = struct {
     mode: Mode = .strict,
     pack_dirs: []const []const u8 = &.{},
     io: std.Io,
+    codes: ?*std.ArrayList(u8) = null,
 };
 
 pub fn parseMode(name: []const u8) ?Mode {
@@ -38,6 +41,17 @@ pub const Validator = struct {
         };
         errdefer self.deinit();
         self.loaded = try packs_mod.load(options.io, allocator, &self.registry, options.pack_dirs);
+        if (self.loaded.refusals.len != 0) {
+            if (options.codes) |sink| {
+                for (self.loaded.refusals) |refusal| {
+                    try sink.appendSlice(allocator, try std.fmt.allocPrint(allocator, " {s} in {s}", .{
+                        if (refusal.code.len == 0) "unresolved-schema-reference" else refusal.code,
+                        refusal.pack,
+                    }));
+                }
+            }
+            return error.PackLoadRefused;
+        }
         self.vocabulary = try self.vocabularyFrom(self.loaded);
         if (self.mode == .tolerant) try self.widen();
         return self;
