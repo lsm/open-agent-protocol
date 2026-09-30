@@ -597,9 +597,35 @@ per-round cap with an unbounded round count is not a bound. The Zig port reads i
 64 KiB rounds, stops at **1 MiB in total**, and stops at **2500 ms elapsed from that
 drain's own start** — elapsed, not the process's uptime, so a daemon that has been up
 for hours still drains. A drain that cannot read its own clock stops rather than
-draining without a bound. Zig: `a body the daemon refused to read is drained before the socket closes,
-or the close resets the answer away` and `a drain gives up rather than waiting on a
-peer that sends nothing more`; measured, forty consecutive refused POSTs with
+draining without a bound.
+
+Each of those four bounds is pinned by a test that would fail if the bound were
+removed, and the four are not the same two tests:
+
+- **the 1 MiB total** — `a drain stops at its byte cap and reports what it consumed`
+  asserts the returned count is exactly `drain_total_cap_bytes` against a larger
+  declared length, written from a thread so the writer cannot deadlock on a full
+  socket buffer
+- **the 2500 ms elapsed budget, and that it is elapsed rather than uptime** —
+  `a drain reads on a long-lived process, because its budget is elapsed not uptime`
+  seeds the clock, drains, waits `drain_total_ms + 200` under a bound, asserts the
+  clock is past the budget, and drains again. Restoring the old
+  `elapsedMs() catch 0 -| started` expression makes this fail with `expected 4096,
+  found 0`
+- **stop on an unreadable clock** — the same test, whose `elapsedMs` path returns
+  the bytes consumed rather than `0`
+- **the bound holding against a real process** —
+  `TestHubAddrRefusesALargeRefusedHeadOverARealSocket` transfers 1,052,672 /
+  1,719,800 / 1,799,224 bytes against declarations of 1 MiB+4096, 4 MiB and 16 MiB
+  and is answered 403 with a complete body each time, so the cap is visible from
+  outside the process. Its clock is seeded through a **refused** request, which is
+  the only shape that reaches a drain, and `boundAt` is taken after that
+
+The two pre-existing tests — `a body the daemon refused to read is drained before
+the socket closes, or the close resets the answer away` and `a drain gives up
+rather than waiting on a peer that sends nothing more` — pin the qualitative rule
+that a refused body is drained and that a silent peer is given up on. They do not
+pin any of the four numbers above. Measured, forty consecutive refused POSTs with
 their bodies sent in full all arrive as `403`.
 
 **A read in flight is bounded, and a signal is noticed inside the bound.** The
