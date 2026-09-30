@@ -44,6 +44,10 @@ func runOAPHost() {
 				fakeEmit(oapFakeReply(request, "provider.models.list.response", map[string]any{"models": []map[string]any{selected}}))
 				break
 			}
+			if selected, ok := selectedCatalogLifecycleModel(); ok {
+				fakeEmit(oapFakeReply(request, "provider.models.list.response", map[string]any{"models": []map[string]any{selected}}))
+				break
+			}
 			fakeEmit(oapFakeReply(request, "provider.models.list.response", map[string]any{"models": []map[string]any{{
 				"model_ref": "fixture/other:test@ok", "model_id": "ok", "provider_id": "fixture", "wire": "other",
 				"auth_status": "authenticated", "lifecycle": "stable", "source": "fallback",
@@ -318,6 +322,37 @@ func TestOAPCombinedHostWire(t *testing.T) {
 	if err != nil || len(providers) == 0 {
 		t.Fatalf("auth providers: %v, %+v", err, providers)
 	}
+}
+
+func selectedCatalogLifecycleModel() (map[string]any, bool) {
+	shape := ""
+	for _, entry := range os.Environ() {
+		if value, ok := strings.CutPrefix(entry, "OAPX_TEST_CATALOG_LIFECYCLE="); ok {
+			shape = value
+		}
+	}
+	if shape == "" {
+		return nil, false
+	}
+	model := map[string]any{
+		"model_ref": "fixture/other:lifecycle@" + shape, "model_id": shape, "provider_id": "fixture",
+		"wire": "other", "auth_status": "authenticated", "source": "fallback",
+		"capabilities": []string{"chat", "streaming"},
+	}
+	switch shape {
+	case "absent":
+	case "stable", "preview", "deprecated":
+		model["lifecycle"] = shape
+	case "invented":
+		model["lifecycle"] = "retired"
+	case "empty":
+		model["lifecycle"] = ""
+	case "null":
+		model["lifecycle"] = nil
+	case "wrong-type":
+		model["lifecycle"] = float64(7)
+	}
+	return model, true
 }
 
 func selectedCatalogSourceModel() (map[string]any, bool) {

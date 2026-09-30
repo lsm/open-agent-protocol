@@ -1,0 +1,116 @@
+package sdk
+
+import (
+	"encoding/json"
+	"testing"
+)
+
+func lifecycleList(t *testing.T, shape string) (*ListModelsResponse, error) {
+	t.Helper()
+	client := newTestClient(t, scenarioOAP, "OAPX_TEST_CATALOG_LIFECYCLE="+shape)
+	defer client.Close()
+	return client.Models.List(testContext(t), ListModelsRequest{})
+}
+
+func lifecycleResolve(t *testing.T, shape string) (*ModelDescriptor, error) {
+	t.Helper()
+	client := newTestClient(t, scenarioOAP, "OAPX_TEST_CATALOG_LIFECYCLE="+shape)
+	defer client.Close()
+	return client.Models.Resolve(testContext(t), ResolveModelRequest{ModelID: shape})
+}
+
+func TestAnOmittedLifecycleIsNilThroughThePublicSeam(t *testing.T) {
+	listed, err := lifecycleList(t, "absent")
+	if err != nil {
+		t.Fatalf("an omitted lifecycle must not fail the list: %v", err)
+	}
+	if len(listed.Models) == 0 {
+		t.Fatal("the listing returned no models")
+	}
+	for _, model := range listed.Models {
+		if model.Lifecycle != nil {
+			t.Errorf("Lifecycle = %v, want nil: an omitted lifecycle is unknown, not a chosen value", *model.Lifecycle)
+		}
+	}
+}
+
+func TestAStatedLifecycleKeepsItsMappingThroughThePublicSeam(t *testing.T) {
+	for shape, want := range map[string]ModelLifecycle{
+		"stable": LifecycleStable, "preview": LifecyclePreview, "deprecated": LifecycleDeprecated,
+	} {
+		listed, err := lifecycleList(t, shape)
+		if err != nil {
+			t.Fatalf("a stated lifecycle must list: %v", err)
+		}
+		if len(listed.Models) != 1 {
+			t.Fatalf("the selected scenario must publish exactly one model, got %d", len(listed.Models))
+		}
+		if listed.Models[0].Lifecycle == nil || *listed.Models[0].Lifecycle != want {
+			t.Errorf("%s decoded to %v, want %q", shape, listed.Models[0].Lifecycle, want)
+		}
+	}
+}
+
+func TestAPresentButInvalidLifecycleIsRefusedThroughThePublicSeam(t *testing.T) {
+	for shape, what := range map[string]string{
+		"null": "an explicit null", "invented": "an invented literal",
+		"empty": "an empty string", "wrong-type": "a number",
+	} {
+		if _, err := lifecycleList(t, shape); err == nil {
+			t.Errorf("%s must be refused, not read as an unknown lifecycle", what)
+		}
+	}
+}
+
+func TestResolveSeesTheSameLifecycleAbsenceAndRefusal(t *testing.T) {
+	resolved, err := lifecycleResolve(t, "absent")
+	if err != nil {
+		t.Fatalf("resolve must answer an omitted lifecycle: %v", err)
+	}
+	if resolved.Lifecycle != nil {
+		t.Errorf("Lifecycle = %v, want nil on resolve too", *resolved.Lifecycle)
+	}
+
+	if _, err := lifecycleResolve(t, "null"); err == nil {
+		t.Error("resolve must refuse an explicit null lifecycle too")
+	}
+}
+
+func TestTheSharedResultSeesAMissingLifecycleAsNilAndStillRejectsABadOne(t *testing.T) {
+	capabilities := []string{"chat"}
+	raw := wireModelDescriptor{ModelRef: "p/wire@m", ModelID: "m", DisplayName: "M", ProviderID: "p",
+		API: "wire", AuthStatus: "authenticated", Capabilities: &capabilities}
+	model, err := parseModelDescriptor(raw, 0, "s")
+	if err != nil {
+		t.Fatalf("a descriptor with no lifecycle must decode as unknown, not fail: %v", err)
+	}
+	if model.Lifecycle != nil {
+		t.Errorf("Lifecycle = %v, want nil", *model.Lifecycle)
+	}
+	raw.Lifecycle = json.RawMessage(`"deprecated"`)
+	stated, err := parseModelDescriptor(raw, 0, "s")
+	if err != nil {
+		t.Fatalf("a stated lifecycle must still decode: %v", err)
+	}
+	if stated.Lifecycle == nil || *stated.Lifecycle != LifecycleDeprecated {
+		t.Errorf("Lifecycle = %v, want deprecated", stated.Lifecycle)
+	}
+	raw.Lifecycle = json.RawMessage(`null`)
+	if _, err := parseModelDescriptor(raw, 0, "s"); err == nil {
+		t.Error("an explicit null lifecycle must be rejected, not read as absent")
+	}
+	raw.Lifecycle = json.RawMessage(`"retired"`)
+	if _, err := parseModelDescriptor(raw, 0, "s"); err == nil {
+		t.Error("an invented lifecycle must be rejected, not defaulted")
+	}
+}
+
+func TestAnUnknownLifecycleIsNotFilteredOutAsDeprecated(t *testing.T) {
+	listed, err := lifecycleList(t, "absent")
+	if err != nil {
+		t.Fatalf("the list must answer: %v", err)
+	}
+	if len(listed.Models) == 0 {
+		t.Error("a model that did not state a lifecycle must not be dropped from the listing")
+	}
+}
