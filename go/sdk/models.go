@@ -525,9 +525,6 @@ var (
 		AuthAuthenticated: true, AuthLoginRequired: true, AuthExpired: true,
 		AuthRefreshing: true, AuthLoginInProgress: true, AuthFailed: true, AuthUnknown: true,
 	}
-	knownLifecycles = map[ModelLifecycle]bool{
-		LifecycleStable: true, LifecyclePreview: true, LifecycleDeprecated: true,
-	}
 	knownSources = map[ModelSource]bool{
 		SourceDynamic: true, SourceStaticFallback: true,
 	}
