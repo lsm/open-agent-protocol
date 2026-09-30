@@ -27,11 +27,11 @@ pub const Budget = struct {
         return now.durationTo(limit).raw.nanoseconds;
     }
 
-    pub fn fromTimeout(given: std.Io.Timeout, io: std.Io) Budget {
+    fn fromTimeout(given: std.Io.Timeout, io: std.Io) Budget {
         return .{ .io = io, .limit = given.toTimestamp(io) };
     }
 
-    pub fn until(io: std.Io, budget_ms: i64) Budget {
+    fn until(io: std.Io, budget_ms: i64) Budget {
         return .{
             .io = io,
             .limit = std.Io.Clock.Timestamp.now(io, .awake).addDuration(.{
@@ -79,7 +79,7 @@ pub const Client = struct {
         return .{ .allocator = allocator, .threaded = std.Io.Threaded.init(allocator, .{}) };
     }
 
-    pub fn io(self: *Client) std.Io {
+    fn io(self: *Client) std.Io {
         return self.threaded.io();
     }
 
@@ -165,22 +165,30 @@ pub const Client = struct {
         try stdin.writeStreamingAll(self.io(), "\n");
     }
 
+    pub fn budget(self: *Client, budget_ms: i64) Budget {
+        return Budget.until(self.io(), budget_ms);
+    }
+
+    pub fn budgetFor(self: *Client, timeout: std.Io.Timeout) Budget {
+        return Budget.fromTimeout(timeout, self.io());
+    }
+
     pub fn next(self: *Client, timeout: std.Io.Timeout) !?Frame {
         return self.nextBounded(Budget.fromTimeout(timeout, self.io()));
     }
 
-    pub fn nextBounded(self: *Client, budget: Budget) !?Frame {
+    pub fn nextBounded(self: *Client, allowance: Budget) !?Frame {
         while (true) {
             if (try self.takeLine()) |line| {
                 const trimmed = std.mem.trim(u8, line, " \t\r");
                 if (trimmed.len == 0) {
-                    if (budget.expired()) return null;
+                    if (allowance.expired()) return null;
                     continue;
                 }
                 return try classify(trimmed);
             }
-            if (budget.expired()) return null;
-            const filled = try self.fill(budget.timeout());
+            if (allowance.expired()) return null;
+            const filled = try self.fill(allowance.timeout());
             if (!filled) return null;
         }
     }
@@ -655,7 +663,7 @@ test "a short budget returns nothing on a partial line, and the same child then 
     defer client.deinit();
     defer stopChild(&client);
 
-    const short = Budget.until(client.io(), short_budget_ms);
+    const short = client.budget(short_budget_ms);
     const allowed = remainingMs(short);
     try std.testing.expect(allowed > 0);
 
@@ -666,7 +674,7 @@ test "a short budget returns nothing on a partial line, and the same child then 
     try std.testing.expect(first.elapsed_ns < bounded_call_limit_ns);
     try std.testing.expect(client.pending.items.len > 0);
 
-    const second = try readUnder(&client, Budget.until(client.io(), open_budget_ms));
+    const second = try readUnder(&client, client.budget(open_budget_ms));
     defer second.deinit(allocator);
     try std.testing.expect(second.frame != null);
     try std.testing.expect(second.frame.?.control);
@@ -681,7 +689,7 @@ test "a short budget returns nothing on a blank flood, and the same child then y
     defer client.deinit();
     defer stopChild(&client);
 
-    const short = Budget.until(client.io(), short_budget_ms);
+    const short = client.budget(short_budget_ms);
     const allowed = remainingMs(short);
     try std.testing.expect(allowed > 0);
 
@@ -691,7 +699,7 @@ test "a short budget returns nothing on a blank flood, and the same child then y
     try std.testing.expect(first.elapsed_ns >= allowed * std.time.ns_per_ms - deadline_slack_ns);
     try std.testing.expect(first.elapsed_ns < bounded_call_limit_ns);
 
-    const second = try readUnder(&client, Budget.until(client.io(), open_budget_ms));
+    const second = try readUnder(&client, client.budget(open_budget_ms));
     defer second.deinit(allocator);
     try std.testing.expect(second.frame != null);
     try std.testing.expect(second.frame.?.control);
