@@ -891,10 +891,14 @@ fn writeEvent(w: *json_writer.JsonWriter, event: tui_session.TuiEvent) !void {
             try w.writeBoolField("active", p.active);
             try w.writeIntField("dropped_count", p.dropped_count);
         },
-        .compaction_start => try w.writeStringField("type", "compaction_start"),
+        .compaction_start => |p| {
+            try w.writeStringField("type", "compaction_start");
+            if (p.in_run) try w.writeBoolField("in_run", true);
+        },
         .compaction_end => |p| {
             try w.writeStringField("type", "compaction_end");
             try w.writeStringField("outcome", @tagName(p.outcome));
+            if (p.in_run) try w.writeBoolField("in_run", true);
             try w.writeStringField("text", p.text.slice());
             try w.writeStringField("transcript", p.transcript.slice());
             try w.writeStringField("message", p.message.slice());
@@ -1047,7 +1051,7 @@ fn parseEvent(allocator: std.mem.Allocator, value: std.json.Value) !tui_session.
         .dropped_count = uint64Field(obj, "dropped_count") orelse 0,
     } };
     if (std.mem.eql(u8, kind, "error")) return .{ .@"error" = .{ .message = try owned(allocator, stringField(obj, "message") orelse "") } };
-    if (std.mem.eql(u8, kind, "compaction_start")) return .{ .compaction_start = .{} };
+    if (std.mem.eql(u8, kind, "compaction_start")) return .{ .compaction_start = .{ .in_run = boolField(obj, "in_run", false) } };
     if (std.mem.eql(u8, kind, "compaction_end")) {
         const text = try allocator.dupe(u8, stringField(obj, "text") orelse "");
         errdefer allocator.free(text);
@@ -1056,6 +1060,7 @@ fn parseEvent(allocator: std.mem.Allocator, value: std.json.Value) !tui_session.
         const message = try allocator.dupe(u8, stringField(obj, "message") orelse "");
 
         return .{ .compaction_end = .{
+            .in_run = boolField(obj, "in_run", false),
             .outcome = parseCompactionOutcome(stringField(obj, "outcome") orelse "failed"),
             .text = OwnedSlice(u8).initOwned(text),
             .transcript = OwnedSlice(u8).initOwned(transcript),
@@ -1926,6 +1931,41 @@ test "load starts at the indexed compaction and keeps a display tail before it" 
     try std.testing.expect(warnings > 0 and warnings < 20);
     try std.testing.expect(events[events.len - 2] == .compaction_end);
     try std.testing.expect(events[events.len - 1] == .message_end);
+}
+
+test "load starts at an indexed compaction made inside a run and keeps it marked as one" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try tmpBase(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+    var store = try Store.init(std.testing.allocator, base);
+    defer store.deinit();
+    var meta = try testMeta("in-run");
+    defer meta.deinit(std.testing.allocator);
+
+    try saveText(store, meta, .user, "old question");
+    try store.save(meta, .{ .compaction_start = .{ .in_run = true } });
+    const offset = try store.conversationBytes("in-run");
+    var compacted = tui_session.TuiEvent{ .compaction_end = .{
+        .in_run = true,
+        .outcome = .completed,
+        .text = try owned(std.testing.allocator, agent.compaction.header ++ " Summary follows.\n\n<summary>\nkept state\n</summary>"),
+        .messages_before = 1,
+    } };
+    defer compacted.deinit(std.testing.allocator);
+    try store.save(meta, compacted);
+    try saveText(store, meta, .user, "carry on");
+    meta.compaction_offset = offset;
+    try store.saveIndex(meta);
+
+    var loaded = try store.load("in-run");
+    defer loaded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 3), loaded.messages.items.len);
+    try std.testing.expectEqualStrings("kept state", agent.compaction.summaryOf(loaded.messages.items[0].user.content.text));
+    try std.testing.expectEqualStrings("carry on", loaded.messages.items[2].user.content.text);
+    const events = loaded.events.items;
+    try std.testing.expect(events[events.len - 2] == .compaction_end);
+    try std.testing.expect(events[events.len - 2].compaction_end.in_run);
 }
 
 test "load reads the whole file when the indexed offset does not start a compaction" {
