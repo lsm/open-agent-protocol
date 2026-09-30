@@ -4,6 +4,7 @@ const provider_catalog = @import("provider_catalog");
 const anthropic_messages_base_url = provider_catalog.baseUrlOrCompileError("anthropic", "anthropic-messages", null);
 const openai_responses_base_url = provider_catalog.baseUrlOrCompileError("openai", "openai-responses", null);
 const types = @import("oap_provider_types");
+const ai_types = @import("ai_types");
 
 pub const OAPX_API_NAMES = [_][]const u8{
     "anthropic-messages",
@@ -166,6 +167,98 @@ pub const BUILT_IN_PROVIDERS = [_]BuiltInProvider{
     },
 };
 
+pub fn ownedModelEntriesForRow(
+    allocator: std.mem.Allocator,
+    models: []const ai_types.Model,
+    provider_id: []const u8,
+    wire: ?types.Wire,
+    source: types.ModelSource,
+) ![]types.ModelEntry {
+    var entries = std.ArrayList(types.ModelEntry).empty;
+    errdefer {
+        for (entries.items) |*entry| entry.deinit(allocator);
+        entries.deinit(allocator);
+    }
+    for (models) |model| {
+        if (!std.mem.eql(u8, model.provider, provider_id)) continue;
+        const mapping = mapApiToWire(model.api) orelse continue;
+        if (wire) |wanted| {
+            if (mapping.wire != wanted) continue;
+        }
+        var entry = try ownedModelEntry(allocator, provider_id, model, mapping, source);
+        var entry_owned = true;
+        defer if (entry_owned) entry.deinit(allocator);
+        try entries.append(allocator, entry);
+        entry_owned = false;
+    }
+    return entries.toOwnedSlice(allocator);
+}
+
+pub fn freeModelEntries(allocator: std.mem.Allocator, entries: []types.ModelEntry) void {
+    for (entries) |*entry| entry.deinit(allocator);
+    allocator.free(entries);
+}
+
+fn ownedModelEntry(
+    allocator: std.mem.Allocator,
+    provider_id: []const u8,
+    model: ai_types.Model,
+    mapping: WireMapping,
+    source: types.ModelSource,
+) !types.ModelEntry {
+    const model_ref = try buildModelRef(allocator, provider_id, mapping.wire, mapping.wire_id, model.id);
+    errdefer allocator.free(model_ref);
+    const model_id = try allocator.dupe(u8, model.id);
+    errdefer allocator.free(model_id);
+    const display_name = if (model.name.len > 0) try allocator.dupe(u8, model.name) else null;
+    errdefer if (display_name) |value| allocator.free(value);
+    const owned_provider = try allocator.dupe(u8, provider_id);
+    errdefer allocator.free(owned_provider);
+    const capabilities = try ownedCapabilities(allocator, model);
+    errdefer allocator.free(capabilities);
+    const input_modalities = try ownedModalities(allocator, model.input);
+    errdefer allocator.free(input_modalities);
+
+    return .{
+        .model_ref = model_ref,
+        .model_id = model_id,
+        .display_name = display_name,
+        .provider_id = owned_provider,
+        .wire = mapping.wire,
+        .context_window = if (model.context_window > 0) model.context_window else null,
+        .max_output_tokens = if (model.max_tokens > 0) model.max_tokens else null,
+        .capabilities = capabilities,
+        .source = source,
+        .input_modalities = input_modalities,
+    };
+}
+
+fn ownedCapabilities(allocator: std.mem.Allocator, model: ai_types.Model) ![]const types.ModelCapability {
+    var list = std.ArrayList(types.ModelCapability).empty;
+    errdefer list.deinit(allocator);
+    for (model.input) |name| {
+        const capability: ?types.ModelCapability = if (std.mem.eql(u8, name, "image"))
+            .vision
+        else if (std.mem.eql(u8, name, "audio"))
+            .audio_input
+        else
+            null;
+        if (capability) |value| try list.append(allocator, value);
+    }
+    if (model.reasoning) try list.append(allocator, .reasoning);
+    return list.toOwnedSlice(allocator);
+}
+
+fn ownedModalities(allocator: std.mem.Allocator, input: []const []const u8) ![]const types.Modality {
+    var list = std.ArrayList(types.Modality).empty;
+    errdefer list.deinit(allocator);
+    for (input) |name| {
+        const modality = std.meta.stringToEnum(types.Modality, name) orelse continue;
+        try list.append(allocator, modality);
+    }
+    return list.toOwnedSlice(allocator);
+}
+
 pub fn buildModelRef(
     allocator: std.mem.Allocator,
     provider_id: []const u8,
@@ -181,6 +274,150 @@ pub fn buildModelRef(
         );
     }
     return std.fmt.allocPrint(allocator, "{s}/{s}@{s}", .{ provider_id, wire.toString(), model_id });
+}
+
+test "a row serves every model the snapshot names for it" {
+    const allocator = std.testing.allocator;
+    const models = [_]ai_types.Model{
+        .{
+            .id = "claude-sonnet-4-5",
+            .name = "Claude Sonnet 4.5",
+            .api = "anthropic-messages",
+            .provider = "anthropic",
+            .base_url = "",
+            .reasoning = true,
+            .input = &.{"text", "image"},
+            .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+            .context_window = 200_000,
+            .max_tokens = 8_192,
+        },
+        .{
+            .id = "claude-opus-4-1",
+            .name = "Claude Opus 4.1",
+            .api = "anthropic-messages",
+            .provider = "anthropic",
+            .base_url = "",
+            .reasoning = false,
+            .input = &.{"text"},
+            .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+            .context_window = 200_000,
+            .max_tokens = 8_192,
+        },
+        .{
+            .id = "gpt-4o",
+            .name = "GPT-4o",
+            .api = "openai-responses",
+            .provider = "openai",
+            .base_url = "",
+            .reasoning = false,
+            .input = &.{"text"},
+            .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+            .context_window = 128_000,
+            .max_tokens = 16_384,
+        },
+    };
+
+    const entries = try ownedModelEntriesForRow(
+        allocator,
+        &models,
+        "anthropic",
+        types.Wire.@"anthropic-messages",
+        .discovered,
+    );
+    defer freeModelEntries(allocator, entries);
+
+    try std.testing.expectEqual(@as(usize, 2), entries.len);
+    try std.testing.expectEqualStrings("claude-sonnet-4-5", entries[0].model_id);
+    try std.testing.expectEqualStrings("claude-opus-4-1", entries[1].model_id);
+    try std.testing.expectEqualStrings("anthropic", entries[0].provider_id);
+    try std.testing.expectEqualStrings("anthropic/anthropic-messages@claude-sonnet-4-5", entries[0].model_ref);
+    try std.testing.expectEqual(@as(u32, 200_000), entries[0].context_window.?);
+    try std.testing.expectEqual(@as(usize, 2), entries[0].input_modalities.len);
+    try std.testing.expectEqual(types.Modality.text, entries[0].input_modalities[0]);
+    try std.testing.expectEqual(types.ModelSource.discovered, entries[0].source);
+    try std.testing.expectEqual(@as(usize, 2), entries[0].capabilities.len);
+    try std.testing.expectEqual(types.ModelCapability.vision, entries[0].capabilities[0]);
+    try std.testing.expectEqual(types.ModelCapability.reasoning, entries[0].capabilities[1]);
+    try std.testing.expectEqual(@as(usize, 0), entries[1].capabilities.len);
+}
+
+test "a row the snapshot names no model for serves nothing" {
+    const allocator = std.testing.allocator;
+    const models = [_]ai_types.Model{.{
+        .id = "gpt-4o",
+        .name = "GPT-4o",
+        .api = "openai-responses",
+        .provider = "openai",
+        .base_url = "",
+        .reasoning = false,
+        .input = &.{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 128_000,
+        .max_tokens = 16_384,
+    }};
+
+    const entries = try ownedModelEntriesForRow(allocator, &models, "anthropic", null, .discovered);
+    defer freeModelEntries(allocator, entries);
+
+    try std.testing.expectEqual(@as(usize, 0), entries.len);
+}
+
+test "a row is served only the models its own wire can carry" {
+    const allocator = std.testing.allocator;
+    const models = [_]ai_types.Model{
+        .{
+            .id = "gpt-4o",
+            .name = "GPT-4o",
+            .api = "openai-responses",
+            .provider = "openai",
+            .base_url = "",
+            .reasoning = false,
+            .input = &.{"text"},
+            .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+            .context_window = 128_000,
+            .max_tokens = 16_384,
+        },
+        .{
+            .id = "gpt-4o-mini",
+            .name = "GPT-4o mini",
+            .api = "openai-completions",
+            .provider = "openai",
+            .base_url = "",
+            .reasoning = false,
+            .input = &.{"text"},
+            .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+            .context_window = 128_000,
+            .max_tokens = 16_384,
+        },
+    };
+
+    const entries = try ownedModelEntriesForRow(allocator, &models, "openai", types.Wire.@"openai-responses", .discovered);
+    defer freeModelEntries(allocator, entries);
+
+    try std.testing.expectEqual(@as(usize, 1), entries.len);
+    try std.testing.expectEqualStrings("gpt-4o", entries[0].model_id);
+    try std.testing.expectEqual(types.Wire.@"openai-responses", entries[0].wire);
+}
+
+fn ownedEntriesProbe(allocator: std.mem.Allocator) !void {
+    const models = [_]ai_types.Model{.{
+        .id = "claude-sonnet-4-5",
+        .name = "Claude Sonnet 4.5",
+        .api = "anthropic-messages",
+        .provider = "anthropic",
+        .base_url = "",
+        .reasoning = true,
+        .input = &.{"text", "image"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 200_000,
+        .max_tokens = 8_192,
+    }};
+    const entries = try ownedModelEntriesForRow(allocator, &models, "anthropic", types.Wire.@"anthropic-messages", .discovered);
+    freeModelEntries(allocator, entries);
+}
+
+test "the owned entries free everything when one allocation fails midway" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, ownedEntriesProbe, .{});
 }
 
 test "an unnamed wire carries an opaque discriminator in the reference" {
