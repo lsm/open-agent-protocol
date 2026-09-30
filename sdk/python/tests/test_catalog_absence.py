@@ -176,9 +176,8 @@ class CatalogAbsence(unittest.IsolatedAsyncioTestCase):
                                 include_deprecated=True)
         self.assertEqual(len(kept.models), 1)
         by_api = await self._list("filt-api", '"stable"', '"fallback"', api="nothing")
-        self.assertEqual(by_api.models, [])
+        self.assertEqual(by_api.models, [], "a non-matching api still filters the row out")
 
-    async def test_an_absent_member_on_a_filtered_row_is_still_unknown_not_refused(self) -> None:
         unknown = await self._list("filt-absent", _ABSENT, _ABSENT, include_deprecated=False)
         self.assertEqual(len(unknown.models), 1)
         self.assertIsNone(unknown.models[0].lifecycle)
