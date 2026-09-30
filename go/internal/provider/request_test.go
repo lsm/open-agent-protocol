@@ -636,3 +636,38 @@ func TestDeepSeekEffortMappingMatchesTheDocumentedTable(t *testing.T) {
 		}
 	}
 }
+
+func TestDeepSeekPublicEffortOptionsMapToTheWireValue(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		requested string
+		want      any
+	}{
+		{"documented low stays low", "low", "low"},
+		{"documented medium becomes high", "medium", "high"},
+		{"documented high stays high", "high", "high"},
+		{"documented xhigh becomes high not max", "xhigh", "high"},
+		{"documented max stays max", "max", "max"},
+		{"documented ultra becomes max", "ultra", "max"},
+		{"an absent effort writes no field", "", nil},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			model := openAIModel()
+			model.Provider = "deepseek"
+			model.BaseURL = "https://gateway.corp/v1"
+			model.HasBaseURL = true
+			model.Reasoning = true
+			body := decode(t, BuildRequestBody(model, Context{}, StreamOptions{ReasoningEffort: testCase.requested}))
+			got, present := body["reasoning_effort"]
+			if testCase.want == nil {
+				if present {
+					t.Fatalf("an absent effort wrote reasoning_effort=%v, want the field omitted", got)
+				}
+				return
+			}
+			if !present || got != testCase.want {
+				t.Fatalf("reasoning_effort = %v (present=%v), want %v", got, present, testCase.want)
+			}
+		})
+	}
+}
