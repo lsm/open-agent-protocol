@@ -1,6 +1,9 @@
 package sdk
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func listSelected(t *testing.T, shape string) (*ListModelsResponse, error) {
 	t.Helper()
@@ -82,10 +85,22 @@ func TestTheSharedResultSeesAMissingSourceAsNilAndStillRejectsABadOne(t *testing
 	if model.Source != nil {
 		t.Errorf("Source = %v, want nil", *model.Source)
 	}
-	bogus := "invented-source"
-	raw.Source = &bogus
+	bogus := json.RawMessage(`"invented-source"`)
+	raw.Source = bogus
 	if _, err := parseModelDescriptor(raw, 0, "s"); err == nil {
 		t.Error("an invalid stated source must still be rejected, not defaulted")
+	}
+	raw.Source = json.RawMessage(`null`)
+	if _, err := parseModelDescriptor(raw, 0, "s"); err == nil {
+		t.Error("an explicit null source must be rejected, not read as absent")
+	}
+	raw.Source = json.RawMessage(`"static_fallback"`)
+	stated, err := parseModelDescriptor(raw, 0, "s")
+	if err != nil {
+		t.Fatalf("a stated source must still decode: %v", err)
+	}
+	if stated.Source == nil || *stated.Source != SourceStaticFallback {
+		t.Errorf("stated Source = %v, want %q", stated.Source, SourceStaticFallback)
 	}
 }
 

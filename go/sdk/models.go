@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -284,7 +285,7 @@ type wireModelDescriptor struct {
 	AuthStatus       string            `json:"auth_status"`
 	Lifecycle        string            `json:"lifecycle"`
 	Capabilities     *[]string         `json:"capabilities"`
-	Source           *string           `json:"source"`
+	Source           json.RawMessage   `json:"source"`
 	ContextWindow    *float64          `json:"context_window"`
 	MaxOutputTokens  *float64          `json:"max_output_tokens"`
 	ReasoningDefault *string           `json:"reasoning_default"`
@@ -329,12 +330,26 @@ func (w *wireModelCost) descriptor() *ModelCost {
 	return cost
 }
 
-func modelSource(value *string) *ModelSource {
-	if value == nil {
-		return nil
+func modelSource(raw json.RawMessage) (*ModelSource, error) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
+		return nil, nil
 	}
-	stated := ModelSource(*value)
-	return &stated
+	if trimmed == "null" {
+		return nil, &ProtocolError{Code: CodeMalformedResponse, Message: "model source must be a string when present, not null"}
+	}
+	var name string
+	if err := json.Unmarshal(raw, &name); err != nil || name == "" {
+		return nil, &ProtocolError{Code: CodeMalformedResponse, Message: "model source must be a non-empty string when present"}
+	}
+	var mapped ModelSource
+	switch ModelSource(name) {
+	case SourceDynamic, SourceStaticFallback:
+		mapped = ModelSource(name)
+	default:
+		return nil, &ProtocolError{Code: CodeMalformedResponse, Message: "model source has unknown value: " + name}
+	}
+	return &mapped, nil
 }
 
 func text(value *string) string {
@@ -433,8 +448,9 @@ func parseModelDescriptor(raw wireModelDescriptor, index int, streamID string) (
 	if !knownLifecycles[ModelLifecycle(raw.Lifecycle)] {
 		return ModelDescriptor{}, malformed("models[%d].lifecycle has unknown value: %q", index, raw.Lifecycle)
 	}
-	if raw.Source != nil && !knownSources[ModelSource(*raw.Source)] {
-		return ModelDescriptor{}, malformed("models[%d].source has unknown value: %q", index, *raw.Source)
+	source, err := modelSource(raw.Source)
+	if err != nil {
+		return ModelDescriptor{}, &ProtocolError{Code: CodeMalformedResponse, Message: fmt.Sprintf("models[%d].%s", index, err.Error())}
 	}
 	if raw.Capabilities == nil {
 		return ModelDescriptor{}, malformed("models[%d].capabilities must be an array", index)
@@ -458,7 +474,7 @@ func parseModelDescriptor(raw wireModelDescriptor, index int, streamID string) (
 		AuthStatus:       AuthStatus(raw.AuthStatus),
 		Lifecycle:        ModelLifecycle(raw.Lifecycle),
 		Capabilities:     capabilities,
-		Source:           modelSource(raw.Source),
+		Source:           source,
 		Metadata:         raw.Metadata,
 		Cost:             raw.Cost.descriptor(),
 		InputModalities:  stringsOf(raw.InputModalities),
