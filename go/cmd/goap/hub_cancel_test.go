@@ -2,11 +2,15 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"os/exec"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -14,9 +18,10 @@ import (
 )
 
 func TestHubAddrFinishesTheRefusalAndStopsTheBodyWhenItsSignalArrives(t *testing.T) {
-	address, stop, cancel := startHubAddr(t)
-	defer cancel()
-	defer stop()
+	daemon := startOwnedHub(t)
+	defer daemon.cancelCtx()
+	defer daemon.stop()
+	address := daemon.address
 
 	const declared = 8 << 20
 	conn, err := net.DialTimeout("tcp", address, 10*time.Second)
@@ -125,7 +130,7 @@ func TestHubAddrFinishesTheRefusalAndStopsTheBodyWhenItsSignalArrives(t *testing
 			envelope.Payload.Error.Code)
 	}
 
-	stop()
+	daemon.stop()
 	select {
 	case <-writeDone:
 	case <-time.After(30 * time.Second):
@@ -140,6 +145,7 @@ func TestHubAddrFinishesTheRefusalAndStopsTheBodyWhenItsSignalArrives(t *testing
 		beforeSignal, declared, final, int64(declared)-final, answer.StatusCode, len(body))
 
 	awaitDaemonGone(t, address, 15*time.Second)
+	daemon.awaitExit(t, 15*time.Second)
 }
 
 func awaitDaemonGone(t *testing.T, address string, within time.Duration) {
@@ -152,8 +158,102 @@ func awaitDaemonGone(t *testing.T, address string, within time.Duration) {
 		}
 		_ = conn.Close()
 		if time.Now().After(deadline) {
-			t.Fatalf("the daemon was still accepting connections on %s after %v, so it did not end when signalled", address, within)
+			t.Fatalf("the daemon was still accepting connections on %s after %v, so its listener had not closed", address, within)
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+type ownedHub struct {
+	address   string
+	command   *exec.Cmd
+	cancelCtx context.CancelFunc
+	exited    chan struct{}
+	stopped   bool
+}
+
+func startOwnedHub(t *testing.T) *ownedHub {
+	t.Helper()
+	oapx := os.Getenv("OAP_OAPX_BIN")
+	if oapx == "" {
+		t.Skip("set OAP_OAPX_BIN to an oapx binary to drive its HTTP daemon")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	command := exec.CommandContext(ctx, oapx, "hub", "--addr=127.0.0.1:0")
+	command.Stdin = strings.NewReader("")
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	if err := command.Start(); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	hub := &ownedHub{command: command, cancelCtx: cancel, exited: make(chan struct{})}
+	go func() {
+		defer close(hub.exited)
+		_ = command.Wait()
+	}()
+	hub.address = awaitBoundAddress(t, stdout, stderr.String, cancel)
+	return hub
+}
+
+func awaitBoundAddress(t *testing.T, stdout io.Reader, reported func() string, cancel context.CancelFunc) string {
+	t.Helper()
+	lines := make(chan string, 1)
+	go func() {
+		reader := bufio.NewReaderSize(stdout, 64*1024)
+		line, err := reader.ReadString('\n')
+		if err == nil {
+			fields := strings.Fields(strings.TrimSpace(line))
+			address := strings.TrimPrefix(fields[len(fields)-1], "http://")
+			address = strings.TrimPrefix(address, "https://")
+			lines <- address
+			return
+		}
+		lines <- ""
+	}()
+	select {
+	case address := <-lines:
+		if address != "" {
+			return address
+		}
+		cancel()
+		t.Fatalf("oapx hub --addr reported no address:\n%s", reported())
+		return ""
+	case <-time.After(30 * time.Second):
+		cancel()
+		t.Fatalf("oapx hub --addr never reported a bound address within 30s:\n%s", reported())
+		return ""
+	}
+}
+
+func (hub *ownedHub) stop() {
+	if hub.stopped {
+		return
+	}
+	hub.stopped = true
+	_ = hub.command.Process.Signal(os.Interrupt)
+	select {
+	case <-hub.exited:
+	case <-time.After(10 * time.Second):
+		_ = hub.command.Process.Kill()
+		select {
+		case <-hub.exited:
+		case <-time.After(10 * time.Second):
+		}
+	}
+	hub.cancelCtx()
+}
+
+func (hub *ownedHub) awaitExit(t *testing.T, within time.Duration) {
+	t.Helper()
+	select {
+	case <-hub.exited:
+	case <-time.After(within):
+		t.Fatalf("the daemon child was not reaped within %v of the signal, so its exit was not observed", within)
 	}
 }
