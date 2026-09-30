@@ -9,11 +9,11 @@ pub const max_file_bytes: usize = 16 * 1024 * 1024;
 pub const process_output_bytes: usize = 16 * 1024 * 1024;
 pub const process_poll_ms: u64 = 100;
 pub const max_results: usize = 200;
-pub const default_shell_limit: usize = 10 * 1024;
-pub const default_file_limit: usize = 20 * 1024;
-pub const default_search_limit: usize = 15 * 1024;
-pub const default_fallback_limit: usize = 4 * 1024;
-pub const tool_output_threshold: usize = default_fallback_limit;
+pub const tool_output_threshold: usize = 32 * 1024;
+pub const default_shell_limit: usize = tool_output_threshold;
+pub const default_file_limit: usize = tool_output_threshold;
+pub const default_search_limit: usize = tool_output_threshold;
+pub const default_fallback_limit: usize = tool_output_threshold;
 pub const snippet_bytes: usize = 512;
 
 pub const ToolOutputLimits = struct {
@@ -368,7 +368,7 @@ pub fn jsonString(allocator: std.mem.Allocator, value: anytype) ![]u8 {
 pub fn makeTextResultWithArtifact(allocator: std.mem.Allocator, options: TextResultOptions) !TextResult {
     const raw_bytes = options.text.len + options.stderr.len;
     const limit = options.limits.forTool(options.tool_name);
-    const should_store = options.force_artifact or options.text.len > limit;
+    const should_store = options.force_artifact or raw_bytes > limit;
     if (!should_store) {
         const body = if (options.stderr.len > 0)
             try std.fmt.allocPrint(allocator, "{s}\nstderr:\n{s}", .{ options.text, options.stderr })
@@ -548,6 +548,32 @@ test "line hash and artifact helpers" {
     try std.testing.expectEqualStrings(buf, full);
     try cleanupArtifacts();
     try std.testing.expectError(error.FileNotFound, retrieveArtifact(std.testing.allocator, made.artifact_path.?, buf.len + 1));
+}
+
+test "tool results remain inline through 32 KiB and become artifacts only above it" {
+    var artifact_root = TestArtifactRoot.init();
+    defer artifact_root.deinit();
+
+    const at_limit = try std.testing.allocator.alloc(u8, tool_output_threshold);
+    defer std.testing.allocator.free(at_limit);
+    @memset(at_limit, 'x');
+    var inline_result = try makeTextResultWithArtifact(std.testing.allocator, .{ .tool_name = "shell_execute", .call_id = "at-limit", .text = at_limit });
+    defer inline_result.deinit(std.testing.allocator);
+    try std.testing.expect(!inline_result.compressed);
+    try std.testing.expectEqual(@as(usize, 0), inline_result.result.artifacts.slice().len);
+    try std.testing.expectEqualStrings(at_limit, inline_result.result.content.slice()[0].text.text);
+
+    var stderr_over_limit = try makeTextResultWithArtifact(std.testing.allocator, .{ .tool_name = "shell_execute", .call_id = "stderr-over-limit", .text = "ok", .stderr = at_limit });
+    defer stderr_over_limit.deinit(std.testing.allocator);
+    try std.testing.expect(stderr_over_limit.compressed);
+
+    const above_limit = try std.testing.allocator.alloc(u8, tool_output_threshold + 1);
+    defer std.testing.allocator.free(above_limit);
+    @memset(above_limit, 'y');
+    var artifact_result = try makeTextResultWithArtifact(std.testing.allocator, .{ .tool_name = "shell_execute", .call_id = "above-limit", .text = above_limit });
+    defer artifact_result.deinit(std.testing.allocator);
+    try std.testing.expect(artifact_result.compressed);
+    try std.testing.expectEqual(@as(usize, 1), artifact_result.result.artifacts.slice().len);
 }
 
 test "tool output limits classify by exact token prefix" {

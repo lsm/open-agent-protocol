@@ -115,12 +115,12 @@ test "shell execute supports filesystem root workspace" {
     try std.testing.expect(std.mem.startsWith(u8, result.content.slice()[0].text.text, "stdout:\n/\n"));
 }
 
-test "shell execute stores only output over the limit as an artifact, whatever compact_output says" {
+test "shell execute stores output over 32 KiB as an artifact, regardless of compact_output" {
     var artifact_root = common.TestArtifactRoot.init();
     defer artifact_root.deinit();
     const cwd = try std.process.currentPathAlloc(common.defaultIo(), std.testing.allocator);
     defer std.testing.allocator.free(cwd);
-    const large_args = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"command\":\"python3 - <<'PY'\\nimport sys\\nsys.stdout.write('x' * 11000)\\nPY\"}}", .{cwd});
+    const large_args = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"command\":\"python3 - <<'PY'\\nimport sys\\nsys.stdout.write('x' * 40000)\\nPY\"}}", .{cwd});
     defer std.testing.allocator.free(large_args);
     var large = try execute("call-large", large_args, null, null, null, std.testing.allocator);
     defer large.deinit(std.testing.allocator);
