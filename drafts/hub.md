@@ -679,6 +679,23 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   presence is NOT pinned anywhere**, exactly as the row above states, and this row adds nothing to it.
   Two things a reader might assume are covered here are not: this site's drain amount, and the
   existence of the time bound.
+- **the media gate answered by the daemon itself, with nothing else wrong** — the third gate in
+  `answer()` and the only refusal no `go/cmd/goap` test named, so the parity D26 records was pinned
+  in-process only. `TestHubAddrRefusesABodyWhoseMediaTypeIsNotJSONAndNothingElseIsWrong` sends five
+  requests over a real socket, each with a **Host the hub accepts and no `Origin` at all**, so nothing
+  but the media type can decide the answer. `text/plain` with a body is refused a **complete 415** —
+  status, `Content-Length` match, `error.response`, `unsupported_media_type`, the fixed
+  `open-agent-protocol` / `0.1` / `open-agent-protocol.agent-control-core` triple, and the synthetic
+  correlation `oap-error-N` replying to `oap-request-N`. **Three of the five are counterexamples**, and
+  they are what keep the first from passing on a build that refuses everything: `application/json` with
+  a body is not media-refused, `application/json; charset=utf-8` with a body is not media-refused —
+  so the real daemon agrees with the parameter parity D26 pinned against Go — and `text/plain` with **no
+  body declared** is not media-refused, because the gate reads length. **Three mutations fail it, each
+  on the case it should:** neutralising the gate answers `404` on the refused case, keying the gate on
+  the header instead of the length answers `415` on the body-less case, and admitting a parameter with
+  no `=` again answers `404` on `application/json; charset`. That third one is why that case is here —
+  without it, dropping the parameter validation was **invisible to this test**, which I found by running
+  the mutation rather than by assuming it would be caught.
 - **the bound holding against a real process** —
   `TestHubAddrRefusesALargeRefusedHeadOverARealSocket` transfers 1,052,672 /
   1,719,800 / 1,799,224 bytes against declarations of 1 MiB+4096, 4 MiB and 16 MiB
