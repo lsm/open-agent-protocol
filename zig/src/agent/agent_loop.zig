@@ -512,10 +512,12 @@ fn finalizeToolExecution(
 
     var tool_result_msg = try createToolResultMessage(allocator, tool_call, owned, is_error);
     var unreached = tool_result_msg;
-    errdefer unreached.deinit(allocator);
+    var message_listed = false;
+    errdefer if (!message_listed) unreached.deinit(allocator);
     owned = AgentToolResult{};
     try results.append(allocator, tool_result_msg);
     tool_result_msg = undefined;
+    message_listed = true;
 
     const appended = &results.items[results.items.len - 1];
     const event_result_json = appended.getDetailsJson() orelse "null";
@@ -2560,6 +2562,65 @@ fn failingMiddleware(
     _ = result;
     _ = allocator;
     if (!self.let_pass) return error.MiddlewareRefused;
+}
+
+test "a message already in the results list is not freed again when the stream closes mid-turn" {
+    var events_storage: AgentEventStream = undefined;
+    const events = &events_storage;
+    events.* = AgentEventStream.init(std.testing.allocator);
+    defer events.deinit();
+    events.complete(.{
+        .messages = types.OwnedSlice(ai_types.Message).initBorrowed(&.{}),
+        .final_message = .{ .content = &.{}, .api = "a", .provider = "p", .model = "m", .usage = .{}, .stop_reason = .stop, .timestamp = 0 },
+        .iterations = 0,
+    });
+    while (events.poll()) |_| {}
+
+    var results_storage: std.ArrayList(ai_types.ToolResultMessage) = .empty;
+    defer {
+        for (results_storage.items) |*item| item.deinit(std.testing.allocator);
+        results_storage.deinit(std.testing.allocator);
+    }
+
+    const text = try std.testing.allocator.dupe(u8, "done");
+    const parts = try std.testing.allocator.alloc(ai_types.UserContentPart, 1);
+    parts[0] = .{ .text = .{ .text = text } };
+    const details = try std.testing.allocator.dupe(u8, "{\"ok\":true}");
+    const directory = try std.testing.allocator.dupe(u8, "/observed/dir");
+    var result = AgentToolResult{
+        .content = ai_types.OwnedSlice(ai_types.UserContentPart).initOwned(parts),
+        .details_json = ai_types.OwnedSlice(u8).initOwned(details),
+        .working_directory = ai_types.OwnedSlice(u8).initOwned(directory),
+        .working_directory_observed = true,
+    };
+
+    const config_model = ai_types.Model{
+        .id = "test-model",
+        .name = "Test",
+        .api = "test-api",
+        .provider = "test-provider",
+        .base_url = "",
+        .reasoning = false,
+        .input = &.{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1024,
+        .max_tokens = 256,
+    };
+
+    try std.testing.expectError(error.StreamCompleted, finalizeToolExecution(
+        std.testing.allocator,
+        .{ .model = config_model, .protocol = .{ .stream_fn = undefined } },
+        events,
+        &results_storage,
+        .{ .id = "call-1", .name = "dirtool", .arguments_json = "{}" },
+        "{}",
+        &result,
+        false,
+    ));
+
+    try std.testing.expectEqual(@as(usize, 1), results_storage.items.len);
+    try std.testing.expectEqualStrings("call-1", results_storage.items[0].tool_call_id);
+    try std.testing.expectEqualStrings("/observed/dir", results_storage.items[0].workingDirectory().?);
 }
 
 test "an exhausted allocator loses nothing across the tool handoff" {
