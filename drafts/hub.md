@@ -590,11 +590,57 @@ mux nor a list of the routes still to come.
 close on a socket whose receive queue still holds those bytes is answered with a
 reset, which on Linux can discard the refusal the client has not read yet — the
 client sees a connection error rather than the reason. So every path that
-answers without consuming a body drains what the head declared, bounded at 64 KiB
-and one poll cycle, and gives up rather than waiting on a peer that sends nothing
-more. Zig: `a body the daemon refused to read is drained before the socket closes,
-or the close resets the answer away` and `a drain gives up rather than waiting on a
-peer that sends nothing more`; measured, forty consecutive refused POSTs with
+answers without consuming a body drains what the head declared, and gives up rather
+than waiting on a peer that sends nothing more. The bound is **both** a byte cap and an
+elapsed-time budget, and it is the *total* over the whole drain that bounds it: a per-round cap
+with an unbounded round count is not a bound. The Zig port reads in 64 KiB rounds, stops at
+**1 MiB in total**, and stops at **2500 ms elapsed from that drain's own start** — elapsed, not the process's uptime, so a daemon that has been up
+for hours still drains. A drain that cannot read its own clock stops rather than draining without a
+bound, and that rule covers the **whole helper path**: `readUntil` returns its existing `Timeout` rather
+than substituting `0` for a clock it could not read, which kept `left_ms` positive and renewed the
+silent-socket poll forever; `readHead` and `readBody` do the same; and the round deadline **reuses the
+`now` that round already read**. The classification is unchanged — a clock it cannot
+read is a wait it cannot honour, which is the `Timeout` those sites already had — so no wire code or
+status is added.
+
+An earlier revision claimed each of the four bounds is pinned by a test that fails if the bound is
+removed. **That was false, and was measured rather than assumed.** The pinning that exists is not uniform:
+
+- **the 1 MiB total — pinned by removal at this head.** `a drain stops at its byte cap and reports
+  what it consumed` carries its own `wanted_cap = 1024 * 1024`, asserts the production constant
+  equals it, and uses the literal throughout, so constant and expectation cannot move together;
+  raising `drain_total_cap_bytes` to 1 GiB fails it with `expected 1048576, found 1073741824`. The real-socket test separately pins that a cap
+  is *observable from outside the process*, asserting a lower bound on transferred bytes plus a
+  complete 403 — never an upper one
+- **the 2500 ms elapsed budget, and that it is elapsed rather than uptime** — `a drain reads on a
+  long-lived process, because its budget is elapsed not uptime` seeds the clock, waits
+  `drain_total_ms + 200` under a bound, asserts the clock is past the budget, and drains again;
+  restoring the old `elapsedMs() catch 0 -| started` fails it with `expected 4096, found 0`. **It pins
+  the comparison, not the guard's presence:** neutralising the guard is green, so a deleted time bound
+  would go unnoticed. The stall case stays covered by `a drain gives up rather than waiting on a peer
+  that sends nothing more`
+- **stop on an unreadable clock — NO exercising test, recorded as a gap.** The port returns the
+  bytes consumed from `drain` and its existing `Timeout` from the read helpers, rather than reading
+  an unreadable clock as `0`. Nothing reaches it: the clock is `std.Io.Timestamp` against a monotonic
+  source and, per the owner's check of `compat/time.zig:25-35`, is currently **infallible**, so no test
+  can reach the branch on this platform, in CI, or on the others this port runs on. **This is a latent
+  error-contract mismatch, not a reproduced clock failure.** Stated by the port and unproven by
+  execution, the same shape as the `type_mismatch` gap D20 records. An earlier revision of this row
+  cited the long-lived test as pinning it; that was a coverage claim with no test behind it. Closing
+  it needs a seam substituting a failing clock, a redesign rather than a test, so it stays a gap
+  rather than invented.
+- **the bound holding against a real process** —
+  `TestHubAddrRefusesALargeRefusedHeadOverARealSocket` transfers 1,052,672 /
+  1,719,800 / 1,799,224 bytes against declarations of 1 MiB+4096, 4 MiB and 16 MiB
+  and is answered 403 with a complete body each time, so the cap is visible from
+  outside the process. Its clock is seeded through a **refused** request, which is
+  the only shape that reaches a drain, and `boundAt` is taken after that
+
+The two pre-existing tests — `a body the daemon refused to read is drained before
+the socket closes, or the close resets the answer away` and `a drain gives up
+rather than waiting on a peer that sends nothing more` — pin the qualitative rule
+that a refused body is drained and that a silent peer is given up on. They do not
+pin any of the four numbers above. Measured, forty consecutive refused POSTs with
 their bodies sent in full all arrive as `403`.
 
 **A read in flight is bounded, and a signal is noticed inside the bound.** The
