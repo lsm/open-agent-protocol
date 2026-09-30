@@ -51,6 +51,11 @@ const anthropic_base_url_env = provider_catalog.baseUrlEnv("anthropic")[0];
 const openai_base_url_env = provider_catalog.baseUrlEnv("openai")[0];
 const deepseek_base_url_env = provider_catalog.baseUrlEnv("deepseek")[0];
 
+pub fn overriddenWire(provider_id: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, provider_id, "deepseek")) return "openai-completions";
+    return null;
+}
+
 pub fn normalizeVersionedBaseUrl(url: []const u8) []const u8 {
     const trimmed = std.mem.trimEnd(u8, url, "/");
     if (std.mem.endsWith(u8, trimmed, "/v1")) return trimmed[0 .. trimmed.len - 3];

@@ -256,12 +256,8 @@ pub const TuiRuntime = struct {
         if (models.len > 0) {
             selected = 0;
             if (options.initial_model) |initial| {
-                for (models, 0..) |model, i| {
-                    if (modelMatchesInitial(model, initial)) {
-                        selected = i;
-                        break;
-                    }
-                }
+                const moved: InitialModelRef = .{ .id = initial.id, .provider = initial.provider };
+                selected = firstMatch(models, initial) orelse firstMatch(models, moved) orelse 0;
             } else if (options.initial_model_id) |id| {
                 for (models, 0..) |model, i| {
                     if (std.mem.eql(u8, model.id, id)) {
@@ -335,6 +331,13 @@ pub const TuiRuntime = struct {
         if (runtime.permission_engine) |engine| engine.setBypassAll(runtime.permission_mode == .bypass);
         runtime.rebuildWrappedTools();
         return runtime;
+    }
+
+    fn firstMatch(models: []const ai_types.Model, initial: InitialModelRef) ?usize {
+        for (models, 0..) |model, i| {
+            if (modelMatchesInitial(model, initial)) return i;
+        }
+        return null;
     }
 
     fn modelMatchesInitial(model: ai_types.Model, initial: InitialModelRef) bool {
@@ -2959,6 +2962,22 @@ test "initial model ref selects exact duplicate id provider api tuple" {
     defer runtime.deinit();
 
     try std.testing.expectEqualStrings("openai-responses", runtime.currentModel().?.api);
+}
+
+test "a saved model whose provider moved it to another wire is still the one selected" {
+    var moved = test_model_b;
+    moved.id = "deepseek-flash";
+    moved.provider = "deepseek";
+    moved.api = "anthropic-messages";
+    const models = [_]ai_types.Model{ test_model_a, moved };
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{
+        .models = &models,
+        .initial_model = .{ .id = "deepseek-flash", .provider = "deepseek", .api = "openai-completions" },
+    });
+    defer runtime.deinit();
+
+    try std.testing.expectEqualStrings("deepseek-flash", runtime.currentModel().?.id);
+    try std.testing.expectEqualStrings("anthropic-messages", runtime.currentModel().?.api);
 }
 
 test "replaceModels preserves selected model when still available" {
