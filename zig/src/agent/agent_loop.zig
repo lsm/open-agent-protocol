@@ -542,10 +542,6 @@ fn finalizeToolExecution(
     } });
 }
 
-fn parkAbandonedMessage(state: *LoopState, message: ai_types.AssistantMessage) void {
-    state.abandoned_message = message;
-}
-
 fn runLegacyApproval(tool: AgentTool, approval_request: types.ToolApprovalRequest, allocator: std.mem.Allocator) types.ToolApprovalDecision {
     if (tool.approval_ui_fn) |notify| {
         notify(tool.approval_ui_ctx, approval_request, allocator);
@@ -1064,13 +1060,8 @@ const LoopState = struct {
     messages: std.ArrayList(ai_types.Message),
     iterations: u32,
     final_message: ?ai_types.AssistantMessage,
-    abandoned_message: ?ai_types.AssistantMessage = null,
 
     fn deinit(self: *LoopState, allocator: std.mem.Allocator) void {
-        if (self.abandoned_message) |*abandoned| {
-            abandoned.deinit(allocator);
-            self.abandoned_message = null;
-        }
         for (self.messages.items) |*msg| {
             msg.deinit(allocator);
         }
@@ -1175,7 +1166,9 @@ fn abortedStream(
     stream_ptr.* = event_stream_module.AssistantMessageEventStream.init(allocator);
     const blocks = try allocator.alloc(ai_types.AssistantContent, 1);
     errdefer allocator.free(blocks);
-    blocks[0] = .{ .text = .{ .text = try allocator.dupe(u8, "partial") } };
+    const text = try allocator.dupe(u8, "partial");
+    errdefer allocator.free(text);
+    blocks[0] = .{ .text = .{ .text = text } };
     const api = try allocator.dupe(u8, model.api);
     errdefer allocator.free(api);
     const provider = try allocator.dupe(u8, model.provider);
@@ -1210,7 +1203,9 @@ fn answeredStream(
     stream_ptr.* = event_stream_module.AssistantMessageEventStream.init(allocator);
     const blocks = try allocator.alloc(ai_types.AssistantContent, 1);
     errdefer allocator.free(blocks);
-    blocks[0] = .{ .text = .{ .text = try allocator.dupe(u8, "reply") } };
+    const text = try allocator.dupe(u8, "reply");
+    errdefer allocator.free(text);
+    blocks[0] = .{ .text = .{ .text = text } };
     const api = try allocator.dupe(u8, model.api);
     errdefer allocator.free(api);
     const provider = try allocator.dupe(u8, model.provider);
@@ -1258,6 +1253,8 @@ test "a message the context already owns is not freed again when a later callbac
 
     var context = AgentContext.init(std.testing.allocator);
     defer context.deinit();
+    var retained = Retained{};
+    defer retained.releaseUnpublished(std.testing.allocator);
 
     var steering_calls: usize = 0;
     try std.testing.expectError(error.SteeringFailed, runLoop(std.testing.allocator, &.{}, &context, .{
@@ -1266,7 +1263,7 @@ test "a message the context already owns is not freed again when a later callbac
         .max_iterations = 2,
         .get_steering_messages_fn = steeringCallbackFails,
         .get_steering_messages_ctx = &steering_calls,
-    }, events));
+    }, events, &retained));
     try std.testing.expect(steering_calls > 1);
 
     while (events.poll()) |event| {
@@ -1336,12 +1333,14 @@ test "a stream closed mid-run does not lose the parked message" {
 
     var context = AgentContext.init(std.testing.allocator);
     defer context.deinit();
+    var retained = Retained{};
+    defer retained.releaseUnpublished(std.testing.allocator);
 
     try std.testing.expectError(error.StreamCompleted, runLoop(std.testing.allocator, &.{}, &context, .{
         .model = model,
         .protocol = protocol,
         .max_iterations = 1,
-    }, &closer.stream));
+    }, &closer.stream, &retained));
 
     while (closer.stream.poll()) |event| {
         var mutable = event;
@@ -1369,12 +1368,14 @@ test "an errored turn's events stay readable after the message is released" {
 
     var context = AgentContext.init(std.testing.allocator);
     defer context.deinit();
+    var retained = Retained{};
+    defer retained.releaseUnpublished(std.testing.allocator);
 
     try runLoop(std.testing.allocator, &.{}, &context, .{
         .model = model,
         .protocol = .{ .stream_fn = erroredStream },
         .max_iterations = 1,
-    }, events);
+    }, events, &retained);
 
     var saw_turn_end = false;
     while (events.poll()) |event| {
@@ -1411,12 +1412,14 @@ test "an aborted turn's events stay readable after the message is released" {
 
     var context = AgentContext.init(std.testing.allocator);
     defer context.deinit();
+    var retained = Retained{};
+    defer retained.releaseUnpublished(std.testing.allocator);
 
     try runLoop(std.testing.allocator, &.{}, &context, .{
         .model = model,
         .protocol = .{ .stream_fn = abortedStream },
         .max_iterations = 1,
-    }, events);
+    }, events, &retained);
 
     var saw_message_end = false;
     while (events.poll()) |event| {
@@ -1453,12 +1456,14 @@ test "an aborted turn frees the message the stream handed over" {
 
     var context = AgentContext.init(std.testing.allocator);
     defer context.deinit();
+    var retained = Retained{};
+    defer retained.releaseUnpublished(std.testing.allocator);
     const config = AgentLoopConfig{
         .model = model,
         .protocol = .{ .stream_fn = abortedStream },
         .max_iterations = 1,
     };
-    try runLoop(std.testing.allocator, &.{}, &context, config, events);
+    try runLoop(std.testing.allocator, &.{}, &context, config, events, &retained);
     var saw_turn_end = false;
     while (events.poll()) |event| {
         var ev = event;
@@ -1486,12 +1491,70 @@ test "turnOutcome ends the run on a cut-off tool call once three in a row were a
     try std.testing.expectEqual(TurnOutcome.called_tools, outcomeOf(.tool_use, &calls, 3));
 }
 
+const Retained = struct {
+    messages: std.ArrayList(ai_types.AssistantMessage) = .empty,
+
+    fn add(self: *Retained, allocator: std.mem.Allocator, message: ai_types.AssistantMessage) !void {
+        try self.messages.append(allocator, message);
+    }
+
+    fn releaseUnpublished(self: *Retained, allocator: std.mem.Allocator) void {
+        for (self.messages.items) |*message| message.deinit(allocator);
+        self.messages.clearRetainingCapacity();
+    }
+
+    fn publishError(self: *Retained, stream: *AgentEventStream, allocator: std.mem.Allocator, err_name: []const u8) void {
+        const result = self.intoResult(allocator) catch {
+            self.releaseUnpublished(allocator);
+            stream.completeWithError(err_name);
+            return;
+        };
+        stream.complete(result);
+    }
+
+    fn intoResult(self: *Retained, allocator: std.mem.Allocator) !AgentLoopResult {
+        const messages = try allocator.alloc(ai_types.Message, 0);
+        errdefer allocator.free(messages);
+        return .{
+            .messages = owned_slice_mod.OwnedSlice(ai_types.Message).initOwned(messages),
+            .final_message = .{
+                .content = &.{},
+                .api = "",
+                .provider = "",
+                .model = "",
+                .usage = .{},
+                .stop_reason = .stop,
+                .timestamp = 0,
+            },
+            .iterations = 0,
+            .abandoned_messages = listOfMessages(allocator, try self.messages.toOwnedSlice(allocator)),
+        };
+    }
+};
+
+fn listOfMessages(allocator: std.mem.Allocator, slice: []ai_types.AssistantMessage) std.ArrayList(ai_types.AssistantMessage) {
+    var list: std.ArrayList(ai_types.AssistantMessage) = .empty;
+    list.appendSlice(allocator, slice) catch unreachable;
+    allocator.free(slice);
+    return list;
+}
+
+fn park(retained: *Retained, allocator: std.mem.Allocator, message: ai_types.AssistantMessage) !void {
+    try retained.add(allocator, message);
+}
+
+fn releaseUnpublishedResult(result: *AgentLoopResult, retained: *Retained, allocator: std.mem.Allocator) void {
+    result.deinit(allocator);
+    retained.releaseUnpublished(allocator);
+}
+
 fn runLoop(
     allocator: std.mem.Allocator,
     prompts: ?[]const ai_types.Message,
     context: *AgentContext,
     config: AgentLoopConfig,
     event_stream: *AgentEventStream,
+    retained: *Retained,
 ) !void {
     var state = LoopState{
         .messages = std.ArrayList(ai_types.Message).empty,
@@ -1592,7 +1655,7 @@ fn runLoop(
             state.iterations += 1;
             const loop_owns_message = assistant_message.is_owned or assistant_message.error_message.is_owned;
             var message_transferred = false;
-            errdefer if (loop_owns_message and !message_transferred) parkAbandonedMessage(&state, assistant_message);
+            errdefer if (loop_owns_message and !message_transferred) park(retained, allocator, assistant_message) catch {};
             try setFinalMessage(&state, allocator, assistant_message);
             try appendClonedStateMessage(&state.messages, allocator, .{ .assistant = assistant_message });
 
@@ -1606,7 +1669,7 @@ fn runLoop(
                         .tool_results = types.OwnedSlice(ai_types.ToolResultMessage).initBorrowed(&.{}),
                     } });
                     if (loop_owns_message) {
-                        state.abandoned_message = assistant_message;
+                        try park(retained, allocator, assistant_message);
                         message_transferred = true;
                     }
                     ended_before_cap = true;
@@ -1743,11 +1806,10 @@ fn runLoop(
         .final_message = result_final_message,
         .iterations = state.iterations,
         .termination = termination,
-        .abandoned_message = state.abandoned_message,
+        .abandoned_messages = listOfMessages(allocator, try retained.messages.toOwnedSlice(allocator)),
     };
-    state.abandoned_message = null;
     var result_owned = false;
-    errdefer if (!result_owned) result.deinit(allocator);
+    errdefer if (!result_owned) releaseUnpublishedResult(&result, retained, allocator);
 
     try pushAgentEvent(event_stream, .{
         .agent_end = .{
@@ -1775,7 +1837,10 @@ fn runLoopThread(ctx: *RunLoopThreadCtx) void {
     const allocator = ctx.allocator;
     const stream = ctx.stream;
 
-    runLoop(allocator, ctx.prompts, ctx.context, ctx.config, stream) catch |err| {
+    var retained = Retained{};
+    defer retained.releaseUnpublished(allocator);
+    runLoop(allocator, ctx.prompts, ctx.context, ctx.config, stream, &retained) catch |err| {
+        retained.publishError(stream, allocator, @errorName(err));
         stream.completeWithError(@errorName(err));
     };
 

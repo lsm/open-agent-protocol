@@ -503,16 +503,21 @@ pub const AgentLoopResult = struct {
     final_message: ai_types.AssistantMessage,
     iterations: u32,
     termination: ?AgentTermination = null,
-    abandoned_message: ?ai_types.AssistantMessage = null,
+    abandoned_messages: std.ArrayList(ai_types.AssistantMessage) = .empty,
 
     pub fn deinit(self: *AgentLoopResult, allocator: std.mem.Allocator) void {
         self.messages.deinit(allocator);
         var final = self.final_message;
         final.deinit(allocator);
-        if (self.abandoned_message) |*abandoned| {
-            abandoned.deinit(allocator);
-            self.abandoned_message = null;
-        }
+        for (self.abandoned_messages.items) |*message| message.deinit(allocator);
+        self.abandoned_messages.deinit(allocator);
+    }
+
+    pub fn takeAbandoned(self: *AgentLoopResult, allocator: std.mem.Allocator) ![]ai_types.AssistantMessage {
+        const out = try allocator.alloc(ai_types.AssistantMessage, self.abandoned_messages.items.len);
+        @memcpy(out, self.abandoned_messages.items);
+        self.abandoned_messages.clearRetainingCapacity();
+        return out;
     }
 };
 
