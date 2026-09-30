@@ -249,12 +249,22 @@ fn gather(
         }
     }
 
+    if (load_refusals.items.len != 0) {
+        return .{
+            .arena = arena,
+            .branches = &.{},
+            .members = &.{},
+            .types = &.{},
+            .refusals = try load_refusals.toOwnedSlice(allocator),
+        };
+    }
+
     return .{
         .arena = arena,
         .branches = try branches.toOwnedSlice(allocator),
         .members = try members.toOwnedSlice(allocator),
         .types = try types.toOwnedSlice(allocator),
-        .refusals = try load_refusals.toOwnedSlice(allocator),
+        .refusals = &.{},
     };
 }
 
@@ -356,6 +366,8 @@ test "a pack may only declare names inside its own namespace, and the set is pre
         var loaded = try describe(std.testing.io, allocator, case.dirs);
         defer loaded.deinit();
         try std.testing.expect(carriesCode(loaded.refusals, case.code));
+        try std.testing.expectEqual(@as(usize, 0), loaded.branches.len);
+        try std.testing.expectEqual(@as(usize, 0), loaded.types.len);
     }
 
     var tmp = std.testing.tmpDir(.{});
