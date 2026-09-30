@@ -1172,6 +1172,11 @@ fn setFinalMessage(state: *LoopState, allocator: std.mem.Allocator, msg: ai_type
     state.final_message = cloned;
 }
 
+fn runCancelled(config: AgentLoopConfig) bool {
+    const token = config.cancel_token orelse return false;
+    return token.isCancelled();
+}
+
 fn withinTurnLimit(iterations: u32, max_iterations: ?u32) bool {
     const limit = max_iterations orelse return true;
     return iterations < limit;
@@ -1342,6 +1347,11 @@ fn runLoop(
         }
 
         while (withinTurnLimit(state.iterations, config.max_iterations)) {
+            if (runCancelled(config)) {
+                ended_before_cap = true;
+                cancelled_run = true;
+                break :outer;
+            }
             var steering_messages: ?[]const ai_types.Message = null;
             if (config.get_steering_messages_fn) |get_steering| {
                 steering_messages = try get_steering(config.get_steering_messages_ctx, allocator);
@@ -1397,6 +1407,7 @@ fn runLoop(
                 } });
 
                 ended_before_cap = true;
+                cancelled_run = runCancelled(config);
                 break :outer;
             };
 
@@ -1411,6 +1422,7 @@ fn runLoop(
             cut_off_tool_turns = if (outcome == .called_tools and assistant_message.stop_reason == .length) cut_off_tool_turns + 1 else 0;
             switch (outcome) {
                 .failed => {
+                    cancelled_run = runCancelled(config);
                     const final_error_msg = state.final_message orelse assistant_message;
                     try pushAgentEvent(event_stream, .{ .turn_end = .{
                         .message = final_error_msg,
