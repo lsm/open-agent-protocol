@@ -3447,6 +3447,8 @@ test "a streamed text thinking and tool call reports indices that diverge from t
     mock.stop();
     stopped = true;
 
+    try std.testing.expect(stream.waitForThread(5_000));
+
     try std.testing.expect(stream.getError() == null);
     try std.testing.expect(mock.saw_chat_path.load(.acquire));
     try std.testing.expect(mock.saw_stream_flag.load(.acquire));
