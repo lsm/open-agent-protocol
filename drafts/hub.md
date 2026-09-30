@@ -691,11 +691,23 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   pattern the other test already uses. `drain` takes `started` at `:214`, calls `keep_going.yes()` at
   `:216`, checks the guard at `:218`, and only then computes the round `deadline` at `:220` — so an
   injected callback can **spend the budget and then leave bytes where the inner read will find them**.
-  The callback waits past `drain_total_ms`, writes 4096 bytes to the peer, and returns true; the guard
-  on that same iteration returns before any read, so `drain` returns **0** with the bytes unread. The
-  test asserts its own precondition rather than trusting it: the observed elapsed is at least
-  `drain_total_ms`, exactly 4096 bytes were left buffered, and the callback was polled **once**. The
-  **negative control is the whole point**: making the budget unreachable
+  The callback waits past `drain_total_ms` **plus 200 ms of skew**, writes 4096 bytes to the peer, and
+  returns true; the guard on that same iteration returns before any read, so `drain` returns **0** with
+  the bytes unread. **The skew is load-bearing, not decoration.** `drain` reads its own `started` at
+  `:214`, which is strictly **later** than the test's `before`, so elapsed-time from `drain`'s clock is
+  always the **shorter** of the two. Waiting exactly `drain_total_ms` from the earlier read therefore
+  does not establish that `drain`'s elapsed has reached the budget, and if it has not, the guard does
+  not fire, the 4096 bytes are read, and the test fails on **unmutated** code with precisely the
+  negative control's signature. The 200 ms is the same margin the elapsed-not-uptime test at `:1412`
+  buys for this skew class. The test observes its own precondition rather than trusting it: the
+  observed elapsed is at least `drain_total_ms` + 200, the callback was polled **once**, the write is
+  **not** allowed to fail, and then — the part that makes the name true rather than promised — the test
+  **reads the 4096 bytes back off `pipe.accepted` and asserts every one of them is still queued**,
+  byte for byte. `drain` returned 0 having read nothing, so the socket must still be holding all
+  4096 `q`s; that is a direct observation of the precondition, not the callback's own bookkeeping, and
+  a failed write can no longer leave the test green. Inverting that read-back expectation fails the
+  test with `expected 0, found 4096` on the queued count. The
+  **negative control is still the whole point**: making the budget unreachable
   (`now -| started >= std.math.maxInt(u64)`) leaves the same test failing with `expected 0, found 4096`,
   so the 0 is attributable to the guard rather than to a starved reader, and the inner deadline being
   computed *after* the callback is what lets the un-guarded build read at all. Teardown is bounded by

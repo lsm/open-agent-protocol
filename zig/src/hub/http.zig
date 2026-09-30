@@ -1419,12 +1419,19 @@ test "a drain reads on a long-lived process, because its budget is elapsed not u
     try testing.expectEqual(@as(usize, 4096), drain(&pipe.accepted, 4096, always_going));
 }
 
+const budget_skew_ms: u64 = 200;
+
 const spends_the_budget = struct {
     client: *compat.net.Stream,
     started: u64,
     observed: u64 = 0,
     buffered: usize = 0,
     polls: usize = 0,
+    write_failed: bool = false,
+
+    fn spent_budget() u64 {
+        return @as(u64, @intCast(@max(drain_total_ms, 0))) + budget_skew_ms;
+    }
 
     fn check(context: *const anyopaque) bool {
         const self: *@This() = @ptrCast(@alignCast(@constCast(context)));
@@ -1432,12 +1439,15 @@ const spends_the_budget = struct {
         self.polls += 1;
         if (self.buffered != 0) return true;
         var now = elapsedMs() catch return true;
-        while (now -| self.started < @as(u64, @intCast(@max(drain_total_ms, 0)))) {
+        while (now -| self.started < spent_budget()) {
             compat.time.sleepMs(5);
             now = elapsedMs() catch return true;
         }
         self.observed = now -| self.started;
-        self.client.writeAll("q" ** 4096) catch {};
+        self.client.writeAll("q" ** 4096) catch {
+            self.write_failed = true;
+            return true;
+        };
         self.buffered = 4096;
         return true;
     }
@@ -1451,10 +1461,22 @@ test "a drain whose elapsed budget is already spent consumes nothing, though the
     var spender = spends_the_budget{ .client = &pipe.client, .started = before };
     const keeping: KeepGoing = .{ .context = &spender, .check = spends_the_budget.check };
     const spent = drain(&pipe.accepted, 8192, keeping);
-    try testing.expect(spender.observed >= @as(u64, @intCast(@max(drain_total_ms, 0))));
+    try testing.expect(spender.observed >= spends_the_budget.spent_budget());
+    try testing.expect(!spender.write_failed);
     try testing.expectEqual(@as(usize, 4096), spender.buffered);
     try testing.expectEqual(@as(usize, 0), spent);
     try testing.expectEqual(@as(usize, 1), spender.polls);
+
+    const read_deadline = (elapsedMs() catch return error.TestUnexpectedResult) + 2000;
+    var scratch: [1024]u8 = undefined;
+    var queued: usize = 0;
+    while (queued < 4096) {
+        const n = readUntil(&pipe.accepted, scratch[0..], read_deadline, drain_cycle_ms, always_going) catch break;
+        if (n == 0) break;
+        for (scratch[0..n]) |byte| try testing.expectEqual(@as(u8, 'q'), byte);
+        queued += n;
+    }
+    try testing.expectEqual(@as(usize, 4096), queued);
 }
 
 const stop_after_one = struct {
