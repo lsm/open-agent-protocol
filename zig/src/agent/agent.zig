@@ -879,6 +879,8 @@ pub const Agent = struct {
         errdefer self._allocator.free(tool_call_id);
         const tool_name = try self._allocator.dupe(u8, msg.tool_name);
         errdefer self._allocator.free(tool_name);
+        const directory = try self._allocator.dupe(u8, msg.working_directory.slice());
+        errdefer self._allocator.free(directory);
 
         return .{
             .tool_call_id = tool_call_id,
@@ -886,6 +888,8 @@ pub const Agent = struct {
             .content = content,
             .details_json = details_json,
             .artifacts = ai_types.OwnedSlice(ai_types.ArtifactReference).initOwned(artifacts),
+            .working_directory = ai_types.OwnedSlice(u8).initOwned(directory),
+            .working_directory_observed = msg.working_directory_observed,
             .is_error = msg.is_error,
             .timestamp = msg.timestamp,
         };

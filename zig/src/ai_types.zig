@@ -396,12 +396,24 @@ pub const ToolResultMessage = struct {
     content: []const UserContentPart,
     details_json: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
     artifacts: OwnedSlice(ArtifactReference) = OwnedSlice(ArtifactReference).initBorrowed(&.{}),
+    working_directory: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+    working_directory_observed: bool = false,
     is_error: bool,
     timestamp: i64,
 
     pub fn getDetailsJson(self: *const ToolResultMessage) ?[]const u8 {
         const details = self.details_json.slice();
         return if (details.len > 0) details else null;
+    }
+
+    pub fn workingDirectory(self: *const ToolResultMessage) ?[]const u8 {
+        const directory = self.working_directory.slice();
+        return if (directory.len > 0) directory else null;
+    }
+
+    pub fn observedWorkingDirectory(self: *const ToolResultMessage) ?[]const u8 {
+        if (!self.working_directory_observed) return null;
+        return self.workingDirectory();
     }
 
     pub fn deinit(self: *ToolResultMessage, allocator: std.mem.Allocator) void {
@@ -414,6 +426,7 @@ pub const ToolResultMessage = struct {
         allocator.free(self.content);
         self.details_json.deinit(allocator);
         self.artifacts.deinit(allocator);
+        self.working_directory.deinit(allocator);
     }
 };
 
@@ -1053,6 +1066,8 @@ fn cloneToolResultMessage(allocator: std.mem.Allocator, tr: ToolResultMessage) !
     errdefer allocator.free(tool_call_id);
     const tool_name = try allocator.dupe(u8, tr.tool_name);
     errdefer allocator.free(tool_name);
+    const directory = try allocator.dupe(u8, tr.working_directory.slice());
+    errdefer allocator.free(directory);
 
     return .{
         .tool_call_id = tool_call_id,
@@ -1060,6 +1075,8 @@ fn cloneToolResultMessage(allocator: std.mem.Allocator, tr: ToolResultMessage) !
         .content = cloned_content,
         .details_json = details_json,
         .artifacts = OwnedSlice(ArtifactReference).initOwned(cloned_artifacts),
+        .working_directory = OwnedSlice(u8).initOwned(directory),
+        .working_directory_observed = tr.working_directory_observed,
         .is_error = tr.is_error,
         .timestamp = tr.timestamp,
     };
@@ -1691,6 +1708,37 @@ test "partialWithContent leaves the partial alone when the index is not there" {
     }, &content, 4);
     try std.testing.expectEqual(@as(?[]AssistantContent, null), carried.owned);
     try std.testing.expectEqual(@as(usize, 0), carried.partial.content.len);
+}
+
+
+test "a copied tool result keeps its directory and the observed flag" {
+    const cases = [_]struct { path: []const u8, observed: bool }{
+        .{ .path = "/observed/dir", .observed = true },
+        .{ .path = "/start/dir", .observed = false },
+    };
+    for (cases, 0..) |case, index| {
+        const source = try std.testing.allocator.dupe(u8, case.path);
+        defer std.testing.allocator.free(source);
+        const original = ToolResultMessage{
+            .tool_call_id = "call-1",
+            .tool_name = "dirtool",
+            .content = &.{.{ .text = .{ .text = "done" } }},
+            .details_json = OwnedSlice(u8).initBorrowed(""),
+            .working_directory = OwnedSlice(u8).initOwned(source),
+            .working_directory_observed = case.observed,
+            .is_error = false,
+            .timestamp = @intCast(index),
+        };
+        var clone = try cloneToolResultMessage(std.testing.allocator, original);
+        defer clone.deinit(std.testing.allocator);
+        try std.testing.expectEqualStrings(case.path, clone.workingDirectory().?);
+        const observed = clone.observedWorkingDirectory();
+        if (case.observed) {
+            try std.testing.expectEqualStrings(case.path, observed.?);
+        } else {
+            try std.testing.expect(observed == null);
+        }
+    }
 }
 
 test "release frees the carried array once the cloned event has its own copy" {
