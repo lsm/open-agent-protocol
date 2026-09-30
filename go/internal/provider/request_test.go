@@ -537,6 +537,22 @@ func TestADeepSeekAssistantPassesItsReasoningBackAsReasoningContent(t *testing.T
 	}
 }
 
+func TestAReplyHoldingOnlyReasoningGoesBackAsItsContent(t *testing.T) {
+	model := loopbackModel()
+	model.BaseURL = "https://api.deepseek.com"
+	ctx := Context{Messages: []Message{{Assistant: &AssistantContent{API: "openai-completions", Provider: "local", Model: "local-model", Parts: []ContentPart{
+		{Thinking: &ThinkingPart{Thinking: "the plan, written as reasoning"}},
+	}}}}}
+	got := messages(t, BuildRequestBody(model, ctx, StreamOptions{}))[0].(map[string]any)
+	if _, ok := got["reasoning_content"]; ok {
+		t.Errorf("a reply with only reasoning carries it as content, not reasoning_content: %v", got)
+	}
+	parts, ok := got["content"].([]any)
+	if !ok || len(parts) != 1 || parts[0].(map[string]any)["text"] != "the plan, written as reasoning" {
+		t.Errorf("content = %v, want the reasoning, since deepseek refuses a message with neither content nor tool calls", got["content"])
+	}
+}
+
 func TestADeepSeekRequestSendsOneOfItsThreeEfforts(t *testing.T) {
 	model := loopbackModel()
 	model.BaseURL = "https://api.deepseek.com"
