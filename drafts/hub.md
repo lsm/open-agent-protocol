@@ -612,11 +612,13 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   raising `drain_total_cap_bytes` to 1 GiB fails it with `expected 1048576, found 1073741824`. The real-socket test separately pins that a cap
   is *observable from outside the process*, asserting a lower bound on transferred bytes plus a
   complete 403 — never an upper one
-- **the 64 KiB round cap, and the one poll cycle a round gets — pinned by removal at this head.** Of the
-  four bounds above, the 64 KiB round cap was **the one no bullet covered** — the row above states the port "reads in 64
-  KiB rounds" and gives a round "one poll cycle", but until now `drain_cap_bytes` was named only at its
-  definition and its use, and `drain_cycle_ms` only in the deadline it builds, so the ledger asserted a
-  bound no test would notice losing. `a drain stops at its byte cap and reports what it consumed` now
+- **the 64 KiB round cap, and the round's own deadline — pinned by removal at this head.** Of the four
+  bounds the row above names, the 64 KiB round cap was **the one no bullet covered**: that row says the
+  port "reads in 64 KiB rounds" and nothing more about a round, and until now `drain_cap_bytes` was named
+  only at its definition (`:205`) and its use (`:219`), so the ledger asserted a bound no test would
+  notice losing. The round's time bound is a **fifth bound the row above never names**: `drain_cycle_ms`
+  is what `drain` builds the round deadline from at `:220`
+  (`const deadline = now + ...drain_cycle_ms...`), and it was pinned by nothing either. `a drain stops at its byte cap and reports what it consumed` now
   carries `wanted_round = 64 * 1024` and `expectEqual(@as(i32, 50), drain_cycle_ms)` beside the
   1 MiB assertion it already had, in the same carrying-its-own-literal shape, so the constant and the
   expectation cannot move together. `a drain gives up rather than waiting on a peer that sends nothing
