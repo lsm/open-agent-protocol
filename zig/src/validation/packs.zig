@@ -58,7 +58,9 @@ fn cleanRelative(allocator: std.mem.Allocator, entry: []const u8) !?[]const u8 {
             allocator.free(parts.pop().?);
             continue;
         }
-        try parts.append(allocator, try allocator.dupe(u8, part));
+        const held = try allocator.dupe(u8, part);
+        errdefer allocator.free(held);
+        try parts.append(allocator, held);
     }
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
@@ -72,6 +74,15 @@ fn cleanRelative(allocator: std.mem.Allocator, entry: []const u8) !?[]const u8 {
 fn lexicalRelative(allocator: std.mem.Allocator, entry: []const u8) ![]const u8 {
     if (entry.len == 0 or std.Io.Dir.path.isAbsolute(entry)) return error.InvalidPackDescriptor;
     return (try cleanRelative(allocator, entry)) orelse error.InvalidPackDescriptor;
+}
+
+fn toSlash(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
+    if (std.mem.indexOfScalar(u8, name, std.Io.Dir.path.sep_windows) == null) return name;
+    const slashed = try allocator.dupe(u8, name);
+    for (slashed) |*byte| {
+        if (byte.* == std.Io.Dir.path.sep_windows) byte.* = '/';
+    }
+    return slashed;
 }
 
 fn readAll(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]u8 {
@@ -133,7 +144,7 @@ fn gather(
                 }
                 for (0..entries.len) |index| {
                     const schema_bytes = try readAll(io, allocator, paths[index]);
-                    const key = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/{s}", .{ pack_base_uri, pack_id, version, names[index] });
+                    const key = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/{s}", .{ pack_base_uri, pack_id, version, try toSlash(allocator, names[index]) });
                     try target.addDocument(key, schema_bytes);
                 }
             }
@@ -284,7 +295,7 @@ test "a loaded pack's schemas are registered under keys its own refs resolve" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    for ([_][]const u8{ "staying", "aliased", "cleaned" }) |name| {
+    for ([_][]const u8{ "staying", "aliased", "cleaned", "nested" }) |name| {
         try tmp.dir.createDir(std.testing.io, name, .default_dir);
     }
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "staying/note.schema.json", .data =
@@ -313,6 +324,16 @@ test "a loaded pack's schemas are registered under keys its own refs resolve" {
         ,
     });
 
+    try tmp.dir.createDir(std.testing.io, "nested/sub", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "nested/sub/note.schema.json", .data =
+            \\{"$schema": "https://json-schema.org/draft/2020-12/schema", "$defs": {"thing": {"type": "object", "required": ["type", "session_id"], "properties": {"type": {"const": "com.example.nested.thing"}, "session_id": {"type": "string"}}}}}
+        ,
+    });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "nested/pack.json", .data =
+            \\{"id": "com.example.nested", "version": "1.0.0", "schemas": ["sub/note.schema.json"], "envelope_types": [{"type": "com.example.nested.thing", "role": "event", "schema": "sub/note.schema.json#/$defs/thing"}]}
+        ,
+    });
+
     var registry = try jsonschema.Registry.initFromBundled(allocator);
     defer registry.deinit();
 
@@ -320,6 +341,7 @@ test "a loaded pack's schemas are registered under keys its own refs resolve" {
         .{ .dir = "staying", .declared = "com.example.ok.thing" },
         .{ .dir = "aliased", .declared = "com.example.alias.thing" },
         .{ .dir = "cleaned", .declared = "com.example.clean.thing" },
+        .{ .dir = "nested", .declared = "com.example.nested.thing" },
     };
 
     for (cases) |case| {
