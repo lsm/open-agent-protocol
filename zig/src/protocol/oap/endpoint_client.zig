@@ -23,6 +23,10 @@ pub const Budget = struct {
     io: std.Io,
     limit: ?std.Io.Clock.Timestamp,
 
+    pub fn leftOf(limit: std.Io.Clock.Timestamp, now: std.Io.Clock.Timestamp) i96 {
+        return now.durationTo(limit).raw.nanoseconds;
+    }
+
     pub fn fromTimeout(given: std.Io.Timeout, io: std.Io) Budget {
         return .{ .io = io, .limit = given.toTimestamp(io) };
     }
@@ -43,7 +47,7 @@ pub const Budget = struct {
 
     fn leftNanoseconds(self: Budget) ?i96 {
         const limit = self.limit orelse return null;
-        return std.Io.Clock.Timestamp.now(self.io, limit.clock).durationTo(limit).raw.nanoseconds;
+        return leftOf(limit, std.Io.Clock.Timestamp.now(self.io, limit.clock));
     }
 
     pub fn expired(self: Budget) bool {
@@ -498,18 +502,19 @@ test "a budget keeps the shape and clock of the timeout it was given" {
     try std.testing.expect(by_deadline.limit.?.clock == .awake);
 }
 
-test "a budget keeps sub-millisecond precision rather than truncating to expired" {
+
+test "the budget arithmetic keeps sub-millisecond precision without a live clock" {
     var client = Client.init(std.testing.allocator);
     defer client.deinit();
     const io = client.io();
+    const base = std.Io.Clock.Timestamp.now(io, .awake);
 
-    const brief = Budget.fromTimeout(
-        .{ .duration = .{ .raw = std.Io.Duration.fromNanoseconds(500_000), .clock = .awake } },
-        io,
-    );
-    try std.testing.expect(!brief.expired());
-    switch (brief.timeout()) {
-        .duration => |d| try std.testing.expect(d.raw.nanoseconds > 0),
-        else => return error.UnexpectedTimeoutShape,
-    }
+    var at = base;
+    try std.testing.expectEqual(@as(i64, 0), @as(i64, @intCast(Budget.leftOf(at, at))));
+    at = at.addDuration(.{ .raw = .fromNanoseconds(500_000), .clock = .awake });
+    try std.testing.expectEqual(@as(i64, 500_000), @as(i64, @intCast(Budget.leftOf(at, base))));
+    const one_nanosecond = base.addDuration(.{ .raw = .fromNanoseconds(1), .clock = .awake });
+    try std.testing.expectEqual(@as(i64, 1), @as(i64, @intCast(Budget.leftOf(one_nanosecond, base))));
+    const past = base.subDuration(.{ .raw = .fromMilliseconds(5), .clock = .awake });
+    try std.testing.expect(Budget.leftOf(past, base) < 0);
 }
