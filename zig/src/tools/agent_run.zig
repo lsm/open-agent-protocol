@@ -116,3 +116,91 @@ pub fn deinitToolFields(allocator: std.mem.Allocator, tool: *agent_loop.AgentToo
     if (tool.short_description) |short| allocator.free(short);
     allocator.free(tool.parameters_schema_json);
 }
+
+pub fn admit(
+    allocator: std.mem.Allocator,
+    table: *std.ArrayList(Run),
+    bridge: *AgentToolBridge.Bridge,
+    prepared: *Prepared,
+    session_id: SessionId,
+    generation: u64,
+    protocol_client: agent_loop.ProtocolClient,
+) !void {
+    const context = try allocator.create(agent_loop.AgentContext);
+    var context_owned_by_run = false;
+    errdefer if (!context_owned_by_run) allocator.destroy(context);
+    context.* = agent_loop.AgentContext.init(allocator);
+    errdefer if (!context_owned_by_run) context.deinit();
+    context.system_prompt = ai_types.OwnedSlice(u8).initOwned(prepared.system_prompt);
+    prepared.system_prompt = &.{};
+    context.tools = prepared.tools;
+
+    const cancel_flag = try allocator.create(std.atomic.Value(bool));
+    var cancel_owned_by_run = false;
+    errdefer if (!cancel_owned_by_run) allocator.destroy(cancel_flag);
+    cancel_flag.* = std.atomic.Value(bool).init(false);
+
+    const disconnect_failed = try allocator.create(std.atomic.Value(bool));
+    var disconnect_owned_by_run = false;
+    errdefer if (!disconnect_owned_by_run) allocator.destroy(disconnect_failed);
+    disconnect_failed.* = std.atomic.Value(bool).init(false);
+
+    const tool_executor = try allocator.create(AgentToolBridge.Executor);
+    var tool_executor_owned_by_run = false;
+    errdefer if (!tool_executor_owned_by_run) allocator.destroy(tool_executor);
+    tool_executor.* = .{
+        .bridge = bridge,
+        .session_id = session_id,
+        .generation = generation,
+        .disconnect_failed = disconnect_failed,
+    };
+
+    const session_id_text = try agent_types.sessionIdToString(session_id, allocator);
+    defer allocator.free(session_id_text);
+
+    const config = agent_loop.AgentLoopConfig{
+        .model = prepared.model,
+        .protocol = protocol_client,
+        .tools = prepared.tools,
+        .execute_tool_via_protocol_fn = AgentToolBridge.executeViaAgentProtocol,
+        .execute_tool_via_protocol_ctx = tool_executor,
+        .temperature = prepared.options.temperature,
+        .max_tokens = prepared.options.max_tokens,
+        .max_iterations = prepared.options.max_iterations,
+        .thinking_level = prepared.options.thinking_level,
+        .session_id = session_id_text,
+        .api_key = prepared.options.api_key,
+        .cancel_token = .{ .cancelled = cancel_flag },
+    };
+
+    const stream = try agent_loop.agentLoop(allocator, prepared.prompts, context, config);
+    var stream_owned_by_run = false;
+    errdefer if (!stream_owned_by_run) {
+        _ = stream.deinitAndDestroy();
+    };
+
+    var run = Run{
+        .session_id = session_id,
+        .generation = generation,
+        .stream = stream,
+        .context = context,
+        .model = prepared.model,
+        .prompts = prepared.prompts,
+        .tools = prepared.tools,
+        .cancel_flag = cancel_flag,
+        .disconnect_failed = disconnect_failed,
+        .tool_executor = tool_executor,
+    };
+    prepared.options.deinit(allocator);
+    context_owned_by_run = true;
+    cancel_owned_by_run = true;
+    disconnect_owned_by_run = true;
+    tool_executor_owned_by_run = true;
+    stream_owned_by_run = true;
+    prepared.disarm();
+
+    var appended = false;
+    errdefer if (!appended) run.deinit(allocator);
+    try table.append(allocator, run);
+    appended = true;
+}
