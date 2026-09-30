@@ -1588,12 +1588,14 @@ are "stamped with the revision the lister served it under", and both name
   earlier attempts got this wrong in opposite directions: one dropped every escaped byte, the next consumed
   every backslash pair. **Both make values Go treats as different compare equal**, which admits a duplicate the
   draft-facing gate should refuse, and the second is the one an MSIE path hits.
-  `a backslash is consumed only before a tspecial, which is what Go does` pins **eight spellings — two admitted,
-  six refused** — including `a="C:\path\x"; a=C:pathx` and `a="x\qy"; a="xqy"`, which are duplicates to Go
-  because the backslash is literal, and `a="x\""; a="x\""` and `a="a\;b=c"; a="a;b=c"`, which are identical
-  because `\"` and `\;` *are* tspecial escapes. **Both mutations fail it:** consuming every pair, and never
-  consuming one. |
-
+  `a backslash is consumed only before a tspecial, which is what Go does` pins **eleven spellings — two
+  admitted, nine refused**. The two admitted are the ones where the backslash is literal on both sides,
+  `a="C:\path"; a="C:\path"` and `a="x\qy"; a="x\qy"`. The nine refused are the ones where Go sees
+  different decoded values: the same two compared against a **bare** value, `a="x\1"; a="x1"`,
+  `a="x\ "; a="x "`, the doubled spellings `a="x\\"; a="x\"` and `a="x\""; a=x\"`, and
+  `a="a\;b=c"; a="a;b=c"` — which is refused because the two are not the parameter the row implies, since
+  `\;` decodes to one `;` and the leading `a` is not part of the value. **Both mutations fail it:** consuming
+  every pair regardless of `isTspecial`, and never consuming one. |
 ### D20 — `type_mismatch` is answered by no test in either tree
 
 | | |
