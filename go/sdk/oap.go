@@ -333,9 +333,9 @@ func (s *ModelsService) oapList(ctx context.Context, req ListModelsRequest) (*Li
 		if req.IncludeLoginRequired != nil && !*req.IncludeLoginRequired && model.str("auth_status") == "login_required" {
 			continue
 		}
-		source := SourceDynamic
-		if model.str("source") == "fallback" {
-			source = SourceStaticFallback
+		source, err := oapModelSource(model)
+		if err != nil {
+			return nil, err
 		}
 		descriptor := ModelDescriptor{ModelRef: model.str("model_ref"), ModelID: model.str("model_id"),
 			DisplayName: model.str("display_name"), ProviderID: model.str("provider_id"), API: model.str("wire"),
@@ -829,6 +829,27 @@ func (s *AgentStream) oapClose() error {
 	s.oapState = nil
 	s.done = true
 	return s.err
+}
+
+func oapModelSource(model jsonObject) (*ModelSource, error) {
+	raw, stated := model["source"]
+	if !stated {
+		return nil, nil
+	}
+	name, ok := raw.(string)
+	if !ok || name == "" {
+		return nil, &ProtocolError{Code: CodeMalformedResponse, Message: "model source must be a non-empty string when present"}
+	}
+	var mapped ModelSource
+	switch name {
+	case "discovered":
+		mapped = SourceDynamic
+	case "fallback":
+		mapped = SourceStaticFallback
+	default:
+		return nil, &ProtocolError{Code: CodeMalformedResponse, Message: "model source has unknown value: " + name}
+	}
+	return &mapped, nil
 }
 
 func (s *AuthService) oapListProviders(ctx context.Context) ([]ProviderAuthInfo, error) {
