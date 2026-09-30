@@ -378,6 +378,36 @@ test("ratchet: a tracked file deleted before staging is skipped, not crashed on"
   assert.deepEqual(result.ratcheted.sort(), [deleted, dirtyZig].sort());
   assert.deepEqual(after.offending, []);
   assert.deepEqual(after.stale, [deleted]);
+  // The allowlisted path stays the stale-entry case rather than becoming a
+  // missing path: skipping it is what lets the ratchet report the entry.
+  assert.deepEqual(after.missing, []);
+});
+
+test("check: a selected path that is not allowlisted and not readable is missing, not clean", () => {
+  const { dirtyZig, cleanZig } = fixtures();
+  const absent = join(workDir, "never-existed.zig");
+  const result = checkFiles([dirtyZig, cleanZig, absent], new Set());
+  assert.deepEqual(result.missing, [absent]);
+  assert.deepEqual(result.offending, [dirtyZig]);
+  // An empty selection judged nothing either, and must not read as coverage.
+  const empty = checkFiles([], new Set());
+  assert.deepEqual(empty.missing, []);
+  assert.equal(empty.offending.length, 0);
+});
+
+test("cli: --check exits 1 on a selected path that is not there", () => {
+  const { cleanZig } = fixtures();
+  const absent = join(workDir, "cli-absent.zig");
+  const run = spawnSync(process.execPath, [
+    SCRIPT,
+    "--check",
+    "--files",
+    cleanZig,
+    absent,
+  ]);
+  assert.equal(run.status, 1, run.stdout);
+  assert.ok(run.stdout.includes("selected path not found"), run.stdout);
+  assert.ok(run.stdout.includes(absent), run.stdout);
 });
 
 function gitRepo(name) {
@@ -610,6 +640,37 @@ test("cli: --stats reports per-file counts without writing", () => {
   assert.equal(run.status, 0, run.stdout);
   assert.ok(run.stdout.includes(`${dirtyZig}: 1`));
   assert.equal(readFileSync(dirtyZig, "utf8"), before);
+});
+
+test("cli: --stats exits 1 on a selected path that is not there", () => {
+  const { dirtyTs } = fixtures();
+  const absent = join(workDir, "stats-absent.ts");
+  const run = spawnSync(process.execPath, [SCRIPT, "--stats", "--files", dirtyTs, absent]);
+  assert.equal(run.status, 1, run.stdout);
+  assert.ok(run.stdout.includes("selected path not found"), run.stdout);
+  // The readable file is still counted, so the failure is about coverage
+  // rather than a mode that stopped working.
+  assert.ok(run.stdout.includes(`${dirtyTs}: `), run.stdout);
+  assert.ok(run.stdout.includes("missing: 1"), run.stdout);
+});
+
+test("cli: write mode exits 1 on a selected path that is not there, and still strips", () => {
+  const { dirtyTs } = fixtures();
+  const before = readFileSync(dirtyTs, "utf8");
+  const absent = join(workDir, "write-absent.ts");
+  const run = spawnSync(process.execPath, [SCRIPT, "--files", dirtyTs, absent]);
+  assert.equal(run.status, 1, run.stdout);
+  assert.ok(run.stdout.includes("selected path not found"), run.stdout);
+  // A missing sibling must not abandon the work that was possible.
+  assert.notEqual(readFileSync(dirtyTs, "utf8"), before);
+  writeFileSync(dirtyTs, before);
+});
+
+test("cli: --stats exits 0 when every selected path is readable", () => {
+  const { cleanZig } = fixtures();
+  const run = spawnSync(process.execPath, [SCRIPT, "--stats", "--files", cleanZig]);
+  assert.equal(run.status, 0, run.stdout);
+  assert.ok(!run.stdout.includes("selected path not found"), run.stdout);
 });
 
 test("cli: non-ASCII tracked filenames are read exactly from git ls-files -z", () => {

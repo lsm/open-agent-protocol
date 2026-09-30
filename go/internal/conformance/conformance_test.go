@@ -159,6 +159,7 @@ func runHelperEndpoint(mode string) int {
 	out := bufio.NewWriter(os.Stdout)
 	defer out.Flush()
 	ids := 0
+	var recordedRun []protocol.Envelope
 	emit := func(typ protocol.EnvelopeType, payload any, decorate func(*protocol.Envelope)) {
 		ids++
 		envelope, err := protocol.NewEnvelope(typ, protocol.EnvelopeID(fmt.Sprintf("helper-%d", ids)), payload)
@@ -168,6 +169,23 @@ func runHelperEndpoint(mode string) int {
 		if decorate != nil {
 			decorate(&envelope)
 		}
+		if envelope.RunID == "helper-run" && envelope.Sequence != nil {
+			recordedRun = append(recordedRun, envelope)
+		}
+		data, err := json.Marshal(envelope)
+		if err != nil {
+			return
+		}
+		out.Write(append(data, '\n'))
+		out.Flush()
+	}
+	replayEnvelope := func(recorded protocol.Envelope, keepID bool) {
+		envelope := recorded
+		if !keepID {
+			ids++
+			envelope.ID = protocol.EnvelopeID(fmt.Sprintf("helper-replay-%d", ids))
+		}
+		envelope.InReplyTo = ""
 		data, err := json.Marshal(envelope)
 		if err != nil {
 			return
@@ -192,6 +210,40 @@ func runHelperEndpoint(mode string) int {
 			if shape.Protocol == "" && shape.Control != "" {
 				if mode == "mute-controls" {
 
+					continue
+				}
+				if mode == "declines-controls" {
+
+					frame, _ := json.Marshal(ControlFrame{
+						Control: "replay.error", ID: shape.ID, Code: "unsupported_control",
+						Message: "this endpoint does not implement the replay control",
+					})
+					out.Write(append(frame, '\n'))
+					out.Flush()
+					continue
+				}
+				if strings.HasPrefix(mode, "replay-") {
+
+					accepted, _ := json.Marshal(ControlFrame{
+						Control: "replay.accepted", ID: shape.ID,
+						OldestAvailable: 1, LatestAvailable: uint64(len(recordedRun)),
+					})
+					out.Write(append(accepted, '\n'))
+					out.Flush()
+
+					for i, recorded := range recordedRun {
+						switch mode {
+						case "replay-drops-middle":
+							if i != 0 && i != len(recordedRun)-1 {
+								continue
+							}
+							replayEnvelope(recorded, true)
+						case "replay-renames-ids":
+							replayEnvelope(recorded, false)
+						case "replay-faithful":
+							replayEnvelope(recorded, true)
+						}
+					}
 					continue
 				}
 
@@ -278,6 +330,18 @@ func handleHelperRequest(request protocol.Envelope, revision, mode string, emit 
 			}, seq(2))
 		}
 
+		status := func(n uint64) {
+			emit(protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{
+				SessionID: submit.SessionID, RunID: "helper-run", Status: protocol.RunRunning,
+			}, seq(n))
+		}
+		completedAt := func(n uint64) {
+			emit(protocol.TypeRunCompleted, protocol.RunCompletedPayload{
+				SessionID: submit.SessionID, RunID: "helper-run", StopReason: "end_turn",
+				FinalResponse: protocol.Message{Role: protocol.RoleAssistant, Content: protocol.TextContent("done")},
+			}, seq(n))
+		}
+
 		if mode == "early-events" {
 
 			started()
@@ -287,6 +351,13 @@ func handleHelperRequest(request protocol.Envelope, revision, mode string, emit 
 		}
 		acknowledge()
 		started()
+		if strings.HasPrefix(mode, "replay-") {
+
+			status(2)
+			status(3)
+			completedAt(4)
+			return
+		}
 		completed()
 
 		emit(protocol.TypeRunFailed, protocol.RunFailedPayload{

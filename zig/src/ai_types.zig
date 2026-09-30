@@ -115,7 +115,6 @@ pub const StreamOptions = struct {
     http_timeout_ms: ?u64 = 30_000,
     ping_interval_ms: ?u64 = null,
     owned_headers: ?OwnedSlice(HeaderPair) = null,
-    requires_owned_stream_events: bool = false,
 
     pub fn getApiKey(self: *const StreamOptions) ?[]const u8 {
         const key = self.api_key.slice();
@@ -705,6 +704,30 @@ pub fn cloneAssistantMessage(allocator: std.mem.Allocator, msg: AssistantMessage
         .timestamp = msg.timestamp,
         .is_owned = true,
     };
+}
+
+pub const CarriedPartial = struct {
+    partial: AssistantMessage,
+    owned: ?[]AssistantContent,
+
+    pub fn release(self: CarriedPartial, allocator: std.mem.Allocator) void {
+        const owned = self.owned orelse return;
+        allocator.free(owned);
+    }
+};
+
+pub fn partialWithContent(
+    allocator: std.mem.Allocator,
+    base: AssistantMessage,
+    content: []const AssistantContent,
+    index: usize,
+) error{OutOfMemory}!CarriedPartial {
+    if (index >= content.len) return .{ .partial = base, .owned = null };
+    const slice = try allocator.alloc(AssistantContent, index + 1);
+    @memcpy(slice, content[0 .. index + 1]);
+    var out = base;
+    out.content = slice;
+    return .{ .partial = out, .owned = slice };
 }
 
 pub fn deinitAssistantMessageOwned(allocator: std.mem.Allocator, msg: *AssistantMessage) void {
@@ -1629,4 +1652,60 @@ test "buildOwnedMessage releases only what it allocated when a later dupe fails"
             held.deinit(alloc);
         }
     }
+}
+
+test "partialWithContent puts the block at the index it is asked for" {
+    const allocator = std.testing.allocator;
+    const content = [_]AssistantContent{
+        .{ .text = .{ .text = "before" } },
+        .{ .thinking = .{ .thinking = "pondering", .thinking_signature = "sig-9" } },
+    };
+    const carried = try partialWithContent(allocator, .{
+        .content = &.{},
+        .api = "anthropic-messages",
+        .provider = "anthropic",
+        .model = "claude",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+    }, &content, 1);
+    defer carried.release(allocator);
+    try std.testing.expectEqual(@as(usize, 2), carried.partial.content.len);
+    switch (carried.partial.content[1]) {
+        .thinking => |t| try std.testing.expectEqualStrings("sig-9", t.thinking_signature.?),
+        else => return error.NotCarried,
+    }
+}
+
+test "partialWithContent leaves the partial alone when the index is not there" {
+    const allocator = std.testing.allocator;
+    const content = [_]AssistantContent{.{ .text = .{ .text = "only" } }};
+    const carried = try partialWithContent(allocator, .{
+        .content = &.{},
+        .api = "anthropic-messages",
+        .provider = "anthropic",
+        .model = "claude",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+    }, &content, 4);
+    try std.testing.expectEqual(@as(?[]AssistantContent, null), carried.owned);
+    try std.testing.expectEqual(@as(usize, 0), carried.partial.content.len);
+}
+
+test "release frees the carried array once the cloned event has its own copy" {
+    const allocator = std.testing.allocator;
+    const content = [_]AssistantContent{.{ .text = .{ .text = "held" } }};
+    const carried = try partialWithContent(allocator, .{
+        .content = &.{},
+        .api = "anthropic-messages",
+        .provider = "anthropic",
+        .model = "claude",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+    }, &content, 0);
+    const slice = carried.owned.?;
+    try std.testing.expectEqual(slice.ptr, carried.partial.content.ptr);
+    carried.release(allocator);
 }
