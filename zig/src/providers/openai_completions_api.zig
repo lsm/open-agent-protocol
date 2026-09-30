@@ -3402,10 +3402,7 @@ test "a streamed text thinking and tool call reports indices that diverge from t
     const stream = try streamOpenAICompletions(
         traceModel(base_url),
         traceContext(),
-        .{
-            .api_key = ai_types.OwnedSlice(u8).initBorrowed("test-key"),
-            .requires_owned_stream_events = true,
-        },
+        .{ .api_key = ai_types.OwnedSlice(u8).initBorrowed("test-key") },
         allocator,
     );
     defer {

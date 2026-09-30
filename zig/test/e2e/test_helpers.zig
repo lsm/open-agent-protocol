@@ -1,7 +1,16 @@
 const std = @import("std");
 const compat = @import("compat");
+const ai_types = @import("ai_types");
 
 pub const DEFAULT_E2E_TIMEOUT_MS: u64 = 60_000;
+
+pub fn drainOne(stream: anytype) void {
+    if (stream.poll()) |event| stream.releaseEvent(event);
+}
+
+pub fn drainAll(stream: anytype) void {
+    while (stream.poll()) |event| stream.releaseEvent(event);
+}
 
 pub fn createDeadline(timeout_ms: u64) i64 {
     return compat.time.nowMillis() + @as(i64, @intCast(timeout_ms));
@@ -19,7 +28,7 @@ pub fn waitForResult(
     const deadline = createDeadline(DEFAULT_E2E_TIMEOUT_MS);
     while (!stream.isDone()) {
         if (isDeadlineExceeded(deadline)) return error.TimeoutExceeded;
-        _ = stream.poll();
+        drainOne(stream);
         compat.time.sleepNs(10 * std.time.ns_per_ms);
     }
     compat.time.sleepNs(50 * std.time.ns_per_ms);

@@ -1084,19 +1084,6 @@ fn buildAnthropicHeaders(allocator: std.mem.Allocator, api_key: []const u8, mode
     return out;
 }
 
-fn retireDeltaSlice(
-    allocator: std.mem.Allocator,
-    pending: *std.ArrayList([]const u8),
-    stream_clones_events: bool,
-    slice: []const u8,
-) void {
-    if (stream_clones_events) {
-        allocator.free(slice);
-        return;
-    }
-    pending.append(allocator, slice) catch {};
-}
-
 fn runThread(ctx: *ThreadCtx) void {
     const allocator = ctx.allocator;
     const stream = ctx.stream;
@@ -1336,13 +1323,6 @@ fn runThread(ctx: *ThreadCtx) void {
     var current_thinking_signature = std.ArrayList(u8).empty;
     defer current_thinking_signature.deinit(allocator);
 
-    var pending_delta_frees = std.ArrayList([]const u8).empty;
-    defer {
-        for (pending_delta_frees.items) |s| allocator.free(s);
-        pending_delta_frees.deinit(allocator);
-    }
-    const stream_clones_events = stream.ownership.isOwned();
-
     var raw_body = std.ArrayList(u8).empty;
     defer raw_body.deinit(allocator);
 
@@ -1443,8 +1423,8 @@ fn runThread(ctx: *ThreadCtx) void {
                                 .partial = createPartialMessage(model),
                             } });
 
-                            retireDeltaSlice(allocator, &pending_delta_frees, stream_clones_events, cbs.tool_id);
-                            retireDeltaSlice(allocator, &pending_delta_frees, stream_clones_events, cbs.tool_name);
+                            allocator.free(cbs.tool_id);
+                            allocator.free(cbs.tool_name);
                         },
                     }
 
@@ -1458,12 +1438,12 @@ fn runThread(ctx: *ThreadCtx) void {
                             .text => |txt| {
                                 current_text.appendSlice(allocator, txt) catch {};
                                 _ = stream.pushBlocking(.{ .text_delta = .{ .content_index = block_info.content_index, .delta = txt, .partial = partial } });
-                                retireDeltaSlice(allocator, &pending_delta_frees, stream_clones_events, txt);
+                                allocator.free(txt);
                             },
                             .thinking => |thk| {
                                 current_thinking.appendSlice(allocator, thk) catch {};
                                 _ = stream.pushBlocking(.{ .thinking_delta = .{ .content_index = block_info.content_index, .delta = thk, .partial = partial } });
-                                retireDeltaSlice(allocator, &pending_delta_frees, stream_clones_events, thk);
+                                allocator.free(thk);
                             },
                             .signature => |sig| {
                                 current_thinking_signature.appendSlice(allocator, sig) catch {};
@@ -1479,7 +1459,7 @@ fn runThread(ctx: *ThreadCtx) void {
                                         .partial = createPartialMessage(model),
                                     } });
                                 }
-                                retireDeltaSlice(allocator, &pending_delta_frees, stream_clones_events, json_delta);
+                                allocator.free(json_delta);
                             },
                         }
                     } else {
@@ -1729,9 +1709,7 @@ pub fn streamAnthropicMessages(
     errdefer allocator.destroy(s);
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
     s.wait_for_thread_on_deinit = true;
-    if (o.requires_owned_stream_events) {
-        s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
-    }
+    s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
 
     const ctx = try allocator.create(ThreadCtx);
     errdefer allocator.destroy(ctx);
@@ -2463,10 +2441,10 @@ const MockAnthropicServer = struct {
     }
 };
 
-test "a streamed tool call frees the id and name it hands the consumer, cloned or borrowed" {
+test "a streamed tool call frees the id and name it hands the consumer" {
     const allocator = std.testing.allocator;
 
-    for ([_]bool{ false, true }) |owned_events| {
+    {
         var mock = try MockAnthropicServer.listen(MockAnthropicServer.complete_stream);
         var stopped = false;
         defer if (!stopped) mock.stop();
@@ -2479,10 +2457,7 @@ test "a streamed tool call frees the id and name it hands the consumer, cloned o
         const stream = try streamAnthropicMessages(
             regressionModel("anthropic-messages", "anthropic", base_url),
             regressionContext(),
-            .{
-                .api_key = ai_types.OwnedSlice(u8).initBorrowed("test-key"),
-                .requires_owned_stream_events = owned_events,
-            },
+            .{ .api_key = ai_types.OwnedSlice(u8).initBorrowed("test-key") },
             allocator,
         );
         defer {
@@ -2493,13 +2468,11 @@ test "a streamed tool call frees the id and name it hands the consumer, cloned o
         var tool_calls_started: usize = 0;
         while (stream.wait()) |event| {
             var polled = event;
-            defer if (owned_events) ai_types.deinitAssistantMessageEvent(allocator, &polled);
+            defer ai_types.deinitAssistantMessageEvent(allocator, &polled);
             if (polled != .toolcall_start) continue;
             tool_calls_started += 1;
-            if (owned_events) {
-                try std.testing.expectEqualStrings("toolu_01LEAKCHECK", polled.toolcall_start.id);
-                try std.testing.expectEqualStrings("bash", polled.toolcall_start.name);
-            }
+            try std.testing.expectEqualStrings("toolu_01LEAKCHECK", polled.toolcall_start.id);
+            try std.testing.expectEqualStrings("bash", polled.toolcall_start.name);
         }
 
         try std.testing.expect(stream.waitForThread(5_000));
@@ -2535,7 +2508,6 @@ test "a response ending mid event frees what the tail flush parses and drops" {
         regressionContext(),
         .{
             .api_key = ai_types.OwnedSlice(u8).initBorrowed("test-key"),
-            .requires_owned_stream_events = true,
         },
         allocator,
     );
@@ -2772,6 +2744,42 @@ test "every row this wire serves finds its key from the row, not a list of vendo
         try std.testing.expectEqualStrings(row.credential_env[0], recorded.asked.items[0]);
     }
     try std.testing.expect(served >= 2);
+}
+
+test "a consumer that drains after the producing thread exits reads intact events" {
+    const allocator = std.testing.allocator;
+    var mock = try MockAnthropicServer.listen(MockAnthropicServer.complete_stream);
+    var stopped = false;
+    defer if (!stopped) mock.stop();
+    const base_url = try mock.baseUrl(allocator);
+    defer allocator.free(base_url);
+    try mock.start();
+
+    const stream = try streamAnthropicMessages(
+        regressionModel("anthropic-messages", "anthropic", base_url),
+        regressionContext(),
+        .{ .api_key = ai_types.OwnedSlice(u8).initBorrowed("test-key") },
+        allocator,
+    );
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+
+    try std.testing.expect(stream.waitForThread(5_000));
+    mock.stop();
+    stopped = true;
+
+    var started: usize = 0;
+    while (stream.wait()) |event| {
+        var polled = event;
+        defer ai_types.deinitAssistantMessageEvent(allocator, &polled);
+        if (polled != .toolcall_start) continue;
+        started += 1;
+        try std.testing.expectEqualStrings("toolu_01LEAKCHECK", polled.toolcall_start.id);
+        try std.testing.expectEqualStrings("bash", polled.toolcall_start.name);
+    }
+    try std.testing.expectEqual(@as(usize, 1), started);
 }
 
 fn lostCloneTestModel() !ai_types.Model {

@@ -63,6 +63,7 @@ pub const MockProvider = struct {
         const stream_ptr = try allocator.create(event_stream.AssistantMessageEventStream);
         errdefer allocator.destroy(stream_ptr);
         stream_ptr.* = event_stream.AssistantMessageEventStream.init(allocator);
+        stream_ptr.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
         errdefer stream_ptr.deinit();
 
         const step = if (self.call_count < self.scenario.steps.len)
@@ -210,6 +211,8 @@ fn pushDoneAndComplete(stream: *event_stream.AssistantMessageEventStream, alloca
     } else {
         try stream.push(.{ .done = .{ .reason = reason, .message = event_message } });
     }
+    var pushed = event_message;
+    pushed.deinit(allocator);
     stream.complete(result_message);
 }
 
@@ -257,12 +260,8 @@ test "mock provider splits a leading think block into thinking and text deltas" 
     var saw_thinking = false;
     var saw_text = false;
     while (stream_ptr.wait()) |event| {
-        var ev = event;
-        defer switch (ev) {
-            .done => |*payload| payload.message.deinit(std.testing.allocator),
-            .@"error" => |*payload| payload.err.deinit(std.testing.allocator),
-            else => {},
-        };
+        const ev = event;
+        defer stream_ptr.releaseEvent(ev);
         if (ev == .thinking_delta) saw_thinking = std.mem.eql(u8, ev.thinking_delta.delta, "plan first");
         if (ev == .text_delta) saw_text = std.mem.eql(u8, ev.text_delta.delta, "then answer");
     }
@@ -296,12 +295,8 @@ test "mock provider streams canned text" {
 
     var saw_delta = false;
     while (stream_ptr.wait()) |event| {
-        var ev = event;
-        defer switch (ev) {
-            .done => |*payload| payload.message.deinit(std.testing.allocator),
-            .@"error" => |*payload| payload.err.deinit(std.testing.allocator),
-            else => {},
-        };
+        const ev = event;
+        defer stream_ptr.releaseEvent(ev);
         if (ev == .text_delta) saw_delta = std.mem.eql(u8, ev.text_delta.delta, "hello");
     }
     try std.testing.expect(saw_delta);
@@ -323,12 +318,8 @@ test "repeat_last scenario keeps replaying the final step" {
         }
         var saw_delta = false;
         while (stream_ptr.wait()) |event| {
-            var ev = event;
-            defer switch (ev) {
-                .done => |*payload| payload.message.deinit(std.testing.allocator),
-                .@"error" => |*payload| payload.err.deinit(std.testing.allocator),
-                else => {},
-            };
+            const ev = event;
+            defer stream_ptr.releaseEvent(ev);
             if (ev == .text_delta) saw_delta = std.mem.eql(u8, ev.text_delta.delta, "again");
         }
         try std.testing.expect(saw_delta);
