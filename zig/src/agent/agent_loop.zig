@@ -1231,6 +1231,13 @@ fn answerRequest(allocator: std.mem.Allocator) !ai_types.Message {
     return .{ .user = .{ .content = .{ .text = text }, .timestamp = compat.time.nowMillis() } };
 }
 
+pub const compacted_request_text = "The conversation was compacted in the middle of this task. Carry on with the task from where it stopped, using the summary above.";
+
+fn compactedRequest(allocator: std.mem.Allocator) !ai_types.Message {
+    const text = try allocator.dupe(u8, compacted_request_text);
+    return .{ .user = .{ .content = .{ .text = text }, .timestamp = compat.time.nowMillis() } };
+}
+
 const max_cut_off_tool_turns: u32 = 3;
 
 fn turnOutcome(message: ai_types.AssistantMessage, cut_off_tool_turns: u32) TurnOutcome {
@@ -1378,6 +1385,30 @@ fn runLoop(
                 ended_before_cap = true;
                 cancelled_run = true;
                 break :outer;
+            }
+            if (state.iterations > 0) {
+                if (config.compact_between_turns_fn) |compact| {
+                    if (try compact(config.compact_between_turns_ctx, context, event_stream)) {
+                        const request = try compactedRequest(context.allocator);
+                        context.appendMessage(request) catch |err| {
+                            var owned = request;
+                            owned.deinit(context.allocator);
+                            return err;
+                        };
+                        try pushAgentEvent(event_stream, .{ .message_start = .{
+                            .message = request,
+                        } });
+                        try pushAgentEvent(event_stream, .{ .message_end = .{
+                            .message = request,
+                        } });
+                        try appendClonedStateMessage(&state.messages, allocator, request);
+                    }
+                    if (runCancelled(config)) {
+                        ended_before_cap = true;
+                        cancelled_run = true;
+                        break :outer;
+                    }
+                }
             }
             var steering_messages: ?[]const ai_types.Message = null;
             if (config.get_steering_messages_fn) |get_steering| {

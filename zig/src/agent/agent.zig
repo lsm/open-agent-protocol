@@ -95,6 +95,9 @@ pub const Agent = struct {
     _thinking_budgets: ?ai_types.ThinkingBudgets,
     _max_retry_delay_ms: ?u32,
     _compact_tool_output: bool,
+    _auto_compact_at: ?u64 = null,
+    _compaction_host: ?CompactionHost = null,
+    _retired_messages: std.ArrayList(ai_types.Message) = .empty,
     _permission_engine: ?*types.permission.PermissionEngine,
 
     _thread: ?std.Thread,
@@ -157,6 +160,8 @@ pub const Agent = struct {
 
         self._listeners.deinit(self._allocator);
 
+        self.freeRetiredMessages();
+        self._retired_messages.deinit(self._allocator);
         self._state.deinit();
 
         if (self._session_id) |sid| {
@@ -266,6 +271,82 @@ pub const Agent = struct {
 
     pub fn setTools(self: *Agent, tools: []const AgentTool) void {
         self._state.tools = tools;
+    }
+
+    pub const CompactionTranscripts = struct {
+        paths: []const []const u8 = &.{},
+        saved: []const u8 = "",
+    };
+
+    pub const CompactionHost = struct {
+        ctx: ?*anyopaque = null,
+        transcripts_fn: *const fn (ctx: ?*anyopaque, history: []const ai_types.Message) CompactionTranscripts,
+        settled_fn: ?*const fn (ctx: ?*anyopaque, completed: bool) void = null,
+    };
+
+    fn settleTranscripts(self: *Agent, completed: bool) void {
+        const host = self._compaction_host orelse return;
+        const settled = host.settled_fn orelse return;
+        settled(host.ctx, completed);
+    }
+
+    pub fn setAutoCompact(self: *Agent, at: ?u64, host: ?CompactionHost) void {
+        self._auto_compact_at = at;
+        self._compaction_host = host;
+    }
+
+    fn compactBetweenTurns(ctx: ?*anyopaque, context: *AgentContext, event_stream: *AgentEventStream) anyerror!bool {
+        const self: *Agent = @ptrCast(@alignCast(ctx.?));
+        const at = self._auto_compact_at orelse return false;
+        const history = context.messages.items;
+        if (history.len == 0 or compaction.isCompacted(history)) return false;
+        if (agent_loop.promptTokens(.{ .messages = history }) < at) return false;
+
+        if (!event_stream.pushBlocking(.compaction_start)) return error.StreamCompleted;
+        const transcripts: CompactionTranscripts = if (self._compaction_host) |host| host.transcripts_fn(host.ctx, history) else .{};
+        var summary = self.summarize(history, .{ .focus = "", .transcripts = transcripts.paths }) catch |err| Summary{
+            .result = compaction.failure(self._allocator, @errorName(err)),
+        };
+        if (summary.replacement) |*replacement| {
+            self.retireHistory(&context.messages, replacement) catch |err| {
+                summary.result.deinit(self._allocator);
+                self.settleTranscripts(false);
+                var failed: AgentEvent = .{ .compaction_end = .{ .outcome = .failed, .message = types.OwnedSlice(u8).initBorrowed(@errorName(err)) } };
+                if (!event_stream.pushBlocking(failed)) {
+                    failed.deinit(self._allocator);
+                    return error.StreamCompleted;
+                }
+                return false;
+            };
+        }
+        const completed = summary.replacement != null;
+        const transcript: types.OwnedSlice(u8) = if (completed and transcripts.saved.len > 0)
+            (if (self._allocator.dupe(u8, transcripts.saved)) |copy| types.OwnedSlice(u8).initOwned(copy) else |_| types.OwnedSlice(u8).initBorrowed(""))
+        else
+            types.OwnedSlice(u8).initBorrowed("");
+        self.settleTranscripts(completed);
+        var event: AgentEvent = .{ .compaction_end = switch (summary.result) {
+            .completed => |done| .{
+                .outcome = .completed,
+                .text = types.OwnedSlice(u8).initOwned(done.text),
+                .transcript = transcript,
+                .messages_before = done.messages_before,
+                .tokens_before = done.tokens_before,
+                .tokens_after = done.tokens_after,
+            },
+            .cancelled => .{ .outcome = .cancelled },
+            .failed => |message| .{ .outcome = .failed, .message = types.OwnedSlice(u8).initOwned(message) },
+        } };
+        if (!event_stream.pushBlocking(event)) {
+            event.deinit(self._allocator);
+            return error.StreamCompleted;
+        }
+        return completed;
+    }
+
+    fn adoptCompactedHistory(self: *Agent, text: []const u8, model: ai_types.Model) !void {
+        var replacement = try compaction.historyMessages(self._allocator, text, .{ .api = model.api, .provider = model.provider, .model = model.id });
+        try self.installHistory(&self._state.messages, &replacement);
     }
 
     pub fn setCompactToolOutput(self: *Agent, enabled: bool) void {
@@ -379,9 +460,48 @@ pub const Agent = struct {
     };
 
     fn summarizeHistory(self: *Agent, options: compaction.Options) !compaction.Result {
+        var summary = try self.summarize(self._state.messages.items, options);
+        if (summary.replacement) |*replacement| {
+            self.installHistory(&self._state.messages, replacement) catch |err| {
+                summary.result.deinit(self._allocator);
+                return err;
+            };
+        }
+        return summary.result;
+    }
+
+    fn retireHistory(self: *Agent, messages: *std.ArrayList(ai_types.Message), replacement: *[2]ai_types.Message) !void {
+        errdefer for (replacement) |*message| message.deinit(self._allocator);
+        try self._retired_messages.ensureUnusedCapacity(self._allocator, messages.items.len);
+        try messages.ensureTotalCapacity(self._allocator, replacement.len);
+        self._retired_messages.appendSliceAssumeCapacity(messages.items);
+        messages.clearRetainingCapacity();
+        messages.appendSliceAssumeCapacity(replacement);
+    }
+
+    fn freeRetiredMessages(self: *Agent) void {
+        for (self._retired_messages.items) |*message| message.deinit(self._allocator);
+        self._retired_messages.clearRetainingCapacity();
+    }
+
+    fn installHistory(self: *Agent, messages: *std.ArrayList(ai_types.Message), replacement: *[2]ai_types.Message) !void {
+        messages.ensureTotalCapacity(self._allocator, replacement.len) catch |err| {
+            for (replacement) |*message| message.deinit(self._allocator);
+            return err;
+        };
+        for (messages.items) |*message| message.deinit(self._allocator);
+        messages.clearRetainingCapacity();
+        messages.appendSliceAssumeCapacity(replacement);
+    }
+
+    const Summary = struct {
+        result: compaction.Result,
+        replacement: ?[2]ai_types.Message = null,
+    };
+
+    fn summarize(self: *Agent, history: []const ai_types.Message, options: compaction.Options) !Summary {
         const allocator = self._allocator;
         const model = self._state.model orelse return error.NoModelConfigured;
-        const history = self._state.messages.items;
 
         const tools = try self.compactionTools();
         defer if (tools) |converted| allocator.free(converted);
@@ -400,16 +520,16 @@ pub const Agent = struct {
         var attempts: usize = 0;
         while (true) {
             start = compaction.firstIncluded(history, budget) orelse
-                return compaction.failure(allocator, "the latest turn alone does not fit in the model's context window");
+                return .{ .result = compaction.failure(allocator, "the latest turn alone does not fit in the model's context window") };
             switch (try self.requestSummary(model, history[start..], request, tools, max_output)) {
                 .text => |text| {
                     reply_text = text;
                     break;
                 },
-                .cancelled => return .cancelled,
+                .cancelled => return .{ .result = .cancelled },
                 .failed => |message| {
                     attempts += 1;
-                    if (attempts >= compaction.max_attempts or !compaction.isContextOverflow(message)) return .{ .failed = message };
+                    if (attempts >= compaction.max_attempts or !compaction.isContextOverflow(message)) return .{ .result = .{ .failed = message } };
                     allocator.free(message);
                     budget = compaction.shrunkBudget(history[start..]);
                 },
@@ -418,7 +538,7 @@ pub const Agent = struct {
         defer allocator.free(reply_text);
 
         const summary = compaction.extractSummary(reply_text);
-        if (summary.len == 0) return compaction.failure(allocator, "the model returned an empty summary");
+        if (summary.len == 0) return .{ .result = compaction.failure(allocator, "the model returned an empty summary") };
 
         const text = try compaction.installedText(allocator, summary, options.transcripts, start > 0);
         errdefer allocator.free(text);
@@ -429,17 +549,16 @@ pub const Agent = struct {
         const tokens_before = agent_loop.estimatePromptTokens(.{ .system_prompt = system_prompt, .messages = history, .tools = tools });
         const tokens_after = agent_loop.estimatePromptTokens(.{ .system_prompt = system_prompt, .messages = &replacement, .tools = tools });
 
-        try self._state.messages.ensureTotalCapacity(allocator, replacement.len);
-        for (self._state.messages.items) |*message| message.deinit(allocator);
-        self._state.messages.clearRetainingCapacity();
-        self._state.messages.appendSliceAssumeCapacity(&replacement);
-        return .{ .completed = .{
-            .text = text,
-            .messages_before = messages_before,
-            .tokens_before = tokens_before,
-            .tokens_after = tokens_after,
-            .head_truncated = start > 0,
-        } };
+        return .{
+            .result = .{ .completed = .{
+                .text = text,
+                .messages_before = messages_before,
+                .tokens_before = tokens_before,
+                .tokens_after = tokens_after,
+                .head_truncated = start > 0,
+            } },
+            .replacement = replacement,
+        };
     }
 
     fn requestSummary(self: *Agent, model: ai_types.Model, included: []const ai_types.Message, request: ai_types.Message, tools: ?[]ai_types.Tool, max_output: u32) !SummaryReply {
@@ -1091,6 +1210,8 @@ pub const Agent = struct {
             .get_steering_messages_ctx = self,
             .get_follow_up_messages_fn = getFollowUpMessages,
             .get_follow_up_messages_ctx = self,
+            .compact_between_turns_fn = compactBetweenTurns,
+            .compact_between_turns_ctx = self,
             .convert_to_llm_fn = self._convert_to_llm_fn,
             .convert_to_llm_ctx = self._convert_to_llm_ctx,
             .get_api_key_fn = self._get_api_key_fn,
@@ -1098,6 +1219,7 @@ pub const Agent = struct {
         };
 
         const initial_message_count = context.messages.items.len;
+        var compacted_in_run = false;
 
         const stream = if (messages.*) |msgs|
             try agent_loop.agentLoop(self._allocator, msgs, &context, config)
@@ -1105,7 +1227,7 @@ pub const Agent = struct {
             try agent_loop.agentLoopContinue(self._allocator, &context, config);
 
         defer {
-            _ = stream.deinitAndDestroy();
+            if (stream.deinitAndDestroy()) self.freeRetiredMessages();
         }
 
         while (stream.wait()) |event| {
@@ -1131,6 +1253,12 @@ pub const Agent = struct {
                 .tool_execution_end => |e| {
                     _ = self._state.pending_tool_calls.remove(e.tool_call_id);
                 },
+                .compaction_end => |e| {
+                    if (e.outcome == .completed) {
+                        try self.adoptCompactedHistory(e.text.slice(), model);
+                        compacted_in_run = true;
+                    }
+                },
                 .turn_end => |e| {
                     if (e.message.getErrorMessage()) |err| {
                         self._state.error_message.deinit(self._allocator);
@@ -1148,7 +1276,7 @@ pub const Agent = struct {
             self.emit(owned_event);
         }
 
-        if (context.messages.items.len > initial_message_count) {
+        if (compacted_in_run or context.messages.items.len > initial_message_count) {
             messages.* = null;
         }
 
@@ -2003,6 +2131,128 @@ test "Agent compactAsync replaces the history with the model's summary and an ac
     try std.testing.expectEqualStrings(compaction.acknowledgement, messages[1].assistant.content[0].text.text);
     try std.testing.expectError(error.NothingToCompact, agent.ensureCompactable());
     try std.testing.expect(agent.isIdle());
+}
+
+const MidRunMock = struct {
+    calls: usize = 0,
+    summary_requests: usize = 0,
+    carried_on: usize = 0,
+    reported_input: u64 = 9_000,
+};
+
+fn midRunStreamFn(
+    ctx: ?*anyopaque,
+    model: ai_types.Model,
+    context: ai_types.Context,
+    options: types.ProtocolOptions,
+    allocator: std.mem.Allocator,
+) anyerror!*event_stream_mod.AssistantMessageEventStream {
+    _ = options;
+    const mock: *MidRunMock = @ptrCast(@alignCast(ctx.?));
+    mock.calls += 1;
+    const last = context.messages[context.messages.len - 1];
+    const last_text: []const u8 = if (last == .user and last.user.content == .text) last.user.content.text else "";
+
+    const stream = try allocator.create(event_stream_mod.AssistantMessageEventStream);
+    stream.* = event_stream_mod.AssistantMessageEventStream.init(allocator);
+    errdefer _ = stream.deinitAndDestroy();
+    const content = try allocator.alloc(ai_types.AssistantContent, 1);
+    errdefer allocator.free(content);
+    var usage: ai_types.Usage = .{};
+    if (std.mem.indexOf(u8, last_text, "about to be compacted") != null) {
+        mock.summary_requests += 1;
+        content[0] = .{ .text = .{ .text = try allocator.dupe(u8, "<summary>state of work</summary>") } };
+    } else if (std.mem.eql(u8, last_text, agent_loop.compacted_request_text)) {
+        mock.carried_on += 1;
+        content[0] = .{ .text = .{ .text = try allocator.dupe(u8, "finished") } };
+    } else if (std.mem.eql(u8, last_text, agent_loop.answer_request_text)) {
+        content[0] = .{ .text = .{ .text = try allocator.dupe(u8, "finished") } };
+    } else {
+        content[0] = .{ .thinking = .{ .thinking = try allocator.dupe(u8, "planning") } };
+        usage.input = mock.reported_input;
+    }
+    stream.complete(.{ .content = content, .api = model.api, .provider = model.provider, .model = model.id, .usage = usage, .stop_reason = .stop, .timestamp = 0 });
+    return stream;
+}
+
+const CompactionEvents = struct {
+    started: usize = 0,
+    completed: usize = 0,
+    history_len: usize = 0,
+    reported_transcript: bool = false,
+
+    fn onEvent(ctx: ?*anyopaque, event: AgentEvent) void {
+        const self: *CompactionEvents = @ptrCast(@alignCast(ctx.?));
+        switch (event) {
+            .compaction_start => self.started += 1,
+            .compaction_end => |payload| {
+                if (payload.outcome == .completed) self.completed += 1;
+                if (std.mem.eql(u8, payload.transcript.slice(), "/sessions/s1/compaction-1.jsonl")) self.reported_transcript = true;
+            },
+            else => {},
+        }
+    }
+
+    fn transcripts(ctx: ?*anyopaque, history: []const ai_types.Message) Agent.CompactionTranscripts {
+        const self: *CompactionEvents = @ptrCast(@alignCast(ctx.?));
+        self.history_len = history.len;
+        const paths = struct {
+            const list = [_][]const u8{"/sessions/s1/compaction-1.jsonl"};
+        };
+        return .{ .paths = &paths.list, .saved = paths.list[0] };
+    }
+};
+
+fn runMidRun(agent: *Agent, events: *CompactionEvents, at: ?u64) !void {
+    var model = test_model;
+    model.context_window = 100_000;
+    agent.setModel(model);
+    agent.subscribeWithContext(events, CompactionEvents.onEvent);
+    agent.setAutoCompact(at, .{ .ctx = events, .transcripts_fn = CompactionEvents.transcripts });
+    try agent.promptAsync(ai_types.Message{ .user = .{ .content = .{ .text = "plan the work" }, .timestamp = 0 } });
+    agent.waitForIdle();
+}
+
+test "a run past the threshold compacts between turns and carries on from the summary" {
+    var mock = MidRunMock{};
+    var agent = Agent.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = midRunStreamFn, .ctx = &mock } });
+    defer agent.deinit();
+    var events = CompactionEvents{};
+
+    try runMidRun(&agent, &events, 5_000);
+
+    try std.testing.expectEqual(@as(usize, 3), mock.calls);
+    try std.testing.expectEqual(@as(usize, 1), mock.summary_requests);
+    try std.testing.expectEqual(@as(usize, 1), mock.carried_on);
+    try std.testing.expectEqual(@as(usize, 1), events.started);
+    try std.testing.expectEqual(@as(usize, 1), events.completed);
+    try std.testing.expectEqual(@as(usize, 3), events.history_len);
+    try std.testing.expect(events.reported_transcript);
+
+    const messages = agent._state.messages.items;
+    try std.testing.expectEqual(@as(usize, 4), messages.len);
+    try std.testing.expect(std.mem.startsWith(u8, messages[0].user.content.text, compaction.header));
+    try std.testing.expect(std.mem.indexOf(u8, messages[0].user.content.text, "- /sessions/s1/compaction-1.jsonl") != null);
+    try std.testing.expectEqualStrings(compaction.acknowledgement, messages[1].assistant.content[0].text.text);
+    try std.testing.expectEqualStrings(agent_loop.compacted_request_text, messages[2].user.content.text);
+    try std.testing.expectEqualStrings("finished", messages[3].assistant.content[0].text.text);
+}
+
+test "a run under the threshold, or with no threshold, does not compact" {
+    const thresholds = [_]?u64{ 50_000, null };
+    for (thresholds) |at| {
+        var mock = MidRunMock{};
+        var agent = Agent.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = midRunStreamFn, .ctx = &mock } });
+        defer agent.deinit();
+        var events = CompactionEvents{};
+
+        try runMidRun(&agent, &events, at);
+
+        try std.testing.expectEqual(@as(usize, 2), mock.calls);
+        try std.testing.expectEqual(@as(usize, 0), mock.summary_requests);
+        try std.testing.expectEqual(@as(usize, 0), events.started);
+        try std.testing.expectEqual(@as(usize, 4), agent._state.messages.items.len);
+    }
 }
 
 test "Agent compactAsync retries with less history when the request overflows the context" {

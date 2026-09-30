@@ -23,6 +23,24 @@ pub const AgentEndPayload = struct {
     }
 };
 
+pub const CompactionOutcome = enum { completed, cancelled, failed };
+
+pub const CompactionEndPayload = struct {
+    outcome: CompactionOutcome,
+    text: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+    transcript: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+    message: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+    messages_before: u64 = 0,
+    tokens_before: u64 = 0,
+    tokens_after: u64 = 0,
+
+    pub fn deinit(self: *CompactionEndPayload, allocator: std.mem.Allocator) void {
+        self.text.deinit(allocator);
+        self.transcript.deinit(allocator);
+        self.message.deinit(allocator);
+    }
+};
+
 pub const TurnEndPayload = struct {
     message: ai_types.AssistantMessage,
     tool_results: OwnedSlice(ai_types.ToolResultMessage) = OwnedSlice(ai_types.ToolResultMessage).initBorrowed(&.{}),
@@ -134,11 +152,15 @@ pub const AgentEvent = union(enum) {
     tool_execution_update: ToolExecutionUpdatePayload,
     tool_execution_end: ToolExecutionEndPayload,
 
+    compaction_start: void,
+    compaction_end: CompactionEndPayload,
+
     run_failed: AgentFailurePayload,
 
     pub fn deinit(self: *AgentEvent, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .message_update => |*payload| payload.deinit(allocator),
+            .compaction_end => |*payload| payload.deinit(allocator),
             .run_failed => |*payload| payload.deinit(allocator),
             else => {},
         }
@@ -366,6 +388,12 @@ pub const GetSteeringMessagesFn = *const fn (
     allocator: std.mem.Allocator,
 ) anyerror!?[]const ai_types.Message;
 
+pub const CompactBetweenTurnsFn = *const fn (
+    ctx: ?*anyopaque,
+    context: *AgentContext,
+    event_stream: *AgentEventStream,
+) anyerror!bool;
+
 pub const GetFollowUpMessagesFn = *const fn (
     ctx: ?*anyopaque,
     allocator: std.mem.Allocator,
@@ -412,6 +440,8 @@ pub const AgentLoopConfig = struct {
     get_steering_messages_ctx: ?*anyopaque = null,
     get_follow_up_messages_fn: ?GetFollowUpMessagesFn = null,
     get_follow_up_messages_ctx: ?*anyopaque = null,
+    compact_between_turns_fn: ?CompactBetweenTurnsFn = null,
+    compact_between_turns_ctx: ?*anyopaque = null,
     convert_to_llm_fn: ?ConvertToLlmFn = null,
     convert_to_llm_ctx: ?*anyopaque = null,
     get_api_key_fn: ?GetApiKeyFn = null,

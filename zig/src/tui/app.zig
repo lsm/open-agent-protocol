@@ -1150,6 +1150,7 @@ pub const App = struct {
             .agent_end => |payload| return payload.reason == .completed,
             .compaction_end => |payload| {
                 if (payload.outcome == .completed) try self.recordCompactionTranscript(payload.transcript.slice());
+                if (payload.in_run) return false;
                 self.compaction_just_ended = payload.outcome == .completed;
                 return true;
             },
@@ -2392,7 +2393,7 @@ pub const App = struct {
 
             if (self.quarantine_events) {
                 const is_lifecycle = ev == .agent_start or ev == .turn_start or ev == .compaction_start;
-                const is_terminal = ev == .agent_end or ev == .@"error" or ev == .compaction_end;
+                const is_terminal = ev == .agent_end or ev == .@"error" or (ev == .compaction_end and !ev.compaction_end.in_run);
                 if (is_lifecycle or is_terminal) {
                     self.quarantine_events = false;
                     {
@@ -2593,6 +2594,7 @@ pub const App = struct {
             }
         }
         self.state.stream_aborted = false;
+        if (!self.state.status.streaming) self.armAutoCompact();
         if (self.session) |*session| {
             session.submitTurn(trimmed) catch |err| {
                 if (err == error.QueueFull) return err;
@@ -2604,6 +2606,26 @@ pub const App = struct {
         self.session_turns += 1;
         try self.state.appendUserMessage(trimmed);
         self.refreshQueuedCounts();
+    }
+
+    fn autoCompactThreshold(self: *const App) ?u64 {
+        const runtime = self.runtime orelse return null;
+        const model = runtime.currentModel() orelse return null;
+        return tui_state.autoCompactAt(self.state.autocompact, model);
+    }
+
+    fn armAutoCompact(self: *App) void {
+        const runtime = self.runtime orelse return;
+        runtime.armAutoCompact(self.autoCompactThreshold(), self.compaction_transcripts.items, .{ .ctx = self, .save_fn = saveRunTranscript }) catch {};
+    }
+
+    fn saveRunTranscript(ctx: ?*anyopaque, allocator: std.mem.Allocator, index: usize, history: []const ai_types.Message) ?[]u8 {
+        const self: *App = @ptrCast(@alignCast(ctx.?));
+        const store = self.store orelse return null;
+        if (self.session_id.len == 0) return null;
+        const saved = store.saveTranscript(self.session_id, index, history) catch return null;
+        defer store.allocator.free(saved);
+        return allocator.dupe(u8, saved) catch null;
     }
 
     fn contextWindowInEffect(self: *const App) u64 {
@@ -7753,6 +7775,40 @@ test "App /compact archives the history and hands the model every transcript so 
     try std.testing.expectEqual(tui_state.TranscriptKind.system, notice.kind);
     try std.testing.expect(std.mem.startsWith(u8, notice.text.items, "conversation compacted · 2 messages · ~2.4k → ~300 tokens"));
     try std.testing.expect(std.mem.indexOf(u8, notice.text.items, "kept state") != null);
+}
+
+test "App holds a run as streaming through a compaction made inside it, even after the turn before it ended, and records its transcript" {
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    var mock = MockAppSession{ .history_messages = &compaction_history };
+    defer mock.deinit();
+    app.session = mock.session();
+    try mock.eventStream().push(.{ .turn_end = .{ .stop_reason = .tool_use } });
+    try app.drainEvents();
+    try std.testing.expect(!app.state.status.streaming);
+
+    try mock.eventStream().push(.{ .compaction_start = .{ .in_run = true } });
+    try app.drainEvents();
+    try std.testing.expect(app.state.status.compacting);
+    try std.testing.expect(app.state.status.streaming);
+
+    try mock.eventStream().push(.{ .compaction_end = .{
+        .in_run = true,
+        .outcome = .completed,
+        .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, agent.compaction.header ++ " x\n\n<summary>\nkept state\n</summary>")),
+        .transcript = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "/s/s1/compaction-1.jsonl")),
+        .messages_before = 2,
+        .tokens_before = 2400,
+        .tokens_after = 300,
+    } });
+    try app.drainEvents();
+
+    try std.testing.expect(app.state.status.streaming);
+    try std.testing.expect(!app.state.status.compacting);
+    try std.testing.expect(app.compaction_just_ended == null);
+    try std.testing.expectEqual(@as(usize, 1), app.compaction_transcripts.items.len);
+    try std.testing.expectEqualStrings("/s/s1/compaction-1.jsonl", app.compaction_transcripts.items[0]);
+    try std.testing.expectEqual(@as(usize, 300), app.state.status.context_used);
 }
 
 test "App /compact reports an empty or freshly compacted history without compacting" {

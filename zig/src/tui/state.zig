@@ -1132,15 +1132,17 @@ pub const AppState = struct {
                 self.dropped_event_count = payload.dropped_count;
             },
             .compaction_start => {
-                self.status.streaming = true;
                 self.status.compacting = true;
+                self.status.streaming = true;
                 self.markStreamingStarted();
             },
             .compaction_end => |payload| {
-                self.status.streaming = false;
                 self.status.compacting = false;
-                self.markStreamingStopped();
-                self.stream_aborted = false;
+                if (!payload.in_run) {
+                    self.status.streaming = false;
+                    self.markStreamingStopped();
+                    self.stream_aborted = false;
+                }
                 switch (payload.outcome) {
                     .completed => {
                         self.telemetry.estimated_tokens = payload.tokens_after;
@@ -1169,6 +1171,7 @@ pub const AppState = struct {
                 self.telemetry.rate.turnEnded();
                 self.telemetry.rate.runEnded();
                 self.status.streaming = false;
+                self.status.compacting = false;
                 self.markStreamingStopped();
                 self.stream_aborted = false;
                 try self.finalizeInterruptedTools();
