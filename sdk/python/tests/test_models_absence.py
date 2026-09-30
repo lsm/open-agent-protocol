@@ -57,21 +57,10 @@ async def test_stated_native_members_keep_their_values(fake: FakeServerFactory) 
 
 
 @pytest.mark.asyncio
-async def test_a_present_null_is_refused(fake: FakeServerFactory) -> None:
-    with pytest.raises(MakaiProtocolError) as caught:
-        await _list(fake, model(lifecycle=None))
-    assert caught.value.code == "malformed_response"
-    assert "lifecycle" in str(caught.value).lower()
-
-    with pytest.raises(MakaiProtocolError) as caught:
-        await _list(fake, model(source=None))
-    assert caught.value.code == "malformed_response"
-    assert "source" in str(caught.value).lower()
-
-
-@pytest.mark.asyncio
-async def test_a_wrong_type_or_unknown_literal_is_refused(fake: FakeServerFactory) -> None:
+async def test_a_present_null_wrong_type_or_unknown_is_refused(fake: FakeServerFactory) -> None:
     for entry, member in (
+        (model(lifecycle=None), "lifecycle"),
+        (model(source=None), "source"),
         (model(lifecycle=7), "lifecycle"),
         (model(lifecycle="retired"), "lifecycle"),
         (model(source=7), "source"),
