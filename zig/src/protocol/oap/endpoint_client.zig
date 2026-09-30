@@ -523,10 +523,6 @@ test "the budget arithmetic keeps sub-millisecond precision without a live clock
     try std.testing.expect(std.meta.activeTag(Budget.unbounded().timeout()) == .none);
 }
 
-const late_tail =
-    \\sleep 0.4; echo '{"control":"late"}'
-;
-
 const partial_tail =
     \\printf partial; cat
 ;
@@ -537,18 +533,6 @@ const blank_tail =
 
 fn stopChild(client: *Client) void {
     _ = client.waitExit(300) catch {};
-}
-
-fn readUnder(allocator: std.mem.Allocator, tail: []const u8, budget: Budget) !?Frame {
-    var client = try Client.spawn(allocator, .{ .command = "/bin/sh", .args = &.{ "-c", tail } });
-    defer client.deinit();
-    defer stopChild(&client);
-    var attempts: usize = 0;
-    var seen: ?Frame = null;
-    while (seen == null and attempts < 8) : (attempts += 1) {
-        seen = try client.nextBounded(budget);
-    }
-    return seen;
 }
 
 test "none, duration and deadline each read the same frame from one child" {
@@ -589,22 +573,32 @@ test "none, duration and deadline each read the same frame from one child" {
     try std.testing.expect(shapes[2].timeout() == .duration);
 }
 
-test "a bounded budget gives up on a late frame where an unbounded one still reads it" {
+test "a spent budget gives up on silence where an unbounded one reads the late frame" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var client = try Client.spawn(std.testing.allocator, .{ .command = "/bin/cat" });
+    defer client.deinit();
+    const sent = "{\"control\":\"late\"}";
 
-    var bounded_client = try Client.spawn(std.testing.allocator, .{ .command = "/bin/sh", .args = &.{ "-c", late_tail } });
-    defer bounded_client.deinit();
-    defer stopChild(&bounded_client);
-    const bounded = Budget.until(bounded_client.io(), 120);
-    var bounded_attempts: usize = 0;
-    while (bounded_attempts < 8) : (bounded_attempts += 1) {
-        if (try bounded_client.nextBounded(bounded) != null) break;
+    const bounded = Budget.until(client.io(), 60);
+    var attempts: usize = 0;
+    var during_silence: ?Frame = null;
+    while (attempts < 8) : (attempts += 1) {
+        during_silence = try client.nextBounded(bounded);
+        if (during_silence != null) break;
     }
+    try std.testing.expect(during_silence == null);
     try std.testing.expect(bounded.expired());
 
-    const late = try readUnder(std.testing.allocator, late_tail, Budget.unbounded());
+    try client.write(sent);
+    var open_attempts: usize = 0;
+    var late: ?Frame = null;
+    while (late == null and open_attempts < 20) : (open_attempts += 1) {
+        late = try client.nextBounded(Budget.unbounded());
+    }
     try std.testing.expect(late != null);
     try std.testing.expect(late.? == .control);
+    try std.testing.expectEqualStrings(sent, late.?.control);
+    try std.testing.expect(Budget.unbounded().timeout() == .none);
 }
 
 test "partial traffic and blank traffic both expire inside one overall budget" {
