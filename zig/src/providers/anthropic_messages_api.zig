@@ -1675,6 +1675,8 @@ fn runThread(ctx: *ThreadCtx) void {
 
 fn settleOrFailLost(stream: *event_stream.AssistantMessageEventStream, out: ai_types.AssistantMessage) void {
     if (stream.pushFailed()) {
+        var dropped = out;
+        dropped.deinit(stream.allocator);
         stream.completeWithError("an event could not be queued: out of memory");
         return;
     }
@@ -2868,7 +2870,16 @@ test "a stream that lost a clone settles as a failure, not a clean terminal" {
     } });
     try std.testing.expect(stream.pushFailed());
 
-    settleOrFailLost(stream, emptyAnthropicMessage());
+    settleOrFailLost(stream, .{
+        .content = &.{},
+        .api = try allocator.dupe(u8, "anthropic-messages"),
+        .provider = try allocator.dupe(u8, "anthropic"),
+        .model = try allocator.dupe(u8, "claude"),
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+        .is_owned = true,
+    });
 
     try std.testing.expect(stream.getResult() == null);
     if (stream.getError() == null) return error.NoErrorRecorded;

@@ -664,6 +664,8 @@ const CurrentBlock = enum {
 
 fn settleOrFailLost(stream: *event_stream.AssistantMessageEventStream, out: ai_types.AssistantMessage) void {
     if (stream.pushFailed()) {
+        var dropped = out;
+        dropped.deinit(stream.allocator);
         stream.completeWithError("an event could not be queued: out of memory");
         return;
     }
