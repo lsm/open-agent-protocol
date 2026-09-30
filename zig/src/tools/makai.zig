@@ -193,13 +193,11 @@ const StdioToolKey = AgentToolBridge.Key;
 const StdioToolResult = AgentToolBridge.Result;
 
 const StdioToolBridge = AgentToolBridge.Bridge;
-
-const StdioAgentToolExecutor = struct {
-    bridge: *StdioToolBridge,
-    session_id: AgentProtocolTypes.SessionId,
-    generation: u64,
-    disconnect_failed: *std.atomic.Value(bool),
-};
+const StdioAgentToolExecutor = AgentToolBridge.Executor;
+const executeStdioToolViaAgentProtocol = AgentToolBridge.executeViaAgentProtocol;
+const parseToolResultContentParts = AgentToolBridge.parseToolResultContentParts;
+const parseUserContentPart = AgentToolBridge.parseUserContentPart;
+const getStringField = AgentToolBridge.getStringField;
 
 const ActiveAgentRun = struct {
     session_id: AgentProtocolTypes.SessionId,
@@ -1210,59 +1208,6 @@ fn unavailableAgentToolExecute(
     return error.ToolExecutionUnavailable;
 }
 
-fn executeStdioToolViaAgentProtocol(
-    ctx: ?*anyopaque,
-    tool_call_id: []const u8,
-    tool_name: []const u8,
-    args_json: []const u8,
-    cancel_token: ?ai_types.CancelToken,
-    on_update_ctx: ?*anyopaque,
-    on_update: ?*const fn (?*anyopaque, []const u8, []const u8, []const u8) void,
-    allocator: std.mem.Allocator,
-) anyerror!agent_loop.AgentToolResult {
-    _ = on_update_ctx;
-    _ = on_update;
-    const executor: *StdioAgentToolExecutor = @ptrCast(@alignCast(ctx.?));
-    try executor.bridge.enqueueRequest(allocator, executor.session_id, executor.generation, tool_call_id, tool_name, args_json);
-
-    const popAndBuild = struct {
-        fn run(
-            bridge: *StdioToolBridge,
-            alloc: std.mem.Allocator,
-            pop_session_id: AgentProtocolTypes.SessionId,
-            pop_tool_call_id: []const u8,
-            pop_generation: u64,
-        ) !?agent_loop.AgentToolResult {
-            const result = bridge.popResult(alloc, pop_session_id, pop_tool_call_id, pop_generation) orelse return null;
-            var owned_result = result;
-            defer owned_result.deinit(alloc);
-            const content = try parseToolResultContentPartsJson(alloc, owned_result.result_json);
-            errdefer deinitUserContentParts(alloc, content);
-            const details_json = try alloc.dupe(u8, owned_result.details_json);
-            errdefer alloc.free(details_json);
-            return .{
-                .content = ai_types.OwnedSlice(ai_types.UserContentPart).initOwned(content),
-                .details_json = ai_types.OwnedSlice(u8).initOwned(details_json),
-                .is_error = owned_result.is_error,
-            };
-        }
-    }.run;
-
-    while (true) {
-        if (cancel_token) |token| {
-            if (token.isCancelled()) return error.Cancelled;
-        }
-        if (try popAndBuild(executor.bridge, allocator, executor.session_id, tool_call_id, executor.generation)) |tool_result| return tool_result;
-        if (executor.bridge.isDisconnected()) {
-            if (try popAndBuild(executor.bridge, allocator, executor.session_id, tool_call_id, executor.generation)) |tool_result| return tool_result;
-            executor.disconnect_failed.store(true, .release);
-            if (cancel_token) |token| token.cancelled.store(true, .release);
-            return error.ClientDisconnected;
-        }
-        compat.time.sleepNs(STDIO_IDLE_SLEEP_NS);
-    }
-}
-
 fn parseAgentMessages(
     allocator: std.mem.Allocator,
     value: std.json.Value,
@@ -1398,34 +1343,6 @@ fn parseUserContent(allocator: std.mem.Allocator, value: std.json.Value) !ai_typ
     }
 }
 
-fn parseToolResultContentParts(allocator: std.mem.Allocator, value: std.json.Value) ![]ai_types.UserContentPart {
-    var parts = std.ArrayList(ai_types.UserContentPart).empty;
-    errdefer {
-        for (parts.items) |*part| part.deinit(allocator);
-        parts.deinit(allocator);
-    }
-
-    try appendToolResultContentParts(allocator, &parts, value);
-    if (parts.items.len == 0) try appendTextContentPart(allocator, &parts, "");
-    return parts.toOwnedSlice(allocator);
-}
-
-fn parseToolResultContentPartsJson(allocator: std.mem.Allocator, result_json: []const u8) ![]ai_types.UserContentPart {
-    if (result_json.len == 0) {
-        const content = try allocator.alloc(ai_types.UserContentPart, 0);
-        return content;
-    }
-
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result_json, .{});
-    defer parsed.deinit();
-    return parseToolResultContentParts(allocator, parsed.value);
-}
-
-fn deinitUserContentParts(allocator: std.mem.Allocator, parts: []ai_types.UserContentPart) void {
-    for (parts) |*part| part.deinit(allocator);
-    allocator.free(parts);
-}
-
 fn firstToolResultStringField(value: ?std.json.Value, key: []const u8) ?[]const u8 {
     const actual = value orelse return null;
     switch (actual) {
@@ -1462,70 +1379,6 @@ fn firstToolResultBoolField(value: ?std.json.Value, key: []const u8) ?bool {
             if (obj.get("content")) |content| return firstToolResultBoolField(content, key);
         },
         else => {},
-    }
-    return null;
-}
-
-fn appendToolResultContentParts(
-    allocator: std.mem.Allocator,
-    parts: *std.ArrayList(ai_types.UserContentPart),
-    value: std.json.Value,
-) !void {
-    switch (value) {
-        .string => |text| try appendTextContentPart(allocator, parts, text),
-        .array => |array| {
-            for (array.items) |item| {
-                try appendToolResultContentParts(allocator, parts, item);
-            }
-        },
-        .object => |obj| {
-            if (std.mem.eql(u8, getStringField(obj, "type") orelse "", "tool_result")) {
-                if (obj.get("content")) |content| {
-                    try appendToolResultContentParts(allocator, parts, content);
-                }
-                return;
-            }
-
-            if (try parseUserContentPart(allocator, value)) |part| {
-                parts.append(allocator, part) catch |err| {
-                    var owned = part;
-                    owned.deinit(allocator);
-                    return err;
-                };
-            }
-        },
-        else => {},
-    }
-}
-
-fn appendTextContentPart(
-    allocator: std.mem.Allocator,
-    parts: *std.ArrayList(ai_types.UserContentPart),
-    text: []const u8,
-) !void {
-    const owned = try allocator.dupe(u8, text);
-    errdefer allocator.free(owned);
-    try parts.append(allocator, .{ .text = .{ .text = owned } });
-}
-
-fn parseUserContentPart(allocator: std.mem.Allocator, value: std.json.Value) !?ai_types.UserContentPart {
-    if (value != .object) return null;
-    const obj = value.object;
-    const ty = getStringField(obj, "type") orelse return null;
-    if (std.mem.eql(u8, ty, "text")) {
-        return .{ .text = .{
-            .text = try allocator.dupe(u8, getStringField(obj, "text") orelse ""),
-        } };
-    }
-    if (std.mem.eql(u8, ty, "image")) {
-        const data = try allocator.dupe(u8, getStringField(obj, "data") orelse "");
-        errdefer allocator.free(data);
-        const mime_type = try allocator.dupe(u8, getStringField(obj, "mime_type") orelse "application/octet-stream");
-        errdefer allocator.free(mime_type);
-        return .{ .image = .{
-            .data = data,
-            .mime_type = mime_type,
-        } };
     }
     return null;
 }
@@ -1830,11 +1683,6 @@ fn writeUsageField(w: *json_writer.JsonWriter, usage: ai_types.Usage) !void {
     try w.writeIntField("cache_read", usage.cache_read);
     try w.writeIntField("cache_write", usage.cache_write);
     try w.endObject();
-}
-
-fn getStringField(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
-    const value = obj.get(key) orelse return null;
-    return if (value == .string) value.string else null;
 }
 
 fn getBoolField(obj: std.json.ObjectMap, key: []const u8) ?bool {
@@ -2251,7 +2099,6 @@ const keepGoing = hub_http.KeepGoing{ .context = undefined, .check = hubSignalle
 fn hubSignalled(_: *const anyopaque) bool {
     return !endpoint_signals.received();
 }
-
 
 fn runHubHttp(
     allocator: std.mem.Allocator,
@@ -2747,7 +2594,6 @@ fn runConformance(
     try compat.stdio.writeAll(stdout, out.items);
     return !report.passed();
 }
-
 
 const ValidateVerdict = union(enum) {
     judged: []ValidateFinding,
@@ -9410,7 +9256,6 @@ const BACKEND_FRAME_TOO_LARGE_MESSAGE = "oapx serve agent --backend: a frame exc
 fn backendClock() u64 {
     return compat.time.monotonicNanos() catch 0;
 }
-
 
 fn backendIo() std.Io {
     return if (@import("builtin").is_test) std.testing.io else std.Io.Threaded.global_single_threaded.io();
