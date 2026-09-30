@@ -31,7 +31,8 @@ fn runWithIo(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8,
         .create_no_window = true,
         .pgid = if (builtin.os.tag != .windows) 0 else null,
     });
-    defer cleanupChild(&child, io);
+    const process_group: ?std.posix.pid_t = if (builtin.os.tag != .windows) child.id else null;
+    defer cleanupChild(&child, io, process_group);
 
     var multi_reader_buffer: std.Io.File.MultiReader.Buffer(2) = undefined;
     var multi_reader: std.Io.File.MultiReader = undefined;
@@ -142,15 +143,13 @@ fn groupSurvives(group: std.posix.pid_t) bool {
     return true;
 }
 
-fn cleanupChild(child: *std.process.Child, io: std.Io) void {
-    if (child.id) |id| {
-        if (builtin.os.tag != .windows) {
-            const group = -@as(std.posix.pid_t, @intCast(id));
-            std.posix.kill(group, std.posix.SIG.TERM) catch {};
-            if (groupSurvives(group)) {
-                compat.time.sleepMs(common.process_group_kill_grace_ms);
-                std.posix.kill(group, std.posix.SIG.KILL) catch {};
-            }
+fn cleanupChild(child: *std.process.Child, io: std.Io, process_group: ?std.posix.pid_t) void {
+    if (process_group) |id| {
+        const group = -@as(std.posix.pid_t, @intCast(id));
+        std.posix.kill(group, std.posix.SIG.TERM) catch {};
+        if (groupSurvives(group)) {
+            compat.time.sleepMs(common.process_group_kill_grace_ms);
+            std.posix.kill(group, std.posix.SIG.KILL) catch {};
         }
     }
     if (child.id != null) child.kill(io);
@@ -245,6 +244,19 @@ fn pollTermWindows(child: *std.process.Child, io: std.Io) !?std.process.Child.Te
     };
 }
 
+fn liveRecordedChild(dir: std.Io.Dir) ?std.posix.pid_t {
+    return switch (probeRecordedChild(dir)) {
+        .alive => |pid| pid,
+        else => null,
+    };
+}
+
+fn readRecordedChild(dir: std.Io.Dir) ?std.posix.pid_t {
+    const text = dir.readFileAlloc(common.defaultIo(), "child.pid", std.testing.allocator, .limited(64)) catch return null;
+    defer std.testing.allocator.free(text);
+    return std.fmt.parseInt(std.posix.pid_t, std.mem.trim(u8, text, " \n\t"), 10) catch null;
+}
+
 const ChildProbe = union(enum) {
     not_written,
     unreadable,
@@ -274,6 +286,7 @@ test "a timed out command takes its backgrounded children with it" {
     if (runWithIo(std.testing.allocator, common.defaultIo(), &argv, .{ .dir = dir }, 1_000, null)) |result| {
         std.testing.allocator.free(result.stdout);
         std.testing.allocator.free(result.stderr);
+        return error.TestUnexpectedResult;
     } else |err| try std.testing.expectEqual(error.Timeout, err);
 
     var leaked: ?std.posix.pid_t = null;
@@ -288,11 +301,12 @@ test "a timed out command takes its backgrounded children with it" {
         compat.time.sleepMs(50);
     }
     switch (probeRecordedChild(dir)) {
+        .dead => {},
         .alive => |pid| {
             std.posix.kill(pid, std.posix.SIG.KILL) catch {};
             return error.TestUnexpectedResult;
         },
-        else => {},
+        .not_written, .unreadable => return error.TestUnexpectedResult,
     }
 }
 
@@ -306,25 +320,58 @@ test "a child that ignores SIGTERM is still taken down" {
     if (runWithIo(std.testing.allocator, common.defaultIo(), &argv, .{ .dir = dir }, 1_000, null)) |result| {
         std.testing.allocator.free(result.stdout);
         std.testing.allocator.free(result.stderr);
+        return error.TestUnexpectedResult;
     } else |err| try std.testing.expectEqual(error.Timeout, err);
 
-    var survived: ?std.posix.pid_t = null;
+    var observed: ?std.posix.pid_t = null;
     const deadline = common.nowMs() + 5_000;
-    while (common.nowMs() < deadline) {
+    while (observed == null and common.nowMs() < deadline) {
         switch (probeRecordedChild(dir)) {
-            .alive => |pid| survived = pid,
-            .dead => break,
+            .alive => |pid| observed = pid,
+            .dead => observed = readRecordedChild(dir),
             .not_written => {},
             .unreadable => return error.TestUnexpectedResult,
         }
-        compat.time.sleepMs(50);
+        compat.time.sleepMs(20);
     }
+    const was_there = observed orelse return error.TestUnexpectedResult;
+    std.posix.kill(was_there, std.posix.SIG.KILL) catch {};
     switch (probeRecordedChild(dir)) {
+        .dead => {},
         .alive => |pid| {
             std.posix.kill(pid, std.posix.SIG.KILL) catch {};
             return error.TestUnexpectedResult;
         },
-        else => {},
+        .not_written, .unreadable => return error.TestUnexpectedResult,
+    }
+}
+
+test "a command that exits early still takes its children with it" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dir = try tmp.dir.openDir(common.defaultIo(), ".", .{});
+    defer dir.close(common.defaultIo());
+
+    const script = try std.fmt.allocPrint(std.testing.allocator, "(sleep 30 & echo $! > child.pid); exit 0", .{});
+    defer std.testing.allocator.free(script);
+    const argv = [_][]const u8{ "/bin/sh", "-c", script };
+
+    const result = try runWithIo(std.testing.allocator, common.defaultIo(), &argv, .{ .dir = dir }, 10_000, null);
+    defer std.testing.allocator.free(result.stdout);
+    defer std.testing.allocator.free(result.stderr);
+    try std.testing.expectEqual(@as(?u8, 0), switch (result.term) {
+        .exited => |code| code,
+        else => null,
+    });
+
+    switch (probeRecordedChild(dir)) {
+        .dead, .not_written => return,
+        .alive => |pid| {
+            std.posix.kill(pid, std.posix.SIG.KILL) catch {};
+            return error.TestUnexpectedResult;
+        },
+        .unreadable => return error.TestUnexpectedResult,
     }
 }
 
