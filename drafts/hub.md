@@ -707,7 +707,8 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   `code: request_read`, `protocol: open-agent-protocol`, `version: 0.1`,
   `profile: open-agent-protocol.agent-control-core`, and the synthetic correlation `oap-error-1`
   replying to `oap-request-1` that `refusalEnvelope` builds at `http.zig:292-298` and the existing
-  unit test at `:1566` already pins for all four refusals — delivered while the client had sent
+  unit test `a refusal is an error.response naming its code, correlated to a request that never
+  arrived` at `:1617` already pins for all four refusals — delivered while the client had sent
   **4096 of the 8 MiB it declared**. The answer arriving at all is the "gave up" claim: a
   daemon waiting for the declared body would have said nothing and the read would have timed out.
   **Two negative controls fail it:** `readBody` treating a short body as complete answers `404`, and
