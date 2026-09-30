@@ -308,6 +308,17 @@ const Runner = struct {
     }
 
     fn failReason(self: *Runner, name: []const u8, err: anyerror) !void {
+        if (err == error.ProbeBudgetExpired) {
+            try self.failOwned(
+                name,
+                try std.fmt.allocPrint(
+                    self.allocator,
+                    "the {d}ms probe budget ran out; raise it with --timeout-ms",
+                    .{self.probe_budget_ms},
+                ),
+            );
+            return;
+        }
         try self.fail(name, self.reasonOf(err));
     }
 
@@ -317,8 +328,8 @@ const Runner = struct {
 
 
     fn pullUntil(self: *Runner, deadline: Deadline) !void {
-        if (deadline.expired()) return error.ConformanceEndpointSilent;
-        const frame = try self.client.next(deadline.budget()) orelse return error.ConformanceEndpointSilent;
+        if (deadline.expired()) return error.ProbeBudgetExpired;
+        const frame = try self.client.next(deadline.budget()) orelse return error.ProbeBudgetExpired;
         if (frame == .control) {
             const control = try parseControl(self.allocator, frame.control);
             self.controls.append(self.allocator, control) catch |err| {
@@ -353,7 +364,7 @@ const Runner = struct {
     fn answer(self: *Runner, id: []const u8, deadline: Deadline) !oap_types.Envelope {
         while (true) {
             if (self.takeAnswer(id)) |found| return found;
-            if (deadline.expired()) return error.ConformanceEndpointSilent;
+            if (deadline.expired()) return error.ProbeBudgetExpired;
             try self.pullUntil(deadline);
         }
     }
@@ -404,7 +415,7 @@ const Runner = struct {
 
     fn nextEvent(self: *Runner, deadline: Deadline) !oap_types.Envelope {
         while (self.events.items.len == 0) {
-            if (deadline.expired()) return error.ConformanceEndpointSilent;
+            if (deadline.expired()) return error.ProbeBudgetExpired;
             try self.pullUntil(deadline);
         }
         return self.events.orderedRemove(0);
@@ -924,7 +935,7 @@ const Runner = struct {
         var last_sequence: u64 = 0;
         while (true) {
             const event = self.nextEvent(deadline) catch |err| {
-                try self.fail("the run reaches a terminal event", @errorName(err));
+                try self.failReason("the run reaches a terminal event", err);
                 return;
             };
             var held = event;
@@ -954,14 +965,14 @@ const Runner = struct {
             switch (held.payload) {
                 .permission_requested => |*gate| {
                     self.answerPermission(gate, deadline) catch |err| {
-                        try self.fail("a permission gate is resolvable from the stream", @errorName(err));
+                        try self.failReason("a permission gate is resolvable from the stream", err);
                         return;
                     };
                     try self.pass("a permission gate is resolvable from the stream");
                 },
                 .user_input_requested => |*gate| {
                     self.answerInput(gate, deadline) catch |err| {
-                        try self.fail("a user input gate is resolvable from the stream", @errorName(err));
+                        try self.failReason("a user input gate is resolvable from the stream", err);
                         return;
                     };
                     try self.pass("a user input gate is resolvable from the stream");
@@ -1626,7 +1637,7 @@ test "an accepted replay that never terminates is judged inside the budget" {
     try std.testing.expect(!report.passed());
     const replay = report.verdict("a cursor replay is accepted and re-delivers the run") orelse return error.CheckMissing;
     try std.testing.expect(!replay.passed);
-    try std.testing.expectEqualStrings("ConformanceEndpointSilent", replay.detail);
+    try std.testing.expectEqualStrings("the 1500ms probe budget ran out; raise it with --timeout-ms", replay.detail);
 }
 
 
@@ -1802,4 +1813,28 @@ test "an event already buffered when the budget runs out is still delivered" {
     var delivered = try runner.nextEvent(spent);
     defer delivered.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("b1", delivered.id);
+}
+
+test "a run that never settles is reported as a spent budget, not as silence" {
+    var runner: Runner = .{
+        .allocator = std.testing.allocator,
+        .client = undefined,
+        .report = .{ .allocator = std.testing.allocator, .endpoint = "" },
+        .session = "conformance",
+        .run_id = "run-1",
+    };
+    defer {
+        for (runner.report.checks.items) |check| {
+            std.testing.allocator.free(check.name);
+            std.testing.allocator.free(check.detail);
+        }
+        runner.report.checks.deinit(std.testing.allocator);
+    }
+
+    const spent = Deadline.start(std.testing.io, 0);
+    try runner.consumeRun(spent);
+
+    const terminal = runner.report.verdict("the run reaches a terminal event") orelse return error.CheckMissing;
+    try std.testing.expect(!terminal.passed);
+    try std.testing.expectEqualStrings("the 30000ms probe budget ran out; raise it with --timeout-ms", terminal.detail);
 }
