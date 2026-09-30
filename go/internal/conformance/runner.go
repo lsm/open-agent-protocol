@@ -613,6 +613,7 @@ func (r *runner) replayRun() {
 	if r.runID == "" {
 		return
 	}
+	original := runEventSignature(r.client.Transcript(), r.runID)
 	from := uint64(0)
 	frame := ControlFrame{Control: "replay", ID: "conformance-replay-1", SessionID: r.session, RunID: r.runID, After: &from}
 	if err := r.client.SendControl(frame); err != nil {
@@ -645,7 +646,6 @@ func (r *runner) replayRun() {
 		return
 	}
 
-	original := runEventSignature(r.client.Transcript(), r.runID)
 	var replayed []runEvent
 	for {
 		event, err := r.client.Event()
@@ -656,15 +656,11 @@ func (r *runner) replayRun() {
 		if event.RunID != r.runID || event.Sequence == nil {
 			continue
 		}
-		replayed = append(replayed, runEvent{typ: event.Type, sequence: *event.Sequence})
+		replayed = append(replayed, runEvent{id: event.ID, typ: event.Type, sequence: *event.Sequence})
 		switch event.Type {
 		case protocol.TypeRunCompleted, protocol.TypeRunFailed, protocol.TypeRunCancelled:
 			if len(original) == 0 {
-				if replayed[0].sequence != 1 {
-					r.fail(accepted, fmt.Sprintf("a replay from 0 began at sequence %d, not the run's first event", replayed[0].sequence))
-					return
-				}
-				r.pass(accepted)
+				r.fail(accepted, "this runner recorded no events for the run it asked to replay, so it cannot tell whether the replay re-delivered that run; an endpoint that declines the control is reported as unsupported, not as a replay it accepted")
 				return
 			}
 			if index, detail := firstDivergence(original, replayed); index >= 0 {
@@ -678,12 +674,13 @@ func (r *runner) replayRun() {
 }
 
 type runEvent struct {
+	id       protocol.EnvelopeID
 	typ      protocol.EnvelopeType
 	sequence uint64
 }
 
 func (e runEvent) String() string {
-	return fmt.Sprintf("%s@%d", e.typ, e.sequence)
+	return fmt.Sprintf("%s %s@%d", e.id, e.typ, e.sequence)
 }
 
 func isTerminalRunEvent(typ protocol.EnvelopeType) bool {
@@ -700,7 +697,7 @@ func runEventSignature(envelopes []protocol.Envelope, run protocol.RunID) []runE
 		if envelope.RunID != run || envelope.Sequence == nil {
 			continue
 		}
-		signature = append(signature, runEvent{typ: envelope.Type, sequence: *envelope.Sequence})
+		signature = append(signature, runEvent{id: envelope.ID, typ: envelope.Type, sequence: *envelope.Sequence})
 		if isTerminalRunEvent(envelope.Type) {
 			return signature
 		}
