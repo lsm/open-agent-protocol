@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,7 +24,6 @@ func TestHubAddrFinishesTheRefusalAndStopsTheBodyWhenItsSignalArrives(t *testing
 	defer daemon.cancelCtx()
 	defer daemon.stop()
 	address := daemon.address
-
 	const declared = 8 << 20
 	conn, err := net.DialTimeout("tcp", address, 10*time.Second)
 	if err != nil {
@@ -32,8 +32,7 @@ func TestHubAddrFinishesTheRefusalAndStopsTheBodyWhenItsSignalArrives(t *testing
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(60 * time.Second))
 
-	head := fmt.Sprintf("POST /adapters HTTP/1.1\r\nHost: evil.test\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n", declared)
-	if _, err := io.WriteString(conn, head); err != nil {
+	if _, err := fmt.Fprintf(conn, "POST /adapters HTTP/1.1\r\nHost: evil.test\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n", declared); err != nil {
 		t.Fatalf("write the head: %v", err)
 	}
 
@@ -56,10 +55,7 @@ func TestHubAddrFinishesTheRefusalAndStopsTheBodyWhenItsSignalArrives(t *testing
 	defer join()
 	go func() {
 		defer close(writeDone)
-		block := make([]byte, 32*1024)
-		for i := range block {
-			block[i] = 'c'
-		}
+		block := bytes.Repeat([]byte{'c'}, 32*1024)
 		for written.Load() < int64(declared) {
 			take := len(block)
 			if left := int64(declared) - written.Load(); left < int64(take) {
@@ -101,16 +97,10 @@ func TestHubAddrFinishesTheRefusalAndStopsTheBodyWhenItsSignalArrives(t *testing
 	if beforeSignal >= int64(declared) {
 		t.Fatalf("the refusal was read only after all %d declared bytes had been written, so the daemon answered after the body rather than before it", declared)
 	}
-	writerRunning := func() bool {
-		select {
-		case <-writeDone:
-			return false
-		default:
-			return true
-		}
-	}
-	if !writerRunning() {
+	select {
+	case <-writeDone:
 		t.Fatalf("the writer had already finished when the refusal was read, so the body arrived before the answer")
+	default:
 	}
 	if answer.ContentLength <= 0 || int64(len(body)) != answer.ContentLength {
 		t.Fatalf("the body was %d bytes and Content-Length said %d", len(body), answer.ContentLength)
@@ -154,6 +144,68 @@ func TestHubAddrFinishesTheRefusalAndStopsTheBodyWhenItsSignalArrives(t *testing
 	awaitDaemonGone(t, address, 15*time.Second)
 }
 
+func TestHubAddrSignalProofReportsADaemonThatIgnoresTheSignalAsAlive(t *testing.T) {
+	binary := filepath.Join(t.TempDir(), "fakehub")
+	build := exec.Command("go", "build", "-o", binary, "./testdata/fakehub")
+	if buildErr := build.Run(); buildErr != nil {
+		t.Fatalf("build the fake daemon: %v", buildErr)
+	}
+	command := exec.Command(binary)
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr lockedBuffer
+	command.Stderr = &stderr
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	reason := make(chan error, 1)
+	done := make(chan struct{})
+	go func() {
+		reapErr := command.Wait()
+		reason <- reapErr
+		close(done)
+	}()
+	var once sync.Once
+	cleanup := func() {
+		once.Do(func() {
+			_ = command.Process.Kill()
+			select {
+			case reapErr := <-reason:
+				t.Logf("cleanup reaped the fake daemon with %v", reapErr)
+			case <-time.After(20 * time.Second):
+				t.Error("cleanup killed the fake daemon but never reaped it")
+			}
+		})
+	}
+	defer cleanup()
+
+	identity := readLineWithin(stdout, 60*time.Second)
+	identity = strings.TrimPrefix(identity, "ready ")
+	fields := strings.Fields(identity)
+	if len(fields) != 2 {
+		t.Fatalf("the fake daemon announced %q, want an address and a pid", identity)
+	}
+	address := fields[0]
+	conn, err := net.DialTimeout("tcp", address, 5*time.Second)
+	if err != nil {
+		t.Fatalf("the fake daemon is not accepting on %s: %v; it said %s", address, err, stderr.String())
+	}
+	_ = conn.Close()
+	proof := &ownedHub{command: command, exited: done, cancelCtx: func() {}}
+	if proof.signalAndAwaitExit(10 * time.Second) {
+		t.Fatal("the proof reported an exit for a daemon that ignores SIGINT, so it cannot tell the two apart")
+	}
+	again, err := net.DialTimeout("tcp", address, 5*time.Second)
+	if err != nil {
+		t.Fatalf("the proof reported it alive but %s no longer accepts: %v; it said %s", address, err, stderr.String())
+	}
+	_ = again.Close()
+	t.Logf("the fake daemon ignored SIGINT, the proof reported it alive under the bound, and it was still accepting on %s afterwards", address)
+	cleanup()
+}
+
 func awaitDaemonGone(t *testing.T, address string, within time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(within)
@@ -191,11 +243,10 @@ func startOwnedHub(t *testing.T) *ownedHub {
 	stderr := &lockedBuffer{}
 	command.Stderr = stderr
 	stdout, err := command.StdoutPipe()
-	if err != nil {
-		cancel()
-		t.Fatal(err)
+	if err == nil {
+		err = command.Start()
 	}
-	if err := command.Start(); err != nil {
+	if err != nil {
 		cancel()
 		t.Fatal(err)
 	}
@@ -234,34 +285,31 @@ func (hub *ownedHub) shutDownForDiagnostics(t *testing.T) string {
 
 func awaitBoundAddress(t *testing.T, stdout io.Reader, hub *ownedHub, cancel context.CancelFunc) string {
 	t.Helper()
-	lines := make(chan string, 1)
-	go func() {
-		reader := bufio.NewReaderSize(stdout, 64*1024)
-		line, err := reader.ReadString('\n')
-		if err == nil {
-			fields := strings.Fields(strings.TrimSpace(line))
-			if len(fields) == 0 {
-				lines <- ""
-				return
-			}
-			address := strings.TrimPrefix(fields[len(fields)-1], "http://")
-			address = strings.TrimPrefix(address, "https://")
-			lines <- address
-			return
-		}
-		lines <- ""
-	}()
-	select {
-	case address := <-lines:
-		if address != "" {
-			return address
-		}
+	identity := readLineWithin(stdout, 30*time.Second)
+	fields := strings.Fields(identity)
+	if len(fields) == 0 {
 		cancel()
 		t.Fatalf("oapx hub --addr reported no address:\n%s", hub.shutDownForDiagnostics(t))
 		return ""
-	case <-time.After(30 * time.Second):
-		cancel()
-		t.Fatalf("oapx hub --addr never reported a bound address within 30s:\n%s", hub.shutDownForDiagnostics(t))
+	}
+	address := strings.TrimPrefix(fields[len(fields)-1], "http://")
+	return strings.TrimPrefix(address, "https://")
+}
+
+func readLineWithin(reader io.Reader, within time.Duration) string {
+	lines := make(chan string, 1)
+	go func() {
+		line, err := bufio.NewReaderSize(reader, 64*1024).ReadString('\n')
+		if err != nil {
+			lines <- ""
+			return
+		}
+		lines <- strings.TrimSpace(line)
+	}()
+	select {
+	case line := <-lines:
+		return line
+	case <-time.After(within):
 		return ""
 	}
 }
@@ -272,20 +320,14 @@ func (hub *ownedHub) stop() {
 	}
 	hub.stopped = true
 	_ = hub.command.Process.Signal(os.Interrupt)
-	select {
-	case <-hub.exited:
-	case <-time.After(10 * time.Second):
+	if !hub.awaitExitWithin(10 * time.Second) {
 		_ = hub.command.Process.Kill()
-		select {
-		case <-hub.exited:
-		case <-time.After(10 * time.Second):
-		}
+		hub.awaitExitWithin(10 * time.Second)
 	}
 	hub.cancelCtx()
 }
 
-func (hub *ownedHub) signalAndAwaitExit(within time.Duration) bool {
-	_ = hub.command.Process.Signal(os.Interrupt)
+func (hub *ownedHub) awaitExitWithin(within time.Duration) bool {
 	select {
 	case <-hub.exited:
 		return true
@@ -294,11 +336,14 @@ func (hub *ownedHub) signalAndAwaitExit(within time.Duration) bool {
 	}
 }
 
+func (hub *ownedHub) signalAndAwaitExit(within time.Duration) bool {
+	_ = hub.command.Process.Signal(os.Interrupt)
+	return hub.awaitExitWithin(within)
+}
+
 func (hub *ownedHub) awaitExit(t *testing.T, within time.Duration) {
 	t.Helper()
-	select {
-	case <-hub.exited:
-	case <-time.After(within):
+	if !hub.awaitExitWithin(within) {
 		t.Fatalf("the daemon child was not reaped within %v of the signal, so its exit was not observed", within)
 	}
 }

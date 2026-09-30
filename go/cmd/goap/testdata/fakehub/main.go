@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"net"
 	"os"
@@ -16,18 +15,8 @@ func main() {
 		os.Exit(1)
 	}
 	defer listener.Close()
-	go func() {
-		for {
-			conn, acceptErr := listener.Accept()
-			if acceptErr != nil {
-				return
-			}
-			_ = conn.Close()
-		}
-	}()
-	ready := bufio.NewWriter(os.Stdout)
-	_, _ = fmt.Fprintf(ready, "ready %s %d\n", listener.Addr().String(), os.Getpid())
-	_ = ready.Flush()
+	_, _ = fmt.Fprintf(os.Stdout, "ready %s %d\n", listener.Addr(), os.Getpid())
+	_ = os.Stdout.Sync()
 	for {
 		conn, acceptErr := listener.Accept()
 		if acceptErr != nil {
