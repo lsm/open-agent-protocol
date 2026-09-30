@@ -29,10 +29,6 @@ function descriptor(overrides: Record<string, unknown> = {}): Record<string, unk
   };
 }
 
-// Both harnesses hand the fixture's lifetime to a callback closed by `finally`,
-// so the child is torn down even when the case under test rejects. Returning a
-// live handle instead would strand the child on exactly the failing cases these
-// tests exist to provoke, and the runner would never exit.
 async function withLegacyModels<T>(
   model: Record<string, unknown>,
   use: (api: MakaiModelsApi) => Promise<T>,
