@@ -276,8 +276,7 @@ test "the client's own initialize is accepted, so the version it sends is the se
     try std.testing.expect(exchange.client.capability_revision != null);
 }
 
-fn openAndSubmit(allocator: std.mem.Allocator, exchange: *Exchange) !void {
-    _ = allocator;
+fn openAndSubmit(exchange: *Exchange) !void {
     try exchange.client.initialize();
     _ = try exchange.step();
     try exchange.client.openSession();
@@ -290,7 +289,7 @@ test "a cancel acknowledges intent and does not itself emit a terminal" {
     var exchange = try Exchange.init(std.testing.allocator);
     defer exchange.deinit();
     exchange.start();
-    try openAndSubmit(std.testing.allocator, &exchange);
+    try openAndSubmit(&exchange);
 
     const run_id = exchange.client.pending_run_id.?;
     try exchange.client.cancel();
@@ -304,7 +303,7 @@ test "settling a cancelled run closes its session, which is the advertised run.c
     var exchange = try Exchange.init(std.testing.allocator);
     defer exchange.deinit();
     exchange.start();
-    try openAndSubmit(std.testing.allocator, &exchange);
+    try openAndSubmit(&exchange);
 
     const session_id = exchange.client.session_id.?;
     try exchange.client.cancel();
@@ -323,9 +322,11 @@ test "a closed session is not reattachable, which is the advertised session.stat
     var exchange = try Exchange.init(std.testing.allocator);
     defer exchange.deinit();
     exchange.start();
-    try openAndSubmit(std.testing.allocator, &exchange);
+    try openAndSubmit(&exchange);
 
-    const first = exchange.client.session_id.?;
+    const allocator = std.testing.allocator;
+    const first = try allocator.dupe(u8, exchange.client.session_id.?);
+    defer allocator.free(first);
     const session_id = exchange.client.session_id.?;
     try exchange.client.cancel();
     _ = try exchange.step();
@@ -422,7 +423,7 @@ test "a cancel with no run on the session is refused as run_not_found" {
     try std.testing.expectEqual(@as(usize, 1), refused);
 }
 
-test "a model switch inside the catalog is accepted and one outside is refused" {
+test "a model switch outside the session catalog is refused with model_not_found" {
     var exchange = try Exchange.init(std.testing.allocator);
     defer exchange.deinit();
     exchange.start();
@@ -434,7 +435,6 @@ test "a model switch inside the catalog is accepted and one outside is refused" 
     try exchange.client.switchModel("no-such-provider/no-such-model");
     _ = try exchange.step();
     try std.testing.expectEqual(@as(u64, 1), exchange.client.error_responses);
-    const refused = exchange.client.last_error.?;
-    try std.testing.expect(std.mem.indexOf(u8, refused, "model") != null or std.mem.indexOf(u8, refused, "catalog") != null);
+    try std.testing.expectEqualStrings(oap_types.EmittedErrorCode.model_not_found.text(), exchange.client.last_error.?);
     try std.testing.expectEqual(Support.native, advertisedLevel("session.model.switch"));
 }
