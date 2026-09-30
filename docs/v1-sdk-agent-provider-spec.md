@@ -1831,11 +1831,17 @@ may rely on. Two are exceptions, recorded because mishandling them is silent:
 `RESIDUAL-2`, locally solvable from `in_reply_to`, and `RESIDUAL-6`, a
 mechanism-COVERAGE gap on the SSE transport that needs no wire change at all.
 
-## Catalog result: an optional `source` (Rust, Go, TypeScript)
+## Catalog result: an optional `source`
 
 The shared catalog result carries `source` as optional. The owner selected
 this shape: absent is read as **unknown**, and no SDK fabricates
 `dynamic`/`discovered` for a value the listing did not state.
+
+This is the target for all three SDKs; it is **implemented in Rust only** so
+far. On the Go and TypeScript SDKs, a listing that omits `source` still
+fabricates a value. Those are tracked as follow-ups and are not covered by
+the Rust change: Go in #690, and the TypeScript reader in its own cut. A
+reader that has not been changed yet must not be described as if it had.
 
 This does not weaken the wire. `schema/v0.1/provider.schema.json` defines
 `modelEntry.source` as an optional key over the `modelSource` enum, and an
