@@ -1,6 +1,7 @@
 const std = @import("std");
 const ai_types = @import("ai_types");
 const agent = @import("agent");
+const compat = @import("compat");
 const common = @import("tools/common");
 const process_runner = @import("tools/process_runner");
 
@@ -15,37 +16,44 @@ const end_directory_script =
     \\eval "$__oap_cmd"
     \\__oap_rc=$?
     \\printf '%s' "$(pwd)" > "$__oap_path"
-    \\exit $__oap_rc
+    \\exit "$__oap_rc"
 ;
 
-const MarkerFile = struct {
-    dir_path: []u8,
+const MarkerDir = struct {
+    path: []u8,
     name: []u8,
 
-    fn create(allocator: std.mem.Allocator, tool_call_id: []const u8) !MarkerFile {
-        const name = try std.fmt.allocPrint(allocator, "oap-cwd-{s}", .{common.hash16(tool_call_id)});
+    fn create(allocator: std.mem.Allocator) !MarkerDir {
+        const base = compat.getEnvVarOwned(allocator, "TMPDIR") catch null;
+        defer if (base) |value| allocator.free(value);
+        const candidate = std.mem.trimEnd(u8, base orelse "/tmp", "/");
+        const root = if (candidate.len == 0 or !std.Io.Dir.path.isAbsolute(candidate)) "/tmp" else candidate;
+
+        var bytes: [16]u8 = undefined;
+        compat.random.fillSecureBytes(&bytes);
+        const name = try std.fmt.allocPrint(allocator, "oap-cwd-{x:0>16}{x:0>16}", .{
+            std.mem.readInt(u64, bytes[0..8], .little),
+            std.mem.readInt(u64, bytes[8..16], .little),
+        });
         errdefer allocator.free(name);
-        const tmp = if (@import("builtin").link_libc)
-            std.c.getenv("TMPDIR")
-        else
-            null;
-        const dir_path = try allocator.dupe(u8, if (tmp) |value| std.mem.span(value) else "/tmp");
-        return .{ .dir_path = dir_path, .name = name };
+        const path = try std.Io.Dir.path.join(allocator, &.{ root, name });
+        errdefer allocator.free(path);
+
+        try compat.fs.createPrivateDir(path);
+        return .{ .path = path, .name = name };
     }
 
-    fn deinit(self: MarkerFile, allocator: std.mem.Allocator) void {
-        allocator.free(self.dir_path);
+    fn deinit(self: MarkerDir, allocator: std.mem.Allocator) void {
+        allocator.free(self.path);
         allocator.free(self.name);
     }
 
-    fn path(self: MarkerFile, allocator: std.mem.Allocator) ![]u8 {
-        return std.Io.Dir.path.join(allocator, &.{ self.dir_path, self.name });
+    fn markerPath(self: MarkerDir, allocator: std.mem.Allocator) ![]u8 {
+        return std.Io.Dir.path.join(allocator, &.{ self.path, self.name });
     }
 
-    fn read(self: MarkerFile, io: std.Io, allocator: std.mem.Allocator) !?[]u8 {
-        const full = try self.path(allocator);
-        defer allocator.free(full);
-        var dir = try std.Io.Dir.openDirAbsolute(io, self.dir_path, .{});
+    fn read(self: MarkerDir, io: std.Io, allocator: std.mem.Allocator) !?[]u8 {
+        var dir = std.Io.Dir.openDirAbsolute(io, self.path, .{}) catch return null;
         defer dir.close(io);
         const data = dir.readFileAlloc(io, self.name, allocator, .limited(4096)) catch return null;
         if (data.len == 0) {
@@ -55,10 +63,11 @@ const MarkerFile = struct {
         return data;
     }
 
-    fn remove(self: MarkerFile, io: std.Io) void {
-        var dir = std.Io.Dir.openDirAbsolute(io, self.dir_path, .{}) catch return;
-        defer dir.close(io);
+    fn remove(self: MarkerDir, io: std.Io) void {
+        var dir = std.Io.Dir.openDirAbsolute(io, self.path, .{}) catch return;
         dir.deleteFile(io, self.name) catch {};
+        dir.close(io);
+        compat.fs.removeDir(self.path);
     }
 };
 
@@ -107,15 +116,18 @@ pub fn execute(
 
     const start_directory = try std.Io.Dir.path.resolve(allocator, &.{workspace_root});
     defer allocator.free(start_directory);
-    const marker = try MarkerFile.create(allocator, tool_call_id);
-    defer marker.deinit(allocator);
-    defer marker.remove(common.defaultIo());
-    const marker_path = try marker.path(allocator);
+    var marker: ?MarkerDir = null;
+    defer if (marker) |created| created.deinit(allocator);
+    defer if (marker) |created| created.remove(common.defaultIo());
+    var marker_path: []u8 = &.{};
     defer allocator.free(marker_path);
     const argv = if (@import("builtin").os.tag == .windows)
         [_][]const u8{ "cmd.exe", "/C", command }
-    else
-        [_][]const u8{ "/bin/sh", "-c", end_directory_script, "sh", command, marker_path };
+    else blk: {
+        marker = try MarkerDir.create(allocator);
+        marker_path = try marker.?.markerPath(allocator);
+        break :blk [_][]const u8{ "/bin/sh", "-c", end_directory_script, "sh", command, marker_path };
+    };
     const result = process_runner.run(allocator, &argv, .{ .dir = dir }, timeout_ms, cancel_token) catch |err| {
         if (err == error.Cancelled) return err;
         const duration_ms = common.durationMs(start_ms);
@@ -129,6 +141,7 @@ pub fn execute(
             .stderr_bytes = 0,
             .raw_bytes = 0,
             .working_directory = start_directory,
+            .working_directory_observed = false,
         });
         var details_here = true;
         defer if (details_here) allocator.free(details);
@@ -138,6 +151,7 @@ pub fn execute(
         var failed = try common.makeTextResultOwned(allocator, text, details);
         errdefer failed.deinit(allocator);
         failed.working_directory = ai_types.OwnedSlice(u8).initOwned(owned_directory);
+        failed.working_directory_observed = false;
         text_here = false;
         details_here = false;
         return failed;
@@ -145,7 +159,7 @@ pub fn execute(
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    const observed = marker.read(common.defaultIo(), allocator) catch null;
+    const observed = if (marker) |created| created.read(common.defaultIo(), allocator) catch null else null;
     defer if (observed) |owned| allocator.free(owned);
     const report = reportDirectory(result.term, observed, start_directory);
     const end_directory = report.directory;
@@ -186,6 +200,7 @@ pub fn execute(
     var made = try common.makeTextResultWithArtifact(allocator, .{ .tool_name = "shell_execute", .call_id = tool_call_id, .text = text, .details_json = details });
     defer if (made.artifact_path) |path| allocator.free(path);
     made.result.working_directory = ai_types.OwnedSlice(u8).initOwned(owned_directory);
+    made.result.working_directory_observed = report.observed;
     return made.result;
 }
 
@@ -383,7 +398,28 @@ test "a killed command reports the start directory as unobserved" {
     try std.testing.expect(std.mem.indexOf(u8, result.getDetailsJson().?, "\"working_directory_observed\":false") != null);
 }
 
-test "a command whose output exceeds the cap fails without hanging" {
+
+test "a command cannot mask its failure by leaving IFS set" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const cwd = try std.process.currentPathAlloc(common.defaultIo(), std.testing.allocator);
+    defer std.testing.allocator.free(cwd);
+    for ([_]struct { command: []const u8, code: []const u8 }{
+        .{ .command = "IFS=1; false", .code = "1" },
+        .{ .command = "IFS=12; exit 10", .code = "10" },
+    }) |case| {
+        const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"command\":\"{s}\"}}", .{ cwd, case.command });
+        defer std.testing.allocator.free(args);
+        var result = try execute("call-ifs", args, null, null, null, std.testing.allocator);
+        defer result.deinit(std.testing.allocator);
+        const details = result.getDetailsJson().?;
+        const expected = try std.fmt.allocPrint(std.testing.allocator, "\"exit_code\":{s}", .{case.code});
+        defer std.testing.allocator.free(expected);
+        try std.testing.expect(std.mem.indexOf(u8, details, expected) != null);
+        try std.testing.expect(std.mem.indexOf(u8, details, "\"ok\":true") == null);
+    }
+}
+
+test "a command whose output exceeds the cap fails promptly, unobserved, without hanging" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     const cwd = try std.process.currentPathAlloc(common.defaultIo(), std.testing.allocator);
     defer std.testing.allocator.free(cwd);
@@ -391,10 +427,16 @@ test "a command whose output exceeds the cap fails without hanging" {
     defer std.testing.allocator.free(expected);
     const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"command\":\"head -c 20000000 /dev/zero | tr '\\\\0' x\",\"timeout_ms\":60000}}", .{cwd});
     defer std.testing.allocator.free(args);
+    const started = common.nowMs();
     var result = try execute("call-cap", args, null, null, null, std.testing.allocator);
+    const elapsed_ms: u64 = @intCast(@max(0, common.nowMs() - started));
     defer result.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings(expected, result.workingDirectory().?);
+    try std.testing.expect(result.workingDirectory() != null and result.working_directory_observed == false);
+    try std.testing.expect(result.observedWorkingDirectory() == null);
     try std.testing.expect(std.mem.indexOf(u8, result.getDetailsJson().?, "StreamTooLong") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.getDetailsJson().?, "\"working_directory_observed\":false") != null);
+    try std.testing.expect(elapsed_ms < 20_000);
 }
 
 test "shell execute captures stdout" {

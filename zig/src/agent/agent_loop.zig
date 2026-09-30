@@ -346,6 +346,7 @@ fn createToolResultMessage(
     tool_call: ai_types.ToolCall,
     result: AgentToolResult,
     is_error: bool,
+    directory: ai_types.OwnedSlice(u8),
 ) !ai_types.ToolResultMessage {
     const details_json = if (result.getDetailsJson()) |details|
         if (result.details_json.is_owned)
@@ -370,6 +371,8 @@ fn createToolResultMessage(
         .content = result.content.slice(),
         .details_json = details_json,
         .artifacts = artifacts,
+        .working_directory = directory,
+        .working_directory_observed = result.working_directory_observed,
         .is_error = is_error,
         .timestamp = compat.time.nowMillis(),
     };
@@ -481,6 +484,11 @@ fn finalizeToolExecution(
 
     const returned_usage = measureToolResult(result.*);
     const result_json = result.getDetailsJson() orelse "null";
+    var observed_directory = result.working_directory;
+    result.working_directory = ai_types.OwnedSlice(u8).initBorrowed("");
+    var directory_owned = true;
+    errdefer if (directory_owned) observed_directory.deinit(allocator);
+
     const content_json = try serializeToolResultContent(allocator, result.content.slice());
     defer allocator.free(content_json);
     const args_bytes: u64 = @intCast(args_json.len);
@@ -503,8 +511,13 @@ fn finalizeToolExecution(
         .artifacts = result.artifacts.slice(),
     } });
 
-    const tool_result_msg = try createToolResultMessage(allocator, tool_call, result.*, is_error);
+    const tool_result_msg = try createToolResultMessage(allocator, tool_call, result.*, is_error, observed_directory);
+    errdefer {
+        var unreached = tool_result_msg;
+        unreached.deinit(allocator);
+    }
     try results.append(allocator, tool_result_msg);
+    directory_owned = false;
 }
 
 fn runLegacyApproval(tool: AgentTool, approval_request: types.ToolApprovalRequest, allocator: std.mem.Allocator) types.ToolApprovalDecision {
@@ -1099,6 +1112,112 @@ fn outcomeOf(stop_reason: ai_types.StopReason, content: []const ai_types.Assista
     }, cut_off_tool_turns);
 }
 
+fn directoryReportingExecute(
+    ctx: ?*anyopaque,
+    tool_call_id: []const u8,
+    tool_name: []const u8,
+    args_json: []const u8,
+    cancel_token: ?ai_types.CancelToken,
+    on_update_ctx: ?*anyopaque,
+    on_update: ?types.ToolUpdateCallback,
+    allocator: std.mem.Allocator,
+) anyerror!types.AgentToolResult {
+    _ = ctx;
+    _ = tool_call_id;
+    _ = tool_name;
+    _ = args_json;
+    _ = cancel_token;
+    _ = on_update_ctx;
+    _ = on_update;
+    const text = try allocator.dupe(u8, "done");
+    errdefer allocator.free(text);
+    const parts = try allocator.alloc(ai_types.UserContentPart, 1);
+    errdefer allocator.free(parts);
+    parts[0] = .{ .text = .{ .text = text } };
+    const details = try allocator.dupe(u8, "{\"ok\":true}");
+    errdefer allocator.free(details);
+    const directory = try allocator.dupe(u8, "/observed/dir");
+    errdefer allocator.free(directory);
+    return types.AgentToolResult{
+        .content = ai_types.OwnedSlice(ai_types.UserContentPart).initOwned(parts),
+        .details_json = ai_types.OwnedSlice(u8).initOwned(details),
+        .working_directory = ai_types.OwnedSlice(u8).initOwned(directory),
+        .working_directory_observed = true,
+    };
+}
+
+const directoryReportingTool = types.AgentTool{
+    .label = "Directory Reporting Tool",
+    .name = "dirtool",
+    .description = "Reports a working directory.",
+    .parameters_schema_json = "{\"type\":\"object\",\"properties\":{},\"required\":[],\"additionalProperties\":false}",
+    .execute = struct {
+        fn run(
+            tool_call_id: []const u8,
+            args_json: []const u8,
+            cancel_token: ?ai_types.CancelToken,
+            on_update_ctx: ?*anyopaque,
+            on_update: ?types.ToolUpdateCallback,
+            allocator: std.mem.Allocator,
+        ) anyerror!types.AgentToolResult {
+            return directoryReportingExecute(null, tool_call_id, "dirtool", args_json, cancel_token, on_update_ctx, on_update, allocator);
+        }
+    }.run,
+};
+
+fn runDirectoryReportingTool(allocator: std.mem.Allocator) !void {
+    const tool_list = [_]types.AgentTool{directoryReportingTool};
+    const tools_slice: []const types.AgentTool = &tool_list;
+    const content = [_]ai_types.AssistantContent{
+        .{ .tool_call = .{ .id = "call_dir", .name = "dirtool", .arguments_json = "{}" } },
+    };
+    const assistant_message = ai_types.AssistantMessage{
+        .content = &content,
+        .api = "test-api",
+        .provider = "test-provider",
+        .model = "test-model",
+        .usage = .{},
+        .stop_reason = .tool_use,
+        .timestamp = 0,
+    };
+    const model = ai_types.Model{
+        .id = "test-model",
+        .name = "Test",
+        .api = "test-api",
+        .provider = "test-provider",
+        .base_url = "",
+        .reasoning = false,
+        .input = &.{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1024,
+        .max_tokens = 256,
+    };
+    var events_storage: AgentEventStream = undefined;
+    const events = &events_storage;
+    events.* = AgentEventStream.init(allocator);
+    defer events.deinit();
+
+    const result = try executeToolCalls(
+        allocator,
+        assistant_message,
+        .{
+            .model = model,
+            .protocol = .{ .stream_fn = undefined },
+            .tools = tools_slice,
+            .execute_tool_via_protocol_fn = directoryReportingExecute,
+        },
+        events,
+    );
+    var owned = result;
+    try std.testing.expectEqual(@as(usize, 1), owned.tool_results.len);
+    try std.testing.expectEqualStrings("/observed/dir", owned.tool_results[0].observedWorkingDirectory().?);
+    owned.deinit(allocator);
+}
+
+test "a tool result's working directory survives the loop and is freed with the message" {
+    try runDirectoryReportingTool(std.testing.allocator);
+}
+
 test "turnOutcome runs a reply's tool calls whatever stop reason it reports" {
     const calls = [_]ai_types.AssistantContent{
         .{ .text = .{ .text = "reading" } },
@@ -1629,7 +1748,7 @@ test "streamAssistantResponse emits context and prompt segment usage" {
         .label = "Search",
         .name = "search",
         .description = "Search indexed artifacts",
-        .parameters_schema_json = "{\"type\":\"object\"}",
+        .parameters_schema_json = "{\"type\":\"object\",\"properties\":{},\"required\":[],\"additionalProperties\":false}",
         .execute = undefined,
     }};
     context.tools = &tools;

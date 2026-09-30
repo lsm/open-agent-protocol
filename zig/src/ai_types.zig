@@ -397,8 +397,16 @@ pub const ToolResultMessage = struct {
     content: []const UserContentPart,
     details_json: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
     artifacts: OwnedSlice(ArtifactReference) = OwnedSlice(ArtifactReference).initBorrowed(&.{}),
+    working_directory: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+    working_directory_observed: bool = false,
     is_error: bool,
     timestamp: i64,
+
+    pub fn observedWorkingDirectory(self: *const ToolResultMessage) ?[]const u8 {
+        if (!self.working_directory_observed) return null;
+        const directory = self.working_directory.slice();
+        return if (directory.len > 0) directory else null;
+    }
 
     pub fn getDetailsJson(self: *const ToolResultMessage) ?[]const u8 {
         const details = self.details_json.slice();
@@ -415,6 +423,7 @@ pub const ToolResultMessage = struct {
         allocator.free(self.content);
         self.details_json.deinit(allocator);
         self.artifacts.deinit(allocator);
+        self.working_directory.deinit(allocator);
     }
 };
 
