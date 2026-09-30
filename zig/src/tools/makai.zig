@@ -144,48 +144,6 @@ const RuntimeErrorCode = enum {
     input_stream_error,
 };
 
-const AgentRunOptions = struct {
-    temperature: ?f32 = null,
-    max_tokens: ?u32 = null,
-    max_iterations: ?u32 = null,
-    thinking_level: ai_types.ThinkingLevel = .low,
-    has_explicit_thinking_level: bool = false,
-    api_key: ?[]u8 = null,
-
-    fn deinit(self: *AgentRunOptions, allocator: std.mem.Allocator) void {
-        if (self.api_key) |key| allocator.free(key);
-        self.api_key = null;
-    }
-};
-
-const PreparedAgentRun = struct {
-    model: ai_types.Model,
-    prompts: []ai_types.Message,
-    system_prompt: []u8,
-    tools: []agent_loop.AgentTool,
-    options: AgentRunOptions,
-
-    fn deinit(self: *PreparedAgentRun, allocator: std.mem.Allocator) void {
-        self.model.deinit(allocator);
-        for (self.prompts) |*message| {
-            message.deinit(allocator);
-        }
-        allocator.free(self.prompts);
-        allocator.free(self.system_prompt);
-        deinitAgentTools(allocator, self.tools);
-        self.options.deinit(allocator);
-        self.* = undefined;
-    }
-
-    fn disarm(self: *PreparedAgentRun) void {
-        self.model.is_owned = false;
-        self.prompts = &.{};
-        self.system_prompt = &.{};
-        self.tools = &.{};
-        self.options.api_key = null;
-    }
-};
-
 const AgentToolBridge = @import("tools/agent_tool_bridge");
 
 const StdioToolRequest = AgentToolBridge.Request;
@@ -197,43 +155,13 @@ const StdioAgentToolExecutor = AgentToolBridge.Executor;
 const executeStdioToolViaAgentProtocol = AgentToolBridge.executeViaAgentProtocol;
 const parseToolResultContentParts = AgentToolBridge.parseToolResultContentParts;
 const parseUserContentPart = AgentToolBridge.parseUserContentPart;
+const AgentRun = @import("tools/agent_run");
+const AgentRunOptions = AgentRun.Options;
+const PreparedAgentRun = AgentRun.Prepared;
+const ActiveAgentRun = AgentRun.Run;
+const deinitAgentTools = AgentRun.deinitTools;
+const deinitAgentToolFields = AgentRun.deinitToolFields;
 const getStringField = AgentToolBridge.getStringField;
-
-const ActiveAgentRun = struct {
-    session_id: AgentProtocolTypes.SessionId,
-    generation: u64,
-    stream: *agent_loop.AgentEventStream,
-    context: *agent_loop.AgentContext,
-    model: ai_types.Model,
-    prompts: []ai_types.Message,
-    tools: []agent_loop.AgentTool,
-    cancel_flag: *std.atomic.Value(bool),
-    disconnect_failed: *std.atomic.Value(bool),
-    tool_executor: *StdioAgentToolExecutor,
-    terminal_event_json: ?[]u8 = null,
-    settlement_frame_published: bool = false,
-    failure_event_published: bool = false,
-    event_publication_failed: bool = false,
-
-    fn cancel(self: *ActiveAgentRun) void {
-        self.cancel_flag.store(true, .release);
-    }
-
-    fn deinit(self: *ActiveAgentRun, allocator: std.mem.Allocator) void {
-        self.cancel();
-        if (!self.stream.deinitAndDestroy()) return;
-        self.context.deinit();
-        allocator.destroy(self.context);
-        self.model.deinit(allocator);
-        allocator.free(self.prompts);
-        deinitAgentTools(allocator, self.tools);
-        allocator.destroy(self.cancel_flag);
-        allocator.destroy(self.disconnect_failed);
-        allocator.destroy(self.tool_executor);
-        if (self.terminal_event_json) |event_json| allocator.free(event_json);
-        self.* = undefined;
-    }
-};
 
 const StdioProtocolLoop = struct {
     allocator: std.mem.Allocator,
@@ -472,7 +400,7 @@ const StdioProtocolLoop = struct {
         const generation = self.agent_server.sessionGeneration(pending.session_id) orelse {
             return error.SessionNotFound;
         };
-        if (self.hasActiveRunForGeneration(pending.session_id, generation)) return error.AgentBusy;
+        if (AgentRun.hasRunForGeneration(&self.active_agent_runs, pending.session_id, generation)) return error.AgentBusy;
 
         var prepared = try prepareAgentRun(self.allocator, pending);
         errdefer prepared.deinit(self.allocator);
@@ -695,14 +623,6 @@ const StdioProtocolLoop = struct {
         run.terminal_event_json = null;
     }
 
-    fn hasActiveRunForGeneration(self: *Self, session_id: AgentProtocolTypes.SessionId, generation: u64) bool {
-        for (self.active_agent_runs.items) |run| {
-            if (run.settlement_frame_published) continue;
-            if (run.generation == generation and std.mem.eql(u8, run.session_id[0..], session_id[0..])) return true;
-        }
-        return false;
-    }
-
     fn finishAgentStopCancellation(
         self: *Self,
         stopped_session: ?AgentProtocolTypes.SessionId,
@@ -710,16 +630,9 @@ const StdioProtocolLoop = struct {
     ) void {
         if (stopped_session) |session_id| {
             if (had_stop_session and !self.agent_server.hasSession(session_id)) {
-                self.cancelAgentRun(session_id);
+                AgentRun.cancelRun(self.allocator, &self.active_agent_runs, &self.tool_bridge, session_id);
             }
         }
-    }
-
-    fn cancelAgentRun(self: *Self, session_id: AgentProtocolTypes.SessionId) void {
-        for (self.active_agent_runs.items) |*run| {
-            if (std.mem.eql(u8, run.session_id[0..], session_id[0..])) run.cancel();
-        }
-        self.tool_bridge.discardSession(self.allocator, session_id);
     }
 
     fn publishAgentLoopError(self: *Self, session_id: AgentProtocolTypes.SessionId, code: AgentProtocolTypes.AgentErrorCode, message: []const u8) !void {
@@ -1176,19 +1089,6 @@ fn parseToolSchemaJson(allocator: std.mem.Allocator, obj: std.json.ObjectMap) ![
     }
 
     return try allocator.dupe(u8, "{}");
-}
-
-fn deinitAgentTools(allocator: std.mem.Allocator, tools: []agent_loop.AgentTool) void {
-    for (tools) |*tool| deinitAgentToolFields(allocator, tool);
-    allocator.free(tools);
-}
-
-fn deinitAgentToolFields(allocator: std.mem.Allocator, tool: *agent_loop.AgentTool) void {
-    allocator.free(tool.label);
-    allocator.free(tool.name);
-    allocator.free(tool.description);
-    if (tool.short_description) |short| allocator.free(short);
-    allocator.free(tool.parameters_schema_json);
 }
 
 fn unavailableAgentToolExecute(
@@ -4751,7 +4651,7 @@ test "stdio tool bridge clears queued and in-flight calls when cancelling sessio
     try std.testing.expectEqual(@as(usize, 1), stdio_loop.tool_bridge.requests.items.len);
     try std.testing.expectEqual(@as(usize, 1), stdio_loop.tool_bridge.in_flight.items.len);
 
-    stdio_loop.cancelAgentRun(session_id);
+    AgentRun.cancelRun(stdio_loop.allocator, &stdio_loop.active_agent_runs, &stdio_loop.tool_bridge, session_id);
     try std.testing.expectEqual(@as(usize, 0), stdio_loop.tool_bridge.requests.items.len);
     try std.testing.expectEqual(@as(usize, 0), stdio_loop.tool_bridge.in_flight.items.len);
 
