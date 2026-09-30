@@ -354,6 +354,7 @@ fn writeMessagesArray(
             };
 
             if (!has_text and !has_thinking and !has_tool_calls) continue;
+            const thinking_as_text = merged.requires_thinking_as_text or (has_thinking and !has_text and !has_tool_calls);
 
             try writer.beginObject();
             try writer.writeStringField("role", "assistant");
@@ -401,7 +402,7 @@ fn writeMessagesArray(
                     };
                     try writer.endArray();
                 }
-            } else if (merged.requires_thinking_as_text and has_thinking) {
+            } else if (thinking_as_text and has_thinking) {
                 try writer.writeKey("content");
                 try writer.beginArray();
                 for (a.content) |c| switch (c) {
@@ -425,7 +426,7 @@ fn writeMessagesArray(
                 }
             }
 
-            if (has_thinking and !merged.requires_thinking_as_text) {
+            if (has_thinking and !thinking_as_text) {
                 var reasoning_field: []const u8 = "reasoning_content";
                 for (a.content) |c| switch (c) {
                     .thinking => |t| {
@@ -2128,6 +2129,50 @@ test "a deepseek request sends past reasoning back as reasoning_content, never a
     try std.testing.expectEqual(@as(usize, 2), assistants);
 }
 
+test "a reply that holds only reasoning goes back to deepseek as its content, since deepseek refuses one with neither content nor tool calls" {
+    const allocator = std.testing.allocator;
+    const model = ai_types.Model{
+        .id = "deepseek-flash",
+        .name = "DeepSeek Flash",
+        .api = "openai-completions",
+        .provider = "deepseek",
+        .base_url = "https://api.deepseek.com",
+        .reasoning = true,
+        .input = &[_][]const u8{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1_048_576,
+        .max_tokens = 100,
+    };
+    const messages = [_]ai_types.Message{
+        .{ .user = .{ .content = .{ .text = "what is the plan?" }, .timestamp = 0 } },
+        .{ .assistant = .{
+            .content = &.{.{ .thinking = .{ .thinking = "the plan, written as reasoning", .thinking_signature = "reasoning_content" } }},
+            .api = "openai-completions",
+            .provider = "deepseek",
+            .model = "deepseek-flash",
+            .usage = .{},
+            .stop_reason = .stop,
+            .timestamp = 0,
+        } },
+        .{ .user = .{ .content = .{ .text = "write the answer" }, .timestamp = 0 } },
+    };
+
+    const body = try buildRequestBody(model, .{ .messages = &messages }, .{ .max_tokens = 100 }, allocator);
+    defer allocator.free(body);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+
+    const written = parsed.value.object.get("messages").?.array.items;
+    try std.testing.expectEqual(@as(usize, 3), written.len);
+    const reply = written[1].object;
+    try std.testing.expectEqualStrings("assistant", reply.get("role").?.string);
+    try std.testing.expect(reply.get("reasoning_content") == null);
+    try std.testing.expect(reply.get("tool_calls") == null);
+    const content = reply.get("content").?.array.items;
+    try std.testing.expectEqual(@as(usize, 1), content.len);
+    try std.testing.expectEqualStrings("the plan, written as reasoning", content[0].object.get("text").?.string);
+}
+
 test "a deepseek request carries the thinking level as one of deepseek's three efforts" {
     const allocator = std.testing.allocator;
     const model = ai_types.Model{
@@ -3536,7 +3581,6 @@ test "a streamed text thinking and tool call reports indices that diverge from t
     try std.testing.expectEqualStrings("bash", result.content[2].tool_call.name);
     try std.testing.expectEqualStrings("{\"command\":\"ls\"}", result.content[2].tool_call.arguments_json);
 }
-
 
 var cleanup_hold: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
 var cleanup_held: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
