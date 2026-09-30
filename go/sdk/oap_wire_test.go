@@ -3,6 +3,7 @@ package sdk
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -367,6 +368,9 @@ func selectedCatalogModel() (map[string]any, bool) {
 			model["auth_status"] = float64(7)
 		case "invented":
 			model["auth_status"] = "retired"
+		default:
+			fmt.Fprintf(os.Stderr, "unsupported OAPX_TEST_CATALOG_AUTH selector %q\n", authShape)
+			os.Exit(3)
 		}
 		model["model_ref"] = "fixture/other:selected@" + identity
 	}

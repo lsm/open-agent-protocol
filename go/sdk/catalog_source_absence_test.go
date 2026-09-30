@@ -1,6 +1,7 @@
 package sdk
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -67,7 +68,7 @@ func TestEachAuthSelectorActuallyChangesTheRow(t *testing.T) {
 	}
 }
 
-func TestAnAuthSelectorThatIsNotAValidValueReachesTheRowUnchanged(t *testing.T) {
+func TestEachMalformedAuthSelectorReplacesTheRowDefault(t *testing.T) {
 	for _, shape := range []string{"null", "number", "invented"} {
 		client := newTestClient(t, scenarioOAP, "OAPX_TEST_CATALOG_AUTH="+shape)
 		listed, err := client.Models.List(testContext(t), ListModelsRequest{IncludeLoginRequired: boolPtr(true)})
@@ -83,7 +84,53 @@ func TestAnAuthSelectorThatIsNotAValidValueReachesTheRowUnchanged(t *testing.T) 
 	}
 }
 
-func TestAnOmittedAuthStatusReadsAsEmptyRatherThanAuthenticated(t *testing.T) {
+func TestAnUnsupportedAuthSelectorFailsTheListing(t *testing.T) {
+	for _, selector := range []string{"stated:expired", "no-such-selector", "expired "} {
+		func() {
+			opts := &Options{
+				BinaryPath: osArgsZero(),
+				Args:       []string{},
+				Env:        fakeHostEnv(scenarioOAP, "OAPX_TEST_CATALOG_AUTH="+selector),
+			}
+			if !strings.Contains(strings.Join(opts.Env, " "), envFakeHost+"="+scenarioOAP) {
+				opts.LegacyWire = true
+			}
+			client, err := New(context.Background(), opts)
+			if err != nil {
+				return
+			}
+			defer func() {
+				if closeErr := client.Close(); closeErr == nil {
+					t.Errorf("auth selector %q must not let the fake host exit clean", selector)
+				}
+			}()
+			listed, listErr := client.Models.List(testContext(t), ListModelsRequest{IncludeLoginRequired: boolPtr(true)})
+			if listErr == nil {
+				t.Errorf("auth selector %q must not yield a listing, got %d models", selector, len(listed.Models))
+			}
+		}()
+	}
+}
+
+func TestAMalformedAuthStatusIsCarriedRatherThanJudgedByThisReader(t *testing.T) {
+	for shape, want := range map[string]AuthStatus{
+		"null":     "",
+		"number":   "",
+		"invented": "retired",
+	} {
+		client := newTestClient(t, scenarioOAP, "OAPX_TEST_CATALOG_AUTH="+shape)
+		listed, err := client.Models.List(testContext(t), ListModelsRequest{IncludeLoginRequired: boolPtr(true)})
+		if err != nil {
+			t.Fatalf("auth selector %q must list: %v", shape, err)
+		}
+		if got := listed.Models[0].AuthStatus; got != want {
+			t.Errorf("auth selector %q read as %q, want %q: jsonutil.str drops a non-string to empty",
+				shape, got, want)
+		}
+	}
+}
+
+func TestAnOmittedAuthStatusReachesTheRowWithNoValueAtAll(t *testing.T) {
 	client := newTestClient(t, scenarioOAP, "OAPX_TEST_CATALOG_AUTH=absent")
 	defer client.Close()
 	listed, err := client.Models.List(testContext(t), ListModelsRequest{IncludeLoginRequired: boolPtr(true)})
@@ -93,8 +140,8 @@ func TestAnOmittedAuthStatusReadsAsEmptyRatherThanAuthenticated(t *testing.T) {
 	if len(listed.Models) != 1 {
 		t.Fatalf("an omitted auth_status must publish one row, got %d", len(listed.Models))
 	}
-	if got := listed.Models[0].AuthStatus; got == AuthAuthenticated {
-		t.Errorf("an omitted auth_status read as %q: the fixture's default leaked through", got)
+	if got := listed.Models[0].AuthStatus; got != "" {
+		t.Errorf("an omitted auth_status read as %q, want the empty value a missing key produces", got)
 	}
 }
 
