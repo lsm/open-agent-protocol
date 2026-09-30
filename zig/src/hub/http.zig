@@ -792,6 +792,33 @@ test "a backslash is consumed only before a tspecial, which is what Go does" {
     }
 }
 
+test "an empty parameter value is admitted quoted and refused bare, as Go does" {
+    const loopback: []const []const u8 = &.{};
+    for ([_][]const u8{
+        "application/json; a=\"\"",
+        "application/json; a=\"\"; b=1",
+    }) |declared| {
+        const raw = try std.fmt.allocPrint(testing.allocator, "POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: {s}\r\nContent-Length: 2\r\n\r\n{{}}", .{declared});
+        defer testing.allocator.free(raw);
+        var request = try requestOver(raw);
+        defer request.deinit(testing.allocator);
+        try testing.expectEqual(Answer.not_found, answer(loopback, request));
+    }
+    for ([_][]const u8{
+        "application/json; a=; b=1",
+        "application/json; a=; b=;",
+        "application/json; a=; b=1; c=2",
+        "application/json; a=;",
+        "application/json; a=\"\" b=1",
+    }) |declared| {
+        const raw = try std.fmt.allocPrint(testing.allocator, "POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: {s}\r\nContent-Length: 2\r\n\r\n{{}}", .{declared});
+        defer testing.allocator.free(raw);
+        var request = try requestOver(raw);
+        defer request.deinit(testing.allocator);
+        try testing.expectEqualStrings("unsupported_media_type", answer(loopback, request).refusal.code);
+    }
+}
+
 test "a zero-length body with a wrong media type is not gated, because the gate reads length" {
     const loopback: []const []const u8 = &.{};
     var posted = try requestOver("POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: text/plain\r\nContent-Length: 0\r\n\r\n");
