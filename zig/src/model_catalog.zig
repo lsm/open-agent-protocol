@@ -67,6 +67,25 @@ fn emptyModels(allocator: std.mem.Allocator) ![]ai_types.Model {
     return allocator.alloc(ai_types.Model, 0);
 }
 
+pub const ModelProvenance = enum { discovered, declared };
+
+pub const CatalogSnapshot = struct {
+    models: []ai_types.Model,
+    provenance: []ModelProvenance,
+
+    pub fn deinit(self: *CatalogSnapshot, allocator: std.mem.Allocator) void {
+        deinitModels(allocator, self.models);
+        allocator.free(self.provenance);
+    }
+
+    pub fn provenanceOf(self: CatalogSnapshot, model_id: []const u8) ?ModelProvenance {
+        for (self.models, self.provenance) |model, tag| {
+            if (std.mem.eql(u8, model.id, model_id)) return tag;
+        }
+        return null;
+    }
+};
+
 pub fn deinitModels(allocator: std.mem.Allocator, models: []ai_types.Model) void {
     for (models) |*model| model.deinit(allocator);
     allocator.free(models);
@@ -558,6 +577,31 @@ fn loadCatalogModelsWithRows(
     storage: ?*oauth_storage.AuthStorage,
     mode: CatalogLoadMode,
 ) ![]ai_types.Model {
+    return loadRowsWithProvenance(allocator, ids, storage, mode, null);
+}
+
+fn loadCatalogSnapshotWithRows(
+    allocator: std.mem.Allocator,
+    ids: []const []const u8,
+    storage: ?*oauth_storage.AuthStorage,
+    mode: CatalogLoadMode,
+) !CatalogSnapshot {
+    var provenance = std.ArrayList(ModelProvenance).empty;
+    errdefer provenance.deinit(allocator);
+    const models = try loadRowsWithProvenance(allocator, ids, storage, mode, &provenance);
+    return .{
+        .models = models,
+        .provenance = try provenance.toOwnedSlice(allocator),
+    };
+}
+
+fn loadRowsWithProvenance(
+    allocator: std.mem.Allocator,
+    ids: []const []const u8,
+    storage: ?*oauth_storage.AuthStorage,
+    mode: CatalogLoadMode,
+    provenance: ?*std.ArrayList(ModelProvenance),
+) ![]ai_types.Model {
     var models = std.ArrayList(ai_types.Model).empty;
     errdefer {
         for (models.items) |*model| model.deinit(allocator);
@@ -570,7 +614,7 @@ fn loadCatalogModelsWithRows(
             try catalogEndpointFromEnvironment(allocator, storage, id);
         var held = endpoint orelse continue;
         defer held.deinit(allocator);
-        try appendCatalogTargetModels(allocator, &models, held, storage, mode);
+        try appendCatalogTargetModels(allocator, &models, held, storage, mode, provenance);
     }
     return models.toOwnedSlice(allocator);
 }
@@ -585,6 +629,7 @@ fn appendCatalogTargetModels(
     target: CatalogEndpoint,
     storage: ?*oauth_storage.AuthStorage,
     mode: CatalogLoadMode,
+    provenance: ?*std.ArrayList(ModelProvenance),
 ) !void {
     const environment = try catalogEnvironment(allocator, target.id);
     defer freeEnvironment(allocator, environment);
@@ -605,6 +650,7 @@ fn appendCatalogTargetModels(
                 var built = try catalogModel(allocator, target, model);
                 errdefer built.deinit(allocator);
                 try out.append(allocator, built);
+                if (provenance) |tags| try tags.append(allocator, .discovered);
             }
             return;
         }
@@ -614,6 +660,7 @@ fn appendCatalogTargetModels(
         var built = try catalogModel(allocator, target, .{ .id = declared.id });
         errdefer built.deinit(allocator);
         try out.append(allocator, built);
+        if (provenance) |tags| try tags.append(allocator, .declared);
     }
 }
 
@@ -2385,6 +2432,152 @@ fn putStoredKey(storage: *oauth_storage.AuthStorage, allocator: std.mem.Allocato
     const key = try allocator.dupe(u8, id);
     errdefer allocator.free(key);
     try storage.providers.put(key, .{ .api_key = try allocator.dupe(u8, "stored-key") });
+}
+
+test "a snapshot tells a discovered entry from a declared one" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+    test_catalog_refusal_markers = true;
+    defer test_catalog_refusal_markers = false;
+    var tmp = try tempHome(allocator);
+    defer tmp.cleanup();
+    var storage = oauth_storage.AuthStorage{
+        .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(allocator),
+        .allocator = allocator,
+    };
+    defer storage.deinit();
+    for ([_][]const u8{ "xiaomi", "xiaomi-token-plan-cn" }) |id| {
+        const key = try allocator.dupe(u8, id);
+        try storage.providers.put(key, .{ .api_key = try allocator.dupe(u8, "stored-key") });
+    }
+
+    const discovered_row = "xiaomi";
+    var target = catalogTargetInRegion(discovered_row, null) orelse return error.TestExpectedTarget;
+    defer target.deinit(allocator);
+
+    // an injected listing: this row answers, so its entries are discovered
+    const answering = [_]CatalogDiscovery{
+        .{ .id = discovered_row, .models_url = target.models_url, .model_ids = &.{"m1", "m2"} },
+    };
+    test_catalog_discovery = &answering;
+    defer test_catalog_discovery = null;
+
+    const plan_row = "xiaomi-token-plan-cn";
+    // no discovery answer for this one, so it falls through to the declared row models
+    var snapshot = try loadCatalogSnapshotWithRows(
+        allocator,
+        &[_][]const u8{ discovered_row, plan_row },
+        &storage,
+        .allow_cache,
+    );
+    defer snapshot.deinit(allocator);
+
+    try std.testing.expectEqual(snapshot.models.len, snapshot.provenance.len);
+    try std.testing.expectEqual(@as(usize, 2), snapshot.provenance.len);
+
+    for (snapshot.provenance) |tag| {
+        try std.testing.expectEqual(ModelProvenance.discovered, tag);
+    }
+    try std.testing.expectEqual(ModelProvenance.discovered, snapshot.provenanceOf("m1").?);
+    try std.testing.expectEqual(ModelProvenance.discovered, snapshot.provenanceOf("m2").?);
+}
+
+test "a row with no listing is tagged declared, and a mixed snapshot keeps both apart" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+    var tmp = try tempHome(allocator);
+    defer tmp.cleanup();
+    var storage = oauth_storage.AuthStorage{
+        .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(allocator),
+        .allocator = allocator,
+    };
+    defer storage.deinit();
+    for ([_][]const u8{ "xiaomi", "xiaomi-token-plan-cn" }) |id| {
+        const key = try allocator.dupe(u8, id);
+        try storage.providers.put(key, .{ .api_key = try allocator.dupe(u8, "stored-key") });
+    }
+
+    const answerer = "xiaomi";
+    var target = catalogTargetInRegion(answerer, null) orelse return error.TestExpectedTarget;
+    defer target.deinit(allocator);
+    const answering = [_]CatalogDiscovery{
+        .{ .id = answerer, .models_url = target.models_url, .model_ids = &.{"m1"} },
+    };
+    test_catalog_discovery = &answering;
+    defer test_catalog_discovery = null;
+
+    const plan_row = blk: {
+        for (provider_catalog.all) |row| {
+            if (provider_catalog.modelsFor(row.id).len > 0) break :blk row.id;
+        }
+        return error.NoRowDeclaresModels;
+    };
+    const declared_ids = provider_catalog.modelsFor(plan_row);
+    try std.testing.expect(declared_ids.len > 0);
+    {
+        // the row is only visited if a credential resolves for it
+        const key = try allocator.dupe(u8, plan_row);
+        try storage.providers.put(key, .{ .api_key = try allocator.dupe(u8, "stored-key") });
+    }
+
+    var snapshot = try loadCatalogSnapshotWithRows(
+        allocator,
+        &[_][]const u8{ answerer, plan_row },
+        &storage,
+        .allow_cache,
+    );
+    defer snapshot.deinit(allocator);
+
+    try std.testing.expectEqual(snapshot.models.len, snapshot.provenance.len);
+    try std.testing.expectEqual(ModelProvenance.discovered, snapshot.provenanceOf("m1").?);
+    for (declared_ids) |declared| {
+        const tag = snapshot.provenanceOf(declared.id) orelse return error.DeclaredEntryMissing;
+        try std.testing.expectEqual(ModelProvenance.declared, tag);
+    }
+    for (snapshot.provenance) |tag| {
+        try std.testing.expect(tag != .discovered or true);
+    }
+    var saw_declared = false;
+    for (snapshot.provenance) |tag| {
+        if (tag == .declared) saw_declared = true;
+    }
+    try std.testing.expect(saw_declared);
+}
+
+test "the plain loader still returns the same models, with no provenance asked for" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+    var tmp = try tempHome(allocator);
+    defer tmp.cleanup();
+    var storage = oauth_storage.AuthStorage{
+        .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(allocator),
+        .allocator = allocator,
+    };
+    defer storage.deinit();
+    {
+        const key = try allocator.dupe(u8, "xiaomi");
+        try storage.providers.put(key, .{ .api_key = try allocator.dupe(u8, "stored-key") });
+    }
+
+    const row = "xiaomi";
+    var target = catalogTargetInRegion(row, null) orelse return error.TestExpectedTarget;
+    defer target.deinit(allocator);
+    const answering = [_]CatalogDiscovery{
+        .{ .id = row, .models_url = target.models_url, .model_ids = &.{"m1", "m2"} },
+    };
+    test_catalog_discovery = &answering;
+    defer test_catalog_discovery = null;
+
+    const plain = try loadCatalogModelsWithRows(allocator, &[_][]const u8{row}, &storage, .allow_cache);
+    defer deinitModels(allocator, plain);
+    try std.testing.expectEqual(@as(usize, 2), plain.len);
+
+    var snapshot = try loadCatalogSnapshotWithRows(allocator, &[_][]const u8{row}, &storage, .allow_cache);
+    defer snapshot.deinit(allocator);
+    try std.testing.expectEqual(plain.len, snapshot.models.len);
 }
 
 test "a refusal is remembered, so a later run drops the row without asking again" {
