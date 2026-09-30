@@ -2456,7 +2456,6 @@ test "a snapshot tells a discovered entry from a declared one" {
     var target = catalogTargetInRegion(discovered_row, null) orelse return error.TestExpectedTarget;
     defer target.deinit(allocator);
 
-    // an injected listing: this row answers, so its entries are discovered
     const answering = [_]CatalogDiscovery{
         .{ .id = discovered_row, .models_url = target.models_url, .model_ids = &.{"m1", "m2"} },
     };
@@ -2464,7 +2463,6 @@ test "a snapshot tells a discovered entry from a declared one" {
     defer test_catalog_discovery = null;
 
     const plan_row = "xiaomi-token-plan-cn";
-    // no discovery answer for this one, so it falls through to the declared row models
     var snapshot = try loadCatalogSnapshotWithRows(
         allocator,
         &[_][]const u8{ discovered_row, plan_row },
@@ -2517,7 +2515,6 @@ test "a row with no listing is tagged declared, and a mixed snapshot keeps both 
     const declared_ids = provider_catalog.modelsFor(plan_row);
     try std.testing.expect(declared_ids.len > 0);
     {
-        // the row is only visited if a credential resolves for it
         const key = try allocator.dupe(u8, plan_row);
         try storage.providers.put(key, .{ .api_key = try allocator.dupe(u8, "stored-key") });
     }
