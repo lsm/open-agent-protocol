@@ -2078,7 +2078,7 @@ test "an autolink is a hyperlink, and a link to anything but http is only its te
     try std.testing.expect(std.mem.indexOf(u8, styled, ";https://b.example") == null);
     const plain = try stripEscapesForTest(std.testing.allocator, styled);
     defer std.testing.allocator.free(plain);
-    try std.testing.expectEqualStrings("https://a.example/x run) [k](https://b.example)", plain);
+    try std.testing.expectEqualStrings("https://a.example/x run [k](https://b.example)", plain);
 }
 
 test "a parenthesis holding more than a target and a quoted title is not a link" {
