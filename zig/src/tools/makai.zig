@@ -83,7 +83,6 @@ const READY_FRAME = "{\"type\":\"ready\",\"protocol_version\":\"1\"}\n";
 const STDIO_PROTOCOL_VERSION = "1";
 const STDIO_IDLE_SLEEP_NS = std.time.ns_per_ms;
 const STDIO_THREAD_JOIN_TIMEOUT_MS: u64 = 5_000;
-const SESSION_SWEEP_INTERVAL_MS: i64 = 1_000;
 const TEST_AUTH_POLL_ITERS_SHORT: usize = 20;
 const TEST_AUTH_POLL_ITERS_DEFAULT: usize = 600;
 const TEST_AUTH_POLL_ITERS_FAILURE: usize = 200;
@@ -178,7 +177,6 @@ const StdioProtocolLoop = struct {
     tool_bridge: StdioToolBridge,
     auth_server: AuthProtocolServer,
     auth_pipe: in_process.SerializedPipe,
-    last_session_sweep_mono_ms: i64 = 0,
 
     const Self = @This();
     const DispatchTarget = enum { provider, agent, auth };
@@ -289,10 +287,10 @@ const StdioProtocolLoop = struct {
                     .allocator = self.allocator,
                 };
                 runtime.pumpClientMessages() catch |err| {
-                    self.finishAgentStopCancellation(stopped_session, had_stop_session);
+                    AgentRun.finishStopCancellation(self.allocator, &self.agent_server, &self.agent_runs, &self.tool_bridge, stopped_session, had_stop_session);
                     return err;
                 };
-                self.finishAgentStopCancellation(stopped_session, had_stop_session);
+                AgentRun.finishStopCancellation(self.allocator, &self.agent_server, &self.agent_runs, &self.tool_bridge, stopped_session, had_stop_session);
             },
             .auth => {
                 var sender = self.auth_pipe.clientSender();
@@ -330,7 +328,7 @@ const StdioProtocolLoop = struct {
         forwarded += try AgentRun.pump(self.allocator, &self.agent_runs, &self.agent_server);
         forwarded += try AgentRun.publishPendingToolRequests(&self.agent_server, self.allocator, &self.tool_bridge);
         forwarded += try agent_runtime.pumpServerOutbox();
-        try self.sweepIdleAgentSessions();
+        try AgentRun.sweepIdleAgentSessions(self.allocator, &self.agent_runs, &self.agent_server, &self.tool_bridge);
 
         var auth_runtime = AuthProtocolRuntime{
             .server = &self.auth_server,
@@ -339,20 +337,6 @@ const StdioProtocolLoop = struct {
         };
         forwarded += try auth_runtime.pumpServerOutbox();
         return forwarded;
-    }
-
-    fn sweepIdleAgentSessions(self: *Self) !void {
-        const now_mono_ms = try compat.time.monotonicMillis();
-        if (now_mono_ms - self.last_session_sweep_mono_ms < SESSION_SWEEP_INTERVAL_MS) return;
-        self.last_session_sweep_mono_ms = now_mono_ms;
-
-        var evicted = std.ArrayList(AgentProtocolTypes.SessionId).empty;
-        defer evicted.deinit(self.allocator);
-        const sweep_result = self.agent_server.evictIdleSessions(now_mono_ms, &evicted);
-        for (evicted.items) |session_id| {
-            self.tool_bridge.discardSession(self.allocator, session_id);
-        }
-        _ = try sweep_result;
     }
 
     pub fn drainOutbound(self: *Self, lines: *std.ArrayList([]const u8)) !usize {
@@ -421,18 +405,6 @@ const StdioProtocolLoop = struct {
             generation,
             protocol_client,
         );
-    }
-
-    fn finishAgentStopCancellation(
-        self: *Self,
-        stopped_session: ?AgentProtocolTypes.SessionId,
-        had_stop_session: bool,
-    ) void {
-        if (stopped_session) |session_id| {
-            if (had_stop_session and !self.agent_server.hasSession(session_id)) {
-                AgentRun.cancelRun(self.allocator, &self.agent_runs, &self.tool_bridge, session_id);
-            }
-        }
     }
 
     fn detectDispatchTarget(self: *Self, line: []const u8) ?DispatchTarget {

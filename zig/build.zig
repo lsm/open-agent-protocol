@@ -87,6 +87,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     packs_mod.addImport("jsonschema", jsonschema_mod);
+    packs_mod.addImport("schema_bytes", schema_bytes_mod);
     fixture_gate_mod.addImport("packs", packs_mod);
     const tolerate_mod = b.createModule(.{
         .root_source_file = b.path("src/validation/tolerate.zig"),
@@ -113,6 +114,7 @@ pub fn build(b: *std.Build) void {
     });
     validator_mod.addImport("jsonschema", jsonschema_mod);
     validator_mod.addImport("tolerate", tolerate_mod);
+    const packs_test = b.addTest(.{ .root_module = packs_mod });
     const validator_test = b.addTest(.{ .root_module = validator_mod });
     const semantic_gate_mod = b.createModule(.{
         .root_source_file = b.path("src/validation/semantic_gate.zig"),
@@ -169,6 +171,7 @@ pub fn build(b: *std.Build) void {
     test_unit_validation_step.dependOn(&b.addRunArtifact(schema_bytes_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(jsonschema_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(tolerate_test).step);
+    test_unit_validation_step.dependOn(&b.addRunArtifact(packs_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(validator_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(fixture_gate_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(semantic_test).step);
@@ -1579,6 +1582,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "oap_provider_types", .module = protocol_oap_provider_types_mod },
             .{ .name = "provider_catalog", .module = provider_catalog_mod },
+            .{ .name = "ai_types", .module = ai_types_mod },
         },
     });
 
@@ -2831,6 +2835,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(adapter_config_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_config_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(deepseek_rpc_test).step);
+    test_step.dependOn(&b.addRunArtifact(packs_test).step);
     test_step.dependOn(&b.addRunArtifact(schema_bytes_test).step);
     test_step.dependOn(&b.addRunArtifact(jsonschema_test).step);
     test_step.dependOn(&b.addRunArtifact(tolerate_test).step);

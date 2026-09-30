@@ -1,5 +1,8 @@
+const SESSION_SWEEP_INTERVAL_MS: i64 = 1_000;
+
 pub const Driver = struct {
     runs: std.ArrayList(Run),
+    last_session_sweep_mono_ms: i64 = 0,
 
     pub fn init() Driver {
         return .{ .runs = std.ArrayList(Run).empty };
@@ -631,4 +634,38 @@ pub fn pump(allocator: std.mem.Allocator, driver: *Driver, server: *AgentProtoco
         idx += 1;
     }
     return forwarded;
+}
+
+pub fn sweepIdleAgentSessions(
+    allocator: std.mem.Allocator,
+    driver: *Driver,
+    server: *AgentProtocolServer,
+    bridge: *AgentToolBridge.Bridge,
+) !void {
+    const now_mono_ms = try compat.time.monotonicMillis();
+    if (now_mono_ms - driver.last_session_sweep_mono_ms < SESSION_SWEEP_INTERVAL_MS) return;
+    driver.last_session_sweep_mono_ms = now_mono_ms;
+
+    var evicted = std.ArrayList(SessionId).empty;
+    defer evicted.deinit(allocator);
+    const sweep_result = server.evictIdleSessions(now_mono_ms, &evicted);
+    for (evicted.items) |session_id| {
+        bridge.discardSession(allocator, session_id);
+    }
+    _ = try sweep_result;
+}
+
+pub fn finishStopCancellation(
+    allocator: std.mem.Allocator,
+    server: *AgentProtocolServer,
+    driver: *Driver,
+    bridge: *AgentToolBridge.Bridge,
+    stopped_session: ?SessionId,
+    had_stop_session: bool,
+) void {
+    if (stopped_session) |session_id| {
+        if (had_stop_session and !server.hasSession(session_id)) {
+            cancelRun(allocator, driver, bridge, session_id);
+        }
+    }
 }

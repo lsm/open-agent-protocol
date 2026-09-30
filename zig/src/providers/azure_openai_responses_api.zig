@@ -391,7 +391,7 @@ fn runThread(ctx: *ThreadCtx) void {
         return ctx.stream.completeWithError("oom");
     };
 
-    ctx.stream.complete(out);
+    ai_types.settleProviderOutcome(ctx.stream, out);
 }
 
 pub fn streamAzureOpenAIResponses(model: ai_types.Model, context: ai_types.Context, options: ?ai_types.StreamOptions, allocator: std.mem.Allocator) !*event_stream.AssistantMessageEventStream {
