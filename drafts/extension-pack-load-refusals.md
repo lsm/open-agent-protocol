@@ -108,16 +108,25 @@ produced a branch that every judgement failed to resolve.
 
 Named so the disclosure shrinks with the code rather than lagging it:
 
-- a cited name with a **leading separator** — `/types.schema.json#/$defs/thing`
+- a cited name **spelled with a leading separator** — `/types.schema.json#/$defs/thing`
   and `//types.schema.json#/$defs/thing` are both **accepted, with no refusal**,
-  and a pack whose *only* citation is spelled that way still contributes a real
-  branch. So the cited spelling is not the spelling it registered, and the
-  contribution is not nominal: the pack adds vocabulary under a name the reader
-  would not find in `schemas`. Measured on `7dd74dd30d`; `valid:true`, no refusal.
-  This is worse than a silent rebind of the resource — it is an accepted
-  contribution under a wrong name. **Open defect; not a decision, and not
-  something the disclosure can excuse.** (A *climbing* name is different: `..` is
-  refused uncoded, as measured above.)
+  and a pack whose *only* citation is spelled that way still contributes a branch.
+  Stated precisely, because an earlier wording of this file got it wrong: the
+  branch does **not** land under an unregistered name. `cleanRelative` drops the
+  empty separator (`packs.zig:83`), the registration loop keys the document by the
+  *normalised* name (`packs.zig:336`), and the branch site normalises the cited name
+  the same way (`packs.zig:396-418`), so the cited spelling and the registered key
+  are the same string after normalisation and the lookup succeeds.
+
+  What is defective is the **spelling's identity**: the descriptor's `schemas`
+  lists `types.schema.json`, and the citation is `/types.schema.json`, which is not
+  a spelling that appears anywhere in the descriptor. A reader auditing the pack by
+  its own text cannot find the resource the branch uses, and nothing in the load
+  says the citation was rewritten. Whether a citation must *be* one of the
+  descriptor's own spellings is a **registered-resource identity question against
+  Decision 0004**, and it is not answered here. Measured on `7dd74dd30d`:
+  `valid:true`, exit 0, no refusal. (A *climbing* name is different: `..` is refused
+  uncoded, as measured above.)
 - an `envelope_types` entry with **no `schema` field at all** — skipped, and the
   declared type still reaches the semantic machine. `goap` refuses it. Whether
   absence should be refused is a **contract question about Decision 0004 §140**
