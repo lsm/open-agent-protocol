@@ -2386,7 +2386,7 @@ test "the refusals the open gate and the payload read name" {
 
 test "every refusal the transport emits has a status, or is one the draft leaves undefined" {
     const emitted = [_][]const u8{
-        "busy", // G13: no wire code exists for it yet
+        "busy",
         "unknown_op",
     };
     for (emitted) |code| {
