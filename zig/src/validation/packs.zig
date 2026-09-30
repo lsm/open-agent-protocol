@@ -324,11 +324,11 @@ fn gather(
         const declared = arrayField(descriptor, "envelope_types") orelse continue;
         for (declared.items) |entry| {
             const declared_type = stringField(entry, "type") orelse continue;
-            const schema_ref = stringField(entry, "schema") orelse continue;
             if (try namespaceRefusal(&roots, allocator, pack_id, declared_type)) |code| {
                 try load_refusals.append(allocator, .{ .code = code, .pack = pack_id, .detail = declared_type });
                 continue;
             }
+            const schema_ref = stringField(entry, "schema") orelse continue;
             const hash = std.mem.indexOfScalar(u8, schema_ref, '#') orelse continue;
             const cleaned = (try cleanRelative(allocator, schema_ref[0..hash])) orelse schema_ref[0..hash];
             const cited = try toSlash(allocator, cleaned);
@@ -660,6 +660,47 @@ test "a schema ref naming nothing the pack contributes is registered, and no ref
             } else {
                 try std.testing.expectError(error.UnresolvableRef, judgesAsAccepted(allocator, &registry, read.branches, envelope));
             }
+        }
+    }
+}
+test "a declared name outside the pack's namespace is refused before its schema is read" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cases = [_]struct { dir: []const u8, name: []const u8, schema: []const u8, code: []const u8, accepted: bool }{
+        .{ .dir = "core-missing", .name = "capabilities.request.thing", .schema = "", .code = pack_unprefixed_name, .accepted = false },
+        .{ .dir = "core-numbered", .name = "capabilities.request.thing", .schema = ", \"schema\": 7", .code = pack_unprefixed_name, .accepted = false },
+        .{ .dir = "foreign-missing", .name = "com.other.billing.thing", .schema = "", .code = pack_foreign_prefix, .accepted = false },
+        .{ .dir = "foreign-numbered", .name = "com.other.billing.thing", .schema = ", \"schema\": 7", .code = pack_foreign_prefix, .accepted = false },
+        .{ .dir = "own-missing", .name = "com.example.nsgap.thing", .schema = "", .code = "", .accepted = true },
+    };
+    for (cases) |c| {
+        try tmp.dir.createDir(std.testing.io, c.dir, .default_dir);
+        const descriptor = try std.fmt.allocPrint(allocator,
+            \\{{"id": "com.example.nsgap", "version": "1.0.0", "schemas": ["note.schema.json"], "envelope_types": [{{"type": "{s}", "role": "event"{s}}}]}}
+        , .{ c.name, c.schema });
+        defer allocator.free(descriptor);
+        const pack = try std.fmt.allocPrint(allocator, "{s}/pack.json", .{c.dir});
+        defer allocator.free(pack);
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = pack, .data = descriptor });
+        const schema_path = try std.fmt.allocPrint(allocator, "{s}/note.schema.json", .{c.dir});
+        defer allocator.free(schema_path);
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = schema_path, .data =
+                \\{"$schema": "https://json-schema.org/draft/2020-12/schema", "$defs": {"thing": {"type": "object", "required": ["type", "id", "session_id"], "properties": {"type": {"type": "string"}, "id": {"type": "string"}, "session_id": {"type": "string"}}}}}
+            ,
+        });
+    }
+    for (cases) |c| {
+        const root = try tmp.dir.realPathFileAlloc(std.testing.io, c.dir, allocator);
+        defer allocator.free(root);
+        const one = [_][]const u8{root};
+        var loaded = try describe(std.testing.io, allocator, &one);
+        defer loaded.deinit();
+        try std.testing.expectEqual(c.accepted, loaded.refusals.len == 0);
+        if (!c.accepted) {
+            try std.testing.expect(carriesCode(loaded.refusals, c.code));
+            try std.testing.expectEqual(@as(usize, 0), loaded.branches.len);
+            try std.testing.expectEqual(@as(usize, 0), loaded.types.len);
         }
     }
 }
