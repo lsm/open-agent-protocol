@@ -2383,8 +2383,8 @@ test "the refusals the open gate and the payload read name" {
     }
 }
 
-test "every refusal the transport emits has a status, or is one the draft leaves undefined" {
-    const emitted = [_][]const u8{
+test "every code the draft names has a status, or is one the draft leaves undefined" {
+    const named_without_status = [_][]const u8{
         "busy",
         "unknown_op",
         "response_too_large",
@@ -2394,7 +2394,7 @@ test "every refusal the transport emits has a status, or is one the draft leaves
         "type_mismatch",
         "invalid_payload",
     };
-    for (emitted) |code| {
+    for (named_without_status) |code| {
         try testing.expect(statusForRefusal(code) == null);
     }
     const named = [_][]const u8{
