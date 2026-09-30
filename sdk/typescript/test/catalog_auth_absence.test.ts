@@ -57,23 +57,28 @@ test("an absent OAP auth_status reads as the existing unknown value", async () =
   assert.equal(models[0].auth_status, "unknown");
 });
 
-test("every stated OAP auth_status reaches the reader as itself", async () => {
-  for (const [fixture, want] of [
-    ["expired", "expired"],
-    ["login-required", "login_required"],
+test("every schema auth_status literal reaches the OAP reader as itself", async () => {
+  for (const literal of [
+    "authenticated",
+    "login_required",
+    "expired",
+    "refreshing",
+    "login_in_progress",
+    "failed",
+    "unknown",
   ] as const) {
     const models = await withOapModels(
-      fixture,
+      literal,
       async (api) => (await api.list({ include_login_required: true })).models,
     );
-    assert.equal(models.length, 1, `${fixture} must survive the reader`);
-    assert.equal(models[0].auth_status, want);
+    assert.equal(models.length, 1, `${literal} must survive the reader`);
+    assert.equal(models[0].auth_status, literal);
   }
 });
 
 test("the model_id filter really does skip the valid fixture row", async () => {
   const models = await withOapModels(
-    "default",
+    "authenticated",
     async (api) => (await api.list({ model_id: "no-such-model" })).models,
   );
   assert.equal(
@@ -84,7 +89,7 @@ test("the model_id filter really does skip the valid fixture row", async () => {
 });
 
 test("a present but invalid OAP auth_status is refused", async () => {
-  for (const shape of ["null", "number", "invented"]) {
+  for (const shape of ["null", "number", "empty", "invented"]) {
     await refusesMalformedAuthStatus(shape, (api) => api.list());
   }
 });
@@ -94,6 +99,9 @@ test("a malformed auth_status is refused even when a local filter would skip the
     api.list({ model_id: "no-such-model" }),
   );
   await refusesMalformedAuthStatus("null", (api) =>
-    api.list({ include_login_required: false }),
+    api.list({ model_id: "no-such-model" }),
+  );
+  await refusesMalformedAuthStatus("invented", (api) =>
+    api.list({ include_deprecated: false }),
   );
 });

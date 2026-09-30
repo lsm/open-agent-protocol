@@ -44,8 +44,14 @@ function fixtureModel() {
     case "null": model.auth_status = null; break;
     case "number": model.auth_status = 7; break;
     case "invented": model.auth_status = "retired"; break;
+    case "empty": model.auth_status = ""; break;
+    case "authenticated": model.auth_status = "authenticated"; break;
+    case "login_required": model.auth_status = "login_required"; break;
     case "expired": model.auth_status = "expired"; break;
-    case "login-required": model.auth_status = "login_required"; break;
+    case "refreshing": model.auth_status = "refreshing"; break;
+    case "login_in_progress": model.auth_status = "login_in_progress"; break;
+    case "failed": model.auth_status = "failed"; break;
+    case "unknown": model.auth_status = "unknown"; break;
     default: break;
   }
   return model;
