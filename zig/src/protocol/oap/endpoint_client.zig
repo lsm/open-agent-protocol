@@ -587,7 +587,8 @@ test "a spent budget gives up on silence where an unbounded one reads the late f
         if (during_silence != null) break;
     }
     try std.testing.expect(during_silence == null);
-    try std.testing.expect(bounded.expired());
+    try std.testing.expect(bounded.limit != null);
+    try std.testing.expect(bounded.timeout() == .duration);
 
     try client.write(sent);
     var open_attempts: usize = 0;
@@ -615,7 +616,7 @@ test "partial traffic and blank traffic both expire inside one overall budget" {
         if (partial_frame != null) break;
     }
     try std.testing.expect(partial_frame == null);
-    try std.testing.expect(partial_budget.expired());
+    try std.testing.expect(partial_budget.timeout() == .duration);
 
     var blank_client = try Client.spawn(std.testing.allocator, .{ .command = "/bin/sh", .args = &.{ "-c", blank_tail } });
     defer blank_client.deinit();
@@ -628,5 +629,5 @@ test "partial traffic and blank traffic both expire inside one overall budget" {
         if (blank_frame != null) break;
     }
     try std.testing.expect(blank_frame == null);
-    try std.testing.expect(blank_budget.expired());
+    try std.testing.expect(blank_budget.timeout() == .duration);
 }
