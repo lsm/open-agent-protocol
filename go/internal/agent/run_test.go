@@ -835,33 +835,48 @@ func TestACallTheCallerAnswersIsAnnouncedAsResolved(t *testing.T) {
 }
 
 func TestACallWhoseAnswerRacesACancelIsAnnouncedEitherWay(t *testing.T) {
-	for attempt := 0; attempt < 20; attempt++ {
-		script := &scripted{turns: []scriptedTurn{toolTurn("call_1", "read", "{}"), toolTurn("call_2", "read", "{}")}}
-		run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("read a"))
-		var resolved, cancelled int
-		drainActing(t, run, func(event Event) {
-			switch event.Kind {
-			case ToolCallRequested:
-				if event.Call.ID == "call_1" {
-					go func() {
-						_ = run.ResolveTool("call_1", provider.ToolResult{Parts: []provider.ContentPart{{Text: &provider.TextPart{Text: "a"}}}})
-						run.Cancel()
-					}()
-				}
-			case ToolCallResolved:
-				resolved++
-			case ToolCallCancelled:
-				cancelled++
-			}
-		})
-		if resolved+cancelled != 1 {
-			t.Fatalf("the call was announced %d times, want 1: a call whose answer raced the cancel is settled either way, but never left open when the run settles", resolved+cancelled)
-		}
-		if cancelled == 1 {
+	script := &scripted{turns: []scriptedTurn{toolTurn("call_1", "read", "{}"), toolTurn("call_2", "read", "{}")}}
+	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("read a"))
+
+	requested := map[string]int{}
+	terminals := map[string]int{}
+	secondAsked := make(chan struct{})
+	var signalled bool
+
+	drainActing(t, run, func(event Event) {
+		if event.Call == nil {
 			return
 		}
+		switch event.Kind {
+		case ToolCallRequested:
+			requested[event.Call.ID]++
+			if event.Call.ID == "call_2" && !signalled {
+				signalled = true
+				close(secondAsked)
+			}
+			if event.Call.ID == "call_1" {
+				go func() {
+					_ = run.ResolveTool("call_1", provider.ToolResult{Parts: []provider.ContentPart{{Text: &provider.TextPart{Text: "a"}}}})
+					<-secondAsked
+					run.Cancel()
+				}()
+			}
+		case ToolCallResolved, ToolCallCancelled:
+			terminals[event.Call.ID]++
+		}
+	})
+
+	if len(requested) != 2 {
+		t.Fatalf("the run asked %d calls, want 2: the race this covers needs the second request to land", len(requested))
 	}
-	t.Error("no attempt in twenty had the loop wake on the answer first, so this is not pinning the order the cancel wins in")
+	for id, asked := range requested {
+		switch {
+		case terminals[id] == 0:
+			t.Errorf("call %q was asked %d time(s) and never settled, so it was left open when the run settled", id, asked)
+		case terminals[id] > 1:
+			t.Errorf("call %q was asked %d time(s) and settled %d times, so one call was announced twice", id, asked, terminals[id])
+		}
+	}
 }
 
 func TestACallTheRunWasCancelledWaitingForIsAnnouncedAsCancelled(t *testing.T) {
