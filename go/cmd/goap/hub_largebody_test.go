@@ -13,12 +13,11 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
 
-func startHubAddr(t *testing.T) (string, func()) {
+func startHubAddr(t *testing.T) (string, func(), context.CancelFunc) {
 	t.Helper()
 	oapx := os.Getenv("OAP_OAPX_BIN")
 	if oapx == "" {
@@ -49,9 +48,10 @@ func startHubAddr(t *testing.T) (string, func()) {
 		}
 		bound <- ""
 	}()
-	var once sync.Once
+	stopped := false
 	cleanup := func() {
-		once.Do(func() {
+		if !stopped {
+			stopped = true
 			_ = command.Process.Signal(os.Interrupt)
 			done := make(chan error, 1)
 			go func() { done <- command.Wait() }()
@@ -65,7 +65,7 @@ func startHubAddr(t *testing.T) (string, func()) {
 					t.Log("oapx hub --addr did not report an exit after Kill")
 				}
 			}
-		})
+		}
 	}
 	addressBound := make(chan string, 1)
 	go func() {
@@ -80,14 +80,15 @@ func startHubAddr(t *testing.T) (string, func()) {
 	if address == "" {
 		cleanup()
 		t.Fatalf("oapx hub --addr never reported a bound address:\n%s", stderr.String())
-		return "", func() {}
+		return "", func() {}, cancel
 	}
-	return address, cleanup
+	return address, cleanup, cancel
 }
 
 func TestHubAddrRefusesALargeMediaTypeOverARealSocket(t *testing.T) {
 	started := time.Now()
-	address, cleanup := startHubAddr(t)
+	address, cleanup, cancel := startHubAddr(t)
+	defer cancel()
 	boundAt := started
 	defer cleanup()
 

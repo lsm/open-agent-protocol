@@ -14,7 +14,8 @@ import (
 )
 
 func TestHubAddrFinishesTheRefusalAndStopsTheBodyWhenItsSignalArrives(t *testing.T) {
-	address, stop := startHubAddr(t)
+	address, stop, cancel := startHubAddr(t)
+	defer cancel()
 
 	const declared = 8 << 20
 	conn, err := net.DialTimeout("tcp", address, 10*time.Second)

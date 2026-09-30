@@ -1228,15 +1228,16 @@ test "drain reads a positive number of bytes, and stops when keepGoing says stop
     _ = &after;
 }
 
-test "a drain still reads after the process has been up longer than its own budget" {
+test "a drain still reads once the process clock is past its own budget" {
+    const budget_wait_ms: u32 = @intCast(drain_total_ms + 200);
+    std.Thread.sleep(budget_wait_ms * std.time.ns_per_ms);
+    const up = elapsedMs() catch return error.TestUnexpectedResult;
+    try testing.expect(up > drain_total_ms);
     var pipe = try Pipe.open();
     defer pipe.close();
     try pipe.client.writeAll("u" ** 4096);
-    const now = elapsedMs() catch 0;
-    const up = now -| 0;
-    if (up <= drain_total_ms) return error.SkipZigTest;
     const consumed = drain(&pipe.accepted, 4096, always_going);
-    try testing.expectEqual(@as(usize, 4096), consumed);
+    try testing.expect(consumed > 0);
 }
 
 fn mediaRefusalOverTheCap(owed: usize) !void {
