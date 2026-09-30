@@ -990,6 +990,23 @@ fn renderAssistantText(allocator: std.mem.Allocator, text: []const u8, width: us
         if (!first_line) try writer.writeByte('\n');
         first_line = false;
         if (!in_fence) {
+            if (styled and std.mem.indexOfScalar(u8, line, '|') != null) {
+                if (lines.peek()) |next| {
+                    if (try tableAlignments(allocator, next, line)) |aligns| {
+                        defer allocator.free(aligns);
+                        _ = lines.next();
+                        var body = std.ArrayList([]const u8).empty;
+                        defer body.deinit(allocator);
+                        while (lines.peek()) |row| {
+                            if (std.mem.trim(u8, row, " \t\r").len == 0 or std.mem.indexOfScalar(u8, row, '|') == null) break;
+                            try body.append(allocator, row);
+                            _ = lines.next();
+                        }
+                        try writeTable(allocator, writer, line, aligns, body.items, width);
+                        continue;
+                    }
+                }
+            }
             if (styled) {
                 try writeStyledProseLine(allocator, writer, line, width);
             } else {
@@ -1019,6 +1036,174 @@ fn renderAssistantText(allocator: std.mem.Allocator, text: []const u8, width: us
         try writer.writeAll(block);
     }
     return out.toOwnedSlice();
+}
+
+const TableAlign = enum { left, center, right };
+
+const table_gap = " \u{2502} ";
+const table_gap_width: usize = 3;
+const table_min_cell: usize = 3;
+
+fn tableRowParts(line: []const u8) []const u8 {
+    var row = std.mem.trim(u8, line, " \t\r");
+    if (row.len > 0 and row[0] == '|') row = row[1..];
+    if (row.len > 0 and row[row.len - 1] == '|' and !(row.len > 1 and row[row.len - 2] == '\\')) row = row[0 .. row.len - 1];
+    return row;
+}
+
+fn tableCellCount(line: []const u8) usize {
+    const row = tableRowParts(line);
+    var count: usize = 1;
+    var i: usize = 0;
+    while (i < row.len) : (i += 1) {
+        if (row[i] == '\\') {
+            i += 1;
+            continue;
+        }
+        if (row[i] == '|') count += 1;
+    }
+    return count;
+}
+
+fn tableAlignments(allocator: std.mem.Allocator, separator: []const u8, header: []const u8) !?[]TableAlign {
+    if (std.mem.indexOfScalar(u8, separator, '|') == null) return null;
+    const columns = tableCellCount(header);
+    if (tableCellCount(separator) != columns) return null;
+    const aligns = try allocator.alloc(TableAlign, columns);
+    errdefer allocator.free(aligns);
+    var parts = std.mem.splitScalar(u8, tableRowParts(separator), '|');
+    var index: usize = 0;
+    while (parts.next()) |raw| : (index += 1) {
+        const part = std.mem.trim(u8, raw, " \t");
+        const left = part.len > 0 and part[0] == ':';
+        const right = part.len > 0 and part[part.len - 1] == ':';
+        const dashes = part[@intFromBool(left) .. part.len - @intFromBool(right and part.len > 1)];
+        if (dashes.len == 0) {
+            allocator.free(aligns);
+            return null;
+        }
+        for (dashes) |c| if (c != '-') {
+            allocator.free(aligns);
+            return null;
+        };
+        aligns[index] = if (left and right) .center else if (right) .right else .left;
+    }
+    return aligns;
+}
+
+fn tableCells(allocator: std.mem.Allocator, line: []const u8, columns: usize) ![]const []const u8 {
+    const cells = try allocator.alloc([]const u8, columns);
+    @memset(cells, "");
+    const row = tableRowParts(line);
+    var index: usize = 0;
+    var cell = std.ArrayList(u8).empty;
+    var i: usize = 0;
+    while (i <= row.len) : (i += 1) {
+        if (i == row.len or row[i] == '|') {
+            if (index < columns) cells[index] = std.mem.trim(u8, try cell.toOwnedSlice(allocator), " \t");
+            index += 1;
+            cell = .empty;
+            continue;
+        }
+        if (row[i] == '\\' and i + 1 < row.len and row[i + 1] == '|') {
+            try cell.append(allocator, '|');
+            i += 1;
+            continue;
+        }
+        try cell.append(allocator, row[i]);
+    }
+    return cells;
+}
+
+fn styledCell(allocator: std.mem.Allocator, text: []const u8, style: zz.Style) ![]const u8 {
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    try writeInlineStyled(allocator, &out.writer, text, style);
+    return out.written();
+}
+
+fn fitTableColumns(widths: []usize, budget: usize) void {
+    var total: usize = 0;
+    for (widths) |w| total += w;
+    while (total > budget) {
+        var widest: usize = 0;
+        for (widths, 0..) |w, c| {
+            if (w > widths[widest]) widest = c;
+        }
+        if (widths[widest] <= table_min_cell) return;
+        widths[widest] -= 1;
+        total -= 1;
+    }
+}
+
+fn writeTable(allocator: std.mem.Allocator, writer: *std.Io.Writer, header: []const u8, aligns: []const TableAlign, body: []const []const u8, width: usize) !void {
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const columns = aligns.len;
+    const budget = width -| table_gap_width * (columns - 1);
+    if (budget < table_min_cell * columns) {
+        try writeStyledProseLine(allocator, writer, header, width);
+        for (body) |line| {
+            try writer.writeByte('\n');
+            try writeStyledProseLine(allocator, writer, line, width);
+        }
+        return;
+    }
+
+    const rows = try arena.alloc([]const []const u8, body.len + 1);
+    rows[0] = try tableCells(arena, header, columns);
+    for (body, 0..) |line, i| rows[i + 1] = try tableCells(arena, line, columns);
+
+    const widths = try arena.alloc(usize, columns);
+    @memset(widths, 1);
+    for (rows, 0..) |cells, r| {
+        const style = if (r == 0) tui_theme.base().bold(true) else tui_theme.base();
+        for (cells, 0..) |cell, c| widths[c] = @max(widths[c], tui_text.visibleWidth(try styledCell(arena, cell, style)));
+    }
+    fitTableColumns(widths, budget);
+
+    const gap = try tui_theme.dim().render(arena, table_gap);
+    for (rows, 0..) |cells, r| {
+        if (r > 0) try writer.writeByte('\n');
+        const style = if (r == 0) tui_theme.base().bold(true) else tui_theme.base();
+        const wrapped = try arena.alloc([]const []const u8, columns);
+        var height: usize = 1;
+        for (cells, 0..) |cell, c| {
+            var out: std.Io.Writer.Allocating = .init(arena);
+            try wrapPlainLine(arena, &out.writer, cell, widths[c]);
+            var parts = std.ArrayList([]const u8).empty;
+            var split = std.mem.splitScalar(u8, out.written(), '\n');
+            while (split.next()) |part| try parts.append(arena, part);
+            wrapped[c] = parts.items;
+            height = @max(height, parts.items.len);
+        }
+        for (0..height) |line_index| {
+            if (line_index > 0) try writer.writeByte('\n');
+            for (wrapped, 0..) |parts, c| {
+                if (c > 0) try writer.writeAll(gap);
+                const text = if (line_index < parts.len) try styledCell(arena, parts[line_index], style) else "";
+                const room = widths[c] -| tui_text.visibleWidth(text);
+                const last = c + 1 == columns;
+                const before: usize = switch (aligns[c]) {
+                    .left => 0,
+                    .right => room,
+                    .center => room / 2,
+                };
+                try writeSpaces(writer, before);
+                try writer.writeAll(text);
+                if (!last) try writeSpaces(writer, room - before);
+            }
+        }
+        if (r == 0) {
+            try writer.writeByte('\n');
+            var rule = std.ArrayList(u8).empty;
+            for (widths, 0..) |w, c| {
+                if (c > 0) try rule.appendSlice(arena, "\u{2500}\u{253c}\u{2500}");
+                for (0..w) |_| try rule.appendSlice(arena, "\u{2500}");
+            }
+            try writer.writeAll(try tui_theme.dim().render(arena, rule.items));
+        }
+    }
 }
 
 fn writeCodeTag(allocator: std.mem.Allocator, writer: *std.Io.Writer, info: []const u8, code_width: usize) !void {
@@ -1631,6 +1816,43 @@ test "unbalanced emphasis markers render literally" {
     const text = out.written();
     try std.testing.expect(std.mem.indexOf(u8, text, "2 * 3 = 6") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "**open") != null);
+}
+
+fn plainTable(text: []const u8, width: usize) ![]u8 {
+    const styled = try renderAssistantStyled(std.testing.allocator, text, width);
+    defer std.testing.allocator.free(styled);
+    return stripEscapesForTest(std.testing.allocator, styled);
+}
+
+test "a markdown table renders as aligned columns with a rule under the header" {
+    const plain = try plainTable("before\n| a | bb |\n|---|---:|\n| ccc | d |\nafter", 40);
+    defer std.testing.allocator.free(plain);
+    try std.testing.expectEqualStrings("before\na   \u{2502} bb\n\u{2500}\u{2500}\u{2500}\u{2500}\u{253c}\u{2500}\u{2500}\u{2500}\nccc \u{2502}  d\nafter", plain);
+}
+
+test "a table cell's inline code is measured without its backticks, and an escaped pipe stays in its cell" {
+    const plain = try plainTable("| k | v |\n|:-:|---|\n| `x` | a\\|b |", 40);
+    defer std.testing.allocator.free(plain);
+    try std.testing.expectEqualStrings("k \u{2502} v\n\u{2500}\u{2500}\u{253c}\u{2500}\u{2500}\u{2500}\u{2500}\nx \u{2502} a|b", plain);
+}
+
+test "a table wider than the transcript wraps inside its cells and stays within the width" {
+    const plain = try plainTable("| n | text |\n|---|---|\n| 1 | alpha beta gamma delta epsilon zeta |", 20);
+    defer std.testing.allocator.free(plain);
+    var lines = std.mem.splitScalar(u8, plain, '\n');
+    var count: usize = 0;
+    while (lines.next()) |line| : (count += 1) {
+        try std.testing.expect(tui_text.visibleWidth(line) <= 20);
+        try std.testing.expect(std.mem.indexOf(u8, line, "\u{2502}") != null or std.mem.indexOf(u8, line, "\u{253c}") != null);
+    }
+    try std.testing.expect(count > 3);
+    try std.testing.expect(std.mem.indexOf(u8, plain, "epsilon") != null);
+}
+
+test "pipes without a separator row stay prose" {
+    const plain = try plainTable("a | b\nc | d", 40);
+    defer std.testing.allocator.free(plain);
+    try std.testing.expectEqualStrings("a | b\nc | d", plain);
 }
 
 test "bullets numbered lists and headings get block styling with hanging indent" {

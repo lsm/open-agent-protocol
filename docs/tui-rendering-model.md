@@ -152,8 +152,15 @@ code paths; add a transcript row instead.
   left-aligned soft block; assistant prose gets inline styling (bold, italic, code
   spans), bullets, numbered lists, headings, block quotes, and fenced code blocks with
   a language tag — all applied to rows *after* the #254 sanitizer and wrapper, one
-  self-contained styled row at a time. `renderAssistantPlain` remains the unstyled
-  wrap engine and its exact-output tests are unchanged.
+  self-contained styled row at a time. A GFM table (a header row, then a `|---|`
+  separator with as many cells, then rows until a blank or pipe-less line) renders
+  as aligned columns split by a dim `│`, with a dim `─┼─` rule under a bold header
+  and the separator's `:` alignment honoured. When the table is wider than the
+  transcript the widest columns give way first and cells wrap inside their column;
+  when there is not room for three columns' worth of cells it falls back to prose
+  rows. A header without its separator stays prose, so a table streams in as text
+  and snaps into columns once the separator arrives. `renderAssistantPlain`
+  remains the unstyled wrap engine and its exact-output tests are unchanged.
 - Tool calls: one row, `◆ Label  argument` on the left, status on the right
   (`⠋ running`, `◌ awaiting approval`, `✓ 342B · ~87 tok`, `✗ failed`,
   `■ interrupted`). Result rows render as dim `⎿` lines capped at eight rows. The row
