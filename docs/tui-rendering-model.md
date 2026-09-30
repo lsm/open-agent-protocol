@@ -523,6 +523,20 @@ with a note saying so, at the top of the resume, so it cannot be sent into the s
 replaced it. A session whose history is already a summary, or empty, is not compacted
 again, and one automatic compaction runs at a time.
 
+A run that crosses the same point while it is working compacts between two of its turns,
+so a long tool loop no longer has to end before the history can shrink. Before each turn
+after the first, the agent measures its own history the way the output limit does (the
+provider's last reported prompt plus an estimate of what came after it) and, once that
+reaches the point, writes the same summary `/compact` writes, saves the history it replaces
+as the session's next transcript, installs the summary and acknowledgement, and adds one
+user message asking the model to carry on with the task from the summary. The transcript
+shows the compaction as it does for `/compact`, the run keeps streaming through it, and a
+message typed meanwhile is steered as usual. A failed or cancelled compaction leaves the
+history as it was and the run goes on (a cancel then ends the run at its next check). The
+session log records it as a `compaction_end` marked `"in_run": true`, so a resumed session
+starts from that summary exactly as it would from a `/compact`. The point is set when a run
+starts, so an `/autocompact` change applies from the next run.
+
 ## Recovery after a provider error
 
 The HTTP retry policy is five statuses — 429, 500, 502, 503, 504 — plus a
