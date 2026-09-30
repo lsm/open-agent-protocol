@@ -193,12 +193,14 @@ is refused for **every** received entry, and only then may the reader skip it.
 The Python change validates once per entry before any local `continue`, and a
 negative control reinstates the old ordering to show the cases fail.
 
-**Go had the same ordering and was the last SDK with it.** `OAPModelsApi.list`
-skipped an entry on `wire`, `model_id`, `lifecycle` or `auth_status` before
-calling `oapModelSource` or `oapModelLifecycle`, so a row any of those filters
-dropped was never validated: `lifecycle` stating `deprecated` together with
-`source` stating `null` returned an empty list and no error under
-`IncludeDeprecated: false`. Both members are now validated once per received
+**Go had the same ordering and was the last SDK with it.** In
+`ModelsService.oapList` (`go/sdk/oap.go:303`), which is where
+`ModelsService.List` dispatches when the transport is OAP
+(`go/sdk/models.go:142`), the four filters on `wire`, `model_id`, `lifecycle`
+and `auth_status` ran before `oapModelSource` and `oapModelLifecycle`, so a row
+any of those filters dropped was never validated: `lifecycle` stating
+`deprecated` together with `source` stating `null` returned an empty list and no
+error under `IncludeDeprecated: false`. Both members are now validated once per received
 entry, before the first `continue`, and the deprecation filter reads the
 validated value — which also needs a nil check, since `*lifecycle ==
 LifecycleDeprecated` would panic on an absent member, the same reason Rust's
