@@ -255,13 +255,6 @@ fn pollTermWindows(child: *std.process.Child, io: std.Io) !?std.process.Child.Te
     };
 }
 
-fn liveRecordedChild(dir: std.Io.Dir) ?std.posix.pid_t {
-    return switch (probeRecordedChild(dir)) {
-        .alive => |pid| pid,
-        else => null,
-    };
-}
-
 fn readRecordedChild(dir: std.Io.Dir) ?std.posix.pid_t {
     const text = dir.readFileAlloc(common.defaultIo(), "child.pid", std.testing.allocator, .limited(64)) catch return null;
     defer std.testing.allocator.free(text);
@@ -300,27 +293,32 @@ test "a timed out command takes its backgrounded children with it" {
         return error.TestUnexpectedResult;
     } else |err| try std.testing.expectEqual(error.Timeout, err);
 
-    var leaked: ?std.posix.pid_t = null;
-    const deadline = common.nowMs() + 2_000;
-    while (common.nowMs() < deadline) {
+    var recorded: ?std.posix.pid_t = null;
+    const found_by = common.nowMs() + 2_000;
+    while (recorded == null and common.nowMs() < found_by) {
         switch (probeRecordedChild(dir)) {
-            .alive => |pid| leaked = pid,
-            .dead => break,
+            .alive => |pid| recorded = pid,
+            .dead => recorded = readRecordedChild(dir),
             .not_written => {},
+            .unreadable => return error.TestUnexpectedResult,
+        }
+        compat.time.sleepMs(20);
+    }
+    const child = recorded orelse return error.TestUnexpectedResult;
+    defer std.posix.kill(child, std.posix.SIG.KILL) catch {};
+
+    const gone_by = common.nowMs() + 5_000;
+    while (common.nowMs() < gone_by) {
+        switch (probeRecordedChild(dir)) {
+            .dead => return,
+            .alive, .not_written => {},
             .unreadable => return error.TestUnexpectedResult,
         }
         compat.time.sleepMs(50);
     }
-    if (leaked) |pid| std.posix.kill(pid, std.posix.SIG.KILL) catch {};
-    const recorded = leaked != null or readRecordedChild(dir) != null;
-    if (!recorded) return error.TestUnexpectedResult;
     switch (probeRecordedChild(dir)) {
         .dead => {},
-        .alive => |pid| {
-            std.posix.kill(pid, std.posix.SIG.KILL) catch {};
-            return error.TestUnexpectedResult;
-        },
-        .not_written, .unreadable => return error.TestUnexpectedResult,
+        else => return error.TestUnexpectedResult,
     }
 }
 
@@ -388,13 +386,32 @@ test "a command that exits early still takes its children with it" {
         else => null,
     });
 
+    var recorded: ?std.posix.pid_t = null;
+    const found_by = common.nowMs() + 2_000;
+    while (recorded == null and common.nowMs() < found_by) {
+        switch (probeRecordedChild(dir)) {
+            .alive => |pid| recorded = pid,
+            .dead => recorded = readRecordedChild(dir),
+            .not_written => {},
+            .unreadable => return error.TestUnexpectedResult,
+        }
+        compat.time.sleepMs(20);
+    }
+    const child = recorded orelse return error.TestUnexpectedResult;
+    defer std.posix.kill(child, std.posix.SIG.KILL) catch {};
+
+    const gone_by = common.nowMs() + 5_000;
+    while (common.nowMs() < gone_by) {
+        switch (probeRecordedChild(dir)) {
+            .dead => return,
+            .alive, .not_written => {},
+            .unreadable => return error.TestUnexpectedResult,
+        }
+        compat.time.sleepMs(50);
+    }
     switch (probeRecordedChild(dir)) {
-        .dead, .not_written => return,
-        .alive => |pid| {
-            std.posix.kill(pid, std.posix.SIG.KILL) catch {};
-            return error.TestUnexpectedResult;
-        },
-        .unreadable => return error.TestUnexpectedResult,
+        .dead => {},
+        else => return error.TestUnexpectedResult,
     }
 }
 
