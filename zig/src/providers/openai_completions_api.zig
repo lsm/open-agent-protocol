@@ -1569,7 +1569,7 @@ fn runThread(ctx: *ThreadCtx) void {
             .is_owned = true,
         };
         ctx.deinit();
-        stream.complete(out);
+        ai_types.settleProviderOutcome(stream, out);
         stream.markThreadDone();
         return;
     }
@@ -1695,7 +1695,7 @@ fn runThread(ctx: *ThreadCtx) void {
     };
 
     ctx.deinit();
-    stream.complete(out);
+    ai_types.settleProviderOutcome(stream, out);
     stream.markThreadDone();
 }
 
