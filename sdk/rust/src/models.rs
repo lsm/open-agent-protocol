@@ -137,8 +137,9 @@ pub struct ModelDescriptor {
     pub lifecycle: ModelLifecycle,
     /// What the model can do.
     pub capabilities: Vec<ModelCapability>,
-    /// Where this descriptor came from.
-    pub source: ModelSource,
+    /// Where this descriptor came from. Absent means the listing did not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<ModelSource>,
     /// The context window, in tokens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u32>,
@@ -569,7 +570,7 @@ mod tests {
         .expect("parses");
         assert_eq!(response.models.len(), 1);
         assert_eq!(response.models[0].auth_status, AuthStatus::Authenticated);
-        assert_eq!(response.models[0].source, ModelSource::StaticFallback);
+        assert_eq!(response.models[0].source, Some(ModelSource::StaticFallback));
         assert_eq!(
             response.models[0].capabilities,
             vec![

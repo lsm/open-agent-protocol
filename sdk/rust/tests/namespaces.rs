@@ -35,7 +35,7 @@ async fn models_list_parses_the_typed_descriptor() {
         "anthropic/anthropic-messages@claude-sonnet-4-5"
     );
     assert_eq!(model.auth_status, AuthStatus::Authenticated);
-    assert_eq!(model.source, ModelSource::StaticFallback);
+    assert_eq!(model.source, Some(ModelSource::StaticFallback));
     assert!(model.capabilities.contains(&ModelCapability::Tools));
     assert_eq!(response.fetched_at_ms, 1_760_000_000_198);
     assert_eq!(response.cache_max_age_ms, 300_000);
