@@ -897,6 +897,24 @@ func TestDeepSeekIdentityFollowsTheConfiguredProviderNotOnlyTheHost(t *testing.T
 			why:      "the host is still the signal, because Provider is not reliably a vendor identity",
 		},
 		{
+			name:     "a non-deepseek nonvendor proxy is not deepseek",
+			model:    Model{Provider: "openai", BaseURL: "https://gateway.corp/v1", HasBaseURL: true},
+			wantDeep: false,
+			why:      "an unrelated vendor on an unrelated host must be left alone",
+		},
+		{
+			name:     "a host that merely contains deepseek is not deepseek",
+			model:    Model{BaseURL: "https://deepseek.com.evil.test/v1", HasBaseURL: true},
+			wantDeep: false,
+			why:      "a lookalike host must not pass the subdomain test",
+		},
+		{
+			name:     "a deepseek subdomain counts",
+			model:    Model{BaseURL: "https://gateway.deepseek.com/v1", HasBaseURL: true},
+			wantDeep: true,
+			why:      "a real deepseek subdomain is still deepseek",
+		},
+		{
 			name:     "no provider configured still trusts the host",
 			model:    Model{BaseURL: "https://api.deepseek.com/v1", HasBaseURL: true},
 			wantDeep: true,

@@ -505,7 +505,7 @@ func deepSeekEffort(effort string) string {
 	switch effort {
 	case "minimal", "low":
 		return "low"
-	case "xhigh", "max":
+	case "max", "ultra":
 		return "max"
 	}
 	return "high"

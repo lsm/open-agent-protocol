@@ -617,3 +617,22 @@ func TestDeepSeekEffortMappingFollowsIdentityBehindANonVendorProxy(t *testing.T)
 	}
 
 }
+
+func TestDeepSeekEffortMappingMatchesTheDocumentedTable(t *testing.T) {
+	for _, want := range []struct {
+		requested string
+		actual    string
+	}{
+		{"minimal", "low"},
+		{"low", "low"},
+		{"medium", "high"},
+		{"high", "high"},
+		{"xhigh", "high"},
+		{"max", "max"},
+		{"ultra", "max"},
+	} {
+		if got := deepSeekEffort(want.requested); got != want.actual {
+			t.Errorf("deepSeekEffort(%q) = %q, want %q", want.requested, got, want.actual)
+		}
+	}
+}
