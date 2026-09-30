@@ -120,8 +120,12 @@ async def test_the_shared_reader_does_not_filter_deprecated_itself(
 
 
 @pytest.mark.asyncio
-async def test_a_concurrent_pair_of_cases_does_not_share_state(fake: FakeServerFactory) -> None:
+async def test_a_stated_then_an_absent_member_both_decode_in_sequence(
+    fake: FakeServerFactory,
+) -> None:
     first = await _list(fake, model(lifecycle="stable", source="dynamic"))
     second = await _list(fake, model())
     assert first.models[0].lifecycle == "stable"
+    assert first.models[0].source == "dynamic"
     assert second.models[0].lifecycle is None
+    assert second.models[0].source is None
