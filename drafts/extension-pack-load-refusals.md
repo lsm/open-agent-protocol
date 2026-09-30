@@ -63,7 +63,15 @@ A ref with **no fragment** takes the whole document as the branch. Measured on
 
 Measured on fetched `origin/main` `844a2228f`, six probes through the built
 binary; the same outcomes were observed on the earlier base `23b642e9c`, so
-nothing here depends on which of the two the measurement came from.
+nothing here depends on which of those two the measurement came from.
+
+**This is old-head evidence and is labelled as such.** `main` has since moved to
+`6a5d3eb24`, and these rows have **not** been re-measured on it. Re-measurement
+needs a build slot, which has not been authorised, so the table is a record of
+what `844a2228f` did, not a claim about current main. Every row below carries the
+same caveat. The rows to re-confirm first are the leading-separator one — a
+citation accepted and *contributing* a branch is the sharpest claim in this file
+and the one most likely to be touched by unrelated main work.
 
 So a no-fragment ref is **not** skipped and not uniformly refused: it is judged
 against the document root, and it is accepted exactly when that root carries the
