@@ -118,8 +118,7 @@ func TestHubAddrRefusesALargeRefusedHeadOverARealSocket(t *testing.T) {
 			if err != nil && written < minTransferred {
 				t.Fatalf("wrote only %d of %d bytes before the write deadline: %v", written, declared, err)
 			}
-			_ = conn.SetWriteDeadline(time.Time{})
-			_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+			_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
 
 			answer, readErr := http.ReadResponse(bufio.NewReader(conn), nil)
 			if readErr != nil {
