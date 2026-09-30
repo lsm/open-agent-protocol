@@ -30,6 +30,7 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
         mutex: std.Io.Mutex = .init,
         futex: std.atomic.Value(u32),
         thread_done: std.atomic.Value(bool),
+        push_failed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
         abandoned: std.atomic.Value(bool),
         allocator: std.mem.Allocator,
         wait_for_thread_on_deinit: bool = false,
@@ -224,10 +225,33 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
                         waitTimeoutMs(self, self.futex.load(.acquire), 1);
                         continue;
                     },
-                    error.StreamCompleted, error.OutOfMemory => return false,
+                    error.StreamCompleted => return false,
+                    error.OutOfMemory => {
+                        self.push_failed.store(true, .release);
+                        return false;
+                    },
                 };
                 return true;
             }
+        }
+
+        pub fn completeIfOpen(self: *Self, result: R) bool {
+            self.mutex.lockUncancelable(defaultIo());
+            defer self.mutex.unlock(defaultIo());
+
+            if (self.completed.load(.acquire)) return false;
+
+            if (self.result) |*previous| {
+                self.deinitResultValue(previous);
+                self.result = null;
+            }
+
+            self.result = result;
+            self.completed.store(true, .release);
+
+            _ = self.futex.fetchAdd(1, .release);
+            self.wake(std.math.maxInt(u32));
+            return true;
         }
 
         pub fn complete(self: *Self, result: R) void {
@@ -249,6 +273,8 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
         pub fn completeWithError(self: *Self, msg: []const u8) void {
             self.mutex.lockUncancelable(defaultIo());
             defer self.mutex.unlock(defaultIo());
+
+            if (self.completed.load(.acquire)) return;
 
             if (self.err_msg) |old| {
                 if (!self.err_msg_static) self.allocator.free(old);
@@ -416,6 +442,10 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
             }
         }
 
+        pub fn pushFailed(self: *Self) bool {
+            return self.push_failed.load(.acquire);
+        }
+
         pub fn isDone(self: *Self) bool {
             return self.completed.load(.acquire);
         }
@@ -528,7 +558,7 @@ test "EventStream keeps a retrievable error when the allocator cannot duplicate 
     try std.testing.expectEqualStrings("out of memory", stream.getError().?);
 }
 
-test "EventStream replaces a static oom error with an owned message" {
+test "EventStream records a static error when the message cannot be allocated" {
     const TestStream = EventStream(u32, bool);
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
     var stream = TestStream.init(failing.allocator());
@@ -536,11 +566,23 @@ test "EventStream replaces a static oom error with an owned message" {
 
     failing.fail_index = failing.alloc_index;
     stream.completeWithError("oom final content");
-    failing.fail_index = std.math.maxInt(usize);
 
+    try std.testing.expectEqualStrings("out of memory", stream.getError().?);
+    try std.testing.expect(stream.getResult() == null);
+}
+
+test "EventStream keeps the first settlement, error or result" {
+    const TestStream = EventStream(u32, bool);
+    var stream = TestStream.init(std.testing.allocator);
+    defer stream.deinit();
+
+    stream.completeWithError("cancelled by the caller");
     stream.completeWithError("later real error");
 
-    try std.testing.expectEqualStrings("later real error", stream.getError().?);
+    try std.testing.expectEqualStrings("cancelled by the caller", stream.getError().?);
+    try std.testing.expect(stream.getResult() == null);
+    try std.testing.expect(!stream.completeIfOpen(true));
+    try std.testing.expect(stream.getResult() == null);
 }
 
 test "EventStream pollBatch" {

@@ -87,6 +87,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     packs_mod.addImport("jsonschema", jsonschema_mod);
+    packs_mod.addImport("schema_bytes", schema_bytes_mod);
     fixture_gate_mod.addImport("packs", packs_mod);
     const tolerate_mod = b.createModule(.{
         .root_source_file = b.path("src/validation/tolerate.zig"),
@@ -112,7 +113,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     validator_mod.addImport("jsonschema", jsonschema_mod);
+    validator_mod.addImport("packs", packs_mod);
+    validator_mod.addImport("semantic", semantic_mod);
     validator_mod.addImport("tolerate", tolerate_mod);
+    validator_mod.addOptions("build_options", gate_options);
     const packs_test = b.addTest(.{ .root_module = packs_mod });
     const validator_test = b.addTest(.{ .root_module = validator_mod });
     const semantic_gate_mod = b.createModule(.{
@@ -1581,6 +1585,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "oap_provider_types", .module = protocol_oap_provider_types_mod },
             .{ .name = "provider_catalog", .module = provider_catalog_mod },
+            .{ .name = "ai_types", .module = ai_types_mod },
         },
     });
 
@@ -1990,6 +1995,21 @@ pub fn build(b: *std.Build) void {
         },
     });
     const tui_oap_client_test = b.addTest(.{ .root_module = tui_oap_client_mod });
+    const tui_oap_ops_parity_mod = b.createModule(.{
+        .root_source_file = b.path("src/tui/oap_ops_parity.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "transports/in_process", .module = in_process_transport_mod },
+            .{ .name = "oap_types", .module = protocol_oap_types_mod },
+            .{ .name = "oap_server", .module = protocol_oap_server_mod },
+            .{ .name = "oap_envelope", .module = protocol_oap_envelope_mod },
+            .{ .name = "tui/oap_client", .module = tui_oap_client_mod },
+            .{ .name = "tui_runtime", .module = tui_runtime_mod },
+            .{ .name = "tui/session", .module = tui_session_mod },
+        },
+    });
+    const tui_oap_ops_parity_test = b.addTest(.{ .root_module = tui_oap_ops_parity_mod });
 
     const tui_auto_continue_mod = b.createModule(.{
         .root_source_file = b.path("src/tui/auto_continue.zig"),
@@ -2930,6 +2950,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(tui_session_store_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_state_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_oap_client_test).step);
+    test_step.dependOn(&b.addRunArtifact(tui_oap_ops_parity_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_auto_continue_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_commands_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_login_test).step);
@@ -3198,6 +3219,7 @@ pub fn build(b: *std.Build) void {
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_session_store_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_state_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_oap_client_test).step);
+    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_oap_ops_parity_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_auto_continue_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_commands_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_login_test).step);

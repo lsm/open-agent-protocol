@@ -4,10 +4,12 @@
 //! parses or constructs one: it is read off a [`ModelDescriptor`] and passed
 //! straight back into a provider or agent request.
 
+use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+use serde::de::{self, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Map, Value};
 
 use crate::error::{Error, Result};
@@ -87,6 +89,81 @@ pub enum ModelCapability {
     AudioOutput,
 }
 
+/// Reads an optional member in a way that tells absence from a present null.
+///
+/// `#[serde(default)]` alone cannot: serde maps an explicit `null` and a
+/// missing key to the same `None`, so a listing stating `"source": null`
+/// would read as unknown here even though the OAP adaptor refuses it.
+/// `default` supplies `None` for the missing key and this runs only when the
+/// key is present, so reaching `visit_unit` means the listing stated a null
+/// and that is the case worth refusing. A member that is present must name a
+/// value; a wrong type lands on serde's own invalid-type error, whose message
+/// is this visitor's.
+fn optional_member<'de, D, T>(
+    deserializer: D,
+    member: &'static str,
+) -> std::result::Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    struct OptionalVisitor<T>(PhantomData<T>, &'static str);
+
+    impl<'de, T: Deserialize<'de>> Visitor<'de> for OptionalVisitor<T> {
+        type Value = Option<T>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(
+                formatter,
+                "a {member} string when the key is present",
+                member = self.1
+            )
+        }
+
+        fn visit_str<E: de::Error>(self, value: &str) -> std::result::Result<Self::Value, E> {
+            T::deserialize(de::value::StrDeserializer::<E>::new(value)).map(Some)
+        }
+
+        fn visit_string<E: de::Error>(self, value: String) -> std::result::Result<Self::Value, E> {
+            self.visit_str(&value)
+        }
+
+        fn visit_unit<E: de::Error>(self) -> std::result::Result<Self::Value, E> {
+            Err(E::custom(format!(
+                "{member} must be a string when present, not null",
+                member = self.1
+            )))
+        }
+
+        fn visit_none<E: de::Error>(self) -> std::result::Result<Self::Value, E> {
+            Err(E::custom(format!(
+                "{member} must be a string when present, not null",
+                member = self.1
+            )))
+        }
+    }
+
+    deserializer.deserialize_any(OptionalVisitor(PhantomData, member))
+}
+
+fn optional_model_source<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<ModelSource>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    optional_member(deserializer, "source")
+}
+
+fn optional_model_lifecycle<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<ModelLifecycle>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    optional_member(deserializer, "lifecycle")
+}
+
 /// Whether the descriptor came from the provider or from the built-in catalog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -133,12 +210,22 @@ pub struct ModelDescriptor {
     pub base_url: Option<String>,
     /// Whether this provider's credentials are usable.
     pub auth_status: AuthStatus,
-    /// Where the model sits in its lifecycle.
-    pub lifecycle: ModelLifecycle,
+    /// Where the model sits in its lifecycle. Absent means the listing did not say.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "optional_model_lifecycle"
+    )]
+    pub lifecycle: Option<ModelLifecycle>,
     /// What the model can do.
     pub capabilities: Vec<ModelCapability>,
-    /// Where this descriptor came from.
-    pub source: ModelSource,
+    /// Where this descriptor came from. Absent means the listing did not say.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "optional_model_source"
+    )]
+    pub source: Option<ModelSource>,
     /// The context window, in tokens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u32>,
@@ -290,6 +377,23 @@ impl ModelsApi {
                     .unwrap_or(Value::String(String::new()));
                 obj.insert("display_name".to_owned(), model_id);
             }
+            match obj.get("source") {
+                None => {}
+                Some(Value::String(name)) => {
+                    if name != "discovered" && name != "fallback" {
+                        return Err(Error::protocol(
+                            format!("OAP model entry has an unknown source: {name}"),
+                            Some("malformed_response"),
+                        ));
+                    }
+                }
+                Some(_) => {
+                    return Err(Error::protocol(
+                        "OAP model entry source must be a string when present".to_owned(),
+                        Some("malformed_response"),
+                    ))
+                }
+            }
             if obj.get("source").and_then(Value::as_str) == Some("discovered") {
                 obj.insert("source".to_owned(), Value::String("dynamic".to_owned()));
             } else if obj.get("source").and_then(Value::as_str) == Some("fallback") {
@@ -310,7 +414,7 @@ impl ModelsApi {
                     .as_deref()
                     .is_some_and(|id| id != model.model_id)
                 || request.include_deprecated != Some(true)
-                    && model.lifecycle == ModelLifecycle::Deprecated
+                    && model.lifecycle == Some(ModelLifecycle::Deprecated)
                 || request.include_login_required != Some(true)
                     && model.auth_status == AuthStatus::LoginRequired
             {
@@ -569,7 +673,7 @@ mod tests {
         .expect("parses");
         assert_eq!(response.models.len(), 1);
         assert_eq!(response.models[0].auth_status, AuthStatus::Authenticated);
-        assert_eq!(response.models[0].source, ModelSource::StaticFallback);
+        assert_eq!(response.models[0].source, Some(ModelSource::StaticFallback));
         assert_eq!(
             response.models[0].capabilities,
             vec![

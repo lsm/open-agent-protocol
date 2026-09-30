@@ -662,6 +662,57 @@ const CurrentBlock = enum {
     thinking,
 };
 
+fn endGoogleThinkingBlock(
+    allocator: std.mem.Allocator,
+    stream: *event_stream.AssistantMessageEventStream,
+    ctx: *ThreadCtx,
+    partial: ai_types.AssistantMessage,
+    content_blocks: *std.ArrayList(ai_types.AssistantContent),
+    content: []const u8,
+    signature: []const u8,
+) bool {
+    const thinking_copy = allocator.dupe(u8, content) catch {
+        ctx.deinit();
+        stream.completeWithError("oom thinking");
+        stream.markThreadDone();
+        return false;
+    };
+    const sig_copy = if (signature.len > 0) allocator.dupe(u8, signature) catch {
+        allocator.free(thinking_copy);
+        ctx.deinit();
+        stream.completeWithError("oom thinking");
+        stream.markThreadDone();
+        return false;
+    } else null;
+
+    content_blocks.append(allocator, .{ .thinking = .{
+        .thinking = thinking_copy,
+        .thinking_signature = sig_copy,
+    } }) catch {
+        allocator.free(thinking_copy);
+        if (sig_copy) |sig| allocator.free(sig);
+        ctx.deinit();
+        stream.completeWithError("oom thinking");
+        stream.markThreadDone();
+        return false;
+    };
+
+    const think_at = content_blocks.items.len - 1;
+    const carried = ai_types.partialWithContent(allocator, partial, content_blocks.items, think_at) catch {
+        ctx.deinit();
+        stream.completeWithError("oom thinking");
+        stream.markThreadDone();
+        return false;
+    };
+    _ = stream.pushBlocking(.{ .thinking_end = .{
+        .content_index = think_at,
+        .content = content,
+        .partial = carried.partial,
+    } });
+    carried.release(allocator);
+    return true;
+}
+
 fn createPartialMessage(model: ai_types.Model) ai_types.AssistantMessage {
     return ai_types.AssistantMessage{
         .content = &.{},
@@ -1017,20 +1068,7 @@ fn runThread(ctx: *ThreadCtx) void {
                                         current_text_signature.clearRetainingCapacity();
                                     },
                                     .thinking => {
-                                        const thinking_copy = allocator.dupe(u8, current_thinking.items) catch continue;
-                                        const sig_copy = if (current_thinking_signature.items.len > 0)
-                                            allocator.dupe(u8, current_thinking_signature.items) catch null
-                                        else
-                                            null;
-                                        content_blocks.append(allocator, .{ .thinking = .{
-                                            .thinking = thinking_copy,
-                                            .thinking_signature = sig_copy,
-                                        } }) catch {};
-                                        _ = stream.pushBlocking(.{ .thinking_end = .{
-                                            .content_index = content_blocks.items.len - 1,
-                                            .content = current_thinking.items,
-                                            .partial = partial,
-                                        } });
+                                        if (!endGoogleThinkingBlock(allocator, stream, ctx, partial, &content_blocks, current_thinking.items, current_thinking_signature.items)) return;
                                         current_thinking.clearRetainingCapacity();
                                         current_thinking_signature.clearRetainingCapacity();
                                     },
@@ -1107,20 +1145,7 @@ fn runThread(ctx: *ThreadCtx) void {
                                         current_text_signature.clearRetainingCapacity();
                                     },
                                     .thinking => {
-                                        const thinking_copy = allocator.dupe(u8, current_thinking.items) catch "";
-                                        const sig_copy = if (current_thinking_signature.items.len > 0)
-                                            allocator.dupe(u8, current_thinking_signature.items) catch null
-                                        else
-                                            null;
-                                        content_blocks.append(allocator, .{ .thinking = .{
-                                            .thinking = thinking_copy,
-                                            .thinking_signature = sig_copy,
-                                        } }) catch {};
-                                        _ = stream.pushBlocking(.{ .thinking_end = .{
-                                            .content_index = content_blocks.items.len - 1,
-                                            .content = current_thinking.items,
-                                            .partial = partial,
-                                        } });
+                                        if (!endGoogleThinkingBlock(allocator, stream, ctx, partial, &content_blocks, current_thinking.items, current_thinking_signature.items)) return;
                                         current_thinking.clearRetainingCapacity();
                                         current_thinking_signature.clearRetainingCapacity();
                                     },
@@ -1224,20 +1249,7 @@ fn runThread(ctx: *ThreadCtx) void {
             },
             .thinking => {
                 const partial = createPartialMessage(model);
-                const thinking_copy = allocator.dupe(u8, current_thinking.items) catch "";
-                const sig_copy = if (current_thinking_signature.items.len > 0)
-                    allocator.dupe(u8, current_thinking_signature.items) catch null
-                else
-                    null;
-                content_blocks.append(allocator, .{ .thinking = .{
-                    .thinking = thinking_copy,
-                    .thinking_signature = sig_copy,
-                } }) catch {};
-                _ = stream.pushBlocking(.{ .thinking_end = .{
-                    .content_index = content_blocks.items.len - 1,
-                    .content = current_thinking.items,
-                    .partial = partial,
-                } });
+                if (!endGoogleThinkingBlock(allocator, stream, ctx, partial, &content_blocks, current_thinking.items, current_thinking_signature.items)) return;
             },
             .none => {},
         }
@@ -1295,7 +1307,7 @@ fn runThread(ctx: *ThreadCtx) void {
 
     ctx.deinit();
 
-    stream.complete(out);
+    ai_types.settleProviderOutcome(stream, out);
     stream.markThreadDone();
 }
 
@@ -1341,9 +1353,7 @@ pub fn streamGoogleGenerativeAI(model: ai_types.Model, context: ai_types.Context
     errdefer allocator.destroy(s);
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
     s.wait_for_thread_on_deinit = true;
-    if (o.requires_owned_stream_events) {
-        s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
-    }
+    s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
 
     const ctx = try allocator.create(ThreadCtx);
     errdefer allocator.destroy(ctx);
@@ -1686,4 +1696,46 @@ test "googleErrorDetail surfaces the API status and message, and nothing else" {
     try std.testing.expect((try googleErrorDetail(std.testing.allocator, "<html>oops</html>")) == null);
     try std.testing.expect((try googleErrorDetail(std.testing.allocator, "{\"error\":\"plain\"}")) == null);
     try std.testing.expect((try googleErrorDetail(std.testing.allocator, "{\"error\":{\"message\":\"\"}}")) == null);
+}
+
+test "google settles through the shared path, so a lost clone is not a clean terminal" {
+    const allocator = std.testing.allocator;
+    var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 1 });
+    const stream = try failing.allocator().create(event_stream.AssistantMessageEventStream);
+    stream.* = event_stream.AssistantMessageEventStream.init(failing.allocator());
+    stream.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
+    defer {
+        _ = stream.deinitAndDestroy();
+    }
+    _ = stream.pushBlocking(.{ .text_delta = .{
+        .content_index = 0,
+        .delta = "x",
+        .partial = createPartialMessage(.{
+            .id = "gemini",
+            .name = "gemini",
+            .api = "google-generative-ai",
+            .provider = "google",
+            .base_url = "https://generativelanguage.googleapis.com",
+            .reasoning = false,
+            .input = &.{},
+            .cost = .{ .input = 0.0, .output = 0.0, .cache_read = 0.0, .cache_write = 0.0 },
+            .context_window = 1_000_000,
+            .max_tokens = 16,
+        }),
+    } });
+    try std.testing.expect(stream.pushFailed());
+
+    ai_types.settleProviderOutcome(stream, .{
+        .content = &.{},
+        .api = try allocator.dupe(u8, "google-generative-ai"),
+        .provider = try allocator.dupe(u8, "google"),
+        .model = try allocator.dupe(u8, "gemini"),
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+        .is_owned = true,
+    });
+
+    try std.testing.expect(stream.getResult() == null);
+    if (stream.getError() == null) return error.NoErrorRecorded;
 }

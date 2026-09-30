@@ -7,7 +7,6 @@ pub const CommandKind = enum {
     help,
     model,
     login,
-    provider,
     status,
     @"resume",
     permissions,
@@ -79,7 +78,6 @@ pub const commands = [_]CommandInfo{
     .{ .name = "help", .kind = .help, .usage = "/help", .description = "List available commands", .handler = handleHelp },
     .{ .name = "model", .kind = .model, .usage = "/model [name]", .description = "Open model picker or switch active model", .handler = handleModel },
     .{ .name = "login", .kind = .login, .usage = "/login [provider]", .description = "Sign in to a provider", .handler = handleLogin },
-    .{ .name = "provider", .kind = .provider, .usage = "/provider [name]", .description = "Show or switch active provider", .handler = handleProvider },
     .{ .name = "status", .kind = .status, .usage = "/status", .description = "Show session status", .handler = handleStatus },
     .{ .name = "sessions", .kind = .@"resume", .usage = "/sessions", .description = "Open saved sessions", .handler = handleSessions },
     .{ .name = "resume", .kind = .@"resume", .usage = "/resume", .description = "Open saved sessions", .handler = handleSessions },
@@ -235,39 +233,6 @@ fn handleLogin(ctx: CommandContext, command: Command) !CommandResult {
         };
     }
     return .{ .action = .open_login_picker };
-}
-
-fn handleProvider(ctx: CommandContext, command: Command) !CommandResult {
-    const runtime = ctx.runtime orelse return error.NoRuntimeConfigured;
-    if (command.arg) |provider| {
-        for (runtime.availableModels()) |model| {
-            if (std.mem.eql(u8, model.provider, provider)) {
-                if (ctx.session) |session| {
-                    try session.switchModelExact(model);
-                } else {
-                    try runtime.switchModelExact(model);
-                }
-                try ctx.state.status.setModel(ctx.allocator, model.id, model.provider);
-                return .{ .output = try std.fmt.allocPrint(ctx.allocator, "provider switched to {s} via model {s}", .{ provider, model.id }) };
-            }
-        }
-        return error.ProviderNotFound;
-    }
-
-    var out: std.Io.Writer.Allocating = .init(ctx.allocator);
-    const writer = &out.writer;
-    try writer.print("current provider: {s}\navailable providers:", .{ctx.state.status.provider});
-    for (runtime.availableModels(), 0..) |model, idx| {
-        var seen = false;
-        for (runtime.availableModels()[0..idx]) |prev| {
-            if (std.mem.eql(u8, prev.provider, model.provider)) {
-                seen = true;
-                break;
-            }
-        }
-        if (!seen) try writer.print("\n  {s}", .{model.provider});
-    }
-    return .{ .output = try out.toOwnedSlice() };
 }
 
 fn handleStatus(ctx: CommandContext, command: Command) !CommandResult {
@@ -797,7 +762,6 @@ test "runtime dependent commands dispatch to no-runtime errors" {
 
     const ctx = CommandContext{ .allocator = std.testing.allocator, .state = &state };
     try std.testing.expectError(error.NoRuntimeConfigured, dispatch(ctx, .{ .kind = .model, .arg = "model-a" }));
-    try std.testing.expectError(error.NoRuntimeConfigured, dispatch(ctx, .{ .kind = .provider }));
 }
 
 test "compact takes its focus and waits for a running turn" {

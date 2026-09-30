@@ -1,0 +1,230 @@
+mod common;
+
+use oap_sdk::{ListModelsRequest, ModelSource};
+
+async fn client_with(shape: &str) -> oap_sdk::Client {
+    oap_sdk::ClientBuilder::new()
+        .command(env!("CARGO_BIN_EXE_oap-protocol-fake"))
+        .args([format!("--catalog-shape={shape}")])
+        .connect()
+        .await
+        .expect("connects to the fake OAP server")
+}
+
+#[tokio::test]
+async fn an_omitted_source_reads_as_unknown_through_the_oap_path() {
+    let client = client_with("absent-source").await;
+    let listed = client
+        .models()
+        .list(ListModelsRequest::default())
+        .await
+        .expect("an omitted source must not fail the listing");
+    assert_eq!(listed.models.len(), 1);
+    assert_eq!(
+        listed.models[0].source, None,
+        "an omitted source must read as unknown, not as a default"
+    );
+
+    let resolved = client
+        .models()
+        .resolve("fixture", None, "mock")
+        .await
+        .expect("an omitted source must not fail resolve either");
+    assert_eq!(resolved.source, None);
+}
+
+#[tokio::test]
+async fn a_stated_source_is_read_unchanged_on_the_oap_path() {
+    for (shape, want) in [
+        ("stated", ModelSource::Dynamic),
+        ("fallback", ModelSource::StaticFallback),
+    ] {
+        let client = client_with(shape).await;
+        let listed = client
+            .models()
+            .list(ListModelsRequest::default())
+            .await
+            .expect("a stated source still lists");
+        assert_eq!(
+            listed.models[0].source,
+            Some(want),
+            "a stated source must survive the reader unchanged"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_native_legacy_path_keeps_its_stated_mapping() {
+    let client = common::fake_client("models").await;
+    let listed = client
+        .models()
+        .list(ListModelsRequest::default())
+        .await
+        .expect("the native path still lists");
+    assert!(!listed.models.is_empty());
+    for model in &listed.models {
+        assert!(
+            model.source.is_some(),
+            "the native path states a source and must keep reading it"
+        );
+    }
+}
+
+#[test]
+fn the_shared_result_sees_a_missing_source_as_unknown_and_still_rejects_a_bad_one() {
+    let stated = serde_json::json!({
+        "model_ref": "p/wire@m", "model_id": "m", "display_name": "M", "provider_id": "p",
+        "api": "wire", "auth_status": "authenticated", "lifecycle": "stable",
+        "capabilities": ["chat"], "source": "static_fallback"
+    });
+    let decoded: oap_sdk::ModelDescriptor =
+        serde_json::from_value(stated.clone()).expect("a stated source decodes");
+    assert_eq!(decoded.source, Some(ModelSource::StaticFallback));
+
+    let mut omitted = stated.clone();
+    omitted.as_object_mut().unwrap().remove("source");
+    let decoded: oap_sdk::ModelDescriptor =
+        serde_json::from_value(omitted).expect("an omitted source decodes as unknown");
+    assert_eq!(decoded.source, None);
+
+    let mut bogus = stated.clone();
+    bogus["source"] = serde_json::json!("discovered-magic");
+    let rejected = serde_json::from_value::<oap_sdk::ModelDescriptor>(bogus);
+    assert!(
+        rejected.is_err(),
+        "an invalid stated source must still be rejected, not defaulted"
+    );
+
+    // The case serde's own `default` cannot express: the key is there, and it
+    // is null. That must not land on the same `None` an absent key produces.
+    let mut null = stated.clone();
+    null["source"] = serde_json::Value::Null;
+    let rejected = serde_json::from_value::<oap_sdk::ModelDescriptor>(null);
+    assert!(
+        rejected.is_err(),
+        "a present null source must be rejected on the shared path, not read as unknown"
+    );
+}
+
+async fn legacy_client(stating: &str) -> oap_sdk::Client {
+    common::fake_builder("models")
+        .env("OAP_SDK_FAKE_SOURCE", stating)
+        .connect()
+        .await
+        .expect("the native fake connects")
+}
+
+#[tokio::test]
+async fn the_legacy_list_reads_an_absent_source_as_unknown() {
+    let client = legacy_client("absent").await;
+    let listed = client
+        .models()
+        .list(ListModelsRequest::default())
+        .await
+        .expect("the legacy list still answers when source is omitted");
+    assert!(!listed.models.is_empty());
+    for model in &listed.models {
+        assert_eq!(
+            model.source, None,
+            "an omitted source is unknown, not a fabricated value"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_legacy_resolve_reads_an_absent_source_as_unknown() {
+    let client = legacy_client("absent").await;
+    let resolved = client
+        .models()
+        .resolve("anthropic", Some("anthropic-messages"), "claude-sonnet-4-5")
+        .await
+        .expect("the legacy resolve still answers when source is omitted");
+    assert_eq!(
+        resolved.source, None,
+        "an omitted source is unknown on resolve too, not fabricated"
+    );
+}
+
+#[tokio::test]
+async fn the_legacy_resolve_keeps_a_stated_native_mapping() {
+    let client = legacy_client("stated").await;
+    let resolved = client
+        .models()
+        .resolve("anthropic", Some("anthropic-messages"), "claude-sonnet-4-5")
+        .await
+        .expect("the legacy resolve answers a stated source");
+    assert_eq!(
+        resolved.source,
+        Some(ModelSource::StaticFallback),
+        "a stated native source keeps its mapping"
+    );
+}
+
+#[tokio::test]
+async fn the_legacy_list_refuses_a_present_null_source() {
+    let client = legacy_client("null").await;
+    let refused = client.models().list(ListModelsRequest::default()).await;
+    assert!(
+        refused.is_err(),
+        "a present null source must fail the shared list, not read as unknown"
+    );
+}
+
+#[tokio::test]
+async fn the_legacy_resolve_refuses_a_present_null_source() {
+    let client = legacy_client("null").await;
+    let refused = client
+        .models()
+        .resolve("anthropic", Some("anthropic-messages"), "claude-sonnet-4-5")
+        .await;
+    assert!(
+        refused.is_err(),
+        "a present null source must fail the shared resolve, not read as unknown"
+    );
+}
+
+#[tokio::test]
+async fn the_legacy_list_refuses_an_invalid_stated_source() {
+    for (stating, what) in [("invented", "an invented literal"), ("number", "a number")] {
+        let client = legacy_client(stating).await;
+        let refused = client.models().list(ListModelsRequest::default()).await;
+        assert!(
+            refused.is_err(),
+            "{what} must be rejected on the shared list, not defaulted"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_present_null_or_non_string_source_is_rejected_on_the_wire() {
+    for shape in ["null-source", "number-source", "invented-source"] {
+        let client = client_with(shape).await;
+        let listed = client.models().list(ListModelsRequest::default()).await;
+        assert!(
+            listed.is_err(),
+            "{shape}: a present source that is not a known literal must be rejected, not read as unknown"
+        );
+
+        let resolved = client.models().resolve("fixture", None, "mock").await;
+        assert!(resolved.is_err(), "{shape}: resolve must reject it too");
+    }
+}
+
+#[tokio::test]
+async fn an_absent_key_and_a_stated_literal_still_succeed() {
+    let client = client_with("absent-source").await;
+    let listed = client
+        .models()
+        .list(ListModelsRequest::default())
+        .await
+        .expect("an absent key is legal and reads as unknown");
+    assert_eq!(listed.models[0].source, None);
+
+    let client = client_with("stated").await;
+    let listed = client
+        .models()
+        .list(ListModelsRequest::default())
+        .await
+        .expect("a stated literal still lists");
+    assert_eq!(listed.models[0].source, Some(ModelSource::Dynamic));
+}

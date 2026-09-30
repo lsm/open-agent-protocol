@@ -86,7 +86,7 @@ test "ollama e2e: basic text generation (new api)" {
     defer _ = stream.deinitAndDestroy();
 
     while (!stream.isDone()) {
-        _ = stream.poll();
+        test_helpers.drainOne(stream);
         compat.time.sleepNs(10 * std.time.ns_per_ms);
     }
 

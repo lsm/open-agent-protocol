@@ -391,7 +391,7 @@ fn runThread(ctx: *ThreadCtx) void {
         return ctx.stream.completeWithError("oom");
     };
 
-    ctx.stream.complete(out);
+    ai_types.settleProviderOutcome(ctx.stream, out);
 }
 
 pub fn streamAzureOpenAIResponses(model: ai_types.Model, context: ai_types.Context, options: ?ai_types.StreamOptions, allocator: std.mem.Allocator) !*event_stream.AssistantMessageEventStream {
@@ -435,9 +435,7 @@ pub fn streamAzureOpenAIResponses(model: ai_types.Model, context: ai_types.Conte
     errdefer allocator.destroy(s);
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
     s.wait_for_thread_on_deinit = true;
-    if (o.requires_owned_stream_events) {
-        s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
-    }
+    s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
 
     const ctx = try allocator.create(ThreadCtx);
     errdefer allocator.destroy(ctx);
