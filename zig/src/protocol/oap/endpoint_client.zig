@@ -523,7 +523,7 @@ test "the budget arithmetic keeps sub-millisecond precision without a live clock
 }
 
 const partial_tail =
-    \\printf partial; cat
+    \\while :; do printf 'x'; sleep 0.05; done
 ;
 
 const flood_tail =
@@ -590,7 +590,7 @@ test "a complete frame already buffered is returned even when the budget is spen
     try std.testing.expectEqualStrings(sent, frame.?.envelope);
 }
 
-test "one call under a budget returns no frame for partial traffic instead of renewing" {
+test "one call under a budget stops on a trickling partial line instead of renewing" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var client = try Client.spawn(std.testing.allocator, .{ .command = "/bin/sh", .args = &.{ "-c", partial_tail } });
     defer client.deinit();
