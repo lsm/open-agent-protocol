@@ -645,27 +645,80 @@ func (r *runner) replayRun() {
 		return
 	}
 
-	var first uint64
+	original := runEventSignature(r.client.Transcript(), r.runID)
+	var replayed []runEvent
 	for {
 		event, err := r.client.Event()
 		if err != nil {
 			r.fail(accepted, err.Error())
 			return
 		}
-		if event.RunID != r.runID {
+		if event.RunID != r.runID || event.Sequence == nil {
 			continue
 		}
-		if first == 0 && event.Sequence != nil {
-			first = *event.Sequence
-		}
+		replayed = append(replayed, runEvent{typ: event.Type, sequence: *event.Sequence})
 		switch event.Type {
 		case protocol.TypeRunCompleted, protocol.TypeRunFailed, protocol.TypeRunCancelled:
-			if first != 1 {
-				r.fail(accepted, fmt.Sprintf("a replay from 0 began at sequence %d, not the run's first event", first))
+			if len(original) == 0 {
+				if replayed[0].sequence != 1 {
+					r.fail(accepted, fmt.Sprintf("a replay from 0 began at sequence %d, not the run's first event", replayed[0].sequence))
+					return
+				}
+				r.pass(accepted)
+				return
+			}
+			if index, detail := firstDivergence(original, replayed); index >= 0 {
+				r.fail(accepted, detail)
 				return
 			}
 			r.pass(accepted)
 			return
 		}
 	}
+}
+
+type runEvent struct {
+	typ      protocol.EnvelopeType
+	sequence uint64
+}
+
+func (e runEvent) String() string {
+	return fmt.Sprintf("%s@%d", e.typ, e.sequence)
+}
+
+func isTerminalRunEvent(typ protocol.EnvelopeType) bool {
+	switch typ {
+	case protocol.TypeRunCompleted, protocol.TypeRunFailed, protocol.TypeRunCancelled:
+		return true
+	}
+	return false
+}
+
+func runEventSignature(envelopes []protocol.Envelope, run protocol.RunID) []runEvent {
+	var signature []runEvent
+	for _, envelope := range envelopes {
+		if envelope.RunID != run || envelope.Sequence == nil {
+			continue
+		}
+		signature = append(signature, runEvent{typ: envelope.Type, sequence: *envelope.Sequence})
+		if isTerminalRunEvent(envelope.Type) {
+			return signature
+		}
+	}
+	return signature
+}
+
+func firstDivergence(original, replayed []runEvent) (int, string) {
+	for i, want := range original {
+		if i >= len(replayed) {
+			return i, fmt.Sprintf("the replay ended after %d of the run's %d events, so %s was never re-delivered", len(replayed), len(original), want)
+		}
+		if got := replayed[i]; got != want {
+			return i, fmt.Sprintf("event %d of the replay is %s, not %s", i, got, want)
+		}
+	}
+	if len(replayed) > len(original) {
+		return len(original), fmt.Sprintf("the replay delivered %s after the run had already ended at %d events", replayed[len(original)], len(original))
+	}
+	return -1, ""
 }

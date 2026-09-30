@@ -194,6 +194,23 @@ func runHelperEndpoint(mode string) int {
 
 					continue
 				}
+				if mode == "replay-drops-middle" {
+
+					accepted, _ := json.Marshal(ControlFrame{
+						Control: "replay.accepted", ID: shape.ID,
+						OldestAvailable: 1, LatestAvailable: 4,
+					})
+					out.Write(append(accepted, '\n'))
+					out.Flush()
+					emit(protocol.TypeRunStarted, protocol.RunStartedPayload{
+						RunID: "helper-run", Status: protocol.RunRunning,
+					}, func(e *protocol.Envelope) { e.RunID = "helper-run"; e.Sequence = sequenceOf(1) })
+					emit(protocol.TypeRunCompleted, protocol.RunCompletedPayload{
+						RunID: "helper-run", StopReason: "end_turn",
+						FinalResponse: protocol.Message{Role: protocol.RoleAssistant, Content: protocol.TextContent("done")},
+					}, func(e *protocol.Envelope) { e.RunID = "helper-run"; e.Sequence = sequenceOf(4) })
+					continue
+				}
 
 				frame, _ := json.Marshal(ControlFrame{
 					Control: "replay.error", ID: shape.ID, Code: "unsupported_control",
@@ -278,6 +295,18 @@ func handleHelperRequest(request protocol.Envelope, revision, mode string, emit 
 			}, seq(2))
 		}
 
+		status := func(n uint64) {
+			emit(protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{
+				SessionID: submit.SessionID, RunID: "helper-run", Status: protocol.RunRunning,
+			}, seq(n))
+		}
+		completedAt := func(n uint64) {
+			emit(protocol.TypeRunCompleted, protocol.RunCompletedPayload{
+				SessionID: submit.SessionID, RunID: "helper-run", StopReason: "end_turn",
+				FinalResponse: protocol.Message{Role: protocol.RoleAssistant, Content: protocol.TextContent("done")},
+			}, seq(n))
+		}
+
 		if mode == "early-events" {
 
 			started()
@@ -287,6 +316,13 @@ func handleHelperRequest(request protocol.Envelope, revision, mode string, emit 
 		}
 		acknowledge()
 		started()
+		if mode == "replay-drops-middle" {
+
+			status(2)
+			status(3)
+			completedAt(4)
+			return
+		}
 		completed()
 
 		emit(protocol.TypeRunFailed, protocol.RunFailedPayload{
