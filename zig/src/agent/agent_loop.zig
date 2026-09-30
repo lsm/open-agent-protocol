@@ -1174,6 +1174,7 @@ test "turnOutcome ends the run on a reply without tool calls, even one reporting
 const ReplyCtx = struct {
     text: []const u8,
     stop_reason: ai_types.StopReason,
+    reasoning_only: bool = false,
 };
 
 fn replyStream(
@@ -1193,7 +1194,7 @@ fn replyStream(
     errdefer allocator.free(blocks);
     const text = try allocator.dupe(u8, reply.text);
     errdefer allocator.free(text);
-    blocks[0] = .{ .text = .{ .text = text } };
+    blocks[0] = if (reply.reasoning_only) .{ .thinking = .{ .thinking = text } } else .{ .text = .{ .text = text } };
     const api = try allocator.dupe(u8, model.api);
     errdefer allocator.free(api);
     const provider = try allocator.dupe(u8, model.provider);
@@ -1373,6 +1374,14 @@ fn failOnAgentEndClone(allocator: std.mem.Allocator, event: AgentEvent) error{Ou
     };
 }
 
+fn failOnMessageStartClone(allocator: std.mem.Allocator, event: AgentEvent) error{OutOfMemory}!AgentEvent {
+    _ = allocator;
+    return switch (event) {
+        .message_start => error.OutOfMemory,
+        else => event,
+    };
+}
+
 test "a rejected final publication leaves the events already queued readable" {
     const allocator = std.testing.allocator;
     var events_storage = AgentEventStream.init(allocator);
@@ -1413,9 +1422,10 @@ test "a failed run publishes the error and leaves the queued events readable" {
     var events_storage = AgentEventStream.init(allocator);
     defer events_storage.deinit();
     const events = &events_storage;
+    events.ownership = .{ .owned = failOnMessageStartClone };
     var context = AgentContext.init(allocator);
     defer context.deinit();
-    const answered = ReplyCtx{ .text = "reply", .stop_reason = .stop };
+    const answered = ReplyCtx{ .text = "the answer, written as reasoning", .stop_reason = .stop, .reasoning_only = true };
     var steering_calls: usize = 0;
     const runner = try allocator.create(RunLoopThreadCtx);
     runner.* = .{
@@ -1433,7 +1443,7 @@ test "a failed run publishes the error and leaves the queued events readable" {
     };
     runLoopThread(runner);
 
-    try std.testing.expectEqualStrings("SteeringFailed", events.getError().?);
+    try std.testing.expectEqualStrings("StreamCompleted", events.getError().?);
     try std.testing.expect(events.getResult() == null);
 
     var saw_turn_end = false;
@@ -1443,7 +1453,7 @@ test "a failed run publishes the error and leaves the queued events readable" {
         switch (drained) {
             .turn_end => |payload| {
                 saw_turn_end = true;
-                try std.testing.expectEqualStrings("reply", payload.message.content[0].text.text);
+                try std.testing.expectEqualStrings("the answer, written as reasoning", payload.message.content[0].thinking.thinking);
             },
             else => {},
         }
@@ -1711,6 +1721,7 @@ fn runLoop(
                         .tool_results = types.OwnedSlice(ai_types.ToolResultMessage).initBorrowed(&.{}),
                     } });
                     try context.appendMessage(.{ .assistant = assistant_message });
+                    message_transferred = true;
 
                     const request = try answerRequest(context.allocator);
                     context.appendMessage(request) catch |err| {

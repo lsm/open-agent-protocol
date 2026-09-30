@@ -70,32 +70,26 @@ decide what to persist and re-validate it.
 
 ## When a run ends before its message is appended
 
-A turn can end `.aborted`, in error, or on a failure part-way through — and a
-consumer can complete the stream mid-run, so the final publication itself can be
-rejected. The events already published are **borrowed**, and a consumer drains
-them after the producer has returned, so three backings have to outlive the run.
+A turn can end `.aborted`, in error, or part-way through a failure — and a consumer can
+complete the stream mid-run, so the final publication itself can be rejected. The events
+already published are **borrowed** and drained after the producer has returned, so three
+backings must outlive the run: a successful one by the result, released by
+`AgentLoopResult.deinit`, and the other two by the stream.
 
-- **Successful.** The result owns them, and `AgentLoopResult.deinit` releases it.
-- **Failed turn.** The assistant message, and the `final_message` clone that a
-  `turn_end` borrowed, are *parked* on `StreamRetention`, which the agent stream
-  keeps and `StreamRetention.deinit` releases. Parking them in the loop's own
-  state is not enough: `LoopState.deinit` runs on the same error return.
+- **Failed turn.** The assistant message, and the `final_message` clone a `turn_end`
+  borrowed, are *parked* on `StreamRetention`, which the stream keeps and releases. The
+  loop's own state cannot hold them: `LoopState.deinit` runs on the same error return.
 - **Publication rejected.** A rejected `agent_end` hands the whole result to that
-  same retention instead of releasing it, so the earlier events stay readable.
+  retention instead of releasing it, so the earlier events stay readable.
 
-`AgentEventStream.deinit` reaches both, and only after a consumer has drained;
-nothing on the producing thread frees either. The retention is declared by the
-result type (`AgentLoopResult.Retention`), so a stream whose result declares none
-is unchanged.
-
-Parking never allocates: at most two messages are ever parked and three slots are
-reserved. That is deliberate. The hand-off runs *after* a borrowed publication,
-where the only memory-safe answers to an exhausted allocator are to keep the
-memory or to panic — freeing would leave a queued event pointing at freed strings.
-
-`AgentEvent.deinit` frees nothing for `message_end` or `turn_end`, so a
-regression that only drains proves nothing: each one here reads the borrowed
-field it is about, and its control fails as a leak attributed to that test.
+`AgentEventStream.deinit` reaches both, only after a consumer has drained; nothing on the
+producing thread frees either. A turn that hands its message to the context marks the
+transfer, so a later failure does not retain it twice. The retention is declared by the
+result type, so a stream whose result declares none is unchanged. Parking never allocates,
+because the hand-off runs *after* a borrowed publication, where an exhausted allocator has
+no memory-safe answer but keeping the memory; three slots are reserved for the two that can
+be parked. `AgentEvent.deinit` frees nothing for `message_end` or `turn_end`, so a drain
+alone proves nothing: each regression reads the borrowed field it is about.
 
 ## The safe consumer pattern
 
