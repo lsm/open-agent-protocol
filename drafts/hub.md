@@ -807,8 +807,10 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   `SIGINT`, and a proof returning "alive" without waiting, which the elapsed assertion catches and which
   nothing else here would. A **test binary** dies on `SIGINT` despite the ignore and a standalone one survives, which is why the helper is a separate program.
 
-- **the shutdown sweep is not abandoned, so the session it was opened for is actually closed —
-  pinned, and this was the wiring nothing covered.** `TestServeSessionsClosedOnShutdown` opened a
+- **the shutdown sweep is not abandoned — pinned, and this is a narrower claim than the row it
+  replaces.** The previous wording said the session "is actually closed" and that "the wiring" is
+  pinned; **both overstated what any test here can show, and the skipped-call control below is the
+  measurement that says so.** `TestServeSessionsClosedOnShutdown` opened a
   session, asserted it appeared in `/sessions` **before** shutdown, called `cancel()` and then
   `expectServeExit` — which checks only that `runHub` returned `nil`. It never asserted anything
   about the session being **closed**, so the test's name claimed a fact its body never looked at. The
@@ -826,13 +828,27 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   `TestServeSessionsClosedOnShutdown` was **green** with that defect in place. `startServe` now
   returns a captured `*syncBuffer` for stderr, and the test fails if the sweep was abandoned, so the
   same mutation now fails it. **What this proves, stated at its limit:** it pins that the shutdown
-  sweep is **not abandoned** — that is the one thing the `serve.go:118`-`:120` wiring decides, and it
-  is what the log reports. It does **not** prove every session reached a closed state; a session that
-  failed to close for some other reason would not emit that line, and no assertion here would see it.
-  Every layer **below** `runHub` is covered elsewhere — `CloseSessions` directly in
-  `go/serve/session_test.go` — so the sweep's own per-session behaviour was never the gap. The gap
-  was the wiring, and that is what is now pinned. The stdio sibling at `serve.go:138` uses the same
-  pattern and is **not** covered by this test; it is recorded here rather than left implied.
+  sweep is **not abandoned** — and the second control below is the measurement that bounds how far
+  that goes.
+  **The second control was run, not argued:** replacing `hub.CloseSessions(sessionShutdown)` at
+  `serve.go:120` with `_ = sessionShutdown` — a source-valid change that leaves `sessionShutdown`
+  used and **skips the call entirely** — also **compiles**, and the test is **green** with the sweep
+  never invoked at all. So the passing case does **not** distinguish "swept" from "never called", and
+  this row does not claim it does.
+  **What is pinned, exactly:** when `CloseSessions` **is** invoked, its budget is not spent before the
+  first session — the one decision the `serve.go:118`-`:120` wiring makes that any observable here can
+  reach. **What is not pinned:** that `runHub` invokes it at all, and that any session reached a
+  closed state. Both are absent because **no observable for them exists through `runHub`**, which is a
+  property of the surfaces rather than an omission in the test: the HTTP listener is already shut down
+  at `serve.go:113` before `CloseSessions` at `:120`, so no request can ask afterwards; the `Hub` and
+  its registry are locals of `runHub`; the memory adapter's `Close` is silent; and
+  `go/serve/registry.go:326`-`:327` builds only `case "memory"`, so a test cannot inject an adapter
+  whose close would be observable. Closing this needs either a close diagnostic in
+  `go/serve/serve.go` or an injection point for the `Hub` into `runHub` — **both are production
+  changes and neither is taken here.** Every layer **below** `runHub` is covered directly in
+  `go/serve/session_test.go`, so the sweep's own per-session behaviour is well covered; what is not
+  covered is that `runHub` reaches it. The stdio sibling at `serve.go:138` uses the same pattern and
+  is **not** covered either; it is recorded here rather than left implied.
 
 The two pre-existing tests — `a body the daemon refused to read is drained before
 the socket closes, or the close resets the answer away` and `a drain gives up

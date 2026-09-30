@@ -216,7 +216,7 @@ func TestServeLifecycleOverRealListener(t *testing.T) {
 	expectServeExit(t, done)
 }
 
-func TestServeSessionsClosedOnShutdown(t *testing.T) {
+func TestServeShutdownSweepIsNotAbandoned(t *testing.T) {
 	address, cancel, done, stderr := startServe(t, []string{"--config", writeServeConfig(t), "--addr", "127.0.0.1:0"})
 
 	envelope, err := protocol.NewEnvelope(protocol.TypeSessionOpenRequest, "serve-close-open", protocol.SessionOpenRequest{SessionID: "serve-close"})
@@ -247,7 +247,7 @@ func TestServeSessionsClosedOnShutdown(t *testing.T) {
 	cancel()
 	expectServeExit(t, done)
 	if strings.Contains(stderr.String(), "shutdown budget exhausted before closing session") {
-		t.Fatalf("the shutdown sweep was abandoned, so the session was never closed: %s", stderr.String())
+		t.Fatalf("the shutdown sweep was abandoned before closing any session: %s", stderr.String())
 	}
 }
 
