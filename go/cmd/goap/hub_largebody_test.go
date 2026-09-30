@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -12,7 +13,6 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -74,15 +74,13 @@ func startHubAddr(t *testing.T) (string, func()) {
 	}
 }
 
-// A bounded concurrent writer transfers the whole declared body while the
-// daemon reads and answers, so the 415 is produced against a body that was
-// genuinely in flight rather than merely named in a header.
 func TestHubAddrRefusesALargeMediaTypeOverARealSocket(t *testing.T) {
 	address, cleanup := startHubAddr(t)
 	defer cleanup()
 
 	for _, declared := range []int{1<<20 + 4096, 4 << 20, 16 << 20} {
 		t.Run(strconv.Itoa(declared), func(t *testing.T) {
+			var conn net.Conn
 			conn, err := net.DialTimeout("tcp", address, 10*time.Second)
 			if err != nil {
 				t.Fatalf("dial the hub: %v", err)
@@ -95,66 +93,71 @@ func TestHubAddrRefusesALargeMediaTypeOverARealSocket(t *testing.T) {
 				t.Fatalf("write the head: %v", err)
 			}
 
-			var written int64
-			var writeErr error
-			var wg sync.WaitGroup
-			stop := make(chan struct{})
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				block := bytes.Repeat([]byte("b"), 32*1024)
-				for written < int64(declared) {
-					select {
-					case <-stop:
-						return
-					default:
-					}
-					n, err := conn.Write(block)
-					written += int64(n)
-					if err != nil {
-						writeErr = err
-						return
-					}
-				}
-			}()
+			_ = conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
+			written, err := writeBody(conn, declared)
+			if err != nil && written < minTransferred {
+				t.Fatalf("wrote only %d of %d bytes before the write deadline: %v", written, declared, err)
+			}
+			_ = conn.SetWriteDeadline(time.Time{})
+			_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 
-			// the daemon refuses on the head, so the answer arrives while the
-			// writer is still going; the writer is released only after the whole
-			// response has been read, which is what leaves bytes pending
 			answer, readErr := http.ReadResponse(bufio.NewReader(conn), nil)
-			joined := make(chan struct{})
-			go func() { wg.Wait(); close(joined) }()
-			select {
-			case <-joined:
-			case <-time.After(30 * time.Second):
-				_ = conn.Close()
-				t.Fatalf("the bounded writer did not finish within 30s")
-			}
-			close(stop)
 			if readErr != nil {
-				t.Fatalf("read the answer after writing %d of %d bytes (write err %v): %v", written, declared, writeErr, readErr)
-			}
-			defer answer.Body.Close()
-			if answer.StatusCode != http.StatusUnsupportedMediaType {
-				t.Fatalf("a wrong Content-Type over %d bytes answered %d, want 415", declared, answer.StatusCode)
-			}
-			if answer.ContentLength <= 0 {
-				t.Fatalf("the refusal carried no Content-Length: %v", answer.ContentLength)
+				_ = conn.Close()
+				t.Fatalf("read the answer after writing %d of %d bytes: %v", written, declared, readErr)
 			}
 			body, err := io.ReadAll(answer.Body)
+			_ = answer.Body.Close()
+			_ = conn.Close()
 			if err != nil {
-				t.Fatalf("read the framed body: %v", err)
+				t.Fatalf("read the whole refusal after writing %d of %d bytes: %v", written, declared, err)
 			}
-			if int64(len(body)) != answer.ContentLength {
+			if answer.StatusCode != http.StatusUnsupportedMediaType {
+				t.Fatalf("a wrong Content-Type after %d transferred bytes answered %d, want 415", written, answer.StatusCode)
+			}
+			if answer.ContentLength <= 0 || int64(len(body)) != answer.ContentLength {
 				t.Fatalf("the body was %d bytes and Content-Length said %d", len(body), answer.ContentLength)
 			}
-			if !bytes.Contains(body, []byte(`"unsupported_media_type"`)) {
-				t.Fatalf("the complete refusal did not carry its code:\n%s", body)
+			var envelope struct {
+				Type    string `json:"type"`
+				Payload struct {
+					Error struct {
+						Code string `json:"code"`
+					} `json:"error"`
+				} `json:"payload"`
 			}
-			if !bytes.Contains(body, []byte(`"type":"error.response"`)) {
-				t.Fatalf("the complete refusal was not an error.response envelope:\n%s", body)
+			if err := json.Unmarshal(body, &envelope); err != nil {
+				t.Fatalf("the refusal body is not parseable JSON (%v): %s", err, body)
+			}
+			if envelope.Type != "error.response" {
+				t.Fatalf("the refusal was %q, want an error.response envelope", envelope.Type)
+			}
+			if envelope.Payload.Error.Code != "unsupported_media_type" {
+				t.Fatalf("the refusal code was %q, want unsupported_media_type", envelope.Payload.Error.Code)
+			}
+			if written < minTransferred {
+				t.Fatalf("only %d bytes were transferred, under the %d drain budget, so this case does not exercise it", written, minTransferred)
 			}
 			t.Logf("declared %d, wrote %d, answered %d with a %d-byte body", declared, written, answer.StatusCode, len(body))
 		})
 	}
+}
+
+const minTransferred = 1 << 20
+
+func writeBody(conn net.Conn, declared int) (int, error) {
+	block := bytes.Repeat([]byte("b"), 32*1024)
+	written := 0
+	for written < declared {
+		take := len(block)
+		if left := declared - written; left < take {
+			take = left
+		}
+		n, err := conn.Write(block[0:take])
+		written += n
+		if err != nil {
+			return written, err
+		}
+	}
+	return written, nil
 }
