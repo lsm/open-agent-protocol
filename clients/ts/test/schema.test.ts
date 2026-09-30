@@ -1,11 +1,3 @@
-/**
- * Cross-checks the hand-written interfaces against the JSON schema files:
- * the samples below are type-checked against the payload interfaces at
- * compile time, and compared with the schema $defs at run time, so every
- * schema-required field exists on the interface and every interface field
- * exists in the schema. Full JSON-Schema validation at runtime is
- * deliberately out of scope for the zero-dependency client.
- */
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -24,7 +16,6 @@ function schema(name: string): Record<string, unknown> {
   return schemas[name];
 }
 
-/** Resolves a def inside one schema file, following one level of $ref (local or cross-file). */
 function def(file: string, defName: string): Record<string, unknown> {
   const defs = schema(file)['$defs'] as Record<string, Record<string, unknown>>;
   const entry = defs[defName];
@@ -32,7 +23,6 @@ function def(file: string, defName: string): Record<string, unknown> {
   return entry;
 }
 
-/** Resolves a property declaration to a bare schema object, following one $ref hop. */
 function resolveProperty(file: string, property: unknown): Record<string, unknown> {
   const entry = property as Record<string, unknown>;
   if (typeof entry.$ref === 'string') {
@@ -42,8 +32,6 @@ function resolveProperty(file: string, property: unknown): Record<string, unknow
     return def(targetFile, targetDef);
   }
   if (Array.isArray(entry.allOf)) {
-    // The envelope defs stack response/session/run/runEvent requirements;
-    // property shapes come from the plain branches.
     for (const branch of entry.allOf as Record<string, unknown>[]) {
       if (branch.$ref === undefined) return branch as Record<string, unknown>;
     }
@@ -57,13 +45,10 @@ interface PayloadSample {
   sample: Record<string, unknown>;
   file: string;
   def: string;
-  /** When set, the def under comparison is this property of the named def (the error.response payload is inline). */
   property?: string;
-  /** The oneOf branch to compare against, for union payloads. */
   variant?: number;
 }
 
-/** Registers a sample whose object literal is compile-time checked against the interface T. */
 function sample<T extends object>(
   name: string,
   file: string,
@@ -76,7 +61,6 @@ function sample<T extends object>(
 }
 
 const samples: PayloadSample[] = [
-  // capabilities.schema.json
   sample<protocol.InitializeRequest>('InitializeRequest', 'capabilities.schema.json', 'initializeRequest', {
     protocol_versions: ['0.1'],
     profiles: ['open-agent-protocol.agent-control-core'],
@@ -174,7 +158,6 @@ const samples: PayloadSample[] = [
     as_of_model_event: { run_id: 'r-1', sequence: 2 },
   }),
 
-  // session.schema.json
   sample<protocol.ToolSourceAttachment>('ToolSourceAttachment', 'session.schema.json', 'toolSourceAttachment', {
     id: 'files',
     kind: 'process',
@@ -304,7 +287,6 @@ const samples: PayloadSample[] = [
     message_ids: ['m-1'],
   }),
 
-  // run.schema.json
   sample<protocol.RunCancelRequest>('RunCancelRequest', 'run.schema.json', 'cancelRequest', {
     session_id: 's-1',
     run_id: 'r-1',
@@ -365,7 +347,6 @@ const samples: PayloadSample[] = [
     settled_by: 'inferred',
   }),
 
-  // action.schema.json
   sample<protocol.ToolsListRequest>('ToolsListRequest', 'action.schema.json', 'toolsListRequest', {
     session_id: 's-1',
     allow_degraded_features: ['action.tools.list'],
@@ -519,7 +500,6 @@ const samples: PayloadSample[] = [
     reason: { code: 'not_needed', message: 'no error' },
   }),
 
-  // interaction.schema.json
   sample<protocol.UserInputRequestedPayload>('UserInputRequestedPayload', 'interaction.schema.json', 'requested', {
     interaction_id: 'i-2',
     requested_by: 'agent',
@@ -579,7 +559,6 @@ const samples: PayloadSample[] = [
     accepted: true,
   }),
 
-  // common.schema.json
   sample<protocol.ErrorResponse>('ErrorResponse', 'envelope.schema.json', 'errorResponse', {
     error: { code: 'unknown_session', message: 'no such session', retriable: false, details: { session_id: 's-x' } },
   }, 'payload'),
@@ -612,7 +591,6 @@ const samples: PayloadSample[] = [
 test('every payload interface mirrors its schema def', () => {
   for (const { name, sample: value, file, def: defName, property, variant } of samples) {
     const definition = def(file, defName);
-    // openResponse/stateResponse/stateUpdated/cancelResponse $ref directly to their target.
     let resolved =
       typeof definition.$ref === 'string' ? resolveProperty(file, definition) : definition;
     if (property !== undefined) {
@@ -652,7 +630,7 @@ test('every envelope type appears exactly once in the envelope schema', () => {
   const schemaTypes = new Set<string>();
   for (const [name, definition] of Object.entries(defs)) {
     const typeConst = definition.properties?.type?.const;
-    if (typeConst === undefined) continue; // response/session/run/runEvent helpers
+    if (typeConst === undefined) continue;
     assert.ok(!schemaTypes.has(typeConst), `duplicate type const ${typeConst} on def ${name}`);
     schemaTypes.add(typeConst);
   }
@@ -702,7 +680,6 @@ test('every envelope type maps to the payload def its schema declares', () => {
     const [file, ref] = payloadRef.split('#');
     payloadDefOf.set(typeConst, `${file}:${ref.replace(/^\/\$defs\//, '')}`);
   }
-  // Spot-check the mapping the client's operations depend on.
   assert.equal(payloadDefOf.get('session.open.request'), 'session.schema.json:openRequest');
   assert.equal(payloadDefOf.get('session.message.submit.response'), 'session.schema.json:messageSubmitResponse');
   assert.equal(payloadDefOf.get('action.permission.resolve.request'), 'action.schema.json:permissionResolveRequest');
@@ -710,9 +687,6 @@ test('every envelope type maps to the payload def its schema declares', () => {
   assert.equal(envelopeFileOf.get('error.response'), 'errorResponse');
 });
 
-// Compile-time assertions of the schema's exclusive choices: each suppressed
-// line below fails the build if the interface ever accepts a value the
-// daemon's schema gate would reject.
 test('the schema exclusivity rules are compile-time errors', () => {
   // @ts-expect-error url and inline data are mutually exclusive image forms
   const badImage: ImageContent = { url: 'https://example.test/i.png', data: 'aGk=', media_type: 'text/plain' };
@@ -801,14 +775,12 @@ test('the schema exclusivity rules are compile-time errors', () => {
   void undefinedArguments;
   void undefinedResult;
   void loadedEmptyRequest;
-  // Legal JSON values still type-check on the required fields.
   const jsonArguments: protocol.ToolCallPart = { type: 'tool_call', tool_call_id: 't-2', name: 'echo', arguments_json: { cmd: ['ls', '-l'] } };
   const nullResult: protocol.ToolResultPart = { type: 'tool_result', tool_call_id: 't-2', result: null };
   const emptyRequest: protocol.CapabilitiesRequest = {};
   void jsonArguments;
   void nullResult;
   void emptyRequest;
-  // The two legal shapes still type-check.
   const urlImage: ImageContent = { url: 'https://example.test/i.png' };
   const inlineImage: ImageContent = { data: 'aGk=', media_type: 'text/plain' };
   const parts: MessageContent = [{ type: 'text', text: 'hi' }];

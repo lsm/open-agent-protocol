@@ -1556,7 +1556,7 @@ fn runThread(ctx: *ThreadCtx) void {
     allocator.free(url);
     ctx.deinit();
 
-    stream.complete(out);
+    ai_types.settleProviderOutcome(stream, out);
     stream.markThreadDone();
 }
 

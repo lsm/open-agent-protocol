@@ -1,11 +1,3 @@
-/**
- * The integration test: builds the goap binary, boots it with the built-in
- * memory adapter on a loopback port, and drives the full lifecycle — open →
- * submit → gates → terminal → disconnect/resume — through the platform
- * fetch. It skips (not fails) when the go or node prerequisites are
- * missing, and spawns no real agent processes: the memory adapter is
- * deterministic and in-process.
- */
 
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcessByStdio } from 'node:child_process';
@@ -35,12 +27,6 @@ interface GoToolchain {
   env: NodeJS.ProcessEnv;
 }
 
-/**
- * Resolves the go toolchain: the OAP_GO override, then PATH, then the
- * runtime locations this repo's environment documents. No GOTOOLCHAIN
- * pinning: a candidate older than go.mod's requirement must be free to
- * select the module's toolchain the way a bare `go build` would.
- */
 function findGo(): GoToolchain | null {
   const candidates: string[] = [];
   if (process.env.OAP_GO) candidates.push(process.env.OAP_GO);
@@ -81,35 +67,20 @@ test(
     const address = await waitForListening(daemon);
     const client = dial(address);
 
-    // Discovery.
     const adapters = await client.adapters();
     assert.ok(adapters.some((adapter) => adapter.name === 'memory'));
     const caps = await client.capabilities('memory');
     assert.equal(caps.revision, 'reference-memory-v11');
     assert.equal(caps.descriptor.endpoint.id, 'reference.memory');
 
-    // An unknown adapter is a coded refusal.
     await assert.rejects(client.open('nope'), /unknown_adapter/);
 
-    // One session, subscribed before submitting so the run's first envelope
-    // cannot be missed. The submission carries a per-submit run control: the
-    // admitted model is echoed on the admission and on run.started, and the
-    // session default does not move, because the application is per_run.
     const session = await client.open('memory', {
       sessionId: 'ts-integration-a',
-      // A process source is named by id only: the daemon fills the command
-      // and the environment from its own registry, so a wire caller cannot
-      // make it run an executable the operator never configured.
       toolSources: [{ id: 'ts-integration-mcp', kind: 'local', protocol: 'mcp', endpoint: 'stdio:ts-integration' }],
     });
 
-    // The session's effective catalog: the scripted tool attributed to a
-    // source id, beside every source the session resolves — the descriptor's
-    // declared ones and the one the open attached.
     const listing = await session.tools();
-    // The listing comes back with the revision that governs it, over the real
-    // daemon wire, so a caller can cache it against that descriptor and drop
-    // it when capabilities.updated reports another.
     assert.equal(listing.revision, caps.revision);
     const catalog = listing.tools;
     assert.equal(catalog.session_id, 'ts-integration-a');
@@ -123,17 +94,11 @@ test(
       `tool source ${String(scripted.source)} resolves to no declared source`,
     );
 
-    // The open's attachments are published back through session state too,
-    // in the descriptor shape: no command, no args, no environment.
     const opened = await session.state();
     assert.ok(opened.sources?.some((source) => source.id === 'ts-integration-mcp'));
 
-    // The model catalog the endpoint publishes is the one its model gate
-    // enforces, so the id selected below is one this listing offered.
     const models = await session.models();
     assert.equal(models.models.session_id, session.id);
-    // The listing comes back with the revision that governs it, so a caller
-    // can cache it against that descriptor and discard it when it moves.
     assert.equal(models.revision, caps.revision);
     assert.deepEqual(
       models.models.models.map((descriptor) => descriptor.id),
@@ -152,8 +117,6 @@ test(
     assert.ok(admission.run_id);
     assert.equal(admission.model_id, 'reference-model-a');
 
-    // A model outside the endpoint's catalog is a typed refusal naming the id
-    // it could not serve, not a generic invalid submission.
     await assert.rejects(
       session.submit({
         messages: [{ role: 'user', content: 'pick another' }],
@@ -168,7 +131,6 @@ test(
       },
     );
 
-    // Consume the run, resolving the scripted gates as they arrive.
     const seen: string[] = [];
     const sequences: number[] = [];
     let firstEnvelope: Envelope | undefined;
@@ -185,21 +147,16 @@ test(
     assert.equal(seen.filter((type) => type === EnvelopeType.RunCompleted).length, 1);
     assert.deepEqual(sequences, Array.from({ length: 12 }, (_, index) => index + 1));
 
-    // The run's events were contiguous and unique.
     const replay = session.eventsAfter(admission.run_id ?? '', 10);
     const tail: Envelope[] = [];
     for await (const envelope of replay) tail.push(envelope);
     assert.deepEqual(tail.map((envelope) => envelope.sequence), [11, 12]);
     assert.equal(finalText(tail[1]), 'The golden script completed.');
 
-    // State settles back to idle; the close contract is 204.
     const state = await session.state();
     assert.equal(state.status, 'idle');
     await session.close();
 
-    // The queue reaches the client as the reservation it is. A second session
-    // carries it, because this client does not yet follow a session across run
-    // domains: a subscription still reads the one run it is bound to.
     assert.equal(caps.descriptor.limits?.max_queued_runs_per_session, 1);
     const queued = await client.open('memory', { sessionId: 'ts-integration-queue' });
     const started = await queued.submit({
@@ -212,8 +169,6 @@ test(
     });
     assert.equal(reservation.admission, 'queued');
     assert.equal(reservation.effective_delivery, 'queue');
-    // The state the client reads describes both nonterminal runs: a caller
-    // seeing only active_run_id would think one run's work was outstanding.
     const busy = await queued.state();
     assert.equal(busy.active_runs?.length, 2);
     assert.equal(busy.active_runs?.[0].run_id, started.run_id);
@@ -250,10 +205,6 @@ test(
     });
     const address = await waitForListening(daemon);
 
-    // Wrap the platform fetch: the first /events connection is dropped once
-    // the bytes that would carry the fourth envelope arrive — never exposing
-    // them, so the client's cursor provably sits mid-run and the resume must
-    // open a second connection.
     const sabotage = sabotagedEventsFetch();
     const client = dial(address, { fetch: sabotage.fetch });
     const session = await client.open('memory', { sessionId: 'ts-integration-b' });
@@ -269,9 +220,6 @@ test(
       sequences.push(envelope.sequence ?? 0);
       await resolveGate(session, envelope);
     }
-    // The golden run is twelve envelopes; the resume replayed the suffix
-    // after the drop with no duplicates and no gaps — and the reconnect
-    // really happened on a second connection.
     assert.deepEqual(sequences, Array.from({ length: 12 }, (_, index) => index + 1));
     assert.ok(sabotage.connections() >= 2, `expected a reconnect, saw ${sabotage.connections()} connections`);
 
@@ -279,7 +227,6 @@ test(
   },
 );
 
-/** Resolves the memory adapter's scripted gates as their envelopes arrive. */
 async function resolveGate(session: OapSession, envelope: Envelope): Promise<void> {
   if (envelope.type === EnvelopeType.ActionPermissionRequested) {
     const requested = payload<PermissionRequestedPayload>(envelope);
@@ -303,7 +250,6 @@ async function resolveGate(session: OapSession, envelope: Envelope): Promise<voi
   }
 }
 
-/** Waits for the daemon's "listening on http://…" banner and returns the address. */
 function waitForListening(daemon: ChildProcessByStdio<null, Readable, Readable>): Promise<string> {
   return new Promise((resolve, reject) => {
     let buffered = '';
@@ -341,16 +287,6 @@ function waitForListening(daemon: ChildProcessByStdio<null, Readable, Readable>)
   });
 }
 
-/**
- * A fetch wrapper that drops the daemon's first event-stream connection at a
- * complete fourth SSE frame. Fetch chunk boundaries are arbitrary — a chunk
- * may already carry the rest of the run — so the wrapper counts envelope
- * markers over the whole accumulated text (a marker split across chunks is
- * still counted once complete) and throws before exposing any byte of the
- * chunk that reaches the fourth envelope: the client's cursor provably sits
- * mid-run, the run is parked at its permission gate, and recovery must open
- * a second connection.
- */
 function sabotagedEventsFetch(): { fetch: FetchLike; connections(): number } {
   let eventsConnections = 0;
   const decoder = new TextDecoder();
@@ -375,8 +311,6 @@ function sabotagedEventsFetch(): { fetch: FetchLike; connections(): number } {
         if (!result.done && result.value) {
           seen += decoder.decode(result.value, { stream: true });
           if ((seen.match(/"sequence":/g) ?? []).length >= 4) {
-            // Drop the connection before this chunk — which may hold the
-            // fourth envelope and more — ever reaches the client.
             controller.abort();
             throw new Error('integration sabotage: connection dropped mid-run');
           }
