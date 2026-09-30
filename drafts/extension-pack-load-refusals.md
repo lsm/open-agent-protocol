@@ -53,10 +53,29 @@ declared type. Two rules, both taken from `goap`'s loader rather than invented:
   *before* the pin check, so `pack_branch_unpinned` is reserved for an object that
   lacks the const.
 
-A ref with **no fragment** takes the whole document as the branch, and a document
-root that does not pin is `pack_branch_unpinned` — which is what `goap` does with a
-whole-document branch. That is a behaviour change from before the ref check
-existed, where such a ref was skipped.
+A ref with **no fragment** takes the whole document as the branch. Measured on
+`origin/main` with two documents that differ only in shape:
+
+| document | outcome |
+|---|---|
+| the pinned object is the document **root** | **loaded**, trace judged `valid:true` |
+| the pinned object sits under `$defs` | refused **`pack_branch_unpinned`** |
+
+Measured on fetched `origin/main` `844a2228f`, six probes through the built
+binary; the same outcomes were observed on the earlier base `23b642e9c`, so
+nothing here depends on which of the two the measurement came from.
+
+So a no-fragment ref is **not** skipped and not uniformly refused: it is judged
+against the document root, and it is accepted exactly when that root carries the
+pin. This is a behaviour change from before the ref check existed, where such a
+ref was skipped; the earlier wording in this file said "skipped" and was wrong.
+
+A citation whose cleaned name **climbs out** — `../types.schema.json#/$defs/thing` —
+is refused **uncoded** (rendered `unresolved-schema-reference` on stderr) and
+yields no verdict. It is not a successful skip. Measured on `origin/main`.
+
+Both rows above are our own loader's outcomes. Neither is taken from `goap`, which
+is consulted only for where a peer-parity claim is made and is recorded as such.
 
 ## The registry key and the cited name
 
@@ -70,10 +89,16 @@ produced a branch that every judgement failed to resolve.
 
 Named so the disclosure shrinks with the code rather than lagging it:
 
-- a cited name that is **absolute or climbs out** — `cleanRelative` normalises a
-  leading separator, so `/types.schema.json#/$defs/thing` currently binds to the
-  relative file rather than being refused. `goap` refuses it. **This is an open
-  defect, not a decision.**
+- a cited name with a **leading separator** — `/types.schema.json#/$defs/thing`
+  and `//types.schema.json#/$defs/thing` are both **accepted, with no refusal**,
+  and a pack whose *only* citation is spelled that way still contributes a real
+  branch. So the cited spelling is not the spelling it registered, and the
+  contribution is not nominal: the pack adds vocabulary under a name the reader
+  would not find in `schemas`. Measured on `844a2228f`; `valid:true`, no refusal.
+  This is worse than a silent rebind of the resource — it is an accepted
+  contribution under a wrong name. **Open defect; not a decision, and not
+  something the disclosure can excuse.** (A *climbing* name is different: `..` is
+  refused uncoded, as measured above.)
 - an `envelope_types` entry with **no `schema` field at all** — skipped, and the
   declared type still reaches the semantic machine. `goap` refuses it. Whether
   absence should be refused is a **contract question about Decision 0004 §140**
