@@ -1509,6 +1509,7 @@ const Retained = struct {
             stream.completeWithError(err_name);
             return;
         };
+        self.moved();
         stream.complete(result);
     }
 
@@ -1527,17 +1528,14 @@ const Retained = struct {
                 .timestamp = 0,
             },
             .iterations = 0,
-            .abandoned_messages = listOfMessages(allocator, try self.messages.toOwnedSlice(allocator)),
+            .abandoned_messages = self.messages,
         };
     }
-};
 
-fn listOfMessages(allocator: std.mem.Allocator, slice: []ai_types.AssistantMessage) std.ArrayList(ai_types.AssistantMessage) {
-    var list: std.ArrayList(ai_types.AssistantMessage) = .empty;
-    list.appendSlice(allocator, slice) catch unreachable;
-    allocator.free(slice);
-    return list;
-}
+    fn moved(self: *Retained) void {
+        self.messages = .empty;
+    }
+};
 
 fn park(retained: *Retained, allocator: std.mem.Allocator, message: ai_types.AssistantMessage) !void {
     try retained.add(allocator, message);
@@ -1806,8 +1804,9 @@ fn runLoop(
         .final_message = result_final_message,
         .iterations = state.iterations,
         .termination = termination,
-        .abandoned_messages = listOfMessages(allocator, try retained.messages.toOwnedSlice(allocator)),
+        .abandoned_messages = retained.messages,
     };
+    retained.moved();
     var result_owned = false;
     errdefer if (!result_owned) releaseUnpublishedResult(&result, retained, allocator);
 

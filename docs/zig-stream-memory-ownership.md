@@ -68,6 +68,35 @@ session read back from disk has neither directory nor flag — deliberate, since
 stored absolute path is stale by construction. Any future resume change must
 decide what to persist and re-validate it.
 
+## When a run ends before its message is appended
+
+A turn can end `.aborted`, in error, or on a failure part-way through — and a
+consumer can complete the stream mid-run, so the final publication itself can be
+rejected. In every case the messages already published are **borrowed**, and a
+consumer drains them after the producer has returned. Three lifetimes follow.
+
+- **Successful.** The message reaches the results list, which owns it from the
+  append. The list is freed with the run's own result.
+- **Failed turn.** The message is never appended, so it is *parked*: held in a
+  holder the caller owns, handed to the stream's result, and freed with the
+  stream. `AgentLoopResult.abandoned_messages` carries them, and its `deinit`
+  releases every one. Parking it in the loop's own state is not enough, because
+  the state is torn down on the same error return while the queue still borrows
+  the strings.
+- **Publication rejected.** The final `agent_end` push can fail once a consumer
+  has completed the stream. A tail guard covers the result until it is actually
+  handed to the stream, and the holder publishes whatever the run parked, so a
+  failure at the last step still leaves every borrowed event readable.
+
+**Consumer proof.** Every regression here drains the queue and reads the
+borrowed fields — `message_end`, `turn_end`, `tool_execution_start` — because
+freeing an event is not evidence either way. The controls that fail, fail on
+freed memory inside a drain or as a leak attributed to the drain, not as a
+timeout.
+
+`AgentLoopResult.deinit` is public and is the only thing that releases a parked
+message; nothing on the producing thread frees one.
+
 ## The safe consumer pattern
 
 One complete, leak-free flow (mirrored by the unit test
