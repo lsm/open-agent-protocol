@@ -2749,9 +2749,9 @@ pub const App = struct {
             .compact => try self.startCompaction(command.arg orelse ""),
             .none => {},
         }
-        if ((command.kind == .model or command.kind == .provider) and command.arg != null) self.persistCurrentModel();
+        if (command.kind == .model and command.arg != null) self.persistCurrentModel();
         switch (command.kind) {
-            .context, .model, .provider => self.applyContextWindow(),
+            .context, .model => self.applyContextWindow(),
             else => {},
         }
         if (command.kind == .context and !result.is_error and command.arg != null) self.persistContextWindow();
@@ -4766,7 +4766,7 @@ test "TuiModel typing after a palette move resets the selection" {
     _ = model.update(.{ .key = .{ .key = .{ .char = 'p' } } }, &tctx.ctx);
     try std.testing.expectEqual(@as(usize, 0), model.app.?.slashSelection());
     _ = model.update(.{ .key = .{ .key = .tab } }, &tctx.ctx);
-    try std.testing.expectEqualStrings("/provider ", model.app.?.state.composer.text());
+    try std.testing.expectEqualStrings("/permissions ", model.app.?.state.composer.text());
 }
 
 test "TuiModel arrow keys keep walking history once a recalled entry is shown" {
@@ -5824,9 +5824,10 @@ test "multi-line /help output renders all lines into transcript view" {
     defer std.testing.allocator.free(rendered);
 
     const expect = [_][]const u8{
-        "/help",   "/model", "/provider",    "/status",
-        "/resume", "/login", "/permissions", "/abort",
-        "/clear",  "/quit",  "/think",
+        "/help",   "/model", "/status",
+        "/resume", "/login", "/permissions",
+        "/abort",  "/clear", "/quit",
+        "/think",
     };
     for (expect) |needle| {
         if (std.mem.indexOf(u8, rendered, needle) == null) {

@@ -778,7 +778,6 @@ RATIFIED_COMMANDS = (
     "/help",
     "/model",
     "/login",
-    "/provider",
     "/permissions",
     "/think",
     "/resume",
@@ -960,10 +959,6 @@ def scenario_commands(args):
             field_positions.append(position)
         if field_positions != sorted(field_positions) or field_positions[-1] - field_positions[0] > 6 * (args.width + 8):
             raise ScenarioError("commands: /status fields did not render as one contiguous status block")
-
-        run.command("/provider", "current provider:")
-        if not run.seen("available providers:"):
-            raise ScenarioError("commands: /provider output missing available providers list")
 
         run.command("/model", "Select model")
         run.key(KEY_ESC, "Escape closes model picker")
