@@ -335,7 +335,7 @@ fn historyMessagesProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "historyMessages survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, historyMessagesProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, historyMessagesProbe, .{});
 }
 
 fn ownedOptionsProbe(allocator: std.mem.Allocator) !void {
@@ -345,7 +345,7 @@ fn ownedOptionsProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "OwnedOptions.init survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, ownedOptionsProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, ownedOptionsProbe, .{});
 }
 
 test "firstIncluded keeps everything without a budget and cuts at a user turn with one" {

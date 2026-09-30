@@ -770,5 +770,5 @@ fn parseSidecarProbe(allocator: std.mem.Allocator) error{OutOfMemory}!void {
 }
 
 test "parseSidecar survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, parseSidecarProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, parseSidecarProbe, .{});
 }

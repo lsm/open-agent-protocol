@@ -615,7 +615,7 @@ fn authProvidersResponseProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "auth_providers_response survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, authProvidersResponseProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, authProvidersResponseProbe, .{});
 }
 
 test "a malformed provider entry after a good one is rejected without leaking" {

@@ -417,7 +417,7 @@ fn ownedEntriesProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "the owned entries free everything when one allocation fails midway" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, ownedEntriesProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, ownedEntriesProbe, .{});
 }
 
 test "an unnamed wire carries an opaque discriminator in the reference" {
