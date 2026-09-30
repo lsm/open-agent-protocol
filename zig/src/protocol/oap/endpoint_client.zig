@@ -526,14 +526,46 @@ test "the budget arithmetic keeps sub-millisecond precision without a live clock
 }
 
 const partial_tail =
-    \\while :; do printf 'x'; sleep 0.05; done
+    \\printf 'partial'; sleep 0.5; echo '{"control":"late"}'
 ;
 
 const flood_tail =
-    \\yes ''
+    \\i=0; while [ $i -lt 60 ]; do echo; i=$((i+1)); sleep 0.02; done; echo '{"control":"after"}'
 ;
 
 const bounded_call_limit_ns: i64 = 30_000_000_000;
+
+const OwnedFrame = struct {
+    control: bool,
+    text: []u8,
+};
+
+const Reading = struct {
+    elapsed_ns: i64,
+    frame: ?OwnedFrame,
+
+    fn deinit(self: Reading, allocator: std.mem.Allocator) void {
+        if (self.frame) |frame| allocator.free(frame.text);
+    }
+};
+
+fn readOnce(allocator: std.mem.Allocator, tail: []const u8, budget_ms: i64) !Reading {
+    var client = try Client.spawn(allocator, .{ .command = "/bin/sh", .args = &.{ "-c", tail } });
+    defer client.deinit();
+    defer stopChild(&client);
+    const start = std.Io.Clock.Timestamp.now(std.testing.io, .awake);
+    const budget = Budget.until(client.io(), budget_ms);
+    const frame = try client.nextBounded(budget);
+    const elapsed: i64 = @intCast(start.durationTo(std.Io.Clock.Timestamp.now(std.testing.io, .awake)).raw.nanoseconds);
+    var owned: ?OwnedFrame = null;
+    if (frame) |seen| {
+        owned = switch (seen) {
+            .control => |text| .{ .control = true, .text = try allocator.dupe(u8, text) },
+            .envelope => |text| .{ .control = false, .text = try allocator.dupe(u8, text) },
+        };
+    }
+    return .{ .elapsed_ns = elapsed, .frame = owned };
+}
 
 fn stopChild(client: *Client) void {
     _ = client.waitExit(300) catch {};
@@ -606,32 +638,34 @@ test "a spent budget stops on the first buffered blank instead of draining the b
     try std.testing.expect(client.pending.items.len > 0);
 }
 
-test "one call under a budget stops on a trickling partial line instead of renewing" {
+test "a short budget on a partial line waits the budget out instead of giving up early" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
-    var client = try Client.spawn(std.testing.allocator, .{ .command = "/bin/sh", .args = &.{ "-c", partial_tail } });
-    defer client.deinit();
-    defer stopChild(&client);
-
-    const budget = Budget.until(client.io(), 400);
-    const start = std.Io.Clock.Timestamp.now(std.testing.io, .awake);
-    const frame = try client.nextBounded(budget);
-    const elapsed: i64 = @intCast(start.durationTo(std.Io.Clock.Timestamp.now(std.testing.io, .awake)).raw.nanoseconds);
-
-    try std.testing.expect(frame == null);
-    try std.testing.expect(elapsed < bounded_call_limit_ns);
+    const measured = try readOnce(std.testing.allocator, partial_tail, 400);
+    defer measured.deinit(std.testing.allocator);
+    try std.testing.expect(measured.frame == null);
+    try std.testing.expect(measured.elapsed_ns < bounded_call_limit_ns);
 }
 
-test "one call under a budget returns no frame for a blank flood instead of renewing" {
+test "a short budget on a blank flood waits the budget out instead of giving up early" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
-    var client = try Client.spawn(std.testing.allocator, .{ .command = "/bin/sh", .args = &.{ "-c", flood_tail } });
-    defer client.deinit();
-    defer stopChild(&client);
+    const measured = try readOnce(std.testing.allocator, flood_tail, 400);
+    defer measured.deinit(std.testing.allocator);
+    try std.testing.expect(measured.frame == null);
+    try std.testing.expect(measured.elapsed_ns < bounded_call_limit_ns);
+}
 
-    const budget = Budget.until(client.io(), 400);
-    const start = std.Io.Clock.Timestamp.now(std.testing.io, .awake);
-    const frame = try client.nextBounded(budget);
-    const elapsed: i64 = @intCast(start.durationTo(std.Io.Clock.Timestamp.now(std.testing.io, .awake)).raw.nanoseconds);
+test "a generous budget reads the frame each of those children goes on to write" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
 
-    try std.testing.expect(frame == null);
-    try std.testing.expect(elapsed < bounded_call_limit_ns);
+    const from_partial = try readOnce(std.testing.allocator, partial_tail, 8000);
+    defer from_partial.deinit(std.testing.allocator);
+    try std.testing.expect(from_partial.frame != null);
+    try std.testing.expect(from_partial.frame.?.control);
+    try std.testing.expectEqualStrings("partial{\"control\":\"late\"}", from_partial.frame.?.text);
+
+    const from_flood = try readOnce(std.testing.allocator, flood_tail, 8000);
+    defer from_flood.deinit(std.testing.allocator);
+    try std.testing.expect(from_flood.frame != null);
+    try std.testing.expect(from_flood.frame.?.control);
+    try std.testing.expectEqualStrings("{\"control\":\"after\"}", from_flood.frame.?.text);
 }
