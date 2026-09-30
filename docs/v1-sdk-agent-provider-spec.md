@@ -72,10 +72,7 @@ Caching rules:
 - `cache_max_age_ms` is required for all responses.
 - Clients treat cached data as stale when `now_ms > fetched_at_ms + cache_max_age_ms`.
 - If `cache_max_age_ms` is missing from a non-conformant server response, clients should default to `300_000` (5 minutes).
-- `source` is per-model metadata: `"dynamic"` or `"static_fallback"`. It is an optional
-  key: when a listing omits it the reader records it as unknown rather than choosing
-  one. An optional key is not a nullable one, so a `source` that is present must be
-  one of those two strings; `null` or another value is a malformed response.
+- `source` is per-model metadata: `"dynamic"` or `"static_fallback"`.
 - `fetched_at_ms` is response-generation time (not per-model last-verified time).
 - Recommended server defaults:
   - dynamic source: `cache_max_age_ms = 300_000` (5 minutes),
@@ -1840,19 +1837,11 @@ The shared catalog result carries `source` as optional. The owner selected
 this shape: absent is read as **unknown**, and no SDK fabricates
 `dynamic`/`discovered` for a value the listing did not state.
 
-This is the target for all three SDKs, and it is **implemented in Rust and
-Go**: #688 for Rust and #690 for Go, each refusing a present null or an
-unrecognised value on both its shared and its OAP decode path. It is **not
-yet implemented in TypeScript**, where a listing that omits `source` is
-still invented as `dynamic` on the OAP path and still rejected on the shared
-path; that reader is #705. A reader that has not been changed yet must not be
-described as if it had, so TypeScript does not satisfy this section today.
-
-That migration status is about the **shared SDK reader** only. The wire
-definition in `schema/v0.1/provider.schema.json` is already an optional key
-on `modelEntry`, and the Zig encoder and decoder making the runtime omit the
-member rather than state a default is a separate change, #673, with
-`lifecycle` following in #665.
+This is the target for all three SDKs; it is **implemented in Rust only** so
+far. On the Go and TypeScript SDKs, a listing that omits `source` still
+fabricates a value. Those are tracked as follow-ups and are not covered by
+the Rust change: Go in #690, and the TypeScript reader in its own cut. A
+reader that has not been changed yet must not be described as if it had.
 
 This does not weaken the wire. `schema/v0.1/provider.schema.json` defines
 `modelEntry.source` as an optional key over the `modelSource` enum, and an
