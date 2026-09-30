@@ -653,6 +653,25 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   that without the threshold just declined. An earlier revision of this work claimed the mutation
   failed when both bounds were removed, and a second claimed the budget was pinned at `:1412`. The
   first does not hold and the second contradicts the row above. Both are withdrawn.
+- **the `readBody` failure path answers completely, and the daemon gives up on a peer that stops** —
+  `makai.zig:1591` is the third and last `drain` call site, and the only one none of the rows above
+  reached. `TestHubAddrAnswersACompleteTransportFailureWhenTheBodyStopsShort` reaches it with a head
+  the gate admits (`Content-Type: application/json`, so `answer()` does not refuse and the request goes
+  on to `readBody`), a declared 8 MiB, 4096 body bytes sent, and then a **TCP half-close**. `readBody`
+  sees `n == 0`, returns `error.BodyTruncated`, and the loop writes the transport failure and drains
+  `request.content_length -| request.filled`. What is pinned, all of it observable: a **complete**
+  answer — status `400`, `Content-Length` matching the 265-byte body, `type: error.response`,
+  `code: request_read`, and both `in_reply_to` and `protocol` populated — delivered while the client
+  had sent **4096 of the 8 MiB it declared**. The answer arriving at all is the "gave up" claim: a
+  daemon waiting for the declared body would have said nothing and the read would have timed out.
+  **Two negative controls fail it:** `readBody` treating a short body as complete answers `404`, and
+  mapping `BodyTruncated` to a different refusal answers `413`. **The drain on this path is NOT
+  pinned, and the mutation says so: deleting `makai.zig:1591` outright leaves the test `EXIT=0`**
+  green, because after a half-close the drain's first read returns EOF immediately, so nothing about
+  the drain reaches this client. So the **`content_length -| filled` arithmetic and this site's
+  reachability are unproved** by this test, by the rows above, and by anything else on main, and no
+  threshold is inferred from transferred bytes to stand in for them. The cap and the budget remain
+  pinned exactly where `:615-621` and the `drain` unit tests say, **time-bound presence among them.**
 - **the bound holding against a real process** —
   `TestHubAddrRefusesALargeRefusedHeadOverARealSocket` transfers 1,052,672 /
   1,719,800 / 1,799,224 bytes against declarations of 1 MiB+4096, 4 MiB and 16 MiB
