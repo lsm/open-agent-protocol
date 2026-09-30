@@ -342,7 +342,7 @@ one. The rest of the request is unchanged, so `anthropic-version` and
 
 The opt-in cannot be turned against a vendor. It is carried on the model as
 `allows_anonymous`, and each provider refuses to honour it for the vendor ids it
-serves: `anthropic` on the Anthropic format, and `openai`, `deepseek`, `kimi`,
+serves: `anthropic` and `deepseek` on the Anthropic format, and `openai`, `deepseek`, `kimi`,
 `github-copilot`, `openai-codex` and `azure` on the OpenAI ones. A declared
 provider can never hold one of those ids anyway, since they are reserved, so the
 check only matters for a request arriving over the protocol. Honouring it there

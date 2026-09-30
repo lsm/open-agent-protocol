@@ -329,7 +329,7 @@ func IsTransparentOpenAIProxy(model Model) bool {
 
 var OpenAIAnonymousBlocked = []string{"openai", "deepseek", "kimi", "github-copilot"}
 
-var AnthropicAnonymousBlocked = []string{"anthropic"}
+var AnthropicAnonymousBlocked = []string{"anthropic", "deepseek"}
 
 func AllowsAnonymousWith(model Model, blocked []string) bool {
 	if !model.AllowsAnonymous {
