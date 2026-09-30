@@ -738,6 +738,20 @@ pub fn buildOwnedMessage(
     };
 }
 
+pub const LOST_CLONE_MESSAGE = "an event could not be queued: out of memory";
+
+pub fn settleProviderOutcome(stream: anytype, out: AssistantMessage) void {
+    if (stream.pushFailed()) {
+        var dropped = out;
+        dropped.deinit(stream.allocator);
+        stream.completeWithError(LOST_CLONE_MESSAGE);
+        return;
+    }
+    if (stream.completeIfOpen(out)) return;
+    var dropped = out;
+    dropped.deinit(stream.allocator);
+}
+
 pub const OwnedMessage = struct {
     const Self = @This();
 
