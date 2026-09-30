@@ -436,3 +436,15 @@ test "a descriptor schema path is read only when it lands beneath the pack root"
     const malformed = [_][]const u8{malformed_root};
     try std.testing.expectError(error.InvalidPackDescriptor, load(std.testing.io, allocator, &registry, &malformed));
 }
+
+test "a schema path cleans without an arena, and a failed allocation does not leak" {
+    const Runner = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            const cleaned = (try cleanRelative(allocator, "sub/../note.schema.json")).?;
+            defer allocator.free(cleaned);
+            try std.testing.expectEqualStrings("note.schema.json", cleaned);
+            try std.testing.expectError(error.InvalidPackDescriptor, lexicalRelative(allocator, "../outside/away.schema.json"));
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Runner.run, .{});
+}
