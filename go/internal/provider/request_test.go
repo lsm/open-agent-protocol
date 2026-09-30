@@ -604,3 +604,16 @@ func TestAnEmptyToolSchemaBecomesAnEmptyObject(t *testing.T) {
 		t.Errorf("parameters = %v, want an empty object rather than nothing", parsed["parameters"])
 	}
 }
+
+func TestDeepSeekEffortMappingFollowsIdentityBehindANonVendorProxy(t *testing.T) {
+	proxied := openAIModel()
+	proxied.Provider = "deepseek"
+	proxied.BaseURL = "https://gateway.corp/v1"
+	proxied.HasBaseURL = true
+	proxied.Reasoning = true
+	body := decode(t, BuildRequestBody(proxied, Context{}, StreamOptions{ReasoningEffort: "minimal"}))
+	if got := body["reasoning_effort"]; got != "low" {
+		t.Fatalf("reasoning_effort = %v, want \"low\": a deepseek model behind a proxy must still get the deepseek mapping", got)
+	}
+
+}

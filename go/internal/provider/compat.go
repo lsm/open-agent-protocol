@@ -213,6 +213,10 @@ func isDeepSeekURL(baseURL string, hasBaseURL bool) bool {
 	return isHostOrSubdomain(baseURL, hasBaseURL, "deepseek.com")
 }
 
+func IsDeepSeekModel(model Model) bool {
+	return model.Provider == "deepseek" || isDeepSeekURL(model.BaseURL, model.HasBaseURL)
+}
+
 func isAnthropicURL(baseURL string, hasBaseURL bool) bool {
 	return isHostOrSubdomain(baseURL, hasBaseURL, "anthropic.com")
 }
@@ -361,8 +365,8 @@ func MergeCompat(model Model) MergedCompat {
 		detectedReasoningEffort = caps.SupportsReasoningEffort
 		detectedMaxTokensField = caps.MaxTokensField
 	}
-	if isDeepSeekURL(model.BaseURL, model.HasBaseURL) {
-		detectedReasoningEffort = caps.SupportsReasoningEffort
+	if IsDeepSeekModel(model) {
+		detectedReasoningEffort = caps.SupportsReasoningEffort || model.Reasoning
 	}
 
 	merged := MergedCompat{
