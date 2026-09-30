@@ -76,26 +76,19 @@ rejected. In every case the messages already published are **borrowed**, and a
 consumer drains them after the producer has returned. Three lifetimes follow.
 
 - **Successful.** The message reaches the results list, which owns it from the
-  append. The list is freed with the run's own result.
-- **Failed turn.** The message is never appended, so it is *parked*: held in a
-  holder the caller owns, handed to the stream's result, and freed with the
-  stream. `AgentLoopResult.abandoned_messages` carries them, and its `deinit`
-  releases every one. Parking it in the loop's own state is not enough, because
-  the state is torn down on the same error return while the queue still borrows
-  the strings.
-- **Publication rejected.** The final `agent_end` push can fail once a consumer
-  has completed the stream. A tail guard covers the result until it is actually
-  handed to the stream, and the holder publishes whatever the run parked, so a
-  failure at the last step still leaves every borrowed event readable.
-
-**Consumer proof.** Every regression here drains the queue and reads the
-borrowed fields — `message_end`, `turn_end`, `tool_execution_start` — because
-freeing an event is not evidence either way. The controls that fail, fail on
-freed memory inside a drain or as a leak attributed to the drain, not as a
-timeout.
+  append.
+- **Failed turn.** It is never appended, so it is *parked* in a holder the caller
+  owns and handed to `AgentLoopResult.abandoned_messages`, whose `deinit` releases
+  every one. Parking it in the loop's own state is not enough: that state is torn
+  down on the same error return, while the queue still borrows the strings.
+- **Publication rejected.** The final `agent_end` push can fail once a consumer has
+  completed the stream. A tail guard covers the result until it is handed over, and
+  the holder publishes what the run parked, so the last step leaves every borrowed
+  event readable too.
 
 `AgentLoopResult.deinit` is public and is the only thing that releases a parked
-message; nothing on the producing thread frees one.
+message. Every regression drains the queue and *reads* the borrowed fields, since
+freeing an event is not evidence; the controls fail on freed memory in a drain.
 
 ## The safe consumer pattern
 

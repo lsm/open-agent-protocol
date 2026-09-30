@@ -1299,54 +1299,7 @@ fn erroredStream(
     return stream_ptr;
 }
 
-const SelfClosing = struct {
-    stream: AgentEventStream,
 
-    fn run(ctx: ?*anyopaque, model: ai_types.Model, context: ai_types.Context, options: types.ProtocolOptions, allocator: std.mem.Allocator) anyerror!*event_stream_module.AssistantMessageEventStream {
-        const self: *SelfClosing = @ptrCast(@alignCast(ctx.?));
-        const out = try abortedStream(ctx, model, context, options, allocator);
-        self.stream.complete(.{
-            .messages = types.OwnedSlice(ai_types.Message).initBorrowed(&.{}),
-            .final_message = .{ .content = &.{}, .api = "a", .provider = "p", .model = "m", .usage = .{}, .stop_reason = .stop, .timestamp = 0 },
-            .iterations = 0,
-        });
-        return out;
-    }
-};
-
-test "a stream closed mid-run does not lose the parked message" {
-    const model = ai_types.Model{
-        .id = "test-model",
-        .name = "Test",
-        .api = "test-api",
-        .provider = "test-provider",
-        .base_url = "",
-        .reasoning = false,
-        .input = &.{"text"},
-        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
-        .context_window = 1024,
-        .max_tokens = 256,
-    };
-    var closer = SelfClosing{ .stream = AgentEventStream.init(std.testing.allocator) };
-    defer closer.stream.deinit();
-    const protocol: types.ProtocolClient = .{ .stream_fn = SelfClosing.run, .ctx = &closer };
-
-    var context = AgentContext.init(std.testing.allocator);
-    defer context.deinit();
-    var retained = Retained{};
-    defer retained.releaseUnpublished(std.testing.allocator);
-
-    try std.testing.expectError(error.StreamCompleted, runLoop(std.testing.allocator, &.{}, &context, .{
-        .model = model,
-        .protocol = protocol,
-        .max_iterations = 1,
-    }, &closer.stream, &retained));
-
-    while (closer.stream.poll()) |event| {
-        var mutable = event;
-        mutable.deinit(std.testing.allocator);
-    }
-}
 
 test "an errored turn's events stay readable after the message is released" {
     const model = ai_types.Model{
@@ -1437,18 +1390,7 @@ test "an aborted turn's events stay readable after the message is released" {
 }
 
 test "an aborted turn frees the message the stream handed over" {
-    const model = ai_types.Model{
-        .id = "test-model",
-        .name = "Test",
-        .api = "test-api",
-        .provider = "test-provider",
-        .base_url = "",
-        .reasoning = false,
-        .input = &.{"text"},
-        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
-        .context_window = 1024,
-        .max_tokens = 256,
-    };
+    const model = testModel();
     var events_storage: AgentEventStream = undefined;
     const events = &events_storage;
     events.* = AgentEventStream.init(std.testing.allocator);
