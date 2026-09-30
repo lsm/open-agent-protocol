@@ -828,7 +828,7 @@ different sets and merging them makes both wrong.
 
 ### What does not cross, from a real options struct
 
-Makai's `StreamOptions` carries twenty-five fields and is the closest thing
+Makai's `StreamOptions` carries twenty-four fields and is the closest thing
 either side has to a complete per-call list. Three are rejected outright and
 two are relocated, on their own reading as much as this draft's:
 

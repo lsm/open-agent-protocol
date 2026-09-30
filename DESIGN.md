@@ -140,9 +140,10 @@ container cheap, and it is why a borrowed stream ties every event's lifetime to
 the pusher's.
 
 **The provider modules are the exception, and unconditionally so.** Every stream
-built by `zig/src/providers/` — anthropic, google, ollama, azure — and the mock
-streams the tui and the provider-protocol bridge build themselves clone each event
-as they queue it. The rule:
+built by `zig/src/providers/` — anthropic, google, ollama, azure,
+openai_completions, openai_responses, azure_openai_responses — and the mock
+streams the provider-protocol bridge builds itself clone each event as they queue
+it. The rule:
 
 > A provider stream clones every event it queues, so whatever the producing
 > thread hands the queue is copied and the producing thread may free its own copy
@@ -166,7 +167,10 @@ Consequences, all of which the ownership tests check:
    The TUI fixture provider (`zig/src/tui/fixture_provider.zig`) is owned too: it
    pushes a terminal event alongside `stream.complete()`, and because those are two
    separately allocated messages, the event clone and the stream result are released
-   once each.
+   once each. Not every stream in the tree is covered, and a consumer still has to
+   branch on `stream.ownership.isOwned()`: the tui runtime's own mock stream
+   (`zig/src/tui/runtime.zig`) is not built by a provider module and is borrowed,
+   so the rule above does not reach it.
 2. `StreamOptions.requires_owned_stream_events` **has been removed** rather than
    left inert. It used to let a caller choose the borrowed mode, and a
    caller-chosen ownership flag is what made the two lifetime models coexist in

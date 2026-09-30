@@ -176,7 +176,18 @@ test "agent_start dual-key parse binds the session under either payload key (#19
 test "a provider mock clones even when the caller passes no options" {
     const allocator = std.testing.allocator;
     const stream = try mockProviderStream(
-        .{ .id = "m", .name = "m", .api = "mock-api", .provider = "mock" },
+        .{
+            .id = "m",
+            .name = "m",
+            .api = "mock-api",
+            .provider = "mock",
+            .base_url = "https://mock.test",
+            .reasoning = false,
+            .input = &.{"text"},
+            .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+            .context_window = 1024,
+            .max_tokens = 16,
+        },
         .{ .messages = &.{} },
         null,
         allocator,
