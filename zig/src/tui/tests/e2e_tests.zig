@@ -174,9 +174,10 @@ test "e2e: /help renders all command names into the transcript" {
 
     const screen = d.frame();
     const expected = [_][]const u8{
-        "/help",   "/model", "/provider",    "/status",
-        "/resume", "/login", "/permissions", "/abort",
-        "/clear",  "/quit",  "/think",
+        "/help",   "/model", "/status",
+        "/resume", "/login", "/permissions",
+        "/abort",  "/clear", "/quit",
+        "/think",
     };
     for (expected) |needle| {
         if (std.mem.indexOf(u8, screen, needle) == null) {
@@ -321,7 +322,7 @@ test "e2e: /model opens the picker and selecting switches the active model" {
     try std.testing.expectEqualStrings("second-provider", cfg.provider);
 }
 
-test "e2e: /model and /provider commands persist the active model" {
+test "e2e: /model command persists the active model" {
     const models = [_]ai_types.Model{
         mock_provider.test_model,
         .{
@@ -345,7 +346,9 @@ test "e2e: /model and /provider commands persist the active model" {
     }, .{});
     defer d.deinit();
 
-    d.typeText("/model second-model");
+    d.typeText("/model");
+    d.pressEnter();
+    d.typeText("second-model");
     d.pressEnter();
     try std.testing.expectEqualStrings("second-model", d.app().state.status.model);
 
@@ -356,19 +359,6 @@ test "e2e: /model and /provider commands persist the active model" {
         defer cfg.deinit(std.testing.allocator);
         try std.testing.expectEqualStrings("second-model", cfg.model);
         try std.testing.expectEqualStrings("second-provider", cfg.provider);
-    }
-
-    d.typeText("/provider " ++ mock_provider.test_model.provider);
-    d.pressEnter();
-    try std.testing.expectEqualStrings(mock_provider.test_model.id, d.app().state.status.model);
-
-    {
-        var store = try tui_config.Store.initDefault(std.testing.allocator);
-        defer store.deinit();
-        var cfg = try store.load();
-        defer cfg.deinit(std.testing.allocator);
-        try std.testing.expectEqualStrings(mock_provider.test_model.id, cfg.model);
-        try std.testing.expectEqualStrings(mock_provider.test_model.provider, cfg.provider);
     }
 }
 
@@ -389,11 +379,11 @@ test "e2e: /login opens the provider picker and selecting starts the flow" {
     try std.testing.expectEqual(tui_state.AppMode.picker, d.app().state.mode);
     try std.testing.expectEqual(tui_state.PickerKind.login, d.app().state.picker_kind);
     try std.testing.expect(d.frameContains("Login provider"));
-    try std.testing.expect(d.frameContains("anthropic"));
+    try std.testing.expect(d.frameContains("OpenAI"));
 
     d.sendKey(.enter);
     try std.testing.expectEqual(tui_state.AppMode.normal, d.app().state.mode);
-    try std.testing.expect(d.frameContains("starting login for anthropic"));
+    try std.testing.expect(d.frameContains("starting login for openai"));
 }
 
 test "e2e: production TUI uses native scrollback mode" {

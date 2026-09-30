@@ -2110,7 +2110,7 @@ fn validateTrace(allocator: std.mem.Allocator, judge: *validator.Validator, sour
             try appendFinding(allocator, out, .decode, "duplicate_key", index, item.line);
             continue;
         }
-        if (try compiled.validate(schema_document, item.value) != null) {
+        if (try compiled.validateWithBranches(schema_document, item.value, judge.branchesFor(schema_document)) != null) {
             try appendFinding(allocator, out, .schema, "schema_invalid", index, item.line);
         }
     }
@@ -2127,6 +2127,7 @@ fn validateTrace(allocator: std.mem.Allocator, judge: *validator.Validator, sour
 
     var machine = semantic.Machine.init(allocator);
     defer machine.deinit();
+    machine.packs = judge.semanticPacks();
     for (trace, 0..) |envelope, index| try machine.apply(index, envelope);
     try machine.close();
     for (machine.diagnostics.items) |diagnostic| try appendFinding(allocator, out, .semantic, diagnostic.code, diagnostic.index, lineOf(items, diagnostic.index));
@@ -2137,6 +2138,7 @@ fn lineOf(items: []const TraceItem, index: usize) usize {
 }
 
 const partial_semantic_note = "semantic rules partial: this validator has not ported every rule; goap validate checks them all";
+const partial_load_note = "pack load checks partial: a descriptor whose id, version or schemas is the wrong shape is refused, a schemas path is checked to stay relative, lexically contained and beneath the pack root with symlinks resolved, and a declared name outside the pack's own id or an id overlapping another's is refused; a refusal now fails the whole load and prints its codes, so no pack is silently dropped. Other descriptor fields are not shape-checked, so a wrong-shaped payload_members or envelope_types reads as absent and contributes nothing, and a schema ref that is absent or carries no fragment is skipped without a refusal. A ref that names a file the pack does not contribute, or a pointer that does not resolve, is registered as a branch anyway and leaves the interpreter unable to judge any trace at all, so one unresolved ref removes validation for every trace. The rest of Decision 0004's load refusals do not run, and a pack's payload members are not widened, so a pack goap refuses may be accepted here and a trace carrying a declared member is refused schema_invalid";
 
 fn writeHumanReport(out: *std.ArrayList(u8), allocator: std.mem.Allocator, path: []const u8, verdict: ValidateVerdict) !void {
     switch (verdict) {
@@ -2218,7 +2220,8 @@ fn validateFlagRefusal(arg: []const u8) ?[]const u8 {
     if (std.mem.startsWith(u8, arg, "--format=")) return null;
     if (std.mem.eql(u8, arg, "--mode") or std.mem.eql(u8, arg, "-mode")) return null;
     if (std.mem.startsWith(u8, arg, "--mode=")) return null;
-    if (std.mem.eql(u8, arg, "--pack") or std.mem.startsWith(u8, arg, "--pack=")) return "extension packs land with the validator's own packs, in #367";
+    if (std.mem.eql(u8, arg, "--pack") or std.mem.eql(u8, arg, "-pack")) return null;
+    if (std.mem.startsWith(u8, arg, "--pack=")) return null;
     if (std.mem.eql(u8, arg, "--provider")) return "the override is not carried; a trace declaring the profile routes itself, in #367";
     return "oapx validate does not carry this flag";
 }
@@ -2231,6 +2234,8 @@ fn runValidate(
 ) !bool {
     var format: ValidateFormat = .human;
     var mode: validator.Mode = .strict;
+    var pack_dirs = std.ArrayList([]const u8).empty;
+    defer pack_dirs.deinit(allocator);
     var paths = std.ArrayList([]const u8).empty;
     defer paths.deinit(allocator);
     var index: usize = 0;
@@ -2257,12 +2262,43 @@ fn runValidate(
             mode = validator.parseMode(arg["--mode=".len..]) orelse return error.UnsupportedMode;
             continue;
         }
+        if (std.mem.eql(u8, arg, "--pack") or std.mem.eql(u8, arg, "-pack")) {
+            index += 1;
+            if (index >= args.len) return error.InvalidArgument;
+            try pack_dirs.append(allocator, args[index]);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--pack=")) {
+            try pack_dirs.append(allocator, arg["--pack=".len..]);
+            continue;
+        }
         try paths.append(allocator, arg);
     }
     if (paths.items.len == 0) return error.InvalidArgument;
 
-    var judge = try validator.Validator.init(allocator, .{ .mode = mode });
+    var load_codes: std.ArrayList(u8) = .empty;
+    defer load_codes.deinit(allocator);
+    var judge = validator.Validator.init(allocator, .{
+        .mode = mode,
+        .pack_dirs = pack_dirs.items,
+        .io = compat.fs.defaultIo(),
+        .codes = &load_codes,
+    }) catch |err| {
+        if (load_codes.items.len != 0) {
+            try compat.stdio.writeAll(stderr, "pack load refused:");
+            try compat.stdio.writeAll(stderr, load_codes.items);
+            try compat.stdio.writeAll(stderr, "\n");
+        }
+        var buf: [512]u8 = undefined;
+        const reason = std.fmt.bufPrint(&buf, "{s} did not load as a pack: {s}", .{
+            if (pack_dirs.items.len == 1) pack_dirs.items[0] else "a --pack directory",
+            @errorName(err),
+        }) catch "a pack did not load";
+        try unavailable(stderr, "validate", "--pack", reason);
+        return error.Unavailable;
+    };
     defer judge.deinit();
+    if (pack_dirs.items.len != 0) try compat.stdio.writeAll(stderr, partial_load_note ++ "\n");
 
     var report = std.ArrayList(u8).empty;
     defer report.deinit(allocator);
@@ -2316,7 +2352,7 @@ fn printUsage(file: std.Io.File) !void {
         \\  oapx serve provider --http 127.0.0.1:<port>
         \\  oapx serve agent,provider --stdio [--model <model-ref>]
         \\  oapx hub --stdio [--config <path>]
-        \\  oapx validate [--format human|json] [--mode strict|tolerant] <trace.json>...
+        \\  oapx validate [--format human|json] [--mode strict|tolerant] [--pack DIR]... <trace.json>...
         \\  oapx conformance --command CMD [--session <id>] [--timeout-ms <n>]
         \\                        [--exit-grace-ms <n>] [--env NAME]... [--format text|json]
         \\  oapx auth providers [--json]
@@ -6911,6 +6947,46 @@ fn oapModelCapabilities(
     return list.toOwnedSlice(allocator);
 }
 
+test "the built-in fallback rows publish no lifecycle, because none states one" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+
+    var server = oap_provider_server.Server.init(allocator, .{
+        .capability_revision = VERSION,
+        .grant_channel = if (oap_provider_grant_channel.GrantChannel.supported) .out_of_band else .unsupported,
+        .accepts_inference = true,
+        .resolves_own_credentials = true,
+        .profile_revision = OAP_PROVIDER_PROFILE_REVISION,
+        .catalog = oapFallbackCatalogState(),
+    });
+    defer server.deinit();
+    try populateOapProviderCatalog(allocator, &server);
+
+    if (server.models.items.len == 0) return error.NoBuiltInRowsPopulated;
+    for (server.models.items) |row| {
+        if (row.lifecycle != null) {
+            std.debug.print("built-in row {s} published lifecycle {s} without stating one\n", .{ row.model_id, @tagName(row.lifecycle.?) });
+            return error.BuiltInRowPublishedAnUnstatedLifecycle;
+        }
+    }
+
+    const request = try std.fmt.allocPrint(allocator,
+        "{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"{s}\",\"type\":\"provider.models.list.request\",\"id\":\"q1\",\"payload\":{{}}}}",
+        .{oap_provider_types.PROFILE});
+    defer allocator.free(request);
+    try server.handleLine(request);
+
+    if (server.outbound.items.len == 0) return error.NoResponseEmitted;
+    const line = server.outbound.items[server.outbound.items.len - 1];
+    if (std.mem.indexOf(u8, line, "provider.models.list.response") == null) return error.NotAModelsListResponse;
+    if (std.mem.indexOf(u8, line, "model_ref") == null) return error.NoModelsPublished;
+    if (std.mem.indexOf(u8, line, "lifecycle") != null) {
+        std.debug.print("the built-in models.list.response published lifecycle: {s}\n", .{line});
+        return error.ResponsePublishedAnUnstatedLifecycle;
+    }
+}
+
 fn populateOapProviderCatalog(allocator: std.mem.Allocator, server: *oap_provider_server.Server) !void {
     const proxy_flags = try provider_base_url.proxyCompatFlagsFromEnv(allocator);
     for (oap_provider_catalog.BUILT_IN_PROVIDERS) |builtin| {
@@ -9416,20 +9492,101 @@ test "two entries of one type are two adapters, each with its own executable" {
     try std.testing.expectEqualStrings("LITERAL=second", second_claude.config.backend.environment[0]);
 }
 
-test "validate refuses a flag goap carries and oapx does not, and never reads its value as a path" {
+test "naming one pack twice, however it is spelled, loads one pack" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(std.testing.io, "pack", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "pack/pack.json",
+        .data = "{\"id\":\"com.example.note\",\"version\":\"1.0.0\",\"schemas\":[\"note.schema.json\"],\"envelope_types\":[{\"type\":\"com.example.note.thing\",\"role\":\"event\",\"schema\":\"note.schema.json#/$defs/thing\"}]}",
+    });
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "pack/note.schema.json",
+        .data = "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"$defs\":{\"thing\":{\"type\":\"object\",\"required\":[\"type\",\"id\",\"payload\"],\"properties\":{\"type\":{\"const\":\"com.example.note.thing\"},\"id\":{\"type\":\"string\"},\"payload\":{\"type\":\"object\"}}}}}",
+    });
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "trace.json",
+        .data = "[{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"com.example.note.thing\",\"id\":\"n1\",\"payload\":{}}]",
+    });
+    const cwd = try std.process.currentPathAlloc(std.testing.io, allocator);
+    defer allocator.free(cwd);
+    const base = try std.fmt.allocPrint(allocator, "{s}/.zig-cache/tmp/{s}", .{ cwd[0..], tmp.sub_path[0..] });
+    defer allocator.free(base);
+    const pack = try std.fmt.allocPrint(allocator, "{s}/pack", .{base});
+    defer allocator.free(pack);
+    const trace = try std.fmt.allocPrint(allocator, "{s}/trace.json", .{base});
+    defer allocator.free(trace);
+    const trailing = try std.fmt.allocPrint(allocator, "{s}/", .{pack});
+    defer allocator.free(trailing);
+    const dotted = try std.fmt.allocPrint(allocator, "{s}/./pack", .{base});
+    defer allocator.free(dotted);
+
+    const rounds = [_][]const []const u8{
+        &.{pack},
+        &.{ pack, pack },
+        &.{ pack, trailing },
+        &.{ dotted, pack },
+        &.{ pack, trailing, dotted, pack },
+    };
+    for (rounds, 0..) |named, round| {
+        var args = std.ArrayList([]const u8).empty;
+        defer args.deinit(allocator);
+        for (named) |dir| {
+            try args.append(allocator, "--pack");
+            try args.append(allocator, dir);
+        }
+        try args.append(allocator, "--format=json");
+        try args.append(allocator, trace);
+        const name = try std.fmt.allocPrint(allocator, "out{d}", .{round});
+        defer allocator.free(name);
+        var out = try tmp.dir.createFile(std.testing.io, name, .{});
+        var complained_on = try tmp.dir.createFile(std.testing.io, "stderr", .{});
+        _ = try runValidate(allocator, args.items, out, complained_on);
+        out.close(std.testing.io);
+        complained_on.close(std.testing.io);
+        const judged = try tmp.dir.readFileAlloc(std.testing.io, name, allocator, .limited(1 << 20));
+        defer allocator.free(judged);
+        try std.testing.expect(std.mem.indexOf(u8, judged, "schema_invalid") == null);
+    }
+}
+
+test "validate says the pack load checks are not the ones goap runs" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(std.testing.io, "pack", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "pack/pack.json",
+        .data = "{\"id\":\"com.example.note\",\"version\":\"1.0.0\"}",
+    });
+    var out = try tmp.dir.createFile(std.testing.io, "stdout", .{});
+    var complained_on = try tmp.dir.createFile(std.testing.io, "stderr", .{});
+    const dir = try tmp.dir.realPathFileAlloc(std.testing.io, "pack", allocator);
+    defer allocator.free(dir);
+    _ = try runValidate(allocator, &.{ "--pack", dir, "--format=json", "t.json" }, out, complained_on);
+    out.close(std.testing.io);
+    complained_on.close(std.testing.io);
+    const said = try tmp.dir.readFileAlloc(std.testing.io, "stderr", allocator, .limited(4096));
+    defer allocator.free(said);
+    try std.testing.expect(std.mem.startsWith(u8, said, partial_load_note));
+}
+
+test "validate names the pack directory that would not load, and judges no trace" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var out = try tmp.dir.createFile(std.testing.io, "stdout", .{});
     var complained_on = try tmp.dir.createFile(std.testing.io, "stderr", .{});
-    try std.testing.expectError(error.Unavailable, runValidate(allocator, &.{ "--pack", "storage" }, out, complained_on));
+    try std.testing.expectError(error.Unavailable, runValidate(allocator, &.{ "--pack", "storage", "t.json" }, out, complained_on));
     out.close(std.testing.io);
     complained_on.close(std.testing.io);
     const complained = try tmp.dir.readFileAlloc(std.testing.io, "stderr", allocator, .limited(4096));
     defer allocator.free(complained);
-    try std.testing.expect(std.mem.indexOf(u8, complained, "oapx validate: --pack: unavailable:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, complained, "storage") == null);
-    try std.testing.expect(std.mem.indexOf(u8, complained, "unreadable") == null);
+    const said = try tmp.dir.readFileAlloc(std.testing.io, "stdout", allocator, .limited(4096));
+    defer allocator.free(said);
+    try std.testing.expect(std.mem.indexOf(u8, complained, "oapx validate: --pack: unavailable: storage did not load as a pack:") != null);
+    try std.testing.expect(said.len == 0);
 }
 
 test "validate refuses a flag it has never heard of, by the name it was given" {
@@ -9447,12 +9604,10 @@ test "validate refuses a flag it has never heard of, by the name it was given" {
 }
 
 test "validate names the goap flag it is refusing rather than a generic one" {
-    try std.testing.expectEqualStrings("extension packs land with the validator's own packs, in #367", validateFlagRefusal("--pack").?);
-    try std.testing.expectEqualStrings("extension packs land with the validator's own packs, in #367", validateFlagRefusal("--pack=./p").?);
     try std.testing.expectEqualStrings("the override is not carried; a trace declaring the profile routes itself, in #367", validateFlagRefusal("--provider").?);
 }
 
-test "validate still takes a path, and both flags it does carry" {
+test "validate still takes a path, and every flag it does carry" {
     try std.testing.expect(validateFlagRefusal("fixtures/manifest.json") == null);
     try std.testing.expect(validateFlagRefusal("manifest.json") == null);
     try std.testing.expect(validateFlagRefusal("--format") == null);
@@ -9461,6 +9616,9 @@ test "validate still takes a path, and both flags it does carry" {
     try std.testing.expect(validateFlagRefusal("--mode") == null);
     try std.testing.expect(validateFlagRefusal("-mode") == null);
     try std.testing.expect(validateFlagRefusal("--mode=tolerant") == null);
+    try std.testing.expect(validateFlagRefusal("--pack") == null);
+    try std.testing.expect(validateFlagRefusal("-pack") == null);
+    try std.testing.expect(validateFlagRefusal("--pack=./p") == null);
 }
 
 test "a mode oapx does not carry is refused by name, and never read as a path" {
@@ -10175,7 +10333,7 @@ test "combined stdio dispatches only the provider profile to the provider handle
 }
 
 fn diagnosedCodes(allocator: std.mem.Allocator, trace: []const u8, out: *std.ArrayList([]const u8)) !void {
-    var judge = try validator.Validator.init(allocator, .{});
+    var judge = try validator.Validator.init(allocator, .{ .io = std.testing.io });
     defer judge.deinit();
     var found = std.ArrayList(ValidateFinding).empty;
     defer freeFindings(allocator, &found);
@@ -10184,7 +10342,7 @@ fn diagnosedCodes(allocator: std.mem.Allocator, trace: []const u8, out: *std.Arr
 }
 
 fn judgedFindings(allocator: std.mem.Allocator, trace: []const u8, out: *std.ArrayList(ValidateFinding)) !void {
-    var judge = try validator.Validator.init(allocator, .{});
+    var judge = try validator.Validator.init(allocator, .{ .io = std.testing.io });
     defer judge.deinit();
     try validateTrace(allocator, &judge, trace, out);
 }
@@ -10488,4 +10646,157 @@ test "a served backend whose stdout nobody reads stops once the stall bound pass
 
     try std.testing.expectEqual(@as(?anyerror, error.OutputStalled), runner.err);
     try std.testing.expectEqualStrings(BACKEND_OUTPUT_STALLED_MESSAGE, complained);
+}
+
+const CliCase = struct {
+    good: [:0]u8,
+    malformed: [:0]u8,
+    core: [:0]u8,
+    invalid: [:0]u8,
+    base: [:0]u8,
+};
+
+fn cliCases(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir) !CliCase {
+    try tmp.dir.createDir(std.testing.io, "good", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "good/pack.json",
+        .data = "{\"id\":\"com.example.note\",\"version\":\"1.0.0\",\"schemas\":[\"note.schema.json\"],\"envelope_types\":[{\"type\":\"com.example.note.ping\",\"role\":\"event\",\"schema\":\"note.schema.json#/$defs/ping\"}]}",
+    });
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "good/note.schema.json",
+        .data = "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"$defs\":{\"ping\":{\"type\":\"object\",\"required\":[\"type\",\"session_id\"],\"properties\":{\"type\":{\"const\":\"com.example.note.ping\"},\"session_id\":{\"type\":\"string\"}}}}}",
+    });
+    try tmp.dir.createDir(std.testing.io, "malformed", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "malformed/pack.json",
+        .data = "{\"id\":\"com.example.malformed\",\"version\":\"1.0.0\",\"schemas\":\"note.schema.json\",\"envelope_types\":[]}",
+    });
+    const cwd = try std.process.currentPathAlloc(std.testing.io, allocator);
+    defer allocator.free(cwd);
+    const base = try std.fmt.allocPrintSentinel(allocator, "{s}/.zig-cache/tmp/{s}", .{ cwd[0..], tmp.sub_path[0..] }, 0);
+    const good = try std.fmt.allocPrintSentinel(allocator, "{s}/good", .{base}, 0);
+    const malformed = try std.fmt.allocPrintSentinel(allocator, "{s}/malformed", .{base}, 0);
+    const core = try std.fmt.allocPrintSentinel(allocator, "{s}/fixtures/valid/core-completed.json", .{cwd[0..]}, 0);
+    const invalid = try std.fmt.allocPrintSentinel(allocator, "{s}/fixtures/packs/bad-unprefixed-name", .{cwd[0..]}, 0);
+    return .{ .good = good, .malformed = malformed, .core = core, .invalid = invalid, .base = base };
+}
+
+fn freeCliCases(allocator: std.mem.Allocator, cases: CliCase) void {
+    allocator.free(cases.good);
+    allocator.free(cases.malformed);
+    allocator.free(cases.core);
+    allocator.free(cases.invalid);
+    allocator.free(cases.base);
+}
+
+fn runCliCase(
+    allocator: std.mem.Allocator,
+    tmp: *std.testing.TmpDir,
+    stem: []const u8,
+    packs: []const []const u8,
+    trace: []const u8,
+) !struct { refused: bool, said: []u8, judged: []u8 } {
+    var args = std.ArrayList([]const u8).empty;
+    defer args.deinit(allocator);
+    for (packs) |dir| {
+        try args.append(allocator, "--pack");
+        try args.append(allocator, dir);
+    }
+    try args.append(allocator, "--format=json");
+    try args.append(allocator, trace);
+    const out_name = try std.fmt.allocPrint(allocator, "{s}out", .{stem});
+    defer allocator.free(out_name);
+    const err_name = try std.fmt.allocPrint(allocator, "{s}err", .{stem});
+    defer allocator.free(err_name);
+    var out = try tmp.dir.createFile(std.testing.io, out_name, .{});
+    var complained = try tmp.dir.createFile(std.testing.io, err_name, .{});
+    var refused = false;
+    _ = runValidate(allocator, args.items, out, complained) catch |err| {
+        try std.testing.expectEqual(error.Unavailable, err);
+        refused = true;
+    };
+    out.close(std.testing.io);
+    complained.close(std.testing.io);
+    return .{
+        .refused = refused,
+        .said = try tmp.dir.readFileAlloc(std.testing.io, err_name, allocator, .limited(1 << 20)),
+        .judged = try tmp.dir.readFileAlloc(std.testing.io, out_name, allocator, .limited(1 << 20)),
+    };
+}
+
+test "validate judges a pure core trace and a contributed type with no refusal" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cases = try cliCases(allocator, &tmp);
+    defer freeCliCases(allocator, cases);
+
+    const core = try runCliCase(allocator, &tmp, "core", &.{}, cases.core);
+    defer allocator.free(core.said);
+    defer allocator.free(core.judged);
+    try std.testing.expect(!core.refused);
+    try std.testing.expect(std.mem.indexOf(u8, core.judged, "schema_invalid") == null);
+
+    const contributed = try runCliCase(allocator, &tmp, "contributed", &.{cases.good}, cases.core);
+    defer allocator.free(contributed.said);
+    defer allocator.free(contributed.judged);
+    try std.testing.expect(!contributed.refused);
+    try std.testing.expect(std.mem.indexOf(u8, contributed.judged, "schema_invalid") == null);
+}
+
+test "validate refuses the load when a pack is invalid, and says which code" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cases = try cliCases(allocator, &tmp);
+    defer freeCliCases(allocator, cases);
+
+    const mixed = try runCliCase(allocator, &tmp, "mixed", &.{ cases.good, cases.invalid }, cases.core);
+    defer allocator.free(mixed.said);
+    defer allocator.free(mixed.judged);
+    try std.testing.expect(mixed.refused);
+    try std.testing.expect(std.mem.indexOf(u8, mixed.said, "pack_unprefixed_name") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mixed.judged, "\"valid\": true") == null);
+
+    const malformed = try runCliCase(allocator, &tmp, "malformed", &.{cases.malformed}, cases.core);
+    defer allocator.free(malformed.said);
+    defer allocator.free(malformed.judged);
+    try std.testing.expect(malformed.refused);
+    try std.testing.expect(std.mem.indexOf(u8, malformed.judged, "\"valid\": true") == null);
+}
+
+test "validate names the code of a refusal whose pack id is longer than any fixed line buffer" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(std.testing.io, "longid", .default_dir);
+    const long_id = try std.fmt.allocPrint(allocator, "com.example.{s}", .{"x" ** 400});
+    defer allocator.free(long_id);
+    const descriptor = try std.fmt.allocPrint(allocator,
+        \\{{"id": "{s}", "version": "1.0.0", "capability_keys": ["capabilities.request.thing"]}}
+    , .{long_id});
+    defer allocator.free(descriptor);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "longid/pack.json", .data = descriptor });
+    const long_dir = try tmp.dir.realPathFileAlloc(std.testing.io, "longid", allocator);
+    defer allocator.free(long_dir);
+
+    const cases = try cliCases(allocator, &tmp);
+    defer freeCliCases(allocator, cases);
+
+    const long_run = try runCliCase(allocator, &tmp, "longid", &.{long_dir}, cases.core);
+    defer allocator.free(long_run.said);
+    defer allocator.free(long_run.judged);
+    try std.testing.expect(long_run.refused);
+    try std.testing.expect(std.mem.indexOf(u8, long_run.said, "pack load refused:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, long_run.said, "pack_unprefixed_name") != null);
+    try std.testing.expect(std.mem.indexOf(u8, long_run.said, long_id) != null);
+    try std.testing.expect(std.mem.indexOf(u8, long_run.judged, "\"valid\": true") == null);
+
+    const short_run = try runCliCase(allocator, &tmp, "shortid", &.{cases.invalid}, cases.core);
+    defer allocator.free(short_run.said);
+    defer allocator.free(short_run.judged);
+    try std.testing.expect(short_run.refused);
+    try std.testing.expect(std.mem.indexOf(u8, short_run.said, "pack load refused:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, short_run.said, "pack_unprefixed_name") != null);
+    try std.testing.expect(std.mem.indexOf(u8, short_run.judged, "\"valid\": true") == null);
 }

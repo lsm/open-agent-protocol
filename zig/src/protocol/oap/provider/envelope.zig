@@ -113,7 +113,7 @@ fn writeModelEntry(w: *json_writer.JsonWriter, entry: types.ModelEntry) !void {
     try w.beginArray();
     for (entry.capabilities) |capability| try w.writeString(@tagName(capability));
     try w.endArray();
-    try w.writeStringField("lifecycle", @tagName(entry.lifecycle));
+    if (entry.lifecycle) |value| try w.writeStringField("lifecycle", @tagName(value));
     if (entry.source) |value| try w.writeStringField("source", @tagName(value));
     if (entry.reasoning_default) |value| try w.writeStringField("reasoning_default", @tagName(value));
     try w.writeStringField("auth_status", @tagName(entry.auth_status));
@@ -1216,7 +1216,7 @@ fn deserializeModelsListResponse(obj: std.json.ObjectMap, allocator: std.mem.All
 
         const context_window = try optionalU32(entry_obj, "context_window");
         const max_output_tokens = try optionalU32(entry_obj, "max_output_tokens");
-        const lifecycle = try oap_envelope.optionalEnum(types.ModelLifecycle, entry_obj, "lifecycle") orelse .stable;
+        const lifecycle = try oap_envelope.optionalEnum(types.ModelLifecycle, entry_obj, "lifecycle");
         const source = try oap_envelope.optionalEnum(types.ModelSource, entry_obj, "source");
         const reasoning_default = try oap_envelope.optionalEnum(types.ReasoningLevel, entry_obj, "reasoning_default");
         const auth_status = try oap_envelope.optionalEnum(types.AuthStatus, entry_obj, "auth_status") orelse .unknown;
@@ -1779,6 +1779,46 @@ fn expectModelsListRoundTrip(allocator: std.mem.Allocator, line: []const u8) !ty
 }
 
 
+
+test "an entry whose lifecycle is absent does not publish the member" {
+    const allocator = std.testing.allocator;
+
+    var decoded = try deserializeEnvelope(MODELS_LIST_RESPONSE_LINE, allocator);
+    defer decoded.deinit(allocator);
+    const response = switch (decoded.payload) {
+        .provider_models_list_response => |value| value,
+        else => return error.ExpectedModelsListPayload,
+    };
+    if (response.models.len != 1) return error.ExpectedOneModel;
+    if (response.models[0].lifecycle == null) return error.ExpectedAStatedLifecycleToStartWith;
+
+    response.models[0].lifecycle = null;
+    const line = try serializeEnvelope(decoded, allocator);
+    defer allocator.free(line);
+    if (std.mem.indexOf(u8, line, "lifecycle") != null) {
+        std.debug.print("an absent lifecycle was published: {s}\n", .{line});
+        return error.AbsentLifecyclePublished;
+    }
+}
+
+test "a decoded entry with no lifecycle stays absent rather than becoming stable" {
+    const allocator = std.testing.allocator;
+    const line = try modelsListLine(
+        allocator,
+        "{\"models\":[{\"model_ref\":\"anthropic/anthropic-messages@claude-sonnet-4-5\",\"model_id\":\"claude-sonnet-4-5\"," ++
+            "\"provider_id\":\"anthropic\",\"wire\":\"anthropic-messages\",\"capabilities\":[\"chat\"]}]}",
+    );
+    defer allocator.free(line);
+
+    var decoded = try deserializeEnvelope(line, allocator);
+    defer decoded.deinit(allocator);
+    const response = switch (decoded.payload) {
+        .provider_models_list_response => |value| value,
+        else => return error.ExpectedModelsListPayload,
+    };
+    if (response.models.len != 1) return error.ExpectedOneModel;
+    if (response.models[0].lifecycle != null) return error.AbsentLifecycleBecameAValue;
+}
 
 test "an entry whose source is absent does not publish the member" {
     const allocator = std.testing.allocator;

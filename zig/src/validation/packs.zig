@@ -41,6 +41,15 @@ pub const Loaded = struct {
     pub fn deinit(self: *Loaded) void {
         self.arena.deinit();
     }
+
+    pub fn empty(child: std.mem.Allocator) Loaded {
+        return .{
+            .arena = std.heap.ArenaAllocator.init(child),
+            .branches = &.{},
+            .members = &.{},
+            .types = &.{},
+        };
+    }
 };
 
 fn beneath(root: []const u8, path: []const u8) bool {
@@ -95,6 +104,25 @@ fn toSlash(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
         if (byte.* == std.Io.Dir.path.sep) byte.* = '/';
     }
     return slashed;
+}
+
+fn field(value: std.json.Value, key: []const u8) ?std.json.Value {
+    if (value != .object) return null;
+    return value.object.get(key);
+}
+
+fn stringField(value: std.json.Value, key: []const u8) ?[]const u8 {
+    const held = field(value, key) orelse return null;
+    return if (held == .string) held.string else null;
+}
+
+fn arrayField(value: std.json.Value, key: []const u8) ?std.json.Array {
+    const held = field(value, key) orelse return null;
+    return if (held == .array) held.array else null;
+}
+
+fn asString(value: std.json.Value) ?[]const u8 {
+    return if (value == .string) value.string else null;
 }
 
 fn underPrefix(name: []const u8, prefix: []const u8) bool {
@@ -185,6 +213,7 @@ fn gather(
     var branches = std.ArrayList(Branch).empty;
     var members = std.ArrayList(Member).empty;
     var types = std.ArrayList(Declared).empty;
+    var named = std.StringHashMap(void).init(allocator);
     var load_refusals = std.ArrayList(Refusal).empty;
     var ids = std.ArrayList([]const u8).empty;
     var roots: ?std.StringHashMap(void) = null;
@@ -194,11 +223,14 @@ fn gather(
         const descriptor_bytes = try readAll(io, allocator, descriptor_path);
         const descriptor = try std.json.parseFromSliceLeaky(std.json.Value, allocator, descriptor_bytes, .{});
         if (descriptor != .object) return error.InvalidPackDescriptor;
-        const pack_id = (descriptor.object.get("id") orelse return error.InvalidPackDescriptor).string;
-        const version = (descriptor.object.get("version") orelse return error.InvalidPackDescriptor).string;
+        const pack_id = stringField(descriptor, "id") orelse return error.InvalidPackDescriptor;
+        const version = stringField(descriptor, "version") orelse return error.InvalidPackDescriptor;
+        const canonical = std.Io.Dir.cwd().realPathFileAlloc(io, dir, allocator) catch dir;
+        if (named.contains(canonical)) continue;
+        try named.put(canonical, {});
         try ids.append(allocator, pack_id);
 
-        if (descriptor.object.get("capability_keys")) |keys| {
+        if (field(descriptor, "capability_keys")) |keys| {
             if (keys == .array) {
                 for (keys.array.items) |key| {
                     if (key != .string) return error.InvalidPackDescriptor;
@@ -209,7 +241,7 @@ fn gather(
             }
         }
 
-        if (descriptor.object.get("error_codes")) |codes| {
+        if (field(descriptor, "error_codes")) |codes| {
             if (codes == .array) {
                 for (codes.array.items) |code| {
                     if (code != .string) return error.InvalidPackDescriptor;
@@ -220,76 +252,83 @@ fn gather(
             }
         }
 
-        if (registry) |target| {
-            if (descriptor.object.get("schemas")) |schemas| {
-                if (schemas != .array) return error.InvalidPackDescriptor;
-                const pack_root = std.Io.Dir.cwd().realPathFileAlloc(io, dir, allocator) catch return error.InvalidPackDescriptor;
-                const entries = schemas.array.items;
-                const names = try allocator.alloc([]const u8, entries.len);
-                const paths = try allocator.alloc([]const u8, entries.len);
-                for (entries, 0..) |schema_name, index| {
-                    if (schema_name != .string) return error.InvalidPackDescriptor;
-                    const file = schema_name.string;
-                    if (file.len == 0 or std.Io.Dir.path.isAbsolute(file)) return error.InvalidPackDescriptor;
-                    const relative = try lexicalRelative(allocator, file);
-                    const schema_path = try std.fs.path.join(allocator, &.{ dir, relative });
-                    const resolved = std.Io.Dir.cwd().realPathFileAlloc(io, schema_path, allocator) catch return error.InvalidPackDescriptor;
-                    if (!beneath(pack_root, resolved)) return error.InvalidPackDescriptor;
-                    names[index] = relative;
-                    paths[index] = resolved;
-                }
-                for (0..entries.len) |index| {
-                    const schema_bytes = try readAll(io, allocator, paths[index]);
-                    const key = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/{s}", .{ pack_base_uri, pack_id, version, try toSlash(allocator, names[index]) });
+            const declared_schemas = field(descriptor, "schemas");
+            if (declared_schemas) |held| {
+                if (held != .array) return error.InvalidPackDescriptor;
+            }
+            if (registry) |target| {
+                if (declared_schemas) |held| {
+                    const schemas = held.array;
+                    const pack_root = std.Io.Dir.cwd().realPathFileAlloc(io, dir, allocator) catch return error.InvalidPackDescriptor;
+                    const entries = schemas.items;
+                    const names = try allocator.alloc([]const u8, entries.len);
+                    const paths = try allocator.alloc([]const u8, entries.len);
+                    for (entries, 0..) |schema_name, index| {
+                        if (schema_name != .string) return error.InvalidPackDescriptor;
+                        const file = schema_name.string;
+                        if (file.len == 0 or std.Io.Dir.path.isAbsolute(file)) return error.InvalidPackDescriptor;
+                        const relative = try lexicalRelative(allocator, file);
+                        const schema_path = try std.fs.path.join(allocator, &.{ dir, relative });
+                        const resolved = std.Io.Dir.cwd().realPathFileAlloc(io, schema_path, allocator) catch return error.InvalidPackDescriptor;
+                        if (!beneath(pack_root, resolved)) return error.InvalidPackDescriptor;
+                        names[index] = relative;
+                        paths[index] = resolved;
+                    }
+                    for (0..entries.len) |index| {
+                        const schema_bytes = try readAll(io, allocator, paths[index]);
+                        const key = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/{s}", .{ pack_base_uri, pack_id, version, try toSlash(allocator, names[index]) });
                     try target.addDocument(key, schema_bytes);
                 }
             }
         }
 
-        const gates = descriptor.object.get("gates");
+        const gates = field(descriptor, "gates");
 
-        if (descriptor.object.get("payload_members")) |declared_members| {
-            for (declared_members.array.items) |entry| {
-                const payload_type = (entry.object.get("payload_type") orelse continue).string;
-                const name = (entry.object.get("member") orelse continue).string;
+        if (arrayField(descriptor, "payload_members")) |declared_members| {
+            for (declared_members.items) |entry| {
+                const payload_type = stringField(entry, "payload_type") orelse continue;
+                const name = stringField(entry, "member") orelse continue;
+                const member_schema = field(entry, "schema") orelse continue;
+                if (member_schema != .object) continue;
                 try members.append(allocator, .{
                     .payload_type = payload_type,
                     .name = name,
-                    .schema = entry.object.get("schema") orelse continue,
+                    .schema = member_schema,
                     .capability = memberCapability(gates, payload_type, name),
                 });
             }
         }
 
-        if (descriptor.object.get("envelope_types")) |declared_types| {
-            for (declared_types.array.items) |entry| {
-                const name = (entry.object.get("type") orelse continue).string;
+        if (arrayField(descriptor, "envelope_types")) |declared_types| {
+            var seen_types = std.StringHashMap(void).init(allocator);
+            for (declared_types.items) |entry| {
+                const name = stringField(entry, "type") orelse continue;
+                if (seen_types.contains(name)) return error.InvalidPackDescriptor;
+                try seen_types.put(name, {});
                 var refusals = std.ArrayList([]const u8).empty;
-                if (entry.object.get("refusals")) |listed| {
-                    if (listed == .array) {
-                        for (listed.array.items) |code| {
-                            if (code == .string) try refusals.append(allocator, code.string);
-                        }
+                if (arrayField(entry, "refusals")) |listed| {
+                    for (listed.items) |code| {
+                        if (asString(code)) |held| try refusals.append(allocator, held);
                     }
                 }
                 try types.append(allocator, .{
                     .name = name,
-                    .role = if (entry.object.get("role")) |role| role.string else "",
+                    .role = stringField(entry, "role") orelse "",
                     .capability = typeCapability(gates, name),
-                    .response = responseFor(declared_types, name),
+                    .response = responseFor(.{ .array = declared_types }, name),
                     .refusals = try refusals.toOwnedSlice(allocator),
                 });
             }
         }
 
-        const declared = descriptor.object.get("envelope_types") orelse continue;
-        for (declared.array.items) |entry| {
-            const declared_type = (entry.object.get("type") orelse continue).string;
+        const declared = arrayField(descriptor, "envelope_types") orelse continue;
+        for (declared.items) |entry| {
+            const declared_type = stringField(entry, "type") orelse continue;
             if (try namespaceRefusal(&roots, allocator, pack_id, declared_type)) |code| {
                 try load_refusals.append(allocator, .{ .code = code, .pack = pack_id, .detail = declared_type });
                 continue;
             }
-            const schema_ref = (entry.object.get("schema") orelse continue).string;
+            const schema_ref = stringField(entry, "schema") orelse continue;
             const hash = std.mem.indexOfScalar(u8, schema_ref, '#') orelse continue;
             const cleaned = (try cleanRelative(allocator, schema_ref[0..hash])) orelse schema_ref[0..hash];
             const cited = try toSlash(allocator, cleaned);
@@ -572,6 +611,99 @@ test "a descriptor schema path is read only when it lands beneath the pack root"
     try std.testing.expectError(error.InvalidPackDescriptor, load(std.testing.io, allocator, &registry, &malformed));
 }
 
+test "a schema ref naming nothing the pack contributes is registered, and no refusal says so" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cases = [_]struct { dir: []const u8, ref: []const u8, registered: bool, resolves: bool }{
+        .{ .dir = "resolves", .ref = "note.schema.json#/$defs/thing", .registered = true, .resolves = true },
+        .{ .dir = "absent-file", .ref = "absent.schema.json#/$defs/thing", .registered = true, .resolves = false },
+        .{ .dir = "absent-pointer", .ref = "note.schema.json#/$defs/absent", .registered = true, .resolves = false },
+        .{ .dir = "no-fragment", .ref = "note.schema.json", .registered = false, .resolves = false },
+    };
+    for (cases) |c| {
+        try tmp.dir.createDir(std.testing.io, c.dir, .default_dir);
+        const name = try std.fmt.allocPrint(allocator, "{s}/note.schema.json", .{c.dir});
+        defer allocator.free(name);
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = name, .data =
+                \\{"$schema": "https://json-schema.org/draft/2020-12/schema", "$defs": {"thing": {"type": "object", "required": ["type", "id", "session_id"], "properties": {"type": {"const": "com.example.ref.thing"}, "id": {"type": "string"}, "session_id": {"type": "string"}}}}}
+            ,
+        });
+        const descriptor = try std.fmt.allocPrint(allocator,
+            \\{{"id": "com.example.ref", "version": "1.0.0", "schemas": ["note.schema.json"], "envelope_types": [{{"type": "com.example.ref.thing", "role": "event", "schema": "{s}"}}]}}
+        , .{c.ref});
+        defer allocator.free(descriptor);
+        const pack = try std.fmt.allocPrint(allocator, "{s}/pack.json", .{c.dir});
+        defer allocator.free(pack);
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = pack, .data = descriptor });
+    }
+    const envelope =
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"com.example.ref.thing","id":"e1","session_id":"s","payload":{}}
+    ;
+    for (cases) |c| {
+        var registry = try jsonschema.Registry.initFromBundled(allocator);
+        defer registry.deinit();
+        const root = try tmp.dir.realPathFileAlloc(std.testing.io, c.dir, allocator);
+        defer allocator.free(root);
+        const one = [_][]const u8{root};
+        var read = try load(std.testing.io, allocator, &registry, &one);
+        defer read.deinit();
+        try std.testing.expectEqual(@as(usize, 0), read.refusals.len);
+        const want: usize = if (c.registered) 1 else 0;
+        try std.testing.expectEqual(want, read.branches.len);
+        if (c.registered) {
+            const key = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/{s}", .{ pack_base_uri, "com.example.ref", "1.0.0", c.ref });
+            defer allocator.free(key);
+            try std.testing.expectEqualStrings(key, read.branches[0].ref);
+            if (c.resolves) {
+                try std.testing.expect(try judgesAsAccepted(allocator, &registry, read.branches, envelope));
+            } else {
+                try std.testing.expectError(error.UnresolvableRef, judgesAsAccepted(allocator, &registry, read.branches, envelope));
+            }
+        }
+    }
+}
+test "a declared name outside the pack's namespace is refused before its schema is read" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cases = [_]struct { dir: []const u8, name: []const u8, schema: []const u8, code: []const u8, accepted: bool }{
+        .{ .dir = "core-missing", .name = "capabilities.request.thing", .schema = "", .code = pack_unprefixed_name, .accepted = false },
+        .{ .dir = "core-numbered", .name = "capabilities.request.thing", .schema = ", \"schema\": 7", .code = pack_unprefixed_name, .accepted = false },
+        .{ .dir = "foreign-missing", .name = "com.other.billing.thing", .schema = "", .code = pack_foreign_prefix, .accepted = false },
+        .{ .dir = "foreign-numbered", .name = "com.other.billing.thing", .schema = ", \"schema\": 7", .code = pack_foreign_prefix, .accepted = false },
+        .{ .dir = "own-missing", .name = "com.example.nsgap.thing", .schema = "", .code = "", .accepted = true },
+    };
+    for (cases) |c| {
+        try tmp.dir.createDir(std.testing.io, c.dir, .default_dir);
+        const descriptor = try std.fmt.allocPrint(allocator,
+            \\{{"id": "com.example.nsgap", "version": "1.0.0", "schemas": ["note.schema.json"], "envelope_types": [{{"type": "{s}", "role": "event"{s}}}]}}
+        , .{ c.name, c.schema });
+        defer allocator.free(descriptor);
+        const pack = try std.fmt.allocPrint(allocator, "{s}/pack.json", .{c.dir});
+        defer allocator.free(pack);
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = pack, .data = descriptor });
+        const schema_path = try std.fmt.allocPrint(allocator, "{s}/note.schema.json", .{c.dir});
+        defer allocator.free(schema_path);
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = schema_path, .data =
+                \\{"$schema": "https://json-schema.org/draft/2020-12/schema", "$defs": {"thing": {"type": "object", "required": ["type", "id", "session_id"], "properties": {"type": {"type": "string"}, "id": {"type": "string"}, "session_id": {"type": "string"}}}}}
+            ,
+        });
+    }
+    for (cases) |c| {
+        const root = try tmp.dir.realPathFileAlloc(std.testing.io, c.dir, allocator);
+        defer allocator.free(root);
+        const one = [_][]const u8{root};
+        var loaded = try describe(std.testing.io, allocator, &one);
+        defer loaded.deinit();
+        try std.testing.expectEqual(c.accepted, loaded.refusals.len == 0);
+        if (!c.accepted) {
+            try std.testing.expect(carriesCode(loaded.refusals, c.code));
+            try std.testing.expectEqual(@as(usize, 0), loaded.branches.len);
+            try std.testing.expectEqual(@as(usize, 0), loaded.types.len);
+        }
+    }
+}
 test "a schema path cleans without an arena, and a failed allocation does not leak" {
     const Runner = struct {
         fn run(allocator: std.mem.Allocator) !void {
