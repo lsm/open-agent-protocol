@@ -129,6 +129,10 @@ const Deadline = struct {
     fn timeout(self: Deadline) std.Io.Timeout {
         return lineBudget(@max(self.remainingMs(), 1));
     }
+
+    fn budget(self: Deadline) endpoint_client.Budget {
+        return .{ .io = self.io, .started = self.started, .budget_ms = self.budget_ms };
+    }
 };
 
 const ControlFrame = struct {
@@ -314,7 +318,7 @@ const Runner = struct {
 
     fn pullUntil(self: *Runner, deadline: Deadline) !void {
         if (deadline.expired()) return error.ConformanceEndpointSilent;
-        const frame = try self.client.next(deadline.timeout()) orelse return error.ConformanceEndpointSilent;
+        const frame = try self.client.next(deadline.budget()) orelse return error.ConformanceEndpointSilent;
         if (frame == .control) {
             const control = try parseControl(self.allocator, frame.control);
             self.controls.append(self.allocator, control) catch |err| {
@@ -365,7 +369,7 @@ const Runner = struct {
         while (true) {
             if (self.takeControl(id)) |found| return found;
             if (deadline.expired()) return error.ControlUnanswered;
-            const frame = self.client.next(deadline.timeout()) catch |err| {
+            const frame = self.client.next(deadline.budget()) catch |err| {
                 if (err == endpoint_client.Error.EndpointClosed) break;
                 return err;
             } orelse break;
@@ -399,7 +403,11 @@ const Runner = struct {
     }
 
     fn nextEvent(self: *Runner, deadline: Deadline) !oap_types.Envelope {
-        while (self.events.items.len == 0) try self.pullUntil(deadline);
+        while (self.events.items.len == 0) {
+            if (deadline.expired()) return error.ConformanceEndpointSilent;
+            try self.pullUntil(deadline);
+        }
+        if (deadline.expired()) return error.ConformanceEndpointSilent;
         return self.events.orderedRemove(0);
     }
 
@@ -885,7 +893,7 @@ const Runner = struct {
     fn drain(self: *Runner, deadline: Deadline) !void {
         while (true) {
             if (deadline.expired()) return;
-            const frame = (self.client.next(deadline.timeout()) catch |err| {
+            const frame = (self.client.next(deadline.budget()) catch |err| {
                 if (err == endpoint_client.Error.EndpointClosed) return;
                 try self.fail("frames the endpoint writes after the run completes decode", @errorName(err));
                 return;
@@ -1542,9 +1550,10 @@ const chatty_script =
     \\  *session.open.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"a3","in_reply_to":"conformance-request-3","payload":{"session_id":"conformance","status":"idle"}}' ;;
     \\  *session.message.submit.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"e1","sequence":1,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","status":"running"}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.completed","id":"e2","sequence":2,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","stop_reason":"end_turn","final_response":{"role":"assistant","content":"done"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"a4","in_reply_to":"conformance-request-4","payload":{"session_id":"conformance","accepted":true,"submission_id":"s1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"run-1"}}' ;;
     \\  esac
-    \\  printf '%s\n' '{"control":"heartbeat"}'
     \\done
+    \\while true; do printf '%s\n' '{"control":"heartbeat"}'; done
 ;
+
 test "a child that writes unrelated frames forever cannot outlive the probe budget" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     const io = std.testing.io;
@@ -1553,6 +1562,7 @@ test "a child that writes unrelated frames forever cannot outlive the probe budg
         .command = "/bin/sh",
         .args = &.{ "-c", chatty_script },
         .probe_budget_ms = 1500,
+        .exit_grace_ms = 500,
     });
     defer report.deinit();
     const elapsed = before.durationTo(std.Io.Timestamp.now(io, .awake));
@@ -1675,4 +1685,67 @@ test "a probe deadline only ever runs down" {
     std.Io.sleep(io, .fromMilliseconds(60), .awake) catch {};
     try std.testing.expect(d.expired());
     try std.testing.expect(d.remainingMs() < 0);
+}
+
+const blank_line_flood_script =
+    \\while read -r line; do
+    \\  case "$line" in
+    \\  *protocol.initialize.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"protocol.initialize.response","id":"a1","in_reply_to":"conformance-request-1","payload":{"protocol_version":"0.1","profile":"open-agent-protocol.agent-control-core","endpoint":{"id":"fake"}}}' ;;
+    \\  *capabilities.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"a2","in_reply_to":"conformance-request-2","capability_revision":"rev-1","payload":{"endpoint":{"id":"fake"},"features":{}}}' ;;
+    \\  *session.open.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"a3","in_reply_to":"conformance-request-3","payload":{"session_id":"conformance","status":"idle"}}' ;;
+    \\  *session.message.submit.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"e1","sequence":1,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","status":"running"}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.completed","id":"e2","sequence":2,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","stop_reason":"end_turn","final_response":{"role":"assistant","content":"done"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"a4","in_reply_to":"conformance-request-4","payload":{"session_id":"conformance","accepted":true,"submission_id":"s1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"run-1"}}' ;;
+    \\  esac
+    \\done
+    \\while true; do printf '\n\n\n\n\n\n\n\n'; done
+;
+
+const partial_line_trickle_script =
+    \\while read -r line; do
+    \\  case "$line" in
+    \\  *protocol.initialize.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"protocol.initialize.response","id":"a1","in_reply_to":"conformance-request-1","payload":{"protocol_version":"0.1","profile":"open-agent-protocol.agent-control-core","endpoint":{"id":"fake"}}}' ;;
+    \\  *capabilities.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"a2","in_reply_to":"conformance-request-2","capability_revision":"rev-1","payload":{"endpoint":{"id":"fake"},"features":{}}}' ;;
+    \\  *session.open.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"a3","in_reply_to":"conformance-request-3","payload":{"session_id":"conformance","status":"idle"}}' ;;
+    \\  *session.message.submit.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"e1","sequence":1,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","status":"running"}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.completed","id":"e2","sequence":2,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","stop_reason":"end_turn","final_response":{"role":"assistant","content":"done"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"a4","in_reply_to":"conformance-request-4","payload":{"session_id":"conformance","accepted":true,"submission_id":"s1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"run-1"}}' ;;
+    \\  esac
+    \\done
+    \\while true; do printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agen'; sleep 0.05; done
+;
+
+fn elapsedMs(io: std.Io, before: std.Io.Timestamp) i64 {
+    const d = before.durationTo(std.Io.Timestamp.now(io, .awake));
+    return @as(i64, @intCast(@divTrunc(d.toNanoseconds(), std.time.ns_per_ms)));
+}
+
+test "a blank-line flood cannot keep a correlation inside next" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const io = std.testing.io;
+    const before = std.Io.Timestamp.now(io, .awake);
+    var report = try run(std.testing.allocator, .{
+        .command = "/bin/sh",
+        .args = &.{ "-c", blank_line_flood_script },
+        .probe_budget_ms = 1200,
+        .exit_grace_ms = 500,
+    });
+    defer report.deinit();
+    const spent = elapsedMs(io, before);
+
+    try std.testing.expect(spent >= 0);
+    try std.testing.expect(spent < 15_000);
+}
+
+test "a partial line trickled in forever cannot keep a correlation inside next" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const io = std.testing.io;
+    const before = std.Io.Timestamp.now(io, .awake);
+    var report = try run(std.testing.allocator, .{
+        .command = "/bin/sh",
+        .args = &.{ "-c", partial_line_trickle_script },
+        .probe_budget_ms = 1200,
+        .exit_grace_ms = 500,
+    });
+    defer report.deinit();
+    const spent = elapsedMs(io, before);
+
+    try std.testing.expect(spent >= 0);
+    try std.testing.expect(spent < 15_000);
 }

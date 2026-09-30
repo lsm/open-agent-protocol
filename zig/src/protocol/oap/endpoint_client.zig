@@ -19,6 +19,35 @@ pub const Spawn = struct {
     environment: []const []const u8 = &.{},
 };
 
+pub const Budget = struct {
+    io: std.Io,
+    started: std.Io.Timestamp,
+    budget_ms: i64,
+
+    pub fn until(io: std.Io, budget_ms: i64) Budget {
+        return .{
+            .io = io,
+            .started = std.Io.Timestamp.now(io, .awake),
+            .budget_ms = @max(budget_ms, 0),
+        };
+    }
+
+    pub fn remainingMs(self: Budget) i64 {
+        const spent = self.started.durationTo(std.Io.Timestamp.now(self.io, .awake));
+        return self.budget_ms - @as(i64, @intCast(@divTrunc(spent.toNanoseconds(), std.time.ns_per_ms)));
+    }
+
+    pub fn expired(self: Budget) bool {
+        return self.remainingMs() <= 0;
+    }
+
+    pub fn timeout(self: Budget) std.Io.Timeout {
+        return .{
+            .duration = .{ .raw = std.Io.Duration.fromMilliseconds(@max(self.remainingMs(), 1)), .clock = .boot },
+        };
+    }
+};
+
 pub const Frame = union(enum) {
     envelope: []const u8,
     control: []const u8,
@@ -122,14 +151,16 @@ pub const Client = struct {
         try stdin.writeStreamingAll(self.io(), "\n");
     }
 
-    pub fn next(self: *Client, timeout: std.Io.Timeout) !?Frame {
+    pub fn next(self: *Client, budget: Budget) !?Frame {
         while (true) {
+            if (budget.expired()) return null;
             if (try self.takeLine()) |line| {
                 const trimmed = std.mem.trim(u8, line, " \t\r");
                 if (trimmed.len == 0) continue;
                 return try classify(trimmed);
             }
-            const filled = try self.fill(timeout);
+            if (budget.expired()) return null;
+            const filled = try self.fill(budget.timeout());
             if (!filled) return null;
         }
     }
@@ -319,7 +350,7 @@ test "a line written to an endpoint comes back framed, and the buffer is the cli
     const sent = "{\"protocol\":\"open-agent-protocol\",\"id\":\"q1\",\"type\":\"capabilities.request\"}";
     try client.write(sent);
 
-    const deadline: std.Io.Timeout = .{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(5000), .clock = .boot } };
+    const deadline = Budget.until(std.testing.io, 5000);
     var seen: ?Frame = null;
     var attempts: usize = 0;
     while (seen == null and attempts < 20) : (attempts += 1) {
@@ -359,7 +390,7 @@ fn probeHome(allowlist: []const []const u8, inherit: bool) ![]const u8 {
         .environment = names.items,
     });
     defer client.deinit();
-    const deadline: std.Io.Timeout = .{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(5000), .clock = .boot } };
+    const deadline = Budget.until(std.testing.io, 5000);
     var attempts: usize = 0;
     while (attempts < 20) : (attempts += 1) {
         const frame = try client.next(deadline) orelse continue;
@@ -400,7 +431,7 @@ test "the client drives a real endpoint binary when the operator names one" {
 
     try client.write("{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"capabilities.request\",\"id\":\"q1\",\"payload\":{}}");
 
-    const deadline: std.Io.Timeout = .{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(10000), .clock = .boot } };
+    const deadline = Budget.until(std.testing.io, 10000);
     var attempts: usize = 0;
     while (attempts < 60) : (attempts += 1) {
         const frame = try client.next(deadline) orelse continue;
