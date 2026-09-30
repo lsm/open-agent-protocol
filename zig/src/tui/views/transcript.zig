@@ -1182,6 +1182,13 @@ fn writeTable(allocator: std.mem.Allocator, writer: *std.Io.Writer, header: []co
         for (cursors, 0..) |*cursor, c| cursor.* = .{ .urls = links[r * columns + c] };
         var height: usize = 1;
         for (cells, 0..) |cell, c| {
+            var probe = cursors[c];
+            if (tui_text.visibleWidth(try styledCell(arena, cell, style, &probe)) <= widths[c]) {
+                const whole = try arena.alloc([]const u8, 1);
+                whole[0] = cell;
+                wrapped[c] = whole;
+                continue;
+            }
             var out: std.Io.Writer.Allocating = .init(arena);
             try wrapPlainLine(arena, &out.writer, cell, widths[c]);
             var parts = std.ArrayList([]const u8).empty;
