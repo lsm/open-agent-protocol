@@ -146,15 +146,23 @@ Migrated and on main:
 Audited on the base of this change, Python had the same defect class in
 **both** of its readers, and neither was fixed:
 
-- `_oap.py:244` — `lifecycle=item.get("lifecycle", "stable")` invented `stable`
-  for an absent member, and a stated `null` arrived as `None` rather than being
-  refused. `:246` invented `dynamic` for an absent member **and** for any
-  unrecognised literal, and accepted the shared aliases `dynamic` and
-  `static_fallback` on the wire where `modelSource` permits only `discovered`
-  and `fallback`.
-- `models.py:317,321` — the shared reader called `_require_known` on both, so
-  an absent member was rejected outright rather than read as unknown.
-- `types.py:395,397` — both members were required on the shared descriptor.
+- `sdk/python/src/oap_sdk/_oap.py:244` — `lifecycle=item.get("lifecycle", "stable")`
+  invents `stable` for an absent member, and a member present as `null`
+  arrives as `None` rather than being refused.
+- `sdk/python/src/oap_sdk/_oap.py:246` —
+  `"static_fallback" if item.get("source") == "fallback" else "dynamic"`
+  invents `dynamic` for an absent member **and** for any unrecognised literal,
+  and it accepts the shared aliases `dynamic`/`static_fallback` on the wire
+  where the `modelSource` enum permits only `discovered` and `fallback`.
+- `sdk/python/src/oap_sdk/models.py:317,321` — the shared reader calls
+  `_require_known` on both members, so an absent one is rejected outright
+  rather than read as unknown.
+- `sdk/python/src/oap_sdk/types.py:395,397` — both members are required on the
+  shared descriptor.
+
+The OAP reader's deprecation filter at `_oap.py:233` is already correct: it
+compares against the literal `"deprecated"`, so an absent member does not
+match and the model stays in the listing.
 
 That audit is kept as the record of what the gap was. **Python is now
 migrated in this change**, under the same absence-versus-present-null policy
