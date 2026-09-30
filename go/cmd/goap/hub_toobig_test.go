@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-func TestHubAddrRefusesAnOversizedDeclaredLengthAndReadsOnlyPartOfIt(t *testing.T) {
+func TestHubAddrAnswersAComplete413BeforeTheWholeDeclaredBodyIsSent(t *testing.T) {
 	const maxTestBodyBytes = 16 << 20
 	for _, declared := range []int{maxTestBodyBytes + 1, 1 << 34} {
 		t.Run(strconv.Itoa(declared), func(t *testing.T) {
@@ -109,13 +109,13 @@ func TestHubAddrRefusesAnOversizedDeclaredLengthAndReadsOnlyPartOfIt(t *testing.
 				t.Fatalf("the writer was still going 30s after the daemon was signalled")
 			}
 			if !cutShort {
-				t.Fatalf("the client pushed all %d declared bytes while the daemon kept serving, so the daemon read the whole declaration", declared)
+				t.Fatalf("the client was still able to send all %d declared bytes, so this run observed no early stop and cannot show the declaration went unread", declared)
 			}
 			sent := written.Load()
 			if sent <= 0 {
-				t.Fatalf("no body byte was transferred, so the 413 path never read anything")
+				t.Fatalf("the client transferred no body byte, so nothing was in flight and the early stop was not observed")
 			}
-			t.Logf("declared %d, refused 413 with a %d-byte body, the client had pushed %d bytes when the writer stopped; these are client write counts, not a count of bytes the daemon read, so this pins that the declaration was not read whole and does not pin the drain's cap or budget", declared, len(body), sent)
+			t.Logf("declared %d, refused 413 with a complete %d-byte envelope, and the client had sent %d of the declared bytes and was still writing when it stopped; every number here is a client write count, so this pins the refusal is complete and complete before the declared body was sent, and pins nothing about how many bytes the daemon read", declared, len(body), sent)
 		})
 	}
 }
