@@ -507,6 +507,10 @@ fn finalizeToolExecution(
     try results.append(allocator, tool_result_msg);
 }
 
+fn parkAbandonedMessage(state: *LoopState, message: ai_types.AssistantMessage) void {
+    state.abandoned_message = message;
+}
+
 fn runLegacyApproval(tool: AgentTool, approval_request: types.ToolApprovalRequest, allocator: std.mem.Allocator) types.ToolApprovalDecision {
     if (tool.approval_ui_fn) |notify| {
         notify(tool.approval_ui_ctx, approval_request, allocator);
@@ -1446,8 +1450,7 @@ fn runLoop(
             state.iterations += 1;
             const loop_owns_message = assistant_message.is_owned or assistant_message.error_message.is_owned;
             var message_transferred = false;
-            var unsent_message = assistant_message;
-            errdefer if (loop_owns_message and !message_transferred) unsent_message.deinit(allocator);
+            errdefer if (loop_owns_message and !message_transferred) parkAbandonedMessage(&state, assistant_message);
             try setFinalMessage(&state, allocator, assistant_message);
             try appendClonedStateMessage(&state.messages, allocator, .{ .assistant = assistant_message });
 
