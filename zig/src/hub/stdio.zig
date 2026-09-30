@@ -187,13 +187,18 @@ pub fn statusForRefusal(code: []const u8) ?[]const u8 {
         .{ .code = "scope_mismatch", .status = "400 Bad Request" },
         .{ .code = "request_cancelled", .status = "400 Bad Request" },
         .{ .code = "request_too_large", .status = "413 Payload Too Large" },
+        .{ .code = "stale_capabilities", .status = "409 Conflict" },
+        .{ .code = "run_active", .status = "409 Conflict" },
+        .{ .code = "model_not_found", .status = "400 Bad Request" },
+        .{ .code = "state_failed", .status = "500 Internal Server Error" },
+        .{ .code = "tools_failed", .status = "502 Bad Gateway" },
         .{ .code = "invalid_request", .status = "400 Bad Request" },
         .{ .code = "schema_invalid", .status = "400 Bad Request" },
         .{ .code = "malformed_json", .status = "400 Bad Request" },
         .{ .code = "type_mismatch", .status = "400 Bad Request" },
         .{ .code = "internal", .status = "500 Internal Server Error" },
         .{ .code = "probe_failed", .status = "500 Internal Server Error" },
-        .{ .code = "open_failed", .status = "500 Internal Server Error" },
+        .{ .code = "open_failed", .status = "502 Bad Gateway" },
     };
     for (named) |entry| {
         if (std.mem.eql(u8, entry.code, code)) return entry.status;
@@ -2235,16 +2240,39 @@ test "the refusals the open gate and the payload read name" {
     }
 }
 
-test "a refusal code carries the status the draft pins, and an unnamed one carries none" {
-    try testing.expectEqualStrings("404 Not Found", statusForRefusal("unknown_session").?);
-    try testing.expectEqualStrings("404 Not Found", statusForRefusal("unknown_adapter").?);
-    try testing.expectEqualStrings("409 Conflict", statusForRefusal("session_closed").?);
-    try testing.expectEqualStrings("400 Bad Request", statusForRefusal("unsupported_feature").?);
-    try testing.expectEqualStrings("400 Bad Request", statusForRefusal("capability_degraded").?);
-    try testing.expectEqualStrings("500 Internal Server Error", statusForRefusal("internal").?);
-    try testing.expectEqualStrings("413 Payload Too Large", statusForRefusal("request_too_large").?);
+test "an unnamed refusal code carries no status, so the wire rule can refuse it" {
     try testing.expect(statusForRefusal("method_not_allowed") == null);
     try testing.expect(statusForRefusal("invented_later") == null);
+    try testing.expect(statusForRefusal("405") == null);
+}
+test "every code the transport can answer carries the status the draft pins" {
+    const named = [_]struct { code: []const u8, status: []const u8 }{
+        .{ .code = "unknown_adapter", .status = "404 Not Found" },
+        .{ .code = "unknown_session", .status = "404 Not Found" },
+        .{ .code = "session_closed", .status = "409 Conflict" },
+        .{ .code = "session_exists", .status = "409 Conflict" },
+        .{ .code = "stale_capabilities", .status = "409 Conflict" },
+        .{ .code = "run_active", .status = "409 Conflict" },
+        .{ .code = "unsupported_feature", .status = "400 Bad Request" },
+        .{ .code = "capability_degraded", .status = "400 Bad Request" },
+        .{ .code = "scope_mismatch", .status = "400 Bad Request" },
+        .{ .code = "request_cancelled", .status = "400 Bad Request" },
+        .{ .code = "model_not_found", .status = "400 Bad Request" },
+        .{ .code = "invalid_request", .status = "400 Bad Request" },
+        .{ .code = "schema_invalid", .status = "400 Bad Request" },
+        .{ .code = "malformed_json", .status = "400 Bad Request" },
+        .{ .code = "type_mismatch", .status = "400 Bad Request" },
+        .{ .code = "request_too_large", .status = "413 Payload Too Large" },
+        .{ .code = "state_failed", .status = "500 Internal Server Error" },
+        .{ .code = "internal", .status = "500 Internal Server Error" },
+        .{ .code = "probe_failed", .status = "500 Internal Server Error" },
+        .{ .code = "tools_failed", .status = "502 Bad Gateway" },
+        .{ .code = "open_failed", .status = "502 Bad Gateway" },
+    };
+    for (named) |entry| {
+        try testing.expectEqualStrings(entry.status, statusForRefusal(entry.code).?);
+    }
+    try testing.expectEqual(@as(usize, 21), named.len);
 }
 
 test "refusal details render as the object the envelope carries" {
