@@ -380,8 +380,6 @@ pub fn declaresJson(content_type: ?[]const u8) bool {
     return parametersWellFormed(media[cut..]);
 }
 
-const max_media_parameters = 64;
-
 const parameter_store_bytes = 2 * max_header_bytes;
 
 fn parametersWellFormed(parameters: []const u8) bool {
