@@ -272,6 +272,13 @@ pub fn statusForRefusal(code: []const u8) ?[]const u8 {
         .{ .code = "scope_mismatch", .status = "400 Bad Request" },
         .{ .code = "request_cancelled", .status = "400 Bad Request" },
         .{ .code = "request_too_large", .status = "413 Payload Too Large" },
+        .{ .code = "run_not_found", .status = "404 Not Found" },
+        .{ .code = "invalid_submission", .status = "400 Bad Request" },
+        .{ .code = "invalid_cursor", .status = "400 Bad Request" },
+        .{ .code = "replay_cursor_future", .status = "400 Bad Request" },
+        .{ .code = "resolution_rejected", .status = "409 Conflict" },
+        .{ .code = "run_terminal", .status = "409 Conflict" },
+        .{ .code = "no_run_to_resume", .status = "409 Conflict" },
         .{ .code = "stale_capabilities", .status = "409 Conflict" },
         .{ .code = "run_active", .status = "409 Conflict" },
         .{ .code = "model_not_found", .status = "400 Bad Request" },
@@ -289,6 +296,14 @@ pub fn statusForRefusal(code: []const u8) ?[]const u8 {
         if (std.mem.eql(u8, entry.code, code)) return entry.status;
     }
     return null;
+}
+
+pub fn featureReasonDetails(feature: []const u8, reason: []const u8) [2]oap_types.DetailEntry {
+    return .{ .{ .key = "feature", .value = feature }, .{ .key = "reason", .value = reason } };
+}
+
+pub fn featureOnlyDetail(feature: []const u8) [1]oap_types.DetailEntry {
+    return .{.{ .key = "feature", .value = feature }};
 }
 
 pub fn detailsJson(arena: std.mem.Allocator, details: []const oap_types.DetailEntry) Error!std.json.Value {
@@ -888,13 +903,8 @@ pub const Frontend = struct {
             error.UnknownSession => .{ .code = "unknown_session", .message = try std.fmt.allocPrint(arena, "no session \"{s}\"", .{session_id}) },
             error.SessionClosed => .{ .code = "session_closed", .message = try std.fmt.allocPrint(arena, "no session \"{s}\"", .{session_id}) },
             error.ScopeMismatch => .{ .code = "scope_mismatch", .message = try std.fmt.allocPrint(arena, "no session \"{s}\"", .{session_id}) },
-            error.UnsupportedFeature, error.ToolCatalogUnavailable => try refusalWith(arena, "unsupported_feature", @errorName(err), &.{
-                .{ .key = "feature", .value = feature },
-                .{ .key = "reason", .value = contract.reason_unadvertised },
-            }),
-            error.CapabilityDegraded => try refusalWith(arena, "capability_degraded", @errorName(err), &.{
-                .{ .key = "feature", .value = feature },
-            }),
+            error.UnsupportedFeature, error.ToolCatalogUnavailable => try refusalWith(arena, "unsupported_feature", @errorName(err), &featureReasonDetails(feature, contract.reason_unadvertised)),
+            error.CapabilityDegraded => try refusalWith(arena, "capability_degraded", @errorName(err), &featureOnlyDetail(feature)),
             error.ModelNotFound => try refusalWith(arena, "model_not_found", @errorName(err), &.{}),
             error.CatalogMisScoped => .{ .code = fallback, .message = "the adapter served a catalog scoped to another session" },
             error.CatalogUnlabelled => .{ .code = fallback, .message = "the adapter served a catalog with no capability revision" },
@@ -2404,11 +2414,18 @@ test "every code the transport can answer carries the status the draft pins" {
         .{ .code = "probe_failed", .status = "500 Internal Server Error" },
         .{ .code = "tools_failed", .status = "502 Bad Gateway" },
         .{ .code = "open_failed", .status = "502 Bad Gateway" },
+        .{ .code = "run_not_found", .status = "404 Not Found" },
+        .{ .code = "invalid_submission", .status = "400 Bad Request" },
+        .{ .code = "invalid_cursor", .status = "400 Bad Request" },
+        .{ .code = "replay_cursor_future", .status = "400 Bad Request" },
+        .{ .code = "resolution_rejected", .status = "409 Conflict" },
+        .{ .code = "run_terminal", .status = "409 Conflict" },
+        .{ .code = "no_run_to_resume", .status = "409 Conflict" },
     };
     for (named) |entry| {
         try testing.expectEqualStrings(entry.status, statusForRefusal(entry.code).?);
     }
-    try testing.expectEqual(@as(usize, 21), named.len);
+    try testing.expectEqual(@as(usize, 28), named.len);
 }
 
 test "refusal details render as the object the envelope carries" {
