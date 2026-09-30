@@ -537,19 +537,77 @@ func TestADeepSeekAssistantPassesItsReasoningBackAsReasoningContent(t *testing.T
 	}
 }
 
-func TestAReplyHoldingOnlyReasoningGoesBackAsItsContent(t *testing.T) {
+func TestAReplyHoldingOnlyReasoningKeepsItsReasoningAndStillHasContent(t *testing.T) {
 	model := loopbackModel()
 	model.BaseURL = "https://api.deepseek.com"
 	ctx := Context{Messages: []Message{{Assistant: &AssistantContent{API: "openai-completions", Provider: "local", Model: "local-model", Parts: []ContentPart{
 		{Thinking: &ThinkingPart{Thinking: "the plan, written as reasoning"}},
 	}}}}}
 	got := messages(t, BuildRequestBody(model, ctx, StreamOptions{}))[0].(map[string]any)
-	if _, ok := got["reasoning_content"]; ok {
-		t.Errorf("a reply with only reasoning carries it as content, not reasoning_content: %v", got)
+	if got["reasoning_content"] != "the plan, written as reasoning" {
+		t.Errorf("reasoning_content = %v, want the reasoning kept as reasoning", got["reasoning_content"])
+	}
+	if got["content"] != "" {
+		t.Errorf("content = %v, want an empty string, since deepseek refuses a message with neither content nor tool calls", got["content"])
+	}
+}
+
+func TestAReasoningOnlyReplyKeepsItsReasoningOnARequestCarryingTools(t *testing.T) {
+	model := loopbackModel()
+	model.BaseURL = "https://api.deepseek.com"
+	ctx := Context{
+		Messages: []Message{{Assistant: &AssistantContent{API: "openai-completions", Provider: "local", Model: "local-model", Parts: []ContentPart{
+			{Thinking: &ThinkingPart{Thinking: "weighing the options"}},
+		}}}},
+		Tools: []Tool{{Name: "lookup", Description: "d", Parameters: json.RawMessage(`{"type":"object"}`)}},
+	}
+	got := messages(t, BuildRequestBody(model, ctx, StreamOptions{}))[0].(map[string]any)
+	if got["reasoning_content"] != "weighing the options" {
+		t.Errorf("reasoning_content = %v, want the reasoning kept, since deepseek requires all prior reasoning on a request carrying tools", got["reasoning_content"])
+	}
+	if got["content"] != "" {
+		t.Errorf("content = %v, want an empty string, so the message is not left with neither content nor tool calls", got["content"])
+	}
+}
+
+func TestAReasoningReplyBesideTextAndAToolCallIsUnchanged(t *testing.T) {
+	model := loopbackModel()
+	model.BaseURL = "https://api.deepseek.com"
+	ctx := Context{Messages: []Message{{Assistant: &AssistantContent{API: "openai-completions", Provider: "local", Model: "local-model", Parts: []ContentPart{
+		{Thinking: &ThinkingPart{Thinking: "deciding"}},
+		{Text: &TextPart{Text: "answer"}},
+		{ToolCall: &ToolCall{ID: "call_1", Name: "lookup", Arguments: "{}"}},
+	}}}}}
+	got := messages(t, BuildRequestBody(model, ctx, StreamOptions{}))[0].(map[string]any)
+	if got["reasoning_content"] != "deciding" {
+		t.Errorf("reasoning_content = %v, want the reasoning beside the answer", got["reasoning_content"])
 	}
 	parts, ok := got["content"].([]any)
-	if !ok || len(parts) != 1 || parts[0].(map[string]any)["text"] != "the plan, written as reasoning" {
-		t.Errorf("content = %v, want the reasoning, since deepseek refuses a message with neither content nor tool calls", got["content"])
+	if !ok || len(parts) != 1 || parts[0].(map[string]any)["text"] != "answer" {
+		t.Errorf("content = %v, want only the answer, not the reasoning folded in", got["content"])
+	}
+	if _, ok := got["tool_calls"]; !ok {
+		t.Errorf("the tool call is dropped: %v", got)
+	}
+}
+
+func TestAModelThatAsksForItsThinkingAsTextStillGetsItInsideTheContent(t *testing.T) {
+	model := loopbackModel()
+	model.BaseURL = "https://api.deepseek.com"
+	model.Compat = CompatOptions{RequiresThinkingAsText: boolPtr(true)}
+	ctx := Context{
+		Messages: []Message{{Assistant: &AssistantContent{API: "openai-completions", Provider: "local", Model: "local-model", Parts: []ContentPart{
+			{Thinking: &ThinkingPart{Thinking: "only reasoning here"}},
+		}}}},
+		Tools: []Tool{{Name: "lookup", Description: "d", Parameters: json.RawMessage(`{"type":"object"}`)}},
+	}
+	got := messages(t, BuildRequestBody(model, ctx, StreamOptions{}))[0].(map[string]any)
+	if _, ok := got["reasoning_content"]; ok {
+		t.Errorf("the model declared that it takes its thinking as text, so there is no separate member: %v", got)
+	}
+	parts, ok := got["content"].([]any)
+	if !ok || len(parts) != 1 || parts[0].(map[string]any)["text"] != "only reasoning here" {
+		t.Errorf("content = %v, want the reasoning as the only content part, even on a request carrying tools", got["content"])
 	}
 }
 

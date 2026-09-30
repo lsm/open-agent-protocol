@@ -178,17 +178,15 @@ func assistantContentValue(a *AssistantContent, model Model, merged MergedCompat
 			texts = append(visibleThinkings(a.Parts), texts...)
 		}
 		return textPartArray(texts)
-	case thinkingAsText(merged, shape) && shape.hasThinking:
+	case merged.RequiresThinkingAsText && shape.hasThinking:
 		return textPartArray(visibleThinkings(a.Parts))
 	case merged.RequiresThinkingAsText:
+		return jsonString("")
+	case shape.hasThinking:
 		return jsonString("")
 	default:
 		return jsonNull{}
 	}
-}
-
-func thinkingAsText(merged MergedCompat, shape assistantShape) bool {
-	return merged.RequiresThinkingAsText || (shape.hasThinking && !shape.hasText && !shape.hasToolCall)
 }
 
 func textPartArray(texts []string) jsonArray {
@@ -220,7 +218,7 @@ func assistantMessage(a *AssistantContent, model Model, merged MergedCompat) (js
 		member("content", assistantContentValue(a, model, merged, shape)),
 	}
 
-	if shape.hasThinking && !thinkingAsText(merged, shape) {
+	if shape.hasThinking && !merged.RequiresThinkingAsText {
 		thinking := visibleThinkings(a.Parts)
 		if len(thinking) > 0 {
 			out = out.with(member(reasoningFieldName(a.Parts), jsonString(strings.Join(thinking, "\n"))))
