@@ -1279,12 +1279,28 @@ const LinkMatch = struct { label: []const u8, target: []const u8, end: usize };
 fn matchLink(text: []const u8, open: usize) ?LinkMatch {
     const label_end = std.mem.indexOfScalarPos(u8, text, open + 1, ']') orelse return null;
     if (label_end == open + 1 or label_end + 1 >= text.len or text[label_end + 1] != '(') return null;
-    const target_end = std.mem.indexOfScalarPos(u8, text, label_end + 2, ')') orelse return null;
+    const target_end = closingParen(text, label_end + 2) orelse return null;
     const inside = std.mem.trim(u8, text[label_end + 2 .. target_end], " ");
     const target_len = std.mem.indexOfAny(u8, inside, " \t") orelse inside.len;
     const title = std.mem.trim(u8, inside[target_len..], " \t");
     if (target_len == 0 or !isLinkTitle(title)) return null;
     return .{ .label = text[open + 1 .. label_end], .target = inside[0..target_len], .end = target_end + 1 };
+}
+
+fn closingParen(text: []const u8, from: usize) ?usize {
+    var depth: usize = 0;
+    var i = from;
+    while (i < text.len) : (i += 1) {
+        switch (text[i]) {
+            '(' => depth += 1,
+            ')' => {
+                if (depth == 0) return i;
+                depth -= 1;
+            },
+            else => {},
+        }
+    }
+    return null;
 }
 
 fn isLinkTitle(title: []const u8) bool {
@@ -1342,7 +1358,7 @@ fn extractLinks(allocator: std.mem.Allocator, text: []const u8, urls: *std.Array
             var run: usize = 0;
             while (i + run < text.len and text[i + run] == '`') run += 1;
             const end = if (findCodeClose(text, i + run, run)) |close| close + run else i + run;
-            try out.appendSlice(allocator, text[i..end]);
+            try appendNeutralized(allocator, &out, text[i..end]);
             i = end;
             continue;
         }
@@ -2115,6 +2131,27 @@ test "a backtick inside a link label cannot pair with one outside the link" {
     const plain = try stripEscapesForTest(std.testing.allocator, styled);
     defer std.testing.allocator.free(plain);
     try std.testing.expectEqualStrings("see apt` and git info", plain);
+}
+
+test "a marker character inside a code span stays inside it and shifts no link" {
+    const styled = try renderAssistantStyled(std.testing.allocator, "`x\u{E000}y` and [k](https://b.example)", 80);
+    defer std.testing.allocator.free(styled);
+    const probe = try tui_theme.inlineCode().render(std.testing.allocator, "x\u{FFFD}y");
+    defer std.testing.allocator.free(probe);
+    try std.testing.expect(std.mem.indexOf(u8, styled, probe) != null);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, styled, "\x1b]8;id="));
+    const plain = try stripEscapesForTest(std.testing.allocator, styled);
+    defer std.testing.allocator.free(plain);
+    try std.testing.expectEqualStrings("x\u{FFFD}y and k", plain);
+}
+
+test "a link target keeps its balanced parentheses" {
+    const styled = try renderAssistantStyled(std.testing.allocator, "[wiki](https://en.wikipedia.org/wiki/Foo_(bar)) done", 80);
+    defer std.testing.allocator.free(styled);
+    try std.testing.expect(std.mem.indexOf(u8, styled, ";https://en.wikipedia.org/wiki/Foo_(bar)\x1b\\") != null);
+    const plain = try stripEscapesForTest(std.testing.allocator, styled);
+    defer std.testing.allocator.free(plain);
+    try std.testing.expectEqualStrings("wiki done", plain);
 }
 
 test "a link that wraps keeps its target on every row it spans" {
