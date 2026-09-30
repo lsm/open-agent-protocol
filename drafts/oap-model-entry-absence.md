@@ -12,13 +12,13 @@ published `"lifecycle":"stable"` the peer never sent.
 ## What this does not claim
 
 **Not every publisher is corrected.** The OAP provider codec and the
-`ModelEntry` type are; nothing else is fixed by the `source` change, #673.
+`ModelEntry` type are; nothing else is fixed by the `lifecycle` change, #665.
 
 The built-in fallback rows in `populateOapProviderCatalog` are the clearest
 case. `BuiltInProvider` (`oap/provider/catalog.zig:120-132`) has no
 `lifecycle` member at all, so those rows never stated one — they published
-`stable` only because the type supplied the default. This change does not
-replace that default with an explicit `stable`, which would republish the
+`stable` only because the type supplied the default. The `lifecycle` change
+does not replace that default with an explicit `stable`, which would republish the
 same invented value under a new line. Their entries now omit `lifecycle`,
 and a client reads the absence as unknown, per
 `drafts/model-provider-core.md:382-390`.

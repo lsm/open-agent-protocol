@@ -38,8 +38,7 @@ That separation held, and it is now history rather than a plan. #673 landed
 the `source` half first; this document's companion change, the `lifecycle`
 half, is what follows it. After both, both members are
 `?ModelLifecycle = null` and `?ModelSource = null`, and the `lifecycle`
-correction described in `drafts/oap-model-entry-absence.md` is the one landing
-here.
+correction described in `drafts/oap-model-entry-absence.md` is #665.
 
 **The SDK readers were decided separately, and they have now landed.** When
 this was written, `sdk/typescript` still mapped the OAP wire into the native
@@ -98,9 +97,10 @@ distinct halves — not three re-decode round-trips.
 
 ### Historical measurement — before the reader migrations
 
-Measured on the `source` change's original base, which predates #688, #690,
-#709, #710 and #712. **Kept as evidence of what the gap was**, not as a
-description of any current tree; the row for every migrated SDK is now false.
+Measured on the `source` change's original base, which predates every reader
+migration: #688, #690 and #705 for `source`, and #709, #710 and #712 for
+`lifecycle`. **Kept as evidence of what the gap was**, not as a description of
+any current tree; the row for every migrated SDK is now false.
 
 | SDK | absent lifecycle | absent source | mode |
 |---|---|---|---|
