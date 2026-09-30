@@ -75,13 +75,11 @@ func TestHubAddrFinishesTheRefusalAndStopsTheBodyWhenItsSignalArrives(t *testing
 
 	answer, err := http.ReadResponse(bufio.NewReader(conn), nil)
 	if err != nil {
-		_ = conn.Close()
 		t.Fatalf("read the answer after %d bytes: %v", written.Load(), err)
 	}
 	body, err := io.ReadAll(answer.Body)
 	_ = answer.Body.Close()
 	if err != nil {
-		_ = conn.Close()
 		t.Fatalf("read the whole refusal: %v", err)
 	}
 	if answer.StatusCode != http.StatusForbidden {
@@ -147,10 +145,19 @@ func TestHubAddrFinishesTheRefusalAndStopsTheBodyWhenItsSignalArrives(t *testing
 const aliveProofBound = 3 * time.Second
 
 func TestHubAddrSignalProofReportsADaemonThatIgnoresTheSignalAsAlive(t *testing.T) {
+	goTool := os.Getenv("OAP_GO")
+	if goTool == "" {
+		goTool = "go"
+	}
+	resolved, err := exec.LookPath(goTool)
+	if err != nil {
+		t.Fatalf("no go toolchain on PATH: %v", err)
+	}
 	binary := filepath.Join(t.TempDir(), "fakehub")
-	build := exec.Command("go", "build", "-o", binary, "./testdata/fakehub")
-	if buildErr := build.Run(); buildErr != nil {
-		t.Fatalf("build the fake daemon: %v", buildErr)
+	build := exec.Command(resolved, "build", "-o", binary, "./go/cmd/goap/testdata/fakehub")
+	build.Dir = repositoryRoot()
+	if output, buildErr := build.CombinedOutput(); buildErr != nil {
+		t.Fatalf("build the fake daemon: %v: %s", buildErr, output)
 	}
 	command := exec.Command(binary)
 	stdout, err := command.StdoutPipe()
@@ -159,14 +166,12 @@ func TestHubAddrSignalProofReportsADaemonThatIgnoresTheSignalAsAlive(t *testing.
 	}
 	var stderr lockedBuffer
 	command.Stderr = &stderr
-	if err := command.Start(); err != nil {
+	if err = command.Start(); err != nil {
 		t.Fatal(err)
 	}
-	reason := make(chan error, 1)
 	done := make(chan struct{})
 	go func() {
-		reapErr := command.Wait()
-		reason <- reapErr
+		_ = command.Wait()
 		close(done)
 	}()
 	var once sync.Once
@@ -174,27 +179,28 @@ func TestHubAddrSignalProofReportsADaemonThatIgnoresTheSignalAsAlive(t *testing.
 		once.Do(func() {
 			_ = command.Process.Kill()
 			select {
-			case reapErr := <-reason:
-				t.Logf("cleanup reaped the fake daemon with %v", reapErr)
+			case <-done:
 			case <-time.After(20 * time.Second):
 				t.Error("cleanup killed the fake daemon but never reaped it")
 			}
 		})
 	}
 	defer cleanup()
-
-	identity := readLineWithin(stdout, 60*time.Second)
-	identity = strings.TrimPrefix(identity, "ready ")
+	identity := strings.TrimPrefix(readLineWithin(stdout, 60*time.Second), "ready ")
 	fields := strings.Fields(identity)
 	if len(fields) != 2 {
 		t.Fatalf("the fake daemon announced %q, want an address and a pid", identity)
 	}
 	address := fields[0]
-	conn, err := net.DialTimeout("tcp", address, 5*time.Second)
-	if err != nil {
-		t.Fatalf("the fake daemon is not accepting on %s: %v; it said %s", address, err, stderr.String())
+	accepting := func(when string) {
+		t.Helper()
+		conn, dialErr := net.DialTimeout("tcp", address, 5*time.Second)
+		if dialErr != nil {
+			t.Fatalf("the fake daemon %s on %s: %v; it said %s", when, address, dialErr, stderr.String())
+		}
+		_ = conn.Close()
 	}
-	_ = conn.Close()
+	accepting("is not accepting")
 	proof := &ownedHub{command: command, exited: done, cancelCtx: func() {}}
 	waited := time.Now()
 	if proof.signalAndAwaitExit(aliveProofBound) {
@@ -204,11 +210,7 @@ func TestHubAddrSignalProofReportsADaemonThatIgnoresTheSignalAsAlive(t *testing.
 	if observed < aliveProofBound-time.Second {
 		t.Fatalf("the proof returned after %v, not the full %v bound, so it did not wait out the signal", observed, aliveProofBound)
 	}
-	again, err := net.DialTimeout("tcp", address, 5*time.Second)
-	if err != nil {
-		t.Fatalf("the proof reported it alive but %s no longer accepts: %v; it said %s", address, err, stderr.String())
-	}
-	_ = again.Close()
+	accepting("no longer accepts though the proof reported it alive")
 	t.Logf("the fake daemon ignored SIGINT, the proof reported it alive after waiting out the full %v bound, and it was still accepting on %s afterwards", observed, address)
 	cleanup()
 }
@@ -299,8 +301,7 @@ func awaitBoundAddress(t *testing.T, stdout io.Reader, hub *ownedHub, cancel con
 		t.Fatalf("oapx hub --addr reported no address:\n%s", hub.shutDownForDiagnostics(t))
 		return ""
 	}
-	address := strings.TrimPrefix(fields[len(fields)-1], "http://")
-	return strings.TrimPrefix(address, "https://")
+	return strings.TrimPrefix(strings.TrimPrefix(fields[len(fields)-1], "http://"), "https://")
 }
 
 func readLineWithin(reader io.Reader, within time.Duration) string {
@@ -308,8 +309,7 @@ func readLineWithin(reader io.Reader, within time.Duration) string {
 	go func() {
 		line, err := bufio.NewReaderSize(reader, 64*1024).ReadString('\n')
 		if err != nil {
-			lines <- ""
-			return
+			line = ""
 		}
 		lines <- strings.TrimSpace(line)
 	}()
