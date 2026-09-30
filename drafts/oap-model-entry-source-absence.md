@@ -53,6 +53,54 @@ output filtering, all under `test-unit-protocol`:
 - encoder dropping a stated `source` → exit 1
 - restored → exit 0
 
-All three tests drive `serializeEnvelope` and re-decode its output. None
-of them asserts an input string it built itself, which is the shape that
-made two of #665's earlier tests worthless.
+None of the three asserts an input string it built itself, which is the
+shape that made two of #665's earlier tests worthless. Their actual
+coverage differs, and it is worth being exact:
+
+1. **Absent source is not published** — decodes a response that states
+   `source`, sets the entry's source to `null`, calls `serializeEnvelope`,
+   and asserts the output has no `source` key. Serializer output only; it
+   does not re-decode that output.
+2. **A decoded absence stays absent** — decodes a payload with no `source`
+   at all (the *initial* decode), asserts the entry's source is `null`,
+   then re-encodes and asserts the output has no `source`. It does not
+   decode the re-encoded output.
+3. **A stated source is published and survives a decode** — decodes a
+   response that states `source`, sets it to `fallback`, asserts
+   `serializeEnvelope` emits `"source":"fallback"`, and then decodes that
+   output again and requires `fallback` back. **Only this one re-decodes
+   the serializer's output.**
+
+So the output round-trip is covered by test 3 alone. Tests 1 and 2 pin the
+encode and the initial-decode halves respectively. The mutation evidence
+above is real and each mutation was run, but it is evidence for those three
+distinct halves — not three re-decode round-trips.
+
+## Reader behaviour across the SDKs, and the unresolved choice
+
+Measured or read on this base:
+
+| SDK | absent lifecycle | absent source | mode |
+|---|---|---|---|
+| TypeScript | invents `stable` (`oap_client.ts:412`) | invents `dynamic` (`:417`) | silent invention, reachable from the default OAP factory |
+| Rust | decode error, `missing field lifecycle` | decode error, `missing field source` | hard fail for `list` and `resolve` |
+| Go | empty string through a native enum (`oap.go:336-343`) | invents `dynamic` | invention plus an unrepresentable value |
+| Python | invents `stable` (`_oap.py:237-246`) | invents `dynamic` | silent invention |
+
+The Rust row is executed, not inspected: through the public
+`ClientBuilder`/`oap-protocol-fake` process seam, a payload with `source`
+and `lifecycle` present yields `lifecycle=Stable source=Dynamic` and
+`lifecycle=Stable source=StaticFallback`, while removing either member
+produces `OAP model entry is malformed: missing field \`lifecycle\`` /
+`` `source` `` on both `list` and `resolve`. Two `resolve` cells for the
+present shapes are unmeasured — a harness artefact I did not fix, recorded
+rather than papered over.
+
+**This PR does not decide what any reader should do about absence.** The
+owner has been asked to choose between shared SDK catalog results with
+optional `lifecycle`/`source` and separate public OAP result/client types,
+with the native wire keeping its validation either way. No answer yet, so
+no reader change is proposed here: this PR makes the wire able to be sparse
+truthfully, and the readers must be able to accept both shapes before it
+merges. Until then this is a wire-side change with a known reader gap, and
+that gap is deliberate rather than overlooked.
