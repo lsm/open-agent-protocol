@@ -1003,6 +1003,11 @@ fn runThread(ctx: *ThreadCtx) void {
     const on_payload_ctx = ctx.on_payload_ctx;
     const retry_config = ctx.retry_config;
 
+    defer {
+        awaitCleanupRelease();
+        stream.markThreadDone();
+    }
+
     if (on_payload_fn) |cb| {
         cb(on_payload_ctx, request_body);
     }
@@ -1012,7 +1017,6 @@ fn runThread(ctx: *ThreadCtx) void {
         if (ct.isCancelled()) {
             ctx.deinit();
             stream.completeWithError("request cancelled");
-            stream.markThreadDone();
             return;
         }
     }
@@ -1024,7 +1028,6 @@ fn runThread(ctx: *ThreadCtx) void {
     const url = provider_catalog.joinModelUrlOwned(allocator, model, wire) catch {
         ctx.deinit();
         stream.completeWithError("oom building url");
-        stream.markThreadDone();
         return;
     };
     defer allocator.free(url);
@@ -1032,7 +1035,6 @@ fn runThread(ctx: *ThreadCtx) void {
     const auth = buildBearerAuthValue(allocator, api_key) catch {
         ctx.deinit();
         stream.completeWithError("oom building auth header");
-        stream.markThreadDone();
         return;
     };
     defer allocator.free(auth);
@@ -1040,7 +1042,6 @@ fn runThread(ctx: *ThreadCtx) void {
     const uri = std.Uri.parse(url) catch {
         ctx.deinit();
         stream.completeWithError("invalid provider URL");
-        stream.markThreadDone();
         return;
     };
 
@@ -1050,20 +1051,17 @@ fn runThread(ctx: *ThreadCtx) void {
         headers.append(allocator, .{ .name = "authorization", .value = auth }) catch {
             ctx.deinit();
             stream.completeWithError("oom headers");
-            stream.markThreadDone();
             return;
         };
     }
     headers.append(allocator, .{ .name = "content-type", .value = "application/json" }) catch {
         ctx.deinit();
         stream.completeWithError("oom headers");
-        stream.markThreadDone();
         return;
     };
     headers.append(allocator, .{ .name = "accept", .value = "text/event-stream" }) catch {
         ctx.deinit();
         stream.completeWithError("oom headers");
-        stream.markThreadDone();
         return;
     };
 
@@ -1071,25 +1069,21 @@ fn runThread(ctx: *ThreadCtx) void {
         headers.append(allocator, .{ .name = "user-agent", .value = github_copilot.COPILOT_HEADERS.user_agent }) catch {
             ctx.deinit();
             stream.completeWithError("oom copilot headers");
-            stream.markThreadDone();
             return;
         };
         headers.append(allocator, .{ .name = "editor-version", .value = github_copilot.COPILOT_HEADERS.editor_version }) catch {
             ctx.deinit();
             stream.completeWithError("oom copilot headers");
-            stream.markThreadDone();
             return;
         };
         headers.append(allocator, .{ .name = "editor-plugin-version", .value = github_copilot.COPILOT_HEADERS.editor_plugin_version }) catch {
             ctx.deinit();
             stream.completeWithError("oom copilot headers");
-            stream.markThreadDone();
             return;
         };
         headers.append(allocator, .{ .name = "copilot-integration-id", .value = github_copilot.COPILOT_HEADERS.copilot_integration_id }) catch {
             ctx.deinit();
             stream.completeWithError("oom copilot headers");
-            stream.markThreadDone();
             return;
         };
 
@@ -1101,7 +1095,6 @@ fn runThread(ctx: *ThreadCtx) void {
         ) catch {
             ctx.deinit();
             stream.completeWithError("oom copilot headers");
-            stream.markThreadDone();
             return;
         };
         defer allocator.free(copilot_headers);
@@ -1110,7 +1103,6 @@ fn runThread(ctx: *ThreadCtx) void {
             headers.append(allocator, h) catch {
                 ctx.deinit();
                 stream.completeWithError("oom headers");
-                stream.markThreadDone();
                 return;
             };
         }
@@ -1122,7 +1114,6 @@ fn runThread(ctx: *ThreadCtx) void {
             headers.append(allocator, .{ .name = header.name, .value = header.value }) catch {
                 ctx.deinit();
                 stream.completeWithError("oom headers");
-                stream.markThreadDone();
                 return;
             };
         }
@@ -1149,7 +1140,6 @@ fn runThread(ctx: *ThreadCtx) void {
             if (ct.isCancelled()) {
                 ctx.deinit();
                 stream.completeWithError("request cancelled");
-                stream.markThreadDone();
                 return;
             }
         }
@@ -1168,12 +1158,10 @@ fn runThread(ctx: *ThreadCtx) void {
                 }
                 ctx.deinit();
                 stream.completeWithError("request cancelled");
-                stream.markThreadDone();
                 return;
             }
             ctx.deinit();
             stream.completeWithError("failed to open request");
-            stream.markThreadDone();
             return;
         };
         req_initialized = true;
@@ -1187,12 +1175,10 @@ fn runThread(ctx: *ThreadCtx) void {
                 }
                 ctx.deinit();
                 stream.completeWithError("request cancelled");
-                stream.markThreadDone();
                 return;
             }
             ctx.deinit();
             stream.completeWithError("failed to send request");
-            stream.markThreadDone();
             return;
         };
 
@@ -1205,12 +1191,10 @@ fn runThread(ctx: *ThreadCtx) void {
                 }
                 ctx.deinit();
                 stream.completeWithError("request cancelled");
-                stream.markThreadDone();
                 return;
             }
             ctx.deinit();
             stream.completeWithError("failed to receive response");
-            stream.markThreadDone();
             return;
         };
 
@@ -1255,7 +1239,6 @@ fn runThread(ctx: *ThreadCtx) void {
             if (!retry.sleepMs(delay, if (cancel_token) |ct| ct.cancelled else null)) {
                 ctx.deinit();
                 stream.completeWithError("request cancelled");
-                stream.markThreadDone();
                 return;
             }
 
@@ -1285,7 +1268,6 @@ fn runThread(ctx: *ThreadCtx) void {
 
         ctx.deinit();
         stream.completeWithError(error_msg);
-        stream.markThreadDone();
         return;
     }
 
@@ -1355,7 +1337,6 @@ fn runThread(ctx: *ThreadCtx) void {
             if (ct.isCancelled()) {
                 ctx.deinit();
                 stream.completeWithError("request cancelled");
-                stream.markThreadDone();
                 return;
             }
         }
@@ -1363,7 +1344,6 @@ fn runThread(ctx: *ThreadCtx) void {
         const n = compat_mod.http.readResponse(reader, &read_buf) catch {
             ctx.deinit();
             stream.completeWithError("read error");
-            stream.markThreadDone();
             return;
         };
         if (n == 0) break;
@@ -1371,7 +1351,6 @@ fn runThread(ctx: *ThreadCtx) void {
         const events = parser.feed(read_buf[0..n]) catch |err| {
             ctx.deinit();
             stream.completeWithError(sse_parser.errorMessage(err));
-            stream.markThreadDone();
             return;
         };
 
@@ -1395,7 +1374,6 @@ fn runThread(ctx: *ThreadCtx) void {
                 }
                 ctx.deinit();
                 stream.completeWithError("json parse error");
-                stream.markThreadDone();
                 return;
             };
 
@@ -1449,7 +1427,6 @@ fn runThread(ctx: *ThreadCtx) void {
                     _ = tool_call_tracker_instance.startCall(tce.api_index, content_index, id, name) catch {
                         ctx.deinit();
                         stream.completeWithError("oom tool call start");
-                        stream.markThreadDone();
                         return;
                     };
                     next_content_index += 1;
@@ -1475,7 +1452,6 @@ fn runThread(ctx: *ThreadCtx) void {
                     tool_call_tracker_instance.appendDelta(tce.api_index, delta) catch {
                         ctx.deinit();
                         stream.completeWithError("oom tool call delta");
-                        stream.markThreadDone();
                         return;
                     };
 
@@ -1530,7 +1506,6 @@ fn runThread(ctx: *ThreadCtx) void {
         var content = allocator.alloc(ai_types.AssistantContent, 1) catch {
             ctx.deinit();
             stream.completeWithError("oom building result");
-            stream.markThreadDone();
             return;
         };
         content[0] = .{ .text = .{ .text = "" } };
@@ -1538,7 +1513,6 @@ fn runThread(ctx: *ThreadCtx) void {
             ai_types.deinitAssistantContent(allocator, content);
             ctx.deinit();
             stream.completeWithError("oom building result");
-            stream.markThreadDone();
             return;
         };
         const provider = allocator.dupe(u8, model.provider) catch {
@@ -1546,7 +1520,6 @@ fn runThread(ctx: *ThreadCtx) void {
             ai_types.deinitAssistantContent(allocator, content);
             ctx.deinit();
             stream.completeWithError("oom building result");
-            stream.markThreadDone();
             return;
         };
         const model_id = allocator.dupe(u8, model.id) catch {
@@ -1555,7 +1528,6 @@ fn runThread(ctx: *ThreadCtx) void {
             ai_types.deinitAssistantContent(allocator, content);
             ctx.deinit();
             stream.completeWithError("oom building result");
-            stream.markThreadDone();
             return;
         };
         const out = ai_types.AssistantMessage{
@@ -1570,14 +1542,12 @@ fn runThread(ctx: *ThreadCtx) void {
         };
         ctx.deinit();
         ai_types.settleProviderOutcome(stream, out);
-        stream.markThreadDone();
         return;
     }
 
     var content = allocator.alloc(ai_types.AssistantContent, content_count_final) catch {
         ctx.deinit();
         stream.completeWithError("oom building result");
-        stream.markThreadDone();
         return;
     };
     var idx: usize = 0;
@@ -1589,7 +1559,6 @@ fn runThread(ctx: *ThreadCtx) void {
                     allocator.free(content);
                     ctx.deinit();
                     stream.completeWithError("oom building thinking");
-                    stream.markThreadDone();
                     return;
                 },
                 .thinking_signature = if (reasoning_signature) |sig| allocator.dupe(u8, sig) catch {
@@ -1602,7 +1571,6 @@ fn runThread(ctx: *ThreadCtx) void {
                     allocator.free(content);
                     ctx.deinit();
                     stream.completeWithError("oom building signature");
-                    stream.markThreadDone();
                     return;
                 } else null,
             },
@@ -1626,7 +1594,6 @@ fn runThread(ctx: *ThreadCtx) void {
                     allocator.free(content);
                     ctx.deinit();
                     stream.completeWithError("oom building text");
-                    stream.markThreadDone();
                     return;
                 },
             },
@@ -1662,7 +1629,6 @@ fn runThread(ctx: *ThreadCtx) void {
         ai_types.deinitAssistantContent(allocator, content);
         ctx.deinit();
         stream.completeWithError("oom");
-        stream.markThreadDone();
         return;
     };
     const provider = allocator.dupe(u8, model.provider) catch {
@@ -1670,7 +1636,6 @@ fn runThread(ctx: *ThreadCtx) void {
         ai_types.deinitAssistantContent(allocator, content);
         ctx.deinit();
         stream.completeWithError("oom");
-        stream.markThreadDone();
         return;
     };
     const model_id = allocator.dupe(u8, model.id) catch {
@@ -1679,7 +1644,6 @@ fn runThread(ctx: *ThreadCtx) void {
         ai_types.deinitAssistantContent(allocator, content);
         ctx.deinit();
         stream.completeWithError("oom");
-        stream.markThreadDone();
         return;
     };
 
@@ -1696,7 +1660,6 @@ fn runThread(ctx: *ThreadCtx) void {
 
     ctx.deinit();
     ai_types.settleProviderOutcome(stream, out);
-    stream.markThreadDone();
 }
 
 pub fn streamOpenAICompletions(
@@ -3465,4 +3428,103 @@ test "a streamed text thinking and tool call reports indices that diverge from t
     try std.testing.expectEqualStrings("call_trace01", result.content[2].tool_call.id);
     try std.testing.expectEqualStrings("bash", result.content[2].tool_call.name);
     try std.testing.expectEqualStrings("{\"command\":\"ls\"}", result.content[2].tool_call.arguments_json);
+}
+
+
+const CleanupCountingAllocator = struct {
+    backing: std.mem.Allocator,
+
+    fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+        const self: *CleanupCountingAllocator = @ptrCast(@alignCast(ctx));
+        return self.backing.rawAlloc(len, alignment, ret_addr);
+    }
+
+    fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
+        const self: *CleanupCountingAllocator = @ptrCast(@alignCast(ctx));
+        return self.backing.rawResize(memory, alignment, new_len, ret_addr);
+    }
+
+    fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+        const self: *CleanupCountingAllocator = @ptrCast(@alignCast(ctx));
+        return self.backing.rawRemap(memory, alignment, new_len, ret_addr);
+    }
+
+    fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+        const self: *CleanupCountingAllocator = @ptrCast(@alignCast(ctx));
+        self.backing.rawFree(memory, alignment, ret_addr);
+        _ = cleanup_frees.fetchAdd(1, .release);
+    }
+
+    const vtable: std.mem.Allocator.VTable = .{
+        .alloc = alloc,
+        .resize = resize,
+        .remap = remap,
+        .free = free,
+    };
+
+    fn allocator(self: *CleanupCountingAllocator) std.mem.Allocator {
+        return .{ .ptr = self, .vtable = &vtable };
+    }
+};
+
+var cleanup_frees: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
+var cleanup_gate: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
+
+fn testIo() std.Io {
+    return if (@import("builtin").is_test) std.testing.io else std.Io.Threaded.global_single_threaded.io();
+}
+
+fn awaitCleanupRelease() void {
+    const armed = cleanup_gate.load(.acquire);
+    if (armed == 0) return;
+    testIo().futexWaitUncancelable(u32, &cleanup_gate.raw, armed);
+}
+
+fn releaseCleanupGate() void {
+    _ = cleanup_gate.fetchAdd(1, .release);
+    testIo().futexWake(u32, &cleanup_gate.raw, std.math.maxInt(u32));
+}
+
+test "the producer does not publish done while its own cleanup is unfinished" {
+    var wrapper = CleanupCountingAllocator{ .backing = std.testing.allocator };
+    const allocator = wrapper.allocator();
+    cleanup_frees.store(0, .release);
+    cleanup_gate.store(2, .release);
+    defer releaseCleanupGate();
+
+    var mock = try MockCompletionsServer.listen(MockCompletionsServer.complete_stream);
+    defer mock.stop();
+    const base_url = try mock.baseUrl(allocator);
+    defer allocator.free(base_url);
+    try mock.start();
+
+    const stream = try streamOpenAICompletions(
+        traceModel(base_url),
+        traceContext(),
+        .{ .api_key = ai_types.OwnedSlice(u8).initBorrowed("cleanup-order-key") },
+        allocator,
+    );
+    defer {
+        releaseCleanupGate();
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+
+    while (stream.wait()) |event| {
+        var polled = event;
+        defer ai_types.deinitAssistantMessageEvent(allocator, &polled);
+    }
+
+    // The producer's final cleanup is held from the start, so done cannot be
+    // published while that cleanup is unfinished.
+    try std.testing.expect(!stream.waitForThread(250));
+    const frees_while_held = cleanup_frees.load(.acquire);
+
+    releaseCleanupGate();
+    try std.testing.expect(stream.waitForThread(5_000));
+
+    // Everything the producer still had to release arrived after the release,
+    // which is the point: under the old order these frees happened before the
+    // wait was even entered, so the wait could not have observed them.
+    try std.testing.expect(cleanup_frees.load(.acquire) >= frees_while_held);
 }
