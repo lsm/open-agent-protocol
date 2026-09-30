@@ -2612,12 +2612,13 @@ pub const App = struct {
         return model.context_window;
     }
 
-    fn estimatedTokensForTurn(self: *const App, text: []const u8) u64 {
+    fn estimatedTokensForTurn(self: *const App, history: []const ai_types.Message, text: []const u8) u64 {
         const message: ai_types.Message = .{ .user = .{
             .content = .{ .text = text },
             .timestamp = 0,
         } };
-        return self.state.telemetry.estimated_tokens + agent.estimateMessageTokens(message);
+        const counted = @max(self.state.telemetry.estimated_tokens, agent.promptTokens(.{ .messages = history }));
+        return counted + agent.estimateMessageTokens(message);
     }
 
     fn compactBeforeTurn(self: *App, text: []const u8) !bool {
@@ -2628,7 +2629,7 @@ pub const App = struct {
         if (self.state.status.streaming or self.state.status.compacting) return false;
         const history = if (self.session) |*session| session.history() else return false;
         if (history.len == 0 or agent.compaction.isCompacted(history)) return false;
-        const tokens = self.estimatedTokensForTurn(text);
+        const tokens = self.estimatedTokensForTurn(history, text);
         if (tokens < at) return false;
 
         const pending = try self.allocator.dupe(u8, text);
@@ -5396,6 +5397,32 @@ test "autocompact by default compacts where the window leaves room for a summary
     try app.submit("at the point");
     try std.testing.expectEqual(@as(usize, 1), mock.compact_count);
     try std.testing.expectEqual(@as(usize, 1), mock.submit_count);
+}
+
+const reported_history = [_]ai_types.Message{
+    .{ .user = .{ .content = .{ .text = "first question" }, .timestamp = 0 } },
+    .{ .assistant = .{
+        .content = &.{.{ .text = .{ .text = "first answer" } }},
+        .api = "test-api",
+        .provider = "test-provider",
+        .model = "model-a",
+        .usage = .{ .input = 55_000, .output = 100, .cache_read = 5_000 },
+        .stop_reason = .stop,
+        .timestamp = 0,
+    } },
+};
+
+test "autocompact counts the context from the provider's last report when the estimate reads lower" {
+    var mock = MockAppSession{ .history_messages = &reported_history };
+    defer mock.deinit();
+    var app = try autoCompactTestApp(&mock);
+    defer app.deinit();
+    app.state.telemetry.estimated_tokens = 1_000;
+
+    try app.submit("second question");
+
+    try std.testing.expectEqual(@as(usize, 1), mock.compact_count);
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
 }
 
 test "autocompact steers the held turn rather than blocking on a run the queue resumed" {
