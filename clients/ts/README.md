@@ -149,8 +149,9 @@ assertions on every envelope and payload type).
 
 The exported surface, with the documentation that lives on it in `src/`. `protocol` is the
 wire model the client mirrors from `schema/v0.1`; the rest is the client surface built on it.
-The error classes are described under [the event stream](#the-event-stream) instead, where the
-resume rules that give them meaning are set out.
+Nine of the eleven documented `errors` exports are covered under
+[the event stream](#the-event-stream), where the resume rules that give them meaning are set out;
+the two that are not appear under `errors` below.
 
 ### `protocol`
 
@@ -366,6 +367,16 @@ A tool catalog needs that pairing more than a model one does, not less. The
   cleanly (the loop simply finishes) once a run's terminal
   event has been delivered; every other error is terminal
   for the stream.
+
+### `errors`
+
+Nine of the eleven documented `errors` exports are covered under
+[the event stream](#the-event-stream), where the resume rules that give them meaning are set out.
+The other two are not resume errors, so that section cannot describe them:
+
+- **`OapError`** — Base class of every client error, carrying an optional cause.
+- **`AbortedError`** — The operation was cancelled through its AbortSignal (the
+  counterpart of Go's context.Canceled).
 
 ### `sse`
 
