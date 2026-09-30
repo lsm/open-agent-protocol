@@ -78,7 +78,11 @@ half produced and may not allocate again.
 
 ### 3. Event loss
 
-Loss modes and what the model does with each:
+Loss modes and what the model does with each. A full TUI queue now sheds streaming chunks
+(`text_delta`, `thinking_delta`, `tool_call_delta`, `provider_event`,
+`tool_execution_update`) first, in place and in order, and drops an older event of any other
+kind only when the queue holds no chunk and the UI has not drained it for two seconds, so
+the first case below needs a stalled UI rather than a burst of output:
 
 - **Backpressure evicts `tool_execution_end`** (retained start + `turn_end`): `turn_end`
   marks the occurrence interrupted with evidence `none`; the tool-result `message_end`

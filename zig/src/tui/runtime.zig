@@ -223,6 +223,7 @@ pub const TuiRuntime = struct {
     transcript_writer: ?TranscriptWriter = null,
     run_transcripts: std.ArrayList([]u8) = .empty,
     run_transcript_saved: []const u8 = "",
+    semantic_wait_ms: i64 = 2_000,
     dropped_event_count: u64 = 0,
     dropped_since_warning: u64 = 0,
     steering_tagged_count: u64 = 0,
@@ -1017,6 +1018,7 @@ pub const TuiRuntime = struct {
     }
 
     fn pushDroppingOldestCounted(self: *TuiRuntime, event: TuiEvent) void {
+        const started_ms = compat.time.nowMillis();
         while (true) {
             if (self.pushUncounted(event)) return;
             while (!self.backpressure_mutex.tryLock()) std.atomic.spinLoopHint();
@@ -1032,17 +1034,53 @@ pub const TuiRuntime = struct {
                     return;
                 },
             }
-            if (self.event_stream.poll()) |dropped| {
-                self.dropped_event_count += 1;
-                self.dropped_since_warning += 1;
-                self.backpressure_active.store(true, .release);
-                var mutable = dropped;
-                mutable.deinit(self.allocator);
-            } else {
-                std.Thread.yield() catch {};
+            if (self.shedStreamingLocked() == 0) {
+                if (isStreamingChunk(event)) {
+                    self.countDroppedLocked(1);
+                    self.backpressure_mutex.unlock();
+                    var mutable = event;
+                    mutable.deinit(self.allocator);
+                    return;
+                }
+                if (compat.time.nowMillis() -| started_ms >= self.semantic_wait_ms) self.dropOldestLocked();
             }
             self.backpressure_mutex.unlock();
         }
+    }
+
+    fn dropOldestLocked(self: *TuiRuntime) void {
+        var dropped = self.event_stream.poll() orelse return;
+        dropped.deinit(self.allocator);
+        self.countDroppedLocked(1);
+    }
+
+    fn isStreamingChunk(event: TuiEvent) bool {
+        return switch (event) {
+            .text_delta, .thinking_delta, .tool_call_delta, .provider_event, .tool_execution_update => true,
+            else => false,
+        };
+    }
+
+    fn evictStreamingChunk(self: *TuiRuntime, event: *TuiEvent) bool {
+        if (!isStreamingChunk(event.*)) return false;
+        event.deinit(self.allocator);
+        return true;
+    }
+
+    fn countDroppedLocked(self: *TuiRuntime, count: usize) void {
+        self.dropped_event_count += count;
+        self.dropped_since_warning += count;
+        self.backpressure_active.store(true, .release);
+    }
+
+    fn shedStreamingLocked(self: *TuiRuntime) usize {
+        const evicted = self.event_stream.evictWhere(self, evictStreamingChunk);
+        if (evicted > 0) {
+            self.countDroppedLocked(evicted);
+            return evicted;
+        }
+        std.Thread.yield() catch {};
+        return 0;
     }
 
     fn pushUncounted(self: *TuiRuntime, event: TuiEvent) bool {
@@ -1108,16 +1146,9 @@ pub const TuiRuntime = struct {
             mutable.deinit(self.allocator);
 
             while (!self.backpressure_mutex.tryLock()) std.atomic.spinLoopHint();
-            if (self.event_stream.poll()) |dropped| {
-                self.dropped_event_count += 1;
-                self.dropped_since_warning += 1;
-                self.backpressure_active.store(true, .release);
-                var dropped_mutable = dropped;
-                dropped_mutable.deinit(self.allocator);
-            } else {
-                std.Thread.yield() catch {};
-            }
+            const shed = self.shedStreamingLocked();
             self.backpressure_mutex.unlock();
+            if (shed == 0) return;
         }
     }
 
@@ -1349,7 +1380,7 @@ pub const TuiRuntime = struct {
                 self.push(.{ .message_start = .{ .role = messageRole(payload.message) } });
             },
             .message_update => |payload| {
-                try self.pushProviderEvent(payload.event);
+                if (!isChunk(payload.event)) try self.pushProviderEvent(payload.event);
                 try self.pushMessageUpdate(payload.event);
             },
             .message_end => |payload| {
@@ -1490,6 +1521,13 @@ pub const TuiRuntime = struct {
             } }),
             else => {},
         }
+    }
+
+    fn isChunk(event: ai_types.AssistantMessageEvent) bool {
+        return switch (event) {
+            .text_delta, .thinking_delta, .toolcall_delta => true,
+            else => false,
+        };
     }
 
     fn pushProviderEvent(self: *TuiRuntime, event: ai_types.AssistantMessageEvent) !void {
@@ -2700,7 +2738,7 @@ test "runtime tags consumed steer message_end with steering provenance" {
     try std.testing.expect(prompt_message_end_untagged);
 }
 
-test "steer consumption count survives backpressure eviction of consumption events" {
+test "steer consumption count and the steered message survive a flood that sheds streaming chunks" {
     var mock = MockProtocolCtx{ .wait_before_text_first = true, .deliver_flood_second = TuiEventStream.usable_capacity - 2 };
     const models = [_]ai_types.Model{test_model_a};
     var runtime = try TuiRuntime.init(std.testing.allocator, .{ .protocol = makeProtocol(&mock), .models = &models, .run_async = true });
@@ -2721,7 +2759,7 @@ test "steer consumption count survives backpressure eviction of consumption even
         defer ev.deinit(std.testing.allocator);
         if (ev == .message_end and ev.message_end.role == .user) saw_user_message_end = true;
     }
-    try std.testing.expect(!saw_user_message_end);
+    try std.testing.expect(saw_user_message_end);
     try std.testing.expectEqual(@as(u64, 1), runtime.steersConsumedCount());
 }
 
@@ -3219,9 +3257,10 @@ test "a compaction inside a run that does not complete gives back the transcript
     try std.testing.expect(completed_with_slot);
 }
 
-test "runtime push preserves newest event when event stream is full" {
+test "runtime push preserves newest event when a full queue holds nothing it may shed and nobody drains it" {
     var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{test_model_a}, .run_async = false });
     defer runtime.deinit();
+    runtime.semantic_wait_ms = 0;
 
     for (0..TuiEventStream.usable_capacity) |_| {
         runtime.push(.{ .turn_start = .{} });
@@ -3239,12 +3278,12 @@ test "runtime push preserves newest event when event stream is full" {
     try std.testing.expect(saw_latest_error);
 }
 
-test "TuiRuntime terminal event emits warning after terminal eviction" {
+test "TuiRuntime terminal event sheds streaming chunks from a full queue and warns" {
     var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{test_model_a}, .run_async = false });
     defer runtime.deinit();
 
-    for (0..TuiEventStream.usable_capacity) |_| {
-        runtime.push(.{ .turn_start = .{} });
+    for (0..TuiEventStream.usable_capacity) |i| {
+        runtime.push(.{ .text_delta = .{ .content_index = i, .delta = OwnedSlice(u8).initBorrowed("x") } });
     }
     try std.testing.expect(runtime.event_stream.isFull());
 
@@ -3277,36 +3316,61 @@ test "TuiRuntime counts dropped events and emits warning" {
     try std.testing.expect(runtime.event_stream.isFull());
 
     runtime.push(.{ .text_delta = .{ .content_index = TuiEventStream.usable_capacity, .delta = OwnedSlice(u8).initBorrowed("after-full") } });
-    try std.testing.expectEqual(@as(u64, 1), runtime.dropped_event_count);
+    const shed: u64 = TuiEventStream.usable_capacity;
+    try std.testing.expectEqual(shed, runtime.dropped_event_count);
     try std.testing.expect(runtime.backpressure_active.load(.acquire));
 
     const bp_active = runtime.backpressureState();
     try std.testing.expect(bp_active.active);
-    try std.testing.expectEqual(@as(u64, 1), bp_active.dropped_count);
-
-    for (0..2) |_| {
-        var ev = runtime.event_stream.poll().?;
-        defer ev.deinit(std.testing.allocator);
-    }
-    runtime.push(.{ .text_delta = .{ .content_index = 256, .delta = OwnedSlice(u8).initBorrowed("after") } });
+    try std.testing.expectEqual(shed, bp_active.dropped_count);
 
     var saw_warning = false;
+    var saw_newest = false;
     while (tui_session.popEvent()) |event| {
         var ev = event;
         defer ev.deinit(std.testing.allocator);
+        if (ev == .text_delta and std.mem.eql(u8, ev.text_delta.delta.slice(), "after-full")) saw_newest = true;
         if (ev == .system_warning) {
             saw_warning = true;
-            try std.testing.expect(std.mem.indexOf(u8, ev.system_warning.message.slice(), "1 event dropped due to backpressure") != null);
+            try std.testing.expect(std.mem.indexOf(u8, ev.system_warning.message.slice(), "1023 events dropped due to backpressure") != null);
         }
     }
     try std.testing.expect(saw_warning);
+    try std.testing.expect(saw_newest);
 
-    const bp_recovered = runtime.backpressureState();
-    try std.testing.expect(bp_recovered.active);
-    try std.testing.expectEqual(@as(u64, 1), bp_recovered.dropped_count);
     const bp_cleared = runtime.backpressureState();
     try std.testing.expect(!bp_cleared.active);
-    try std.testing.expectEqual(@as(u64, 1), bp_cleared.dropped_count);
+    try std.testing.expectEqual(shed, bp_cleared.dropped_count);
+}
+
+test "a full queue sheds only streaming chunks, keeping message and turn events in order" {
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{test_model_a}, .run_async = false });
+    defer runtime.deinit();
+
+    runtime.push(.{ .message_start = .{ .role = .assistant } });
+    for (0..TuiEventStream.usable_capacity - 3) |i| {
+        runtime.push(.{ .text_delta = .{ .content_index = i, .delta = OwnedSlice(u8).initBorrowed("x") } });
+    }
+    runtime.push(.{ .thinking_delta = .{ .content_index = 0, .delta = OwnedSlice(u8).initBorrowed("t") } });
+    runtime.push(.{ .message_end = .{ .role = .assistant, .text = OwnedSlice(u8).initBorrowed("whole reply") } });
+    try std.testing.expect(runtime.event_stream.isFull());
+
+    runtime.push(.{ .turn_end = .{ .stop_reason = .stop } });
+
+    try std.testing.expectEqual(@as(u64, TuiEventStream.usable_capacity - 2), runtime.dropped_event_count);
+    var order: [4]std.meta.Tag(TuiEvent) = undefined;
+    var count: usize = 0;
+    while (runtime.event_stream.poll()) |event| {
+        var ev = event;
+        defer ev.deinit(std.testing.allocator);
+        if (count < order.len) order[count] = std.meta.activeTag(ev);
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 4), count);
+    try std.testing.expectEqual(std.meta.Tag(TuiEvent).message_start, order[0]);
+    try std.testing.expectEqual(std.meta.Tag(TuiEvent).message_end, order[1]);
+    try std.testing.expectEqual(std.meta.Tag(TuiEvent).turn_end, order[2]);
+    try std.testing.expectEqual(std.meta.Tag(TuiEvent).system_warning, order[3]);
 }
 
 test "TuiRuntime replaceMessages clears stale backpressure counters" {
