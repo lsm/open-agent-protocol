@@ -377,6 +377,12 @@ impl ModelsApi {
                     .unwrap_or(Value::String(String::new()));
                 obj.insert("display_name".to_owned(), model_id);
             }
+            if !obj.contains_key("auth_status") {
+                obj.insert(
+                    "auth_status".to_owned(),
+                    Value::String("unknown".to_owned()),
+                );
+            }
             match obj.get("source") {
                 None => {}
                 Some(Value::String(name)) => {
