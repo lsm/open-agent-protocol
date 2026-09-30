@@ -2368,6 +2368,21 @@ test "executeToolCalls frees the results it built when a later step fails" {
     try std.testing.expectEqual(@as(usize, 1), protocol_ctx.call_count);
 }
 
+fn testModel() ai_types.Model {
+    return .{
+        .id = "test-model",
+        .name = "Test",
+        .api = "test-api",
+        .provider = "test-provider",
+        .base_url = "",
+        .reasoning = false,
+        .input = &.{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1024,
+        .max_tokens = 256,
+    };
+}
+
 fn directoryReportingExecute(
     ctx: ?*anyopaque,
     tool_call_id: []const u8,
@@ -2440,18 +2455,7 @@ fn runDirectoryReportingTool(allocator: std.mem.Allocator) !void {
         .stop_reason = .tool_use,
         .timestamp = 0,
     };
-    const model = ai_types.Model{
-        .id = "test-model",
-        .name = "Test",
-        .api = "test-api",
-        .provider = "test-provider",
-        .base_url = "",
-        .reasoning = false,
-        .input = &.{"text"},
-        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
-        .context_window = 1024,
-        .max_tokens = 256,
-    };
+    const model = testModel();
     var events_storage: AgentEventStream = undefined;
     const events = &events_storage;
     events.* = AgentEventStream.init(allocator);
@@ -2503,18 +2507,7 @@ const HandoffCase = struct {
             .stop_reason = .tool_use,
             .timestamp = 0,
         };
-        const model = ai_types.Model{
-            .id = "test-model",
-            .name = "Test",
-            .api = "test-api",
-            .provider = "test-provider",
-            .base_url = "",
-            .reasoning = false,
-            .input = &.{"text"},
-            .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
-            .context_window = 1024,
-            .max_tokens = 256,
-        };
+        const model = testModel();
         var events_storage: AgentEventStream = undefined;
         const events = &events_storage;
         events.* = AgentEventStream.init(allocator);
@@ -2594,22 +2587,9 @@ test "a message already in the results list is not freed again when the stream c
         .working_directory_observed = true,
     };
 
-    const config_model = ai_types.Model{
-        .id = "test-model",
-        .name = "Test",
-        .api = "test-api",
-        .provider = "test-provider",
-        .base_url = "",
-        .reasoning = false,
-        .input = &.{"text"},
-        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
-        .context_window = 1024,
-        .max_tokens = 256,
-    };
-
     try std.testing.expectError(error.StreamCompleted, finalizeToolExecution(
         std.testing.allocator,
-        .{ .model = config_model, .protocol = .{ .stream_fn = undefined } },
+        .{ .model = testModel(), .protocol = .{ .stream_fn = undefined } },
         events,
         &results_storage,
         .{ .id = "call-1", .name = "dirtool", .arguments_json = "{}" },

@@ -43,6 +43,31 @@ The completed result is transferred to the stream: `EventStream.deinit()`
 frees it. Event handling depends on the stream's `ownership` setting — check
 it before writing your poll loop.
 
+## The reported working directory on a tool result
+
+`AgentToolResult.working_directory` and `ToolResultMessage.working_directory`
+are optional: a tool reporting nothing leaves the field **empty and borrowed**
+and `working_directory_observed` **defaults to false**, so the absent case
+allocates and frees nothing. `workingDirectory()` returns the value when there is
+one; `observedWorkingDirectory()` returns `null` unless the flag is set.
+
+**Transfer.** `finalizeToolExecution` copies the result out and empties it
+before anything fallible, so the copy is sole owner from then on; the message
+build takes that whole copy and leaves it empty, so no field has two owners and
+none has none. The results list owns the message once appended, which is why the
+guard releasing an unreached message is disarmed there — a failed
+tool-execution-end publication, including the `StreamCompleted` a consumer's
+teardown causes, must free nothing the list owns.
+
+**Destruction and copies.** Both `deinit`s free the directory, so ownership moves
+once. The three places rebuilding a result field by field — the message clone, the
+agent's copy, the hand-off — carry the directory *and* the flag.
+
+**No session-resume persistence.** The store does not carry this field, so a
+session read back from disk has neither directory nor flag — deliberate, since a
+stored absolute path is stale by construction. Any future resume change must
+decide what to persist and re-validate it.
+
 ## The safe consumer pattern
 
 One complete, leak-free flow (mirrored by the unit test
