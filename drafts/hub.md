@@ -635,6 +635,19 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   and is answered 403 with a complete body each time, so the cap is visible from
   outside the process. Its clock is seeded through a **refused** request, which is
   the only shape that reaches a drain, and `boundAt` is taken after that
+- **the refusal answered before the body, over a real process** —
+  `TestHubAddrFinishesTheRefusalAndStopsTheBodyWhenItsSignalArrives` declares 8 MiB
+  and paces the writer, and asserts that the complete refusal is read while bytes are
+  still unwritten, that the writer is still running at that moment, and that after the
+  signal the writer stops with fewer than `declared` bytes ever written. Every number it
+  reports is a **client write count**: it bounds when the answer arrived and when the
+  writer stopped, and **no threshold on it is a count of bytes the daemon read**, because
+  what the client pushes before the answer lands is kernel buffering and scheduling. The
+  same test then dials the address under a bound and **fails if the daemon is still
+  accepting connections**, so its "the process ended" claim is one that can fail. It does
+  **not** show that the custom `SIGINT` handler stopped the daemon — the default
+  disposition of `SIGINT` terminates the process regardless, so removing the handler
+  changes nothing observable.
 
 The two pre-existing tests — `a body the daemon refused to read is drained before
 the socket closes, or the close resets the answer away` and `a drain gives up
