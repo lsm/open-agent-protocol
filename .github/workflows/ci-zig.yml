@@ -141,13 +141,20 @@ jobs:
           HEAD_ROOT: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          # The checker runs from the base tip, not from this pull request's head,
-          # for the reason compatibility.yml gives for apidiffcheck: the tool that
-          # judges a change must not be part of the change. Judged contents are
-          # the head checkout's, because the command runs in HEAD_ROOT and
-          # --files resolves against the working directory.
+          # The checker runs from the base tip, not from this pull request's head:
+          # the tool that judges a change must not be part of the change, and that
+          # has to hold for its dependencies too. Judged contents are the head
+          # checkout's, because the command runs in HEAD_ROOT and --files resolves
+          # against the working directory.
+          #
+          # The worktree installs its own node_modules from the base tip's lockfile
+          # rather than symlinking the head's. A symlink would leave the judging
+          # lexer resolved from the head: a pull request bumping typescript would
+          # change what counts as a comment, which is the same defect one level
+          # down. npm ci is deterministic because the base tip's package-lock.json
+          # pins the version.
           git worktree add --detach "$RUNNER_TEMP/cleaned" "origin/$BASE_REF"
-          ln -s "$HEAD_ROOT/node_modules" "$RUNNER_TEMP/cleaned/node_modules"
+          (cd "$RUNNER_TEMP/cleaned" && npm ci --no-audit --no-fund)
           files=(
           clients/ts/test/client.test.ts
           clients/ts/test/events.test.ts
@@ -155,6 +162,8 @@ jobs:
           clients/ts/test/schema.test.ts
           clients/ts/test/sse.test.ts
           clients/ts/test/transport.ts
+          clients/ts/src/protocol.ts
+          clients/ts/src/events.ts
           clients/ts/src/session.ts
           clients/ts/src/client.ts
           clients/ts/src/errors.ts

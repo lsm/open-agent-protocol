@@ -23,6 +23,10 @@ fn emit(profile: &str, kind: &str, reply: Option<&str>, payload: Value, scope: V
 }
 
 fn main() {
+    let shape = std::env::args()
+        .nth(1)
+        .and_then(|arg| arg.strip_prefix("--catalog-shape=").map(str::to_owned))
+        .unwrap_or_else(|| "stated".to_owned());
     let mut authenticated = false;
     let mut selected_model = "fixture/openai-responses@mock".to_owned();
     for line in io::stdin().lock().lines() {
@@ -140,15 +144,29 @@ fn main() {
                 }),
                 json!({}),
             ),
-            (PROVIDER, "provider.models.list.request") => emit(
-                profile,
-                "provider.models.list.response",
-                Some(id),
-                json!({
-                    "models": [{ "model_ref": "fixture/openai-responses@mock", "model_id": "mock", "provider_id": "fixture", "wire": "openai-responses", "auth_status": "authenticated", "source": "discovered", "lifecycle": "stable", "capabilities": ["chat", "streaming"] }]
-                }),
-                json!({}),
-            ),
+            (PROVIDER, "provider.models.list.request") => {
+                let mut entry = json!({
+                    "model_ref": "fixture/openai-responses@mock", "model_id": "mock", "provider_id": "fixture",
+                    "wire": "openai-responses", "auth_status": "authenticated",
+                    "capabilities": ["chat", "streaming"]
+                });
+                match shape.as_str() {
+                    "absent-source" => {}
+                    "null-source" => entry["source"] = Value::Null,
+                    "number-source" => entry["source"] = json!(7),
+                    "invented-source" => entry["source"] = json!("invented-source"),
+                    "fallback" => entry["source"] = json!("fallback"),
+                    _ => entry["source"] = json!("discovered"),
+                }
+                entry["lifecycle"] = json!("stable");
+                emit(
+                    profile,
+                    "provider.models.list.response",
+                    Some(id),
+                    json!({ "models": [entry] }),
+                    json!({}),
+                )
+            }
             (PROVIDER, "inference.create.request") => {
                 let auth_rejection =
                     data.get("model_ref")
