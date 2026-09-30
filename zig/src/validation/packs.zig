@@ -478,11 +478,7 @@ test "a loaded pack's schemas are registered under keys its own refs resolve" {
         .{ .dir = "cleaned", .declared = "com.example.clean.thing" },
         .{ .dir = "nested", .declared = "com.example.nested.thing" },
     };
-    const with_literal = [_]Case{
-        .{ .dir = "staying", .declared = "com.example.ok.thing" },
-        .{ .dir = "aliased", .declared = "com.example.alias.thing" },
-        .{ .dir = "cleaned", .declared = "com.example.clean.thing" },
-        .{ .dir = "nested", .declared = "com.example.nested.thing" },
+    const with_literal = portable ++ [_]Case{
         .{ .dir = "literal", .declared = "com.example.literal.thing" },
     };
     const cases = if (comptime std.Io.Dir.path.sep == '/') with_literal else portable;
