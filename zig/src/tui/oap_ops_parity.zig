@@ -3,6 +3,8 @@ const in_process = @import("transports/in_process");
 const oap_server = @import("oap_server");
 const oap_types = @import("oap_types");
 const oap_client = @import("tui/oap_client");
+const oap_envelope = @import("oap_envelope");
+const tui_session = @import("tui/session");
 const tui_runtime = @import("tui_runtime");
 
 const Support = enum { native, emulated, degraded, unavailable, unadvertised };
@@ -119,23 +121,15 @@ const Exchange = struct {
     }
 };
 
-const SESSION_OP_NAMES = [_][]const u8{
-    "start",                "resume_session", "compact",      "history",               "cancel",
-    "submit_turn",          "steer",          "follow_up",    "clear_queued_messages", "queued_counts",
-    "steers_consumed",      "can_steer",      "switch_model", "switch_model_exact",    "current_model",
-    "decide_tool_approval", "stream_events",
-};
-
 test "the op matrix covers every session operation the TUI exposes" {
-    const ops = std.meta.fields(@import("tui/session").TuiSessionOps);
-    try std.testing.expectEqual(SESSION_OP_NAMES.len, ops.len);
-    try std.testing.expectEqual(SESSION_OP_NAMES.len, OPS.len);
-    for (SESSION_OP_NAMES) |name| {
-        var in_table = false;
+    const ops = std.meta.fields(tui_session.TuiSessionOps);
+    try std.testing.expectEqual(OPS.len, ops.len);
+    inline for (ops) |field| {
+        var in_matrix = false;
         for (OPS) |op| {
-            if (std.mem.eql(u8, op.name, name)) in_table = true;
+            if (std.mem.eql(u8, op.name, field.name)) in_matrix = true;
         }
-        try std.testing.expect(in_table);
+        try std.testing.expect(in_matrix);
     }
 }
 
@@ -229,17 +223,55 @@ test "the native side reports it can steer, and the endpoint does not advertise 
     try std.testing.expectEqual(Support.unadvertised, advertisedLevel("session.message.delivery.steer"));
 }
 
-test "the envelope version and profile the client sends are the ones the endpoint declares" {
+test "an initialize that declares a version the endpoint does not serve is refused" {
+    const allocator = std.testing.allocator;
+    var exchange = try Exchange.init(allocator);
+    defer exchange.deinit();
+    exchange.start();
+
+    const versions = [_][]const u8{"0.0.0-not-a-version"};
+    const profiles = [_][]const u8{oap_types.PROFILE};
+    const envelope = oap_types.Envelope{
+        .id = "req-bogus-version",
+        .payload = .{ .initialize_request = .{
+            .protocol_versions = &versions,
+            .profiles = &profiles,
+        } },
+    };
+    const line = try oap_envelope.serializeEnvelope(envelope, allocator);
+    defer allocator.free(line);
+    var sender = exchange.pipe.clientSender();
+    try sender.write(line);
+
+    var inbound = exchange.pipe.serverReceiver();
+    while (try inbound.readLine(allocator)) |request| {
+        defer allocator.free(request);
+        try exchange.server.handleLine(request);
+    }
+
+    var refused_unsupported = false;
+    var emitted: usize = 0;
+    while (exchange.server.popOutbound()) |reply| {
+        defer allocator.free(reply);
+        emitted += 1;
+        var parsed = try oap_envelope.deserializeEnvelope(reply, allocator);
+        defer parsed.deinit(allocator);
+        const payload = parsed.payload;
+        if (payload != .error_response) continue;
+        const code = payload.error_response.code;
+        if (std.mem.eql(u8, code, oap_types.EmittedErrorCode.unsupported_feature.text())) refused_unsupported = true;
+    }
+    try std.testing.expect(emitted > 0);
+    try std.testing.expect(refused_unsupported);
+}
+
+test "the client's own initialize is accepted, so the version it sends is the served one" {
     const allocator = std.testing.allocator;
     var exchange = try Exchange.init(allocator);
     defer exchange.deinit();
     exchange.start();
 
     try exchange.client.initialize();
-    _ = try exchange.step();
+    try std.testing.expectEqual(@as(usize, 1), try exchange.step());
     try std.testing.expect(exchange.client.capability_revision != null);
-
-    const descriptor = oap_server.Descriptor{};
-    try std.testing.expect(descriptor.endpoint_id.len > 0);
-    try std.testing.expect(oap_types.VERSION.len > 0);
 }

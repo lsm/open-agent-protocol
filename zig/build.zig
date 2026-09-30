@@ -1996,6 +1996,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "transports/in_process", .module = in_process_transport_mod },
             .{ .name = "oap_types", .module = protocol_oap_types_mod },
             .{ .name = "oap_server", .module = protocol_oap_server_mod },
+            .{ .name = "oap_envelope", .module = protocol_oap_envelope_mod },
             .{ .name = "tui/oap_client", .module = tui_oap_client_mod },
             .{ .name = "tui_runtime", .module = tui_runtime_mod },
             .{ .name = "tui/session", .module = tui_session_mod },
