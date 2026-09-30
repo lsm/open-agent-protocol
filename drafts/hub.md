@@ -815,7 +815,12 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   production line it exists to cover is `serve.go:120`, `hub.CloseSessions(sessionShutdown)`, and
   nothing in the tree constrained it. `startServe` also sent `runHub`'s stderr to `io.Discard`, so
   even the sweep's own abandonment log — `serve.go:251`, "shutdown budget exhausted before closing
-  session" — was invisible to every test. **The mutation, run:** giving that site a
+  session" — was invisible to every test. **The captured buffer is read only after the writer is finished**, and
+  that is structural rather than a sleep: `startServe` sends on `done` only after `runHub` returns
+  (`serve_test.go:128`), `expectServeExit` receives from `done` (`:154`), and the test reads the buffer
+  after that, so every write the daemon made happens-before the read. `syncBuffer` is mutex-guarded as
+  well, and the test is green under `go test -race` unmutated and red under it when the sweep is
+  abandoned, with no data race in either case. **The mutation, run:** giving that site a
   `context.WithTimeout(context.Background(), 0)`, so the sweep context is born expired and
   `CloseSessions` closes **zero** sessions. It **compiles**, and on `main` as it stood
   `TestServeSessionsClosedOnShutdown` was **green** with that defect in place. `startServe` now
