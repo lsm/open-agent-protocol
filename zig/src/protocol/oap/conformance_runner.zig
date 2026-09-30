@@ -184,7 +184,7 @@ fn parseControl(allocator: std.mem.Allocator, line: []const u8) !ControlFrame {
             continue;
         }
         const number = switch (found) {
-            .integer => |number| @as(u64, @intCast(number)),
+            .integer => |number| if (number < 0) return error.InvalidControlFrame else @as(u64, @intCast(number)),
             else => continue,
         };
         if (std.mem.eql(u8, field.key, "after")) {
@@ -1305,4 +1305,19 @@ test "a replay is accepted and its events reach the runner" {
 
     const replay = report.verdict("a cursor replay is accepted and re-delivers the run") orelse return error.CheckMissing;
     try std.testing.expect(replay.passed);
+}
+
+test "a negative number in a control frame is judged, not fatal" {
+    const frame = parseControl(std.testing.allocator, "{\"control\":\"replay.gap\",\"id\":\"r1\",\"requested_after\":-1}") catch |err| {
+        try std.testing.expect(err == error.InvalidControlFrame);
+        return;
+    };
+    var released = frame;
+    released.deinit(std.testing.allocator);
+    return error.NegativeNotRejected;
+}
+
+test "a control frame that is not JSON is judged, not fatal" {
+    try std.testing.expectError(error.InvalidControlFrame, parseControl(std.testing.allocator, "not json"));
+    try std.testing.expectError(error.InvalidControlFrame, parseControl(std.testing.allocator, "[1,2,3]"));
 }
