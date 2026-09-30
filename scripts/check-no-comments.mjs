@@ -9,7 +9,8 @@
 // `//` inside any literal is never a comment. `//`, `///`, and `//!`
 // outside literals are comments; only `// zig fmt: off|on` is exempt
 // (formatter control). Modes: `--check` (exit 1 on any comment in a
-// non-allowlisted file — CI), `--stats` (per-file counts), and write
+// non-allowlisted file, and on a selected path that cannot be read so it
+// was never judged — CI), `--stats` (per-file counts), and write
 // mode (default, or `--write`: strip + tidy orphaned blank lines).
 // `--check` is ratcheted by scripts/no-comments-allowlist.txt: files
 // seeded there pass while the gap-7 series lands, and the list may only
@@ -446,8 +447,12 @@ export function ratchetViolation(allowlistPath, cwd, baseCommit = null) {
 }
 
 // A tracked file deleted from the working tree before staging (git
-// ls-files still lists it) is not dirty — skipping it lets the stale-entry
-// logic report its allowlist entry instead of crashing on ENOENT.
+// ls-files still lists it) is not dirty. Skipping it lets the stale-entry
+// logic report its allowlist entry instead of crashing on ENOENT -- but only
+// for an allowlisted path. A selected path that is not allowlisted and not
+// readable is not a clean file, it is an unjudged one, and reporting it as
+// clean would let a typo, a stale selection or a mid-deletion file pass as
+// coverage that never happened.
 function readIfExists(file) {
   try {
     return readFileSync(file, "utf8");
@@ -461,10 +466,14 @@ export function checkFiles(files, allowlist, baseEntries = null) {
   const offending = [];
   const ratcheted = [];
   const stats = [];
+  const missing = [];
   const dirty = new Set();
   for (const file of files) {
     const text = readIfExists(file);
-    if (text === null) continue;
+    if (text === null) {
+      if (!allowlist.has(file)) missing.push(file);
+      continue;
+    }
     const count = findComments(text, file).length;
     if (count === 0) continue;
     dirty.add(file);
@@ -477,7 +486,7 @@ export function checkFiles(files, allowlist, baseEntries = null) {
   }
   const stale = [...allowlist].filter((p) => !dirty.has(p)).sort();
   const additions = baseEntries === null ? [] : [...allowlist].filter((p) => !baseEntries.has(p)).sort();
-  return { offending, ratcheted, stale, additions, stats, dirtyCount: dirty.size, commentTotal: stats.reduce((a, s) => a + s.count, 0) };
+  return { offending, ratcheted, stale, additions, missing: missing.sort(), stats, dirtyCount: dirty.size, commentTotal: stats.reduce((a, s) => a + s.count, 0) };
 }
 
 function listFiles(args) {
@@ -526,12 +535,20 @@ function main() {
     for (const path of result.additions) {
       process.stdout.write(`allowlist addition not permitted (the ratchet may only shrink): ${path}\n`);
     }
+    for (const path of result.missing) {
+      process.stdout.write(`selected path not found, so it was not judged: ${path}\n`);
+    }
     process.stdout.write(
       `files with comments: ${result.dirtyCount} (${result.ratcheted.length} ratcheted), ` +
         `offending: ${result.offending.length}, stale entries: ${result.stale.length}` +
-        `, added entries: ${result.additions.length}\n`,
+        `, added entries: ${result.additions.length}, missing: ${result.missing.length}\n`,
     );
-    if (result.offending.length > 0 || result.stale.length > 0 || result.additions.length > 0) {
+    if (
+      result.offending.length > 0 ||
+      result.stale.length > 0 ||
+      result.additions.length > 0 ||
+      result.missing.length > 0
+    ) {
       process.exit(1);
     }
     return;
