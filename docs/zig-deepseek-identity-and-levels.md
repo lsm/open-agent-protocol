@@ -20,9 +20,21 @@ way, which is exactly how a table drifts. There is now one copy, in the
 module that already owns provider capability facts, and the two writers
 call it. Adding a third caller cannot introduce a fourth table.
 
-`anthropic_messages_api` did not previously depend on `provider_caps`, so
-`zig/build.zig` gains one import line for that module. That is the whole
-build change.
+`anthropic_messages_api` does not import `provider_caps`, so this cut's
+source will not compile until `zig/build.zig` gains one line for that
+module. **That line is not in this cut.** `zig/build.zig` is shared and
+serialised, and a named integrator applies changes to it, so the edit is
+handed over rather than made here:
+
+- file: `zig/build.zig`
+- inside `anthropic_messages_api_mod` (defined at line 797), in its
+  `.imports` list, add
+  `.{ .name = "provider_caps", .module = provider_caps_mod },`
+- `provider_caps_mod` is declared at line 707, before that use, so no
+  reordering is needed.
+
+This is a one-line addition and nothing else. Until it lands, treat the
+source change as not yet buildable, and do not assume it compiles.
 
 ## The mapping
 
