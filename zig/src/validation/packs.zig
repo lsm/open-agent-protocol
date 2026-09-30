@@ -42,11 +42,16 @@ fn beneath(root: []const u8, path: []const u8) bool {
 
 const lexical_root = "/.pack-root";
 
-fn lexicalRelative(allocator: std.mem.Allocator, entry: []const u8) ![]const u8 {
+fn cleanedUnder(allocator: std.mem.Allocator, entry: []const u8) !?[]const u8 {
     const cleaned = try std.fs.path.resolve(allocator, &.{ lexical_root, entry });
     if (std.mem.eql(u8, cleaned, lexical_root)) return "";
-    if (!std.mem.startsWith(u8, cleaned, lexical_root ++ "/")) return error.InvalidPackDescriptor;
+    if (!std.mem.startsWith(u8, cleaned, lexical_root ++ "/")) return null;
     return cleaned[lexical_root.len + 1 ..];
+}
+
+fn lexicalRelative(allocator: std.mem.Allocator, entry: []const u8) ![]const u8 {
+    if (entry.len == 0 or std.fs.path.isAbsolute(entry)) return error.InvalidPackDescriptor;
+    return (try cleanedUnder(allocator, entry)) orelse error.InvalidPackDescriptor;
 }
 
 fn readAll(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]u8 {
@@ -90,6 +95,7 @@ fn gather(
 
         if (registry) |target| {
             if (descriptor.object.get("schemas")) |schemas| {
+                if (schemas != .array) return error.InvalidPackDescriptor;
                 const pack_root = std.Io.Dir.cwd().realPathFileAlloc(io, dir, allocator) catch return error.InvalidPackDescriptor;
                 const entries = schemas.array.items;
                 const names = try allocator.alloc([]const u8, entries.len);
@@ -154,8 +160,8 @@ fn gather(
             const declared_type = (entry.object.get("type") orelse continue).string;
             const schema_ref = (entry.object.get("schema") orelse continue).string;
             const hash = std.mem.indexOfScalar(u8, schema_ref, '#') orelse continue;
-            const ref = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/{s}", .{ pack_base_uri, pack_id, version, schema_ref });
-            _ = hash;
+            const cited = (try cleanedUnder(allocator, schema_ref[0..hash])) orelse schema_ref[0..hash];
+            const ref = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/{s}{s}", .{ pack_base_uri, pack_id, version, cited, schema_ref[hash..] });
             try branches.append(allocator, .{
                 .declared_type = try allocator.dupe(u8, declared_type),
                 .ref = ref,
@@ -258,7 +264,7 @@ test "a loaded pack's schemas are registered under keys its own refs resolve" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    for ([_][]const u8{ "staying", "aliased" }) |name| {
+    for ([_][]const u8{ "staying", "aliased", "cleaned" }) |name| {
         try tmp.dir.createDir(std.testing.io, name, .default_dir);
     }
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "staying/note.schema.json", .data =
@@ -278,6 +284,14 @@ test "a loaded pack's schemas are registered under keys its own refs resolve" {
             \\{"id": "com.example.alias", "version": "1.0.0", "schemas": ["alias.schema.json"], "envelope_types": [{"type": "com.example.alias.thing", "role": "event", "schema": "alias.schema.json#/$defs/thing"}]}
         ,
     });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "cleaned/note.schema.json", .data =
+            \\{"$schema": "https://json-schema.org/draft/2020-12/schema", "$defs": {"thing": {"type": "object", "required": ["type", "session_id"], "properties": {"type": {"const": "com.example.clean.thing"}, "session_id": {"type": "string"}}}}}
+        ,
+    });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "cleaned/pack.json", .data =
+            \\{"id": "com.example.clean", "version": "1.0.0", "schemas": ["sub/../note.schema.json"], "envelope_types": [{"type": "com.example.clean.thing", "role": "event", "schema": "sub/../note.schema.json#/$defs/thing"}]}
+        ,
+    });
 
     var registry = try jsonschema.Registry.initFromBundled(allocator);
     defer registry.deinit();
@@ -285,6 +299,7 @@ test "a loaded pack's schemas are registered under keys its own refs resolve" {
     const cases = [_]struct { dir: []const u8, declared: []const u8 }{
         .{ .dir = "staying", .declared = "com.example.ok.thing" },
         .{ .dir = "aliased", .declared = "com.example.alias.thing" },
+        .{ .dir = "cleaned", .declared = "com.example.clean.thing" },
     };
 
     for (cases) |case| {
@@ -309,7 +324,7 @@ test "a descriptor schema path is read only when it lands beneath the pack root"
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    for ([_][]const u8{ "upward", "absolute", "absoluteinside", "linked", "backlink", "cleaned", "preflight" }) |name| {
+    for ([_][]const u8{ "upward", "absolute", "absoluteinside", "linked", "backlink", "preflight" }) |name| {
         try tmp.dir.createDir(std.testing.io, name, .default_dir);
     }
     try tmp.dir.createDir(std.testing.io, "outside", .default_dir);
@@ -348,14 +363,6 @@ test "a descriptor schema path is read only when it lands beneath the pack root"
             \\{"id": "com.example.back", "version": "1.0.0", "schemas": ["../sym/note.schema.json"], "envelope_types": []}
         ,
     });
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "cleaned/note.schema.json", .data =
-            \\{"$schema": "https://json-schema.org/draft/2020-12/schema"}
-        ,
-    });
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "cleaned/pack.json", .data =
-            \\{"id": "com.example.clean", "version": "1.0.0", "schemas": ["sub/../note.schema.json"], "envelope_types": []}
-        ,
-    });
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "preflight/note.schema.json", .data =
             \\{"$schema": "https://json-schema.org/draft/2020-12/schema"}
         ,
@@ -377,10 +384,13 @@ test "a descriptor schema path is read only when it lands beneath the pack root"
 
     try std.testing.expect(registry.root("https://open-agent-protocol.local/ext/com.example.pre/1.0.0/note.schema.json") == null);
 
-    const cleaned_root = try tmp.dir.realPathFileAlloc(std.testing.io, "cleaned", allocator);
-    defer allocator.free(cleaned_root);
-    const contained = [_][]const u8{cleaned_root};
-    var normalized = try load(std.testing.io, allocator, &registry, &contained);
-    defer normalized.deinit();
-    try std.testing.expect(registry.root("https://open-agent-protocol.local/ext/com.example.clean/1.0.0/note.schema.json") != null);
+    try tmp.dir.createDir(std.testing.io, "malformed", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "malformed/pack.json", .data =
+            \\{"id": "com.example.malformed", "version": "1.0.0", "schemas": "note.schema.json", "envelope_types": []}
+        ,
+    });
+    const malformed_root = try tmp.dir.realPathFileAlloc(std.testing.io, "malformed", allocator);
+    defer allocator.free(malformed_root);
+    const malformed = [_][]const u8{malformed_root};
+    try std.testing.expectError(error.InvalidPackDescriptor, load(std.testing.io, allocator, &registry, &malformed));
 }
