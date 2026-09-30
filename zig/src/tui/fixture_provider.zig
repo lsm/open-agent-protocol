@@ -63,6 +63,7 @@ pub const MockProvider = struct {
         const stream_ptr = try allocator.create(event_stream.AssistantMessageEventStream);
         errdefer allocator.destroy(stream_ptr);
         stream_ptr.* = event_stream.AssistantMessageEventStream.init(allocator);
+        stream_ptr.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
         errdefer stream_ptr.deinit();
 
         const step = if (self.call_count < self.scenario.steps.len)
@@ -210,6 +211,8 @@ fn pushDoneAndComplete(stream: *event_stream.AssistantMessageEventStream, alloca
     } else {
         try stream.push(.{ .done = .{ .reason = reason, .message = event_message } });
     }
+    var pushed = event_message;
+    pushed.deinit(allocator);
     stream.complete(result_message);
 }
 

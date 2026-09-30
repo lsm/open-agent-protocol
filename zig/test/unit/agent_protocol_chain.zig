@@ -28,10 +28,8 @@ fn mockProviderStream(
 
     const s = try allocator.create(event_stream.AssistantMessageEventStream);
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
-    if (options) |o| {
-        _ = o;
-        s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
-    }
+    _ = options;
+    s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
 
     const final = ai_types.AssistantMessage{
         .content = &.{},
@@ -173,4 +171,21 @@ test "agent_start dual-key parse binds the session under either payload key (#19
         try std.testing.expectEqual(sid, resp.session_id);
         try std.testing.expect(server.hasSession(sid));
     }
+}
+
+test "a provider mock clones even when the caller passes no options" {
+    const allocator = std.testing.allocator;
+    const stream = try mockProviderStream(
+        .{ .id = "m", .name = "m", .api = "mock-api", .provider = "mock" },
+        .{ .messages = &.{} },
+        null,
+        allocator,
+    );
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+    try std.testing.expect(stream.ownership.isOwned());
+    try std.testing.expect(!stream.pushFailed());
+    try std.testing.expect(stream.getError() == null);
 }

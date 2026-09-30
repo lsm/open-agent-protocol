@@ -163,10 +163,10 @@ Consequences, all of which the ownership tests check:
 1. A consumer of a provider stream **must** release each event it polls
    (`releaseEvent`, or `deinitAssistantMessageEvent`), because the clone is
    per-poll. A consumer that keeps an event and never releases it leaks.
-   This does **not** generalise to every stream in the tree: the TUI fixture
-   provider (`zig/src/tui/fixture_provider.zig`) is still borrowed and pushes a
-   terminal event alongside `stream.complete()`, so a consumer must keep
-   branching on `stream.ownership.isOwned()`. That guard is not redundant.
+   The TUI fixture provider (`zig/src/tui/fixture_provider.zig`) is owned too: it
+   pushes a terminal event alongside `stream.complete()`, and because those are two
+   separately allocated messages, the event clone and the stream result are released
+   once each.
 2. `StreamOptions.requires_owned_stream_events` **has been removed** rather than
    left inert. It used to let a caller choose the borrowed mode, and a
    caller-chosen ownership flag is what made the two lifetime models coexist in

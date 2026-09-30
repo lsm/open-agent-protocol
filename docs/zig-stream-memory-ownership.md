@@ -155,15 +155,12 @@ parsed delta immediately, since the queued event holds a copy. The #192 window w
 exactly the borrowed configuration, and an owned stream both removed it and stopped
 the provider holding every delta string until the stream ends.
 
-**Not every stream in this tree is owned.** The TUI fixture provider
-(`zig/src/tui/fixture_provider.zig`, reachable through `OAPX_TUI_FIXTURE`) is a test
-double that still builds a borrowed stream and pushes `.done` and `.error` events
-carrying heap messages its consumer frees by hand. It is deliberately left that way:
-it pushes a terminal *event* **and** calls `stream.complete()`, so making it owned
-would let the same message be freed both as a queued event and as the stream's
-result. A consumer must therefore still branch on `stream.ownership.isOwned()`, and
-that guard is not redundant — removing it on the strength of "provider streams
-clone" would double-free against the fixture.
+The TUI fixture provider (`zig/src/tui/fixture_provider.zig`, reachable through
+`OAPX_TUI_FIXTURE`) is owned as well. It pushes a terminal *event* **and** calls
+`stream.complete()`, and because those are two separately allocated messages the
+event clone and the stream result are each released once. A consumer still
+branches on `stream.ownership.isOwned()`, because the generic `EventStream`
+default is still borrowed.
 
 ## Completion is `wait()` → `null` → result, not a `done` event
 

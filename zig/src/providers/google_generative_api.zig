@@ -1295,6 +1295,10 @@ fn runThread(ctx: *ThreadCtx) void {
 
     ctx.deinit();
 
+    if (stream.pushFailed()) {
+        stream.completeWithError("an event could not be queued: out of memory");
+        return;
+    }
     stream.complete(out);
     stream.markThreadDone();
 }
