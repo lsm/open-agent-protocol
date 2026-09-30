@@ -181,11 +181,7 @@ func newWaitBudget(total time.Duration) waitBudget {
 }
 
 func (b waitBudget) remaining() time.Duration {
-	left := time.Until(b.expiry)
-	if left < 0 {
-		return 0
-	}
-	return left
+	return max(time.Until(b.expiry), 0)
 }
 
 func (c *Client) ingest(l line, ok bool) error {
