@@ -20,7 +20,10 @@ async fn an_omitted_source_reads_as_unknown_through_the_oap_path() {
         .await
         .expect("an omitted source must not fail the listing");
     assert_eq!(listed.models.len(), 1);
-    assert_eq!(listed.models[0].source, None, "an omitted source must read as unknown, not as a default");
+    assert_eq!(
+        listed.models[0].source, None,
+        "an omitted source must read as unknown, not as a default"
+    );
 
     let resolved = client
         .models()
@@ -42,7 +45,11 @@ async fn a_stated_source_is_read_unchanged_on_the_oap_path() {
             .list(ListModelsRequest::default())
             .await
             .expect("a stated source still lists");
-        assert_eq!(listed.models[0].source, Some(want), "a stated source must survive the reader unchanged");
+        assert_eq!(
+            listed.models[0].source,
+            Some(want),
+            "a stated source must survive the reader unchanged"
+        );
     }
 }
 
@@ -83,5 +90,8 @@ fn the_shared_result_sees_a_missing_source_as_unknown_and_still_rejects_a_bad_on
     let mut bogus = stated.clone();
     bogus["source"] = serde_json::json!("discovered-magic");
     let rejected = serde_json::from_value::<oap_sdk::ModelDescriptor>(bogus);
-    assert!(rejected.is_err(), "an invalid stated source must still be rejected, not defaulted");
+    assert!(
+        rejected.is_err(),
+        "an invalid stated source must still be rejected, not defaulted"
+    );
 }
