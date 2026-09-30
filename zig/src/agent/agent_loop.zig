@@ -1060,8 +1060,13 @@ const LoopState = struct {
     messages: std.ArrayList(ai_types.Message),
     iterations: u32,
     final_message: ?ai_types.AssistantMessage,
+    abandoned_message: ?ai_types.AssistantMessage = null,
 
     fn deinit(self: *LoopState, allocator: std.mem.Allocator) void {
+        if (self.abandoned_message) |*abandoned| {
+            abandoned.deinit(allocator);
+            self.abandoned_message = null;
+        }
         for (self.messages.items) |*msg| {
             msg.deinit(allocator);
         }
@@ -1262,8 +1267,59 @@ test "a message the context already owns is not freed again when a later callbac
 
     while (events.poll()) |event| {
         var mutable = event;
-        mutable.deinit(std.testing.allocator);
+        defer mutable.deinit(std.testing.allocator);
+        switch (mutable) {
+            .message_end => |payload| {
+                try std.testing.expectEqualStrings("reply", payload.message.assistant.content[0].text.text);
+            },
+            .turn_end => |payload| {
+                try std.testing.expectEqualStrings("reply", payload.message.content[0].text.text);
+            },
+            else => {},
+        }
     }
+}
+
+test "an aborted turn's events stay readable after the message is released" {
+    const model = ai_types.Model{
+        .id = "test-model",
+        .name = "Test",
+        .api = "test-api",
+        .provider = "test-provider",
+        .base_url = "",
+        .reasoning = false,
+        .input = &.{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1024,
+        .max_tokens = 256,
+    };
+    var events_storage: AgentEventStream = undefined;
+    const events = &events_storage;
+    events.* = AgentEventStream.init(std.testing.allocator);
+    defer events.deinit();
+
+    var context = AgentContext.init(std.testing.allocator);
+    defer context.deinit();
+
+    try runLoop(std.testing.allocator, &.{}, &context, .{
+        .model = model,
+        .protocol = .{ .stream_fn = abortedStream },
+        .max_iterations = 1,
+    }, events);
+
+    var saw_message_end = false;
+    while (events.poll()) |event| {
+        var mutable = event;
+        defer mutable.deinit(std.testing.allocator);
+        switch (mutable) {
+            .message_end => |payload| {
+                saw_message_end = true;
+                try std.testing.expectEqualStrings("partial", payload.message.assistant.content[0].text.text);
+            },
+            else => {},
+        }
+    }
+    try std.testing.expect(saw_message_end);
 }
 
 test "an aborted turn frees the message the stream handed over" {
@@ -1440,10 +1496,9 @@ fn runLoop(
                         .tool_results = types.OwnedSlice(ai_types.ToolResultMessage).initBorrowed(&.{}),
                     } });
                     if (loop_owns_message) {
-                        var owned_assistant_message = assistant_message;
-                        owned_assistant_message.deinit(allocator);
+                        state.abandoned_message = assistant_message;
+                        message_transferred = true;
                     }
-                    message_transferred = true;
                     ended_before_cap = true;
                     break :outer;
                 },
@@ -1578,7 +1633,9 @@ fn runLoop(
         .final_message = result_final_message,
         .iterations = state.iterations,
         .termination = termination,
+        .abandoned_message = state.abandoned_message,
     };
+    state.abandoned_message = null;
 
     try pushAgentEvent(event_stream, .{
         .agent_end = .{

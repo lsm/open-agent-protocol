@@ -503,11 +503,16 @@ pub const AgentLoopResult = struct {
     final_message: ai_types.AssistantMessage,
     iterations: u32,
     termination: ?AgentTermination = null,
+    abandoned_message: ?ai_types.AssistantMessage = null,
 
     pub fn deinit(self: *AgentLoopResult, allocator: std.mem.Allocator) void {
         self.messages.deinit(allocator);
         var final = self.final_message;
         final.deinit(allocator);
+        if (self.abandoned_message) |*abandoned| {
+            abandoned.deinit(allocator);
+            self.abandoned_message = null;
+        }
     }
 };
 
