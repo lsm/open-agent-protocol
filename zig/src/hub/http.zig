@@ -393,7 +393,7 @@ fn parametersWellFormed(parameters: []const u8) bool {
         if (!isToken(name)) return false;
         var after = rest[name_end + 1 ..];
         if (after.len > 0 and after[0] == '"') {
-            const closed = std.mem.indexOfScalarPos(u8, after, 1, '"') orelse return false;
+            const closed = closingQuote(after) orelse return false;
             after = after[closed + 1 ..];
         } else {
             const next = std.mem.indexOfScalar(u8, after, ';') orelse after.len;
@@ -404,6 +404,18 @@ fn parametersWellFormed(parameters: []const u8) bool {
         if (semi == after.len and std.mem.trim(u8, after, " \t").len != 0) return false;
         rest = if (semi == after.len) "" else after[semi..];
     }
+}
+
+fn closingQuote(quoted: []const u8) ?usize {
+    var at: usize = 1;
+    while (at < quoted.len) : (at += 1) {
+        if (quoted[at] == '\\') {
+            at += 1;
+            continue;
+        }
+        if (quoted[at] == '"') return at;
+    }
+    return null;
 }
 
 fn isToken(text: []const u8) bool {
@@ -608,6 +620,10 @@ test "a parameter list that is not well formed is refused, as the header grammar
         "application/json ; charset=utf-8",
         "application/json;charset=utf-8;x=1",
         "application/json; charset=\"utf-8\"",
+        "application/json; charset =utf-8",
+        "application/json; charset= utf-8",
+        "application/json; charset=\"a\\\"b\"",
+        "application/json; charset=\"a;b\"",
     }) |declared| {
         const raw = try std.fmt.allocPrint(testing.allocator, "POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: {s}\r\nContent-Length: 2\r\n\r\n{{}}", .{declared});
         defer testing.allocator.free(raw);
