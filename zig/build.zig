@@ -2038,6 +2038,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
+            .{ .name = "agent", .module = agent_mod },
             .{ .name = "ai_types", .module = ai_types_mod },
             .{ .name = "compat", .module = compat_mod },
             .{ .name = "tui_runtime", .module = tui_runtime_mod },

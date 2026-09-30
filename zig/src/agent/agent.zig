@@ -95,6 +95,7 @@ pub const Agent = struct {
     _thinking_budgets: ?ai_types.ThinkingBudgets,
     _max_retry_delay_ms: ?u32,
     _compact_tool_output: bool,
+    _output: agent_loop.OutputSetting = .auto,
     _permission_engine: ?*types.permission.PermissionEngine,
 
     _thread: ?std.Thread,
@@ -266,6 +267,10 @@ pub const Agent = struct {
 
     pub fn setTools(self: *Agent, tools: []const AgentTool) void {
         self._state.tools = tools;
+    }
+
+    pub fn setOutput(self: *Agent, setting: agent_loop.OutputSetting) void {
+        self._output = setting;
     }
 
     pub fn setCompactToolOutput(self: *Agent, enabled: bool) void {
@@ -1075,7 +1080,7 @@ pub const Agent = struct {
             .execute_tool_via_protocol_fn = self._execute_tool_via_protocol_fn orelse tool_local_runtime.LocalToolProtocol.executeFn,
             .execute_tool_via_protocol_ctx = self._execute_tool_via_protocol_ctx orelse self._local_tool_protocol,
             .temperature = null,
-            .max_tokens = model.max_tokens,
+            .max_tokens = agent_loop.outputRequest(model, self._output),
             .api_key = null,
             .cancel_token = self._cancel_token,
             .thinking_level = self._state.thinking_level,
@@ -1593,6 +1598,84 @@ test "a run that ends because its provider refused still ends exactly once" {
 
     try std.testing.expectEqual(@as(usize, 1), tally.terminals);
     try std.testing.expect(tally.saw_end);
+}
+
+const CutOffMock = struct {
+    cut_off_replies: usize,
+    calls: usize = 0,
+    asked: [4]?u32 = .{ null, null, null, null },
+    continue_requests: usize = 0,
+};
+
+fn cutOffStreamFn(
+    ctx: ?*anyopaque,
+    model: ai_types.Model,
+    context: ai_types.Context,
+    options: types.ProtocolOptions,
+    allocator: std.mem.Allocator,
+) anyerror!*event_stream_mod.AssistantMessageEventStream {
+    const mock: *CutOffMock = @ptrCast(@alignCast(ctx.?));
+    if (mock.calls < mock.asked.len) mock.asked[mock.calls] = options.max_tokens;
+    mock.calls += 1;
+    const last = context.messages[context.messages.len - 1];
+    if (last == .user and last.user.content == .text and std.mem.eql(u8, last.user.content.text, agent_loop.continue_request_text)) mock.continue_requests += 1;
+
+    const stream = try allocator.create(event_stream_mod.AssistantMessageEventStream);
+    stream.* = event_stream_mod.AssistantMessageEventStream.init(allocator);
+    errdefer _ = stream.deinitAndDestroy();
+    const body = try allocator.dupe(u8, "part of the answer");
+    errdefer allocator.free(body);
+    const content = try allocator.alloc(ai_types.AssistantContent, 1);
+    content[0] = .{ .text = .{ .text = body } };
+    const stop: ai_types.StopReason = if (mock.calls <= mock.cut_off_replies) .length else .stop;
+    stream.complete(.{ .content = content, .api = model.api, .provider = model.provider, .model = model.id, .usage = .{}, .stop_reason = stop, .timestamp = 0 });
+    return stream;
+}
+
+fn runCutOff(agent: *Agent) !void {
+    var model = test_model;
+    model.context_window = 1_000_000;
+    model.max_tokens = 100_000;
+    agent.setModel(model);
+    try agent.promptAsync(ai_types.Message{ .user = .{ .content = .{ .text = "write it all" }, .timestamp = 0 } });
+    agent.waitForIdle();
+}
+
+test "a reply cut off at the default output limit is continued once at the model's maximum" {
+    var mock = CutOffMock{ .cut_off_replies = 1 };
+    var agent = Agent.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = cutOffStreamFn, .ctx = &mock } });
+    defer agent.deinit();
+
+    try runCutOff(&agent);
+
+    try std.testing.expectEqual(@as(usize, 2), mock.calls);
+    try std.testing.expectEqual(@as(?u32, agent_loop.default_output_tokens), mock.asked[0]);
+    try std.testing.expectEqual(@as(?u32, 100_000), mock.asked[1]);
+    try std.testing.expectEqual(@as(usize, 1), mock.continue_requests);
+}
+
+test "a reply cut off at the model's maximum ends the run without a continue request" {
+    var mock = CutOffMock{ .cut_off_replies = 2 };
+    var agent = Agent.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = cutOffStreamFn, .ctx = &mock } });
+    defer agent.deinit();
+    agent.setOutput(.max);
+
+    try runCutOff(&agent);
+
+    try std.testing.expectEqual(@as(usize, 1), mock.calls);
+    try std.testing.expectEqual(@as(?u32, 100_000), mock.asked[0]);
+    try std.testing.expectEqual(@as(usize, 0), mock.continue_requests);
+}
+
+test "a reply cut off twice is continued only once" {
+    var mock = CutOffMock{ .cut_off_replies = 3 };
+    var agent = Agent.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = cutOffStreamFn, .ctx = &mock } });
+    defer agent.deinit();
+
+    try runCutOff(&agent);
+
+    try std.testing.expectEqual(@as(usize, 2), mock.calls);
+    try std.testing.expectEqual(@as(usize, 1), mock.continue_requests);
 }
 
 const ReasoningOnlyMock = struct {
