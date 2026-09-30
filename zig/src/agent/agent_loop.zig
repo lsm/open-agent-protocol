@@ -177,7 +177,7 @@ fn headroom(context_window: u64) u64 {
     return @max(full_window_output_tokens, context_window / 64);
 }
 
-fn promptTokens(context: ai_types.Context) u64 {
+pub fn promptTokens(context: ai_types.Context) u64 {
     const messages = context.messages;
     var index = messages.len;
     while (index > 0) {

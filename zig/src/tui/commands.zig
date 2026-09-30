@@ -90,7 +90,7 @@ pub const commands = [_]CommandInfo{
     .{ .name = "compact", .kind = .compact, .usage = "/compact [focus]", .description = "Summarize the conversation to free context", .handler = handleCompact },
     .{ .name = "context", .kind = .context, .usage = "/context [tokens|default]", .description = "Show or set the context window for this session", .handler = handleContext },
     .{ .name = "output", .kind = .output, .usage = "/output [auto|max|tokens]", .description = "Show or set how much output a reply may ask for", .handler = handleOutput },
-    .{ .name = "autocompact", .kind = .autocompact, .usage = "/autocompact [percent|off]", .description = "Show or set the share of the window that compacts on its own", .handler = handleAutoCompact },
+    .{ .name = "autocompact", .kind = .autocompact, .usage = "/autocompact [auto|percent|off]", .description = "Show or set when the conversation compacts on its own", .handler = handleAutoCompact },
     .{ .name = "settings", .kind = .settings, .usage = "/settings", .description = "Configure TUI settings", .handler = handleSettings },
     .{ .name = "abort", .kind = .abort, .usage = "/abort", .description = "Cancel the active streaming turn", .handler = handleAbort },
     .{ .name = "quit", .kind = .quit, .usage = "/quit", .description = "Exit TUI", .handler = handleQuit },
@@ -252,10 +252,10 @@ fn handleStatus(ctx: CommandContext, command: Command) !CommandResult {
         status.context_limit,
         if (status.streaming) "yes" else "no",
     });
-    if (ctx.state.autocompact_percent) |percent| {
-        try writer.print("{d}%", .{percent});
-    } else {
-        try writer.writeAll("off");
+    switch (ctx.state.autocompact) {
+        .auto => try writer.writeAll("auto"),
+        .off => try writer.writeAll("off"),
+        .percent => |percent| try writer.print("{d}%", .{percent}),
     }
     return .{ .output = try out.toOwnedSlice() };
 }
@@ -430,24 +430,35 @@ fn outputReport(allocator: std.mem.Allocator, runtime: *tui_runtime.TuiRuntime) 
 }
 
 fn handleAutoCompact(ctx: CommandContext, command: Command) !CommandResult {
-    const arg = command.arg orelse return .{ .output = try autoCompactReport(ctx.allocator, ctx.state.autocompact_percent) };
+    const arg = command.arg orelse return .{ .output = try autoCompactReport(ctx) };
     if (std.ascii.eqlIgnoreCase(arg, "off") or std.ascii.eqlIgnoreCase(arg, "none")) {
-        ctx.state.autocompact_percent = null;
-        return .{ .output = try autoCompactReport(ctx.allocator, null) };
-    }
-    const percent = parseAutoCompactShare(arg) orelse {
-        return .{
-            .output = try std.fmt.allocPrint(ctx.allocator, "not a share of the context window: {s}. Give a whole number from 1 to 100, optionally with a % sign, or off", .{arg}),
-            .is_error = true,
+        ctx.state.autocompact = .off;
+    } else if (std.ascii.eqlIgnoreCase(arg, "auto")) {
+        ctx.state.autocompact = .auto;
+    } else {
+        const percent = parseAutoCompactShare(arg) orelse {
+            return .{
+                .output = try std.fmt.allocPrint(ctx.allocator, "not a share of the context window: {s}. Give a whole number from 1 to 100, optionally with a % sign, or auto, or off", .{arg}),
+                .is_error = true,
+            };
         };
-    };
-    ctx.state.autocompact_percent = percent;
-    return .{ .output = try autoCompactReport(ctx.allocator, percent) };
+        ctx.state.autocompact = .{ .percent = percent };
+    }
+    return .{ .output = try autoCompactReport(ctx) };
 }
 
-fn autoCompactReport(allocator: std.mem.Allocator, percent: ?u8) ![]u8 {
-    const held = percent orelse return allocator.dupe(u8, "autocompact: off. The conversation is compacted only when you run /compact");
-    return std.fmt.allocPrint(allocator, "autocompact: {d}% of the context window.", .{held});
+fn autoCompactReport(ctx: CommandContext) ![]u8 {
+    const allocator = ctx.allocator;
+    switch (ctx.state.autocompact) {
+        .off => return allocator.dupe(u8, "autocompact: off. The conversation is compacted only when you run /compact"),
+        .percent => |percent| return std.fmt.allocPrint(allocator, "autocompact: {d}% of the context window.", .{percent}),
+        .auto => {
+            const runtime = ctx.runtime orelse return allocator.dupe(u8, "autocompact: auto, at a point set by the model's context window and output limit.");
+            const model = runtime.currentModel() orelse return allocator.dupe(u8, "autocompact: auto, at a point set by the model's context window and output limit.");
+            const at = tui_state.autoCompactAt(.auto, model) orelse return allocator.dupe(u8, "autocompact: auto, but the model reports no context window, so nothing compacts on its own.");
+            return std.fmt.allocPrint(allocator, "autocompact: auto, at {d} of the {d}-token context window, keeping room for a summary and a reply.", .{ at, model.context_window });
+        },
+    }
 }
 
 fn parseAutoCompactShare(value: []const u8) ?u8 {
@@ -716,17 +727,18 @@ test "autocompact sets, reports and turns off the share for the session" {
 
     var shown = try dispatch(ctx, .{ .kind = .autocompact });
     defer shown.deinit(std.testing.allocator);
-    try std.testing.expectEqualStrings("autocompact: off. The conversation is compacted only when you run /compact", shown.output);
+    try std.testing.expect(state.autocompact == .auto);
+    try std.testing.expect(std.mem.startsWith(u8, shown.output, "autocompact: auto"));
 
     var set = try dispatch(ctx, .{ .kind = .autocompact, .arg = "80%" });
     defer set.deinit(std.testing.allocator);
     try std.testing.expect(!set.is_error);
-    try std.testing.expectEqual(@as(?u8, 80), state.autocompact_percent);
+    try std.testing.expectEqualDeep(tui_state.AutoCompactSetting{ .percent = 80 }, state.autocompact);
     try std.testing.expectEqualStrings("autocompact: 80% of the context window.", set.output);
 
     var bare = try dispatch(ctx, .{ .kind = .autocompact, .arg = "55" });
     defer bare.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(?u8, 55), state.autocompact_percent);
+    try std.testing.expectEqualDeep(tui_state.AutoCompactSetting{ .percent = 55 }, state.autocompact);
 
     var again = try dispatch(ctx, .{ .kind = .autocompact });
     defer again.deinit(std.testing.allocator);
@@ -734,8 +746,12 @@ test "autocompact sets, reports and turns off the share for the session" {
 
     var off = try dispatch(ctx, .{ .kind = .autocompact, .arg = "off" });
     defer off.deinit(std.testing.allocator);
-    try std.testing.expect(state.autocompact_percent == null);
+    try std.testing.expect(state.autocompact == .off);
     try std.testing.expect(std.mem.indexOf(u8, off.output, "autocompact: off") != null);
+
+    var auto = try dispatch(ctx, .{ .kind = .autocompact, .arg = "auto" });
+    defer auto.deinit(std.testing.allocator);
+    try std.testing.expect(state.autocompact == .auto);
 }
 
 test "autocompact refuses a share that is not a percentage of the window" {
@@ -749,7 +765,7 @@ test "autocompact refuses a share that is not a percentage of the window" {
         var result = try dispatch(ctx, .{ .kind = .autocompact, .arg = bad });
         defer result.deinit(std.testing.allocator);
         try std.testing.expect(result.is_error);
-        try std.testing.expectEqual(@as(?u8, 80), state.autocompact_percent);
+        try std.testing.expectEqualDeep(tui_state.AutoCompactSetting{ .percent = 80 }, state.autocompact);
     }
     for ([_][]const u8{ "1", "1%", "100", "100%" }) |good| {
         var result = try dispatch(ctx, .{ .kind = .autocompact, .arg = good });
@@ -764,11 +780,16 @@ test "status reports the autocompact share beside the context it measures" {
     try state.status.setModel(std.testing.allocator, "model-a", "provider-a");
     const ctx = CommandContext{ .allocator = std.testing.allocator, .state = &state };
 
+    var auto = try dispatch(ctx, .{ .kind = .status });
+    defer auto.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, auto.output, "autocompact: auto") != null);
+
+    state.autocompact = .off;
     var off = try dispatch(ctx, .{ .kind = .status });
     defer off.deinit(std.testing.allocator);
     try std.testing.expect(std.mem.indexOf(u8, off.output, "autocompact: off") != null);
 
-    state.autocompact_percent = 80;
+    state.autocompact = .{ .percent = 80 };
     var on = try dispatch(ctx, .{ .kind = .status });
     defer on.deinit(std.testing.allocator);
     try std.testing.expect(std.mem.indexOf(u8, on.output, "autocompact: 80%") != null);

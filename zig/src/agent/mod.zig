@@ -43,6 +43,7 @@ pub const estimateMessageTokens = agent_loop_mod.estimateMessageTokens;
 pub const OutputSetting = agent_loop_mod.OutputSetting;
 pub const outputRequest = agent_loop_mod.outputRequest;
 pub const default_output_tokens = agent_loop_mod.default_output_tokens;
+pub const promptTokens = agent_loop_mod.promptTokens;
 
 pub const Agent = @import("agent.zig").Agent;
 pub const AgentOptions = @import("agent.zig").AgentOptions;

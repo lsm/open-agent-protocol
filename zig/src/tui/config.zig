@@ -27,11 +27,18 @@ pub const Output = union(enum) {
     tokens: u32,
 };
 
+pub const AutoCompact = union(enum) {
+    auto,
+    off,
+    percent: u8,
+};
+
 pub const ModeSettings = struct {
     compact_output: bool = true,
     context_window: ?u32 = null,
     output: Output = .auto,
     auto_worktree: bool = false,
+    autocompact: AutoCompact = .auto,
 };
 
 pub const Config = struct {
@@ -169,6 +176,7 @@ fn parseConfig(allocator: std.mem.Allocator, data: []const u8) !Config {
             cfg.mode.context_window = positiveIntField(mode_obj, "context_window");
             cfg.mode.output = outputField(mode_obj);
             cfg.mode.auto_worktree = boolField(mode_obj, "auto_worktree", cfg.mode.auto_worktree);
+            cfg.mode.autocompact = autoCompactField(mode_obj);
         },
         else => {},
     };
@@ -206,6 +214,11 @@ fn serializeConfig(allocator: std.mem.Allocator, cfg: Config) ![]u8 {
         .max => try w.writeStringField("output", "max"),
         .tokens => |count| try w.writeIntField("output", count),
     }
+    switch (cfg.mode.autocompact) {
+        .auto => try w.writeStringField("autocompact", "auto"),
+        .off => try w.writeStringField("autocompact", "off"),
+        .percent => |percent| try w.writeIntField("autocompact", percent),
+    }
     try w.endObject();
     try w.endObject();
     try buf.append(allocator, '\n');
@@ -237,6 +250,15 @@ fn outputField(obj: std.json.ObjectMap) Output {
     const text = stringField(obj, "output") orelse return .auto;
     if (std.mem.eql(u8, text, "max")) return .max;
     return .auto;
+}
+
+fn autoCompactField(obj: std.json.ObjectMap) AutoCompact {
+    const value = obj.get("autocompact") orelse return .auto;
+    return switch (value) {
+        .string => |text| if (std.mem.eql(u8, text, "off")) .off else .auto,
+        .integer => |n| if (n >= 1 and n <= 100) .{ .percent = @intCast(n) } else .auto,
+        else => .auto,
+    };
 }
 
 fn boolField(obj: std.json.ObjectMap, key: []const u8, default: bool) bool {
@@ -364,6 +386,55 @@ test "a context window that is not a positive whole number is not read as one" {
         var loaded = try store.load();
         defer loaded.deinit(std.testing.allocator);
         try std.testing.expect(loaded.mode.context_window == null);
+    }
+}
+
+test "autocompact is automatic by default and a set share or off survives a save" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try tmpBase(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+    var store = try Store.init(std.testing.allocator, base);
+    defer store.deinit();
+
+    var cfg = try Config.defaults(std.testing.allocator);
+    defer cfg.deinit(std.testing.allocator);
+    try store.save(cfg);
+    var unset = try store.load();
+    defer unset.deinit(std.testing.allocator);
+    try std.testing.expect(unset.mode.autocompact == .auto);
+
+    const settings = [_]AutoCompact{ .{ .percent = 65 }, .off, .auto };
+    for (settings) |setting| {
+        cfg.mode.autocompact = setting;
+        try store.save(cfg);
+        var loaded = try store.load();
+        defer loaded.deinit(std.testing.allocator);
+        try std.testing.expectEqualDeep(setting, loaded.mode.autocompact);
+    }
+}
+
+test "an autocompact value that is neither off nor a share from 1 to 100 reads as automatic" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try tmpBase(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+    var store = try Store.init(std.testing.allocator, base);
+    defer store.deinit();
+
+    const malformed = [_][]const u8{
+        "{\"model\":\"m\",\"provider\":\"p\",\"api\":\"a\",\"workspace\":\".\",\"mode\":{\"autocompact\":0}}",
+        "{\"model\":\"m\",\"provider\":\"p\",\"api\":\"a\",\"workspace\":\".\",\"mode\":{\"autocompact\":101}}",
+        "{\"model\":\"m\",\"provider\":\"p\",\"api\":\"a\",\"workspace\":\".\",\"mode\":{\"autocompact\":\"sometimes\"}}",
+        "{\"model\":\"m\",\"provider\":\"p\",\"api\":\"a\",\"workspace\":\".\",\"mode\":{\"autocompact\":true}}",
+    };
+    for (malformed) |text| {
+        const path = try std.fs.path.join(std.testing.allocator, &.{ base, "config.json" });
+        defer std.testing.allocator.free(path);
+        try compat.fs.writeFile(compat.fs.getCwd(), path, text);
+        var loaded = try store.load();
+        defer loaded.deinit(std.testing.allocator);
+        try std.testing.expect(loaded.mode.autocompact == .auto);
     }
 }
 
