@@ -444,7 +444,11 @@ func BuildRequestBody(model Model, ctx Context, options StreamOptions) []byte {
 	}
 	if options.ReasoningEffort != "" {
 		if model.Reasoning && merged.SupportsReasoningEffort {
-			body = body.with(member("reasoning_effort", jsonString(options.ReasoningEffort)))
+			effort := options.ReasoningEffort
+			if isDeepSeekURL(model.BaseURL, model.HasBaseURL) {
+				effort = deepSeekEffort(effort)
+			}
+			body = body.with(member("reasoning_effort", jsonString(effort)))
 		}
 	}
 	if len(ctx.Tools) > 0 {
@@ -495,4 +499,14 @@ func toolChoiceValue(choice ToolChoice) (jsonValue, bool) {
 		}, true
 	}
 	return nil, false
+}
+
+func deepSeekEffort(effort string) string {
+	switch effort {
+	case "minimal", "low":
+		return "low"
+	case "xhigh", "max":
+		return "max"
+	}
+	return "high"
 }
