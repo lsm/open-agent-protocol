@@ -9,6 +9,7 @@ const json_writer = @import("json_writer");
 pub const default_line_deadline_ms: u64 = 300_000;
 
 pub const default_exit_grace_ms: i64 = 30_000;
+pub const default_probe_budget_ms: i64 = 30_000;
 
 pub const Check = struct {
     name: []const u8,
@@ -52,6 +53,7 @@ pub const Options = struct {
     environment: []const []const u8 = &.{},
     session_id: []const u8 = "conformance",
     line_deadline_ms: i64 = default_line_deadline_ms,
+    probe_budget_ms: i64 = default_probe_budget_ms,
     exit_grace_ms: i64 = default_exit_grace_ms,
 };
 
@@ -76,10 +78,10 @@ pub fn run(allocator: std.mem.Allocator, options: Options) !Report {
     defer runner.client.deinit();
     defer runner.releaseEnvelopes();
 
-    try runner.drive(options.line_deadline_ms);
+    try runner.drive(options.probe_budget_ms);
 
     runner.client.closeStdin();
-    try runner.drain(options.line_deadline_ms);
+    try runner.drain(runner.probeDeadline());
     const code = runner.client.waitExit(options.exit_grace_ms) catch |err| blk: {
         if (err == endpoint_client.Error.ExitGraceElapsed) {
             try runner.fail(
@@ -107,6 +109,29 @@ pub fn run(allocator: std.mem.Allocator, options: Options) !Report {
 fn lineBudget(line_deadline_ms: i64) std.Io.Timeout {
     return .{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(line_deadline_ms), .clock = .boot } };
 }
+
+const Deadline = struct {
+    io: std.Io,
+    started: std.Io.Timestamp,
+    budget_ms: i64,
+
+    fn start(io: std.Io, budget_ms: i64) Deadline {
+        return .{ .io = io, .started = std.Io.Timestamp.now(io, .awake), .budget_ms = budget_ms };
+    }
+
+    fn remainingMs(self: Deadline) i64 {
+        const spent = std.Io.Timestamp.now(self.io, .awake).durationTo(self.started);
+        return self.budget_ms - @as(i64, @intCast(@divTrunc(spent.toNanoseconds(), std.time.ns_per_ms)));
+    }
+
+    fn expired(self: Deadline) bool {
+        return self.remainingMs() <= 0;
+    }
+
+    fn timeout(self: Deadline) std.Io.Timeout {
+        return lineBudget(@max(self.remainingMs(), 1));
+    }
+};
 
 const ControlFrame = struct {
     control: []const u8,
@@ -210,6 +235,7 @@ const Runner = struct {
     events: std.ArrayList(oap_types.Envelope) = .empty,
     controls: std.ArrayList(ControlFrame) = .empty,
     session: []const u8,
+    probe_budget_ms: i64 = default_probe_budget_ms,
     revision: []const u8 = "",
     run_id: []const u8 = "",
     refusal: []const u8 = "",
@@ -285,8 +311,9 @@ const Runner = struct {
     }
 
 
-    fn pullUntil(self: *Runner, line_deadline_ms: i64) !void {
-        const frame = try self.client.next(lineBudget(line_deadline_ms)) orelse return error.ConformanceEndpointSilent;
+    fn pullUntil(self: *Runner, deadline: Deadline) !void {
+        if (deadline.expired()) return error.ConformanceEndpointSilent;
+        const frame = try self.client.next(deadline.timeout()) orelse return error.ConformanceEndpointSilent;
         if (frame == .control) {
             const control = try parseControl(self.allocator, frame.control);
             self.controls.append(self.allocator, control) catch |err| {
@@ -318,10 +345,11 @@ const Runner = struct {
         return null;
     }
 
-    fn answer(self: *Runner, id: []const u8, line_deadline_ms: i64) !oap_types.Envelope {
+    fn answer(self: *Runner, id: []const u8, deadline: Deadline) !oap_types.Envelope {
         while (true) {
             if (self.takeAnswer(id)) |found| return found;
-            try self.pullUntil(line_deadline_ms);
+            if (deadline.expired()) return error.ConformanceEndpointSilent;
+            try self.pullUntil(deadline);
         }
     }
 
@@ -332,10 +360,11 @@ const Runner = struct {
         return null;
     }
 
-    fn answerControl(self: *Runner, id: []const u8, line_deadline_ms: i64) !ControlFrame {
+    fn answerControl(self: *Runner, id: []const u8, deadline: Deadline) !ControlFrame {
         while (true) {
             if (self.takeControl(id)) |found| return found;
-            const frame = self.client.next(lineBudget(line_deadline_ms)) catch |err| {
+            if (deadline.expired()) return error.ControlUnanswered;
+            const frame = self.client.next(deadline.timeout()) catch |err| {
                 if (err == endpoint_client.Error.EndpointClosed) break;
                 return err;
             } orelse break;
@@ -368,8 +397,8 @@ const Runner = struct {
         return error.ControlUnanswered;
     }
 
-    fn nextEvent(self: *Runner, line_deadline_ms: i64) !oap_types.Envelope {
-        while (self.events.items.len == 0) try self.pullUntil(line_deadline_ms);
+    fn nextEvent(self: *Runner, deadline: Deadline) !oap_types.Envelope {
+        while (self.events.items.len == 0) try self.pullUntil(deadline);
         return self.events.orderedRemove(0);
     }
 
@@ -414,11 +443,11 @@ const Runner = struct {
         return id;
     }
 
-    fn request(self: *Runner, payload: oap_types.Payload, run_id: ?[]const u8, line_deadline_ms: i64) !oap_types.Envelope {
+    fn request(self: *Runner, payload: oap_types.Payload, run_id: ?[]const u8, deadline: Deadline) !oap_types.Envelope {
         const id = try self.probe(payload, run_id, self.revision);
         defer self.allocator.free(id);
 
-        var answered = try self.answer(id, line_deadline_ms);
+        var answered = try self.answer(id, deadline);
         if (answered.payload == .error_response) {
             const failure = answered.payload.error_response;
             var released = false;
@@ -431,7 +460,13 @@ const Runner = struct {
         return answered;
     }
 
-    fn drive(self: *Runner, line_deadline_ms: i64) !void {
+    fn probeDeadline(self: *Runner) Deadline {
+        return Deadline.start(self.client.io(), self.probe_budget_ms);
+    }
+
+    fn drive(self: *Runner, probe_budget_ms: i64) !void {
+        self.probe_budget_ms = probe_budget_ms;
+
         var init_fields: [2][]const u8 = undefined;
         var init_built: usize = 0;
         var versions: []const []const u8 = undefined;
@@ -463,7 +498,7 @@ const Runner = struct {
                 .profiles = profiles,
                 .participant = .{ .id = participant_id, .name = participant_name },
             },
-        }, null, line_deadline_ms) catch |err| {
+        }, null, self.probeDeadline()) catch |err| {
             try self.failReason("protocol.initialize.request is answered", err);
             return;
         };
@@ -475,7 +510,7 @@ const Runner = struct {
         }
         try self.pass("protocol.initialize.request is answered");
 
-        var capabilities = self.request(.capabilities_request, null, line_deadline_ms) catch |err| {
+        var capabilities = self.request(.capabilities_request, null, self.probeDeadline()) catch |err| {
             try self.failReason("capabilities.request is answered", err);
             return;
         };
@@ -502,7 +537,7 @@ const Runner = struct {
         const open_session = try self.allocator.dupe(u8, self.session);
         errdefer if (!open_handed_off) self.allocator.free(open_session);
         open_handed_off = true;
-        var opened = self.request(.{ .session_open_request = .{ .session_id = open_session } }, null, line_deadline_ms) catch |err| {
+        var opened = self.request(.{ .session_open_request = .{ .session_id = open_session } }, null, self.probeDeadline()) catch |err| {
             try self.failReason("session.open.request is answered", err);
             return;
         };
@@ -531,7 +566,7 @@ const Runner = struct {
             .session_id = submit_session,
             .messages = submit_messages,
             .delivery = .auto,
-        } }, null, line_deadline_ms) catch |err| {
+        } }, null, self.probeDeadline()) catch |err| {
             try self.failReason("session.message.submit.request is answered", err);
             return;
         };
@@ -562,14 +597,14 @@ const Runner = struct {
             try self.passOwned("the admission repeats requested_delivery and reports a concrete effective_delivery", settled);
         }
 
-        try self.consumeRun(line_deadline_ms);
-        try self.replayRun(line_deadline_ms);
-        try self.refuseStaleRevision(line_deadline_ms);
-        try self.answerCancel(line_deadline_ms);
-        try self.refuseAddressableEnvelope(line_deadline_ms);
+        try self.consumeRun(self.probeDeadline());
+        try self.replayRun(self.probeDeadline());
+        try self.refuseStaleRevision(self.probeDeadline());
+        try self.answerCancel(self.probeDeadline());
+        try self.refuseAddressableEnvelope(self.probeDeadline());
     }
 
-    fn replayRun(self: *Runner, line_deadline_ms: i64) !void {
+    fn replayRun(self: *Runner, deadline: Deadline) !void {
         const accepted = "a cursor replay is accepted and re-delivers the run";
         if (self.run_id.len == 0) return;
 
@@ -585,7 +620,7 @@ const Runner = struct {
         try writer.endObject();
         try self.client.write(buffer.items);
 
-        const control_answer = self.answerControl(replay_id, line_deadline_ms) catch |err| {
+        const control_answer = self.answerControl(replay_id, deadline) catch |err| {
             if (err == error.ControlUnanswered) {
                 try self.fail(
                     accepted,
@@ -623,7 +658,7 @@ const Runner = struct {
 
         var first: u64 = 0;
         while (true) {
-            var event = self.nextEvent(line_deadline_ms) catch |err| {
+            var event = self.nextEvent(deadline) catch |err| {
                 try self.failReason(accepted, err);
                 return;
             };
@@ -650,7 +685,7 @@ const Runner = struct {
         }
     }
 
-    fn refuseStaleRevision(self: *Runner, line_deadline_ms: i64) !void {
+    fn refuseStaleRevision(self: *Runner, deadline: Deadline) !void {
         const name = "a stale capability_revision is refused with stale_capabilities";
         if (self.revision.len == 0) {
             try self.skip(name, "the endpoint issued no revision, so none can be stale");
@@ -667,7 +702,7 @@ const Runner = struct {
         }, null, stale);
         defer self.allocator.free(id);
 
-        var answered = self.answer(id, line_deadline_ms) catch |err| {
+        var answered = self.answer(id, deadline) catch |err| {
             try self.failReason(name, err);
             return;
         };
@@ -695,12 +730,12 @@ const Runner = struct {
         try self.pass(name);
     }
 
-    fn refuseAddressableEnvelope(self: *Runner, line_deadline_ms: i64) !void {
+    fn refuseAddressableEnvelope(self: *Runner, deadline: Deadline) !void {
         const name = "an addressable envelope that is wrong draws a correlated refusal";
         const id = try self.rawProbe("conformance.not.a.real.request", self.revision);
         defer self.allocator.free(id);
 
-        var answered = self.answer(id, line_deadline_ms) catch |err| {
+        var answered = self.answer(id, deadline) catch |err| {
             try self.failReason(name, err);
             return;
         };
@@ -731,7 +766,7 @@ const Runner = struct {
         handed_off = true;
         var recovered = self.request(.{
             .session_state_request = .{ .session_id = probe_session },
-        }, null, line_deadline_ms) catch |err| {
+        }, null, self.probeDeadline()) catch |err| {
             try self.failOwned(
                 name,
                 try std.fmt.allocPrint(
@@ -746,7 +781,7 @@ const Runner = struct {
         try self.pass(name);
     }
 
-    fn answerCancel(self: *Runner, line_deadline_ms: i64) !void {
+    fn answerCancel(self: *Runner, deadline: Deadline) !void {
         const name = "run.cancel.request is supported, or refused as unavailable";
         if (self.run_id.len == 0) {
             try self.skip(name, "no run was admitted, so there is nothing to cancel");
@@ -765,7 +800,7 @@ const Runner = struct {
         } }, self.run_id, self.revision);
         defer self.allocator.free(id);
 
-        var answered = self.answer(id, line_deadline_ms) catch |err| {
+        var answered = self.answer(id, deadline) catch |err| {
             try self.failReason(name, err);
             return;
         };
@@ -822,9 +857,9 @@ const Runner = struct {
         return messages;
     }
 
-    fn drain(self: *Runner, line_deadline_ms: i64) !void {
+    fn drain(self: *Runner, deadline: Deadline) !void {
         while (true) {
-            const frame = (self.client.next(lineBudget(line_deadline_ms)) catch |err| {
+            const frame = (self.client.next(deadline.timeout()) catch |err| {
                 if (err == endpoint_client.Error.EndpointClosed) return;
                 try self.fail("frames the endpoint writes after the run completes decode", @errorName(err));
                 return;
@@ -841,10 +876,10 @@ const Runner = struct {
         }
     }
 
-    fn consumeRun(self: *Runner, line_deadline_ms: i64) !void {
+    fn consumeRun(self: *Runner, deadline: Deadline) !void {
         var last_sequence: u64 = 0;
         while (true) {
-            const event = self.nextEvent(line_deadline_ms) catch |err| {
+            const event = self.nextEvent(deadline) catch |err| {
                 try self.fail("the run reaches a terminal event", @errorName(err));
                 return;
             };
@@ -865,14 +900,14 @@ const Runner = struct {
             }
             switch (held.payload) {
                 .permission_requested => |*gate| {
-                    self.answerPermission(gate, line_deadline_ms) catch |err| {
+                    self.answerPermission(gate, deadline) catch |err| {
                         try self.fail("a permission gate is resolvable from the stream", @errorName(err));
                         return;
                     };
                     try self.pass("a permission gate is resolvable from the stream");
                 },
                 .user_input_requested => |*gate| {
-                    self.answerInput(gate, line_deadline_ms) catch |err| {
+                    self.answerInput(gate, deadline) catch |err| {
                         try self.fail("a user input gate is resolvable from the stream", @errorName(err));
                         return;
                     };
@@ -888,7 +923,7 @@ const Runner = struct {
         }
     }
 
-    fn answerPermission(self: *Runner, gate: *const oap_types.PermissionEvent, line_deadline_ms: i64) !void {
+    fn answerPermission(self: *Runner, gate: *const oap_types.PermissionEvent, deadline: Deadline) !void {
         if (gate.choices.len == 0) return error.NoChoicesOffered;
 
         const fields = [_][]const u8{
@@ -920,11 +955,11 @@ const Runner = struct {
             .granted = true,
         } };
         handed_off = true;
-        var resolved = try self.request(payload, copies[4], line_deadline_ms);
+        var resolved = try self.request(payload, copies[4], deadline);
         resolved.deinit(self.allocator);
     }
 
-    fn answerInput(self: *Runner, gate: *const oap_types.UserInputEvent, line_deadline_ms: i64) !void {
+    fn answerInput(self: *Runner, gate: *const oap_types.UserInputEvent, deadline: Deadline) !void {
         const fields = [_][]const u8{
             gate.interaction_id,
             gate.requested_by,
@@ -970,7 +1005,7 @@ const Runner = struct {
             .answers = answers,
         } };
         handed_off = true;
-        var resolved = try self.request(payload, copies[4], line_deadline_ms);
+        var resolved = try self.request(payload, copies[4], deadline);
         resolved.deinit(self.allocator);
     }
 };
@@ -1150,7 +1185,7 @@ test "an endpoint that ignores stdin EOF is reported under goap's check name" {
     var report = try run(std.testing.allocator, .{
         .command = "/bin/sh",
         .args = &.{ "-c", "while read -r line; do :; done; sleep 30" },
-        .line_deadline_ms = 1000,
+        .probe_budget_ms = 1000,
         .exit_grace_ms = 200,
     });
     defer report.deinit();
@@ -1335,4 +1370,76 @@ test "a cursor that is not a whole non-negative number is judged, not swallowed"
     for (cases) |line| {
         try std.testing.expectError(error.InvalidControlFrame, parseControl(std.testing.allocator, line));
     }
+}
+
+const chatty_script =
+    \\while read -r line; do
+    \\  case "$line" in
+    \\  *protocol.initialize.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"protocol.initialize.response","id":"a1","in_reply_to":"conformance-request-1","payload":{"protocol_version":"0.1","profile":"open-agent-protocol.agent-control-core","endpoint":{"id":"fake"}}}' ;;
+    \\  *capabilities.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"a2","in_reply_to":"conformance-request-2","capability_revision":"rev-1","payload":{"endpoint":{"id":"fake"},"features":{}}}' ;;
+    \\  *session.open.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"a3","in_reply_to":"conformance-request-3","payload":{"session_id":"conformance","status":"idle"}}' ;;
+    \\  *session.message.submit.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"e1","sequence":1,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","status":"running"}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.completed","id":"e2","sequence":2,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","stop_reason":"end_turn","final_response":{"role":"assistant","content":"done"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"a4","in_reply_to":"conformance-request-4","payload":{"session_id":"conformance","accepted":true,"submission_id":"s1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"run-1"}}' ;;
+    \\  esac
+    \\  printf '%s\n' '{"control":"heartbeat"}'
+    \\done
+;
+
+test "a child that writes unrelated frames forever cannot outlive the probe budget" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const io = std.testing.io;
+    const before = std.Io.Timestamp.now(io, .awake);
+    var report = try run(std.testing.allocator, .{
+        .command = "/bin/sh",
+        .args = &.{ "-c", chatty_script },
+        .probe_budget_ms = 1500,
+    });
+    defer report.deinit();
+    const elapsed = std.Io.Timestamp.now(io, .awake).durationTo(before);
+    const spent = @as(i64, @intCast(@divTrunc(elapsed.toNanoseconds(), std.time.ns_per_ms)));
+
+    try std.testing.expect(spent < 20_000);
+    try std.testing.expect(!report.passed());
+    const replay = report.verdict("a cursor replay is accepted and re-delivers the run") orelse return error.CheckMissing;
+    try std.testing.expect(!replay.passed);
+    try std.testing.expectEqualStrings(
+        "the endpoint answered nothing; a control it does not implement must still be answered with unsupported_control",
+        replay.detail,
+    );
+}
+
+const no_terminal_script =
+    \\while read -r line; do
+    \\  case "$line" in
+    \\  *protocol.initialize.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"protocol.initialize.response","id":"a1","in_reply_to":"conformance-request-1","payload":{"protocol_version":"0.1","profile":"open-agent-protocol.agent-control-core","endpoint":{"id":"fake"}}}' ;;
+    \\  *capabilities.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"a2","in_reply_to":"conformance-request-2","capability_revision":"rev-1","payload":{"endpoint":{"id":"fake"},"features":{}}}' ;;
+    \\  *session.open.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"a3","in_reply_to":"conformance-request-3","payload":{"session_id":"conformance","status":"idle"}}' ;;
+    \\  *session.message.submit.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"e1","sequence":1,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","status":"running"}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.completed","id":"e2","sequence":2,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","stop_reason":"end_turn","final_response":{"role":"assistant","content":"done"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"a4","in_reply_to":"conformance-request-4","payload":{"session_id":"conformance","accepted":true,"submission_id":"s1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"run-1"}}' ;;
+    \\  *run.cancel.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"c","in_reply_to":"%s","payload":{"error":{"code":"unsupported_feature","message":"x"}}}\n' "$rid" ;;
+    \\  *-stale*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"s","in_reply_to":"%s","payload":{"error":{"code":"stale_capabilities","message":"x"}}}\n' "$rid" ;;
+    \\  *conformance.not.a.real.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"u","in_reply_to":"%s","payload":{"error":{"code":"unknown_request","message":"x"}}}\n' "$rid" ;;
+    \\  *session.state.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.state.response","id":"t","in_reply_to":"%s","payload":{"session_id":"conformance","status":"idle"}}\n' "$rid" ;;
+    \\  *replay*) printf '%s\n' '{"control":"replay.accepted","id":"conformance-replay-1"}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"r1","sequence":1,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","status":"running"}}' ; sleep 30 ;;
+    \\  esac
+    \\done
+;
+
+test "an accepted replay that never terminates is judged inside the budget" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const io = std.testing.io;
+    const before = std.Io.Timestamp.now(io, .awake);
+    var report = try run(std.testing.allocator, .{
+        .command = "/bin/sh",
+        .args = &.{ "-c", no_terminal_script },
+        .probe_budget_ms = 1500,
+        .exit_grace_ms = 200,
+    });
+    defer report.deinit();
+    const elapsed = std.Io.Timestamp.now(io, .awake).durationTo(before);
+    const spent = @as(i64, @intCast(@divTrunc(elapsed.toNanoseconds(), std.time.ns_per_ms)));
+
+    try std.testing.expect(spent < 20_000);
+    try std.testing.expect(!report.passed());
+    const replay = report.verdict("a cursor replay is accepted and re-delivers the run") orelse return error.CheckMissing;
+    try std.testing.expect(!replay.passed);
+    try std.testing.expectEqualStrings("ConformanceEndpointSilent", replay.detail);
 }

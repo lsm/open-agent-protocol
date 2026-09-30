@@ -36,7 +36,7 @@ pub const Client = struct {
         return .{ .allocator = allocator, .threaded = std.Io.Threaded.init(allocator, .{}) };
     }
 
-    fn io(self: *Client) std.Io {
+    pub fn io(self: *Client) std.Io {
         return self.threaded.io();
     }
 
