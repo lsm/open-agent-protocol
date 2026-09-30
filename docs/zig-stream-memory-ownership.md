@@ -304,3 +304,26 @@ If you implement the provider side (custom API registration or test mocks):
   only when `is_owned` is true. Empty content (`&.{}`) and empty strings are
   always safe. Duplicate `api`/`provider`/`model` before freeing the model the
   strings came from — the published result outlives the producer thread.
+
+## Spawned child processes
+
+`process_runner` owns the same question one level down, for the children a tool
+spawns rather than for the values it produces.
+
+- A child is spawned into its **own POSIX process group**, and teardown signals
+  the group, not just the child. Without that, anything the command backgrounded
+  outlives the timeout or cancellation that was supposed to end it.
+- **The group id is captured at spawn**, where it is still known. Waiting on the
+  child clears `child.id`, and a command that exits on its own takes its id with
+  it, so a teardown that consulted `child.id` would skip the group exactly when a
+  backgrounded grandchild was still running.
+- Teardown sends `SIGTERM` to the group, then `SIGKILL` after a short bounded
+  grace if the group still has a member. This runs on every cleanup path, not
+  only on timeout: a normal early exit gets the same treatment.
+- **Windows is not covered by any of this.** The child id there is a native
+  handle, so the group is null and the posix signals are not compiled; Windows
+  keeps its existing child-only cleanup and gains nothing from this change.
+
+Limits worth stating rather than implying: this is a process-group signal, so it
+reaches descendants that stay in the group. It does not claim a detached session
+or a new process group of its own, and it is not cross-platform group support.
