@@ -591,11 +591,10 @@ close on a socket whose receive queue still holds those bytes is answered with a
 reset, which on Linux can discard the refusal the client has not read yet — the
 client sees a connection error rather than the reason. So every path that
 answers without consuming a body drains what the head declared, and gives up rather
-than waiting on a peer that sends nothing more. The bound is **both** a byte cap and
-an elapsed-time budget, and it is the *total* over the whole drain that bounds it: a
-per-round cap with an unbounded round count is not a bound. The Zig port reads in
-64 KiB rounds, stops at **1 MiB in total**, and stops at **2500 ms elapsed from that
-drain's own start** — elapsed, not the process's uptime, so a daemon that has been up
+than waiting on a peer that sends nothing more. The bound is **both** a byte cap and an
+elapsed-time budget, and it is the *total* over the whole drain that bounds it: a per-round cap
+with an unbounded round count is not a bound. The Zig port reads in 64 KiB rounds, stops at
+**1 MiB in total**, and stops at **2500 ms elapsed from that drain's own start** — elapsed, not the process's uptime, so a daemon that has been up
 for hours still drains. A drain that cannot read its own clock stops rather than draining without a
 bound, and that rule covers the **whole helper path**: `readUntil` returns its existing `Timeout` rather
 than substituting `0` for a clock it could not read, which kept `left_ms` positive and renewed the
