@@ -134,6 +134,23 @@ jobs:
           # caught. Empty falls through to the checker's HEAD^1 comparison.
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
 
+      # The default scope still excludes clients/ts/** while that package is
+      # cleaned in stages. These eight paths are already clean, so the
+      # unmodified checker gates them by explicit selection: --files bypasses
+      # the scope at scripts/check-no-comments.mjs:492 rather than widening it.
+      # No pathspec is removed, no skip or allowlist is added, and the checker
+      # itself is not touched — dropping the pathspec is a separate change once
+      # all thirteen tracked .ts files are clean.
+      - name: Check zero-comments policy on the cleaned oap-client files
+        run: >-
+          node scripts/check-no-comments.mjs --check --base "$BASE_SHA"
+          --files clients/ts/test/client.test.ts clients/ts/test/events.test.ts
+          clients/ts/test/integration.test.ts clients/ts/test/schema.test.ts
+          clients/ts/test/sse.test.ts clients/ts/test/transport.ts
+          clients/ts/src/protocol.ts clients/ts/src/events.ts
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+
   ts-sdk-e2e:
     name: TS SDK E2E
     needs: [unit-tests]
