@@ -1710,6 +1710,44 @@ test "partialWithContent leaves the partial alone when the index is not there" {
     try std.testing.expectEqual(@as(usize, 0), carried.partial.content.len);
 }
 
+
+test "a copied tool result keeps its directory and the observed flag" {
+    const directory = try std.testing.allocator.dupe(u8, "/observed/dir");
+    defer std.testing.allocator.free(directory);
+    var original = ToolResultMessage{
+        .tool_call_id = "call-1",
+        .tool_name = "dirtool",
+        .content = &.{.{ .text = .{ .text = "done" } }},
+        .details_json = OwnedSlice(u8).initBorrowed(""),
+        .working_directory = OwnedSlice(u8).initOwned(directory),
+        .working_directory_observed = true,
+        .is_error = false,
+        .timestamp = 1,
+    };
+    var clone = try cloneToolResultMessage(std.testing.allocator, original);
+    original.working_directory = OwnedSlice(u8).initBorrowed("");
+    defer clone.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("/observed/dir", clone.workingDirectory().?);
+    try std.testing.expectEqualStrings("/observed/dir", clone.observedWorkingDirectory().?);
+
+    const start = try std.testing.allocator.dupe(u8, "/start/dir");
+    defer std.testing.allocator.free(start);
+    const unobserved = ToolResultMessage{
+        .tool_call_id = "call-2",
+        .tool_name = "dirtool",
+        .content = &.{.{ .text = .{ .text = "done" } }},
+        .details_json = OwnedSlice(u8).initBorrowed(""),
+        .working_directory = OwnedSlice(u8).initBorrowed(start),
+        .working_directory_observed = false,
+        .is_error = false,
+        .timestamp = 2,
+    };
+    var unobserved_clone = try cloneToolResultMessage(std.testing.allocator, unobserved);
+    defer unobserved_clone.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("/start/dir", unobserved_clone.workingDirectory().?);
+    try std.testing.expect(unobserved_clone.observedWorkingDirectory() == null);
+}
+
 test "release frees the carried array once the cloned event has its own copy" {
     const allocator = std.testing.allocator;
     const content = [_]AssistantContent{.{ .text = .{ .text = "held" } }};
