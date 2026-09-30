@@ -689,9 +689,18 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   `open-agent-protocol.agent-control-core` triple, and the synthetic correlation `oap-error-N` replying
   to `oap-request-N` for the same `N` — including one beside a **Host the hub refuses** and one beside
   a body with a **refused media type**, so the ordering is pinned in both directions.
-  `TestHubAddrRefusesAHostOnlyWhenThereIsNoOriginHeaderToRefuseFirst` is its counterexample: the same
-  two requests **without** an `Origin` are refused `unrecognized_host`, which is what keeps the first
-  test from passing vacuously. **Three mutations fail them:** checking `Host` before `Origin` answers
+  `TestHubAddrRefusesTheSameTwoRequestsDifferentlyOnceNoOriginHeaderIsPresent` is its counterexample,
+  and each of its two requests is the **same request as one of the first two with the `Origin` header
+  removed and nothing else changed**: `Host: evil.test` with `application/json` is refused `403
+  unrecognized_host`, and `Host: 127.0.0.1:1` with `text/plain` and a body is refused `415
+  unsupported_media_type`. That is what makes the ordering a measurement rather than an assertion —
+  each precedence case has a twin that differs only in the header under test, so the first test cannot
+  pass on a build that refuses everything. Both counterexamples parse the envelope and assert `type`,
+  `code`, `Content-Length` and the same `open-agent-protocol` / `0.1` /
+  `open-agent-protocol.agent-control-core` triple and `oap-error-N` / `oap-request-N` correlation as
+  the primary proof; an earlier revision of this row checked the code with a substring search over the
+  raw body, which would have accepted a different `payload.error.code` that merely mentioned the
+  string elsewhere. **Three mutations fail them:** checking `Host` before `Origin` answers
   `unrecognized_host` on the second case, checking the media type first answers `415` on the third,
   and deleting the `Origin` gate answers `404`. One thing this pins that is worth stating plainly,
   because it is stricter than the name suggests: the gate fires on the **presence** of an `Origin`

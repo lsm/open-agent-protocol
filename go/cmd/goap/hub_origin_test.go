@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 )
@@ -94,13 +93,20 @@ func TestHubAddrRefusesAnOriginHeaderBeforeItLooksAtTheHostOrTheMediaType(t *tes
 	}
 }
 
-func TestHubAddrRefusesAHostOnlyWhenThereIsNoOriginHeaderToRefuseFirst(t *testing.T) {
+func TestHubAddrRefusesTheSameTwoRequestsDifferentlyOnceNoOriginHeaderIsPresent(t *testing.T) {
 	address, stop, cancel := startHubAddr(t)
 	defer cancel()
 	defer stop()
-	for _, c := range []struct{ name, host, ctype, body string }{
-		{name: "a refused Host with a media type the hub accepts", host: "evil.test", ctype: "application/json", body: "{}"},
-		{name: "a refused Host beside a body with a refused media type", host: "evil.test", ctype: "text/plain", body: "xx"},
+	for _, c := range []struct {
+		name   string
+		host   string
+		ctype  string
+		body   string
+		status int
+		code   string
+	}{
+		{name: "a refused Host with a media type the hub accepts", host: "evil.test", ctype: "application/json", body: "{}", status: http.StatusForbidden, code: "unrecognized_host"},
+		{name: "an accepted Host beside a body with a refused media type", host: "127.0.0.1:1", ctype: "text/plain", body: "xx", status: http.StatusUnsupportedMediaType, code: "unsupported_media_type"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			conn, err := net.DialTimeout("tcp", address, 10*time.Second)
@@ -122,13 +128,40 @@ func TestHubAddrRefusesAHostOnlyWhenThereIsNoOriginHeaderToRefuseFirst(t *testin
 			if readErr != nil {
 				t.Fatalf("read the whole answer: %v", readErr)
 			}
-			if answer.StatusCode != http.StatusForbidden {
-				t.Fatalf("%s answered %d, want 403", c.name, answer.StatusCode)
+			if answer.StatusCode != c.status {
+				t.Fatalf("%s answered %d, want %d; the answer was %s", c.name, answer.StatusCode, c.status, body)
 			}
-			if !strings.Contains(string(body), `"unrecognized_host"`) {
-				t.Fatalf("%s was refused with %s, want unrecognized_host", c.name, body)
+			if answer.ContentLength <= 0 || int64(len(body)) != answer.ContentLength {
+				t.Fatalf("the answer was %d bytes and Content-Length said %d", len(body), answer.ContentLength)
 			}
-			t.Logf("%s: refused 403 unrecognized_host, %d-byte envelope", c.name, len(body))
+			var envelope struct {
+				Type     string `json:"type"`
+				Protocol string `json:"protocol"`
+				Version  string `json:"version"`
+				Profile  string `json:"profile"`
+				ID       string `json:"id"`
+				InReply  string `json:"in_reply_to"`
+				Payload  struct {
+					Error struct {
+						Code string `json:"code"`
+					} `json:"error"`
+				} `json:"payload"`
+			}
+			if err := json.Unmarshal(body, &envelope); err != nil {
+				t.Fatalf("the answer is not parseable JSON (%v): %s", err, body)
+			}
+			if envelope.Type != "error.response" || envelope.Payload.Error.Code != c.code {
+				t.Fatalf("%s was refused %s / %s, want error.response / %s", c.name, envelope.Type, envelope.Payload.Error.Code, c.code)
+			}
+			if envelope.Protocol != "open-agent-protocol" || envelope.Version != "0.1" || envelope.Profile != "open-agent-protocol.agent-control-core" {
+				t.Fatalf("the answer was %s %s %s, want open-agent-protocol 0.1 open-agent-protocol.agent-control-core", envelope.Protocol, envelope.Version, envelope.Profile)
+			}
+			got := oapSyntheticID.FindStringSubmatch(envelope.ID)
+			want := oapSyntheticID.FindStringSubmatch(envelope.InReply)
+			if got == nil || want == nil || got[1] != "error" || want[1] != "request" || got[2] != want[2] {
+				t.Fatalf("the answer was correlated as %q replying to %q, want oap-error-N replying to oap-request-N for the same N", envelope.ID, envelope.InReply)
+			}
+			t.Logf("%s: with no Origin header this is refused %d %s, correlated as %s replying to %s, %d-byte envelope", c.name, answer.StatusCode, envelope.Payload.Error.Code, envelope.ID, envelope.InReply, len(body))
 		})
 	}
 }
