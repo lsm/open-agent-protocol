@@ -1156,9 +1156,9 @@ fn writeTable(allocator: std.mem.Allocator, writer: *std.Io.Writer, header: []co
     const links = try arena.alloc([]const ?[]const u8, (body.len + 1) * columns);
     for (rows, 0..) |cells, r| {
         for (cells, 0..) |cell, c| {
-            @constCast(cells)[c] = try expandTabs(arena, try stripControls(arena, cell));
+            const clean = try expandTabs(arena, try stripControls(arena, cell));
             var urls = std.ArrayList(?[]const u8).empty;
-            @constCast(cells)[c] = try extractLinks(arena, cell, &urls);
+            @constCast(cells)[c] = try extractLinks(arena, clean, &urls);
             links[r * columns + c] = urls.items;
         }
     }
