@@ -261,38 +261,39 @@ fn featureOnly(arena: std.mem.Allocator, reason: contract.Refusal) std.mem.Alloc
     return try arena.dupe(oap_types.DetailEntry, &.{.{ .key = "feature", .value = reason.feature }});
 }
 
+pub const refusal_statuses = [_]struct { code: []const u8, status: []const u8 }{
+    .{ .code = "unknown_adapter", .status = "404 Not Found" },
+    .{ .code = "unknown_session", .status = "404 Not Found" },
+    .{ .code = "session_closed", .status = "409 Conflict" },
+    .{ .code = "session_exists", .status = "409 Conflict" },
+    .{ .code = "unsupported_feature", .status = "400 Bad Request" },
+    .{ .code = "capability_degraded", .status = "400 Bad Request" },
+    .{ .code = "scope_mismatch", .status = "400 Bad Request" },
+    .{ .code = "request_cancelled", .status = "400 Bad Request" },
+    .{ .code = "request_too_large", .status = "413 Payload Too Large" },
+    .{ .code = "run_not_found", .status = "404 Not Found" },
+    .{ .code = "invalid_submission", .status = "400 Bad Request" },
+    .{ .code = "invalid_cursor", .status = "400 Bad Request" },
+    .{ .code = "replay_cursor_future", .status = "400 Bad Request" },
+    .{ .code = "resolution_rejected", .status = "409 Conflict" },
+    .{ .code = "run_terminal", .status = "409 Conflict" },
+    .{ .code = "no_run_to_resume", .status = "409 Conflict" },
+    .{ .code = "stale_capabilities", .status = "409 Conflict" },
+    .{ .code = "run_active", .status = "409 Conflict" },
+    .{ .code = "model_not_found", .status = "400 Bad Request" },
+    .{ .code = "state_failed", .status = "500 Internal Server Error" },
+    .{ .code = "tools_failed", .status = "502 Bad Gateway" },
+    .{ .code = "invalid_request", .status = "400 Bad Request" },
+    .{ .code = "schema_invalid", .status = "400 Bad Request" },
+    .{ .code = "malformed_json", .status = "400 Bad Request" },
+    .{ .code = "type_mismatch", .status = "400 Bad Request" },
+    .{ .code = "internal", .status = "500 Internal Server Error" },
+    .{ .code = "probe_failed", .status = "500 Internal Server Error" },
+    .{ .code = "open_failed", .status = "502 Bad Gateway" },
+};
+
 pub fn statusForRefusal(code: []const u8) ?[]const u8 {
-    const named = [_]struct { code: []const u8, status: []const u8 }{
-        .{ .code = "unknown_adapter", .status = "404 Not Found" },
-        .{ .code = "unknown_session", .status = "404 Not Found" },
-        .{ .code = "session_closed", .status = "409 Conflict" },
-        .{ .code = "session_exists", .status = "409 Conflict" },
-        .{ .code = "unsupported_feature", .status = "400 Bad Request" },
-        .{ .code = "capability_degraded", .status = "400 Bad Request" },
-        .{ .code = "scope_mismatch", .status = "400 Bad Request" },
-        .{ .code = "request_cancelled", .status = "400 Bad Request" },
-        .{ .code = "request_too_large", .status = "413 Payload Too Large" },
-        .{ .code = "run_not_found", .status = "404 Not Found" },
-        .{ .code = "invalid_submission", .status = "400 Bad Request" },
-        .{ .code = "invalid_cursor", .status = "400 Bad Request" },
-        .{ .code = "replay_cursor_future", .status = "400 Bad Request" },
-        .{ .code = "resolution_rejected", .status = "409 Conflict" },
-        .{ .code = "run_terminal", .status = "409 Conflict" },
-        .{ .code = "no_run_to_resume", .status = "409 Conflict" },
-        .{ .code = "stale_capabilities", .status = "409 Conflict" },
-        .{ .code = "run_active", .status = "409 Conflict" },
-        .{ .code = "model_not_found", .status = "400 Bad Request" },
-        .{ .code = "state_failed", .status = "500 Internal Server Error" },
-        .{ .code = "tools_failed", .status = "502 Bad Gateway" },
-        .{ .code = "invalid_request", .status = "400 Bad Request" },
-        .{ .code = "schema_invalid", .status = "400 Bad Request" },
-        .{ .code = "malformed_json", .status = "400 Bad Request" },
-        .{ .code = "type_mismatch", .status = "400 Bad Request" },
-        .{ .code = "internal", .status = "500 Internal Server Error" },
-        .{ .code = "probe_failed", .status = "500 Internal Server Error" },
-        .{ .code = "open_failed", .status = "502 Bad Gateway" },
-    };
-    for (named) |entry| {
+    for (refusal_statuses) |entry| {
         if (std.mem.eql(u8, entry.code, code)) return entry.status;
     }
     return null;
@@ -975,11 +976,7 @@ pub const Frontend = struct {
         try body.put(arena, "code", .{ .string = refusal.code });
         try body.put(arena, "message", .{ .string = try trim(arena, refusal.message) });
         if (refusal.details.len > 0) {
-            var details = try emptyObject(arena);
-            for (refusal.details) |detail| {
-                try details.put(arena, detail.key, .{ .string = detail.value });
-            }
-            try body.put(arena, "details", .{ .object = details });
+            try body.put(arena, "details", try detailsJson(arena, refusal.details));
         }
         try object.put(arena, "error", .{ .object = body });
         if (self.frame(arena, object)) |line| {
@@ -2425,6 +2422,7 @@ test "every code the transport can answer carries the status the draft pins" {
     for (named) |entry| {
         try testing.expectEqualStrings(entry.status, statusForRefusal(entry.code).?);
     }
+    try testing.expectEqual(@as(usize, 28), refusal_statuses.len);
     try testing.expectEqual(@as(usize, 28), named.len);
 }
 
