@@ -229,7 +229,7 @@ pub fn detectCapabilities(base_url: ?[]const u8) ProviderCapabilities {
                     caps.thinking_format = .qwen;
                 }
                 if (isDeepSeek(url)) {
-                    caps.requires_thinking_as_text = true;
+                    caps.supports_reasoning_effort = true;
                 }
             }
             break :capabilities caps;
@@ -626,12 +626,13 @@ test "a deepseek host is deepseek.com or a subdomain of it" {
     try std.testing.expect(!isDeepSeek(null));
 }
 
-test "the catalogued deepseek row still asks for its thinking as text" {
+test "the catalogued deepseek row takes its reasoning back as reasoning, with an effort" {
     const url = "https://api.deepseek.com";
     try std.testing.expect(isDeepSeek(url));
     const caps = detectCapabilities(url);
     try std.testing.expectEqual(ProviderType.openai_compatible, caps.provider_type);
-    try std.testing.expect(caps.requires_thinking_as_text);
+    try std.testing.expect(!caps.requires_thinking_as_text);
+    try std.testing.expect(caps.supports_reasoning_effort);
 }
 
 test "a github copilot host is githubcopilot.com or a subdomain of it" {

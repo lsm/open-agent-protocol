@@ -309,7 +309,7 @@ func DetectCapabilities(baseURL string, hasBaseURL bool) Capabilities {
 		caps.ThinkingFormat = ThinkingQwen
 	}
 	if isDeepSeekURL(baseURL, hasBaseURL) {
-		caps.RequiresThinkingAsText = true
+		caps.SupportsReasoningEffort = true
 	}
 	return caps
 }
@@ -360,6 +360,9 @@ func MergeCompat(model Model) MergedCompat {
 		detectedDeveloperRole = caps.SupportsDeveloperRole
 		detectedReasoningEffort = caps.SupportsReasoningEffort
 		detectedMaxTokensField = caps.MaxTokensField
+	}
+	if isDeepSeekURL(model.BaseURL, model.HasBaseURL) {
+		detectedReasoningEffort = caps.SupportsReasoningEffort
 	}
 
 	merged := MergedCompat{

@@ -759,11 +759,17 @@ func TestAnOpenAIHostGetsTheNativeCapsFromDetectionAndFromTheMerge(t *testing.T)
 	}
 }
 
-func TestANonGatedFlagReachesTheMergeWhateverTheHost(t *testing.T) {
+func TestDeepSeekTakesItsReasoningBackAsReasoningWithAnEffort(t *testing.T) {
 	deep := MergeCompat(hostModel("https://api.deepseek.com"))
-	if !deep.RequiresThinkingAsText {
-		t.Error("requires_thinking_as_text is not gated: deepseek keeps it")
+	if deep.RequiresThinkingAsText {
+		t.Error("deepseek wants reasoning_content passed back, not its reasoning as the answer")
 	}
+	if !deep.SupportsReasoningEffort {
+		t.Error("deepseek takes reasoning_effort")
+	}
+}
+
+func TestANonGatedFlagReachesTheMergeWhateverTheHost(t *testing.T) {
 	mistral := MergeCompat(hostModel("https://api.mistral.ai"))
 	if !mistral.RequiresMistralToolIDs {
 		t.Error("requires_mistral_tool_ids is not gated: mistral keeps it")

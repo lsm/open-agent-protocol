@@ -35,7 +35,7 @@ fn mergeCompat(model: ai_types.Model) MergedCompat {
     const is_openai_native = provider_caps.isOpenAIHost(model.base_url);
     const honors_native_caps = is_openai_native or isTransparentOpenAIProxy(model);
     const detected_developer_role = if (honors_native_caps) caps.supports_developer_role else false;
-    const detected_reasoning_effort = if (honors_native_caps) caps.supports_reasoning_effort else false;
+    const detected_reasoning_effort = if (honors_native_caps or provider_caps.isDeepSeek(model.base_url)) caps.supports_reasoning_effort else false;
     const detected_max_tokens_field: []const u8 = if (honors_native_caps) caps.max_tokens_field else "max_tokens";
 
     return .{
@@ -644,7 +644,7 @@ fn buildRequestBody(
     }
     if (options.getReasoningEffort()) |effort| {
         if (model.reasoning and merged.supports_reasoning_effort) {
-            try w.writeStringField("reasoning_effort", effort);
+            try w.writeStringField("reasoning_effort", if (provider_caps.isDeepSeek(model.base_url)) deepSeekEffort(effort) else effort);
         }
     }
     if (context.tools) |tools| {
@@ -1774,6 +1774,12 @@ pub fn streamOpenAICompletions(
     return s;
 }
 
+fn deepSeekEffort(effort: []const u8) []const u8 {
+    if (std.mem.eql(u8, effort, "minimal") or std.mem.eql(u8, effort, "low")) return "low";
+    if (std.mem.eql(u8, effort, "xhigh") or std.mem.eql(u8, effort, "max")) return "max";
+    return "high";
+}
+
 fn thinkingLevelToString(level: ai_types.ThinkingLevel) []const u8 {
     return switch (level) {
         .off => "off",
@@ -2090,6 +2096,96 @@ test "parseChunk keeps reading after a chunk it could not read" {
     }
 
     try std.testing.expectEqualStrings("kept", text.items);
+}
+
+const deepseek_test_model = ai_types.Model{
+    .id = "deepseek-flash",
+    .name = "DeepSeek Flash",
+    .api = "openai-completions",
+    .provider = "deepseek",
+    .base_url = "https://api.deepseek.com",
+    .reasoning = true,
+    .input = &[_][]const u8{"text"},
+    .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+    .context_window = 1_048_576,
+    .max_tokens = 100,
+};
+
+test "a deepseek request sends past reasoning back as reasoning_content, never as the answer" {
+    const allocator = std.testing.allocator;
+
+    const messages = [_]ai_types.Message{
+        .{ .user = .{ .content = .{ .text = "list the files" }, .timestamp = 0 } },
+        .{ .assistant = .{
+            .content = &.{
+                .{ .thinking = .{ .thinking = "plan the listing", .thinking_signature = "reasoning_content" } },
+                .{ .tool_call = .{ .id = "call-1", .name = "ls", .arguments_json = "{}" } },
+            },
+            .api = "openai-completions",
+            .provider = "deepseek",
+            .model = "deepseek-flash",
+            .usage = .{},
+            .stop_reason = .tool_use,
+            .timestamp = 0,
+        } },
+        .{ .tool_result = .{ .tool_call_id = "call-1", .tool_name = "ls", .content = &.{.{ .text = .{ .text = "a.zig" } }}, .is_error = false, .timestamp = 0 } },
+        .{ .assistant = .{
+            .content = &.{
+                .{ .thinking = .{ .thinking = "one file", .thinking_signature = "reasoning_content" } },
+                .{ .text = .{ .text = "There is a.zig." } },
+            },
+            .api = "openai-completions",
+            .provider = "deepseek",
+            .model = "deepseek-flash",
+            .usage = .{},
+            .stop_reason = .stop,
+            .timestamp = 0,
+        } },
+    };
+
+    const body = try buildRequestBody(deepseek_test_model, .{ .messages = &messages }, .{ .max_tokens = 100 }, allocator);
+    defer allocator.free(body);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+
+    var assistants: usize = 0;
+    for (parsed.value.object.get("messages").?.array.items) |m| {
+        if (!std.mem.eql(u8, m.object.get("role").?.string, "assistant")) continue;
+        assistants += 1;
+        const reasoning = m.object.get("reasoning_content") orelse return error.TestExpectedReasoningContent;
+        const content = m.object.get("content").?;
+        if (assistants == 1) {
+            try std.testing.expectEqualStrings("plan the listing", reasoning.string);
+            try std.testing.expect(content == .null);
+        } else {
+            try std.testing.expectEqualStrings("one file", reasoning.string);
+            try std.testing.expectEqual(@as(usize, 1), content.array.items.len);
+            try std.testing.expectEqualStrings("There is a.zig.", content.array.items[0].object.get("text").?.string);
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), assistants);
+}
+
+test "a deepseek request carries the thinking level as one of deepseek's three efforts" {
+    const allocator = std.testing.allocator;
+    const messages = [_]ai_types.Message{.{ .user = .{ .content = .{ .text = "hi" }, .timestamp = 0 } }};
+    const cases = [_]struct { level: []const u8, sent: []const u8 }{
+        .{ .level = "minimal", .sent = "low" },
+        .{ .level = "low", .sent = "low" },
+        .{ .level = "medium", .sent = "high" },
+        .{ .level = "high", .sent = "high" },
+        .{ .level = "xhigh", .sent = "max" },
+    };
+    for (cases) |case| {
+        const body = try buildRequestBody(deepseek_test_model, .{ .messages = &messages }, .{
+            .max_tokens = 100,
+            .reasoning_effort = ai_types.OwnedSlice(u8).initBorrowed(case.level),
+        }, allocator);
+        defer allocator.free(body);
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+        defer parsed.deinit();
+        try std.testing.expectEqualStrings(case.sent, parsed.value.object.get("reasoning_effort").?.string);
+    }
 }
 
 test "writeMessagesArray drops an orphan wherever it falls in a run of results" {

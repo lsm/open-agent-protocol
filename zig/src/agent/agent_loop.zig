@@ -970,8 +970,7 @@ fn streamAssistantResponse(
                 } });
                 final_transferred = true;
             },
-            .keepalive => {
-            },
+            .keepalive => {},
         }
     }
 
@@ -1063,7 +1062,27 @@ fn withinTurnLimit(iterations: u32, max_iterations: ?u32) bool {
     return iterations < limit;
 }
 
-const TurnOutcome = enum { failed, answered, called_tools };
+const TurnOutcome = enum { failed, answered, called_tools, reasoned_only };
+
+pub const answer_request_text = "Your last reply held only reasoning and no answer. Write your answer now.";
+
+fn reasonedWithoutAnswer(content: []const ai_types.AssistantContent) bool {
+    var reasoned = false;
+    for (content) |block| switch (block) {
+        .text => |t| if (std.mem.trim(u8, t.text, " \t\r\n").len > 0) return false,
+        .thinking => |t| {
+            if (std.mem.trim(u8, t.thinking, " \t\r\n").len > 0) reasoned = true;
+        },
+        .tool_call => return false,
+        .image => {},
+    };
+    return reasoned;
+}
+
+fn answerRequest(allocator: std.mem.Allocator) !ai_types.Message {
+    const text = try allocator.dupe(u8, answer_request_text);
+    return .{ .user = .{ .content = .{ .text = text }, .timestamp = compat.time.nowMillis() } };
+}
 
 const max_cut_off_tool_turns: u32 = 3;
 
@@ -1077,6 +1096,7 @@ fn turnOutcome(message: ai_types.AssistantMessage, cut_off_tool_turns: u32) Turn
     for (message.content) |block| {
         if (block == .tool_call) return .called_tools;
     }
+    if (message.stop_reason == .stop and reasonedWithoutAnswer(message.content)) return .reasoned_only;
     return .answered;
 }
 
@@ -1125,6 +1145,33 @@ test "turnOutcome never runs the tool calls of a failed, aborted or filtered rep
     try std.testing.expectEqual(TurnOutcome.answered, outcomeOf(.content_filter, &calls, 0));
 }
 
+test "turnOutcome marks a finished reply that holds only reasoning" {
+    const reasoning = [_]ai_types.AssistantContent{.{ .thinking = .{ .thinking = "the answer, written as reasoning" } }};
+    try std.testing.expectEqual(TurnOutcome.reasoned_only, outcomeOf(.stop, &reasoning, 0));
+    try std.testing.expectEqual(TurnOutcome.answered, outcomeOf(.length, &reasoning, 0));
+
+    const answered = [_]ai_types.AssistantContent{
+        .{ .thinking = .{ .thinking = "plan" } },
+        .{ .text = .{ .text = "the answer" } },
+    };
+    try std.testing.expectEqual(TurnOutcome.answered, outcomeOf(.stop, &answered, 0));
+
+    const blank = [_]ai_types.AssistantContent{
+        .{ .thinking = .{ .thinking = " \n" } },
+        .{ .text = .{ .text = "\n" } },
+    };
+    try std.testing.expectEqual(TurnOutcome.answered, outcomeOf(.stop, &blank, 0));
+}
+
+test "answerRequest survives an allocation failure at every step" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, answerRequestProbe, .{});
+}
+
+fn answerRequestProbe(allocator: std.mem.Allocator) !void {
+    var message = try answerRequest(allocator);
+    message.deinit(allocator);
+}
+
 test "turnOutcome ends the run on a cut-off tool call once three in a row were answered" {
     const calls = [_]ai_types.AssistantContent{
         .{ .tool_call = .{ .id = "call_1", .name = "write", .arguments_json = "{\"text\":\"cut" } },
@@ -1168,6 +1215,7 @@ fn runLoop(
     var ended_before_cap = false;
     var cancelled_run = false;
     var cut_off_tool_turns: u32 = 0;
+    var asked_for_answer = false;
 
     outer: while (withinTurnLimit(state.iterations, config.max_iterations)) {
         if (config.cancel_token) |token| {
@@ -1241,7 +1289,10 @@ fn runLoop(
             try setFinalMessage(&state, allocator, assistant_message);
             try appendClonedStateMessage(&state.messages, allocator, .{ .assistant = assistant_message });
 
-            const outcome = turnOutcome(assistant_message, cut_off_tool_turns);
+            const outcome = switch (turnOutcome(assistant_message, cut_off_tool_turns)) {
+                .reasoned_only => if (asked_for_answer) TurnOutcome.answered else TurnOutcome.reasoned_only,
+                else => |value| value,
+            };
             cut_off_tool_turns = if (outcome == .called_tools and assistant_message.stop_reason == .length) cut_off_tool_turns + 1 else 0;
             switch (outcome) {
                 .failed => {
@@ -1307,6 +1358,28 @@ fn runLoop(
 
                     ended_before_cap = true;
                     break :outer;
+                },
+                .reasoned_only => {
+                    asked_for_answer = true;
+                    try pushAgentEvent(event_stream, .{ .turn_end = .{
+                        .message = assistant_message,
+                        .tool_results = types.OwnedSlice(ai_types.ToolResultMessage).initBorrowed(&.{}),
+                    } });
+                    try context.appendMessage(.{ .assistant = assistant_message });
+
+                    const request = try answerRequest(context.allocator);
+                    context.appendMessage(request) catch |err| {
+                        var owned = request;
+                        owned.deinit(context.allocator);
+                        return err;
+                    };
+                    try pushAgentEvent(event_stream, .{ .message_start = .{
+                        .message = request,
+                    } });
+                    try pushAgentEvent(event_stream, .{ .message_end = .{
+                        .message = request,
+                    } });
+                    try appendClonedStateMessage(&state.messages, allocator, request);
                 },
                 .called_tools => {
                     var tool_result = try executeToolCalls(
