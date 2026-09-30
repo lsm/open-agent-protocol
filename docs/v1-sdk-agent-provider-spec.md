@@ -1841,13 +1841,19 @@ The shared catalog result carries `source` as optional. The owner selected
 this shape: absent is read as **unknown**, and no SDK fabricates
 `dynamic`/`discovered` for a value the listing did not state.
 
-This is the target for all three SDKs, and it is **implemented in Rust and
-Go**: #688 for Rust and #690 for Go, each refusing a present null or an
-unrecognised value on both its shared and its OAP decode path. It is **not
-yet implemented in TypeScript**, where a listing that omits `source` is
-still invented as `dynamic` on the OAP path and still rejected on the shared
-path; that reader is #705. A reader that has not been changed yet must not be
-described as if it had, so TypeScript does not satisfy this section today.
+This is the target for all three SDKs and all three now implement it. Rust
+landed as #688 and Go as #690; each refuses a present null or an
+unrecognised value on both its shared and its OAP decode path. TypeScript
+is #705, which changes both of its readers: the shared reader no longer
+requires the member, and the OAP reader no longer invents `dynamic` for a
+listing that stated nothing. All three record an omitted source as unknown
+and omit the member rather than setting a value.
+
+The Rust section of this paragraph was written when Rust alone had been
+changed and named Go and TypeScript as follow-ups; those two have since
+landed. A reader that has not been changed must not be described as if it
+had, which is why the earlier text said "Rust only" rather than claiming
+the shape for the others.
 
 That migration status is about the **shared SDK reader** only. The wire
 definition in `schema/v0.1/provider.schema.json` is already an optional key
