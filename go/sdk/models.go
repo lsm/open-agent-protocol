@@ -65,8 +65,6 @@ type ModelDescriptor struct {
 
 	Capabilities []ModelCapability
 
-	// Source is nil when the listing did not say. A present value is
-	// preserved verbatim; nothing is invented for an absent one.
 	Source *ModelSource
 
 	ContextWindow   int
