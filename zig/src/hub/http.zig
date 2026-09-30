@@ -380,7 +380,16 @@ pub fn declaresJson(content_type: ?[]const u8) bool {
     return parametersWellFormed(media[cut..]);
 }
 
+const max_media_parameters = 64;
+
+const SeenParameter = struct {
+    name: []const u8,
+    value: []const u8,
+};
+
 fn parametersWellFormed(parameters: []const u8) bool {
+    var seen: [max_media_parameters]SeenParameter = undefined;
+    var count: usize = 0;
     var rest = std.mem.trim(u8, parameters, " \t");
     while (true) {
         rest = std.mem.trimStart(u8, rest, " \t");
@@ -392,18 +401,35 @@ fn parametersWellFormed(parameters: []const u8) bool {
         const name_end = std.mem.indexOfScalar(u8, rest, '=') orelse return false;
         const name = std.mem.trim(u8, rest[0..name_end], " \t");
         if (!isToken(name)) return false;
-        var after = rest[name_end + 1 ..];
+        var after = std.mem.trimStart(u8, rest[name_end + 1 ..], " \t");
+        var value: []const u8 = undefined;
         if (after.len > 0 and after[0] == '"') {
             const closed = closingQuote(after) orelse return false;
-            after = after[closed + 1 ..];
+            value = after[1..closed];
+            after = std.mem.trim(u8, after[closed + 1 ..], " \t");
+            if (after.len == 0) return true;
+            if (after[0] != ';') return false;
+            rest = after;
+            continue;
         } else {
             const next = std.mem.indexOfScalar(u8, after, ';') orelse after.len;
-            if (!isToken(std.mem.trim(u8, after[0..next], " \t"))) return false;
+            value = std.mem.trim(u8, after[0..next], " \t");
+            if (!isToken(value)) return false;
             after = after[next..];
         }
+        if (count == max_media_parameters) return false;
+        for (seen[0..count]) |prior| {
+            if (!std.ascii.eqlIgnoreCase(prior.name, name)) continue;
+            if (!std.mem.eql(u8, prior.value, value)) return false;
+        }
+        seen[count] = .{ .name = name, .value = value };
+        count += 1;
         const semi = std.mem.indexOfScalar(u8, after, ';') orelse after.len;
-        if (semi == after.len and std.mem.trim(u8, after, " \t").len != 0) return false;
-        rest = if (semi == after.len) "" else after[semi..];
+        if (semi == after.len) {
+            if (std.mem.trim(u8, after, " \t").len != 0) return false;
+            return true;
+        }
+        rest = after[semi..];
     }
 }
 
@@ -423,7 +449,7 @@ fn isToken(text: []const u8) bool {
     if (text.len == 0) return false;
     for (text) |byte| {
         if (std.ascii.isAlphanumeric(byte)) continue;
-        if (std.mem.indexOfScalar(u8, "!#$%&'*+-.^_`|~", byte) == null) return false;
+        if (std.mem.indexOfScalar(u8, "!#$%&'*+-.^_`|~{}", byte) == null) return false;
     }
     return true;
 }
@@ -600,7 +626,7 @@ test "a request with no body names no media type and is not refused for it" {
     try testing.expectEqual(Answer.not_found, answer(loopback, listing));
 }
 
-test "a parameter list that is not well formed is refused, as the header grammar requires" {
+test "a parameter list that Go refuses is refused here too, and one it admits is admitted" {
     const loopback: []const []const u8 = &.{};
     for ([_][]const u8{
         "application/json; charset",
@@ -610,6 +636,9 @@ test "a parameter list that is not well formed is refused, as the header grammar
         "application/json; x=\"unterminated",
         "application/json;;",
         "application/json; ;",
+        "application/json;charset=\"utf-8\" junk; x=1",
+        "application/json; a=1; a=2",
+        "application/json; CHARSET=utf-8; charset=UTF-8",
     }) |declared| {
         const raw = try std.fmt.allocPrint(testing.allocator, "POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: {s}\r\nContent-Length: 2\r\n\r\n{{}}", .{declared});
         defer testing.allocator.free(raw);
@@ -627,6 +656,13 @@ test "a parameter list that is not well formed is refused, as the header grammar
         "application/json; charset= utf-8",
         "application/json; charset=\"a\\\"b\"",
         "application/json; charset=\"a;b\"",
+        "application/json; charset= \"utf-8\"",
+        "application/json; a=1; a=1",
+        "application/json; a=\"x\"; a=x",
+        "application/json; a={b}",
+        "application/json; a={b}; c=1",
+        "application/json; a=$b",
+        "application/json; a=^b",
     }) |declared| {
         const raw = try std.fmt.allocPrint(testing.allocator, "POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: {s}\r\nContent-Length: 2\r\n\r\n{{}}", .{declared});
         defer testing.allocator.free(raw);
