@@ -31,7 +31,7 @@ fn runWithIo(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8,
         .create_no_window = true,
         .pgid = if (builtin.os.tag != .windows) 0 else null,
     });
-    const process_group: ?std.posix.pid_t = if (builtin.os.tag != .windows) child.id else null;
+    const process_group = processGroupId(child.id);
     defer cleanupChild(&child, io, process_group);
 
     var multi_reader_buffer: std.Io.File.MultiReader.Buffer(2) = undefined;
@@ -139,19 +139,30 @@ fn lookupCurrentUser() ?CurrentUser {
 }
 
 fn groupSurvives(group: std.posix.pid_t) bool {
+    if (comptime builtin.os.tag == .windows) return false;
     std.posix.kill(group, @as(std.posix.SIG, @enumFromInt(0))) catch return false;
     return true;
 }
 
-fn cleanupChild(child: *std.process.Child, io: std.Io, process_group: ?std.posix.pid_t) void {
-    if (process_group) |id| {
-        const group = -@as(std.posix.pid_t, @intCast(id));
-        std.posix.kill(group, std.posix.SIG.TERM) catch {};
-        if (groupSurvives(group)) {
-            compat.time.sleepMs(common.process_group_kill_grace_ms);
-            std.posix.kill(group, std.posix.SIG.KILL) catch {};
-        }
+fn processGroupId(id: ?std.process.Child.Id) ?std.posix.pid_t {
+    if (builtin.os.tag == .windows) return null;
+    const pid = id orelse return null;
+    return @intCast(pid);
+}
+
+fn signalGroup(process_group: ?std.posix.pid_t) void {
+    if (comptime builtin.os.tag == .windows) return;
+    const id = process_group orelse return;
+    const group = -id;
+    std.posix.kill(group, std.posix.SIG.TERM) catch {};
+    if (groupSurvives(group)) {
+        compat.time.sleepMs(common.process_group_kill_grace_ms);
+        std.posix.kill(group, std.posix.SIG.KILL) catch {};
     }
+}
+
+fn cleanupChild(child: *std.process.Child, io: std.Io, process_group: ?std.posix.pid_t) void {
+    signalGroup(process_group);
     if (child.id != null) child.kill(io);
     if (child.stdin) |stdin| {
         stdin.close(io);
@@ -300,6 +311,9 @@ test "a timed out command takes its backgrounded children with it" {
         }
         compat.time.sleepMs(50);
     }
+    if (leaked) |pid| std.posix.kill(pid, std.posix.SIG.KILL) catch {};
+    const recorded = leaked != null or readRecordedChild(dir) != null;
+    if (!recorded) return error.TestUnexpectedResult;
     switch (probeRecordedChild(dir)) {
         .dead => {},
         .alive => |pid| {
@@ -335,14 +349,23 @@ test "a child that ignores SIGTERM is still taken down" {
         compat.time.sleepMs(20);
     }
     const was_there = observed orelse return error.TestUnexpectedResult;
-    std.posix.kill(was_there, std.posix.SIG.KILL) catch {};
+
+    const gone_by = common.nowMs() + 5_000;
+    while (common.nowMs() < gone_by) {
+        switch (probeRecordedChild(dir)) {
+            .dead => break,
+            .alive => {},
+            .not_written, .unreadable => return error.TestUnexpectedResult,
+        }
+        compat.time.sleepMs(50);
+    }
     switch (probeRecordedChild(dir)) {
         .dead => {},
-        .alive => |pid| {
-            std.posix.kill(pid, std.posix.SIG.KILL) catch {};
+        else => |status| {
+            defer std.posix.kill(was_there, std.posix.SIG.KILL) catch {};
+            _ = status;
             return error.TestUnexpectedResult;
         },
-        .not_written, .unreadable => return error.TestUnexpectedResult,
     }
 }
 
