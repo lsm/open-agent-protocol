@@ -73,23 +73,23 @@ decide what to persist and re-validate it.
 A turn can end `.aborted`, in error, or part-way through a failure — and a consumer can
 complete the stream mid-run, so the final publication itself can be rejected. The events
 already published are **borrowed** and drained after the producer has returned, so three
-backings must outlive the run: a successful one by the result, released by
-`AgentLoopResult.deinit`, and the other two by the stream.
+backings must outlive the run: one by the result, released by `AgentLoopResult.deinit`,
+and the other two by the stream's retention, declared by the result type.
 
-- **Failed turn.** The assistant message, and the `final_message` clone a `turn_end`
-  borrowed, are *parked* on `StreamRetention`, which the stream keeps and releases. The
-  loop's own state cannot hold them: `LoopState.deinit` runs on the same error return.
+- **Failed turn.** The assistant message is *parked* on `StreamRetention` and released
+  with the stream; `LoopState.deinit` runs on the same error return. The `final_message`
+  clone a `turn_end` borrows needs none of that: both such publications are followed only
+  by a `break`, so the clone always reaches the result.
 - **Publication rejected.** A rejected `agent_end` hands the whole result to that
   retention instead of releasing it, so the earlier events stay readable.
 
 `AgentEventStream.deinit` reaches both, only after a consumer has drained; nothing on the
 producing thread frees either. A turn that hands its message to the context marks the
-transfer, so a later failure does not retain it twice. The retention is declared by the
-result type, so a stream whose result declares none is unchanged. Parking never allocates,
-because the hand-off runs *after* a borrowed publication, where an exhausted allocator has
-no memory-safe answer but keeping the memory; three slots are reserved for the two that can
-be parked. `AgentEvent.deinit` frees nothing for `message_end` or `turn_end`, so a drain
-alone proves nothing: each regression reads the borrowed field it is about.
+transfer, so a later failure does not retain it twice. Parking never allocates, because the
+hand-off runs *after* a borrowed publication, where an exhausted allocator has no
+memory-safe answer but keeping the memory. `AgentEvent.deinit` frees nothing for
+`message_end` or `turn_end`, so a drain alone proves nothing: each regression reads the
+borrowed field it is about.
 
 ## The safe consumer pattern
 
