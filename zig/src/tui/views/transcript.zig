@@ -2082,7 +2082,7 @@ test "a table cell's escape sequences and control bytes never reach the terminal
     try std.testing.expect(std.mem.indexOfScalar(u8, styled, 0x07) == null);
     const plain = try stripEscapesForTest(std.testing.allocator, styled);
     defer std.testing.allocator.free(plain);
-    try std.testing.expectEqualStrings("a  \u{2502} b\n\u{2500}\u{2500}\u{2500}\u{253c}\u{2500}\u{2500}\nxy \u{2502} zw", plain);
+    try std.testing.expectEqualStrings("a  \u{2502} b\n\u{2500}\u{2500}\u{2500}\u{253c}\u{2500}\u{2500}\u{2500}\nxy \u{2502} zw", plain);
 }
 
 test "a marker character inside a link label cannot shift a later link's target" {
