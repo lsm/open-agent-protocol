@@ -139,6 +139,24 @@ lifecycle work is linear in session length, no quadratic scans:
   occurrence that is not fully terminal — because rows are created in occurrence order
   and rewrites are in place (finding r4019270180).
 
+## Artifact-backed tool output
+
+A text tool result that crosses its inline limit is stored as an artifact and the model
+receives a summary in its place. Three properties of that hand-off are contracts:
+
+- **The artifact carries the whole result.** With stderr present the stored bytes are the
+  combined output — stdout, then `stderr:`, then stderr — the same shape the inline path
+  returns, so a stderr-only result stores the `stderr:` section alone.
+- **The reported size describes the stored bytes.** `raw_bytes`, the artifact reference's
+  `byte_size` and the summary's `bytes:` line all count the combined output, so what a
+  later retrieval reads back is what the result claimed to have stored.
+- **The summary preview is bounded on both streams.** stdout and stderr each contribute a
+  head and a tail of at most `snippet_bytes`, so an artifact-backed summary cannot grow
+  with the output that produced it, and `artifact_retrieve` stays the way to read the rest.
+
+The inline limit itself is unchanged by this section: it still measures stdout alone, so a
+result whose stderr alone would cross the limit stays inline with both streams in the body.
+
 ## Slices
 
 One design, two PRs (~100 production lines each, per methodology):
