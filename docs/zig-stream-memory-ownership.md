@@ -122,12 +122,12 @@ The sample above assumes the default: a **borrowed-event** stream
 (`ownership == .borrowed`), where the stream stores pushed events as-is and never
 frees their strings. You copy what you keep; you never free the event itself.
 
-Some streams are **owned-event** streams (`ownership = .{ .owned = ... }`, e.g. OpenAI
-Completions, or any provider started with `requires_owned_stream_events: true`
-in `StreamOptions`): `push()` deep-copies each event into stream-owned storage.
-There the obligations flip — after processing each polled event you must free
-it with `ai_types.deinitAssistantMessageEvent(allocator, &event)`. Events still
-queued when the stream dies are freed by `EventStream.deinit()`.
+**Every provider stream is an owned-event stream** (`ownership = .{ .owned = ... }`):
+`push()` deep-copies each event into stream-owned storage, and the producing thread
+frees its own copy as soon as the push returns. There the obligations flip — after
+processing each polled event you must free it with
+`ai_types.deinitAssistantMessageEvent(allocator, &event)`. Events still queued when
+the stream dies are freed by `EventStream.deinit()`.
 
 ```zig
 if (s.ownership.isOwned()) {
@@ -140,20 +140,27 @@ if (s.ownership.isOwned()) {
 }
 ```
 
-If your consumer may lag the producer (UI buffering, slow sinks), prefer
-`requires_owned_stream_events: true` where the provider supports it: with
-borrowed events the producer is responsible for keeping the backing storage
-alive until you drain the queue, and not every provider upholds that for the
-full queue lifetime yet (the Anthropic direct path frees its delta storage when
-its producer thread exits — #192). Owned events remove that race at the cost of
-one deep copy per event.
+A consumer may lag the producer — UI buffering, slow sinks — and that is exactly
+why provider streams clone. With borrowed events the producer must keep the
+backing storage alive until you drain, which a producer thread cannot guarantee:
+`wait()` reads the ring buffer before it checks `completed`, and `deinit()` drains
+after joining the thread, so an event can reach you after the producing thread's
+storage is gone (#192). The one-deep-copy-per-event cost is paid deliberately to
+remove that race. `StreamOptions.requires_owned_stream_events` has been removed
+rather than left optional, because a caller-chosen ownership flag is what let two
+lifetime models coexist here.
 
-Anthropic reads the flag rather than only being built by it: when the stream
-clones on push it frees each parsed delta immediately, since the queued event
-holds a copy, and only the borrowed configuration defers to thread exit. So the
-#192 window exists exactly where the flag is off, and asking for owned events
-both removes it and stops the provider holding every delta string until the
-stream ends.
+Anthropic is built as an owned stream. Because it clones on push it frees each
+parsed delta immediately, since the queued event holds a copy. The #192 window was
+exactly the borrowed configuration, and an owned stream both removed it and stopped
+the provider holding every delta string until the stream ends.
+
+The TUI fixture provider (`zig/src/tui/fixture_provider.zig`, reachable through
+`OAPX_TUI_FIXTURE`) is owned as well. It pushes a terminal *event* **and** calls
+`stream.complete()`, and because those are two separately allocated messages the
+event clone and the stream result are each released once. A consumer still
+branches on `stream.ownership.isOwned()`, because the generic `EventStream`
+default is still borrowed.
 
 ## Completion is `wait()` → `null` → result, not a `done` event
 

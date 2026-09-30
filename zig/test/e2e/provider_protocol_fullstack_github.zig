@@ -1,4 +1,3 @@
-
 const std = @import("std");
 const compat = @import("compat");
 const ai_types = @import("ai_types");

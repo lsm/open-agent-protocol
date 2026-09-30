@@ -3402,10 +3402,7 @@ test "a streamed text thinking and tool call reports indices that diverge from t
     const stream = try streamOpenAICompletions(
         traceModel(base_url),
         traceContext(),
-        .{
-            .api_key = ai_types.OwnedSlice(u8).initBorrowed("test-key"),
-            .requires_owned_stream_events = true,
-        },
+        .{ .api_key = ai_types.OwnedSlice(u8).initBorrowed("test-key") },
         allocator,
     );
     defer {
@@ -3449,6 +3446,8 @@ test "a streamed text thinking and tool call reports indices that diverge from t
     try std.testing.expect(stream.waitForThread(5_000));
     mock.stop();
     stopped = true;
+
+    try std.testing.expect(stream.waitForThread(5_000));
 
     try std.testing.expect(stream.getError() == null);
     try std.testing.expect(mock.saw_chat_path.load(.acquire));
