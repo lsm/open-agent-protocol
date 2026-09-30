@@ -375,3 +375,13 @@ cursor has passed would be invisible (PR #288 c1 P1). The contract:
   occurrence at `agent_end`) with enough trailing rows for flush pressure asserts the
   end-of-session release — the early rows land in scrollback instead of being clipped
   out of the held window.
+
+## Hashline read and edit budgets
+
+`hashline_read` and `hashline_edit` do not share the text-tool output limits. A read
+returns at most 20 KiB of anchored lines (`common.default_hashline_limit`); a caller's
+explicit `byte_limit` replaces that default and is still capped by `max_file_bytes`; and
+an edit preview caps its rendered replacement at the same 20 KiB. The budget is a hashline
+budget, not the file tool's inline limit: it is declared on its own, so moving a text
+tool's inline limit does not move it. Neither hashline tool stores an artifact — both
+return capped text plus their own byte telemetry (`returned_bytes`, `returned_text_bytes`).

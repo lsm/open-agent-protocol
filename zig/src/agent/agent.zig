@@ -1576,6 +1576,70 @@ test "a run that ends because its provider refused still ends exactly once" {
     try std.testing.expect(tally.saw_end);
 }
 
+const ReasoningOnlyMock = struct {
+    reasoning_replies: usize,
+    calls: usize = 0,
+    answer_requests: usize = 0,
+};
+
+fn reasoningOnlyStreamFn(
+    ctx: ?*anyopaque,
+    model: ai_types.Model,
+    context: ai_types.Context,
+    options: types.ProtocolOptions,
+    allocator: std.mem.Allocator,
+) anyerror!*event_stream_mod.AssistantMessageEventStream {
+    _ = options;
+    const mock: *ReasoningOnlyMock = @ptrCast(@alignCast(ctx.?));
+    mock.calls += 1;
+    const last = context.messages[context.messages.len - 1];
+    if (last == .user and last.user.content == .text and std.mem.eql(u8, last.user.content.text, agent_loop.answer_request_text)) mock.answer_requests += 1;
+
+    const stream = try allocator.create(event_stream_mod.AssistantMessageEventStream);
+    stream.* = event_stream_mod.AssistantMessageEventStream.init(allocator);
+    errdefer _ = stream.deinitAndDestroy();
+    const body = try allocator.dupe(u8, "the answer");
+    errdefer allocator.free(body);
+    const content = try allocator.alloc(ai_types.AssistantContent, 1);
+    content[0] = if (mock.calls <= mock.reasoning_replies)
+        .{ .thinking = .{ .thinking = body } }
+    else
+        .{ .text = .{ .text = body } };
+    stream.complete(.{ .content = content, .api = model.api, .provider = model.provider, .model = model.id, .usage = .{}, .stop_reason = .stop, .timestamp = 0 });
+    return stream;
+}
+
+fn runReasoningOnly(agent: *Agent) !void {
+    agent.setModel(test_model);
+    try agent.promptAsync(ai_types.Message{ .user = .{ .content = .{ .text = "what is the plan?" }, .timestamp = 0 } });
+    agent.waitForIdle();
+}
+
+test "a reply that holds only reasoning gets one request for the answer, and the run goes on" {
+    var mock = ReasoningOnlyMock{ .reasoning_replies = 1 };
+    var agent = Agent.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = reasoningOnlyStreamFn, .ctx = &mock } });
+    defer agent.deinit();
+    try runReasoningOnly(&agent);
+
+    try std.testing.expectEqual(@as(usize, 2), mock.calls);
+    try std.testing.expectEqual(@as(usize, 1), mock.answer_requests);
+    const messages = agent._state.messages.items;
+    const final = messages[messages.len - 1];
+    try std.testing.expect(final == .assistant);
+    try std.testing.expect(final.assistant.content[0] == .text);
+}
+
+test "a run whose replies hold only reasoning asks for the answer once, then ends" {
+    var mock = ReasoningOnlyMock{ .reasoning_replies = std.math.maxInt(usize) };
+    var agent = Agent.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = reasoningOnlyStreamFn, .ctx = &mock } });
+    defer agent.deinit();
+    try runReasoningOnly(&agent);
+
+    try std.testing.expectEqual(@as(usize, 2), mock.calls);
+    try std.testing.expectEqual(@as(usize, 1), mock.answer_requests);
+    try std.testing.expect(!agent.isStreaming());
+}
+
 test "a run that stops before it starts still ends, and says why" {
     var agent = Agent.init(std.testing.allocator, .{ .protocol = createMockProtocol() });
     defer agent.deinit();
