@@ -420,17 +420,39 @@ test "a command whose output exceeds the cap fails promptly, unobserved, without
     try std.testing.expect(elapsed_ms < 20_000);
 }
 const MarkerCase = struct {
-    fn run(failing: std.mem.Allocator, root: []const u8) !void {
-        var marker: ?MarkerDir = null;
+    /// The private directory is built for real, so it exists on disk, and the next
+    /// allocation is the one that fails. That is the window where the directory has a
+    /// name and a path and no owner, which is the only thing this case is about;
+    /// failing an earlier allocation would not reach it.
+    fn run(failing: std.mem.Allocator) !void {
+        const created = try MarkerDir.create(std.testing.allocator);
         var marker_path: []u8 = &.{};
         defer failing.free(marker_path);
-        _ = try prepareMarker(failing, root, &marker, &marker_path);
-        if (marker) |created| {
-            created.remove(common.defaultIo());
-            created.deinit(failing);
-        }
+        const made = try created.markerPath(failing);
+        marker_path = made;
+        created.remove(common.defaultIo());
+        created.deinit(std.testing.allocator);
     }
-};test "shell execute captures stdout" {
+};
+
+test "an exhausted allocator leaves no private directory behind" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, MarkerCase.run, .{});
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cwd = try std.process.currentPathAlloc(common.defaultIo(), std.testing.allocator);
+    defer std.testing.allocator.free(cwd);
+    const root = try std.Io.Dir.path.join(std.testing.allocator, &.{ cwd, ".zig-cache", "tmp", tmp.sub_path[0..] });
+    defer std.testing.allocator.free(root);
+    var dir = try tmp.dir.openDir(common.defaultIo(), ".", .{ .iterate = true });
+    defer dir.close(common.defaultIo());
+    var it: std.Io.Dir.Iterator = dir.iterate();
+    while (try it.next(common.defaultIo())) |entry| {
+        if (std.mem.startsWith(u8, entry.name, "oap-cwd-")) return error.TestUnexpectedResult;
+    }
+}
+
+test "shell execute captures stdout" {
     const cwd = try std.process.currentPathAlloc(common.defaultIo(), std.testing.allocator);
     defer std.testing.allocator.free(cwd);
     const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"command\":\"echo hello\"}}", .{cwd});
