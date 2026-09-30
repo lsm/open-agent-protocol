@@ -1645,27 +1645,30 @@ fn runThread(ctx: *ThreadCtx) void {
         return;
     };
 
-    const out = ai_types.AssistantMessage{
+    var result_content = ai_types.AssistantMessage{
         .content = content_slice,
-        .api = allocator.dupe(u8, model.api) catch {
-            ctx.deinit();
-            stream.completeWithError("oom");
-            return;
-        },
-        .provider = allocator.dupe(u8, model.provider) catch {
-            ctx.deinit();
-            stream.completeWithError("oom");
-            return;
-        },
-        .model = allocator.dupe(u8, model.id) catch {
-            ctx.deinit();
-            stream.completeWithError("oom");
-            return;
-        },
-        .usage = usage,
-        .stop_reason = stop_reason,
-        .timestamp = compat.time.nowMillis(),
+        .api = "",
+        .provider = "",
+        .model = "",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
         .is_owned = true,
+    };
+    const out = ai_types.buildOwnedMessage(
+        allocator,
+        content_slice,
+        model.api,
+        model.provider,
+        model.id,
+        usage,
+        stop_reason,
+        compat.time.nowMillis(),
+    ) catch {
+        result_content.deinit(allocator);
+        ctx.deinit();
+        stream.completeWithError("oom");
+        return;
     };
 
     ctx.deinit();
