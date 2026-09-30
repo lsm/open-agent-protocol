@@ -477,6 +477,23 @@ fixed per revision, so the volatile fact belongs on the entry in the response
 and not in the descriptor. That distinction is the whole of 0014's objection and
 it is satisfied, not overridden.
 
+**An absent `auth_status` on a published entry reads as `unknown`.** The entry
+carries the member optionally — `provider.schema.json` requires only
+`model_ref`, `model_id`, `provider_id` and `wire` — so a provider that never
+looked is not malformed, and the literal `unknown` exists to say exactly that.
+A *present* member is still judged: `null`, a non-string, and a literal outside
+the enum are each `malformed_response`, judged before any local filter, because
+a filter that would have dropped the row cannot make a present value into an
+absent one.
+
+This is the **entry in a response**, and it is not the same rule as the native
+envelope. A native `ModelDescriptor` states `auth_status` as required
+(`docs/v1-sdk-agent-provider-spec.md`), and the native readers keep it that way:
+a native response that omits it is malformed there and is not repaired by this
+rule. The two envelopes have different requiredness on this member, and
+conflating them would either excuse a native omission or over-refuse an OAP
+one.
+
 ### One inference call
 
 | Type | Direction | Carries |
