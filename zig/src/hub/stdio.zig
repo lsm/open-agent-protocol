@@ -309,6 +309,7 @@ pub fn featureOnlyDetail(feature: []const u8) [1]oap_types.DetailEntry {
 
 pub fn detailsJson(arena: std.mem.Allocator, details: []const oap_types.DetailEntry) Error!std.json.Value {
     var object = try emptyObject(arena);
+    errdefer object.deinit(arena);
     for (details) |entry| try object.put(arena, entry.key, .{ .string = entry.value });
     return .{ .object = object };
 }
@@ -2456,6 +2457,40 @@ test "every code the transport can answer carries the status the draft pins" {
     }
     try testing.expectEqual(@as(usize, 28), refusal_statuses.len);
     try testing.expectEqual(@as(usize, 28), named.len);
+}
+
+fn detailsUnderFailure(arena: std.mem.Allocator) !void {
+    const details = [_]oap_types.DetailEntry{
+        .{ .key = "feature", .value = "action.tool_sources.attach" },
+        .{ .key = "source", .value = "x1" },
+        .{ .key = "revision", .value = "r7" },
+    };
+    var rendered = try detailsJson(arena, &details);
+    defer rendered.object.deinit(arena);
+    try std.testing.expectEqual(@as(usize, 3), rendered.object.count());
+}
+
+test "a refusal detail that cannot be put releases the map it had already grown" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, detailsUnderFailure, .{});
+}
+
+test "a refusal detail borrows its key and value rather than copying them" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var kept: [2]oap_types.DetailEntry = .{ .{ .key = "", .value = "" }, .{ .key = "", .value = "" } };
+    const arena = arena_state.allocator();
+    const feature = "action.tls_attach";
+    const source = "x1";
+    const backing = try arena.alloc(u8, feature.len + source.len);
+    @memcpy(backing[0..feature.len], feature);
+    @memcpy(backing[feature.len..], source);
+    kept[0] = .{ .key = "feature", .value = backing[0..feature.len] };
+    kept[1] = .{ .key = "source", .value = backing[feature.len..] };
+    var rendered = try detailsJson(arena, &kept);
+    defer rendered.object.deinit(arena);
+    try testing.expectEqualStrings(feature, rendered.object.get("feature").?.string);
+    try testing.expectEqualStrings("x1", rendered.object.get("source").?.string);
+    try testing.expectEqual(@as(usize, 2), rendered.object.count());
 }
 
 test "refusal details render as the object the envelope carries" {
