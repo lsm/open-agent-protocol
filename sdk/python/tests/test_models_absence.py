@@ -37,6 +37,7 @@ async def _resolve(fake: FakeServerFactory, entry: Dict[str, Any]) -> Any:
 @pytest.mark.asyncio
 async def test_missing_members_read_as_unknown(fake: FakeServerFactory) -> None:
     listed = await _list(fake, model())
+    assert len(listed.models) == 1, "an unknown lifecycle must not be dropped from the listing"
     assert listed.models[0].lifecycle is None
     assert listed.models[0].source is None
 
@@ -99,12 +100,6 @@ async def test_the_rest_of_the_native_envelope_is_still_validated(fake: FakeServ
         with pytest.raises(MakaiProtocolError) as caught:
             await _list(fake, model(**{field: bad}))
         assert caught.value.code == "malformed_response", f"{field} must still be validated"
-
-
-@pytest.mark.asyncio
-async def test_an_unknown_lifecycle_is_not_filtered_out(fake: FakeServerFactory) -> None:
-    kept = await _list(fake, model())
-    assert len(kept.models) == 1, "an unknown lifecycle must not be dropped from the listing"
 
 
 @pytest.mark.asyncio
