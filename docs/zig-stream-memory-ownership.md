@@ -150,12 +150,20 @@ remove that race. `StreamOptions.requires_owned_stream_events` has been removed
 rather than left optional, because a caller-chosen ownership flag is what let two
 lifetime models coexist here.
 
-Anthropic is built as an owned stream rather than merely reading the flag: because
-the stream clones on push it frees each parsed delta immediately, since the queued event
-holds a copy, and only the borrowed configuration defers to thread exit. So the
-#192 window exists exactly where the flag is off, and asking for owned events
-both removes it and stops the provider holding every delta string until the
-stream ends.
+Anthropic is built as an owned stream. Because it clones on push it frees each
+parsed delta immediately, since the queued event holds a copy. The #192 window was
+exactly the borrowed configuration, and an owned stream both removed it and stopped
+the provider holding every delta string until the stream ends.
+
+**Not every stream in this tree is owned.** The TUI fixture provider
+(`zig/src/tui/fixture_provider.zig`, reachable through `OAPX_TUI_FIXTURE`) is a test
+double that still builds a borrowed stream and pushes `.done` and `.error` events
+carrying heap messages its consumer frees by hand. It is deliberately left that way:
+it pushes a terminal *event* **and** calls `stream.complete()`, so making it owned
+would let the same message be freed both as a queued event and as the stream's
+result. A consumer must therefore still branch on `stream.ownership.isOwned()`, and
+that guard is not redundant — removing it on the strength of "provider streams
+clone" would double-free against the fixture.
 
 ## Completion is `wait()` → `null` → result, not a `done` event
 

@@ -832,9 +832,8 @@ Makai's `StreamOptions` carries twenty-five fields and is the closest thing
 either side has to a complete per-call list. Three are rejected outright and
 two are relocated, on their own reading as much as this draft's:
 
-- `cancel_token`, `on_payload_fn`, `on_payload_ctx` and
-  `requires_owned_stream_events` are in-process function pointers and
-  memory-ownership flags. They are in that struct because it doubles as an
+- `cancel_token`, `on_payload_fn` and `on_payload_ctx` are in-process function
+  pointers. They are in that struct because it doubles as an
   internal call-options type, which is a design smell on their side rather than
   a protocol shape.
 - `http_timeout_ms` and `ping_interval_ms` are transport-shaped and belong to a

@@ -4409,7 +4409,7 @@ test "a provider that ignores cancellation is abandoned, not freed underneath" {
     std.testing.allocator.destroy(SlowProviderState.created_cancel_flag.?);
 }
 
-test "the complete path cancels without waiting on the provider thread" {
+test "the complete path injects a cancel token the provider receives" {
     CancelMockState.reset();
     defer CancelMockState.reset();
 
