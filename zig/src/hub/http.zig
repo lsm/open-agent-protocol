@@ -1419,18 +1419,17 @@ test "a drain reads on a long-lived process, because its budget is elapsed not u
     try testing.expectEqual(@as(usize, 4096), drain(&pipe.accepted, 4096, always_going));
 }
 
-const budget_skew_ms: u64 = 200;
-
 const spends_the_budget = struct {
     client: *compat.net.Stream,
-    started: u64,
+    entered: u64 = 0,
+    entered_at: bool = false,
     observed: u64 = 0,
     buffered: usize = 0,
     polls: usize = 0,
     write_failed: bool = false,
 
-    fn spent_budget() u64 {
-        return @as(u64, @intCast(@max(drain_total_ms, 0))) + budget_skew_ms;
+    fn budget() u64 {
+        return @as(u64, @intCast(@max(drain_total_ms, 0)));
     }
 
     fn check(context: *const anyopaque) bool {
@@ -1438,11 +1437,15 @@ const spends_the_budget = struct {
         self.polls += 1;
         if (self.buffered != 0) return true;
         var now = elapsedMs() catch return true;
-        while (now -| self.started < spent_budget()) {
+        if (!self.entered_at) {
+            self.entered_at = true;
+            self.entered = now;
+        }
+        while (now -| self.entered < budget()) {
             compat.time.sleepMs(5);
             now = elapsedMs() catch return true;
         }
-        self.observed = now -| self.started;
+        self.observed = now -| self.entered;
         self.client.writeAll("q" ** 4096) catch {
             self.write_failed = true;
             return true;
@@ -1456,11 +1459,10 @@ test "a drain whose elapsed budget is already spent consumes nothing, though the
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var pipe = try Pipe.open();
     defer pipe.close();
-    const before = try elapsedMs();
-    var spender = spends_the_budget{ .client = &pipe.client, .started = before };
+    var spender = spends_the_budget{ .client = &pipe.client };
     const keeping: KeepGoing = .{ .context = &spender, .check = spends_the_budget.check };
     const spent = drain(&pipe.accepted, 8192, keeping);
-    try testing.expect(spender.observed >= spends_the_budget.spent_budget());
+    try testing.expect(spender.observed >= spends_the_budget.budget());
     try testing.expect(!spender.write_failed);
     try testing.expectEqual(@as(usize, 4096), spender.buffered);
     try testing.expectEqual(@as(usize, 0), spent);
