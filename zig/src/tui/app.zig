@@ -2609,10 +2609,9 @@ pub const App = struct {
     }
 
     fn autoCompactThreshold(self: *const App) ?u64 {
-        const share = self.state.autocompact_percent orelse return null;
-        const window = self.contextWindowInEffect();
-        if (window == 0) return null;
-        return window * share / 100;
+        const runtime = self.runtime orelse return null;
+        const model = runtime.currentModel() orelse return null;
+        return tui_state.autoCompactAt(self.state.autocompact, model);
     }
 
     fn armAutoCompact(self: *App) void {
