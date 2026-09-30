@@ -313,6 +313,23 @@ is reported as that, naming the budget, rather than as silence: an endpoint that
 answered thousands of unrelated frames and then ran out of time has not answered
 nothing.
 
+Two numbers are worth stating plainly, because the bound moved and nobody
+should have to infer it from a diff. The per-read allowance goes from 300s to
+30s, and it stops being re-armed: before, each read was granted the full
+allowance again, so a correlation could last as long as the endpoint kept it
+going; now one correlation gets 30s in total and raising it is `--timeout-ms`.
+The default is a floor for conformance, not a statement about how long an
+endpoint may take — an endpoint that needs longer raises the flag, and the
+failure names the budget rather than calling the endpoint silent. Nine
+correlations make up a run; against the reference endpoint a complete
+conformance run measures 66-135ms, which is the margin 30s is leaving, not a
+measurement of a slow endpoint.
+
+Writing is the other half of a correlation and it carries no budget at all, in
+either tree: a write blocks until the child reads it. That is preexisting rather
+than something this bound introduced, and it is recorded here because a budget
+that covers reads and not writes is easy to over-read as complete.
+
 That bound is `oapx`'s alone for now. `goap conformance` still re-arms
 `--timeout` for every line it pulls, so a chatty endpoint holds its
 correlations open there indefinitely, and it does not yet report a spent budget
