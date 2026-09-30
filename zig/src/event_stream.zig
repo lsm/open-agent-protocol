@@ -235,11 +235,6 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
             }
         }
 
-        /// Settles only while the stream is still open. The check and the write are
-        /// under one lock, so a cancellation that lands between them is preserved
-        /// rather than clobbered by a late result. Returns false when the
-        /// settlement was refused, in which case the caller still owns `result`
-        /// and must free it -- exactly once.
         pub fn completeIfOpen(self: *Self, result: R) bool {
             self.mutex.lockUncancelable(defaultIo());
             defer self.mutex.unlock(defaultIo());
