@@ -512,12 +512,12 @@ fn finalizeToolExecution(
     } });
 
     const tool_result_msg = try createToolResultMessage(allocator, tool_call, result.*, is_error, observed_directory);
+    directory_owned = false;
     errdefer {
         var unreached = tool_result_msg;
         unreached.deinit(allocator);
     }
     try results.append(allocator, tool_result_msg);
-    directory_owned = false;
 }
 
 fn runLegacyApproval(tool: AgentTool, approval_request: types.ToolApprovalRequest, allocator: std.mem.Allocator) types.ToolApprovalDecision {
