@@ -152,6 +152,9 @@ fn main() {
                 });
                 match shape.as_str() {
                     "absent-source" => {}
+                    "null-source" => entry["source"] = Value::Null,
+                    "number-source" => entry["source"] = json!(7),
+                    "invented-source" => entry["source"] = json!("invented-source"),
                     "fallback" => entry["source"] = json!("fallback"),
                     _ => entry["source"] = json!("discovered"),
                 }

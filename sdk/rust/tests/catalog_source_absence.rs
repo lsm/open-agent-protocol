@@ -95,3 +95,37 @@ fn the_shared_result_sees_a_missing_source_as_unknown_and_still_rejects_a_bad_on
         "an invalid stated source must still be rejected, not defaulted"
     );
 }
+
+#[tokio::test]
+async fn a_present_null_or_non_string_source_is_rejected_on_the_wire() {
+    for shape in ["null-source", "number-source", "invented-source"] {
+        let client = client_with(shape).await;
+        let listed = client.models().list(ListModelsRequest::default()).await;
+        assert!(
+            listed.is_err(),
+            "{shape}: a present source that is not a known literal must be rejected, not read as unknown"
+        );
+
+        let resolved = client.models().resolve("fixture", None, "mock").await;
+        assert!(resolved.is_err(), "{shape}: resolve must reject it too");
+    }
+}
+
+#[tokio::test]
+async fn an_absent_key_and_a_stated_literal_still_succeed() {
+    let client = client_with("absent-source").await;
+    let listed = client
+        .models()
+        .list(ListModelsRequest::default())
+        .await
+        .expect("an absent key is legal and reads as unknown");
+    assert_eq!(listed.models[0].source, None);
+
+    let client = client_with("stated").await;
+    let listed = client
+        .models()
+        .list(ListModelsRequest::default())
+        .await
+        .expect("a stated literal still lists");
+    assert_eq!(listed.models[0].source, Some(ModelSource::Dynamic));
+}

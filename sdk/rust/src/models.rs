@@ -291,6 +291,23 @@ impl ModelsApi {
                     .unwrap_or(Value::String(String::new()));
                 obj.insert("display_name".to_owned(), model_id);
             }
+            match obj.get("source") {
+                None => {}
+                Some(Value::String(name)) => {
+                    if name != "discovered" && name != "fallback" {
+                        return Err(Error::protocol(
+                            format!("OAP model entry has an unknown source: {name}"),
+                            Some("malformed_response"),
+                        ));
+                    }
+                }
+                Some(_) => {
+                    return Err(Error::protocol(
+                        "OAP model entry source must be a string when present".to_owned(),
+                        Some("malformed_response"),
+                    ))
+                }
+            }
             if obj.get("source").and_then(Value::as_str) == Some("discovered") {
                 obj.insert("source".to_owned(), Value::String("dynamic".to_owned()));
             } else if obj.get("source").and_then(Value::as_str) == Some("fallback") {
