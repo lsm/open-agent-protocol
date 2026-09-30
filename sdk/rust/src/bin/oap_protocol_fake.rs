@@ -158,7 +158,14 @@ fn main() {
                     "fallback" => entry["source"] = json!("fallback"),
                     _ => entry["source"] = json!("discovered"),
                 }
-                entry["lifecycle"] = json!("stable");
+                match shape.as_str() {
+                    "absent-lifecycle" => {
+                        let _ = entry.as_object_mut().map(|o| o.remove("lifecycle"));
+                    }
+                    "null-lifecycle" => entry["lifecycle"] = Value::Null,
+                    "invented-lifecycle" => entry["lifecycle"] = json!("retired"),
+                    _ => entry["lifecycle"] = json!("stable"),
+                }
                 emit(
                     profile,
                     "provider.models.list.response",

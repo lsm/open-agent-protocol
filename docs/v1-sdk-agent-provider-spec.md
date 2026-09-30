@@ -1865,3 +1865,18 @@ reads as the SDK's dynamic value and `fallback` as its static-fallback value.
 `lifecycle` follows the same shape in a later change, and the native
 protocol `ModelDescriptor` declared earlier in this document is a separate
 contract that keeps its required members.
+
+## Catalog result: an optional `lifecycle`
+
+`lifecycle` is the same shape as `source` above: the shared catalog result
+carries it as optional, an absent key reads as **unknown**, and no reader
+invents `stable` or any other value for a listing that did not state one.
+An optional key is not a nullable one, so a `lifecycle` that is **present**
+must be one of `stable`, `preview` or `deprecated`, and `null`, a number or
+an unrecognised literal is a malformed response.
+
+One consequence is worth stating because it is a filtering decision rather
+than a parsing one. A listing filters a model out as deprecated only when
+the listing **stated** `deprecated`. A model whose lifecycle is unknown is
+kept, because dropping it would silently exclude a model for failing to
+answer a question it was never asked.
