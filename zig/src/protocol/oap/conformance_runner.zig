@@ -119,7 +119,7 @@ const Deadline = struct {
     }
 
     fn remainingMs(self: Deadline) i64 {
-        const spent = std.Io.Timestamp.now(self.io, .awake).durationTo(self.started);
+        const spent = self.started.durationTo(std.Io.Timestamp.now(self.io, .awake));
         return self.budget_ms - @as(i64, @intCast(@divTrunc(spent.toNanoseconds(), std.time.ns_per_ms)));
     }
 
@@ -1658,10 +1658,22 @@ test "a child that spams well-formed frames after stdin EOF is reaped inside the
 
     try std.testing.expect(spent >= 0);
     try std.testing.expect(spent < 20_000);
-    const exiting = report.verdict("endpoint exits 0 after stdin EOF") orelse return error.CheckMissing;
-    try std.testing.expect(!exiting.passed);
+    const killed = report.verdict("endpoint exits after stdin EOF") orelse return error.CheckMissing;
+    try std.testing.expect(!killed.passed);
     try std.testing.expectEqualStrings(
         "the endpoint was still running once the exit grace elapsed, so it was killed",
-        exiting.detail,
+        killed.detail,
     );
+    try std.testing.expect(report.verdict("endpoint exits 0 after stdin EOF") == null);
+}
+
+test "a probe deadline only ever runs down" {
+    const io = std.testing.io;
+    const d = Deadline.start(io, 40);
+    try std.testing.expect(d.remainingMs() <= 40);
+    try std.testing.expect(d.remainingMs() >= 0);
+    try std.testing.expect(!d.expired());
+    std.Io.sleep(io, .fromMilliseconds(60), .awake) catch {};
+    try std.testing.expect(d.expired());
+    try std.testing.expect(d.remainingMs() < 0);
 }
