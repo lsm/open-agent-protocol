@@ -321,18 +321,6 @@ func (s *ModelsService) oapList(ctx context.Context, req ListModelsRequest) (*Li
 			return nil, &ProtocolError{Code: CodeMalformedResponse, Message: "model entry is not an object"}
 		}
 		model := jsonObject(entry)
-		if req.API != "" && model.str("wire") != req.API {
-			continue
-		}
-		if req.ModelID != "" && model.str("model_id") != req.ModelID {
-			continue
-		}
-		if req.IncludeDeprecated != nil && !*req.IncludeDeprecated && model.str("lifecycle") == "deprecated" {
-			continue
-		}
-		if req.IncludeLoginRequired != nil && !*req.IncludeLoginRequired && model.str("auth_status") == "login_required" {
-			continue
-		}
 		source, err := oapModelSource(model)
 		if err != nil {
 			return nil, err
@@ -340,6 +328,18 @@ func (s *ModelsService) oapList(ctx context.Context, req ListModelsRequest) (*Li
 		lifecycle, err := oapModelLifecycle(model)
 		if err != nil {
 			return nil, err
+		}
+		if req.API != "" && model.str("wire") != req.API {
+			continue
+		}
+		if req.ModelID != "" && model.str("model_id") != req.ModelID {
+			continue
+		}
+		if req.IncludeDeprecated != nil && !*req.IncludeDeprecated && lifecycle != nil && *lifecycle == LifecycleDeprecated {
+			continue
+		}
+		if req.IncludeLoginRequired != nil && !*req.IncludeLoginRequired && model.str("auth_status") == "login_required" {
+			continue
 		}
 		descriptor := ModelDescriptor{ModelRef: model.str("model_ref"), ModelID: model.str("model_id"),
 			DisplayName: model.str("display_name"), ProviderID: model.str("provider_id"), API: model.str("wire"),
