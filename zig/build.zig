@@ -1433,6 +1433,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "json_encode", .module = json_encode_mod },
             .{ .name = "contract", .module = adapter_contract_mod },
             .{ .name = "jsonschema", .module = jsonschema_mod },
+            .{ .name = "json_writer", .module = json_writer_mod },
             .{ .name = "hub", .module = hub_mod },
         },
     });
@@ -1906,7 +1907,7 @@ pub fn build(b: *std.Build) void {
     const tools_search_mod = b.createModule(.{ .root_source_file = b.path("src/tools/search.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent", .module = agent_mod }, .{ .name = "tools/common", .module = tools_common_mod } } });
     const tools_workspace_mod = b.createModule(.{ .root_source_file = b.path("src/tools/workspace.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent", .module = agent_mod }, .{ .name = "tools/common", .module = tools_common_mod }, .{ .name = "tools/process_runner", .module = tools_process_runner_mod } } });
     const tools_mcp_bridge_mod = b.createModule(.{ .root_source_file = b.path("src/tools/mcp_bridge.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "compat", .module = compat_mod }, .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent", .module = agent_mod }, .{ .name = "tools/common", .module = tools_common_mod }, .{ .name = "build_options", .module = version_module }, .{ .name = "json_encode", .module = json_encode_mod } } });
-    const tools_agent_tool_bridge_mod = b.createModule(.{ .root_source_file = b.path("src/tools/agent_tool_bridge.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "agent_types", .module = protocol_agent_types_mod } } });
+    const tools_agent_tool_bridge_mod = b.createModule(.{ .root_source_file = b.path("src/tools/agent_tool_bridge.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "agent_types", .module = protocol_agent_types_mod }, .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent_loop", .module = agent_loop_mod }, .{ .name = "compat", .module = compat_mod } } });
     const tools_agent_tool_bridge_test = b.addTest(.{ .root_module = tools_agent_tool_bridge_mod });
     const tools_registry_mod = b.createModule(.{ .root_source_file = b.path("src/tools/registry.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "agent", .module = agent_mod }, .{ .name = "permission", .module = permission_mod }, .{ .name = "tools/shell", .module = tools_shell_mod }, .{ .name = "tools/file", .module = tools_file_mod }, .{ .name = "tools/edit", .module = tools_edit_mod }, .{ .name = "tools/hashline", .module = tools_hashline_mod }, .{ .name = "tools/search", .module = tools_search_mod }, .{ .name = "tools/workspace", .module = tools_workspace_mod }, .{ .name = "tools/artifact", .module = tools_artifact_mod }, .{ .name = "tools/mcp_bridge", .module = tools_mcp_bridge_mod } } });
 
