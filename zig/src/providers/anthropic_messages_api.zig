@@ -1119,7 +1119,6 @@ fn endThinkingBlock(
     carried.release(allocator);
     return .ended;
 }
-
 fn runThread(ctx: *ThreadCtx) void {
     const allocator = ctx.allocator;
     const stream = ctx.stream;
@@ -2484,9 +2483,7 @@ test "a streamed tool call frees the id and name it hands the consumer" {
         const stream = try streamAnthropicMessages(
             regressionModel("anthropic-messages", "anthropic", base_url),
             regressionContext(),
-            .{
-                .api_key = ai_types.OwnedSlice(u8).initBorrowed("test-key"),
-            },
+            .{ .api_key = ai_types.OwnedSlice(u8).initBorrowed("test-key") },
             allocator,
         );
         defer {
@@ -2537,7 +2534,6 @@ test "a response ending mid event frees what the tail flush parses and drops" {
         regressionContext(),
         .{
             .api_key = ai_types.OwnedSlice(u8).initBorrowed("test-key"),
-            .requires_owned_stream_events = true,
         },
         allocator,
     );
@@ -2774,6 +2770,42 @@ test "every row this wire serves finds its key from the row, not a list of vendo
         try std.testing.expectEqualStrings(row.credential_env[0], recorded.asked.items[0]);
     }
     try std.testing.expect(served >= 2);
+}
+
+test "a consumer that drains after the producing thread exits reads intact events" {
+    const allocator = std.testing.allocator;
+    var mock = try MockAnthropicServer.listen(MockAnthropicServer.complete_stream);
+    var stopped = false;
+    defer if (!stopped) mock.stop();
+    const base_url = try mock.baseUrl(allocator);
+    defer allocator.free(base_url);
+    try mock.start();
+
+    const stream = try streamAnthropicMessages(
+        regressionModel("anthropic-messages", "anthropic", base_url),
+        regressionContext(),
+        .{ .api_key = ai_types.OwnedSlice(u8).initBorrowed("test-key") },
+        allocator,
+    );
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+
+    try std.testing.expect(stream.waitForThread(5_000));
+    mock.stop();
+    stopped = true;
+
+    var started: usize = 0;
+    while (stream.wait()) |event| {
+        var polled = event;
+        defer ai_types.deinitAssistantMessageEvent(allocator, &polled);
+        if (polled != .toolcall_start) continue;
+        started += 1;
+        try std.testing.expectEqualStrings("toolu_01LEAKCHECK", polled.toolcall_start.id);
+        try std.testing.expectEqualStrings("bash", polled.toolcall_start.name);
+    }
+    try std.testing.expectEqual(@as(usize, 1), started);
 }
 
 fn lostCloneTestModel() !ai_types.Model {

@@ -4865,12 +4865,8 @@ test "fixture runtime streams the env-provided text" {
 
     var saw_delta = false;
     while (stream_ptr.wait()) |event| {
-        var ev = event;
-        defer switch (ev) {
-            .done => |*payload| payload.message.deinit(std.testing.allocator),
-            .@"error" => |*payload| payload.err.deinit(std.testing.allocator),
-            else => {},
-        };
+        const ev = event;
+        defer stream_ptr.releaseEvent(ev);
         if (ev == .text_delta) saw_delta = std.mem.eql(u8, ev.text_delta.delta, "pty fixture reply");
     }
     try std.testing.expect(saw_delta);
@@ -5963,7 +5959,7 @@ test "a failed adopt leaves the old model pair and the average in place" {
 }
 
 test "an adopt that succeeds replaces the pair and clears the average" {
-    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{gpt_model, kimi_model} });
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ gpt_model, kimi_model } });
     defer app.deinit();
     app.drainEvents() catch {};
 
