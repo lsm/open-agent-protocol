@@ -535,6 +535,8 @@ Provider stream rules:
 - `message_start` may include resolved `provider_id`, `api`, and `model_id` metadata when available.
 - `message_end` should include `usage` and `stop_reason` when available from upstream provider.
 - `tool_call` is emitted after full argument buffering in V1; incremental tool-call delta streaming is deferred (planned future shape: `tool_call_start` / `tool_call_delta` / `tool_call_end`).
+- A provider that deep-copies each queued event **must not** publish a terminal that silently omits one. If an event's copy could not be allocated, the turn settles through the error path rather than as a completed message, because a consumer cannot tell a complete turn from one missing an event.
+- Settlement is first-writer-wins. A caller that already settled the stream — a cancellation, for instance — keeps its own outcome: a provider that finishes afterwards must not overwrite a terminal the caller established, and the message it built is released rather than published.
 
 Agent stream rules:
 - Agent streams wrap one or more provider turns and may emit `turn_start` / `turn_end` plus tool execution lifecycle events.
