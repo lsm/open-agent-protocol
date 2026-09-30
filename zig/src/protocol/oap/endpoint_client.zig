@@ -21,30 +21,41 @@ pub const Spawn = struct {
 
 pub const Budget = struct {
     io: std.Io,
-    started: std.Io.Timestamp,
-    budget_ms: i64,
+    limit: ?std.Io.Clock.Timestamp,
+
+    pub fn fromTimeout(given: std.Io.Timeout, io: std.Io) Budget {
+        return .{ .io = io, .limit = given.toTimestamp(io) };
+    }
 
     pub fn until(io: std.Io, budget_ms: i64) Budget {
         return .{
             .io = io,
-            .started = std.Io.Timestamp.now(io, .awake),
-            .budget_ms = @max(budget_ms, 0),
+            .limit = std.Io.Clock.Timestamp.now(io, .awake).addDuration(.{
+                .raw = .fromMilliseconds(@max(budget_ms, 0)),
+                .clock = .awake,
+            }),
         };
     }
 
-    pub fn remainingMs(self: Budget) i64 {
-        const spent = self.started.durationTo(std.Io.Timestamp.now(self.io, .awake));
-        return self.budget_ms - @as(i64, @intCast(@divTrunc(spent.toNanoseconds(), std.time.ns_per_ms)));
+    pub fn unbounded() Budget {
+        return .{ .io = undefined, .limit = null };
+    }
+
+    fn leftNanoseconds(self: Budget) ?i96 {
+        const limit = self.limit orelse return null;
+        return std.Io.Clock.Timestamp.now(self.io, limit.clock).durationTo(limit).raw.nanoseconds;
     }
 
     pub fn expired(self: Budget) bool {
-        return self.remainingMs() <= 0;
+        const left = self.leftNanoseconds() orelse return false;
+        return left <= 0;
     }
 
     pub fn timeout(self: Budget) std.Io.Timeout {
-        return .{
-            .duration = .{ .raw = std.Io.Duration.fromMilliseconds(@max(self.remainingMs(), 1)), .clock = .boot },
-        };
+        const limit = self.limit orelse return .none;
+        const left = self.leftNanoseconds() orelse return .none;
+        const spend = @max(left, 1);
+        return .{ .duration = .{ .raw = .fromNanoseconds(spend), .clock = limit.clock } };
     }
 };
 
@@ -152,13 +163,7 @@ pub const Client = struct {
     }
 
     pub fn next(self: *Client, timeout: std.Io.Timeout) !?Frame {
-        const handle = self.io();
-        const now = std.Io.Timestamp.now(handle, .awake);
-        return self.nextBounded(.{
-            .io = handle,
-            .started = now,
-            .budget_ms = @as(i64, @intCast(@divTrunc(timeout.duration.raw.nanoseconds, std.time.ns_per_ms))),
-        });
+        return self.nextBounded(Budget.fromTimeout(timeout, self.io()));
     }
 
     pub fn nextBounded(self: *Client, budget: Budget) !?Frame {
@@ -360,7 +365,7 @@ test "a line written to an endpoint comes back framed, and the buffer is the cli
     const sent = "{\"protocol\":\"open-agent-protocol\",\"id\":\"q1\",\"type\":\"capabilities.request\"}";
     try client.write(sent);
 
-    const deadline: std.Io.Timeout = .{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(5000), .clock = .boot } };
+    const deadline: std.Io.Timeout = .{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(5000), .clock = .awake } };
     var seen: ?Frame = null;
     var attempts: usize = 0;
     while (seen == null and attempts < 20) : (attempts += 1) {
@@ -400,7 +405,7 @@ fn probeHome(allowlist: []const []const u8, inherit: bool) ![]const u8 {
         .environment = names.items,
     });
     defer client.deinit();
-    const deadline: std.Io.Timeout = .{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(5000), .clock = .boot } };
+    const deadline: std.Io.Timeout = .{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(5000), .clock = .awake } };
     var attempts: usize = 0;
     while (attempts < 20) : (attempts += 1) {
         const frame = try client.next(deadline) orelse continue;
@@ -441,7 +446,7 @@ test "the client drives a real endpoint binary when the operator names one" {
 
     try client.write("{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"capabilities.request\",\"id\":\"q1\",\"payload\":{}}");
 
-    const deadline: std.Io.Timeout = .{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(10000), .clock = .boot } };
+    const deadline: std.Io.Timeout = .{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(10000), .clock = .awake } };
     var attempts: usize = 0;
     while (attempts < 60) : (attempts += 1) {
         const frame = try client.next(deadline) orelse continue;
@@ -463,4 +468,48 @@ test "a child inherits this process's environment unless the allowlist says othe
     const inherited = try probeHome(&.{}, true);
     defer std.testing.allocator.free(inherited);
     try std.testing.expectEqualStrings(ambient, inherited);
+}
+
+test "a budget keeps the shape and clock of the timeout it was given" {
+    var client = Client.init(std.testing.allocator);
+    defer client.deinit();
+    const io = client.io();
+
+    const unbounded = Budget.fromTimeout(.none, io);
+    try std.testing.expect(unbounded.limit == null);
+    try std.testing.expect(!unbounded.expired());
+    try std.testing.expect(unbounded.timeout() == .none);
+
+    const by_duration = Budget.fromTimeout(
+        .{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(60000), .clock = .awake } },
+        io,
+    );
+    try std.testing.expect(by_duration.limit != null);
+    try std.testing.expect(!by_duration.expired());
+    try std.testing.expect(by_duration.timeout() == .duration);
+
+    const by_deadline = Budget.fromTimeout(
+        .{ .deadline = std.Io.Clock.Timestamp.now(io, .awake).addDuration(.{ .raw = std.Io.Duration.fromMilliseconds(60000), .clock = .awake }) },
+        io,
+    );
+    try std.testing.expect(by_deadline.limit != null);
+    try std.testing.expect(!by_deadline.expired());
+    try std.testing.expect(by_deadline.timeout() == .duration);
+    try std.testing.expect(by_deadline.limit.?.clock == .awake);
+}
+
+test "a budget keeps sub-millisecond precision rather than truncating to expired" {
+    var client = Client.init(std.testing.allocator);
+    defer client.deinit();
+    const io = client.io();
+
+    const brief = Budget.fromTimeout(
+        .{ .duration = .{ .raw = std.Io.Duration.fromNanoseconds(500_000), .clock = .awake } },
+        io,
+    );
+    try std.testing.expect(!brief.expired());
+    switch (brief.timeout()) {
+        .duration => |d| try std.testing.expect(d.raw.nanoseconds > 0),
+        else => return error.UnexpectedTimeoutShape,
+    }
 }
