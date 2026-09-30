@@ -173,6 +173,10 @@ fn inflated(estimate: u64) u64 {
     return estimate + estimate / 3;
 }
 
+fn headroom(context_window: u64) u64 {
+    return @max(full_window_output_tokens, context_window / 64);
+}
+
 fn promptTokens(context: ai_types.Context) u64 {
     const messages = context.messages;
     var index = messages.len;
@@ -190,7 +194,7 @@ fn promptTokens(context: ai_types.Context) u64 {
 pub fn outputLimit(model: ai_types.Model, requested: ?u32, context: ai_types.Context) ?u32 {
     const wanted: u64 = requested orelse model.max_tokens;
     if (model.context_window == 0 or wanted == 0) return requested;
-    const prompt = promptTokens(context);
+    const prompt = promptTokens(context) + headroom(model.context_window);
     if (model.context_window <= prompt) return @intCast(@min(wanted, full_window_output_tokens));
     const room = model.context_window - prompt;
     if (room >= wanted) return requested;
@@ -212,11 +216,11 @@ fn outputLimitModel(context_window: u32, max_tokens: u32) ai_types.Model {
     };
 }
 
-test "outputLimit asks for no more output than the context window leaves after an estimated prompt, and leaves an unset limit unset when it fits" {
+test "outputLimit asks for no more output than the context window leaves after an estimated prompt and its headroom, and leaves an unset limit unset when it fits" {
     const text = "a" ** 3000;
     const messages = [_]ai_types.Message{.{ .user = .{ .content = .{ .text = text }, .timestamp = 0 } }};
     const context: ai_types.Context = .{ .messages = &messages };
-    const prompt = inflated(estimatePromptTokens(context));
+    const prompt = inflated(estimatePromptTokens(context)) + full_window_output_tokens;
 
     try std.testing.expectEqual(@as(?u32, @intCast(10_000 - prompt)), outputLimit(outputLimitModel(10_000, 9_000), null, context));
     try std.testing.expectEqual(@as(?u32, 500), outputLimit(outputLimitModel(10_000, 9_000), 500, context));
@@ -242,9 +246,32 @@ test "outputLimit counts the prompt from the provider's last report when a reply
         .{ .user = .{ .content = .{ .text = "b" ** 400 }, .timestamp = 0 } },
     };
     const context: ai_types.Context = .{ .messages = &messages };
-    const prompt = 6_000 + 3_000 + 800 + 200 + inflated(estimateMessages(messages[2..]).estimated_tokens);
+    const prompt = 6_000 + 3_000 + 800 + 200 + inflated(estimateMessages(messages[2..]).estimated_tokens) + full_window_output_tokens;
 
     try std.testing.expectEqual(@as(?u32, @intCast(20_000 - prompt)), outputLimit(outputLimitModel(20_000, 19_000), null, context));
+}
+
+test "outputLimit leaves a sixty-fourth of a large window unasked, so a prompt the estimate undercounts still fits" {
+    const messages = [_]ai_types.Message{
+        .{ .user = .{ .content = .{ .text = "a" ** 400 }, .timestamp = 0 } },
+        .{ .assistant = .{
+            .content = &.{.{ .text = .{ .text = "ok" } }},
+            .api = "test-api",
+            .provider = "test-provider",
+            .model = "test-model",
+            .usage = .{ .input = 656_000, .output = 100, .cache_read = 0, .cache_write = 0 },
+            .stop_reason = .stop,
+            .timestamp = 0,
+        } },
+        .{ .user = .{ .content = .{ .text = "b" ** 400 }, .timestamp = 0 } },
+    };
+    const context: ai_types.Context = .{ .messages = &messages };
+    const window: u32 = 1_048_576;
+    const prompt = 656_000 + 100 + inflated(estimateMessages(messages[2..]).estimated_tokens);
+    const asked = outputLimit(outputLimitModel(window, 393_216), null, context).?;
+
+    try std.testing.expectEqual(@as(u32, @intCast(window - prompt - window / 64)), asked);
+    try std.testing.expect(prompt + asked + 16_000 <= window);
 }
 
 fn pushAgentEvent(event_stream: *AgentEventStream, event: AgentEvent) !void {
