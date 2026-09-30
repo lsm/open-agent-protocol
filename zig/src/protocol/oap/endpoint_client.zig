@@ -533,6 +533,9 @@ const flood_tail =
     \\i=0; while [ $i -lt 60 ]; do echo; i=$((i+1)); sleep 0.02; done; echo '{"control":"after"}'
 ;
 
+const short_budget_ms: i64 = 400;
+const open_budget_ms: i64 = 15_000;
+const deadline_slack_ns: i64 = 50_000_000;
 const bounded_call_limit_ns: i64 = 30_000_000_000;
 
 const OwnedFrame = struct {
@@ -549,32 +552,66 @@ const Reading = struct {
     }
 };
 
-fn readOnce(allocator: std.mem.Allocator, tail: []const u8, budget_ms: i64) !Reading {
+fn own(allocator: std.mem.Allocator, frame: ?Frame) !?OwnedFrame {
+    const seen = frame orelse return null;
+    return switch (seen) {
+        .control => |text| .{ .control = true, .text = try allocator.dupe(u8, text) },
+        .envelope => |text| .{ .control = false, .text = try allocator.dupe(u8, text) },
+    };
+}
+
+fn readUnder(client: *Client, budget: Budget) !Reading {
+    const started = std.Io.Clock.Timestamp.now(std.testing.io, .awake);
+    const frame = try client.nextBounded(budget);
+    const finished = std.Io.Clock.Timestamp.now(std.testing.io, .awake);
+    return .{
+        .elapsed_ns = @intCast(started.durationTo(finished).raw.nanoseconds),
+        .frame = try own(std.testing.allocator, frame),
+    };
+}
+
+const Pair = struct {
+    short: Reading,
+    open: Reading,
+
+    fn deinit(self: Pair, allocator: std.mem.Allocator) void {
+        self.short.deinit(allocator);
+        self.open.deinit(allocator);
+    }
+};
+
+fn readTwice(allocator: std.mem.Allocator, tail: []const u8) !Pair {
+    const short = Budget.until(std.testing.io, short_budget_ms);
     var client = try Client.spawn(allocator, .{ .command = "/bin/sh", .args = &.{ "-c", tail } });
     defer client.deinit();
     defer stopChild(&client);
-    const start = std.Io.Clock.Timestamp.now(std.testing.io, .awake);
-    const budget = Budget.until(client.io(), budget_ms);
-    const frame = try client.nextBounded(budget);
-    const elapsed: i64 = @intCast(start.durationTo(std.Io.Clock.Timestamp.now(std.testing.io, .awake)).raw.nanoseconds);
-    var owned: ?OwnedFrame = null;
-    if (frame) |seen| {
-        owned = switch (seen) {
-            .control => |text| .{ .control = true, .text = try allocator.dupe(u8, text) },
-            .envelope => |text| .{ .control = false, .text = try allocator.dupe(u8, text) },
-        };
-    }
-    return .{ .elapsed_ns = elapsed, .frame = owned };
+    const first = try readUnder(&client, short);
+    const second = try readUnder(&client, Budget.until(std.testing.io, open_budget_ms));
+    return .{ .short = first, .open = second };
 }
 
 fn stopChild(client: *Client) void {
     _ = client.waitExit(300) catch {};
 }
 
+test "a spent budget stops on the first buffered blank instead of draining the buffer" {
+    var client = Client.init(std.testing.allocator);
+    defer client.deinit();
+    try client.pending.appendNTimes(std.testing.allocator, '\n', 4096);
+
+    const spent: Budget = .{ .io = client.io(), .limit = std.Io.Clock.Timestamp.now(client.io(), .awake).subDuration(.{ .raw = .fromMilliseconds(5), .clock = .awake }) };
+    try std.testing.expect(spent.expired());
+
+    const frame = try client.nextBounded(spent);
+    try std.testing.expect(frame == null);
+    try std.testing.expect(client.pending.items.len > 0);
+}
+
 test "none, duration and deadline each read the same frame from one child" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var client = try Client.spawn(std.testing.allocator, .{ .command = "/bin/cat" });
     defer client.deinit();
+    defer stopChild(&client);
     const io = client.io();
     const sent = "{\"protocol\":\"open-agent-protocol\",\"id\":\"q1\"}";
 
@@ -625,47 +662,30 @@ test "a complete frame already buffered is returned even when the budget is spen
     try std.testing.expectEqualStrings(sent, frame.?.envelope);
 }
 
-test "a spent budget stops on the first buffered blank instead of draining the buffer" {
-    var client = Client.init(std.testing.allocator);
-    defer client.deinit();
-    try client.pending.appendNTimes(std.testing.allocator, '\n', 4096);
+test "a short budget returns nothing on a partial line, and the same child then yields its frame" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const pair = try readTwice(std.testing.allocator, partial_tail);
+    defer pair.deinit(std.testing.allocator);
 
-    const spent: Budget = .{ .io = client.io(), .limit = std.Io.Clock.Timestamp.now(client.io(), .awake).subDuration(.{ .raw = .fromMilliseconds(5), .clock = .awake }) };
-    try std.testing.expect(spent.expired());
+    try std.testing.expect(pair.short.frame == null);
+    try std.testing.expect(pair.short.elapsed_ns >= short_budget_ms * std.time.ns_per_ms - deadline_slack_ns);
+    try std.testing.expect(pair.short.elapsed_ns < bounded_call_limit_ns);
 
-    const frame = try client.nextBounded(spent);
-    try std.testing.expect(frame == null);
-    try std.testing.expect(client.pending.items.len > 0);
+    try std.testing.expect(pair.open.frame != null);
+    try std.testing.expect(pair.open.frame.?.control);
+    try std.testing.expectEqualStrings("partial{\"control\":\"late\"}", pair.open.frame.?.text);
 }
 
-test "a short budget on a partial line waits the budget out instead of giving up early" {
+test "a short budget returns nothing on a blank flood, and the same child then yields its frame" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
-    const measured = try readOnce(std.testing.allocator, partial_tail, 400);
-    defer measured.deinit(std.testing.allocator);
-    try std.testing.expect(measured.frame == null);
-    try std.testing.expect(measured.elapsed_ns < bounded_call_limit_ns);
-}
+    const pair = try readTwice(std.testing.allocator, flood_tail);
+    defer pair.deinit(std.testing.allocator);
 
-test "a short budget on a blank flood waits the budget out instead of giving up early" {
-    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
-    const measured = try readOnce(std.testing.allocator, flood_tail, 400);
-    defer measured.deinit(std.testing.allocator);
-    try std.testing.expect(measured.frame == null);
-    try std.testing.expect(measured.elapsed_ns < bounded_call_limit_ns);
-}
+    try std.testing.expect(pair.short.frame == null);
+    try std.testing.expect(pair.short.elapsed_ns >= short_budget_ms * std.time.ns_per_ms - deadline_slack_ns);
+    try std.testing.expect(pair.short.elapsed_ns < bounded_call_limit_ns);
 
-test "a generous budget reads the frame each of those children goes on to write" {
-    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
-
-    const from_partial = try readOnce(std.testing.allocator, partial_tail, 8000);
-    defer from_partial.deinit(std.testing.allocator);
-    try std.testing.expect(from_partial.frame != null);
-    try std.testing.expect(from_partial.frame.?.control);
-    try std.testing.expectEqualStrings("partial{\"control\":\"late\"}", from_partial.frame.?.text);
-
-    const from_flood = try readOnce(std.testing.allocator, flood_tail, 8000);
-    defer from_flood.deinit(std.testing.allocator);
-    try std.testing.expect(from_flood.frame != null);
-    try std.testing.expect(from_flood.frame.?.control);
-    try std.testing.expectEqualStrings("{\"control\":\"after\"}", from_flood.frame.?.text);
+    try std.testing.expect(pair.open.frame != null);
+    try std.testing.expect(pair.open.frame.?.control);
+    try std.testing.expectEqualStrings("{\"control\":\"after\"}", pair.open.frame.?.text);
 }
