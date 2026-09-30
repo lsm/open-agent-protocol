@@ -313,12 +313,12 @@ def _parse_descriptor(raw: Any, index: int) -> ModelDescriptor:
         auth_status=_require_known(  # type: ignore[arg-type]
             raw.get("auth_status"), f"models[{index}].auth_status", _KNOWN_AUTH_STATUSES
         ),
-        lifecycle=_require_known(  # type: ignore[arg-type]
-            raw.get("lifecycle"), f"models[{index}].lifecycle", _KNOWN_LIFECYCLES
+        lifecycle=_optional_known(  # type: ignore[arg-type]
+            raw.get("lifecycle", _ABSENT), f"models[{index}].lifecycle", _KNOWN_LIFECYCLES
         ),
         capabilities=capabilities,
-        source=_require_known(  # type: ignore[arg-type]
-            raw.get("source"), f"models[{index}].source", _KNOWN_SOURCES
+        source=_optional_known(  # type: ignore[arg-type]
+            raw.get("source", _ABSENT), f"models[{index}].source", _KNOWN_SOURCES
         ),
         base_url=_optional_nonempty_str(raw.get("base_url")),
         context_window=_finite_int(raw.get("context_window")),
@@ -332,6 +332,19 @@ def _require_str(value: Any, field_name: str) -> str:
     if not isinstance(value, str):
         raise _malformed(f"{field_name} must be a string")
     return value
+
+
+class _Absent:
+    pass
+
+
+_ABSENT = _Absent()
+
+
+def _optional_known(value: Any, field_name: str, known: Set[str]) -> Optional[str]:
+    if isinstance(value, _Absent):
+        return None
+    return _require_known(value, field_name, known)
 
 
 def _require_known(value: Any, field_name: str, known: Set[str]) -> str:
