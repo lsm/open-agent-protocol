@@ -382,9 +382,12 @@ pub fn declaresJson(content_type: ?[]const u8) bool {
 
 const max_media_parameters = 64;
 
+const max_parameter_bytes = 256;
+
 const SeenParameter = struct {
     name: []const u8,
-    value: []const u8,
+    value: [max_parameter_bytes]u8,
+    value_len: usize,
 };
 
 fn parametersWellFormed(parameters: []const u8) bool {
@@ -402,28 +405,35 @@ fn parametersWellFormed(parameters: []const u8) bool {
         const name = std.mem.trim(u8, rest[0..name_end], " \t");
         if (!isToken(name)) return false;
         var after = std.mem.trimStart(u8, rest[name_end + 1 ..], " \t");
-        var value: []const u8 = undefined;
+        var decoded: [max_parameter_bytes]u8 = undefined;
+        var decoded_len: usize = 0;
+        var quoted = false;
         if (after.len > 0 and after[0] == '"') {
+            quoted = true;
             const closed = closingQuote(after) orelse return false;
-            value = after[1..closed];
+            decoded_len = unescapeInto(after[1..closed], &decoded);
             after = std.mem.trim(u8, after[closed + 1 ..], " \t");
-            if (after.len == 0) return true;
-            if (after[0] != ';') return false;
-            rest = after;
-            continue;
         } else {
             const next = std.mem.indexOfScalar(u8, after, ';') orelse after.len;
-            value = std.mem.trim(u8, after[0..next], " \t");
+            const value = std.mem.trim(u8, after[0..next], " \t");
             if (!isToken(value)) return false;
+            decoded_len = value.len;
+            @memcpy(decoded[0..decoded_len], value);
             after = after[next..];
         }
         if (count == max_media_parameters) return false;
         for (seen[0..count]) |prior| {
             if (!std.ascii.eqlIgnoreCase(prior.name, name)) continue;
-            if (!std.mem.eql(u8, prior.value, value)) return false;
+            if (!std.mem.eql(u8, prior.value[0..prior.value_len], decoded[0..decoded_len])) return false;
         }
-        seen[count] = .{ .name = name, .value = value };
+        seen[count] = .{ .name = name, .value = decoded, .value_len = decoded_len };
         count += 1;
+        if (quoted) {
+            if (after.len == 0) return true;
+            if (after[0] != ';') return false;
+            rest = after;
+            continue;
+        }
         const semi = std.mem.indexOfScalar(u8, after, ';') orelse after.len;
         if (semi == after.len) {
             if (std.mem.trim(u8, after, " \t").len != 0) return false;
@@ -431,6 +441,17 @@ fn parametersWellFormed(parameters: []const u8) bool {
         }
         rest = after[semi..];
     }
+}
+
+fn unescapeInto(quoted: []const u8, into: []u8) usize {
+    var at: usize = 0;
+    for (quoted) |byte| {
+        if (at == into.len) return into.len;
+        if (byte == '\\' and at + 1 < into.len) continue;
+        into[at] = byte;
+        at += 1;
+    }
+    return at;
 }
 
 fn closingQuote(quoted: []const u8) ?usize {
@@ -639,6 +660,8 @@ test "a parameter list that Go refuses is refused here too, and one it admits is
         "application/json;charset=\"utf-8\" junk; x=1",
         "application/json; a=1; a=2",
         "application/json; CHARSET=utf-8; charset=UTF-8",
+        "application/json; a=1; a=\"2\"",
+        "application/json; a=\"x\"; a=\"y\"",
     }) |declared| {
         const raw = try std.fmt.allocPrint(testing.allocator, "POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: {s}\r\nContent-Length: 2\r\n\r\n{{}}", .{declared});
         defer testing.allocator.free(raw);
@@ -659,6 +682,10 @@ test "a parameter list that Go refuses is refused here too, and one it admits is
         "application/json; charset= \"utf-8\"",
         "application/json; a=1; a=1",
         "application/json; a=\"x\"; a=x",
+        "application/json; a=\"x\"; a=\"x\"",
+        "application/json; A=1; a=1",
+        "application/json; a=1; a=\"1\"",
+        "application/json; a=\"x\\\"y\"; a=\"x\\\"y\"",
         "application/json; a={b}",
         "application/json; a={b}; c=1",
         "application/json; a=$b",
