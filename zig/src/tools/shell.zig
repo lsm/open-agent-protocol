@@ -23,12 +23,7 @@ const MarkerDir = struct {
     path: []u8,
     name: []u8,
 
-    fn create(allocator: std.mem.Allocator) !MarkerDir {
-        const base = compat.getEnvVarOwned(allocator, "TMPDIR") catch null;
-        defer if (base) |value| allocator.free(value);
-        const candidate = std.mem.trimEnd(u8, base orelse "/tmp", "/");
-        const root = if (candidate.len == 0 or !std.Io.Dir.path.isAbsolute(candidate)) "/tmp" else candidate;
-
+    fn create(allocator: std.mem.Allocator, root: []const u8) !MarkerDir {
         var bytes: [16]u8 = undefined;
         compat.random.fillSecureBytes(&bytes);
         const name = try std.fmt.allocPrint(allocator, "oap-cwd-{x:0>16}{x:0>16}", .{
@@ -71,12 +66,24 @@ const MarkerDir = struct {
     }
 };
 
-fn prepareMarker(allocator: std.mem.Allocator, marker: *?MarkerDir, path: *[]u8) !?[]u8 {
-    const created = MarkerDir.create(allocator) catch |err| switch (err) {
+fn tempRoot(allocator: std.mem.Allocator) ![]u8 {
+    const base = compat.getEnvVarOwned(allocator, "TMPDIR") catch null;
+    defer if (base) |value| allocator.free(value);
+    const candidate = std.mem.trimEnd(u8, base orelse "/tmp", "/");
+    if (candidate.len == 0 or !std.Io.Dir.path.isAbsolute(candidate)) return allocator.dupe(u8, "/tmp");
+    return allocator.dupe(u8, candidate);
+}
+
+fn prepareMarker(allocator: std.mem.Allocator, root: []const u8, marker: *?MarkerDir, path: *[]u8) !?[]u8 {
+    const created = MarkerDir.create(allocator, root) catch |err| switch (err) {
         error.OutOfMemory => return err,
         else => return null,
     };
-    const made = try created.markerPath(allocator);
+    const made = created.markerPath(allocator) catch |err| {
+        created.remove(common.defaultIo());
+        created.deinit(allocator);
+        return err;
+    };
     marker.* = created;
     path.* = made;
     return made;
@@ -133,7 +140,11 @@ pub fn execute(
     const windows = @import("builtin").os.tag == .windows;
     var marker_path: []u8 = &.{};
     defer allocator.free(marker_path);
-    const prepared: ?[]u8 = if (windows) null else try prepareMarker(allocator, &marker, &marker_path);
+    const prepared: ?[]u8 = if (windows) null else blk: {
+        const root = try tempRoot(allocator);
+        defer allocator.free(root);
+        break :blk try prepareMarker(allocator, root, &marker, &marker_path);
+    };
     const argv: []const []const u8 = if (prepared) |marker_file|
         &.{ "/bin/sh", "-c", end_directory_script, "sh", command, marker_file }
     else if (windows)
@@ -437,26 +448,85 @@ test "a command whose output exceeds the cap fails promptly, unobserved, without
     try std.testing.expect(elapsed_ms < 20_000);
 }
 
-test "a command still runs when no private directory can be made" {
+test "a temp root that cannot hold a directory is reported, not fatal" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(common.defaultIo(), .{ .sub_path = "blocker", .data = "not-a-directory" });
     const cwd = try std.process.currentPathAlloc(common.defaultIo(), std.testing.allocator);
     defer std.testing.allocator.free(cwd);
-    const expected = try std.Io.Dir.path.resolve(std.testing.allocator, &.{cwd});
-    defer std.testing.allocator.free(expected);
-    const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"command\":\"echo still-runs\"}}", .{cwd});
-    defer std.testing.allocator.free(args);
-    var unusable: ?MarkerDir = null;
-    var unusable_path: []u8 = &.{};
-    const prepared = try prepareMarker(std.testing.allocator, &unusable, &unusable_path);
-    if (prepared == null) return error.SkipZigTest;
-    defer unusable.?.deinit(std.testing.allocator);
-    defer unusable.?.remove(common.defaultIo());
-    defer std.testing.allocator.free(unusable_path);
+    const unusable_root = try std.Io.Dir.path.join(std.testing.allocator, &.{ cwd, ".zig-cache", "tmp", tmp.sub_path[0..], "nested" });
+    defer std.testing.allocator.free(unusable_root);
 
-    var result = try execute("call-notemp", args, null, null, null, std.testing.allocator);
-    defer result.deinit(std.testing.allocator);
-    try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, "still-runs") != null);
-    try std.testing.expect(result.working_directory_observed);
+    var marker: ?MarkerDir = null;
+    var marker_path: []u8 = &.{};
+    const prepared = try prepareMarker(std.testing.allocator, unusable_root, &marker, &marker_path);
+    try std.testing.expect(prepared == null);
+    try std.testing.expect(marker == null);
+    defer std.testing.allocator.free(marker_path);
+    try std.testing.expectEqual(@as(usize, 0), marker_path.len);
+}
+
+const MarkerCase = struct {
+    fn run(failing: std.mem.Allocator, root: []const u8) !void {
+        var marker: ?MarkerDir = null;
+        var marker_path: []u8 = &.{};
+        defer failing.free(marker_path);
+        _ = try prepareMarker(failing, root, &marker, &marker_path);
+        if (marker) |created| {
+            created.remove(common.defaultIo());
+            created.deinit(failing);
+        }
+    }
+};
+
+test "an exhausted allocator leaves no private directory behind" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cwd = try std.process.currentPathAlloc(common.defaultIo(), std.testing.allocator);
+    defer std.testing.allocator.free(cwd);
+    const root = try std.Io.Dir.path.join(std.testing.allocator, &.{ cwd, ".zig-cache", "tmp", tmp.sub_path[0..] });
+    defer std.testing.allocator.free(root);
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, MarkerCase.run, .{root});
+    var leftovers = tmp.dir.openDir(common.defaultIo(), ".", .{ .iterate = true }) catch return;
+    defer leftovers.close(common.defaultIo());
+    var it: std.Io.Dir.Iterator = leftovers.iterate();
+    while (try it.next(common.defaultIo())) |entry| {
+        if (std.mem.startsWith(u8, entry.name, "oap-cwd-")) return error.TestUnexpectedResult;
+    }
+}
+
+test "the command still runs when the temp root is unusable" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(common.defaultIo(), .{ .sub_path = "blocker", .data = "not-a-directory" });
+    const cwd = try std.process.currentPathAlloc(common.defaultIo(), std.testing.allocator);
+    defer std.testing.allocator.free(cwd);
+    const root = try std.Io.Dir.path.join(std.testing.allocator, &.{ cwd, ".zig-cache", "tmp", tmp.sub_path[0..] });
+    defer std.testing.allocator.free(root);
+    const unusable_root = try std.Io.Dir.path.join(std.testing.allocator, &.{ root, "nested" });
+    defer std.testing.allocator.free(unusable_root);
+    const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"command\":\"echo still-runs\"}}", .{root});
+    defer std.testing.allocator.free(args);
+
+    var marker: ?MarkerDir = null;
+    var marker_path: []u8 = &.{};
+    defer std.testing.allocator.free(marker_path);
+    const prepared = try prepareMarker(std.testing.allocator, unusable_root, &marker, &marker_path);
+    try std.testing.expect(prepared == null);
+    const argv: []const []const u8 = if (prepared) |path|
+        &.{ "/bin/sh", "-c", "echo should-not-run", "sh", "echo should-not-run", path }
+    else
+        &.{ "/bin/sh", "-c", "echo still-runs" };
+
+    var dir = try common.openWorkspace(root, false);
+    defer dir.close(common.defaultIo());
+    const result = try process_runner.run(std.testing.allocator, argv, .{ .dir = dir }, 10_000, null);
+    defer std.testing.allocator.free(result.stdout);
+    defer std.testing.allocator.free(result.stderr);
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "still-runs") != null);
 }
 
 test "shell execute captures stdout" {
