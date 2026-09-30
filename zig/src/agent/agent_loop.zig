@@ -728,7 +728,7 @@ fn executeToolCalls(
                 .args_json = execution_args,
             };
             if (config.permission_engine) |engine| {
-                const policy_decision = engine.evaluate(tool_call.name, validated_args);
+                const policy_decision = engine.evaluateTool(t.operation, tool_call.name, validated_args);
                 if (policy_decision == .deny) {
                     result = try rejectedToolResult(allocator);
                     is_error = true;
@@ -744,7 +744,7 @@ fn executeToolCalls(
                         continue;
                     }
                     if (legacy_decision == .approve_always) {
-                        const call = permission.parseToolCall(allocator, tool_call.name, validated_args) catch null;
+                        const call = permission.parseToolCallOf(allocator, t.operation, tool_call.name, validated_args) catch null;
                         if (call) |parsed_call| {
                             defer permission.deinitParsedToolCall(allocator, parsed_call);
                             if (permission.canPersistDecision(parsed_call)) engine.persistDecision(parsed_call, .allow) catch {};
@@ -752,7 +752,7 @@ fn executeToolCalls(
                     }
 
                     if (policy_decision == .prompt and engine.approval_callback != null and legacy_decision != .approve_always) {
-                        const decision = try engine.approve(tool_call.name, validated_args);
+                        const decision = try engine.approveTool(t.operation, tool_call.name, validated_args);
                         if (decision == .reject or decision == .reject_always) {
                             result = try rejectedToolResult(allocator);
                             is_error = true;

@@ -44,7 +44,7 @@ point.
 **2. Write the section.**
 
 ```sh
-node scripts/changelog-release.mjs --version 0.3.0 --date 2026-09-29 \
+node scripts/changelog-release.mjs --version 0.1.0-alpha.5 --date 2026-09-29 \
   --input prs.json --write
 ```
 
@@ -61,37 +61,93 @@ Two things it refuses, both worth knowing before you tag:
   happens if the tag line and the changelog have drifted apart;
 - a version that already has a section, so the same release cannot be cut twice.
 
-### Open: the tag line and the changelog do not agree
+### Resolved: the tag line and the changelog now agree
 
-**The next release cannot be cut until someone decides this.** It is the owner's
-call, not a bug in the script.
+**The alpha line continues, and the two untagged sections are gone.** This was
+the owner's call (2026-09-29), and it was the second of the two ways out; the
+first — tag forward to `v0.3.0` and retire `v0.1.0-alpha.N` as a naming
+accident — was not taken.
 
-The tags run `v0.1.0-alpha.1` through `v0.1.0-alpha.4` (2026-09-27). The
-changelog's newest released sections are `## [0.2.0] - 2026-09-11` and
-`## [0.1.0] - 2026-09-05`, and **neither was ever tagged** — there is no `v0.1.0`
-and no `v0.2.0` in the repository. `package.json` says `0.2.0`.
+What it cost, so nobody has to re-derive it: the tags ran
+`v0.1.0-alpha.1` through `v0.1.0-alpha.4` (2026-09-27) while the changelog's
+newest released sections were `## [0.2.0] - 2026-09-11` and
+`## [0.1.0] - 2026-09-05`, **neither of which was ever tagged**. There is no
+`v0.1.0` and no `v0.2.0` in the repository, so `[0.2.0]` described no release
+that anyone could install, and `v0.1.0-alpha.5` was a version the script
+**refused** to cut because it sorts below `[0.2.0]`.
 
-So the next alpha, `v0.1.0-alpha.5`, is a version the script **refuses** to cut:
-it is older than `[0.2.0]`, which the file already records. The tag that CI
-expects and the changelog that ships have been on different version lines, and
-the script will not paper over it.
+Those two sections are now deleted. They were the most complete release notes in
+the file, and deleting them is the price of the decision: keeping them would mean
+either tagging `v0.2.0` after four alphas already shipped past it, or leaving
+`[0.2.0]` above every version that exists, which is the disagreement itself.
 
-The gate stays as it is — a tag with no matching section fails `release` and
-`publish-npm` — so this has to be resolved before the next tag, not worked
-around.
+**What is actually lost: the prose, permanently.** The 37 pull requests those
+sections cite are `#184` through `#243`, all merged 2026-09-05 to 2026-09-11 —
+before `v0.1.0-alpha.4` (2026-09-27). The next `--write` collects everything
+merged *since the last real tag*, so **none of those 37 is in the list it will
+build**; checked, zero of the 37 appear in the 142 pull requests a
+`0.1.0-alpha.5` release actually collects. The re-collection is not a recovery
+path for this content. What survives is the work itself, on `main` and in the
+history — and the notes verbatim, in the last real tag:
 
-Two ways out, and the choice is the owner's:
+```sh
+git show v0.1.0-alpha.4:CHANGELOG.md
+```
 
-1. **Tag forward from the changelog.** The next release is `v0.3.0` or later,
-   which is above `[0.2.0]`, and the `v0.1.0-alpha.N` line is retired as a
-   naming accident. The changelog's account of what shipped in `[0.1.0]` and
-   `[0.2.0]` is already the better record, so this makes the tags agree with it.
-2. **Retract the untagged sections** and go back to the alpha line, so
-   `v0.1.0-alpha.5` becomes the next release. This discards the 0.1.0 and 0.2.0
-   release notes, which are the most complete ones in the file.
+That tag predates the deletion, so the `[0.2.0]` and `[0.1.0]` sections are
+still in its copy of the file — byte-identical to the text this section removed,
+verified by diffing the two. It is a good pointer to leave behind because it
+cannot rot: a tag is not rewritten by a squash, and reading a file *at* a tag
+needs no history walk, so it works in a shallow clone and in any future state of
+this branch. A `git log -S` search for the heading would be the obvious
+alternative and is the wrong tool here — the string's count changed in three
+commits, not one, and which of them a given clone can see depends on its depth.
 
-Whichever is chosen, `package.json`'s version and the tag line should end up
-agreeing too, since the release workflow reads it for the npm package version.
+If those notes are ever wanted back into the file, that is where they are — a
+deliberate revert of one commit, not a regeneration.
+
+`package.json` and `package-lock.json` are `0.1.0-alpha.5` so the declared
+version and the next tag agree. That value is not cosmetic, but it decides
+something narrower than it looks:
+
+- **a tagged run ignores it.** `changelog`, `package-npm` and `publish-npm` are
+  all `if: startsWith(github.ref, 'refs/tags/v')`, and they take
+  `${GITHUB_REF_NAME#v}` — `package-npm` also runs `npm version "$TAG_VERSION"
+  --no-git-tag-version`, overwriting both files in the runner's workspace. So the
+  tag decides what npm publishes, every time, and `package.json` cannot
+  contradict it.
+- **an untagged `workflow_dispatch` is governed by it.** `build-binaries` and
+  `checksums` carry no `if`, so they run on one, and three steps in
+  `build-binaries` read `package.json`: `-Dversion` for the binary's compiled-in
+  version, and the `oapx-<version>-<os>-<arch>` names of the `.tar.gz` and the
+  `.zip`.
+
+One more surface, which the workflow never reads but a local build does:
+`zig/build.zig.zon`'s `.version` is the *default* for `-Dversion`
+(`zig/build.zig:13`, `orelse manifest.version`), so it is what `oapx --version`
+prints for anyone who runs `zig build` themselves. It is on the alpha line now
+for the same reason `package.json` is — a manifest left saying `0.2.0` after the
+retraction is the disagreement again, one file over. Nothing validates it; the
+only workflow reference is a `hashFiles` cache key, which a correct bump
+invalidates.
+
+That second bullet is the whole reason this value is worth setting, and it is
+worth being exact about what it is: a dispatch builds binaries and names
+artifacts. It does not publish to npm. So the drift to fear is not "the wrong
+version reaches the registry" — the tag makes that impossible — it is an
+artifact and an `oapx --version` line labelled `0.2.0` when the tree is four
+alphas past it, handed to whoever asked for a build. `scripts/package-npm.ts`
+also falls back to `package.json` when no `--version` is passed, which is
+reachable from a local shell but not from CI, since the workflow always passes
+it.
+
+`clients/ts/package.json` (`oap-client`) is deliberately **not** moved. It is a
+separate package on its own `0.1.0` line, and no workflow in this repository
+releases it — `release-binaries.yml` does not mention it — so it is not part of
+the tag line this decision is about.
+
+The `NPM_DIST_TAG` rule already sends a version containing `-` to `next`, so
+the alpha line publishes under the right tag with no further change.
 
 **3. Commit the changelog through a pull request.** This is an ordinary change to
 `CHANGELOG.md` on a branch, merged the usual way. It has to be on `main` *before*
@@ -101,13 +157,13 @@ there.
 **4. Tag.**
 
 ```sh
-git tag v0.3.0 && git push origin v0.3.0
+git tag v0.1.0-alpha.5 && git push origin v0.1.0-alpha.5
 ```
 
 To check step 2 landed before you tag:
 
 ```sh
-node scripts/changelog-release.mjs --version 0.3.0 --check
+node scripts/changelog-release.mjs --version 0.1.0-alpha.5 --check
 ```
 
 That is the same check the release workflow runs, and it is what fails the

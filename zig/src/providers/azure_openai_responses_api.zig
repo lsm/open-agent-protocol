@@ -367,21 +367,28 @@ fn runThread(ctx: *ThreadCtx) void {
         return;
     } } };
 
-    const out = ai_types.AssistantMessage{
+    var result_content = ai_types.AssistantMessage{
         .content = content,
-        .api = ctx.allocator.dupe(u8, ctx.model.api) catch {
-            return ctx.stream.completeWithError("oom");
-        },
-        .provider = ctx.allocator.dupe(u8, ctx.model.provider) catch {
-            return ctx.stream.completeWithError("oom");
-        },
-        .model = ctx.allocator.dupe(u8, ctx.model.id) catch {
-            return ctx.stream.completeWithError("oom");
-        },
-        .usage = usage,
-        .stop_reason = stop_reason,
-        .timestamp = compat.time.nowMillis(),
+        .api = "",
+        .provider = "",
+        .model = "",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
         .is_owned = true,
+    };
+    const out = ai_types.buildOwnedMessage(
+        ctx.allocator,
+        content,
+        ctx.model.api,
+        ctx.model.provider,
+        ctx.model.id,
+        usage,
+        stop_reason,
+        compat.time.nowMillis(),
+    ) catch {
+        result_content.deinit(ctx.allocator);
+        return ctx.stream.completeWithError("oom");
     };
 
     ctx.stream.complete(out);

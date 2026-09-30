@@ -42,7 +42,7 @@ jobs:
           # this pull request *and* everything merged into the base since the two
           # diverged, so comparing against it charges the pull request with other
           # people's breaks. Naming the head here means the working tree is the
-          # thing being judged and -root needs no second checkout.
+          # thing being judged, which is what -root is given below.
           ref: ${{ github.event.pull_request.head.sha }}
           # Full history: the comparison needs the merge base, which a shallow
           # clone would not have fetched.
@@ -52,7 +52,7 @@ jobs:
           go-version: '1.27.x'
           cache: true
 
-      - name: Check out the merge base to compare against
+      - name: Check out the base tip to run the checker from, and the merge base to compare against
         env:
           # Through the environment, for the same reason the description is: a
           # branch name may legally contain quotes, $(...) and backticks, and
@@ -63,6 +63,24 @@ jobs:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           set -euo pipefail
+          # The checker runs from the base tip, not from this pull request's head,
+          # and both reasons are the same mistake: the tool that judges a change
+          # should not be part of the change. A head older than the flag fails
+          # outright, because the older apidiffcheck does not define -description
+          # and exits on it -- so every pull request opened before that commit
+          # cannot merge, for a reason that has nothing to do with it. And a pull
+          # request that edits apidiffcheck edits the thing deciding whether it
+          # passes, which no gate can notice on its own. The base tip is the
+          # newest checker the base has decided is correct, and the base is what
+          # the pull request is asking to merge into, so it is the right authority
+          # for the tool.
+          #
+          # This is the base *tip*, not the merge base below. They are different
+          # commits and the difference is the whole point: the merge base is what
+          # the head gets compared against, and taking the checker from there would
+          # reintroduce the staleness in its worst form, running a tool from
+          # wherever the two happened to fork.
+          git worktree add --detach "$RUNNER_TEMP/checker" "origin/$BASE_REF"
           mkdir -p "$RUNNER_TEMP/base"
           # The merge base of the base ref and this pull request's head commit:
           # the commit the two actually share.
@@ -90,4 +108,16 @@ jobs:
       - name: Require a Breaking changes section for what this pull request breaks
         env:
           PR_BASE_ROOT: ${{ runner.temp }}/base
-        run: go run ./go/cmd/apidiffcheck -description "$RUNNER_TEMP/pr-body.md"
+          # -root is the head checkout and PR_BASE_ROOT is the merge base, and
+          # neither is the directory the command runs in any more -- that is the
+          # checker's own checkout, so -root is named rather than left to default
+          # to ".". A gate that silently compared the base tip against the merge
+          # base would pass everything, so both roots are passed explicitly.
+          HEAD_ROOT: ${{ github.workspace }}
+          CHECKER_ROOT: ${{ runner.temp }}/checker
+        run: |
+          set -euo pipefail
+          cd "$CHECKER_ROOT"
+          go run ./go/cmd/apidiffcheck \
+            -root "$HEAD_ROOT" \
+            -description "$RUNNER_TEMP/pr-body.md"

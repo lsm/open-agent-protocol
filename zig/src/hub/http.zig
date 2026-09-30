@@ -129,6 +129,17 @@ fn readUntil(stream: *compat.net.Stream, buffer: []u8, deadline_ms: u64, cycle_m
     }
 }
 
+pub fn digits(text: []const u8) ?usize {
+    if (text.len == 0) return null;
+    var value: usize = 0;
+    for (text) |byte| {
+        if (!std.ascii.isDigit(byte)) return null;
+        value = std.math.mul(usize, value, 10) catch return null;
+        value = std.math.add(usize, value, byte - '0') catch return null;
+    }
+    return value;
+}
+
 pub fn readHead(allocator: std.mem.Allocator, stream: *compat.net.Stream, header_wait_ms: i32, cycle_ms: i32, keep_going: KeepGoing, body_allowed: *bool, declared: *usize) Failure!Request {
     var head = std.ArrayList(u8).empty;
     defer head.deinit(allocator);
@@ -149,6 +160,7 @@ pub fn readHead(allocator: std.mem.Allocator, stream: *compat.net.Stream, header
     const target = parts.next() orelse return error.Malformed;
     const version = parts.next() orelse return error.Malformed;
     if (parts.next() != null) return error.Malformed;
+    if (verb.len == 0 or target.len == 0) return error.Malformed;
     if (!std.mem.eql(u8, version, "HTTP/1.1")) return error.Malformed;
     body_allowed.* = bodyAllowedFor(verb);
 
@@ -179,7 +191,7 @@ pub fn readHead(allocator: std.mem.Allocator, stream: *compat.net.Stream, header
         } else if (std.ascii.eqlIgnoreCase(name, "content-length")) {
             if (seen_length) return error.Malformed;
             seen_length = true;
-            request.content_length = std.fmt.parseInt(usize, value, 10) catch return error.Malformed;
+            request.content_length = digits(value) orelse return error.Malformed;
             declared.* = request.content_length;
         } else if (std.ascii.eqlIgnoreCase(name, "transfer-encoding")) {
             return error.UnsupportedTransferEncoding;
@@ -1009,6 +1021,46 @@ test "a body is read only when a route wants it, and the read is the same one a 
     try testing.expectEqual(@as(usize, 0), head.body.len);
     try readBody(testing.allocator, &pipe.accepted, &head, idle_read_ms, test_cycle_ms, always_going);
     try testing.expectEqualStrings("body", head.body);
+}
+
+test "a request line with an empty method or an empty target is refused, not read as the token beside it" {
+    const cases = [_][]const u8{
+        " /adapters HTTP/1.1\r\nHost: a\r\n\r\n",
+        "GET  HTTP/1.1\r\nHost: a\r\n\r\n",
+        "  /adapters HTTP/1.1\r\nHost: a\r\n\r\n",
+        "GET \r\nHost: a\r\n\r\n",
+        "GET  /adapters  HTTP/1.1\r\nHost: a\r\n\r\n",
+    };
+    for (cases) |raw| try testing.expectError(error.Malformed, requestOver(raw));
+}
+
+test "a Content-Length of anything but ASCII digits is refused, as net/http refuses it" {
+    for ([_][]const u8{ "+5", "1_0", "0x10", "-1", " 5", "5 ", "", "1,0", "５" }) |value| {
+        try testing.expect(digits(value) == null);
+    }
+    for ([_]struct { text: []const u8, want: usize }{
+        .{ .text = "0", .want = 0 },
+        .{ .text = "5", .want = 5 },
+        .{ .text = "4096", .want = 4096 },
+        .{ .text = "000012", .want = 12 },
+    }) |case| {
+        try testing.expectEqual(case.want, digits(case.text).?);
+    }
+    const cases = [_][]const u8{
+        "POST /adapters/a/sessions HTTP/1.1\r\nHost: a\r\nContent-Length: +5\r\n\r\nhello",
+        "POST /adapters/a/sessions HTTP/1.1\r\nHost: a\r\nContent-Length: 1_0\r\n\r\nhello",
+        "POST /adapters/a/sessions HTTP/1.1\r\nHost: a\r\nContent-Length: -1\r\n\r\n",
+    };
+    for (cases) |raw| try testing.expectError(error.Malformed, requestOver(raw));
+    var pipe = try Pipe.open();
+    defer pipe.close();
+    try pipe.client.writeAll("POST /adapters/a/sessions HTTP/1.1\r\nHost: a\r\nContent-Length: 000012\r\n\r\n");
+    var allowed = true;
+    var declared: usize = 0;
+    var request = try readHead(testing.allocator, &pipe.accepted, header_read_ms, test_cycle_ms, always_going, &allowed, &declared);
+    defer request.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 12), request.content_length);
+    try testing.expectEqual(@as(usize, 12), declared);
 }
 
 test "the default bind is loopback, so every default user keeps the allowlist" {

@@ -2,6 +2,7 @@ const std = @import("std");
 const oap_types = @import("oap_types");
 const oap_envelope = @import("oap_envelope");
 const json_encode = @import("json_encode");
+const json_writer = @import("json_writer");
 const contract = @import("contract");
 const jsonschema = @import("jsonschema");
 const hubmod = @import("hub");
@@ -145,6 +146,119 @@ fn refusalWith(
     details: []const oap_types.DetailEntry,
 ) std.mem.Allocator.Error!Refusal {
     return Refusal{ .code = code, .message = message, .details = try arena.dupe(oap_types.DetailEntry, details) };
+}
+
+fn substitutedSources(
+    arena: std.mem.Allocator,
+    hub: *const hubmod.Hub,
+    wire: ?[]const u8,
+) Error!?[]const u8 {
+    const listed = wire orelse return null;
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, listed, .{}) catch |failure| switch (failure) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return null,
+    };
+    if (parsed != .array) return null;
+    var buffer: std.ArrayList(u8) = .empty;
+    var writer = json_writer.JsonWriter.init(&buffer, arena);
+    try writer.beginArray();
+    for (parsed.array.items) |entry| {
+        if (entry != .object) continue;
+        const id = if (entry.object.get("id")) |value| (if (value == .string) value.string else "") else "";
+        const configured = if (id.len > 0) hub.toolSource(id) else null;
+        if (configured) |source| {
+            try writeConfiguredSource(&writer, source, entry.object);
+        } else {
+            const kept = try std.json.Stringify.valueAlloc(arena, entry, .{});
+            try writer.writeRawJson(kept);
+        }
+    }
+    try writer.endArray();
+    return buffer.toOwnedSlice(arena) catch return error.OutOfMemory;
+}
+
+fn writeConfiguredSource(
+    writer: *json_writer.JsonWriter,
+    source: contract.ConfiguredSource,
+    wire: std.json.ObjectMap,
+) Error!void {
+    try writer.beginObject();
+    try writer.writeStringField("id", source.id);
+    try writer.writeStringField("kind", source.kind);
+    try writeMember(writer, "display_name", source.display_name);
+    try writeMember(writer, "protocol", source.protocol);
+    try writeMember(writer, "endpoint", source.endpoint);
+    try writeMember(writer, "command", source.command);
+    try writeList(writer, "args", source.args);
+    try writeList(writer, "environment", mergedEnvironment(writer.allocator, source.environment, wire) catch return error.OutOfMemory);
+    try writer.endObject();
+}
+
+fn writeMember(writer: *json_writer.JsonWriter, key: []const u8, value: []const u8) Error!void {
+    if (value.len == 0) return;
+    try writer.writeStringField(key, value);
+}
+
+fn writeList(writer: *json_writer.JsonWriter, key: []const u8, values: []const []const u8) Error!void {
+    if (values.len == 0) return;
+    try writer.writeKey(key);
+    try writer.beginArray();
+    for (values) |value| try writer.writeString(value);
+    try writer.endArray();
+}
+
+fn mergedEnvironment(arena: std.mem.Allocator, operator: []const []const u8, wire: std.json.ObjectMap) ![]const []const u8 {
+    var taken: std.StringHashMapUnmanaged(void) = .empty;
+    defer taken.deinit(arena);
+    var merged: std.ArrayList([]const u8) = .empty;
+    for (operator) |entry| {
+        try taken.put(arena, nameOf(entry), {});
+        try merged.append(arena, entry);
+    }
+    const listed = wire.get("environment") orelse return try merged.toOwnedSlice(arena);
+    if (listed != .array) return try merged.toOwnedSlice(arena);
+    for (listed.array.items) |entry| {
+        if (entry != .string) continue;
+        const name = nameOf(entry.string);
+        if (taken.contains(name)) continue;
+        try taken.put(arena, name, {});
+        try merged.append(arena, entry.string);
+    }
+    return try merged.toOwnedSlice(arena);
+}
+
+fn nameOf(entry: []const u8) []const u8 {
+    const cut = std.mem.indexOfScalar(u8, entry, '=') orelse return entry;
+    return entry[0..cut];
+}
+
+fn detailForReason(arena: std.mem.Allocator, reason: contract.Refusal) std.mem.Allocator.Error![]oap_types.DetailEntry {
+    const named = [_]struct { key: []const u8, value: []const u8 }{
+        .{ .key = "feature", .value = reason.feature },
+        .{ .key = "reason", .value = reason.reason },
+        .{ .key = "tool", .value = reason.tool },
+        .{ .key = "field", .value = reason.field },
+        .{ .key = "source", .value = reason.source },
+    };
+    var entries: [named.len]oap_types.DetailEntry = undefined;
+    var count: usize = 0;
+    for (named) |entry| {
+        if (entry.value.len == 0) continue;
+        entries[count] = .{ .key = entry.key, .value = entry.value };
+        count += 1;
+    }
+    if (count == 0) return &.{};
+    return try arena.dupe(oap_types.DetailEntry, entries[0..count]);
+}
+
+fn ownRevisions(arena: std.mem.Allocator, refused: *hubmod.OpenRefusal) std.mem.Allocator.Error!void {
+    refused.expected_revision = try arena.dupe(u8, refused.expected_revision);
+    refused.current_revision = try arena.dupe(u8, refused.current_revision);
+}
+
+fn featureOnly(arena: std.mem.Allocator, reason: contract.Refusal) std.mem.Allocator.Error![]oap_types.DetailEntry {
+    if (reason.feature.len == 0) return &.{};
+    return try arena.dupe(oap_types.DetailEntry, &.{.{ .key = "feature", .value = reason.feature }});
 }
 
 fn requireStringOrNull(root: std.json.ObjectMap, name: []const u8) Error!void {
@@ -314,7 +428,7 @@ pub const Frontend = struct {
         }
     }
 
-    const Outcome = union(enum) {
+    pub const Outcome = union(enum) {
         answer: std.json.Value,
         answer_line: []const u8,
         refused: Refusal,
@@ -367,7 +481,7 @@ pub const Frontend = struct {
         return .{ .refused = .{ .code = "unknown_op", .message = try std.fmt.allocPrint(arena, "no op \"{s}\"", .{request.op}) } };
     }
 
-    fn adapters(self: *Frontend, arena: std.mem.Allocator) !std.json.Value {
+    pub fn adapters(self: *Frontend, arena: std.mem.Allocator) !std.json.Value {
         const listed = try self.hub.listing(arena);
         const entries = try arena.alloc(std.json.Value, listed.len);
         for (listed, entries) |status, *entry| {
@@ -386,7 +500,7 @@ pub const Frontend = struct {
         return .{ .object = root };
     }
 
-    fn sessions(self: *Frontend, arena: std.mem.Allocator) !std.json.Value {
+    pub fn sessions(self: *Frontend, arena: std.mem.Allocator) !std.json.Value {
         const listed = try self.hub.sessions(arena);
         const entries = try arena.alloc(std.json.Value, listed.len);
         for (listed, entries) |status, *entry| {
@@ -419,7 +533,7 @@ pub const Frontend = struct {
         return .{ .object = root };
     }
 
-    fn capabilities(self: *Frontend, arena: std.mem.Allocator, name: []const u8) !Outcome {
+    pub fn capabilities(self: *Frontend, arena: std.mem.Allocator, name: []const u8) !Outcome {
         self.next_envelope += 1;
         const correlation = try std.fmt.allocPrint(arena, "oap-request-{d}", .{self.next_envelope});
         const descriptor = self.hub.probe(name) catch |err| switch (err) {
@@ -450,7 +564,7 @@ pub const Frontend = struct {
         return .{ .answer_line = try oap_envelope.serializeEnvelope(envelope, arena) };
     }
 
-    fn state(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8) !Outcome {
+    pub fn state(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8) !Outcome {
         const reported = self.hub.state(arena, session_id) catch |err| {
             return .{ .refused = try self.stateRefusal(arena, err, session_id) };
         };
@@ -625,18 +739,19 @@ pub const Frontend = struct {
             envelope.deinit(arena);
             return .{ .refused = .{ .code = "unsupported_feature", .message = "an open carrying a message is refused until submit lands" } };
         }
-        const opened = self.hub.open(arena, adapter, .{
+        var refused: hubmod.OpenRefusal = .{};
+        const opened = self.hub.openReporting(arena, adapter, .{
             .session_id = open.session_id orelse "",
             .metadata = metadata,
             .capability_revision = envelope.capability_revision,
             .subscribe = open.subscribe,
             .allow_degraded_features = open.allow_degraded_features,
             .tools_json = open.tools_json,
-            .tool_sources_json = open.tool_sources_json,
-        }) catch |err| {
-            const cited = if (envelope.capability_revision) |text| try arena.dupe(u8, text) else null;
+            .tool_sources_json = try substitutedSources(arena, self.hub, open.tool_sources_json),
+        }, &refused) catch |err| {
+            try ownRevisions(arena, &refused);
             envelope.deinit(arena);
-            return .{ .refused = try self.openRefusal(arena, err, request, cited) };
+            return .{ .refused = try openRefusal(arena, err, request, &refused) };
         };
         self.next_envelope += 1;
         const answer_id = try std.fmt.allocPrint(arena, "oap-response-{d}", .{self.next_envelope});
@@ -653,22 +768,21 @@ pub const Frontend = struct {
     }
 
     fn openRefusal(
-        self: *Frontend,
         arena: std.mem.Allocator,
         err: hubmod.Failure,
         request: Request,
-        cited: ?[]const u8,
+        refused: *const hubmod.OpenRefusal,
     ) !Refusal {
         return switch (err) {
             error.UnknownAdapter => .{ .code = "unknown_adapter", .message = try std.fmt.allocPrint(arena, "no adapter is registered as \"{s}\"", .{request.adapter orelse ""}) },
             error.SessionExists => .{ .code = "session_exists", .message = "the session id is already open" },
             error.SessionClosed => .{ .code = "session_closed", .message = "the session was already closed when the open probed it" },
             error.StaleCapabilities => try refusalWith(arena, "stale_capabilities", "the open cites a capability revision that is no longer current", try arena.dupe(oap_types.DetailEntry, &.{
-                .{ .key = "expected_revision", .value = try self.registeredRevision(arena, request.adapter orelse "") },
-                .{ .key = "current_revision", .value = cited orelse "" },
+                .{ .key = "expected_revision", .value = refused.expected_revision },
+                .{ .key = "current_revision", .value = refused.current_revision },
             })),
-            error.UnsupportedFeature, error.ToolCatalogUnavailable => .{ .code = "unsupported_feature", .message = "the adapter does not advertise a feature the request elected" },
-            error.CapabilityDegraded => .{ .code = "capability_degraded", .message = "a feature the request did not opt into is degraded" },
+            error.UnsupportedFeature, error.ToolCatalogUnavailable => try refusalWith(arena, "unsupported_feature", "the adapter does not advertise a feature the request elected", try detailForReason(arena, refused.reason)),
+            error.CapabilityDegraded => try refusalWith(arena, "capability_degraded", "a feature the request did not opt into is degraded", try featureOnly(arena, refused.reason)),
             error.AdapterDescriptorUnbound => .{ .code = "internal", .message = "the adapter descriptor carries no capability revision" },
             error.BackendFailed => .{ .code = "probe_failed", .message = "the adapter's probe refused" },
             error.OutOfMemory => error.OutOfMemory,
@@ -676,15 +790,7 @@ pub const Frontend = struct {
         };
     }
 
-    fn registeredRevision(self: *Frontend, arena: std.mem.Allocator, adapter: []const u8) ![]const u8 {
-        const listed = try self.hub.listing(arena);
-        for (listed) |status| {
-            if (std.mem.eql(u8, status.name, adapter)) return status.revision;
-        }
-        return "";
-    }
-
-    fn models(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8, degraded: []const []const u8) !Outcome {
+    pub fn models(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8, degraded: []const []const u8) !Outcome {
         const catalog = self.hub.models(arena, session_id, &.{
             .session_id = session_id,
             .allow_degraded_features = degraded,
@@ -705,7 +811,7 @@ pub const Frontend = struct {
         return .{ .answer_line = try oap_envelope.serializeEnvelope(envelope, arena) };
     }
 
-    fn tools(self: *Frontend, arena: std.mem.Allocator, session_id: ?[]const u8, degraded: []const []const u8) !Outcome {
+    pub fn tools(self: *Frontend, arena: std.mem.Allocator, session_id: ?[]const u8, degraded: []const []const u8) !Outcome {
         const served = self.hub.tools(arena, session_id orelse "", &.{
             .session_id = session_id,
             .allow_degraded_features = degraded,
@@ -1141,7 +1247,7 @@ const reference_descriptor = contract.Descriptor{
     .capability_revision = "reference-v1",
     .features = &.{
         .{ .key = "session.open.subscribe", .level = .native },
-        .{ .key = "session.tool_sources.attach", .level = .degraded, .reason = "sources are recorded, not loaded" },
+        .{ .key = contract.feature_tool_sources_attach, .level = .native, .modes = &.{"session_open"} },
         .{ .key = "run.cancel", .level = .emulated, .scope = "primary", .modes = &.{"stream"}, .constraints_json = "{\"max\":2}" },
     },
 };
@@ -1209,6 +1315,8 @@ const ReferenceState = struct {
     last_id: []const u8 = "session-1",
     last_id_buffer: [128]u8 = undefined,
     saw_metadata_members: usize = 0,
+    saw_tool_sources_buffer: [1024]u8 = undefined,
+    saw_tool_sources_json: []const u8 = "",
     running: bool = false,
     state_fails: bool = false,
     lister_closed: bool = false,
@@ -1234,6 +1342,13 @@ fn referenceOpen(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.Op
     state.opened += 1;
     state.running = false;
     state.saw_metadata_members = if (request.metadata) |named| named.object.count() else 0;
+    const handed = request.tool_sources_json orelse "";
+    if (handed.len <= state.saw_tool_sources_buffer.len) {
+        @memcpy(state.saw_tool_sources_buffer[0..handed.len], handed);
+        state.saw_tool_sources_json = state.saw_tool_sources_buffer[0..handed.len];
+    } else {
+        state.saw_tool_sources_json = "";
+    }
     const asked = if (request.session_id.len > 0) request.session_id else "session-1";
     if (asked.len <= state.last_id_buffer.len) {
         @memcpy(state.last_id_buffer[0..asked.len], asked);
@@ -1468,8 +1583,9 @@ test "the adapters listing answers every registered adapter, sorted, with its re
     const capabilities = adapters.items[0].object.get("capabilities").?;
     const features = capabilities.object.get("features").?.object;
     try testing.expectEqualStrings("native", try textMember(harness.arena(), features.get("session.open.subscribe").?, "level"));
-    try testing.expectEqualStrings("degraded", try textMember(harness.arena(), features.get("session.tool_sources.attach").?, "level"));
-    try testing.expectEqualStrings("sources are recorded, not loaded", try textMember(harness.arena(), features.get("session.tool_sources.attach").?, "reason"));
+    try testing.expectEqualStrings("native", try textMember(harness.arena(), features.get(contract.feature_tool_sources_attach).?, "level"));
+    const attach = features.get(contract.feature_tool_sources_attach).?;
+    try testing.expectEqualStrings("session_open", attach.object.get("modes").?.array.items[0].string);
     const emulated = features.get("run.cancel").?;
     try testing.expectEqualStrings("primary", try textMember(harness.arena(), emulated, "scope"));
     try testing.expectEqual(@as(i64, 2), emulated.object.get("constraints").?.object.get("max").?.integer);
@@ -2022,6 +2138,37 @@ test "a subscribing open is refused, because this wire cannot drain a subscripti
     try testing.expectEqualStrings("unsupported_feature", try harness.code());
 }
 
+test "a refusal carries the adapter's own feature and reason, and nothing more" {
+    const arena = testing.allocator;
+    const both = try detailForReason(arena, .{ .feature = "session.open.subscribe", .reason = contract.reason_unadvertised });
+    defer if (both.len > 0) arena.free(both);
+    try testing.expectEqual(@as(usize, 2), both.len);
+    try testing.expectEqualStrings("feature", both[0].key);
+    try testing.expectEqualStrings("session.open.subscribe", both[0].value);
+    try testing.expectEqualStrings("reason", both[1].key);
+    try testing.expectEqualStrings("unadvertised", both[1].value);
+
+    const feature_only = try detailForReason(arena, .{ .feature = "session.tool_sources.attach" });
+    defer if (feature_only.len > 0) arena.free(feature_only);
+    try testing.expectEqual(@as(usize, 1), feature_only.len);
+    try testing.expectEqualStrings("session.tool_sources.attach", feature_only[0].value);
+
+    const named_source = try detailForReason(arena, .{
+        .feature = "session.tool_sources.attach",
+        .reason = contract.reason_unsatisfiable,
+        .source = "x1",
+    });
+    defer if (named_source.len > 0) arena.free(named_source);
+    try testing.expectEqual(@as(usize, 3), named_source.len);
+    try testing.expectEqualStrings("session.tool_sources.attach", named_source[0].value);
+    try testing.expectEqualStrings("unsatisfiable", named_source[1].value);
+    try testing.expectEqualStrings("source", named_source[2].key);
+    try testing.expectEqualStrings("x1", named_source[2].value);
+
+    const nothing = try detailForReason(arena, .{});
+    try testing.expectEqual(@as(usize, 0), nothing.len);
+}
+
 test "an open citing a stale revision is refused, naming both revisions" {
     const harness = try Harness.init(testing.allocator, .{}, .{});
     defer harness.deinit();
@@ -2073,6 +2220,47 @@ test "an unconfigured id may be named from the wire, but a process one may not" 
     try testing.expectEqual(@as(usize, 3), refusal.details.len);
     try testing.expectEqualStrings(contract.feature_tool_sources_attach, refusal.details[0].value);
     try testing.expectEqualStrings("x1", refusal.details[2].value);
+}
+
+test "an allocator that refuses is not a request with no sources" {
+    var fails = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    const configured = [_]contract.ConfiguredSource{.{
+        .id = "pinned",
+        .kind = "remote",
+        .endpoint = "https://operator.test",
+    }};
+    var hub: Hub = undefined;
+    hub = Hub.init(fails.allocator(), wallClock, .{ .tool_sources = &configured });
+    defer hub.deinit();
+    try testing.expectError(error.OutOfMemory, substitutedSources(fails.allocator(), &hub, "[{\"id\":\"pinned\",\"kind\":\"remote\"}]"));
+}
+
+test "the adapter is handed the operator's source, and an unconfigured one as written" {
+    const configured = [_]contract.ConfiguredSource{.{
+        .id = "pinned",
+        .kind = "remote",
+        .endpoint = "https://operator.test",
+        .environment = &.{ "PATH=/operator", "TOKEN=operator" },
+    }};
+    const harness = try Harness.init(testing.allocator, .{ .tool_sources = &configured }, .{});
+    defer harness.deinit();
+    const pinned = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"payload\":{\"session_id\":\"s1\",\"tool_sources\":[{\"id\":\"pinned\",\"kind\":\"remote\",\"environment\":[\"PATH\",\"EXTRA\"]},{\"id\":\"free\",\"kind\":\"hosted\"}]}}";
+    try harness.send(try std.fmt.allocPrint(harness.arena(), "{{\"id\":1,\"op\":\"open\",\"adapter\":\"reference\",\"request\":{s}}}", .{pinned}));
+
+    try testing.expect((try harness.lastValue()).object.get("ok").?.bool);
+    const handed = std.json.parseFromSliceLeaky(std.json.Value, harness.arena(), reference_holder.saw_tool_sources_json, .{}) catch return error.TestUnexpectedResult;
+    const listed = handed.array.items;
+    try testing.expectEqual(@as(usize, 2), listed.len);
+
+    try testing.expectEqualStrings("https://operator.test", listed[0].object.get("endpoint").?.string);
+    const environment = listed[0].object.get("environment").?.array.items;
+    try testing.expectEqual(@as(usize, 3), environment.len);
+    try testing.expectEqualStrings("PATH=/operator", environment[0].string);
+    try testing.expectEqualStrings("TOKEN=operator", environment[1].string);
+    try testing.expectEqualStrings("EXTRA", environment[2].string);
+
+    try testing.expectEqualStrings("free", listed[1].object.get("id").?.string);
+    try testing.expectEqualStrings("hosted", listed[1].object.get("kind").?.string);
 }
 
 test "a configured source is named by id, not re-described from the wire" {
