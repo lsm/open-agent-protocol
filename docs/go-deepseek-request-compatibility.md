@@ -31,7 +31,8 @@ when its host says nothing.
 ## Effort mapping
 
 DeepSeek documents a requested/actual effort table. The Go package maps each
-public level to the literal it puts on the wire:
+public level to the literal it puts on the wire
+(<https://api-docs.deepseek.com/guides/thinking_mode/>):
 
 | Requested | Sent | Note |
 | --- | --- | --- |
@@ -45,9 +46,13 @@ public level to the literal it puts on the wire:
 
 An unrecognised level, and any level not in this table, maps to `high`.
 
-An **absent** effort is different from a level: the field is omitted entirely.
-Omission and an empty value are kept distinguishable, and the table above applies
-only when a level was actually requested.
+An **absent** effort is different from a level: nothing is written at all. It is
+not distinguishable from an *empty* effort, though. `StreamOptions.ReasoningEffort`
+is a plain `string` and the writer gates on it being non-empty, so an absent
+effort and an empty one coalesce into the same request: both omit the member. The
+table above applies only when a level was actually requested. No presence flag is
+added here to separate the two, because that would be a new API rather than a
+record of this one.
 
 The table is also gated twice before anything is written: the model must be a
 reasoning model, and the merged capabilities must support the effort. A
@@ -114,9 +119,17 @@ satisfied by the identity check alone:
 | proxy capability carry dropped | 9 |
 | `IsDeepSeekModel` reverted to host-only | 11 |
 
-The three effort tables — the documented one, the pre-existing request test, and
-the public-options test — are independent of each other, so the `xhigh` and
-`ultra` mutations are each caught more than once.
+The counts are failing assertions, not independent implementations. The `xhigh`
+and `ultra` mappings are three separate assertions over **one** shared function,
+`deepSeekEffort`, reached through three entrypoints: a direct function-level table,
+the pre-existing request-level test, and the public-options test that goes through
+`BuildRequestBody`. A mutation is caught by more than one entrypoint because each
+asserts the value independently, not because there are three mappings. The table
+above is a record of what is emitted and is not itself a control.
+
+The identity mutations are likewise single-function changes — `IsDeepSeekModel`
+and the capability carry in `MergeCompat` — reached from both the identity
+controls and the request-level ones.
 
 ## Zig handoff
 
