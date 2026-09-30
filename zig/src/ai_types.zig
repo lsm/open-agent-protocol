@@ -999,12 +999,17 @@ fn cloneToolResultMessage(allocator: std.mem.Allocator, tr: ToolResultMessage) !
     const tool_name = try allocator.dupe(u8, tr.tool_name);
     errdefer allocator.free(tool_name);
 
+    const directory = try allocator.dupe(u8, tr.working_directory.slice());
+    errdefer allocator.free(directory);
+
     return .{
         .tool_call_id = tool_call_id,
         .tool_name = tool_name,
         .content = cloned_content,
         .details_json = details_json,
         .artifacts = OwnedSlice(ArtifactReference).initOwned(cloned_artifacts),
+        .working_directory = OwnedSlice(u8).initOwned(directory),
+        .working_directory_observed = tr.working_directory_observed,
         .is_error = tr.is_error,
         .timestamp = tr.timestamp,
     };
