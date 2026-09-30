@@ -647,6 +647,10 @@ const Runner = struct {
             if (event.payload.isTerminal()) break;
         }
 
+        if (self.run_events.items.len == 0) {
+            try self.fail(accepted, "the run delivered no envelope the replay could re-deliver");
+            return;
+        }
         if (replayed.items.len != self.run_events.items.len) {
             try self.failOwned(
                 accepted,
@@ -668,10 +672,6 @@ const Runner = struct {
                     .{ seen, original },
                 ),
             );
-            return;
-        }
-        if (self.run_events.items.len == 0) {
-            try self.fail(accepted, "the run delivered no envelope for the replay to re-deliver");
             return;
         }
         try self.pass(accepted);
@@ -1379,6 +1379,28 @@ fn replayVerdictOf(report: *const Report) !Check {
     return report.verdict(replay_verdict) orelse error.CheckMissing;
 }
 
+
+fn withoutEnvelopeRunId(allocator: std.mem.Allocator, script: []const u8) ![]u8 {
+    const marker = ",\"run_id\":\"run-1\",\"payload\"";
+    const boundary = std.mem.indexOf(u8, script, "*replay*)") orelse return error.MarkerMissing;
+    const stream = script[0..boundary];
+    const rest = script[boundary..];
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    var head = stream;
+    while (true) {
+        const at = std.mem.indexOf(u8, head, marker) orelse {
+            try out.appendSlice(allocator, head);
+            break;
+        };
+        try out.appendSlice(allocator, head[0..at]);
+        try out.appendSlice(allocator, ",\"payload\"");
+        head = head[at + marker.len ..];
+    }
+    try out.appendSlice(allocator, rest);
+    return out.toOwnedSlice(allocator);
+}
+
 fn withReplayBody(allocator: std.mem.Allocator, body: []const u8) ![]u8 {
     const marker = "@@REPLAY@@";
     const at = std.mem.indexOf(u8, replay_case_script, marker) orelse return error.MarkerMissing;
@@ -1390,8 +1412,9 @@ fn withReplayBody(allocator: std.mem.Allocator, body: []const u8) ![]u8 {
     return out.toOwnedSlice(allocator);
 }
 
-const replay_case_script =
 
+
+const replay_case_script =
         \\while read -r line; do
         \\  case "$line" in
         \\  *protocol.initialize.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"protocol.initialize.response","id":"a1","in_reply_to":"conformance-request-1","payload":{"protocol_version":"0.1","profile":"open-agent-protocol.agent-control-core","endpoint":{"id":"fake"}}}' ;;
@@ -1406,6 +1429,8 @@ const replay_case_script =
         \\  esac
         \\done
     ;
+
+const replay_over_unattributed_run = "'{\"control\":\"replay.accepted\",\"id\":\"conformance-replay-1\"}' '{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"run.started\",\"id\":\"e1\",\"sequence\":1,\"run_id\":\"run-1\",\"payload\":{\"session_id\":\"conformance\",\"run_id\":\"run-1\",\"status\":\"running\"}}' '{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"run.completed\",\"id\":\"e2\",\"sequence\":2,\"run_id\":\"run-1\",\"payload\":{\"session_id\":\"conformance\",\"run_id\":\"run-1\",\"stop_reason\":\"end_turn\",\"final_response\":{\"role\":\"assistant\",\"content\":\"done\"}}}'";
 
 const renamed_replay = "'{\"control\":\"replay.accepted\",\"id\":\"conformance-replay-1\"}' '{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"run.started\",\"id\":\"renamed\",\"sequence\":1,\"run_id\":\"run-1\",\"payload\":{\"session_id\":\"conformance\",\"run_id\":\"run-1\",\"status\":\"running\"}}' '{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"run.completed\",\"id\":\"e2\",\"sequence\":2,\"run_id\":\"run-1\",\"payload\":{\"session_id\":\"conformance\",\"run_id\":\"run-1\",\"stop_reason\":\"end_turn\",\"final_response\":{\"role\":\"assistant\",\"content\":\"done\"}}}'";
 
@@ -1452,6 +1477,26 @@ test "an endpoint that refuses the replay control skips the check, through the p
         "the endpoint does not implement the replay control, which the binding permits",
         replay.detail,
     );
+}
+
+
+test "a run whose events name no run is reported by the replay check, through the public runner" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const script = try withReplayBody(std.testing.allocator, replay_over_unattributed_run);
+    defer std.testing.allocator.free(script);
+    const run_events = try withoutEnvelopeRunId(std.testing.allocator, script);
+    defer std.testing.allocator.free(run_events);
+
+    var report = try run(std.testing.allocator, .{
+        .command = "/bin/sh",
+        .args = &.{ "-c", run_events },
+        .line_deadline_ms = 5000,
+    });
+    defer report.deinit();
+
+    const replay = try replayVerdictOf(&report);
+    try std.testing.expect(!replay.passed);
+    try std.testing.expectEqualStrings("the run delivered no envelope the replay could re-deliver", replay.detail);
 }
 
 test "a replay that renames an envelope fails the check, through the public runner" {
