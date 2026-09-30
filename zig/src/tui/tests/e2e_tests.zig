@@ -389,11 +389,11 @@ test "e2e: /login opens the provider picker and selecting starts the flow" {
     try std.testing.expectEqual(tui_state.AppMode.picker, d.app().state.mode);
     try std.testing.expectEqual(tui_state.PickerKind.login, d.app().state.picker_kind);
     try std.testing.expect(d.frameContains("Login provider"));
-    try std.testing.expect(d.frameContains("anthropic"));
+    try std.testing.expect(d.frameContains("OpenAI"));
 
     d.sendKey(.enter);
     try std.testing.expectEqual(tui_state.AppMode.normal, d.app().state.mode);
-    try std.testing.expect(d.frameContains("starting login for anthropic"));
+    try std.testing.expect(d.frameContains("starting login for openai"));
 }
 
 test "e2e: production TUI uses native scrollback mode" {
