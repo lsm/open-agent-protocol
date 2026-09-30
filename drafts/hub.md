@@ -605,8 +605,7 @@ read is a wait it cannot honour, which is the `Timeout` those sites already had 
 status is added.
 
 An earlier revision claimed each of the four bounds is pinned by a test that fails if the bound is
-removed. **That was false, and was measured rather than assumed.** The pinning that exists is not
-uniform:
+removed. **That was false, and was measured rather than assumed.** The pinning that exists is not uniform:
 
 - **the 1 MiB total — pinned by removal at this head.** `a drain stops at its byte cap and reports
   what it consumed` carries its own `wanted_cap = 1024 * 1024`, asserts the production constant
