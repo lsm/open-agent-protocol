@@ -51,6 +51,20 @@ func ask(t *testing.T, client *Client, id string) protocol.EnvelopeID {
 	return request.ID
 }
 
+func awaitLiveness(t *testing.T, client *Client) {
+	t.Helper()
+	deadline := time.Now().Add(budgetHardCap)
+	for {
+		if _, err := client.Event(); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the chatty peer never produced a line, so this cannot tell a renewed budget from a peer that was never chatty")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 func expectBudgetSpent(t *testing.T, what string, start time.Time, err error) {
 	t.Helper()
 	if err == nil {
@@ -62,20 +76,6 @@ func expectBudgetSpent(t *testing.T, what string, start time.Time, err error) {
 	}
 	if elapsed > budgetForTest+budgetHardCap {
 		t.Fatalf("the %s wait took %s against a %s budget, so frames renewed it", what, elapsed, budgetForTest)
-	}
-}
-
-func awaitLiveness(t *testing.T, client *Client) {
-	t.Helper()
-	deadline := time.Now().Add(budgetHardCap)
-	for {
-		if _, err := client.Event(); err == nil {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the chatty peer never produced a line, so this case cannot tell a renewed budget from a peer that was never chatty")
-		}
-		time.Sleep(20 * time.Millisecond)
 	}
 }
 
@@ -145,5 +145,32 @@ func TestAMatchingAnswerAlreadyBufferedIsReturnedWithoutSpendingTheBudget(t *tes
 	}
 	if elapsed > budgetForTest/2 {
 		t.Fatalf("a buffered match took %s, so it was not served from the buffer", elapsed)
+	}
+}
+
+func TestAnEventWaitIsNotRenewedByRepliesToNobody(t *testing.T) {
+	client := shortDeadlineClient(t, "chatty-responses")
+	ask(t, client, "budget-evt")
+	before := len(client.Transcript())
+	start := time.Now()
+	err := waitWithin(t, "event", func() error {
+		_, err := client.Event()
+		return err
+	})
+	if err == nil {
+		t.Fatal("an event appeared for a peer that only ever sent replies to nobody")
+	}
+	elapsed := time.Since(start)
+	if elapsed < budgetForTest {
+		t.Fatalf("the event wait gave up after %s without spending its %s budget", elapsed, budgetForTest)
+	}
+	if elapsed > budgetForTest+budgetHardCap {
+		t.Fatalf("replies renewed the event budget for %s", elapsed)
+	}
+	if !strings.Contains(err.Error(), budgetForTest.String()) {
+		t.Fatalf("the failure does not name the budget: %v", err)
+	}
+	if grew := len(client.Transcript()) - before; grew < 2 {
+		t.Fatalf("the peer managed only %d frame(s) during the wait, so this case never saw a chatty peer and cannot tell a renewed budget from a silent one", grew)
 	}
 }

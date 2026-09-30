@@ -220,21 +220,18 @@ func (c *Client) expire(total time.Duration, fatal bool) error {
 	return err
 }
 
-func (c *Client) drainBuffered() (bool, error) {
-	available := len(c.lines)
-	ingested := false
-	for i := 0; i < available; i++ {
+func (c *Client) drainBuffered() error {
+	for i, available := 0, len(c.lines); i < available; i++ {
 		select {
 		case l, ok := <-c.lines:
 			if err := c.ingest(l, ok); err != nil {
-				return ingested, err
+				return err
 			}
-			ingested = true
 		default:
-			return ingested, nil
+			return nil
 		}
 	}
-	return ingested, nil
+	return nil
 }
 
 func (c *Client) pullWithin(remaining, total time.Duration, fatal bool) error {
@@ -258,6 +255,7 @@ func (c *Client) Response(inReplyTo protocol.EnvelopeID) (protocol.Envelope, err
 	fail := func(err error) error {
 		return fmt.Errorf("waiting for the answer to %s: %w", inReplyTo, err)
 	}
+	scanned := false
 	for {
 		c.mu.Lock()
 		for i, candidate := range c.responses {
@@ -269,14 +267,14 @@ func (c *Client) Response(inReplyTo protocol.EnvelopeID) (protocol.Envelope, err
 		}
 		c.mu.Unlock()
 		if budget.remaining() <= 0 {
-			ingested, err := c.drainBuffered()
-			if err != nil {
+			if scanned {
+				return protocol.Envelope{}, fail(c.expire(total, true))
+			}
+			scanned = true
+			if err := c.drainBuffered(); err != nil {
 				return protocol.Envelope{}, fail(err)
 			}
-			if ingested {
-				continue
-			}
-			return protocol.Envelope{}, fail(c.expire(total, true))
+			continue
 		}
 		if err := c.pullWithin(budget.remaining(), total, true); err != nil {
 			return protocol.Envelope{}, fail(err)
@@ -287,6 +285,7 @@ func (c *Client) Response(inReplyTo protocol.EnvelopeID) (protocol.Envelope, err
 func (c *Client) Event() (protocol.Envelope, error) {
 	total := c.deadline
 	budget := newWaitBudget(total)
+	scanned := false
 	for {
 		c.mu.Lock()
 		if len(c.events) > 0 {
@@ -297,14 +296,14 @@ func (c *Client) Event() (protocol.Envelope, error) {
 		}
 		c.mu.Unlock()
 		if budget.remaining() <= 0 {
-			ingested, err := c.drainBuffered()
-			if err != nil {
+			if scanned {
+				return protocol.Envelope{}, c.expire(total, true)
+			}
+			scanned = true
+			if err := c.drainBuffered(); err != nil {
 				return protocol.Envelope{}, err
 			}
-			if ingested {
-				continue
-			}
-			return protocol.Envelope{}, c.expire(total, true)
+			continue
 		}
 		if err := c.pullWithin(budget.remaining(), total, true); err != nil {
 			return protocol.Envelope{}, err
@@ -327,6 +326,7 @@ func (c *Client) Control(id string) (ControlFrame, error) {
 	fail := func(err error) error {
 		return fmt.Errorf("waiting for the control answer to %s: %w", id, err)
 	}
+	scanned := false
 	for {
 		c.mu.Lock()
 		for i, candidate := range c.controls {
@@ -338,14 +338,14 @@ func (c *Client) Control(id string) (ControlFrame, error) {
 		}
 		c.mu.Unlock()
 		if budget.remaining() <= 0 {
-			ingested, err := c.drainBuffered()
-			if err != nil {
+			if scanned {
+				return ControlFrame{}, fail(c.expire(total, false))
+			}
+			scanned = true
+			if err := c.drainBuffered(); err != nil {
 				return ControlFrame{}, fail(err)
 			}
-			if ingested {
-				continue
-			}
-			return ControlFrame{}, fail(c.expire(total, false))
+			continue
 		}
 		if err := c.pullWithin(budget.remaining(), total, false); err != nil {
 			if errors.Is(err, ErrControlUnanswered) {

@@ -157,7 +157,6 @@ func runHelperEndpoint(mode string) int {
 		return 0
 	}
 	if mode == "silent" {
-
 		bufio.NewReader(os.Stdin).ReadString('\n')
 		time.Sleep(time.Hour)
 		return 0
