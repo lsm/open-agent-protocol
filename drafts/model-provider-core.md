@@ -343,6 +343,18 @@ content is bound to one descriptor snapshot.
 
 #### The model entry
 
+An entry is an object or the response is refused. This is the shape rule stated
+once and applied to the entry itself: `models` is an array of model entries, and
+an element of that array that is not an object is a `malformed_response`, not an
+element to skip. A reader that filters non-objects out of `models` returns a
+partial list while reporting the provider's own `catalog.complete`, so a caller
+that trusts `complete` believes it holds the whole catalog while an entry has
+vanished — and with a single malformed entry it receives an empty list and no
+error at all. The refusal is not exempt because a local filter would have
+dropped the row: a filter that excludes every model still cannot make a
+malformed entry well-formed. Readers must judge the entry's shape before any
+local filter, which is the same ordering the member rules below require.
+
 Each entry in `provider.models.list.response`:
 
 - `model_ref` — `provider_id/wire@model_id`.
