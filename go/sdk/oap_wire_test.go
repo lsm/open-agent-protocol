@@ -336,9 +336,10 @@ func selectedCatalogModel() (map[string]any, bool) {
 	if sourceShape == "" && lifecycleShape == "" && authShape == "" {
 		return nil, false
 	}
+	identity := firstNonEmpty(lifecycleShape, sourceShape, authShape)
 	model := map[string]any{
-		"model_ref": "fixture/other:selected@" + lifecycleShape + sourceShape,
-		"model_id":  firstNonEmpty(lifecycleShape, sourceShape), "provider_id": "fixture",
+		"model_ref": "fixture/other:selected@" + lifecycleShape + sourceShape + authShape,
+		"model_id":  identity, "provider_id": "fixture",
 		"wire": "other", "auth_status": "authenticated",
 		"capabilities": []string{"chat", "streaming"},
 	}
@@ -346,6 +347,7 @@ func selectedCatalogModel() (map[string]any, bool) {
 		if authShape == "login_required" {
 			model["auth_status"] = "login_required"
 		}
+		model["model_ref"] = "fixture/other:selected@" + identity
 	}
 	if lifecycleShape != "" {
 		switch lifecycleShape {

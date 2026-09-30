@@ -49,6 +49,28 @@ func TestAStatedSourceKeepsItsMappingThroughThePublicSeam(t *testing.T) {
 	}
 }
 
+func TestAnAuthOnlyShapeStillNamesItsRow(t *testing.T) {
+	client := newTestClient(t, scenarioOAP, "OAPX_TEST_CATALOG_AUTH=login_required")
+	defer client.Close()
+	listed, err := client.Models.List(testContext(t), ListModelsRequest{IncludeLoginRequired: boolPtr(true)})
+	if err != nil {
+		t.Fatalf("an auth-only shape must still list its row: %v", err)
+	}
+	if len(listed.Models) != 1 {
+		t.Fatalf("an auth-only shape must publish exactly one row, got %d", len(listed.Models))
+	}
+	model := listed.Models[0]
+	if model.ModelID == "" {
+		t.Error("an auth-only shape must give the row a model_id, not an empty one")
+	}
+	if model.ModelRef == "" || !strings.Contains(model.ModelRef, model.ModelID) {
+		t.Errorf("model_ref %q must be coherent with model_id %q", model.ModelRef, model.ModelID)
+	}
+	if model.AuthStatus != AuthLoginRequired {
+		t.Errorf("AuthStatus = %q, want %q", model.AuthStatus, AuthLoginRequired)
+	}
+}
+
 func TestAPresentButInvalidSourceIsRefusedThroughThePublicSeam(t *testing.T) {
 	for _, shape := range []string{"invented", "empty", "null", "wrong-type", "shared-alias-dynamic", "shared-alias-static-fallback"} {
 		if _, err := listSelected(t, shape); err == nil {
