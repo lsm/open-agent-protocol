@@ -920,7 +920,7 @@ test "a schema path cleans without an arena, and a failed allocation does not le
             try std.testing.expectError(error.InvalidPackDescriptor, lexicalRelative(allocator, "../outside/away.schema.json"));
         }
     };
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, Runner.run, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, Runner.run, .{});
 }
 
 fn carriesCode(refusals: []const Refusal, code: []const u8) bool {
