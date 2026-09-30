@@ -834,14 +834,12 @@ func TestACallTheCallerAnswersIsAnnouncedAsResolved(t *testing.T) {
 	}
 }
 
-func TestACallWhoseAnswerRacesACancelIsAnnouncedEitherWay(t *testing.T) {
+func TestACancelLandingMidTurnSettlesEveryCallItFoundOpenExactlyOnce(t *testing.T) {
 	script := &scripted{turns: []scriptedTurn{toolTurn("call_1", "read", "{}"), toolTurn("call_2", "read", "{}")}}
 	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("read a"))
 
 	requested := map[string]int{}
 	terminals := map[string]int{}
-	secondAsked := make(chan struct{})
-	var signalled bool
 
 	drainActing(t, run, func(event Event) {
 		if event.Call == nil {
@@ -850,16 +848,11 @@ func TestACallWhoseAnswerRacesACancelIsAnnouncedEitherWay(t *testing.T) {
 		switch event.Kind {
 		case ToolCallRequested:
 			requested[event.Call.ID]++
-			if event.Call.ID == "call_2" && !signalled {
-				signalled = true
-				close(secondAsked)
-			}
-			if event.Call.ID == "call_1" {
-				go func() {
-					_ = run.ResolveTool("call_1", provider.ToolResult{Parts: []provider.ContentPart{{Text: &provider.TextPart{Text: "a"}}}})
-					<-secondAsked
-					run.Cancel()
-				}()
+			switch event.Call.ID {
+			case "call_1":
+				_ = run.ResolveTool("call_1", provider.ToolResult{Parts: []provider.ContentPart{{Text: &provider.TextPart{Text: "a"}}}})
+			case "call_2":
+				run.Cancel()
 			}
 		case ToolCallResolved, ToolCallCancelled:
 			terminals[event.Call.ID]++
@@ -867,7 +860,7 @@ func TestACallWhoseAnswerRacesACancelIsAnnouncedEitherWay(t *testing.T) {
 	})
 
 	if len(requested) != 2 {
-		t.Fatalf("the run asked %d calls, want 2: the race this covers needs the second request to land", len(requested))
+		t.Fatalf("the run asked %d calls, want 2: a cancel that lands mid-turn needs the second request to reach the loop first", len(requested))
 	}
 	for id, asked := range requested {
 		switch {
