@@ -1156,6 +1156,7 @@ fn writeTable(allocator: std.mem.Allocator, writer: *std.Io.Writer, header: []co
     const links = try arena.alloc([]const ?[]const u8, (body.len + 1) * columns);
     for (rows, 0..) |cells, r| {
         for (cells, 0..) |cell, c| {
+            @constCast(cells)[c] = try expandTabs(arena, try stripControls(arena, cell));
             var urls = std.ArrayList(?[]const u8).empty;
             @constCast(cells)[c] = try extractLinks(arena, cell, &urls);
             links[r * columns + c] = urls.items;
@@ -1301,13 +1302,30 @@ fn safeLinkTarget(target: []const u8) ?[]const u8 {
     return target;
 }
 
+fn isLinkMarkerAt(text: []const u8, i: usize) bool {
+    return std.mem.startsWith(u8, text[i..], link_open) or std.mem.startsWith(u8, text[i..], link_close);
+}
+
+fn appendNeutralized(allocator: std.mem.Allocator, out: *std.ArrayList(u8), text: []const u8) !void {
+    var i: usize = 0;
+    while (i < text.len) {
+        if (isLinkMarkerAt(text, i)) {
+            try out.appendSlice(allocator, "\u{FFFD}");
+            i += link_open.len;
+            continue;
+        }
+        try out.append(allocator, text[i]);
+        i += 1;
+    }
+}
+
 fn extractLinks(allocator: std.mem.Allocator, text: []const u8, urls: *std.ArrayList(?[]const u8)) ![]const u8 {
     if (std.mem.indexOfAny(u8, text, "[<") == null and std.mem.indexOf(u8, text, link_open) == null and std.mem.indexOf(u8, text, link_close) == null) return text;
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
     var i: usize = 0;
     while (i < text.len) {
-        if (std.mem.startsWith(u8, text[i..], link_open) or std.mem.startsWith(u8, text[i..], link_close)) {
+        if (isLinkMarkerAt(text, i)) {
             try out.appendSlice(allocator, "\u{FFFD}");
             i += link_open.len;
             continue;
@@ -1323,7 +1341,7 @@ fn extractLinks(allocator: std.mem.Allocator, text: []const u8, urls: *std.Array
         if (text[i] == '[' and !(i > 0 and text[i - 1] == '!')) {
             if (matchLink(text, i)) |link| {
                 try out.appendSlice(allocator, link_open);
-                try out.appendSlice(allocator, link.label);
+                try appendNeutralized(allocator, &out, link.label);
                 try out.appendSlice(allocator, link_close);
                 try urls.append(allocator, safeLinkTarget(link.target));
                 i = link.end;
@@ -2055,6 +2073,26 @@ test "a private-use character in the text cannot pose as a link marker" {
     const plain = try stripEscapesForTest(std.testing.allocator, styled);
     defer std.testing.allocator.free(plain);
     try std.testing.expectEqualStrings("odd \u{FFFD}glyph\u{FFFD} then ok", plain);
+}
+
+test "a table cell's escape sequences and control bytes never reach the terminal" {
+    const styled = try renderAssistantStyled(std.testing.allocator, "| a | b |\n|---|---|\n| x\x1b]52;c;aGk=\x07y | z\x07w |", 40);
+    defer std.testing.allocator.free(styled);
+    try std.testing.expect(std.mem.indexOf(u8, styled, "]52;") == null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, styled, 0x07) == null);
+    const plain = try stripEscapesForTest(std.testing.allocator, styled);
+    defer std.testing.allocator.free(plain);
+    try std.testing.expectEqualStrings("a  \u{2502} b\n\u{2500}\u{2500}\u{2500}\u{253c}\u{2500}\u{2500}\nxy \u{2502} zw", plain);
+}
+
+test "a marker character inside a link label cannot shift a later link's target" {
+    const styled = try renderAssistantStyled(std.testing.allocator, "[a\u{E000}b](https://one.example) [c](https://two.example)", 80);
+    defer std.testing.allocator.free(styled);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, styled, ";https://one.example\x1b\\"));
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, styled, ";https://two.example\x1b\\"));
+    const plain = try stripEscapesForTest(std.testing.allocator, styled);
+    defer std.testing.allocator.free(plain);
+    try std.testing.expectEqualStrings("a\u{FFFD}b c", plain);
 }
 
 test "a link that wraps keeps its target on every row it spans" {
