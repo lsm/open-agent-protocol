@@ -711,6 +711,24 @@ pub fn deinitAssistantMessageOwned(allocator: std.mem.Allocator, msg: *Assistant
     msg.deinit(allocator);
 }
 
+pub const LOST_CLONE_MESSAGE = "an event could not be queued: out of memory";
+
+/// The one settlement every provider uses. A clone that could not be allocated is
+/// a lost event, so the turn settles as a failure rather than as a terminal; and a
+/// stream the caller already settled keeps its own outcome. The result is freed
+/// here whenever it is not handed to the stream, so it is freed exactly once.
+pub fn settleProviderOutcome(stream: anytype, out: AssistantMessage) void {
+    if (stream.pushFailed()) {
+        var dropped = out;
+        dropped.deinit(stream.allocator);
+        stream.completeWithError(LOST_CLONE_MESSAGE);
+        return;
+    }
+    if (stream.completeIfOpen(out)) return;
+    var dropped = out;
+    dropped.deinit(stream.allocator);
+}
+
 pub const OwnedMessage = struct {
     const Self = @This();
 

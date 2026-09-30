@@ -1670,17 +1670,7 @@ fn runThread(ctx: *ThreadCtx) void {
 
     ctx.deinit();
 
-    settleOrFailLost(stream, out);
-}
-
-fn settleOrFailLost(stream: *event_stream.AssistantMessageEventStream, out: ai_types.AssistantMessage) void {
-    if (stream.pushFailed()) {
-        var dropped = out;
-        dropped.deinit(stream.allocator);
-        stream.completeWithError("an event could not be queued: out of memory");
-        return;
-    }
-    stream.complete(out);
+    ai_types.settleProviderOutcome(stream, out);
 }
 
 fn createPartialMessage(model: ai_types.Model) ai_types.AssistantMessage {
@@ -2870,7 +2860,7 @@ test "a stream that lost a clone settles as a failure, not a clean terminal" {
     } });
     try std.testing.expect(stream.pushFailed());
 
-    settleOrFailLost(stream, .{
+    ai_types.settleProviderOutcome(stream, .{
         .content = &.{},
         .api = try allocator.dupe(u8, "anthropic-messages"),
         .provider = try allocator.dupe(u8, "anthropic"),
@@ -2895,9 +2885,93 @@ test "a stream that lost nothing settles with the message the provider built" {
         allocator.destroy(stream);
     }
 
-    settleOrFailLost(stream, emptyAnthropicMessage());
+    ai_types.settleProviderOutcome(stream, emptyAnthropicMessage());
 
     const result = stream.getResult() orelse return error.NoResult;
     try std.testing.expectEqualStrings("claude", result.model);
     try std.testing.expect(stream.getError() == null);
+}
+
+test "a cancellation before settlement survives, and the refused result is freed" {
+    const allocator = std.testing.allocator;
+    const stream = try allocator.create(event_stream.AssistantMessageEventStream);
+    stream.* = event_stream.AssistantMessageEventStream.init(allocator);
+    stream.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+    stream.completeWithError("cancelled by the caller");
+
+    ai_types.settleProviderOutcome(stream, .{
+        .content = &.{},
+        .api = try allocator.dupe(u8, "anthropic-messages"),
+        .provider = try allocator.dupe(u8, "anthropic"),
+        .model = try allocator.dupe(u8, "claude"),
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+        .is_owned = true,
+    });
+
+    try std.testing.expect(stream.getResult() == null);
+    try std.testing.expectEqualStrings("cancelled by the caller", stream.getError() orelse return error.NoErrorRecorded);
+}
+
+test "a lost clone followed by a cancellation keeps the cancellation" {
+    const allocator = std.testing.allocator;
+    var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 1 });
+    const stream = try failing.allocator().create(event_stream.AssistantMessageEventStream);
+    stream.* = event_stream.AssistantMessageEventStream.init(failing.allocator());
+    stream.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
+    defer {
+        _ = stream.deinitAndDestroy();
+    }
+    _ = stream.pushBlocking(.{ .text_delta = .{
+        .content_index = 0,
+        .delta = "x",
+        .partial = createPartialMessage(try lostCloneTestModel()),
+    } });
+    try std.testing.expect(stream.pushFailed());
+    stream.completeWithError("cancelled by the caller");
+
+    ai_types.settleProviderOutcome(stream, emptyAnthropicMessage());
+
+    try std.testing.expect(stream.getResult() == null);
+    try std.testing.expect(stream.getError() != null);
+}
+
+test "a stream that settled with its own result keeps it against a later provider result" {
+    const allocator = std.testing.allocator;
+    const stream = try allocator.create(event_stream.AssistantMessageEventStream);
+    stream.* = event_stream.AssistantMessageEventStream.init(allocator);
+    stream.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+    stream.complete(.{
+        .content = &.{},
+        .api = try allocator.dupe(u8, "caller-api"),
+        .provider = try allocator.dupe(u8, "caller"),
+        .model = try allocator.dupe(u8, "caller-model"),
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+        .is_owned = true,
+    });
+
+    ai_types.settleProviderOutcome(stream, .{
+        .content = &.{},
+        .api = try allocator.dupe(u8, "anthropic-messages"),
+        .provider = try allocator.dupe(u8, "anthropic"),
+        .model = try allocator.dupe(u8, "claude"),
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+        .is_owned = true,
+    });
+
+    const result = stream.getResult() orelse return error.NoResult;
+    try std.testing.expectEqualStrings("caller-model", result.model);
 }

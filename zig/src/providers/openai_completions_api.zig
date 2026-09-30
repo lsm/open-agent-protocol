@@ -81,7 +81,6 @@ fn allowsAnonymous(model: ai_types.Model) bool {
     return true;
 }
 
-
 fn appendTextContent(msg: ai_types.Message, out: *std.ArrayList(u8), allocator: std.mem.Allocator) !void {
     switch (msg) {
         .user => |u| switch (u.content) {
@@ -1570,7 +1569,7 @@ fn runThread(ctx: *ThreadCtx) void {
             .is_owned = true,
         };
         ctx.deinit();
-        stream.complete(out);
+        ai_types.settleProviderOutcome(stream, out);
         stream.markThreadDone();
         return;
     }
@@ -1696,7 +1695,7 @@ fn runThread(ctx: *ThreadCtx) void {
     };
 
     ctx.deinit();
-    stream.complete(out);
+    ai_types.settleProviderOutcome(stream, out);
     stream.markThreadDone();
 }
 

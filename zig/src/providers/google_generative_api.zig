@@ -669,7 +669,7 @@ fn settleOrFailLost(stream: *event_stream.AssistantMessageEventStream, out: ai_t
         stream.completeWithError("an event could not be queued: out of memory");
         return;
     }
-    stream.complete(out);
+    ai_types.settleProviderOutcome(stream, out);
 }
 
 fn createPartialMessage(model: ai_types.Model) ai_types.AssistantMessage {
@@ -1696,4 +1696,46 @@ test "googleErrorDetail surfaces the API status and message, and nothing else" {
     try std.testing.expect((try googleErrorDetail(std.testing.allocator, "<html>oops</html>")) == null);
     try std.testing.expect((try googleErrorDetail(std.testing.allocator, "{\"error\":\"plain\"}")) == null);
     try std.testing.expect((try googleErrorDetail(std.testing.allocator, "{\"error\":{\"message\":\"\"}}")) == null);
+}
+
+test "google settles through the shared path, so a lost clone is not a clean terminal" {
+    const allocator = std.testing.allocator;
+    var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 1 });
+    const stream = try failing.allocator().create(event_stream.AssistantMessageEventStream);
+    stream.* = event_stream.AssistantMessageEventStream.init(failing.allocator());
+    stream.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
+    defer {
+        _ = stream.deinitAndDestroy();
+    }
+    _ = stream.pushBlocking(.{ .text_delta = .{
+        .content_index = 0,
+        .delta = "x",
+        .partial = createPartialMessage(.{
+            .id = "gemini",
+            .name = "gemini",
+            .api = "google-generative-ai",
+            .provider = "google",
+            .base_url = "https://generativelanguage.googleapis.com",
+            .reasoning = false,
+            .input = &.{},
+            .cost = .{ .input = 0.0, .output = 0.0, .cache_read = 0.0, .cache_write = 0.0 },
+            .context_window = 1_000_000,
+            .max_tokens = 16,
+        }),
+    } });
+    try std.testing.expect(stream.pushFailed());
+
+    ai_types.settleProviderOutcome(stream, .{
+        .content = &.{},
+        .api = try allocator.dupe(u8, "google-generative-ai"),
+        .provider = try allocator.dupe(u8, "google"),
+        .model = try allocator.dupe(u8, "gemini"),
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+        .is_owned = true,
+    });
+
+    try std.testing.expect(stream.getResult() == null);
+    if (stream.getError() == null) return error.NoErrorRecorded;
 }
