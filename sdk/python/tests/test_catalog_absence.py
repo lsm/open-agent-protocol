@@ -4,7 +4,7 @@ import json
 import os
 import sys
 import unittest
-from typing import List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from oap_sdk import MakaiProtocolError, connect
 from oap_sdk.types import ListModelsResponse
@@ -145,7 +145,7 @@ class CatalogAbsence(unittest.IsolatedAsyncioTestCase):
         self.assertIn("source", str(caught.exception).lower())
 
     async def test_an_invalid_member_is_refused_even_when_another_filter_skips_it(self) -> None:
-        cases = (
+        cases: Sequence[Tuple[str, Dict[str, Any], Dict[str, Any]]] = (
             ("api", {"api": "not-other"}, {}),
             ("model", {"model_id": "nope"}, {}),
             ("auth", {"include_login_required": False}, {"auth_status": '"login_required"'}),
