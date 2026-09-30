@@ -1871,6 +1871,9 @@ deprecated only when it **stated** `deprecated`; a model whose lifecycle is
 unknown stays in the listing, because dropping it would exclude a model for
 failing to answer a question it was never asked.
 
-Rust landed as #709 and Go as #710; this change is the TypeScript reader,
-completing the three. The native protocol `ModelDescriptor` declared earlier
-in this document is a separate contract that keeps its required members.
+That is the target for all three SDKs. This change implements it for
+TypeScript; Rust is #709 and Go is #710, and **none of the three is on main
+yet**. Until they land, no SDK satisfies this section on its own, and the
+paragraph above records the same rule for `source`. The native protocol
+`ModelDescriptor` declared earlier in this document is a separate contract
+that keeps its required members.
