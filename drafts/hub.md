@@ -612,8 +612,17 @@ removed, and the four are not the same two tests:
   clock is past the budget, and drains again. Restoring the old
   `elapsedMs() catch 0 -| started` expression makes this fail with `expected 4096,
   found 0`
-- **stop on an unreadable clock** — the same test, whose `elapsedMs` path returns
-  the bytes consumed rather than `0`
+- **stop on an unreadable clock — a rule with NO exercising test, recorded as a
+  gap.** The Zig port returns the bytes consumed when `elapsedMs` fails rather
+  than treating the failure as `0`. Nothing exercises that path: the clock is
+  `std.Io.Timestamp` against a monotonic source and does not fail in this test,
+  in CI, or on the platforms this port runs on, so there is no way to make the
+  branch execute from a test. **The clause is stated by the port and unproven by
+  execution**, which is the same shape as the `type_mismatch` gap D20 records.
+  An earlier revision of this row cited the long-lived test as pinning it; that
+  was a coverage claim with no test behind it. Closing it needs a seam that
+  substitutes a failing clock, which would be a change to the port rather than a
+  test, so it is left as a gap rather than invented.
 - **the bound holding against a real process** —
   `TestHubAddrRefusesALargeRefusedHeadOverARealSocket` transfers 1,052,672 /
   1,719,800 / 1,799,224 bytes against declarations of 1 MiB+4096, 4 MiB and 16 MiB
