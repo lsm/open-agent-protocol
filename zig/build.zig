@@ -1582,6 +1582,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "oap_provider_types", .module = protocol_oap_provider_types_mod },
             .{ .name = "provider_catalog", .module = provider_catalog_mod },
+            .{ .name = "ai_types", .module = ai_types_mod },
         },
     });
 
