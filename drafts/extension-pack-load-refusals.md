@@ -65,13 +65,24 @@ Measured on fetched `origin/main` `844a2228f`, six probes through the built
 binary; the same outcomes were observed on the earlier base `23b642e9c`, so
 nothing here depends on which of those two the measurement came from.
 
-**This is old-head evidence and is labelled as such.** `main` has since moved to
-`6a5d3eb24`, and these rows have **not** been re-measured on it. Re-measurement
-needs a build slot, which has not been authorised, so the table is a record of
-what `844a2228f` did, not a claim about current main. Every row below carries the
-same caveat. The rows to re-confirm first are the leading-separator one — a
-citation accepted and *contributing* a branch is the sharpest claim in this file
-and the one most likely to be touched by unrelated main work.
+**Re-measured on fetched `origin/main` `7dd74dd30d`**, and every row below holds
+on that base as it held on `844a2228f`. The earlier base was labelled old-head
+evidence because `main` had moved and no slot had been granted; that is no longer
+the case, and this file now states current behaviour rather than a superseded
+measurement. The leading-separator row was re-checked first, since a citation that
+is accepted and *contributing* a branch is the sharpest claim here.
+
+Raw results, exit status captured before any filtering, six invocations of the
+built binary:
+
+| probe | exit | refusal printed | verdict |
+|---|---|---|---|
+| no-fragment, pinned object is the document root | 0 | none | `valid:true` |
+| no-fragment, pinned object under `$defs` | 1 | `pack_branch_unpinned` | no verdict |
+| `../types.schema.json#/$defs/thing` | 1 | empty code, rendered `unresolved-schema-reference` | no verdict |
+| `types.schema.json#/$defs/thing` (control) | 0 | none | `valid:true` |
+| `/types.schema.json#/$defs/thing` | 0 | none | `valid:true` |
+| `//types.schema.json#/$defs/thing` | 0 | none | `valid:true` |
 
 So a no-fragment ref is **not** skipped and not uniformly refused: it is judged
 against the document root, and it is accepted exactly when that root carries the
@@ -102,7 +113,7 @@ Named so the disclosure shrinks with the code rather than lagging it:
   and a pack whose *only* citation is spelled that way still contributes a real
   branch. So the cited spelling is not the spelling it registered, and the
   contribution is not nominal: the pack adds vocabulary under a name the reader
-  would not find in `schemas`. Measured on `844a2228f`; `valid:true`, no refusal.
+  would not find in `schemas`. Measured on `7dd74dd30d`; `valid:true`, no refusal.
   This is worse than a silent rebind of the resource — it is an accepted
   contribution under a wrong name. **Open defect; not a decision, and not
   something the disclosure can excuse.** (A *climbing* name is different: `..` is
