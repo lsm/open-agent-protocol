@@ -331,7 +331,7 @@ pub const TuiRuntime = struct {
             runtime.wrapped_tools = next_wrapped_tools;
             runtime.approval_contexts = next_approval_contexts;
         }
-        runtime.dropContextWindowAboveCeiling();
+        runtime.suspendContextWindowAboveCeiling();
         if (runtime.permission_engine) |engine| engine.setBypassAll(runtime.permission_mode == .bypass);
         runtime.rebuildWrappedTools();
         return runtime;
@@ -594,12 +594,12 @@ pub const TuiRuntime = struct {
         }
     }
 
-    fn dropContextWindowAboveCeiling(self: *TuiRuntime) void {
+    fn suspendContextWindowAboveCeiling(self: *TuiRuntime) void {
         const held = self.context_window orelse return;
         const index = self.selected_model_index orelse return;
-        const model = self.models[index];
-        const ceiling = model_catalog.contextWindowMaximum(model) orelse return;
+        const ceiling = model_catalog.contextWindowMaximum(self.models[index]) orelse return;
         if (held <= ceiling) return;
+        self.suspended_context_window = held;
         self.context_window = null;
         self.context_window_refused = held;
     }
@@ -1933,6 +1933,18 @@ test "a model switch suspends an oversized context window and restores it when s
     try std.testing.expectEqual(@as(u64, 1_000_000), runtime.contextWindow());
     try std.testing.expectEqual(@as(?u32, 1_000_000), runtime.contextWindowOverride());
     try std.testing.expect(runtime.suspended_context_window == null);
+}
+
+test "a startup window above the selected model ceiling is suspended for a later switch back" {
+    const models = [_]ai_types.Model{ narrow_ceiling_model, wide_ceiling_model };
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &models, .context_window = 1_000_000 });
+    defer runtime.deinit();
+
+    try std.testing.expectEqual(@as(u64, 262_144), runtime.contextWindow());
+    try std.testing.expectEqual(@as(?u32, 1_000_000), runtime.takeContextWindowRefused());
+    try runtime.switchModel("gpt-5-codex");
+    try std.testing.expectEqual(@as(u64, 1_000_000), runtime.contextWindow());
+    try std.testing.expectEqual(@as(?u32, 1_000_000), runtime.contextWindowOverride());
 }
 
 test "a startup window above the ceiling is dropped before the first turn" {
