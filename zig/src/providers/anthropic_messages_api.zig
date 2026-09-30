@@ -2933,12 +2933,14 @@ test "a lost clone followed by a cancellation keeps the cancellation" {
         .partial = createPartialMessage(try lostCloneTestModel()),
     } });
     try std.testing.expect(stream.pushFailed());
+
+    failing.fail_index = std.math.maxInt(usize);
     stream.completeWithError("cancelled by the caller");
 
     ai_types.settleProviderOutcome(stream, emptyAnthropicMessage());
 
     try std.testing.expect(stream.getResult() == null);
-    try std.testing.expect(stream.getError() != null);
+    try std.testing.expectEqualStrings("cancelled by the caller", stream.getError() orelse return error.NoErrorRecorded);
 }
 
 test "a stream that settled with its own result keeps it against a later provider result" {
