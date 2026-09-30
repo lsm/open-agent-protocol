@@ -78,11 +78,16 @@ pub const CatalogSnapshot = struct {
         allocator.free(self.provenance);
     }
 
-    pub fn provenanceOf(self: CatalogSnapshot, model_id: []const u8) ?ModelProvenance {
+    pub fn firstProvenanceOf(self: CatalogSnapshot, model_id: []const u8) ?ModelProvenance {
         for (self.models, self.provenance) |model, tag| {
             if (std.mem.eql(u8, model.id, model_id)) return tag;
         }
         return null;
+    }
+
+    pub fn provenanceForIndex(self: CatalogSnapshot, index: usize) ?ModelProvenance {
+        if (index >= self.provenance.len) return null;
+        return self.provenance[index];
     }
 };
 
@@ -2481,8 +2486,8 @@ test "a snapshot tells a discovered entry from a declared one" {
     for (snapshot.provenance) |tag| {
         try std.testing.expectEqual(ModelProvenance.discovered, tag);
     }
-    try std.testing.expectEqual(ModelProvenance.discovered, snapshot.provenanceOf("m1").?);
-    try std.testing.expectEqual(ModelProvenance.discovered, snapshot.provenanceOf("m2").?);
+    try std.testing.expectEqual(ModelProvenance.discovered, snapshot.firstProvenanceOf("m1").?);
+    try std.testing.expectEqual(ModelProvenance.discovered, snapshot.firstProvenanceOf("m2").?);
 }
 
 test "a row with no listing is tagged declared, and a mixed snapshot keeps both apart" {
@@ -2497,8 +2502,7 @@ test "a row with no listing is tagged declared, and a mixed snapshot keeps both 
     };
     defer storage.deinit();
     for ([_][]const u8{ "xiaomi", "xiaomi-token-plan-cn" }) |id| {
-        const key = try allocator.dupe(u8, id);
-        try storage.providers.put(key, .{ .api_key = try allocator.dupe(u8, "stored-key") });
+        try putStoredKey(&storage, allocator, id);
     }
 
     const answerer = "xiaomi";
@@ -2529,9 +2533,9 @@ test "a row with no listing is tagged declared, and a mixed snapshot keeps both 
     defer snapshot.deinit(allocator);
 
     try std.testing.expectEqual(snapshot.models.len, snapshot.provenance.len);
-    try std.testing.expectEqual(ModelProvenance.discovered, snapshot.provenanceOf("m1").?);
+    try std.testing.expectEqual(ModelProvenance.discovered, snapshot.firstProvenanceOf("m1").?);
     for (declared_ids) |declared| {
-        const tag = snapshot.provenanceOf(declared.id) orelse return error.DeclaredEntryMissing;
+        const tag = snapshot.firstProvenanceOf(declared.id) orelse return error.DeclaredEntryMissing;
         try std.testing.expectEqual(ModelProvenance.declared, tag);
     }
     var saw_discovered = false;
@@ -4349,6 +4353,47 @@ fn overriddenCatalogLoadProbe(allocator: std.mem.Allocator) !void {
 test "an overridden catalog row frees every allocation when one fails midway" {
     try overriddenCatalogLoadProbe(std.testing.allocator);
     try std.testing.checkAllAllocationFailures(std.testing.allocator, overriddenCatalogLoadProbe, .{});
+}
+
+fn snapshotProvenanceProbe(allocator: std.mem.Allocator) !void {
+    const discovered_row = "xiaomi";
+    var target = catalogTargetInRegion(discovered_row, null) orelse return error.TestExpectedTarget;
+    defer target.deinit(allocator);
+    var storage = oauth_storage.AuthStorage{
+        .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(allocator),
+        .allocator = allocator,
+    };
+    defer storage.deinit();
+
+    test_catalog_discovery = &[_]CatalogDiscovery{
+        .{ .id = discovered_row, .models_url = target.models_url, .model_ids = &.{"m1", "m2"} },
+    };
+    defer test_catalog_discovery = null;
+    test_catalog_environment = &[_]provider_credential.EnvironmentValue{
+        .{ .name = "XIAOMI_API_KEY", .value = "row-key" },
+    };
+    defer test_catalog_environment = null;
+
+    var snapshot = try loadCatalogSnapshotWithRows(
+        allocator,
+        &[_][]const u8{discovered_row},
+        &storage,
+        .allow_cache,
+    );
+    defer snapshot.deinit(allocator);
+    if (snapshot.models.len != snapshot.provenance.len) return error.TestExpectedProvenance;
+    if (snapshot.provenance.len == 0) return error.TestExpectedProvenance;
+}
+
+test "a provenance snapshot frees every allocation when one fails midway" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
+    test_catalog_refusal_markers = true;
+    defer test_catalog_refusal_markers = false;
+    var tmp = try tempHome(std.testing.allocator);
+    defer tmp.cleanup();
+    try snapshotProvenanceProbe(std.testing.allocator);
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, snapshotProvenanceProbe, .{});
 }
 
 test "catalog row models free every allocation when one fails midway" {
