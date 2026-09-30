@@ -374,6 +374,7 @@ test "a line written to an endpoint comes back framed, and the buffer is the cli
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var client = Client.spawn(std.testing.allocator, .{ .command = "/bin/cat" }) catch return error.SkipZigTest;
     defer client.deinit();
+    defer stopChild(&client);
 
     const sent = "{\"protocol\":\"open-agent-protocol\",\"id\":\"q1\",\"type\":\"capabilities.request\"}";
     try client.write(sent);
@@ -456,6 +457,7 @@ test "the client drives a real endpoint binary when the operator names one" {
         .environment = &.{ "HOME", "PATH" },
     });
     defer client.deinit();
+    defer stopChild(&client);
 
     try client.write("{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"capabilities.request\",\"id\":\"q1\",\"payload\":{}}");
 
@@ -490,25 +492,28 @@ test "a budget keeps the shape and clock of the timeout it was given" {
 
     const unbounded = Budget.fromTimeout(.none, io);
     try std.testing.expect(unbounded.limit == null);
-    try std.testing.expect(!unbounded.expired());
     try std.testing.expect(unbounded.timeout() == .none);
 
+    const opened = std.Io.Clock.Timestamp.now(io, .awake);
     const by_duration = Budget.fromTimeout(
         .{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(60000), .clock = .awake } },
         io,
     );
     try std.testing.expect(by_duration.limit != null);
-    try std.testing.expect(!by_duration.expired());
     try std.testing.expect(by_duration.timeout() == .duration);
+    try std.testing.expect(by_duration.limit.?.clock == .awake);
+    try std.testing.expect(Budget.leftOf(by_duration.limit.?, opened) > 0);
 
-    const by_deadline = Budget.fromTimeout(
-        .{ .deadline = std.Io.Clock.Timestamp.now(io, .awake).addDuration(.{ .raw = std.Io.Duration.fromMilliseconds(60000), .clock = .awake }) },
-        io,
-    );
+    const given = std.Io.Clock.Timestamp.now(io, .awake).addDuration(.{ .raw = std.Io.Duration.fromMilliseconds(60000), .clock = .awake });
+    const by_deadline = Budget.fromTimeout(.{ .deadline = given }, io);
     try std.testing.expect(by_deadline.limit != null);
-    try std.testing.expect(!by_deadline.expired());
     try std.testing.expect(by_deadline.timeout() == .duration);
     try std.testing.expect(by_deadline.limit.?.clock == .awake);
+    try std.testing.expectEqual(given.raw.nanoseconds, by_deadline.limit.?.raw.nanoseconds);
+
+    const spent: Budget = .{ .io = io, .limit = opened };
+    try std.testing.expect(spent.expired());
+    try std.testing.expect(std.meta.activeTag(spent.timeout()) == .duration);
 }
 
 
