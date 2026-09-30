@@ -216,8 +216,8 @@ test "outputLimit asks for no more output than the context window leaves after a
 
     try std.testing.expectEqual(@as(?u32, @intCast(10_000 - prompt)), outputLimit(outputLimitModel(10_000, 9_000), null, context));
     try std.testing.expectEqual(@as(?u32, 500), outputLimit(outputLimitModel(10_000, 9_000), 500, context));
-    try std.testing.expectEqual(@as(?u32, 1024), outputLimit(outputLimitModel(prompt, 9_000), null, context));
-    try std.testing.expectEqual(@as(?u32, 700), outputLimit(outputLimitModel(prompt, 700), null, context));
+    try std.testing.expectEqual(@as(?u32, 1024), outputLimit(outputLimitModel(@intCast(prompt), 9_000), null, context));
+    try std.testing.expectEqual(@as(?u32, 700), outputLimit(outputLimitModel(@intCast(prompt), 700), null, context));
     try std.testing.expectEqual(@as(?u32, 9_000), outputLimit(outputLimitModel(0, 9_000), 9_000, context));
 }
 
