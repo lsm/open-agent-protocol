@@ -2239,7 +2239,7 @@ fn customCatalogProbe(allocator: std.mem.Allocator) !void {
 
 test "custom catalog models free every allocation when one fails midway" {
     try customCatalogProbe(std.testing.allocator);
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, customCatalogProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, customCatalogProbe, .{});
 }
 
 test "loadProductionModels includes the Anthropic static list when forced" {
@@ -4415,7 +4415,7 @@ fn declaredModelsFallbackProbe(allocator: std.mem.Allocator) !void {
 
 test "a row's declared models free every allocation when one fails midway" {
     try declaredModelsFallbackProbe(std.testing.allocator);
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, declaredModelsFallbackProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, declaredModelsFallbackProbe, .{});
 }
 
 fn overriddenCatalogLoadProbe(allocator: std.mem.Allocator) !void {
@@ -4439,7 +4439,7 @@ fn overriddenCatalogLoadProbe(allocator: std.mem.Allocator) !void {
 
 test "an overridden catalog row frees every allocation when one fails midway" {
     try overriddenCatalogLoadProbe(std.testing.allocator);
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, overriddenCatalogLoadProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, overriddenCatalogLoadProbe, .{});
 }
 
 fn snapshotProvenanceProbe(allocator: std.mem.Allocator) !void {
@@ -4480,12 +4480,12 @@ test "a provenance snapshot frees every allocation when one fails midway" {
     var tmp = try tempHome(std.testing.allocator);
     defer tmp.cleanup();
     try snapshotProvenanceProbe(std.testing.allocator);
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, snapshotProvenanceProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, snapshotProvenanceProbe, .{});
 }
 
 test "catalog row models free every allocation when one fails midway" {
     try catalogLoadProbe(std.testing.allocator);
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, catalogLoadProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, catalogLoadProbe, .{});
 }
 
 test "the row environment names every credential variable the catalog records, in order" {

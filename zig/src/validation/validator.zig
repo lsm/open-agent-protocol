@@ -441,7 +441,7 @@ test "the pack's own vocabulary is what the semantic machine is handed" {
 }
 
 test "a validator frees itself exactly once when a pack cannot be loaded" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, struct {
         fn run(allocator: std.mem.Allocator) !void {
             var judge = try Validator.init(allocator, .{ .io = std.testing.io });
             defer judge.deinit();
@@ -449,7 +449,7 @@ test "a validator frees itself exactly once when a pack cannot be loaded" {
             defer compiled.deinit();
         }
     }.run, .{});
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, struct {
         fn run(allocator: std.mem.Allocator) !void {
             const dir = try storagePack(allocator);
             defer allocator.free(dir);
@@ -459,7 +459,7 @@ test "a validator frees itself exactly once when a pack cannot be loaded" {
             defer compiled.deinit();
         }
     }.run, .{});
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, struct {
         fn run(allocator: std.mem.Allocator) !void {
             const dir = try fixturePack(allocator, "bad-type-duplicate");
             defer allocator.free(dir);
@@ -473,7 +473,7 @@ test "a validator frees itself exactly once when a pack cannot be loaded" {
             }
         }
     }.run, .{});
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, struct {
         fn run(allocator: std.mem.Allocator) !void {
             const dir = try fixturePack(allocator, "bad-unprefixed-name");
             defer allocator.free(dir);
@@ -490,7 +490,7 @@ test "a validator frees itself exactly once when a pack cannot be loaded" {
 }
 
 test "a validator frees itself exactly once, on every allocation failure" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, struct {
         fn run(allocator: std.mem.Allocator) !void {
             var judge = try Validator.init(allocator, .{ .mode = .tolerant, .io = std.testing.io });
             defer judge.deinit();
@@ -498,7 +498,7 @@ test "a validator frees itself exactly once, on every allocation failure" {
             defer compiled.deinit();
         }
     }.run, .{});
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, struct {
         fn run(allocator: std.mem.Allocator) !void {
             var judge = try Validator.init(allocator, .{ .io = std.testing.io });
             defer judge.deinit();

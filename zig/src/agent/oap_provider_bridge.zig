@@ -875,7 +875,7 @@ test "terminal message conversion unwinds every allocation failure" {
             defer completed.deinit(allocator);
         }
     };
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, Probe.run, .{ model, message });
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, Probe.run, .{ model, message });
 }
 
 test "part-start metadata unwinds every allocation failure" {
@@ -897,5 +897,5 @@ test "part-start metadata unwinds every allocation failure" {
             });
         }
     };
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, Probe.run, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, Probe.run, .{});
 }
