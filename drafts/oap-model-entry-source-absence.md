@@ -146,19 +146,15 @@ Migrated and on main:
 Audited on the base of this change, Python had the same defect class in
 **both** of its readers, and neither was fixed:
 
-- `sdk/python/src/oap_sdk/_oap.py:244` — `lifecycle=item.get("lifecycle", "stable")`
-  invented `stable` for an absent member, and a member present as `null`
-  arrived as `None` rather than being refused.
-- `sdk/python/src/oap_sdk/_oap.py:246` —
-  `"static_fallback" if item.get("source") == "fallback" else "dynamic"`
-  invented `dynamic` for an absent member **and** for any unrecognised
-  literal, and it accepted the shared aliases `dynamic`/`static_fallback` on
-  the wire where the `modelSource` enum permits only `discovered` and `fallback`.
-- `sdk/python/src/oap_sdk/models.py:317,321` — the shared reader called
-  `_require_known` on both members, so an absent one was rejected outright
-  rather than read as unknown.
-- `sdk/python/src/oap_sdk/types.py:395,397` — both members were required on
-  the shared descriptor.
+- `_oap.py:244` — `lifecycle=item.get("lifecycle", "stable")` invented `stable`
+  for an absent member, and a stated `null` arrived as `None` rather than being
+  refused. `:246` invented `dynamic` for an absent member **and** for any
+  unrecognised literal, and accepted the shared aliases `dynamic` and
+  `static_fallback` on the wire where `modelSource` permits only `discovered`
+  and `fallback`.
+- `models.py:317,321` — the shared reader called `_require_known` on both, so
+  an absent member was rejected outright rather than read as unknown.
+- `types.py:395,397` — both members were required on the shared descriptor.
 
 That audit is kept as the record of what the gap was. **Python is now
 migrated in this change**, under the same absence-versus-present-null policy

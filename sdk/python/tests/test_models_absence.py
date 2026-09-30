@@ -9,13 +9,9 @@ from oap_sdk.errors import MakaiProtocolError
 from test_models import models_config
 
 BASE: Dict[str, Any] = {
-    "model_ref": "anthropic/anthropic-messages@claude-sonnet-4-5",
-    "model_id": "claude-sonnet-4-5",
-    "display_name": "Claude Sonnet 4.5",
-    "provider_id": "anthropic",
-    "api": "anthropic-messages",
-    "auth_status": "authenticated",
-    "capabilities": ["chat"],
+    "model_ref": "anthropic/anthropic-messages@claude-sonnet-4-5", "model_id": "claude-sonnet-4-5",
+    "display_name": "Claude Sonnet 4.5", "provider_id": "anthropic", "api": "anthropic-messages",
+    "auth_status": "authenticated", "capabilities": ["chat"],
 }
 
 
@@ -87,9 +83,7 @@ async def test_the_rest_of_the_native_envelope_is_still_validated(fake: FakeServ
 
 
 @pytest.mark.asyncio
-async def test_the_shared_reader_does_not_filter_deprecated_itself(
-    fake: FakeServerFactory,
-) -> None:
+async def test_the_shared_reader_never_filters_deprecated(fake: FakeServerFactory) -> None:
     for flag in (None, False, True):
         client = await fake.client(models_config([model(lifecycle="deprecated")]))
         listed = await client.models.list(include_deprecated=flag)
@@ -99,9 +93,7 @@ async def test_the_shared_reader_does_not_filter_deprecated_itself(
 
 
 @pytest.mark.asyncio
-async def test_a_stated_then_an_absent_member_both_decode_in_sequence(
-    fake: FakeServerFactory,
-) -> None:
+async def test_a_stated_then_an_absent_member_both_decode(fake: FakeServerFactory) -> None:
     first = await _list(fake, model(lifecycle="stable", source="dynamic"))
     second = await _list(fake, model())
     assert first.models[0].lifecycle == "stable"

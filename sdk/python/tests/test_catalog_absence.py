@@ -41,10 +41,8 @@ for line in sys.stdin:
         emit(A, "protocol.initialize.response", rid,
              {"protocol_version": "0.1", "profile": A, "endpoint": {"id": "fixture"}})
     elif kind == "capabilities.request":
-        print(json.dumps({"protocol": "open-agent-protocol", "version": "0.1", "profile": A,
-                          "type": "capabilities.response", "id": "host-capabilities",
-                          "in_reply_to": rid, "capability_revision": "fixture-rev-1",
-                          "payload": {"features": {}}}), flush=True)
+        emit(A, "capabilities.response", rid, {"features": {}},
+             {"capability_revision": "fixture-rev-1"})
     elif kind == "provider.models.list.request":
         emit(P, "provider.models.list.response", rid,
              {"models": [model], "catalog": {"observed_at_ms": 1, "complete": True}})
