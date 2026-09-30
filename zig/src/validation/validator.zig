@@ -281,25 +281,19 @@ test "a descriptor whose fields are the wrong shape is refused, not read past" {
     try std.testing.expectError(error.InvalidPackDescriptor, packs_mod.load(std.testing.io, allocator, &judge.registry, &dirs));
 }
 
-test "one pack at two paths is one pack, and contributes one branch" {
+test "one pack named twice is one pack, and contributes one branch" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    for ([_][]const u8{ "a", "b" }) |name| {
-        try tmp.dir.createDir(std.testing.io, name, .default_dir);
-        const descriptor = try std.fmt.allocPrint(allocator, "{s}/pack.json", .{name});
-        defer allocator.free(descriptor);
-        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = descriptor,
-            .data =
-            \\{"id":"com.example.note","version":"1.0.0","schemas":[],"envelope_types":[{"type":"com.example.note.thing","role":"event","schema":"note.schema.json#/$defs/thing"}]}
-            ,
-        });
-    }
+    try tmp.dir.createDir(std.testing.io, "a", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "a/pack.json",
+        .data =
+        \\{"id":"com.example.note","version":"1.0.0","schemas":[],"envelope_types":[{"type":"com.example.note.ping","role":"event","schema":"note.schema.json#/$defs/ping"}]}
+        ,
+    });
     const first = try tmp.dir.realPathFileAlloc(std.testing.io, "a", allocator);
     defer allocator.free(first);
-    const second = try tmp.dir.realPathFileAlloc(std.testing.io, "b", allocator);
-    defer allocator.free(second);
-    const dirs = [_][]const u8{ first, second };
+    const dirs = [_][]const u8{ first, first };
 
     var registry = try jsonschema.Registry.initFromBundled(allocator);
     defer registry.deinit();

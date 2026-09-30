@@ -83,11 +83,6 @@ const READY_FRAME = "{\"type\":\"ready\",\"protocol_version\":\"1\"}\n";
 const STDIO_PROTOCOL_VERSION = "1";
 const STDIO_IDLE_SLEEP_NS = std.time.ns_per_ms;
 const STDIO_THREAD_JOIN_TIMEOUT_MS: u64 = 5_000;
-const SESSION_SWEEP_INTERVAL_MS: i64 = 1_000;
-const STDIO_DISCONNECT_TOOL_WAIT_MESSAGE = "client disconnected while the run waited for a distributed tool_result";
-const STDIO_EVENT_PUBLICATION_FAILED_MESSAGE = "run event publication failed; event stream truncated before settlement";
-const STDIO_RUN_WITHOUT_OUTCOME_MESSAGE = "run ended without a deliverable outcome (terminal lost to allocation failure)";
-
 const TEST_AUTH_POLL_ITERS_SHORT: usize = 20;
 const TEST_AUTH_POLL_ITERS_DEFAULT: usize = 600;
 const TEST_AUTH_POLL_ITERS_FAILURE: usize = 200;
@@ -157,6 +152,9 @@ const parseToolResultContentParts = AgentToolBridge.parseToolResultContentParts;
 const parseUserContentPart = AgentToolBridge.parseUserContentPart;
 const AgentRun = @import("tools/agent_run");
 const AgentRunOptions = AgentRun.Options;
+const STDIO_DISCONNECT_TOOL_WAIT_MESSAGE = AgentRun.STDIO_DISCONNECT_TOOL_WAIT_MESSAGE;
+const STDIO_EVENT_PUBLICATION_FAILED_MESSAGE = AgentRun.STDIO_EVENT_PUBLICATION_FAILED_MESSAGE;
+const STDIO_RUN_WITHOUT_OUTCOME_MESSAGE = AgentRun.STDIO_RUN_WITHOUT_OUTCOME_MESSAGE;
 const PreparedAgentRun = AgentRun.Prepared;
 const ActiveAgentRun = AgentRun.Run;
 const deinitAgentTools = AgentRun.deinitTools;
@@ -175,11 +173,10 @@ const StdioProtocolLoop = struct {
     agent_pipe: in_process.SerializedPipe,
     provider_bridge: agent_bridge.InProcessProviderProtocolBridge,
     oap_provider_bridge: ?agent_oap_provider_bridge.InProcessOapProviderBridge = null,
-    active_agent_runs: std.ArrayList(ActiveAgentRun),
+    agent_runs: AgentRun.Driver,
     tool_bridge: StdioToolBridge,
     auth_server: AuthProtocolServer,
     auth_pipe: in_process.SerializedPipe,
-    last_session_sweep_mono_ms: i64 = 0,
 
     const Self = @This();
     const DispatchTarget = enum { provider, agent, auth };
@@ -200,7 +197,7 @@ const StdioProtocolLoop = struct {
             .agent_server = AgentProtocolServer.initWithOptions(allocator, agent_options),
             .agent_pipe = in_process.createSerializedPipe(allocator),
             .provider_bridge = agent_bridge.InProcessProviderProtocolBridge.init(registry),
-            .active_agent_runs = std.ArrayList(ActiveAgentRun).empty,
+            .agent_runs = AgentRun.Driver.init(),
             .tool_bridge = .{},
             .auth_server = AuthProtocolServer.init(allocator, auth_options),
             .auth_pipe = in_process.createSerializedPipe(allocator),
@@ -228,8 +225,7 @@ const StdioProtocolLoop = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        for (self.active_agent_runs.items) |*run| run.deinit(self.allocator);
-        self.active_agent_runs.deinit(self.allocator);
+        self.agent_runs.deinit(self.allocator);
         self.tool_bridge.deinit(self.allocator);
         self.provider_server.deinit();
         self.provider_pipe.deinit();
@@ -291,10 +287,10 @@ const StdioProtocolLoop = struct {
                     .allocator = self.allocator,
                 };
                 runtime.pumpClientMessages() catch |err| {
-                    self.finishAgentStopCancellation(stopped_session, had_stop_session);
+                    AgentRun.finishStopCancellation(self.allocator, &self.agent_server, &self.agent_runs, &self.tool_bridge, stopped_session, had_stop_session);
                     return err;
                 };
-                self.finishAgentStopCancellation(stopped_session, had_stop_session);
+                AgentRun.finishStopCancellation(self.allocator, &self.agent_server, &self.agent_runs, &self.tool_bridge, stopped_session, had_stop_session);
             },
             .auth => {
                 var sender = self.auth_pipe.clientSender();
@@ -329,10 +325,10 @@ const StdioProtocolLoop = struct {
             .allocator = self.allocator,
         };
         forwarded += try self.startPendingAgentRuns();
-        forwarded += try self.pumpAgentRuns();
+        forwarded += try AgentRun.pump(self.allocator, &self.agent_runs, &self.agent_server);
         forwarded += try AgentRun.publishPendingToolRequests(&self.agent_server, self.allocator, &self.tool_bridge);
         forwarded += try agent_runtime.pumpServerOutbox();
-        try self.sweepIdleAgentSessions();
+        try AgentRun.sweepIdleAgentSessions(self.allocator, &self.agent_runs, &self.agent_server, &self.tool_bridge);
 
         var auth_runtime = AuthProtocolRuntime{
             .server = &self.auth_server,
@@ -341,20 +337,6 @@ const StdioProtocolLoop = struct {
         };
         forwarded += try auth_runtime.pumpServerOutbox();
         return forwarded;
-    }
-
-    fn sweepIdleAgentSessions(self: *Self) !void {
-        const now_mono_ms = try compat.time.monotonicMillis();
-        if (now_mono_ms - self.last_session_sweep_mono_ms < SESSION_SWEEP_INTERVAL_MS) return;
-        self.last_session_sweep_mono_ms = now_mono_ms;
-
-        var evicted = std.ArrayList(AgentProtocolTypes.SessionId).empty;
-        defer evicted.deinit(self.allocator);
-        const sweep_result = self.agent_server.evictIdleSessions(now_mono_ms, &evicted);
-        for (evicted.items) |session_id| {
-            self.tool_bridge.discardSession(self.allocator, session_id);
-        }
-        _ = try sweep_result;
     }
 
     pub fn drainOutbound(self: *Self, lines: *std.ArrayList([]const u8)) !usize {
@@ -370,7 +352,7 @@ const StdioProtocolLoop = struct {
     }
 
     pub fn hasActiveAgentRuns(self: *Self) bool {
-        return self.active_agent_runs.items.len > 0;
+        return self.agent_runs.len() > 0;
     }
 
     pub fn hasActiveAuthFlows(self: *Self) bool {
@@ -402,7 +384,7 @@ const StdioProtocolLoop = struct {
         const generation = self.agent_server.sessionGeneration(pending.session_id) orelse {
             return error.SessionNotFound;
         };
-        if (AgentRun.hasRunForGeneration(&self.active_agent_runs, pending.session_id, generation)) return error.AgentBusy;
+        if (AgentRun.hasRunForGeneration(&self.agent_runs, pending.session_id, generation)) return error.AgentBusy;
 
         var prepared = try prepareAgentRun(self.allocator, pending);
         errdefer prepared.deinit(self.allocator);
@@ -416,132 +398,13 @@ const StdioProtocolLoop = struct {
 
         try AgentRun.admit(
             self.allocator,
-            &self.active_agent_runs,
+            &self.agent_runs,
             &self.tool_bridge,
             &prepared,
             pending.session_id,
             generation,
             protocol_client,
         );
-    }
-
-    fn pumpAgentRuns(self: *Self) !usize {
-        var forwarded: usize = 0;
-        var idx: usize = 0;
-        while (idx < self.active_agent_runs.items.len) {
-            var run = &self.active_agent_runs.items[idx];
-
-            const registration_current = blk: {
-                const generation = self.agent_server.sessionGeneration(run.session_id);
-                break :blk generation != null and generation.? == run.generation;
-            };
-            if (!registration_current) run.cancel();
-
-            while (run.stream.poll()) |event| {
-                var owned_event = event;
-                errdefer deinitSerializedStdioAgentEvent(self.allocator, &owned_event);
-
-                if (!registration_current) {
-                    deinitSerializedStdioAgentEvent(self.allocator, &owned_event);
-                    continue;
-                }
-
-                if (std.meta.activeTag(event) == .agent_end) {
-                    run.terminal_event_json = serializeAgentLoopEvent(self.allocator, run.session_id, event) catch |err| {
-                        run.event_publication_failed = true;
-                        return err;
-                    };
-                    deinitSerializedStdioAgentEvent(self.allocator, &owned_event);
-                    continue;
-                }
-
-                const event_json = serializeAgentLoopEvent(self.allocator, run.session_id, event) catch |err| {
-                    run.event_publication_failed = true;
-                    return err;
-                };
-                defer self.allocator.free(event_json);
-                self.agent_server.publishAgentEvent(run.session_id, event_json) catch |err| {
-                    run.event_publication_failed = true;
-                    if (err == error.OutOfMemory) return err;
-                };
-                deinitSerializedStdioAgentEvent(self.allocator, &owned_event);
-                forwarded += 1;
-            }
-
-            if (!run.stream.isDone()) {
-                idx += 1;
-                continue;
-            }
-
-            if (registration_current) {
-                if (!run.settlement_frame_published) {
-                    if (run.disconnect_failed.load(.acquire)) {
-                        AgentRun.dropTerminalProjection(self.allocator, run);
-                        try AgentRun.publishRunFailurePair(&self.agent_server, self.allocator, run, .tool_execution_error, STDIO_DISCONNECT_TOOL_WAIT_MESSAGE);
-                        forwarded += 1;
-                    } else if (run.stream.getError()) |msg| {
-                        AgentRun.dropTerminalProjection(self.allocator, run);
-                        try AgentRun.publishRunFailurePair(&self.agent_server, self.allocator, run, .internal_error, msg);
-                        forwarded += 1;
-                    } else if (run.event_publication_failed) {
-                        AgentRun.dropTerminalProjection(self.allocator, run);
-                        try AgentRun.publishRunFailurePair(&self.agent_server, self.allocator, run, .internal_error, STDIO_EVENT_PUBLICATION_FAILED_MESSAGE);
-                        forwarded += 1;
-                    } else if (run.stream.getResult()) |result| {
-                        const result_reason: []const u8 = if (result.termination) |termination|
-                            @tagName(termination)
-                        else
-                            @tagName(result.final_message.stop_reason);
-                        const result_json = try transport.serializeResultWithStopReason(result.final_message, result_reason, self.allocator);
-                        defer self.allocator.free(result_json);
-                        self.agent_server.publishAgentResult(run.session_id, result_json) catch |err| switch (err) {
-                            error.OutOfMemory => return err,
-                            else => {},
-                        };
-                        run.settlement_frame_published = true;
-                        forwarded += 1;
-                    } else {
-                        AgentRun.dropTerminalProjection(self.allocator, run);
-                        try AgentRun.publishRunFailurePair(&self.agent_server, self.allocator, run, .internal_error, STDIO_RUN_WITHOUT_OUTCOME_MESSAGE);
-                        forwarded += 1;
-                    }
-                }
-
-                if (run.settlement_frame_published) {
-                    if (run.terminal_event_json) |event_json| {
-                        self.agent_server.publishAgentEvent(run.session_id, event_json) catch |err| switch (err) {
-                            error.OutOfMemory => return err,
-                            else => {},
-                        };
-                        self.allocator.free(event_json);
-                        run.terminal_event_json = null;
-                        forwarded += 1;
-                    }
-                    var removed = self.active_agent_runs.orderedRemove(idx);
-                    removed.deinit(self.allocator);
-                    continue;
-                }
-            } else {
-                var removed = self.active_agent_runs.orderedRemove(idx);
-                removed.deinit(self.allocator);
-                continue;
-            }
-
-            idx += 1;
-        }
-        return forwarded;
-    }
-
-    fn finishAgentStopCancellation(
-        self: *Self,
-        stopped_session: ?AgentProtocolTypes.SessionId,
-        had_stop_session: bool,
-    ) void {
-        if (stopped_session) |session_id| {
-            if (had_stop_session and !self.agent_server.hasSession(session_id)) {
-                AgentRun.cancelRun(self.allocator, &self.active_agent_runs, &self.tool_bridge, session_id);
-            }
-        }
     }
 
     fn detectDispatchTarget(self: *Self, line: []const u8) ?DispatchTarget {
@@ -3960,7 +3823,7 @@ test "stdio protocol loop ignores malformed agent_stop for cancellation" {
     const tool_executor = try allocator.create(StdioAgentToolExecutor);
     tool_executor.* = .{ .bridge = &stdio_loop.tool_bridge, .session_id = session_id, .generation = 0, .disconnect_failed = disconnect_flag };
 
-    try stdio_loop.active_agent_runs.append(allocator, .{
+    try stdio_loop.agent_runs.runs.append(allocator, .{
         .session_id = session_id,
         .generation = 0,
         .stream = stream,
@@ -4333,7 +4196,7 @@ test "stdio tool bridge clears queued and in-flight calls when cancelling sessio
     try std.testing.expectEqual(@as(usize, 1), stdio_loop.tool_bridge.requests.items.len);
     try std.testing.expectEqual(@as(usize, 1), stdio_loop.tool_bridge.in_flight.items.len);
 
-    AgentRun.cancelRun(stdio_loop.allocator, &stdio_loop.active_agent_runs, &stdio_loop.tool_bridge, session_id);
+    AgentRun.cancelRun(stdio_loop.allocator, &stdio_loop.agent_runs, &stdio_loop.tool_bridge, session_id);
     try std.testing.expectEqual(@as(usize, 0), stdio_loop.tool_bridge.requests.items.len);
     try std.testing.expectEqual(@as(usize, 0), stdio_loop.tool_bridge.in_flight.items.len);
 
@@ -4751,7 +4614,7 @@ fn appendManualAgentRun(
         .generation = generation,
         .disconnect_failed = disconnect_failed,
     };
-    try loop.active_agent_runs.append(allocator, .{
+    try loop.agent_runs.runs.append(allocator, .{
         .session_id = session_id,
         .generation = generation,
         .stream = stream,
@@ -4774,7 +4637,7 @@ fn appendManualAgentRun(
         .disconnect_failed = disconnect_failed,
         .tool_executor = tool_executor,
     });
-    return &loop.active_agent_runs.items[loop.active_agent_runs.items.len - 1];
+    return &loop.agent_runs.runs.items[loop.agent_runs.runs.items.len - 1];
 }
 
 fn completeManualRunWithResult(run: *ActiveAgentRun) void {
@@ -5007,10 +4870,10 @@ test "event publication failure marks the stream truncated and converts the sett
     completeManualRunWithResult(run);
 
     failing.fail_index = failing.alloc_index;
-    try std.testing.expectError(error.OutOfMemory, stdio_loop.pumpAgentRuns());
+    try std.testing.expectError(error.OutOfMemory, AgentRun.pump(stdio_loop.allocator, &stdio_loop.agent_runs, &stdio_loop.agent_server));
     failing.fail_index = std.math.maxInt(usize);
-    try std.testing.expectEqual(@as(usize, 1), stdio_loop.active_agent_runs.items.len);
-    try std.testing.expect(stdio_loop.active_agent_runs.items[0].event_publication_failed);
+    try std.testing.expectEqual(@as(usize, 1), stdio_loop.agent_runs.runs.items.len);
+    try std.testing.expect(stdio_loop.agent_runs.runs.items[0].event_publication_failed);
 
     _ = try stdio_loop.pumpBackground();
     _ = try stdio_loop.drainOutbound(&outbound);
@@ -5129,7 +4992,7 @@ test "stop-reply publication failure still cancels runs and discards tool-bridge
         if (!stdio_loop.agent_server.hasSession(session_id)) {
             try std.testing.expectEqual(@as(usize, 0), stdio_loop.tool_bridge.requests.items.len);
             try std.testing.expectEqual(@as(usize, 0), stdio_loop.tool_bridge.in_flight.items.len);
-            for (stdio_loop.active_agent_runs.items) |*listed| {
+            for (stdio_loop.agent_runs.runs.items) |*listed| {
                 try std.testing.expect(listed.cancel_flag.load(.acquire));
             }
             if (dispatch_errored) saw_failed_reply_with_session_removed = true;
@@ -5897,7 +5760,7 @@ test "stdio protocol loop emits terminal agent_error when active run fails" {
     const tool_executor = try allocator.create(StdioAgentToolExecutor);
     tool_executor.* = .{ .bridge = &stdio_loop.tool_bridge, .session_id = session_id, .generation = stdio_loop.agent_server.sessionGeneration(session_id).?, .disconnect_failed = disconnect_flag };
 
-    try stdio_loop.active_agent_runs.append(allocator, .{
+    try stdio_loop.agent_runs.runs.append(allocator, .{
         .session_id = session_id,
         .generation = stdio_loop.agent_server.sessionGeneration(session_id).?,
         .stream = stream,
@@ -5966,7 +5829,7 @@ test "stopped session's late run publications are discarded after id re-registra
     const tool_executor = try allocator.create(StdioAgentToolExecutor);
     tool_executor.* = .{ .bridge = &stdio_loop.tool_bridge, .session_id = session_id, .generation = first_generation, .disconnect_failed = disconnect_flag };
 
-    try stdio_loop.active_agent_runs.append(allocator, .{
+    try stdio_loop.agent_runs.runs.append(allocator, .{
         .session_id = session_id,
         .generation = first_generation,
         .stream = stream,
@@ -6048,7 +5911,7 @@ test "re-created session's admitted run is not failed by the stopped registratio
     const tool_executor = try allocator.create(StdioAgentToolExecutor);
     tool_executor.* = .{ .bridge = &stdio_loop.tool_bridge, .session_id = session_id, .generation = first_generation, .disconnect_failed = disconnect_flag };
 
-    try stdio_loop.active_agent_runs.append(allocator, .{
+    try stdio_loop.agent_runs.runs.append(allocator, .{
         .session_id = session_id,
         .generation = first_generation,
         .stream = stream,
@@ -6129,7 +5992,7 @@ test "agent_stop cancels every listed run for the id, including the current regi
         context.* = agent_loop.AgentContext.init(allocator);
         const tool_executor = try allocator.create(StdioAgentToolExecutor);
         tool_executor.* = .{ .bridge = &stdio_loop.tool_bridge, .session_id = session_id, .generation = first_generation, .disconnect_failed = stale_disconnect_flag };
-        try stdio_loop.active_agent_runs.append(allocator, .{
+        try stdio_loop.agent_runs.runs.append(allocator, .{
             .session_id = session_id,
             .generation = first_generation,
             .stream = stream,
@@ -6164,7 +6027,7 @@ test "agent_stop cancels every listed run for the id, including the current regi
         context.* = agent_loop.AgentContext.init(allocator);
         const tool_executor = try allocator.create(StdioAgentToolExecutor);
         tool_executor.* = .{ .bridge = &stdio_loop.tool_bridge, .session_id = session_id, .generation = second_generation, .disconnect_failed = current_disconnect_flag };
-        try stdio_loop.active_agent_runs.append(allocator, .{
+        try stdio_loop.agent_runs.runs.append(allocator, .{
             .session_id = session_id,
             .generation = second_generation,
             .stream = stream,
@@ -6184,7 +6047,7 @@ test "agent_stop cancels every listed run for the id, including the current regi
     try std.testing.expect(stale_flag.load(.acquire));
     try std.testing.expect(current_flag.load(.acquire));
     try std.testing.expect(!stdio_loop.agent_server.hasSession(session_id));
-    try std.testing.expectEqual(@as(usize, 2), stdio_loop.active_agent_runs.items.len);
+    try std.testing.expectEqual(@as(usize, 2), stdio_loop.agent_runs.runs.items.len);
 }
 
 test "writeOwnedLinesAndClear clears owned lines on write failure" {
