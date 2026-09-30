@@ -396,12 +396,24 @@ pub const ToolResultMessage = struct {
     content: []const UserContentPart,
     details_json: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
     artifacts: OwnedSlice(ArtifactReference) = OwnedSlice(ArtifactReference).initBorrowed(&.{}),
+    working_directory: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+    working_directory_observed: bool = false,
     is_error: bool,
     timestamp: i64,
 
     pub fn getDetailsJson(self: *const ToolResultMessage) ?[]const u8 {
         const details = self.details_json.slice();
         return if (details.len > 0) details else null;
+    }
+
+    pub fn workingDirectory(self: *const ToolResultMessage) ?[]const u8 {
+        const directory = self.working_directory.slice();
+        return if (directory.len > 0) directory else null;
+    }
+
+    pub fn observedWorkingDirectory(self: *const ToolResultMessage) ?[]const u8 {
+        if (!self.working_directory_observed) return null;
+        return self.workingDirectory();
     }
 
     pub fn deinit(self: *ToolResultMessage, allocator: std.mem.Allocator) void {
@@ -414,6 +426,7 @@ pub const ToolResultMessage = struct {
         allocator.free(self.content);
         self.details_json.deinit(allocator);
         self.artifacts.deinit(allocator);
+        self.working_directory.deinit(allocator);
     }
 };
 
@@ -1053,6 +1066,8 @@ fn cloneToolResultMessage(allocator: std.mem.Allocator, tr: ToolResultMessage) !
     errdefer allocator.free(tool_call_id);
     const tool_name = try allocator.dupe(u8, tr.tool_name);
     errdefer allocator.free(tool_name);
+    const directory = try allocator.dupe(u8, tr.working_directory.slice());
+    errdefer allocator.free(directory);
 
     return .{
         .tool_call_id = tool_call_id,
@@ -1060,6 +1075,8 @@ fn cloneToolResultMessage(allocator: std.mem.Allocator, tr: ToolResultMessage) !
         .content = cloned_content,
         .details_json = details_json,
         .artifacts = OwnedSlice(ArtifactReference).initOwned(cloned_artifacts),
+        .working_directory = OwnedSlice(u8).initOwned(directory),
+        .working_directory_observed = tr.working_directory_observed,
         .is_error = tr.is_error,
         .timestamp = tr.timestamp,
     };
