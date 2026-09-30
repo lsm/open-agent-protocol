@@ -3431,43 +3431,8 @@ test "a streamed text thinking and tool call reports indices that diverge from t
 }
 
 
-const CleanupCountingAllocator = struct {
-    backing: std.mem.Allocator,
-
-    fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
-        const self: *CleanupCountingAllocator = @ptrCast(@alignCast(ctx));
-        return self.backing.rawAlloc(len, alignment, ret_addr);
-    }
-
-    fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
-        const self: *CleanupCountingAllocator = @ptrCast(@alignCast(ctx));
-        return self.backing.rawResize(memory, alignment, new_len, ret_addr);
-    }
-
-    fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
-        const self: *CleanupCountingAllocator = @ptrCast(@alignCast(ctx));
-        return self.backing.rawRemap(memory, alignment, new_len, ret_addr);
-    }
-
-    fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
-        const self: *CleanupCountingAllocator = @ptrCast(@alignCast(ctx));
-        self.backing.rawFree(memory, alignment, ret_addr);
-        _ = cleanup_frees.fetchAdd(1, .release);
-    }
-
-    const vtable: std.mem.Allocator.VTable = .{
-        .alloc = alloc,
-        .resize = resize,
-        .remap = remap,
-        .free = free,
-    };
-
-    fn allocator(self: *CleanupCountingAllocator) std.mem.Allocator {
-        return .{ .ptr = self, .vtable = &vtable };
-    }
-};
-
-var cleanup_frees: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
+var cleanup_hold: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
+var cleanup_held: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
 var cleanup_gate: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
 
 fn testIo() std.Io {
@@ -3475,21 +3440,30 @@ fn testIo() std.Io {
 }
 
 fn awaitCleanupRelease() void {
-    const armed = cleanup_gate.load(.acquire);
-    if (armed == 0) return;
-    testIo().futexWaitUncancelable(u32, &cleanup_gate.raw, armed);
+    if (cleanup_hold.load(.acquire) == 0) return;
+    _ = cleanup_held.fetchAdd(1, .release);
+    const io = testIo();
+    while (cleanup_hold.load(.acquire) != 0) {
+        io.futexWaitUncancelable(u32, &cleanup_gate.raw, cleanup_gate.load(.acquire));
+    }
+}
+
+fn holdCleanup() void {
+    _ = cleanup_hold.store(1, .release);
+    _ = cleanup_gate.fetchAdd(1, .release);
+    testIo().futexWake(u32, &cleanup_gate.raw, std.math.maxInt(u32));
 }
 
 fn releaseCleanupGate() void {
+    _ = cleanup_hold.store(0, .release);
     _ = cleanup_gate.fetchAdd(1, .release);
     testIo().futexWake(u32, &cleanup_gate.raw, std.math.maxInt(u32));
 }
 
 test "the producer does not publish done while its own cleanup is unfinished" {
-    var wrapper = CleanupCountingAllocator{ .backing = std.testing.allocator };
-    const allocator = wrapper.allocator();
-    cleanup_frees.store(0, .release);
-    cleanup_gate.store(2, .release);
+    const allocator = std.testing.allocator;
+    cleanup_held.store(0, .release);
+    holdCleanup();
     defer releaseCleanupGate();
 
     var mock = try MockCompletionsServer.listen(MockCompletionsServer.complete_stream);
@@ -3516,10 +3490,11 @@ test "the producer does not publish done while its own cleanup is unfinished" {
     }
 
     try std.testing.expect(!stream.waitForThread(250));
-    const frees_while_held = cleanup_frees.load(.acquire);
+    try std.testing.expectEqual(@as(usize, 1), cleanup_held.load(.acquire));
 
     releaseCleanupGate();
     try std.testing.expect(stream.waitForThread(5_000));
-
-    try std.testing.expect(cleanup_frees.load(.acquire) >= frees_while_held);
+    try std.testing.expect(stream.getError() == null);
+    const result = stream.getResult() orelse return error.TestUnexpectedResult;
+    try std.testing.expect(result.content.len > 0);
 }
