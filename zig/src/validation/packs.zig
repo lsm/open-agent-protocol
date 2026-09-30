@@ -9,11 +9,18 @@ pub const Branch = jsonschema.Alternative;
 pub const pack_unprefixed_name = "pack_unprefixed_name";
 pub const pack_foreign_prefix = "pack_foreign_prefix";
 pub const pack_id_collision = "pack_id_collision";
+pub const pack_branch_unpinned = "pack_branch_unpinned";
+pub const pack_branch_undeclared_type = "pack_branch_undeclared_type";
 
 pub const Refusal = struct {
     code: []const u8,
     pack: []const u8,
     detail: []const u8 = "",
+};
+
+const Document = struct {
+    name: []const u8,
+    value: std.json.Value,
 };
 
 pub const Member = struct {
@@ -183,6 +190,55 @@ fn namespaceRefusal(roots: *?std.StringHashMap(void), allocator: std.mem.Allocat
     return pack_foreign_prefix;
 }
 
+fn unescapeToken(allocator: std.mem.Allocator, token: []const u8) ![]const u8 {
+    if (std.mem.indexOfScalar(u8, token, '~') == null) return token;
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    var index: usize = 0;
+    while (index < token.len) : (index += 1) {
+        if (token[index] == '~' and index + 1 < token.len) {
+            if (token[index + 1] == '1') {
+                try out.append(allocator, '/');
+                index += 1;
+                continue;
+            }
+            if (token[index + 1] == '0') {
+                try out.append(allocator, '~');
+                index += 1;
+                continue;
+            }
+        }
+        try out.append(allocator, token[index]);
+    }
+    return try out.toOwnedSlice(allocator);
+}
+
+fn pointerAt(allocator: std.mem.Allocator, root: std.json.Value, pointer: []const u8) !?std.json.Value {
+    if (pointer.len == 0 or std.mem.eql(u8, pointer, "#")) return root;
+    if (!std.mem.startsWith(u8, pointer, "#/")) return null;
+    var current = root;
+    var rest = pointer[2..];
+    while (true) {
+        const slash = std.mem.indexOfScalar(u8, rest, '/');
+        const raw = if (slash) |at| rest[0..at] else rest;
+        rest = if (slash) |at| rest[at + 1 ..] else "";
+        const token = try unescapeToken(allocator, raw);
+        if (current != .object) return null;
+        current = current.object.get(token) orelse return null;
+        if (rest.len == 0) return current;
+    }
+}
+
+fn pinnedTypeOf(branch: std.json.Value) ?[]const u8 {
+    if (branch != .object) return null;
+    const properties = branch.object.get("properties") orelse return null;
+    if (properties != .object) return null;
+    const type_schema = properties.object.get("type") orelse return null;
+    if (type_schema != .object) return null;
+    const held = type_schema.object.get("const") orelse return null;
+    return if (held == .string) held.string else null;
+}
+
 fn readAll(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     return std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(8 * 1024 * 1024));
 }
@@ -256,31 +312,37 @@ fn gather(
             if (declared_schemas) |held| {
                 if (held != .array) return error.InvalidPackDescriptor;
             }
-            if (registry) |target| {
-                if (declared_schemas) |held| {
-                    const schemas = held.array;
-                    const pack_root = std.Io.Dir.cwd().realPathFileAlloc(io, dir, allocator) catch return error.InvalidPackDescriptor;
-                    const entries = schemas.items;
-                    const names = try allocator.alloc([]const u8, entries.len);
-                    const paths = try allocator.alloc([]const u8, entries.len);
-                    for (entries, 0..) |schema_name, index| {
-                        if (schema_name != .string) return error.InvalidPackDescriptor;
-                        const file = schema_name.string;
-                        if (file.len == 0 or std.Io.Dir.path.isAbsolute(file)) return error.InvalidPackDescriptor;
-                        const relative = try lexicalRelative(allocator, file);
-                        const schema_path = try std.fs.path.join(allocator, &.{ dir, relative });
-                        const resolved = std.Io.Dir.cwd().realPathFileAlloc(io, schema_path, allocator) catch return error.InvalidPackDescriptor;
-                        if (!beneath(pack_root, resolved)) return error.InvalidPackDescriptor;
-                        names[index] = relative;
-                        paths[index] = resolved;
+            var pack_documents: std.ArrayList(Document) = .empty;
+            if (declared_schemas) |held| {
+                const schemas = held.array;
+                const pack_root = std.Io.Dir.cwd().realPathFileAlloc(io, dir, allocator) catch return error.InvalidPackDescriptor;
+                const entries = schemas.items;
+                const names = try allocator.alloc([]const u8, entries.len);
+                const paths = try allocator.alloc([]const u8, entries.len);
+                for (entries, 0..) |schema_name, index| {
+                    if (schema_name != .string) return error.InvalidPackDescriptor;
+                    const file = schema_name.string;
+                    if (file.len == 0 or std.Io.Dir.path.isAbsolute(file)) return error.InvalidPackDescriptor;
+                    const relative = try lexicalRelative(allocator, file);
+                    const schema_path = try std.fs.path.join(allocator, &.{ dir, relative });
+                    const resolved = std.Io.Dir.cwd().realPathFileAlloc(io, schema_path, allocator) catch return error.InvalidPackDescriptor;
+                    if (!beneath(pack_root, resolved)) return error.InvalidPackDescriptor;
+                    names[index] = relative;
+                    paths[index] = resolved;
+                }
+                for (0..entries.len) |index| {
+                    const schema_bytes = try readAll(io, allocator, paths[index]);
+                    const normalized = try toSlash(allocator, names[index]);
+                    const key = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/{s}", .{ pack_base_uri, pack_id, version, normalized });
+                    try pack_documents.append(allocator, .{
+                        .name = normalized,
+                        .value = try std.json.parseFromSliceLeaky(std.json.Value, allocator, schema_bytes, .{}),
+                    });
+                    if (registry) |target| {
+                        try target.addDocument(key, schema_bytes);
                     }
-                    for (0..entries.len) |index| {
-                        const schema_bytes = try readAll(io, allocator, paths[index]);
-                        const key = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/{s}", .{ pack_base_uri, pack_id, version, try toSlash(allocator, names[index]) });
-                    try target.addDocument(key, schema_bytes);
                 }
             }
-        }
 
         const gates = field(descriptor, "gates");
 
@@ -329,15 +391,36 @@ fn gather(
                 continue;
             }
             const schema_ref = stringField(entry, "schema") orelse continue;
-            const hash = std.mem.indexOfScalar(u8, schema_ref, '#') orelse continue;
-            const cleaned = (try cleanRelative(allocator, schema_ref[0..hash])) orelse schema_ref[0..hash];
+            const hash = std.mem.indexOfScalar(u8, schema_ref, '#');
+            const spelled = if (hash) |at| schema_ref[0..at] else schema_ref;
+            const cleaned = (try cleanRelative(allocator, spelled)) orelse spelled;
             const cited = try toSlash(allocator, cleaned);
-            const ref = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/{s}{s}", .{ pack_base_uri, pack_id, version, cited, schema_ref[hash..] });
+            const pointer: []const u8 = if (hash) |at| schema_ref[at..] else "";
+            var resolved: ?std.json.Value = null;
+            for (pack_documents.items) |document| {
+                if (!std.mem.eql(u8, document.name, cited)) continue;
+                resolved = try pointerAt(allocator, document.value, pointer);
+                break;
+            }
+            if (resolved == null or resolved.? != .object) {
+                try load_refusals.append(allocator, .{ .code = "", .pack = pack_id, .detail = declared_type });
+                continue;
+            }
+            const pinned = pinnedTypeOf(resolved.?);
+            if (pinned == null) {
+                try load_refusals.append(allocator, .{ .code = pack_branch_unpinned, .pack = pack_id, .detail = declared_type });
+                continue;
+            }
+            if (!std.mem.eql(u8, pinned.?, declared_type)) {
+                try load_refusals.append(allocator, .{ .code = pack_branch_undeclared_type, .pack = pack_id, .detail = declared_type });
+                continue;
+            }
+            const ref = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/{s}{s}", .{ pack_base_uri, pack_id, version, cited, pointer });
             try branches.append(allocator, .{
                 .declared_type = try allocator.dupe(u8, declared_type),
                 .ref = ref,
             });
-        }
+    }
     }
 
     std.mem.sort(Branch, branches.items, {}, struct {
@@ -611,15 +694,15 @@ test "a descriptor schema path is read only when it lands beneath the pack root"
     try std.testing.expectError(error.InvalidPackDescriptor, load(std.testing.io, allocator, &registry, &malformed));
 }
 
-test "a schema ref naming nothing the pack contributes is registered, and no refusal says so" {
+test "a schema ref that resolves to nothing is refused, and the same ref made to resolve is accepted" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const cases = [_]struct { dir: []const u8, ref: []const u8, registered: bool, resolves: bool }{
-        .{ .dir = "resolves", .ref = "note.schema.json#/$defs/thing", .registered = true, .resolves = true },
-        .{ .dir = "absent-file", .ref = "absent.schema.json#/$defs/thing", .registered = true, .resolves = false },
-        .{ .dir = "absent-pointer", .ref = "note.schema.json#/$defs/absent", .registered = true, .resolves = false },
-        .{ .dir = "no-fragment", .ref = "note.schema.json", .registered = false, .resolves = false },
+    const cases = [_]struct { dir: []const u8, ref: []const u8, code: []const u8 }{
+        .{ .dir = "resolves", .ref = "note.schema.json#/$defs/thing", .code = "" },
+        .{ .dir = "absent-file", .ref = "absent.schema.json#/$defs/thing", .code = "" },
+        .{ .dir = "absent-pointer", .ref = "note.schema.json#/$defs/absent", .code = "" },
+        .{ .dir = "no-fragment", .ref = "note.schema.json", .code = pack_branch_unpinned },
     };
     for (cases) |c| {
         try tmp.dir.createDir(std.testing.io, c.dir, .default_dir);
@@ -637,9 +720,6 @@ test "a schema ref naming nothing the pack contributes is registered, and no ref
         defer allocator.free(pack);
         try tmp.dir.writeFile(std.testing.io, .{ .sub_path = pack, .data = descriptor });
     }
-    const envelope =
-        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"com.example.ref.thing","id":"e1","session_id":"s","payload":{}}
-    ;
     for (cases) |c| {
         var registry = try jsonschema.Registry.initFromBundled(allocator);
         defer registry.deinit();
@@ -648,20 +728,147 @@ test "a schema ref naming nothing the pack contributes is registered, and no ref
         const one = [_][]const u8{root};
         var read = try load(std.testing.io, allocator, &registry, &one);
         defer read.deinit();
-        try std.testing.expectEqual(@as(usize, 0), read.refusals.len);
-        const want: usize = if (c.registered) 1 else 0;
-        try std.testing.expectEqual(want, read.branches.len);
-        if (c.registered) {
-            const key = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/{s}", .{ pack_base_uri, "com.example.ref", "1.0.0", c.ref });
+        if (c.code.len == 0 and c.dir[0] == 'r') {
+            try std.testing.expectEqual(@as(usize, 0), read.refusals.len);
+            try std.testing.expectEqual(@as(usize, 1), read.branches.len);
+            const key = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/{s}", .{ pack_base_uri, "com.example.ref", "1.0.0", "note.schema.json" });
             defer allocator.free(key);
-            try std.testing.expectEqualStrings(key, read.branches[0].ref);
-            if (c.resolves) {
-                try std.testing.expect(try judgesAsAccepted(allocator, &registry, read.branches, envelope));
-            } else {
-                try std.testing.expectError(error.UnresolvableRef, judgesAsAccepted(allocator, &registry, read.branches, envelope));
-            }
+            const envelope =
+                \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"com.example.ref.thing","id":"e1","session_id":"s","payload":{}}
+            ;
+            const line = try std.fmt.allocPrint(allocator, "{s}", .{read.branches[0].ref});
+            defer allocator.free(line);
+            try std.testing.expect(std.mem.startsWith(u8, line, key));
+            try std.testing.expect(try judgesAsAccepted(allocator, &registry, read.branches, envelope));
+        } else {
+            try std.testing.expectEqual(@as(usize, 1), read.refusals.len);
+            try std.testing.expectEqualStrings(c.code, read.refusals[0].code);
+            try std.testing.expectEqualStrings("com.example.ref", read.refusals[0].pack);
+            try std.testing.expectEqual(@as(usize, 0), read.branches.len);
         }
     }
+}
+
+test "a branch pointer resolves through objects only, as goap's loader resolves it" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const Outcome = enum { accepted, uncoded, coded };
+    const cases = [_]struct { dir: []const u8, ref: []const u8, outcome: Outcome, code: []const u8 }{
+        .{ .dir = "object", .ref = "types.schema.json#/$defs/thing", .outcome = .accepted, .code = "" },
+        .{ .dir = "array-index", .ref = "types.schema.json#/$defs/arr/0", .outcome = .uncoded, .code = "" },
+        .{ .dir = "array-escaped", .ref = "types.schema.json#/$defs/deep~1arr/0", .outcome = .uncoded, .code = "" },
+        .{ .dir = "array-parent", .ref = "types.schema.json#/$defs/list/0", .outcome = .uncoded, .code = "" },
+        .{ .dir = "string-node", .ref = "types.schema.json#/$schema", .outcome = .uncoded, .code = "" },
+        .{ .dir = "const-node", .ref = "types.schema.json#/$defs/thing/properties/type/const", .outcome = .uncoded, .code = "" },
+        .{ .dir = "absent-node", .ref = "types.schema.json#/$defs/absent", .outcome = .uncoded, .code = "" },
+        .{ .dir = "whole-document", .ref = "types.schema.json", .outcome = .coded, .code = pack_branch_unpinned },
+        .{ .dir = "object-no-const", .ref = "types.schema.json#/$defs/plain", .outcome = .coded, .code = pack_branch_unpinned },
+    };
+    const document =
+        \\{"$schema": "https://json-schema.org/draft/2020-12/schema", "$defs": {"thing": {"type": "object", "required": ["type", "id", "session_id"], "properties": {"type": {"const": "com.example.ptr.thing"}, "id": {"type": "string"}, "session_id": {"type": "string"}}}, "plain": {"type": "object", "required": ["type"], "properties": {"type": {"type": "string"}}}, "arr": [{"type": "object", "required": ["type", "id", "session_id"], "properties": {"type": {"const": "com.example.ptr.thing"}, "id": {"type": "string"}, "session_id": {"type": "string"}}}], "deep/arr": [{"type": "object", "required": ["type"], "properties": {"type": {"const": "com.example.ptr.thing"}}}], "list": {"type": "array", "items": {"$ref": "#/$defs/thing"}}}}
+    ;
+    for (cases) |c| {
+        try tmp.dir.createDir(std.testing.io, c.dir, .default_dir);
+        const document_path = try std.fmt.allocPrint(allocator, "{s}/types.schema.json", .{c.dir});
+        defer allocator.free(document_path);
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = document_path, .data = document });
+        const descriptor = try std.fmt.allocPrint(allocator,
+            \\{{"id": "com.example.ptr", "version": "1.0.0", "schemas": ["types.schema.json"], "envelope_types": [{{"type": "com.example.ptr.thing", "role": "event", "schema": "{s}"}}]}}
+        , .{c.ref});
+        defer allocator.free(descriptor);
+        const pack = try std.fmt.allocPrint(allocator, "{s}/pack.json", .{c.dir});
+        defer allocator.free(pack);
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = pack, .data = descriptor });
+    }
+    for (cases) |c| {
+        var registry = try jsonschema.Registry.initFromBundled(allocator);
+        defer registry.deinit();
+        const root = try tmp.dir.realPathFileAlloc(std.testing.io, c.dir, allocator);
+        defer allocator.free(root);
+        const one = [_][]const u8{root};
+        var read = try load(std.testing.io, allocator, &registry, &one);
+        defer read.deinit();
+        switch (c.outcome) {
+            .accepted => {
+                try std.testing.expectEqual(@as(usize, 0), read.refusals.len);
+                try std.testing.expectEqual(@as(usize, 1), read.branches.len);
+            },
+            .uncoded => {
+                try std.testing.expectEqual(@as(usize, 1), read.refusals.len);
+                try std.testing.expectEqualStrings("", read.refusals[0].code);
+                try std.testing.expectEqual(@as(usize, 0), read.branches.len);
+            },
+            .coded => {
+                try std.testing.expectEqual(@as(usize, 1), read.refusals.len);
+                try std.testing.expectEqualStrings(c.code, read.refusals[0].code);
+                try std.testing.expectEqual(@as(usize, 0), read.branches.len);
+            },
+        }
+    }
+}
+test "a cited name is cleaned and its pointer unescaped, so the ref matches the key it registered" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(std.testing.io, "sub", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "sub/note.schema.json", .data =
+            \\{"$schema": "https://json-schema.org/draft/2020-12/schema", "$defs": {"odd/name~here": {"type": "object", "required": ["type", "id", "session_id"], "properties": {"type": {"const": "com.example.escape.thing"}, "id": {"type": "string"}, "session_id": {"type": "string"}}}}}
+        ,
+    });
+    const descriptor = try std.fmt.allocPrint(allocator,
+        \\{{"id": "com.example.escape", "version": "1.0.0", "schemas": ["./note.schema.json"], "envelope_types": [{{"type": "com.example.escape.thing", "role": "event", "schema": "./note.schema.json#/$defs/odd~1name~0here"}}]}}
+    , .{});
+    defer allocator.free(descriptor);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "sub/pack.json", .data = descriptor });
+
+    var registry = try jsonschema.Registry.initFromBundled(allocator);
+    defer registry.deinit();
+    const root = try tmp.dir.realPathFileAlloc(std.testing.io, "sub", allocator);
+    defer allocator.free(root);
+    const one = [_][]const u8{root};
+    var read = try load(std.testing.io, allocator, &registry, &one);
+    defer read.deinit();
+    try std.testing.expectEqual(@as(usize, 0), read.refusals.len);
+    try std.testing.expectEqual(@as(usize, 1), read.branches.len);
+    const key = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/{s}", .{ pack_base_uri, "com.example.escape", "1.0.0", "note.schema.json" });
+    defer allocator.free(key);
+    try std.testing.expect(std.mem.startsWith(u8, read.branches[0].ref, key));
+    try std.testing.expect(registry.root(key) != null);
+    const envelope =
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"com.example.escape.thing","id":"e1","session_id":"s","payload":{}}
+    ;
+    try std.testing.expect(try judgesAsAccepted(allocator, &registry, read.branches, envelope));
+}
+
+test "a branch that does not pin its own type is refused, and the manifest fixtures carry the codes" {
+    const allocator = std.testing.allocator;
+    const cases = [_]struct { dir: []const u8, code: []const u8 }{
+        .{ .dir = "fixtures/packs/bad-branch-unpinned", .code = pack_branch_unpinned },
+        .{ .dir = "fixtures/packs/bad-branch-undeclared-type", .code = pack_branch_undeclared_type },
+        .{ .dir = "fixtures/packs/storage", .code = "" },
+    };
+    for (cases) |c| {
+        var registry = try jsonschema.Registry.initFromBundled(allocator);
+        defer registry.deinit();
+        const one = [_][]const u8{c.dir};
+        var read = try load(std.testing.io, allocator, &registry, &one);
+        defer read.deinit();
+        if (c.code.len == 0) {
+            try std.testing.expectEqual(@as(usize, 0), read.refusals.len);
+            try std.testing.expect(read.branches.len > 0);
+        } else {
+            try std.testing.expect(carriesCode(read.refusals, c.code));
+            try std.testing.expectEqual(@as(usize, 0), read.branches.len);
+        }
+    }
+    var registry = try jsonschema.Registry.initFromBundled(allocator);
+    defer registry.deinit();
+    const one = [_][]const u8{"fixtures/packs/bad-branch-unpinned"};
+    var refused = try describe(std.testing.io, allocator, &one);
+    defer refused.deinit();
+    try std.testing.expect(carriesCode(refused.refusals, pack_branch_unpinned));
+    try std.testing.expectEqual(@as(usize, 0), refused.branches.len);
 }
 test "a declared name outside the pack's namespace is refused before its schema is read" {
     const allocator = std.testing.allocator;
