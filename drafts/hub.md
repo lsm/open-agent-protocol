@@ -596,52 +596,39 @@ an elapsed-time budget, and it is the *total* over the whole drain that bounds i
 per-round cap with an unbounded round count is not a bound. The Zig port reads in
 64 KiB rounds, stops at **1 MiB in total**, and stops at **2500 ms elapsed from that
 drain's own start** — elapsed, not the process's uptime, so a daemon that has been up
-for hours still drains. A drain that cannot read its own clock stops rather than
-draining without a bound, and that rule now covers the **whole helper path**, not just the
-drain: `readUntil` returns its existing `Timeout` rather than substituting `0` for a clock it
-could not read, which would have kept `left_ms` positive and renewed the silent-socket poll
-forever; the header budget in `readHead` and the idle budget in `readBody` do the same; and the
-drain round deadline **reuses the `now` that round has already read** instead of asking the clock a
-second time. The classification is unchanged — a clock it cannot read is a wait it cannot
-honour, which is the `Timeout` those sites already had — so no wire code or status is added.
+for hours still drains. A drain that cannot read its own clock stops rather than draining without
+a bound, and that rule covers the **whole helper path**: `readUntil` returns its existing `Timeout`
+rather than substituting `0` for a clock it could not read, which kept `left_ms` positive and renewed
+the silent-socket poll forever; `readHead` and `readBody` do the same for their budgets; and the drain
+round deadline **reuses the `now` that round already read**. The classification is unchanged — a clock it
+cannot read is a wait it cannot honour, which is the `Timeout` those sites already had — so no wire code
+or status is added.
 
-An earlier revision of this row said each of the four bounds is pinned by a test
-that would fail if the bound was removed. **That was false, and it was checked
-rather than assumed.** What follows is the pinning that exists, measured on this
-head, and it is not uniform: the byte cap is removal-pinned, the time budget is
-not.
+An earlier revision claimed each of the four bounds is pinned by a test that fails if the bound is
+removed. **That was false, and was measured rather than assumed.** The pinning that exists is not
+uniform:
 
-- **the 1 MiB total — pinned by removal at this head.** `a drain stops at its byte
-  cap and reports what it consumed` carries its own literal, `wanted_cap =
-  1024 * 1024`, asserts the production constant equals it, and uses the literal for
-  both the declared length and the expected count, so the constant and the
-  expectation cannot move together. Raising `drain_total_cap_bytes` to 1 GiB fails
-  it with `expected 1048576, found 1073741824` (`7/9` steps, `EXIT=1`). An earlier
-  revision of this row said the opposite — the expectation was read from the
-  production constant, so raising it left the suite green — and that was measured
-  before the literal was added. The writer is a thread so it cannot deadlock on a
-  full socket buffer. The real-socket test separately pins that a cap is
-  *observable from outside the process*, and asserts only a lower bound on
-  transferred bytes plus a complete 403 — never an upper one
-- **the 2500 ms elapsed budget, and that it is elapsed rather than uptime** —
-  `a drain reads on a long-lived process, because its budget is elapsed not uptime`
-  seeds the clock, drains, waits `drain_total_ms + 200` under a bound, asserts the
-  clock is past the budget, and drains again. Restoring the old
-  `elapsedMs() catch 0 -| started` expression makes this fail with `expected 4096,
-  found 0`. **It pins the comparison, not the guard's presence:** neutralising the
-  guard entirely is green, so a deleted time bound would go unnoticed here. The
-  stall case is covered separately by `a drain gives up rather than waiting on a
-  peer that sends nothing more`
-- **stop on an unreadable clock — a rule with NO exercising test, recorded as a
-  gap.** The port returns the bytes consumed from `drain` and `Timeout` from the read helpers
-  rather than treating an unreadable clock as `0`. **Nothing exercises that path**: the clock is
-  `std.Io.Timestamp` against a monotonic source and, as the owner verified against
-  `compat/time.zig:25-35`, is currently **infallible** — it does not fail in this test, in CI, or on
-  the platforms this port runs on, so there is no way to make the branch execute from a test. **This
-  is a latent error-contract mismatch, not a reproduced current-platform clock failure.**
-  The clause is stated by the port and unproven by execution, which is the same shape as the
-  `type_mismatch` gap D20 records. Closing it needs a clock-injection seam, which is a redesign
-  rather than a test, so it is left as a gap rather than invented.
+- **the 1 MiB total — pinned by removal at this head.** `a drain stops at its byte cap and reports
+  what it consumed` carries its own `wanted_cap = 1024 * 1024`, asserts the production constant
+  equals it, and uses the literal for the declared length and the expected count, so constant and
+  expectation cannot move together; raising `drain_total_cap_bytes` to 1 GiB fails it with `expected
+  1048576, found 1073741824` (`7/9` steps, `EXIT=1`). The real-socket test separately pins that a cap
+  is *observable from outside the process*, asserting a lower bound on transferred bytes plus a
+  complete 403 — never an upper one
+- **the 2500 ms elapsed budget, and that it is elapsed rather than uptime** — `a drain reads on a
+  long-lived process, because its budget is elapsed not uptime` seeds the clock, waits
+  `drain_total_ms + 200` under a bound, asserts the clock is past the budget, and drains again;
+  restoring the old `elapsedMs() catch 0 -| started` fails it with `expected 4096, found 0`. **It pins
+  the comparison, not the guard's presence:** neutralising the guard is green, so a deleted time bound
+  would go unnoticed. The stall case stays covered by `a drain gives up rather than waiting on a peer
+  that sends nothing more`
+- **stop on an unreadable clock — NO exercising test, recorded as a gap.** The port returns the bytes
+  consumed from `drain` and `Timeout` from the read helpers rather than reading an unreadable clock as
+  `0`. Nothing reaches it: the clock is `std.Io.Timestamp` against a monotonic source and, per the
+  owner's check of `compat/time.zig:25-35`, is currently **infallible**, so no test can reach the
+  branch. **This is a latent error-contract mismatch, not a reproduced current-platform clock failure.**
+  Stated by the port and unproven by execution, the same shape as the `type_mismatch` gap D20 records;
+  closing it needs a clock-injection seam, a redesign rather than a test
   than treating the failure as `0`. Nothing exercises that path: the clock is
   `std.Io.Timestamp` against a monotonic source and does not fail in this test,
   in CI, or on the platforms this port runs on, so there is no way to make the
