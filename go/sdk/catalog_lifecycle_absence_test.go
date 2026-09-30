@@ -12,6 +12,13 @@ func lifecycleList(t *testing.T, shape string) (*ListModelsResponse, error) {
 	return client.Models.List(testContext(t), ListModelsRequest{})
 }
 
+func lifecycleListFilteringDeprecated(t *testing.T, shape string, includeDeprecated bool) (*ListModelsResponse, error) {
+	t.Helper()
+	client := newTestClient(t, scenarioOAP, "OAPX_TEST_CATALOG_LIFECYCLE="+shape)
+	defer client.Close()
+	return client.Models.List(testContext(t), ListModelsRequest{IncludeDeprecated: &includeDeprecated})
+}
+
 func lifecycleResolve(t *testing.T, shape string) (*ModelDescriptor, error) {
 	t.Helper()
 	client := newTestClient(t, scenarioOAP, "OAPX_TEST_CATALOG_LIFECYCLE="+shape)
@@ -106,11 +113,32 @@ func TestTheSharedResultSeesAMissingLifecycleAsNilAndStillRejectsABadOne(t *test
 }
 
 func TestAnUnknownLifecycleIsNotFilteredOutAsDeprecated(t *testing.T) {
-	listed, err := lifecycleList(t, "absent")
+	// IncludeDeprecated must be set, not left nil: the filter at oap.go only
+	// runs when the request states the flag, so a nil request never exercises
+	// it and this case would pass whatever the reader did.
+	listed, err := lifecycleListFilteringDeprecated(t, "absent", false)
 	if err != nil {
 		t.Fatalf("the list must answer: %v", err)
 	}
-	if len(listed.Models) == 0 {
-		t.Error("a model that did not state a lifecycle must not be dropped from the listing")
+	if len(listed.Models) != 1 {
+		t.Errorf("got %d models, want 1: a model that did not state a lifecycle must not be dropped by the deprecation filter",
+			len(listed.Models))
+	}
+
+	deprecated, err := lifecycleListFilteringDeprecated(t, "deprecated", false)
+	if err != nil {
+		t.Fatalf("the list must answer: %v", err)
+	}
+	if len(deprecated.Models) != 0 {
+		t.Errorf("got %d models, want 0: a stated deprecated lifecycle must still be filtered out",
+			len(deprecated.Models))
+	}
+
+	included, err := lifecycleListFilteringDeprecated(t, "deprecated", true)
+	if err != nil {
+		t.Fatalf("the list must answer: %v", err)
+	}
+	if len(included.Models) != 1 {
+		t.Errorf("got %d models, want 1: asking for deprecated models must include them", len(included.Models))
 	}
 }

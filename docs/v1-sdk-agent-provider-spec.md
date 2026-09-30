@@ -1871,5 +1871,12 @@ only when it **stated** `deprecated`; a model whose lifecycle is unknown is
 kept, because dropping it would exclude a model for failing to answer a
 question it was never asked.
 
+That is the target for all three SDKs. It is implemented in Rust as #709 and
+in Go here; **TypeScript does not satisfy it yet**, still fabricating `stable`
+for an absent lifecycle on its OAP path and still requiring the member on its
+shared path. That reader is #712 and is not on main. Following the rule the
+`source` section states, a reader that has not been changed must not be
+described as if it had.
+
 The native protocol `ModelDescriptor` declared earlier in this document is a
 separate contract that keeps its required members.
