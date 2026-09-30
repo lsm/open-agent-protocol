@@ -276,26 +276,23 @@ test "a timed out command takes its backgrounded children with it" {
         std.testing.allocator.free(result.stderr);
     } else |err| try std.testing.expectEqual(error.Timeout, err);
 
-    var recorded = false;
     var leaked: ?std.posix.pid_t = null;
     const deadline = common.nowMs() + 2_000;
     while (common.nowMs() < deadline) {
         switch (probeRecordedChild(dir)) {
-            .alive => |pid| {
-                if (!recorded) {
-                    recorded = true;
-                    leaked = pid;
-                }
-            },
+            .alive => |pid| leaked = pid,
             .dead => break,
             .not_written => {},
             .unreadable => return error.TestUnexpectedResult,
         }
         compat.time.sleepMs(50);
     }
-    if (leaked) |pid| {
-        std.posix.kill(pid, std.posix.SIG.KILL) catch {};
-        return error.TestUnexpectedResult;
+    switch (probeRecordedChild(dir)) {
+        .alive => |pid| {
+            std.posix.kill(pid, std.posix.SIG.KILL) catch {};
+            return error.TestUnexpectedResult;
+        },
+        else => {},
     }
 }
 
@@ -311,26 +308,23 @@ test "a child that ignores SIGTERM is still taken down" {
         std.testing.allocator.free(result.stderr);
     } else |err| try std.testing.expectEqual(error.Timeout, err);
 
-    var recorded = false;
     var survived: ?std.posix.pid_t = null;
     const deadline = common.nowMs() + 5_000;
     while (common.nowMs() < deadline) {
         switch (probeRecordedChild(dir)) {
-            .alive => |pid| {
-                if (!recorded) {
-                    recorded = true;
-                    survived = pid;
-                }
-            },
+            .alive => |pid| survived = pid,
             .dead => break,
             .not_written => {},
             .unreadable => return error.TestUnexpectedResult,
         }
         compat.time.sleepMs(50);
     }
-    if (survived) |pid| {
-        std.posix.kill(pid, std.posix.SIG.KILL) catch {};
-        return error.TestUnexpectedResult;
+    switch (probeRecordedChild(dir)) {
+        .alive => |pid| {
+            std.posix.kill(pid, std.posix.SIG.KILL) catch {};
+            return error.TestUnexpectedResult;
+        },
+        else => {},
     }
 }
 
