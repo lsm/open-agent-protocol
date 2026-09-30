@@ -457,14 +457,18 @@ func TestAToolCarriesItsSchemaUnderInputSchema(t *testing.T) {
 	}
 }
 
-func TestTheAnonymityRuleExcludesOneVendorNotFour(t *testing.T) {
+func TestTheAnonymityRuleExcludesTheVendorsThisWireServes(t *testing.T) {
 	allowed := Model{Provider: "openai", AllowsAnonymous: true, HasBaseURL: true, BaseURL: "https://api.openai.com"}
 	if !AllowsAnonymousWith(allowed, AnthropicAnonymousBlocked) {
 		t.Error("openai is not on this client's blocked list")
 	}
 	blocked := Model{Provider: "anthropic", AllowsAnonymous: true, HasBaseURL: true, BaseURL: "https://api.anthropic.com"}
 	if AllowsAnonymousWith(blocked, AnthropicAnonymousBlocked) {
-		t.Error("anthropic is the one vendor this client blocks")
+		t.Error("anthropic is a vendor this client serves, so it is blocked")
+	}
+	deepseek := Model{Provider: "deepseek", AllowsAnonymous: true, HasBaseURL: true, BaseURL: "https://api.deepseek.com/anthropic"}
+	if AllowsAnonymousWith(deepseek, AnthropicAnonymousBlocked) {
+		t.Error("deepseek is served on this wire too, so it is blocked")
 	}
 	if !AllowsAnonymousWith(blocked, OpenAIAnonymousBlocked) {
 		t.Error("the openai list does not name anthropic, so reusing it here would let an anthropic model through anonymously: the two lists are separate on purpose")

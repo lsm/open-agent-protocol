@@ -1498,6 +1498,7 @@ test "Agent passes model max_tokens to protocol" {
     defer agent.deinit();
     var model = test_model;
     model.max_tokens = 8192;
+    model.context_window = 1_000_000;
     agent.setModel(model);
 
     const text = try std.testing.allocator.dupe(u8, "hello");
@@ -1505,6 +1506,24 @@ test "Agent passes model max_tokens to protocol" {
     try agent.prompt(@as([]const ai_types.Message, &.{message}));
 
     try std.testing.expectEqual(@as(?u32, 8192), capture.max_tokens);
+}
+
+test "Agent asks for less output when the prompt leaves less room in the context window" {
+    var capture = CaptureOptionsCtx{};
+    var agent = Agent.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = captureOptionsStreamFn, .ctx = &capture } });
+    defer agent.deinit();
+    var model = test_model;
+    model.max_tokens = 8192;
+    model.context_window = 10_000;
+    agent.setModel(model);
+
+    const text = try std.testing.allocator.dupe(u8, "a" ** 8000);
+    const message = ai_types.Message{ .user = .{ .content = .{ .text = text }, .timestamp = 0 } };
+    const expected = agent_loop.outputLimit(model, model.max_tokens, .{ .messages = &.{message} }).?;
+    try std.testing.expect(expected < 8192);
+    try agent.prompt(@as([]const ai_types.Message, &.{message}));
+
+    try std.testing.expectEqual(@as(?u32, expected), capture.max_tokens);
 }
 
 test "Agent validateContinueFromContext reports resume errors" {
@@ -1638,6 +1657,94 @@ test "a run whose replies hold only reasoning asks for the answer once, then end
     try std.testing.expectEqual(@as(usize, 2), mock.calls);
     try std.testing.expectEqual(@as(usize, 1), mock.answer_requests);
     try std.testing.expect(!agent.isStreaming());
+}
+
+const CancellingToolMock = struct {
+    calls: usize = 0,
+};
+
+fn cancellingToolStreamFn(
+    ctx: ?*anyopaque,
+    model: ai_types.Model,
+    context: ai_types.Context,
+    options: types.ProtocolOptions,
+    allocator: std.mem.Allocator,
+) anyerror!*event_stream_mod.AssistantMessageEventStream {
+    _ = context;
+    _ = options;
+    const mock: *CancellingToolMock = @ptrCast(@alignCast(ctx.?));
+    mock.calls += 1;
+
+    const stream = try allocator.create(event_stream_mod.AssistantMessageEventStream);
+    stream.* = event_stream_mod.AssistantMessageEventStream.init(allocator);
+    errdefer _ = stream.deinitAndDestroy();
+    const id = try allocator.dupe(u8, "call_1");
+    errdefer allocator.free(id);
+    const name = try allocator.dupe(u8, "slow_tool");
+    errdefer allocator.free(name);
+    const args = try allocator.dupe(u8, "{}");
+    errdefer allocator.free(args);
+    const content = try allocator.alloc(ai_types.AssistantContent, 1);
+    content[0] = .{ .tool_call = .{ .id = id, .name = name, .arguments_json = args } };
+    stream.complete(.{ .content = content, .api = model.api, .provider = model.provider, .model = model.id, .usage = .{}, .stop_reason = .tool_use, .timestamp = 0 });
+    return stream;
+}
+
+fn userAbortsDuringTool(
+    tool_call_id: []const u8,
+    args_json: []const u8,
+    cancel_token: ?ai_types.CancelToken,
+    on_update_ctx: ?*anyopaque,
+    on_update: ?types.ToolUpdateCallback,
+    allocator: std.mem.Allocator,
+) anyerror!types.AgentToolResult {
+    _ = tool_call_id;
+    _ = args_json;
+    _ = on_update_ctx;
+    _ = on_update;
+    _ = allocator;
+    cancel_token.?.cancelled.store(true, .release);
+    return error.Cancelled;
+}
+
+const TerminationCapture = struct {
+    termination: ?types.AgentTermination = null,
+    ended: bool = false,
+
+    fn onEvent(ctx: ?*anyopaque, event: AgentEvent) void {
+        const self: *TerminationCapture = @ptrCast(@alignCast(ctx.?));
+        switch (event) {
+            .agent_end => |payload| {
+                self.ended = true;
+                self.termination = payload.termination;
+            },
+            else => {},
+        }
+    }
+};
+
+test "a run cancelled while a tool runs asks the model for nothing more and ends cancelled" {
+    var mock = CancellingToolMock{};
+    var agent = Agent.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = cancellingToolStreamFn, .ctx = &mock } });
+    defer agent.deinit();
+    agent.setModel(test_model);
+    const tools = [_]AgentTool{.{
+        .label = "Slow",
+        .name = "slow_tool",
+        .description = "A tool the user aborts while it runs",
+        .parameters_schema_json = "{\"type\":\"object\"}",
+        .execute = userAbortsDuringTool,
+    }};
+    agent.setTools(&tools);
+
+    var capture = TerminationCapture{};
+    agent.subscribeWithContext(&capture, TerminationCapture.onEvent);
+    try agent.promptAsync(ai_types.Message{ .user = .{ .content = .{ .text = "run it" }, .timestamp = 0 } });
+    agent.waitForIdle();
+
+    try std.testing.expectEqual(@as(usize, 1), mock.calls);
+    try std.testing.expect(capture.ended);
+    try std.testing.expectEqual(@as(?types.AgentTermination, .cancelled), capture.termination);
 }
 
 test "a run that stops before it starts still ends, and says why" {
