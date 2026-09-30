@@ -166,7 +166,7 @@ impl Fake {
 }
 
 fn model_descriptor() -> Value {
-    json!({
+    let mut model = json!({
         "model_ref": "anthropic/anthropic-messages@claude-sonnet-4-5",
         "model_id": "claude-sonnet-4-5",
         "display_name": "Claude Sonnet 4.5",
@@ -180,7 +180,33 @@ fn model_descriptor() -> Value {
         "context_window": 200_000,
         "max_output_tokens": 8_192,
         "reasoning_default": "medium"
-    })
+    });
+    // `OAP_SDK_FAKE_SOURCE` picks what the native path states, so the shared
+    // reader can be driven through the public list and resolve calls rather
+    // than only through a direct decode. Unset leaves every other test alone.
+    match std::env::var("OAP_SDK_FAKE_SOURCE").ok().as_deref() {
+        Some("absent") => {
+            model.as_object_mut().expect("an object").remove("source");
+        }
+        Some("null") => model["source"] = Value::Null,
+        Some("number") => model["source"] = json!(7),
+        Some("invented") => model["source"] = json!("invented-source"),
+        _ => {}
+    }
+    match std::env::var("OAP_SDK_FAKE_LIFECYCLE").ok().as_deref() {
+        Some("absent") => {
+            model
+                .as_object_mut()
+                .expect("an object")
+                .remove("lifecycle");
+        }
+        Some("null") => model["lifecycle"] = Value::Null,
+        Some("number") => model["lifecycle"] = json!(7),
+        Some("invented") => model["lifecycle"] = json!("retired"),
+        Some("deprecated") => model["lifecycle"] = json!("deprecated"),
+        _ => {}
+    }
+    model
 }
 
 fn second_model_descriptor() -> Value {

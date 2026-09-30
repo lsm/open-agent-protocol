@@ -72,7 +72,10 @@ Caching rules:
 - `cache_max_age_ms` is required for all responses.
 - Clients treat cached data as stale when `now_ms > fetched_at_ms + cache_max_age_ms`.
 - If `cache_max_age_ms` is missing from a non-conformant server response, clients should default to `300_000` (5 minutes).
-- `source` is per-model metadata: `"dynamic"` or `"static_fallback"`.
+- `source` is per-model metadata: `"dynamic"` or `"static_fallback"`. It is an optional
+  key: when a listing omits it the reader records it as unknown rather than choosing
+  one. An optional key is not a nullable one, so a `source` that is present must be
+  one of those two strings; `null` or another value is a malformed response.
 - `fetched_at_ms` is response-generation time (not per-model last-verified time).
 - Recommended server defaults:
   - dynamic source: `cache_max_age_ms = 300_000` (5 minutes),
@@ -231,9 +234,11 @@ export interface ModelDescriptor {
   api: ApiId;
   base_url?: string;
   auth_status: AuthStatus;
-  lifecycle: ModelLifecycle;
+  /** Absent means the listing did not state a lifecycle. Never defaulted. */
+  lifecycle?: ModelLifecycle;
   capabilities: ModelCapability[];
-  source: ModelSource;
+  /** Absent means the listing did not state a source. Never defaulted. */
+  source?: ModelSource;
   context_window?: number;
   max_output_tokens?: number;
   reasoning_default?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
@@ -535,6 +540,8 @@ Provider stream rules:
 - `message_start` may include resolved `provider_id`, `api`, and `model_id` metadata when available.
 - `message_end` should include `usage` and `stop_reason` when available from upstream provider.
 - `tool_call` is emitted after full argument buffering in V1; incremental tool-call delta streaming is deferred (planned future shape: `tool_call_start` / `tool_call_delta` / `tool_call_end`).
+- A provider that deep-copies each queued event **must not** publish a terminal that silently omits one. If an event's copy could not be allocated, the turn settles through the error path rather than as a completed message, because a consumer cannot tell a complete turn from one missing an event.
+- Settlement is first-writer-wins. A caller that already settled the stream — a cancellation, for instance — keeps its own outcome: a provider that finishes afterwards must not overwrite a terminal the caller established, and the message it built is released rather than published.
 
 Agent stream rules:
 - Agent streams wrap one or more provider turns and may emit `turn_start` / `turn_end` plus tool execution lifecycle events.
@@ -1827,3 +1834,62 @@ resolve them because no frame carries a registration or run generation
 may rely on. Two are exceptions, recorded because mishandling them is silent:
 `RESIDUAL-2`, locally solvable from `in_reply_to`, and `RESIDUAL-6`, a
 mechanism-COVERAGE gap on the SSE transport that needs no wire change at all.
+
+## Catalog result: an optional `source`
+
+The shared catalog result carries `source` as optional. The owner selected
+this shape: absent is read as **unknown**, and no SDK fabricates
+`dynamic`/`discovered` for a value the listing did not state.
+
+This is the target for all three SDKs and all three now implement it. Rust
+landed as #688 and Go as #690; each refuses a present null or an
+unrecognised value on both its shared and its OAP decode path. TypeScript
+is #705, which changes both of its readers: the shared reader no longer
+requires the member, and the OAP reader no longer invents `dynamic` for a
+listing that stated nothing. All three record an omitted source as unknown
+and omit the member rather than setting a value.
+
+The Rust section of this paragraph was written when Rust alone had been
+changed and named Go and TypeScript as follow-ups; those two have since
+landed. A reader that has not been changed must not be described as if it
+had, which is why the earlier text said "Rust only" rather than claiming
+the shape for the others.
+
+That migration status is about the **shared SDK reader** only. The wire
+definition in `schema/v0.1/provider.schema.json` is already an optional key
+on `modelEntry`, and the Zig encoder and decoder making the runtime omit the
+member rather than state a default is a separate change, #673, with
+`lifecycle` following in #665.
+
+This does not weaken the wire. `schema/v0.1/provider.schema.json` defines
+`modelEntry.source` as an optional key over the `modelSource` enum, and an
+optional key is not a nullable one: a `source` that is **present** must be a
+string naming `discovered` or `fallback`. `null`, a number, or an
+unrecognised literal is a malformed response and is rejected. Only an absent
+key reads as unknown. The vocabulary normalisation is unchanged: `discovered`
+reads as the SDK's dynamic value and `fallback` as its static-fallback value.
+
+`lifecycle` follows the same shape in a later change, and the native
+protocol `ModelDescriptor` declared earlier in this document is a separate
+contract that keeps its required members.
+
+## Catalog result: an optional `lifecycle`
+
+`lifecycle` is the same shape as `source` above: the shared catalog result
+carries it as optional, an absent key reads as **unknown**, and no reader
+invents `stable` or any other value for a listing that did not state one.
+An optional key is not a nullable one, so a `lifecycle` that is **present**
+must be one of `stable`, `preview` or `deprecated`, and `null`, a number or
+an unrecognised literal is a malformed response.
+
+That is the target for all three SDKs and all three now implement it: Rust
+merged as #709, Go merged as #710, and TypeScript by this change. Each
+records an omitted `lifecycle` as unknown and omits the member rather than
+setting a value, and each refuses a present `null`, a number or an
+unrecognised literal as a malformed response.
+
+One consequence is worth stating because it is a filtering decision rather
+than a parsing one. A listing filters a model out as deprecated only when the
+listing **stated** `deprecated`. A model whose lifecycle is unknown is
+kept, because dropping it would silently exclude a model for failing to
+answer a question it was never asked.

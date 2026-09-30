@@ -114,7 +114,7 @@ fn writeModelEntry(w: *json_writer.JsonWriter, entry: types.ModelEntry) !void {
     for (entry.capabilities) |capability| try w.writeString(@tagName(capability));
     try w.endArray();
     if (entry.lifecycle) |value| try w.writeStringField("lifecycle", @tagName(value));
-    try w.writeStringField("source", @tagName(entry.source));
+    if (entry.source) |value| try w.writeStringField("source", @tagName(value));
     if (entry.reasoning_default) |value| try w.writeStringField("reasoning_default", @tagName(value));
     try w.writeStringField("auth_status", @tagName(entry.auth_status));
     if (entry.cost) |cost| try writeModelCost(w, cost);
@@ -1217,7 +1217,7 @@ fn deserializeModelsListResponse(obj: std.json.ObjectMap, allocator: std.mem.All
         const context_window = try optionalU32(entry_obj, "context_window");
         const max_output_tokens = try optionalU32(entry_obj, "max_output_tokens");
         const lifecycle = try oap_envelope.optionalEnum(types.ModelLifecycle, entry_obj, "lifecycle");
-        const source = try oap_envelope.optionalEnum(types.ModelSource, entry_obj, "source") orelse .discovered;
+        const source = try oap_envelope.optionalEnum(types.ModelSource, entry_obj, "source");
         const reasoning_default = try oap_envelope.optionalEnum(types.ReasoningLevel, entry_obj, "reasoning_default");
         const auth_status = try oap_envelope.optionalEnum(types.AuthStatus, entry_obj, "auth_status") orelse .unknown;
         const cost = try deserializeModelCost(entry_obj.get("cost"));
@@ -1817,19 +1817,10 @@ test "a decoded entry with no lifecycle stays absent rather than becoming stable
         else => return error.ExpectedModelsListPayload,
     };
     if (response.models.len != 1) return error.ExpectedOneModel;
-    if (response.models[0].lifecycle) |value| {
-        std.debug.print("an omitted lifecycle decoded as {s} rather than absent\n", .{@tagName(value)});
-        return error.OmittedLifecycleBecameAValue;
-    }
-    const again = try serializeEnvelope(decoded, allocator);
-    defer allocator.free(again);
-    if (std.mem.indexOf(u8, again, "lifecycle") != null) {
-        std.debug.print("a decoded absence re-encoded as a published lifecycle: {s}\n", .{again});
-        return error.AbsenceReEncodedAsAValue;
-    }
+    if (response.models[0].lifecycle != null) return error.AbsentLifecycleBecameAValue;
 }
 
-test "a stated lifecycle is published and survives a decode" {
+test "an entry whose source is absent does not publish the member" {
     const allocator = std.testing.allocator;
 
     var decoded = try deserializeEnvelope(MODELS_LIST_RESPONSE_LINE, allocator);
@@ -1839,27 +1830,74 @@ test "a stated lifecycle is published and survives a decode" {
         else => return error.ExpectedModelsListPayload,
     };
     if (response.models.len != 1) return error.ExpectedOneModel;
-    const stated = response.models[0].lifecycle orelse return error.ExpectedAStatedLifecycle;
-    if (stated != .stable) return error.UnexpectedStatedLifecycle;
+    if (response.models[0].source == null) return error.ExpectedAStatedSourceToStartWith;
 
-    response.models[0].lifecycle = .preview;
+    response.models[0].source = null;
     const line = try serializeEnvelope(decoded, allocator);
     defer allocator.free(line);
-    if (std.mem.indexOf(u8, line, "\"lifecycle\":\"preview\"") == null) {
-        std.debug.print("a stated lifecycle was not published: {s}\n", .{line});
-        return error.StatedLifecycleNotPublished;
+    if (std.mem.indexOf(u8, line, "source") != null) {
+        std.debug.print("an absent source was published: {s}\n", .{line});
+        return error.AbsentSourcePublished;
     }
+}
 
+test "a decoded entry with no source stays absent rather than becoming discovered" {
+    const allocator = std.testing.allocator;
+    const line = try modelsListLine(
+        allocator,
+        "{\"models\":[{\"model_ref\":\"anthropic/anthropic-messages@claude-sonnet-4-5\",\"model_id\":\"claude-sonnet-4-5\"," ++
+            "\"provider_id\":\"anthropic\",\"wire\":\"anthropic-messages\",\"capabilities\":[\"chat\"]}]}",
+    );
+    defer allocator.free(line);
+
+    var decoded = try deserializeEnvelope(line, allocator);
+    defer decoded.deinit(allocator);
+    const response = switch (decoded.payload) {
+        .provider_models_list_response => |value| value,
+        else => return error.ExpectedModelsListPayload,
+    };
+    if (response.models.len != 1) return error.ExpectedOneModel;
+    if (response.models[0].source) |value| {
+        std.debug.print("an omitted source decoded as {s} rather than absent\n", .{@tagName(value)});
+        return error.OmittedSourceBecameAValue;
+    }
+    const again = try serializeEnvelope(decoded, allocator);
+    defer allocator.free(again);
+    if (std.mem.indexOf(u8, again, "source") != null) {
+        std.debug.print("a decoded absence re-encoded as a published source: {s}\n", .{again});
+        return error.AbsenceReEncodedAsAValue;
+    }
+}
+
+test "a stated source is published and survives a decode" {
+    const allocator = std.testing.allocator;
+
+    var decoded = try deserializeEnvelope(MODELS_LIST_RESPONSE_LINE, allocator);
+    defer decoded.deinit(allocator);
+    const response = switch (decoded.payload) {
+        .provider_models_list_response => |value| value,
+        else => return error.ExpectedModelsListPayload,
+    };
+    if (response.models.len != 1) return error.ExpectedOneModel;
+    if (response.models[0].source == null) return error.ExpectedAStatedSource;
+
+    response.models[0].source = .fallback;
+    const line = try serializeEnvelope(decoded, allocator);
+    defer allocator.free(line);
+    if (std.mem.indexOf(u8, line, "\"source\":\"fallback\"") == null) {
+        std.debug.print("a stated source was not published: {s}\n", .{line});
+        return error.StatedSourceNotPublished;
+    }
     var again = try deserializeEnvelope(line, allocator);
     defer again.deinit(allocator);
     const reread = switch (again.payload) {
         .provider_models_list_response => |value| value,
         else => return error.ExpectedModelsListPayload,
     };
-    const round_tripped = reread.models[0].lifecycle orelse return error.StatedLifecycleDropped;
-    if (round_tripped != .preview) {
-        std.debug.print("a stated lifecycle came back as {s}\n", .{@tagName(round_tripped)});
-        return error.StatedLifecycleNotPreserved;
+    const round_tripped = reread.models[0].source orelse return error.StatedSourceDropped;
+    if (round_tripped != .fallback) {
+        std.debug.print("a stated source came back as {s}\n", .{@tagName(round_tripped)});
+        return error.StatedSourceNotPreserved;
     }
 }
 

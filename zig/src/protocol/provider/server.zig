@@ -537,7 +537,6 @@ fn injectServerOptions(
 ) ai_types.StreamOptions {
     var resolved = options orelse ai_types.StreamOptions{};
     resolved.cancel_token = cancel_token;
-    resolved.requires_owned_stream_events = true;
     return resolved;
 }
 
@@ -3320,11 +3319,9 @@ test "handleAbortRequest rejects sequence gap" {
 
 const CancelMockState = struct {
     var received_cancel_token: ?ai_types.CancelToken = null;
-    var received_requires_owned_events: ?bool = null;
 
     fn reset() void {
         received_cancel_token = null;
-        received_requires_owned_events = null;
     }
 };
 
@@ -3339,7 +3336,6 @@ fn cancelCapturingStream(
 
     if (options) |opts| {
         CancelMockState.received_cancel_token = opts.cancel_token;
-        CancelMockState.received_requires_owned_events = opts.requires_owned_stream_events;
     }
 
     const s = try allocator.create(event_stream.AssistantMessageEventStream);
@@ -3413,7 +3409,6 @@ test "handleStreamRequest injects CancelToken into provider stream options" {
     if (CancelMockState.received_cancel_token) |ct| {
         try std.testing.expect(!ct.isCancelled());
     }
-    try std.testing.expectEqual(@as(?bool, true), CancelMockState.received_requires_owned_events);
 
     const active = server.active_streams.get(stream_id);
     try std.testing.expect(active != null);
@@ -4414,7 +4409,7 @@ test "a provider that ignores cancellation is abandoned, not freed underneath" {
     std.testing.allocator.destroy(SlowProviderState.created_cancel_flag.?);
 }
 
-test "the complete path cancels without forcing owned stream events" {
+test "the complete path injects a cancel token the provider receives" {
     CancelMockState.reset();
     defer CancelMockState.reset();
 
@@ -4462,7 +4457,6 @@ test "the complete path cancels without forcing owned stream events" {
     }
 
     try std.testing.expect(CancelMockState.received_cancel_token != null);
-    try std.testing.expectEqual(@as(?bool, false), CancelMockState.received_requires_owned_events);
 }
 
 test "handleAbortRequest signals CancelToken so provider stops early" {

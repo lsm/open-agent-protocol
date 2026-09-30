@@ -1,0 +1,78 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "inference.started",
+    "id": "e1",
+    "inference_id": "i1",
+    "sequence": 1,
+    "payload": {
+      "model_ref": "anthropic/anthropic-messages@claude-sonnet-4-5",
+      "started_at_ms": 1
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "inference.part.started",
+    "id": "s0",
+    "inference_id": "i1",
+    "sequence": 2,
+    "payload": {
+      "part_index": 0,
+      "part_kind": "reasoning"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "inference.part.delta",
+    "id": "d0",
+    "inference_id": "i1",
+    "sequence": 3,
+    "payload": {
+      "part_index": 0,
+      "delta": "pondering"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "inference.part.ended",
+    "id": "n0",
+    "inference_id": "i1",
+    "sequence": 4,
+    "payload": {
+      "part_index": 0,
+      "part_kind": "reasoning",
+      "text": "pondering",
+      "carry": "sig-1"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "inference.completed",
+    "id": "t1",
+    "inference_id": "i1",
+    "sequence": 5,
+    "payload": {
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "reasoning",
+            "reasoning": "pondering",
+            "carry": "sig-1"
+          }
+        ]
+      },
+      "stop_reason": "stop"
+    }
+  }
+]

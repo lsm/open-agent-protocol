@@ -1,4 +1,6 @@
 const std = @import("std");
+
+const replay_id = "conformance-replay-1";
 const oap_types = @import("types");
 const oap_envelope = @import("envelope");
 const endpoint_client = @import("endpoint_client");
@@ -106,12 +108,108 @@ fn lineBudget(line_deadline_ms: i64) std.Io.Timeout {
     return .{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(line_deadline_ms), .clock = .boot } };
 }
 
+const ControlFrame = struct {
+    control: []const u8,
+    id: []const u8 = "",
+    session_id: []const u8 = "",
+    run_id: []const u8 = "",
+    after: ?u64 = null,
+    requested_after: u64 = 0,
+    oldest_available: u64 = 0,
+    latest_available: u64 = 0,
+    code: []const u8 = "",
+    message: []const u8 = "",
+
+    fn deinit(self: *ControlFrame, allocator: std.mem.Allocator) void {
+        allocator.free(self.control);
+        if (self.id.len != 0) allocator.free(self.id);
+        if (self.session_id.len != 0) allocator.free(self.session_id);
+        if (self.run_id.len != 0) allocator.free(self.run_id);
+        if (self.code.len != 0) allocator.free(self.code);
+        if (self.message.len != 0) allocator.free(self.message);
+    }
+};
+
+const ControlField = struct { key: []const u8, string: bool };
+
+const control_fields = [_]ControlField{
+    .{ .key = "control", .string = true },
+    .{ .key = "id", .string = true },
+    .{ .key = "session_id", .string = true },
+    .{ .key = "run_id", .string = true },
+    .{ .key = "after", .string = false },
+    .{ .key = "requested_after", .string = false },
+    .{ .key = "oldest_available", .string = false },
+    .{ .key = "latest_available", .string = false },
+    .{ .key = "code", .string = true },
+    .{ .key = "message", .string = true },
+};
+
+fn parseControl(allocator: std.mem.Allocator, line: []const u8) !ControlFrame {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch return error.InvalidControlFrame;
+    defer parsed.deinit();
+    const root = switch (parsed.value) {
+        .object => |entries| entries,
+        else => return error.InvalidControlFrame,
+    };
+    var frame = ControlFrame{ .control = "" };
+    errdefer frame.deinit(allocator);
+    for (control_fields) |field| {
+        const found = root.get(field.key) orelse continue;
+        if (field.string) {
+            const text = switch (found) {
+                .string => |text| text,
+                else => continue,
+            };
+            const owned = try allocator.dupe(u8, text);
+            if (std.mem.eql(u8, field.key, "control")) {
+                allocator.free(frame.control);
+                frame.control = owned;
+            } else if (std.mem.eql(u8, field.key, "id")) {
+                allocator.free(frame.id);
+                frame.id = owned;
+            } else if (std.mem.eql(u8, field.key, "session_id")) {
+                allocator.free(frame.session_id);
+                frame.session_id = owned;
+            } else if (std.mem.eql(u8, field.key, "run_id")) {
+                allocator.free(frame.run_id);
+                frame.run_id = owned;
+            } else if (std.mem.eql(u8, field.key, "code")) {
+                allocator.free(frame.code);
+                frame.code = owned;
+            } else {
+                allocator.free(frame.message);
+                frame.message = owned;
+            }
+            continue;
+        }
+        const number = switch (found) {
+            .integer => |number| if (number < 0) return error.InvalidControlFrame else @as(u64, @intCast(number)),
+            .float => return error.InvalidControlFrame,
+            .number_string => return error.InvalidControlFrame,
+            else => return error.InvalidControlFrame,
+        };
+        if (std.mem.eql(u8, field.key, "after")) {
+            frame.after = number;
+        } else if (std.mem.eql(u8, field.key, "requested_after")) {
+            frame.requested_after = number;
+        } else if (std.mem.eql(u8, field.key, "oldest_available")) {
+            frame.oldest_available = number;
+        } else {
+            frame.latest_available = number;
+        }
+    }
+    return frame;
+}
+
 const Runner = struct {
     allocator: std.mem.Allocator,
     client: endpoint_client.Client = undefined,
     report: Report,
     responses: std.ArrayList(oap_types.Envelope) = .empty,
     events: std.ArrayList(oap_types.Envelope) = .empty,
+    controls: std.ArrayList(ControlFrame) = .empty,
+    run_events: std.ArrayList([]const u8) = .empty,
     session: []const u8,
     revision: []const u8 = "",
     run_id: []const u8 = "",
@@ -122,6 +220,10 @@ const Runner = struct {
     fn releaseEnvelopes(self: *Runner) void {
         for (self.responses.items) |*envelope| envelope.deinit(self.allocator);
         for (self.events.items) |*envelope| envelope.deinit(self.allocator);
+        for (self.controls.items) |*frame| frame.deinit(self.allocator);
+        self.controls.deinit(self.allocator);
+        for (self.run_events.items) |id| self.allocator.free(id);
+        self.run_events.deinit(self.allocator);
         self.responses.deinit(self.allocator);
         self.events.deinit(self.allocator);
         if (self.refusal.len != 0) self.allocator.free(self.refusal);
@@ -188,7 +290,15 @@ const Runner = struct {
 
     fn pullUntil(self: *Runner, line_deadline_ms: i64) !void {
         const frame = try self.client.next(lineBudget(line_deadline_ms)) orelse return error.ConformanceEndpointSilent;
-        if (frame == .control) return;
+        if (frame == .control) {
+            const control = try parseControl(self.allocator, frame.control);
+            self.controls.append(self.allocator, control) catch |err| {
+                var released = control;
+                released.deinit(self.allocator);
+                return err;
+            };
+            return;
+        }
         var envelope = try oap_envelope.deserializeEnvelope(frame.envelope, self.allocator);
         if (envelope.in_reply_to != null) {
             self.responses.append(self.allocator, envelope) catch |err| {
@@ -216,6 +326,49 @@ const Runner = struct {
             if (self.takeAnswer(id)) |found| return found;
             try self.pullUntil(line_deadline_ms);
         }
+    }
+
+    fn takeControl(self: *Runner, id: []const u8) ?ControlFrame {
+        for (self.controls.items, 0..) |*candidate, index| {
+            if (std.mem.eql(u8, candidate.id, id)) return self.controls.orderedRemove(index);
+        }
+        return null;
+    }
+
+    fn answerControl(self: *Runner, id: []const u8, line_deadline_ms: i64) !ControlFrame {
+        while (true) {
+            if (self.takeControl(id)) |found| return found;
+            const frame = self.client.next(lineBudget(line_deadline_ms)) catch |err| {
+                if (err == endpoint_client.Error.EndpointClosed) break;
+                return err;
+            } orelse break;
+            switch (frame) {
+                .control => |control_line| {
+                    const control = try parseControl(self.allocator, control_line);
+                    if (std.mem.eql(u8, control.id, id)) return control;
+                    self.controls.append(self.allocator, control) catch |err| {
+                        var released = control;
+                        released.deinit(self.allocator);
+                        return err;
+                    };
+                },
+                .envelope => |envelope_line| {
+                    var envelope = try oap_envelope.deserializeEnvelope(envelope_line, self.allocator);
+                    if (envelope.in_reply_to != null) {
+                        self.responses.append(self.allocator, envelope) catch |err| {
+                            envelope.deinit(self.allocator);
+                            return err;
+                        };
+                    } else {
+                        self.events.append(self.allocator, envelope) catch |err| {
+                            envelope.deinit(self.allocator);
+                            return err;
+                        };
+                    }
+                },
+            }
+        }
+        return error.ControlUnanswered;
     }
 
     fn nextEvent(self: *Runner, line_deadline_ms: i64) !oap_types.Envelope {
@@ -413,9 +566,115 @@ const Runner = struct {
         }
 
         try self.consumeRun(line_deadline_ms);
+        try self.replayRun(line_deadline_ms);
         try self.refuseStaleRevision(line_deadline_ms);
         try self.answerCancel(line_deadline_ms);
         try self.refuseAddressableEnvelope(line_deadline_ms);
+    }
+
+    fn replayRun(self: *Runner, line_deadline_ms: i64) !void {
+        const accepted = "a cursor replay is accepted and re-delivers the run";
+        if (self.run_id.len == 0) return;
+
+        var buffer = std.ArrayList(u8).empty;
+        defer buffer.deinit(self.allocator);
+        var writer = json_writer.JsonWriter.init(&buffer, self.allocator);
+        try writer.beginObject();
+        try writer.writeStringField("control", "replay");
+        try writer.writeStringField("id", replay_id);
+        try writer.writeStringField("session_id", self.session);
+        try writer.writeStringField("run_id", self.run_id);
+        try writer.writeIntField("after", 0);
+        try writer.endObject();
+        try self.client.write(buffer.items);
+
+        const control_answer = self.answerControl(replay_id, line_deadline_ms) catch |err| {
+            if (err == error.ControlUnanswered) {
+                try self.fail(
+                    accepted,
+                    "the endpoint answered nothing; a control it does not implement must still be answered with unsupported_control",
+                );
+                return;
+            }
+            try self.failReason(accepted, err);
+            return;
+        };
+        var held = control_answer;
+        defer held.deinit(self.allocator);
+
+        if (std.mem.eql(u8, held.control, "replay.accepted")) {
+        } else if (std.mem.eql(u8, held.control, "replay.gap")) {
+            try self.failOwned(
+                accepted,
+                try std.fmt.allocPrint(
+                    self.allocator,
+                    "the endpoint retains nothing at {d}; its window is {d}..{d}",
+                    .{ held.requested_after, held.oldest_available, held.latest_available },
+                ),
+            );
+            return;
+        } else if (std.mem.eql(u8, held.code, "unsupported_control")) {
+            try self.skip(accepted, "the endpoint does not implement the replay control, which the binding permits");
+            return;
+        } else {
+            try self.failOwned(
+                accepted,
+                try std.fmt.allocPrint(self.allocator, "{s}: {s}", .{ held.code, held.message }),
+            );
+            return;
+        }
+
+        var replayed = std.ArrayList([]const u8).empty;
+        defer {
+            for (replayed.items) |id| self.allocator.free(id);
+            replayed.deinit(self.allocator);
+        }
+        while (true) {
+            var event = self.nextEvent(line_deadline_ms) catch |err| {
+                try self.failReason(accepted, err);
+                return;
+            };
+            defer event.deinit(self.allocator);
+            const belongs = event.run_id != null and std.mem.eql(u8, event.run_id.?, self.run_id);
+            if (!belongs) continue;
+            const id_copy = self.allocator.dupe(u8, event.id) catch |err| {
+                return err;
+            };
+            replayed.append(self.allocator, id_copy) catch |err| {
+                self.allocator.free(id_copy);
+                return err;
+            };
+            if (event.payload.isTerminal()) break;
+        }
+
+        if (self.run_events.items.len == 0) {
+            try self.fail(accepted, "the run delivered no envelope the replay could re-deliver");
+            return;
+        }
+        if (replayed.items.len != self.run_events.items.len) {
+            try self.failOwned(
+                accepted,
+                try std.fmt.allocPrint(
+                    self.allocator,
+                    "the replay delivered {d} envelopes for a run of {d}; a cursor re-delivers what the host already has, not a different set",
+                    .{ replayed.items.len, self.run_events.items.len },
+                ),
+            );
+            return;
+        }
+        for (replayed.items, self.run_events.items) |seen, original| {
+            if (std.mem.eql(u8, seen, original)) continue;
+            try self.failOwned(
+                accepted,
+                try std.fmt.allocPrint(
+                    self.allocator,
+                    "the replay delivered envelope \"{s}\" where the run had \"{s}\"",
+                    .{ seen, original },
+                ),
+            );
+            return;
+        }
+        try self.pass(accepted);
     }
 
     fn refuseStaleRevision(self: *Runner, line_deadline_ms: i64) !void {
@@ -619,6 +878,15 @@ const Runner = struct {
             var held = event;
             defer held.deinit(self.allocator);
 
+            if (held.run_id != null and std.mem.eql(u8, held.run_id.?, self.run_id)) {
+                const id_copy = self.allocator.dupe(u8, held.id) catch |err| {
+                    return err;
+                };
+                self.run_events.append(self.allocator, id_copy) catch |err| {
+                    self.allocator.free(id_copy);
+                    return err;
+                };
+            }
             if (held.sequence) |sequence| {
                 if (held.run_id != null and std.mem.eql(u8, held.run_id.?, self.run_id)) {
                     if (sequence <= last_sequence) {
@@ -751,12 +1019,13 @@ test "events that arrive ahead of the answer are read in the order they were wri
         \\  *protocol.initialize.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"protocol.initialize.response","id":"a1","in_reply_to":"conformance-request-1","payload":{"protocol_version":"0.1","profile":"open-agent-protocol.agent-control-core","endpoint":{"id":"fake"}}}' ;;
         \\  *capabilities.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"a2","in_reply_to":"conformance-request-2","capability_revision":"rev-1","payload":{"endpoint":{"id":"fake"},"features":{}}}' ;;
         \\  *session.open.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"a3","in_reply_to":"conformance-request-3","payload":{"session_id":"conformance","status":"idle"}}' ;;
-        \\  *session.message.submit.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"e1","sequence":1,"payload":{"session_id":"conformance","run_id":"run-1","status":"running"}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"content.delta","id":"e2","sequence":2,"payload":{"session_id":"conformance","run_id":"run-1","message_id":"m-e2","part":{"type":"text","text":"one"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.requested","id":"e2","payload":{"interaction_id":"p-1","requested_by":"fake","responded_by":"user","session_id":"conformance","run_id":"run-1","title":"Allow","choices":[{"id":"approve","label":"Approve"}]}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"content.delta","id":"e4","sequence":4,"payload":{"session_id":"conformance","run_id":"run-1","message_id":"m-e4","part":{"type":"text","text":"two"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"a4","in_reply_to":"conformance-request-4","payload":{"session_id":"conformance","accepted":true,"submission_id":"s1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"run-1"}}' ;;
-        \\  *choice_id*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.resolved","id":"e3","payload":{"interaction_id":"p-1","requested_by":"fake","responded_by":"user","session_id":"conformance","run_id":"run-1","outcome":"resolved","choice_id":"approve","granted":true}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.completed","id":"e6","sequence":6,"payload":{"session_id":"conformance","run_id":"run-1","stop_reason":"end_turn","final_response":{"role":"assistant","content":"done"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.resolve.response","id":"a5","in_reply_to":"conformance-request-5","payload":{"interaction_id":"p-1","session_id":"conformance","run_id":"run-1","accepted":true}}' ;;
+        \\  *session.message.submit.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"e1","sequence":1,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","status":"running"}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"content.delta","id":"e2","sequence":2,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","message_id":"m-e2","part":{"type":"text","text":"one"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.requested","id":"e2","run_id":"run-1","payload":{"interaction_id":"p-1","requested_by":"fake","responded_by":"user","session_id":"conformance","run_id":"run-1","title":"Allow","choices":[{"id":"approve","label":"Approve"}]}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"content.delta","id":"e4","sequence":4,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","message_id":"m-e4","part":{"type":"text","text":"two"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"a4","in_reply_to":"conformance-request-4","run_id":"run-1","payload":{"session_id":"conformance","accepted":true,"submission_id":"s1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"run-1"}}' ;;
+        \\  *choice_id*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.resolved","id":"e3","run_id":"run-1","payload":{"interaction_id":"p-1","requested_by":"fake","responded_by":"user","session_id":"conformance","run_id":"run-1","outcome":"resolved","choice_id":"approve","granted":true}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.completed","id":"e6","sequence":6,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","stop_reason":"end_turn","final_response":{"role":"assistant","content":"done"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.resolve.response","id":"a5","in_reply_to":"conformance-request-5","run_id":"run-1","payload":{"interaction_id":"p-1","session_id":"conformance","run_id":"run-1","accepted":true}}' ;;
         \\  *run.cancel.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"cancel-answer","in_reply_to":"%s","payload":{"error":{"code":"unsupported_feature","message":"cancellation is not implemented"}}}\n' "$rid" ;;
     \\  *conformance.not.a.real.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"unknown-answer","in_reply_to":"%s","payload":{"error":{"code":"unknown_request","message":"no such request"}}}\n' "$rid" ;;
     \\  *-stale*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"stale-answer","in_reply_to":"%s","payload":{"error":{"code":"stale_capabilities","message":"that revision is not current"}}}\n' "$rid" ;;
-    \\  *session.state.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.state.response","id":"state-answer","in_reply_to":"%s","payload":{"session_id":"conformance","status":"idle"}}\n' "$rid" ;;
+    \\  *session.state.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.state.response","id":"t","in_reply_to":"%s","payload":{"session_id":"conformance","status":"idle"}}\n' "$rid" ;;
+    \\  *replay*) printf '%s\n' '{"control":"replay.accepted","id":"conformance-replay-1"}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"e1","sequence":1,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","status":"running"}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"content.delta","id":"e2","sequence":2,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","message_id":"m-e2","part":{"type":"text","text":"one"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.requested","id":"e2","run_id":"run-1","payload":{"interaction_id":"p-1","requested_by":"fake","responded_by":"user","session_id":"conformance","run_id":"run-1","title":"Allow","choices":[{"id":"approve","label":"Approve"}]}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"content.delta","id":"e4","sequence":4,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","message_id":"m-e4","part":{"type":"text","text":"two"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.resolved","id":"e3","run_id":"run-1","payload":{"interaction_id":"p-1","requested_by":"fake","responded_by":"user","session_id":"conformance","run_id":"run-1","outcome":"resolved","choice_id":"approve","granted":true}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.completed","id":"e6","sequence":6,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","stop_reason":"end_turn","final_response":{"role":"assistant","content":"done"}}}' ;;
         \\  esac
         \\done
     ;
@@ -781,12 +1050,13 @@ const fixture_script =
     \\  *protocol.initialize.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"protocol.initialize.response","id":"a1","in_reply_to":"conformance-request-1","payload":{"protocol_version":"0.1","profile":"open-agent-protocol.agent-control-core","endpoint":{"id":"fake"}}}' ;;
     \\  *capabilities.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"a2","in_reply_to":"conformance-request-2","capability_revision":"rev-1","payload":{"endpoint":{"id":"fake"},"features":{}}}' ;;
     \\  *session.open.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"a3","in_reply_to":"conformance-request-3","payload":{"session_id":"conformance","status":"idle"}}' ;;
-    \\  *session.message.submit.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"e1","sequence":1,"payload":{"session_id":"conformance","run_id":"run-1","status":"running"}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"content.delta","id":"e2","sequence":2,"payload":{"session_id":"conformance","run_id":"run-1","message_id":"m-e2","part":{"type":"text","text":"one"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.requested","id":"e3","sequence":3,"payload":{"interaction_id":"p-1","requested_by":"fake","responded_by":"user","session_id":"conformance","run_id":"run-1","title":"Allow","choices":[{"id":"approve","label":"Approve"}]}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"a4","in_reply_to":"conformance-request-4","payload":{"session_id":"conformance","accepted":true,"submission_id":"s1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"run-1"}}' ;;
-    \\  *choice_id*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.resolved","id":"e5","sequence":5,"payload":{"interaction_id":"p-1","requested_by":"fake","responded_by":"user","session_id":"conformance","run_id":"run-1","outcome":"resolved","choice_id":"approve","granted":true}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.completed","id":"e6","sequence":6,"payload":{"session_id":"conformance","run_id":"run-1","stop_reason":"end_turn","final_response":{"role":"assistant","content":"done"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.resolve.response","id":"a7","in_reply_to":"conformance-request-5","payload":{"interaction_id":"p-1","session_id":"conformance","run_id":"run-1","accepted":true}}' ;;
+    \\  *session.message.submit.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"e1","sequence":1,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","status":"running"}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"content.delta","id":"e2","sequence":2,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","message_id":"m-e2","part":{"type":"text","text":"one"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.requested","id":"e3","sequence":3,"run_id":"run-1","payload":{"interaction_id":"p-1","requested_by":"fake","responded_by":"user","session_id":"conformance","run_id":"run-1","title":"Allow","choices":[{"id":"approve","label":"Approve"}]}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"a4","in_reply_to":"conformance-request-4","run_id":"run-1","payload":{"session_id":"conformance","accepted":true,"submission_id":"s1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"run-1"}}' ;;
+    \\  *choice_id*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.resolved","id":"e5","sequence":5,"run_id":"run-1","payload":{"interaction_id":"p-1","requested_by":"fake","responded_by":"user","session_id":"conformance","run_id":"run-1","outcome":"resolved","choice_id":"approve","granted":true}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.completed","id":"e6","sequence":6,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","stop_reason":"end_turn","final_response":{"role":"assistant","content":"done"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.resolve.response","id":"a7","in_reply_to":"conformance-request-5","run_id":"run-1","payload":{"interaction_id":"p-1","session_id":"conformance","run_id":"run-1","accepted":true}}' ;;
     \\  *run.cancel.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"cancel-answer","in_reply_to":"%s","payload":{"error":{"code":"unsupported_feature","message":"cancellation is not implemented"}}}\n' "$rid" ;;
     \\  *conformance.not.a.real.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"unknown-answer","in_reply_to":"%s","payload":{"error":{"code":"unknown_request","message":"no such request"}}}\n' "$rid" ;;
     \\  *-stale*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"stale-answer","in_reply_to":"%s","payload":{"error":{"code":"stale_capabilities","message":"that revision is not current"}}}\n' "$rid" ;;
-    \\  *session.state.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.state.response","id":"state-answer","in_reply_to":"%s","payload":{"session_id":"conformance","status":"idle"}}\n' "$rid" ;;
+    \\  *session.state.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.state.response","id":"t","in_reply_to":"%s","payload":{"session_id":"conformance","status":"idle"}}\n' "$rid" ;;
+    \\  *replay*) printf '%s\n' '{"control":"replay.accepted","id":"conformance-replay-1"}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"e1","sequence":1,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","status":"running"}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"content.delta","id":"e2","sequence":2,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","message_id":"m-e2","part":{"type":"text","text":"one"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.requested","id":"e3","sequence":3,"run_id":"run-1","payload":{"interaction_id":"p-1","requested_by":"fake","responded_by":"user","session_id":"conformance","run_id":"run-1","title":"Allow","choices":[{"id":"approve","label":"Approve"}]}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.permission.resolved","id":"e5","sequence":5,"run_id":"run-1","payload":{"interaction_id":"p-1","requested_by":"fake","responded_by":"user","session_id":"conformance","run_id":"run-1","outcome":"resolved","choice_id":"approve","granted":true}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.completed","id":"e6","sequence":6,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","stop_reason":"end_turn","final_response":{"role":"assistant","content":"done"}}}' ;;
     \\  esac
     \\done
 ;
@@ -942,6 +1212,7 @@ const cancel_script =
     \\  *conformance.not.a.real.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"unknown-answer","in_reply_to":"%s","payload":{"error":{"code":"unknown_request","message":"no such request"}}}\n' "$rid" ;;
     \\  *-stale*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"stale-answer","in_reply_to":"%s","payload":{"error":{"code":"stale_capabilities","message":"that revision is not current"}}}\n' "$rid" ;;
     \\  *session.state.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.state.response","id":"state-answer","in_reply_to":"%s","payload":{"session_id":"conformance","status":"idle"}}\n' "$rid" ;;
+    \\  *replay*) printf '%s\n' '{"control":"replay.error","id":"conformance-replay-1","code":"unsupported_control","message":"no replay here"}' ;;
     \\  esac
     \\done
 ;
@@ -957,6 +1228,7 @@ const cancelling_script =
     \\  *conformance.not.a.real.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"unknown-answer","in_reply_to":"%s","payload":{"error":{"code":"unknown_request","message":"no such request"}}}\n' "$rid" ;;
     \\  *-stale*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"stale-answer","in_reply_to":"%s","payload":{"error":{"code":"stale_capabilities","message":"that revision is not current"}}}\n' "$rid" ;;
     \\  *session.state.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.state.response","id":"state-answer","in_reply_to":"%s","payload":{"session_id":"conformance","status":"idle"}}\n' "$rid" ;;
+    \\  *replay*) printf '%s\n' '{"control":"replay.error","id":"conformance-replay-1","code":"unsupported_control","message":"no replay here"}' ;;
     \\  esac
     \\done
 ;
@@ -998,11 +1270,12 @@ const stale_refusing_script =
     \\  *protocol.initialize.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"protocol.initialize.response","id":"a1","in_reply_to":"conformance-request-1","payload":{"protocol_version":"0.1","profile":"open-agent-protocol.agent-control-core","endpoint":{"id":"fake"}}}' ;;
     \\  *capabilities.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"a2","in_reply_to":"conformance-request-2","capability_revision":"rev-1","payload":{"endpoint":{"id":"fake"},"features":{}}}' ;;
     \\  *session.open.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"a3","in_reply_to":"conformance-request-3","payload":{"session_id":"conformance","status":"idle"}}' ;;
-    \\  *session.message.submit.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"e1","sequence":1,"payload":{"session_id":"conformance","run_id":"run-1","status":"running"}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.completed","id":"e2","sequence":2,"payload":{"session_id":"conformance","run_id":"run-1","stop_reason":"end_turn","final_response":{"role":"assistant","content":"done"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"a4","in_reply_to":"conformance-request-4","payload":{"session_id":"conformance","accepted":true,"submission_id":"s1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"run-1"}}' ;;
+    \\  *session.message.submit.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"e1","sequence":1,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","status":"running"}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.completed","id":"e2","sequence":2,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","stop_reason":"end_turn","final_response":{"role":"assistant","content":"done"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"a4","in_reply_to":"conformance-request-4","run_id":"run-1","payload":{"session_id":"conformance","accepted":true,"submission_id":"s1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"run-1"}}' ;;
     \\  *run.cancel.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"c","in_reply_to":"%s","payload":{"error":{"code":"unsupported_feature","message":"x"}}}\n' "$rid" ;;
     \\  *conformance.not.a.real.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"u","in_reply_to":"%s","payload":{"error":{"code":"unknown_request","message":"x"}}}\n' "$rid" ;;
     \\  *-stale*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"s","in_reply_to":"%s","payload":{"error":{"code":"invalid_request","message":"that revision is not one this endpoint issued"}}}\n' "$rid" ;;
     \\  *session.state.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.state.response","id":"t","in_reply_to":"%s","payload":{"session_id":"conformance","status":"idle"}}\n' "$rid" ;;
+    \\  *replay*) printf '%s\n' '{"control":"replay.error","id":"conformance-replay-1","code":"unsupported_control","message":"no replay here"}' ;;
     \\  esac
     \\done
 ;
@@ -1032,11 +1305,12 @@ test "a recovery failure is reported under the check it belongs to" {
         \\  *protocol.initialize.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"protocol.initialize.response","id":"a1","in_reply_to":"conformance-request-1","payload":{"protocol_version":"0.1","profile":"open-agent-protocol.agent-control-core","endpoint":{"id":"fake"}}}' ;;
         \\  *capabilities.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"a2","in_reply_to":"conformance-request-2","capability_revision":"rev-1","payload":{"endpoint":{"id":"fake"},"features":{}}}' ;;
         \\  *session.open.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"a3","in_reply_to":"conformance-request-3","payload":{"session_id":"conformance","status":"idle"}}' ;;
-        \\  *session.message.submit.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"e1","sequence":1,"payload":{"session_id":"conformance","run_id":"run-1","status":"running"}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.completed","id":"e2","sequence":2,"payload":{"session_id":"conformance","run_id":"run-1","stop_reason":"end_turn","final_response":{"role":"assistant","content":"done"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"a4","in_reply_to":"conformance-request-4","payload":{"session_id":"conformance","accepted":true,"submission_id":"s1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"run-1"}}' ;;
+        \\  *session.message.submit.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"e1","sequence":1,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","status":"running"}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.completed","id":"e2","sequence":2,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","stop_reason":"end_turn","final_response":{"role":"assistant","content":"done"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"a4","in_reply_to":"conformance-request-4","run_id":"run-1","payload":{"session_id":"conformance","accepted":true,"submission_id":"s1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"run-1"}}' ;;
         \\  *run.cancel.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"c","in_reply_to":"%s","payload":{"error":{"code":"unsupported_feature","message":"x"}}}\n' "$rid" ;;
         \\  *-stale*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"s","in_reply_to":"%s","payload":{"error":{"code":"stale_capabilities","message":"x"}}}\n' "$rid" ;;
         \\  *conformance.not.a.real.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"u","in_reply_to":"%s","payload":{"error":{"code":"unknown_request","message":"x"}}}\n' "$rid" ;;
         \\  *session.state.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"r","in_reply_to":"%s","payload":{"error":{"code":"unsupported_feature","message":"this endpoint will not be asked again"}}}\n' "$rid" ;;
+        \\  *replay*) printf '%s\n' '{"control":"replay.error","id":"conformance-replay-1","code":"unsupported_control","message":"no replay here"}' ;;
         \\  esac
         \\done
     ;
@@ -1056,4 +1330,191 @@ test "a recovery failure is reported under the check it belongs to" {
         refused.detail,
     );
     try std.testing.expect(report.verdict("the endpoint stopped answering after a recoverable protocol error") == null);
+}
+
+test "a replay is accepted and its events reach the runner" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var report = try run(std.testing.allocator, .{
+        .command = "/bin/sh",
+        .args = &.{ "-c", fixture_script },
+        .line_deadline_ms = 5000,
+    });
+    defer report.deinit();
+
+    const replay = report.verdict("a cursor replay is accepted and re-delivers the run") orelse return error.CheckMissing;
+    try std.testing.expect(replay.passed);
+}
+
+test "a negative number in a control frame is judged, not fatal" {
+    const frame = parseControl(std.testing.allocator, "{\"control\":\"replay.gap\",\"id\":\"r1\",\"requested_after\":-1}") catch |err| {
+        try std.testing.expect(err == error.InvalidControlFrame);
+        return;
+    };
+    var released = frame;
+    released.deinit(std.testing.allocator);
+    return error.NegativeNotRejected;
+}
+
+test "a control frame that is not JSON is judged, not fatal" {
+    try std.testing.expectError(error.InvalidControlFrame, parseControl(std.testing.allocator, "not json"));
+    try std.testing.expectError(error.InvalidControlFrame, parseControl(std.testing.allocator, "[1,2,3]"));
+}
+
+test "a cursor that is not a whole non-negative number is judged, not swallowed" {
+    const cases = [_][]const u8{
+        "{\"control\":\"replay.gap\",\"id\":\"r1\",\"requested_after\":5.5}",
+        "{\"control\":\"replay.gap\",\"id\":\"r1\",\"requested_after\":5.0}",
+        "{\"control\":\"replay.gap\",\"id\":\"r1\",\"requested_after\":\"5\"}",
+        "{\"control\":\"replay.gap\",\"id\":\"r1\",\"requested_after\":true}",
+        "{\"control\":\"replay.gap\",\"id\":\"r1\",\"requested_after\":[5]}",
+    };
+    for (cases) |line| {
+        try std.testing.expectError(error.InvalidControlFrame, parseControl(std.testing.allocator, line));
+    }
+}
+
+const replay_verdict = "a cursor replay is accepted and re-delivers the run";
+
+fn replayVerdictOf(report: *const Report) !Check {
+    return report.verdict(replay_verdict) orelse error.CheckMissing;
+}
+
+
+fn withoutEnvelopeRunId(allocator: std.mem.Allocator, script: []const u8) ![]u8 {
+    const marker = ",\"run_id\":\"run-1\",\"payload\"";
+    const boundary = std.mem.indexOf(u8, script, "*replay*)") orelse return error.MarkerMissing;
+    const stream = script[0..boundary];
+    const rest = script[boundary..];
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    var head = stream;
+    while (true) {
+        const at = std.mem.indexOf(u8, head, marker) orelse {
+            try out.appendSlice(allocator, head);
+            break;
+        };
+        try out.appendSlice(allocator, head[0..at]);
+        try out.appendSlice(allocator, ",\"payload\"");
+        head = head[at + marker.len ..];
+    }
+    try out.appendSlice(allocator, rest);
+    return out.toOwnedSlice(allocator);
+}
+
+fn withReplayBody(allocator: std.mem.Allocator, body: []const u8) ![]u8 {
+    const marker = "@@REPLAY@@";
+    const at = std.mem.indexOf(u8, replay_case_script, marker) orelse return error.MarkerMissing;
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, replay_case_script[0..at]);
+    try out.appendSlice(allocator, body);
+    try out.appendSlice(allocator, replay_case_script[at + marker.len ..]);
+    return out.toOwnedSlice(allocator);
+}
+
+
+
+const replay_case_script =
+        \\while read -r line; do
+        \\  case "$line" in
+        \\  *protocol.initialize.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"protocol.initialize.response","id":"a1","in_reply_to":"conformance-request-1","payload":{"protocol_version":"0.1","profile":"open-agent-protocol.agent-control-core","endpoint":{"id":"fake"}}}' ;;
+        \\  *capabilities.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"a2","in_reply_to":"conformance-request-2","capability_revision":"rev-1","payload":{"endpoint":{"id":"fake"},"features":{}}}' ;;
+        \\  *session.open.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"a3","in_reply_to":"conformance-request-3","payload":{"session_id":"conformance","status":"idle"}}' ;;
+        \\  *session.message.submit.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"e1","sequence":1,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","status":"running"}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.completed","id":"e2","sequence":2,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","stop_reason":"end_turn","final_response":{"role":"assistant","content":"done"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"a4","in_reply_to":"conformance-request-4","payload":{"session_id":"conformance","accepted":true,"submission_id":"s1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"run-1"}}' ;;
+        \\  *run.cancel.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"c","in_reply_to":"%s","payload":{"error":{"code":"unsupported_feature","message":"x"}}}\n' "$rid" ;;
+        \\  *-stale*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"s","in_reply_to":"%s","payload":{"error":{"code":"stale_capabilities","message":"x"}}}\n' "$rid" ;;
+        \\  *conformance.not.a.real.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"u","in_reply_to":"%s","payload":{"error":{"code":"unknown_request","message":"x"}}}\n' "$rid" ;;
+        \\  *session.state.request*) rid=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p'); printf '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.state.response","id":"t","in_reply_to":"%s","payload":{"session_id":"conformance","status":"idle"}}\n' "$rid" ;;
+        \\  *replay*) printf '%s\n' @@REPLAY@@ ;;
+        \\  esac
+        \\done
+    ;
+
+const replay_over_unattributed_run = "'{\"control\":\"replay.accepted\",\"id\":\"conformance-replay-1\"}' '{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"run.started\",\"id\":\"e1\",\"sequence\":1,\"run_id\":\"run-1\",\"payload\":{\"session_id\":\"conformance\",\"run_id\":\"run-1\",\"status\":\"running\"}}' '{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"run.completed\",\"id\":\"e2\",\"sequence\":2,\"run_id\":\"run-1\",\"payload\":{\"session_id\":\"conformance\",\"run_id\":\"run-1\",\"stop_reason\":\"end_turn\",\"final_response\":{\"role\":\"assistant\",\"content\":\"done\"}}}'";
+
+const renamed_replay = "'{\"control\":\"replay.accepted\",\"id\":\"conformance-replay-1\"}' '{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"run.started\",\"id\":\"renamed\",\"sequence\":1,\"run_id\":\"run-1\",\"payload\":{\"session_id\":\"conformance\",\"run_id\":\"run-1\",\"status\":\"running\"}}' '{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"run.completed\",\"id\":\"e2\",\"sequence\":2,\"run_id\":\"run-1\",\"payload\":{\"session_id\":\"conformance\",\"run_id\":\"run-1\",\"stop_reason\":\"end_turn\",\"final_response\":{\"role\":\"assistant\",\"content\":\"done\"}}}'";
+
+const short_replay = "'{\"control\":\"replay.accepted\",\"id\":\"conformance-replay-1\"}' '{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"run.completed\",\"id\":\"e2\",\"sequence\":2,\"run_id\":\"run-1\",\"payload\":{\"session_id\":\"conformance\",\"run_id\":\"run-1\",\"stop_reason\":\"end_turn\",\"final_response\":{\"role\":\"assistant\",\"content\":\"done\"}}}'";
+
+const unsupported_replay = "'{\"control\":\"replay.error\",\"id\":\"conformance-replay-1\",\"code\":\"unsupported_control\",\"message\":\"no replay here\"}'";
+
+test "a replay that drops an envelope fails the check, through the public runner" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const script = try withReplayBody(std.testing.allocator, short_replay);
+    defer std.testing.allocator.free(script);
+
+    var report = try run(std.testing.allocator, .{
+        .command = "/bin/sh",
+        .args = &.{ "-c", script },
+        .line_deadline_ms = 5000,
+    });
+    defer report.deinit();
+
+    const replay = try replayVerdictOf(&report);
+    try std.testing.expect(!replay.passed);
+    try std.testing.expectEqualStrings(
+        "the replay delivered 1 envelopes for a run of 2; a cursor re-delivers what the host already has, not a different set",
+        replay.detail,
+    );
+}
+
+test "an endpoint that refuses the replay control skips the check, through the public runner" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const script = try withReplayBody(std.testing.allocator, unsupported_replay);
+    defer std.testing.allocator.free(script);
+
+    var report = try run(std.testing.allocator, .{
+        .command = "/bin/sh",
+        .args = &.{ "-c", script },
+        .line_deadline_ms = 5000,
+    });
+    defer report.deinit();
+
+    const replay = try replayVerdictOf(&report);
+    try std.testing.expect(replay.skipped);
+    try std.testing.expect(replay.passed);
+    try std.testing.expectEqualStrings(
+        "the endpoint does not implement the replay control, which the binding permits",
+        replay.detail,
+    );
+}
+
+
+test "a run whose events name no run is reported by the replay check, through the public runner" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const script = try withReplayBody(std.testing.allocator, replay_over_unattributed_run);
+    defer std.testing.allocator.free(script);
+    const run_events = try withoutEnvelopeRunId(std.testing.allocator, script);
+    defer std.testing.allocator.free(run_events);
+
+    var report = try run(std.testing.allocator, .{
+        .command = "/bin/sh",
+        .args = &.{ "-c", run_events },
+        .line_deadline_ms = 5000,
+    });
+    defer report.deinit();
+
+    const replay = try replayVerdictOf(&report);
+    try std.testing.expect(!replay.passed);
+    try std.testing.expectEqualStrings("the run delivered no envelope the replay could re-deliver", replay.detail);
+}
+
+test "a replay that renames an envelope fails the check, through the public runner" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const script = try withReplayBody(std.testing.allocator, renamed_replay);
+    defer std.testing.allocator.free(script);
+
+    var report = try run(std.testing.allocator, .{
+        .command = "/bin/sh",
+        .args = &.{ "-c", script },
+        .line_deadline_ms = 5000,
+    });
+    defer report.deinit();
+
+    const replay = try replayVerdictOf(&report);
+    try std.testing.expect(!replay.passed);
+    try std.testing.expectEqualStrings(
+        "the replay delivered envelope \"renamed\" where the run had \"e1\"",
+        replay.detail,
+    );
 }

@@ -67,6 +67,30 @@ fn emptyModels(allocator: std.mem.Allocator) ![]ai_types.Model {
     return allocator.alloc(ai_types.Model, 0);
 }
 
+pub const ModelProvenance = enum { discovered, declared };
+
+pub const CatalogSnapshot = struct {
+    models: []ai_types.Model,
+    provenance: []ModelProvenance,
+
+    pub fn deinit(self: *CatalogSnapshot, allocator: std.mem.Allocator) void {
+        deinitModels(allocator, self.models);
+        allocator.free(self.provenance);
+    }
+
+    pub fn firstProvenanceOf(self: CatalogSnapshot, model_id: []const u8) ?ModelProvenance {
+        for (self.models, self.provenance) |model, tag| {
+            if (std.mem.eql(u8, model.id, model_id)) return tag;
+        }
+        return null;
+    }
+
+    pub fn provenanceForIndex(self: CatalogSnapshot, index: usize) ?ModelProvenance {
+        if (index >= self.provenance.len) return null;
+        return self.provenance[index];
+    }
+};
+
 pub fn deinitModels(allocator: std.mem.Allocator, models: []ai_types.Model) void {
     for (models) |*model| model.deinit(allocator);
     allocator.free(models);
@@ -520,6 +544,10 @@ const catalog_loader_rows = [_][]const u8{
     "kimi",
 };
 
+pub fn supportsCatalogModelDiscovery(id: []const u8) bool {
+    return isCatalogLoaderRow(id) or std.mem.eql(u8, id, "anthropic") or std.mem.eql(u8, id, "openai-codex") or std.mem.eql(u8, id, "github-copilot");
+}
+
 const deepseek_catalog_models_url = "https://api.deepseek.com/v1/models";
 const proxy_models_url = "https://proxy.example/api/v1/models";
 const xiaomi_catalog_models_url = "https://token-plan-cn.xiaomimimo.com/v1/models";
@@ -558,6 +586,32 @@ fn loadCatalogModelsWithRows(
     storage: ?*oauth_storage.AuthStorage,
     mode: CatalogLoadMode,
 ) ![]ai_types.Model {
+    return loadRowsWithProvenance(allocator, ids, storage, mode, null);
+}
+
+fn loadCatalogSnapshotWithRows(
+    allocator: std.mem.Allocator,
+    ids: []const []const u8,
+    storage: ?*oauth_storage.AuthStorage,
+    mode: CatalogLoadMode,
+) !CatalogSnapshot {
+    var provenance = std.ArrayList(ModelProvenance).empty;
+    errdefer provenance.deinit(allocator);
+    const models = try loadRowsWithProvenance(allocator, ids, storage, mode, &provenance);
+    var models_owned = true;
+    errdefer if (models_owned) deinitModels(allocator, models);
+    const tags = try provenance.toOwnedSlice(allocator);
+    models_owned = false;
+    return .{ .models = models, .provenance = tags };
+}
+
+fn loadRowsWithProvenance(
+    allocator: std.mem.Allocator,
+    ids: []const []const u8,
+    storage: ?*oauth_storage.AuthStorage,
+    mode: CatalogLoadMode,
+    provenance: ?*std.ArrayList(ModelProvenance),
+) ![]ai_types.Model {
     var models = std.ArrayList(ai_types.Model).empty;
     errdefer {
         for (models.items) |*model| model.deinit(allocator);
@@ -570,7 +624,7 @@ fn loadCatalogModelsWithRows(
             try catalogEndpointFromEnvironment(allocator, storage, id);
         var held = endpoint orelse continue;
         defer held.deinit(allocator);
-        try appendCatalogTargetModels(allocator, &models, held, storage, mode);
+        try appendCatalogTargetModels(allocator, &models, held, storage, mode, provenance);
     }
     return models.toOwnedSlice(allocator);
 }
@@ -585,6 +639,7 @@ fn appendCatalogTargetModels(
     target: CatalogEndpoint,
     storage: ?*oauth_storage.AuthStorage,
     mode: CatalogLoadMode,
+    provenance: ?*std.ArrayList(ModelProvenance),
 ) !void {
     const environment = try catalogEnvironment(allocator, target.id);
     defer freeEnvironment(allocator, environment);
@@ -603,8 +658,11 @@ fn appendCatalogTargetModels(
         if (models.len > 0) {
             for (models) |model| {
                 var built = try catalogModel(allocator, target, model);
-                errdefer built.deinit(allocator);
+                var built_owned = true;
+                errdefer if (built_owned) built.deinit(allocator);
                 try out.append(allocator, built);
+                built_owned = false;
+                if (provenance) |tags| try tags.append(allocator, .discovered);
             }
             return;
         }
@@ -612,8 +670,11 @@ fn appendCatalogTargetModels(
 
     for (provider_catalog.modelsFor(target.id)) |declared| {
         var built = try catalogModel(allocator, target, .{ .id = declared.id });
-        errdefer built.deinit(allocator);
+        var built_owned = true;
+        errdefer if (built_owned) built.deinit(allocator);
         try out.append(allocator, built);
+        built_owned = false;
+        if (provenance) |tags| try tags.append(allocator, .declared);
     }
 }
 
@@ -2387,6 +2448,145 @@ fn putStoredKey(storage: *oauth_storage.AuthStorage, allocator: std.mem.Allocato
     try storage.providers.put(key, .{ .api_key = try allocator.dupe(u8, "stored-key") });
 }
 
+test "a snapshot tells a discovered entry from a declared one" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+    test_catalog_refusal_markers = true;
+    defer test_catalog_refusal_markers = false;
+    var tmp = try tempHome(allocator);
+    defer tmp.cleanup();
+    var storage = oauth_storage.AuthStorage{
+        .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(allocator),
+        .allocator = allocator,
+    };
+    defer storage.deinit();
+    for ([_][]const u8{ "xiaomi", "xiaomi-token-plan-cn" }) |id| {
+        try putStoredKey(&storage, allocator, id);
+    }
+
+    const discovered_row = "xiaomi";
+    var target = catalogTargetInRegion(discovered_row, null) orelse return error.TestExpectedTarget;
+    defer target.deinit(allocator);
+
+    const answering = [_]CatalogDiscovery{
+        .{ .id = discovered_row, .models_url = target.models_url, .model_ids = &.{"m1", "m2"} },
+    };
+    test_catalog_discovery = &answering;
+    defer test_catalog_discovery = null;
+
+    const plan_row = "xiaomi-token-plan-cn";
+    var snapshot = try loadCatalogSnapshotWithRows(
+        allocator,
+        &[_][]const u8{ discovered_row, plan_row },
+        &storage,
+        .allow_cache,
+    );
+    defer snapshot.deinit(allocator);
+
+    try std.testing.expectEqual(snapshot.models.len, snapshot.provenance.len);
+    try std.testing.expectEqual(@as(usize, 2), snapshot.provenance.len);
+
+    for (snapshot.provenance) |tag| {
+        try std.testing.expectEqual(ModelProvenance.discovered, tag);
+    }
+    try std.testing.expectEqual(ModelProvenance.discovered, snapshot.firstProvenanceOf("m1").?);
+    try std.testing.expectEqual(ModelProvenance.discovered, snapshot.firstProvenanceOf("m2").?);
+}
+
+test "a row with no listing is tagged declared, and a mixed snapshot keeps both apart" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+    var tmp = try tempHome(allocator);
+    defer tmp.cleanup();
+    var storage = oauth_storage.AuthStorage{
+        .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(allocator),
+        .allocator = allocator,
+    };
+    defer storage.deinit();
+    for ([_][]const u8{ "xiaomi", "xiaomi-token-plan-cn" }) |id| {
+        try putStoredKey(&storage, allocator, id);
+    }
+
+    const answerer = "xiaomi";
+    var target = catalogTargetInRegion(answerer, null) orelse return error.TestExpectedTarget;
+    defer target.deinit(allocator);
+    const answering = [_]CatalogDiscovery{
+        .{ .id = answerer, .models_url = target.models_url, .model_ids = &.{"m1"} },
+    };
+    test_catalog_discovery = &answering;
+    defer test_catalog_discovery = null;
+
+    const plan_row = blk: {
+        for (provider_catalog.all) |row| {
+            if (provider_catalog.modelsFor(row.id).len > 0) break :blk row.id;
+        }
+        return error.NoRowDeclaresModels;
+    };
+    const declared_ids = provider_catalog.modelsFor(plan_row);
+    try std.testing.expect(declared_ids.len > 0);
+    try putStoredKey(&storage, allocator, plan_row);
+
+    var snapshot = try loadCatalogSnapshotWithRows(
+        allocator,
+        &[_][]const u8{ answerer, plan_row },
+        &storage,
+        .allow_cache,
+    );
+    defer snapshot.deinit(allocator);
+
+    try std.testing.expectEqual(snapshot.models.len, snapshot.provenance.len);
+    try std.testing.expectEqual(ModelProvenance.discovered, snapshot.firstProvenanceOf("m1").?);
+    for (declared_ids) |declared| {
+        const tag = snapshot.firstProvenanceOf(declared.id) orelse return error.DeclaredEntryMissing;
+        try std.testing.expectEqual(ModelProvenance.declared, tag);
+    }
+    var saw_discovered = false;
+    for (snapshot.provenance) |tag| {
+        if (tag == .discovered) saw_discovered = true;
+    }
+    try std.testing.expect(saw_discovered);
+    var saw_declared = false;
+    for (snapshot.provenance) |tag| {
+        if (tag == .declared) saw_declared = true;
+    }
+    try std.testing.expect(saw_declared);
+}
+
+test "the plain loader still returns the same models, with no provenance asked for" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+    var tmp = try tempHome(allocator);
+    defer tmp.cleanup();
+    var storage = oauth_storage.AuthStorage{
+        .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(allocator),
+        .allocator = allocator,
+    };
+    defer storage.deinit();
+    for ([_][]const u8{ "xiaomi", "xiaomi-token-plan-cn" }) |id| {
+        try putStoredKey(&storage, allocator, id);
+    }
+
+    const row = "xiaomi";
+    var target = catalogTargetInRegion(row, null) orelse return error.TestExpectedTarget;
+    defer target.deinit(allocator);
+    const answering = [_]CatalogDiscovery{
+        .{ .id = row, .models_url = target.models_url, .model_ids = &.{"m1", "m2"} },
+    };
+    test_catalog_discovery = &answering;
+    defer test_catalog_discovery = null;
+
+    const plain = try loadCatalogModelsWithRows(allocator, &[_][]const u8{row}, &storage, .allow_cache);
+    defer deinitModels(allocator, plain);
+    try std.testing.expectEqual(@as(usize, 2), plain.len);
+
+    var snapshot = try loadCatalogSnapshotWithRows(allocator, &[_][]const u8{row}, &storage, .allow_cache);
+    defer snapshot.deinit(allocator);
+    try std.testing.expectEqual(plain.len, snapshot.models.len);
+}
+
 test "a refusal is remembered, so a later run drops the row without asking again" {
     const allocator = std.testing.allocator;
     try provider_catalog.blankEnvironment(allocator);
@@ -3838,7 +4038,11 @@ test "the loader's rows are catalog rows the target answers for" {
     for (catalog_loader_rows) |id| {
         try std.testing.expect(provider_catalog.provider(id) != null);
         try std.testing.expect(catalogTargetInRegion(id, provider_catalog.defaultRegion(id)) != null);
+        try std.testing.expect(supportsCatalogModelDiscovery(id));
     }
+    try std.testing.expect(!supportsCatalogModelDiscovery("google"));
+    try std.testing.expect(!supportsCatalogModelDiscovery("ollama"));
+    try std.testing.expect(!supportsCatalogModelDiscovery("azure"));
 }
 
 test "a discovered catalog row builds models on the row's wire and base url" {
@@ -4157,6 +4361,47 @@ fn overriddenCatalogLoadProbe(allocator: std.mem.Allocator) !void {
 test "an overridden catalog row frees every allocation when one fails midway" {
     try overriddenCatalogLoadProbe(std.testing.allocator);
     try std.testing.checkAllAllocationFailures(std.testing.allocator, overriddenCatalogLoadProbe, .{});
+}
+
+fn snapshotProvenanceProbe(allocator: std.mem.Allocator) !void {
+    const discovered_row = "xiaomi";
+    var target = catalogTargetInRegion(discovered_row, null) orelse return error.TestExpectedTarget;
+    defer target.deinit(allocator);
+    var storage = oauth_storage.AuthStorage{
+        .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(allocator),
+        .allocator = allocator,
+    };
+    defer storage.deinit();
+
+    test_catalog_discovery = &[_]CatalogDiscovery{
+        .{ .id = discovered_row, .models_url = target.models_url, .model_ids = &.{"m1", "m2"} },
+    };
+    defer test_catalog_discovery = null;
+    test_catalog_environment = &[_]provider_credential.EnvironmentValue{
+        .{ .name = "XIAOMI_API_KEY", .value = "row-key" },
+    };
+    defer test_catalog_environment = null;
+
+    var snapshot = try loadCatalogSnapshotWithRows(
+        allocator,
+        &[_][]const u8{discovered_row},
+        &storage,
+        .allow_cache,
+    );
+    defer snapshot.deinit(allocator);
+    if (snapshot.models.len != snapshot.provenance.len) return error.TestExpectedProvenance;
+    if (snapshot.provenance.len == 0) return error.TestExpectedProvenance;
+}
+
+test "a provenance snapshot frees every allocation when one fails midway" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
+    test_catalog_refusal_markers = true;
+    defer test_catalog_refusal_markers = false;
+    var tmp = try tempHome(std.testing.allocator);
+    defer tmp.cleanup();
+    try snapshotProvenanceProbe(std.testing.allocator);
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, snapshotProvenanceProbe, .{});
 }
 
 test "catalog row models free every allocation when one fails midway" {

@@ -204,6 +204,7 @@ test "App loginStatusFor reports stored, environment and expired credentials" {
     } });
 
     try std.testing.expectEqual(App.LoginStatus.api_key, App.loginStatusFor(&storage, "kimi", false));
+    try std.testing.expectEqual(App.LoginStatus.env_key, App.loginStatusFor(&storage, "kimi", true));
     try std.testing.expectEqual(App.LoginStatus.oauth, App.loginStatusFor(&storage, "anthropic", false));
     try std.testing.expectEqual(App.LoginStatus.env_key, App.loginStatusFor(null, "anthropic", true));
     try std.testing.expectEqual(App.LoginStatus.none, App.loginStatusFor(null, "kimi", false));
@@ -623,8 +624,8 @@ test "TuiModel login picker shows which providers are logged in" {
     defer tctx.deinit();
     tctx.ctx.width = 80;
     tctx.ctx.height = 24;
-    model.app.?.login_status[0] = .oauth;
-    model.app.?.login_status[3] = .api_key;
+    model.app.?.login_status[App.loginProviderCatalogIndex("anthropic").?] = .oauth;
+    model.app.?.login_status[App.loginProviderCatalogIndex("kimi").?] = .api_key;
     model.app.?.state.mode = .picker;
     model.app.?.state.picker_kind = .login;
 
@@ -941,7 +942,7 @@ pub const App = struct {
     last_view_height: usize = 8,
     inline_history_flushed: usize = 0,
     inline_flushed_rows: usize = 0,
-    login_status: [login_providers.len]LoginStatus = [_]LoginStatus{.none} ** login_providers.len,
+    login_status: [provider_catalog.all.len]LoginStatus = [_]LoginStatus{.none} ** provider_catalog.all.len,
     pending_session_reset: bool = false,
     quarantine_events: bool = false,
     quarantine_generation: u32 = 0,
@@ -1394,17 +1395,66 @@ pub const App = struct {
         self.saveSessionIndex(store);
     }
 
-    const login_providers = [_][]const u8{ "anthropic", "github-copilot", "openai-codex", "kimi" };
-    const login_env_keys = [_][]const []const u8{
-        provider_catalog.credentialEnv("anthropic"),
-        provider_catalog.credentialEnv("github-copilot"),
-        provider_catalog.credentialEnv("openai-codex"),
-        provider_catalog.credentialEnv("kimi"),
-    };
+    fn loginDiscoveryAvailable(id: []const u8) bool {
+        return model_catalog.supportsCatalogModelDiscovery(id);
+    }
+
+    fn loginProviderGroupLabel(row: provider_catalog.Provider) []const u8 {
+        if (provider_catalog.sharesCredentialEnv(row.id) and row.credential_env.len > 0) return row.credential_env[0];
+        return row.display_name orelse row.id;
+    }
+
+    fn supportsLogin(row: provider_catalog.Provider) bool {
+        for (row.auth) |kind| {
+            if (kind == .api_key or kind == .oauth) return true;
+        }
+        return false;
+    }
+
+    fn hasEarlierSharedCredential(index: usize) bool {
+        const row = provider_catalog.all[index];
+        for (provider_catalog.all[0..index]) |earlier| {
+            for (row.credential_env) |name| {
+                for (earlier.credential_env) |earlier_name| {
+                    if (std.mem.eql(u8, name, earlier_name)) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    fn loginProviderCount() usize {
+        var count: usize = 0;
+        for (provider_catalog.all, 0..) |row, index| {
+            if (supportsLogin(row) and !hasEarlierSharedCredential(index)) count += 1;
+        }
+        return count;
+    }
+
+    fn loginProviderAt(index: usize) ?provider_catalog.Provider {
+        var visible_index: usize = 0;
+        for (0..2) |availability_pass| {
+            for (provider_catalog.all, 0..) |row, catalog_index| {
+                if (!supportsLogin(row) or hasEarlierSharedCredential(catalog_index)) continue;
+                if (loginDiscoveryAvailable(row.id) != (availability_pass == 0)) continue;
+                if (visible_index == index) return row;
+                visible_index += 1;
+            }
+        }
+        return null;
+    }
+
+    fn loginProviderCatalogIndex(provider_id: []const u8) ?usize {
+        for (provider_catalog.all, 0..) |row, index| {
+            if (std.mem.eql(u8, row.id, provider_id)) return index;
+        }
+        return null;
+    }
 
     pub const LoginStatus = enum { none, api_key, env_key, oauth, expired };
 
     pub fn loginStatusFor(storage: ?*const oauth_storage.AuthStorage, provider_id: []const u8, env_key_present: bool) LoginStatus {
+        if (env_key_present) return .env_key;
         if (storage) |stored| {
             if (stored.providers.get(provider_id)) |auth| {
                 return switch (auth) {
@@ -1413,7 +1463,7 @@ pub const App = struct {
                 };
             }
         }
-        return if (env_key_present) .env_key else .none;
+        return .none;
     }
 
     pub fn loginBadge(status: LoginStatus) ?[]const u8 {
@@ -1430,37 +1480,52 @@ pub const App = struct {
         var loaded: ?oauth_storage.AuthStorage = oauth_storage.AuthStorage.loadDefaultStoredOnly(self.allocator) catch null;
         defer if (loaded) |*storage| storage.deinit();
         const storage: ?*const oauth_storage.AuthStorage = if (loaded) |*stored| stored else null;
-        for (login_providers, 0..) |provider, i| {
+        for (provider_catalog.all, 0..) |provider, i| {
             var env_present = false;
-            for (login_env_keys[i]) |name| {
+            for (provider.credential_env) |name| {
                 if (compat.getEnvVarOwned(self.allocator, name)) |value| {
                     env_present = env_present or value.len > 0;
                     self.allocator.free(value);
                 } else |_| {}
             }
-            self.login_status[i] = loginStatusFor(storage, provider, env_present);
+            self.login_status[i] = loginStatusFor(storage, provider.id, env_present);
         }
     }
 
     const permission_modes = [_]tui_runtime.PermissionMode{ .bypass, .ask };
 
-    fn loginProviderEnum(idx: usize) tui_login.Provider {
-        return switch (idx) {
-            0 => .anthropic,
-            1 => .github_copilot,
-            2 => .openai_codex,
-            3 => .kimi,
-            else => .anthropic,
-        };
+    fn startCatalogLogin(self: *App, provider_id: []const u8) !*tui_login.LoginSession {
+        if (std.mem.eql(u8, provider_id, "anthropic")) return tui_login.LoginSession.start(self.allocator, .anthropic);
+        if (std.mem.eql(u8, provider_id, "github-copilot")) return tui_login.LoginSession.start(self.allocator, .github_copilot);
+        if (std.mem.eql(u8, provider_id, "openai-codex")) return tui_login.LoginSession.start(self.allocator, .openai_codex);
+        if (std.mem.eql(u8, provider_id, "kimi")) return tui_login.LoginSession.start(self.allocator, .kimi);
+        return tui_login.LoginSession.startApiKey(self.allocator, provider_id);
+    }
+
+    fn startCatalogLoginProvider(self: *App, provider_id: []const u8) !void {
+        const row = provider_catalog.provider(provider_id) orelse return error.UnknownLoginProvider;
+        for (row.auth) |kind| {
+            if (kind == .oauth) return error.UnsupportedOAuthProvider;
+        }
+        try self.startCustomLogin(provider_id);
     }
 
     fn loginProviderIndex(provider_id: []const u8) ?usize {
-        for (login_providers, 0..) |provider, idx| {
-            if (std.mem.eql(u8, provider_id, provider)) return idx;
+        for (0..loginProviderCount()) |index| {
+            const row = loginProviderAt(index) orelse continue;
+            if (std.mem.eql(u8, provider_id, row.id)) return index;
+            if (std.mem.eql(u8, row.id, "openai-codex") and (std.mem.eql(u8, provider_id, "codex") or std.mem.eql(u8, provider_id, "openai"))) return index;
+            if (std.mem.eql(u8, row.id, "github-copilot") and std.mem.eql(u8, provider_id, "github")) return index;
+            if (std.mem.eql(u8, row.id, "kimi") and std.mem.eql(u8, provider_id, "moonshot")) return index;
+            if (provider_catalog.sharesCredentialEnv(row.id)) {
+                const target = provider_catalog.provider(provider_id) orelse continue;
+                for (row.credential_env) |name| {
+                    for (target.credential_env) |target_name| {
+                        if (std.mem.eql(u8, name, target_name)) return index;
+                    }
+                }
+            }
         }
-        if (std.mem.eql(u8, provider_id, "codex") or std.mem.eql(u8, provider_id, "openai")) return 2;
-        if (std.mem.eql(u8, provider_id, "github")) return 1;
-        if (std.mem.eql(u8, provider_id, "moonshot")) return 3;
         return null;
     }
 
@@ -1499,7 +1564,7 @@ pub const App = struct {
     fn pickerSourceCount(self: *const App) usize {
         return switch (self.state.picker_kind) {
             .model => if (self.runtime) |runtime| runtime.availableModels().len else 0,
-            .login => login_providers.len,
+            .login => loginProviderCount(),
             .permission => permission_modes.len,
             .settings => 2,
         };
@@ -1512,7 +1577,11 @@ pub const App = struct {
                 const is_current = if (current) |active| std.mem.eql(u8, active.id, model.id) else false;
                 break :model_item .{ .label = model.id, .detail = model.provider, .badge = if (is_current) tui_theme.glyph.system ++ " current" else null };
             } else .{ .label = "" },
-            .login => .{ .label = login_providers[index], .badge = loginBadge(self.login_status[index]) },
+            .login => if (loginProviderAt(index)) |row| .{
+                .label = loginProviderGroupLabel(row),
+                .detail = if (loginDiscoveryAvailable(row.id)) row.id else "models unavailable",
+                .badge = if (loginDiscoveryAvailable(row.id)) loginBadge(self.login_status[loginProviderCatalogIndex(row.id).?]) else "unavailable",
+            } else .{ .label = "" },
             .permission => .{ .label = @tagName(permission_modes[index]), .detail = TuiModel.permissionModeDetail(permission_modes[index]) },
             .settings => .{ .label = if (index == 0) "Compact output" else "Automatic worktrees", .detail = if (index == 0) "Reduce tool output in the transcript" else "Create an isolated Git worktree for each session", .badge = if ((if (index == 0) self.mode_settings.compact_output else self.mode_settings.auto_worktree)) "on" else "off" },
         };
@@ -1566,13 +1635,18 @@ pub const App = struct {
     }
 
     fn startLoginProviderIndex(self: *App, idx: usize) !void {
-        const provider = login_providers[idx];
+        const row = loginProviderAt(idx) orelse return;
+        const provider = row.id;
+        if (!loginDiscoveryAvailable(provider)) {
+            try self.state.appendTranscript(.system, "model discovery is not available for this provider yet");
+            return;
+        }
         self.state.mode = .normal;
         if (self.login != null) {
             try self.state.appendTranscript(.system, "a login is already in progress");
             return;
         }
-        self.login = tui_login.LoginSession.start(self.allocator, loginProviderEnum(idx)) catch |err| {
+        self.login = self.startCatalogLogin(provider) catch |err| {
             const msg = try std.fmt.allocPrint(self.allocator, "could not start login for {s}: {s}", .{ provider, @errorName(err) });
             defer self.allocator.free(msg);
             try self.state.appendTranscript(.@"error", msg);
@@ -1628,6 +1702,16 @@ pub const App = struct {
     }
 
     fn startLoginProviderName(self: *App, provider_id: []const u8) !void {
+        if (provider_catalog.provider(provider_id)) |row| {
+            if (supportsLogin(row)) {
+                if (!loginDiscoveryAvailable(provider_id)) {
+                    try self.state.appendTranscript(.system, "model discovery is not available for this provider yet");
+                    return;
+                }
+                if (loginProviderIndex(provider_id)) |idx| return self.startLoginProviderIndex(idx);
+                return self.startCatalogLoginProvider(provider_id);
+            }
+        }
         const idx = loginProviderIndex(provider_id) orelse {
             if (self.isDeclaredCustomProvider(provider_id)) return self.startCustomLogin(provider_id);
             const msg = try std.fmt.allocPrint(self.allocator, "unknown login provider: {s}", .{provider_id});
@@ -1752,6 +1836,28 @@ pub const App = struct {
                 try storage.providers.put(key, .{ .api_key = api_key });
             }
             owned = true;
+            if (provider_catalog.sharesCredentialEnv(provider_id)) {
+                const row = provider_catalog.provider(provider_id) orelse return error.UnknownLoginProvider;
+                for (provider_catalog.all) |sibling| {
+                    if (std.mem.eql(u8, sibling.id, provider_id)) continue;
+                    var shares_env = false;
+                    for (row.credential_env) |name| {
+                        for (sibling.credential_env) |sibling_name| {
+                            if (std.mem.eql(u8, name, sibling_name)) shares_env = true;
+                        }
+                    }
+                    if (!shares_env) continue;
+                    const sibling_key = try self.allocator.dupe(u8, sibling.id);
+                    errdefer self.allocator.free(sibling_key);
+                    const sibling_secret = try self.allocator.dupe(u8, creds.access);
+                    errdefer self.allocator.free(sibling_secret);
+                    if (storage.providers.fetchRemove(sibling.id)) |removed| {
+                        self.allocator.free(removed.key);
+                        removed.value.deinit(self.allocator);
+                    }
+                    try storage.providers.put(sibling_key, .{ .api_key = sibling_secret });
+                }
+            }
             try storage.persist();
             return;
         }
@@ -4865,12 +4971,8 @@ test "fixture runtime streams the env-provided text" {
 
     var saw_delta = false;
     while (stream_ptr.wait()) |event| {
-        var ev = event;
-        defer switch (ev) {
-            .done => |*payload| payload.message.deinit(std.testing.allocator),
-            .@"error" => |*payload| payload.err.deinit(std.testing.allocator),
-            else => {},
-        };
+        const ev = event;
+        defer stream_ptr.releaseEvent(ev);
         if (ev == .text_delta) saw_delta = std.mem.eql(u8, ev.text_delta.delta, "pty fixture reply");
     }
     try std.testing.expect(saw_delta);
@@ -5643,15 +5745,72 @@ test "App saves Kimi login credentials as api key" {
     }
 }
 
-test "App login status scans KIMI_API_KEY for the kimi provider" {
-    const kimi_slot = App.loginProviderIndex("kimi").?;
-
-    var exported = false;
-    for (App.login_env_keys[kimi_slot]) |name| {
-        if (std.mem.eql(u8, name, "KIMI_API_KEY")) exported = true;
+test "App saves one Xiaomi login for every catalog row sharing its key" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "home" });
+    defer std.testing.allocator.free(home);
+    try compat.fs.createDir(compat.fs.getCwd(), home);
+    const previous_home = std.process.Environ.getAlloc(std.testing.environ, std.testing.allocator, "HOME") catch null;
+    defer {
+        if (previous_home) |value| {
+            const value_z = std.testing.allocator.dupeZ(u8, value) catch null;
+            if (value_z) |home_z| {
+                defer std.testing.allocator.free(home_z);
+                _ = setenv("HOME", home_z.ptr, 1);
+            }
+            std.testing.allocator.free(value);
+        } else {
+            _ = unsetenv("HOME");
+        }
     }
-    try std.testing.expect(exported);
+    const home_z = try std.testing.allocator.dupeZ(u8, home);
+    defer std.testing.allocator.free(home_z);
+    _ = setenv("HOME", home_z.ptr, 1);
 
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    const creds = oauth_storage.Credentials{
+        .refresh = try std.testing.allocator.dupe(u8, ""),
+        .access = try std.testing.allocator.dupe(u8, "xiaomi-test-key"),
+        .expires = std.math.maxInt(i64),
+    };
+    defer creds.deinit(std.testing.allocator);
+
+    try app.saveLoginCredentials("xiaomi-token-plan-cn", creds, true);
+
+    var storage = try oauth_storage.AuthStorage.loadFromFile(std.testing.allocator);
+    defer storage.deinit();
+    const providers = [_][]const u8{ "xiaomi-token-plan-cn", "xiaomi-token-plan-sgp", "xiaomi-token-plan-ams", "xiaomi" };
+    for (providers) |provider_id| {
+        const auth = storage.providers.get(provider_id) orelse return error.MissingSharedKeyProvider;
+        switch (auth) {
+            .api_key => |key| try std.testing.expectEqualStrings("xiaomi-test-key", key),
+            .oauth => return error.ExpectedApiKeyAuth,
+        }
+    }
+}
+
+test "App login discovery availability follows the model catalog loader" {
+    for (provider_catalog.all) |row| {
+        try std.testing.expectEqual(model_catalog.supportsCatalogModelDiscovery(row.id), App.loginDiscoveryAvailable(row.id));
+    }
+    try std.testing.expect(!App.loginDiscoveryAvailable("google"));
+    try std.testing.expect(!App.loginDiscoveryAvailable("ollama"));
+    try std.testing.expect(!App.loginDiscoveryAvailable("azure"));
+}
+
+test "App login picker follows catalog order and groups shared credentials" {
+    try std.testing.expectEqualStrings("openai", App.loginProviderAt(0).?.id);
+    try std.testing.expectEqualStrings("anthropic", App.loginProviderAt(1).?.id);
+    try std.testing.expect(App.loginProviderIndex("xiaomi") != null);
+    try std.testing.expect(App.loginProviderIndex("xiaomi-token-plan-cn") != null);
+    try std.testing.expectEqual(App.loginProviderIndex("xiaomi").?, App.loginProviderIndex("xiaomi-token-plan-cn").?);
+    try std.testing.expect(App.loginProviderAt(App.loginProviderIndex("xiaomi-token-plan-cn").?).?.display_name != null);
+    try std.testing.expect(App.loginProviderIndex("google") != null);
+    try std.testing.expect(!App.loginDiscoveryAvailable("google"));
+    try std.testing.expect(App.loginProviderIndex("ollama") != null);
+    try std.testing.expect(App.loginProviderCatalogIndex("kimi") != null);
     try std.testing.expectEqual(App.LoginStatus.env_key, App.loginStatusFor(null, "kimi", true));
     try std.testing.expectEqual(App.LoginStatus.none, App.loginStatusFor(null, "kimi", false));
 }
@@ -5787,7 +5946,7 @@ test "a context window the user chose is persisted, and the catalog's own is not
     defer std.testing.allocator.free(home);
     try compat.setTestEnv(std.testing.allocator, "HOME", home);
 
-    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{gpt_model, kimi_model} });
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ gpt_model, kimi_model } });
     defer app.deinit();
     if (app.store) |*owned| owned.deinit();
     app.store = null;
@@ -5883,7 +6042,7 @@ test "a bare /context reports the window and leaves the persisted member alone" 
     defer std.testing.allocator.free(home);
     try compat.setTestEnv(std.testing.allocator, "HOME", home);
 
-    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{gpt_model, kimi_model} });
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ gpt_model, kimi_model } });
     defer app.deinit();
     if (app.store) |*owned| owned.deinit();
     app.store = null;
@@ -5903,7 +6062,7 @@ test "a settings toggle does not erase the persisted window" {
     defer std.testing.allocator.free(home);
     try compat.setTestEnv(std.testing.allocator, "HOME", home);
 
-    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{gpt_model, kimi_model} });
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ gpt_model, kimi_model } });
     defer app.deinit();
     if (app.store) |*owned| owned.deinit();
     app.store = null;
@@ -5963,7 +6122,7 @@ test "a failed adopt leaves the old model pair and the average in place" {
 }
 
 test "an adopt that succeeds replaces the pair and clears the average" {
-    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{gpt_model, kimi_model} });
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ gpt_model, kimi_model } });
     defer app.deinit();
     app.drainEvents() catch {};
 
@@ -7289,11 +7448,8 @@ const MockProvider = struct {
 
         const s = try a.create(event_stream.AssistantMessageEventStream);
         s.* = event_stream.AssistantMessageEventStream.init(a);
-        if (options) |opts| {
-            if (opts.requires_owned_stream_events) {
-                s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
-            }
-        }
+        _ = options;
+        s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
 
         s.push(.{ .start = .{ .partial = .{
             .content = &.{},

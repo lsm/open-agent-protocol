@@ -19,7 +19,7 @@ fn waitResultOrFail(stream: *event_stream.AssistantMessageEventStream) !ai_types
         if (test_helpers.isDeadlineExceeded(deadline)) {
             return error.TimeoutExceeded;
         }
-        _ = stream.poll();
+        test_helpers.drainOne(stream);
         compat.time.sleepNs(10 * std.time.ns_per_ms);
     }
 

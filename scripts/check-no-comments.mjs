@@ -10,7 +10,10 @@
 // outside literals are comments; only `// zig fmt: off|on` is exempt
 // (formatter control). Modes: `--check` (exit 1 on any comment in a
 // non-allowlisted file — CI), `--stats` (per-file counts), and write
-// mode (default, or `--write`: strip + tidy orphaned blank lines).
+// mode (default, or `--write`: strip + tidy orphaned blank lines). Every
+// mode exits 1 on a selected path that cannot be read, in check mode only
+// when the path is not allowlisted: a path that was not read was not
+// judged, and reporting it as done would claim coverage that never ran.
 // `--check` is ratcheted by scripts/no-comments-allowlist.txt: files
 // seeded there pass while the gap-7 series lands, and the list may only
 // shrink — entries whose file is clean or untracked are stale, entries
@@ -446,8 +449,12 @@ export function ratchetViolation(allowlistPath, cwd, baseCommit = null) {
 }
 
 // A tracked file deleted from the working tree before staging (git
-// ls-files still lists it) is not dirty — skipping it lets the stale-entry
-// logic report its allowlist entry instead of crashing on ENOENT.
+// ls-files still lists it) is not dirty. Skipping it lets the stale-entry
+// logic report its allowlist entry instead of crashing on ENOENT -- but only
+// for an allowlisted path. A selected path that is not allowlisted and not
+// readable is not a clean file, it is an unjudged one, and reporting it as
+// clean would let a typo, a stale selection or a mid-deletion file pass as
+// coverage that never happened.
 function readIfExists(file) {
   try {
     return readFileSync(file, "utf8");
@@ -461,10 +468,14 @@ export function checkFiles(files, allowlist, baseEntries = null) {
   const offending = [];
   const ratcheted = [];
   const stats = [];
+  const missing = [];
   const dirty = new Set();
   for (const file of files) {
     const text = readIfExists(file);
-    if (text === null) continue;
+    if (text === null) {
+      if (!allowlist.has(file)) missing.push(file);
+      continue;
+    }
     const count = findComments(text, file).length;
     if (count === 0) continue;
     dirty.add(file);
@@ -477,7 +488,7 @@ export function checkFiles(files, allowlist, baseEntries = null) {
   }
   const stale = [...allowlist].filter((p) => !dirty.has(p)).sort();
   const additions = baseEntries === null ? [] : [...allowlist].filter((p) => !baseEntries.has(p)).sort();
-  return { offending, ratcheted, stale, additions, stats, dirtyCount: dirty.size, commentTotal: stats.reduce((a, s) => a + s.count, 0) };
+  return { offending, ratcheted, stale, additions, missing: missing.sort(), stats, dirtyCount: dirty.size, commentTotal: stats.reduce((a, s) => a + s.count, 0) };
 }
 
 function listFiles(args) {
@@ -485,11 +496,19 @@ function listFiles(args) {
   if (filesIdx !== -1) {
     const rest = args.slice(filesIdx + 1);
     const end = rest.findIndex((a) => a.startsWith("--"));
-    return rest.slice(0, end === -1 ? rest.length : end).filter(Boolean);
+    // An explicit --files that selects nothing judged nothing, and the run
+    // would exit 0 looking like a clean pass. That is the outcome a typo, a
+    // shell that lost an argument, or a glob that matched no tracked file all
+    // produce, so it is refused here rather than reported as coverage.
+    const explicit = rest.slice(0, end === -1 ? rest.length : end).filter(Boolean);
+    if (explicit.length === 0) {
+      throw new Error("--files selected no paths, so nothing was judged — refusing a vacuous check");
+    }
+    return explicit;
   }
   // -z emits NUL-delimited names without C-quoting non-ASCII paths or
   // touching embedded whitespace, so every tracked filename reads exactly.
-  return git(["ls-files", "-z", "*.zig", "*.ts", ":!:clients/ts/**"])
+  return git(["ls-files", "-z", "*.zig", "*.ts"])
     .split("\0")
     .filter(Boolean);
 }
@@ -502,7 +521,15 @@ function main() {
   const allowlistPath = allowlistIdx !== -1 ? args[allowlistIdx + 1] : DEFAULT_ALLOWLIST;
   const baseIdx = args.indexOf("--base");
   const baseRev = baseIdx !== -1 ? args[baseIdx + 1] : null;
-  const files = listFiles(args);
+  let files;
+  try {
+    files = listFiles(args);
+  } catch (err) {
+    // Same shape as the base-commit and ratchet refusals below: the message,
+    // then exit 1, rather than a stack trace from an unwrapped throw.
+    process.stdout.write(`${err.message}\n`);
+    process.exit(1);
+  }
   const allowlist = loadAllowlist(allowlistPath);
 
   if (check) {
@@ -526,12 +553,20 @@ function main() {
     for (const path of result.additions) {
       process.stdout.write(`allowlist addition not permitted (the ratchet may only shrink): ${path}\n`);
     }
+    for (const path of result.missing) {
+      process.stdout.write(`selected path not found, so it was not judged: ${path}\n`);
+    }
     process.stdout.write(
       `files with comments: ${result.dirtyCount} (${result.ratcheted.length} ratcheted), ` +
         `offending: ${result.offending.length}, stale entries: ${result.stale.length}` +
-        `, added entries: ${result.additions.length}\n`,
+        `, added entries: ${result.additions.length}, missing: ${result.missing.length}\n`,
     );
-    if (result.offending.length > 0 || result.stale.length > 0 || result.additions.length > 0) {
+    if (
+      result.offending.length > 0 ||
+      result.stale.length > 0 ||
+      result.additions.length > 0 ||
+      result.missing.length > 0
+    ) {
       process.exit(1);
     }
     return;
@@ -540,9 +575,14 @@ function main() {
   let stripped = 0;
   let removed = 0;
   let failed = false;
+  let missing = 0;
   for (const file of files) {
     const text = readIfExists(file);
-    if (text === null) continue;
+    if (text === null) {
+      process.stdout.write(`selected path not found, so it was not judged: ${file}\n`);
+      missing++;
+      continue;
+    }
     let out;
     try {
       out = stripComments(text, file);
@@ -559,9 +599,13 @@ function main() {
     if (!stats) writeFileSync(file, out);
   }
   process.stdout.write(
-    `${stats ? "files with comments" : "files stripped"}: ${stripped}, comments: ${removed}\n`,
+    `${stats ? "files with comments" : "files stripped"}: ${stripped}, comments: ${removed}` +
+      `${missing ? `, missing: ${missing}` : ""}\n`,
   );
+  // A path that was not read was not judged, so counting it as done would
+  // report a coverage that did not happen — the same trap --check refuses.
   if (failed) process.exit(2);
+  if (missing > 0) process.exit(1);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {

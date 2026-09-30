@@ -115,7 +115,6 @@ pub const StreamOptions = struct {
     http_timeout_ms: ?u64 = 30_000,
     ping_interval_ms: ?u64 = null,
     owned_headers: ?OwnedSlice(HeaderPair) = null,
-    requires_owned_stream_events: bool = false,
 
     pub fn getApiKey(self: *const StreamOptions) ?[]const u8 {
         const key = self.api_key.slice();
@@ -707,8 +706,73 @@ pub fn cloneAssistantMessage(allocator: std.mem.Allocator, msg: AssistantMessage
     };
 }
 
+pub const CarriedPartial = struct {
+    partial: AssistantMessage,
+    owned: ?[]AssistantContent,
+
+    pub fn release(self: CarriedPartial, allocator: std.mem.Allocator) void {
+        const owned = self.owned orelse return;
+        allocator.free(owned);
+    }
+};
+
+pub fn partialWithContent(
+    allocator: std.mem.Allocator,
+    base: AssistantMessage,
+    content: []const AssistantContent,
+    index: usize,
+) error{OutOfMemory}!CarriedPartial {
+    if (index >= content.len) return .{ .partial = base, .owned = null };
+    const slice = try allocator.alloc(AssistantContent, index + 1);
+    @memcpy(slice, content[0 .. index + 1]);
+    var out = base;
+    out.content = slice;
+    return .{ .partial = out, .owned = slice };
+}
+
 pub fn deinitAssistantMessageOwned(allocator: std.mem.Allocator, msg: *AssistantMessage) void {
     msg.deinit(allocator);
+}
+
+pub fn buildOwnedMessage(
+    allocator: std.mem.Allocator,
+    content: []AssistantContent,
+    api_src: []const u8,
+    provider_src: []const u8,
+    model_src: []const u8,
+    usage: Usage,
+    stop_reason: StopReason,
+    timestamp: i64,
+) error{OutOfMemory}!AssistantMessage {
+    const api = try allocator.dupe(u8, api_src);
+    errdefer allocator.free(api);
+    const provider = try allocator.dupe(u8, provider_src);
+    errdefer allocator.free(provider);
+    const model_id = try allocator.dupe(u8, model_src);
+    return .{
+        .content = content,
+        .api = api,
+        .provider = provider,
+        .model = model_id,
+        .usage = usage,
+        .stop_reason = stop_reason,
+        .timestamp = timestamp,
+        .is_owned = true,
+    };
+}
+
+pub const LOST_CLONE_MESSAGE = "an event could not be queued: out of memory";
+
+pub fn settleProviderOutcome(stream: anytype, out: AssistantMessage) void {
+    if (stream.pushFailed()) {
+        var dropped = out;
+        dropped.deinit(stream.allocator);
+        stream.completeWithError(LOST_CLONE_MESSAGE);
+        return;
+    }
+    if (stream.completeIfOpen(out)) return;
+    var dropped = out;
+    dropped.deinit(stream.allocator);
 }
 
 pub const OwnedMessage = struct {
@@ -1555,4 +1619,93 @@ test "OwnedMessage cloneOf frees its copy when a later allocation fails" {
     };
 
     try std.testing.checkAllAllocationFailures(allocator, Case.run, .{source});
+}
+
+test "buildOwnedMessage releases only what it allocated when a later dupe fails" {
+    var fail_at: usize = 1;
+    while (fail_at <= 6) : (fail_at += 1) {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_at });
+        const alloc = failing.allocator();
+
+        const content = alloc.alloc(AssistantContent, 1) catch continue;
+        content[0] = .{ .text = .{ .text = alloc.dupe(u8, "answer") catch {
+            alloc.free(content);
+            continue;
+        } } };
+
+        const built = buildOwnedMessage(alloc, content, "anthropic-messages", "anthropic", "claude", .{}, .stop, 0);
+        if (built) |*message| {
+            var owned = message.*;
+            owned.deinit(alloc);
+        } else |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            var held = AssistantMessage{
+                .content = content,
+                .api = "",
+                .provider = "",
+                .model = "",
+                .usage = .{},
+                .stop_reason = .stop,
+                .timestamp = 0,
+                .is_owned = true,
+            };
+            held.deinit(alloc);
+        }
+    }
+}
+
+test "partialWithContent puts the block at the index it is asked for" {
+    const allocator = std.testing.allocator;
+    const content = [_]AssistantContent{
+        .{ .text = .{ .text = "before" } },
+        .{ .thinking = .{ .thinking = "pondering", .thinking_signature = "sig-9" } },
+    };
+    const carried = try partialWithContent(allocator, .{
+        .content = &.{},
+        .api = "anthropic-messages",
+        .provider = "anthropic",
+        .model = "claude",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+    }, &content, 1);
+    defer carried.release(allocator);
+    try std.testing.expectEqual(@as(usize, 2), carried.partial.content.len);
+    switch (carried.partial.content[1]) {
+        .thinking => |t| try std.testing.expectEqualStrings("sig-9", t.thinking_signature.?),
+        else => return error.NotCarried,
+    }
+}
+
+test "partialWithContent leaves the partial alone when the index is not there" {
+    const allocator = std.testing.allocator;
+    const content = [_]AssistantContent{.{ .text = .{ .text = "only" } }};
+    const carried = try partialWithContent(allocator, .{
+        .content = &.{},
+        .api = "anthropic-messages",
+        .provider = "anthropic",
+        .model = "claude",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+    }, &content, 4);
+    try std.testing.expectEqual(@as(?[]AssistantContent, null), carried.owned);
+    try std.testing.expectEqual(@as(usize, 0), carried.partial.content.len);
+}
+
+test "release frees the carried array once the cloned event has its own copy" {
+    const allocator = std.testing.allocator;
+    const content = [_]AssistantContent{.{ .text = .{ .text = "held" } }};
+    const carried = try partialWithContent(allocator, .{
+        .content = &.{},
+        .api = "anthropic-messages",
+        .provider = "anthropic",
+        .model = "claude",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+    }, &content, 0);
+    const slice = carried.owned.?;
+    try std.testing.expectEqual(slice.ptr, carried.partial.content.ptr);
+    carried.release(allocator);
 }
