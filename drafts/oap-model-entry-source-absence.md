@@ -140,31 +140,39 @@ Migrated and on main:
 | Go | #690 | #710 |
 | TypeScript | #705 | #712 |
 
-### Python is still a gap, and it is not small
+### Python: the gap, and what closed it
 
-Audited on current main. Python has the same defect class in **both** of its
-readers, and neither is fixed:
+Audited on the base of this change, Python had the same defect class in
+**both** of its readers, and neither was fixed:
 
 - `sdk/python/src/oap_sdk/_oap.py:244` — `lifecycle=item.get("lifecycle", "stable")`
-  invents `stable` for an absent member, and a member present as `null`
-  arrives as `None` rather than being refused.
+  invented `stable` for an absent member, and a member present as `null`
+  arrived as `None` rather than being refused.
 - `sdk/python/src/oap_sdk/_oap.py:246` —
   `"static_fallback" if item.get("source") == "fallback" else "dynamic"`
-  invents `dynamic` for an absent member **and** for any unrecognised literal,
-  and it accepts the shared aliases `dynamic`/`static_fallback` on the wire
-  where the `modelSource` enum permits only `discovered` and `fallback`.
-- `sdk/python/src/oap_sdk/models.py:317,321` — the shared reader calls
-  `_require_known` on both members, so an absent one is rejected outright
+  invented `dynamic` for an absent member **and** for any unrecognised
+  literal, and it accepted the shared aliases `dynamic`/`static_fallback` on
+  the wire where the `modelSource` enum permits only `discovered` and `fallback`.
+- `sdk/python/src/oap_sdk/models.py:317,321` — the shared reader called
+  `_require_known` on both members, so an absent one was rejected outright
   rather than read as unknown.
-- `sdk/python/src/oap_sdk/types.py:395,397` — both members are required on the
-  shared descriptor.
+- `sdk/python/src/oap_sdk/types.py:395,397` — both members were required on
+  the shared descriptor.
 
-The OAP reader's deprecation filter at `_oap.py:233` is already correct: it
-compares against the literal `"deprecated"`, so an absent member does not
-match and the model stays in the listing.
+That audit is kept as the record of what the gap was. **Python is now
+migrated in this change**, under the same absence-versus-present-null policy
+as the three readers above: both members are optional on the shared
+descriptor, both readers tell an absent key from a present value, and a
+present `null`, wrong type or unrecognised literal is a malformed response
+naming the field. Its sixteen cases cover both seams through a real fake
+process each, including every direction of the deprecation filter on the OAP
+side.
 
-Python is being migrated as its own reader cut from fresh main, under the same
-absence-versus-present-null policy as the three reviewed readers. It is
-recorded here as an open gap rather than folded into this change, which is
-wire-side: a sparse wire is already legal, so a reader lagging behind it is a
-separate defect with a separate review.
+One asymmetry worth recording because it is easy to assume the wrong way: the
+**shared** reader has no client-side deprecation filter at all. It forwards
+`include_deprecated` to the server and keeps whatever comes back; the filter
+exists only on the OAP seam. Its test asserts that it does *not* drop entries
+locally, because asserting that it filters would be asserting behaviour it
+never had.
+
+All four SDK readers now implement the owner decision, so no reader is open.

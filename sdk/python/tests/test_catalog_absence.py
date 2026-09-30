@@ -4,8 +4,10 @@ import json
 import os
 import sys
 import unittest
+from typing import List, Optional, Sequence, Tuple, Union
 
 from oap_sdk import MakaiProtocolError, connect
+from oap_sdk.types import ListModelsResponse
 
 HOST = r'''
 import json, os, sys
@@ -54,14 +56,29 @@ for line in sys.stdin:
         emit(A, kind.replace(".request", ".response"), rid, {})
 '''
 
+class _Absent:
+    pass
+
+
+_ABSENT = _Absent()
+_Member = Union[str, None, _Absent]
+
+
 class CatalogAbsence(unittest.IsolatedAsyncioTestCase):
-    async def _list(self, key, lifecycle, source, include_deprecated=None):
+    async def _list(
+        self,
+        key: str,
+        lifecycle: _Member,
+        source: _Member,
+        include_deprecated: Optional[bool] = None,
+    ) -> ListModelsResponse:
         env = dict(os.environ)
         env["OAP_PY_FIXTURE_SHAPE"] = key
         stamped = []
-        for member, raw in (("lifecycle", lifecycle), ("source", source)):
+        members: Sequence[Tuple[str, _Member]] = (("lifecycle", lifecycle), ("source", source))
+        for member, raw in members:
             if raw is not _ABSENT:
-                env[f"{member}_{key}"] = raw
+                env[f"{member}_{key}"] = str(raw)
                 stamped.append(f"{member}_{key}")
         env["OAP_PY_FIXTURE_SET"] = ",".join(stamped)
         async with connect(command=sys.executable, args=["-u", "-c", HOST],
@@ -128,13 +145,6 @@ class CatalogAbsence(unittest.IsolatedAsyncioTestCase):
             resolved = await client.models.resolve(provider_id="fixture", model_id="ok")
             self.assertIsNone(resolved.source)
             self.assertIsNone(resolved.lifecycle)
-
-
-class _Absent:
-    pass
-
-
-_ABSENT = _Absent()
 
 
 if __name__ == "__main__":
