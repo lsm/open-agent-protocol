@@ -3251,3 +3251,219 @@ test "the openai completions request url drops the wire's version only when the 
         try std.testing.expectEqualStrings(case.want, url);
     }
 }
+
+const MockCompletionsServer = struct {
+    server: compat_mod.net.Server,
+    body: []const u8,
+    thread: ?std.Thread = null,
+    served: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    saw_chat_path: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    saw_stream_flag: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+    const trace_events =
+        \\data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"regression-model","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":null}]}
+        \\
+        \\data: {"choices":[{"index":0,"delta":{"reasoning_content":"plan"},"finish_reason":null}]}
+        \\
+        \\data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_trace01","type":"function","function":{"name":"bash","arguments":""}}]},"finish_reason":null}]}
+        \\
+        \\data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"command\":\"ls\"}"}}]},"finish_reason":null}]}
+        \\
+        \\data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":9,"total_tokens":12}}
+        \\
+        \\data: [DONE]
+        \\
+    ;
+
+    const complete_stream = trace_events ++ "\n\n";
+
+    fn listen(body: []const u8) !MockCompletionsServer {
+        const address = try compat_mod.net.resolveAddress(std.testing.allocator, "127.0.0.1", 0);
+        return .{
+            .server = try compat_mod.net.tcpListen(address, .{ .reuse_address = true }),
+            .body = body,
+        };
+    }
+
+    fn baseUrl(self: *const MockCompletionsServer, allocator: std.mem.Allocator) ![]u8 {
+        return std.fmt.allocPrint(allocator, "http://127.0.0.1:{d}", .{compat_mod.net.listenAddress(&self.server).getPort()});
+    }
+
+    fn start(self: *MockCompletionsServer) !void {
+        self.thread = try std.Thread.spawn(.{}, serve, .{self});
+    }
+
+    fn stop(self: *MockCompletionsServer) void {
+        if (self.thread) |thread| {
+            if (!self.served.load(.acquire)) {
+                if (compat_mod.net.tcpConnect(compat_mod.net.listenAddress(&self.server))) |opened| {
+                    var kick = opened;
+                    kick.close();
+                } else |_| {}
+            }
+            thread.join();
+            self.thread = null;
+        }
+        compat_mod.net.closeServer(&self.server);
+    }
+
+    fn contentLength(head: []const u8) ?usize {
+        var lines = std.mem.splitSequence(u8, head, "\r\n");
+        while (lines.next()) |line| {
+            if (std.ascii.startsWithIgnoreCase(line, "content-length:")) {
+                return std.fmt.parseInt(usize, std.mem.trim(u8, line["content-length:".len..], " \t"), 10) catch null;
+            }
+        }
+        return null;
+    }
+
+    fn readHead(stream: *compat_mod.net.Stream, buffer: []u8) !usize {
+        var filled: usize = 0;
+        while (filled < buffer.len) {
+            const read = try stream.read(buffer[filled .. filled + 1]);
+            if (read == 0) return error.EndOfStream;
+            filled += read;
+            if (filled >= 4 and std.mem.eql(u8, buffer[filled - 4 .. filled], "\r\n\r\n")) return filled - 4;
+        }
+        return error.StreamTooLong;
+    }
+
+    fn serve(self: *MockCompletionsServer) void {
+        defer self.served.store(true, .release);
+
+        var conn = compat_mod.net.accept(&self.server) catch return;
+        defer conn.stream.close();
+
+        var request: [16384]u8 = undefined;
+        const head_len = readHead(&conn.stream, &request) catch return;
+        const head = request[0..head_len];
+
+        var body: [16384]u8 = undefined;
+        if (contentLength(head)) |length| {
+            if (length > 0 and length <= body.len) {
+                _ = conn.stream.read(body[0..length]) catch return;
+            }
+        }
+        const body_slice = body[0..@min(contentLength(head) orelse 0, body.len)];
+
+        if (std.mem.indexOf(u8, head, "/chat/completions ") != null) {
+            self.saw_chat_path.store(true, .release);
+        }
+        if (std.mem.indexOf(u8, body_slice, "\"stream\":true") != null) {
+            self.saw_stream_flag.store(true, .release);
+        }
+
+        var head_buffer: [128]u8 = undefined;
+        const response_head = std.fmt.bufPrint(
+            &head_buffer,
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n",
+            .{self.body.len},
+        ) catch return;
+
+        conn.stream.writeAll(response_head) catch return;
+        conn.stream.writeAll(self.body) catch return;
+    }
+};
+
+fn traceModel(base_url: []const u8) ai_types.Model {
+    return .{
+        .id = "regression-model",
+        .name = "regression-model",
+        .api = "openai-completions",
+        .provider = "gateway",
+        .base_url = base_url,
+        .reasoning = false,
+        .input = &.{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1024,
+        .max_tokens = 16,
+    };
+}
+
+fn traceContext() ai_types.Context {
+    const messages = struct {
+        const items = [_]ai_types.Message{.{ .user = .{ .content = .{ .text = "hello" }, .timestamp = 0 } }};
+    }.items[0..];
+    return .{ .messages = messages };
+}
+
+test "a streamed text thinking and tool call reports indices that diverge from the terminal assembly order" {
+    const allocator = std.testing.allocator;
+
+    var mock = try MockCompletionsServer.listen(MockCompletionsServer.complete_stream);
+    var stopped = false;
+    defer if (!stopped) mock.stop();
+
+    const base_url = try mock.baseUrl(allocator);
+    defer allocator.free(base_url);
+
+    try mock.start();
+
+    const stream = try streamOpenAICompletions(
+        traceModel(base_url),
+        traceContext(),
+        .{
+            .api_key = ai_types.OwnedSlice(u8).initBorrowed("test-key"),
+            .requires_owned_stream_events = true,
+        },
+        allocator,
+    );
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+
+    var text_index: ?usize = null;
+    var thinking_index: ?usize = null;
+    var tool_start_index: ?usize = null;
+    var tool_end_index: ?usize = null;
+
+    while (stream.wait()) |event| {
+        var polled = event;
+        defer ai_types.deinitAssistantMessageEvent(allocator, &polled);
+        switch (polled) {
+            .text_delta => |td| {
+                try std.testing.expectEqualStrings("hi", td.delta);
+                text_index = td.content_index;
+            },
+            .thinking_delta => |td| {
+                try std.testing.expectEqualStrings("plan", td.delta);
+                thinking_index = td.content_index;
+            },
+            .toolcall_start => |ts| {
+                try std.testing.expectEqualStrings("call_trace01", ts.id);
+                try std.testing.expectEqualStrings("bash", ts.name);
+                tool_start_index = ts.content_index;
+            },
+            .toolcall_delta => |td| {
+                try std.testing.expectEqualStrings("{\"command\":\"ls\"}", td.delta);
+            },
+            .toolcall_end => |te| {
+                try std.testing.expectEqualStrings("call_trace01", te.tool_call.id);
+                tool_end_index = te.content_index;
+            },
+            else => {},
+        }
+    }
+
+    try std.testing.expect(stream.waitForThread(5_000));
+    mock.stop();
+    stopped = true;
+
+    try std.testing.expect(stream.getError() == null);
+    try std.testing.expect(mock.saw_chat_path.load(.acquire));
+    try std.testing.expect(mock.saw_stream_flag.load(.acquire));
+
+    try std.testing.expectEqual(@as(usize, 0), text_index.?);
+    try std.testing.expectEqual(@as(usize, 0), thinking_index.?);
+    try std.testing.expectEqual(@as(usize, 0), tool_start_index.?);
+    try std.testing.expectEqual(@as(usize, 2), tool_end_index.?);
+
+    const result = stream.getResult() orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 3), result.content.len);
+    try std.testing.expectEqualStrings("plan", result.content[0].thinking.thinking);
+    try std.testing.expectEqualStrings("hi", result.content[1].text.text);
+    try std.testing.expectEqualStrings("call_trace01", result.content[2].tool_call.id);
+    try std.testing.expectEqualStrings("bash", result.content[2].tool_call.name);
+    try std.testing.expectEqualStrings("{\"command\":\"ls\"}", result.content[2].tool_call.arguments_json);
+}
