@@ -7724,6 +7724,7 @@ fn populateOapProviderCatalog(allocator: std.mem.Allocator, server: *oap_provide
             .context_window = builtin.context_window,
             .max_output_tokens = builtin.max_output_tokens,
             .source = .fallback,
+            .lifecycle = .stable,
             .auth_status = if (builtin.allows_anonymous) .authenticated else .unknown,
             .output_modalities = output_modalities,
         });
