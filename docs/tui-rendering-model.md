@@ -475,8 +475,9 @@ switched to later is lowered to that maximum when the request is made, so no req
 for more than the model writes. Whatever is asked for is lowered again to what the context
 window leaves.
 
-A reply cut off at a limit below the model's maximum raises the limit to that maximum for
-the rest of the run: a cut-off tool call is answered with the usual error and retried, and
+Under the default, a reply cut off below the model's maximum raises the limit to that maximum
+for the rest of the run; a count set with `/output` is kept as the user's bound and never
+raised: a cut-off tool call is answered with the usual error and retried, and
 cut-off text is followed by one request to continue from where it stopped. A reply cut off
 at the maximum ends as before. The setting is kept in `~/.oapx/config.json` under
 `mode.output`, as `"max"` or a count, and absent for the default.

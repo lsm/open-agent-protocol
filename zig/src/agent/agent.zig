@@ -1081,6 +1081,7 @@ pub const Agent = struct {
             .execute_tool_via_protocol_ctx = self._execute_tool_via_protocol_ctx orelse self._local_tool_protocol,
             .temperature = null,
             .max_tokens = agent_loop.outputRequest(model, self._output),
+            .raise_max_tokens_on_cut_off = self._output == .auto,
             .api_key = null,
             .cancel_token = self._cancel_token,
             .thinking_level = self._state.thinking_level,
@@ -1664,6 +1665,19 @@ test "a reply cut off at the model's maximum ends the run without a continue req
 
     try std.testing.expectEqual(@as(usize, 1), mock.calls);
     try std.testing.expectEqual(@as(?u32, 100_000), mock.asked[0]);
+    try std.testing.expectEqual(@as(usize, 0), mock.continue_requests);
+}
+
+test "a reply cut off at a count the user set ends the run without raising it" {
+    var mock = CutOffMock{ .cut_off_replies = 2 };
+    var agent = Agent.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = cutOffStreamFn, .ctx = &mock } });
+    defer agent.deinit();
+    agent.setOutput(.{ .tokens = 8_000 });
+
+    try runCutOff(&agent);
+
+    try std.testing.expectEqual(@as(usize, 1), mock.calls);
+    try std.testing.expectEqual(@as(?u32, 8_000), mock.asked[0]);
     try std.testing.expectEqual(@as(usize, 0), mock.continue_requests);
 }
 

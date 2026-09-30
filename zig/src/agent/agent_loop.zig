@@ -1493,7 +1493,7 @@ fn runLoop(
             try setFinalMessage(&state, allocator, assistant_message);
             try appendClonedStateMessage(&state.messages, allocator, .{ .assistant = assistant_message });
 
-            const raised = if (assistant_message.stop_reason == .length) raisedOutput(turn_config.max_tokens, config.model) else null;
+            const raised = if (config.raise_max_tokens_on_cut_off and assistant_message.stop_reason == .length) raisedOutput(turn_config.max_tokens, config.model) else null;
             if (raised) |higher| turn_config.max_tokens = higher;
             const outcome = switch (turnOutcome(assistant_message, cut_off_tool_turns)) {
                 .reasoned_only => if (asked_for_answer) TurnOutcome.answered else TurnOutcome.reasoned_only,
