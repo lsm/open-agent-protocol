@@ -1536,6 +1536,17 @@ are "stamped with the revision the lister served it under", and both name
 | **How it is tested, and what is not** | A Zig unit test sends an open naming a pinned source and an unconfigured one, and asserts on what the adapter was handed: the operator's `endpoint`, the operator's `environment` values kept even where the wire named the same variables, the caller's bare names appended, and the unconfigured source verbatim. |
 | **The differential case that is owed** | **There is no differential scenario for it, and that is a real gap rather than an impossibility.** I first recorded this as unreachable on the grounds that `oapx hub` refuses `--config` and `adapter/memory` refuses every unconfigured source. **Both were wrong.** `runHub` parses `--config` and feeds `file.tool_sources` into `Hub.init` (`makai.zig:2641`), and `adapter/memory` admits any id outside its own declared set whose kind it can attach (`adapter.zig:1098`). So a config declaring `pinned` as a `local` source and an open naming `{"id":"pinned","kind":"local"}` is admitted today, and before this change the session carried the wire's description of a source the operator had pinned. **The case is therefore expressible, and writing it is owed.** It needs the differential harness to pass a per-tree `--config`, which it cannot today — `hubCommand` runs `hub --stdio` with no arguments. That is the follow-up, and until it lands this row is the only place the divergence is recorded, which is a weaker guarantee than the other rows have. |
 
+### D23 — the media gate sits on the head, so 413 wins where Go answers 415
+
+| | |
+| --- | --- |
+| **The draft says** | Every route that reads a body requires `Content-Type: application/json`, and the rows above pin `415` for a wrong type and `413 request_too_large` for a body over 16 MiB. It does not say which wins when a request is both, because a request cannot be both before the length is read. |
+| **Go does** | `readRequest` (`go/serve/servehttp/server.go:747`) parses the media type **first** and answers `415`; the `MaxBytesReader` is only reached after that. A wrong-media body over 16 MiB is therefore `415` in Go. |
+| **Zig does** | The gate is in `answer()` (`zig/src/hub/http.zig:367`, inside the function declared at `:364`), which is called on the head **after** `readHead` has read the length. So the length check fires first and a wrong-media body over 16 MiB answers `413`, and a wrong-media request at or under the cap answers `415`. |
+| **The divergence** | One request, two answers: `Content-Type: text/plain` with `Content-Length` over 16 MiB is `413` in Zig and `415` in Go. Neither is wrong against the draft, which pins both statuses and states no precedence. |
+| **Why it is not decided here** | Choosing would be **settling a precedence the draft does not state**, and a wrong-media *body* has to be either refused or buffered to get there, which is a routing decision this ledger does not own. A draft row saying "a wrong media type is refused before the body is measured" or the reverse would close it; that is a spec change and unaccepted. |
+| **Anchor correction** | An earlier revision cited `http.zig:367` for the *function* `answer`, which is declared at `:364`; `:367` is the gate line inside it. Both are given above so a reader following either lands on what the row claims. |
+
 ### D26 — the media gate's predicate differs between the trees in two corners the draft leaves open
 
 | | |
