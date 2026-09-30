@@ -674,14 +674,12 @@ fn endGoogleThinkingBlock(
     const thinking_copy = allocator.dupe(u8, content) catch {
         ctx.deinit();
         stream.completeWithError("oom thinking");
-        stream.markThreadDone();
         return false;
     };
     const sig_copy = if (signature.len > 0) allocator.dupe(u8, signature) catch {
         allocator.free(thinking_copy);
         ctx.deinit();
         stream.completeWithError("oom thinking");
-        stream.markThreadDone();
         return false;
     } else null;
 
@@ -693,7 +691,6 @@ fn endGoogleThinkingBlock(
         if (sig_copy) |sig| allocator.free(sig);
         ctx.deinit();
         stream.completeWithError("oom thinking");
-        stream.markThreadDone();
         return false;
     };
 
@@ -701,7 +698,6 @@ fn endGoogleThinkingBlock(
     const carried = ai_types.partialWithContent(allocator, partial, content_blocks.items, think_at) catch {
         ctx.deinit();
         stream.completeWithError("oom thinking");
-        stream.markThreadDone();
         return false;
     };
     _ = stream.pushBlocking(.{ .thinking_end = .{
@@ -1737,8 +1733,10 @@ fn google_generative_api_awaitCleanupRelease() void {
     if (google_generative_api_cleanup_hold.load(.acquire) == 0) return;
     _ = google_generative_api_cleanup_held.fetchAdd(1, .release);
     const io = google_generative_api_defaultIo();
-    while (google_generative_api_cleanup_hold.load(.acquire) != 0) {
-        io.futexWaitUncancelable(u32, &google_generative_api_cleanup_gate.raw, google_generative_api_cleanup_gate.load(.acquire));
+    while (true) {
+        const seen = google_generative_api_cleanup_gate.load(.acquire);
+        if (google_generative_api_cleanup_hold.load(.acquire) == 0) break;
+        io.futexWaitUncancelable(u32, &google_generative_api_cleanup_gate.raw, seen);
     }
 }
 

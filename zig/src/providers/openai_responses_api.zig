@@ -2519,8 +2519,10 @@ fn openai_responses_api_awaitCleanupRelease() void {
     if (openai_responses_api_cleanup_hold.load(.acquire) == 0) return;
     _ = openai_responses_api_cleanup_held.fetchAdd(1, .release);
     const io = openai_responses_api_defaultIo();
-    while (openai_responses_api_cleanup_hold.load(.acquire) != 0) {
-        io.futexWaitUncancelable(u32, &openai_responses_api_cleanup_gate.raw, openai_responses_api_cleanup_gate.load(.acquire));
+    while (true) {
+        const seen = openai_responses_api_cleanup_gate.load(.acquire);
+        if (openai_responses_api_cleanup_hold.load(.acquire) == 0) break;
+        io.futexWaitUncancelable(u32, &openai_responses_api_cleanup_gate.raw, seen);
     }
 }
 
