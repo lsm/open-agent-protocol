@@ -1,5 +1,6 @@
 const std = @import("std");
 const provider_catalog = @import("provider_catalog");
+const provider_caps = @import("provider_caps");
 const compat = @import("compat");
 const ai_types = @import("ai_types");
 const event_stream = @import("event_stream");
@@ -107,13 +108,7 @@ fn isAnthropicHost(base_url: []const u8) bool {
 }
 
 fn thinksWhenAsked(model: ai_types.Model) bool {
-    return model.reasoning and std.mem.eql(u8, model.provider, "deepseek");
-}
-
-fn deepSeekEffort(effort: []const u8) []const u8 {
-    if (std.mem.eql(u8, effort, "minimal") or std.mem.eql(u8, effort, "low")) return "low";
-    if (std.mem.eql(u8, effort, "xhigh") or std.mem.eql(u8, effort, "max")) return "max";
-    return "high";
+    return model.reasoning and provider_caps.usesDeepSeekWire(model.provider, model.base_url);
 }
 
 fn supportsAdaptiveThinking(model_id: []const u8) bool {
@@ -777,7 +772,7 @@ fn buildRequestBody(model: ai_types.Model, context: ai_types.Context, options: a
             if (options.getThinkingEffort()) |effort| {
                 try w.writeKey("output_config");
                 try w.beginObject();
-                try w.writeStringField("effort", deepSeekEffort(effort));
+                try w.writeStringField("effort", provider_caps.deepSeekEffort(effort));
                 try w.endObject();
             }
         }

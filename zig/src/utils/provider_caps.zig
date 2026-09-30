@@ -120,6 +120,21 @@ pub fn isDeepSeek(base_url: ?[]const u8) bool {
     return isHostOrSubdomainOf(base_url, "deepseek.com");
 }
 
+pub fn isExplicitDeepSeekVendor(vendor_id: []const u8) bool {
+    return std.mem.eql(u8, vendor_id, "deepseek");
+}
+
+pub fn usesDeepSeekWire(vendor_id: []const u8, base_url: ?[]const u8) bool {
+    return isExplicitDeepSeekVendor(vendor_id) or isDeepSeek(base_url);
+}
+
+pub fn deepSeekEffort(effort: []const u8) []const u8 {
+    if (std.mem.eql(u8, effort, "minimal") or std.mem.eql(u8, effort, "low")) return "low";
+    if (std.mem.eql(u8, effort, "max") or std.mem.eql(u8, effort, "ultra")) return "max";
+    if (std.mem.eql(u8, effort, "medium") or std.mem.eql(u8, effort, "high") or std.mem.eql(u8, effort, "xhigh")) return "high";
+    return "";
+}
+
 fn hostIsOrSubdomainOf(host: []const u8, domain: []const u8) bool {
     return std.ascii.eqlIgnoreCase(host, domain) or
         (host.len > domain.len and std.ascii.eqlIgnoreCase(host[host.len - domain.len ..], domain) and host[host.len - domain.len - 1] == '.');
@@ -909,3 +924,29 @@ test "detectCapabilities unknown returns defaults" {
     try std.testing.expect(!caps.prompt_caching);
     try std.testing.expectEqual(ProviderType.unknown, caps.provider_type);
 }
+
+test "an explicit deepseek vendor is recognised behind any host, and a lookalike host is not" {
+    try std.testing.expect(usesDeepSeekWire("deepseek", "https://proxy.internal.example/v1"));
+    try std.testing.expect(usesDeepSeekWire("deepseek", null));
+    try std.testing.expect(usesDeepSeekWire("openai", "https://api.deepseek.com"));
+    try std.testing.expect(usesDeepSeekWire("openai", "https://gateway.deepseek.com/v1"));
+    try std.testing.expect(!usesDeepSeekWire("openai", "https://deepseek.com.evil.example/v1"));
+    try std.testing.expect(!usesDeepSeekWire("openai", "https://proxy.internal.example/v1"));
+    try std.testing.expect(!usesDeepSeekWire("deepseek-like", "https://api.deepseek.com.evil.example"));
+}
+
+test "the deepseek level table follows the published mapping" {
+    try std.testing.expectEqualStrings("low", deepSeekEffort("minimal"));
+    try std.testing.expectEqualStrings("low", deepSeekEffort("low"));
+    try std.testing.expectEqualStrings("high", deepSeekEffort("medium"));
+    try std.testing.expectEqualStrings("high", deepSeekEffort("high"));
+    try std.testing.expectEqualStrings("high", deepSeekEffort("xhigh"));
+    try std.testing.expectEqualStrings("max", deepSeekEffort("max"));
+    try std.testing.expectEqualStrings("max", deepSeekEffort("ultra"));
+}
+
+test "an effort with no published deepseek level maps to nothing rather than to a guess" {
+    try std.testing.expectEqualStrings("", deepSeekEffort("nonsense"));
+    try std.testing.expectEqualStrings("", deepSeekEffort(""));
+}
+

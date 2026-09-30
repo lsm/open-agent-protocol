@@ -813,6 +813,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "retry", .module = retry_mod },
             .{ .name = "pre_transform", .module = pre_transform_mod },
             .{ .name = "string_builder", .module = string_builder_mod },
+            .{ .name = "provider_caps", .module = provider_caps_mod },
             .{ .name = "compat", .module = compat_mod },
         },
     });
