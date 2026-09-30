@@ -494,6 +494,20 @@ rule. The two envelopes have different requiredness on this member, and
 conflating them would either excuse a native omission or over-refuse an OAP
 one.
 
+**Each reader reaches that judgement on its own, and two ways of writing it
+are not the same reader.** A reader that reads the member as
+`str(value) || "unknown"` and one that tests it against the seven literals
+disagree on three inputs at once: a present `null` and a present number both
+become the string `unknown` under the first and are `malformed_response` under
+the second, and a literal outside the enum passes through the first as though a
+type assertion had checked it. The lenient form is not a different policy that
+some readers were left free to choose — it is a coercion that cannot
+distinguish "the provider said `unknown`" from "the provider said something we
+could not read", and the seven literals are the closed set that makes those two
+distinguishable. A reader conforms here when absent reads as the existing
+`unknown` and a present value outside the seven is refused, whatever its
+intermediate representation.
+
 ### One inference call
 
 | Type | Direction | Carries |
