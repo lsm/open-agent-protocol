@@ -518,31 +518,119 @@ DEFER
 
 scan_defer_scope() {
   local file="$1"
+  # A frame stack over whole-line shapes, deliberately NOT a brace count.
+  #
+  # The previous version counted statements between an `if (cond) {` line and the
+  # next line that was exactly `}`, which cannot see a `} else if`/`} else` head, a
+  # `|capture|`, or a nested block. Widening it the obvious way -- tracking brace
+  # depth -- desyncs: Zig's character literals (a bare `'"'`) and its `\\` multiline
+  # strings both hide braces from a line scanner, and 40 of 202 files came out
+  # unbalanced. Counting no braces at all removes that failure mode: the only thing
+  # that moves the stack is a line that IS an opener or IS a closing brace, so a
+  # brace inside a string cannot shift anything. What is left is a line that looks
+  # like an opener or like `}` while inside a string or a comment. That is a much
+  # smaller surface, and guard-bad.zig pins the case that actually bit -- a `://`
+  # inside a string in the head, which a naive comment strip hid.
+  #
+  # Loops are out of scope on purpose. A `defer` in a loop body is scoped to the
+  # iteration -- the body block ends every pass -- so a lone `defer` there is the
+  # idiom, not the defect. Counting loops reported six correct sites in makai.zig.
+  # The defect needs a CONDITIONAL, where the defer runs once at block exit, before
+  # the call it was meant to outlive.
   awk -v file="$file" '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    # String-aware, because an `if` head is full of them: `if (startsWith(url,
+    # "http://")) {` ends in `{`, and cutting at the `//` inside the literal
+    # truncated the line before the brace, so the frame never opened. The old
+    # raw-line regex had no comment handling and did open one there, so a naive
+    # strip is a coverage regression, not a tidy-up. Still not a full lexer: a
+    # `//` inside a `\\` multiline string is still treated as a comment.
+    function strip_line_comment(s,   i, c, n, instr, esc) {
+      n = length(s); instr = 0; esc = 0
+      for (i = 1; i <= n; i++) {
+        c = substr(s, i, 1)
+        if (instr) {
+          if (esc) { esc = 0; continue }
+          if (c == "\\") { esc = 1; continue }
+          if (c == "\"") instr = 0
+          continue
+        }
+        if (c == "\"") { instr = 1; continue }
+        if (c == "/" && substr(s, i + 1, 1) == "/") return substr(s, 1, i - 1)
+      }
+      return s
+    }
+    function add_stmt(f, text,   t) {
+      t = trim(text)
+      if (t == "" || f < 1) return
+      if (fstmts[f] == 0) {
+        ffirst[f] = t
+        if (t ~ /^defer[ \t]/) fdefer[f] = 1
+      }
+      fstmts[f]++
+    }
+    function frees_a_capture(f,   names, j, c, n) {
+      if (fcaps[f] == "") return 0
+      n = split(fcaps[f], names, ",")
+      for (j = 1; j <= n; j++) {
+        c = trim(names[j])
+        if (c != "" && ffirst[f] ~ ("(^|[^A-Za-z0-9_])" c "([^A-Za-z0-9_]|$)")) return 1
+      }
+      return 0
+    }
+    function evaluate(f) {
+      if (f < 1) return
+      if (fkind[f] !~ /^(if|else)$/) return
+      if (fstmts[f] != 1 || !fdefer[f]) return
+      if (frees_a_capture(f)) return
+      print file ":" fline[f] "\t" fkind[f] "\t" ffirst[f]
+    }
+    function push(kind, line, head,   f, caps) {
+      f = ++top
+      fkind[f] = kind; fline[f] = line
+      fstmts[f] = 0; fdefer[f] = 0; ffirst[f] = ""; fcaps[f] = ""
+      caps = ""
+      if (match(head, /\|[^|]*\|[ \t]*$/)) {
+        caps = substr(head, RSTART, RLENGTH)
+        sub(/^[ \t|]*/, "", caps); sub(/[ \t|]+$/, "", caps)
+      }
+      fcaps[f] = caps
+      return f
+    }
     {
-      if (collecting) {
-        trimmed = $0
-        sub(/^[ \t]+/, "", trimmed)
-        sub(/[ \t]+$/, "", trimmed)
-        if (trimmed == "}") {
-          if (count == 1 && only_defer) print file ":" if_line
-          collecting = 0
-          count = 0
-          only_defer = 0
-          next
-        }
-        if (trimmed != "") {
-          count++
-          if (count == 1 && trimmed ~ /^defer[ \t]/) only_defer = 1
-        }
-        next
+      code = trim(strip_line_comment($0))
+      if (code == "}") { if (top >= 1) { evaluate(top); top-- } ; next }
+      # `} else if (...) {` and `} else {` close one block and open the next on one
+      # line. That is self-evident from the line itself, so it needs no brace count.
+      # The trailing brace is required before pushing, and the pop happens either
+      # way. A braceless `} else if (c) continue;` opens no block, so pushing for it
+      # left a phantom frame that swallowed the lines after the if-statement and
+      # would report a loop-scoped defer as a conditional one.
+      if (code ~ /^\}[ \t]*else[ \t]*if[ \t]*\(/) {
+        opens_block = (code ~ /\{[ \t]*$/)
+        if (top >= 1) { evaluate(top); top-- }
+        if (!opens_block) next
+        h = code; sub(/^\}[ \t]*/, "", h); sub(/\{[ \t]*$/, "", h)
+        push("if", FNR, h); next
       }
-      if ($0 ~ /^[ \t]*if[ \t]*\(.*\)[ \t]*\{[ \t]*$/) {
-        collecting = 1
-        if_line = FNR
-        count = 0
-        only_defer = 0
+      if (code ~ /^\}[ \t]*else[ \t]*(\||\{)/) {
+        opens_block = (code ~ /\{[ \t]*$/)
+        if (top >= 1) { evaluate(top); top-- }
+        if (!opens_block) next
+        h = code; sub(/^\}[ \t]*/, "", h); sub(/\{[ \t]*$/, "", h)
+        push("else", FNR, h); next
       }
+      if (code ~ /^(if[ \t]*\(|else[ \t]+if[ \t]*\()/ && code ~ /\{[ \t]*$/) {
+        h = code; sub(/\{[ \t]*$/, "", h)
+        if (top >= 1) add_stmt(top, code)
+        push("if", FNR, h); next
+      }
+      if (code ~ /^else[ \t]*(\||\{)/ && code ~ /\{[ \t]*$/) {
+        if (top >= 1) add_stmt(top, code)
+        h = code; sub(/\{[ \t]*$/, "", h)
+        push("else", FNR, h); next
+      }
+      if (top >= 1) add_stmt(top, code)
     }
   ' "$file"
 }
@@ -567,16 +655,16 @@ if [[ -n "$undeclared_defer_scope" ]]; then
   echo "[patterns] closes, so here it runs before the call it was meant to outlive." >&2
   echo "[patterns] Hold the call's result, do the free, then branch on the error; see run() in" >&2
   echo "[patterns] zig/src/transports/in_process.zig." >&2
-  echo "[patterns] This is a floor, not a detector, and it is a narrow floor. NOT SEEN: a defer in a" >&2
-  echo "[patterns] branch that has a following \`else\` (the \`} else {\` line reads as a second" >&2
-  echo "[patterns] statement, so the block looks non-empty); a defer in a \`} else if (...) {\` or" >&2
-  echo "[patterns] \`else {\` branch; one in a payload-capture head such as \`if (x) |v| {\`; one" >&2
-  echo "[patterns] nested one block deep; an \`errdefer\` on its own, which the pattern does not" >&2
-  echo "[patterns] match; and any \`while\` or \`for\` body, since only \`if\` opens are matched." >&2
-  echo "[patterns] Each is the same defect - the defer runs before the code it was meant to" >&2
-  echo "[patterns] outlive. Catching them needs brace-depth tracking, which reports ten false" >&2
-  echo "[patterns] positives on today's tree; tracked in #603, with the reproducer. Until then," >&2
-  echo "[patterns] read a defer in a conditional as suspect by hand." >&2
+  echo "[patterns] This is a floor, not a detector. It sees a plain \`if\`, a \`} else if (...) {\`" >&2
+  echo "[patterns] or \`} else {\` / \`} else |err| {\` branch, a payload-capture head, and a block" >&2
+  echo "[patterns] nested one deep, whenever the block's only top-level line starts with \`defer\`." >&2
+  echo "[patterns] A line carrying more than one statement still counts as that one line, so" >&2
+  echo "[patterns] \`defer release(v); use(v);\` is seen. NOT SEEN, all of it measured against the" >&2
+  echo "[patterns] fixtures rather than assumed: an \`errdefer\` alone; a \`defer {\` block on its own" >&2
+  echo "[patterns] lines, whose inner lines raise the statement count and whose own closing brace" >&2
+  echo "[patterns] ends the conditional early; a one-line \`if (f) { defer f(); }\`, whose head does not" >&2
+  echo "[patterns] end in \`{\`; a braceless \`} else if (c) continue;\`, which opens no block; and a" >&2
+  echo "[patterns] switch prong. Until then, read a defer in a conditional as suspect by hand." >&2
   echo "[patterns] known_defer_scope is a backlog for sites that predate this check, not a list of" >&2
   echo "[patterns] approved ones. Adding to it needs a reason in the commit message saying why the" >&2
   echo "[patterns] defer is not meant to outlive its block. New code is expected to be fixed." >&2
@@ -605,25 +693,37 @@ if [[ "$scanned_zig_files" -eq 0 ]]; then
   echo "[patterns] that because it calls the scanner directly. Fail rather than pass on nothing." >&2
   exit 1
 fi
+defer_scope_expected_bad=8
+defer_scope_expected_good=0
 bad_fixture_hits="$(scan_defer_scope "$defer_fixture_bad")"
 good_fixture_hits="$(scan_defer_scope "$defer_fixture_good")"
-if [[ -z "$bad_fixture_hits" ]]; then
-  echo "[patterns] the defer-scope check no longer reports its own bad fixture:" >&2
-  echo "[patterns] $defer_fixture_bad holds the one shape this check exists to catch. A check that" >&2
-  echo "[patterns] has stopped catching it is not a check. The fixtures are scanned directly, so the" >&2
-  echo "[patterns] count above is what keeps the tree scan from passing on nothing." >&2
+bad_fixture_count="$(printf '%s\n' "$bad_fixture_hits" | grep -c . || true)"
+if [[ "$bad_fixture_count" -ne "$defer_scope_expected_bad" ]]; then
+  echo "[patterns] the defer-scope check reports $bad_fixture_count of its $defer_scope_expected_bad bad fixtures:" >&2
+  echo "$bad_fixture_hits" >&2
+  echo "[patterns] guard-bad.zig holds one function per spelling this check is supposed to see: a" >&2
+  echo "[patterns] plain if, a \`} else if\` branch, a \`} else\` branch, a payload-capture head, a" >&2
+  echo "[patterns] block nested one deep, an \`if\` head carrying a \`://\` string literal, an" >&2
+  echo "[patterns] \`} else |err| {\` branch, and a lone line carrying two statements. Fewer" >&2
+  echo "[patterns] means a spelling went unseen again, which is the" >&2
+  echo "[patterns] defect this check exists to prevent; more means it is matching something it should" >&2
+  echo "[patterns] not. A count is checked rather than a non-empty result because a check that" >&2
+  echo "[patterns] quietly stops seeing three of the eight shapes still passes an emptiness test." >&2
   exit 1
 fi
-if [[ -n "$good_fixture_hits" ]]; then
-  echo "[patterns] the defer-scope check reports a fixture it must not:" >&2
+good_fixture_count="$(printf '%s\n' "$good_fixture_hits" | grep -c . || true)"
+if [[ "$good_fixture_count" -ne "$defer_scope_expected_good" ]]; then
+  echo "[patterns] the defer-scope check reports $good_fixture_count good fixtures, want $defer_scope_expected_good:" >&2
   echo "$good_fixture_hits" >&2
-  echo "[patterns] $defer_fixture_good holds the shapes that are correct today: a defer sharing a" >&2
-  echo "[patterns] block with the work it protects, one in a function body, one in a capture block" >&2
-  echo "[patterns] that also uses the value, and one in an if-branch that has an else and holds a" >&2
-  echo "[patterns] second statement. That last one is here because \`} else {\` is where this scanner" >&2
-  echo "[patterns] is weakest: the line reads as a statement, so collection runs on into the else" >&2
-  echo "[patterns] body. An if-branch whose ONLY statement is a defer is the bug, not a fixture, and" >&2
-  echo "[patterns] it is listed above under NOT SEEN." >&2
+  echo "[patterns] guard-good.zig holds the shapes that are correct: a defer sharing a block with the" >&2
+  echo "[patterns] work it protects, one in a function body, one in a capture block that also uses the" >&2
+  echo "[patterns] value, one in an if-branch with an else and a second statement, a multi-line" >&2
+  echo "[patterns] \`defer {\` block, a braceless else-if leaving a loop defer, and two on a" >&2
+  echo "[patterns] single line with a following statement, two loop bodies -- one freeing a local and" >&2
+  echo "[patterns] one freeing the loop's own capture -- and one freeing a capture in an \`} else if\`" >&2
+  echo "[patterns] head, which is the same exemption as the plain \`if\` spelled the other way. The loop" >&2
+  echo "[patterns] and capture cases are there because that value dies with its block, so a defer that" >&2
+  echo "[patterns] frees it is scoped correctly; a lone defer in a loop body is the idiom, not a defect." >&2
   exit 1
 fi
 
