@@ -671,3 +671,40 @@ func TestDeepSeekPublicEffortOptionsMapToTheWireValue(t *testing.T) {
 		})
 	}
 }
+
+func TestDeepSeekCompanionBehaviourRecord(t *testing.T) {
+	t.Run("identity is additive and never removes an existing host match", func(t *testing.T) {
+		if !IsDeepSeekModel(Model{BaseURL: "https://api.deepseek.com/v1", HasBaseURL: true}) {
+			t.Error("the host match that existed before this change is gone")
+		}
+		if !IsDeepSeekModel(Model{Provider: "deepseek", BaseURL: "https://gateway.corp/v1", HasBaseURL: true}) {
+			t.Error("a configured deepseek identity behind a non-vendor proxy is not recognised")
+		}
+		if IsDeepSeekModel(Model{Provider: "openai", BaseURL: "https://gateway.corp/v1", HasBaseURL: true}) {
+			t.Error("an unrelated vendor on an unrelated host is treated as deepseek")
+		}
+	})
+
+	t.Run("a proxied deepseek reasoning model reaches the wire with its effort", func(t *testing.T) {
+		model := openAIModel()
+		model.Provider = "deepseek"
+		model.BaseURL = "https://gateway.corp/v1"
+		model.HasBaseURL = true
+		model.Reasoning = true
+		if !MergeCompat(model).SupportsReasoningEffort {
+			t.Fatal("the capability is false, so no reasoning_effort is written at all")
+		}
+		if got := decode(t, BuildRequestBody(model, Context{}, StreamOptions{ReasoningEffort: "high"}))["reasoning_effort"]; got != "high" {
+			t.Fatalf("reasoning_effort = %v, want high", got)
+		}
+	})
+
+	t.Run("absence stays distinguishable from a value", func(t *testing.T) {
+		model := openAIModel()
+		model.Provider = "deepseek"
+		model.Reasoning = true
+		if _, present := decode(t, BuildRequestBody(model, Context{}, StreamOptions{}))["reasoning_effort"]; present {
+			t.Error("an absent effort wrote a field")
+		}
+	})
+}
