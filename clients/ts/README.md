@@ -353,6 +353,8 @@ A tool catalog needs that pairing more than a model one does, not less. The
   Without the revision a caller cannot tell which snapshot it read, so it
   cannot tell which update invalidates it.
 - **`OpenOptions`** — open() input; see OapClient.open.
+- **`SessionOpenRequest`** — One session.open request payload, re-exported for
+  callers minting custom opens.
 - **`finalText`** — Returns the final-response text of a run.completed envelope,
   or null for any other envelope or a non-text final response.
 
