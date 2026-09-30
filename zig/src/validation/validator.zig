@@ -44,11 +44,11 @@ pub const Validator = struct {
         if (self.loaded.refusals.len != 0) {
             if (options.codes) |sink| {
                 for (self.loaded.refusals) |refusal| {
-                    var line: [256]u8 = undefined;
-                    const rendered = std.fmt.bufPrint(&line, " {s} in {s}", .{
+                    const rendered = try std.fmt.allocPrint(allocator, " {s} in {s}", .{
                         if (refusal.code.len == 0) "unresolved-schema-reference" else refusal.code,
                         refusal.pack,
-                    }) catch continue;
+                    });
+                    defer allocator.free(rendered);
                     try sink.appendSlice(allocator, rendered);
                 }
             }
@@ -284,6 +284,53 @@ test "a schema path that leaves the pack root is refused, by .. or by symlink, a
     try std.testing.expectEqual(@as(usize, 1), read.branches.len);
 }
 
+test "a refusal whose rendered line outgrows any fixed buffer still prints its code" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(std.testing.io, "long", .default_dir);
+
+    const long_id = try std.fmt.allocPrint(allocator, "com.example.{s}", .{"x" ** 400});
+    defer allocator.free(long_id);
+    try std.testing.expect(long_id.len > 256);
+
+    const descriptor = try std.fmt.allocPrint(allocator,
+        \\{{"id": "{s}", "version": "1.0.0", "capability_keys": ["capabilities.request.thing"]}}
+    , .{long_id});
+    defer allocator.free(descriptor);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "long/pack.json", .data = descriptor });
+
+    const dir = try tmp.dir.realPathFileAlloc(std.testing.io, "long", allocator);
+    defer allocator.free(dir);
+    const dirs = [_][]const u8{dir};
+
+    var codes: std.ArrayList(u8) = .empty;
+    defer codes.deinit(allocator);
+    try std.testing.expectError(error.PackLoadRefused, Validator.init(allocator, .{
+        .io = std.testing.io,
+        .pack_dirs = &dirs,
+        .codes = &codes,
+    }));
+    try std.testing.expect(std.mem.indexOf(u8, codes.items, "pack_unprefixed_name") != null);
+    try std.testing.expect(std.mem.indexOf(u8, codes.items, long_id) != null);
+    try std.testing.expect(codes.items.len > long_id.len);
+
+    codes.clearRetainingCapacity();
+    try tmp.dir.createDir(std.testing.io, "short", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "short/pack.json", .data =
+            \\{"id": "com.example.short", "version": "1.0.0", "capability_keys": ["capabilities.request.thing"]}
+        ,
+    });
+    const short_dir = try tmp.dir.realPathFileAlloc(std.testing.io, "short", allocator);
+    defer allocator.free(short_dir);
+    const short_dirs = [_][]const u8{short_dir};
+    try std.testing.expectError(error.PackLoadRefused, Validator.init(allocator, .{
+        .io = std.testing.io,
+        .pack_dirs = &short_dirs,
+        .codes = &codes,
+    }));
+    try std.testing.expectEqualStrings(" pack_unprefixed_name in com.example.short", codes.items);
+}
 test "a descriptor whose id, version or schemas is the wrong shape is refused" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});

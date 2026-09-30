@@ -10724,3 +10724,39 @@ test "validate refuses the load when a pack is invalid, and says which code" {
     try std.testing.expect(malformed.refused);
     try std.testing.expect(std.mem.indexOf(u8, malformed.judged, "\"valid\": true") == null);
 }
+
+test "validate names the code of a refusal whose pack id is longer than any fixed line buffer" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(std.testing.io, "longid", .default_dir);
+    const long_id = try std.fmt.allocPrint(allocator, "com.example.{s}", .{"x" ** 400});
+    defer allocator.free(long_id);
+    const descriptor = try std.fmt.allocPrint(allocator,
+        \\{{"id": "{s}", "version": "1.0.0", "capability_keys": ["capabilities.request.thing"]}}
+    , .{long_id});
+    defer allocator.free(descriptor);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "longid/pack.json", .data = descriptor });
+    const long_dir = try tmp.dir.realPathFileAlloc(std.testing.io, "longid", allocator);
+    defer allocator.free(long_dir);
+
+    const cases = try cliCases(allocator, &tmp);
+    defer freeCliCases(allocator, cases);
+
+    const long_run = try runCliCase(allocator, &tmp, "longid", &.{long_dir}, cases.core);
+    defer allocator.free(long_run.said);
+    defer allocator.free(long_run.judged);
+    try std.testing.expect(long_run.refused);
+    try std.testing.expect(std.mem.indexOf(u8, long_run.said, "pack load refused:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, long_run.said, "pack_unprefixed_name") != null);
+    try std.testing.expect(std.mem.indexOf(u8, long_run.said, long_id) != null);
+    try std.testing.expect(std.mem.indexOf(u8, long_run.judged, "\"valid\": true") == null);
+
+    const short_run = try runCliCase(allocator, &tmp, "shortid", &.{cases.invalid}, cases.core);
+    defer allocator.free(short_run.said);
+    defer allocator.free(short_run.judged);
+    try std.testing.expect(short_run.refused);
+    try std.testing.expect(std.mem.indexOf(u8, short_run.said, "pack load refused:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, short_run.said, "pack_unprefixed_name") != null);
+    try std.testing.expect(std.mem.indexOf(u8, short_run.judged, "\"valid\": true") == null);
+}
