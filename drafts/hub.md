@@ -597,7 +597,13 @@ per-round cap with an unbounded round count is not a bound. The Zig port reads i
 64 KiB rounds, stops at **1 MiB in total**, and stops at **2500 ms elapsed from that
 drain's own start** — elapsed, not the process's uptime, so a daemon that has been up
 for hours still drains. A drain that cannot read its own clock stops rather than
-draining without a bound.
+draining without a bound, and that rule now covers the **whole helper path**, not just the
+drain: `readUntil` returns its existing `Timeout` rather than substituting `0` for a clock it
+could not read, which would have kept `left_ms` positive and renewed the silent-socket poll
+forever; the header budget in `readHead` and the idle budget in `readBody` do the same; and the
+drain round deadline **reuses the `now` that round has already read** instead of asking the clock a
+second time. The classification is unchanged — a clock it cannot read is a wait it cannot
+honour, which is the `Timeout` those sites already had — so no wire code or status is added.
 
 An earlier revision of this row said each of the four bounds is pinned by a test
 that would fail if the bound was removed. **That was false, and it was checked
@@ -627,7 +633,15 @@ not.
   stall case is covered separately by `a drain gives up rather than waiting on a
   peer that sends nothing more`
 - **stop on an unreadable clock — a rule with NO exercising test, recorded as a
-  gap.** The Zig port returns the bytes consumed when `elapsedMs` fails rather
+  gap.** The port returns the bytes consumed from `drain` and `Timeout` from the read helpers
+  rather than treating an unreadable clock as `0`. **Nothing exercises that path**: the clock is
+  `std.Io.Timestamp` against a monotonic source and, as the owner verified against
+  `compat/time.zig:25-35`, is currently **infallible** — it does not fail in this test, in CI, or on
+  the platforms this port runs on, so there is no way to make the branch execute from a test. **This
+  is a latent error-contract mismatch, not a reproduced current-platform clock failure.**
+  The clause is stated by the port and unproven by execution, which is the same shape as the
+  `type_mismatch` gap D20 records. Closing it needs a clock-injection seam, which is a redesign
+  rather than a test, so it is left as a gap rather than invented.
   than treating the failure as `0`. Nothing exercises that path: the clock is
   `std.Io.Timestamp` against a monotonic source and does not fail in this test,
   in CI, or on the platforms this port runs on, so there is no way to make the

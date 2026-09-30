@@ -119,7 +119,7 @@ pub const always_going = KeepGoing{ .context = undefined, .check = struct {
 fn readUntil(stream: *compat.net.Stream, buffer: []u8, deadline_ms: u64, cycle_ms: i32, keep_going: KeepGoing) Failure!usize {
     while (true) {
         if (!keep_going.yes()) return error.Stopped;
-        const left_ms: i64 = @as(i64, @intCast(deadline_ms)) - @as(i64, @intCast(elapsedMs() catch 0));
+        const left_ms: i64 = @as(i64, @intCast(deadline_ms)) - @as(i64, @intCast(elapsedMs() catch return error.Timeout));
         if (left_ms <= 0) return error.Timeout;
         if (comptime !pollable) return stream.read(buffer) catch error.ReadFailed;
         const wait: i32 = @intCast(@min(left_ms, @as(i64, @max(@as(i64, cycle_ms), 1))));
@@ -144,7 +144,7 @@ pub fn readHead(allocator: std.mem.Allocator, stream: *compat.net.Stream, header
     var head = std.ArrayList(u8).empty;
     defer head.deinit(allocator);
     var byte: [1]u8 = undefined;
-    const headers_done = (elapsedMs() catch 0) + @as(u64, @intCast(@max(header_wait_ms, 0)));
+    const headers_done = (elapsedMs() catch return error.Timeout) + @as(u64, @intCast(@max(header_wait_ms, 0)));
     while (head.items.len < max_header_bytes) {
         const n = try readUntil(stream, &byte, headers_done, cycle_ms, keep_going);
         if (n == 0) return error.Truncated;
@@ -217,7 +217,7 @@ pub fn drain(stream: *compat.net.Stream, remaining_in: usize, keep_going: KeepGo
         const now = elapsedMs() catch return spent;
         if (now -| started >= drain_total_ms) return spent;
         var owed: usize = @min(remaining, drain_cap_bytes);
-        const deadline = (elapsedMs() catch 0) + drain_cycle_ms;
+        const deadline = now + @as(u64, @intCast(@max(drain_cycle_ms, 0)));
         while (owed > 0) {
             if (!keep_going.yes()) return spent;
             const chunk = @min(owed, scratch.len);
@@ -237,7 +237,8 @@ pub fn readBody(allocator: std.mem.Allocator, stream: *compat.net.Stream, reques
     request.body = try allocator.alloc(u8, request.content_length);
     const idle_ms: u64 = @intCast(@max(idle_wait_ms, 0));
     while (request.filled < request.body.len) {
-        const n = try readUntil(stream, request.body[request.filled..], (elapsedMs() catch 0) + idle_ms, cycle_ms, keep_going);
+        const round_deadline = (elapsedMs() catch return error.Timeout) + idle_ms;
+        const n = try readUntil(stream, request.body[request.filled..], round_deadline, cycle_ms, keep_going);
         if (n == 0) return error.BodyTruncated;
         request.filled += n;
     }
@@ -643,9 +644,9 @@ test "the header budget is the whole request's, not a fresh one per byte" {
     var pipe = try Pipe.open();
     defer pipe.close();
     try pipe.client.writeAll("G");
-    const started = elapsedMs() catch 0;
+    const started = elapsedMs() catch return error.TestUnexpectedResult;
     try testing.expectError(error.Timeout, readRequest(testing.allocator, &pipe.accepted, 120, idle_read_ms, test_cycle_ms, always_going, fresh()));
-    try testing.expect((elapsedMs() catch 0) - started < 2000);
+    try testing.expect((elapsedMs() catch return error.TestUnexpectedResult) - started < 2000);
 }
 
 test "a header whose name merely starts with a known one is not that header" {
@@ -950,7 +951,7 @@ test "a read in flight gives up when the daemon is told to stop, rather than wai
     var pipe = try Pipe.open();
     defer pipe.close();
     try pipe.client.writeAll("POST /adapters/a/sessions HTTP/1.1\r\nHost: a\r\nContent-Length: 8\r\n\r\n{\"a\":");
-    const started = elapsedMs() catch 0;
+    const started = elapsedMs() catch return error.TestUnexpectedResult;
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -963,7 +964,7 @@ test "a read in flight gives up when the daemon is told to stop, rather than wai
             }
         }.stop,
     }));
-    try testing.expect((elapsedMs() catch 0) - started < 500);
+    try testing.expect((elapsedMs() catch return error.TestUnexpectedResult) - started < 500);
 }
 
 fn bodyOf(allocator: std.mem.Allocator, length: usize) Failure!Request {
