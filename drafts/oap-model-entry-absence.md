@@ -12,13 +12,13 @@ published `"lifecycle":"stable"` the peer never sent.
 ## What this does not claim
 
 **Not every publisher is corrected.** The OAP provider codec and the
-`ModelEntry` type are; nothing else is fixed by this change.
+`ModelEntry` type are; nothing else is fixed by the `lifecycle` change, #665.
 
 The built-in fallback rows in `populateOapProviderCatalog` are the clearest
 case. `BuiltInProvider` (`oap/provider/catalog.zig:120-132`) has no
 `lifecycle` member at all, so those rows never stated one — they published
-`stable` only because the type supplied the default. This change does not
-replace that default with an explicit `stable`, which would republish the
+`stable` only because the type supplied the default. The `lifecycle` change
+does not replace that default with an explicit `stable`, which would republish the
 same invented value under a new line. Their entries now omit `lifecycle`,
 and a client reads the absence as unknown, per
 `drafts/model-provider-core.md:382-390`.
@@ -32,8 +32,9 @@ the value it states rather than a value the code prefers.
 This section used to say `ModelEntry.source` was still defaulted to
 `.discovered` in `types.zig:437` and `envelope.zig:1220`, and that the fix was
 queued. That is no longer true and the sentence has been removed rather than
-hedged: #673 made `source` omission-preserving and merged before this branch,
-so this branch is now the second half of the same change.
+hedged: #673 made `source` omission-preserving and merged first, so its
+companion, #665, is the second half of the same change and carries
+`lifecycle`.
 
 Both members are absent-tolerant and neither is defaulted:
 
