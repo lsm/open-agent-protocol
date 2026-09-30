@@ -690,8 +690,10 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   to `oap-request-N` for the same `N` — including one beside a **Host the hub refuses** and one beside
   a body with a **refused media type**, so the ordering is pinned in both directions.
   `TestHubAddrRefusesTheSameTwoRequestsDifferentlyOnceNoOriginHeaderIsPresent` is its counterexample,
-  and each of its two requests is the **same request as one of the first two with the `Origin` header
-  removed and nothing else changed**: `Host: evil.test` with `application/json` is refused `403
+  and each of its two requests is the **same request as the second and third of the four the first
+  test sends, with the `Origin` header removed and nothing else changed** — those two, not the first
+  two, are the precedence cases, the first being the Origin header alone and the fourth the
+  matching-`Origin` case: `Host: evil.test` with `application/json` is refused `403
   unrecognized_host`, and `Host: 127.0.0.1:1` with `text/plain` and a body is refused `415
   unsupported_media_type`. That is what makes the ordering a measurement rather than an assertion —
   each precedence case has a twin that differs only in the header under test, so the first test cannot
