@@ -333,9 +333,14 @@ func (s *ModelsService) oapList(ctx context.Context, req ListModelsRequest) (*Li
 		if req.IncludeLoginRequired != nil && !*req.IncludeLoginRequired && model.str("auth_status") == "login_required" {
 			continue
 		}
-		source := SourceDynamic
-		if model.str("source") == "fallback" {
-			source = SourceStaticFallback
+		var source *ModelSource
+		switch model.str("source") {
+		case "discovered":
+			stated := SourceDynamic
+			source = &stated
+		case "fallback":
+			stated := SourceStaticFallback
+			source = &stated
 		}
 		descriptor := ModelDescriptor{ModelRef: model.str("model_ref"), ModelID: model.str("model_id"),
 			DisplayName: model.str("display_name"), ProviderID: model.str("provider_id"), API: model.str("wire"),

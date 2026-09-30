@@ -193,8 +193,8 @@ func TestOAPCombinedFakeHost(t *testing.T) {
 	if err != nil || len(models.Models) != 1 {
 		t.Fatalf("models: %v, %+v", err, models)
 	}
-	if models.Models[0].Source != SourceStaticFallback {
-		t.Fatalf("fallback source was not normalized: %q", models.Models[0].Source)
+	if models.Models[0].Source == nil || *models.Models[0].Source != SourceStaticFallback {
+		t.Fatalf("fallback source was not normalized: %v", models.Models[0].Source)
 	}
 	response, err := client.Provider.Complete(ctx, CompletionRequest{ModelRef: models.Models[0].ModelRef, Messages: []Message{UserMessage("hi")}})
 	if err != nil || response.Message.Text != "hello" {

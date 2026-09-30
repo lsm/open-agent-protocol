@@ -65,7 +65,9 @@ type ModelDescriptor struct {
 
 	Capabilities []ModelCapability
 
-	Source ModelSource
+	// Source is nil when the listing did not say. A present value is
+	// preserved verbatim; nothing is invented for an absent one.
+	Source *ModelSource
 
 	ContextWindow   int
 	MaxOutputTokens int
@@ -284,7 +286,7 @@ type wireModelDescriptor struct {
 	AuthStatus       string            `json:"auth_status"`
 	Lifecycle        string            `json:"lifecycle"`
 	Capabilities     *[]string         `json:"capabilities"`
-	Source           string            `json:"source"`
+	Source           *string           `json:"source"`
 	ContextWindow    *float64          `json:"context_window"`
 	MaxOutputTokens  *float64          `json:"max_output_tokens"`
 	ReasoningDefault *string           `json:"reasoning_default"`
@@ -327,6 +329,14 @@ func (w *wireModelCost) descriptor() *ModelCost {
 		cost.CacheWrite = *w.CacheWrite
 	}
 	return cost
+}
+
+func modelSource(value *string) *ModelSource {
+	if value == nil {
+		return nil
+	}
+	stated := ModelSource(*value)
+	return &stated
 }
 
 func text(value *string) string {
@@ -425,8 +435,8 @@ func parseModelDescriptor(raw wireModelDescriptor, index int, streamID string) (
 	if !knownLifecycles[ModelLifecycle(raw.Lifecycle)] {
 		return ModelDescriptor{}, malformed("models[%d].lifecycle has unknown value: %q", index, raw.Lifecycle)
 	}
-	if !knownSources[ModelSource(raw.Source)] {
-		return ModelDescriptor{}, malformed("models[%d].source has unknown value: %q", index, raw.Source)
+	if raw.Source != nil && !knownSources[ModelSource(*raw.Source)] {
+		return ModelDescriptor{}, malformed("models[%d].source has unknown value: %q", index, *raw.Source)
 	}
 	if raw.Capabilities == nil {
 		return ModelDescriptor{}, malformed("models[%d].capabilities must be an array", index)
@@ -450,7 +460,7 @@ func parseModelDescriptor(raw wireModelDescriptor, index int, streamID string) (
 		AuthStatus:       AuthStatus(raw.AuthStatus),
 		Lifecycle:        ModelLifecycle(raw.Lifecycle),
 		Capabilities:     capabilities,
-		Source:           ModelSource(raw.Source),
+		Source:           modelSource(raw.Source),
 		Metadata:         raw.Metadata,
 		Cost:             raw.Cost.descriptor(),
 		InputModalities:  stringsOf(raw.InputModalities),
