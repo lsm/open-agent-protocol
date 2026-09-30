@@ -368,11 +368,11 @@ const Runner = struct {
     fn answerControl(self: *Runner, id: []const u8, deadline: Deadline) !ControlFrame {
         while (true) {
             if (self.takeControl(id)) |found| return found;
-            if (deadline.expired()) return error.ControlUnanswered;
+            if (deadline.expired()) return error.ControlBudgetExpired;
             const frame = self.client.next(deadline.budget()) catch |err| {
                 if (err == endpoint_client.Error.EndpointClosed) break;
                 return err;
-            } orelse break;
+            } orelse continue;
             switch (frame) {
                 .control => |control_line| {
                     const control = try parseControl(self.allocator, control_line);
@@ -407,7 +407,6 @@ const Runner = struct {
             if (deadline.expired()) return error.ConformanceEndpointSilent;
             try self.pullUntil(deadline);
         }
-        if (deadline.expired()) return error.ConformanceEndpointSilent;
         return self.events.orderedRemove(0);
     }
 
@@ -630,6 +629,17 @@ const Runner = struct {
         try self.client.write(buffer.items);
 
         const control_answer = self.answerControl(replay_id, deadline) catch |err| {
+            if (err == error.ControlBudgetExpired) {
+                try self.failOwned(
+                    accepted,
+                    try std.fmt.allocPrint(
+                        self.allocator,
+                        "the {d}ms probe budget ran out before the endpoint answered the replay control; raise it with --timeout-ms",
+                        .{self.probe_budget_ms},
+                    ),
+                );
+                return;
+            }
             if (err == error.ControlUnanswered) {
                 try self.fail(
                     accepted,
@@ -1574,7 +1584,7 @@ test "a child that writes unrelated frames forever cannot outlive the probe budg
     const replay = report.verdict("a cursor replay is accepted and re-delivers the run") orelse return error.CheckMissing;
     try std.testing.expect(!replay.passed);
     try std.testing.expectEqualStrings(
-        "the endpoint answered nothing; a control it does not implement must still be answered with unsupported_control",
+        "the 1500ms probe budget ran out before the endpoint answered the replay control; raise it with --timeout-ms",
         replay.detail,
     );
 }
@@ -1777,4 +1787,40 @@ test "a backlog queued before the budget ran out is still judged inside it" {
 
     try std.testing.expect(spent >= 0);
     try std.testing.expect(spent < 15_000);
+    try std.testing.expect(!report.passed());
+    const settled = report.verdict("the run reaches a terminal event") orelse return error.CheckMissing;
+    try std.testing.expect(settled.passed);
+    try std.testing.expectEqualStrings("settled run.completed", settled.detail);
+    const replay = report.verdict("a cursor replay is accepted and re-delivers the run") orelse return error.CheckMissing;
+    try std.testing.expect(!replay.passed);
+    try std.testing.expectEqualStrings(
+        "the 1200ms probe budget ran out before the endpoint answered the replay control; raise it with --timeout-ms",
+        replay.detail,
+    );
+}
+
+test "an event already buffered when the budget runs out is still delivered" {
+    var runner: Runner = .{
+        .allocator = std.testing.allocator,
+        .client = undefined,
+        .report = .{ .allocator = std.testing.allocator, .endpoint = "" },
+        .session = "conformance",
+    };
+    defer {
+        for (runner.events.items) |*envelope| envelope.deinit(std.testing.allocator);
+        runner.events.deinit(std.testing.allocator);
+    }
+
+    const envelope = try oap_envelope.deserializeEnvelope(
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"b1","sequence":1,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","status":"running"}}
+    ++ "\n",
+        std.testing.allocator,
+    );
+    try runner.events.append(std.testing.allocator, envelope);
+
+    const spent = Deadline.start(std.testing.io, 0);
+    try std.testing.expect(spent.expired());
+    var delivered = try runner.nextEvent(spent);
+    defer delivered.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("b1", delivered.id);
 }

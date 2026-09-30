@@ -300,3 +300,14 @@ revision the endpoint never issued, and a cancel for a run that has already
 settled — and those exchanges are kept out of the assembled trace, because the
 endpoint's answer is what is under test and the request is a fault the runner
 committed on purpose.
+
+The runner judges each correlation inside one absolute probe budget rather than
+a fresh allowance per frame, so an endpoint that keeps writing frames nobody
+asked for cannot hold a correlation open indefinitely; `--timeout-ms` sets it.
+Two rules keep such a verdict about the endpoint rather than about scheduling.
+A frame the endpoint has already delivered is handed to the correlation even
+when the budget expires before it is looked at, because that frame is the
+endpoint's answer rather than a late one. And a control left unanswered because
+the budget ran out is reported as exactly that, naming the budget, rather than
+as silence: an endpoint that answered thousands of unrelated frames and then ran
+out of time has not answered nothing.
