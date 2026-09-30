@@ -15,6 +15,7 @@ function send(request, type, payload, scope = {}) {
 function event(profile, type, payload, scope = {}) {
   send({ profile }, type, payload, scope);
 }
+
 function fixtureModel() {
   const model = { model_ref: "fixture/openai-responses@mock", model_id: "mock", provider_id: "fixture", wire: "openai-responses", capabilities: ["chat", "streaming"], lifecycle: "stable", source: "discovered", auth_status: "authenticated", cost: { input: 3, output: 15, cache_read: 0.3, cache_write: 3.75 }, input_modalities: ["text", "image"], reasoning_levels: ["off", "medium", "high"], release_date: "2025-09-29", family: "mock-family" };
   switch (process.env.OAP_FIXTURE_SOURCE) {
@@ -27,9 +28,17 @@ function fixtureModel() {
     case "alias-static-fallback": model.source = "static_fallback"; break;
     default: break;
   }
+  switch (process.env.OAP_FIXTURE_LIFECYCLE) {
+    case "absent": delete model.lifecycle; break;
+    case "null": model.lifecycle = null; break;
+    case "number": model.lifecycle = 7; break;
+    case "invented": model.lifecycle = "retired"; break;
+    case "preview": model.lifecycle = "preview"; break;
+    case "deprecated": model.lifecycle = "deprecated"; break;
+    default: break;
+  }
   return model;
 }
-
 createInterface({ input: process.stdin }).on("line", (line) => {
   const request = JSON.parse(line);
   if (request.protocol !== "open-agent-protocol" || request.version !== "0.1" || !request.id) {
