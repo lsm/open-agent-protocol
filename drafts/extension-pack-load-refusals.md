@@ -26,15 +26,20 @@ tested.
 | `pack_id_collision` | two loaded packs with equal ids, or whose ids prefix one another |
 | `pack_branch_unpinned` | a contributed branch whose resolved schema is an object with no `properties.type.const` |
 | `pack_branch_undeclared_type` | a branch whose `const` names a type other than its own declared one |
-| *(no code)* | a `schema` ref naming a file the descriptor does not contribute; a pointer that resolves to nothing; a pointer that lands on a non-object; a cited name that is absolute or climbs out — see the skipped list below for which of these are refused and which are not |
+| *(no code)* | a `schema` ref naming a file the descriptor does not contribute; a pointer that resolves to nothing; a pointer that lands on a non-object; a cited name that climbs out. A cited name with a **leading separator** is *not* refused — it normalises and is accepted; see below |
 | *(no code, `InvalidPackDescriptor`)* | a wrong shape for `id`, `version` or `schemas`; a duplicate type within one pack; a `schemas` path that is absolute, climbs out, or does not land beneath the pack root once symlinks are resolved |
 
 The uncoded refusals carry no code **on purpose**. `goap` records no code for
 the same two shapes, so inventing `pack_unresolvable_ref` would make oapx louder
-than the reference and put a word in the vocabulary `fixtures/manifest.json` does
+than its peer and put a word in the vocabulary `fixtures/manifest.json` does
 not have. When oapx prints an uncoded refusal on stderr it renders the label
-`unresolved-schema-reference`; `goap` prints nothing. The *code* is identical, the
-label is not, and the label is the CLI's doing rather than the loader's.
+`unresolved-schema-reference`; `goap` emits no such label, but it still writes a
+failure diagnostic — `PackLoadError.Error` formats the pack, code and message
+(`go/validation/pack.go:79-80`), `goap` returns it, and `main` writes it to stderr.
+So the difference is in the **label**, not in whether output appears: a `goap`
+refusal with no code prints no `unresolved-schema-reference`, but it is not silent.
+The *code* is identical, the label is not, and the label is the CLI's doing rather
+than the loader's.
 
 ## Pointer contract
 
@@ -98,25 +103,29 @@ is consulted only for where a peer-parity claim is made and is recorded as such.
 
 ## The registry key and the cited name
 
-Both derive from one value, `toSlash(names[index])`, so they cannot disagree. A
-cleaned citation and the key it registered are the same string by construction.
-Go cleans both sides too, which is why the earlier divergence — a branch ref built
-from a cleaned citation against a registry keyed by the raw `schemas` spelling —
-produced a branch that every judgement failed to resolve.
+The key at registration is the normalised schema name
+`toSlash(lexicalRelative(schemas[index]))` (`packs.zig:330`), and at citation time
+the branch normalises the cited name the same way before lookup (`packs.zig:393-402`),
+matching `document.name` (`packs.zig:418`). The two sides are therefore **equal
+canonical names after normalisation**, not one value carried from the descriptor —
+they are independently derived from different source strings and agree only once
+both have been cleaned. Go cleans both sides too, which is why the earlier
+divergence — a branch ref built from a cleaned citation against a registry keyed by
+the raw `schemas` spelling — produced a branch that every judgement failed to
+resolve.
 
-## Skipped, not refused
+## Accepted by normalization, not skipped
 
-Named so the disclosure shrinks with the code rather than lagging it:
+These shapes load and **contribute**, so they are not on the skipped list:
 
 - a cited name **spelled with a leading separator** — `/types.schema.json#/$defs/thing`
   and `//types.schema.json#/$defs/thing` are both **accepted, with no refusal**,
-  and a pack whose *only* citation is spelled that way still contributes a branch.
-  Stated precisely, because an earlier wording of this file got it wrong: the
-  branch does **not** land under an unregistered name. `cleanRelative` drops the
-  empty separator (`packs.zig:83`), the registration loop keys the document by the
-  *normalised* name (`packs.zig:336`), and the branch site normalises the cited name
-  the same way (`packs.zig:396-418`), so the cited spelling and the registered key
-  are the same string after normalisation and the lookup succeeds.
+  and a pack whose citation is spelled that way still contributes its branch.
+  `cleanRelative` drops the empty separator (`packs.zig:83`), the registration
+  loop keys the document by the *normalised* name (`packs.zig:330`), and the branch
+  site normalises the cited name the same way (`packs.zig:393-402`), so the cited
+  spelling and the registered key are the same string after normalisation and the
+  lookup succeeds; the branch is appended and the pack contributes it.
 
   What is defective is the **spelling's identity**: the descriptor's `schemas`
   lists `types.schema.json`, and the citation is `/types.schema.json`, which is not
@@ -127,11 +136,19 @@ Named so the disclosure shrinks with the code rather than lagging it:
   Decision 0004**, and it is not answered here. Measured on `7dd74dd30d`:
   `valid:true`, exit 0, no refusal. (A *climbing* name is different: `..` is refused
   uncoded, as measured above.)
-- an `envelope_types` entry with **no `schema` field at all** — skipped, and the
-  declared type still reaches the semantic machine. `goap` refuses it. Whether
-  absence should be refused is a **contract question about Decision 0004 §140**
-  and is with the owner; it is deliberately not answered here, because
-  `fixtures/packs/*/pack.json` treats `type` as the only required field.
+
+## Skipped, not refused
+
+Named so the disclosure shrinks with the code rather than lagging it. "Skipped"
+means the load **succeeds** but the shape contributes **no branch, member or type**
+the loader can see — it is neither refused nor used:
+
+- an `envelope_types` entry with **no `schema` field at all** — the branch-schema
+  check is skipped, so the entry contributes no branch, and the declared type
+  reaches the semantic machine anyway. `goap` refuses it. Whether absence should be
+  refused is a **contract question about Decision 0004 §140** and is with the owner;
+  it is deliberately not answered here, because `fixtures/packs/*/pack.json` treats
+  `type` as the only required field.
 - a **wrong-shaped but present** `schema` is a separate matter from absence and
   has its own repair.
 

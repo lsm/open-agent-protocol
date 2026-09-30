@@ -859,6 +859,9 @@ test "one unpinned branch in a pack takes the pack's pinned branch with it" {
         \\]
         , .refused = false },
     };
+    const members =
+        \\[{"payload_type": "com.example.mixed.good", "member": "note", "schema": {"type": "string"}}]
+    ;
     const document =
         \\{"$schema": "https://json-schema.org/draft/2020-12/schema", "$defs": {"good": {"type": "object", "required": ["type", "id", "session_id"], "properties": {"type": {"const": "com.example.mixed.good"}, "id": {"type": "string"}, "session_id": {"type": "string"}}}, "other": {"type": "object", "required": ["type", "id", "session_id"], "properties": {"type": {"const": "com.example.mixed.other"}, "id": {"type": "string"}, "session_id": {"type": "string"}}}, "plain": {"type": "object", "required": ["type"], "properties": {"type": {"type": "string"}}}}}
     ;
@@ -868,8 +871,8 @@ test "one unpinned branch in a pack takes the pack's pinned branch with it" {
         defer allocator.free(document_path);
         try tmp.dir.writeFile(std.testing.io, .{ .sub_path = document_path, .data = document });
         const descriptor = try std.fmt.allocPrint(allocator,
-            \\{{"id": "com.example.mixed", "version": "1.0.0", "schemas": ["types.schema.json"], "envelope_types": {s}}}
-        , .{c.types});
+            \\{{"id": "com.example.mixed", "version": "1.0.0", "schemas": ["types.schema.json"], "envelope_types": {s}, "payload_members": {s}}}
+        , .{ c.types, members });
         defer allocator.free(descriptor);
         const pack = try std.fmt.allocPrint(allocator, "{s}/pack.json", .{c.dir});
         defer allocator.free(pack);
@@ -892,6 +895,9 @@ test "one unpinned branch in a pack takes the pack's pinned branch with it" {
             try std.testing.expectEqual(@as(usize, 0), read.refusals.len);
             try std.testing.expectEqual(@as(usize, 2), read.branches.len);
             try std.testing.expectEqual(@as(usize, 2), read.types.len);
+            try std.testing.expectEqual(@as(usize, 1), read.members.len);
+            try std.testing.expectEqualStrings("note", read.members[0].name);
+            try std.testing.expectEqualStrings("com.example.mixed.good", read.members[0].payload_type);
         }
     }
 }
