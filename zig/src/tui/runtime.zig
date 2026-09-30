@@ -210,6 +210,7 @@ pub const TuiRuntime = struct {
     permission_mode: PermissionMode = .bypass,
     thinking_level: ai_types.ThinkingLevel = .low,
     context_window: ?u32 = null,
+    suspended_context_window: ?u32 = null,
     context_window_refused: ?u32 = null,
     cancelled: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     completed: bool = false,
@@ -463,7 +464,7 @@ pub const TuiRuntime = struct {
         self.models = owned_next;
         owned_next = &.{};
         self.selected_model_index = next_selected;
-        self.dropContextWindowAboveCeiling();
+        self.reconcileContextWindowAfterModelSwitch();
 
         if (self.local_agent) |*local| {
             if (next_selected) |idx| local.setModel(self.effectiveModel(self.models[idx]));
@@ -545,6 +546,7 @@ pub const TuiRuntime = struct {
             }
         }
         self.context_window = window;
+        self.suspended_context_window = null;
         self.context_window_refused = null;
         self.applyContextWindowToAgent();
     }
@@ -566,6 +568,29 @@ pub const TuiRuntime = struct {
     fn applyContextWindowToAgent(self: *TuiRuntime) void {
         if (self.selected_model_index) |idx| {
             if (self.local_agent) |*local| local.setModel(self.effectiveModel(self.models[idx]));
+        }
+    }
+
+    fn reconcileContextWindowAfterModelSwitch(self: *TuiRuntime) void {
+        if (self.context_window) |held| {
+            const index = self.selected_model_index orelse return;
+            const ceiling = model_catalog.contextWindowMaximum(self.models[index]) orelse return;
+            if (held > ceiling) {
+                self.suspended_context_window = held;
+                self.context_window = null;
+                self.context_window_refused = held;
+                return;
+            }
+        }
+        if (self.context_window == null) {
+            const held = self.suspended_context_window orelse return;
+            const index = self.selected_model_index orelse return;
+            if (model_catalog.contextWindowMaximum(self.models[index])) |ceiling| {
+                if (held > ceiling) return;
+            }
+            self.context_window = held;
+            self.suspended_context_window = null;
+            self.context_window_refused = null;
         }
     }
 
@@ -637,7 +662,7 @@ pub const TuiRuntime = struct {
         for (self.models, 0..) |model, i| {
             if (std.mem.eql(u8, model.id, model_id)) {
                 self.selected_model_index = i;
-                self.dropContextWindowAboveCeiling();
+                self.reconcileContextWindowAfterModelSwitch();
                 if (self.local_agent) |*local| local.setModel(self.effectiveModel(self.models[i]));
                 return;
             }
@@ -656,7 +681,7 @@ pub const TuiRuntime = struct {
                 std.mem.eql(u8, model.api, selected.api))
             {
                 self.selected_model_index = i;
-                self.dropContextWindowAboveCeiling();
+                self.reconcileContextWindowAfterModelSwitch();
                 if (self.local_agent) |*local| local.setModel(self.effectiveModel(self.models[i]));
                 return;
             }
@@ -1891,6 +1916,23 @@ test "a session's window the model in effect cannot take is dropped, and named" 
     try std.testing.expectEqual(@as(u64, 262_144), runtime.contextWindow());
     try std.testing.expectEqual(@as(?u32, 1_000_000), runtime.takeContextWindowRefused());
     try std.testing.expect(runtime.contextWindowRefused() == null);
+}
+
+test "a model switch suspends an oversized context window and restores it when switching back" {
+    const models = [_]ai_types.Model{ wide_ceiling_model, narrow_ceiling_model };
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &models });
+    defer runtime.deinit();
+
+    try runtime.setContextWindow(1_000_000);
+    try runtime.switchModel("kimi-k2.7-code");
+    try std.testing.expectEqual(@as(u64, 262_144), runtime.contextWindow());
+    try std.testing.expectEqual(@as(?u32, 1_000_000), runtime.takeContextWindowRefused());
+    try std.testing.expectEqual(@as(?u32, 1_000_000), runtime.suspended_context_window);
+
+    try runtime.switchModel("gpt-5-codex");
+    try std.testing.expectEqual(@as(u64, 1_000_000), runtime.contextWindow());
+    try std.testing.expectEqual(@as(?u32, 1_000_000), runtime.contextWindowOverride());
+    try std.testing.expect(runtime.suspended_context_window == null);
 }
 
 test "a startup window above the ceiling is dropped before the first turn" {
