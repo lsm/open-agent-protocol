@@ -2,11 +2,13 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -29,21 +31,35 @@ func TestHubAddrFinishesTheRefusalAndStopsTheBodyWhenItsSignalArrives(t *testing
 		t.Fatalf("write the head: %v", err)
 	}
 
-	var written int64
+	var written atomic.Int64
 	writeDone := make(chan struct{})
+	joined := false
+	join := func() {
+		if joined {
+			return
+		}
+		joined = true
+		_ = conn.Close()
+		select {
+		case <-writeDone:
+		case <-time.After(30 * time.Second):
+			t.Log("the writer did not finish within 30s")
+		}
+	}
+	defer join()
 	go func() {
 		defer close(writeDone)
 		block := make([]byte, 32*1024)
 		for i := range block {
 			block[i] = 'c'
 		}
-		for written < declared {
+		for written.Load() < int64(declared) {
 			take := len(block)
-			if left := int64(declared) - written; left < int64(take) {
+			if left := int64(declared) - written.Load(); left < int64(take) {
 				take = int(left)
 			}
 			n, werr := conn.Write(block[0:take])
-			written += int64(n)
+			written.Add(int64(n))
 			if werr != nil {
 				return
 			}
@@ -54,7 +70,7 @@ func TestHubAddrFinishesTheRefusalAndStopsTheBodyWhenItsSignalArrives(t *testing
 	if err != nil {
 		stop()
 		_ = conn.Close()
-		t.Fatalf("read the answer after %d bytes: %v", written, err)
+		t.Fatalf("read the answer after %d bytes: %v", written.Load(), err)
 	}
 	body, err := io.ReadAll(answer.Body)
 	_ = answer.Body.Close()
@@ -71,7 +87,31 @@ func TestHubAddrFinishesTheRefusalAndStopsTheBodyWhenItsSignalArrives(t *testing
 		stop()
 		t.Fatalf("the refusal did not carry its code: %s", body)
 	}
-	beforeSignal := written
+	beforeSignal := written.Load()
+	if beforeSignal == 0 {
+		stop()
+		t.Fatalf("the refusal was read before any body byte moved, so nothing was in flight")
+	}
+	if answer.ContentLength <= 0 || int64(len(body)) != answer.ContentLength {
+		stop()
+		t.Fatalf("the body was %d bytes and Content-Length said %d", len(body), answer.ContentLength)
+	}
+	var envelope struct {
+		Type    string `json:"type"`
+		Payload struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		stop()
+		t.Fatalf("the refusal body is not parseable JSON (%v): %s", err, body)
+	}
+	if envelope.Type != "error.response" || envelope.Payload.Error.Code != "unsupported_media_type" {
+		stop()
+		t.Fatalf("the refusal was %s / %s, want error.response / unsupported_media_type", envelope.Type, envelope.Payload.Error.Code)
+	}
 
 	stop()
 	select {
@@ -80,6 +120,9 @@ func TestHubAddrFinishesTheRefusalAndStopsTheBodyWhenItsSignalArrives(t *testing
 		_ = conn.Close()
 		t.Fatalf("the writer was still going 30s after the daemon exited")
 	}
+	if final := written.Load(); final >= int64(declared) {
+		t.Logf("the whole declared body was transferred before the signal")
+	}
 	t.Logf("refusal read whole after %d bytes; %d in total after the daemon stopped; %d status, %d body bytes",
-		beforeSignal, written, answer.StatusCode, len(body))
+		beforeSignal, written.Load(), answer.StatusCode, len(body))
 }

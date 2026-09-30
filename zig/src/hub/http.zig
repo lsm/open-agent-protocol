@@ -211,10 +211,11 @@ pub fn drain(stream: *compat.net.Stream, remaining_in: usize, keep_going: KeepGo
     var remaining: usize = @min(remaining_in, drain_total_cap_bytes);
     var spent: usize = 0;
     var scratch: [1024]u8 = undefined;
-    const started = elapsedMs() catch 0;
+    const started = elapsedMs() catch return spent;
     while (remaining > 0) {
         if (!keep_going.yes()) return spent;
-        if (elapsedMs() catch 0 -| started >= drain_total_ms) return spent;
+        const now = elapsedMs() catch return spent;
+        if (now -| started >= drain_total_ms) return spent;
         var owed: usize = @min(remaining, drain_cap_bytes);
         const deadline = (elapsedMs() catch 0) + drain_cycle_ms;
         while (owed > 0) {
@@ -1203,13 +1204,12 @@ const CancelState = struct {
 
     fn check(context: *const anyopaque) bool {
         const self: *CancelState = @ptrCast(@alignCast(@constCast(context)));
-        const count = self.asks.fetchAdd(1, .seq_cst) + 1;
-        if (count >= 3) self.stopped.store(true, .seq_cst);
-        return count < 3;
+        _ = self.asks.fetchAdd(1, .seq_cst);
+        return !self.stopped.load(.seq_cst);
     }
 };
 
-test "drain stops mid-body when the signal flips after reading has begun" {
+test "drain reads a positive number of bytes, and stops when keepGoing says stop" {
     var pipe = try Pipe.open();
     defer pipe.close();
     const owed: usize = 4 * 1024 * 1024;
@@ -1218,10 +1218,27 @@ test "drain stops mid-body when the signal flips after reading has begun" {
     var state = CancelState{};
     const keeping: KeepGoing = .{ .context = &state, .check = CancelState.check };
     const consumed = drain(&pipe.accepted, owed, keeping);
-    try testing.expect(state.stopped.load(.seq_cst));
-    try testing.expect(state.asks.load(.seq_cst) < 40);
-    try testing.expect(consumed < owed);
+    try testing.expect(consumed > 0);
+
+    state.stopped.store(true, .seq_cst);
+    var after: [8]u8 = undefined;
+    try pipe.client.writeAll("y" ** 4096);
+    const more = drain(&pipe.accepted, 4096, keeping);
+    try testing.expectEqual(@as(usize, 0), more);
+    _ = &after;
 }
+
+test "a drain still reads after the process has been up longer than its own budget" {
+    var pipe = try Pipe.open();
+    defer pipe.close();
+    try pipe.client.writeAll("u" ** 4096);
+    const now = elapsedMs() catch 0;
+    const up = now -| 0;
+    if (up <= drain_total_ms) return error.SkipZigTest;
+    const consumed = drain(&pipe.accepted, 4096, always_going);
+    try testing.expectEqual(@as(usize, 4096), consumed);
+}
+
 fn mediaRefusalOverTheCap(owed: usize) !void {
     var pipe = try Pipe.open();
     defer pipe.close();

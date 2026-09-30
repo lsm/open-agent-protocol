@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -48,38 +49,56 @@ func startHubAddr(t *testing.T) (string, func()) {
 		}
 		bound <- ""
 	}()
+	var once sync.Once
 	cleanup := func() {
-		_ = command.Process.Signal(os.Interrupt)
-		done := make(chan error, 1)
-		go func() { done <- command.Wait() }()
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			_ = command.Process.Kill()
-			<-done
-		}
-		cancel()
+		once.Do(func() {
+			_ = command.Process.Signal(os.Interrupt)
+			done := make(chan error, 1)
+			go func() { done <- command.Wait() }()
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+				_ = command.Process.Kill()
+				select {
+				case <-done:
+				case <-time.After(10 * time.Second):
+					t.Log("oapx hub --addr did not report an exit after Kill")
+				}
+			}
+		})
 	}
-	select {
-	case address := <-bound:
-		if address == "" {
-			cleanup()
-			t.Fatalf("oapx hub --addr bound nothing:\n%s", stderr.String())
+	addressBound := make(chan string, 1)
+	go func() {
+		select {
+		case address := <-bound:
+			addressBound <- address
+		case <-time.After(60 * time.Second):
+			addressBound <- ""
 		}
-		return address, cleanup
-	case <-ctx.Done():
+	}()
+	address := <-addressBound
+	if address == "" {
 		cleanup()
 		t.Fatalf("oapx hub --addr never reported a bound address:\n%s", stderr.String())
 		return "", func() {}
 	}
+	return address, cleanup
 }
 
 func TestHubAddrRefusesALargeMediaTypeOverARealSocket(t *testing.T) {
+	started := time.Now()
 	address, cleanup := startHubAddr(t)
+	boundAt := started
 	defer cleanup()
 
 	for _, declared := range []int{1<<20 + 4096, 4 << 20, 16 << 20} {
 		t.Run(strconv.Itoa(declared), func(t *testing.T) {
+			if wait := 2500*time.Millisecond - time.Since(boundAt); wait > 0 {
+				time.Sleep(wait)
+			}
+			if up := time.Since(boundAt); up <= 2500*time.Millisecond {
+				t.Fatalf("the daemon was up %v, under its own drain budget", up)
+			}
 			var conn net.Conn
 			conn, err := net.DialTimeout("tcp", address, 10*time.Second)
 			if err != nil {
