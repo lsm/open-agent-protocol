@@ -599,19 +599,30 @@ drain's own start** — elapsed, not the process's uptime, so a daemon that has 
 for hours still drains. A drain that cannot read its own clock stops rather than
 draining without a bound.
 
-Each of those four bounds is pinned by a test that would fail if the bound were
-removed, and the four are not the same two tests:
+An earlier revision of this row said each of the four bounds is pinned by a test
+that would fail if the bound were removed. **That is false, and it was checked
+rather than assumed.** Neutralising the 2500 ms guard leaves the suite green
+(`9/9` steps, `179/179`, `EXIT=0`), and raising `drain_total_cap_bytes` to 1 GiB
+also leaves it green. So what follows is the pinning that exists, which is
+narrower than removal-pinning for the first two clauses:
 
 - **the 1 MiB total** — `a drain stops at its byte cap and reports what it consumed`
-  asserts the returned count is exactly `drain_total_cap_bytes` against a larger
-  declared length, written from a thread so the writer cannot deadlock on a full
-  socket buffer
+  asserts the returned count against a larger declared length, written from a
+  thread so the writer cannot deadlock on a full socket buffer. **It does not pin
+  the number by removal:** the expectation is read from `drain_total_cap_bytes`,
+  so raising the constant to 1 GiB keeps the suite green, as measured above. The
+  unit test pins *that a cap is enforced and reported*; the real-socket test pins
+  that a cap is *observable from outside the process*, and asserts only a lower
+  bound on transferred bytes plus a complete 403 — never an upper one
 - **the 2500 ms elapsed budget, and that it is elapsed rather than uptime** —
   `a drain reads on a long-lived process, because its budget is elapsed not uptime`
   seeds the clock, drains, waits `drain_total_ms + 200` under a bound, asserts the
   clock is past the budget, and drains again. Restoring the old
   `elapsedMs() catch 0 -| started` expression makes this fail with `expected 4096,
-  found 0`
+  found 0`. **It pins the comparison, not the guard's presence:** neutralising the
+  guard entirely is green, so a deleted time bound would go unnoticed here. The
+  stall case is covered separately by `a drain gives up rather than waiting on a
+  peer that sends nothing more`
 - **stop on an unreadable clock — a rule with NO exercising test, recorded as a
   gap.** The Zig port returns the bytes consumed when `elapsedMs` fails rather
   than treating the failure as `0`. Nothing exercises that path: the clock is
