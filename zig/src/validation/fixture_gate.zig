@@ -56,6 +56,8 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
     var unsupported: usize = 0;
     var undecodable: usize = 0;
     var unhandled: usize = 0;
+    var scoped: usize = 0;
+    var declaring_packs: usize = 0;
     var disagreements = std.ArrayList(u8).empty;
     defer disagreements.deinit(allocator);
 
@@ -104,7 +106,16 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
             else => continue,
         };
 
-        var loaded = packs_mod.load(std.testing.io, allocator, &registry, pack_dirs.items) catch {
+        var with_packs: ?jsonschema.Registry = null;
+        defer if (with_packs) |*held| held.deinit();
+        if (pack_dirs.items.len != 0) {
+            with_packs = try jsonschema.Registry.initFromBundled(allocator);
+            scoped += 1;
+        }
+        const scope: *jsonschema.Registry = if (with_packs) |*held| held else &registry;
+
+        if (pack_dirs.items.len != 0) declaring_packs += 1;
+        var loaded = packs_mod.load(std.testing.io, allocator, scope, pack_dirs.items) catch {
             skipped_packs += 1;
             continue;
         };
@@ -113,11 +124,11 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
         var override_arena = std.heap.ArenaAllocator.init(allocator);
         defer override_arena.deinit();
 
-        var validator = jsonschema.Validator.init(allocator, &registry);
+        var validator = jsonschema.Validator.init(allocator, scope);
         defer validator.deinit();
 
         if (tolerant) {
-            for (registry.documents.keys()) |name| {
+            for (scope.documents.keys()) |name| {
                 if (tolerate.isMetaSchema(name)) continue;
                 const tolerated = try tolerate.document(override_arena.allocator(), registry.root(name).?);
                 try validator.overrides.put(allocator, name, tolerated);
@@ -125,8 +136,8 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
         }
 
         for (loaded.members) |member| {
-            const target = packs_mod.payloadTarget(&registry, documentFor(profile), member.payload_type) orelse continue;
-            const current = validator.overrides.get(target.document) orelse registry.root(target.document).?;
+            const target = packs_mod.payloadTarget(scope, documentFor(profile), member.payload_type) orelse continue;
+            const current = validator.overrides.get(target.document) orelse scope.root(target.document).?;
             const member_schema = if (tolerant)
                 try tolerate.document(override_arena.allocator(), member.schema)
             else
@@ -164,6 +175,7 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
         }
     }
 
+    try std.testing.expectEqual(declaring_packs, scoped);
     std.debug.print("\njudged={d} tolerant={d} skipped_packs={d} unsupported={d} undecodable={d} unhandled={d}\n", .{ judged, tolerant_judged, skipped_packs, unsupported, undecodable, unhandled });
     if (disagreements.items.len > 0) {
         std.debug.print("disagreements:\n{s}", .{disagreements.items});
@@ -175,6 +187,43 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
     try std.testing.expect(judged >= judged_floor);
     try std.testing.expectEqual(unhandled_pack_composition.len, unhandled);
     try std.testing.expectEqual(tolerant_fixtures, tolerant_judged);
+}
+
+test "a pack loaded for one fixture does not judge the next one" {
+    const allocator = std.testing.allocator;
+    const root = build_options.repository_root;
+    const pack_dir = try std.fs.path.join(allocator, &.{ root, "fixtures", "packs", "storage" });
+    defer allocator.free(pack_dir);
+    const trace_path = try std.fs.path.join(allocator, &.{ root, "fixtures", "valid", "ext-advertised-key-gated.json" });
+    defer allocator.free(trace_path);
+    const bytes = try readAll(allocator, trace_path);
+    defer allocator.free(bytes);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, bytes, .{});
+    defer parsed.deinit();
+    var packed_type: ?std.json.Value = null;
+    for (parsed.value.array.items) |envelope| {
+        const declared = envelope.object.get("type") orelse continue;
+        if (!std.mem.startsWith(u8, declared.string, "com.example.storage.")) continue;
+        packed_type = envelope;
+    }
+    try std.testing.expect(packed_type != null);
+
+    var carrying = try jsonschema.Registry.initFromBundled(allocator);
+    defer carrying.deinit();
+    const pack_list = [_][]const u8{pack_dir};
+    var loaded = try packs_mod.load(std.testing.io, allocator, &carrying, &pack_list);
+    defer loaded.deinit();
+    try std.testing.expect(loaded.branches.len > 0);
+
+    var first = jsonschema.Validator.init(allocator, &carrying);
+    defer first.deinit();
+    try std.testing.expect(try first.validateWithBranches("envelope.schema.json", packed_type.?, loaded.branches) == null);
+
+    var later = try jsonschema.Registry.initFromBundled(allocator);
+    defer later.deinit();
+    var second = jsonschema.Validator.init(allocator, &later);
+    defer second.deinit();
+    try std.testing.expect(try second.validateWithBranches("envelope.schema.json", packed_type.?, &.{}) != null);
 }
 
 fn acceptsUnder(allocator: std.mem.Allocator, registry: *const jsonschema.Registry, tolerant: bool, envelope: std.json.Value) !bool {
