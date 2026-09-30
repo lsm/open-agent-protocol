@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   createMakaiModelsApi,
   createOapClient,
+  MakaiProtocolError,
   MakaiStdioClient,
   type MakaiModelsApi,
 } from "../src";
@@ -13,6 +14,21 @@ import {
 const sourceFixturesDir = path.resolve(__dirname, "../../sdk/typescript/test/fixtures");
 const oapFixtureScript = path.join(sourceFixturesDir, "oap-server.js");
 const legacyFixtureScript = path.join(sourceFixturesDir, "models-server.js");
+
+function refusesSource(error: unknown, field: RegExp): boolean {
+  if (!(error instanceof MakaiProtocolError)) {
+    assert.fail(
+      `a parser refusal must be a MakaiProtocolError, got ${String(error)}`,
+    );
+  }
+  assert.equal(
+    error.code,
+    "malformed_response",
+    `a refusal must carry the malformed_response code, got ${String(error.code)}`,
+  );
+  assert.match(error.message, field);
+  return true;
+}
 
 function descriptor(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -115,13 +131,7 @@ test("the shared reader refuses a present null or wrong-typed source", async () 
           await api.list();
           return null;
         }),
-      (error: unknown) => {
-        assert.ok(
-          error instanceof Error && /models\[0\]\.source/.test(error.message),
-          `${what} must be refused naming the field, got: ${String(error)}`,
-        );
-        return true;
-      },
+      (error: unknown) => refusesSource(error, /models\[0\]\.source/),
       `${what} must be a malformed response, not an unknown source`,
     );
   }
@@ -156,13 +166,7 @@ test("the OAP reader refuses a present null or unknown source", async () => {
           await api.list();
           return null;
         }),
-      (error: unknown) => {
-        assert.ok(
-          error instanceof Error && /source/.test(error.message),
-          `${what} must be refused naming source, got: ${String(error)}`,
-        );
-        return true;
-      },
+      (error: unknown) => refusesSource(error, /source/),
       `${what} must be a malformed response on the OAP path too`,
     );
   }
@@ -184,13 +188,7 @@ test("the OAP reader refuses the shared aliases, which are not wire values", asy
           await api.list();
           return null;
         }),
-      (error: unknown) => {
-        assert.ok(
-          error instanceof Error && /source/.test(error.message),
-          `${alias} must be refused naming source on the wire, got: ${String(error)}`,
-        );
-        return true;
-      },
+      (error: unknown) => refusesSource(error, /source/),
       `${alias} is the shared vocabulary, not a wire value: the modelSource enum permits discovered and fallback only`,
     );
   }
@@ -211,4 +209,32 @@ test("the shared reader still accepts the native aliases", async () => {
       `${alias} is the native stated vocabulary and must keep decoding on the shared path`,
     );
   }
+});
+
+test("a transport failure cannot stand in for a parser refusal", () => {
+  const transportFailure = new Error("fixture process exited unexpectedly: source");
+  assert.throws(
+    () => refusesSource(transportFailure, /source/),
+    (error: unknown) => {
+      assert.ok(
+        error instanceof assert.AssertionError,
+        `a non-protocol failure must be rejected, got ${String(error)}`,
+      );
+      return true;
+    },
+    "the predicate must not accept a plain Error even when its message mentions the field",
+  );
+
+  const wrongCode = new MakaiProtocolError("source is wrong", "invalid_request");
+  assert.throws(
+    () => refusesSource(wrongCode, /source/),
+    (error: unknown) => {
+      assert.ok(
+        error instanceof assert.AssertionError,
+        `a refusal with the wrong code must be rejected, got ${String(error)}`,
+      );
+      return true;
+    },
+    "a MakaiProtocolError carrying another code must not satisfy a parser-refusal case",
+  );
 });
