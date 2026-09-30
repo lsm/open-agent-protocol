@@ -29,8 +29,10 @@ fn runWithIo(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8,
         .stdout = .pipe,
         .stderr = .pipe,
         .create_no_window = true,
+        .pgid = if (builtin.os.tag != .windows) 0 else null,
     });
-    defer cleanupChild(&child, io);
+    const process_group = processGroupId(child.id);
+    defer cleanupChild(&child, io, process_group);
 
     var multi_reader_buffer: std.Io.File.MultiReader.Buffer(2) = undefined;
     var multi_reader: std.Io.File.MultiReader = undefined;
@@ -136,7 +138,31 @@ fn lookupCurrentUser() ?CurrentUser {
     };
 }
 
-fn cleanupChild(child: *std.process.Child, io: std.Io) void {
+fn groupSurvives(group: std.posix.pid_t) bool {
+    if (comptime builtin.os.tag == .windows) return false;
+    std.posix.kill(group, @as(std.posix.SIG, @enumFromInt(0))) catch return false;
+    return true;
+}
+
+fn processGroupId(id: ?std.process.Child.Id) ?std.posix.pid_t {
+    if (builtin.os.tag == .windows) return null;
+    const pid = id orelse return null;
+    return @intCast(pid);
+}
+
+fn signalGroup(process_group: ?std.posix.pid_t) void {
+    if (comptime builtin.os.tag == .windows) return;
+    const id = process_group orelse return;
+    const group = -id;
+    std.posix.kill(group, std.posix.SIG.TERM) catch {};
+    if (groupSurvives(group)) {
+        compat.time.sleepMs(common.process_group_kill_grace_ms);
+        std.posix.kill(group, std.posix.SIG.KILL) catch {};
+    }
+}
+
+fn cleanupChild(child: *std.process.Child, io: std.Io, process_group: ?std.posix.pid_t) void {
+    signalGroup(process_group);
     if (child.id != null) child.kill(io);
     if (child.stdin) |stdin| {
         stdin.close(io);
@@ -227,6 +253,163 @@ fn pollTermWindows(child: *std.process.Child, io: std.Io) !?std.process.Child.Te
         .TIMEOUT => null,
         else => |status| return windows.unexpectedStatus(status),
     };
+}
+
+fn readRecordedChild(dir: std.Io.Dir) ?std.posix.pid_t {
+    const text = dir.readFileAlloc(common.defaultIo(), "child.pid", std.testing.allocator, .limited(64)) catch return null;
+    defer std.testing.allocator.free(text);
+    return std.fmt.parseInt(std.posix.pid_t, std.mem.trim(u8, text, " \n\t"), 10) catch null;
+}
+
+const ChildProbe = union(enum) {
+    not_written,
+    unreadable,
+    dead,
+    alive: std.posix.pid_t,
+};
+
+fn probeRecordedChild(dir: std.Io.Dir) ChildProbe {
+    const text = dir.readFileAlloc(common.defaultIo(), "child.pid", std.testing.allocator, .limited(64)) catch |err| switch (err) {
+        error.FileNotFound => return .not_written,
+        else => return .unreadable,
+    };
+    defer std.testing.allocator.free(text);
+    const pid = std.fmt.parseInt(std.posix.pid_t, std.mem.trim(u8, text, " \n\t"), 10) catch return .unreadable;
+    std.posix.kill(pid, @as(std.posix.SIG, @enumFromInt(0))) catch return .dead;
+    return .{ .alive = pid };
+}
+
+test "a timed out command takes its backgrounded children with it" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dir = try tmp.dir.openDir(common.defaultIo(), ".", .{});
+    defer dir.close(common.defaultIo());
+    const argv = [_][]const u8{ "/bin/sh", "-c", "(sleep 30 & echo $! > child.pid); sleep 30" };
+
+    if (runWithIo(std.testing.allocator, common.defaultIo(), &argv, .{ .dir = dir }, 1_000, null)) |result| {
+        std.testing.allocator.free(result.stdout);
+        std.testing.allocator.free(result.stderr);
+        return error.TestUnexpectedResult;
+    } else |err| try std.testing.expectEqual(error.Timeout, err);
+
+    var recorded: ?std.posix.pid_t = null;
+    const found_by = common.nowMs() + 2_000;
+    while (recorded == null and common.nowMs() < found_by) {
+        switch (probeRecordedChild(dir)) {
+            .alive => |pid| recorded = pid,
+            .dead => recorded = readRecordedChild(dir),
+            .not_written => {},
+            .unreadable => return error.TestUnexpectedResult,
+        }
+        compat.time.sleepMs(20);
+    }
+    const child = recorded orelse return error.TestUnexpectedResult;
+    defer std.posix.kill(child, std.posix.SIG.KILL) catch {};
+
+    const gone_by = common.nowMs() + 5_000;
+    while (common.nowMs() < gone_by) {
+        switch (probeRecordedChild(dir)) {
+            .dead => return,
+            .alive, .not_written => {},
+            .unreadable => return error.TestUnexpectedResult,
+        }
+        compat.time.sleepMs(50);
+    }
+    switch (probeRecordedChild(dir)) {
+        .dead => {},
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "a child that ignores SIGTERM is still taken down" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dir = try tmp.dir.openDir(common.defaultIo(), ".", .{});
+    defer dir.close(common.defaultIo());
+    const argv = [_][]const u8{ "/bin/sh", "-c", "(trap '' TERM; sleep 30) & echo $! > child.pid; sleep 30" };
+    if (runWithIo(std.testing.allocator, common.defaultIo(), &argv, .{ .dir = dir }, 1_000, null)) |result| {
+        std.testing.allocator.free(result.stdout);
+        std.testing.allocator.free(result.stderr);
+        return error.TestUnexpectedResult;
+    } else |err| try std.testing.expectEqual(error.Timeout, err);
+
+    var observed: ?std.posix.pid_t = null;
+    const deadline = common.nowMs() + 5_000;
+    while (observed == null and common.nowMs() < deadline) {
+        switch (probeRecordedChild(dir)) {
+            .alive => |pid| observed = pid,
+            .dead => observed = readRecordedChild(dir),
+            .not_written => {},
+            .unreadable => return error.TestUnexpectedResult,
+        }
+        compat.time.sleepMs(20);
+    }
+    const was_there = observed orelse return error.TestUnexpectedResult;
+    defer std.posix.kill(was_there, std.posix.SIG.KILL) catch {};
+
+    const gone_by = common.nowMs() + 5_000;
+    while (common.nowMs() < gone_by) {
+        switch (probeRecordedChild(dir)) {
+            .dead => break,
+            .alive => {},
+            .not_written, .unreadable => return error.TestUnexpectedResult,
+        }
+        compat.time.sleepMs(50);
+    }
+    switch (probeRecordedChild(dir)) {
+        .dead => {},
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "a command that exits early still takes its children with it" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dir = try tmp.dir.openDir(common.defaultIo(), ".", .{});
+    defer dir.close(common.defaultIo());
+
+    const script = try std.fmt.allocPrint(std.testing.allocator, "(sleep 30 & echo $! > child.pid); exit 0", .{});
+    defer std.testing.allocator.free(script);
+    const argv = [_][]const u8{ "/bin/sh", "-c", script };
+
+    const result = try runWithIo(std.testing.allocator, common.defaultIo(), &argv, .{ .dir = dir }, 10_000, null);
+    defer std.testing.allocator.free(result.stdout);
+    defer std.testing.allocator.free(result.stderr);
+    try std.testing.expectEqual(@as(?u8, 0), switch (result.term) {
+        .exited => |code| code,
+        else => null,
+    });
+
+    var recorded: ?std.posix.pid_t = null;
+    const found_by = common.nowMs() + 2_000;
+    while (recorded == null and common.nowMs() < found_by) {
+        switch (probeRecordedChild(dir)) {
+            .alive => |pid| recorded = pid,
+            .dead => recorded = readRecordedChild(dir),
+            .not_written => {},
+            .unreadable => return error.TestUnexpectedResult,
+        }
+        compat.time.sleepMs(20);
+    }
+    const child = recorded orelse return error.TestUnexpectedResult;
+    defer std.posix.kill(child, std.posix.SIG.KILL) catch {};
+
+    const gone_by = common.nowMs() + 5_000;
+    while (common.nowMs() < gone_by) {
+        switch (probeRecordedChild(dir)) {
+            .dead => return,
+            .alive, .not_written => {},
+            .unreadable => return error.TestUnexpectedResult,
+        }
+        compat.time.sleepMs(50);
+    }
+    switch (probeRecordedChild(dir)) {
+        .dead => {},
+        else => return error.TestUnexpectedResult,
+    }
 }
 
 test "process runner honors cancellation" {
