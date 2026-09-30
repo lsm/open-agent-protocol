@@ -159,7 +159,12 @@ code paths; add a transcript row instead.
   transcript the widest columns give way first and cells wrap inside their column;
   when there is not room for three columns' worth of cells it falls back to prose
   rows. A header without its separator stays prose, so a table streams in as text
-  and snaps into columns once the separator arrives. `renderAssistantPlain`
+  and snaps into columns once the separator arrives. A line of three or more `-`,
+  `*` or `_` is a dim rule across the width. `[text](url)` and `<url>` show as
+  underlined link text carrying an OSC 8 hyperlink, kept on every row a wrapped link
+  spans; only an `http(s)` target with no space or control byte becomes a hyperlink,
+  anything else keeps just its text, and a link inside a code span stays literal.
+  `renderAssistantPlain`
   remains the unstyled wrap engine and its exact-output tests are unchanged.
 - Tool calls: one row, `◆ Label  argument` on the left, status on the right
   (`⠋ running`, `◌ awaiting approval`, `✓ 342B · ~87 tok`, `✗ failed`,
