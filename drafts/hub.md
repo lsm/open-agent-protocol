@@ -596,13 +596,13 @@ an elapsed-time budget, and it is the *total* over the whole drain that bounds i
 per-round cap with an unbounded round count is not a bound. The Zig port reads in
 64 KiB rounds, stops at **1 MiB in total**, and stops at **2500 ms elapsed from that
 drain's own start** — elapsed, not the process's uptime, so a daemon that has been up
-for hours still drains. A drain that cannot read its own clock stops rather than draining without
-a bound, and that rule covers the **whole helper path**: `readUntil` returns its existing `Timeout`
-rather than substituting `0` for a clock it could not read, which kept `left_ms` positive and renewed
-the silent-socket poll forever; `readHead` and `readBody` do the same for their budgets; and the drain
-round deadline **reuses the `now` that round already read**. The classification is unchanged — a clock it
-cannot read is a wait it cannot honour, which is the `Timeout` those sites already had — so no wire code
-or status is added.
+for hours still drains. A drain that cannot read its own clock stops rather than draining without a
+bound, and that rule covers the **whole helper path**: `readUntil` returns its existing `Timeout` rather
+than substituting `0` for a clock it could not read, which kept `left_ms` positive and renewed the
+silent-socket poll forever; `readHead` and `readBody` do the same for their budgets; and the drain round
+deadline **reuses the `now` that round already read**. The classification is unchanged — a clock it cannot
+read is a wait it cannot honour, which is the `Timeout` those sites already had — so no wire code or
+status is added.
 
 An earlier revision claimed each of the four bounds is pinned by a test that fails if the bound is
 removed. **That was false, and was measured rather than assumed.** The pinning that exists is not
