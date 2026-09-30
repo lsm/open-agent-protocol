@@ -3434,6 +3434,8 @@ test "a streamed text thinking and tool call reports indices that diverge from t
 var cleanup_hold: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
 var cleanup_held: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
 var cleanup_gate: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
+var cleanup_window: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
+var cleanup_paused: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 
 fn defaultIo() std.Io {
     return if (@import("builtin").is_test) std.testing.io else std.Io.Threaded.global_single_threaded.io();
@@ -3444,9 +3446,28 @@ fn awaitCleanupRelease() void {
     if (cleanup_hold.load(.acquire) == 0) return;
     _ = cleanup_held.fetchAdd(1, .release);
     const io = defaultIo();
-    while (cleanup_hold.load(.acquire) != 0) {
-        io.futexWaitUncancelable(u32, &cleanup_gate.raw, cleanup_gate.load(.acquire));
+    while (true) {
+        const seen = cleanup_gate.load(.acquire);
+        if (cleanup_hold.load(.acquire) == 0) break;
+        if (cleanup_window.load(.acquire) == 1) {
+            _ = cleanup_paused.store(true, .release);
+            while (cleanup_window.load(.acquire) == 1) {
+                io.futexWaitTimeout(u32, &cleanup_window.raw, cleanup_window.load(.acquire), boundedWait()) catch {};
+            }
+        }
+        io.futexWaitTimeout(u32, &cleanup_gate.raw, seen, boundedWait()) catch {};
     }
+}
+
+fn boundedWait() std.Io.Timeout {
+    return .{ .duration = .{
+        .raw = .fromMilliseconds(25),
+        .clock = .boot,
+    } };
+}
+
+fn wakeCleanupWaiters() void {
+    defaultIo().futexWake(u32, &cleanup_gate.raw, std.math.maxInt(u32));
 }
 
 fn holdCleanup() void {
@@ -3458,7 +3479,144 @@ fn holdCleanup() void {
 fn releaseCleanupGate() void {
     _ = cleanup_hold.store(0, .release);
     _ = cleanup_gate.fetchAdd(1, .release);
-    defaultIo().futexWake(u32, &cleanup_gate.raw, std.math.maxInt(u32));
+    wakeCleanupWaiters();
+}
+
+fn cleanupGateGeneration() u32 {
+    return cleanup_gate.load(.acquire);
+}
+
+test "a release inside the snapshot-to-wait window still reaches the producer" {
+    const allocator = std.testing.allocator;
+    cleanup_held.store(0, .release);
+    cleanup_paused.store(false, .release);
+    holdCleanup();
+    cleanup_window.store(1, .release);
+    defer {
+        cleanup_window.store(0, .release);
+        releaseCleanupGate();
+    }
+
+    var mock = try MockCompletionsServer.listen(MockCompletionsServer.complete_stream);
+    defer mock.stop();
+    const base_url = try mock.baseUrl(allocator);
+    defer allocator.free(base_url);
+    try mock.start();
+
+    const stream = try streamOpenAICompletions(
+        traceModel(base_url),
+        traceContext(),
+        .{ .api_key = ai_types.OwnedSlice(u8).initBorrowed("cleanup-window-key") },
+        allocator,
+    );
+    defer {
+        cleanup_window.store(0, .release);
+        releaseCleanupGate();
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+
+    while (stream.wait()) |event| {
+        var polled = event;
+        defer ai_types.deinitAssistantMessageEvent(allocator, &polled);
+    }
+
+    var spins: usize = 0;
+    while (!cleanup_paused.load(.acquire) and spins < 400) : (spins += 1) {
+        std.Thread.yield() catch {};
+    }
+    try std.testing.expect(cleanup_paused.load(.acquire));
+    try std.testing.expect(!stream.waitForThread(100));
+
+    releaseCleanupGate();
+    cleanup_window.store(0, .release);
+    wakeCleanupWaiters();
+
+    try std.testing.expect(stream.waitForThread(5_000));
+    try std.testing.expect(stream.getError() == null);
+}
+
+test "a wake that carries no release does not let the producer publish done" {
+    const allocator = std.testing.allocator;
+    cleanup_held.store(0, .release);
+    holdCleanup();
+    defer releaseCleanupGate();
+
+    var mock = try MockCompletionsServer.listen(MockCompletionsServer.complete_stream);
+    defer mock.stop();
+    const base_url = try mock.baseUrl(allocator);
+    defer allocator.free(base_url);
+    try mock.start();
+
+    const stream = try streamOpenAICompletions(
+        traceModel(base_url),
+        traceContext(),
+        .{ .api_key = ai_types.OwnedSlice(u8).initBorrowed("cleanup-wake-key") },
+        allocator,
+    );
+    defer {
+        releaseCleanupGate();
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+
+    while (stream.wait()) |event| {
+        var polled = event;
+        defer ai_types.deinitAssistantMessageEvent(allocator, &polled);
+    }
+
+    try std.testing.expect(!stream.waitForThread(250));
+    const held = cleanup_held.load(.acquire);
+    const generation = cleanupGateGeneration();
+
+    wakeCleanupWaiters();
+    wakeCleanupWaiters();
+    try std.testing.expect(!stream.waitForThread(250));
+
+    try std.testing.expectEqual(@as(usize, 1), held);
+    try std.testing.expectEqual(generation, cleanupGateGeneration());
+
+    releaseCleanupGate();
+    try std.testing.expect(stream.waitForThread(5_000));
+    try std.testing.expect(stream.getError() == null);
+}
+
+test "a release that lands before the producer waits is still observed" {
+    const allocator = std.testing.allocator;
+    cleanup_held.store(0, .release);
+    holdCleanup();
+    defer releaseCleanupGate();
+
+    const generation = cleanupGateGeneration();
+    releaseCleanupGate();
+
+    var mock = try MockCompletionsServer.listen(MockCompletionsServer.complete_stream);
+    defer mock.stop();
+    const base_url = try mock.baseUrl(allocator);
+    defer allocator.free(base_url);
+    try mock.start();
+
+    const stream = try streamOpenAICompletions(
+        traceModel(base_url),
+        traceContext(),
+        .{ .api_key = ai_types.OwnedSlice(u8).initBorrowed("cleanup-early-key") },
+        allocator,
+    );
+    defer {
+        releaseCleanupGate();
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+
+    while (stream.wait()) |event| {
+        var polled = event;
+        defer ai_types.deinitAssistantMessageEvent(allocator, &polled);
+    }
+
+    try std.testing.expect(cleanupGateGeneration() != generation);
+    try std.testing.expectEqual(@as(usize, 0), cleanup_held.load(.acquire));
+    try std.testing.expect(stream.waitForThread(5_000));
+    try std.testing.expect(stream.getError() == null);
 }
 
 test "the producer does not publish done while its own cleanup is unfinished" {
