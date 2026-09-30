@@ -113,9 +113,6 @@ func TestTheSharedResultSeesAMissingLifecycleAsNilAndStillRejectsABadOne(t *test
 }
 
 func TestAnUnknownLifecycleIsNotFilteredOutAsDeprecated(t *testing.T) {
-	// IncludeDeprecated must be set, not left nil: the filter at oap.go only
-	// runs when the request states the flag, so a nil request never exercises
-	// it and this case would pass whatever the reader did.
 	listed, err := lifecycleListFilteringDeprecated(t, "absent", false)
 	if err != nil {
 		t.Fatalf("the list must answer: %v", err)
