@@ -212,7 +212,7 @@ func (c *Client) expire(total time.Duration, fatal bool) error {
 	if !fatal {
 		return ErrControlUnanswered
 	}
-	err := fmt.Errorf("conformance: the endpoint produced no line within %s", total)
+	err := fmt.Errorf("conformance: no matching answer arrived within %s", total)
 	c.mu.Lock()
 	c.dead = err
 	c.mu.Unlock()
