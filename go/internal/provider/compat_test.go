@@ -691,8 +691,8 @@ func TestPerHostRefinementsInsideTheCompatibleBranch(t *testing.T) {
 		t.Error("mistral wants mistral tool ids")
 	}
 	deep := DetectCapabilities("https://api.deepseek.com", true)
-	if !deep.RequiresThinkingAsText {
-		t.Error("deepseek wants thinking as text")
+	if deep.RequiresThinkingAsText || !deep.SupportsReasoningEffort {
+		t.Errorf("deepseek caps = %+v, want reasoning passed back as reasoning, with an effort", deep)
 	}
 	zai := DetectCapabilities("https://api.zukijourney.com", true)
 	if zai.ThinkingFormat != ThinkingZai {

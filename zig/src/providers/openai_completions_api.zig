@@ -2098,21 +2098,20 @@ test "parseChunk keeps reading after a chunk it could not read" {
     try std.testing.expectEqualStrings("kept", text.items);
 }
 
-const deepseek_test_model = ai_types.Model{
-    .id = "deepseek-flash",
-    .name = "DeepSeek Flash",
-    .api = "openai-completions",
-    .provider = "deepseek",
-    .base_url = "https://api.deepseek.com",
-    .reasoning = true,
-    .input = &[_][]const u8{"text"},
-    .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
-    .context_window = 1_048_576,
-    .max_tokens = 100,
-};
-
 test "a deepseek request sends past reasoning back as reasoning_content, never as the answer" {
     const allocator = std.testing.allocator;
+    const model = ai_types.Model{
+        .id = "deepseek-flash",
+        .name = "DeepSeek Flash",
+        .api = "openai-completions",
+        .provider = "deepseek",
+        .base_url = "https://api.deepseek.com",
+        .reasoning = true,
+        .input = &[_][]const u8{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1_048_576,
+        .max_tokens = 100,
+    };
 
     const messages = [_]ai_types.Message{
         .{ .user = .{ .content = .{ .text = "list the files" }, .timestamp = 0 } },
@@ -2143,7 +2142,7 @@ test "a deepseek request sends past reasoning back as reasoning_content, never a
         } },
     };
 
-    const body = try buildRequestBody(deepseek_test_model, .{ .messages = &messages }, .{ .max_tokens = 100 }, allocator);
+    const body = try buildRequestBody(model, .{ .messages = &messages }, .{ .max_tokens = 100 }, allocator);
     defer allocator.free(body);
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
     defer parsed.deinit();
@@ -2168,6 +2167,18 @@ test "a deepseek request sends past reasoning back as reasoning_content, never a
 
 test "a deepseek request carries the thinking level as one of deepseek's three efforts" {
     const allocator = std.testing.allocator;
+    const model = ai_types.Model{
+        .id = "deepseek-flash",
+        .name = "DeepSeek Flash",
+        .api = "openai-completions",
+        .provider = "deepseek",
+        .base_url = "https://api.deepseek.com",
+        .reasoning = true,
+        .input = &[_][]const u8{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1_048_576,
+        .max_tokens = 100,
+    };
     const messages = [_]ai_types.Message{.{ .user = .{ .content = .{ .text = "hi" }, .timestamp = 0 } }};
     const cases = [_]struct { level: []const u8, sent: []const u8 }{
         .{ .level = "minimal", .sent = "low" },
@@ -2177,7 +2188,7 @@ test "a deepseek request carries the thinking level as one of deepseek's three e
         .{ .level = "xhigh", .sent = "max" },
     };
     for (cases) |case| {
-        const body = try buildRequestBody(deepseek_test_model, .{ .messages = &messages }, .{
+        const body = try buildRequestBody(model, .{ .messages = &messages }, .{
             .max_tokens = 100,
             .reasoning_effort = ai_types.OwnedSlice(u8).initBorrowed(case.level),
         }, allocator);
