@@ -27,14 +27,36 @@ Substituting a row-specific `lifecycle` would need an actual pinned source
 per row, and there is none today. If a source appears, the rows should carry
 the value it states rather than a value the code prefers.
 
-## Still defaulted, and why it is not fixed here
+## `source` now preserves absence too, and it landed first
 
-`ModelEntry.source` defaults to `.discovered` in the same two places
-(`types.zig:437`, `envelope.zig:1220`), so a decoded listing that omits
-`source` still becomes `discovered` on re-encode. That is the same defect
-class, and it is queued as its own correction rather than folded in here,
-because provenance and a serving fact are different questions and bundling
-them puts both behind one review.
+This section used to say `ModelEntry.source` was still defaulted to
+`.discovered` in `types.zig:437` and `envelope.zig:1220`, and that the fix was
+queued. That is no longer true and the sentence has been removed rather than
+hedged: #673 made `source` omission-preserving and merged before this branch,
+so this branch is now the second half of the same change.
+
+Both members are absent-tolerant and neither is defaulted:
+
+    lifecycle: ?ModelLifecycle = null,   types.zig:436
+    source:    ?ModelSource = null,      types.zig:437
+
+The encoder omits an absent member rather than publishing a value
+(`envelope.zig:116-117`), and the decoder leaves it absent rather than
+defaulting (`envelope.zig:1219-1220`). An absent key reads as unknown and a
+member that is *present* must be a string naming a known value: `optionalEnum`
+returns `null` for a missing key and rejects a present `null` or an
+unrecognised literal with `DecodeError.InvalidField`
+(`zig/src/protocol/oap/envelope.zig:896-899`). That is the same
+optional-but-not-nullable rule the three SDK readers now implement.
+
+The publisher and the source are still different questions, and that
+distinction is unchanged by any of this. A publisher that falls back to a
+built-in catalog row is making a statement about *where the row came from*,
+which is what `source` records; a publisher that omits `source` is saying it
+did not establish that. Provenance for the loader's own rows continues to
+live in `CatalogSnapshot` and is a separate concern from what a wire entry
+publishes, which is why #696 carried it on its own rather than bundling it
+here.
 
 ## Contract this follows
 

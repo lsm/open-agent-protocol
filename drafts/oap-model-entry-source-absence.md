@@ -32,16 +32,25 @@ changes: an entry that states nothing now publishes nothing.
 two are adjacent lines, not one concern, and folding them together would
 put a serving-behaviour change and a provenance change behind one review.
 
-**The TypeScript reader is not fixed by this.** In
-`sdk/typescript`, `oap_client.ts:412-417` maps the OAP wire into the native
-`ModelDescriptor`, defaulting absent `lifecycle` to `stable` and absent
-`source` to `dynamic`. `models_types.ts:43-54,87-107` requires both on the
-native type. This Zig change therefore does not mean a TS client reads
-these absences as unknown — it does not. Blanket-optionalising the native
-descriptor would change a deliberately separated contract, which is an
-owner decision, so the recommendation is an OAP-facing optional
-representation in the SDK with the conversion made visible at the adaptor
-boundary. That work is queued and not attempted here.
+**The SDK readers were decided separately, and they have now landed.** When
+this was written, `sdk/typescript` still mapped the OAP wire into the native
+`ModelDescriptor` with absent `lifecycle` becoming `stable` and absent
+`source` becoming `dynamic`, and the recommendation here was an OAP-facing
+optional representation in the SDK.
+
+That recommendation was not adopted, and this section is corrected rather
+than left as a superseded proposal. The owner chose the shared catalog result
+carrying optional `lifecycle` and `source`, with **no separate OAP result
+type** and no invented `stable` or `dynamic`. All three readers now implement
+that: Rust in #688 and #709, Go in #690 and #710, TypeScript in #705 and
+#712. Each distinguishes an absent key from a present value, records absence
+as unknown, and refuses a present `null`, a wrong type or an unrecognised
+literal as a malformed response.
+
+The native protocol `ModelDescriptor` declared in
+`docs/v1-sdk-agent-provider-spec.md` keeps its required members as a separate
+contract; only the shared catalog result is optional, which is what the owner
+decision selected.
 
 ## Evidence
 
