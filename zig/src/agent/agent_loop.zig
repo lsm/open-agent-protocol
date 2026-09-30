@@ -1186,6 +1186,86 @@ fn abortedStream(
     return stream_ptr;
 }
 
+fn answeredStream(
+    ctx: ?*anyopaque,
+    model: ai_types.Model,
+    context: ai_types.Context,
+    options: types.ProtocolOptions,
+    allocator: std.mem.Allocator,
+) anyerror!*event_stream_module.AssistantMessageEventStream {
+    _ = ctx;
+    _ = context;
+    _ = options;
+    const stream_ptr = try allocator.create(event_stream_module.AssistantMessageEventStream);
+    errdefer allocator.destroy(stream_ptr);
+    stream_ptr.* = event_stream_module.AssistantMessageEventStream.init(allocator);
+    const blocks = try allocator.alloc(ai_types.AssistantContent, 1);
+    errdefer allocator.free(blocks);
+    blocks[0] = .{ .text = .{ .text = try allocator.dupe(u8, "reply") } };
+    const api = try allocator.dupe(u8, model.api);
+    errdefer allocator.free(api);
+    const provider = try allocator.dupe(u8, model.provider);
+    errdefer allocator.free(provider);
+    const owned_model = try allocator.dupe(u8, model.id);
+    errdefer allocator.free(owned_model);
+    stream_ptr.complete(.{
+        .content = blocks,
+        .api = api,
+        .provider = provider,
+        .model = owned_model,
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+        .is_owned = true,
+    });
+    return stream_ptr;
+}
+
+fn steeringCallbackFails(ctx: ?*anyopaque, allocator: std.mem.Allocator) anyerror!?[]ai_types.Message {
+    const seen: *usize = @ptrCast(@alignCast(ctx.?));
+    _ = allocator;
+    seen.* += 1;
+    if (seen.* > 1) return error.SteeringFailed;
+    return null;
+}
+
+test "a message the context already owns is not freed again when a later callback fails" {
+    const model = ai_types.Model{
+        .id = "test-model",
+        .name = "Test",
+        .api = "test-api",
+        .provider = "test-provider",
+        .base_url = "",
+        .reasoning = false,
+        .input = &.{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1024,
+        .max_tokens = 256,
+    };
+    var events_storage: AgentEventStream = undefined;
+    const events = &events_storage;
+    events.* = AgentEventStream.init(std.testing.allocator);
+    defer events.deinit();
+
+    var context = AgentContext.init(std.testing.allocator);
+    defer context.deinit();
+
+    var steering_calls: usize = 0;
+    try std.testing.expectError(error.SteeringFailed, runLoop(std.testing.allocator, &.{}, &context, .{
+        .model = model,
+        .protocol = .{ .stream_fn = answeredStream },
+        .max_iterations = 2,
+        .get_steering_messages_fn = steeringCallbackFails,
+        .get_steering_messages_ctx = &steering_calls,
+    }, events));
+    try std.testing.expect(steering_calls > 1);
+
+    while (events.poll()) |event| {
+        var mutable = event;
+        mutable.deinit(std.testing.allocator);
+    }
+}
+
 test "an aborted turn frees the message the stream handed over" {
     const model = ai_types.Model{
         .id = "test-model",
@@ -1344,8 +1424,9 @@ fn runLoop(
 
             state.iterations += 1;
             const loop_owns_message = assistant_message.is_owned or assistant_message.error_message.is_owned;
+            var message_transferred = false;
             var unsent_message = assistant_message;
-            errdefer if (loop_owns_message) unsent_message.deinit(allocator);
+            errdefer if (loop_owns_message and !message_transferred) unsent_message.deinit(allocator);
             try setFinalMessage(&state, allocator, assistant_message);
             try appendClonedStateMessage(&state.messages, allocator, .{ .assistant = assistant_message });
 
@@ -1362,6 +1443,7 @@ fn runLoop(
                         var owned_assistant_message = assistant_message;
                         owned_assistant_message.deinit(allocator);
                     }
+                    message_transferred = true;
                     ended_before_cap = true;
                     break :outer;
                 },
@@ -1372,6 +1454,7 @@ fn runLoop(
                     } });
 
                     try context.appendMessage(.{ .assistant = assistant_message });
+                    message_transferred = true;
 
                     if (config.get_steering_messages_fn) |get_steering| {
                         if (try get_steering(config.get_steering_messages_ctx, allocator)) |queued_steering| {
@@ -1431,6 +1514,7 @@ fn runLoop(
                     } });
 
                     try context.appendMessage(.{ .assistant = assistant_message });
+                    message_transferred = true;
 
                     for (tool_result.tool_results) |tool_result_msg| {
                         const msg: ai_types.Message = .{ .tool_result = tool_result_msg };
