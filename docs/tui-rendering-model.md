@@ -30,10 +30,13 @@ region**, the same model Bubble Tea's standard renderer and Ink's `<Static>` use
   any queued print-above text, then the frame, then `ED 0` (erase below) so a shorter
   frame leaves nothing behind. Rows are written with `\r\n`; when the cursor is on the
   bottom row the terminal scrolls naturally, which is how history reaches scrollback.
-- The Program keeps the previous frame's rows. When nothing was printed above and the
-  live region has not moved, a row identical to the one already on screen is skipped
-  with a bare line feed instead of being rewritten (the last row is always rewritten,
-  since `ED 0` precedes it). A spinner tick therefore costs one or two rows rather
+- The Program keeps the previous frame's rows. When nothing was printed above, the
+  live region has not moved and no repaint is pending, a row identical to the one
+  already on screen is skipped with a bare line feed instead of being rewritten (the
+  last row is always rewritten, since `ED 0` precedes it). `Cmd.repaint`, `println`,
+  an inline image and a resume each force every row to be rewritten while keeping the
+  row count, so the paint still starts at the top of the live region;
+  `Options.render_mode = .full` turns row reuse off entirely. A spinner tick therefore costs one or two rows rather
   than a whole screen, and modal panels are emitted once, not on every animation
   frame — this is what keeps the PTY harness's "no second approval prompt" assertion
   meaningful.
@@ -59,8 +62,9 @@ region**, the same model Bubble Tea's standard renderer and Ink's `<Static>` use
   repaint would land in the wrong place). When it fires the Program performs a
   relayout inside one synchronized-output block: it moves to the top of the old live
   region, erases it, writes any print-above text that was queued during the debounce
-  window, scrolls the whole screen into scrollback with `height` line feeds, homes the
-  cursor and resets the live region. Before that it dispatches `window_size` to the
+  window, scrolls the whole screen into scrollback with `height` line feeds, which
+  leaves the cursor on the bottom row, and resets the live region; the next frame is
+  anchored so its last row lands on that bottom row. Before that it dispatches `window_size` to the
   model, and the app answers by rewinding its flush cursor so the frame itself carries
   the tail of the transcript at the new width; the screen is repainted from the top as
   `[history tail][frame]` with the status line and working-directory row back on the
@@ -73,6 +77,9 @@ region**, the same model Bubble Tea's standard renderer and Ink's `<Static>` use
   counts `ceil(width / new_width)` rows per line. Terminals differ on whether written
   trailing spaces rewrap, so the estimate deliberately ignores them: undercounting
   leaves an invisible blank row in scrollback, overcounting would erase real history.
+- Resuming after `Ctrl+Z` does the same: the shell wrote its prompt while the
+  program was stopped, so the Program scrolls `height` rows and anchors the next frame
+  at the bottom, and drops any input sequence left half-read when it stopped.
 - When the program exits in inline mode it erases the live region and drains queued
   print-above text, leaving only the transcript in the terminal followed by the shell
   prompt on a fresh line. The real cursor is hidden; the composer draws its own caret.
@@ -191,7 +198,8 @@ code paths; add a transcript row instead.
   the cursor and muted `▲ N` / `▼ N` markers in the top/bottom border count the hidden
   rows. Tab renders as `→`, other C0 bytes and DEL as caret notation (`^G`, `^?`), C1
   and invalid UTF-8 as `?`, so a pasted escape sequence can never reach the terminal
-  raw; pastes normalise CRLF to LF. Masked login input stays on one windowed row.
+  raw; pastes normalise CRLF to LF, including a CR and LF split across two paste
+  events (the Program streams a paste longer than 2 KB as several). Masked login input stays on one windowed row.
 - Status line: `provider/model`, context gauge with a usage percentage coloured by
   band (green below 60%, yellow 60–75, orange 75–85, red 85 and up), `queue`, a bare
   permission value (`ask`/`bypass`/`pending`), cost (once tokens are known), a bare

@@ -129,6 +129,8 @@ pub fn Cmd(comptime Msg: type) type {
 
         println: []const u8,
 
+        repaint,
+
         image_file: ImageFile,
 
         kitty_image_file: KittyImageFile,
@@ -173,6 +175,14 @@ pub fn Cmd(comptime Msg: type) type {
 
         pub fn sequenceOf(cmds: []const Self) Self {
             return .{ .sequence = cmds };
+        }
+
+        pub fn batchAlloc(allocator: std.mem.Allocator, cmds: []const Self) !Self {
+            return .{ .batch = try allocator.dupe(Self, cmds) };
+        }
+
+        pub fn sequenceAlloc(allocator: std.mem.Allocator, cmds: []const Self) !Self {
+            return .{ .sequence = try allocator.dupe(Self, cmds) };
         }
 
         pub fn send(message: Msg) Self {

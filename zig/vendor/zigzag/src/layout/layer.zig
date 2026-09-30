@@ -42,17 +42,18 @@ pub const LayerStack = struct {
         self.layers.clearRetainingCapacity();
     }
 
-    pub fn render(self: *const LayerStack, allocator: std.mem.Allocator) []const u8 {
+    pub fn render(self: *const LayerStack, allocator: std.mem.Allocator) ![]const u8 {
         const w: usize = self.width;
         const h: usize = self.height;
 
-        const grid = allocator.alloc(Cell, w * h) catch return "";
+        const grid = try allocator.alloc(Cell, w * h);
 
+        const bg = [1]u8{self.background};
         for (grid) |*cell| {
-            cell.* = .{ .char = self.background, .ansi_prefix = "" };
+            cell.* = .{ .content = &bg, .ansi_prefix = "" };
         }
 
-        const sorted = allocator.alloc(Layer, self.layers.items.len) catch return "";
+        const sorted = try allocator.alloc(Layer, self.layers.items.len);
         @memcpy(sorted, self.layers.items);
         std.mem.sort(Layer, sorted, {}, struct {
             fn lessThan(_: void, a: Layer, b: Layer) bool {
@@ -68,15 +69,16 @@ pub const LayerStack = struct {
         const writer = &result.writer;
 
         for (0..h) |row| {
-            if (row > 0) writer.writeByte('\n') catch {};
+            if (row > 0) try writer.writeByte('\n');
             for (0..w) |col| {
                 const cell = grid[row * w + col];
+                if (cell.content.len == 0) continue;
                 if (cell.ansi_prefix.len > 0) {
-                    writer.writeAll(cell.ansi_prefix) catch {};
-                    writer.writeByte(cell.char) catch {};
-                    writer.writeAll("\x1b[0m") catch {};
+                    try writer.writeAll(cell.ansi_prefix);
+                    try writer.writeAll(cell.content);
+                    try writer.writeAll("\x1b[0m");
                 } else {
-                    writer.writeByte(cell.char) catch {};
+                    try writer.writeAll(cell.content);
                 }
             }
         }
@@ -115,22 +117,31 @@ pub const LayerStack = struct {
                 continue;
             }
 
-            if (col < w) {
-                const is_transparent = layer.transparent and content[i] == ' ' and current_ansi.len == 0;
-                if (!is_transparent) {
-                    grid[row * w + col] = .{
-                        .char = content[i],
-                        .ansi_prefix = current_ansi,
-                    };
+            const char_len = std.unicode.utf8ByteSequenceLength(content[i]) catch 1;
+            const end = @min(i + char_len, content.len);
+            const char = content[i..end];
+            const codepoint: u21 = std.unicode.utf8Decode(char) catch content[i];
+            const char_width = measure.charWidth(codepoint);
+            i = end;
+
+            if (char_width == 0) continue;
+
+            const is_transparent = layer.transparent and codepoint == ' ' and current_ansi.len == 0;
+            if (!is_transparent and col + char_width <= w) {
+                grid[row * w + col] = .{
+                    .content = char,
+                    .ansi_prefix = current_ansi,
+                };
+                if (char_width == 2) {
+                    grid[row * w + col + 1] = .{ .content = "" };
                 }
-                col += 1;
             }
-            i += 1;
+            col += char_width;
         }
     }
 };
 
 const Cell = struct {
-    char: u8 = ' ',
+    content: []const u8 = " ",
     ansi_prefix: []const u8 = "",
 };

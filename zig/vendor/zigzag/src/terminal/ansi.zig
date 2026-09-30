@@ -53,6 +53,40 @@ pub const kitty_keyboard_disable = CSI ++ "<u";
 pub const kitty_keyboard_disable_all = CSI ++ "<10u";
 pub const kitty_keyboard_reset = CSI ++ "=0u";
 
+pub fn escapeSequenceLen(text: []const u8, pos: usize) usize {
+    if (pos >= text.len or text[pos] != ESC[0]) return 0;
+    if (pos + 1 >= text.len) return 1;
+
+    return switch (text[pos + 1]) {
+        '[' => csiLen(text, pos),
+        'O' => @min(3, text.len - pos),
+        ']' => stringLen(text, pos, true),
+        'P', '_', '^', 'X' => stringLen(text, pos, false),
+        else => 2,
+    };
+}
+
+fn csiLen(text: []const u8, pos: usize) usize {
+    var i = pos + 2;
+    while (i < text.len and text[i] >= 0x30 and text[i] <= 0x3f) : (i += 1) {}
+    while (i < text.len and text[i] >= 0x20 and text[i] <= 0x2f) : (i += 1) {}
+    if (i >= text.len) return i - pos;
+    if (text[i] < 0x40 or text[i] > 0x7e) return i - pos;
+    return i + 1 - pos;
+}
+
+fn stringLen(text: []const u8, pos: usize, bel_terminates: bool) usize {
+    var i = pos + 2;
+    while (i < text.len) : (i += 1) {
+        if (bel_terminates and text[i] == 0x07) return i + 1 - pos;
+        if (text[i] == ESC[0]) {
+            if (i + 1 < text.len and text[i + 1] == '\\') return i + 2 - pos;
+            return i - pos;
+        }
+    }
+    return i - pos;
+}
+
 pub fn cursorTo(writer: *Writer, row: u16, col: u16) !void {
     try writer.print(CSI ++ "{d};{d}H", .{ row, col });
 }
@@ -298,6 +332,46 @@ pub fn iterm2InlineImage(writer: *Writer, params: []const u8, payload: []const u
     try writer.writeAll(":");
     try writer.writeAll(payload);
     try writer.writeAll("\x07");
+}
+
+test "escapeSequenceLen: not a sequence" {
+    try std.testing.expectEqual(@as(usize, 0), escapeSequenceLen("abc", 0));
+    try std.testing.expectEqual(@as(usize, 0), escapeSequenceLen("", 0));
+    try std.testing.expectEqual(@as(usize, 0), escapeSequenceLen("a\x1b[0m", 0));
+}
+
+test "escapeSequenceLen: CSI" {
+    try std.testing.expectEqual(@as(usize, 4), escapeSequenceLen("\x1b[0mtail", 0));
+    try std.testing.expectEqual(@as(usize, 13), escapeSequenceLen("\x1b[38;2;1;2;3mtail", 0));
+    try std.testing.expectEqual(@as(usize, 4), escapeSequenceLen("\x1b[3~tail", 0));
+    try std.testing.expectEqual(@as(usize, 6), escapeSequenceLen("\x1b[?25htail", 0));
+    try std.testing.expectEqual(@as(usize, 9), escapeSequenceLen("\x1b[?2027$ptail", 0));
+}
+
+test "escapeSequenceLen: string sequences" {
+    try std.testing.expectEqual(@as(usize, 10), escapeSequenceLen("\x1b]0;title\x07tail", 0));
+    try std.testing.expectEqual(@as(usize, 11), escapeSequenceLen("\x1b]0;title\x1b\\tail", 0));
+    try std.testing.expectEqual(@as(usize, 10), escapeSequenceLen("\x1bPtmux;q\x1b\\tail", 0));
+    try std.testing.expectEqual(@as(usize, 13), escapeSequenceLen("\x1b_Gf=100;ab\x1b\\tail", 0));
+    try std.testing.expectEqual(@as(usize, 7), escapeSequenceLen("\x1bPa\x07b\x1b\\tail", 0));
+}
+
+test "escapeSequenceLen: SS3 and two-byte escapes" {
+    try std.testing.expectEqual(@as(usize, 3), escapeSequenceLen("\x1bOPtail", 0));
+    try std.testing.expectEqual(@as(usize, 2), escapeSequenceLen("\x1bMtail", 0));
+}
+
+test "escapeSequenceLen: truncated input still advances" {
+    for ([_][]const u8{ "\x1b", "\x1b[", "\x1b[38;2", "\x1b]0;partial", "\x1bP", "\x1bO" }) |input| {
+        const len = escapeSequenceLen(input, 0);
+        try std.testing.expect(len > 0);
+        try std.testing.expect(len <= input.len);
+    }
+}
+
+test "escapeSequenceLen: offset within a string" {
+    const text = "ab\x1b[31mcd";
+    try std.testing.expectEqual(@as(usize, 5), escapeSequenceLen(text, 2));
 }
 
 test "osc52Encoded direct BEL" {

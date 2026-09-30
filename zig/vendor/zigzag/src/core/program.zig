@@ -10,6 +10,7 @@ const command = @import("command.zig");
 const Logger = @import("log.zig").Logger;
 const unicode = @import("../unicode.zig");
 const Environment = @import("environment.zig").Environment;
+const model_contract = @import("model.zig");
 
 pub const Cmd = command.Cmd;
 pub const Msg = message;
@@ -21,21 +22,16 @@ const PendingImage = union(enum) {
     place_cached: command.PlaceCachedImage,
 };
 
+const read_chunk_size = 1024;
+
+const max_reads_per_tick = 8;
+
 pub fn Program(comptime Model: type) type {
-    comptime {
-        if (!@hasDecl(Model, "Msg")) {
-            @compileError("Model must have a 'Msg' type declaration");
-        }
-        if (!@hasDecl(Model, "init")) {
-            @compileError("Model must have an 'init' function");
-        }
-        if (!@hasDecl(Model, "update")) {
-            @compileError("Model must have an 'update' function");
-        }
-        if (!@hasDecl(Model, "view")) {
-            @compileError("Model must have a 'view' function");
-        }
-    }
+    model_contract.validate(Model, "Model");
+
+    const init_fallible = model_contract.returnsError(@TypeOf(Model.init));
+    const update_fallible = model_contract.returnsError(@TypeOf(Model.update));
+    const view_fallible = model_contract.returnsError(@TypeOf(Model.view));
 
     const UserMsg = Model.Msg;
     const UserCmd = Cmd(UserMsg);
@@ -57,21 +53,20 @@ pub fn Program(comptime Model: type) type {
         pacing_epoch: std.Io.Clock.Timestamp,
         pacing_frame_offset: u64,
         pending_tick: ?u64,
+        pending_tick_scheduled_at: u64,
         every_interval: ?u64,
         last_every_tick: u64,
         last_view_hash: u64,
         last_line_count: usize,
         needs_repaint: bool,
         resize_deadline: ?u64,
+        bottom_anchor: bool,
         last_line_widths: std.ArrayList(usize),
         last_frame: std.ArrayList(u8),
         relayout_above_split: ?usize,
         pending_image: ?PendingImage,
         logger: ?Logger,
-        paste_buffer: std.array_list.Managed(u8),
-        paste_pending_prefix: std.array_list.Managed(u8),
-        paste_pending_end_prefix: std.array_list.Managed(u8),
-        paste_active: bool,
+        input_parser: keyboard.InputParser,
 
         filter: ?*const fn (UserMsg) ?UserMsg,
 
@@ -158,21 +153,20 @@ pub fn Program(comptime Model: type) type {
                 .pacing_epoch = clock_epoch,
                 .pacing_frame_offset = 0,
                 .pending_tick = null,
+                .pending_tick_scheduled_at = 0,
                 .every_interval = null,
                 .last_every_tick = 0,
                 .last_view_hash = 0,
                 .last_line_count = 0,
                 .needs_repaint = false,
                 .resize_deadline = null,
+                .bottom_anchor = false,
                 .last_line_widths = .empty,
                 .last_frame = .empty,
                 .relayout_above_split = null,
                 .pending_image = null,
                 .logger = null,
-                .paste_buffer = std.array_list.Managed(u8).init(allocator),
-                .paste_pending_prefix = std.array_list.Managed(u8).init(allocator),
-                .paste_pending_end_prefix = std.array_list.Managed(u8).init(allocator),
-                .paste_active = false,
+                .input_parser = .{},
                 .filter = null,
             };
 
@@ -192,9 +186,6 @@ pub fn Program(comptime Model: type) type {
             self.last_line_widths.deinit(self.allocator);
             self.last_frame.deinit(self.allocator);
             self.message_queue.deinit();
-            self.paste_buffer.deinit();
-            self.paste_pending_prefix.deinit();
-            self.paste_pending_end_prefix.deinit();
             self.arena.deinit();
 
             if (@hasDecl(Model, "deinit")) {
@@ -237,6 +228,9 @@ pub fn Program(comptime Model: type) type {
                 .osc52 = self.options.osc52,
             });
 
+            self.input_parser.escape_timeout_ns =
+                @as(u64, self.options.escape_timeout_ms) * std.time.ns_per_ms;
+
             if (self.options.title) |title| {
                 try self.terminal.?.setTitle(title);
             }
@@ -263,7 +257,10 @@ pub fn Program(comptime Model: type) type {
 
             self.resetFrameAllocator();
 
-            const init_cmd = self.model.init(&self.context);
+            const init_cmd = if (comptime init_fallible)
+                try self.model.init(&self.context)
+            else
+                self.model.init(&self.context);
             try self.processCommand(init_cmd);
 
             self.running.store(true, .release);
@@ -299,7 +296,7 @@ pub fn Program(comptime Model: type) type {
                     self.needs_repaint = true;
                     if (self.options.inline_bottom_viewport) self.relayout_above_split = self.context.above_buffer.items.len;
                     if (@hasField(UserMsg, "window_size")) {
-                        const cmd = self.dispatchToModel(.{ .window_size = .{
+                        const cmd = try self.dispatchToModel(.{ .window_size = .{
                             .width = self.context.width,
                             .height = self.context.height,
                         } });
@@ -309,33 +306,19 @@ pub fn Program(comptime Model: type) type {
                 }
             }
 
-            var input_buf: [256]u8 = undefined;
-            const bytes_read = try self.terminal.?.readInput(&input_buf, 0);
-
-            if (bytes_read > 0) {
-                const events = try self.parseInputEvents(input_buf[0..bytes_read]);
-                for (events) |event| {
-                    const user_cmd = switch (event) {
-                        .key => |k| self.processKeyEvent(k),
-                        .mouse => |m| self.processMouseEvent(m),
-                        .none => null,
-                    };
-                    if (user_cmd) |cmd| {
-                        try self.processCommand(cmd);
-                        if (!self.isRunning()) return;
-                    }
-                }
-            }
+            try self.drainInput();
+            if (!self.isRunning()) return;
 
             if (self.pending_tick) |tick_ns| {
                 if (self.context.elapsed >= tick_ns) {
                     self.pending_tick = null;
                     if (@hasField(UserMsg, "tick")) {
+                        const tick_delta = self.context.elapsed -| self.pending_tick_scheduled_at;
                         const user_msg = UserMsg{ .tick = .{
                             .timestamp = @intCast(tick_start),
-                            .delta = actual_delta,
+                            .delta = tick_delta,
                         } };
-                        const cmd = self.dispatchToModel(user_msg);
+                        const cmd = try self.dispatchToModel(user_msg);
                         try self.processCommand(cmd);
                         if (!self.isRunning()) return;
                     }
@@ -344,13 +327,14 @@ pub fn Program(comptime Model: type) type {
 
             if (self.every_interval) |interval| {
                 if (self.context.elapsed - self.last_every_tick >= interval) {
+                    const tick_delta = self.context.elapsed -| self.last_every_tick;
                     self.last_every_tick = self.context.elapsed;
                     if (@hasField(UserMsg, "tick")) {
                         const user_msg = UserMsg{ .tick = .{
                             .timestamp = @intCast(tick_start),
-                            .delta = actual_delta,
+                            .delta = tick_delta,
                         } };
-                        const cmd = self.dispatchToModel(user_msg);
+                        const cmd = try self.dispatchToModel(user_msg);
                         try self.processCommand(cmd);
                         if (!self.isRunning()) return;
                     }
@@ -376,7 +360,7 @@ pub fn Program(comptime Model: type) type {
                         .raw = .{ .nanoseconds = @intCast(deadline_offset_ns) },
                         .clock = .boot,
                     });
-                    deadline.wait(self.io) catch unreachable;
+                    deadline.wait(self.io) catch {};
                 }
             }
         }
@@ -387,7 +371,7 @@ pub fn Program(comptime Model: type) type {
 
             try self.message_queue.popBatch(&batch);
             for (batch.items, 0..) |m, i| {
-                const cmd = self.dispatchToModel(m);
+                const cmd = try self.dispatchToModel(m);
                 self.processCommand(cmd) catch |err| {
                     try self.message_queue.requeueFront(batch.items[i + 1 ..]);
                     return err;
@@ -395,117 +379,52 @@ pub fn Program(comptime Model: type) type {
             }
         }
 
-        fn appendParsedInputEvents(
-            self: *Self,
-            results: *std.array_list.Managed(keyboard.ParseResult),
-            data: []const u8,
-        ) !void {
-            if (data.len == 0) return;
-            const parsed = try keyboard.parseAll(self.context.allocator, data);
-            try results.appendSlice(parsed);
-        }
+        fn drainInput(self: *Self) !void {
+            var input_buf: [read_chunk_size]u8 = undefined;
 
-        fn appendParsedInputEventsPreservingPastePrefix(
-            self: *Self,
-            results: *std.array_list.Managed(keyboard.ParseResult),
-            data: []const u8,
-            paste_start: []const u8,
-        ) !void {
-            if (data.len == 0) return;
-            const keep = pasteDelimiterPrefixSuffixLen(data, paste_start);
-            if (keep > 1 and keep < paste_start.len) {
-                const parse_len = data.len - keep;
-                try self.appendParsedInputEvents(results, data[0..parse_len]);
-                self.paste_pending_prefix.clearRetainingCapacity();
-                try self.paste_pending_prefix.appendSlice(data[parse_len..]);
-                return;
+            var reads: usize = 0;
+            while (reads < max_reads_per_tick) : (reads += 1) {
+                const bytes_read = try self.terminal.?.readInput(&input_buf, 0);
+
+                const events = try self.input_parser.feed(
+                    self.context.allocator,
+                    input_buf[0..bytes_read],
+                    self.context.elapsed,
+                );
+                try self.dispatchInputEvents(events);
+                if (!self.isRunning()) return;
+
+                if (bytes_read < input_buf.len) break;
             }
-            try self.appendParsedInputEvents(results, data);
         }
 
-        fn appendPasteEvent(
-            self: *Self,
-            results: *std.array_list.Managed(keyboard.ParseResult),
-        ) !void {
-            const text = try self.context.allocator.dupe(u8, self.paste_buffer.items);
-            try results.append(.{ .key = .{ .key = .{ .paste = text } } });
-            self.paste_buffer.clearRetainingCapacity();
-        }
-
-        fn parseInputEvents(self: *Self, data: []const u8) ![]keyboard.ParseResult {
-            const paste_start = "\x1b[200~";
-            const paste_end = "\x1b[201~";
-            var results = std.array_list.Managed(keyboard.ParseResult).init(self.context.allocator);
-            errdefer results.deinit();
-
-            var owned_data: ?[]u8 = null;
-            defer if (owned_data) |buf| self.context.allocator.free(buf);
-            var input = data;
-            const pending_prefix = if (self.paste_active) &self.paste_pending_end_prefix else &self.paste_pending_prefix;
-            if (pending_prefix.items.len > 0) {
-                const combined = try self.context.allocator.alloc(u8, pending_prefix.items.len + data.len);
-                @memcpy(combined[0..pending_prefix.items.len], pending_prefix.items);
-                @memcpy(combined[pending_prefix.items.len..], data);
-                pending_prefix.clearRetainingCapacity();
-                owned_data = combined;
-                input = combined;
-            }
-
-            var offset: usize = 0;
-            while (offset < input.len) {
-                if (self.paste_active) {
-                    const rest = input[offset..];
-                    if (std.mem.indexOf(u8, rest, paste_end)) |end_offset| {
-                        try self.paste_buffer.appendSlice(rest[0..end_offset]);
-                        try self.appendPasteEvent(&results);
-                        self.paste_active = false;
-                        self.paste_pending_end_prefix.clearRetainingCapacity();
-                        offset += end_offset + paste_end.len;
-                    } else {
-                        const keep = pasteDelimiterPrefixSuffixLen(rest, paste_end);
-                        const append_len = rest.len - keep;
-                        try self.paste_buffer.appendSlice(rest[0..append_len]);
-                        self.paste_pending_end_prefix.clearRetainingCapacity();
-                        if (keep > 0) try self.paste_pending_end_prefix.appendSlice(rest[append_len..]);
-                        offset = input.len;
-                    }
-                    continue;
-                }
-
-                const rest = input[offset..];
-                if (std.mem.indexOf(u8, rest, paste_start)) |start_offset| {
-                    try self.appendParsedInputEventsPreservingPastePrefix(&results, rest[0..start_offset], paste_start);
-                    self.paste_active = true;
-                    offset += start_offset + paste_start.len;
-                } else {
-                    try self.appendParsedInputEventsPreservingPastePrefix(&results, rest, paste_start);
-                    offset = input.len;
+        fn dispatchInputEvents(self: *Self, events: []const keyboard.ParseResult) !void {
+            for (events) |event| {
+                const user_cmd = switch (event) {
+                    .key => |k| try self.processKeyEvent(k),
+                    .mouse => |m| try self.processMouseEvent(m),
+                    .none => null,
+                };
+                if (user_cmd) |cmd| {
+                    try self.processCommand(cmd);
+                    if (!self.isRunning()) return;
                 }
             }
-
-            return results.toOwnedSlice();
         }
 
-        fn pasteDelimiterPrefixSuffixLen(data: []const u8, delimiter: []const u8) usize {
-            const max = @min(data.len, delimiter.len -| 1);
-            var len = max;
-            while (len > 0) : (len -= 1) {
-                if (std.mem.eql(u8, data[data.len - len ..], delimiter[0..len])) return len;
-            }
-            return 0;
+        fn dispatchToModel(self: *Self, user_msg: UserMsg) !UserCmd {
+            const delivered = if (self.filter) |f|
+                f(user_msg) orelse return .none
+            else
+                user_msg;
+
+            return if (comptime update_fallible)
+                try self.model.update(delivered, &self.context)
+            else
+                self.model.update(delivered, &self.context);
         }
 
-        fn dispatchToModel(self: *Self, user_msg: UserMsg) UserCmd {
-            if (self.filter) |f| {
-                if (f(user_msg)) |filtered_msg| {
-                    return self.model.update(filtered_msg, &self.context);
-                }
-                return .none;
-            }
-            return self.model.update(user_msg, &self.context);
-        }
-
-        fn processKeyEvent(self: *Self, key: keyboard.KeyEvent) ?UserCmd {
+        fn processKeyEvent(self: *Self, key: keyboard.KeyEvent) !?UserCmd {
             if (key.modifiers.ctrl) {
                 switch (key.key) {
                     .char => |c| {
@@ -524,18 +443,18 @@ pub fn Program(comptime Model: type) type {
             if (key.key == .paste) {
                 if (@hasField(UserMsg, "paste")) {
                     const user_msg = UserMsg{ .paste = key.key.paste };
-                    return self.dispatchToModel(user_msg);
+                    return try self.dispatchToModel(user_msg);
                 }
                 if (@hasField(UserMsg, "key")) {
                     const user_msg = UserMsg{ .key = key };
-                    return self.dispatchToModel(user_msg);
+                    return try self.dispatchToModel(user_msg);
                 }
                 return null;
             }
 
             if (@hasField(UserMsg, "key")) {
                 const user_msg = UserMsg{ .key = key };
-                return self.dispatchToModel(user_msg);
+                return try self.dispatchToModel(user_msg);
             }
 
             return null;
@@ -551,10 +470,10 @@ pub fn Program(comptime Model: type) type {
             return detected;
         }
 
-        fn processMouseEvent(self: *Self, mouse_event: keyboard.MouseEvent) ?UserCmd {
+        fn processMouseEvent(self: *Self, mouse_event: keyboard.MouseEvent) !?UserCmd {
             if (@hasField(UserMsg, "mouse")) {
                 const user_msg = UserMsg{ .mouse = mouse_event };
-                return self.dispatchToModel(user_msg);
+                return try self.dispatchToModel(user_msg);
             }
 
             return null;
@@ -576,15 +495,34 @@ pub fn Program(comptime Model: type) type {
                 term.setup() catch {};
             }
 
-            self.last_frame_time = self.elapsedNs();
+            self.input_parser.reset();
+
+            if (self.options.inline_bottom_viewport) {
+                if (self.terminal) |*term| {
+                    const writer = term.writer();
+                    const height: usize = @max(@as(usize, self.context.height), 1);
+                    var n: usize = 0;
+                    while (n < height) : (n += 1) writer.writeAll("\r\n") catch break;
+                    term.flush() catch {};
+                }
+                self.reanchorInline();
+            }
+
+            const resume_elapsed = self.elapsedNs();
+            self.last_frame_time = resume_elapsed;
+            self.context.elapsed = resume_elapsed;
             self.pacing_epoch = std.Io.Clock.Timestamp.now(self.io, .boot);
             self.pacing_frame_offset = self.context.frame;
 
-            self.last_view_hash = 0;
+            self.last_every_tick = resume_elapsed;
+            self.pending_tick_scheduled_at = resume_elapsed;
+
+            self.invalidate();
 
             if (@hasField(UserMsg, "resumed")) {
-                const cmd = self.dispatchToModel(.{ .resumed = {} });
-                self.processCommand(cmd) catch {};
+                if (self.dispatchToModel(.{ .resumed = {} })) |cmd| {
+                    self.processCommand(cmd) catch {};
+                } else |_| {}
             }
         }
 
@@ -596,6 +534,7 @@ pub fn Program(comptime Model: type) type {
                 },
                 .tick => |ns| {
                     self.pending_tick = self.context.elapsed + ns;
+                    self.pending_tick_scheduled_at = self.context.elapsed;
                 },
                 .every => |ns| {
                     self.every_interval = ns;
@@ -612,12 +551,12 @@ pub fn Program(comptime Model: type) type {
                     }
                 },
                 .msg => |m| {
-                    const new_cmd = self.dispatchToModel(m);
+                    const new_cmd = try self.dispatchToModel(m);
                     try self.processCommand(new_cmd);
                 },
                 .perform => |func| {
                     if (func()) |m| {
-                        const new_cmd = self.dispatchToModel(m);
+                        const new_cmd = try self.dispatchToModel(m);
                         try self.processCommand(new_cmd);
                     }
                 },
@@ -654,6 +593,7 @@ pub fn Program(comptime Model: type) type {
                         try writer.writeAll(ansi.alt_screen_enter);
                         try term.flush();
                     }
+                    self.invalidate();
                 },
                 .exit_alt_screen => {
                     if (self.terminal) |*term| {
@@ -661,6 +601,10 @@ pub fn Program(comptime Model: type) type {
                         try writer.writeAll(ansi.alt_screen_exit);
                         try term.flush();
                     }
+                    self.invalidate();
+                },
+                .repaint => {
+                    self.invalidate();
                 },
                 .set_title => |title| {
                     if (self.terminal) |*term| {
@@ -679,6 +623,7 @@ pub fn Program(comptime Model: type) type {
                         try writer.writeAll(ansi.cursor_restore);
                         try term.flush();
                     }
+                    self.invalidate();
                 },
                 .image_file => |image| {
                     self.pending_image = .{ .auto = image };
@@ -693,25 +638,25 @@ pub fn Program(comptime Model: type) type {
                     if (self.terminal) |*term| {
                         switch (cache.source) {
                             .file => |path| {
-                                _ = term.transmitKittyImageFromFile(path, .{
+                                _ = try term.transmitKittyImageFromFile(path, .{
                                     .image_id = cache.image_id,
                                     .format = @enumFromInt(@intFromEnum(cache.format)),
                                     .quiet = cache.quiet,
                                     .pixel_width = cache.pixel_width,
                                     .pixel_height = cache.pixel_height,
-                                }) catch {};
+                                });
                             },
                             .data => |data| {
-                                _ = term.transmitKittyImage(data, .{
+                                _ = try term.transmitKittyImage(data, .{
                                     .image_id = cache.image_id,
                                     .format = @enumFromInt(@intFromEnum(cache.format)),
                                     .quiet = cache.quiet,
                                     .pixel_width = cache.pixel_width,
                                     .pixel_height = cache.pixel_height,
-                                }) catch {};
+                                });
                             },
                         }
-                        term.flush() catch {};
+                        try term.flush();
                     }
                 },
                 .place_cached_image => |place| {
@@ -724,8 +669,8 @@ pub fn Program(comptime Model: type) type {
                             .by_placement => |bp| .{ .by_placement = .{ .image_id = bp.image_id, .placement_id = bp.placement_id } },
                             .all => .all,
                         };
-                        _ = term.deleteKittyImage(target) catch {};
-                        term.flush() catch {};
+                        _ = try term.deleteKittyImage(target);
+                        try term.flush();
                     }
                 },
             }
@@ -831,6 +776,7 @@ pub fn Program(comptime Model: type) type {
                     },
                 }
                 try term.flush();
+                self.invalidate();
             }
         }
 
@@ -929,11 +875,6 @@ pub fn Program(comptime Model: type) type {
             return @intCast(ns);
         }
 
-        fn sleepNs(io: std.Io, nanoseconds: u64) void {
-            if (nanoseconds == 0) return;
-            std.Io.sleep(io, .fromNanoseconds(nanoseconds), .boot) catch unreachable;
-        }
-
         fn resetFrameAllocator(self: *Self) void {
             _ = self.arena.reset(.retain_capacity);
             self.context.allocator = self.arena.allocator();
@@ -943,7 +884,10 @@ pub fn Program(comptime Model: type) type {
 
         fn render(self: *Self) !void {
             if (self.resize_deadline != null) return;
-            const view_output = self.model.view(&self.context);
+            const view_output = if (comptime view_fallible)
+                try self.model.view(&self.context)
+            else
+                self.model.view(&self.context);
 
             const view_hash = std.hash.Wyhash.hash(0, view_output);
             const has_above = self.context.hasPendingAbove();
@@ -1002,8 +946,6 @@ pub fn Program(comptime Model: type) type {
         fn renderInlineFrame(self: *Self, writer: *std.Io.Writer, view_output: []const u8, above: []const u8) !void {
             const height: usize = @max(@as(usize, self.context.height), 1);
             const width: usize = @max(@as(usize, self.context.width), 1);
-            try self.moveToLiveRegionTop(writer);
-            try writeAboveLines(writer, above, width);
 
             var frame_lines: std.ArrayList([]const u8) = .empty;
             defer frame_lines.deinit(self.allocator);
@@ -1017,7 +959,19 @@ pub fn Program(comptime Model: type) type {
                 try frame_lines.append(self.allocator, line);
             }
 
-            const reuse = above.len == 0 and self.last_line_count > 0;
+            if (self.bottom_anchor) {
+                self.bottom_anchor = false;
+                try writer.writeAll("\r");
+                if (frame_lines.items.len > 1) {
+                    const up: u16 = @intCast(@min(frame_lines.items.len - 1, std.math.maxInt(u16)));
+                    try ansi.cursorUp(writer, up);
+                }
+            } else {
+                try self.moveToLiveRegionTop(writer);
+            }
+            try writeAboveLines(writer, above, width);
+
+            const reuse = self.options.render_mode == .diff and !self.needs_repaint and above.len == 0 and self.last_line_count > 0;
             var old_lines = std.mem.splitScalar(u8, self.last_frame.items, '\n');
             var next_frame: std.ArrayList(u8) = .empty;
             defer next_frame.deinit(self.allocator);
@@ -1054,7 +1008,7 @@ pub fn Program(comptime Model: type) type {
             try writeAboveLines(writer, above, width);
             var n: usize = 0;
             while (n < height) : (n += 1) try writer.writeAll("\r\n");
-            try writer.writeAll(ansi.cursor_home);
+            self.bottom_anchor = true;
             self.last_line_count = 0;
             self.last_line_widths.clearRetainingCapacity();
         }
@@ -1088,6 +1042,11 @@ pub fn Program(comptime Model: type) type {
             }
         }
 
+        pub fn invalidate(self: *Self) void {
+            self.needs_repaint = true;
+            self.last_frame.clearRetainingCapacity();
+        }
+
         fn finishInline(self: *Self) void {
             if (self.terminal) |*term| {
                 const writer = term.writer();
@@ -1103,9 +1062,18 @@ pub fn Program(comptime Model: type) type {
             }
         }
 
+        fn reanchorInline(self: *Self) void {
+            self.bottom_anchor = true;
+            self.last_line_count = 0;
+            self.last_frame.clearRetainingCapacity();
+            self.last_line_widths.clearRetainingCapacity();
+            self.needs_repaint = true;
+        }
+
         fn writeClampedLine(writer: *std.Io.Writer, line: []const u8, width: usize) !usize {
             var i: usize = 0;
             var used: usize = 0;
+            var clipped = false;
             while (i < line.len) {
                 const c = line[i];
                 if (c == 0x1b) {
@@ -1118,7 +1086,8 @@ pub fn Program(comptime Model: type) type {
                 const take = @min(len, line.len - i);
                 const codepoint: u21 = std.unicode.utf8Decode(line[i .. i + take]) catch c;
                 const cell_width = unicode.charWidth(codepoint);
-                if (used + cell_width > width) {
+                if (clipped or used + cell_width > width) {
+                    clipped = true;
                     i += take;
                     continue;
                 }
@@ -1140,7 +1109,7 @@ pub fn Program(comptime Model: type) type {
 
         pub fn send(self: *Self, m: UserMsg) !void {
             if (std.Thread.getCurrentId() == self.main_thread_id) {
-                const cmd = self.dispatchToModel(m);
+                const cmd = try self.dispatchToModel(m);
                 try self.processCommand(cmd);
                 return;
             }
@@ -1219,4 +1188,239 @@ fn escapeSequenceEnd(text: []const u8, from: usize) usize {
         '(', ')', '*', '+' => return @min(text.len, i + 1),
         else => return i,
     }
+}
+
+const AnchorTestModel = struct {
+    pub const Msg = union(enum) { nop: void };
+
+    pub fn init(_: *AnchorTestModel, _: *Context) Cmd(AnchorTestModel.Msg) {
+        return .none;
+    }
+
+    pub fn update(_: *AnchorTestModel, _: AnchorTestModel.Msg, _: *Context) Cmd(AnchorTestModel.Msg) {
+        return .none;
+    }
+
+    pub fn view(_: *const AnchorTestModel, _: *const Context) []const u8 {
+        return "one\ntwo";
+    }
+};
+
+const QuitTestModel = struct {
+    pub const Msg = union(enum) { key: keyboard.KeyEvent };
+
+    keys: usize = 0,
+
+    pub fn init(_: *QuitTestModel, _: *Context) Cmd(QuitTestModel.Msg) {
+        return .none;
+    }
+
+    pub fn update(self: *QuitTestModel, msg: QuitTestModel.Msg, _: *Context) Cmd(QuitTestModel.Msg) {
+        switch (msg) {
+            .key => |k| {
+                self.keys += 1;
+                if (k.key == .char and k.key.char == 'q') return .quit;
+            },
+        }
+        return .none;
+    }
+
+    pub fn view(_: *const QuitTestModel, _: *const Context) []const u8 {
+        return "";
+    }
+};
+
+test "dispatchInputEvents stops at the quit and hands nothing after it to the model" {
+    var env_map: std.process.Environ.Map = .init(std.testing.allocator);
+    defer env_map.deinit();
+
+    var program = Program(QuitTestModel).init(std.testing.allocator, std.testing.io, &env_map);
+    defer program.deinit();
+    program.model = .{};
+    program.running.store(true, .release);
+
+    const events = [_]keyboard.ParseResult{
+        .{ .key = .{ .key = .{ .char = 'q' } } },
+        .{ .key = .{ .key = .{ .char = 'x' } } },
+    };
+    try program.dispatchInputEvents(&events);
+
+    try std.testing.expect(!program.isRunning());
+    try std.testing.expectEqual(@as(usize, 1), program.model.keys);
+}
+
+test "renderInlineFrame anchors a short frame to the bottom after a scroll" {
+    var env_map: std.process.Environ.Map = .init(std.testing.allocator);
+    defer env_map.deinit();
+
+    var program = Program(AnchorTestModel).init(std.testing.allocator, std.testing.io, &env_map);
+    defer program.deinit();
+    program.options.inline_bottom_viewport = true;
+    program.context.allocator = program.arena.allocator();
+    program.context.width = 40;
+    program.context.height = 10;
+
+    program.bottom_anchor = true;
+
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try program.renderInlineFrame(&out.writer, "one\ntwo", "");
+
+    try std.testing.expect(std.mem.startsWith(u8, out.written(), "\r\x1b[1A"));
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\x1b[H") == null);
+    try std.testing.expectEqual(false, program.bottom_anchor);
+}
+
+test "invalidate in inline mode repaints every row in place and keeps a pending relayout" {
+    var env_map: std.process.Environ.Map = .init(std.testing.allocator);
+    defer env_map.deinit();
+
+    var program = Program(AnchorTestModel).init(std.testing.allocator, std.testing.io, &env_map);
+    defer program.deinit();
+    program.options.inline_bottom_viewport = true;
+    program.context.allocator = program.arena.allocator();
+    program.context.width = 40;
+    program.context.height = 10;
+
+    var first: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer first.deinit();
+    try program.renderInlineFrame(&first.writer, "one\ntwo", "");
+
+    program.resize_deadline = 42;
+    program.invalidate();
+    try std.testing.expectEqual(@as(?u64, 42), program.resize_deadline);
+    try std.testing.expect(program.needs_repaint);
+
+    var second: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer second.deinit();
+    try program.renderInlineFrame(&second.writer, "one\ntwo", "");
+
+    try std.testing.expect(std.mem.startsWith(u8, second.written(), "\x1b[1A\r"));
+    try std.testing.expect(std.mem.indexOf(u8, second.written(), "one") != null);
+    try std.testing.expect(std.mem.indexOf(u8, second.written(), "two") != null);
+}
+
+test "invalidate outside inline mode keeps the row count and a pending resize" {
+    var env_map: std.process.Environ.Map = .init(std.testing.allocator);
+    defer env_map.deinit();
+
+    var program = Program(AnchorTestModel).init(std.testing.allocator, std.testing.io, &env_map);
+    defer program.deinit();
+    program.options.inline_bottom_viewport = false;
+    program.last_line_count = 3;
+    try program.last_line_widths.append(program.allocator, 5);
+    program.resize_deadline = 42;
+
+    program.invalidate();
+
+    try std.testing.expectEqual(@as(usize, 3), program.last_line_count);
+    try std.testing.expectEqual(@as(?u64, 42), program.resize_deadline);
+    try std.testing.expect(program.needs_repaint);
+}
+
+test "an inline repaint after invalidate rewrites a blank first row" {
+    var env_map: std.process.Environ.Map = .init(std.testing.allocator);
+    defer env_map.deinit();
+
+    var program = Program(AnchorTestModel).init(std.testing.allocator, std.testing.io, &env_map);
+    defer program.deinit();
+    program.options.inline_bottom_viewport = true;
+    program.context.allocator = program.arena.allocator();
+    program.context.width = 40;
+    program.context.height = 10;
+
+    var first: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer first.deinit();
+    try program.renderInlineFrame(&first.writer, "one\ntwo", "");
+
+    program.invalidate();
+
+    var second: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer second.deinit();
+    try program.renderInlineFrame(&second.writer, "\ntwo", "");
+
+    try std.testing.expect(std.mem.startsWith(u8, second.written(), "\x1b[1A\r" ++ ansi.line_clear_right ++ "\r\n"));
+}
+
+test "render_mode full rewrites the unchanged rows that diff skips" {
+    var env_map: std.process.Environ.Map = .init(std.testing.allocator);
+    defer env_map.deinit();
+
+    for ([_]bool{ false, true }) |full| {
+        var program = Program(AnchorTestModel).init(std.testing.allocator, std.testing.io, &env_map);
+        defer program.deinit();
+        program.options.inline_bottom_viewport = true;
+        program.options.render_mode = if (full) .full else .diff;
+        program.context.allocator = program.arena.allocator();
+        program.context.width = 40;
+        program.context.height = 10;
+
+        var first: std.Io.Writer.Allocating = .init(std.testing.allocator);
+        defer first.deinit();
+        try program.renderInlineFrame(&first.writer, "one\ntwo", "");
+
+        var second: std.Io.Writer.Allocating = .init(std.testing.allocator);
+        defer second.deinit();
+        try program.renderInlineFrame(&second.writer, "one\ntwo", "");
+
+        const rewrote_first_row = std.mem.indexOf(u8, second.written(), "one") != null;
+        try std.testing.expectEqual(full, rewrote_first_row);
+    }
+}
+
+test "scrollLiveRegionAway leaves the cursor at the bottom row" {
+    var env_map: std.process.Environ.Map = .init(std.testing.allocator);
+    defer env_map.deinit();
+
+    var program = Program(AnchorTestModel).init(std.testing.allocator, std.testing.io, &env_map);
+    defer program.deinit();
+    program.options.inline_bottom_viewport = true;
+    program.context.allocator = program.arena.allocator();
+    program.context.width = 40;
+    program.context.height = 10;
+
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try program.scrollLiveRegionAway(&out.writer, "");
+
+    try std.testing.expectEqual(@as(usize, 10), std.mem.count(u8, out.written(), "\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\x1b[H") == null);
+    try std.testing.expectEqual(true, program.bottom_anchor);
+}
+
+test "writeClampedLine stops at a wide character that crosses the edge" {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    const used = try Program(AnchorTestModel).writeClampedLine(&out.writer, "123456789漢ab", 10);
+
+    try std.testing.expectEqualStrings("123456789", out.written());
+    try std.testing.expectEqual(@as(usize, 9), used);
+}
+
+test "writeClampedLine still flushes escape sequences past the edge" {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    _ = try Program(AnchorTestModel).writeClampedLine(&out.writer, "123456789漢\x1b[0m", 10);
+
+    try std.testing.expectEqualStrings("123456789\x1b[0m", out.written());
+}
+
+test "reanchorInline drops the stale frame and re-anchors at the bottom" {
+    var env_map: std.process.Environ.Map = .init(std.testing.allocator);
+    defer env_map.deinit();
+
+    var program = Program(AnchorTestModel).init(std.testing.allocator, std.testing.io, &env_map);
+    defer program.deinit();
+    program.context.allocator = program.arena.allocator();
+    program.last_line_count = 7;
+    try program.last_frame.appendSlice(program.allocator, "stale");
+    try program.last_line_widths.append(program.allocator, 5);
+
+    program.reanchorInline();
+
+    try std.testing.expectEqual(true, program.bottom_anchor);
+    try std.testing.expectEqual(@as(usize, 0), program.last_line_count);
+    try std.testing.expectEqual(@as(usize, 0), program.last_frame.items.len);
+    try std.testing.expectEqual(@as(usize, 0), program.last_line_widths.items.len);
+    try std.testing.expectEqual(true, program.needs_repaint);
 }
