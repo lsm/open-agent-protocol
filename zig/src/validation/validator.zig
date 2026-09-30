@@ -204,7 +204,11 @@ test "tolerance leaves a core envelope's own requirements alone" {
 }
 
 fn storagePack(allocator: std.mem.Allocator) ![]const u8 {
-    return std.fs.path.join(allocator, &.{ build_options.repository_root, "fixtures", "packs", "storage" });
+    return fixturePack(allocator, "storage");
+}
+
+fn fixturePack(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
+    return std.fs.path.join(allocator, &.{ build_options.repository_root, "fixtures", "packs", name });
 }
 
 fn admits(allocator: std.mem.Allocator, judge: *Validator, envelope: []const u8) !bool {
@@ -448,6 +452,34 @@ test "a validator frees itself exactly once when a pack cannot be loaded" {
             defer judge.deinit();
             var compiled = try judge.schema();
             defer compiled.deinit();
+        }
+    }.run, .{});
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            const dir = try fixturePack(allocator, "bad-type-duplicate");
+            defer allocator.free(dir);
+            if (Validator.init(allocator, .{ .pack_dirs = &.{dir}, .io = std.testing.io })) |judge| {
+                var loaded = judge;
+                defer loaded.deinit();
+                return error.TestExpectedError;
+            } else |err| switch (err) {
+                error.InvalidPackDescriptor => {},
+                else => return err,
+            }
+        }
+    }.run, .{});
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            const dir = try fixturePack(allocator, "bad-unprefixed-name");
+            defer allocator.free(dir);
+            if (Validator.init(allocator, .{ .pack_dirs = &.{dir}, .io = std.testing.io })) |judge| {
+                var refused = judge;
+                defer refused.deinit();
+                return error.TestExpectedError;
+            } else |err| switch (err) {
+                error.PackLoadRefused => {},
+                else => return err,
+            }
         }
     }.run, .{});
 }
