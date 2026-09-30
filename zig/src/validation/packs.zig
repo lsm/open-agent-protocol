@@ -418,11 +418,7 @@ test "a loaded pack's schemas are registered under keys its own refs resolve" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const dirs = if (comptime std.Io.Dir.path.sep == '/')
-        [_][]const u8{ "staying", "aliased", "cleaned", "nested", "literal" }
-    else
-        [_][]const u8{ "staying", "aliased", "cleaned", "nested" };
-    for (dirs) |name| {
+    for ([_][]const u8{ "staying", "aliased", "cleaned", "nested", "literal" }) |name| {
         try tmp.dir.createDir(std.testing.io, name, .default_dir);
     }
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "staying/note.schema.json", .data =
@@ -461,14 +457,16 @@ test "a loaded pack's schemas are registered under keys its own refs resolve" {
         ,
     });
 
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "literal/back\\slash.schema.json", .data =
-            \\{"$schema": "https://json-schema.org/draft/2020-12/schema", "$defs": {"thing": {"type": "object", "required": ["type", "session_id"], "properties": {"type": {"const": "com.example.literal.thing"}, "session_id": {"type": "string"}}}}}
-        ,
-    });
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "literal/pack.json", .data =
-            \\{"id": "com.example.literal", "version": "1.0.0", "schemas": ["back\\slash.schema.json"], "envelope_types": [{"type": "com.example.literal.thing", "role": "event", "schema": "back\\slash.schema.json#/$defs/thing"}]}
-        ,
-    });
+    if (comptime std.Io.Dir.path.sep == '/') {
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "literal/back\\slash.schema.json", .data =
+                \\{"$schema": "https://json-schema.org/draft/2020-12/schema", "$defs": {"thing": {"type": "object", "required": ["type", "session_id"], "properties": {"type": {"const": "com.example.literal.thing"}, "session_id": {"type": "string"}}}}}
+            ,
+        });
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "literal/pack.json", .data =
+                \\{"id": "com.example.literal", "version": "1.0.0", "schemas": ["back\\slash.schema.json"], "envelope_types": [{"type": "com.example.literal.thing", "role": "event", "schema": "back\\slash.schema.json#/$defs/thing"}]}
+            ,
+        });
+    }
 
     var registry = try jsonschema.Registry.initFromBundled(allocator);
     defer registry.deinit();
