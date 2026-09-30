@@ -794,28 +794,25 @@ test "a backslash is consumed only before a tspecial, which is what Go does" {
 
 test "an empty parameter value is admitted quoted and refused bare, as Go does" {
     const loopback: []const []const u8 = &.{};
-    for ([_][]const u8{
-        "application/json; a=\"\"",
-        "application/json; a=\"\"; b=1",
-    }) |declared| {
-        const raw = try std.fmt.allocPrint(testing.allocator, "POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: {s}\r\nContent-Length: 2\r\n\r\n{{}}", .{declared});
+    const cases = [_]struct { declared: []const u8, refused: bool }{
+        .{ .declared = "application/json; a=\"\"", .refused = false },
+        .{ .declared = "application/json; a=\"\"; b=1", .refused = false },
+        .{ .declared = "application/json; a=; b=1", .refused = true },
+        .{ .declared = "application/json; a=; b=;", .refused = true },
+        .{ .declared = "application/json; a=; b=1; c=2", .refused = true },
+        .{ .declared = "application/json; a=;", .refused = true },
+        .{ .declared = "application/json; a=\"\" b=1", .refused = true },
+    };
+    for (cases) |case| {
+        const raw = try std.fmt.allocPrint(testing.allocator, "POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: {s}\r\nContent-Length: 2\r\n\r\n{{}}", .{case.declared});
         defer testing.allocator.free(raw);
         var request = try requestOver(raw);
         defer request.deinit(testing.allocator);
-        try testing.expectEqual(Answer.not_found, answer(loopback, request));
-    }
-    for ([_][]const u8{
-        "application/json; a=; b=1",
-        "application/json; a=; b=;",
-        "application/json; a=; b=1; c=2",
-        "application/json; a=;",
-        "application/json; a=\"\" b=1",
-    }) |declared| {
-        const raw = try std.fmt.allocPrint(testing.allocator, "POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: {s}\r\nContent-Length: 2\r\n\r\n{{}}", .{declared});
-        defer testing.allocator.free(raw);
-        var request = try requestOver(raw);
-        defer request.deinit(testing.allocator);
-        try testing.expectEqualStrings("unsupported_media_type", answer(loopback, request).refusal.code);
+        if (case.refused) {
+            try testing.expectEqualStrings("unsupported_media_type", answer(loopback, request).refusal.code);
+        } else {
+            try testing.expectEqual(Answer.not_found, answer(loopback, request));
+        }
     }
 }
 
@@ -830,6 +827,11 @@ test "a zero-length body with a wrong media type is not gated, because the gate 
     defer empty.deinit(testing.allocator);
     try testing.expect(!carriesBody(empty));
     try testing.expectEqual(Answer.not_found, answer(loopback, empty));
+
+    var closed = try requestOver("POST /sessions/s/close HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: text/plain\r\nContent-Length: 0\r\n\r\n");
+    defer closed.deinit(testing.allocator);
+    try testing.expect(!carriesBody(closed));
+    try testing.expectEqual(Answer.not_found, answer(loopback, closed));
 }
 
 test "a listing carrying a body with a wrong media type is gated, because the gate reads the head" {

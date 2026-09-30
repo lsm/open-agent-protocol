@@ -1555,47 +1555,25 @@ are "stamped with the revision the lister served it under", and both name
 | **What the Zig port does** | `zig/src/hub/http.zig:367` gates on `carriesBody(request)`, which is `content_length > 0`, and it does so in `answer()`, so it is decided on the head for **every** request. A `POST` with `Content-Length: 0` and `Content-Type: text/plain` passes the gate; a `GET` carrying a body with `text/plain` is refused. |
 | **What Go does** | `servehttp/server.go:747` gates inside `readRequest`, which is called by the four body-reading routes only — `handleOpen` at `:191`, `handleSubmit` at `:321`, `handleResolve` at `:382`, `handleCancel` at `:496` — and the check reads only `r.Header.Get("Content-Type")`, with no reference to length. So a `POST` to `close` (`:643`), which never calls `readRequest`, is not gated at all, and a `POST` with `Content-Length: 0` and `text/plain` **is** refused 415, because length is never consulted. |
 | **The two corners, stated** | **Empty body, wrong type, on a body-reading route.** `POST /adapters/{name}/sessions` — `handleOpen`, one of the four that call `readRequest` — with `Content-Length: 0` and `Content-Type: text/plain`: **Go answers 415**, because its check reads the media type and never the length, and **Zig answers `.not_found`**, because `carriesBody` is false. **Body on a listing.** `GET /adapters` carrying a body with `text/plain`: **Zig answers 415**, decided on the head, and **Go answers the listing**, because no listing route calls `readRequest`. |
-| **A route where the trees agree, which is not a corner** | `POST /sessions/{id}/close` with `Content-Length: 0` and `text/plain` answers the close in **both** trees: Zig because `carriesBody` is false, Go because `handleClose` at `server.go:643` never calls `readRequest` at all. An earlier revision of this row used `close` as the empty-body example and so recorded a divergence that does not exist. The empty-body corner is only real on a route that reads a body, and the four are `handleOpen` `:191`, `handleSubmit` `:321`, `handleResolve` `:382`, `handleCancel` `:496`. |
+| **A route that reads no body, so it is not a corner** | `POST /sessions/{id}/close` with `Content-Length: 0` and `text/plain`. Go **registers the route** (`mux.HandleFunc("POST /sessions/{id}/close", s.handleClose)`, `server.go:80`) and `handleClose` at `server.go:643` never calls `readRequest`, so it answers the close — `204`, per `server_test.go:591`. **Zig dispatches no routes at all**, so it answers `.not_found` (`404 not found`, `not found`), which I measured against a built `oapx hub` over a socket and then pinned in `a zero-length body with a wrong media type is not gated`. An earlier revision of this row claimed the route "answers the close in **both** trees"; that was false for Zig, and the trees agree on **one** thing only — neither refuses it `415`, Zig because `carriesBody` is false and Go because the gate is never reached. The empty-body corner is only real on a route that reads a body, and the four are `handleOpen` `:191`, `handleSubmit` `:321`, `handleResolve` `:382`, `handleCancel` `:496`. |
 | **Why they are not rows here** | Neither tree is wrong against the draft: `:461` pins the status for a wrong `Content-Type` and is silent on the predicate, so both answers are consistent with the text. Deciding which predicate is correct would be **choosing a precedence the draft does not state**, and this table does not make that choice. A draft row naming the predicate — "a request whose method reads a body" or "a request that carries one" — would settle it, and that is a spec change and unaccepted. |
 | **What is recorded instead** | The divergence itself, in both directions and with both call sites, so a reader comparing the trees sees two answers and knows the cause is an unpinned predicate rather than a bug in either. |
 | **What is now pinned, on the Zig side** | Both corners are executable rather than described. `a zero-length body with a wrong media type is not gated, because the gate reads length` sends a `POST /adapters/a/sessions` with `Content-Type: text/plain` at both `Content-Length: 0` and with the header absent, asserts `carriesBody` is false and that the answer is `.not_found` — **Go answers 415 for both.** `a listing carrying a body with a wrong media type is gated, because the gate reads the head` sends a `GET /adapters` with `Content-Length: 4` and `text/plain`, asserts `carriesBody` is true and that the answer is `unsupported_media_type` — Go serves the listing. Changing `carriesBody` from `content_length > 0` to `content_type != null` makes the first fail, so the tests pin the predicate rather than restate it. **Go still has no test for either corner**, which is the same gap D20 records for `type_mismatch`; these tests fix the Zig half and leave the Go half recorded rather than silently equal. |
-| **A third corner, closed rather than recorded** | `declaresJson` used to cut at the first `;` and never look at the
-  parameter section, so `application/json; charset` — a parameter with no `=` — was admitted, while Go's
-  `mime.ParseMediaType` errors on it and the gate answers 415. **The Zig gate now validates the parameter
-  section.** The authority it is aligned to is **Go's `mime.ParseMediaType`, not the bare grammar of
-  RFC 9110 §5.6.6** — the two are not the same, and citing the grammar would misdescribe the result. Go's
-  parser **admits optional whitespace around `=`** and **quoted-pairs**, which the bare grammar does not.
-  The test, `a parameter list that Go refuses is refused here too, and one it admits is admitted`, pins
-  **thirteen refused and twenty admitted** spellings, each **executed against Go 1.27's parser and
-  matched against what it answered**. Duplicate names compare case-insensitively and values compare
-  **after unescaping quoted-pairs**, because a raw slice comparison diverges from Go on exactly those
-  spellings. **Go still has no test for any of these** — the parity is established by executing its parser,
-  not by a Go test, which is the same gap D20 records for `type_mismatch`. |
-| **Storage, and the bound that replaced two bad ones** | The duplicate check compares **decoded** values, so each
-  parameter is appended to one store as two big-endian u16 lengths, the name, and the decoded value. The
-  store is `2 * max_header_bytes` — 32 KiB — which is the only bound there is, and it is the header bound
-  the draft already states. **An earlier revision imposed two refusals of its own: a 64-parameter cap and a
-  256-byte value limit.** Both were mine, neither is in the draft, and both refused requests Go accepts, so
-  both are gone. The 256-byte one existed only because the buffer was 256 bytes and the bare-token branch
-  copied into it unchecked, so a 257-character token indexed past the end — a **panic in the daemon's request
-  path**, which is an abort and every session with it. Sizing the store from the header removes the overflow
-  *and* the refusal at the same time, rather than trading one for the other. `sixty-five parameters and a long
-  value are admitted, because the header bound is the limit` pins 64, 65 and 200 parameters and a 2048-character
-  value, each **executed against Go 1.27 first**. |
+| **A third corner, closed rather than recorded** | `declaresJson` used to cut at the first `;`, so `application/json; charset` — a parameter with no `=` — was admitted while Go's `mime.ParseMediaType` errors on it and the gate answers 415. **The Zig gate now validates the parameter section**, aligned to **Go's `mime.ParseMediaType`, not the bare grammar of RFC 9110 §5.6.6** — the two are not the same, and citing the grammar would misdescribe the result, since Go's parser **admits optional whitespace around `=`** and **quoted-pairs**. The test, `a parameter list that Go refuses is refused here too, and one it admits is admitted`, pins **thirteen refused and twenty admitted** spellings, each **executed against Go 1.27's parser and matched against what it answered**. Duplicate names compare case-insensitively and values **after unescaping quoted-pairs**, because a raw slice comparison diverges from Go on exactly those spellings. **Go still has no test for any of these**, the same gap D20 records for `type_mismatch`. |
+| **Storage, and the bound that replaced two bad ones** | The duplicate check compares **decoded** values, so each parameter is appended to one store as two big-endian u16 lengths, the name, and the decoded value. The store is `2 * max_header_bytes` — 32 KiB — which is the only bound there is, and it is the header bound the draft already states. **An earlier revision imposed two refusals of its own, a 64-parameter cap and a 256-byte value limit.** Both were mine, neither is in the draft, and both refused requests Go accepts, so both are gone. The 256-byte one existed only because the buffer was 256 bytes and the bare-token branch copied into it unchecked, so a 257-character token indexed past the end — a **panic in the daemon's request path**, an abort and every session with it. Sizing the store from the header removes the overflow *and* the refusal at once. `sixty-five parameters and a long value are admitted, because the header bound is the limit` pins 64, 65 and 200 parameters and a 2048-character value, each **executed against Go 1.27 first**. |
 | **A backslash is an escape only before a tspecial** | The decoder is aligned to `mime/mediatype.go:304-312`, which
   consumes a backslash **only when the byte it precedes is a tspecial** — `( ) < > @ , ; : \ " / [ ] ? =` —
-  and deliberately preserves a backslash before a letter or digit, so an MSIE path survives a round trip. Two
-  earlier attempts got this wrong in opposite directions: one dropped every escaped byte, the next consumed
-  every backslash pair. **Both make values Go treats as different compare equal**, which admits a duplicate the
-  draft-facing gate should refuse, and the second is the one an MSIE path hits.
-  `a backslash is consumed only before a tspecial, which is what Go does` pins **eleven header spellings,
-  two admitted and nine refused**, each reproduced against Go 1.27 and matched against what it answered. The
-  bytes are **runtime header bytes**, not Zig source. Admitted: `a="C:\\path"; a="C:\\path"` and
-  `a="x\\qy"; a="x\\qy"`, the same spelling on both sides. Refused: those two against a shorter value
+  and deliberately preserves one before a letter or digit, so an MSIE path survives a round trip. Two earlier
+  attempts got this wrong in opposite directions: one dropped every escaped byte, the next consumed every
+  backslash pair, and **both make values Go treats as different compare equal**, admitting a duplicate the
+  draft-facing gate should refuse. `a backslash is consumed only before a tspecial, which is what Go does` pins
+  **eleven header spellings, two admitted and nine refused**, each reproduced against Go 1.27 and matched
+  against what it answered; the bytes are **runtime header bytes**, not Zig source. Admitted:
+  `a="C:\\path"; a="C:\\path"` and `a="x\\qy"; a="x\\qy"`. Refused: those two against a shorter value
   (`a="C:path"`, `a="xqy"`), a second literal backslash (`a="C:\\path\\x"; a=C:pathx`), a literal one before a
   digit or space (`a="x\\1"; a="x1"`, `a="x\\ "; a="x "`), a doubled against a single one quoted or bare
-  (`a="x\\\\"; a="x\\"`, `a="x\\\""; a="x\""`, `a="x\\\""; a=x\"`), and `a="a\\;b=c"; a="a;b=c"`, where
-  the doubled backslash leaves a literal one after decoding. **Both mutations fail it:** consuming every pair
+  (`a="x\\\\"; a="x\\"`, `a="x\\\""; a="x\""`, `a="x\\\""; a=x\"`), and `a="a\\;b=c"; a="a;b=c"`, where the
+  doubled backslash leaves a literal one after decoding. **Both mutations fail it:** consuming every pair
   regardless of `isTspecial`, and never consuming one. |
 
 ### D20 — `type_mismatch` is answered by no test in either tree
