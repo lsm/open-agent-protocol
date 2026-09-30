@@ -407,86 +407,20 @@ const StdioProtocolLoop = struct {
 
         self.agent_server.updateSessionModel(pending.session_id, prepared.model.id) catch {};
 
-        const context = try self.allocator.create(agent_loop.AgentContext);
-        var context_owned_by_run = false;
-        errdefer if (!context_owned_by_run) self.allocator.destroy(context);
-        context.* = agent_loop.AgentContext.init(self.allocator);
-        errdefer if (!context_owned_by_run) context.deinit();
-        context.system_prompt = ai_types.OwnedSlice(u8).initOwned(prepared.system_prompt);
-        prepared.system_prompt = &.{};
-        context.tools = prepared.tools;
+        const protocol_client = if (self.oap_provider_bridge) |*provider_bridge|
+            provider_bridge.protocolClient()
+        else
+            (&self.provider_bridge).protocolClient();
 
-        const cancel_flag = try self.allocator.create(std.atomic.Value(bool));
-        var cancel_owned_by_run = false;
-        errdefer if (!cancel_owned_by_run) self.allocator.destroy(cancel_flag);
-        cancel_flag.* = std.atomic.Value(bool).init(false);
-
-        const disconnect_failed = try self.allocator.create(std.atomic.Value(bool));
-        var disconnect_owned_by_run = false;
-        errdefer if (!disconnect_owned_by_run) self.allocator.destroy(disconnect_failed);
-        disconnect_failed.* = std.atomic.Value(bool).init(false);
-
-        const tool_executor = try self.allocator.create(StdioAgentToolExecutor);
-        var tool_executor_owned_by_run = false;
-        errdefer if (!tool_executor_owned_by_run) self.allocator.destroy(tool_executor);
-        tool_executor.* = .{
-            .bridge = &self.tool_bridge,
-            .session_id = pending.session_id,
-            .generation = generation,
-            .disconnect_failed = disconnect_failed,
-        };
-
-        const session_id_text = try AgentProtocolTypes.sessionIdToString(pending.session_id, self.allocator);
-        defer self.allocator.free(session_id_text);
-
-        const config = agent_loop.AgentLoopConfig{
-            .model = prepared.model,
-            .protocol = if (self.oap_provider_bridge) |*provider_bridge|
-                provider_bridge.protocolClient()
-            else
-                (&self.provider_bridge).protocolClient(),
-            .tools = prepared.tools,
-            .execute_tool_via_protocol_fn = executeStdioToolViaAgentProtocol,
-            .execute_tool_via_protocol_ctx = tool_executor,
-            .temperature = prepared.options.temperature,
-            .max_tokens = prepared.options.max_tokens,
-            .max_iterations = prepared.options.max_iterations,
-            .thinking_level = prepared.options.thinking_level,
-            .session_id = session_id_text,
-            .api_key = prepared.options.api_key,
-            .cancel_token = .{ .cancelled = cancel_flag },
-        };
-
-        const stream = try agent_loop.agentLoop(self.allocator, prepared.prompts, context, config);
-        var stream_owned_by_run = false;
-        errdefer if (!stream_owned_by_run) {
-            _ = stream.deinitAndDestroy();
-        };
-
-        var run = ActiveAgentRun{
-            .session_id = pending.session_id,
-            .generation = generation,
-            .stream = stream,
-            .context = context,
-            .model = prepared.model,
-            .prompts = prepared.prompts,
-            .tools = prepared.tools,
-            .cancel_flag = cancel_flag,
-            .disconnect_failed = disconnect_failed,
-            .tool_executor = tool_executor,
-        };
-        prepared.options.deinit(self.allocator);
-        context_owned_by_run = true;
-        cancel_owned_by_run = true;
-        disconnect_owned_by_run = true;
-        tool_executor_owned_by_run = true;
-        stream_owned_by_run = true;
-        prepared.disarm();
-
-        var appended = false;
-        errdefer if (!appended) run.deinit(self.allocator);
-        try self.active_agent_runs.append(self.allocator, run);
-        appended = true;
+        try AgentRun.admit(
+            self.allocator,
+            &self.active_agent_runs,
+            &self.tool_bridge,
+            &prepared,
+            pending.session_id,
+            generation,
+            protocol_client,
+        );
     }
 
     fn pumpAgentRuns(self: *Self) !usize {
