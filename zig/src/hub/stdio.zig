@@ -272,6 +272,7 @@ pub const refusal_statuses = [_]struct { code: []const u8, status: []const u8 }{
     .{ .code = "request_cancelled", .status = "400 Bad Request" },
     .{ .code = "request_too_large", .status = "413 Payload Too Large" },
     .{ .code = "run_not_found", .status = "404 Not Found" },
+    .{ .code = "invalid_payload", .status = "400 Bad Request" },
     .{ .code = "invalid_submission", .status = "400 Bad Request" },
     .{ .code = "invalid_cursor", .status = "400 Bad Request" },
     .{ .code = "replay_cursor_future", .status = "400 Bad Request" },
@@ -2383,6 +2384,30 @@ test "the refusals the open gate and the payload read name" {
     }
 }
 
+test "every refusal the transport emits has a status, or is one the draft leaves undefined" {
+    // derived, not remembered: the codes the refusals in this file name, and
+    // the three the draft does not give a status to
+    const emitted = [_][]const u8{
+        "busy", // G13: no wire code exists for it yet
+        "unknown_op",
+    };
+    for (emitted) |code| {
+        try testing.expect(statusForRefusal(code) == null);
+    }
+    const named = [_][]const u8{
+        "capability_degraded", "internal",             "invalid_cursor",     "invalid_payload",     "invalid_request",
+        "invalid_submission",  "malformed_json",       "model_not_found",    "no_run_to_resume",    "open_failed",
+        "probe_failed",        "replay_cursor_future", "request_cancelled",  "request_too_large",   "resolution_rejected",
+        "run_active",          "run_not_found",        "run_terminal",       "schema_invalid",      "scope_mismatch",
+        "session_closed",      "session_exists",       "stale_capabilities", "state_failed",        "tools_failed",
+        "type_mismatch",       "unknown_adapter",      "unknown_session",    "unsupported_feature",
+    };
+    for (named) |code| {
+        try testing.expect(statusForRefusal(code) != null);
+    }
+    try testing.expectEqual(@as(usize, 29), refusal_statuses.len);
+}
+
 test "an unnamed refusal code carries no status, so the wire rule can refuse it" {
     try testing.expect(statusForRefusal("method_not_allowed") == null);
     try testing.expect(statusForRefusal("invented_later") == null);
@@ -2414,6 +2439,7 @@ test "every code the transport can answer carries the status the draft pins" {
         .{ .code = "run_not_found", .status = "404 Not Found" },
         .{ .code = "invalid_submission", .status = "400 Bad Request" },
         .{ .code = "invalid_cursor", .status = "400 Bad Request" },
+        .{ .code = "invalid_payload", .status = "400 Bad Request" },
         .{ .code = "replay_cursor_future", .status = "400 Bad Request" },
         .{ .code = "resolution_rejected", .status = "409 Conflict" },
         .{ .code = "run_terminal", .status = "409 Conflict" },
@@ -2422,8 +2448,8 @@ test "every code the transport can answer carries the status the draft pins" {
     for (named) |entry| {
         try testing.expectEqualStrings(entry.status, statusForRefusal(entry.code).?);
     }
-    try testing.expectEqual(@as(usize, 28), refusal_statuses.len);
-    try testing.expectEqual(@as(usize, 28), named.len);
+    try testing.expectEqual(@as(usize, 29), refusal_statuses.len);
+    try testing.expectEqual(@as(usize, 29), named.len);
 }
 
 test "refusal details render as the object the envelope carries" {
