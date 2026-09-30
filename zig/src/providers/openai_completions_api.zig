@@ -3515,16 +3515,11 @@ test "the producer does not publish done while its own cleanup is unfinished" {
         defer ai_types.deinitAssistantMessageEvent(allocator, &polled);
     }
 
-    // The producer's final cleanup is held from the start, so done cannot be
-    // published while that cleanup is unfinished.
     try std.testing.expect(!stream.waitForThread(250));
     const frees_while_held = cleanup_frees.load(.acquire);
 
     releaseCleanupGate();
     try std.testing.expect(stream.waitForThread(5_000));
 
-    // Everything the producer still had to release arrived after the release,
-    // which is the point: under the old order these frees happened before the
-    // wait was even entered, so the wait could not have observed them.
     try std.testing.expect(cleanup_frees.load(.acquire) >= frees_while_held);
 }
