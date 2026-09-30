@@ -608,9 +608,8 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
 
 - **the 1 MiB total — pinned by removal at this head.** `a drain stops at its byte cap and reports
   what it consumed` carries its own `wanted_cap = 1024 * 1024`, asserts the production constant
-  equals it, and uses the literal for the declared length and the expected count, so constant and
-  expectation cannot move together; raising `drain_total_cap_bytes` to 1 GiB fails it with `expected
-  1048576, found 1073741824` (`7/9` steps, `EXIT=1`). The real-socket test separately pins that a cap
+  equals it, and uses the literal throughout, so constant and expectation cannot move together;
+  raising `drain_total_cap_bytes` to 1 GiB fails it with `expected 1048576, found 1073741824`. The real-socket test separately pins that a cap
   is *observable from outside the process*, asserting a lower bound on transferred bytes plus a
   complete 403 — never an upper one
 - **the 2500 ms elapsed budget, and that it is elapsed rather than uptime** — `a drain reads on a
