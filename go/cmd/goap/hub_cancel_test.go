@@ -18,6 +18,7 @@ func TestHubAddrFinishesTheRefusalAndStopsTheBodyWhenItsSignalArrives(t *testing
 	defer cancel()
 
 	const declared = 8 << 20
+	const drainTotalCapBytes = 1 << 20
 	conn, err := net.DialTimeout("tcp", address, 10*time.Second)
 	if err != nil {
 		stop()
@@ -33,6 +34,7 @@ func TestHubAddrFinishesTheRefusalAndStopsTheBodyWhenItsSignalArrives(t *testing
 	}
 
 	var written atomic.Int64
+	var blocks atomic.Int64
 	writeDone := make(chan struct{})
 	joined := false
 	join := func() {
@@ -64,6 +66,10 @@ func TestHubAddrFinishesTheRefusalAndStopsTheBodyWhenItsSignalArrives(t *testing
 			if werr != nil {
 				return
 			}
+			blocks.Add(1)
+			if blocks.Load()%8 == 0 {
+				time.Sleep(2 * time.Millisecond)
+			}
 		}
 	}()
 
@@ -93,6 +99,29 @@ func TestHubAddrFinishesTheRefusalAndStopsTheBodyWhenItsSignalArrives(t *testing
 		stop()
 		t.Fatalf("the refusal was read before any body byte moved, so nothing was in flight")
 	}
+	if beforeSignal >= int64(declared) {
+		stop()
+		t.Fatalf("the refusal was read only after all %d declared bytes had been written, so the daemon answered after the body rather than before it", declared)
+	}
+	if beforeSignal > drainTotalCapBytes/2 {
+		stop()
+		t.Fatalf("the writer had pushed %d body bytes when the refusal was read, more than half the %d drain cap, so the daemon had already been reading the body it refused",
+			beforeSignal, drainTotalCapBytes)
+	}
+	writerRunning := func() bool {
+		select {
+		case <-writeDone:
+			return false
+		default:
+			return true
+		}
+	}
+	if !writerRunning() {
+		stop()
+		t.Fatalf("the writer had already finished when the refusal was read, so the body arrived before the answer")
+	}
+	stop()
+	_ = writerRunning
 	if answer.ContentLength <= 0 || int64(len(body)) != answer.ContentLength {
 		stop()
 		t.Fatalf("the body was %d bytes and Content-Length said %d", len(body), answer.ContentLength)
@@ -111,7 +140,8 @@ func TestHubAddrFinishesTheRefusalAndStopsTheBodyWhenItsSignalArrives(t *testing
 	}
 	if envelope.Type != "error.response" || envelope.Payload.Error.Code != "unrecognized_host" {
 		stop()
-		t.Fatalf("the refusal was %s / %s, want error.response / unrecognized_host", envelope.Type, envelope.Payload.Error.Code)
+		t.Fatalf("the refusal was %s / %s, want error.response / unrecognized_host", envelope.Type,
+			envelope.Payload.Error.Code)
 	}
 
 	stop()
@@ -125,10 +155,6 @@ func TestHubAddrFinishesTheRefusalAndStopsTheBodyWhenItsSignalArrives(t *testing
 	if final >= int64(declared) {
 		t.Fatalf("all %d declared bytes were transferred, so nothing was left in flight to cancel", declared)
 	}
-	if final <= beforeSignal {
-		t.Fatalf("the writer moved no further bytes after the signal (%d before, %d after), so the transfer was not cut short by anything",
-			beforeSignal, final)
-	}
-	t.Logf("refusal read whole after %d of %d bytes were in flight; the daemon stopped the rest at %d, leaving %d never written; %d status, %d body bytes",
+	t.Logf("the refusal was read whole while %d of the %d declared body bytes were still unwritten; after the signal the writer reached %d and stopped, leaving %d never written; %d status, %d body bytes. These are client write counts: they bound when the answer arrived and when the writer stopped, not how many bytes the daemon read.",
 		beforeSignal, declared, final, int64(declared)-final, answer.StatusCode, len(body))
 }
