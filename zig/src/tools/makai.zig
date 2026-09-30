@@ -1966,7 +1966,7 @@ fn runConformance(
         .args = endpoint_args.items,
         .environment = environment.items,
         .session_id = session,
-        .line_deadline_ms = line_deadline_ms,
+        .probe_budget_ms = line_deadline_ms,
         .exit_grace_ms = exit_grace_ms,
     }) catch |err| {
         try compat.stdio.writeAll(stderr, try std.fmt.allocPrint(allocator, "conformance: {s}\n", .{@errorName(err)}));
@@ -2319,6 +2319,8 @@ fn printUsage(file: std.Io.File) !void {
         \\  oapx validate [--format human|json] [--mode strict|tolerant] <trace.json>...
         \\  oapx conformance --command CMD [--session <id>] [--timeout-ms <n>]
         \\                        [--exit-grace-ms <n>] [--env NAME]... [--format text|json]
+        \\                   --timeout-ms bounds one probe: the whole correlation,
+        \\                   not each line, so unrelated frames cannot extend it.
         \\  oapx auth providers [--json]
         \\  oapx auth login --provider <id> [--json]
         \\  oapx --version

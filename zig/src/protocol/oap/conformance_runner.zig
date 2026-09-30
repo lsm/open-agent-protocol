@@ -52,7 +52,6 @@ pub const Options = struct {
     args: []const []const u8 = &.{},
     environment: []const []const u8 = &.{},
     session_id: []const u8 = "conformance",
-    line_deadline_ms: i64 = default_line_deadline_ms,
     probe_budget_ms: i64 = default_probe_budget_ms,
     exit_grace_ms: i64 = default_exit_grace_ms,
 };
@@ -886,6 +885,7 @@ const Runner = struct {
 
     fn drain(self: *Runner, deadline: Deadline) !void {
         while (true) {
+            if (deadline.expired()) return;
             const frame = (self.client.next(deadline.timeout()) catch |err| {
                 if (err == endpoint_client.Error.EndpointClosed) return;
                 try self.fail("frames the endpoint writes after the run completes decode", @errorName(err));
@@ -1068,7 +1068,7 @@ test "events that arrive ahead of the answer are read in the order they were wri
     var report = try run(std.testing.allocator, .{
         .command = "/bin/sh",
         .args = &.{ "-c", script },
-        .line_deadline_ms = 5000,
+        .probe_budget_ms = 5000,
     });
     defer report.deinit();
 
@@ -1106,7 +1106,7 @@ fn runAllocationProbe(allocator: std.mem.Allocator) !void {
     var report = try run(allocator, .{
         .command = "/bin/sh",
         .args = &.{ "-c", fixture_script },
-        .line_deadline_ms = 5000,
+        .probe_budget_ms = 5000,
     });
     defer report.deinit();
     const gate = report.verdict("a permission gate is resolvable from the stream") orelse return error.ProbeReachedNoGate;
@@ -1122,7 +1122,7 @@ fn refusalAllocationProbe(allocator: std.mem.Allocator) !void {
     var report = try run(allocator, .{
         .command = "/bin/sh",
         .args = &.{ "-c", refusing_script },
-        .line_deadline_ms = 5000,
+        .probe_budget_ms = 5000,
     });
     defer report.deinit();
     const refused = report.verdict("protocol.initialize.request is answered") orelse return error.ProbeReachedNoRefusal;
@@ -1148,7 +1148,7 @@ test "a frame the endpoint writes after the terminal event is recorded, not swal
     var report = try run(std.testing.allocator, .{
         .command = "/bin/sh",
         .args = &.{ "-c", script },
-        .line_deadline_ms = 5000,
+        .probe_budget_ms = 5000,
     });
     defer report.deinit();
 
@@ -1162,7 +1162,7 @@ test "an endpoint that exits non-zero is judged, and its detail is freed with it
     var report = try run(std.testing.allocator, .{
         .command = "/bin/sh",
         .args = &.{ "-c", "while read -r line; do :; done; exit 3" },
-        .line_deadline_ms = 5000,
+        .probe_budget_ms = 5000,
     });
     defer report.deinit();
 
@@ -1185,7 +1185,7 @@ test "a line with neither protocol nor control is judged, not skipped" {
     var report = try run(std.testing.allocator, .{
         .command = "/bin/sh",
         .args = &.{ "-c", script },
-        .line_deadline_ms = 5000,
+        .probe_budget_ms = 5000,
     });
     defer report.deinit();
 
@@ -1209,7 +1209,7 @@ test "a control frame is answered, never judged" {
     var report = try run(std.testing.allocator, .{
         .command = "/bin/sh",
         .args = &.{ "-c", script },
-        .line_deadline_ms = 5000,
+        .probe_budget_ms = 5000,
     });
     defer report.deinit();
 
@@ -1273,7 +1273,7 @@ test "an endpoint declaring run.cancel supported may answer the call" {
     var report = try run(std.testing.allocator, .{
         .command = "/bin/sh",
         .args = &.{ "-c", cancel_script },
-        .line_deadline_ms = 5000,
+        .probe_budget_ms = 5000,
     });
     defer report.deinit();
 
@@ -1287,7 +1287,7 @@ test "an endpoint declaring run.cancel supported must not answer it with another
     var report = try run(std.testing.allocator, .{
         .command = "/bin/sh",
         .args = &.{ "-c", cancelling_script },
-        .line_deadline_ms = 5000,
+        .probe_budget_ms = 5000,
     });
     defer report.deinit();
 
@@ -1320,7 +1320,7 @@ test "a revision this endpoint never issued is judged, not waved through" {
     var report = try run(std.testing.allocator, .{
         .command = "/bin/sh",
         .args = &.{ "-c", stale_refusing_script },
-        .line_deadline_ms = 5000,
+        .probe_budget_ms = 5000,
     });
     defer report.deinit();
 
@@ -1353,7 +1353,7 @@ test "a recovery failure is reported under the check it belongs to" {
     var report = try run(std.testing.allocator, .{
         .command = "/bin/sh",
         .args = &.{ "-c", script },
-        .line_deadline_ms = 2000,
+        .probe_budget_ms = 2000,
     });
     defer report.deinit();
 
@@ -1372,7 +1372,7 @@ test "a replay is accepted and its events reach the runner" {
     var report = try run(std.testing.allocator, .{
         .command = "/bin/sh",
         .args = &.{ "-c", fixture_script },
-        .line_deadline_ms = 5000,
+        .probe_budget_ms = 5000,
     });
     defer report.deinit();
 
@@ -1481,7 +1481,7 @@ test "a replay that drops an envelope fails the check, through the public runner
     var report = try run(std.testing.allocator, .{
         .command = "/bin/sh",
         .args = &.{ "-c", script },
-        .line_deadline_ms = 5000,
+        .probe_budget_ms = 5000,
     });
     defer report.deinit();
 
@@ -1501,7 +1501,7 @@ test "an endpoint that refuses the replay control skips the check, through the p
     var report = try run(std.testing.allocator, .{
         .command = "/bin/sh",
         .args = &.{ "-c", script },
-        .line_deadline_ms = 5000,
+        .probe_budget_ms = 5000,
     });
     defer report.deinit();
 
@@ -1525,7 +1525,7 @@ test "a run whose events name no run is reported by the replay check, through th
     var report = try run(std.testing.allocator, .{
         .command = "/bin/sh",
         .args = &.{ "-c", run_events },
-        .line_deadline_ms = 5000,
+        .probe_budget_ms = 5000,
     });
     defer report.deinit();
 
@@ -1556,9 +1556,10 @@ test "a child that writes unrelated frames forever cannot outlive the probe budg
         .probe_budget_ms = 1500,
     });
     defer report.deinit();
-    const elapsed = std.Io.Timestamp.now(io, .awake).durationTo(before);
+    const elapsed = before.durationTo(std.Io.Timestamp.now(io, .awake));
     const spent = @as(i64, @intCast(@divTrunc(elapsed.toNanoseconds(), std.time.ns_per_ms)));
 
+    try std.testing.expect(spent >= 0);
     try std.testing.expect(spent < 20_000);
     try std.testing.expect(!report.passed());
     const replay = report.verdict("a cursor replay is accepted and re-delivers the run") orelse return error.CheckMissing;
@@ -1595,9 +1596,10 @@ test "an accepted replay that never terminates is judged inside the budget" {
         .exit_grace_ms = 200,
     });
     defer report.deinit();
-    const elapsed = std.Io.Timestamp.now(io, .awake).durationTo(before);
+    const elapsed = before.durationTo(std.Io.Timestamp.now(io, .awake));
     const spent = @as(i64, @intCast(@divTrunc(elapsed.toNanoseconds(), std.time.ns_per_ms)));
 
+    try std.testing.expect(spent >= 0);
     try std.testing.expect(spent < 20_000);
     try std.testing.expect(!report.passed());
     const replay = report.verdict("a cursor replay is accepted and re-delivers the run") orelse return error.CheckMissing;
@@ -1615,7 +1617,7 @@ test "a replay that renames an envelope fails the check, through the public runn
     var report = try run(std.testing.allocator, .{
         .command = "/bin/sh",
         .args = &.{ "-c", script },
-        .line_deadline_ms = 5000,
+        .probe_budget_ms = 5000,
     });
     defer report.deinit();
 
@@ -1626,4 +1628,40 @@ test "a replay that renames an envelope fails the check, through the public runn
         replay.detail,
     );
 
+}
+
+const spam_after_eof_script =
+    \\while read -r line; do
+    \\  case "$line" in
+    \\  *protocol.initialize.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"protocol.initialize.response","id":"a1","in_reply_to":"conformance-request-1","payload":{"protocol_version":"0.1","profile":"open-agent-protocol.agent-control-core","endpoint":{"id":"fake"}}}' ;;
+    \\  *capabilities.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"a2","in_reply_to":"conformance-request-2","capability_revision":"rev-1","payload":{"endpoint":{"id":"fake"},"features":{}}}' ;;
+    \\  *session.open.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"a3","in_reply_to":"conformance-request-3","payload":{"session_id":"conformance","status":"idle"}}' ;;
+    \\  *session.message.submit.request*) printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"e1","sequence":1,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","status":"running"}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.completed","id":"e2","sequence":2,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","stop_reason":"end_turn","final_response":{"role":"assistant","content":"done"}}}' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"a4","in_reply_to":"conformance-request-4","payload":{"session_id":"conformance","accepted":true,"submission_id":"s1","requested_delivery":"auto","effective_delivery":"start","admission":"started","run_id":"run-1"}}' ;;
+    \\  esac
+    \\done
+    \\while true; do printf '%s\n' '{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"content.delta","id":"spam","sequence":2,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","message_id":"m","part":{"type":"text","text":"x"}}}'; done
+;
+
+test "a child that spams well-formed frames after stdin EOF is reaped inside the budget" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const io = std.testing.io;
+    const before = std.Io.Timestamp.now(io, .awake);
+    var report = try run(std.testing.allocator, .{
+        .command = "/bin/sh",
+        .args = &.{ "-c", spam_after_eof_script },
+        .probe_budget_ms = 1500,
+        .exit_grace_ms = 500,
+    });
+    defer report.deinit();
+    const elapsed = before.durationTo(std.Io.Timestamp.now(io, .awake));
+    const spent = @as(i64, @intCast(@divTrunc(elapsed.toNanoseconds(), std.time.ns_per_ms)));
+
+    try std.testing.expect(spent >= 0);
+    try std.testing.expect(spent < 20_000);
+    const exiting = report.verdict("endpoint exits 0 after stdin EOF") orelse return error.CheckMissing;
+    try std.testing.expect(!exiting.passed);
+    try std.testing.expectEqualStrings(
+        "the endpoint was still running once the exit grace elapsed, so it was killed",
+        exiting.detail,
+    );
 }
