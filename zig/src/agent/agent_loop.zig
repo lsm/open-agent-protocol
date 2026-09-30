@@ -505,16 +505,26 @@ fn finalizeToolExecution(
     }
 
     const returned_usage = measureToolResult(owned);
-    const result_json = owned.getDetailsJson() orelse "null";
 
     const content_json = try serializeToolResultContent(allocator, owned.content.slice());
     defer allocator.free(content_json);
     const args_bytes: u64 = @intCast(args_json.len);
 
+    var tool_result_msg = try createToolResultMessage(allocator, tool_call, owned, is_error);
+    var unreached = tool_result_msg;
+    errdefer unreached.deinit(allocator);
+    owned = AgentToolResult{};
+    try results.append(allocator, tool_result_msg);
+    tool_result_msg = undefined;
+
+    const appended = &results.items[results.items.len - 1];
+    const event_result_json = appended.getDetailsJson() orelse "null";
+    const event_artifacts = appended.artifacts.slice();
+
     try pushAgentEvent(event_stream, .{ .tool_execution_end = .{
         .tool_call_id = tool_call.id,
         .tool_name = tool_call.name,
-        .result_json = result_json,
+        .result_json = event_result_json,
         .content_json = content_json,
         .is_error = is_error,
         .args_bytes = args_bytes,
@@ -526,15 +536,8 @@ fn finalizeToolExecution(
         .returned_total_bytes = returned_usage.total_bytes + args_bytes,
         .estimated_returned_tokens = returned_usage.estimated_tokens + estimateTextTokens(args_json.len),
         .artifact_count = returned_usage.artifact_count,
-        .artifacts = owned.artifacts.slice(),
+        .artifacts = event_artifacts,
     } });
-
-    var tool_result_msg = try createToolResultMessage(allocator, tool_call, owned, is_error);
-    var unreached = tool_result_msg;
-    errdefer unreached.deinit(allocator);
-    owned = AgentToolResult{};
-    try results.append(allocator, tool_result_msg);
-    tool_result_msg = undefined;
 }
 
 fn runLegacyApproval(tool: AgentTool, approval_request: types.ToolApprovalRequest, allocator: std.mem.Allocator) types.ToolApprovalDecision {
@@ -2514,6 +2517,7 @@ const HandoffCase = struct {
         const events = &events_storage;
         events.* = AgentEventStream.init(allocator);
         defer events.deinit();
+        defer drainEvents(events, allocator);
 
         self.let_pass = !middleware_fails;
         const result = executeToolCalls(
@@ -2537,6 +2541,13 @@ const HandoffCase = struct {
         }
     }
 };
+
+fn drainEvents(events: *AgentEventStream, allocator: std.mem.Allocator) void {
+    while (events.poll()) |event| {
+        var drained = event;
+        drained.deinit(allocator);
+    }
+}
 
 fn failingMiddleware(
     ctx: ?*anyopaque,
