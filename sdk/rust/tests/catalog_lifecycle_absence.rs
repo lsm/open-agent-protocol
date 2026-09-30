@@ -136,17 +136,48 @@ async fn the_legacy_list_refuses_an_invalid_stated_lifecycle() {
     }
 }
 
-#[tokio::test]
-async fn a_model_that_did_not_state_a_lifecycle_is_not_filtered_as_deprecated() {
-    let client = legacy_client("absent").await;
-    let listed = client
+async fn oap_list(shape: &str, include_deprecated: Option<bool>) -> Vec<oap_sdk::ModelDescriptor> {
+    let client = oap_client(shape).await;
+    client
         .models()
-        .list(ListModelsRequest::default())
+        .list(ListModelsRequest {
+            include_deprecated,
+            ..ListModelsRequest::default()
+        })
         .await
-        .expect("the list answers");
+        .expect("the OAP path lists")
+        .models
+}
+
+#[tokio::test]
+async fn the_oap_filter_drops_only_a_stated_deprecated_lifecycle() {
+    for retained in [
+        oap_list("absent-lifecycle", None).await,
+        oap_list("absent-lifecycle", Some(false)).await,
+        oap_list("stable", None).await,
+        oap_list("preview-lifecycle", None).await,
+    ] {
+        assert!(
+            !retained.is_empty(),
+            "a model that stated stable, preview or nothing must stay in the listing"
+        );
+    }
+
     assert!(
-        !listed.models.is_empty(),
-        "an unknown lifecycle must not silently drop the model from the listing"
+        oap_list("deprecated-lifecycle", None).await.is_empty(),
+        "a stated deprecated lifecycle is dropped by default"
+    );
+    assert!(
+        oap_list("deprecated-lifecycle", Some(false))
+            .await
+            .is_empty(),
+        "and dropped again when the request says not to include them"
+    );
+    assert!(
+        !oap_list("deprecated-lifecycle", Some(true))
+            .await
+            .is_empty(),
+        "and kept when the request asks for deprecated models"
     );
 }
 

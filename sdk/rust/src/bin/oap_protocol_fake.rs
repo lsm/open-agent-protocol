@@ -164,6 +164,8 @@ fn main() {
                     }
                     "null-lifecycle" => entry["lifecycle"] = Value::Null,
                     "invented-lifecycle" => entry["lifecycle"] = json!("retired"),
+                    "preview-lifecycle" => entry["lifecycle"] = json!("preview"),
+                    "deprecated-lifecycle" => entry["lifecycle"] = json!("deprecated"),
                     _ => entry["lifecycle"] = json!("stable"),
                 }
                 emit(
