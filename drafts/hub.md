@@ -619,22 +619,16 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   the comparison, not the guard's presence:** neutralising the guard is green, so a deleted time bound
   would go unnoticed. The stall case stays covered by `a drain gives up rather than waiting on a peer
   that sends nothing more`
-- **stop on an unreadable clock — NO exercising test, recorded as a gap.** The port returns the bytes
-  consumed from `drain` and `Timeout` from the read helpers rather than reading an unreadable clock as
-  `0`. Nothing reaches it: the clock is `std.Io.Timestamp` against a monotonic source and, per the
-  owner's check of `compat/time.zig:25-35`, is currently **infallible**, so no test can reach the
-  branch. **This is a latent error-contract mismatch, not a reproduced current-platform clock failure.**
-  Stated by the port and unproven by execution, the same shape as the `type_mismatch` gap D20 records;
-  closing it needs a clock-injection seam, a redesign rather than a test
-  than treating the failure as `0`. Nothing exercises that path: the clock is
-  `std.Io.Timestamp` against a monotonic source and does not fail in this test,
-  in CI, or on the platforms this port runs on, so there is no way to make the
-  branch execute from a test. **The clause is stated by the port and unproven by
-  execution**, which is the same shape as the `type_mismatch` gap D20 records.
-  An earlier revision of this row cited the long-lived test as pinning it; that
-  was a coverage claim with no test behind it. Closing it needs a seam that
-  substitutes a failing clock, which would be a change to the port rather than a
-  test, so it is left as a gap rather than invented.
+- **stop on an unreadable clock — NO exercising test, recorded as a gap.** The port returns the
+  bytes consumed from `drain` and its existing `Timeout` from the read helpers, rather than reading
+  an unreadable clock as `0`. Nothing reaches it: the clock is `std.Io.Timestamp` against a monotonic
+  source and, per the owner's check of `compat/time.zig:25-35`, is currently **infallible**, so no test
+  can reach the branch on this platform, in CI, or on the others this port runs on. **This is a latent
+  error-contract mismatch, not a reproduced clock failure.** Stated by the port and unproven by
+  execution, the same shape as the `type_mismatch` gap D20 records. An earlier revision of this row
+  cited the long-lived test as pinning it; that was a coverage claim with no test behind it. Closing
+  it needs a seam substituting a failing clock, a redesign rather than a test, so it stays a gap
+  rather than invented.
 - **the bound holding against a real process** —
   `TestHubAddrRefusesALargeRefusedHeadOverARealSocket` transfers 1,052,672 /
   1,719,800 / 1,799,224 bytes against declarations of 1 MiB+4096, 4 MiB and 16 MiB
