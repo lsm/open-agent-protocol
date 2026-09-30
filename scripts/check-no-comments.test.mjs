@@ -642,6 +642,37 @@ test("cli: --stats reports per-file counts without writing", () => {
   assert.equal(readFileSync(dirtyZig, "utf8"), before);
 });
 
+test("cli: --stats exits 1 on a selected path that is not there", () => {
+  const { dirtyTs } = fixtures();
+  const absent = join(workDir, "stats-absent.ts");
+  const run = spawnSync(process.execPath, [SCRIPT, "--stats", "--files", dirtyTs, absent]);
+  assert.equal(run.status, 1, run.stdout);
+  assert.ok(run.stdout.includes("selected path not found"), run.stdout);
+  // The readable file is still counted, so the failure is about coverage
+  // rather than a mode that stopped working.
+  assert.ok(run.stdout.includes(`${dirtyTs}: `), run.stdout);
+  assert.ok(run.stdout.includes("missing: 1"), run.stdout);
+});
+
+test("cli: write mode exits 1 on a selected path that is not there, and still strips", () => {
+  const { dirtyTs } = fixtures();
+  const before = readFileSync(dirtyTs, "utf8");
+  const absent = join(workDir, "write-absent.ts");
+  const run = spawnSync(process.execPath, [SCRIPT, "--files", dirtyTs, absent]);
+  assert.equal(run.status, 1, run.stdout);
+  assert.ok(run.stdout.includes("selected path not found"), run.stdout);
+  // A missing sibling must not abandon the work that was possible.
+  assert.notEqual(readFileSync(dirtyTs, "utf8"), before);
+  writeFileSync(dirtyTs, before);
+});
+
+test("cli: --stats exits 0 when every selected path is readable", () => {
+  const { cleanZig } = fixtures();
+  const run = spawnSync(process.execPath, [SCRIPT, "--stats", "--files", cleanZig]);
+  assert.equal(run.status, 0, run.stdout);
+  assert.ok(!run.stdout.includes("selected path not found"), run.stdout);
+});
+
 test("cli: non-ASCII tracked filenames are read exactly from git ls-files -z", () => {
   const repo = gitRepo("unicode-repo");
   writeFileSync(join(repo, "café.zig"), "// carve\nconst x = 1;\n");
