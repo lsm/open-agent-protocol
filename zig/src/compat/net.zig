@@ -11,6 +11,7 @@ fn defaultIo() std.Io {
 pub const Address = std.Io.net.IpAddress;
 pub const ListenOptions = Address.ListenOptions;
 pub const Server = std.Io.net.Server;
+pub const ShutdownHow = std.Io.net.ShutdownHow;
 
 pub const AddressList = struct {
     addrs: []Address,
@@ -237,6 +238,40 @@ test "compat networking can listen on loopback" {
     defer server.deinit(defaultIo());
 
     try std.testing.expect(listenAddress(&server).getPort() != 0);
+}
+
+test "a send shutdown ends the peer's read of us" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const address = try resolveAddress(std.testing.allocator, "127.0.0.1", 0);
+    var server = try tcpListen(address, .{ .reuse_address = true });
+    defer server.deinit(defaultIo());
+    const client = try tcpConnect(listenAddress(&server));
+    defer client.close();
+    const accepted = try accept(&server);
+    defer accepted.close();
+
+    try client.writeAll("first");
+    accepted.shutdownHow(.send);
+
+    var seen: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("first", try client.readAll(&seen));
+    var after: [64]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 0), try client.readAll(&after));
+}
+test "a both-direction shutdown is what the unnamed shutdown already did" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const address = try resolveAddress(std.testing.allocator, "127.0.0.1", 0);
+    var server = try tcpListen(address, .{ .reuse_address = true });
+    defer server.deinit(defaultIo());
+    const client = try tcpConnect(listenAddress(&server));
+    defer client.close();
+    const accepted = try accept(&server);
+    defer accepted.close();
+
+    try client.writeAll("first");
+    accepted.shutdown();
+    var seen: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("first", try client.readAll(&seen));
 }
 
 test "compat networking loopback connect read write round trip" {
