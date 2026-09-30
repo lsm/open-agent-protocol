@@ -167,6 +167,86 @@ pub fn estimateMessageTokens(message: ai_types.Message) u64 {
     return estimateMessage(message).estimated_tokens;
 }
 
+const full_window_output_tokens: u64 = 1024;
+
+fn inflated(estimate: u64) u64 {
+    return estimate + estimate / 3;
+}
+
+fn promptTokens(context: ai_types.Context) u64 {
+    const messages = context.messages;
+    var index = messages.len;
+    while (index > 0) {
+        index -= 1;
+        if (messages[index] != .assistant) continue;
+        const usage = messages[index].assistant.usage;
+        const reported = usage.input + usage.cache_read + usage.cache_write;
+        if (reported == 0) continue;
+        return reported + usage.output + inflated(estimateMessages(messages[index + 1 ..]).estimated_tokens);
+    }
+    return inflated(estimatePromptTokens(context));
+}
+
+pub fn outputLimit(model: ai_types.Model, requested: ?u32, context: ai_types.Context) ?u32 {
+    const wanted: u64 = requested orelse model.max_tokens;
+    if (model.context_window == 0 or wanted == 0) return requested;
+    const prompt = promptTokens(context);
+    if (model.context_window <= prompt) return @intCast(@min(wanted, full_window_output_tokens));
+    const room = model.context_window - prompt;
+    if (room >= wanted) return requested;
+    return @intCast(room);
+}
+
+fn outputLimitModel(context_window: u32, max_tokens: u32) ai_types.Model {
+    return .{
+        .id = "test-model",
+        .name = "Test",
+        .api = "test-api",
+        .provider = "test-provider",
+        .base_url = "",
+        .reasoning = false,
+        .input = &.{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = context_window,
+        .max_tokens = max_tokens,
+    };
+}
+
+test "outputLimit asks for no more output than the context window leaves after an estimated prompt, and leaves an unset limit unset when it fits" {
+    const text = "a" ** 3000;
+    const messages = [_]ai_types.Message{.{ .user = .{ .content = .{ .text = text }, .timestamp = 0 } }};
+    const context: ai_types.Context = .{ .messages = &messages };
+    const prompt = inflated(estimatePromptTokens(context));
+
+    try std.testing.expectEqual(@as(?u32, @intCast(10_000 - prompt)), outputLimit(outputLimitModel(10_000, 9_000), null, context));
+    try std.testing.expectEqual(@as(?u32, 500), outputLimit(outputLimitModel(10_000, 9_000), 500, context));
+    try std.testing.expectEqual(@as(?u32, 1024), outputLimit(outputLimitModel(@intCast(prompt), 9_000), null, context));
+    try std.testing.expectEqual(@as(?u32, 700), outputLimit(outputLimitModel(@intCast(prompt), 700), null, context));
+    try std.testing.expectEqual(@as(?u32, 500), outputLimit(outputLimitModel(@intCast(prompt + 500), 9_000), null, context));
+    try std.testing.expectEqual(@as(?u32, 9_000), outputLimit(outputLimitModel(0, 9_000), 9_000, context));
+    try std.testing.expectEqual(@as(?u32, null), outputLimit(outputLimitModel(1_000_000, 9_000), null, context));
+}
+
+test "outputLimit counts the prompt from the provider's last report when a reply carries one" {
+    const messages = [_]ai_types.Message{
+        .{ .user = .{ .content = .{ .text = "a" ** 40_000 }, .timestamp = 0 } },
+        .{ .assistant = .{
+            .content = &.{.{ .text = .{ .text = "ok" } }},
+            .api = "test-api",
+            .provider = "test-provider",
+            .model = "test-model",
+            .usage = .{ .input = 6_000, .output = 200, .cache_read = 3_000, .cache_write = 800 },
+            .stop_reason = .stop,
+            .timestamp = 0,
+        } },
+        .{ .user = .{ .content = .{ .text = "b" ** 400 }, .timestamp = 0 } },
+    };
+    const context: ai_types.Context = .{ .messages = &messages };
+    const prompt = 6_000 + 3_000 + 800 + 200 + inflated(estimateMessages(messages[2..]).estimated_tokens);
+
+    try std.testing.expectEqual(@as(?u32, @intCast(20_000 - prompt)), outputLimit(outputLimitModel(20_000, 19_000), null, context));
+}
+
 fn pushAgentEvent(event_stream: *AgentEventStream, event: AgentEvent) !void {
     if (!event_stream.pushBlocking(event)) {
         return error.StreamCompleted;
@@ -347,6 +427,11 @@ fn createToolResultMessage(
     result: AgentToolResult,
     is_error: bool,
 ) !ai_types.ToolResultMessage {
+    const tool_call_id = try allocator.dupe(u8, tool_call.id);
+    errdefer allocator.free(tool_call_id);
+    const tool_name = try allocator.dupe(u8, tool_call.name);
+    errdefer allocator.free(tool_name);
+
     const details_json = if (result.getDetailsJson()) |details|
         if (result.details_json.is_owned)
             ai_types.OwnedSlice(u8).initOwned(@constCast(details))
@@ -364,12 +449,25 @@ fn createToolResultMessage(
     else
         ai_types.OwnedSlice(ai_types.ArtifactReference).initBorrowed(result.artifacts.slice());
 
+    return makeToolResultMessage(tool_call_id, tool_name, result, details_json, artifacts, is_error);
+}
+
+fn makeToolResultMessage(
+    tool_call_id: []const u8,
+    tool_name: []const u8,
+    result: AgentToolResult,
+    details_json: ai_types.OwnedSlice(u8),
+    artifacts: ai_types.OwnedSlice(ai_types.ArtifactReference),
+    is_error: bool,
+) ai_types.ToolResultMessage {
     return .{
-        .tool_call_id = try allocator.dupe(u8, tool_call.id),
-        .tool_name = try allocator.dupe(u8, tool_call.name),
+        .tool_call_id = tool_call_id,
+        .tool_name = tool_name,
         .content = result.content.slice(),
         .details_json = details_json,
         .artifacts = artifacts,
+        .working_directory = result.working_directory,
+        .working_directory_observed = result.working_directory_observed,
         .is_error = is_error,
         .timestamp = compat.time.nowMillis(),
     };
@@ -467,8 +565,15 @@ fn finalizeToolExecution(
 ) !void {
     const raw_usage = measureToolResult(result.*);
 
+    var owned = result.*;
+    errdefer owned.deinit(allocator);
+    result.content = ai_types.OwnedSlice(ai_types.UserContentPart).initBorrowed(&.{});
+    result.details_json = ai_types.OwnedSlice(u8).initBorrowed("");
+    result.artifacts = ai_types.OwnedSlice(ai_types.ArtifactReference).initBorrowed(&.{});
+    result.working_directory = ai_types.OwnedSlice(u8).initBorrowed("");
+
     if (config.tool_output_middleware_fn) |middleware| {
-        try middleware(config.tool_output_middleware_ctx, .{
+        middleware(config.tool_output_middleware_ctx, .{
             .tool_call_id = tool_call.id,
             .tool_name = tool_call.name,
             .args_json = args_json,
@@ -476,19 +581,32 @@ fn finalizeToolExecution(
             .raw_result_bytes = raw_usage.result_bytes,
             .raw_details_bytes = raw_usage.details_bytes,
             .raw_total_bytes = raw_usage.total_bytes,
-        }, result, allocator);
+        }, &owned, allocator) catch |err| return err;
     }
 
-    const returned_usage = measureToolResult(result.*);
-    const result_json = result.getDetailsJson() orelse "null";
-    const content_json = try serializeToolResultContent(allocator, result.content.slice());
+    const returned_usage = measureToolResult(owned);
+
+    const content_json = try serializeToolResultContent(allocator, owned.content.slice());
     defer allocator.free(content_json);
     const args_bytes: u64 = @intCast(args_json.len);
+
+    var tool_result_msg = try createToolResultMessage(allocator, tool_call, owned, is_error);
+    var unreached = tool_result_msg;
+    var message_listed = false;
+    errdefer if (!message_listed) unreached.deinit(allocator);
+    owned = AgentToolResult{};
+    try results.append(allocator, tool_result_msg);
+    tool_result_msg = undefined;
+    message_listed = true;
+
+    const appended = &results.items[results.items.len - 1];
+    const event_result_json = appended.getDetailsJson() orelse "null";
+    const event_artifacts = appended.artifacts.slice();
 
     try pushAgentEvent(event_stream, .{ .tool_execution_end = .{
         .tool_call_id = tool_call.id,
         .tool_name = tool_call.name,
-        .result_json = result_json,
+        .result_json = event_result_json,
         .content_json = content_json,
         .is_error = is_error,
         .args_bytes = args_bytes,
@@ -500,11 +618,8 @@ fn finalizeToolExecution(
         .returned_total_bytes = returned_usage.total_bytes + args_bytes,
         .estimated_returned_tokens = returned_usage.estimated_tokens + estimateTextTokens(args_json.len),
         .artifact_count = returned_usage.artifact_count,
-        .artifacts = result.artifacts.slice(),
+        .artifacts = event_artifacts,
     } });
-
-    const tool_result_msg = try createToolResultMessage(allocator, tool_call, result.*, is_error);
-    try results.append(allocator, tool_result_msg);
 }
 
 fn runLegacyApproval(tool: AgentTool, approval_request: types.ToolApprovalRequest, allocator: std.mem.Allocator) types.ToolApprovalDecision {
@@ -877,7 +992,7 @@ fn streamAssistantResponse(
         .thinking_budgets = config.thinking_budgets,
         .max_retry_delay_ms = config.max_retry_delay_ms orelse 60_000,
         .temperature = config.temperature,
-        .max_tokens = config.max_tokens,
+        .max_tokens = outputLimit(config.model, config.max_tokens, llm_context),
     };
 
     const provider_stream = try config.protocol.stream(
@@ -970,8 +1085,7 @@ fn streamAssistantResponse(
                 } });
                 final_transferred = true;
             },
-            .keepalive => {
-            },
+            .keepalive => {},
         }
     }
 
@@ -1063,7 +1177,27 @@ fn withinTurnLimit(iterations: u32, max_iterations: ?u32) bool {
     return iterations < limit;
 }
 
-const TurnOutcome = enum { failed, answered, called_tools };
+const TurnOutcome = enum { failed, answered, called_tools, reasoned_only };
+
+pub const answer_request_text = "Your last reply held only reasoning and no answer. Write your answer now.";
+
+fn reasonedWithoutAnswer(content: []const ai_types.AssistantContent) bool {
+    var reasoned = false;
+    for (content) |block| switch (block) {
+        .text => |t| if (std.mem.trim(u8, t.text, " \t\r\n").len > 0) return false,
+        .thinking => |t| {
+            if (std.mem.trim(u8, t.thinking, " \t\r\n").len > 0) reasoned = true;
+        },
+        .tool_call => return false,
+        .image => {},
+    };
+    return reasoned;
+}
+
+fn answerRequest(allocator: std.mem.Allocator) !ai_types.Message {
+    const text = try allocator.dupe(u8, answer_request_text);
+    return .{ .user = .{ .content = .{ .text = text }, .timestamp = compat.time.nowMillis() } };
+}
 
 const max_cut_off_tool_turns: u32 = 3;
 
@@ -1077,6 +1211,7 @@ fn turnOutcome(message: ai_types.AssistantMessage, cut_off_tool_turns: u32) Turn
     for (message.content) |block| {
         if (block == .tool_call) return .called_tools;
     }
+    if (message.stop_reason == .stop and reasonedWithoutAnswer(message.content)) return .reasoned_only;
     return .answered;
 }
 
@@ -1125,6 +1260,33 @@ test "turnOutcome never runs the tool calls of a failed, aborted or filtered rep
     try std.testing.expectEqual(TurnOutcome.answered, outcomeOf(.content_filter, &calls, 0));
 }
 
+test "turnOutcome marks a finished reply that holds only reasoning" {
+    const reasoning = [_]ai_types.AssistantContent{.{ .thinking = .{ .thinking = "the answer, written as reasoning" } }};
+    try std.testing.expectEqual(TurnOutcome.reasoned_only, outcomeOf(.stop, &reasoning, 0));
+    try std.testing.expectEqual(TurnOutcome.answered, outcomeOf(.length, &reasoning, 0));
+
+    const answered = [_]ai_types.AssistantContent{
+        .{ .thinking = .{ .thinking = "plan" } },
+        .{ .text = .{ .text = "the answer" } },
+    };
+    try std.testing.expectEqual(TurnOutcome.answered, outcomeOf(.stop, &answered, 0));
+
+    const blank = [_]ai_types.AssistantContent{
+        .{ .thinking = .{ .thinking = " \n" } },
+        .{ .text = .{ .text = "\n" } },
+    };
+    try std.testing.expectEqual(TurnOutcome.answered, outcomeOf(.stop, &blank, 0));
+}
+
+test "answerRequest survives an allocation failure at every step" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, answerRequestProbe, .{});
+}
+
+fn answerRequestProbe(allocator: std.mem.Allocator) !void {
+    var message = try answerRequest(allocator);
+    message.deinit(allocator);
+}
+
 test "turnOutcome ends the run on a cut-off tool call once three in a row were answered" {
     const calls = [_]ai_types.AssistantContent{
         .{ .tool_call = .{ .id = "call_1", .name = "write", .arguments_json = "{\"text\":\"cut" } },
@@ -1168,6 +1330,7 @@ fn runLoop(
     var ended_before_cap = false;
     var cancelled_run = false;
     var cut_off_tool_turns: u32 = 0;
+    var asked_for_answer = false;
 
     outer: while (withinTurnLimit(state.iterations, config.max_iterations)) {
         if (config.cancel_token) |token| {
@@ -1241,7 +1404,10 @@ fn runLoop(
             try setFinalMessage(&state, allocator, assistant_message);
             try appendClonedStateMessage(&state.messages, allocator, .{ .assistant = assistant_message });
 
-            const outcome = turnOutcome(assistant_message, cut_off_tool_turns);
+            const outcome = switch (turnOutcome(assistant_message, cut_off_tool_turns)) {
+                .reasoned_only => if (asked_for_answer) TurnOutcome.answered else TurnOutcome.reasoned_only,
+                else => |value| value,
+            };
             cut_off_tool_turns = if (outcome == .called_tools and assistant_message.stop_reason == .length) cut_off_tool_turns + 1 else 0;
             switch (outcome) {
                 .failed => {
@@ -1307,6 +1473,28 @@ fn runLoop(
 
                     ended_before_cap = true;
                     break :outer;
+                },
+                .reasoned_only => {
+                    asked_for_answer = true;
+                    try pushAgentEvent(event_stream, .{ .turn_end = .{
+                        .message = assistant_message,
+                        .tool_results = types.OwnedSlice(ai_types.ToolResultMessage).initBorrowed(&.{}),
+                    } });
+                    try context.appendMessage(.{ .assistant = assistant_message });
+
+                    const request = try answerRequest(context.allocator);
+                    context.appendMessage(request) catch |err| {
+                        var owned = request;
+                        owned.deinit(context.allocator);
+                        return err;
+                    };
+                    try pushAgentEvent(event_stream, .{ .message_start = .{
+                        .message = request,
+                    } });
+                    try pushAgentEvent(event_stream, .{ .message_end = .{
+                        .message = request,
+                    } });
+                    try appendClonedStateMessage(&state.messages, allocator, request);
                 },
                 .called_tools => {
                     var tool_result = try executeToolCalls(
@@ -2331,4 +2519,248 @@ test "executeToolCalls frees the results it built when a later step fails" {
         &agent_events,
     ));
     try std.testing.expectEqual(@as(usize, 1), protocol_ctx.call_count);
+}
+
+fn testModel() ai_types.Model {
+    return .{
+        .id = "test-model",
+        .name = "Test",
+        .api = "test-api",
+        .provider = "test-provider",
+        .base_url = "",
+        .reasoning = false,
+        .input = &.{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1024,
+        .max_tokens = 256,
+    };
+}
+
+fn directoryReportingExecute(
+    ctx: ?*anyopaque,
+    tool_call_id: []const u8,
+    tool_name: []const u8,
+    args_json: []const u8,
+    cancel_token: ?ai_types.CancelToken,
+    on_update_ctx: ?*anyopaque,
+    on_update: ?types.ToolUpdateCallback,
+    allocator: std.mem.Allocator,
+) anyerror!types.AgentToolResult {
+    _ = ctx;
+    _ = tool_call_id;
+    _ = tool_name;
+    _ = args_json;
+    _ = cancel_token;
+    _ = on_update_ctx;
+    _ = on_update;
+    const text = try allocator.dupe(u8, "done");
+    errdefer allocator.free(text);
+    const parts = try allocator.alloc(ai_types.UserContentPart, 1);
+    errdefer allocator.free(parts);
+    parts[0] = .{ .text = .{ .text = text } };
+    const details = try allocator.dupe(u8, "{\"ok\":true}");
+    errdefer allocator.free(details);
+    const directory = try allocator.dupe(u8, "/observed/dir");
+    errdefer allocator.free(directory);
+    const artifacts = try allocator.alloc(ai_types.ArtifactReference, 1);
+    errdefer allocator.free(artifacts);
+    artifacts[0] = .{ .artifact_id = try allocator.dupe(u8, "artifact-1") };
+    return types.AgentToolResult{
+        .content = ai_types.OwnedSlice(ai_types.UserContentPart).initOwned(parts),
+        .details_json = ai_types.OwnedSlice(u8).initOwned(details),
+        .artifacts = ai_types.OwnedSlice(ai_types.ArtifactReference).initOwned(artifacts),
+        .working_directory = ai_types.OwnedSlice(u8).initOwned(directory),
+        .working_directory_observed = true,
+    };
+}
+
+const directoryReportingTool = types.AgentTool{
+    .label = "Directory Reporting Tool",
+    .name = "dirtool",
+    .description = "Reports a working directory.",
+    .parameters_schema_json = "{\"type\":\"object\",\"properties\":{},\"required\":[],\"additionalProperties\":false}",
+    .execute = struct {
+        fn run(
+            tool_call_id: []const u8,
+            args_json: []const u8,
+            cancel_token: ?ai_types.CancelToken,
+            on_update_ctx: ?*anyopaque,
+            on_update: ?types.ToolUpdateCallback,
+            allocator: std.mem.Allocator,
+        ) anyerror!types.AgentToolResult {
+            return directoryReportingExecute(null, tool_call_id, "dirtool", args_json, cancel_token, on_update_ctx, on_update, allocator);
+        }
+    }.run,
+};
+
+fn runDirectoryReportingTool(allocator: std.mem.Allocator) !void {
+    const tool_list = [_]types.AgentTool{directoryReportingTool};
+    const tools_slice: []const types.AgentTool = &tool_list;
+    const content = [_]ai_types.AssistantContent{
+        .{ .tool_call = .{ .id = "call_dir", .name = "dirtool", .arguments_json = "{}" } },
+    };
+    const assistant_message = ai_types.AssistantMessage{
+        .content = &content,
+        .api = "test-api",
+        .provider = "test-provider",
+        .model = "test-model",
+        .usage = .{},
+        .stop_reason = .tool_use,
+        .timestamp = 0,
+    };
+    const model = testModel();
+    var events_storage: AgentEventStream = undefined;
+    const events = &events_storage;
+    events.* = AgentEventStream.init(allocator);
+    defer events.deinit();
+
+    const result = try executeToolCalls(
+        allocator,
+        assistant_message,
+        .{
+            .model = model,
+            .protocol = .{ .stream_fn = undefined },
+            .tools = tools_slice,
+            .execute_tool_via_protocol_fn = directoryReportingExecute,
+        },
+        events,
+    );
+    var owned = result;
+    defer owned.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), owned.tool_results.len);
+    try std.testing.expectEqualStrings("/observed/dir", owned.tool_results[0].observedWorkingDirectory().?);
+}
+
+const HandoffCase = struct {
+    let_pass: bool = false,
+
+    fn run(allocator: std.mem.Allocator) !void {
+        var self = HandoffCase{};
+        self.drive(allocator, true) catch |err| switch (err) {
+            error.OutOfMemory, error.MiddlewareRefused => {},
+            else => return err,
+        };
+        self.drive(allocator, false) catch |err| switch (err) {
+            error.OutOfMemory, error.MiddlewareRefused => return err,
+            else => return err,
+        };
+    }
+
+    fn drive(self: *HandoffCase, allocator: std.mem.Allocator, middleware_fails: bool) !void {
+        const tool_list = [_]types.AgentTool{directoryReportingTool};
+        const content = [_]ai_types.AssistantContent{
+            .{ .tool_call = .{ .id = "call_dir", .name = "dirtool", .arguments_json = "{}" } },
+        };
+        const assistant_message = ai_types.AssistantMessage{
+            .content = &content,
+            .api = "test-api",
+            .provider = "test-provider",
+            .model = "test-model",
+            .usage = .{},
+            .stop_reason = .tool_use,
+            .timestamp = 0,
+        };
+        const model = testModel();
+        var events_storage: AgentEventStream = undefined;
+        const events = &events_storage;
+        events.* = AgentEventStream.init(allocator);
+        defer events.deinit();
+        defer drainEvents(events, allocator);
+
+        self.let_pass = !middleware_fails;
+        const result = executeToolCalls(
+            allocator,
+            assistant_message,
+            .{
+                .model = model,
+                .protocol = .{ .stream_fn = undefined },
+                .tools = &tool_list,
+                .execute_tool_via_protocol_fn = directoryReportingExecute,
+                .tool_output_middleware_fn = failingMiddleware,
+                .tool_output_middleware_ctx = self,
+            },
+            events,
+        ) catch |err| return err;
+        var owned = result;
+        defer owned.deinit(allocator);
+        for (owned.tool_results) |message| {
+            var clone = try ai_types.cloneMessage(allocator, .{ .tool_result = message });
+            clone.deinit(allocator);
+        }
+    }
+};
+
+fn drainEvents(events: *AgentEventStream, allocator: std.mem.Allocator) void {
+    while (events.poll()) |event| {
+        var drained = event;
+        drained.deinit(allocator);
+    }
+}
+
+fn failingMiddleware(
+    ctx: ?*anyopaque,
+    input: types.ToolOutputMiddlewareInput,
+    result: *types.AgentToolResult,
+    allocator: std.mem.Allocator,
+) anyerror!void {
+    const self: *HandoffCase = @ptrCast(@alignCast(ctx.?));
+    _ = input;
+    _ = result;
+    _ = allocator;
+    if (!self.let_pass) return error.MiddlewareRefused;
+}
+
+test "a message already in the results list is not freed again when the stream closes mid-turn" {
+    var events_storage: AgentEventStream = undefined;
+    const events = &events_storage;
+    events.* = AgentEventStream.init(std.testing.allocator);
+    defer events.deinit();
+    events.complete(.{
+        .messages = types.OwnedSlice(ai_types.Message).initBorrowed(&.{}),
+        .final_message = .{ .content = &.{}, .api = "a", .provider = "p", .model = "m", .usage = .{}, .stop_reason = .stop, .timestamp = 0 },
+        .iterations = 0,
+    });
+    while (events.poll()) |_| {}
+
+    var results_storage: std.ArrayList(ai_types.ToolResultMessage) = .empty;
+    defer {
+        for (results_storage.items) |*item| item.deinit(std.testing.allocator);
+        results_storage.deinit(std.testing.allocator);
+    }
+
+    const text = try std.testing.allocator.dupe(u8, "done");
+    const parts = try std.testing.allocator.alloc(ai_types.UserContentPart, 1);
+    parts[0] = .{ .text = .{ .text = text } };
+    const details = try std.testing.allocator.dupe(u8, "{\"ok\":true}");
+    const directory = try std.testing.allocator.dupe(u8, "/observed/dir");
+    var result = AgentToolResult{
+        .content = ai_types.OwnedSlice(ai_types.UserContentPart).initOwned(parts),
+        .details_json = ai_types.OwnedSlice(u8).initOwned(details),
+        .working_directory = ai_types.OwnedSlice(u8).initOwned(directory),
+        .working_directory_observed = true,
+    };
+
+    try std.testing.expectError(error.StreamCompleted, finalizeToolExecution(
+        std.testing.allocator,
+        .{ .model = testModel(), .protocol = .{ .stream_fn = undefined } },
+        events,
+        &results_storage,
+        .{ .id = "call-1", .name = "dirtool", .arguments_json = "{}" },
+        "{}",
+        &result,
+        false,
+    ));
+
+    try std.testing.expectEqual(@as(usize, 1), results_storage.items.len);
+    try std.testing.expectEqualStrings("call-1", results_storage.items[0].tool_call_id);
+    try std.testing.expectEqualStrings("/observed/dir", results_storage.items[0].workingDirectory().?);
+}
+
+test "an exhausted allocator loses nothing across the tool handoff" {
+    if (@import("builtin").os.tag == .wasi) return error.SkipZigTest;
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, HandoffCase.run, .{});
+}
+
+test "a tool result's working directory survives the loop and is freed with the message" {
+    try runDirectoryReportingTool(std.testing.allocator);
 }

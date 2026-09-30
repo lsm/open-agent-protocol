@@ -1,4 +1,3 @@
-
 const std = @import("std");
 const compat = @import("compat");
 const ai_types = @import("ai_types");
@@ -51,6 +50,11 @@ const kimi_global_base_url = provider_catalog.baseUrlOrCompileError("kimi", "ope
 const anthropic_base_url_env = provider_catalog.baseUrlEnv("anthropic")[0];
 const openai_base_url_env = provider_catalog.baseUrlEnv("openai")[0];
 const deepseek_base_url_env = provider_catalog.baseUrlEnv("deepseek")[0];
+
+pub fn overriddenWire(provider_id: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, provider_id, "deepseek")) return "openai-completions";
+    return null;
+}
 
 pub fn normalizeVersionedBaseUrl(url: []const u8) []const u8 {
     const trimmed = std.mem.trimEnd(u8, url, "/");
@@ -320,7 +324,6 @@ pub fn transparentProxyCompatForFlags(provider_id: []const u8, flags: ProxyCompa
     }
     if (std.mem.eql(u8, provider_id, "deepseek") and (if (flags.global_base_set) flags.global_proxy else flags.deepseek_proxy)) {
         return .{
-            .requires_thinking_as_text = true,
             .max_tokens_field = .max_tokens,
             .supports_strict_mode = false,
         };
@@ -337,7 +340,8 @@ fn envFlag(allocator: std.mem.Allocator, key: []const u8) !bool {
     return std.mem.eql(u8, value, "1") or std.ascii.eqlIgnoreCase(value, "true");
 }
 
-pub fn isReasoningModelRef(provider_id: []const u8, model_id: []const u8) bool {    if (std.mem.eql(u8, provider_id, "openai") or std.mem.eql(u8, provider_id, "openai-codex")) {
+pub fn isReasoningModelRef(provider_id: []const u8, model_id: []const u8) bool {
+    if (std.mem.eql(u8, provider_id, "openai") or std.mem.eql(u8, provider_id, "openai-codex")) {
         return std.mem.startsWith(u8, model_id, "o1") or
             std.mem.startsWith(u8, model_id, "o3") or
             std.mem.startsWith(u8, model_id, "o4") or
@@ -548,7 +552,7 @@ test "baseUrlWithOverrides rejects provider/API mismatches" {
 test "transparent proxy compat preserves vendor token-limit fields" {
     const deepseek = transparentProxyCompatForFlags("deepseek", .{ .deepseek_proxy = true });
     try std.testing.expect(deepseek != null);
-    try std.testing.expectEqual(@as(?bool, true), deepseek.?.requires_thinking_as_text);
+    try std.testing.expectEqual(@as(?bool, null), deepseek.?.requires_thinking_as_text);
     try std.testing.expect(deepseek.?.max_tokens_field.? == .max_tokens);
     try std.testing.expectEqual(@as(?bool, false), deepseek.?.supports_strict_mode);
 

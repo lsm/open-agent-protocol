@@ -458,8 +458,8 @@ both answers, at the budget and one byte over it.
 
 | HTTP rule | pinned by |
 | --- | --- |
-| A wrong `Content-Type` is refused `415` | `TestReadRequestRefusesBrowserOrigins` (the status), `TestARequestTheDaemonWillNotParseIsRefusedWithItsCode` (the code, and the absent `Content-Type`; a `charset` is no longer a reason to refuse, and the row below says which test pins that) |
-| Any `charset` is admitted and the body is read as UTF-8 — no `charset` means UTF-8, and `utf-8`, `utf8`, `UTF-8`, `latin1`, `us-ascii`, `iso-8859-1` and a name that is not a charset all behave alike | `TestAnyCharsetIsAdmittedAndTheBodyIsReadAsUTF8` — each case's body names a session whose id carries non-ASCII text, and the answer must echo those characters unchanged, so a body transcoded per the header could not pass |
+| A wrong `Content-Type` is refused `415` | `TestReadRequestRefusesBrowserOrigins` (the status), `TestARequestTheDaemonWillNotParseIsRefusedWithItsCode` (the code, and the absent `Content-Type`; a `charset` is no longer a reason to refuse, and the row below says which test pins that)  ·  Zig: `a body must declare application/json, and only that` |
+| Any `charset` is admitted and the body is read as UTF-8 — no `charset` means UTF-8, and `utf-8`, `utf8`, `UTF-8`, `latin1`, `us-ascii`, `iso-8859-1` and a name that is not a charset all behave alike | `TestAnyCharsetIsAdmittedAndTheBodyIsReadAsUTF8` — each case's body names a session whose id carries non-ASCII text, and the answer must echo those characters unchanged, so a body transcoded per the header could not pass  ·  Zig: `a charset is admitted, because application/json registers no parameters` |
 | A body that is not valid UTF-8 is read with the replacement character, whatever `charset` it claims | `TestABodyThatIsNotUTF8IsReadWithTheReplacementCharacter` — a body with a raw invalid byte is admitted and the echoed id carries U+FFFD. The gate does not police UTF-8 validity; refusing it would be the new refusal the charset decision removed |
 | A body that cannot be read at all is refused `400 request_read` | `TestATruncatedRequestBodyIsRefusedWithItsOwnCode` — a client that hangs up mid-body over a raw connection, so the daemon's read fails rather than the client's write. Zig: `a client that hangs up mid-body is refused request_read, as the draft pins it`, which half-closes a real socket after a short prefix and reads the answer. A hangup **mid-header** is a different thing and gets a bare `400`, because no body was promised and there is nothing to have failed to read |
 | A body over 16 MiB is refused `413 request_too_large` | `TestRequestBudgetMatchesHTTP` (which pins the stdio `request_too_large` for the same budget) |
@@ -617,8 +617,10 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   `drain_total_ms + 200` under a bound, asserts the clock is past the budget, and drains again;
   restoring the old `elapsedMs() catch 0 -| started` fails it with `expected 4096, found 0`. **It pins
   the comparison, not the guard's presence:** neutralising the guard is green, so a deleted time bound
-  would go unnoticed. The stall case stays covered by `a drain gives up rather than waiting on a peer
-  that sends nothing more`
+  would go unnoticed **by that test**. The stall case stays covered by `a drain gives up rather than
+  waiting on a peer that sends nothing more`. **The guard's presence is pinned separately, by
+  `a drain whose elapsed budget is already spent consumes nothing, though the bytes are buffered and
+  reachable`, recorded below; this row and that one are complementary, and neither alone closes the other.**
 - **stop on an unreadable clock — NO exercising test, recorded as a gap.** The port returns the
   bytes consumed from `drain` and its existing `Timeout` from the read helpers, rather than reading
   an unreadable clock as `0`. Nothing reaches it: the clock is `std.Io.Timestamp` against a monotonic
@@ -629,12 +631,181 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   cited the long-lived test as pinning it; that was a coverage claim with no test behind it. Closing
   it needs a seam substituting a failing clock, a redesign rather than a test, so it stays a gap
   rather than invented.
+- **the 413 path answers completely, before the whole declared body is sent** —
+  `TestHubAddrAnswersAComplete413BeforeTheWholeDeclaredBodyIsSent` drives the branch a plain media
+  refusal does not reach: `readHead` refuses `413 request_too_large` on the declared length alone,
+  and the daemon writes that refusal and then drains what the head declared. Against declarations of
+  16 MiB+1 and 16 GiB it is answered 413 with a **complete, parsed** envelope — status,
+  `Content-Length` match, envelope type and the `request_too_large` code — and the client was **still
+  writing** when the writer stopped, having sent only a fraction of what it declared. That is the
+  whole claim, and it is phrased in what a client can observe on purpose: **every number this test
+  reports is a client write count**, which bounds when the writer stopped and not how many bytes the
+  daemon read, because what the client pushes before the close lands is kernel buffering and
+  scheduling. **It does not pin the drain's cap or budget on this path, and the mutation says so:**
+  lifting `drain_total_cap_bytes` to 8 MiB, lifting `drain_total_ms` to 60000, and lifting **both
+  together** all leave the test **green**. The transferred bytes do move — 1.7–3.1 MB bounded against
+  9.2–10.8 MB unbounded — but a threshold on them would be a machine-dependent constant rather than a
+  bound, and the same build produced 1.70 MB and 3.13 MB on two runs of one case, so none is asserted.
+  **What the existing unit tests do and do not cover, stated precisely so this row does not overstate
+  them:** `http.zig:1369` pins the **byte cap** — it asserts `drain_total_cap_bytes` against its own
+  literal and drains past it — while `http.zig:1412` pins only that the budget is **elapsed rather
+  than uptime**, exactly as the row above records, and that row's finding stands unchanged:
+  **neutralising the time guard leaves it green, so the time bound's presence was a gap until the
+  already-spent-budget proof below closed it.** What
+  is **not** pinned anywhere is that the 413 path *reaches* `drain` at all, and no client can observe
+  that without the threshold just declined. An earlier revision of this work claimed the mutation
+  failed when both bounds were removed, and a second claimed the budget was pinned at `:1412`. The
+  first does not hold and the second contradicts the row above. Both are withdrawn.
+- **the `readBody` failure path answers completely, and the daemon gives up on a peer that stops** —
+  `makai.zig:1591` is the third and last `drain` call site, and the only one none of the rows above
+  reached. `TestHubAddrAnswersACompleteTransportFailureWhenTheBodyStopsShort` reaches it with a head
+  the gate admits (`Content-Type: application/json`, so `answer()` does not refuse and the request goes
+  on to `readBody`), a declared 8 MiB, 4096 body bytes sent, and then a **TCP half-close**. `readBody`
+  sees `n == 0`, returns `error.BodyTruncated`, and the loop writes the transport failure and drains
+  `request.content_length -| request.filled`. What is pinned, all of it observable: a **complete**
+  answer — status `400`, `Content-Length` matching the 265-byte body, `type: error.response`,
+  `code: request_read`, `protocol: open-agent-protocol`, `version: 0.1`,
+  `profile: open-agent-protocol.agent-control-core`, and the synthetic correlation `oap-error-1`
+  replying to `oap-request-1` that `refusalEnvelope` builds at `http.zig:292-298` and the existing
+  unit test at `:1561` already pins for all four refusals — delivered while the client had sent
+  **4096 of the 8 MiB it declared**. The answer arriving at all is the "gave up" claim: a
+  daemon waiting for the declared body would have said nothing and the read would have timed out.
+  **Two negative controls fail it:** `readBody` treating a short body as complete answers `404`, and
+  mapping `BodyTruncated` to a different refusal answers `413`. **The drain on this path is NOT
+  pinned, and the mutation says so: deleting `makai.zig:1591` outright leaves the test `EXIT=0`**
+  green, because after a half-close the drain's first read returns EOF immediately, so nothing about
+  the drain reaches this client. So the **`content_length -| filled` arithmetic and this site's
+  reachability are unproved** by this test, by the rows above, and by anything else on main, and no
+  threshold is inferred from transferred bytes to stand in for them. **Of the two drain bounds, the
+  byte cap is pinned** — `:1369` asserts `drain_total_cap_bytes` against its own literal and drains
+  past it — and the **elapsed-versus-uptime comparison is pinned** at `:1412`, but **the time guard's
+  presence was NOT pinned by this row**, exactly as the row above then stated; it is now pinned by the
+  already-spent-budget proof, which is about the guard itself and not about any client's drain amount.
+  Two things a reader might assume are covered here are not: this site's drain amount, and the
+  existence of the time bound.
+- **the total-time guard's presence, through the injected callback that already exists** — the row at
+  `:615-621` pins that the 2500 ms budget is **elapsed rather than uptime** and is explicit that it does
+  **not** pin the guard's presence, because that test's bytes are already buffered when `drain` starts.
+  `a drain whose elapsed budget is already spent consumes nothing, though the bytes are buffered and
+  reachable` pins the presence, through the **existing public `KeepGoing`** at `:104-110` and the injection
+  pattern the other test already uses. `drain` takes `started` at `:214`, calls `keep_going.yes()` at
+  `:216`, checks the guard at `:218`, and only then computes the round `deadline` at `:220` — so an
+  injected callback can **spend the budget and then leave bytes where the inner read will find them**.
+  The callback takes its **entry timestamp on its first entry**, waits `drain_total_ms` from that
+  timestamp, writes 4096 bytes to the peer and returns true; the guard on that same iteration returns
+  before any read, so `drain` returns **0** with the bytes unread. **Why the timestamp is taken inside
+  the callback, which is the whole correctness of this test:** `drain` reads its own `started` at
+  `:214` and only then makes the first `keep_going.yes()` call at `:216`, so the callback's entry
+  instant is **necessarily later** than `drain`'s — `drain.started <= entry <= write`. The elapsed the
+  callback waits out is therefore measured from a **later** origin than the guard's, which makes it the
+  **smaller** of the two, and `final_now - drain.started >= final_now - entry >= drain_total_ms`. The
+  guard at `:218` compares against `:217`'s `now`, which is read after the callback returns, so the
+  inequality the guard needs holds by **ordering**, with no margin and no assumption about scheduling.
+
+  **This replaced a version that was wrong in a way worth recording.** It previously took the timestamp
+  from the test's `before`, read **outside** `drain`, and added a flat 200 ms of skew. That bought
+  nothing structural: the gap between `before` and `drain`'s `:214` is **unbounded** under preemption,
+  so `observed >= drain_total_ms + 200` never established `now - drain.started >= drain_total_ms`, and
+  the 200 ms only *assumed* the gap was smaller than itself. The claim that the test "observes its own
+  precondition rather than trusting it" was false for the same reason — it observed an elapsed from the
+  wrong origin. A/B run, with the **only** difference being which side of the gap the clock is read:
+  timestamp outside `drain` plus a 3 s stall before `:214` fails with `EXIT=1` and
+  `expected 0, found 4096` — the negative control's exact signature, on the unmutated budget; the
+  in-callback entry timestamp passes the identical stall with `EXIT=0`. That is why the constant is
+  gone and not merely enlarged.
+
+  The test also checks the rest of its preconditions rather than assuming them: the callback was polled
+  **once**, the write is **not** allowed to fail, and the test **reads the 4096 bytes back off
+  `pipe.accepted` and asserts every one of them is still queued**, byte for byte. `drain` returned 0
+  having read nothing, so the socket must still be holding all 4096 `q`s; that is an observation of the
+  socket, not the callback's own bookkeeping, and a failed write can no longer leave the test green.
+  Inverting that read-back expectation fails the test with `expected 0, found 4096` on the queued
+  count. The
+  **negative control is still the whole point**: making the budget unreachable
+  (`now -| started >= std.math.maxInt(u64)`) leaves the same test failing with `expected 0, found 4096`,
+  so the 0 is attributable to the guard rather than to a starved reader, and the inner deadline being
+  computed *after* the callback is what lets the un-guarded build read at all. Teardown is bounded by
+  construction: the callback writes to the peer itself, so there is no writer thread to join.
+  **What this is not.** It is an **already-spent wall-clock-budget** test. It does **not** show a
+  continuous daemon giving up on a trickling peer, does **not** exercise the budget elapsing across
+  rounds of real I/O, and makes **no** claim about `drain_total_ms`, `drain_cycle_ms` or
+  `drain_total_cap_bytes` — all three are unchanged, and no clock seam was added. An earlier revision of
+  this work claimed the guard was "structurally unreachable" from a bound on the requested I/O round
+  deadlines; that was **withdrawn**, because those deadlines bound requested waits and not elapsed
+  execution across preemption, inter-round scheduling, or the work an injected callback does.
+- **the refusal order, decided outside the process** — `answer()` at `http.zig:378-383` checks
+  **Origin, then Host, then the media type**, and what was missing was a **separate daemon process**
+  deciding it over a socket. Two in-process tests already covered the ordering inside one test binary:
+  the test at `:1155` calls `answer()` directly on hand-built `Request` values and uses **no sockets at
+  all**, and the test at `:1169` does use real sockets, with its `cross_origin_request` cases at
+  `:1175-1176`. No `go/cmd/goap` test named `cross_origin_request`, so nothing outside the test binary
+  had ever seen this refusal. Two tests now settle it over a real
+  socket. `TestHubAddrRefusesAnOriginHeaderBeforeItLooksAtTheHostOrTheMediaType` sends four requests
+  that each carry an `Origin` header and asserts a **complete** 403 — status, `Content-Length` match,
+  `error.response`, `cross_origin_request`, the fixed `open-agent-protocol` / `0.1` /
+  `open-agent-protocol.agent-control-core` triple, and the synthetic correlation `oap-error-N` replying
+  to `oap-request-N` for the same `N` — including one beside a **Host the hub refuses** and one beside
+  a body with a **refused media type**, so the ordering is pinned in both directions.
+  `TestHubAddrRefusesTheSameTwoRequestsDifferentlyOnceNoOriginHeaderIsPresent` is its counterexample,
+  and each of its two requests is the **same request as the second and third of the four the first
+  test sends, with the `Origin` header removed and nothing else changed** — those two, not the first
+  two, are the precedence cases, the first being the Origin header alone and the fourth the
+  matching-`Origin` case: `Host: evil.test` with `application/json` is refused `403
+  unrecognized_host`, and `Host: 127.0.0.1:1` with `text/plain` and a body is refused `415
+  unsupported_media_type`. That is what makes the ordering a measurement rather than an assertion —
+  each precedence case has a twin that differs only in the header under test, so the first test cannot
+  pass on a build that refuses everything. Both counterexamples parse the envelope and assert `type`,
+  `code`, `Content-Length` and the same `open-agent-protocol` / `0.1` /
+  `open-agent-protocol.agent-control-core` triple and `oap-error-N` / `oap-request-N` correlation as
+  the primary proof; an earlier revision of this row checked the code with a substring search over the
+  raw body, which would have accepted a different `payload.error.code` that merely mentioned the
+  string elsewhere. **Three mutations fail them:** checking `Host` before `Origin` answers
+  `unrecognized_host` on the second case, checking the media type first answers `415` on the third,
+  and deleting the `Origin` gate answers `404`. One thing this pins that is worth stating plainly,
+  because it is stricter than the name suggests: the gate fires on the **presence** of an `Origin`
+  header, not on a comparison. A request with `Host: 127.0.0.1:1` and `Origin: http://127.0.0.1:1` —
+  matching — is still refused `cross_origin_request`. That is the observed contract, recorded rather
+  than judged, and narrowing it would be a policy change this table does not make.
+- **the media gate answered by the daemon itself, with nothing else wrong** — the third gate in
+  `answer()` and the only refusal no `go/cmd/goap` test named, so the parity D26 records was pinned
+  in-process only. `TestHubAddrRefusesABodyWhoseMediaTypeIsNotJSONAndNothingElseIsWrong` sends five
+  requests over a real socket, each with a **Host the hub accepts and no `Origin` at all**, so nothing
+  but the media type can decide the answer. `text/plain` with a body is refused a **complete 415** —
+  status, `Content-Length` match, `error.response`, `unsupported_media_type`, the fixed
+  `open-agent-protocol` / `0.1` / `open-agent-protocol.agent-control-core` triple, and the synthetic
+  correlation `oap-error-N` replying to `oap-request-N`. **Three of the five are counterexamples**, and
+  they are what keep the first from passing on a build that refuses everything: `application/json` with
+  a body is not media-refused, `application/json; charset=utf-8` with a body is not media-refused —
+  so the real daemon agrees with the parameter parity D26 pinned against Go — and `text/plain` with **no
+  body declared** is not media-refused, because the gate reads length. **Three mutations fail it, each
+  on the case it should:** neutralising the gate answers `404` on the refused case, keying the gate on
+  the header instead of the length answers `415` on the body-less case, and admitting a parameter with
+  no `=` again answers `404` on `application/json; charset`. That third one is why that case is here —
+  without it, dropping the parameter validation was **invisible to this test**, which I found by running
+  the mutation rather than by assuming it would be caught.
 - **the bound holding against a real process** —
   `TestHubAddrRefusesALargeRefusedHeadOverARealSocket` transfers 1,052,672 /
   1,719,800 / 1,799,224 bytes against declarations of 1 MiB+4096, 4 MiB and 16 MiB
   and is answered 403 with a complete body each time, so the cap is visible from
   outside the process. Its clock is seeded through a **refused** request, which is
   the only shape that reaches a drain, and `boundAt` is taken after that
+- **the refusal answered before the body, and an exit proof that can fail** —
+  `TestHubAddrFinishesTheRefusalAndStopsTheBodyWhenItsSignalArrives` declares 8 MiB, paces the
+  writer, and asserts the complete refusal is read while bytes are still unwritten, that the writer
+  is still running then, and that after the signal it stops with fewer than `declared` bytes ever
+  written. Every number it reports is a **client write count**: it bounds when the answer arrived
+  and when the writer stopped, and **no threshold on it counts bytes the daemon read**. It then
+  dials under a bound and **fails if the daemon still accepts**. It does **not** show the custom
+  `SIGINT` handler stopped the daemon — the default disposition of `SIGINT` terminates the process
+  regardless, so removing the handler changes nothing observable. That exit proof is only worth
+  something if it can tell cooperation from a kill, so `TestHubAddrSignalProofReportsADaemonThatIgnoresTheSignalAsAlive`
+  runs `testdata/fakehub`, a separate program that installs `signal.Ignore`, announces its address, and
+  never exits on its own: the test confirms it is **accepting before the signal**, sends the same `SIGINT`,
+  and requires the proof to report it alive, failing **before any kill**, and then asserts it **waited
+  the bound out** and logs the elapsed figure. **Four** mutations fail it — cleanup running first (the
+  defect fixed here), a proof reporting an exit when the bound elapses, the helper no longer ignoring
+  `SIGINT`, and a proof returning "alive" without waiting, which the elapsed assertion catches and which
+  nothing else here would. A **test binary** dies on `SIGINT` despite the ignore and a standalone one survives, which is why the helper is a separate program.
 
 The two pre-existing tests — `a body the daemon refused to read is drained before
 the socket closes, or the close resets the answer away` and `a drain gives up
@@ -1581,6 +1752,46 @@ are "stamped with the revision the lister served it under", and both name
 | **Zig does** | **Fixed.** `openSession` handed the raw `tool_sources_json` to `hub.open`, so the adapter saw the host's own description of a source the operator had pinned. `substitutedSources` now runs between the trust check and the hub: the check still reads the **wire**, which is the untrusted thing, and the adapter receives the **registry**. A source the operator left unconfigured is passed through exactly as written, so a daemon with no registry behaves as it did. |
 | **How it is tested, and what is not** | A Zig unit test sends an open naming a pinned source and an unconfigured one, and asserts on what the adapter was handed: the operator's `endpoint`, the operator's `environment` values kept even where the wire named the same variables, the caller's bare names appended, and the unconfigured source verbatim. |
 | **The differential case that is owed** | **There is no differential scenario for it, and that is a real gap rather than an impossibility.** I first recorded this as unreachable on the grounds that `oapx hub` refuses `--config` and `adapter/memory` refuses every unconfigured source. **Both were wrong.** `runHub` parses `--config` and feeds `file.tool_sources` into `Hub.init` (`makai.zig:2641`), and `adapter/memory` admits any id outside its own declared set whose kind it can attach (`adapter.zig:1098`). So a config declaring `pinned` as a `local` source and an open naming `{"id":"pinned","kind":"local"}` is admitted today, and before this change the session carried the wire's description of a source the operator had pinned. **The case is therefore expressible, and writing it is owed.** It needs the differential harness to pass a per-tree `--config`, which it cannot today — `hubCommand` runs `hub --stdio` with no arguments. That is the follow-up, and until it lands this row is the only place the divergence is recorded, which is a weaker guarantee than the other rows have. |
+
+### D23 — the media gate sits on the head, so 413 wins where Go answers 415
+
+| | |
+| --- | --- |
+| **The draft says** | Every route that reads a body requires `Content-Type: application/json`, and the rows above pin `415` for a wrong type and `413 request_too_large` for a body over 16 MiB. It does not say which wins when a request is both, because a request cannot be both before the length is read. |
+| **Go does** | `readRequest` (`go/serve/servehttp/server.go:747`) parses the media type **first** and answers `415`; the `MaxBytesReader` is only reached after that. A wrong-media body over 16 MiB is therefore `415` in Go. |
+| **Zig does** | The gate is in `answer()` (`zig/src/hub/http.zig:381`, inside the function declared at `:378`), which is called on the head **after** `readHead` has read the length. So the length check fires first and a wrong-media body over 16 MiB answers `413`, and a wrong-media request at or under the cap answers `415`. |
+| **The divergence** | One request, two answers: `Content-Type: text/plain` with `Content-Length` over 16 MiB is `413` in Zig and `415` in Go. Neither is wrong against the draft, which pins both statuses and states no precedence. |
+| **Why it is not decided here** | Choosing would be **settling a precedence the draft does not state**, and a wrong-media *body* has to be either refused or buffered to get there, which is a routing decision this ledger does not own. A draft row saying "a wrong media type is refused before the body is measured" or the reverse would close it; that is a spec change and unaccepted. |
+| **Anchor correction** | These citations were **wrong on arrival on `main`, not staled by later edits.** They landed on `main` in the squash `1ee4a53` (#685), and in **that commit's own tree** `answer()` already stood at `:378` and the media gate at `:381`, while `:364` was a struct field (`refusal: Refusal,`) and `:367` was blank — so `:364`/`:367` were off by 14 the moment they landed. `git diff 1ee4a53 d63e6d8 -- zig/src/hub/http.zig` is **empty**, where `d63e6d8` is the tip of `main` immediately before the #730 squash, so nothing had shifted them as of the point these rows were written. That comparison is **deliberately bounded to `d63e6d8`** and is **not** a claim that the file is unchanged since: #730 has since added 61 lines to `http.zig`, so the same diff against a later `main` is no longer empty. The narrower statement is the one carrying the point — the anchors were off by 14 on arrival, not stale afterwards. They appear to have been carried over from an unlanded pre-squash branch revision, where the numbers did match that tree; that revision is not reachable from `main`, so it is deliberately **not** cited here, and the checkable fact is the squash itself. The two anchors are now given separately on purpose, so a reader following either lands on what the claim names. |
+
+### D26 — the media gate's predicate differs between the trees in two corners the draft leaves open
+
+| | |
+| --- | --- |
+| **The rule, which is not in doubt** | `drafts/hub.md:461`: a wrong `Content-Type` is refused `415`, and `:462-463` admit any `charset`. That is the whole pin — it does not say *which* requests the gate applies to, and the draft names no predicate for that. |
+| **What the Zig port does** | `zig/src/hub/http.zig:381` gates on `carriesBody(request)` — declared at `:385`, returning `content_length > 0` at `:386` — and it does so in `answer()`, so it is decided on the head for **every** request. The companion `declaresJson` it calls is declared at `:389`. A `POST` with `Content-Length: 0` and `Content-Type: text/plain` passes the gate; a `GET` carrying a body with `text/plain` is refused. |
+| **What Go does** | `servehttp/server.go:747` gates inside `readRequest`, which is called by the four body-reading routes only — `handleOpen` at `:191`, `handleSubmit` at `:321`, `handleResolve` at `:382`, `handleCancel` at `:496` — and the check reads only `r.Header.Get("Content-Type")`, with no reference to length. So a `POST` to `close` (`:643`), which never calls `readRequest`, is not gated at all, and a `POST` with `Content-Length: 0` and `text/plain` **is** refused 415, because length is never consulted. |
+| **The two corners, stated** | **Empty body, wrong type, on a body-reading route.** `POST /adapters/{name}/sessions` — `handleOpen`, one of the four that call `readRequest` — with `Content-Length: 0` and `Content-Type: text/plain`: **Go answers 415**, because its check reads the media type and never the length, and **Zig answers `.not_found`**, because `carriesBody` is false. **Body on a listing.** `GET /adapters` carrying a body with `text/plain`: **Zig answers 415**, decided on the head, and **Go answers the listing**, because no listing route calls `readRequest`. |
+| **A route that reads no body, so it is not a corner** | `POST /sessions/{id}/close` with `Content-Length: 0` and `text/plain`. Go **registers the route** (`mux.HandleFunc("POST /sessions/{id}/close", s.handleClose)`, `server.go:80`) and `handleClose` at `server.go:643` never calls `readRequest`, so it answers the close — `204`, per `server_test.go:591`. **Zig dispatches no routes at all**, so it answers `.not_found` (`404 not found`, `not found`), which I measured against a built `oapx hub` over a socket and then pinned in `a zero-length body with a wrong media type is not gated`. An earlier revision of this row claimed the route "answers the close in **both** trees"; that was false for Zig, and the trees agree on **one** thing only — neither refuses it `415`, Zig because `carriesBody` is false and Go because the gate is never reached. The empty-body corner is only real on a route that reads a body, and the four are `handleOpen` `:191`, `handleSubmit` `:321`, `handleResolve` `:382`, `handleCancel` `:496`. |
+| **Why they are not rows here** | Neither tree is wrong against the draft: `:461` pins the status for a wrong `Content-Type` and is silent on the predicate, so both answers are consistent with the text. Deciding which predicate is correct would be **choosing a precedence the draft does not state**, and this table does not make that choice. A draft row naming the predicate — "a request whose method reads a body" or "a request that carries one" — would settle it, and that is a spec change and unaccepted. |
+| **What is recorded instead** | The divergence itself, in both directions and with both call sites, so a reader comparing the trees sees two answers and knows the cause is an unpinned predicate rather than a bug in either. |
+| **What is now pinned, on the Zig side** | Both corners are executable rather than described. `a zero-length body with a wrong media type is not gated, because the gate reads length` sends a `POST /adapters/a/sessions` with `Content-Type: text/plain` at both `Content-Length: 0` and with the header absent, asserts `carriesBody` is false and that the answer is `.not_found` — **Go answers 415 for both.** `a listing carrying a body with a wrong media type is gated, because the gate reads the head` sends a `GET /adapters` with `Content-Length: 4` and `text/plain`, asserts `carriesBody` is true and that the answer is `unsupported_media_type` — Go serves the listing. Changing `carriesBody` from `content_length > 0` to `content_type != null` makes the first fail, so the tests pin the predicate rather than restate it. **Go still has no test for either corner**, which is the same gap D20 records for `type_mismatch`; these tests fix the Zig half and leave the Go half recorded rather than silently equal. |
+| **A third corner, closed rather than recorded** | `declaresJson` used to cut at the first `;`, so `application/json; charset` — a parameter with no `=` — was admitted while Go's `mime.ParseMediaType` errors on it and the gate answers 415. **The Zig gate now validates the parameter section**, aligned to **Go's `mime.ParseMediaType`, not the bare grammar of RFC 9110 §5.6.6** — the two are not the same, and citing the grammar would misdescribe the result, since Go's parser **admits optional whitespace around `=`** and **quoted-pairs**. The test, `a parameter list that Go refuses is refused here too, and one it admits is admitted`, pins **thirteen refused and twenty admitted** spellings, each **executed against Go 1.27's parser and matched against what it answered**. Duplicate names compare case-insensitively and values **after unescaping quoted-pairs**, because a raw slice comparison diverges from Go on exactly those spellings. **Go still has no test for any of these**, the same gap D20 records for `type_mismatch`. |
+| **Storage, and the bound that replaced two bad ones** | The duplicate check compares **decoded** values, so each parameter is appended to one store as two big-endian u16 lengths, the name, and the decoded value. The store is `2 * max_header_bytes` — 32 KiB — which is the only bound there is, and it is the header bound the draft already states. **An earlier revision imposed two refusals of its own, a 64-parameter cap and a 256-byte value limit.** Both were mine, neither is in the draft, and both refused requests Go accepts, so both are gone. The 256-byte one existed only because the buffer was 256 bytes and the bare-token branch copied into it unchecked, so a 257-character token indexed past the end — a **panic in the daemon's request path**, an abort and every session with it. Sizing the store from the header removes the overflow *and* the refusal at once. `sixty-five parameters and a long value are admitted, because the header bound is the limit` pins 64, 65 and 200 parameters and a 2048-character value, each **executed against Go 1.27 first**. |
+| **A backslash is an escape only before a tspecial** | The decoder is aligned to `mime/mediatype.go:304-312`, which
+  consumes a backslash **only when the byte it precedes is a tspecial** — `( ) < > @ , ; : \ " / [ ] ? =` —
+  and deliberately preserves one before a letter or digit, so an MSIE path survives a round trip. Two earlier
+  attempts got this wrong in opposite directions: one dropped every escaped byte, the next consumed every
+  backslash pair, and **both make values Go treats as different compare equal**, admitting a duplicate the
+  draft-facing gate should refuse. `a backslash is consumed only before a tspecial, which is what Go does` pins
+  **eleven header spellings, two admitted and nine refused**, each reproduced against Go 1.27 and matched
+  against what it answered; the bytes are **runtime header bytes**, not Zig source. Admitted:
+  `a="C:\\path"; a="C:\\path"` and `a="x\\qy"; a="x\\qy"`. Refused: those two against a shorter value
+  (`a="C:path"`, `a="xqy"`), a second literal backslash (`a="C:\\path\\x"; a=C:pathx`), a literal one before a
+  digit or space (`a="x\\1"; a="x1"`, `a="x\\ "; a="x "`), a doubled against a single one quoted or bare
+  (`a="x\\\\"; a="x\\"`, `a="x\\\""; a="x\""`, `a="x\\\""; a=x\"`), and `a="a\\;b=c"; a="a;b=c"`, where the
+  doubled backslash leaves a literal one after decoding. **Both mutations fail it:** consuming every pair
+  regardless of `isTspecial`, and never consuming one. |
 
 ### D20 — `type_mismatch` is answered by no test in either tree
 

@@ -234,7 +234,8 @@ export interface ModelDescriptor {
   api: ApiId;
   base_url?: string;
   auth_status: AuthStatus;
-  lifecycle: ModelLifecycle;
+  /** Absent means the listing did not state a lifecycle. Never defaulted. */
+  lifecycle?: ModelLifecycle;
   capabilities: ModelCapability[];
   /** Absent means the listing did not state a source. Never defaulted. */
   source?: ModelSource;
@@ -1840,13 +1841,19 @@ The shared catalog result carries `source` as optional. The owner selected
 this shape: absent is read as **unknown**, and no SDK fabricates
 `dynamic`/`discovered` for a value the listing did not state.
 
-This is the target for all three SDKs, and it is **implemented in Rust and
-Go**: #688 for Rust and #690 for Go, each refusing a present null or an
-unrecognised value on both its shared and its OAP decode path. It is **not
-yet implemented in TypeScript**, where a listing that omits `source` is
-still invented as `dynamic` on the OAP path and still rejected on the shared
-path; that reader is #705. A reader that has not been changed yet must not be
-described as if it had, so TypeScript does not satisfy this section today.
+This is the target for all three SDKs and all three now implement it. Rust
+landed as #688 and Go as #690; each refuses a present null or an
+unrecognised value on both its shared and its OAP decode path. TypeScript
+is #705, which changes both of its readers: the shared reader no longer
+requires the member, and the OAP reader no longer invents `dynamic` for a
+listing that stated nothing. All three record an omitted source as unknown
+and omit the member rather than setting a value.
+
+The Rust section of this paragraph was written when Rust alone had been
+changed and named Go and TypeScript as follow-ups; those two have since
+landed. A reader that has not been changed must not be described as if it
+had, which is why the earlier text said "Rust only" rather than claiming
+the shape for the others.
 
 That migration status is about the **shared SDK reader** only. The wire
 definition in `schema/v0.1/provider.schema.json` is already an optional key
@@ -1865,3 +1872,24 @@ reads as the SDK's dynamic value and `fallback` as its static-fallback value.
 `lifecycle` follows the same shape in a later change, and the native
 protocol `ModelDescriptor` declared earlier in this document is a separate
 contract that keeps its required members.
+
+## Catalog result: an optional `lifecycle`
+
+`lifecycle` is the same shape as `source` above: the shared catalog result
+carries it as optional, an absent key reads as **unknown**, and no reader
+invents `stable` or any other value for a listing that did not state one.
+An optional key is not a nullable one, so a `lifecycle` that is **present**
+must be one of `stable`, `preview` or `deprecated`, and `null`, a number or
+an unrecognised literal is a malformed response.
+
+That is the target for all three SDKs and all three now implement it: Rust
+merged as #709, Go merged as #710, and TypeScript by this change. Each
+records an omitted `lifecycle` as unknown and omits the member rather than
+setting a value, and each refuses a present `null`, a number or an
+unrecognised literal as a malformed response.
+
+One consequence is worth stating because it is a filtering decision rather
+than a parsing one. A listing filters a model out as deprecated only when the
+listing **stated** `deprecated`. A model whose lifecycle is unknown is
+kept, because dropping it would silently exclude a model for failing to
+answer a question it was never asked.

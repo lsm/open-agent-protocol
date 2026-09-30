@@ -17,7 +17,7 @@ pub const edit_tool = agent.AgentTool{ .label = "Hashline Edit", .name = "hashli
 
 const Operation = tool_types.HashlineEditOperation;
 const max_read_bytes: usize = common.max_file_bytes;
-const max_preview_bytes: usize = common.default_file_limit;
+const max_preview_bytes: usize = common.default_hashline_limit;
 
 const Line = struct {
     no: usize,
@@ -38,7 +38,7 @@ pub fn readExecute(tool_call_id: []const u8, args_json: []const u8, cancel_token
     const workspace_root = try common.requiredString(obj, "workspace_root");
     const path = try common.requiredString(obj, "path");
     const start_line = common.optionalUsize(obj, "start_line", 1);
-    const byte_limit = @min(common.optionalUsize(obj, "byte_limit", common.default_file_limit), max_read_bytes);
+    const byte_limit = @min(common.optionalUsize(obj, "byte_limit", common.default_hashline_limit), max_read_bytes);
     if (start_line == 0) return error.InvalidLineRange;
 
     const content = try common.readWorkspaceFile(allocator, workspace_root, path, common.max_file_bytes);
@@ -369,6 +369,42 @@ test "hashline preview caps large replacements" {
     var result = try editExecute("call", args, null, null, null, std.testing.allocator);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(result.content.slice()[0].text.text.len <= max_preview_bytes);
+}
+
+test "hashline budgets stay 20 KiB whatever the tool output limits say" {
+    try std.testing.expectEqual(@as(usize, 20 * 1024), common.default_hashline_limit);
+    try std.testing.expectEqual(@as(usize, 20 * 1024), max_preview_bytes);
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmpRoot(std.testing.allocator, tmp);
+    defer std.testing.allocator.free(root);
+    const line = "abcdefghijklmnopqrstuvwxyz\n";
+    var data = std.ArrayList(u8).empty;
+    defer data.deinit(std.testing.allocator);
+    for (0..900) |i| {
+        const numbered = try std.fmt.allocPrint(std.testing.allocator, "{d:0>3}{s}", .{ i, line });
+        defer std.testing.allocator.free(numbered);
+        try data.appendSlice(std.testing.allocator, numbered);
+    }
+    try tmp.dir.writeFile(common.defaultIo(), .{ .sub_path = "big.txt", .data = data.items });
+    try std.testing.expect(data.items.len > 20 * 1024);
+
+    const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"path\":\"big.txt\"}}", .{root});
+    defer std.testing.allocator.free(args);
+    var result = try readExecute("call", args, null, null, null, std.testing.allocator);
+    defer result.deinit(std.testing.allocator);
+    const text = result.content.slice()[0].text.text;
+    try std.testing.expect(text.len <= 20 * 1024);
+    try std.testing.expectEqual(@as(usize, 0), result.artifacts.slice().len);
+    try std.testing.expect(std.mem.indexOf(u8, text, "|000abcdefghijklmnopqrstuvwxyz") != null);
+    try std.testing.expect(std.mem.startsWith(u8, text, "1:"));
+
+    const capped_args = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"path\":\"big.txt\",\"byte_limit\":4096}}", .{root});
+    defer std.testing.allocator.free(capped_args);
+    var capped = try readExecute("call-capped", capped_args, null, null, null, std.testing.allocator);
+    defer capped.deinit(std.testing.allocator);
+    try std.testing.expect(capped.content.slice()[0].text.text.len <= 4096);
 }
 
 test "hashline read then edit integration" {

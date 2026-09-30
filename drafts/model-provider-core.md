@@ -343,6 +343,18 @@ content is bound to one descriptor snapshot.
 
 #### The model entry
 
+An entry is an object or the response is refused. This is the shape rule stated
+once and applied to the entry itself: `models` is an array of model entries, and
+an element of that array that is not an object is a `malformed_response`, not an
+element to skip. A reader that filters non-objects out of `models` returns a
+partial list while reporting the provider's own `catalog.complete`, so a caller
+that trusts `complete` believes it holds the whole catalog while an entry has
+vanished — and with a single malformed entry it receives an empty list and no
+error at all. The refusal is not exempt because a local filter would have
+dropped the row: a filter that excludes every model still cannot make a
+malformed entry well-formed. Readers must judge the entry's shape before any
+local filter, which is the same ordering the member rules below require.
+
 Each entry in `provider.models.list.response`:
 
 - `model_ref` — `provider_id/wire@model_id`.
@@ -464,6 +476,48 @@ resolution is that a response is generated per request while a descriptor is
 fixed per revision, so the volatile fact belongs on the entry in the response
 and not in the descriptor. That distinction is the whole of 0014's objection and
 it is satisfied, not overridden.
+
+**An absent `auth_status` on a published entry reads as `unknown`.** The entry
+carries the member optionally — `provider.schema.json` requires only
+`model_ref`, `model_id`, `provider_id` and `wire` — so a provider that never
+looked is not malformed, and the literal `unknown` exists to say exactly that.
+A *present* member is still judged: `null`, a non-string, and a literal outside
+the enum are each `malformed_response`, judged before any local filter, because
+a filter that would have dropped the row cannot make a present value into an
+absent one.
+
+This is the **entry in a response**, and it is not the same rule as the native
+envelope. A native `ModelDescriptor` states `auth_status` as required
+(`docs/v1-sdk-agent-provider-spec.md`), and the native readers keep it that way:
+a native response that omits it is malformed there and is not repaired by this
+rule. The two envelopes have different requiredness on this member, and
+conflating them would either excuse a native omission or over-refuse an OAP
+one.
+
+**A reader that judges a present value, and one that coerces it, are not
+measuring the same thing.** A reader that reads the member as
+`str(value) || "unknown"` and one that tests it against a closed set disagree
+on three inputs at once: a present `null` and a present number both become the
+string `unknown` under the first and are `malformed_response` under the second,
+and a literal outside the set passes through the first as though a type
+assertion had checked it. The coercion cannot distinguish "the provider said
+`unknown`" from "the provider said something we could not read", which is the
+distinction this member exists to carry.
+
+**What the tree does today, measured, without settling which set is
+conforming.** `common.schema.json` publishes seven literals — `authenticated`,
+`login_required`, `expired`, `refreshing`, `login_in_progress`, `failed`,
+`unknown` — and the OAP readers validate a present value against that set, so
+`refreshing` and `login_in_progress` are accepted and carried through today.
+The paragraph above excludes those two from this profile as transient states.
+**That disagreement is open, and nothing here resolves it**: this profile, the
+schema, and the readers do not currently agree on the vocabulary, and which of
+them should change is a separate decision. The reader repairs that have landed
+do not depend on the answer, because each adds no literal and removes none —
+they judge a present value against the set the schema already publishes, and
+read an absent one as the existing `unknown`. A reader is conformant on the
+point recorded here — absent reads as `unknown`, and a present value outside
+the set it validates against is refused — whichever set that turns out to be.
 
 ### One inference call
 
@@ -1845,8 +1899,8 @@ two kinds of redirect. Makai already does: a base-URL override alone means
 "different endpoint, assume nothing", while an explicit proxy assertion means
 "same vendor behind a proxy, the vendor's facts still hold" — and the
 distinction is load-bearing there, gating assertions about OpenAI's
-`max_completion_tokens` and developer role, DeepSeek's thinking-as-text
-requirement, and Anthropic's cache TTL. A conformance harness pointing at a mock
+`max_completion_tokens` and developer role, DeepSeek's token-limit field and
+strict mode, and Anthropic's cache TTL. A conformance harness pointing at a mock
 is emphatically not a transparent proxy.
 
 The reason it stays a recommendation is stronger than "not yet decided": the

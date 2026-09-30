@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -87,14 +88,14 @@ func TestPiProcessHelper(t *testing.T) {
 		os.Stdout.WriteString("noise\n")
 		os.Exit(2)
 	case "hang":
-		select {}
+		_, _ = io.Copy(io.Discard, os.Stdin)
 	case "badstate":
 		scanner := bufio.NewScanner(os.Stdin)
 		scanner.Scan()
 		var command native.Command
 		_ = json.Unmarshal(scanner.Bytes(), &command)
 		os.Stdout.WriteString(`{"id":"` + command.ID + `","type":"response","command":"get_state","success":true,"data":{"steeringMode":"all","followUpMode":"all","sessionId":""}}` + "\n")
-		select {}
+		_, _ = io.Copy(io.Discard, os.Stdin)
 	}
 }
 func helperConfig(mode string) ProcessConfig {

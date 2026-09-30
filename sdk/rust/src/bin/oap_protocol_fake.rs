@@ -158,7 +158,29 @@ fn main() {
                     "fallback" => entry["source"] = json!("fallback"),
                     _ => entry["source"] = json!("discovered"),
                 }
-                entry["lifecycle"] = json!("stable");
+                match shape.as_str() {
+                    "absent-lifecycle" => {
+                        let _ = entry.as_object_mut().map(|o| o.remove("lifecycle"));
+                    }
+                    "null-lifecycle" => entry["lifecycle"] = Value::Null,
+                    "invented-lifecycle" => entry["lifecycle"] = json!("retired"),
+                    "preview-lifecycle" => entry["lifecycle"] = json!("preview"),
+                    "deprecated-lifecycle" => entry["lifecycle"] = json!("deprecated"),
+                    _ => entry["lifecycle"] = json!("stable"),
+                }
+                match shape.as_str() {
+                    "absent-auth" => {
+                        let _ = entry.as_object_mut().map(|o| o.remove("auth_status"));
+                    }
+                    "null-auth" => entry["auth_status"] = Value::Null,
+                    "number-auth" => entry["auth_status"] = json!(7),
+                    "invented-auth" => entry["auth_status"] = json!("retired"),
+                    other => {
+                        if let Some(literal) = other.strip_prefix("stated-auth-") {
+                            entry["auth_status"] = json!(literal);
+                        }
+                    }
+                }
                 emit(
                     profile,
                     "provider.models.list.response",
