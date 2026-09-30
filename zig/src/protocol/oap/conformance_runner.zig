@@ -328,8 +328,15 @@ const Runner = struct {
 
 
     fn pullUntil(self: *Runner, deadline: Deadline) !void {
-        if (deadline.expired()) return error.ProbeBudgetExpired;
-        const frame = try self.client.next(deadline.budget()) orelse return error.ProbeBudgetExpired;
+        // next() returns null both when the deadline has elapsed and on an early
+        // wake with no bytes, which fill() permits; only the deadline ends the
+        // correlation, so a no-byte wake retries under the same absolute deadline.
+        const frame = while (true) {
+            if (deadline.expired()) return error.ProbeBudgetExpired;
+            const maybe = try self.client.next(deadline.budget());
+            if (maybe) |frame| break frame;
+            if (deadline.expired()) return error.ProbeBudgetExpired;
+        };
         if (frame == .control) {
             const control = try parseControl(self.allocator, frame.control);
             self.controls.append(self.allocator, control) catch |err| {
@@ -821,12 +828,13 @@ const Runner = struct {
         var recovered = self.request(.{
             .session_state_request = .{ .session_id = probe_session },
         }, null, self.probeDeadline()) catch |err| {
+            const why = recoveryFailureReason(err, self.reasonOf(err));
             try self.failOwned(
                 name,
                 try std.fmt.allocPrint(
                     self.allocator,
                     "the endpoint stopped answering after a recoverable protocol error: {s}",
-                    .{self.reasonOf(err)},
+                    .{why},
                 ),
             );
             return;
@@ -900,6 +908,11 @@ const Runner = struct {
     fn reasonOf(self: *const Runner, err: anyerror) []const u8 {
         if (err == error.ConformanceRefused and self.refusal.len != 0) return self.refusal;
         return @errorName(err);
+    }
+
+    fn recoveryFailureReason(err: anyerror, named: []const u8) []const u8 {
+        if (err == error.ProbeBudgetExpired) return "the session_state probe ran out of its budget without an answer";
+        return named;
     }
 
     fn scriptedMessages(self: *Runner) ![]oap_types.Message {
@@ -1357,6 +1370,17 @@ test "a revision this endpoint never issued is judged, not waved through" {
     try std.testing.expectEqualStrings(
         "refused \"invalid_request\", want \"stale_capabilities\"",
         stale.detail,
+    );
+}
+
+test "a spent recovery budget is explained, not printed as the raw error" {
+    try std.testing.expectEqualStrings(
+        "the session_state probe ran out of its budget without an answer",
+        Runner.recoveryFailureReason(error.ProbeBudgetExpired, "ProbeBudgetExpired"),
+    );
+    try std.testing.expectEqualStrings(
+        "unsupported_feature: this endpoint will not be asked again",
+        Runner.recoveryFailureReason(error.ConformanceRefused, "unsupported_feature: this endpoint will not be asked again"),
     );
 }
 
