@@ -34,12 +34,11 @@ In `goap`, `--timeout` gives one answer wait one budget for the whole wait, not 
 per line: a response, event or control answer is judged on the deadline from the
 moment the runner starts looking, a frame it did not ask for spends that budget
 rather than renewing it, a match already buffered is still returned, and a control
-frame the endpoint does not implement still skips. Two things are outside that rule
-today, and neither is claimed fixed: the end-of-stream drain renews per line on
-purpose, because it is waiting for the endpoint to stop talking rather than for an
-answer; and `oapx` still renews per line in its runner, so `oapx conformance
---timeout-ms` waits on a chatty endpoint indefinitely until the Zig side carries the
-same absolute budget.
+frame the endpoint does not implement still skips. Two things are outside that rule,
+and neither is claimed fixed: the end-of-stream drain renews per line on purpose,
+because it waits for the endpoint to stop talking rather than for an answer; and
+`oapx` still renews per line in its runner, so `oapx conformance --timeout-ms` waits
+on a chatty endpoint indefinitely until Zig carries the same absolute budget.
 
 The hub is its own verb in both binaries: `goap hub` and `oapx hub`. It is a layer
 above an endpoint, not a different spelling of one, and giving it its own verb is
