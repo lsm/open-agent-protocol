@@ -29,6 +29,7 @@ fn runWithIo(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8,
         .stdout = .pipe,
         .stderr = .pipe,
         .create_no_window = true,
+        .pgid = if (builtin.os.tag != .windows) 0 else null,
     });
     defer cleanupChild(&child, io);
 
@@ -137,6 +138,11 @@ fn lookupCurrentUser() ?CurrentUser {
 }
 
 fn cleanupChild(child: *std.process.Child, io: std.Io) void {
+    if (child.id) |id| {
+        if (builtin.os.tag != .windows) {
+            std.posix.kill(-@as(std.posix.pid_t, @intCast(id)), std.posix.SIG.TERM) catch {};
+        }
+    }
     if (child.id != null) child.kill(io);
     if (child.stdin) |stdin| {
         stdin.close(io);
@@ -227,6 +233,39 @@ fn pollTermWindows(child: *std.process.Child, io: std.Io) !?std.process.Child.Te
         .TIMEOUT => null,
         else => |status| return windows.unexpectedStatus(status),
     };
+}
+
+fn liveRecordedChild(dir: std.Io.Dir) ?std.posix.pid_t {
+    const text = dir.readFileAlloc(common.defaultIo(), "child.pid", std.testing.allocator, .limited(64)) catch return null;
+    defer std.testing.allocator.free(text);
+    const pid = std.fmt.parseInt(std.posix.pid_t, std.mem.trim(u8, text, " \n\t"), 10) catch return null;
+    std.posix.kill(pid, @as(std.posix.SIG, @enumFromInt(0))) catch return null;
+    return pid;
+}
+
+test "a timed out command takes its backgrounded children with it" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dir = try tmp.dir.openDir(common.defaultIo(), ".", .{});
+    defer dir.close(common.defaultIo());
+    const argv = [_][]const u8{ "/bin/sh", "-c", "(sleep 30 & echo $! > child.pid); sleep 30" };
+
+    if (runWithIo(std.testing.allocator, common.defaultIo(), &argv, .{ .dir = dir }, 1_000, null)) |result| {
+        std.testing.allocator.free(result.stdout);
+        std.testing.allocator.free(result.stderr);
+    } else |err| try std.testing.expectEqual(error.Timeout, err);
+
+    var leaked: ?std.posix.pid_t = null;
+    const deadline = common.nowMs() + 2_000;
+    while (common.nowMs() < deadline) {
+        leaked = liveRecordedChild(dir) orelse break;
+        compat.time.sleepMs(50);
+    }
+    if (leaked) |pid| {
+        std.posix.kill(pid, std.posix.SIG.KILL) catch {};
+        return error.TestUnexpectedResult;
+    }
 }
 
 test "process runner honors cancellation" {
