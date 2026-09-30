@@ -719,6 +719,39 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   this work claimed the guard was "structurally unreachable" from a bound on the requested I/O round
   deadlines; that was **withdrawn**, because those deadlines bound requested waits and not elapsed
   execution across preemption, inter-round scheduling, or the work an injected callback does.
+- **the refusal order, decided outside the process** — `answer()` at `http.zig:378-383` checks
+  **Origin, then Host, then the media type**, and what was missing was a **separate daemon process**
+  deciding it over a socket. Two in-process tests already covered the ordering inside one test binary:
+  the test at `:1155` calls `answer()` directly on hand-built `Request` values and uses **no sockets at
+  all**, and the test at `:1169` does use real sockets, with its `cross_origin_request` cases at
+  `:1175-1176`. No `go/cmd/goap` test named `cross_origin_request`, so nothing outside the test binary
+  had ever seen this refusal. Two tests now settle it over a real
+  socket. `TestHubAddrRefusesAnOriginHeaderBeforeItLooksAtTheHostOrTheMediaType` sends four requests
+  that each carry an `Origin` header and asserts a **complete** 403 — status, `Content-Length` match,
+  `error.response`, `cross_origin_request`, the fixed `open-agent-protocol` / `0.1` /
+  `open-agent-protocol.agent-control-core` triple, and the synthetic correlation `oap-error-N` replying
+  to `oap-request-N` for the same `N` — including one beside a **Host the hub refuses** and one beside
+  a body with a **refused media type**, so the ordering is pinned in both directions.
+  `TestHubAddrRefusesTheSameTwoRequestsDifferentlyOnceNoOriginHeaderIsPresent` is its counterexample,
+  and each of its two requests is the **same request as the second and third of the four the first
+  test sends, with the `Origin` header removed and nothing else changed** — those two, not the first
+  two, are the precedence cases, the first being the Origin header alone and the fourth the
+  matching-`Origin` case: `Host: evil.test` with `application/json` is refused `403
+  unrecognized_host`, and `Host: 127.0.0.1:1` with `text/plain` and a body is refused `415
+  unsupported_media_type`. That is what makes the ordering a measurement rather than an assertion —
+  each precedence case has a twin that differs only in the header under test, so the first test cannot
+  pass on a build that refuses everything. Both counterexamples parse the envelope and assert `type`,
+  `code`, `Content-Length` and the same `open-agent-protocol` / `0.1` /
+  `open-agent-protocol.agent-control-core` triple and `oap-error-N` / `oap-request-N` correlation as
+  the primary proof; an earlier revision of this row checked the code with a substring search over the
+  raw body, which would have accepted a different `payload.error.code` that merely mentioned the
+  string elsewhere. **Three mutations fail them:** checking `Host` before `Origin` answers
+  `unrecognized_host` on the second case, checking the media type first answers `415` on the third,
+  and deleting the `Origin` gate answers `404`. One thing this pins that is worth stating plainly,
+  because it is stricter than the name suggests: the gate fires on the **presence** of an `Origin`
+  header, not on a comparison. A request with `Host: 127.0.0.1:1` and `Origin: http://127.0.0.1:1` —
+  matching — is still refused `cross_origin_request`. That is the observed contract, recorded rather
+  than judged, and narrowing it would be a policy change this table does not make.
 - **the media gate answered by the daemon itself, with nothing else wrong** — the third gate in
   `answer()` and the only refusal no `go/cmd/goap` test named, so the parity D26 records was pinned
   in-process only. `TestHubAddrRefusesABodyWhoseMediaTypeIsNotJSONAndNothingElseIsWrong` sends five

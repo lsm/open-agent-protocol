@@ -1435,7 +1435,6 @@ const spends_the_budget = struct {
 
     fn check(context: *const anyopaque) bool {
         const self: *@This() = @ptrCast(@alignCast(@constCast(context)));
-        _ = self.polls;
         self.polls += 1;
         if (self.buffered != 0) return true;
         var now = elapsedMs() catch return true;
