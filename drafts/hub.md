@@ -629,11 +629,19 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   a response-time bound **derived** from the constant, not evidence that the per-round deadline is read.
   **What these equalities do not prove, stated plainly because it is the limit of the evidence:** they
   pin the two constants' **values**, not that `drain` *uses* them. Bypassing the use while keeping the
-  constants — taking `owed` from `drain_total_cap_bytes` instead of `drain_cap_bytes` at `:219`, or
-  building the round deadline from something other than `drain_cycle_ms` at `:220` — **compiles and leaves
-  every assertion here green**, and no such control is presented, because the per-round cap is not
-  independently observable through `drain`'s surface: the 1 MiB total and the 2500 ms total both dominate
-  it, so a wider round changes no observable byte count. So this bullet says only that the ledger's
+  constants — taking `owed` from `drain_total_cap_bytes` instead of `drain_cap_bytes` at `:219` — **compiles
+  and leaves every assertion here green**, and no such control is presented, because the per-round cap is
+  not independently observable through `drain`'s surface: the 1 MiB total and the 2500 ms total both
+  dominate it, so a wider round changes no observable byte count. The round deadline is **not** in that
+  position, and the row should not have put it there. A `:220` substitute that keeps both constants but
+  builds the deadline from something larger — `drain_total_ms` is the case that matters — blocks a silent
+  peer for ~2500 ms and so **fails** the 10-cycle bound, and that is **run, not inspected**: building the
+  deadline from `drain_total_ms` instead compiles clean and fails `EXIT=1` in `a drain gives up rather
+  than waiting on a peer that sends nothing more`, with both constants still holding 64 KiB and 50, so
+  the `expectEqual` assertions pass and only the derived bound objects. What the derived bound pins is
+  therefore a **ceiling**: a round deadline substituted at **500 ms or more** is caught, and one
+  substituted **below 500 ms** — a hardcoded shorter wait, say — is not. So the bound does real work on
+  the deadline, and none at all on the round cap. So this bullet says only that the ledger's
   64 KiB and one-cycle figures are now **asserted rather than merely stated**, and it does not close the
   per-round cap or the per-round deadline the way the 1 MiB bullet and the guard-presence row do theirs.
   **Both measured, not assumed:** against `main` as it stood, raising `drain_cap_bytes` to 1 MiB left
