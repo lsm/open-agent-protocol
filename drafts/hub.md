@@ -679,6 +679,25 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   presence is NOT pinned anywhere**, exactly as the row above states, and this row adds nothing to it.
   Two things a reader might assume are covered here are not: this site's drain amount, and the
   existence of the time bound.
+- **the refusal order, decided outside the process** — `answer()` at `http.zig:378-383` checks
+  **Origin, then Host, then the media type**, and the first of those had no real-process proof: the
+  cases at `:1163` are in-process `Pipe` sockets inside one test binary, not a daemon answering a
+  socket, and no `go/cmd/goap` test named `cross_origin_request`. Two tests now settle it over a real
+  socket. `TestHubAddrRefusesAnOriginHeaderBeforeItLooksAtTheHostOrTheMediaType` sends four requests
+  that each carry an `Origin` header and asserts a **complete** 403 — status, `Content-Length` match,
+  `error.response`, `cross_origin_request`, the fixed `open-agent-protocol` / `0.1` /
+  `open-agent-protocol.agent-control-core` triple, and the synthetic correlation `oap-error-N` replying
+  to `oap-request-N` for the same `N` — including one beside a **Host the hub refuses** and one beside
+  a body with a **refused media type**, so the ordering is pinned in both directions.
+  `TestHubAddrRefusesAHostOnlyWhenThereIsNoOriginHeaderToRefuseFirst` is its counterexample: the same
+  two requests **without** an `Origin` are refused `unrecognized_host`, which is what keeps the first
+  test from passing vacuously. **Three mutations fail them:** checking `Host` before `Origin` answers
+  `unrecognized_host` on the second case, checking the media type first answers `415` on the third,
+  and deleting the `Origin` gate answers `404`. One thing this pins that is worth stating plainly,
+  because it is stricter than the name suggests: the gate fires on the **presence** of an `Origin`
+  header, not on a comparison. A request with `Host: 127.0.0.1:1` and `Origin: http://127.0.0.1:1` —
+  matching — is still refused `cross_origin_request`. That is the observed contract, recorded rather
+  than judged, and narrowing it would be a policy change this table does not make.
 - **the bound holding against a real process** —
   `TestHubAddrRefusesALargeRefusedHeadOverARealSocket` transfers 1,052,672 /
   1,719,800 / 1,799,224 bytes against declarations of 1 MiB+4096, 4 MiB and 16 MiB
