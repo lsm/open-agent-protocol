@@ -1222,6 +1222,48 @@ test "drain stops mid-body when the signal flips after reading has begun" {
     try testing.expect(state.asks.load(.seq_cst) < 40);
     try testing.expect(consumed < owed);
 }
+fn mediaRefusalOverTheCap(owed: usize) !void {
+    var pipe = try Pipe.open();
+    defer pipe.close();
+    const head = try std.fmt.allocPrint(testing.allocator, "POST /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: text/plain\r\nContent-Length: {d}\r\n\r\n", .{owed});
+    defer testing.allocator.free(head);
+    try pipe.client.writeAll(head);
+    var filler: [64 * 1024]u8 = undefined;
+    @memset(&filler, 'b');
+    var sent: usize = 0;
+    const want = @min(owed, 256 * 1024);
+    while (sent < want) {
+        const take = @min(filler.len, want - sent);
+        try pipe.client.writeAll(filler[0..take]);
+        sent += take;
+    }
+
+    var body_allowed = true;
+    var seen: usize = 0;
+    var request = try readHead(testing.allocator, &pipe.accepted, header_read_ms, test_cycle_ms, always_going, &body_allowed, &seen);
+    defer request.deinit(testing.allocator);
+
+    var scratch_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch_state.deinit();
+    const refused = answer(loopbackHosts("127.0.0.1:0").?, request);
+    try testing.expectEqualStrings("415 Unsupported Media Type", refused.refusal.status);
+    try writeAnswer(&pipe.accepted, scratch_state.allocator(), 11, refused, body_allowed);
+    _ = drain(&pipe.accepted, request.content_length, always_going);
+    pipe.closeAccepted();
+
+    var spoken: [8192]u8 = undefined;
+    const said = try readToEnd(&pipe.client, &spoken);
+    try testing.expect(std.mem.startsWith(u8, said, "HTTP/1.1 415 Unsupported Media Type"));
+    try testing.expect(std.mem.indexOf(u8, said, "unsupported_media_type") != null);
+}
+
+test "a media-refused body over the drain cap still gets its complete answer" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    try mediaRefusalOverTheCap(drain_total_cap_bytes + 1024);
+    try mediaRefusalOverTheCap(4 * 1024 * 1024);
+    try mediaRefusalOverTheCap(max_body_bytes);
+}
+
 test "a drain gives up rather than waiting on a peer that sends nothing more" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var pipe = try Pipe.open();
