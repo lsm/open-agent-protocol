@@ -102,31 +102,21 @@ class CatalogAbsence(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model.lifecycle, "preview")
         self.assertEqual(model.source, "dynamic")
 
-    async def test_a_present_null_is_refused(self) -> None:
-        for key, member in (("null-lifecycle", "lifecycle"), ("null-source", "source")):
+    async def test_a_present_null_wrong_type_unknown_or_alias_is_refused(self) -> None:
+        for key, lifecycle, source, member in (
+            ("null-lifecycle", "null", _ABSENT, "lifecycle"),
+            ("null-source", _ABSENT, "null", "source"),
+            ("invented-lifecycle", '"retired"', _ABSENT, "lifecycle"),
+            ("number-lifecycle", "7", _ABSENT, "lifecycle"),
+            ("invented-source", _ABSENT, '"invented-source"', "source"),
+            ("number-source", _ABSENT, "7", "source"),
+            ("alias-dynamic", _ABSENT, '"dynamic"', "source"),
+            ("alias-static-fallback", _ABSENT, '"static_fallback"', "source"),
+        ):
             with self.assertRaises(MakaiProtocolError) as caught:
-                await self._list(key, "null" if member == "lifecycle" else _ABSENT,
-                                 "null" if member == "source" else _ABSENT)
-            self.assertEqual(caught.exception.code, "malformed_response")
-            self.assertIn(member, str(caught.exception).lower())
-
-    async def test_an_unrecognised_member_is_refused(self) -> None:
-        for key, raw in (("invented-lifecycle", '"retired"'), ("number-lifecycle", "7"),
-                         ("invented-source", '"invented-source"'), ("number-source", "7")):
-            member = key.split("-")[1]
-            with self.assertRaises(MakaiProtocolError) as caught:
-                await self._list(key, raw if member == "lifecycle" else _ABSENT,
-                                 raw if member == "source" else _ABSENT)
-            self.assertEqual(caught.exception.code, "malformed_response")
-            self.assertIn(member, str(caught.exception).lower())
-
-    async def test_the_shared_aliases_are_not_wire_values(self) -> None:
-        for key, raw in (("alias-dynamic", '"dynamic"'),
-                         ("alias-static-fallback", '"static_fallback"')):
-            with self.assertRaises(MakaiProtocolError) as caught:
-                await self._list(key, _ABSENT, raw)
-            self.assertEqual(caught.exception.code, "malformed_response")
-            self.assertIn("source", str(caught.exception).lower())
+                await self._list(key, lifecycle, source)
+            self.assertEqual(caught.exception.code, "malformed_response", key)
+            self.assertIn(member, str(caught.exception).lower(), key)
 
     async def test_deprecated_is_filtered_but_an_unknown_one_is_kept(self) -> None:
         dropped = await self._list("dep", '"deprecated"', '"fallback"', include_deprecated=False)
