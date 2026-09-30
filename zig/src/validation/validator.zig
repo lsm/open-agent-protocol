@@ -359,9 +359,14 @@ test "one pack named twice is one pack, and contributes one branch" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try tmp.dir.createDir(std.testing.io, "a", .default_dir);
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "a/note.schema.json",
+        .data =
+        \\{"$schema":"https://json-schema.org/draft/2020-12/schema","$defs":{"ping":{"type":"object","required":["type","id","session_id"],"properties":{"type":{"const":"com.example.note.ping"},"id":{"type":"string"},"session_id":{"type":"string"}}}}}
+        ,
+    });
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "a/pack.json",
         .data =
-        \\{"id":"com.example.note","version":"1.0.0","schemas":[],"envelope_types":[{"type":"com.example.note.ping","role":"event","schema":"note.schema.json#/$defs/ping"}]}
+        \\{"id":"com.example.note","version":"1.0.0","schemas":["note.schema.json"],"envelope_types":[{"type":"com.example.note.ping","role":"event","schema":"note.schema.json#/$defs/ping"}]}
         ,
     });
     const first = try tmp.dir.realPathFileAlloc(std.testing.io, "a", allocator);
