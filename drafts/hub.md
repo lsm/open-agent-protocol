@@ -629,6 +629,30 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   cited the long-lived test as pinning it; that was a coverage claim with no test behind it. Closing
   it needs a seam substituting a failing clock, a redesign rather than a test, so it stays a gap
   rather than invented.
+- **the 413 path answers completely, before the whole declared body is sent** —
+  `TestHubAddrAnswersAComplete413BeforeTheWholeDeclaredBodyIsSent` drives the branch a plain media
+  refusal does not reach: `readHead` refuses `413 request_too_large` on the declared length alone,
+  and the daemon writes that refusal and then drains what the head declared. Against declarations of
+  16 MiB+1 and 16 GiB it is answered 413 with a **complete, parsed** envelope — status,
+  `Content-Length` match, envelope type and the `request_too_large` code — and the client was **still
+  writing** when the writer stopped, having sent only a fraction of what it declared. That is the
+  whole claim, and it is phrased in what a client can observe on purpose: **every number this test
+  reports is a client write count**, which bounds when the writer stopped and not how many bytes the
+  daemon read, because what the client pushes before the close lands is kernel buffering and
+  scheduling. **It does not pin the drain's cap or budget on this path, and the mutation says so:**
+  lifting `drain_total_cap_bytes` to 8 MiB, lifting `drain_total_ms` to 60000, and lifting **both
+  together** all leave the test **green**. The transferred bytes do move — 1.7–3.1 MB bounded against
+  9.2–10.8 MB unbounded — but a threshold on them would be a machine-dependent constant rather than a
+  bound, and the same build produced 1.70 MB and 3.13 MB on two runs of one case, so none is asserted.
+  **What the existing unit tests do and do not cover, stated precisely so this row does not overstate
+  them:** `http.zig:1369` pins the **byte cap** — it asserts `drain_total_cap_bytes` against its own
+  literal and drains past it — while `http.zig:1412` pins only that the budget is **elapsed rather
+  than uptime**, exactly as the row above records, and that row's finding stands unchanged:
+  **neutralising the time guard leaves it green, so the time bound's presence is still a gap.** What
+  is **not** pinned anywhere is that the 413 path *reaches* `drain` at all, and no client can observe
+  that without the threshold just declined. An earlier revision of this work claimed the mutation
+  failed when both bounds were removed, and a second claimed the budget was pinned at `:1412`. The
+  first does not hold and the second contradicts the row above. Both are withdrawn.
 - **the bound holding against a real process** —
   `TestHubAddrRefusesALargeRefusedHeadOverARealSocket` transfers 1,052,672 /
   1,719,800 / 1,799,224 bytes against declarations of 1 MiB+4096, 4 MiB and 16 MiB
