@@ -1829,22 +1829,38 @@ test "a decoded entry with no lifecycle stays absent rather than becoming stable
     }
 }
 
-test "a model entry that states a lifecycle publishes it" {
+test "a stated lifecycle is published and survives a decode" {
     const allocator = std.testing.allocator;
-    const line = try modelsListLine(
-        allocator,
-        "{\"models\":[{\"model_ref\":\"anthropic/anthropic-messages@claude-sonnet-4-5\",\"model_id\":\"claude-sonnet-4-5\"," ++
-            "\"provider_id\":\"anthropic\",\"wire\":\"anthropic-messages\",\"capabilities\":[\"chat\"]," ++
-            "\"lifecycle\":\"preview\"}]}",
-    );
-    defer allocator.free(line);
 
+    var decoded = try deserializeEnvelope(MODELS_LIST_RESPONSE_LINE, allocator);
+    defer decoded.deinit(allocator);
+    const response = switch (decoded.payload) {
+        .provider_models_list_response => |value| value,
+        else => return error.ExpectedModelsListPayload,
+    };
+    if (response.models.len != 1) return error.ExpectedOneModel;
+    const stated = response.models[0].lifecycle orelse return error.ExpectedAStatedLifecycle;
+    if (stated != .stable) return error.UnexpectedStatedLifecycle;
+
+    response.models[0].lifecycle = .preview;
+    const line = try serializeEnvelope(decoded, allocator);
+    defer allocator.free(line);
     if (std.mem.indexOf(u8, line, "\"lifecycle\":\"preview\"") == null) {
         std.debug.print("a stated lifecycle was not published: {s}\n", .{line});
         return error.StatedLifecycleNotPublished;
     }
-    var first = try expectModelsListRoundTrip(allocator, line);
-    defer first.deinit(allocator);
+
+    var again = try deserializeEnvelope(line, allocator);
+    defer again.deinit(allocator);
+    const reread = switch (again.payload) {
+        .provider_models_list_response => |value| value,
+        else => return error.ExpectedModelsListPayload,
+    };
+    const round_tripped = reread.models[0].lifecycle orelse return error.StatedLifecycleDropped;
+    if (round_tripped != .preview) {
+        std.debug.print("a stated lifecycle came back as {s}\n", .{@tagName(round_tripped)});
+        return error.StatedLifecycleNotPreserved;
+    }
 }
 
 test "every fact a model entry publishes survives a round trip" {

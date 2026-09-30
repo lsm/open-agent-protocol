@@ -7648,6 +7648,46 @@ fn oapModelCapabilities(
     return list.toOwnedSlice(allocator);
 }
 
+test "the built-in fallback rows publish no lifecycle, because none states one" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+
+    var server = oap_provider_server.Server.init(allocator, .{
+        .capability_revision = VERSION,
+        .grant_channel = if (oap_provider_grant_channel.GrantChannel.supported) .out_of_band else .unsupported,
+        .accepts_inference = true,
+        .resolves_own_credentials = true,
+        .profile_revision = OAP_PROVIDER_PROFILE_REVISION,
+        .catalog = oapFallbackCatalogState(),
+    });
+    defer server.deinit();
+    try populateOapProviderCatalog(allocator, &server);
+
+    if (server.models.items.len == 0) return error.NoBuiltInRowsPopulated;
+    for (server.models.items) |row| {
+        if (row.lifecycle != null) {
+            std.debug.print("built-in row {s} published lifecycle {s} without stating one\n", .{ row.model_id, @tagName(row.lifecycle.?) });
+            return error.BuiltInRowPublishedAnUnstatedLifecycle;
+        }
+    }
+
+    const request = try std.fmt.allocPrint(allocator,
+        "{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"{s}\",\"type\":\"provider.models.list.request\",\"id\":\"q1\",\"payload\":{{}}}}",
+        .{oap_provider_types.PROFILE});
+    defer allocator.free(request);
+    try server.handleLine(request);
+
+    if (server.outbound.items.len == 0) return error.NoResponseEmitted;
+    const line = server.outbound.items[server.outbound.items.len - 1];
+    if (std.mem.indexOf(u8, line, "provider.models.list.response") == null) return error.NotAModelsListResponse;
+    if (std.mem.indexOf(u8, line, "model_ref") == null) return error.NoModelsPublished;
+    if (std.mem.indexOf(u8, line, "lifecycle") != null) {
+        std.debug.print("the built-in models.list.response published lifecycle: {s}\n", .{line});
+        return error.ResponsePublishedAnUnstatedLifecycle;
+    }
+}
+
 fn populateOapProviderCatalog(allocator: std.mem.Allocator, server: *oap_provider_server.Server) !void {
     const proxy_flags = try provider_base_url.proxyCompatFlagsFromEnv(allocator);
     for (oap_provider_catalog.BUILT_IN_PROVIDERS) |builtin| {
