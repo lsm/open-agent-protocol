@@ -284,17 +284,23 @@ test "a schema path that leaves the pack root is refused, by .. or by symlink, a
     try std.testing.expectEqual(@as(usize, 1), read.branches.len);
 }
 
-test "a descriptor whose fields are the wrong shape is refused, not read past" {
+test "a descriptor whose id, version or schemas is the wrong shape is refused" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "pack.json", .data = "{\"id\":7,\"version\":\"1.0.0\"}" });
     const dir = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
     defer allocator.free(dir);
     const dirs = [_][]const u8{dir};
-    var judge = try Validator.init(allocator, .{ .io = std.testing.io });
-    defer judge.deinit();
-    try std.testing.expectError(error.InvalidPackDescriptor, packs_mod.load(std.testing.io, allocator, &judge.registry, &dirs));
+    for ([_][]const u8{
+        "{\"id\":7,\"version\":\"1.0.0\"}",
+        "{\"id\":\"com.example.note\",\"version\":7}",
+        "{\"id\":\"com.example.note\",\"version\":\"1.0.0\",\"schemas\":\"note.schema.json\"}",
+    }) |descriptor| {
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "pack.json", .data = descriptor });
+        var judge = try Validator.init(allocator, .{ .io = std.testing.io });
+        defer judge.deinit();
+        try std.testing.expectError(error.InvalidPackDescriptor, packs_mod.load(std.testing.io, allocator, &judge.registry, &dirs));
+    }
 }
 
 test "one pack named twice is one pack, and contributes one branch" {
