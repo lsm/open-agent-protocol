@@ -673,6 +673,23 @@ test("cli: --stats exits 0 when every selected path is readable", () => {
   assert.ok(!run.stdout.includes("selected path not found"), run.stdout);
 });
 
+test("cli: an explicit --files that selects nothing is refused in every mode", () => {
+  for (const mode of [["--check"], ["--stats"], []]) {
+    const run = spawnSync(process.execPath, [SCRIPT, ...mode, "--files"]);
+    assert.equal(run.status, 1, `${mode.join(" ")}: ${run.stdout}`);
+    assert.ok(run.stdout.includes("selected no paths"), run.stdout);
+    // A refusal, not a crash: the message alone, no stack trace.
+    assert.ok(!run.stdout.includes("at "), run.stdout);
+  }
+});
+
+test("cli: a --files followed by another flag still selects its arguments", () => {
+  const { cleanZig } = fixtures();
+  const run = spawnSync(process.execPath, [SCRIPT, "--check", "--files", cleanZig, "--stats"]);
+  assert.equal(run.status, 0, run.stdout);
+  assert.ok(!run.stdout.includes("selected no paths"), run.stdout);
+});
+
 test("cli: non-ASCII tracked filenames are read exactly from git ls-files -z", () => {
   const repo = gitRepo("unicode-repo");
   writeFileSync(join(repo, "café.zig"), "// carve\nconst x = 1;\n");
