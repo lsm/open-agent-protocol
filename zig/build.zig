@@ -1433,6 +1433,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "json_encode", .module = json_encode_mod },
             .{ .name = "contract", .module = adapter_contract_mod },
             .{ .name = "jsonschema", .module = jsonschema_mod },
+            .{ .name = "json_writer", .module = json_writer_mod },
             .{ .name = "hub", .module = hub_mod },
         },
     });
