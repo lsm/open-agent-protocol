@@ -612,6 +612,22 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   raising `drain_total_cap_bytes` to 1 GiB fails it with `expected 1048576, found 1073741824`. The real-socket test separately pins that a cap
   is *observable from outside the process*, asserting a lower bound on transferred bytes plus a
   complete 403 — never an upper one
+- **the 64 KiB round cap, and the one poll cycle a round gets — pinned by removal at this head.** Of the
+  four bounds above, the 64 KiB round cap was **the one no bullet covered** — the row above states the port "reads in 64
+  KiB rounds" and gives a round "one poll cycle", but until now `drain_cap_bytes` was named only at its
+  definition and its use, and `drain_cycle_ms` only in the deadline it builds, so the ledger asserted a
+  bound no test would notice losing. `a drain stops at its byte cap and reports what it consumed` now
+  carries `wanted_round = 64 * 1024` and `expectEqual(@as(i32, 50), drain_cycle_ms)` beside the
+  1 MiB assertion it already had, in the same carrying-its-own-literal shape, so the constant and the
+  expectation cannot move together. `a drain gives up rather than waiting on a peer that sends nothing
+  more` no longer accepts any elapsed time under 2000 ms for a silent peer, which was 40× the 50 ms
+  round it is supposed to honour and let a 1500 ms cycle pass; it now requires the drain back within
+  **10 round cycles** of the constant, so the bound tracks the constant instead of drifting from it.
+  **Both measured, not assumed:** against `main` as it stood, raising `drain_cap_bytes` to 1 MiB left
+  the suite `EXIT=0` and raising `drain_cycle_ms` to 1500 left it `EXIT=0` — both compile, and neither
+  was caught. With these assertions the same two mutations fail, with `expected 65536, found 1048576`
+  and `expected 50, found 1500`. The round cap is a **shape** bound rather than a total, so it is
+  asserted as the constant it is; the total remains pinned separately by the 1 MiB bullet above
 - **the 2500 ms elapsed budget, and that it is elapsed rather than uptime** — `a drain reads on a
   long-lived process, because its budget is elapsed not uptime` seeds the clock, waits
   `drain_total_ms + 200` under a bound, asserts the clock is past the budget, and drains again;

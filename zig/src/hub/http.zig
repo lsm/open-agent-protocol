@@ -1358,7 +1358,9 @@ test "a drain gives up rather than waiting on a peer that sends nothing more" {
     defer pipe.close();
     const started = compat.time.nowMillis();
     _ = drain(&pipe.accepted, 4096, always_going);
-    try testing.expect(compat.time.nowMillis() - started < 2000);
+    const spent = compat.time.nowMillis() - started;
+    const one_round_ms: u64 = @intCast(@max(drain_cycle_ms, 0));
+    try testing.expect(spent < 10 * one_round_ms);
 }
 
 test "a drain stops at its byte cap and reports what it consumed" {
@@ -1367,6 +1369,9 @@ test "a drain stops at its byte cap and reports what it consumed" {
     defer pipe.close();
     const wanted_cap: usize = 1024 * 1024;
     try testing.expectEqual(wanted_cap, drain_total_cap_bytes);
+    const wanted_round: usize = 64 * 1024;
+    try testing.expectEqual(wanted_round, drain_cap_bytes);
+    try testing.expectEqual(@as(i32, 50), drain_cycle_ms);
     const owed: usize = wanted_cap + 512 * 1024;
     var writer = try std.Thread.spawn(.{}, flood, .{ &pipe.client, owed });
     const spent = drain(&pipe.accepted, owed, always_going);
