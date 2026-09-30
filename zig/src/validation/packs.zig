@@ -46,13 +46,38 @@ pub const Loaded = struct {
     }
 };
 
-fn pointerAt(root: std.json.Value, fragment: []const u8) ?std.json.Value {
+fn unescapeToken(allocator: std.mem.Allocator, token: []const u8) ![]const u8 {
+    if (std.mem.indexOfScalar(u8, token, '~') == null) return token;
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    var index: usize = 0;
+    while (index < token.len) : (index += 1) {
+        if (token[index] == '~' and index + 1 < token.len) {
+            if (token[index + 1] == '1') {
+                try out.append(allocator, '/');
+                index += 1;
+                continue;
+            }
+            if (token[index + 1] == '0') {
+                try out.append(allocator, '~');
+                index += 1;
+                continue;
+            }
+        }
+        try out.append(allocator, token[index]);
+    }
+    return try out.toOwnedSlice(allocator);
+}
+
+fn pointerAt(allocator: std.mem.Allocator, root: std.json.Value, pointer: []const u8) !?std.json.Value {
+    if (!std.mem.startsWith(u8, pointer, "#/")) return null;
     var current = root;
-    var rest = fragment;
-    if (std.mem.startsWith(u8, rest, "/")) rest = rest[1 ..];
-    while (std.mem.indexOfScalar(u8, rest, '/')) |slash| {
-        const token = rest[0..slash];
-        rest = rest[slash + 1 ..];
+    var rest = pointer[2..];
+    while (true) {
+        const slash = std.mem.indexOfScalar(u8, rest, '/');
+        const raw = if (slash) |at| rest[0..at] else rest;
+        rest = if (slash) |at| rest[at + 1 ..] else "";
+        const token = try unescapeToken(allocator, raw);
         switch (current) {
             .object => |members| current = members.get(token) orelse return null,
             .array => |list| {
@@ -62,12 +87,38 @@ fn pointerAt(root: std.json.Value, fragment: []const u8) ?std.json.Value {
             },
             else => return null,
         }
+        if (rest.len == 0) return current;
     }
-    if (rest.len == 0) return current;
-    return switch (current) {
-        .object => |members| members.get(rest),
-        else => null,
-    };
+}
+
+fn cleanCited(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    var parts: std.ArrayList([]const u8) = .empty;
+    defer parts.deinit(allocator);
+    var start: usize = 0;
+    var index: usize = 0;
+    while (index <= name.len) : (index += 1) {
+        if (index < name.len and name[index] != '/') continue;
+        const part = name[start..index];
+        start = index + 1;
+        if (part.len == 0 or std.mem.eql(u8, part, ".")) continue;
+        if (std.mem.eql(u8, part, "..")) {
+            if (parts.items.len == 0) {
+                for (parts.items) |held| allocator.free(held);
+                return try out.toOwnedSlice(allocator);
+            }
+            allocator.free(parts.pop().?);
+            continue;
+        }
+        try parts.append(allocator, try allocator.dupe(u8, part));
+    }
+    for (parts.items, 0..) |part, position| {
+        if (position != 0) try out.append(allocator, '/');
+        try out.appendSlice(allocator, part);
+    }
+    for (parts.items) |held| allocator.free(held);
+    return try out.toOwnedSlice(allocator);
 }
 
 fn pinnedTypeOf(branch: std.json.Value) ?[]const u8 {
@@ -130,7 +181,7 @@ fn gather(
                 const schema_bytes = try readAll(io, allocator, schema_path);
                 const key = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/{s}", .{ pack_base_uri, pack_id, version, file });
                 try pack_documents.append(allocator, .{
-                    .name = file,
+                    .name = try cleanCited(allocator, file),
                     .value = try std.json.parseFromSliceLeaky(std.json.Value, allocator, schema_bytes, .{}),
                 });
                 if (registry) |target| try target.addDocument(key, schema_bytes);
@@ -177,12 +228,16 @@ fn gather(
         for (declared.array.items) |entry| {
             const declared_type = (entry.object.get("type") orelse continue).string;
             const schema_ref = (entry.object.get("schema") orelse continue).string;
-            const hash = std.mem.indexOfScalar(u8, schema_ref, '#') orelse continue;
-            const cited = schema_ref[0..hash];
+            const hash = std.mem.indexOfScalar(u8, schema_ref, '#');
+            const cited = try cleanCited(allocator, if (hash) |at| schema_ref[0..at] else schema_ref);
+            const pointer: []const u8 = if (hash) |at| schema_ref[at..] else "";
             var resolved: ?std.json.Value = null;
             for (pack_documents.items) |document| {
                 if (!std.mem.eql(u8, document.name, cited)) continue;
-                resolved = pointerAt(document.value, schema_ref[hash + 1 ..]);
+                resolved = if (pointer.len == 0 or std.mem.eql(u8, pointer, "#"))
+                    document.value
+                else
+                    try pointerAt(allocator, document.value, pointer);
                 break;
             }
             if (resolved == null) {
@@ -198,7 +253,7 @@ fn gather(
                 try load_refusals.append(allocator, .{ .code = pack_branch_undeclared_type, .pack = pack_id, .detail = declared_type });
                 continue;
             }
-            const ref = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/{s}", .{ pack_base_uri, pack_id, version, schema_ref });
+            const ref = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/{s}{s}", .{ pack_base_uri, pack_id, version, cited, pointer });
             try branches.append(allocator, .{
                 .declared_type = try allocator.dupe(u8, declared_type),
                 .ref = ref,
@@ -385,6 +440,60 @@ test "a contributed branch must pin type to a const naming its own declared type
     try std.testing.expectEqualStrings(pack_branch_unpinned, partial.refusals[0].code);
     try std.testing.expectEqualStrings("com.example.mixed.bad", partial.refusals[0].detail);
     try std.testing.expectEqual(@as(usize, 0), partial.branches.len);
+
+    const escaped: [:0]u8 = try writePack(allocator, &tmp, "escaped",
+        \\{"$defs": {"a/b": {"type": "object", "properties": {"type": {"const": "com.example.escaped.slash"}}}, "c~d": {"type": "object", "properties": {"type": {"const": "com.example.escaped.tilde"}}}}}
+    ,
+        \\{"id": "com.example.escaped", "version": "1.0.0", "schemas": ["types.schema.json"], "envelope_types": [{"type": "com.example.escaped.slash", "role": "event", "schema": "types.schema.json#/$defs/a~1b"}, {"type": "com.example.escaped.tilde", "role": "event", "schema": "types.schema.json#/$defs/c~0d"}]}
+    ,
+    );
+    defer allocator.free(escaped);
+    const escaped_dirs = [_][]const u8{escaped};
+    var unescaped = try load(std.testing.io, allocator, &registry, &escaped_dirs);
+    defer unescaped.deinit();
+    try std.testing.expectEqual(@as(usize, 0), unescaped.refusals.len);
+    try std.testing.expectEqual(@as(usize, 2), unescaped.branches.len);
+
+    const cleaned: [:0]u8 = try writePack(allocator, &tmp, "cleaned",
+        \\{"$defs": {"ping": {"type": "object", "properties": {"type": {"const": "com.example.cleaned.ping"}}}}}
+    ,
+        \\{"id": "com.example.cleaned", "version": "1.0.0", "schemas": ["sub/../types.schema.json"], "envelope_types": [{"type": "com.example.cleaned.ping", "role": "event", "schema": "sub/../types.schema.json#/$defs/ping"}]}
+    ,
+    );
+    defer allocator.free(cleaned);
+    try tmp.dir.createDir(std.testing.io, "cleaned/sub", .default_dir);
+    const cleaned_dirs = [_][]const u8{cleaned};
+    var normalized = try load(std.testing.io, allocator, &registry, &cleaned_dirs);
+    defer normalized.deinit();
+    try std.testing.expectEqual(@as(usize, 0), normalized.refusals.len);
+    try std.testing.expectEqual(@as(usize, 1), normalized.branches.len);
+
+    const whole_good: [:0]u8 = try writePack(allocator, &tmp, "wholegood",
+        \\{"type": "object", "properties": {"type": {"const": "com.example.wholegood.ping"}}}
+    ,
+        \\{"id": "com.example.wholegood", "version": "1.0.0", "schemas": ["types.schema.json"], "envelope_types": [{"type": "com.example.wholegood.ping", "role": "event", "schema": "types.schema.json"}]}
+    ,
+    );
+    defer allocator.free(whole_good);
+    const whole_good_dirs = [_][]const u8{whole_good};
+    var whole = try load(std.testing.io, allocator, &registry, &whole_good_dirs);
+    defer whole.deinit();
+    try std.testing.expectEqual(@as(usize, 0), whole.refusals.len);
+    try std.testing.expectEqual(@as(usize, 1), whole.branches.len);
+
+    const whole_bad: [:0]u8 = try writePack(allocator, &tmp, "wholebad",
+        \\{"type": "object", "properties": {"type": {"type": "string"}}}
+    ,
+        \\{"id": "com.example.wholebad", "version": "1.0.0", "schemas": ["types.schema.json"], "envelope_types": [{"type": "com.example.wholebad.ping", "role": "event", "schema": "types.schema.json"}]}
+    ,
+    );
+    defer allocator.free(whole_bad);
+    const whole_bad_dirs = [_][]const u8{whole_bad};
+    var bypass = try load(std.testing.io, allocator, &registry, &whole_bad_dirs);
+    defer bypass.deinit();
+    try std.testing.expectEqual(@as(usize, 1), bypass.refusals.len);
+    try std.testing.expectEqualStrings(pack_branch_unpinned, bypass.refusals[0].code);
+    try std.testing.expectEqual(@as(usize, 0), bypass.branches.len);
 
     const dangling: [:0]u8 = try writePack(allocator, &tmp, "dangling",
         \\{"$defs": {"ping": {"type": "object", "properties": {"type": {"const": "com.example.dangling.ping"}}}}}
