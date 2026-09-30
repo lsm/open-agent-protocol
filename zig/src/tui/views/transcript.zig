@@ -1280,8 +1280,17 @@ fn matchLink(text: []const u8, open: usize) ?LinkMatch {
     if (label_end == open + 1 or label_end + 1 >= text.len or text[label_end + 1] != '(') return null;
     const target_end = std.mem.indexOfScalarPos(u8, text, label_end + 2, ')') orelse return null;
     const inside = std.mem.trim(u8, text[label_end + 2 .. target_end], " ");
-    const target = inside[0 .. std.mem.indexOfAny(u8, inside, " \t") orelse inside.len];
-    return .{ .label = text[open + 1 .. label_end], .target = target, .end = target_end + 1 };
+    const target_len = std.mem.indexOfAny(u8, inside, " \t") orelse inside.len;
+    const title = std.mem.trim(u8, inside[target_len..], " \t");
+    if (target_len == 0 or !isLinkTitle(title)) return null;
+    return .{ .label = text[open + 1 .. label_end], .target = inside[0..target_len], .end = target_end + 1 };
+}
+
+fn isLinkTitle(title: []const u8) bool {
+    if (title.len == 0) return true;
+    if (title.len < 2) return false;
+    const quote = title[0];
+    return (quote == '"' or quote == '\'') and title[title.len - 1] == quote;
 }
 
 fn safeLinkTarget(target: []const u8) ?[]const u8 {
@@ -1293,11 +1302,16 @@ fn safeLinkTarget(target: []const u8) ?[]const u8 {
 }
 
 fn extractLinks(allocator: std.mem.Allocator, text: []const u8, urls: *std.ArrayList(?[]const u8)) ![]const u8 {
-    if (std.mem.indexOfAny(u8, text, "[<") == null) return text;
+    if (std.mem.indexOfAny(u8, text, "[<") == null and std.mem.indexOf(u8, text, link_open) == null and std.mem.indexOf(u8, text, link_close) == null) return text;
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
     var i: usize = 0;
     while (i < text.len) {
+        if (std.mem.startsWith(u8, text[i..], link_open) or std.mem.startsWith(u8, text[i..], link_close)) {
+            try out.appendSlice(allocator, "\u{FFFD}");
+            i += link_open.len;
+            continue;
+        }
         if (text[i] == '`') {
             var run: usize = 0;
             while (i + run < text.len and text[i + run] == '`') run += 1;
@@ -2022,6 +2036,25 @@ test "an autolink is a hyperlink, and a link to anything but http is only its te
     const plain = try stripEscapesForTest(std.testing.allocator, styled);
     defer std.testing.allocator.free(plain);
     try std.testing.expectEqualStrings("https://a.example/x run) [k](https://b.example)", plain);
+}
+
+test "a parenthesis holding more than a target and a quoted title is not a link" {
+    const styled = try renderAssistantStyled(std.testing.allocator, "[see](the notes) and [a](https://x.example y)", 80);
+    defer std.testing.allocator.free(styled);
+    try std.testing.expect(std.mem.indexOf(u8, styled, "\x1b]8;") == null);
+    const plain = try stripEscapesForTest(std.testing.allocator, styled);
+    defer std.testing.allocator.free(plain);
+    try std.testing.expectEqualStrings("[see](the notes) and [a](https://x.example y)", plain);
+}
+
+test "a private-use character in the text cannot pose as a link marker" {
+    const styled = try renderAssistantStyled(std.testing.allocator, "odd \u{E000}glyph\u{E001} then [ok](https://example.com/ok)", 80);
+    defer std.testing.allocator.free(styled);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, styled, "\x1b]8;id="));
+    try std.testing.expect(std.mem.indexOf(u8, styled, ";https://example.com/ok\x1b\\") != null);
+    const plain = try stripEscapesForTest(std.testing.allocator, styled);
+    defer std.testing.allocator.free(plain);
+    try std.testing.expectEqualStrings("odd \u{FFFD}glyph\u{FFFD} then ok", plain);
 }
 
 test "a link that wraps keeps its target on every row it spans" {
