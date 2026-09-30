@@ -244,7 +244,7 @@ test "compat networking can listen on loopback" {
     try std.testing.expect(listenAddress(&server).getPort() != 0);
 }
 
-test "a send shutdown ends the peer's read while our own receive still works" {
+test "a send shutdown ends the peer read of us" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     const address = try resolveAddress(std.testing.allocator, "127.0.0.1", 0);
     var server = try tcpListen(address, .{ .reuse_address = true });
@@ -281,4 +281,33 @@ test "the unnamed shutdown still closes both directions" {
     try std.testing.expectEqualStrings("from-server", seen[0..n]);
     var after: [64]u8 = undefined;
     try std.testing.expectEqual(@as(usize, 0), try client.read(&after));
+}
+
+test "compat networking loopback connect read write round trip" {
+    const address = try resolveAddress(std.testing.allocator, "127.0.0.1", 0);
+    var server = try tcpListen(address, .{ .reuse_address = true });
+    defer server.deinit(defaultIo());
+
+    var client = try tcpConnect(listenAddress(&server));
+    defer client.close();
+
+    var context = LoopbackServerContext{ .server = &server };
+    const thread = try std.Thread.spawn(.{}, loopbackServerThread, .{&context});
+    var thread_joined = false;
+    defer if (!thread_joined) thread.join();
+
+    try client.writeAll("ping");
+
+    var response: [4]u8 = undefined;
+    var total_read: usize = 0;
+    while (total_read < response.len) {
+        const bytes_read = try client.read(response[total_read..]);
+        if (bytes_read == 0) return error.EndOfStream;
+        total_read += bytes_read;
+    }
+    try std.testing.expectEqualStrings("pong", &response);
+
+    thread.join();
+    thread_joined = true;
+    try context.result;
 }
