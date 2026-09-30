@@ -408,10 +408,10 @@ function oapModelSource(value: unknown): { source?: ModelSource } {
   if (value === undefined) {
     return {};
   }
-  if (value === "discovered" || value === "dynamic") {
+  if (value === "discovered") {
     return { source: "dynamic" };
   }
-  if (value === "fallback" || value === "static_fallback") {
+  if (value === "fallback") {
     return { source: "static_fallback" };
   }
   throw new MakaiProtocolError(

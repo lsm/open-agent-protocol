@@ -172,3 +172,43 @@ test("the default fixture still states a source, so no reader regressed to unkno
   const models = await withOapModels("", async (api) => (await api.list()).models);
   assert.equal(models[0].source, "dynamic", "a stated discovered source still reads as dynamic");
 });
+
+test("the OAP reader refuses the shared aliases, which are not wire values", async () => {
+  for (const [stating, alias] of [
+    ["alias-dynamic", "dynamic"],
+    ["alias-static-fallback", "static_fallback"],
+  ] as const) {
+    await assert.rejects(
+      () =>
+        withOapModels(stating, async (api) => {
+          await api.list();
+          return null;
+        }),
+      (error: unknown) => {
+        assert.ok(
+          error instanceof Error && /source/.test(error.message),
+          `${alias} must be refused naming source on the wire, got: ${String(error)}`,
+        );
+        return true;
+      },
+      `${alias} is the shared vocabulary, not a wire value: the modelSource enum permits discovered and fallback only`,
+    );
+  }
+});
+
+test("the shared reader still accepts the native aliases", async () => {
+  for (const [alias, want] of [
+    ["dynamic", "dynamic"],
+    ["static_fallback", "static_fallback"],
+  ] as const) {
+    const models = await withLegacyModels(
+      descriptor({ source: alias }),
+      async (api) => (await api.list()).models,
+    );
+    assert.equal(
+      models[0].source,
+      want,
+      `${alias} is the native stated vocabulary and must keep decoding on the shared path`,
+    );
+  }
+});

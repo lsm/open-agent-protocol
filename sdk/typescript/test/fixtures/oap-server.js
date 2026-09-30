@@ -23,6 +23,8 @@ function fixtureModel() {
     case "number": model.source = 7; break;
     case "invented": model.source = "invented-source"; break;
     case "fallback": model.source = "fallback"; break;
+    case "alias-dynamic": model.source = "dynamic"; break;
+    case "alias-static-fallback": model.source = "static_fallback"; break;
     default: break;
   }
   return model;
