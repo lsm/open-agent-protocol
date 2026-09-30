@@ -39,6 +39,15 @@ function fixtureModel() {
   }
   if (process.env.OAP_FIXTURE_ENTRY === "nonobject") return "not-an-object";
   if (process.env.OAP_FIXTURE_ENTRY === "trailing-nonobject") return [model, 7];
+  switch (process.env.OAP_FIXTURE_AUTH) {
+    case "absent": delete model.auth_status; break;
+    case "null": model.auth_status = null; break;
+    case "number": model.auth_status = 7; break;
+    case "invented": model.auth_status = "retired"; break;
+    case "expired": model.auth_status = "expired"; break;
+    case "login-required": model.auth_status = "login_required"; break;
+    default: break;
+  }
   return model;
 }
 createInterface({ input: process.stdin }).on("line", (line) => {
