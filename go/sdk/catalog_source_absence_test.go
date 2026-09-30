@@ -78,7 +78,7 @@ func TestResolveSeesTheSameAbsenceAndRefusal(t *testing.T) {
 func TestTheSharedResultSeesAMissingSourceAsNilAndStillRejectsABadOne(t *testing.T) {
 	capabilities := []string{"chat"}
 	raw := wireModelDescriptor{ModelRef: "p/wire@m", ModelID: "m", DisplayName: "M", ProviderID: "p",
-		API: "wire", AuthStatus: "authenticated", Lifecycle: "stable", Capabilities: &capabilities}
+		API: "wire", AuthStatus: "authenticated", Lifecycle: json.RawMessage(`"stable"`), Capabilities: &capabilities}
 	model, err := parseModelDescriptor(raw, 0, "s")
 	if err != nil {
 		t.Fatalf("a descriptor with no source must decode as unknown, not fail: %v", err)

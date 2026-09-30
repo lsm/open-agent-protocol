@@ -392,9 +392,9 @@ class ModelDescriptor:
     provider_id: str
     api: str
     auth_status: AuthStatus
-    lifecycle: ModelLifecycle
+    lifecycle: Optional[ModelLifecycle]
     capabilities: Sequence[ModelCapability]
-    source: ModelSource
+    source: Optional[ModelSource]
     base_url: Optional[str] = None
     context_window: Optional[int] = None
     max_output_tokens: Optional[int] = None

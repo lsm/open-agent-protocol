@@ -544,6 +544,10 @@ const catalog_loader_rows = [_][]const u8{
     "kimi",
 };
 
+pub fn supportsCatalogModelDiscovery(id: []const u8) bool {
+    return isCatalogLoaderRow(id) or std.mem.eql(u8, id, "anthropic") or std.mem.eql(u8, id, "openai-codex") or std.mem.eql(u8, id, "github-copilot");
+}
+
 const deepseek_catalog_models_url = "https://api.deepseek.com/v1/models";
 const proxy_models_url = "https://proxy.example/api/v1/models";
 const xiaomi_catalog_models_url = "https://token-plan-cn.xiaomimimo.com/v1/models";
@@ -4034,7 +4038,11 @@ test "the loader's rows are catalog rows the target answers for" {
     for (catalog_loader_rows) |id| {
         try std.testing.expect(provider_catalog.provider(id) != null);
         try std.testing.expect(catalogTargetInRegion(id, provider_catalog.defaultRegion(id)) != null);
+        try std.testing.expect(supportsCatalogModelDiscovery(id));
     }
+    try std.testing.expect(!supportsCatalogModelDiscovery("google"));
+    try std.testing.expect(!supportsCatalogModelDiscovery("ollama"));
+    try std.testing.expect(!supportsCatalogModelDiscovery("azure"));
 }
 
 test "a discovered catalog row builds models on the row's wire and base url" {

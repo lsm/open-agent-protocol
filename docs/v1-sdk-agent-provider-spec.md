@@ -1882,15 +1882,14 @@ An optional key is not a nullable one, so a `lifecycle` that is **present**
 must be one of `stable`, `preview` or `deprecated`, and `null`, a number or
 an unrecognised literal is a malformed response.
 
-That is the target for all three SDKs and it is **implemented in Rust
-only** so far. Go still rejects an absent lifecycle on its shared path and
-TypeScript still fabricates `stable` for an absent one on the OAP path;
-those are #710 and #712, and neither is on main yet. Following the rule the
-`source` section above states, a reader that has not been changed must not
-be described as if it had.
+That is the target for all three SDKs and all three now implement it: Rust
+merged as #709, Go merged as #710, and TypeScript by this change. Each
+records an omitted `lifecycle` as unknown and omits the member rather than
+setting a value, and each refuses a present `null`, a number or an
+unrecognised literal as a malformed response.
 
 One consequence is worth stating because it is a filtering decision rather
-than a parsing one. A listing filters a model out as deprecated only when
-the listing **stated** `deprecated`. A model whose lifecycle is unknown is
+than a parsing one. A listing filters a model out as deprecated only when the
+listing **stated** `deprecated`. A model whose lifecycle is unknown is
 kept, because dropping it would silently exclude a model for failing to
 answer a question it was never asked.
