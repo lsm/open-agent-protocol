@@ -307,7 +307,7 @@ func (c *Client) Event() (protocol.Envelope, error) {
 			}
 			continue
 		}
-		if err := c.pullWithin(budget.remaining(), "no matching answer arrived", total, true); err != nil {
+		if err := c.pullWithin(budget.remaining(), "no event arrived", total, true); err != nil {
 			return protocol.Envelope{}, err
 		}
 	}
