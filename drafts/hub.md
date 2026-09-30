@@ -585,6 +585,55 @@ daemon's own 404 while no route is written; Go pins the same thing by
 `TestTheRouteTableIsComplete`, which fails when a path is added to neither the
 mux nor a list of the routes still to come.
 
+Three records that existed only in the historical review of #656 and were **verified against
+current `main` before being recorded here**, rather than carried over on the strength of the old
+thread. They are measurements and an open question. None of them settles anything, and none of them
+was settled by #656 either.
+
+- **A wrong-media request to a path no route matches is `415` here and `404` in Go — MEASURED, both
+  sides, from the source.** `answer()` tests the media gate at `http.zig:381` and only then returns
+  `.not_found` at `:382`, so on this tree an unrouted path carrying a body and a non-JSON
+  `Content-Type` is answered `415 unsupported_media_type`, **not** the plain `404` the paragraph
+  above describes. Go cannot reach the same answer: its media check is at
+  `servehttp/server.go:749`, inside `readRequest`, which is called only from the twelve handlers
+  registered on the mux at `:68`-`:69`, and a path matching no pattern is answered by the mux before
+  any handler runs. So the two trees disagree on one request, and the paragraph above is right about
+  the rule and incomplete about the case. **Neither tree is wrong against the draft**: the draft
+  states the media rule for routes that read a body, and states no rule for a path that does not
+  exist. Which answer an unrouted path should give is **not decided here**. The `415`-on-unrouted
+  behaviour is a consequence of the gate's position in `answer()`, not a stated policy, and narrowing
+  it would be a policy change this table does not make. Carried forward from #656.
+- **A wrong method on a known path — UNRESOLVED QUESTION, and deliberately not merged with the row
+  above.** Go registers patterns that include the method (`mux.HandleFunc("GET /adapters", ...)`,
+  `servehttp/server.go:69`) and the module targets `go 1.26`, where `http.ServeMux` answers a request
+  whose path matches but whose method does not with `405 Method Not Allowed` and an `Allow` header.
+  The Zig hub contains **no** `405` at all, and `answer()` (`http.zig:378-383`) never inspects
+  `request.method` — the only method-aware function in the file is `bodyAllowedFor` at `:368`, which
+  exists to exclude `HEAD` and decides nothing about routing. So a wrong method on a known path is
+  `404` here and `405` in Go. **No test name in either tree mentions `405`**, so nothing
+  pins the behaviour either way. The open question is what the draft says a wrong method should
+  answer, and it is recorded as open. **It is recorded here as a separate question on purpose.** The
+  fact that both this and the row above are decided by the order of checks inside one function is a
+  *coincidence of implementation*, and the unproved suggestion that the `405` and the media-precedence
+  questions must therefore be settled as **one** decision is **not** carried forward as settled
+  policy. They are separate rows because they are separate questions, and nothing here establishes
+  that answering one constrains the other. Carried forward from #656, which raised the `405` and left
+  it open.
+- **No proof that a media-refused request with a body over 1 MiB still receives a complete answer —
+  an explicit gap, and the stated reason for it has changed.** `drain` is bounded at
+  `drain_total_cap_bytes = 1 MiB` (`:207`) while `max_body_bytes` is 16 MiB (`:7`), so a request
+  declaring between 1 MiB and 16 MiB with a non-JSON `Content-Type` is refused `415` by the gate and
+  then drained **short**, leaving bytes unread at close — which is the condition the drain paragraph
+  above identifies as able to reset the connection and discard the refusal. **No test exercises that
+  case.** The `415` proof sends bodies of `"xx"`, `"{}"` and `""`; the over-cap declared sizes in
+  `hub_toobig_test.go` are the `413` path, not this one. One correction to the reason this gap was
+  previously carried with: it used to be blamed on a test helper that capped writes at 256 KiB, and
+  **that cap no longer exists** — `writeBody` at `hub_largebody_test.go:190` writes the full declared
+  amount in 32 KiB blocks. So the absence is not a helper limitation any more; it is simply that no
+  test asks the question. **What is still unknown is unchanged and is not claimed either way here:**
+  whether the daemon's `415` survives the close in that window. The `413` complete-answer proof and
+  the drain-cap proof cover their own cases and do not cover this one. Carried forward from #656.
+
 **A body the daemon refused to read is drained before the socket closes.** A
 `403` or a `413` is answered without reading the body the head declared, and a
 close on a socket whose receive queue still holds those bytes is answered with a
