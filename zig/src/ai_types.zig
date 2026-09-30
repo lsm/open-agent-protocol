@@ -711,6 +711,33 @@ pub fn deinitAssistantMessageOwned(allocator: std.mem.Allocator, msg: *Assistant
     msg.deinit(allocator);
 }
 
+pub fn buildOwnedMessage(
+    allocator: std.mem.Allocator,
+    content: []AssistantContent,
+    api_src: []const u8,
+    provider_src: []const u8,
+    model_src: []const u8,
+    usage: Usage,
+    stop_reason: StopReason,
+    timestamp: i64,
+) error{OutOfMemory}!AssistantMessage {
+    const api = try allocator.dupe(u8, api_src);
+    errdefer allocator.free(api);
+    const provider = try allocator.dupe(u8, provider_src);
+    errdefer allocator.free(provider);
+    const model_id = try allocator.dupe(u8, model_src);
+    return .{
+        .content = content,
+        .api = api,
+        .provider = provider,
+        .model = model_id,
+        .usage = usage,
+        .stop_reason = stop_reason,
+        .timestamp = timestamp,
+        .is_owned = true,
+    };
+}
+
 pub const LOST_CLONE_MESSAGE = "an event could not be queued: out of memory";
 
 pub fn settleProviderOutcome(stream: anytype, out: AssistantMessage) void {
@@ -1569,4 +1596,37 @@ test "OwnedMessage cloneOf frees its copy when a later allocation fails" {
     };
 
     try std.testing.checkAllAllocationFailures(allocator, Case.run, .{source});
+}
+
+test "buildOwnedMessage releases only what it allocated when a later dupe fails" {
+    var fail_at: usize = 1;
+    while (fail_at <= 6) : (fail_at += 1) {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_at });
+        const alloc = failing.allocator();
+
+        const content = alloc.alloc(AssistantContent, 1) catch continue;
+        content[0] = .{ .text = .{ .text = alloc.dupe(u8, "answer") catch {
+            alloc.free(content);
+            continue;
+        } } };
+
+        const built = buildOwnedMessage(alloc, content, "anthropic-messages", "anthropic", "claude", .{}, .stop, 0);
+        if (built) |*message| {
+            var owned = message.*;
+            owned.deinit(alloc);
+        } else |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            var held = AssistantMessage{
+                .content = content,
+                .api = "",
+                .provider = "",
+                .model = "",
+                .usage = .{},
+                .stop_reason = .stop,
+                .timestamp = 0,
+                .is_owned = true,
+            };
+            held.deinit(alloc);
+        }
+    }
 }
