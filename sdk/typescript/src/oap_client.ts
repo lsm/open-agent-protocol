@@ -5,7 +5,7 @@ import { resolveMakaiBinary } from "./binary_resolver";
 import { isAbortError, raceWithAbort } from "./abort_signal";
 import { AUTH_KINDS, AUTH_STATUSES, MakaiAuthError, type AuthFlowHandlers, type AuthKind, type MakaiAuthApi, type MakaiAuthEvent, type ProviderAuthInfo } from "./auth_protocol";
 import { MakaiAuthRequiredError, MakaiStreamError, type AgentRunRequest, type AgentRunResponse, type AgentStreamEvent, type ChatMessage, type CompletionResponse, type ContentPart, type MakaiProviderApi, type ProviderCompleteRequest, type ProviderStreamEvent, type UsageSummary } from "./execution_types";
-import { MakaiProtocolError, type ListModelsRequest, type ListModelsResponse, type MakaiModelsApi, type ModelDescriptor, type ModelCost, type ResolveModelRequest, type ResolveModelResponse } from "./models_types";
+import { MakaiProtocolError, type ListModelsRequest, type ListModelsResponse, type MakaiModelsApi, type ModelDescriptor, type ModelCost, type ModelSource, type ResolveModelRequest, type ResolveModelResponse } from "./models_types";
 import type { CreateMakaiClientOptions, MakaiAgentModelsApi, MakaiClient } from "./execution_client";
 
 export const OAP_PROTOCOL = "open-agent-protocol";
@@ -404,6 +404,22 @@ class OapProviderApi implements MakaiProviderApi {
   }
 }
 
+function oapModelSource(value: unknown): { source?: ModelSource } {
+  if (value === undefined) {
+    return {};
+  }
+  if (value === "discovered" || value === "dynamic") {
+    return { source: "dynamic" };
+  }
+  if (value === "fallback" || value === "static_fallback") {
+    return { source: "static_fallback" };
+  }
+  throw new MakaiProtocolError(
+    "provider model entry source must be discovered or fallback when present",
+    "malformed_response",
+  );
+}
+
 class OapModelsApi implements MakaiModelsApi {
   constructor(private readonly transport: OapStdioTransport) {}
   async list(request: ListModelsRequest = {}): Promise<ListModelsResponse> {
@@ -414,7 +430,7 @@ class OapModelsApi implements MakaiModelsApi {
       provider_id: str(raw.provider_id), api: str(raw.wire), auth_status: (str(raw.auth_status) || "unknown") as ModelDescriptor["auth_status"],
       lifecycle: (str(raw.lifecycle) || "stable") as ModelDescriptor["lifecycle"],
       capabilities: Array.isArray(raw.capabilities) ? raw.capabilities.filter((v): v is ModelDescriptor["capabilities"][number] => typeof v === "string") : [],
-      source: raw.source === "fallback" || raw.source === "static_fallback" ? "static_fallback" as const : "dynamic" as const,
+      ...oapModelSource(raw.source),
       ...(typeof raw.context_window === "number" ? { context_window: raw.context_window } : {}),
       ...(typeof raw.max_output_tokens === "number" ? { max_output_tokens: raw.max_output_tokens } : {}),
       ...(isRecord(raw.cost) ? { cost: modelCost(raw.cost) } : {}),
