@@ -1545,6 +1545,14 @@ are "stamped with the revision the lister served it under", and both name
 | **Zig does** | Answered at `zig/src/hub/stdio.zig:505`, after the envelope is validated and before it is dispatched, and with no test that reaches it. `malformed_json` is covered by the Zig unit table; `type_mismatch` is not, in either tree. |
 | **Why it is not fixed here** | The line that reaches it does not exist yet in either tree, so the check is correct by inspection and unproven by execution. A row that claims coverage it does not have is the same defect as a name that claims an unexercised check, and the ledger is where that claim has to be visible. Renaming the differential scenario that claimed five gate refusals and exercised two is the other half of the same fix. |
 
+### D24 — `invalid_request` is both an operation error and a stdio-only code
+
+| | |
+| --- | --- |
+| **The draft says** | Two things, and they do not agree. `open`'s error list at `:839` carries `invalid_request` with the other decode codes at 400. The stdio-only list at `:744-748` says `unknown_op`, `invalid_request`, `busy` and `response_too_large` "exist because a pipe gives no back pressure and has one shape a socket does not" and that "a port must not produce any of them over HTTP". |
+| **What follows** | The other three have no row in the HTTP table and are asserted null. `invalid_request` has one, at 400, because the operation row pins it. |
+| **Why it is not fixed here** | The more specific statement governs the transport — a port must not produce it over HTTP — but the operation row pins a status, and dropping the row would leave an operation error with no status while keeping it would give a socket a code the draft says it has no shape for. **Deciding which statement wins is a spec question, not a table question**, so the table records what each row says and the ambiguity is here rather than resolved by deleting a row. The three unambiguous ones are null-asserted and tested. |
+
 ### D4 — the registry's `journal_capacity` is hub-wide in Zig, per-adapter in Go
 
 | | |

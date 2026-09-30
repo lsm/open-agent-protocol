@@ -2388,6 +2388,7 @@ test "every refusal the transport emits has a status, or is one the draft leaves
     const emitted = [_][]const u8{
         "busy",
         "unknown_op",
+        "response_too_large",
     };
     for (emitted) |code| {
         try testing.expect(statusForRefusal(code) == null);
