@@ -1012,6 +1012,7 @@ test "a drain stops at its byte cap and reports what it consumed" {
     const owed: usize = drain_total_cap_bytes + 512 * 1024;
     var writer = try std.Thread.spawn(.{}, flood, .{ &pipe.client, owed });
     const spent = drain(&pipe.accepted, owed, always_going);
+    pipe.closeAccepted();
     writer.join();
     try testing.expectEqual(drain_total_cap_bytes, spent);
     try testing.expect(spent < owed);

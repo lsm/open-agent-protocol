@@ -86,13 +86,12 @@ func startHubAddr(t *testing.T) (string, func(), context.CancelFunc) {
 }
 
 func TestHubAddrRefusesALargeRefusedHeadOverARealSocket(t *testing.T) {
-	started := time.Now()
 	address, cleanup, cancel := startHubAddr(t)
 	defer cancel()
-	boundAt := started
 	defer cleanup()
 
 	seedHubClock(t, address)
+	boundAt := time.Now()
 	for _, declared := range []int{1<<20 + 4096, 4 << 20, 16 << 20} {
 		t.Run(strconv.Itoa(declared), func(t *testing.T) {
 			if wait := 2500*time.Millisecond - time.Since(boundAt); wait > 0 {
@@ -174,7 +173,8 @@ func seedHubClock(t *testing.T, address string) {
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(20 * time.Second))
-	if _, err := io.WriteString(conn, "GET /adapters HTTP/1.1\r\nHost: "+address+"\r\n\r\n"); err != nil {
+	head := "GET /adapters HTTP/1.1\r\nHost: evil.test\r\nContent-Length: 0\r\n\r\n"
+	if _, err := io.WriteString(conn, head); err != nil {
 		t.Fatalf("write the seeding request: %v", err)
 	}
 	answer, err := http.ReadResponse(bufio.NewReader(conn), nil)
@@ -183,6 +183,9 @@ func seedHubClock(t *testing.T, address string) {
 	}
 	_, _ = io.Copy(io.Discard, answer.Body)
 	_ = answer.Body.Close()
+	if answer.StatusCode != http.StatusForbidden {
+		t.Fatalf("the seeding request answered %d, want 403, so it never reached a drain", answer.StatusCode)
+	}
 }
 
 func writeBody(conn net.Conn, declared int) (int, error) {
