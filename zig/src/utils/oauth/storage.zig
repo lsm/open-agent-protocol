@@ -864,6 +864,12 @@ pub const AuthStorage = struct {
     }
 
     fn loadFromFileWithSaveFn(allocator: std.mem.Allocator, save_fn: ?SaveFn) !AuthStorage {
+        return loadFromFileOpening(allocator, save_fn, .any_failure_is_empty);
+    }
+
+    const OpenFailure = enum { any_failure_is_empty, only_missing_is_empty };
+
+    fn loadFromFileOpening(allocator: std.mem.Allocator, save_fn: ?SaveFn, open_failure: OpenFailure) !AuthStorage {
         const home = compat.getEnvVarOwned(allocator, "HOME") catch return error.NoHomeDir;
         defer allocator.free(home);
         const dir_path = try std.fs.path.join(allocator, &.{ home, ".oapx" });
@@ -874,7 +880,8 @@ pub const AuthStorage = struct {
         const cwd = compat.fs.getCwd();
         cleanupExistingAuthDirectory(cwd, dir_path);
 
-        var file = compat.fs.openFile(cwd, path, .{}) catch {
+        var file = compat.fs.openFile(cwd, path, .{}) catch |err| {
+            if (open_failure == .only_missing_is_empty and err != error.FileNotFound) return err;
             return emptyStorage(allocator, save_fn);
         };
         file.close(defaultIo());
@@ -968,6 +975,9 @@ pub const AuthStorage = struct {
     }
 
     pub fn removeStored(allocator: std.mem.Allocator, provider_id: []const u8, shared_key_ids: []const []const u8) !bool {
+        var file = try loadFromFileOpening(allocator, null, .only_missing_is_empty);
+        defer file.deinit();
+        const file_removed = file.removeCredentials(provider_id, shared_key_ids);
         var removed = false;
         if (shouldUseKeychain()) {
             switch (try loadFromKeychainWithCodexImport(allocator, false)) {
@@ -983,9 +993,7 @@ pub const AuthStorage = struct {
                 .unavailable, .needs_interaction, .busy => return error.KeychainUnavailable,
             }
         }
-        var file = try loadFromFile(allocator);
-        defer file.deinit();
-        if (file.removeCredentials(provider_id, shared_key_ids)) {
+        if (file_removed) {
             try file.saveToFile();
             removed = true;
         }
@@ -1128,6 +1136,30 @@ test "removing a stored credential drops that provider and keeps the rest" {
     try std.testing.expect(!reloaded.providers.contains("opencode"));
     try std.testing.expect(reloaded.providers.contains("oauth-sibling"));
     try std.testing.expectEqualStrings("zai-key", reloaded.providers.get("zai").?.api_key);
+}
+
+test "logout refuses an auth file it cannot open rather than reading it as empty" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const previous_home = try setHomeForTest(std.testing.allocator, &tmp);
+    defer restoreHomeForTest(std.testing.allocator, previous_home);
+
+    var storage = try AuthStorage.loadFromFile(std.testing.allocator);
+    try putOwnedAuth(&storage, "opencode-go", .{ .api_key = try std.testing.allocator.dupe(u8, "go-key") });
+    try storage.saveToFile();
+    storage.deinit();
+
+    const path = try std.fs.path.join(std.testing.allocator, &.{ previous_home.home, ".oapx", auth_file_name });
+    defer std.testing.allocator.free(path);
+    try compat.fs.getCwd().setFilePermissions(defaultIo(), path, @enumFromInt(0o000), .{});
+    defer compat.fs.getCwd().setFilePermissions(defaultIo(), path, @enumFromInt(0o600), .{}) catch {};
+    if (compat.fs.openFile(compat.fs.getCwd(), path, .{})) |opened| {
+        opened.close(defaultIo());
+        return error.SkipZigTest;
+    } else |_| {}
+
+    try std.testing.expectError(error.AccessDenied, AuthStorage.removeStored(std.testing.allocator, "opencode-go", &.{}));
 }
 
 test "AuthStorage - save and load" {
