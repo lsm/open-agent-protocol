@@ -15,6 +15,7 @@ const end_directory_script =
     \\set --
     \\eval "$__oap_cmd"
     \\__oap_rc=$?
+    \\set +x
     \\printf '%s' "$(pwd)" > "$__oap_path"
     \\exit "$__oap_rc"
 ;
