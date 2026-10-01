@@ -2595,7 +2595,10 @@ pub const App = struct {
             }
         }
         self.state.stream_aborted = false;
-        if (!self.state.status.streaming) self.armAutoCompact();
+        if (!self.state.status.streaming) {
+            self.armAutoCompact();
+            if (self.runtime) |runtime| runtime.setSessionId(self.session_id) catch {};
+        }
         if (self.session) |*session| {
             session.submitTurn(trimmed) catch |err| {
                 if (err == error.QueueFull) return err;

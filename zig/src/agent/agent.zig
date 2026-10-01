@@ -266,6 +266,12 @@ pub const Agent = struct {
         self._state.model = model;
     }
 
+    pub fn setSessionId(self: *Agent, session_id: ?[]const u8) !void {
+        const next: ?[]const u8 = if (session_id) |id| try self._allocator.dupe(u8, id) else null;
+        if (self._session_id) |previous| self._allocator.free(previous);
+        self._session_id = next;
+    }
+
     pub fn setThinkingLevel(self: *Agent, level: ai_types.ThinkingLevel) void {
         self._state.thinking_level = level;
     }
@@ -1571,6 +1577,8 @@ fn createDelayedErrorProtocol() types.ProtocolClient {
 
 const CaptureOptionsCtx = struct {
     max_tokens: ?u32 = null,
+    session_id: [32]u8 = undefined,
+    session_id_len: usize = 0,
 };
 
 fn captureOptionsStreamFn(
@@ -1583,6 +1591,10 @@ fn captureOptionsStreamFn(
     _ = context;
     const capture: *CaptureOptionsCtx = @ptrCast(@alignCast(ctx.?));
     capture.max_tokens = options.max_tokens;
+    if (options.session_id) |sid| {
+        capture.session_id_len = @min(sid.len, capture.session_id.len);
+        @memcpy(capture.session_id[0..capture.session_id_len], sid[0..capture.session_id_len]);
+    }
 
     const stream = try allocator.create(event_stream_mod.AssistantMessageEventStream);
     stream.* = event_stream_mod.AssistantMessageEventStream.init(allocator);
@@ -1624,6 +1636,21 @@ test "Agent async completion signals waitForIdle" {
 
     try std.testing.expect(agent.isIdle());
     try std.testing.expect(agent._thread == null);
+}
+
+test "Agent sends the session id it was given, and a later one replaces it" {
+    var capture = CaptureOptionsCtx{};
+    var agent = Agent.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = captureOptionsStreamFn, .ctx = &capture } });
+    defer agent.deinit();
+    agent.setModel(test_model);
+    try agent.setSessionId("first-session");
+    try agent.setSessionId("tui-session-1");
+
+    const text = try std.testing.allocator.dupe(u8, "hello");
+    const message = ai_types.Message{ .user = .{ .content = .{ .text = text }, .timestamp = 0 } };
+    try agent.prompt(@as([]const ai_types.Message, &.{message}));
+
+    try std.testing.expectEqualStrings("tui-session-1", capture.session_id[0..capture.session_id_len]);
 }
 
 test "Agent passes model max_tokens to protocol" {

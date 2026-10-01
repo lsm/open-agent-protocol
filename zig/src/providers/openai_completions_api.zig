@@ -14,6 +14,7 @@ const retry = @import("retry");
 const pre_transform = @import("pre_transform");
 const StringBuilder = @import("string_builder").StringBuilder;
 const compat_mod = @import("compat");
+const version = @import("version_options").version;
 
 const MergedCompat = struct {
     supports_store: bool,
@@ -707,8 +708,10 @@ const ThreadCtx = struct {
     on_payload_ctx: ?*anyopaque = null,
     retry_config: ?ai_types.RetryConfig = null,
     ping_interval_ms: ?u64 = null,
+    conversation_id: ?[]u8 = null,
 
     fn deinit(self: *ThreadCtx) void {
+        if (self.conversation_id) |id| self.allocator.free(id);
         self.allocator.free(self.api_key);
         self.allocator.free(self.request_body);
         var mut_context = self.context;
@@ -981,6 +984,30 @@ fn pushEvent(stream: *event_stream.AssistantMessageEventStream, event: ai_types.
     _ = stream.pushBlocking(event);
 }
 
+const client_user_agent = "oapx/" ++ version;
+
+fn wantsConversationId(model: ai_types.Model) bool {
+    return std.mem.eql(u8, model.provider, "opencode-go");
+}
+
+fn conversationId(allocator: std.mem.Allocator, session_id: ?[]const u8, context: ai_types.Context) ![]u8 {
+    if (session_id) |id| return allocator.dupe(u8, id);
+    var hasher = std.hash.Wyhash.init(0);
+    hasher.update(context.system_prompt.slice());
+    for (context.messages) |message| {
+        if (message != .user) continue;
+        switch (message.user.content) {
+            .text => |text| hasher.update(text),
+            .parts => |parts| for (parts) |part| switch (part) {
+                .text => |text| hasher.update(text.text),
+                .image => {},
+            },
+        }
+        break;
+    }
+    return std.fmt.allocPrint(allocator, "oapx-{x:0>16}", .{hasher.final()});
+}
+
 fn isKimiModel(model: ai_types.Model) bool {
     return std.mem.eql(u8, model.provider, "kimi");
 }
@@ -1120,8 +1147,18 @@ fn runThread(ctx: *ThreadCtx) void {
         }
     }
 
+    if (ctx.conversation_id) |id| {
+        headers.append(allocator, .{ .name = "x-opencode-session", .value = id }) catch {
+            ctx.deinit();
+            stream.completeWithError("oom headers");
+            return;
+        };
+    }
+
     const user_agent_override: ?[]const u8 = if (isKimiModel(model))
         "claude-code/0.1.0"
+    else if (wantsConversationId(model))
+        client_user_agent
     else
         null;
 
@@ -1702,6 +1739,9 @@ pub fn streamOpenAICompletions(
     const req_body = try buildRequestBody(owned_model, owned_context, resolved, allocator);
     errdefer allocator.free(req_body);
 
+    const conversation_id: ?[]u8 = if (wantsConversationId(owned_model)) try conversationId(allocator, resolved.getSessionId(), owned_context) else null;
+    errdefer if (conversation_id) |id| allocator.free(id);
+
     const s = try allocator.create(event_stream.AssistantMessageEventStream);
     errdefer allocator.destroy(s);
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
@@ -1731,11 +1771,43 @@ pub fn streamOpenAICompletions(
         .on_payload_ctx = resolved.on_payload_ctx,
         .retry_config = resolved.retry,
         .ping_interval_ms = resolved.ping_interval_ms,
+        .conversation_id = conversation_id,
     };
 
     const th = try std.Thread.spawn(.{}, runThread, .{ctx});
     th.detach();
     return s;
+}
+
+test "OpenCode Go gets a conversation id, the session's when there is one, else one stable across a conversation's turns" {
+    const allocator = std.testing.allocator;
+    var model = traceModel("https://opencode.ai/zen/go/v1");
+    model.provider = "opencode-go";
+    try std.testing.expect(wantsConversationId(model));
+    model.provider = "opencode";
+    try std.testing.expect(!wantsConversationId(model));
+
+    const first = [_]ai_types.Message{.{ .user = .{ .content = .{ .text = "plan the work" }, .timestamp = 0 } }};
+    const later = [_]ai_types.Message{
+        .{ .user = .{ .content = .{ .text = "plan the work" }, .timestamp = 0 } },
+        .{ .user = .{ .content = .{ .text = "and then do it" }, .timestamp = 1 } },
+    };
+    const other = [_]ai_types.Message{.{ .user = .{ .content = .{ .text = "something else" }, .timestamp = 0 } }};
+
+    const given = try conversationId(allocator, "ses-tui-1", .{ .messages = &first });
+    defer allocator.free(given);
+    try std.testing.expectEqualStrings("ses-tui-1", given);
+
+    const a = try conversationId(allocator, null, .{ .messages = &first });
+    defer allocator.free(a);
+    const b = try conversationId(allocator, null, .{ .messages = &later });
+    defer allocator.free(b);
+    const c = try conversationId(allocator, null, .{ .messages = &other });
+    defer allocator.free(c);
+    try std.testing.expectEqualStrings(a, b);
+    try std.testing.expect(!std.mem.eql(u8, a, c));
+    try std.testing.expect(std.mem.startsWith(u8, a, "oapx-"));
+    try std.testing.expect(std.mem.startsWith(u8, client_user_agent, "oapx/"));
 }
 
 fn deepSeekEffort(effort: []const u8) []const u8 {
@@ -3374,6 +3446,8 @@ const MockCompletionsServer = struct {
     served: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     saw_chat_path: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     saw_stream_flag: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    saw_session_header: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    saw_client_agent: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     const trace_events =
         \\data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"regression-model","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":null}]}
@@ -3467,6 +3541,12 @@ const MockCompletionsServer = struct {
         if (std.mem.indexOf(u8, body_slice, "\"stream\":true") != null) {
             self.saw_stream_flag.store(true, .release);
         }
+        if (std.ascii.indexOfIgnoreCase(head, "x-opencode-session: ses-tui-1\r\n") != null) {
+            self.saw_session_header.store(true, .release);
+        }
+        if (std.ascii.indexOfIgnoreCase(head, "user-agent: " ++ client_user_agent ++ "\r\n") != null) {
+            self.saw_client_agent.store(true, .release);
+        }
 
         var head_buffer: [128]u8 = undefined;
         const response_head = std.fmt.bufPrint(
@@ -3500,6 +3580,44 @@ fn traceContext() ai_types.Context {
         const items = [_]ai_types.Message{.{ .user = .{ .content = .{ .text = "hello" }, .timestamp = 0 } }};
     }.items[0..];
     return .{ .messages = messages };
+}
+
+test "an OpenCode Go request names this client and carries the session id" {
+    const allocator = std.testing.allocator;
+
+    var mock = try MockCompletionsServer.listen(MockCompletionsServer.complete_stream);
+    var stopped = false;
+    defer if (!stopped) mock.stop();
+
+    const base_url = try mock.baseUrl(allocator);
+    defer allocator.free(base_url);
+    try mock.start();
+
+    var model = traceModel(base_url);
+    model.provider = "opencode-go";
+    const stream = try streamOpenAICompletions(
+        model,
+        traceContext(),
+        .{
+            .api_key = ai_types.OwnedSlice(u8).initBorrowed("test-key"),
+            .session_id = ai_types.OwnedSlice(u8).initBorrowed("ses-tui-1"),
+        },
+        allocator,
+    );
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+    while (stream.wait()) |event| {
+        var polled = event;
+        ai_types.deinitAssistantMessageEvent(allocator, &polled);
+    }
+    try std.testing.expect(stream.waitForThread(5_000));
+    mock.stop();
+    stopped = true;
+
+    try std.testing.expect(mock.saw_session_header.load(.acquire));
+    try std.testing.expect(mock.saw_client_agent.load(.acquire));
 }
 
 test "a streamed text thinking and tool call reports indices that diverge from the terminal assembly order" {

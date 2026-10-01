@@ -830,6 +830,13 @@ pub const TuiRuntime = struct {
         save_fn: *const fn (ctx: ?*anyopaque, allocator: std.mem.Allocator, index: usize, history: []const ai_types.Message) ?[]u8,
     };
 
+    pub fn setSessionId(self: *TuiRuntime, session_id: []const u8) !void {
+        if (!self.started) try self.start();
+        const local = &(self.local_agent orelse return error.RuntimeNotStarted);
+        if (!local.isIdle()) return error.AgentAlreadyStreaming;
+        try local.setSessionId(if (session_id.len > 0) session_id else null);
+    }
+
     pub fn armAutoCompact(self: *TuiRuntime, at: ?u64, transcripts: []const []const u8, writer: ?TranscriptWriter) !void {
         if (!self.started) try self.start();
         const local = &(self.local_agent orelse return error.RuntimeNotStarted);

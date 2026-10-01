@@ -29,6 +29,13 @@
       "request_url": "https://opencode.ai/zen/v1/chat/completions"
     },
     {
+      "id": "opencode-go",
+      "wire": "openai-completions",
+      "base_url": "https://opencode.ai/zen/go/v1",
+      "models_url": "https://opencode.ai/zen/go/v1/models",
+      "request_url": "https://opencode.ai/zen/go/v1/chat/completions"
+    },
+    {
       "id": "openrouter",
       "wire": "openai-completions",
       "base_url": "https://openrouter.ai/api/v1",
