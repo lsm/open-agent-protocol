@@ -770,6 +770,22 @@ fn canCompletePartialTextOnStreamError(text_len: usize, thinking_len: usize, too
     return tool_call_count == 0 and (text_len > 0 or thinking_len > 0);
 }
 
+const ChunkOutcome = enum { more, finished, stream_error };
+
+fn streamErrorMessage(allocator: std.mem.Allocator, data: []const u8) ?[]u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, data, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const reported = parsed.value.object.get("error") orelse return null;
+    const message = switch (reported) {
+        .string => |text| text,
+        .object => |object| if (object.get("message")) |found| (if (found == .string) found.string else "") else "",
+        else => "",
+    };
+    if (message.len == 0) return std.fmt.allocPrint(allocator, "provider stream error: {f}", .{std.json.fmt(reported, .{})}) catch null;
+    return std.fmt.allocPrint(allocator, "provider stream error: {s}", .{message}) catch null;
+}
+
 fn parseChunk(
     data: []const u8,
     text: *std.ArrayList(u8),
@@ -781,14 +797,18 @@ fn parseChunk(
     tool_call_events: *std.ArrayList(ToolCallEvent),
     reasoning_detail_events: *std.ArrayList(ReasoningDetailEvent),
     allocator: std.mem.Allocator,
-) !void {
-    if (std.mem.eql(u8, data, "[DONE]")) return;
+) !ChunkOutcome {
+    if (std.mem.eql(u8, data, "[DONE]")) return .finished;
 
-    var parsed = std.json.parseFromSlice(std.json.Value, allocator, data, .{}) catch return;
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, data, .{}) catch return .more;
     defer parsed.deinit();
 
     const root = parsed.value;
-    if (root != .object) return;
+    if (root != .object) return .more;
+    if (root.object.get("error")) |reported| {
+        if (reported != .null) return .stream_error;
+    }
+    var finished = false;
 
     if (root.object.get("usage")) |u| {
         if (u == .object) {
@@ -828,12 +848,13 @@ fn parseChunk(
     }
 
     if (root.object.get("choices")) |choices| {
-        if (choices != .array or choices.array.items.len == 0) return;
+        if (choices != .array or choices.array.items.len == 0) return .more;
         const ch = choices.array.items[0];
-        if (ch != .object) return;
+        if (ch != .object) return .more;
 
         if (ch.object.get("finish_reason")) |fr| {
             if (fr == .string) {
+                finished = true;
                 if (std.mem.eql(u8, fr.string, "length")) stop_reason.* = .length else if (std.mem.eql(u8, fr.string, "tool_calls")) stop_reason.* = .tool_use else if (std.mem.eql(u8, fr.string, "content_filter")) stop_reason.* = .@"error" else stop_reason.* = .stop;
             }
         }
@@ -954,6 +975,7 @@ fn parseChunk(
             }
         }
     }
+    return if (finished) .finished else .more;
 }
 
 pub const wires: []const []const u8 = &.{"openai-completions"};
@@ -1351,6 +1373,7 @@ fn runThread(ctx: *ThreadCtx) void {
     }
     var next_content_index: usize = 0;
     var tool_call_count: usize = 0;
+    var finished = false;
 
     var transfer_buf: [4096]u8 = undefined;
     var read_buf: [8192]u8 = undefined;
@@ -1416,7 +1439,7 @@ fn runThread(ctx: *ThreadCtx) void {
             const prev_text_len = text.items.len;
             const prev_thinking_len = thinking.items.len;
 
-            parseChunk(ev.data, &text, &thinking, &usage, &stop_reason, &current_block, &reasoning_signature, &tool_call_events, &reasoning_detail_events, allocator) catch {
+            const outcome = parseChunk(ev.data, &text, &thinking, &usage, &stop_reason, &current_block, &reasoning_signature, &tool_call_events, &reasoning_detail_events, allocator) catch {
                 if (canCompletePartialTextOnStreamError(text.items.len, thinking.items.len, tool_call_count)) {
                     stop_reason = .length;
                     break :read_loop;
@@ -1425,6 +1448,17 @@ fn runThread(ctx: *ThreadCtx) void {
                 stream.completeWithError("json parse error");
                 return;
             };
+            switch (outcome) {
+                .more => {},
+                .finished => finished = true,
+                .stream_error => {
+                    const message = streamErrorMessage(allocator, ev.data);
+                    defer if (message) |owned| allocator.free(owned);
+                    ctx.deinit();
+                    stream.completeWithError(message orelse "provider stream error");
+                    return;
+                },
+            }
 
             if (text.items.len > prev_text_len) {
                 const delta = text.items[prev_text_len..];
@@ -1550,6 +1584,12 @@ fn runThread(ctx: *ThreadCtx) void {
     const has_text = text.items.len > 0;
     const content_count: usize = if (has_thinking) 1 else 0;
     const content_count_final = content_count + (if (has_text) @as(usize, 1) else @as(usize, 0)) + tool_call_count;
+
+    if (content_count_final == 0 and stop_reason != .length) {
+        ctx.deinit();
+        stream.completeWithError(if (finished) "the model returned an empty reply" else "the stream ended before the model replied");
+        return;
+    }
 
     if (content_count_final == 0) {
         var content = allocator.alloc(ai_types.AssistantContent, 1) catch {
@@ -2089,7 +2129,7 @@ test "parseChunk ignores a chunk that is not json and a json value that is not a
         "null",
     };
     for (chunks) |chunk| {
-        try parseChunk(
+        _ = try parseChunk(
             chunk,
             &text,
             &thinking,
@@ -2143,7 +2183,7 @@ test "parseChunk keeps reading after a chunk it could not read" {
         "{\"choices\":[{\"delta\":{\"content\":\"kept\"}}]}",
     };
     for (args) |chunk| {
-        try parseChunk(
+        _ = try parseChunk(
             chunk,
             &text,
             &thinking,
@@ -2389,7 +2429,7 @@ test "parseChunk does not leak memory with reasoning content" {
         \\{"choices":[{"delta":{"reasoning_content":"Let me think about this..."}}]}
     ;
 
-    try parseChunk(
+    _ = try parseChunk(
         chunk_data,
         &text,
         &thinking,
@@ -2440,7 +2480,7 @@ test "parseChunk handles multiple chunks without leaking" {
     };
 
     for (chunks) |chunk| {
-        try parseChunk(
+        _ = try parseChunk(
             chunk,
             &text,
             &thinking,
@@ -2489,7 +2529,7 @@ test "parseChunk handles tool_calls without leaking" {
         \\{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_abc123","type":"function","function":{"name":"bash","arguments":""}}]}}]}
     ;
 
-    try parseChunk(
+    _ = try parseChunk(
         chunk1,
         &text,
         &thinking,
@@ -2517,7 +2557,7 @@ test "parseChunk handles tool_calls without leaking" {
         \\{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"cmd\": \"ls\""}}]}}]}
     ;
 
-    try parseChunk(
+    _ = try parseChunk(
         chunk2,
         &text,
         &thinking,
@@ -2544,7 +2584,7 @@ test "parseChunk handles tool_calls without leaking" {
         \\{"choices":[{"finish_reason":"tool_calls"}]}
     ;
 
-    try parseChunk(
+    _ = try parseChunk(
         chunk3,
         &text,
         &thinking,
@@ -2591,7 +2631,7 @@ test "parseChunk handles multiple tool_calls" {
         \\{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_001","type":"function","function":{"name":"read","arguments":""}}]}}]}
     ;
 
-    try parseChunk(
+    _ = try parseChunk(
         chunk1,
         &text,
         &thinking,
@@ -2617,7 +2657,7 @@ test "parseChunk handles multiple tool_calls" {
         \\{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_002","type":"function","function":{"name":"write","arguments":""}}]}}]}
     ;
 
-    try parseChunk(
+    _ = try parseChunk(
         chunk2,
         &text,
         &thinking,
@@ -2644,7 +2684,7 @@ test "parseChunk handles multiple tool_calls" {
         \\{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":"}}]}}]}
     ;
 
-    try parseChunk(
+    _ = try parseChunk(
         chunk3,
         &text,
         &thinking,
@@ -3099,7 +3139,7 @@ test "parseChunk extracts reasoning_details for encrypted reasoning round-trip" 
         \\{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_abc123","type":"function","function":{"name":"bash","arguments":""}}]}}]}
     ;
 
-    try parseChunk(
+    _ = try parseChunk(
         chunk1,
         &text,
         &thinking,
@@ -3122,7 +3162,7 @@ test "parseChunk extracts reasoning_details for encrypted reasoning round-trip" 
         \\{"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.encrypted","id":"call_abc123","data":"encrypted_data_here"}]}}]}
     ;
 
-    try parseChunk(
+    _ = try parseChunk(
         chunk2,
         &text,
         &thinking,
@@ -3174,7 +3214,7 @@ test "parseChunk encodes a reasoning detail's id and data rather than splicing t
         \\{"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.encrypted","id":"call\"1","data":"a\"b\\c"}]}}]}
     ;
 
-    try parseChunk(
+    _ = try parseChunk(
         chunk,
         &text,
         &thinking,
@@ -3242,7 +3282,7 @@ test "a reasoning detail carrying a quote leaves the request body parseable" {
         \\{"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.encrypted","id":"call_abc123","data":"a\"b"}]}}]}
     ;
 
-    try parseChunk(
+    _ = try parseChunk(
         chunk,
         &text,
         &thinking,
@@ -3618,6 +3658,59 @@ fn traceContext() ai_types.Context {
     return .{ .messages = messages };
 }
 
+fn streamErrorFor(body: []const u8) !?[]u8 {
+    const allocator = std.testing.allocator;
+    var mock = try MockCompletionsServer.listen(body);
+    var stopped = false;
+    defer if (!stopped) mock.stop();
+    const base_url = try mock.baseUrl(allocator);
+    defer allocator.free(base_url);
+    try mock.start();
+
+    const stream = try streamOpenAICompletions(
+        traceModel(base_url),
+        traceContext(),
+        .{ .api_key = ai_types.OwnedSlice(u8).initBorrowed("test-key") },
+        allocator,
+    );
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+    while (stream.wait()) |event| {
+        var polled = event;
+        ai_types.deinitAssistantMessageEvent(allocator, &polled);
+    }
+    try std.testing.expect(stream.waitForThread(5_000));
+    mock.stop();
+    stopped = true;
+    const reported = stream.getError() orelse return null;
+    return try allocator.dupe(u8, reported);
+}
+
+test "a stream that ends with no reply fails instead of settling as a finished turn" {
+    const cases = [_]struct { body: []const u8, want: []const u8 }{
+        .{
+            .body = "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n",
+            .want = "the stream ended before the model replied",
+        },
+        .{
+            .body = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+            .want = "the model returned an empty reply",
+        },
+        .{
+            .body = "data: {\"error\":{\"message\":\"upstream overloaded\",\"code\":529}}\n\ndata: [DONE]\n\n",
+            .want = "provider stream error: upstream overloaded",
+        },
+    };
+    for (cases) |case| {
+        const reported = try streamErrorFor(case.body) orelse return error.TestExpectedStreamError;
+        defer std.testing.allocator.free(reported);
+        try std.testing.expectEqualStrings(case.want, reported);
+    }
+    try std.testing.expect(try streamErrorFor(MockCompletionsServer.complete_stream) == null);
+}
+
 test "an OpenCode Go request names this client and carries the session id" {
     const allocator = std.testing.allocator;
 
@@ -3779,7 +3872,7 @@ fn expectCleanupPaused() !void {
     }
     if (!cleanup_paused.load(.acquire)) {
         std.debug.print("producer never reached the held publish: held={d} paused={any} window={d} waits={d}\n", .{
-            cleanup_held.load(.acquire), cleanup_paused.load(.acquire),
+            cleanup_held.load(.acquire),   cleanup_paused.load(.acquire),
             cleanup_window.load(.acquire), cleanup_waits.load(.acquire),
         });
         return error.TestUnexpectedResult;
