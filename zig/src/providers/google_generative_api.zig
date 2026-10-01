@@ -1737,6 +1737,7 @@ fn google_generative_api_awaitCleanupRelease() void {
         const seen = google_generative_api_cleanup_gate.load(.acquire);
         if (google_generative_api_cleanup_hold.load(.acquire) == 0) break;
         io.futexWaitUncancelable(u32, &google_generative_api_cleanup_gate.raw, seen);
+        if (google_generative_api_cleanup_hold.load(.acquire) == 0) break;
     }
 }
 

@@ -2523,6 +2523,7 @@ fn openai_responses_api_awaitCleanupRelease() void {
         const seen = openai_responses_api_cleanup_gate.load(.acquire);
         if (openai_responses_api_cleanup_hold.load(.acquire) == 0) break;
         io.futexWaitUncancelable(u32, &openai_responses_api_cleanup_gate.raw, seen);
+        if (openai_responses_api_cleanup_hold.load(.acquire) == 0) break;
     }
 }
 
