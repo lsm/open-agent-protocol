@@ -772,6 +772,119 @@ fn canCompletePartialTextOnStreamError(text_len: usize, thinking_len: usize, too
 
 const ChunkOutcome = enum { more, finished, stream_error };
 
+const reply_trace_headers = [_][]const u8{ "x-request-id", "request-id", "x-opencode-endpoint-id", "x-opencode-log-id" };
+const reply_trace_bytes = 400;
+
+const ReplyTrace = struct {
+    chunks: usize = 0,
+    first: Kept = .{},
+    last: Kept = .{},
+    headers: [reply_trace_headers.len]Kept = [_]Kept{.{}} ** reply_trace_headers.len,
+
+    const Kept = struct {
+        buf: [reply_trace_bytes]u8 = undefined,
+        len: usize = 0,
+        cut: bool = false,
+
+        fn keep(self: *Kept, bytes: []const u8) void {
+            self.len = @min(bytes.len, self.buf.len);
+            @memcpy(self.buf[0..self.len], bytes[0..self.len]);
+            self.cut = bytes.len > self.buf.len;
+        }
+
+        fn slice(self: *const Kept) []const u8 {
+            return self.buf[0..self.len];
+        }
+    };
+
+    fn noteHeaders(self: *ReplyTrace, head: anytype) void {
+        if (std.mem.find(u8, head.bytes, "\r\n") == null) return;
+        var headers = head.iterateHeaders();
+        while (headers.next()) |header| {
+            for (reply_trace_headers, 0..) |name, index| {
+                if (std.ascii.eqlIgnoreCase(header.name, name)) self.headers[index].keep(header.value);
+            }
+        }
+    }
+
+    fn observe(self: *ReplyTrace, data: []const u8) void {
+        self.chunks += 1;
+        if (std.mem.eql(u8, data, "[DONE]")) return;
+        if (self.first.len == 0) self.first.keep(data);
+        self.last.keep(data);
+    }
+
+    fn describe(self: *const ReplyTrace, allocator: std.mem.Allocator, summary: []const u8, usage: ai_types.Usage) ![]u8 {
+        var out: std.Io.Writer.Allocating = .init(allocator);
+        errdefer out.deinit();
+        self.writeDescription(allocator, &out.writer, summary, usage) catch |err| switch (err) {
+            error.WriteFailed => return error.OutOfMemory,
+            else => |other| return other,
+        };
+        return out.toOwnedSlice();
+    }
+
+    fn writeDescription(self: *const ReplyTrace, allocator: std.mem.Allocator, writer: *std.Io.Writer, summary: []const u8, usage: ai_types.Usage) !void {
+        try writer.print("{s} (", .{summary});
+        var finish: ?[]const u8 = null;
+        var id: ?[]const u8 = null;
+        var first = try chunkFacts(allocator, self.first.slice());
+        defer first.deinit(allocator);
+        var last = try chunkFacts(allocator, self.last.slice());
+        defer last.deinit(allocator);
+        finish = last.finish_reason orelse first.finish_reason;
+        id = first.id orelse last.id;
+        if (finish) |reason| try writer.print("finish_reason: {s}", .{reason}) else try writer.writeAll("no finish_reason");
+        const input = usage.input + usage.cache_read;
+        if (input + usage.output > 0) {
+            try writer.print("; usage: {d} input ({d} cached), {d} output", .{ input, usage.cache_read, usage.output });
+        } else {
+            try writer.writeAll("; no usage reported");
+        }
+        try writer.print("; {d} chunk{s}", .{ self.chunks, if (self.chunks == 1) "" else "s" });
+        if (id) |value| try writer.print("; id: {s}", .{value});
+        for (reply_trace_headers, self.headers) |name, value| {
+            if (value.len > 0) try writer.print("; {s}: {s}", .{ name, value.slice() });
+        }
+        if (self.last.len > 0) try writer.print("; last chunk: {s}{s}", .{ self.last.slice(), if (self.last.cut) "…" else "" });
+        try writer.writeByte(')');
+    }
+};
+
+const ChunkFacts = struct {
+    finish_reason: ?[]u8 = null,
+    id: ?[]u8 = null,
+
+    fn deinit(self: *ChunkFacts, allocator: std.mem.Allocator) void {
+        if (self.finish_reason) |value| allocator.free(value);
+        if (self.id) |value| allocator.free(value);
+        self.* = undefined;
+    }
+};
+
+fn chunkFacts(allocator: std.mem.Allocator, data: []const u8) !ChunkFacts {
+    if (data.len == 0) return .{};
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, data, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return .{},
+    };
+    defer parsed.deinit();
+    if (parsed.value != .object) return .{};
+    var facts: ChunkFacts = .{};
+    errdefer facts.deinit(allocator);
+    if (parsed.value.object.get("id")) |value| {
+        if (value == .string and value.string.len > 0) facts.id = try allocator.dupe(u8, value.string);
+    }
+    const choices = parsed.value.object.get("choices") orelse return facts;
+    if (choices != .array or choices.array.items.len == 0) return facts;
+    const choice = choices.array.items[0];
+    if (choice != .object) return facts;
+    if (choice.object.get("finish_reason")) |value| {
+        if (value == .string) facts.finish_reason = try allocator.dupe(u8, value.string);
+    }
+    return facts;
+}
+
 fn streamErrorMessage(allocator: std.mem.Allocator, data: []const u8) ?[]u8 {
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, data, .{}) catch return null;
     defer parsed.deinit();
@@ -1374,6 +1487,8 @@ fn runThread(ctx: *ThreadCtx) void {
     var next_content_index: usize = 0;
     var tool_call_count: usize = 0;
     var finished = false;
+    var trace: ReplyTrace = .{};
+    trace.noteHeaders(&response.head);
 
     var transfer_buf: [4096]u8 = undefined;
     var read_buf: [8192]u8 = undefined;
@@ -1427,6 +1542,7 @@ fn runThread(ctx: *ThreadCtx) void {
         };
 
         for (events) |ev| {
+            trace.observe(ev.data);
             for (tool_call_events.items) |*tce| {
                 @constCast(tce).deinit(allocator);
             }
@@ -1586,8 +1702,11 @@ fn runThread(ctx: *ThreadCtx) void {
     const content_count_final = content_count + (if (has_text) @as(usize, 1) else @as(usize, 0)) + tool_call_count;
 
     if (content_count_final == 0 and stop_reason != .length) {
+        const summary = if (finished) "the model returned an empty reply" else "the stream ended before the model replied";
+        const message = trace.describe(allocator, summary, usage) catch null;
+        defer if (message) |owned| allocator.free(owned);
         ctx.deinit();
-        stream.completeWithError(if (finished) "the model returned an empty reply" else "the stream ended before the model replied");
+        stream.completeWithError(message orelse summary);
         return;
     }
 
@@ -3514,6 +3633,7 @@ const MockCompletionsServer = struct {
     saw_stream_flag: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     saw_session_header: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     saw_client_agent: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    response_headers: []const u8 = "",
 
     const trace_events =
         \\data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"regression-model","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":null}]}
@@ -3624,11 +3744,11 @@ const MockCompletionsServer = struct {
             self.saw_client_agent.store(true, .release);
         }
 
-        var head_buffer: [128]u8 = undefined;
+        var head_buffer: [512]u8 = undefined;
         const response_head = std.fmt.bufPrint(
             &head_buffer,
-            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n",
-            .{self.body.len},
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {d}\r\n{s}Connection: close\r\n\r\n",
+            .{ self.body.len, self.response_headers },
         ) catch return;
 
         conn.stream.writeAll(response_head) catch return;
@@ -3659,8 +3779,13 @@ fn traceContext() ai_types.Context {
 }
 
 fn streamErrorFor(body: []const u8) !?[]u8 {
+    return streamErrorWithHeaders(body, "");
+}
+
+fn streamErrorWithHeaders(body: []const u8, response_headers: []const u8) !?[]u8 {
     const allocator = std.testing.allocator;
     var mock = try MockCompletionsServer.listen(body);
+    mock.response_headers = response_headers;
     var stopped = false;
     defer if (!stopped) mock.stop();
     const base_url = try mock.baseUrl(allocator);
@@ -3706,9 +3831,56 @@ test "a stream that ends with no reply fails instead of settling as a finished t
     for (cases) |case| {
         const reported = try streamErrorFor(case.body) orelse return error.TestExpectedStreamError;
         defer std.testing.allocator.free(reported);
-        try std.testing.expectEqualStrings(case.want, reported);
+        try std.testing.expect(std.mem.startsWith(u8, reported, case.want));
     }
     try std.testing.expect(try streamErrorFor(MockCompletionsServer.complete_stream) == null);
+}
+
+test "an empty reply names its finish reason, usage, chunk count, id, the gateway's request headers and the last chunk" {
+    const body =
+        "data: {\"id\":\"chatcmpl-empty\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n" ++
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":612034,\"prompt_tokens_details\":{\"cached_tokens\":600000},\"completion_tokens\":0}}\n\n" ++
+        "data: [DONE]\n\n";
+    const reported = try streamErrorWithHeaders(body, "x-opencode-endpoint-id: orcarouter-dsv4.1flash\r\nx-opencode-log-id: log-42\r\n") orelse return error.TestExpectedStreamError;
+    defer std.testing.allocator.free(reported);
+    try std.testing.expectEqualStrings(
+        "the model returned an empty reply (finish_reason: stop; usage: 612034 input (600000 cached), 0 output; 3 chunks; id: chatcmpl-empty; x-opencode-endpoint-id: orcarouter-dsv4.1flash; x-opencode-log-id: log-42; last chunk: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":612034,\"prompt_tokens_details\":{\"cached_tokens\":600000},\"completion_tokens\":0}})",
+        reported,
+    );
+}
+
+test "a stream cut before any reply says it saw no finish reason and no usage" {
+    const reported = try streamErrorFor("data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n") orelse return error.TestExpectedStreamError;
+    defer std.testing.allocator.free(reported);
+    try std.testing.expectEqualStrings(
+        "the stream ended before the model replied (no finish_reason; no usage reported; 1 chunk; last chunk: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]})",
+        reported,
+    );
+}
+
+test "a reply trace keeps a long chunk's head and marks it cut" {
+    var trace: ReplyTrace = .{};
+    const long = "{\"choices\":[]," ++ ("\"x\":1," ** 100) ++ "\"y\":2}";
+    trace.observe(long);
+    trace.observe("[DONE]");
+    try std.testing.expectEqual(@as(usize, 2), trace.chunks);
+    try std.testing.expectEqual(@as(usize, reply_trace_bytes), trace.last.len);
+    try std.testing.expect(trace.last.cut);
+    const message = try trace.describe(std.testing.allocator, "empty", .{});
+    defer std.testing.allocator.free(message);
+    try std.testing.expect(std.mem.endsWith(u8, message, "…)"));
+}
+
+fn replyTraceDescribeProbe(allocator: std.mem.Allocator) !void {
+    var trace: ReplyTrace = .{};
+    trace.observe("{\"id\":\"chatcmpl-a\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":null}]}");
+    trace.observe("{\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}");
+    const message = try trace.describe(allocator, "empty", .{ .input = 5, .output = 1 });
+    allocator.free(message);
+}
+
+test "a reply trace's description frees what it built on every allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, replyTraceDescribeProbe, .{});
 }
 
 test "an OpenCode Go request names this client and carries the session id" {
