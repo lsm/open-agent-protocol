@@ -319,15 +319,22 @@ fn handleProvider(ctx: CommandContext, command: Command) !CommandResult {
     }
     if (runIsActive(ctx)) return .{ .output = try ctx.allocator.dupe(u8, "A turn is running; add the provider once it finishes."), .is_error = true };
 
-    var add = ProviderAdd{
-        .id = try ctx.allocator.dupe(u8, id),
-        .base_url = try ctx.allocator.dupe(u8, base_url),
+    const owned_id = try ctx.allocator.dupe(u8, id);
+    errdefer ctx.allocator.free(owned_id);
+    const owned_base = try ctx.allocator.dupe(u8, base_url);
+    errdefer ctx.allocator.free(owned_base);
+    const owned_api = if (api) |value| try ctx.allocator.dupe(u8, value) else null;
+    errdefer if (owned_api) |value| ctx.allocator.free(value);
+    const owned_env = if (env_key) |value| try ctx.allocator.dupe(u8, value) else null;
+    errdefer if (owned_env) |value| ctx.allocator.free(value);
+
+    return .{ .action = .add_provider, .provider_add = .{
+        .id = owned_id,
+        .base_url = owned_base,
+        .api = owned_api,
+        .env_key = owned_env,
         .auth_none = auth_none,
-    };
-    errdefer add.deinit(ctx.allocator);
-    if (api) |value| add.api = try ctx.allocator.dupe(u8, value);
-    if (env_key) |value| add.env_key = try ctx.allocator.dupe(u8, value);
-    return .{ .action = .add_provider, .provider_add = add };
+    } };
 }
 
 fn handleStatus(ctx: CommandContext, command: Command) !CommandResult {
@@ -1430,4 +1437,20 @@ test "provider add is reachable as a command and the result frees its spec" {
     try std.testing.expectEqual(CommandKind.provider, parsed.kind);
     try std.testing.expectEqualStrings("add local http://localhost:8000/v1 --no-auth", parsed.arg.?);
     try std.testing.expect(findCommandByKind(.provider) != null);
+}
+
+fn providerDispatchProbe(allocator: std.mem.Allocator) !void {
+    var state = tui_state.AppState.init(allocator);
+    defer state.deinit();
+    const ctx = CommandContext{ .allocator = allocator, .state = &state };
+
+    var result = try dispatch(ctx, .{ .kind = .provider, .arg = "add gateway https://gw.internal/anthropic --api anthropic-messages --env GW_KEY" });
+    defer result.deinit(allocator);
+    try std.testing.expectEqual(CommandAction.add_provider, result.action);
+    try std.testing.expectEqualStrings("gateway", result.provider_add.?.id);
+    try std.testing.expectEqualStrings("GW_KEY", result.provider_add.?.env_key.?);
+}
+
+test "provider add frees every allocation when one fails" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, providerDispatchProbe, .{});
 }
