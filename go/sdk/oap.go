@@ -333,13 +333,17 @@ func (s *ModelsService) oapList(ctx context.Context, req ListModelsRequest) (*Li
 		if req.IncludeLoginRequired != nil && !*req.IncludeLoginRequired && model.str("auth_status") == "login_required" {
 			continue
 		}
-		source := SourceDynamic
-		if model.str("source") == "fallback" {
-			source = SourceStaticFallback
+		source, err := oapModelSource(model)
+		if err != nil {
+			return nil, err
+		}
+		lifecycle, err := oapModelLifecycle(model)
+		if err != nil {
+			return nil, err
 		}
 		descriptor := ModelDescriptor{ModelRef: model.str("model_ref"), ModelID: model.str("model_id"),
 			DisplayName: model.str("display_name"), ProviderID: model.str("provider_id"), API: model.str("wire"),
-			AuthStatus: AuthStatus(model.str("auth_status")), Lifecycle: ModelLifecycle(model.str("lifecycle")),
+			AuthStatus: AuthStatus(model.str("auth_status")), Lifecycle: lifecycle,
 			Source: source, ContextWindow: model.intOr(0, "context_window"),
 			MaxOutputTokens: model.intOr(0, "max_output_tokens"), ReasoningDefault: ReasoningLevel(model.str("reasoning_default"))}
 		if descriptor.DisplayName == "" {
@@ -829,6 +833,48 @@ func (s *AgentStream) oapClose() error {
 	s.oapState = nil
 	s.done = true
 	return s.err
+}
+
+func oapModelLifecycle(model jsonObject) (*ModelLifecycle, error) {
+	raw, stated := model["lifecycle"]
+	if !stated {
+		return nil, nil
+	}
+	if raw == nil {
+		return nil, &ProtocolError{Code: CodeMalformedResponse, Message: "model lifecycle must be a string when present, not null"}
+	}
+	name, ok := raw.(string)
+	if !ok || name == "" {
+		return nil, &ProtocolError{Code: CodeMalformedResponse, Message: "model lifecycle must be a non-empty string when present"}
+	}
+	switch ModelLifecycle(name) {
+	case LifecycleStable, LifecyclePreview, LifecycleDeprecated:
+		mapped := ModelLifecycle(name)
+		return &mapped, nil
+	default:
+		return nil, &ProtocolError{Code: CodeMalformedResponse, Message: "model lifecycle has unknown value: " + name}
+	}
+}
+
+func oapModelSource(model jsonObject) (*ModelSource, error) {
+	raw, stated := model["source"]
+	if !stated {
+		return nil, nil
+	}
+	name, ok := raw.(string)
+	if !ok || name == "" {
+		return nil, &ProtocolError{Code: CodeMalformedResponse, Message: "model source must be a non-empty string when present"}
+	}
+	var mapped ModelSource
+	switch name {
+	case "discovered":
+		mapped = SourceDynamic
+	case "fallback":
+		mapped = SourceStaticFallback
+	default:
+		return nil, &ProtocolError{Code: CodeMalformedResponse, Message: "model source has unknown value: " + name}
+	}
+	return &mapped, nil
 }
 
 func (s *AuthService) oapListProviders(ctx context.Context) ([]ProviderAuthInfo, error) {

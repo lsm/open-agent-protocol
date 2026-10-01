@@ -261,6 +261,59 @@ fn featureOnly(arena: std.mem.Allocator, reason: contract.Refusal) std.mem.Alloc
     return try arena.dupe(oap_types.DetailEntry, &.{.{ .key = "feature", .value = reason.feature }});
 }
 
+pub const refusal_statuses = [_]struct { code: []const u8, status: []const u8 }{
+    .{ .code = "unknown_adapter", .status = "404 Not Found" },
+    .{ .code = "unknown_session", .status = "404 Not Found" },
+    .{ .code = "session_closed", .status = "409 Conflict" },
+    .{ .code = "session_exists", .status = "409 Conflict" },
+    .{ .code = "unsupported_feature", .status = "400 Bad Request" },
+    .{ .code = "capability_degraded", .status = "400 Bad Request" },
+    .{ .code = "scope_mismatch", .status = "400 Bad Request" },
+    .{ .code = "request_cancelled", .status = "400 Bad Request" },
+    .{ .code = "request_too_large", .status = "413 Payload Too Large" },
+    .{ .code = "run_not_found", .status = "404 Not Found" },
+    .{ .code = "unsupported_media_type", .status = "415 Unsupported Media Type" },
+    .{ .code = "request_read", .status = "400 Bad Request" },
+    .{ .code = "unrecognized_host", .status = "403 Forbidden" },
+    .{ .code = "cross_origin_request", .status = "403 Forbidden" },
+    .{ .code = "invalid_submission", .status = "400 Bad Request" },
+    .{ .code = "invalid_cursor", .status = "400 Bad Request" },
+    .{ .code = "replay_cursor_future", .status = "400 Bad Request" },
+    .{ .code = "resolution_rejected", .status = "409 Conflict" },
+    .{ .code = "run_terminal", .status = "409 Conflict" },
+    .{ .code = "no_run_to_resume", .status = "409 Conflict" },
+    .{ .code = "stale_capabilities", .status = "409 Conflict" },
+    .{ .code = "run_active", .status = "409 Conflict" },
+    .{ .code = "model_not_found", .status = "400 Bad Request" },
+    .{ .code = "state_failed", .status = "500 Internal Server Error" },
+    .{ .code = "tools_failed", .status = "502 Bad Gateway" },
+    .{ .code = "internal", .status = "500 Internal Server Error" },
+    .{ .code = "probe_failed", .status = "500 Internal Server Error" },
+    .{ .code = "open_failed", .status = "502 Bad Gateway" },
+};
+
+pub fn statusForRefusal(code: []const u8) ?[]const u8 {
+    for (refusal_statuses) |entry| {
+        if (std.mem.eql(u8, entry.code, code)) return entry.status;
+    }
+    return null;
+}
+
+pub fn featureReasonDetails(feature: []const u8, reason: []const u8) [2]oap_types.DetailEntry {
+    return .{ .{ .key = "feature", .value = feature }, .{ .key = "reason", .value = reason } };
+}
+
+pub fn featureOnlyDetail(feature: []const u8) [1]oap_types.DetailEntry {
+    return .{.{ .key = "feature", .value = feature }};
+}
+
+pub fn detailsJson(arena: std.mem.Allocator, details: []const oap_types.DetailEntry) Error!std.json.Value {
+    var object = try emptyObject(arena);
+    errdefer object.deinit(arena);
+    for (details) |entry| try object.put(arena, entry.key, .{ .string = entry.value });
+    return .{ .object = object };
+}
+
 fn requireStringOrNull(root: std.json.ObjectMap, name: []const u8) Error!void {
     const value = member(root, name) orelse return;
     if (value == .null or value == .string) return;
@@ -852,13 +905,8 @@ pub const Frontend = struct {
             error.UnknownSession => .{ .code = "unknown_session", .message = try std.fmt.allocPrint(arena, "no session \"{s}\"", .{session_id}) },
             error.SessionClosed => .{ .code = "session_closed", .message = try std.fmt.allocPrint(arena, "no session \"{s}\"", .{session_id}) },
             error.ScopeMismatch => .{ .code = "scope_mismatch", .message = try std.fmt.allocPrint(arena, "no session \"{s}\"", .{session_id}) },
-            error.UnsupportedFeature, error.ToolCatalogUnavailable => try refusalWith(arena, "unsupported_feature", @errorName(err), &.{
-                .{ .key = "feature", .value = feature },
-                .{ .key = "reason", .value = contract.reason_unadvertised },
-            }),
-            error.CapabilityDegraded => try refusalWith(arena, "capability_degraded", @errorName(err), &.{
-                .{ .key = "feature", .value = feature },
-            }),
+            error.UnsupportedFeature, error.ToolCatalogUnavailable => try refusalWith(arena, "unsupported_feature", @errorName(err), &featureReasonDetails(feature, contract.reason_unadvertised)),
+            error.CapabilityDegraded => try refusalWith(arena, "capability_degraded", @errorName(err), &featureOnlyDetail(feature)),
             error.ModelNotFound => try refusalWith(arena, "model_not_found", @errorName(err), &.{}),
             error.CatalogMisScoped => .{ .code = fallback, .message = "the adapter served a catalog scoped to another session" },
             error.CatalogUnlabelled => .{ .code = fallback, .message = "the adapter served a catalog with no capability revision" },
@@ -929,11 +977,7 @@ pub const Frontend = struct {
         try body.put(arena, "code", .{ .string = refusal.code });
         try body.put(arena, "message", .{ .string = try trim(arena, refusal.message) });
         if (refusal.details.len > 0) {
-            var details = try emptyObject(arena);
-            for (refusal.details) |detail| {
-                try details.put(arena, detail.key, .{ .string = detail.value });
-            }
-            try body.put(arena, "details", .{ .object = details });
+            try body.put(arena, "details", try detailsJson(arena, refusal.details));
         }
         try object.put(arena, "error", .{ .object = body });
         if (self.frame(arena, object)) |line| {
@@ -2338,6 +2382,164 @@ test "the refusals the open gate and the payload read name" {
         try harness.send(case.line);
         try testing.expectEqualStrings(case.code, try harness.code());
     }
+}
+
+test "every code the draft names has a status, or is one the draft leaves undefined" {
+    const named_without_status = [_][]const u8{
+        "busy",
+        "unknown_op",
+        "response_too_large",
+        "invalid_request",
+        "malformed_json",
+        "schema_invalid",
+        "type_mismatch",
+        "invalid_payload",
+    };
+    for (named_without_status) |code| {
+        try testing.expect(statusForRefusal(code) == null);
+    }
+    const named = [_][]const u8{
+        "capability_degraded",    "internal",          "invalid_cursor",
+        "invalid_submission",     "model_not_found",   "no_run_to_resume",
+        "open_failed",            "probe_failed",      "replay_cursor_future",
+        "request_cancelled",      "request_too_large", "resolution_rejected",
+        "run_active",             "run_not_found",     "run_terminal",
+        "scope_mismatch",         "session_closed",    "session_exists",
+        "stale_capabilities",     "state_failed",      "tools_failed",
+        "unknown_adapter",        "unknown_session",   "unsupported_feature",
+        "unsupported_media_type", "request_read",      "unrecognized_host",
+        "cross_origin_request",
+    };
+    for (named) |code| {
+        try testing.expect(statusForRefusal(code) != null);
+    }
+    try testing.expectEqual(@as(usize, 28), refusal_statuses.len);
+}
+
+test "an unnamed refusal code carries no status, so the wire rule can refuse it" {
+    try testing.expect(statusForRefusal("method_not_allowed") == null);
+    try testing.expect(statusForRefusal("invented_later") == null);
+    try testing.expect(statusForRefusal("405") == null);
+}
+test "every code the transport can answer carries the status the draft pins" {
+    const named = [_]struct { code: []const u8, status: []const u8 }{
+        .{ .code = "unknown_adapter", .status = "404 Not Found" },
+        .{ .code = "unknown_session", .status = "404 Not Found" },
+        .{ .code = "session_closed", .status = "409 Conflict" },
+        .{ .code = "session_exists", .status = "409 Conflict" },
+        .{ .code = "stale_capabilities", .status = "409 Conflict" },
+        .{ .code = "run_active", .status = "409 Conflict" },
+        .{ .code = "unsupported_feature", .status = "400 Bad Request" },
+        .{ .code = "capability_degraded", .status = "400 Bad Request" },
+        .{ .code = "scope_mismatch", .status = "400 Bad Request" },
+        .{ .code = "request_cancelled", .status = "400 Bad Request" },
+        .{ .code = "model_not_found", .status = "400 Bad Request" },
+        .{ .code = "request_too_large", .status = "413 Payload Too Large" },
+        .{ .code = "state_failed", .status = "500 Internal Server Error" },
+        .{ .code = "internal", .status = "500 Internal Server Error" },
+        .{ .code = "probe_failed", .status = "500 Internal Server Error" },
+        .{ .code = "tools_failed", .status = "502 Bad Gateway" },
+        .{ .code = "open_failed", .status = "502 Bad Gateway" },
+        .{ .code = "run_not_found", .status = "404 Not Found" },
+        .{ .code = "invalid_submission", .status = "400 Bad Request" },
+        .{ .code = "invalid_cursor", .status = "400 Bad Request" },
+        .{ .code = "replay_cursor_future", .status = "400 Bad Request" },
+        .{ .code = "resolution_rejected", .status = "409 Conflict" },
+        .{ .code = "run_terminal", .status = "409 Conflict" },
+        .{ .code = "no_run_to_resume", .status = "409 Conflict" },
+        .{ .code = "unsupported_media_type", .status = "415 Unsupported Media Type" },
+        .{ .code = "request_read", .status = "400 Bad Request" },
+        .{ .code = "unrecognized_host", .status = "403 Forbidden" },
+        .{ .code = "cross_origin_request", .status = "403 Forbidden" },
+    };
+    for (named) |entry| {
+        try testing.expectEqualStrings(entry.status, statusForRefusal(entry.code).?);
+    }
+    try testing.expectEqual(@as(usize, 28), refusal_statuses.len);
+    try testing.expectEqual(@as(usize, 28), named.len);
+}
+
+const many_detail_keys = [_][]const u8{
+    "feature", "source",   "revision",          "session_id", "run_id",
+    "cursor",  "expected", "current",           "attachment", "subscription",
+    "limit",   "oldest",   "newest",            "resolution", "interaction",
+    "reason",  "detail",   "expected_revision", "capability", "mode",
+};
+
+fn manyDetailEntries(buf: []u8) [many_detail_keys.len]oap_types.DetailEntry {
+    var entries: [many_detail_keys.len]oap_types.DetailEntry = undefined;
+    var at: usize = 0;
+    for (many_detail_keys, 0..) |key, index| {
+        const slot = buf[at..][0..key.len];
+        @memcpy(slot, key);
+        entries[index] = .{ .key = key, .value = slot };
+        at += key.len;
+    }
+    return entries;
+}
+
+fn detailsUnderFailure(arena: std.mem.Allocator) !void {
+    var backing: [256]u8 = undefined;
+    const entries = manyDetailEntries(&backing);
+    var rendered = try detailsJson(arena, &entries);
+    defer rendered.object.deinit(arena);
+    try std.testing.expectEqual(@as(usize, many_detail_keys.len), rendered.object.count());
+}
+
+test "a refusal detail that cannot be put releases the map it had already grown" {
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, detailsUnderFailure, .{});
+}
+
+test "a refusal detail borrows its key and value rather than copying them" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    var kept: [2]oap_types.DetailEntry = .{ .{ .key = "", .value = "" }, .{ .key = "", .value = "" } };
+    const arena = arena_state.allocator();
+    const feature = "action.tls_attach";
+    const source = "x1";
+    const feature_key = "feature";
+    const source_key = "source";
+    const keys_at = try arena.alloc(u8, feature_key.len + source_key.len);
+    @memcpy(keys_at[0..feature_key.len], feature_key);
+    @memcpy(keys_at[feature_key.len..], source_key);
+    const values_at = try arena.alloc(u8, feature.len + source.len);
+    @memcpy(values_at[0..feature.len], feature);
+    @memcpy(values_at[feature.len..], source);
+    kept[0] = .{ .key = keys_at[0..feature_key.len], .value = values_at[0..feature.len] };
+    kept[1] = .{ .key = keys_at[feature_key.len..], .value = values_at[feature.len..] };
+    var rendered = try detailsJson(arena, &kept);
+    defer rendered.object.deinit(arena);
+    try testing.expectEqual(@as(usize, 2), rendered.object.count());
+    for (kept) |entry| {
+        const stored = rendered.object.getPtr(entry.key).?;
+        try testing.expectEqualStrings(entry.value, stored.string);
+        try testing.expect(stored.string.ptr == entry.value.ptr);
+        try testing.expectEqual(entry.value.len, stored.string.len);
+    }
+    var borrowed_keys: usize = 0;
+    for (rendered.object.keys()) |key| {
+        for (kept) |entry| {
+            if (key.ptr == entry.key.ptr and key.len == entry.key.len) {
+                borrowed_keys += 1;
+            }
+        }
+    }
+    try testing.expectEqual(@as(usize, 2), borrowed_keys);
+}
+
+test "refusal details render as the object the envelope carries" {
+    const arena = testing.allocator;
+    var rendered = try detailsJson(arena, &.{
+        .{ .key = "feature", .value = "action.tool_sources.attach" },
+        .{ .key = "source", .value = "x1" },
+    });
+    defer rendered.object.deinit(arena);
+    try testing.expectEqualStrings("action.tool_sources.attach", rendered.object.get("feature").?.string);
+    try testing.expectEqualStrings("x1", rendered.object.get("source").?.string);
+
+    var none = try detailsJson(arena, &.{});
+    defer none.object.deinit(arena);
+    try testing.expectEqual(@as(usize, 0), none.object.count());
 }
 
 test "the in-flight bound refuses any op, naming the bound that refused it" {

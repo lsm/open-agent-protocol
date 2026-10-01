@@ -23,6 +23,10 @@ fn emit(profile: &str, kind: &str, reply: Option<&str>, payload: Value, scope: V
 }
 
 fn main() {
+    let shape = std::env::args()
+        .nth(1)
+        .and_then(|arg| arg.strip_prefix("--catalog-shape=").map(str::to_owned))
+        .unwrap_or_else(|| "stated".to_owned());
     let mut authenticated = false;
     let mut selected_model = "fixture/openai-responses@mock".to_owned();
     for line in io::stdin().lock().lines() {
@@ -140,15 +144,51 @@ fn main() {
                 }),
                 json!({}),
             ),
-            (PROVIDER, "provider.models.list.request") => emit(
-                profile,
-                "provider.models.list.response",
-                Some(id),
-                json!({
-                    "models": [{ "model_ref": "fixture/openai-responses@mock", "model_id": "mock", "provider_id": "fixture", "wire": "openai-responses", "auth_status": "authenticated", "source": "discovered", "lifecycle": "stable", "capabilities": ["chat", "streaming"] }]
-                }),
-                json!({}),
-            ),
+            (PROVIDER, "provider.models.list.request") => {
+                let mut entry = json!({
+                    "model_ref": "fixture/openai-responses@mock", "model_id": "mock", "provider_id": "fixture",
+                    "wire": "openai-responses", "auth_status": "authenticated",
+                    "capabilities": ["chat", "streaming"]
+                });
+                match shape.as_str() {
+                    "absent-source" => {}
+                    "null-source" => entry["source"] = Value::Null,
+                    "number-source" => entry["source"] = json!(7),
+                    "invented-source" => entry["source"] = json!("invented-source"),
+                    "fallback" => entry["source"] = json!("fallback"),
+                    _ => entry["source"] = json!("discovered"),
+                }
+                match shape.as_str() {
+                    "absent-lifecycle" => {
+                        let _ = entry.as_object_mut().map(|o| o.remove("lifecycle"));
+                    }
+                    "null-lifecycle" => entry["lifecycle"] = Value::Null,
+                    "invented-lifecycle" => entry["lifecycle"] = json!("retired"),
+                    "preview-lifecycle" => entry["lifecycle"] = json!("preview"),
+                    "deprecated-lifecycle" => entry["lifecycle"] = json!("deprecated"),
+                    _ => entry["lifecycle"] = json!("stable"),
+                }
+                match shape.as_str() {
+                    "absent-auth" => {
+                        let _ = entry.as_object_mut().map(|o| o.remove("auth_status"));
+                    }
+                    "null-auth" => entry["auth_status"] = Value::Null,
+                    "number-auth" => entry["auth_status"] = json!(7),
+                    "invented-auth" => entry["auth_status"] = json!("retired"),
+                    other => {
+                        if let Some(literal) = other.strip_prefix("stated-auth-") {
+                            entry["auth_status"] = json!(literal);
+                        }
+                    }
+                }
+                emit(
+                    profile,
+                    "provider.models.list.response",
+                    Some(id),
+                    json!({ "models": [entry] }),
+                    json!({}),
+                )
+            }
             (PROVIDER, "inference.create.request") => {
                 let auth_rejection =
                     data.get("model_ref")

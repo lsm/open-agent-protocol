@@ -269,9 +269,34 @@ pub fn sharesCredentialEnv(id: []const u8) bool {
     return false;
 }
 
+pub fn sharesCredentialEnvWith(id: []const u8, other: []const u8) bool {
+    if (std.mem.eql(u8, id, other)) return false;
+    const row = provider(id) orelse return false;
+    const sibling = provider(other) orelse return false;
+    for (row.credential_env) |mine| {
+        for (sibling.credential_env) |theirs| {
+            if (std.mem.eql(u8, mine, theirs)) return true;
+        }
+    }
+    return false;
+}
+
+test "rows reading one credential variable share it, and a row does not share with itself" {
+    try std.testing.expect(sharesCredentialEnvWith("opencode-go", "opencode"));
+    try std.testing.expect(sharesCredentialEnvWith("opencode", "opencode-go"));
+    try std.testing.expect(!sharesCredentialEnvWith("opencode", "opencode"));
+    try std.testing.expect(!sharesCredentialEnvWith("opencode", "deepseek"));
+    try std.testing.expect(!sharesCredentialEnvWith("no-such-provider", "opencode"));
+}
+
 pub fn modelsEndpoint(id: []const u8) ?[]const u8 {
     const row = provider(id) orelse return null;
     return row.models_endpoint;
+}
+
+pub fn modelsDevKey(id: []const u8) ?[]const u8 {
+    const row = provider(id) orelse return null;
+    return row.models_dev;
 }
 
 pub fn baseUrl(id: []const u8, wire: []const u8, region: ?[]const u8) ?[]const u8 {
@@ -636,6 +661,10 @@ test "a models listing is recorded only where the provider answers one" {
     try std.testing.expect(modelsEndpoint("github-copilot") == null);
     try std.testing.expect(modelsEndpoint("ollama") == null);
     try std.testing.expect(modelsEndpoint("no-such-provider") == null);
+    try std.testing.expectEqualStrings("opencode", modelsDevKey("opencode").?);
+    try std.testing.expectEqualStrings("opencode-go", modelsDevKey("opencode-go").?);
+    try std.testing.expect(modelsDevKey("deepseek") == null);
+    try std.testing.expect(modelsDevKey("no-such-provider") == null);
 }
 
 test "a models listing is an absolute path appended to a base that does not end in a slash" {

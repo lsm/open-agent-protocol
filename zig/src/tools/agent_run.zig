@@ -1,3 +1,28 @@
+const SESSION_SWEEP_INTERVAL_MS: i64 = 1_000;
+
+pub const Driver = struct {
+    runs: std.ArrayList(Run),
+    last_session_sweep_mono_ms: i64 = 0,
+
+    pub fn init() Driver {
+        return .{ .runs = std.ArrayList(Run).empty };
+    }
+
+    pub fn deinit(self: *Driver, allocator: std.mem.Allocator) void {
+        for (self.runs.items) |*run| run.deinit(allocator);
+        self.runs.deinit(allocator);
+        self.* = undefined;
+    }
+
+    pub fn len(self: *Driver) usize {
+        return self.runs.items.len;
+    }
+};
+
+pub const STDIO_DISCONNECT_TOOL_WAIT_MESSAGE = "client disconnected while the run waited for a distributed tool_result";
+pub const STDIO_EVENT_PUBLICATION_FAILED_MESSAGE = "run event publication failed; event stream truncated before settlement";
+pub const STDIO_RUN_WITHOUT_OUTCOME_MESSAGE = "run ended without a deliverable outcome (terminal lost to allocation failure)";
+
 const std = @import("std");
 const agent_types = @import("agent_types");
 const ai_types = @import("ai_types");
@@ -90,8 +115,8 @@ pub const Run = struct {
     }
 };
 
-pub fn hasRunForGeneration(table: *const std.ArrayList(Run), session_id: SessionId, generation: u64) bool {
-    for (table.items) |run| {
+pub fn hasRunForGeneration(driver: *const Driver, session_id: SessionId, generation: u64) bool {
+    for (driver.runs.items) |run| {
         if (run.settlement_frame_published) continue;
         if (run.generation == generation and std.mem.eql(u8, run.session_id[0..], session_id[0..])) return true;
     }
@@ -100,11 +125,11 @@ pub fn hasRunForGeneration(table: *const std.ArrayList(Run), session_id: Session
 
 pub fn cancelRun(
     allocator: std.mem.Allocator,
-    table: *std.ArrayList(Run),
+    driver: *Driver,
     bridge: *AgentToolBridge.Bridge,
     session_id: SessionId,
 ) void {
-    for (table.items) |*run| {
+    for (driver.runs.items) |*run| {
         if (std.mem.eql(u8, run.session_id[0..], session_id[0..])) run.cancel();
     }
     bridge.discardSession(allocator, session_id);
@@ -125,7 +150,7 @@ pub fn deinitToolFields(allocator: std.mem.Allocator, tool: *agent_loop.AgentToo
 
 pub fn admit(
     allocator: std.mem.Allocator,
-    table: *std.ArrayList(Run),
+    driver: *Driver,
     bridge: *AgentToolBridge.Bridge,
     prepared: *Prepared,
     session_id: SessionId,
@@ -207,7 +232,7 @@ pub fn admit(
 
     var appended = false;
     errdefer if (!appended) run.deinit(allocator);
-    try table.append(allocator, run);
+    try driver.runs.append(allocator, run);
     appended = true;
 }
 
@@ -320,6 +345,16 @@ pub fn serializeAgentLoopEvent(
             try w.writeIntField("estimated_tokens", payload.estimated_tokens);
             try w.writeIntField("item_count", payload.item_count);
         },
+        .compaction_start => {
+            try w.writeStringField("type", "compaction_start");
+        },
+        .compaction_end => |payload| {
+            try w.writeStringField("type", "compaction_end");
+            try w.writeStringField("outcome", @tagName(payload.outcome));
+            try w.writeIntField("messages_before", payload.messages_before);
+            try w.writeIntField("tokens_before", payload.tokens_before);
+            try w.writeIntField("tokens_after", payload.tokens_after);
+        },
         .tool_execution_start => |payload| {
             try w.writeStringField("type", "tool_execution_start");
             try w.writeStringField("tool_call_id", payload.tool_call_id);
@@ -337,7 +372,7 @@ pub fn serializeAgentLoopEvent(
             try w.writeStringField("tool_call_id", payload.tool_call_id);
             try w.writeStringField("tool_name", payload.tool_name);
             try w.writeStringField("result_json", payload.result_json);
-            if (payload.content_json.len > 0) try w.writeStringField("content_json", payload.content_json);
+            if (payload.content_json.slice().len > 0) try w.writeStringField("content_json", payload.content_json.slice());
             try w.writeBoolField("is_error", payload.is_error);
             try w.writeIntField("args_bytes", payload.args_bytes);
             try w.writeIntField("raw_result_bytes", payload.raw_result_bytes);
@@ -502,4 +537,145 @@ fn serializeAgentErrorEvent(allocator: std.mem.Allocator, message: []const u8, c
     const out = try allocator.dupe(u8, buffer.items);
     buffer.deinit(allocator);
     return out;
+}
+
+pub fn pump(allocator: std.mem.Allocator, driver: *Driver, server: *AgentProtocolServer) !usize {
+    var forwarded: usize = 0;
+    var idx: usize = 0;
+    while (idx < driver.runs.items.len) {
+        var run = &driver.runs.items[idx];
+
+        const registration_current = blk: {
+            const generation = server.sessionGeneration(run.session_id);
+            break :blk generation != null and generation.? == run.generation;
+        };
+        if (!registration_current) run.cancel();
+
+        while (run.stream.poll()) |event| {
+            var owned_event = event;
+            errdefer deinitStdioAgentEvent(allocator, &owned_event);
+
+            if (!registration_current) {
+                deinitStdioAgentEvent(allocator, &owned_event);
+                continue;
+            }
+
+            if (std.meta.activeTag(event) == .agent_end) {
+                run.terminal_event_json = serializeAgentLoopEvent(allocator, run.session_id, event) catch |err| {
+                    run.event_publication_failed = true;
+                    return err;
+                };
+                deinitStdioAgentEvent(allocator, &owned_event);
+                continue;
+            }
+
+            const event_json = serializeAgentLoopEvent(allocator, run.session_id, event) catch |err| {
+                run.event_publication_failed = true;
+                return err;
+            };
+            defer allocator.free(event_json);
+            server.publishAgentEvent(run.session_id, event_json) catch |err| {
+                run.event_publication_failed = true;
+                if (err == error.OutOfMemory) return err;
+            };
+            deinitStdioAgentEvent(allocator, &owned_event);
+            forwarded += 1;
+        }
+
+        if (!run.stream.isDone()) {
+            idx += 1;
+            continue;
+        }
+
+        if (registration_current) {
+            if (!run.settlement_frame_published) {
+                if (run.disconnect_failed.load(.acquire)) {
+                    dropTerminalProjection(allocator, run);
+                    try publishRunFailurePair(server, allocator, run, .tool_execution_error, STDIO_DISCONNECT_TOOL_WAIT_MESSAGE);
+                    forwarded += 1;
+                } else if (run.stream.getError()) |msg| {
+                    dropTerminalProjection(allocator, run);
+                    try publishRunFailurePair(server, allocator, run, .internal_error, msg);
+                    forwarded += 1;
+                } else if (run.event_publication_failed) {
+                    dropTerminalProjection(allocator, run);
+                    try publishRunFailurePair(server, allocator, run, .internal_error, STDIO_EVENT_PUBLICATION_FAILED_MESSAGE);
+                    forwarded += 1;
+                } else if (run.stream.getResult()) |result| {
+                    const result_reason: []const u8 = if (result.termination) |termination|
+                        @tagName(termination)
+                    else
+                        @tagName(result.final_message.stop_reason);
+                    const result_json = try transport.serializeResultWithStopReason(result.final_message, result_reason, allocator);
+                    defer allocator.free(result_json);
+                    server.publishAgentResult(run.session_id, result_json) catch |err| switch (err) {
+                        error.OutOfMemory => return err,
+                        else => {},
+                    };
+                    run.settlement_frame_published = true;
+                    forwarded += 1;
+                } else {
+                    dropTerminalProjection(allocator, run);
+                    try publishRunFailurePair(server, allocator, run, .internal_error, STDIO_RUN_WITHOUT_OUTCOME_MESSAGE);
+                    forwarded += 1;
+                }
+            }
+
+            if (run.settlement_frame_published) {
+                if (run.terminal_event_json) |event_json| {
+                    server.publishAgentEvent(run.session_id, event_json) catch |err| switch (err) {
+                        error.OutOfMemory => return err,
+                        else => {},
+                    };
+                    allocator.free(event_json);
+                    run.terminal_event_json = null;
+                    forwarded += 1;
+                }
+                var removed = driver.runs.orderedRemove(idx);
+                removed.deinit(allocator);
+                continue;
+            }
+        } else {
+            var removed = driver.runs.orderedRemove(idx);
+            removed.deinit(allocator);
+            continue;
+        }
+
+        idx += 1;
+    }
+    return forwarded;
+}
+
+pub fn sweepIdleAgentSessions(
+    allocator: std.mem.Allocator,
+    driver: *Driver,
+    server: *AgentProtocolServer,
+    bridge: *AgentToolBridge.Bridge,
+) !void {
+    const now_mono_ms = try compat.time.monotonicMillis();
+    if (now_mono_ms - driver.last_session_sweep_mono_ms < SESSION_SWEEP_INTERVAL_MS) return;
+    driver.last_session_sweep_mono_ms = now_mono_ms;
+
+    var evicted = std.ArrayList(SessionId).empty;
+    defer evicted.deinit(allocator);
+    const sweep_result = server.evictIdleSessions(now_mono_ms, &evicted);
+    for (evicted.items) |session_id| {
+        bridge.discardSession(allocator, session_id);
+    }
+    _ = try sweep_result;
+}
+
+pub fn finishStopCancellation(
+    allocator: std.mem.Allocator,
+    server: *AgentProtocolServer,
+    driver: *Driver,
+    bridge: *AgentToolBridge.Bridge,
+    stopped_session: ?SessionId,
+    had_stop_session: bool,
+) void {
+    if (stopped_session) |session_id| {
+        if (had_stop_session and !server.hasSession(session_id)) {
+            cancelRun(allocator, driver, bridge, session_id);
+        }
+    }
 }

@@ -85,13 +85,13 @@ func startHubAddr(t *testing.T) (string, func(), context.CancelFunc) {
 	return address, cleanup, cancel
 }
 
-func TestHubAddrRefusesALargeMediaTypeOverARealSocket(t *testing.T) {
-	started := time.Now()
+func TestHubAddrRefusesALargeRefusedHeadOverARealSocket(t *testing.T) {
 	address, cleanup, cancel := startHubAddr(t)
 	defer cancel()
-	boundAt := started
 	defer cleanup()
 
+	seedHubClock(t, address)
+	boundAt := time.Now()
 	for _, declared := range []int{1<<20 + 4096, 4 << 20, 16 << 20} {
 		t.Run(strconv.Itoa(declared), func(t *testing.T) {
 			if wait := 2500*time.Millisecond - time.Since(boundAt); wait > 0 {
@@ -108,7 +108,7 @@ func TestHubAddrRefusesALargeMediaTypeOverARealSocket(t *testing.T) {
 			defer conn.Close()
 			_ = conn.SetDeadline(time.Now().Add(90 * time.Second))
 
-			head := fmt.Sprintf("POST /adapters HTTP/1.1\r\nHost: %s\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n", address, declared)
+			head := fmt.Sprintf("POST /adapters HTTP/1.1\r\nHost: evil.test\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n", declared)
 			if _, err := io.WriteString(conn, head); err != nil {
 				t.Fatalf("write the head: %v", err)
 			}
@@ -118,8 +118,7 @@ func TestHubAddrRefusesALargeMediaTypeOverARealSocket(t *testing.T) {
 			if err != nil && written < minTransferred {
 				t.Fatalf("wrote only %d of %d bytes before the write deadline: %v", written, declared, err)
 			}
-			_ = conn.SetWriteDeadline(time.Time{})
-			_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+			_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
 
 			answer, readErr := http.ReadResponse(bufio.NewReader(conn), nil)
 			if readErr != nil {
@@ -132,8 +131,8 @@ func TestHubAddrRefusesALargeMediaTypeOverARealSocket(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read the whole refusal after writing %d of %d bytes: %v", written, declared, err)
 			}
-			if answer.StatusCode != http.StatusUnsupportedMediaType {
-				t.Fatalf("a wrong Content-Type after %d transferred bytes answered %d, want 415", written, answer.StatusCode)
+			if answer.StatusCode != http.StatusForbidden {
+				t.Fatalf("a refused head after %d transferred bytes answered %d, want 403", written, answer.StatusCode)
 			}
 			if answer.ContentLength <= 0 || int64(len(body)) != answer.ContentLength {
 				t.Fatalf("the body was %d bytes and Content-Length said %d", len(body), answer.ContentLength)
@@ -152,8 +151,8 @@ func TestHubAddrRefusesALargeMediaTypeOverARealSocket(t *testing.T) {
 			if envelope.Type != "error.response" {
 				t.Fatalf("the refusal was %q, want an error.response envelope", envelope.Type)
 			}
-			if envelope.Payload.Error.Code != "unsupported_media_type" {
-				t.Fatalf("the refusal code was %q, want unsupported_media_type", envelope.Payload.Error.Code)
+			if envelope.Payload.Error.Code != "unrecognized_host" {
+				t.Fatalf("the refusal code was %q, want unrecognized_host", envelope.Payload.Error.Code)
 			}
 			if written < minTransferred {
 				t.Fatalf("only %d bytes were transferred, under the %d drain budget, so this case does not exercise it", written, minTransferred)
@@ -164,6 +163,29 @@ func TestHubAddrRefusesALargeMediaTypeOverARealSocket(t *testing.T) {
 }
 
 const minTransferred = 1 << 20
+
+func seedHubClock(t *testing.T, address string) {
+	t.Helper()
+	conn, err := net.DialTimeout("tcp", address, 10*time.Second)
+	if err != nil {
+		t.Fatalf("dial the hub to seed its clock: %v", err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(20 * time.Second))
+	head := "GET /adapters HTTP/1.1\r\nHost: evil.test\r\nContent-Length: 0\r\n\r\n"
+	if _, err := io.WriteString(conn, head); err != nil {
+		t.Fatalf("write the seeding request: %v", err)
+	}
+	answer, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("the seeding request was not answered: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, answer.Body)
+	_ = answer.Body.Close()
+	if answer.StatusCode != http.StatusForbidden {
+		t.Fatalf("the seeding request answered %d, want 403, so it never reached a drain", answer.StatusCode)
+	}
+}
 
 func writeBody(conn net.Conn, declared int) (int, error) {
 	block := bytes.Repeat([]byte("b"), 32*1024)

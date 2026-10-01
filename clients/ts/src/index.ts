@@ -1,20 +1,3 @@
-/**
- * The TypeScript OAP client: drives a local `goap hub` daemon over its
- * HTTP + SSE surface with verbatim schema/v0.1 envelopes. Zero-dependency
- * runtime (platform fetch + streams, Node 18+ baseline); the Go `client`
- * package is the behavioral reference — same wire surface, same semantics.
- *
- * ```ts
- * const client = dial('127.0.0.1:6270');
- * const session = await client.open('memory', { sessionId: 'demo' });
- * const events = session.events();          // subscribe before submitting
- * await events.ready;                        // the subscription is live
- * await session.submit({ messages: [{ role: 'user', content: 'hi' }], delivery: 'auto' });
- * for await (const envelope of events) {
- *   // resolve gates, collect deltas, end at run.completed
- * }
- * ```
- */
 
 export {
   dial,

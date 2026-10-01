@@ -27,6 +27,7 @@ const rows = [_]Row{
     .{ .id = "kimi", .model = "kimi-k2.7-code" },
     .{ .id = "zai-coding-plan", .model = "glm-4.6" },
     .{ .id = "opencode", .model = "grok-code-fast-1" },
+    .{ .id = "opencode-go", .model = "deepseek-v4-flash" },
     .{ .id = "openrouter", .model = "openai/gpt-4o-mini" },
 };
 
@@ -274,7 +275,9 @@ test "provider smoke: a streamed completion arrives as deltas" {
             return error.TimeoutExceeded;
         }
         while (stream.poll()) |event| {
-            switch (event) {
+            const polled = event;
+            defer stream.releaseEvent(polled);
+            switch (polled) {
                 .text_delta, .thinking_delta => deltas += 1,
                 else => {},
             }
@@ -361,7 +364,7 @@ test "provider smoke: an unknown model is refused" {
             report(fixture.row.id, "unknown model refused", false);
             return error.TimeoutExceeded;
         }
-        _ = stream.poll();
+        test_helpers.drainOne(stream);
         compat.time.sleepNs(10 * std.time.ns_per_ms);
     }
 

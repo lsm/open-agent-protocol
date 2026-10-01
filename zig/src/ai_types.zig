@@ -115,7 +115,6 @@ pub const StreamOptions = struct {
     http_timeout_ms: ?u64 = 30_000,
     ping_interval_ms: ?u64 = null,
     owned_headers: ?OwnedSlice(HeaderPair) = null,
-    requires_owned_stream_events: bool = false,
 
     pub fn getApiKey(self: *const StreamOptions) ?[]const u8 {
         const key = self.api_key.slice();
@@ -397,12 +396,24 @@ pub const ToolResultMessage = struct {
     content: []const UserContentPart,
     details_json: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
     artifacts: OwnedSlice(ArtifactReference) = OwnedSlice(ArtifactReference).initBorrowed(&.{}),
+    working_directory: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+    working_directory_observed: bool = false,
     is_error: bool,
     timestamp: i64,
 
     pub fn getDetailsJson(self: *const ToolResultMessage) ?[]const u8 {
         const details = self.details_json.slice();
         return if (details.len > 0) details else null;
+    }
+
+    pub fn workingDirectory(self: *const ToolResultMessage) ?[]const u8 {
+        const directory = self.working_directory.slice();
+        return if (directory.len > 0) directory else null;
+    }
+
+    pub fn observedWorkingDirectory(self: *const ToolResultMessage) ?[]const u8 {
+        if (!self.working_directory_observed) return null;
+        return self.workingDirectory();
     }
 
     pub fn deinit(self: *ToolResultMessage, allocator: std.mem.Allocator) void {
@@ -415,6 +426,7 @@ pub const ToolResultMessage = struct {
         allocator.free(self.content);
         self.details_json.deinit(allocator);
         self.artifacts.deinit(allocator);
+        self.working_directory.deinit(allocator);
     }
 };
 
@@ -707,8 +719,73 @@ pub fn cloneAssistantMessage(allocator: std.mem.Allocator, msg: AssistantMessage
     };
 }
 
+pub const CarriedPartial = struct {
+    partial: AssistantMessage,
+    owned: ?[]AssistantContent,
+
+    pub fn release(self: CarriedPartial, allocator: std.mem.Allocator) void {
+        const owned = self.owned orelse return;
+        allocator.free(owned);
+    }
+};
+
+pub fn partialWithContent(
+    allocator: std.mem.Allocator,
+    base: AssistantMessage,
+    content: []const AssistantContent,
+    index: usize,
+) error{OutOfMemory}!CarriedPartial {
+    if (index >= content.len) return .{ .partial = base, .owned = null };
+    const slice = try allocator.alloc(AssistantContent, index + 1);
+    @memcpy(slice, content[0 .. index + 1]);
+    var out = base;
+    out.content = slice;
+    return .{ .partial = out, .owned = slice };
+}
+
 pub fn deinitAssistantMessageOwned(allocator: std.mem.Allocator, msg: *AssistantMessage) void {
     msg.deinit(allocator);
+}
+
+pub fn buildOwnedMessage(
+    allocator: std.mem.Allocator,
+    content: []AssistantContent,
+    api_src: []const u8,
+    provider_src: []const u8,
+    model_src: []const u8,
+    usage: Usage,
+    stop_reason: StopReason,
+    timestamp: i64,
+) error{OutOfMemory}!AssistantMessage {
+    const api = try allocator.dupe(u8, api_src);
+    errdefer allocator.free(api);
+    const provider = try allocator.dupe(u8, provider_src);
+    errdefer allocator.free(provider);
+    const model_id = try allocator.dupe(u8, model_src);
+    return .{
+        .content = content,
+        .api = api,
+        .provider = provider,
+        .model = model_id,
+        .usage = usage,
+        .stop_reason = stop_reason,
+        .timestamp = timestamp,
+        .is_owned = true,
+    };
+}
+
+pub const LOST_CLONE_MESSAGE = "an event could not be queued: out of memory";
+
+pub fn settleProviderOutcome(stream: anytype, out: AssistantMessage) void {
+    if (stream.pushFailed()) {
+        var dropped = out;
+        dropped.deinit(stream.allocator);
+        stream.completeWithError(LOST_CLONE_MESSAGE);
+        return;
+    }
+    if (stream.completeIfOpen(out)) return;
+    var dropped = out;
+    dropped.deinit(stream.allocator);
 }
 
 pub const OwnedMessage = struct {
@@ -989,6 +1066,8 @@ fn cloneToolResultMessage(allocator: std.mem.Allocator, tr: ToolResultMessage) !
     errdefer allocator.free(tool_call_id);
     const tool_name = try allocator.dupe(u8, tr.tool_name);
     errdefer allocator.free(tool_name);
+    const directory = try allocator.dupe(u8, tr.working_directory.slice());
+    errdefer allocator.free(directory);
 
     return .{
         .tool_call_id = tool_call_id,
@@ -996,6 +1075,8 @@ fn cloneToolResultMessage(allocator: std.mem.Allocator, tr: ToolResultMessage) !
         .content = cloned_content,
         .details_json = details_json,
         .artifacts = OwnedSlice(ArtifactReference).initOwned(cloned_artifacts),
+        .working_directory = OwnedSlice(u8).initOwned(directory),
+        .working_directory_observed = tr.working_directory_observed,
         .is_error = tr.is_error,
         .timestamp = tr.timestamp,
     };
@@ -1555,4 +1636,124 @@ test "OwnedMessage cloneOf frees its copy when a later allocation fails" {
     };
 
     try std.testing.checkAllAllocationFailures(allocator, Case.run, .{source});
+}
+
+test "buildOwnedMessage releases only what it allocated when a later dupe fails" {
+    var fail_at: usize = 1;
+    while (fail_at <= 6) : (fail_at += 1) {
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_at });
+        const alloc = failing.allocator();
+
+        const content = alloc.alloc(AssistantContent, 1) catch continue;
+        content[0] = .{ .text = .{ .text = alloc.dupe(u8, "answer") catch {
+            alloc.free(content);
+            continue;
+        } } };
+
+        const built = buildOwnedMessage(alloc, content, "anthropic-messages", "anthropic", "claude", .{}, .stop, 0);
+        if (built) |*message| {
+            var owned = message.*;
+            owned.deinit(alloc);
+        } else |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            var held = AssistantMessage{
+                .content = content,
+                .api = "",
+                .provider = "",
+                .model = "",
+                .usage = .{},
+                .stop_reason = .stop,
+                .timestamp = 0,
+                .is_owned = true,
+            };
+            held.deinit(alloc);
+        }
+    }
+}
+
+test "partialWithContent puts the block at the index it is asked for" {
+    const allocator = std.testing.allocator;
+    const content = [_]AssistantContent{
+        .{ .text = .{ .text = "before" } },
+        .{ .thinking = .{ .thinking = "pondering", .thinking_signature = "sig-9" } },
+    };
+    const carried = try partialWithContent(allocator, .{
+        .content = &.{},
+        .api = "anthropic-messages",
+        .provider = "anthropic",
+        .model = "claude",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+    }, &content, 1);
+    defer carried.release(allocator);
+    try std.testing.expectEqual(@as(usize, 2), carried.partial.content.len);
+    switch (carried.partial.content[1]) {
+        .thinking => |t| try std.testing.expectEqualStrings("sig-9", t.thinking_signature.?),
+        else => return error.NotCarried,
+    }
+}
+
+test "partialWithContent leaves the partial alone when the index is not there" {
+    const allocator = std.testing.allocator;
+    const content = [_]AssistantContent{.{ .text = .{ .text = "only" } }};
+    const carried = try partialWithContent(allocator, .{
+        .content = &.{},
+        .api = "anthropic-messages",
+        .provider = "anthropic",
+        .model = "claude",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+    }, &content, 4);
+    try std.testing.expectEqual(@as(?[]AssistantContent, null), carried.owned);
+    try std.testing.expectEqual(@as(usize, 0), carried.partial.content.len);
+}
+
+
+test "a copied tool result keeps its directory and the observed flag" {
+    const cases = [_]struct { path: []const u8, observed: bool }{
+        .{ .path = "/observed/dir", .observed = true },
+        .{ .path = "/start/dir", .observed = false },
+    };
+    for (cases, 0..) |case, index| {
+        const source = try std.testing.allocator.dupe(u8, case.path);
+        defer std.testing.allocator.free(source);
+        const original = ToolResultMessage{
+            .tool_call_id = "call-1",
+            .tool_name = "dirtool",
+            .content = &.{.{ .text = .{ .text = "done" } }},
+            .details_json = OwnedSlice(u8).initBorrowed(""),
+            .working_directory = OwnedSlice(u8).initOwned(source),
+            .working_directory_observed = case.observed,
+            .is_error = false,
+            .timestamp = @intCast(index),
+        };
+        var clone = try cloneToolResultMessage(std.testing.allocator, original);
+        defer clone.deinit(std.testing.allocator);
+        try std.testing.expectEqualStrings(case.path, clone.workingDirectory().?);
+        const observed = clone.observedWorkingDirectory();
+        if (case.observed) {
+            try std.testing.expectEqualStrings(case.path, observed.?);
+        } else {
+            try std.testing.expect(observed == null);
+        }
+    }
+}
+
+test "release frees the carried array once the cloned event has its own copy" {
+    const allocator = std.testing.allocator;
+    const content = [_]AssistantContent{.{ .text = .{ .text = "held" } }};
+    const carried = try partialWithContent(allocator, .{
+        .content = &.{},
+        .api = "anthropic-messages",
+        .provider = "anthropic",
+        .model = "claude",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+    }, &content, 0);
+    const slice = carried.owned.?;
+    try std.testing.expectEqual(slice.ptr, carried.partial.content.ptr);
+    carried.release(allocator);
 }

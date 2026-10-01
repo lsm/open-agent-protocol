@@ -28,9 +28,11 @@ pub fn width(str: []const u8) usize {
                     in_escape = false;
                     escape_bracket = false;
                 }
-            } else if (c == ']') {
+            } else if (c == ']' or c == 'P' or c == '_' or c == '^' or c == 'X') {
+                const bel_terminates = c == ']';
                 i += 1;
-                while (i < str.len and str[i] != 0x07) {
+                while (i < str.len) {
+                    if (bel_terminates and str[i] == 0x07) break;
                     if (str[i] == 0x1b and i + 1 < str.len and str[i + 1] == '\\') {
                         i += 1;
                         break;

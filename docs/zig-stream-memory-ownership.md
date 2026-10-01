@@ -43,6 +43,54 @@ The completed result is transferred to the stream: `EventStream.deinit()`
 frees it. Event handling depends on the stream's `ownership` setting — check
 it before writing your poll loop.
 
+## The reported working directory on a tool result
+
+`AgentToolResult.working_directory` and `ToolResultMessage.working_directory`
+are optional: a tool reporting nothing leaves the field **empty and borrowed**
+and `working_directory_observed` **defaults to false**, so the absent case
+allocates and frees nothing. `workingDirectory()` returns the value when there is
+one; `observedWorkingDirectory()` returns `null` unless the flag is set.
+
+**Transfer.** `finalizeToolExecution` copies the result out and empties it
+before anything fallible, so the copy is sole owner from then on; the message
+build takes that whole copy and leaves it empty, so no field has two owners and
+none has none. The results list owns the message once appended, which is why the
+guard releasing an unreached message is disarmed there — a failed
+tool-execution-end publication, including the `StreamCompleted` a consumer's
+teardown causes, must free nothing the list owns.
+
+**Destruction and copies.** Both `deinit`s free the directory, so ownership moves
+once. The three places rebuilding a result field by field — the message clone, the
+agent's copy, the hand-off — carry the directory *and* the flag.
+
+**No session-resume persistence.** The store does not carry this field, so a
+session read back from disk has neither directory nor flag — deliberate, since a
+stored absolute path is stale by construction. Any future resume change must
+decide what to persist and re-validate it.
+
+## When a run ends before its message is appended
+
+A turn can end `.aborted`, in error, or part-way through a failure — and a consumer can
+complete the stream mid-run, so the final publication itself can be rejected. The events
+already published are **borrowed** and drained after the producer has returned, so three
+backings must outlive the run: one by the result, released by `AgentLoopResult.deinit`,
+and the other two by the stream's retention, declared by the result type.
+
+- **Failed turn.** The assistant message is *parked* on `StreamRetention` and released
+  with the stream; `LoopState.deinit` runs on the same error return. The `final_message`
+  clone a `turn_end` borrows needs none of that: both such publications are followed only
+  by a `break`, so the clone always reaches the result.
+- **Publication rejected.** A rejected `agent_end` hands the whole result to that
+  retention instead of releasing it, so the earlier events stay readable.
+
+`AgentEventStream.deinit` reaches both, only after a consumer has drained; nothing on the
+producing thread frees either. A turn that hands its message to the context marks the
+transfer, so a later failure does not retain it twice. Parking never allocates, because the
+hand-off runs *after* a borrowed publication, where an exhausted allocator has no
+memory-safe answer but keeping the memory. `AgentEvent.deinit` frees nothing for
+`message_end` or `turn_end`, so a drain alone proves nothing: each regression reads the
+borrowed field it is about.
+
 ## The safe consumer pattern
 
 One complete, leak-free flow (mirrored by the unit test
@@ -122,12 +170,12 @@ The sample above assumes the default: a **borrowed-event** stream
 (`ownership == .borrowed`), where the stream stores pushed events as-is and never
 frees their strings. You copy what you keep; you never free the event itself.
 
-Some streams are **owned-event** streams (`ownership = .{ .owned = ... }`, e.g. OpenAI
-Completions, or any provider started with `requires_owned_stream_events: true`
-in `StreamOptions`): `push()` deep-copies each event into stream-owned storage.
-There the obligations flip — after processing each polled event you must free
-it with `ai_types.deinitAssistantMessageEvent(allocator, &event)`. Events still
-queued when the stream dies are freed by `EventStream.deinit()`.
+**Every provider stream is an owned-event stream** (`ownership = .{ .owned = ... }`):
+`push()` deep-copies each event into stream-owned storage, and the producing thread
+frees its own copy as soon as the push returns. There the obligations flip — after
+processing each polled event you must free it with
+`ai_types.deinitAssistantMessageEvent(allocator, &event)`. Events still queued when
+the stream dies are freed by `EventStream.deinit()`.
 
 ```zig
 if (s.ownership.isOwned()) {
@@ -140,20 +188,27 @@ if (s.ownership.isOwned()) {
 }
 ```
 
-If your consumer may lag the producer (UI buffering, slow sinks), prefer
-`requires_owned_stream_events: true` where the provider supports it: with
-borrowed events the producer is responsible for keeping the backing storage
-alive until you drain the queue, and not every provider upholds that for the
-full queue lifetime yet (the Anthropic direct path frees its delta storage when
-its producer thread exits — #192). Owned events remove that race at the cost of
-one deep copy per event.
+A consumer may lag the producer — UI buffering, slow sinks — and that is exactly
+why provider streams clone. With borrowed events the producer must keep the
+backing storage alive until you drain, which a producer thread cannot guarantee:
+`wait()` reads the ring buffer before it checks `completed`, and `deinit()` drains
+after joining the thread, so an event can reach you after the producing thread's
+storage is gone (#192). The one-deep-copy-per-event cost is paid deliberately to
+remove that race. `StreamOptions.requires_owned_stream_events` has been removed
+rather than left optional, because a caller-chosen ownership flag is what let two
+lifetime models coexist here.
 
-Anthropic reads the flag rather than only being built by it: when the stream
-clones on push it frees each parsed delta immediately, since the queued event
-holds a copy, and only the borrowed configuration defers to thread exit. So the
-#192 window exists exactly where the flag is off, and asking for owned events
-both removes it and stops the provider holding every delta string until the
-stream ends.
+Anthropic is built as an owned stream. Because it clones on push it frees each
+parsed delta immediately, since the queued event holds a copy. The #192 window was
+exactly the borrowed configuration, and an owned stream both removed it and stopped
+the provider holding every delta string until the stream ends.
+
+The TUI fixture provider (`zig/src/tui/fixture_provider.zig`, reachable through
+`OAPX_TUI_FIXTURE`) is owned as well. It pushes a terminal *event* **and** calls
+`stream.complete()`, and because those are two separately allocated messages the
+event clone and the stream result are each released once. A consumer still
+branches on `stream.ownership.isOwned()`, because the generic `EventStream`
+default is still borrowed.
 
 ## Completion is `wait()` → `null` → result, not a `done` event
 
@@ -169,16 +224,17 @@ result signal — some producers mark the thread done *before* publishing the
 final result. Gate on `wait()` → `null` (blocking) or `isDone()` plus a drained
 queue (polling), then read `getError()` / `cloneResult()`.
 
-Nor is it uniformly a *cleanup* signal. Anthropic Messages, Ollama and Azure
-OpenAI Responses defer the mark to thread exit, so `waitForThread()` returning
-true there means every allocation the producer thread owned has been freed.
-OpenAI Completions, OpenAI Responses, Google Generative and Google Vertex still
+Nor is it uniformly a *cleanup* signal. Anthropic Messages, Ollama, Azure OpenAI
+Responses and OpenAI Completions defer the mark to thread exit, so
+`waitForThread()` returning true there means every allocation the producer thread
+owned has been freed. OpenAI Responses, Google Generative and Google Vertex still
 mark on each return path, ahead of the function's own `defer`s, so their threads
-are still freeing buffers after the mark. A test that drives one of those four
+are still freeing buffers after the mark. A test that drives one of those three
 with a leak-checking allocator can observe an allocation that is about to be
 freed and report it as a leak; that is a race in the mark, not in the provider.
 Anthropic was in that group until the tool-call leak tests needed a barrier that
-meant what it said.
+meant what it said, and OpenAI Completions moved after the provider gate aborted
+on a leak plus a `writeTrace` segfault.
 
 ## A stream is never freed underneath a live producer thread
 
@@ -297,3 +353,26 @@ If you implement the provider side (custom API registration or test mocks):
   only when `is_owned` is true. Empty content (`&.{}`) and empty strings are
   always safe. Duplicate `api`/`provider`/`model` before freeing the model the
   strings came from — the published result outlives the producer thread.
+
+## Spawned child processes
+
+`process_runner` owns the same question one level down, for the children a tool
+spawns rather than for the values it produces.
+
+- A child is spawned into its **own POSIX process group**, and teardown signals
+  the group, not just the child. Without that, anything the command backgrounded
+  outlives the timeout or cancellation that was supposed to end it.
+- **The group id is captured at spawn**, where it is still known. Waiting on the
+  child clears `child.id`, and a command that exits on its own takes its id with
+  it, so a teardown that consulted `child.id` would skip the group exactly when a
+  backgrounded grandchild was still running.
+- Teardown sends `SIGTERM` to the group, then `SIGKILL` after a short bounded
+  grace if the group still has a member. This runs on every cleanup path, not
+  only on timeout: a normal early exit gets the same treatment.
+- **Windows is not covered by any of this.** The child id there is a native
+  handle, so the group is null and the posix signals are not compiled; Windows
+  keeps its existing child-only cleanup and gains nothing from this change.
+
+Limits worth stating rather than implying: this is a process-group signal, so it
+reaches descendants that stay in the group. It does not claim a detached session
+or a new process group of its own, and it is not cross-platform group support.

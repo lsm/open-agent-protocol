@@ -9,6 +9,10 @@ import (
 	"time"
 )
 
+func sourceIs(got *ModelSource, want ModelSource) bool {
+	return got != nil && *got == want
+}
+
 func TestModelsListDecodesDescriptors(t *testing.T) {
 	logPath, readLog := requestLogPath(t)
 	client := newTestClient(t, scenarioProtocol, envRequestLog+"="+logPath)
@@ -33,8 +37,8 @@ func TestModelsListDecodesDescriptors(t *testing.T) {
 	if model.AuthStatus != AuthAuthenticated {
 		t.Errorf("AuthStatus = %q, want %q", model.AuthStatus, AuthAuthenticated)
 	}
-	if model.Lifecycle != LifecycleStable || model.Source != SourceDynamic {
-		t.Errorf("Lifecycle/Source = %q/%q", model.Lifecycle, model.Source)
+	if model.Lifecycle == nil || *model.Lifecycle != LifecycleStable || !sourceIs(model.Source, SourceDynamic) {
+		t.Errorf("Lifecycle/Source = %v/%v", model.Lifecycle, model.Source)
 	}
 	if model.ContextWindow != 200000 || model.MaxOutputTokens != 8192 {
 		t.Errorf("limits = %d/%d", model.ContextWindow, model.MaxOutputTokens)

@@ -78,7 +78,11 @@ half produced and may not allocate again.
 
 ### 3. Event loss
 
-Loss modes and what the model does with each:
+Loss modes and what the model does with each. A full TUI queue now sheds streaming chunks
+(`text_delta`, `thinking_delta`, `tool_call_delta`, `provider_event`,
+`tool_execution_update`) first, in place and in order, and drops an older event of any other
+kind only when the queue holds no chunk and the UI has not drained it for two seconds, so
+the first case below needs a stalled UI rather than a burst of output:
 
 - **Backpressure evicts `tool_execution_end`** (retained start + `turn_end`): `turn_end`
   marks the occurrence interrupted with evidence `none`; the tool-result `message_end`
@@ -138,6 +142,35 @@ lifecycle work is linear in session length, no quadratic scans:
   to a `summary_scan_floor` watermark — the index of the earliest row still owned by an
   occurrence that is not fully terminal — because rows are created in occurrence order
   and rewrites are in place (finding r4019270180).
+
+## Artifact-backed tool output
+
+A text tool result that crosses its inline limit is stored as an artifact and the model
+receives a summary in its place. Three properties of that hand-off are contracts:
+
+- **The artifact carries the whole result.** With stderr present the stored bytes are the
+  combined output — stdout, then `stderr:`, then stderr — the same shape the inline path
+  returns, so a stderr-only result stores the `stderr:` section alone.
+- **The reported size describes the stored bytes.** `raw_bytes`, the artifact reference's
+  `byte_size`, the summary's `bytes:` line and its `lines:` line all count the stored
+  combined output, separator included, so what a later retrieval reads back is what the
+  result claimed to have stored.
+- **The summary preview is bounded on both streams.** stdout and stderr each contribute a
+  head and a tail of at most `snippet_bytes`, so an artifact-backed summary cannot grow
+  with the output that produced it.
+
+Two boundaries are worth stating because they are not the helper's to decide:
+
+- **Which bytes the limit measures.** The limit reads `TextResultOptions.text`, the
+  helper's own separate `stderr` field is not part of that measurement, so a caller that
+  passes stderr separately only crosses the limit on its stdout. The shell caller
+  packs both streams into `text` before calling, so for shell the limit already covers
+  both; the other callers pass no stderr at all. Changing that split is a caller decision.
+- **How the stored bytes are read back.** A file-backed artifact is referenced by its
+  `.oapx/tool-artifacts/…` path, which is what `artifact_retrieve` takes, so the summary's
+  `artifact_retrieve` advice holds for those. A store-backed artifact is referenced by a
+  `makai-artifact://` URI that the tool's path-based reader refuses, and is read through
+  the artifact store instead. Both routes exist; the tool covers only the first.
 
 ## Slices
 
@@ -346,3 +379,13 @@ cursor has passed would be invisible (PR #288 c1 P1). The contract:
   occurrence at `agent_end`) with enough trailing rows for flush pressure asserts the
   end-of-session release — the early rows land in scrollback instead of being clipped
   out of the held window.
+
+## Hashline read and edit budgets
+
+`hashline_read` and `hashline_edit` do not share the text-tool output limits. A read
+returns at most 20 KiB of anchored lines (`common.default_hashline_limit`); a caller's
+explicit `byte_limit` replaces that default and is still capped by `max_file_bytes`; and
+an edit preview caps its rendered replacement at the same 20 KiB. The budget is a hashline
+budget, not the file tool's inline limit: it is declared on its own, so moving a text
+tool's inline limit does not move it. Neither hashline tool stores an artifact — both
+return capped text plus their own byte telemetry (`returned_bytes`, `returned_text_bytes`).

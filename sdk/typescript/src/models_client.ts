@@ -320,16 +320,8 @@ function parseModelDescriptor(raw: unknown, idx: number): ModelDescriptor {
     `models[${idx}].auth_status`,
     KNOWN_AUTH_STATUSES,
   ) as AuthStatus;
-  const lifecycle = requireKnownString(
-    raw.lifecycle,
-    `models[${idx}].lifecycle`,
-    KNOWN_LIFECYCLES,
-  ) as ModelLifecycle;
-  const source = requireKnownString(
-    raw.source,
-    `models[${idx}].source`,
-    KNOWN_SOURCES,
-  ) as ModelSource;
+  const lifecycle = optionalModelLifecycle(raw.lifecycle, `models[${idx}].lifecycle`);
+  const source = optionalModelSource(raw.source, `models[${idx}].source`);
 
   if (!Array.isArray(raw.capabilities)) {
     throw malformedResponseError(`models[${idx}].capabilities must be an array`);
@@ -355,9 +347,9 @@ function parseModelDescriptor(raw: unknown, idx: number): ModelDescriptor {
     provider_id: providerId,
     api,
     auth_status: authStatus,
-    lifecycle,
+    ...(lifecycle === undefined ? {} : { lifecycle }),
     capabilities,
-    source,
+    ...(source === undefined ? {} : { source }),
   };
 
   if (typeof raw.base_url === "string" && raw.base_url.length > 0) {
@@ -398,6 +390,26 @@ function requireString(value: unknown, fieldName: string): string {
     throw malformedResponseError(`${fieldName} must be a string`);
   }
   return value;
+}
+
+function optionalModelLifecycle(
+  value: unknown,
+  fieldName: string,
+): ModelLifecycle | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  return requireKnownString(value, fieldName, KNOWN_LIFECYCLES) as ModelLifecycle;
+}
+
+function optionalModelSource(
+  value: unknown,
+  fieldName: string,
+): ModelSource | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  return requireKnownString(value, fieldName, KNOWN_SOURCES) as ModelSource;
 }
 
 function requireKnownString(

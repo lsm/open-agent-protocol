@@ -100,6 +100,49 @@ connections; an endpoint has exactly one consumer — the process holding the
 other end of the pipe — and it is already attached. Nothing can be missed, so
 nothing needs to be joined.
 
+## How a reader bounds a wait
+
+A reader on this binding has to answer one question on every call: how long
+may I wait for the endpoint to say something? The Zig reader takes that as a
+budget and normalises it once, up front, into an absolute deadline.
+
+The three shapes a caller can hand it mean the same thing and differ only in
+where the deadline comes from:
+
+- **no limit** — wait as long as it takes. There is no deadline, and the
+  reader reports that it is waiting without a bound rather than inventing one.
+- **a duration** — a relative allowance, turned once into an absolute stamp
+  when the budget is built, so a slow read cannot silently restart it.
+- **a deadline** — an absolute stamp the caller already computed, carried
+  through unchanged.
+
+Whatever the shape, the clock the caller chose is the clock the budget reads,
+and the remaining time is handed to each read as a duration on that same
+clock. The remainder is carried in nanoseconds and never rounded to
+milliseconds, so a sub-millisecond allowance is a very short wait rather than
+no wait at all.
+
+A read returns a frame as soon as one is available, and returns nothing when
+the budget is spent. Two rules follow from that and are worth stating
+separately, because both were wrong at some point:
+
+- **A budget bounds the wait; it does not extend it.** Each read inside a
+  budget is given only what is left. Re-deriving the full allowance per read
+  turns a bounded wait into an unbounded one, which is the failure this
+  shape exists to prevent.
+- **Data already in hand is delivered even once the budget is spent.** The
+  budget gates the *next* read, not frames that have already been read. A
+  complete line sitting in the buffer is returned even if the deadline passed
+  while the reader was descheduled, because discarding it would report a
+  silent endpoint for one that in fact answered. Blank lines carry no
+  information, so once the budget is spent they are dropped and the read
+  ends.
+
+The reader treats a read that wakes with no bytes as "nothing right now"
+rather than "nothing ever", so a bounded read can return before its deadline
+if the reader is woken without data. The deadline is therefore an upper bound
+on the wait, not a promise to use all of it.
+
 ## What ends a session, and the exit contract
 
 There is no `session.close.request` envelope in v0.1. On this binding the pipe
@@ -300,3 +343,38 @@ revision the endpoint never issued, and a cancel for a run that has already
 settled — and those exchanges are kept out of the assembled trace, because the
 endpoint's answer is what is under test and the request is a fault the runner
 committed on purpose.
+
+`oapx conformance` judges each correlation inside one absolute probe budget
+rather than a fresh allowance per frame, so an endpoint that keeps writing
+frames nobody asked for cannot hold a correlation open indefinitely;
+`--timeout-ms` sets it. Two rules keep such a verdict about the endpoint rather
+than about scheduling. A frame it has already parsed out of the reader and into
+the waiting correlation is handed to that correlation even when the budget
+expires before it is looked at, because the frame is the endpoint's answer
+rather than a late one. And a control left unanswered because the budget ran out
+is reported as that, naming the budget, rather than as silence: an endpoint that
+answered thousands of unrelated frames and then ran out of time has not answered
+nothing.
+
+Two numbers are worth stating plainly, because the bound moved and nobody
+should have to infer it from a diff. The per-read allowance goes from 300s to
+30s, and it stops being re-armed: before, each read was granted the full
+allowance again, so a correlation could last as long as the endpoint kept it
+going; now one correlation gets 30s in total and raising it is `--timeout-ms`.
+The tenfold figure is the per-read one; the change that matters is that the
+allowance stops being renewed, because that is what removes the unbounded case.
+The 30s is a floor for conformance, not a statement about how long an endpoint
+may take — an endpoint that needs longer raises the flag, and the failure names
+the budget rather than calling the endpoint silent.
+
+Writing is the other half of a correlation and it carries no budget at all, in
+either tree: a write blocks until the child reads it. That is preexisting rather
+than something this bound introduced, and it is recorded here because a budget
+that covers reads and not writes is easy to over-read as complete.
+
+That bound is `oapx`'s alone for now. `goap conformance` still re-arms
+`--timeout` for every line it pulls, so a chatty endpoint holds its
+correlations open there indefinitely, and it does not yet report a spent budget
+as distinct from silence. Both sides are held to this section, so that
+divergence is a gap in the Go runner rather than a difference between the
+bindings, and it is closed by the Go runner adopting the same budget.

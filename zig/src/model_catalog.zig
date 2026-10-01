@@ -37,6 +37,9 @@ const anthropic_api_name = "anthropic-messages";
 const anthropic_base_url = provider_catalog.baseUrlOrCompileError(anthropic_provider_id, anthropic_api_name, null);
 const anthropic_env_keys = provider_catalog.credentialEnv(anthropic_provider_id);
 const max_catalog_bytes = 2 * 1024 * 1024;
+const models_dev_url = "https://models.dev/api.json";
+const models_dev_cache_name = "models-dev.json";
+const max_models_dev_bytes = 16 * 1024 * 1024;
 const catalog_context_window: u32 = 128_000;
 const catalog_max_output_tokens: u32 = 8_192;
 pub const catalog_fetch_timeout_ms: u64 = 20_000;
@@ -66,6 +69,30 @@ fn secureFree(allocator: std.mem.Allocator, data: []const u8) void {
 fn emptyModels(allocator: std.mem.Allocator) ![]ai_types.Model {
     return allocator.alloc(ai_types.Model, 0);
 }
+
+pub const ModelProvenance = enum { discovered, declared };
+
+pub const CatalogSnapshot = struct {
+    models: []ai_types.Model,
+    provenance: []ModelProvenance,
+
+    pub fn deinit(self: *CatalogSnapshot, allocator: std.mem.Allocator) void {
+        deinitModels(allocator, self.models);
+        allocator.free(self.provenance);
+    }
+
+    pub fn firstProvenanceOf(self: CatalogSnapshot, model_id: []const u8) ?ModelProvenance {
+        for (self.models, self.provenance) |model, tag| {
+            if (std.mem.eql(u8, model.id, model_id)) return tag;
+        }
+        return null;
+    }
+
+    pub fn provenanceForIndex(self: CatalogSnapshot, index: usize) ?ModelProvenance {
+        if (index >= self.provenance.len) return null;
+        return self.provenance[index];
+    }
+};
 
 pub fn deinitModels(allocator: std.mem.Allocator, models: []ai_types.Model) void {
     for (models) |*model| model.deinit(allocator);
@@ -366,6 +393,7 @@ var test_catalog_environment: ?[]const provider_credential.EnvironmentValue = nu
 var test_catalog_base_urls: ?provider_base_url.BaseUrlOverrides = null;
 var test_catalog_refusal_markers: bool = false;
 var test_refusal_marker_age_ms: ?i64 = null;
+var test_models_dev: ?[]const u8 = null;
 
 const CatalogListing = struct {
     models: ?[]DiscoveredModel,
@@ -409,9 +437,14 @@ fn catalogTarget(id: []const u8) ?CatalogEndpoint {
 }
 
 fn catalogTargetInRegion(id: []const u8, region: ?[]const u8) ?CatalogEndpoint {
+    return catalogTargetOnWire(id, region, null);
+}
+
+fn catalogTargetOnWire(id: []const u8, region: ?[]const u8, wanted: ?[]const u8) ?CatalogEndpoint {
     const row = provider_catalog.provider(id) orelse return null;
     var chosen: ?[]const u8 = null;
     for (row.wires) |wire| {
+        if (wanted) |only| if (!std.mem.eql(u8, wire, only)) continue;
         if (!wireIsImplemented(wire)) continue;
         if (provider_catalog.requestUrl(id, wire, region) == null) continue;
         chosen = wire;
@@ -463,10 +496,18 @@ fn catalogEndpointWithOverrides(
     overrides: provider_base_url.BaseUrlOverrides,
 ) !?CatalogEndpoint {
     const region = try catalogRegion(allocator, null, id);
-    const catalog = catalogTargetInRegion(id, region) orelse return null;
+    var catalog = catalogTargetInRegion(id, region) orelse return null;
     var merged = overrides;
     if (region) |resolved| merged.kimi_region = resolved;
-    const base_url = try provider_base_url.baseUrlWithOverrides(allocator, id, catalog.wire, merged);
+    var base_url = try provider_base_url.baseUrlWithOverrides(allocator, id, catalog.wire, merged);
+    if (canonicalForWire(id, catalog.wire, region, base_url)) {
+        allocator.free(base_url);
+        base_url = try allocator.dupe(u8, "");
+    } else if (overriddenTarget(id, region, catalog, base_url)) |moved| {
+        allocator.free(base_url);
+        catalog = moved;
+        base_url = try provider_base_url.baseUrlWithOverrides(allocator, id, catalog.wire, merged);
+    }
     return try catalogEndpointWithBase(allocator, catalog, base_url);
 }
 
@@ -476,9 +517,36 @@ fn catalogEndpointFromEnvironment(
     id: []const u8,
 ) !?CatalogEndpoint {
     const region = try catalogRegion(allocator, storage, id);
-    const catalog = catalogTargetInRegion(id, region) orelse return null;
-    const base_url = try provider_base_url.defaultBaseUrlForRefWithRegion(allocator, id, catalog.wire, region);
+    var catalog = catalogTargetInRegion(id, region) orelse return null;
+    var base_url = try resolvedBaseForTarget(allocator, id, catalog.wire, region);
+    if (overriddenTarget(id, region, catalog, base_url)) |moved| {
+        allocator.free(base_url);
+        catalog = moved;
+        base_url = try resolvedBaseForTarget(allocator, id, catalog.wire, region);
+    }
     return try catalogEndpointWithBase(allocator, catalog, base_url);
+}
+
+fn overriddenTarget(id: []const u8, region: ?[]const u8, catalog: CatalogEndpoint, base_url: []const u8) ?CatalogEndpoint {
+    if (base_url.len == 0) return null;
+    const wire = provider_base_url.overriddenWire(id) orelse return null;
+    if (std.mem.eql(u8, wire, catalog.wire)) return null;
+    return catalogTargetOnWire(id, region, wire);
+}
+
+fn canonicalForWire(id: []const u8, wire: []const u8, region: ?[]const u8, base_url: []const u8) bool {
+    if (base_url.len == 0) return false;
+    const catalogued = provider_catalog.baseUrl(id, wire, region) orelse return false;
+    return std.mem.eql(u8, base_url, catalogued);
+}
+
+fn resolvedBaseForTarget(allocator: std.mem.Allocator, id: []const u8, wire: []const u8, region: ?[]const u8) ![]const u8 {
+    const base = try provider_base_url.defaultBaseUrlForRefWithRegion(allocator, id, wire, region);
+    if (base.len == 0) return base;
+    const catalogued = provider_catalog.baseUrl(id, wire, region) orelse return base;
+    if (!std.mem.eql(u8, base, catalogued)) return base;
+    allocator.free(base);
+    return allocator.dupe(u8, "");
 }
 
 fn catalogRegion(allocator: std.mem.Allocator, storage: ?*oauth_storage.AuthStorage, id: []const u8) !?[]const u8 {
@@ -508,6 +576,7 @@ const catalog_loader_rows = [_][]const u8{
     "deepseek",
     "openrouter",
     "opencode",
+    "opencode-go",
     "vercel",
     "zenmux",
     "deepinfra",
@@ -519,6 +588,10 @@ const catalog_loader_rows = [_][]const u8{
     "openai",
     "kimi",
 };
+
+pub fn supportsCatalogModelDiscovery(id: []const u8) bool {
+    return isCatalogLoaderRow(id) or std.mem.eql(u8, id, "anthropic") or std.mem.eql(u8, id, "openai-codex") or std.mem.eql(u8, id, "github-copilot");
+}
 
 const deepseek_catalog_models_url = "https://api.deepseek.com/v1/models";
 const proxy_models_url = "https://proxy.example/api/v1/models";
@@ -558,11 +631,39 @@ fn loadCatalogModelsWithRows(
     storage: ?*oauth_storage.AuthStorage,
     mode: CatalogLoadMode,
 ) ![]ai_types.Model {
+    return loadRowsWithProvenance(allocator, ids, storage, mode, null);
+}
+
+fn loadCatalogSnapshotWithRows(
+    allocator: std.mem.Allocator,
+    ids: []const []const u8,
+    storage: ?*oauth_storage.AuthStorage,
+    mode: CatalogLoadMode,
+) !CatalogSnapshot {
+    var provenance = std.ArrayList(ModelProvenance).empty;
+    errdefer provenance.deinit(allocator);
+    const models = try loadRowsWithProvenance(allocator, ids, storage, mode, &provenance);
+    var models_owned = true;
+    errdefer if (models_owned) deinitModels(allocator, models);
+    const tags = try provenance.toOwnedSlice(allocator);
+    models_owned = false;
+    return .{ .models = models, .provenance = tags };
+}
+
+fn loadRowsWithProvenance(
+    allocator: std.mem.Allocator,
+    ids: []const []const u8,
+    storage: ?*oauth_storage.AuthStorage,
+    mode: CatalogLoadMode,
+    provenance: ?*std.ArrayList(ModelProvenance),
+) ![]ai_types.Model {
     var models = std.ArrayList(ai_types.Model).empty;
     errdefer {
         for (models.items) |*model| model.deinit(allocator);
         models.deinit(allocator);
     }
+    var models_dev: ModelsDev = .{ .mode = mode };
+    defer models_dev.deinit();
     for (ids) |id| {
         const endpoint = if (builtin.is_test)
             try catalogEndpointWithOverrides(allocator, id, test_catalog_base_urls orelse .{})
@@ -570,7 +671,7 @@ fn loadCatalogModelsWithRows(
             try catalogEndpointFromEnvironment(allocator, storage, id);
         var held = endpoint orelse continue;
         defer held.deinit(allocator);
-        try appendCatalogTargetModels(allocator, &models, held, storage, mode);
+        try appendCatalogTargetModels(allocator, &models, held, storage, mode, provenance, &models_dev);
     }
     return models.toOwnedSlice(allocator);
 }
@@ -585,6 +686,8 @@ fn appendCatalogTargetModels(
     target: CatalogEndpoint,
     storage: ?*oauth_storage.AuthStorage,
     mode: CatalogLoadMode,
+    provenance: ?*std.ArrayList(ModelProvenance),
+    models_dev: *ModelsDev,
 ) !void {
     const environment = try catalogEnvironment(allocator, target.id);
     defer freeEnvironment(allocator, environment);
@@ -601,10 +704,20 @@ fn appendCatalogTargetModels(
 
     if (discovered) |models| {
         if (models.len > 0) {
+            if (provider_catalog.modelsDevKey(target.id)) |key| {
+                if (lacksFigures(models)) {
+                    if (models_dev.provider(allocator, key)) |listed| {
+                        for (models) |*model| fillFromModelsDev(target.id, model, listed);
+                    }
+                }
+            }
             for (models) |model| {
                 var built = try catalogModel(allocator, target, model);
-                errdefer built.deinit(allocator);
+                var built_owned = true;
+                errdefer if (built_owned) built.deinit(allocator);
                 try out.append(allocator, built);
+                built_owned = false;
+                if (provenance) |tags| try tags.append(allocator, .discovered);
             }
             return;
         }
@@ -612,13 +725,16 @@ fn appendCatalogTargetModels(
 
     for (provider_catalog.modelsFor(target.id)) |declared| {
         var built = try catalogModel(allocator, target, .{ .id = declared.id });
-        errdefer built.deinit(allocator);
+        var built_owned = true;
+        errdefer if (built_owned) built.deinit(allocator);
         try out.append(allocator, built);
+        built_owned = false;
+        if (provenance) |tags| try tags.append(allocator, .declared);
     }
 }
 
 fn catalogModel(allocator: std.mem.Allocator, target: CatalogEndpoint, model: DiscoveredModel) !ai_types.Model {
-    const wire = provider_catalog.wireForModel(target.id, model.id) orelse return error.UnsupportedCatalogWire;
+    const wire = catalogModelWire(target, model.id) orelse return error.UnsupportedCatalogWire;
     const id = try allocator.dupe(u8, model.id);
     errdefer allocator.free(id);
     const name = try allocator.dupe(u8, displayNameFor(target.id, model));
@@ -653,6 +769,13 @@ fn catalogModel(allocator: std.mem.Allocator, target: CatalogEndpoint, model: Di
         .max_tokens = maxTokensFor(target.id, model),
         .is_owned = true,
     };
+}
+
+fn catalogModelWire(target: CatalogEndpoint, model_id: []const u8) ?provider_catalog.Wire {
+    const row = provider_catalog.provider(target.id) orelse return null;
+    const first = provider_catalog.firstImplementedWire(row) orelse return null;
+    if (!std.mem.eql(u8, first.id, target.wire)) return provider_catalog.wirePath(target.wire);
+    return provider_catalog.wireForModel(target.id, model_id);
 }
 
 fn displayNameFor(id: []const u8, model: DiscoveredModel) []const u8 {
@@ -745,7 +868,6 @@ fn freeEnvironment(allocator: std.mem.Allocator, values: []provider_credential.E
     allocator.free(values);
 }
 
-
 fn refusalMarkerName(allocator: std.mem.Allocator, id: []const u8, region: ?[]const u8) ![]u8 {
     const base = try catalogRowCacheName(allocator, id, region);
     defer allocator.free(base);
@@ -795,8 +917,7 @@ fn discoverCatalogModels(
     defer allocator.free(marker);
     const honouring = honour_marker and refusalMarkersEnabled();
     const marked = honouring and refusalIsRemembered(allocator, marker);
-    if (marked and mode == .allow_cache and refusalIsFresh(allocator, marker, anthropic_catalog_max_age_ms))
-    {
+    if (marked and mode == .allow_cache and refusalIsFresh(allocator, marker, anthropic_catalog_max_age_ms)) {
         return error.ModelCatalogRefused;
     }
 
@@ -1044,6 +1165,120 @@ const DiscoveredModel = struct {
     }
 };
 
+const ModelsDev = struct {
+    mode: CatalogLoadMode,
+    parsed: ?std.json.Parsed(std.json.Value) = null,
+    loaded: bool = false,
+
+    fn deinit(self: *ModelsDev) void {
+        if (self.parsed) |*parsed| parsed.deinit();
+        self.* = undefined;
+    }
+
+    fn provider(self: *ModelsDev, allocator: std.mem.Allocator, key: []const u8) ?*const std.json.ObjectMap {
+        if (!self.loaded) {
+            self.loaded = true;
+            self.parsed = loadModelsDev(allocator, self.mode);
+        }
+        const parsed = self.parsed orelse return null;
+        if (parsed.value != .object) return null;
+        const row = parsed.value.object.getPtr(key) orelse return null;
+        if (row.* != .object) return null;
+        const models = row.object.getPtr("models") orelse return null;
+        if (models.* != .object) return null;
+        return &models.object;
+    }
+};
+
+fn lacksFigures(models: []const DiscoveredModel) bool {
+    for (models) |model| {
+        if (model.context_window == null or model.max_tokens == null) return true;
+        if (model.reasoning == null or model.image_input == null) return true;
+    }
+    return false;
+}
+
+fn fillFromModelsDev(id: []const u8, model: *DiscoveredModel, listed: *const std.json.ObjectMap) void {
+    const entry = listed.getPtr(model.id) orelse return;
+    if (entry.* != .object) return;
+    const declared = provider_catalog.declaredModel(id, model.id);
+    if (entry.object.getPtr("limit")) |limit| {
+        if (limit.* == .object) {
+            const declares_window = declared != null and declared.?.context_window != null;
+            const declares_output = declared != null and declared.?.max_tokens != null;
+            if (model.context_window == null and !declares_window) {
+                model.context_window = positiveU32(objectU32(&limit.object, "context"));
+            }
+            if (model.max_tokens == null and !declares_output) {
+                model.max_tokens = positiveU32(objectU32(&limit.object, "output"));
+            }
+        }
+    }
+    if (model.reasoning == null) model.reasoning = objectBool(&entry.object, "reasoning");
+    if (model.image_input == null) {
+        if (entry.object.getPtr("modalities")) |modalities| {
+            if (modalities.* == .object and listNamesImage(&modalities.object, "input")) model.image_input = true;
+        }
+    }
+}
+
+fn loadModelsDev(allocator: std.mem.Allocator, mode: CatalogLoadMode) ?std.json.Parsed(std.json.Value) {
+    if (builtin.is_test) {
+        const body = test_models_dev orelse return null;
+        return parseModelsDev(allocator, body) catch null;
+    }
+    if (mode == .allow_cache) {
+        if (loadCachedModelsDev(allocator)) |parsed| return parsed;
+    }
+    if (fetchModelsDev(allocator)) |parsed| return parsed;
+    return loadCachedModelsDev(allocator);
+}
+
+fn parseModelsDev(allocator: std.mem.Allocator, body: []const u8) !std.json.Parsed(std.json.Value) {
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    if (parsed.value != .object) {
+        parsed.deinit();
+        return error.InvalidModelCatalog;
+    }
+    return parsed;
+}
+
+fn loadCachedModelsDev(allocator: std.mem.Allocator) ?std.json.Parsed(std.json.Value) {
+    const path = makaiCatalogPath(allocator, models_dev_cache_name) catch return null;
+    defer allocator.free(path);
+    const data = compat.fs.readFileAlloc(allocator, compat.fs.getCwd(), path, max_models_dev_bytes) catch return null;
+    defer allocator.free(data);
+    return parseModelsDev(allocator, data) catch null;
+}
+
+fn fetchModelsDev(allocator: std.mem.Allocator) ?std.json.Parsed(std.json.Value) {
+    var fetched = compat.http.fetch(allocator, models_dev_url, .{
+        .method = .GET,
+        .extra_headers = &.{.{ .name = "accept", .value = "application/json" }},
+        .accept_encoding = "identity",
+        .max_response_bytes = max_models_dev_bytes,
+        .timeout_ms = catalog_fetch_timeout_ms,
+    }) catch return null;
+    defer fetched.deinit(allocator);
+    if (fetched.status != 200) return null;
+    const parsed = parseModelsDev(allocator, fetched.body) catch return null;
+    const subset = modelsDevSubset(allocator, parsed.value) catch return parsed;
+    defer allocator.free(subset);
+    saveMakaiCatalog(allocator, models_dev_cache_name, subset) catch {};
+    return parsed;
+}
+
+fn modelsDevSubset(allocator: std.mem.Allocator, root: std.json.Value) ![]u8 {
+    var kept: std.json.ObjectMap = .empty;
+    defer kept.deinit(allocator);
+    for (provider_catalog.all) |row| {
+        const key = row.models_dev orelse continue;
+        const listed = root.object.get(key) orelse continue;
+        try kept.put(allocator, key, listed);
+    }
+    return std.json.Stringify.valueAlloc(allocator, std.json.Value{ .object = kept }, .{});
+}
+
 fn freeDiscoveredModels(allocator: std.mem.Allocator, models: []DiscoveredModel) void {
     for (models) |model| model.deinit(allocator);
     allocator.free(models);
@@ -1080,7 +1315,8 @@ fn parseCatalogModels(allocator: std.mem.Allocator, data: []const u8) ![]Discove
         }
         if (model.reasoning == null) {
             model.reasoning = objectBool(&item.object, "supports_reasoning") orelse
-                objectBool(&item.object, "reasoning");
+                objectBool(&item.object, "reasoning") orelse
+                reportsEffortLevels(&item.object);
         }
         if (model.image_input == null) {
             model.image_input = objectBool(&item.object, "supports_image_in") orelse
@@ -1089,6 +1325,8 @@ fn parseCatalogModels(allocator: std.mem.Allocator, data: []const u8) ![]Discove
         if (model.image_input == null) {
             if (listNamesImage(&item.object, "modalities") or listNamesImage(&item.object, "input_modalities")) {
                 model.image_input = true;
+            } else if (holdsList(&item.object, "modalities") or holdsList(&item.object, "input_modalities")) {
+                model.image_input = false;
             }
         }
         try models.append(allocator, model);
@@ -1100,6 +1338,11 @@ fn positiveU32(value: ?u32) ?u32 {
     const found = value orelse return null;
     if (found == 0) return null;
     return found;
+}
+
+fn holdsList(obj: *const std.json.ObjectMap, key: []const u8) bool {
+    const value = obj.get(key) orelse return false;
+    return value == .array;
 }
 
 fn listNamesImage(obj: *const std.json.ObjectMap, key: []const u8) bool {
@@ -1847,6 +2090,14 @@ fn objectString(obj: *const std.json.ObjectMap, key: []const u8) ?[]const u8 {
     return value.string;
 }
 
+fn reportsEffortLevels(obj: *const std.json.ObjectMap) ?bool {
+    const effort = obj.get("effort") orelse return null;
+    if (effort != .object) return null;
+    const levels = effort.object.get("supported_levels") orelse return null;
+    if (levels != .array) return null;
+    return if (levels.array.items.len > 0) true else null;
+}
+
 fn objectBool(obj: *const std.json.ObjectMap, key: []const u8) ?bool {
     const value = obj.get(key) orelse return null;
     if (value != .bool) return null;
@@ -2140,7 +2391,7 @@ fn customCatalogProbe(allocator: std.mem.Allocator) !void {
 
 test "custom catalog models free every allocation when one fails midway" {
     try customCatalogProbe(std.testing.allocator);
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, customCatalogProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, customCatalogProbe, .{});
 }
 
 test "loadProductionModels includes the Anthropic static list when forced" {
@@ -2385,6 +2636,145 @@ fn putStoredKey(storage: *oauth_storage.AuthStorage, allocator: std.mem.Allocato
     const key = try allocator.dupe(u8, id);
     errdefer allocator.free(key);
     try storage.providers.put(key, .{ .api_key = try allocator.dupe(u8, "stored-key") });
+}
+
+test "a snapshot tells a discovered entry from a declared one" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+    test_catalog_refusal_markers = true;
+    defer test_catalog_refusal_markers = false;
+    var tmp = try tempHome(allocator);
+    defer tmp.cleanup();
+    var storage = oauth_storage.AuthStorage{
+        .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(allocator),
+        .allocator = allocator,
+    };
+    defer storage.deinit();
+    for ([_][]const u8{ "xiaomi", "xiaomi-token-plan-cn" }) |id| {
+        try putStoredKey(&storage, allocator, id);
+    }
+
+    const discovered_row = "xiaomi";
+    var target = catalogTargetInRegion(discovered_row, null) orelse return error.TestExpectedTarget;
+    defer target.deinit(allocator);
+
+    const answering = [_]CatalogDiscovery{
+        .{ .id = discovered_row, .models_url = target.models_url, .model_ids = &.{ "m1", "m2" } },
+    };
+    test_catalog_discovery = &answering;
+    defer test_catalog_discovery = null;
+
+    const plan_row = "xiaomi-token-plan-cn";
+    var snapshot = try loadCatalogSnapshotWithRows(
+        allocator,
+        &[_][]const u8{ discovered_row, plan_row },
+        &storage,
+        .allow_cache,
+    );
+    defer snapshot.deinit(allocator);
+
+    try std.testing.expectEqual(snapshot.models.len, snapshot.provenance.len);
+    try std.testing.expectEqual(@as(usize, 2), snapshot.provenance.len);
+
+    for (snapshot.provenance) |tag| {
+        try std.testing.expectEqual(ModelProvenance.discovered, tag);
+    }
+    try std.testing.expectEqual(ModelProvenance.discovered, snapshot.firstProvenanceOf("m1").?);
+    try std.testing.expectEqual(ModelProvenance.discovered, snapshot.firstProvenanceOf("m2").?);
+}
+
+test "a row with no listing is tagged declared, and a mixed snapshot keeps both apart" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+    var tmp = try tempHome(allocator);
+    defer tmp.cleanup();
+    var storage = oauth_storage.AuthStorage{
+        .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(allocator),
+        .allocator = allocator,
+    };
+    defer storage.deinit();
+    for ([_][]const u8{ "xiaomi", "xiaomi-token-plan-cn" }) |id| {
+        try putStoredKey(&storage, allocator, id);
+    }
+
+    const answerer = "xiaomi";
+    var target = catalogTargetInRegion(answerer, null) orelse return error.TestExpectedTarget;
+    defer target.deinit(allocator);
+    const answering = [_]CatalogDiscovery{
+        .{ .id = answerer, .models_url = target.models_url, .model_ids = &.{"m1"} },
+    };
+    test_catalog_discovery = &answering;
+    defer test_catalog_discovery = null;
+
+    const plan_row = blk: {
+        for (provider_catalog.all) |row| {
+            if (provider_catalog.modelsFor(row.id).len > 0) break :blk row.id;
+        }
+        return error.NoRowDeclaresModels;
+    };
+    const declared_ids = provider_catalog.modelsFor(plan_row);
+    try std.testing.expect(declared_ids.len > 0);
+    try putStoredKey(&storage, allocator, plan_row);
+
+    var snapshot = try loadCatalogSnapshotWithRows(
+        allocator,
+        &[_][]const u8{ answerer, plan_row },
+        &storage,
+        .allow_cache,
+    );
+    defer snapshot.deinit(allocator);
+
+    try std.testing.expectEqual(snapshot.models.len, snapshot.provenance.len);
+    try std.testing.expectEqual(ModelProvenance.discovered, snapshot.firstProvenanceOf("m1").?);
+    for (declared_ids) |declared| {
+        const tag = snapshot.firstProvenanceOf(declared.id) orelse return error.DeclaredEntryMissing;
+        try std.testing.expectEqual(ModelProvenance.declared, tag);
+    }
+    var saw_discovered = false;
+    for (snapshot.provenance) |tag| {
+        if (tag == .discovered) saw_discovered = true;
+    }
+    try std.testing.expect(saw_discovered);
+    var saw_declared = false;
+    for (snapshot.provenance) |tag| {
+        if (tag == .declared) saw_declared = true;
+    }
+    try std.testing.expect(saw_declared);
+}
+
+test "the plain loader still returns the same models, with no provenance asked for" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+    var tmp = try tempHome(allocator);
+    defer tmp.cleanup();
+    var storage = oauth_storage.AuthStorage{
+        .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(allocator),
+        .allocator = allocator,
+    };
+    defer storage.deinit();
+    for ([_][]const u8{ "xiaomi", "xiaomi-token-plan-cn" }) |id| {
+        try putStoredKey(&storage, allocator, id);
+    }
+
+    const row = "xiaomi";
+    var target = catalogTargetInRegion(row, null) orelse return error.TestExpectedTarget;
+    defer target.deinit(allocator);
+    const answering = [_]CatalogDiscovery{
+        .{ .id = row, .models_url = target.models_url, .model_ids = &.{ "m1", "m2" } },
+    };
+    test_catalog_discovery = &answering;
+    defer test_catalog_discovery = null;
+
+    const plain = try loadCatalogModelsWithRows(allocator, &[_][]const u8{row}, &storage, .allow_cache);
+    defer deinitModels(allocator, plain);
+    try std.testing.expectEqual(@as(usize, 2), plain.len);
+
+    var snapshot = try loadCatalogSnapshotWithRows(allocator, &[_][]const u8{row}, &storage, .allow_cache);
+    defer snapshot.deinit(allocator);
+    try std.testing.expectEqual(plain.len, snapshot.models.len);
 }
 
 test "a refusal is remembered, so a later run drops the row without asking again" {
@@ -2714,7 +3104,6 @@ test "a refusal recorded for a stored key does not drop the row once an environm
     defer deinitModels(allocator, listed);
     try std.testing.expectEqual(@as(usize, 1), listed.len);
     try std.testing.expectEqualStrings("plan-model", listed[0].id);
-
 }
 
 test "a refusal taken under an environment key does not suppress a stored key" {
@@ -3123,8 +3512,8 @@ test "the loader builds models on a wire a built-in module claims, and no other"
 test "a catalog target names the row's own wire, base and models url" {
     const target = catalogTarget("deepseek").?;
     try std.testing.expectEqualStrings("deepseek", target.id);
-    try std.testing.expectEqualStrings("openai-completions", target.wire);
-    try std.testing.expectEqualStrings("https://api.deepseek.com", target.base_url);
+    try std.testing.expectEqualStrings("anthropic-messages", target.wire);
+    try std.testing.expectEqualStrings("https://api.deepseek.com/anthropic", target.base_url);
     try std.testing.expectEqualStrings("https://api.deepseek.com/v1/models", target.models_url);
 }
 
@@ -3144,8 +3533,8 @@ fn countVersions(url: []const u8) usize {
 
 test "a carries-version row's listing and its request agree under an override" {
     const rows = [_][]const u8{
-        "opencode",          "openrouter",              "vercel",            "zenmux",           "deepinfra",
-        "zai-coding-plan",   "alibaba-coding-plan",     "minimax-coding-plan", "tencent-coding-plan", "volcengine-coding-plan",
+        "opencode",        "opencode-go",         "openrouter",          "vercel",              "zenmux",                 "deepinfra",
+        "zai-coding-plan", "alibaba-coding-plan", "minimax-coding-plan", "tencent-coding-plan", "volcengine-coding-plan",
     };
     for (rows) |id| {
         const target = catalogTarget(id) orelse return error.TestExpectedTarget;
@@ -3203,7 +3592,8 @@ test "a custom entry's discovery url follows its stated version fact" {
 test "a catalog target keeps the catalog base when no override is set" {
     var endpoint = (try catalogEndpointWithOverrides(std.testing.allocator, "deepseek", .{})).?;
     defer endpoint.deinit(std.testing.allocator);
-    try std.testing.expectEqualStrings("https://api.deepseek.com", endpoint.base_url);
+    try std.testing.expectEqualStrings("anthropic-messages", endpoint.wire);
+    try std.testing.expectEqualStrings("https://api.deepseek.com/anthropic", endpoint.base_url);
     try std.testing.expectEqualStrings("https://api.deepseek.com/v1/models", endpoint.models_url);
 }
 
@@ -3225,6 +3615,7 @@ test "the row's base-url override moves both the base and the models url" {
         .row = "https://proxy.example/api",
     })).?;
     defer endpoint.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("openai-completions", endpoint.wire);
     try std.testing.expectEqualStrings("https://proxy.example/api", endpoint.base_url);
     try std.testing.expectEqualStrings("https://proxy.example/api/v1/models", endpoint.models_url);
 }
@@ -3244,6 +3635,7 @@ test "the global base-url override outranks the row's own" {
         .row = "https://proxy.example/api",
     })).?;
     defer endpoint.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("openai-completions", endpoint.wire);
     try std.testing.expectEqualStrings("https://everywhere.example", endpoint.base_url);
     try std.testing.expectEqualStrings("https://everywhere.example/v1/models", endpoint.models_url);
 }
@@ -3340,7 +3732,7 @@ test "a row with no implemented wire, endpoint or models listing has no target" 
 }
 
 test "every gateway row the loader enables has its own target, wire and version fact" {
-    const gateways = [_][]const u8{ "openrouter", "opencode", "vercel", "zenmux", "deepinfra" };
+    const gateways = [_][]const u8{ "openrouter", "opencode", "opencode-go", "vercel", "zenmux", "deepinfra" };
     for (gateways) |id| {
         const target = catalogTarget(id) orelse return error.TestExpectedTarget;
         try std.testing.expectEqualStrings(id, target.id);
@@ -3354,6 +3746,7 @@ test "a gateway row's discovered models carry that row's base and its own listin
     const cases = [_]struct { id: []const u8, env: []const u8, model: []const u8 }{
         .{ .id = "openrouter", .env = "OPENROUTER_API_KEY", .model = "openai/gpt-4o-mini" },
         .{ .id = "opencode", .env = "OPENCODE_API_KEY", .model = "grok-code-fast-1" },
+        .{ .id = "opencode-go", .env = "OPENCODE_API_KEY", .model = "deepseek-v4.1-flash" },
         .{ .id = "vercel", .env = "AI_GATEWAY_API_KEY", .model = "anthropic/claude-sonnet-4.5" },
         .{ .id = "zenmux", .env = "ZENMUX_API_KEY", .model = "bigseek/code" },
         .{ .id = "deepinfra", .env = "DEEPINFRA_API_KEY", .model = "meta-llama/Llama-3.3-70B-Instruct" },
@@ -3409,6 +3802,7 @@ test "the production loader enables deepseek, every gateway and every coding pla
         "deepseek",
         "openrouter",
         "opencode",
+        "opencode-go",
         "vercel",
         "zenmux",
         "deepinfra",
@@ -3450,7 +3844,7 @@ test "loadProductionModels serves a gateway row's discovered models beside deeps
     try std.testing.expectEqualStrings("openrouter", models[0].provider);
     try std.testing.expectEqualStrings("deepseek", models[1].provider);
     try std.testing.expectEqualStrings("https://openrouter.ai/api/v1", models[0].base_url);
-    try std.testing.expectEqualStrings("https://api.deepseek.com", models[1].base_url);
+    try std.testing.expectEqualStrings("https://api.deepseek.com/anthropic", models[1].base_url);
 }
 
 test "the loaded list leads with the plans, and follows the catalog within each group" {
@@ -3662,7 +4056,7 @@ test "loadProductionModels serves a coding plan row's discovered models beside d
     try std.testing.expectEqualStrings("tencent-coding-plan", models[0].provider);
     try std.testing.expectEqualStrings("deepseek", models[1].provider);
     try std.testing.expectEqualStrings("https://api.lkeap.cloud.tencent.com/coding/v3", models[0].base_url);
-    try std.testing.expectEqualStrings("https://api.deepseek.com", models[1].base_url);
+    try std.testing.expectEqualStrings("https://api.deepseek.com/anthropic", models[1].base_url);
 }
 
 test "a window a session asks for is capped at the ceiling its row records" {
@@ -3838,7 +4232,11 @@ test "the loader's rows are catalog rows the target answers for" {
     for (catalog_loader_rows) |id| {
         try std.testing.expect(provider_catalog.provider(id) != null);
         try std.testing.expect(catalogTargetInRegion(id, provider_catalog.defaultRegion(id)) != null);
+        try std.testing.expect(supportsCatalogModelDiscovery(id));
     }
+    try std.testing.expect(!supportsCatalogModelDiscovery("google"));
+    try std.testing.expect(!supportsCatalogModelDiscovery("ollama"));
+    try std.testing.expect(!supportsCatalogModelDiscovery("azure"));
 }
 
 test "a discovered catalog row builds models on the row's wire and base url" {
@@ -3860,14 +4258,52 @@ test "a discovered catalog row builds models on the row's wire and base url" {
     try std.testing.expectEqualStrings("deepseek-chat", models[0].id);
     try std.testing.expectEqualStrings("deepseek-chat", models[0].name);
     try std.testing.expectEqualStrings("deepseek", models[0].provider);
-    try std.testing.expectEqualStrings("openai-completions", models[0].api);
-    try std.testing.expectEqualStrings("https://api.deepseek.com", models[0].base_url);
+    try std.testing.expectEqualStrings("anthropic-messages", models[0].api);
+    try std.testing.expectEqualStrings("https://api.deepseek.com/anthropic", models[0].base_url);
     try std.testing.expectEqual(@as(u32, catalog_context_window), models[0].context_window);
     try std.testing.expectEqual(@as(u32, catalog_max_output_tokens), models[0].max_tokens);
     try std.testing.expectEqual(@as(usize, 1), models[0].input.len);
     try std.testing.expectEqualStrings("text", models[0].input[0]);
 
     try std.testing.expectEqualStrings("deepseek-reasoner", models[1].id);
+}
+
+test "a model that reports effort levels is a reasoning model, and one reporting none is not" {
+    const body =
+        \\{"data":[
+        \\ {"id":"deepseek-flash","effort":{"supported_levels":["low","high","max"],"default_level":"high"}},
+        \\ {"id":"plain","effort":{"supported_levels":[]}},
+        \\ {"id":"flagged","supports_reasoning":false,"effort":{"supported_levels":["low"]}},
+        \\ {"id":"silent"}
+        \\]}
+    ;
+    const models = try parseCatalogModels(std.testing.allocator, body);
+    defer freeDiscoveredModels(std.testing.allocator, models);
+    try std.testing.expectEqual(@as(?bool, true), models[0].reasoning);
+    try std.testing.expectEqual(@as(?bool, null), models[1].reasoning);
+    try std.testing.expectEqual(@as(?bool, false), models[2].reasoning);
+    try std.testing.expectEqual(@as(?bool, null), models[3].reasoning);
+}
+
+test "a base-url override keeps deepseek's models on the wire the override was written for" {
+    test_catalog_base_urls = .{ .row = "https://proxy.example/api" };
+    test_catalog_discovery = &[_]CatalogDiscovery{
+        .{ .id = "deepseek", .models_url = "https://proxy.example/api/v1/models", .model_ids = &.{"deepseek-flash"} },
+    };
+    test_catalog_environment = &[_]provider_credential.EnvironmentValue{
+        .{ .name = "DEEPSEEK_API_KEY", .value = "row-key" },
+    };
+    defer {
+        test_catalog_base_urls = null;
+        test_catalog_discovery = null;
+        test_catalog_environment = null;
+    }
+
+    const models = try loadCatalogModels(std.testing.allocator, null, .allow_cache);
+    defer deinitModels(std.testing.allocator, models);
+    try std.testing.expectEqual(@as(usize, 1), models.len);
+    try std.testing.expectEqualStrings("openai-completions", models[0].api);
+    try std.testing.expectEqualStrings("https://proxy.example/api", models[0].base_url);
 }
 
 test "a catalog row with no credential set contributes nothing" {
@@ -4080,7 +4516,7 @@ test "loadProductionModels carries a catalog row's discovered models" {
 
     try std.testing.expectEqual(@as(usize, 1), models.len);
     try std.testing.expectEqualStrings("deepseek", models[0].provider);
-    try std.testing.expectEqualStrings("openai-completions", models[0].api);
+    try std.testing.expectEqualStrings("anthropic-messages", models[0].api);
 }
 
 fn catalogLoadProbe(allocator: std.mem.Allocator) !void {
@@ -4132,7 +4568,7 @@ fn declaredModelsFallbackProbe(allocator: std.mem.Allocator) !void {
 
 test "a row's declared models free every allocation when one fails midway" {
     try declaredModelsFallbackProbe(std.testing.allocator);
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, declaredModelsFallbackProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, declaredModelsFallbackProbe, .{});
 }
 
 fn overriddenCatalogLoadProbe(allocator: std.mem.Allocator) !void {
@@ -4156,12 +4592,53 @@ fn overriddenCatalogLoadProbe(allocator: std.mem.Allocator) !void {
 
 test "an overridden catalog row frees every allocation when one fails midway" {
     try overriddenCatalogLoadProbe(std.testing.allocator);
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, overriddenCatalogLoadProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, overriddenCatalogLoadProbe, .{});
+}
+
+fn snapshotProvenanceProbe(allocator: std.mem.Allocator) !void {
+    const discovered_row = "xiaomi";
+    var target = catalogTargetInRegion(discovered_row, null) orelse return error.TestExpectedTarget;
+    defer target.deinit(allocator);
+    var storage = oauth_storage.AuthStorage{
+        .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(allocator),
+        .allocator = allocator,
+    };
+    defer storage.deinit();
+
+    test_catalog_discovery = &[_]CatalogDiscovery{
+        .{ .id = discovered_row, .models_url = target.models_url, .model_ids = &.{ "m1", "m2" } },
+    };
+    defer test_catalog_discovery = null;
+    test_catalog_environment = &[_]provider_credential.EnvironmentValue{
+        .{ .name = "XIAOMI_API_KEY", .value = "row-key" },
+    };
+    defer test_catalog_environment = null;
+
+    var snapshot = try loadCatalogSnapshotWithRows(
+        allocator,
+        &[_][]const u8{discovered_row},
+        &storage,
+        .allow_cache,
+    );
+    defer snapshot.deinit(allocator);
+    if (snapshot.models.len != snapshot.provenance.len) return error.TestExpectedProvenance;
+    if (snapshot.provenance.len == 0) return error.TestExpectedProvenance;
+}
+
+test "a provenance snapshot frees every allocation when one fails midway" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
+    test_catalog_refusal_markers = true;
+    defer test_catalog_refusal_markers = false;
+    var tmp = try tempHome(std.testing.allocator);
+    defer tmp.cleanup();
+    try snapshotProvenanceProbe(std.testing.allocator);
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, snapshotProvenanceProbe, .{});
 }
 
 test "catalog row models free every allocation when one fails midway" {
     try catalogLoadProbe(std.testing.allocator);
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, catalogLoadProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, catalogLoadProbe, .{});
 }
 
 test "the row environment names every credential variable the catalog records, in order" {
@@ -4222,4 +4699,149 @@ test "a row that ships an endpoint per region caches each region's models apart"
     const from_target = try catalogRowCacheName(std.testing.allocator, resolved.id, resolved.region);
     defer std.testing.allocator.free(from_target);
     try std.testing.expectEqualStrings("catalog-kimi-global.json", from_target);
+}
+
+test "the catalogued target keeps its wire and its catalogued listing url when the named base is the catalogued one" {
+    const allocator = std.testing.allocator;
+    const catalogued = provider_catalog.baseUrl("deepseek", "anthropic-messages", null) orelse return error.TestUnexpectedResult;
+    var kept = (try catalogEndpointWithOverrides(allocator, "deepseek", .{ .row = catalogued })) orelse return error.TestUnexpectedResult;
+    defer kept.deinit(allocator);
+    try std.testing.expectEqualStrings("anthropic-messages", kept.wire);
+    try std.testing.expectEqualStrings(catalogued, kept.base_url);
+    try std.testing.expectEqualStrings("https://api.deepseek.com/v1/models", kept.models_url);
+}
+
+test "an overridden base still moves the target through the caller, and the listing is read from the override" {
+    const allocator = std.testing.allocator;
+    var moved = (try catalogEndpointWithOverrides(allocator, "deepseek", .{ .row = "https://proxy.invalid/deepseek" })) orelse return error.TestUnexpectedResult;
+    defer moved.deinit(allocator);
+    try std.testing.expectEqualStrings("openai-completions", moved.wire);
+    try std.testing.expectEqualStrings("https://proxy.invalid/deepseek", moved.base_url);
+    try std.testing.expectEqualStrings("https://proxy.invalid/deepseek/v1/models", moved.models_url);
+}
+
+const models_dev_fixture =
+    \\{"opencode-go":{"id":"opencode-go","models":{
+    \\  "deepseek-v4-flash":{"id":"deepseek-v4-flash","reasoning":true,"modalities":{"input":["text","image"],"output":["text"]},"limit":{"context":1000000,"output":384000}},
+    \\  "zero-limits":{"id":"zero-limits","limit":{"context":0,"output":0}}}},
+    \\ "vercel":{"id":"vercel","models":{"anthropic/claude-sonnet-4.5":{"limit":{"context":777777,"output":77777},"reasoning":true}}},
+    \\ "uncatalogued":{"id":"uncatalogued","models":{}}}
+;
+
+fn loadOneRow(id: []const u8, env: []const u8, model_ids: []const []const u8) ![]ai_types.Model {
+    const target = catalogTarget(id) orelse return error.TestExpectedTarget;
+    test_catalog_discovery = &[_]CatalogDiscovery{.{ .id = id, .models_url = target.models_url, .model_ids = model_ids }};
+    test_catalog_environment = &[_]provider_credential.EnvironmentValue{.{ .name = env, .value = "row-key" }};
+    defer {
+        test_catalog_discovery = null;
+        test_catalog_environment = null;
+    }
+    return loadCatalogModelsWithRows(std.testing.allocator, &.{id}, null, .allow_cache);
+}
+
+test "an OpenCode Go model its listing gives no limits takes models.dev's window, output, reasoning and image input" {
+    test_models_dev = models_dev_fixture;
+    defer test_models_dev = null;
+    const models = try loadOneRow("opencode-go", "OPENCODE_API_KEY", &.{ "deepseek-v4-flash", "unlisted-model", "zero-limits" });
+    defer deinitModels(std.testing.allocator, models);
+
+    try std.testing.expectEqual(@as(usize, 3), models.len);
+    try std.testing.expectEqual(@as(u32, 1_000_000), models[0].context_window);
+    try std.testing.expectEqual(@as(u32, 384_000), models[0].max_tokens);
+    try std.testing.expect(models[0].reasoning);
+    try std.testing.expectEqual(@as(usize, 2), models[0].input.len);
+    try std.testing.expectEqualStrings("image", models[0].input[1]);
+    try std.testing.expect(contextWindowIsReported(models[0]));
+    try std.testing.expectEqual(@as(?u32, 1_000_000), contextWindowMaximum(models[0]));
+
+    try std.testing.expectEqual(catalog_context_window, models[1].context_window);
+    try std.testing.expectEqual(catalog_max_output_tokens, models[1].max_tokens);
+    try std.testing.expect(!models[1].reasoning);
+    try std.testing.expectEqual(catalog_context_window, models[2].context_window);
+    try std.testing.expectEqual(catalog_max_output_tokens, models[2].max_tokens);
+}
+
+test "an OpenCode Go model keeps the generic defaults when models.dev cannot be read" {
+    test_models_dev = "not json";
+    defer test_models_dev = null;
+    const models = try loadOneRow("opencode-go", "OPENCODE_API_KEY", &.{"deepseek-v4-flash"});
+    defer deinitModels(std.testing.allocator, models);
+
+    try std.testing.expectEqual(catalog_context_window, models[0].context_window);
+    try std.testing.expectEqual(catalog_max_output_tokens, models[0].max_tokens);
+}
+
+test "a row the catalog gives no models_dev key never takes models.dev's figures" {
+    try std.testing.expect(provider_catalog.modelsDevKey("vercel") == null);
+    test_models_dev = models_dev_fixture;
+    defer test_models_dev = null;
+    const models = try loadOneRow("vercel", "AI_GATEWAY_API_KEY", &.{"anthropic/claude-sonnet-4.5"});
+    defer deinitModels(std.testing.allocator, models);
+
+    try std.testing.expect(models[0].context_window != 777_777);
+    try std.testing.expect(models[0].max_tokens != 77_777);
+    try std.testing.expect(!models[0].reasoning);
+}
+
+test "a limit the listing reports is never replaced by models.dev's" {
+    var parsed = try parseModelsDev(std.testing.allocator, models_dev_fixture);
+    defer parsed.deinit();
+    const listed = &parsed.value.object.getPtr("opencode-go").?.object.getPtr("models").?.object;
+    var model = DiscoveredModel{ .id = "deepseek-v4-flash", .context_window = 64_000, .max_tokens = 4_096, .reasoning = false };
+    fillFromModelsDev("opencode-go", &model, listed);
+    try std.testing.expectEqual(@as(?u32, 64_000), model.context_window);
+    try std.testing.expectEqual(@as(?u32, 4_096), model.max_tokens);
+    try std.testing.expectEqual(@as(?bool, false), model.reasoning);
+    try std.testing.expectEqual(@as(?bool, true), model.image_input);
+}
+
+test "the models.dev cache keeps only the providers a catalog row names" {
+    var parsed = try parseModelsDev(std.testing.allocator, models_dev_fixture);
+    defer parsed.deinit();
+    const subset = try modelsDevSubset(std.testing.allocator, parsed.value);
+    defer std.testing.allocator.free(subset);
+
+    var kept = try parseModelsDev(std.testing.allocator, subset);
+    defer kept.deinit();
+    try std.testing.expect(kept.value.object.get("opencode-go") != null);
+    try std.testing.expect(kept.value.object.get("vercel") == null);
+    try std.testing.expect(kept.value.object.get("uncatalogued") == null);
+    const window = kept.value.object.get("opencode-go").?.object.get("models").?.object.get("deepseek-v4-flash").?.object.get("limit").?.object.get("context").?;
+    try std.testing.expectEqual(@as(i64, 1_000_000), window.integer);
+}
+
+fn modelsDevSubsetProbe(allocator: std.mem.Allocator, root: std.json.Value) !void {
+    const subset = try modelsDevSubset(allocator, root);
+    allocator.free(subset);
+}
+
+test "the models.dev cache subset frees what it built on every allocation failure" {
+    var parsed = try parseModelsDev(std.testing.allocator, models_dev_fixture);
+    defer parsed.deinit();
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, modelsDevSubsetProbe, .{parsed.value});
+}
+
+test "a model missing only its reasoning or image input still sends the row to models.dev" {
+    const complete = [_]DiscoveredModel{.{ .id = "a", .context_window = 1, .max_tokens = 1, .reasoning = false, .image_input = false }};
+    try std.testing.expect(!lacksFigures(&complete));
+    const no_reasoning = [_]DiscoveredModel{.{ .id = "a", .context_window = 1, .max_tokens = 1, .image_input = false }};
+    try std.testing.expect(lacksFigures(&no_reasoning));
+    const no_image = [_]DiscoveredModel{.{ .id = "a", .context_window = 1, .max_tokens = 1, .reasoning = false }};
+    try std.testing.expect(lacksFigures(&no_image));
+}
+
+test "a listing's text-only modality list is a text-only claim models.dev cannot override" {
+    const models = try parseCatalogModels(std.testing.allocator,
+        \\{"data":[{"id":"deepseek-v4-flash","input_modalities":["text"]},{"id":"bare"}]}
+    );
+    defer freeDiscoveredModels(std.testing.allocator, models);
+    try std.testing.expectEqual(@as(?bool, false), models[0].image_input);
+    try std.testing.expectEqual(@as(?bool, null), models[1].image_input);
+
+    var parsed = try parseModelsDev(std.testing.allocator, models_dev_fixture);
+    defer parsed.deinit();
+    const listed = &parsed.value.object.getPtr("opencode-go").?.object.getPtr("models").?.object;
+    fillFromModelsDev("opencode-go", &models[0], listed);
+    try std.testing.expectEqual(@as(?bool, false), models[0].image_input);
+    try std.testing.expectEqual(@as(?u32, 1_000_000), models[0].context_window);
 }

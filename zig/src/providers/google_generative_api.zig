@@ -662,6 +662,53 @@ const CurrentBlock = enum {
     thinking,
 };
 
+fn endGoogleThinkingBlock(
+    allocator: std.mem.Allocator,
+    stream: *event_stream.AssistantMessageEventStream,
+    ctx: *ThreadCtx,
+    partial: ai_types.AssistantMessage,
+    content_blocks: *std.ArrayList(ai_types.AssistantContent),
+    content: []const u8,
+    signature: []const u8,
+) bool {
+    const thinking_copy = allocator.dupe(u8, content) catch {
+        ctx.deinit();
+        stream.completeWithError("oom thinking");
+        return false;
+    };
+    const sig_copy = if (signature.len > 0) allocator.dupe(u8, signature) catch {
+        allocator.free(thinking_copy);
+        ctx.deinit();
+        stream.completeWithError("oom thinking");
+        return false;
+    } else null;
+
+    content_blocks.append(allocator, .{ .thinking = .{
+        .thinking = thinking_copy,
+        .thinking_signature = sig_copy,
+    } }) catch {
+        allocator.free(thinking_copy);
+        if (sig_copy) |sig| allocator.free(sig);
+        ctx.deinit();
+        stream.completeWithError("oom thinking");
+        return false;
+    };
+
+    const think_at = content_blocks.items.len - 1;
+    const carried = ai_types.partialWithContent(allocator, partial, content_blocks.items, think_at) catch {
+        ctx.deinit();
+        stream.completeWithError("oom thinking");
+        return false;
+    };
+    _ = stream.pushBlocking(.{ .thinking_end = .{
+        .content_index = think_at,
+        .content = content,
+        .partial = carried.partial,
+    } });
+    carried.release(allocator);
+    return true;
+}
+
 fn createPartialMessage(model: ai_types.Model) ai_types.AssistantMessage {
     return ai_types.AssistantMessage{
         .content = &.{},
@@ -713,6 +760,10 @@ const ThreadCtx = struct {
 fn runThread(ctx: *ThreadCtx) void {
     const allocator = ctx.allocator;
     const stream = ctx.stream;
+    defer {
+        google_generative_api_awaitCleanupRelease();
+        stream.markThreadDone();
+    }
     const model = ctx.model;
     const api_key = ctx.api_key;
     const body = ctx.body;
@@ -731,7 +782,6 @@ fn runThread(ctx: *ThreadCtx) void {
         if (ct.isCancelled()) {
             ctx.deinit();
             stream.completeWithError("request cancelled");
-            stream.markThreadDone();
             return;
         }
     }
@@ -742,7 +792,6 @@ fn runThread(ctx: *ThreadCtx) void {
     const url = buildStreamGenerateContentUrl(allocator, base_url, model.id) catch {
         ctx.deinit();
         stream.completeWithError("oom url");
-        stream.markThreadDone();
         return;
     };
     defer allocator.free(url);
@@ -750,7 +799,6 @@ fn runThread(ctx: *ThreadCtx) void {
     const uri = std.Uri.parse(url) catch {
         ctx.deinit();
         stream.completeWithError("invalid URL");
-        stream.markThreadDone();
         return;
     };
 
@@ -775,7 +823,6 @@ fn runThread(ctx: *ThreadCtx) void {
             if (ct.isCancelled()) {
                 ctx.deinit();
                 stream.completeWithError("request cancelled");
-                stream.markThreadDone();
                 return;
             }
         }
@@ -794,12 +841,10 @@ fn runThread(ctx: *ThreadCtx) void {
                 }
                 ctx.deinit();
                 stream.completeWithError("request cancelled");
-                stream.markThreadDone();
                 return;
             }
             ctx.deinit();
             stream.completeWithError("request failed");
-            stream.markThreadDone();
             return;
         };
         req_initialized = true;
@@ -813,12 +858,10 @@ fn runThread(ctx: *ThreadCtx) void {
                 }
                 ctx.deinit();
                 stream.completeWithError("request cancelled");
-                stream.markThreadDone();
                 return;
             }
             ctx.deinit();
             stream.completeWithError("send failed");
-            stream.markThreadDone();
             return;
         };
 
@@ -831,12 +874,10 @@ fn runThread(ctx: *ThreadCtx) void {
                 }
                 ctx.deinit();
                 stream.completeWithError("request cancelled");
-                stream.markThreadDone();
                 return;
             }
             ctx.deinit();
             stream.completeWithError("receive failed");
-            stream.markThreadDone();
             return;
         };
 
@@ -881,7 +922,6 @@ fn runThread(ctx: *ThreadCtx) void {
             if (!retry_util.sleepMs(delay, if (cancel_token) |ct| ct.cancelled else null)) {
                 ctx.deinit();
                 stream.completeWithError("request cancelled");
-                stream.markThreadDone();
                 return;
             }
 
@@ -908,7 +948,6 @@ fn runThread(ctx: *ThreadCtx) void {
 
         ctx.deinit();
         stream.completeWithError(message orelse "google request failed");
-        stream.markThreadDone();
         return;
     }
 
@@ -954,7 +993,6 @@ fn runThread(ctx: *ThreadCtx) void {
             if (ct.isCancelled()) {
                 ctx.deinit();
                 stream.completeWithError("request cancelled");
-                stream.markThreadDone();
                 return;
             }
         }
@@ -962,7 +1000,6 @@ fn runThread(ctx: *ThreadCtx) void {
         const n = compat.http.readResponse(reader, &read_buf) catch {
             ctx.deinit();
             stream.completeWithError("read failed");
-            stream.markThreadDone();
             return;
         };
         if (n == 0) break;
@@ -970,7 +1007,6 @@ fn runThread(ctx: *ThreadCtx) void {
         const events = parser.feed(read_buf[0..n]) catch |err| {
             ctx.deinit();
             stream.completeWithError(sse_parser.errorMessage(err));
-            stream.markThreadDone();
             return;
         };
 
@@ -1017,20 +1053,7 @@ fn runThread(ctx: *ThreadCtx) void {
                                         current_text_signature.clearRetainingCapacity();
                                     },
                                     .thinking => {
-                                        const thinking_copy = allocator.dupe(u8, current_thinking.items) catch continue;
-                                        const sig_copy = if (current_thinking_signature.items.len > 0)
-                                            allocator.dupe(u8, current_thinking_signature.items) catch null
-                                        else
-                                            null;
-                                        content_blocks.append(allocator, .{ .thinking = .{
-                                            .thinking = thinking_copy,
-                                            .thinking_signature = sig_copy,
-                                        } }) catch {};
-                                        _ = stream.pushBlocking(.{ .thinking_end = .{
-                                            .content_index = content_blocks.items.len - 1,
-                                            .content = current_thinking.items,
-                                            .partial = partial,
-                                        } });
+                                        if (!endGoogleThinkingBlock(allocator, stream, ctx, partial, &content_blocks, current_thinking.items, current_thinking_signature.items)) return;
                                         current_thinking.clearRetainingCapacity();
                                         current_thinking_signature.clearRetainingCapacity();
                                     },
@@ -1107,20 +1130,7 @@ fn runThread(ctx: *ThreadCtx) void {
                                         current_text_signature.clearRetainingCapacity();
                                     },
                                     .thinking => {
-                                        const thinking_copy = allocator.dupe(u8, current_thinking.items) catch "";
-                                        const sig_copy = if (current_thinking_signature.items.len > 0)
-                                            allocator.dupe(u8, current_thinking_signature.items) catch null
-                                        else
-                                            null;
-                                        content_blocks.append(allocator, .{ .thinking = .{
-                                            .thinking = thinking_copy,
-                                            .thinking_signature = sig_copy,
-                                        } }) catch {};
-                                        _ = stream.pushBlocking(.{ .thinking_end = .{
-                                            .content_index = content_blocks.items.len - 1,
-                                            .content = current_thinking.items,
-                                            .partial = partial,
-                                        } });
+                                        if (!endGoogleThinkingBlock(allocator, stream, ctx, partial, &content_blocks, current_thinking.items, current_thinking_signature.items)) return;
                                         current_thinking.clearRetainingCapacity();
                                         current_thinking_signature.clearRetainingCapacity();
                                     },
@@ -1224,20 +1234,7 @@ fn runThread(ctx: *ThreadCtx) void {
             },
             .thinking => {
                 const partial = createPartialMessage(model);
-                const thinking_copy = allocator.dupe(u8, current_thinking.items) catch "";
-                const sig_copy = if (current_thinking_signature.items.len > 0)
-                    allocator.dupe(u8, current_thinking_signature.items) catch null
-                else
-                    null;
-                content_blocks.append(allocator, .{ .thinking = .{
-                    .thinking = thinking_copy,
-                    .thinking_signature = sig_copy,
-                } }) catch {};
-                _ = stream.pushBlocking(.{ .thinking_end = .{
-                    .content_index = content_blocks.items.len - 1,
-                    .content = current_thinking.items,
-                    .partial = partial,
-                } });
+                if (!endGoogleThinkingBlock(allocator, stream, ctx, partial, &content_blocks, current_thinking.items, current_thinking_signature.items)) return;
             },
             .none => {},
         }
@@ -1253,7 +1250,6 @@ fn runThread(ctx: *ThreadCtx) void {
     const content_slice = content_blocks.toOwnedSlice(allocator) catch {
         ctx.deinit();
         stream.completeWithError("oom content");
-        stream.markThreadDone();
         return;
     };
 
@@ -1261,7 +1257,6 @@ fn runThread(ctx: *ThreadCtx) void {
         ai_types.deinitAssistantContent(allocator, content_slice);
         ctx.deinit();
         stream.completeWithError("oom");
-        stream.markThreadDone();
         return;
     };
     const provider_dup = allocator.dupe(u8, model.provider) catch {
@@ -1269,7 +1264,6 @@ fn runThread(ctx: *ThreadCtx) void {
         ai_types.deinitAssistantContent(allocator, content_slice);
         ctx.deinit();
         stream.completeWithError("oom");
-        stream.markThreadDone();
         return;
     };
     const model_dup = allocator.dupe(u8, model.id) catch {
@@ -1278,7 +1272,6 @@ fn runThread(ctx: *ThreadCtx) void {
         ai_types.deinitAssistantContent(allocator, content_slice);
         ctx.deinit();
         stream.completeWithError("oom");
-        stream.markThreadDone();
         return;
     };
 
@@ -1295,8 +1288,7 @@ fn runThread(ctx: *ThreadCtx) void {
 
     ctx.deinit();
 
-    stream.complete(out);
-    stream.markThreadDone();
+    ai_types.settleProviderOutcome(stream, out);
 }
 
 pub fn streamGoogleGenerativeAI(model: ai_types.Model, context: ai_types.Context, options: ?ai_types.StreamOptions, allocator: std.mem.Allocator) !*event_stream.AssistantMessageEventStream {
@@ -1341,9 +1333,7 @@ pub fn streamGoogleGenerativeAI(model: ai_types.Model, context: ai_types.Context
     errdefer allocator.destroy(s);
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
     s.wait_for_thread_on_deinit = true;
-    if (o.requires_owned_stream_events) {
-        s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
-    }
+    s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
 
     const ctx = try allocator.create(ThreadCtx);
     errdefer allocator.destroy(ctx);
@@ -1686,4 +1676,123 @@ test "googleErrorDetail surfaces the API status and message, and nothing else" {
     try std.testing.expect((try googleErrorDetail(std.testing.allocator, "<html>oops</html>")) == null);
     try std.testing.expect((try googleErrorDetail(std.testing.allocator, "{\"error\":\"plain\"}")) == null);
     try std.testing.expect((try googleErrorDetail(std.testing.allocator, "{\"error\":{\"message\":\"\"}}")) == null);
+}
+
+test "google settles through the shared path, so a lost clone is not a clean terminal" {
+    const allocator = std.testing.allocator;
+    var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 1 });
+    const stream = try failing.allocator().create(event_stream.AssistantMessageEventStream);
+    stream.* = event_stream.AssistantMessageEventStream.init(failing.allocator());
+    stream.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
+    defer {
+        _ = stream.deinitAndDestroy();
+    }
+    _ = stream.pushBlocking(.{ .text_delta = .{
+        .content_index = 0,
+        .delta = "x",
+        .partial = createPartialMessage(.{
+            .id = "gemini",
+            .name = "gemini",
+            .api = "google-generative-ai",
+            .provider = "google",
+            .base_url = "https://generativelanguage.googleapis.com",
+            .reasoning = false,
+            .input = &.{},
+            .cost = .{ .input = 0.0, .output = 0.0, .cache_read = 0.0, .cache_write = 0.0 },
+            .context_window = 1_000_000,
+            .max_tokens = 16,
+        }),
+    } });
+    try std.testing.expect(stream.pushFailed());
+
+    ai_types.settleProviderOutcome(stream, .{
+        .content = &.{},
+        .api = try allocator.dupe(u8, "google-generative-ai"),
+        .provider = try allocator.dupe(u8, "google"),
+        .model = try allocator.dupe(u8, "gemini"),
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+        .is_owned = true,
+    });
+
+    try std.testing.expect(stream.getResult() == null);
+    if (stream.getError() == null) return error.NoErrorRecorded;
+}
+
+var google_generative_api_cleanup_hold: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
+var google_generative_api_cleanup_held: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
+var google_generative_api_cleanup_gate: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
+
+fn google_generative_api_defaultIo() std.Io {
+    return if (@import("builtin").is_test) std.testing.io else std.Io.Threaded.global_single_threaded.io();
+}
+
+fn google_generative_api_awaitCleanupRelease() void {
+    if (!@import("builtin").is_test) return;
+    if (google_generative_api_cleanup_hold.load(.acquire) == 0) return;
+    _ = google_generative_api_cleanup_held.fetchAdd(1, .release);
+    const io = google_generative_api_defaultIo();
+    while (true) {
+        const seen = google_generative_api_cleanup_gate.load(.acquire);
+        if (google_generative_api_cleanup_hold.load(.acquire) == 0) break;
+        io.futexWaitUncancelable(u32, &google_generative_api_cleanup_gate.raw, seen);
+        if (google_generative_api_cleanup_hold.load(.acquire) == 0) break;
+    }
+}
+
+fn google_generative_api_holdCleanup() void {
+    _ = google_generative_api_cleanup_hold.store(1, .release);
+    _ = google_generative_api_cleanup_gate.fetchAdd(1, .release);
+    google_generative_api_defaultIo().futexWake(u32, &google_generative_api_cleanup_gate.raw, std.math.maxInt(u32));
+}
+
+fn google_generative_api_releaseCleanupGate() void {
+    _ = google_generative_api_cleanup_hold.store(0, .release);
+    _ = google_generative_api_cleanup_gate.fetchAdd(1, .release);
+    google_generative_api_defaultIo().futexWake(u32, &google_generative_api_cleanup_gate.raw, std.math.maxInt(u32));
+}
+
+test "google_generative_api producer does not publish done while its own cleanup is unfinished" {
+    google_generative_api_cleanup_held.store(0, .release);
+    google_generative_api_holdCleanup();
+    defer google_generative_api_releaseCleanupGate();
+
+    const allocator = std.testing.allocator;
+    const m = ai_types.Model{
+        .id = "probe",
+        .name = "Probe",
+        .api = "google-generative-ai",
+        .provider = "google",
+        .base_url = "https://probe.invalid",
+        .reasoning = true,
+        .input = &[_][]const u8{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 128_000,
+        .max_tokens = 100,
+    };
+    const context = ai_types.Context{ .messages = &[_]ai_types.Message{} };
+    var cancelled = std.atomic.Value(bool).init(true);
+
+    const stream = try streamSimpleGoogleGenerativeAI(m, context, .{
+        .api_key = "test-key",
+        .cancel_token = ai_types.CancelToken{ .cancelled = &cancelled },
+    }, allocator);
+    defer {
+        google_generative_api_releaseCleanupGate();
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+
+    while (stream.wait()) |ev| {
+        var mutable_ev = ev;
+        ai_types.deinitAssistantMessageEvent(allocator, &mutable_ev);
+    }
+
+    try std.testing.expect(!stream.waitForThread(250));
+    try std.testing.expectEqual(@as(usize, 1), google_generative_api_cleanup_held.load(.acquire));
+
+    google_generative_api_releaseCleanupGate();
+    try std.testing.expect(stream.waitForThread(5_000));
+    try std.testing.expectEqualStrings("request cancelled", stream.getError().?);
 }

@@ -28,11 +28,8 @@ fn mockProviderStream(
 
     const s = try allocator.create(event_stream.AssistantMessageEventStream);
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
-    if (options) |o| {
-        if (o.requires_owned_stream_events) {
-            s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
-        }
-    }
+    _ = options;
+    s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
 
     const final = ai_types.AssistantMessage{
         .content = &.{},
@@ -130,7 +127,10 @@ test "distributed chain: protocol/agent -> agent_loop -> protocol/provider" {
         allocator.destroy(loop_stream);
     }
 
-    while (loop_stream.wait()) |_| {}
+    while (loop_stream.wait()) |event| {
+        var owned_event = event;
+        owned_event.deinit(allocator);
+    }
     const loop_result = loop_stream.getResult().?;
     try std.testing.expect(loop_result.final_message.stop_reason == .stop);
 
@@ -174,4 +174,32 @@ test "agent_start dual-key parse binds the session under either payload key (#19
         try std.testing.expectEqual(sid, resp.session_id);
         try std.testing.expect(server.hasSession(sid));
     }
+}
+
+test "a provider mock clones even when the caller passes no options" {
+    const allocator = std.testing.allocator;
+    const stream = try mockProviderStream(
+        .{
+            .id = "m",
+            .name = "m",
+            .api = "mock-api",
+            .provider = "mock",
+            .base_url = "https://mock.test",
+            .reasoning = false,
+            .input = &.{"text"},
+            .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+            .context_window = 1024,
+            .max_tokens = 16,
+        },
+        .{ .messages = &.{} },
+        null,
+        allocator,
+    );
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+    try std.testing.expect(stream.ownership.isOwned());
+    try std.testing.expect(!stream.pushFailed());
+    try std.testing.expect(stream.getError() == null);
 }

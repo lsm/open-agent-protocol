@@ -25,7 +25,7 @@ func runConformance(ctx context.Context, args []string, stdout, stderr io.Writer
 	verbose := fs.Bool("verbose", false, "print the endpoint's stderr")
 	model := fs.String("model", "", "model id for the scripted submission (default: the endpoint's own catalog, else none)")
 	traceOut := fs.String("trace-out", "", "write the assembled trace to this file, so a diagnostic can be read against the envelope it anchors to")
-	timeout := fs.Duration("timeout", conformance.DefaultLineDeadline, "how long to wait for each line the endpoint writes")
+	timeout := fs.Duration("timeout", conformance.DefaultLineDeadline, "how long one response, event or control answer may take; the whole wait shares this budget, so a chatty endpoint is judged on it rather than waited on")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

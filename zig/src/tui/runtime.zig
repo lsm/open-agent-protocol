@@ -67,6 +67,7 @@ pub const TuiRuntimeOptions = struct {
     run_async: bool = true,
     generate_titles: bool = false,
     context_window: ?u32 = null,
+    output: agent.OutputSetting = .auto,
 };
 
 pub const ContextWindowError = error{
@@ -209,7 +210,9 @@ pub const TuiRuntime = struct {
     permission_engine: ?*permission.PermissionEngine,
     permission_mode: PermissionMode = .bypass,
     thinking_level: ai_types.ThinkingLevel = .low,
+    output: agent.OutputSetting = .auto,
     context_window: ?u32 = null,
+    suspended_context_window: ?u32 = null,
     context_window_refused: ?u32 = null,
     cancelled: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     completed: bool = false,
@@ -219,6 +222,11 @@ pub const TuiRuntime = struct {
     compact_output: bool = false,
     run_async: bool = true,
     compaction_transcript: []u8 = &.{},
+    session_id: []u8 = &.{},
+    transcript_writer: ?TranscriptWriter = null,
+    run_transcripts: std.ArrayList([]u8) = .empty,
+    run_transcript_saved: []const u8 = "",
+    semantic_wait_ms: i64 = 2_000,
     dropped_event_count: u64 = 0,
     dropped_since_warning: u64 = 0,
     steering_tagged_count: u64 = 0,
@@ -255,12 +263,8 @@ pub const TuiRuntime = struct {
         if (models.len > 0) {
             selected = 0;
             if (options.initial_model) |initial| {
-                for (models, 0..) |model, i| {
-                    if (modelMatchesInitial(model, initial)) {
-                        selected = i;
-                        break;
-                    }
-                }
+                const moved: InitialModelRef = .{ .id = initial.id, .provider = initial.provider };
+                selected = firstMatch(models, initial) orelse firstMatch(models, moved) orelse 0;
             } else if (options.initial_model_id) |id| {
                 for (models, 0..) |model, i| {
                     if (std.mem.eql(u8, model.id, id)) {
@@ -296,6 +300,7 @@ pub const TuiRuntime = struct {
             .permission_mode = options.permission_mode,
             .thinking_level = normalizeTuiThinkingLevel(options.thinking_level),
             .context_window = options.context_window,
+            .output = options.output,
             .compact_output = options.compact_output,
             .run_async = options.run_async,
             .generate_titles = options.generate_titles,
@@ -330,10 +335,17 @@ pub const TuiRuntime = struct {
             runtime.wrapped_tools = next_wrapped_tools;
             runtime.approval_contexts = next_approval_contexts;
         }
-        runtime.dropContextWindowAboveCeiling();
+        runtime.suspendContextWindowAboveCeiling();
         if (runtime.permission_engine) |engine| engine.setBypassAll(runtime.permission_mode == .bypass);
         runtime.rebuildWrappedTools();
         return runtime;
+    }
+
+    fn firstMatch(models: []const ai_types.Model, initial: InitialModelRef) ?usize {
+        for (models, 0..) |model, i| {
+            if (modelMatchesInitial(model, initial)) return i;
+        }
+        return null;
     }
 
     fn modelMatchesInitial(model: ai_types.Model, initial: InitialModelRef) bool {
@@ -353,6 +365,9 @@ pub const TuiRuntime = struct {
         self.tool_protocol.deinit();
         self.allocator.free(self.workspace_root);
         self.allocator.free(self.compaction_transcript);
+        self.allocator.free(self.session_id);
+        self.clearRunTranscripts();
+        self.run_transcripts.deinit(self.allocator);
         self.allocator.free(self.approval_contexts);
         self.allocator.free(self.wrapped_tools);
         self.allocator.free(self.original_tools);
@@ -384,6 +399,8 @@ pub const TuiRuntime = struct {
         try self.local_agent.?.setSystemPrompt(system_prompt);
         if (self.selected_model_index) |idx| self.local_agent.?.setModel(self.effectiveModel(self.models[idx]));
         self.local_agent.?.setThinkingLevel(self.thinking_level);
+        try self.applySessionId();
+        self.local_agent.?.setOutput(self.output);
         self.tool_protocol.server.tools.clearRetainingCapacity();
         try self.tool_protocol.server.registerTools(self.wrapped_tools);
         self.local_agent.?.setTools(self.wrapped_tools);
@@ -401,6 +418,12 @@ pub const TuiRuntime = struct {
             self.local_agent = null;
         }
         self.started = false;
+    }
+
+    pub fn isIdle(self: *TuiRuntime) bool {
+        if (self.stream_active) return false;
+        if (self.local_agent) |*local| return local.isIdle();
+        return true;
     }
 
     pub fn canSteer(_: *const TuiRuntime) bool {
@@ -463,7 +486,7 @@ pub const TuiRuntime = struct {
         self.models = owned_next;
         owned_next = &.{};
         self.selected_model_index = next_selected;
-        self.dropContextWindowAboveCeiling();
+        self.reconcileContextWindowAfterModelSwitch();
 
         if (self.local_agent) |*local| {
             if (next_selected) |idx| local.setModel(self.effectiveModel(self.models[idx]));
@@ -545,6 +568,7 @@ pub const TuiRuntime = struct {
             }
         }
         self.context_window = window;
+        self.suspended_context_window = null;
         self.context_window_refused = null;
         self.applyContextWindowToAgent();
     }
@@ -569,12 +593,35 @@ pub const TuiRuntime = struct {
         }
     }
 
-    fn dropContextWindowAboveCeiling(self: *TuiRuntime) void {
+    fn reconcileContextWindowAfterModelSwitch(self: *TuiRuntime) void {
+        if (self.context_window) |held| {
+            const index = self.selected_model_index orelse return;
+            const ceiling = model_catalog.contextWindowMaximum(self.models[index]) orelse return;
+            if (held > ceiling) {
+                self.suspended_context_window = held;
+                self.context_window = null;
+                self.context_window_refused = held;
+                return;
+            }
+        }
+        if (self.context_window == null) {
+            const held = self.suspended_context_window orelse return;
+            const index = self.selected_model_index orelse return;
+            if (model_catalog.contextWindowMaximum(self.models[index])) |ceiling| {
+                if (held > ceiling) return;
+            }
+            self.context_window = held;
+            self.suspended_context_window = null;
+            self.context_window_refused = null;
+        }
+    }
+
+    fn suspendContextWindowAboveCeiling(self: *TuiRuntime) void {
         const held = self.context_window orelse return;
         const index = self.selected_model_index orelse return;
-        const model = self.models[index];
-        const ceiling = model_catalog.contextWindowMaximum(model) orelse return;
+        const ceiling = model_catalog.contextWindowMaximum(self.models[index]) orelse return;
         if (held <= ceiling) return;
+        self.suspended_context_window = held;
         self.context_window = null;
         self.context_window_refused = held;
     }
@@ -595,6 +642,23 @@ pub const TuiRuntime = struct {
         const normalized = normalizeTuiThinkingLevel(level);
         self.thinking_level = normalized;
         if (self.local_agent) |*local| local.setThinkingLevel(normalized);
+    }
+
+    pub fn outputSetting(self: *const TuiRuntime) agent.OutputSetting {
+        return self.output;
+    }
+
+    pub fn setOutput(self: *TuiRuntime, setting: agent.OutputSetting) error{ AboveMaximum, AgentAlreadyStreaming }!void {
+        if (self.local_agent) |*local| {
+            if (!local.isIdle()) return error.AgentAlreadyStreaming;
+        }
+        if (setting == .tokens) {
+            if (self.currentModel()) |model| {
+                if (model.max_tokens > 0 and setting.tokens > model.max_tokens) return error.AboveMaximum;
+            }
+        }
+        self.output = setting;
+        if (self.local_agent) |*local| local.setOutput(setting);
     }
 
     pub fn setPermissionMode(self: *TuiRuntime, mode: PermissionMode) !void {
@@ -637,7 +701,7 @@ pub const TuiRuntime = struct {
         for (self.models, 0..) |model, i| {
             if (std.mem.eql(u8, model.id, model_id)) {
                 self.selected_model_index = i;
-                self.dropContextWindowAboveCeiling();
+                self.reconcileContextWindowAfterModelSwitch();
                 if (self.local_agent) |*local| local.setModel(self.effectiveModel(self.models[i]));
                 return;
             }
@@ -656,7 +720,7 @@ pub const TuiRuntime = struct {
                 std.mem.eql(u8, model.api, selected.api))
             {
                 self.selected_model_index = i;
-                self.dropContextWindowAboveCeiling();
+                self.reconcileContextWindowAfterModelSwitch();
                 if (self.local_agent) |*local| local.setModel(self.effectiveModel(self.models[i]));
                 return;
             }
@@ -768,6 +832,71 @@ pub const TuiRuntime = struct {
         local.compactAsync(.{ .focus = options.focus, .transcripts = options.transcripts }, self, onCompaction) catch |err| {
             self.finishCompaction(.{ .outcome = .failed, .message = OwnedSlice(u8).initBorrowed(@errorName(err)) });
         };
+    }
+
+    pub const TranscriptWriter = struct {
+        ctx: ?*anyopaque,
+        save_fn: *const fn (ctx: ?*anyopaque, allocator: std.mem.Allocator, index: usize, history: []const ai_types.Message) ?[]u8,
+    };
+
+    pub fn setSessionId(self: *TuiRuntime, session_id: []const u8) !void {
+        const owned = try self.allocator.dupe(u8, session_id);
+        self.allocator.free(self.session_id);
+        self.session_id = owned;
+        const local = &(self.local_agent orelse return);
+        if (!local.isIdle()) return error.AgentAlreadyStreaming;
+        try self.applySessionId();
+    }
+
+    fn applySessionId(self: *TuiRuntime) !void {
+        const local = &(self.local_agent orelse return);
+        try local.setSessionId(if (self.session_id.len > 0) self.session_id else null);
+    }
+
+    pub fn armAutoCompact(self: *TuiRuntime, at: ?u64, transcripts: []const []const u8, writer: ?TranscriptWriter) !void {
+        if (!self.started) try self.start();
+        const local = &(self.local_agent orelse return error.RuntimeNotStarted);
+        if (!local.isIdle()) return error.AgentAlreadyStreaming;
+        var copies: std.ArrayList([]u8) = .empty;
+        errdefer {
+            for (copies.items) |path| self.allocator.free(path);
+            copies.deinit(self.allocator);
+        }
+        try copies.ensureTotalCapacity(self.allocator, transcripts.len);
+        for (transcripts) |path| copies.appendAssumeCapacity(try self.allocator.dupe(u8, path));
+        self.clearRunTranscripts();
+        self.run_transcripts.deinit(self.allocator);
+        self.run_transcripts = copies;
+        self.transcript_writer = writer;
+        local.setAutoCompact(at, .{ .ctx = self, .transcripts_fn = runTranscripts, .settled_fn = settleRunTranscript });
+    }
+
+    fn settleRunTranscript(ctx: ?*anyopaque, completed: bool) void {
+        const self: *TuiRuntime = @ptrCast(@alignCast(ctx.?));
+        defer self.run_transcript_saved = "";
+        if (completed or self.run_transcript_saved.len == 0) return;
+        const items = self.run_transcripts.items;
+        if (items.len == 0 or items[items.len - 1].ptr != self.run_transcript_saved.ptr) return;
+        self.allocator.free(self.run_transcripts.pop().?);
+    }
+
+    fn clearRunTranscripts(self: *TuiRuntime) void {
+        for (self.run_transcripts.items) |path| self.allocator.free(path);
+        self.run_transcripts.clearRetainingCapacity();
+        self.run_transcript_saved = "";
+    }
+
+    fn runTranscripts(ctx: ?*anyopaque, messages: []const ai_types.Message) agent.Agent.CompactionTranscripts {
+        const self: *TuiRuntime = @ptrCast(@alignCast(ctx.?));
+        self.run_transcript_saved = "";
+        const writer = self.transcript_writer orelse return .{ .paths = self.run_transcripts.items };
+        const path = writer.save_fn(writer.ctx, self.allocator, self.run_transcripts.items.len + 1, messages) orelse return .{ .paths = self.run_transcripts.items };
+        self.run_transcripts.append(self.allocator, path) catch {
+            self.allocator.free(path);
+            return .{ .paths = self.run_transcripts.items };
+        };
+        self.run_transcript_saved = path;
+        return .{ .paths = self.run_transcripts.items, .saved = path };
     }
 
     fn onCompaction(ctx: ?*anyopaque, result: *const agent.compaction.Result) void {
@@ -923,6 +1052,7 @@ pub const TuiRuntime = struct {
     fn push(self: *TuiRuntime, event: TuiEvent) void {
         var mutable = event;
         mutable.setGeneration(self.current_generation);
+        mutable.stamp(compat.time.nowMillis());
         self.pushDroppingOldestCounted(mutable);
         self.flushDroppedWarning();
     }
@@ -930,11 +1060,13 @@ pub const TuiRuntime = struct {
     fn pushTerminal(self: *TuiRuntime, event: TuiEvent) void {
         var mutable = event;
         mutable.setGeneration(self.current_generation);
+        mutable.stamp(compat.time.nowMillis());
         self.pushDroppingOldestCounted(mutable);
         self.flushDroppedWarningDroppingOldest();
     }
 
     fn pushDroppingOldestCounted(self: *TuiRuntime, event: TuiEvent) void {
+        const started_ms = compat.time.nowMillis();
         while (true) {
             if (self.pushUncounted(event)) return;
             while (!self.backpressure_mutex.tryLock()) std.atomic.spinLoopHint();
@@ -950,17 +1082,53 @@ pub const TuiRuntime = struct {
                     return;
                 },
             }
-            if (self.event_stream.poll()) |dropped| {
-                self.dropped_event_count += 1;
-                self.dropped_since_warning += 1;
-                self.backpressure_active.store(true, .release);
-                var mutable = dropped;
-                mutable.deinit(self.allocator);
-            } else {
-                std.Thread.yield() catch {};
+            if (self.shedStreamingLocked() == 0) {
+                if (isStreamingChunk(event)) {
+                    self.countDroppedLocked(1);
+                    self.backpressure_mutex.unlock();
+                    var mutable = event;
+                    mutable.deinit(self.allocator);
+                    return;
+                }
+                if (compat.time.nowMillis() -| started_ms >= self.semantic_wait_ms) self.dropOldestLocked();
             }
             self.backpressure_mutex.unlock();
         }
+    }
+
+    fn dropOldestLocked(self: *TuiRuntime) void {
+        var dropped = self.event_stream.poll() orelse return;
+        dropped.deinit(self.allocator);
+        self.countDroppedLocked(1);
+    }
+
+    fn isStreamingChunk(event: TuiEvent) bool {
+        return switch (event) {
+            .text_delta, .thinking_delta, .tool_call_delta, .provider_event, .tool_execution_update => true,
+            else => false,
+        };
+    }
+
+    fn evictStreamingChunk(self: *TuiRuntime, event: *TuiEvent) bool {
+        if (!isStreamingChunk(event.*)) return false;
+        event.deinit(self.allocator);
+        return true;
+    }
+
+    fn countDroppedLocked(self: *TuiRuntime, count: usize) void {
+        self.dropped_event_count += count;
+        self.dropped_since_warning += count;
+        self.backpressure_active.store(true, .release);
+    }
+
+    fn shedStreamingLocked(self: *TuiRuntime) usize {
+        const evicted = self.event_stream.evictWhere(self, evictStreamingChunk);
+        if (evicted > 0) {
+            self.countDroppedLocked(evicted);
+            return evicted;
+        }
+        std.Thread.yield() catch {};
+        return 0;
     }
 
     fn pushUncounted(self: *TuiRuntime, event: TuiEvent) bool {
@@ -1026,16 +1194,9 @@ pub const TuiRuntime = struct {
             mutable.deinit(self.allocator);
 
             while (!self.backpressure_mutex.tryLock()) std.atomic.spinLoopHint();
-            if (self.event_stream.poll()) |dropped| {
-                self.dropped_event_count += 1;
-                self.dropped_since_warning += 1;
-                self.backpressure_active.store(true, .release);
-                var dropped_mutable = dropped;
-                dropped_mutable.deinit(self.allocator);
-            } else {
-                std.Thread.yield() catch {};
-            }
+            const shed = self.shedStreamingLocked();
             self.backpressure_mutex.unlock();
+            if (shed == 0) return;
         }
     }
 
@@ -1267,7 +1428,7 @@ pub const TuiRuntime = struct {
                 self.push(.{ .message_start = .{ .role = messageRole(payload.message) } });
             },
             .message_update => |payload| {
-                try self.pushProviderEvent(payload.event);
+                if (!isChunk(payload.event)) try self.pushProviderEvent(payload.event);
                 try self.pushMessageUpdate(payload.event);
             },
             .message_end => |payload| {
@@ -1341,7 +1502,37 @@ pub const TuiRuntime = struct {
                 .estimated_tokens = payload.estimated_tokens,
                 .item_count = payload.item_count,
             } }),
+            .compaction_start => self.push(.{ .compaction_start = .{ .in_run = true } }),
+            .compaction_end => |payload| try self.pushRunCompactionEnd(payload),
         }
+    }
+
+    fn pushRunCompactionEnd(self: *TuiRuntime, payload: agent_types.CompactionEndPayload) !void {
+        const text = try self.dupeOwned(payload.text.slice());
+        errdefer {
+            var owned = text;
+            owned.deinit(self.allocator);
+        }
+        const transcript = try self.dupeOwned(payload.transcript.slice());
+        errdefer {
+            var owned = transcript;
+            owned.deinit(self.allocator);
+        }
+        const message = try self.dupeOwned(payload.message.slice());
+        self.push(.{ .compaction_end = .{
+            .in_run = true,
+            .outcome = switch (payload.outcome) {
+                .completed => .completed,
+                .cancelled => .cancelled,
+                .failed => .failed,
+            },
+            .text = text,
+            .transcript = transcript,
+            .message = message,
+            .messages_before = payload.messages_before,
+            .tokens_before = payload.tokens_before,
+            .tokens_after = payload.tokens_after,
+        } });
     }
 
     fn formatArtifactRefs(self: *TuiRuntime, artifacts: []const ai_types.ArtifactReference) !OwnedSlice(u8) {
@@ -1375,6 +1566,13 @@ pub const TuiRuntime = struct {
             } }),
             else => {},
         }
+    }
+
+    fn isChunk(event: ai_types.AssistantMessageEvent) bool {
+        return switch (event) {
+            .text_delta, .thinking_delta, .toolcall_delta => true,
+            else => false,
+        };
     }
 
     fn pushProviderEvent(self: *TuiRuntime, event: ai_types.AssistantMessageEvent) !void {
@@ -1891,6 +2089,35 @@ test "a session's window the model in effect cannot take is dropped, and named" 
     try std.testing.expectEqual(@as(u64, 262_144), runtime.contextWindow());
     try std.testing.expectEqual(@as(?u32, 1_000_000), runtime.takeContextWindowRefused());
     try std.testing.expect(runtime.contextWindowRefused() == null);
+}
+
+test "a model switch suspends an oversized context window and restores it when switching back" {
+    const models = [_]ai_types.Model{ wide_ceiling_model, narrow_ceiling_model };
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &models });
+    defer runtime.deinit();
+
+    try runtime.setContextWindow(1_000_000);
+    try runtime.switchModel("kimi-k2.7-code");
+    try std.testing.expectEqual(@as(u64, 262_144), runtime.contextWindow());
+    try std.testing.expectEqual(@as(?u32, 1_000_000), runtime.takeContextWindowRefused());
+    try std.testing.expectEqual(@as(?u32, 1_000_000), runtime.suspended_context_window);
+
+    try runtime.switchModel("gpt-5-codex");
+    try std.testing.expectEqual(@as(u64, 1_000_000), runtime.contextWindow());
+    try std.testing.expectEqual(@as(?u32, 1_000_000), runtime.contextWindowOverride());
+    try std.testing.expect(runtime.suspended_context_window == null);
+}
+
+test "a startup window above the selected model ceiling is suspended for a later switch back" {
+    const models = [_]ai_types.Model{ narrow_ceiling_model, wide_ceiling_model };
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &models, .context_window = 1_000_000 });
+    defer runtime.deinit();
+
+    try std.testing.expectEqual(@as(u64, 262_144), runtime.contextWindow());
+    try std.testing.expectEqual(@as(?u32, 1_000_000), runtime.takeContextWindowRefused());
+    try runtime.switchModel("gpt-5-codex");
+    try std.testing.expectEqual(@as(u64, 1_000_000), runtime.contextWindow());
+    try std.testing.expectEqual(@as(?u32, 1_000_000), runtime.contextWindowOverride());
 }
 
 test "a startup window above the ceiling is dropped before the first turn" {
@@ -2430,7 +2657,7 @@ fn compactionEndPayloadProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "compactionEndPayload survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, compactionEndPayloadProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, compactionEndPayloadProbe, .{});
 }
 
 const CompactionSeen = struct {
@@ -2556,7 +2783,7 @@ test "runtime tags consumed steer message_end with steering provenance" {
     try std.testing.expect(prompt_message_end_untagged);
 }
 
-test "steer consumption count survives backpressure eviction of consumption events" {
+test "steer consumption count and the steered message survive a flood that sheds streaming chunks" {
     var mock = MockProtocolCtx{ .wait_before_text_first = true, .deliver_flood_second = TuiEventStream.usable_capacity - 2 };
     const models = [_]ai_types.Model{test_model_a};
     var runtime = try TuiRuntime.init(std.testing.allocator, .{ .protocol = makeProtocol(&mock), .models = &models, .run_async = true });
@@ -2577,7 +2804,7 @@ test "steer consumption count survives backpressure eviction of consumption even
         defer ev.deinit(std.testing.allocator);
         if (ev == .message_end and ev.message_end.role == .user) saw_user_message_end = true;
     }
-    try std.testing.expect(!saw_user_message_end);
+    try std.testing.expect(saw_user_message_end);
     try std.testing.expectEqual(@as(u64, 1), runtime.steersConsumedCount());
 }
 
@@ -2586,6 +2813,21 @@ test "local runtime reports steering available" {
     defer runtime.deinit();
     try std.testing.expect(runtime.canSteer());
     try std.testing.expect(runtime.createSession().canSteer());
+}
+
+test "a session id set before the agent starts reaches it at start, and a later one replaces it" {
+    var mock = MockProtocolCtx{};
+    const models = [_]ai_types.Model{test_model_a};
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .protocol = makeProtocol(&mock), .models = &models });
+    defer runtime.deinit();
+
+    try runtime.setSessionId("ses-before-start");
+    try std.testing.expect(runtime.local_agent == null);
+    try runtime.start();
+    try std.testing.expectEqualStrings("ses-before-start", runtime.local_agent.?._session_id.?);
+
+    try runtime.setSessionId("ses-resumed");
+    try std.testing.expectEqualStrings("ses-resumed", runtime.local_agent.?._session_id.?);
 }
 
 test "runtime clears queued messages before replacing messages" {
@@ -2907,6 +3149,22 @@ test "initial model ref selects exact duplicate id provider api tuple" {
     try std.testing.expectEqualStrings("openai-responses", runtime.currentModel().?.api);
 }
 
+test "a saved model whose provider moved it to another wire is still the one selected" {
+    var moved = test_model_b;
+    moved.id = "deepseek-flash";
+    moved.provider = "deepseek";
+    moved.api = "anthropic-messages";
+    const models = [_]ai_types.Model{ test_model_a, moved };
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{
+        .models = &models,
+        .initial_model = .{ .id = "deepseek-flash", .provider = "deepseek", .api = "openai-completions" },
+    });
+    defer runtime.deinit();
+
+    try std.testing.expectEqualStrings("deepseek-flash", runtime.currentModel().?.id);
+    try std.testing.expectEqualStrings("anthropic-messages", runtime.currentModel().?.api);
+}
+
 test "replaceModels preserves selected model when still available" {
     const initial = [_]ai_types.Model{ test_model_a, test_model_b };
     var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &initial, .initial_model_id = "model-b" });
@@ -3024,9 +3282,48 @@ test "failed turns emit error end reason" {
     try std.testing.expect(saw_error_end);
 }
 
-test "runtime push preserves newest event when event stream is full" {
+fn saveNumberedTranscript(ctx: ?*anyopaque, allocator: std.mem.Allocator, index: usize, history: []const ai_types.Message) ?[]u8 {
+    _ = ctx;
+    _ = history;
+    return std.fmt.allocPrint(allocator, "/t/compaction-{d}.jsonl", .{index}) catch null;
+}
+
+test "a compaction inside a run that does not complete gives back the transcript slot it saved" {
     var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{test_model_a}, .run_async = false });
     defer runtime.deinit();
+    try runtime.run_transcripts.append(std.testing.allocator, try std.testing.allocator.dupe(u8, "/t/compaction-1.jsonl"));
+    runtime.transcript_writer = .{ .ctx = null, .save_fn = saveNumberedTranscript };
+
+    const first = TuiRuntime.runTranscripts(&runtime, &.{});
+    try std.testing.expectEqual(@as(usize, 2), first.paths.len);
+    try std.testing.expectEqualStrings("/t/compaction-2.jsonl", first.paths[1]);
+    try std.testing.expectEqualStrings("/t/compaction-2.jsonl", first.saved);
+
+    TuiRuntime.settleRunTranscript(&runtime, false);
+    try std.testing.expectEqual(@as(usize, 1), runtime.run_transcripts.items.len);
+    try runtime.pushRunCompactionEnd(.{ .outcome = .failed });
+
+    const second = TuiRuntime.runTranscripts(&runtime, &.{});
+    try std.testing.expectEqualStrings("/t/compaction-2.jsonl", second.paths[1]);
+    TuiRuntime.settleRunTranscript(&runtime, true);
+    try std.testing.expectEqual(@as(usize, 2), runtime.run_transcripts.items.len);
+    try runtime.pushRunCompactionEnd(.{ .outcome = .completed, .text = OwnedSlice(u8).initBorrowed("summary"), .transcript = OwnedSlice(u8).initBorrowed(second.saved) });
+
+    var completed_with_slot = false;
+    while (runtime.event_stream.poll()) |event| {
+        var ev = event;
+        defer ev.deinit(std.testing.allocator);
+        if (ev == .compaction_end and ev.compaction_end.outcome == .completed) {
+            completed_with_slot = std.mem.eql(u8, ev.compaction_end.transcript.slice(), "/t/compaction-2.jsonl");
+        }
+    }
+    try std.testing.expect(completed_with_slot);
+}
+
+test "runtime push preserves newest event when a full queue holds nothing it may shed and nobody drains it" {
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{test_model_a}, .run_async = false });
+    defer runtime.deinit();
+    runtime.semantic_wait_ms = 0;
 
     for (0..TuiEventStream.usable_capacity) |_| {
         runtime.push(.{ .turn_start = .{} });
@@ -3044,12 +3341,12 @@ test "runtime push preserves newest event when event stream is full" {
     try std.testing.expect(saw_latest_error);
 }
 
-test "TuiRuntime terminal event emits warning after terminal eviction" {
+test "TuiRuntime terminal event sheds streaming chunks from a full queue and warns" {
     var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{test_model_a}, .run_async = false });
     defer runtime.deinit();
 
-    for (0..TuiEventStream.usable_capacity) |_| {
-        runtime.push(.{ .turn_start = .{} });
+    for (0..TuiEventStream.usable_capacity) |i| {
+        runtime.push(.{ .text_delta = .{ .content_index = i, .delta = OwnedSlice(u8).initBorrowed("x") } });
     }
     try std.testing.expect(runtime.event_stream.isFull());
 
@@ -3082,36 +3379,61 @@ test "TuiRuntime counts dropped events and emits warning" {
     try std.testing.expect(runtime.event_stream.isFull());
 
     runtime.push(.{ .text_delta = .{ .content_index = TuiEventStream.usable_capacity, .delta = OwnedSlice(u8).initBorrowed("after-full") } });
-    try std.testing.expectEqual(@as(u64, 1), runtime.dropped_event_count);
+    const shed: u64 = TuiEventStream.usable_capacity;
+    try std.testing.expectEqual(shed, runtime.dropped_event_count);
     try std.testing.expect(runtime.backpressure_active.load(.acquire));
 
     const bp_active = runtime.backpressureState();
     try std.testing.expect(bp_active.active);
-    try std.testing.expectEqual(@as(u64, 1), bp_active.dropped_count);
-
-    for (0..2) |_| {
-        var ev = runtime.event_stream.poll().?;
-        defer ev.deinit(std.testing.allocator);
-    }
-    runtime.push(.{ .text_delta = .{ .content_index = 256, .delta = OwnedSlice(u8).initBorrowed("after") } });
+    try std.testing.expectEqual(shed, bp_active.dropped_count);
 
     var saw_warning = false;
+    var saw_newest = false;
     while (tui_session.popEvent()) |event| {
         var ev = event;
         defer ev.deinit(std.testing.allocator);
+        if (ev == .text_delta and std.mem.eql(u8, ev.text_delta.delta.slice(), "after-full")) saw_newest = true;
         if (ev == .system_warning) {
             saw_warning = true;
-            try std.testing.expect(std.mem.indexOf(u8, ev.system_warning.message.slice(), "1 event dropped due to backpressure") != null);
+            try std.testing.expect(std.mem.indexOf(u8, ev.system_warning.message.slice(), "1023 events dropped due to backpressure") != null);
         }
     }
     try std.testing.expect(saw_warning);
+    try std.testing.expect(saw_newest);
 
-    const bp_recovered = runtime.backpressureState();
-    try std.testing.expect(bp_recovered.active);
-    try std.testing.expectEqual(@as(u64, 1), bp_recovered.dropped_count);
     const bp_cleared = runtime.backpressureState();
     try std.testing.expect(!bp_cleared.active);
-    try std.testing.expectEqual(@as(u64, 1), bp_cleared.dropped_count);
+    try std.testing.expectEqual(shed, bp_cleared.dropped_count);
+}
+
+test "a full queue sheds only streaming chunks, keeping message and turn events in order" {
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{test_model_a}, .run_async = false });
+    defer runtime.deinit();
+
+    runtime.push(.{ .message_start = .{ .role = .assistant } });
+    for (0..TuiEventStream.usable_capacity - 3) |i| {
+        runtime.push(.{ .text_delta = .{ .content_index = i, .delta = OwnedSlice(u8).initBorrowed("x") } });
+    }
+    runtime.push(.{ .thinking_delta = .{ .content_index = 0, .delta = OwnedSlice(u8).initBorrowed("t") } });
+    runtime.push(.{ .message_end = .{ .role = .assistant, .text = OwnedSlice(u8).initBorrowed("whole reply") } });
+    try std.testing.expect(runtime.event_stream.isFull());
+
+    runtime.push(.{ .turn_end = .{ .stop_reason = .stop } });
+
+    try std.testing.expectEqual(@as(u64, TuiEventStream.usable_capacity - 2), runtime.dropped_event_count);
+    var order: [4]std.meta.Tag(TuiEvent) = undefined;
+    var count: usize = 0;
+    while (runtime.event_stream.poll()) |event| {
+        var ev = event;
+        defer ev.deinit(std.testing.allocator);
+        if (count < order.len) order[count] = std.meta.activeTag(ev);
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 4), count);
+    try std.testing.expectEqual(std.meta.Tag(TuiEvent).message_start, order[0]);
+    try std.testing.expectEqual(std.meta.Tag(TuiEvent).message_end, order[1]);
+    try std.testing.expectEqual(std.meta.Tag(TuiEvent).turn_end, order[2]);
+    try std.testing.expectEqual(std.meta.Tag(TuiEvent).system_warning, order[3]);
 }
 
 test "TuiRuntime replaceMessages clears stale backpressure counters" {
