@@ -1654,6 +1654,7 @@ fn flushWrapRow(writer: *std.Io.Writer, buf: *std.ArrayList(u8), col: *usize, pe
         if (split >= pf) split = lastCharStart(buf.items);
     }
     if (std.mem.trim(u8, buf.items[0..split], " ").len == 0) split = lastCharStart(buf.items);
+    split = keepEscapeAtomic(buf.items, split);
     if (pending_newline.*) {
         try writer.writeByte('\n');
         pending_newline.* = false;
@@ -1663,7 +1664,7 @@ fn flushWrapRow(writer: *std.Io.Writer, buf: *std.ArrayList(u8), col: *usize, pe
     const tail_len = buf.items.len - tail_start;
     std.mem.copyForwards(u8, buf.items[0..tail_len], buf.items[tail_start..]);
     buf.shrinkRetainingCapacity(tail_len);
-    col.* = tui_text.visibleWidth(buf.items);
+    col.* = escapedVisibleWidth(buf.items);
     if (tail_len > 0) {
         try writer.writeByte('\n');
     } else {
@@ -1774,6 +1775,44 @@ fn lastCharStart(buf: []const u8) usize {
         if ((buf[i] & 0xc0) != 0x80) return i;
     }
     return 0;
+}
+
+// An escape sentinel and the glyph it protects are one display unit; a wrap split
+// must not land between them or the emitted row decodes past its own end.
+fn keepEscapeAtomic(buf: []const u8, split: usize) usize {
+    if (split < link_escape.len) return split;
+    if (std.mem.startsWith(u8, buf[split - link_escape.len ..], link_escape)) return split - link_escape.len;
+    return split;
+}
+
+// The width of a wrapped row: literal escaped glyphs count by the glyph, an
+// internal link marker counts nothing because writeInlineStyled consumes it.
+fn escapedVisibleWidth(buf: []const u8) usize {
+    var width: usize = 0;
+    var i: usize = 0;
+    while (i < buf.len) {
+        if (std.mem.startsWith(u8, buf[i..], link_escape)) {
+            const next_i = i + link_escape.len;
+            const next_len = std.unicode.utf8ByteSequenceLength(buf[next_i]) catch 1;
+            if (next_i + next_len > buf.len) break;
+            const cp = std.unicode.utf8Decode(buf[next_i .. next_i + next_len]) catch {
+                i = next_i;
+                continue;
+            };
+            width += zz.measure.charWidth(@intCast(cp));
+            i = next_i + next_len;
+            continue;
+        }
+        const len = std.unicode.utf8ByteSequenceLength(buf[i]) catch 1;
+        if (i + len > buf.len) break;
+        const cp = std.unicode.utf8Decode(buf[i .. i + len]) catch {
+            i += 1;
+            continue;
+        };
+        if (cp != 0xE000 and cp != 0xE001) width += zz.measure.charWidth(@intCast(cp));
+        i += len;
+    }
+    return width;
 }
 
 fn stripControls(allocator: std.mem.Allocator, line: []const u8) ![]u8 {
@@ -2252,6 +2291,15 @@ test "a link whose visible label exactly fills the width stays on one row" {
     const plain = try stripEscapesForTest(std.testing.allocator, styled);
     defer std.testing.allocator.free(plain);
     try std.testing.expectEqualStrings("abcdefgh", plain);
+}
+
+test "an escape pair is never split across a wrap and the glyph survives" {
+    const styled = try renderAssistantStyled(std.testing.allocator, "abcdefgh\u{E000}", 8);
+    defer std.testing.allocator.free(styled);
+    try std.testing.expect(std.mem.indexOf(u8, styled, "\u{E002}") == null);
+    const plain = try stripEscapesForTest(std.testing.allocator, styled);
+    defer std.testing.allocator.free(plain);
+    try std.testing.expectEqualStrings("abcdefgh\n\u{E000}", plain);
 }
 
 test "a link target keeps its balanced parentheses" {
