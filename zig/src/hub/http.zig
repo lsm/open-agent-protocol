@@ -1230,7 +1230,7 @@ test "drain reads a positive number of bytes, and stops when keepGoing says stop
 
 test "a drain still reads once the process clock is past its own budget" {
     const budget_wait_ms: u32 = @intCast(drain_total_ms + 200);
-    std.Thread.sleep(budget_wait_ms * std.time.ns_per_ms);
+    std.testing.io.sleep(.fromNanoseconds(budget_wait_ms * std.time.ns_per_ms), .boot) catch {};
     const up = elapsedMs() catch return error.TestUnexpectedResult;
     try testing.expect(up > drain_total_ms);
     var pipe = try Pipe.open();
