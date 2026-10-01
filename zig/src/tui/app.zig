@@ -964,6 +964,7 @@ pub const App = struct {
     pending_thinking: std.ArrayList(u8) = .empty,
     pending_after_compaction: ?[]u8 = null,
     pending_after_compaction_echo: ?[]u8 = null,
+    runtime_echo_suppressed: []u8 = &.{},
     compaction_just_ended: ?bool = null,
     session_title: []u8 = &.{},
     session_title_generated: bool = false,
@@ -1089,6 +1090,7 @@ pub const App = struct {
         self.pending_thinking.deinit(self.allocator);
         if (self.pending_after_compaction) |pending| self.allocator.free(pending);
         if (self.pending_after_compaction_echo) |echo| self.allocator.free(echo);
+        if (self.runtime_echo_suppressed.len > 0) self.allocator.free(self.runtime_echo_suppressed);
         if (self.rate_model.len > 0) self.allocator.free(self.rate_model);
         if (self.rate_provider.len > 0) self.allocator.free(self.rate_provider);
         if (self.session_title.len > 0) self.allocator.free(self.session_title);
@@ -2647,6 +2649,11 @@ pub const App = struct {
     fn appendRuntimeUserMessage(self: *App, text: []const u8) !void {
         const trimmed = std.mem.trim(u8, text, " \t\r\n");
         if (trimmed.len == 0) return;
+        if (self.runtime_echo_suppressed.len > 0 and std.mem.eql(u8, trimmed, self.runtime_echo_suppressed)) {
+            self.allocator.free(self.runtime_echo_suppressed);
+            self.runtime_echo_suppressed = &.{};
+            return;
+        }
         if (self.state.transcript.items.len > 0) {
             const last = &self.state.transcript.items[self.state.transcript.items.len - 1];
             if (last.kind == .user and std.mem.eql(u8, last.text.items, trimmed)) return;
@@ -2770,6 +2777,11 @@ pub const App = struct {
             };
         }
         self.session_turns += 1;
+        if (!std.mem.eql(u8, echo, trimmed)) {
+            const suppressed = try self.allocator.dupe(u8, std.mem.trim(u8, trimmed, " \t\r\n"));
+            if (self.runtime_echo_suppressed.len > 0) self.allocator.free(self.runtime_echo_suppressed);
+            self.runtime_echo_suppressed = suppressed;
+        }
         if (echo.len > 0) try self.state.appendUserMessage(echo);
         self.refreshQueuedCounts();
         return true;
@@ -5647,6 +5659,8 @@ test "esc during a run sends the queued messages as a new run once the aborted o
     try std.testing.expectEqual(@as(usize, 1), mock.submit_count);
     try std.testing.expectEqualStrings("check the logs first\n\nthen open a PR", mock.submitted.items[0]);
     try std.testing.expectEqual(@as(usize, 0), app.state.held_after_abort.items.len);
+    try mock.eventStream().push(.{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "check the logs first\n\nthen open a PR")) } });
+    try app.drainEvents();
     const last = app.state.transcript.items[app.state.transcript.items.len - 1];
     try std.testing.expectEqual(tui_state.TranscriptKind.user, last.kind);
     try std.testing.expectEqualStrings("then open a PR", last.text.items);
