@@ -967,6 +967,31 @@ pub const AuthStorage = struct {
         };
     }
 
+    pub fn removeStored(allocator: std.mem.Allocator, provider_id: []const u8) !bool {
+        var stored = try loadDefaultStoredOnly(allocator);
+        defer stored.deinit();
+        var removed = false;
+        if (stored.removeProvider(provider_id)) {
+            try stored.persist();
+            removed = true;
+        }
+        if (stored.save_fn == null) return removed;
+        var file = try loadFromFile(allocator);
+        defer file.deinit();
+        if (file.removeProvider(provider_id)) {
+            try file.saveToFile();
+            removed = true;
+        }
+        return removed;
+    }
+
+    fn removeProvider(self: *AuthStorage, provider_id: []const u8) bool {
+        const removed = self.providers.fetchRemove(provider_id) orelse return false;
+        self.allocator.free(removed.key);
+        removed.value.deinit(self.allocator);
+        return true;
+    }
+
     pub fn persist(self: *const AuthStorage) !void {
         if (self.save_fn) |save| return save(self);
         return self.saveToFile();
@@ -1056,6 +1081,27 @@ test "AuthStorage - load non-existent file" {
     defer storage.deinit();
 
     try std.testing.expectEqual(@as(usize, 0), storage.providers.count());
+}
+
+test "removing a stored credential drops that provider and keeps the rest" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const previous_home = try setHomeForTest(std.testing.allocator, &tmp);
+    defer restoreHomeForTest(std.testing.allocator, previous_home);
+
+    var storage = try AuthStorage.loadFromFile(std.testing.allocator);
+    try putOwnedAuth(&storage, "opencode-go", .{ .api_key = try std.testing.allocator.dupe(u8, "go-key") });
+    try putOwnedAuth(&storage, "zai", .{ .api_key = try std.testing.allocator.dupe(u8, "zai-key") });
+    try storage.saveToFile();
+    storage.deinit();
+
+    try std.testing.expect(try AuthStorage.removeStored(std.testing.allocator, "opencode-go"));
+    try std.testing.expect(!try AuthStorage.removeStored(std.testing.allocator, "opencode-go"));
+
+    var reloaded = try AuthStorage.loadFromFile(std.testing.allocator);
+    defer reloaded.deinit();
+    try std.testing.expect(!reloaded.providers.contains("opencode-go"));
+    try std.testing.expectEqualStrings("zai-key", reloaded.providers.get("zai").?.api_key);
 }
 
 test "AuthStorage - save and load" {

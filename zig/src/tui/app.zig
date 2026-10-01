@@ -1777,7 +1777,7 @@ pub const App = struct {
                 self.finishLogin();
                 if (save_err) |_| {
                     self.refreshLoginStatus();
-                    const refresh_err = self.refreshModelsAfterLogin();
+                    const refresh_err = self.refreshModels();
                     const msg = try std.fmt.allocPrint(self.allocator, "logged in to {s}", .{provider_id});
                     defer self.allocator.free(msg);
                     try self.state.appendTranscript(.system, msg);
@@ -1896,12 +1896,61 @@ pub const App = struct {
         try storage.persist();
     }
 
-    fn refreshModelsAfterLogin(self: *App) !void {
-        const runtime = self.runtime orelse return;
-        const current_model = runtime.currentModel();
+    fn refreshModels(self: *App) !bool {
+        const runtime = self.runtime orelse return false;
         const models = try loadRuntimeModelsFresh(self.allocator);
         defer model_catalog.deinitModels(self.allocator, models);
-        try runtime.replaceModels(models, current_model);
+        try runtime.replaceModels(models, runtime.currentModel());
+        const model = runtime.currentModel() orelse return false;
+        const switched = !std.mem.eql(u8, model.id, self.state.status.model) or
+            !std.mem.eql(u8, model.provider, self.state.status.provider);
+        if (switched) {
+            try self.state.status.setModel(self.allocator, model.id, model.provider);
+            self.applyContextWindow();
+        }
+        return switched;
+    }
+
+    fn reportModelRefresh(self: *App, switched: anyerror!bool, failure: []const u8) !void {
+        const changed = switched catch |err| {
+            const msg = try std.fmt.allocPrint(self.allocator, "{s}: {s}", .{ failure, @errorName(err) });
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.@"error", msg);
+            return;
+        };
+        try self.state.appendTranscript(.system, "model catalog refreshed");
+        if (!changed) return;
+        const msg = try std.fmt.allocPrint(self.allocator, "model switched to {s}/{s}", .{ self.state.status.provider, self.state.status.model });
+        defer self.allocator.free(msg);
+        try self.state.appendTranscript(.system, msg);
+    }
+
+    fn logoutProvider(self: *App, provider_id: []const u8) !void {
+        const removed = oauth_storage.AuthStorage.removeStored(self.allocator, provider_id) catch |err| {
+            const msg = try std.fmt.allocPrint(self.allocator, "logout failed: {s}", .{@errorName(err)});
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.@"error", msg);
+            return;
+        };
+        const outcome = try std.fmt.allocPrint(self.allocator, "{s} {s}", .{ if (removed) "logged out of" else "no saved credential for", provider_id });
+        defer self.allocator.free(outcome);
+        try self.state.appendTranscript(.system, outcome);
+        if (provider_catalog.provider(provider_id)) |row| {
+            for (row.credential_env) |name| {
+                const value = compat.getEnvVarOwned(self.allocator, name) catch continue;
+                defer self.allocator.free(value);
+                if (value.len == 0) continue;
+                const msg = try std.fmt.allocPrint(self.allocator, "{s} is still set, so {s} stays signed in", .{ name, provider_id });
+                defer self.allocator.free(msg);
+                try self.state.appendTranscript(.system, msg);
+            }
+        }
+        if (std.mem.eql(u8, provider_id, "openai-codex")) {
+            try self.state.appendTranscript(.system, "oapx imports the Codex CLI's login while it has one; sign out there too to drop openai-codex");
+        }
+        if (!removed) return;
+        self.refreshLoginStatus();
+        try self.reportModelRefresh(self.refreshModels(), "logged out but refreshing models failed");
     }
 
     fn submitLoginInput(self: *App, text: []const u8) void {
@@ -2809,9 +2858,11 @@ pub const App = struct {
             .start_login_provider => try self.startLoginProviderName(result.login_provider),
             .compact => try self.startCompaction(command.arg orelse ""),
             .rename_session => try self.renameSession(command.arg orelse ""),
+            .refresh_models => try self.reportModelRefresh(self.refreshModels(), "refreshing models failed"),
+            .logout_provider => try self.logoutProvider(command.arg orelse ""),
             .none => {},
         }
-        if (command.kind == .model and command.arg != null) self.persistCurrentModel();
+        if (command.kind == .model and command.arg != null and result.action != .refresh_models) self.persistCurrentModel();
         switch (command.kind) {
             .context, .model => self.applyContextWindow(),
             else => {},
@@ -4527,9 +4578,11 @@ test "App refreshes runtime models after login" {
     app.runtime = runtime;
 
     try std.testing.expectEqual(@as(usize, 2), runtime.availableModels().len);
-    try app.refreshModelsAfterLogin();
+    try std.testing.expect(try app.refreshModels());
     try std.testing.expectEqual(@as(usize, 1), runtime.availableModels().len);
     try std.testing.expectEqualStrings(defaultModel().id, runtime.currentModel().?.id);
+    try std.testing.expectEqualStrings(defaultModel().id, app.state.status.model);
+    try std.testing.expect(!try app.refreshModels());
 }
 
 const TempHome = struct {
@@ -4587,6 +4640,34 @@ test "App stores a custom provider key under its own id" {
         .api_key => |key| try std.testing.expectEqualStrings("gateway-secret", key),
         else => return error.UnexpectedAuthKind,
     }
+}
+
+test "App logout removes only that provider's saved credential" {
+    var env = try TempHome.init("home-logout");
+    defer env.deinit();
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    inline for (.{ "gateway", "other-gateway" }) |id| {
+        const creds = oauth_storage.Credentials{
+            .refresh = try std.testing.allocator.dupe(u8, ""),
+            .access = try std.testing.allocator.dupe(u8, id ++ "-secret"),
+            .expires = std.math.maxInt(i64),
+        };
+        defer creds.deinit(std.testing.allocator);
+        try app.saveLoginCredentials(id, creds, true);
+    }
+
+    try app.submit("/logout gateway");
+    try std.testing.expectEqualStrings("logged out of gateway", app.state.transcript.items[0].text.items);
+    try app.submit("/logout gateway");
+    const last = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expectEqualStrings("no saved credential for gateway", last.text.items);
+
+    var storage = try oauth_storage.AuthStorage.loadFromFile(std.testing.allocator);
+    defer storage.deinit();
+    try std.testing.expect(!storage.providers.contains("gateway"));
+    try std.testing.expect(storage.providers.contains("other-gateway"));
 }
 
 test "App only offers an api-key login for a declared custom provider" {

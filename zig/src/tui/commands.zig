@@ -8,6 +8,7 @@ pub const CommandKind = enum {
     help,
     model,
     login,
+    logout,
     status,
     @"resume",
     rename,
@@ -41,6 +42,8 @@ pub const CommandAction = enum {
     open_session_picker,
     rename_session,
     open_model_picker,
+    refresh_models,
+    logout_provider,
     open_login_picker,
     open_permission_picker,
     open_settings_picker,
@@ -80,8 +83,9 @@ pub const CommandInfo = struct {
 
 pub const commands = [_]CommandInfo{
     .{ .name = "help", .kind = .help, .usage = "/help", .description = "List available commands", .handler = handleHelp },
-    .{ .name = "model", .kind = .model, .usage = "/model [name]", .description = "Open model picker or switch active model", .handler = handleModel },
+    .{ .name = "model", .kind = .model, .usage = "/model [name|refresh]", .description = "Open model picker, switch active model, or refetch every provider's models", .handler = handleModel },
     .{ .name = "login", .kind = .login, .usage = "/login [provider]", .description = "Sign in to a provider", .handler = handleLogin },
+    .{ .name = "logout", .kind = .logout, .usage = "/logout <provider>", .description = "Remove a provider's saved credential", .handler = handleLogout },
     .{ .name = "status", .kind = .status, .usage = "/status", .description = "Show session status", .handler = handleStatus },
     .{ .name = "sessions", .kind = .@"resume", .usage = "/sessions", .description = "Open saved sessions", .handler = handleSessions },
     .{ .name = "resume", .kind = .@"resume", .usage = "/resume", .description = "Open saved sessions", .handler = handleSessions },
@@ -217,6 +221,7 @@ fn handleHelp(ctx: CommandContext, command: Command) !CommandResult {
 
 fn handleModel(ctx: CommandContext, command: Command) !CommandResult {
     if (command.arg) |model_id| {
+        if (std.mem.eql(u8, model_id, "refresh")) return .{ .action = .refresh_models };
         if (ctx.session) |session| {
             try session.switchModel(model_id);
         } else if (ctx.runtime) |runtime| {
@@ -239,6 +244,12 @@ fn handleLogin(ctx: CommandContext, command: Command) !CommandResult {
         };
     }
     return .{ .action = .open_login_picker };
+}
+
+fn handleLogout(ctx: CommandContext, command: Command) !CommandResult {
+    if (command.arg == null) return .{ .output = try ctx.allocator.dupe(u8, "usage: /logout <provider>"), .is_error = true };
+    if (ctx.state.status.streaming) return .{ .output = try ctx.allocator.dupe(u8, "A turn is running; log out once it finishes."), .is_error = true };
+    return .{ .action = .logout_provider };
 }
 
 fn handleStatus(ctx: CommandContext, command: Command) !CommandResult {
@@ -812,6 +823,33 @@ test "login command can target a provider directly" {
 
     try std.testing.expectEqual(CommandAction.start_login_provider, result.action);
     try std.testing.expectEqualStrings("openai-codex", result.login_provider);
+}
+
+test "model refresh and logout hand their work to the app" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+
+    var refresh = try dispatch(.{ .allocator = std.testing.allocator, .state = &state }, try parse("/model refresh"));
+    defer refresh.deinit(std.testing.allocator);
+    try std.testing.expectEqual(CommandAction.refresh_models, refresh.action);
+
+    const logout = try parse("/logout opencode-go");
+    try std.testing.expectEqual(CommandKind.logout, logout.kind);
+    try std.testing.expectEqualStrings("opencode-go", logout.arg.?);
+    var out = try dispatch(.{ .allocator = std.testing.allocator, .state = &state }, logout);
+    defer out.deinit(std.testing.allocator);
+    try std.testing.expectEqual(CommandAction.logout_provider, out.action);
+
+    var bare = try dispatch(.{ .allocator = std.testing.allocator, .state = &state }, try parse("/logout"));
+    defer bare.deinit(std.testing.allocator);
+    try std.testing.expectEqual(CommandAction.none, bare.action);
+    try std.testing.expectEqualStrings("usage: /logout <provider>", bare.output);
+
+    state.status.streaming = true;
+    var busy = try dispatch(.{ .allocator = std.testing.allocator, .state = &state }, logout);
+    defer busy.deinit(std.testing.allocator);
+    try std.testing.expectEqual(CommandAction.none, busy.action);
+    try std.testing.expect(busy.is_error);
 }
 
 test "resume opens the session picker when sessions exist" {
