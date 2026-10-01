@@ -612,6 +612,46 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   raising `drain_total_cap_bytes` to 1 GiB fails it with `expected 1048576, found 1073741824`. The real-socket test separately pins that a cap
   is *observable from outside the process*, asserting a lower bound on transferred bytes plus a
   complete 403 — never an upper one
+- **the 64 KiB round cap, and the round's own deadline — pinned as _configuration_ at this head, which is
+  a weaker claim than the bullets around it and is not a removal proof.** Of the four
+  bounds the row above names, the 64 KiB round cap was **the one no bullet covered**: that row says the
+  port "reads in 64 KiB rounds". It does discuss the round deadline at `:601` — that the deadline
+  **reuses the `now` that round already read** — but only as a property of the clock; it never gives a
+  round a **time bound of its own**, where it names the 1 MiB and the 2500 ms outright. So the narrow
+  claim is that `drain_cap_bytes` and `drain_cycle_ms` are two bounds the row leaves **unnamed**, and
+  until now each was named only in the source: `drain_cap_bytes` at its definition (`:205`) and its use
+  (`:219`), `drain_cycle_ms` where `drain` builds the round deadline from it at `:220`
+  (`const deadline = now + ...drain_cycle_ms...`). Neither was asserted anywhere, so the ledger stated
+  a bound no test would notice losing. `a drain stops at its byte cap and reports what it consumed` now
+  carries `wanted_round = 64 * 1024` and `expectEqual(@as(i32, 50), drain_cycle_ms)` beside the
+  1 MiB assertion it already had, in the same carrying-its-own-literal shape, so the constant and the
+  expectation cannot move together. `a drain gives up rather than waiting on a peer that sends nothing
+  more` no longer accepts any elapsed time under 2000 ms for a silent peer, which was 40× the 50 ms
+  round it is supposed to honour and let a 1500 ms cycle pass; it now requires the drain back within
+  **10 round cycles** of the constant, so the bound tracks the constant instead of drifting from it —
+  a response-time bound **derived** from the constant, not evidence that the per-round deadline is read.
+  **What these equalities do not prove, stated plainly because it is the limit of the evidence:** they
+  pin the two constants' **values**, not that `drain` *uses* them. Bypassing the use while keeping the
+  constants — taking `owed` from `drain_total_cap_bytes` instead of `drain_cap_bytes` at `:219` — **compiles
+  and leaves every assertion here green**, and no such control is presented, because the per-round cap is
+  not independently observable through `drain`'s surface: the 1 MiB total and the 2500 ms total both
+  dominate it, so a wider round changes no observable byte count. The round deadline is **not** in that
+  position, and the row should not have put it there. A `:220` substitute that keeps both constants but
+  builds the deadline from something larger — `drain_total_ms` is the case that matters — blocks a silent
+  peer for ~2500 ms and so **fails** the 10-cycle bound, and that is **run, not inspected**: building the
+  deadline from `drain_total_ms` instead compiles clean and fails `EXIT=1` in `a drain gives up rather
+  than waiting on a peer that sends nothing more`, with both constants still holding 64 KiB and 50, so
+  the `expectEqual` assertions pass and only the derived bound objects. What the derived bound pins is
+  therefore a **ceiling**: a round deadline substituted at **500 ms or more** is caught, and one
+  substituted **below 500 ms** — a hardcoded shorter wait, say — is not. So the bound does real work on
+  the deadline, and none at all on the round cap. So this bullet says only that the ledger's
+  64 KiB and one-cycle figures are now **asserted rather than merely stated**, and it does not close the
+  per-round cap or the per-round deadline the way the 1 MiB bullet and the guard-presence row do theirs.
+  **Both measured, not assumed:** against `main` as it stood, raising `drain_cap_bytes` to 1 MiB left
+  the suite `EXIT=0` and raising `drain_cycle_ms` to 1500 left it `EXIT=0` — both compile, and neither
+  was caught. With these assertions the same two mutations fail, with `expected 65536, found 1048576`
+  and `expected 50, found 1500`. The round cap is a **shape** bound rather than a total, so it is
+  asserted as the constant it is; the total remains pinned separately by the 1 MiB bullet above
 - **the 2500 ms elapsed budget, and that it is elapsed rather than uptime** — `a drain reads on a
   long-lived process, because its budget is elapsed not uptime` seeds the clock, waits
   `drain_total_ms + 200` under a bound, asserts the clock is past the budget, and drains again;
@@ -647,14 +687,14 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   9.2–10.8 MB unbounded — but a threshold on them would be a machine-dependent constant rather than a
   bound, and the same build produced 1.70 MB and 3.13 MB on two runs of one case, so none is asserted.
   **What the existing unit tests do and do not cover, stated precisely so this row does not overstate
-  them:** `http.zig:1369` pins the **byte cap** — it asserts `drain_total_cap_bytes` against its own
-  literal and drains past it — while `http.zig:1412` pins only that the budget is **elapsed rather
+  them:** `http.zig:1371` pins the **byte cap** — it asserts `drain_total_cap_bytes` against its own
+  literal and drains past it — while `http.zig:1417` pins only that the budget is **elapsed rather
   than uptime**, exactly as the row above records, and that row's finding stands unchanged:
   **neutralising the time guard leaves it green, so the time bound's presence was a gap until the
   already-spent-budget proof below closed it.** What
   is **not** pinned anywhere is that the 413 path *reaches* `drain` at all, and no client can observe
   that without the threshold just declined. An earlier revision of this work claimed the mutation
-  failed when both bounds were removed, and a second claimed the budget was pinned at `:1412`. The
+  failed when both bounds were removed, and a second claimed the budget was pinned at `:1417`. The
   first does not hold and the second contradicts the row above. Both are withdrawn.
 - **the `readBody` failure path answers completely, and the daemon gives up on a peer that stops** —
   `makai.zig:1591` is the third and last `drain` call site, and the only one none of the rows above
@@ -667,7 +707,8 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   `code: request_read`, `protocol: open-agent-protocol`, `version: 0.1`,
   `profile: open-agent-protocol.agent-control-core`, and the synthetic correlation `oap-error-1`
   replying to `oap-request-1` that `refusalEnvelope` builds at `http.zig:292-298` and the existing
-  unit test at `:1561` already pins for all four refusals — delivered while the client had sent
+  unit test `a refusal is an error.response naming its code, correlated to a request that never
+  arrived` at `:1617` already pins for all four refusals — delivered while the client had sent
   **4096 of the 8 MiB it declared**. The answer arriving at all is the "gave up" claim: a
   daemon waiting for the declared body would have said nothing and the read would have timed out.
   **Two negative controls fail it:** `readBody` treating a short body as complete answers `404`, and
@@ -677,14 +718,14 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   the drain reaches this client. So the **`content_length -| filled` arithmetic and this site's
   reachability are unproved** by this test, by the rows above, and by anything else on main, and no
   threshold is inferred from transferred bytes to stand in for them. **Of the two drain bounds, the
-  byte cap is pinned** — `:1369` asserts `drain_total_cap_bytes` against its own literal and drains
-  past it — and the **elapsed-versus-uptime comparison is pinned** at `:1412`, but **the time guard's
+  byte cap is pinned** — `:1371` asserts `drain_total_cap_bytes` against its own literal and drains
+  past it — and the **elapsed-versus-uptime comparison is pinned** at `:1417`, but **the time guard's
   presence was NOT pinned by this row**, exactly as the row above then stated; it is now pinned by the
   already-spent-budget proof, which is about the guard itself and not about any client's drain amount.
   Two things a reader might assume are covered here are not: this site's drain amount, and the
   existence of the time bound.
 - **the total-time guard's presence, through the injected callback that already exists** — the row at
-  `:615-621` pins that the 2500 ms budget is **elapsed rather than uptime** and is explicit that it does
+  `:655-663` pins that the 2500 ms budget is **elapsed rather than uptime** and is explicit that it does
   **not** pin the guard's presence, because that test's bytes are already buffered when `drain` starts.
   `a drain whose elapsed budget is already spent consumes nothing, though the bytes are buffered and
   reachable` pins the presence, through the **existing public `KeepGoing`** at `:104-110` and the injection
