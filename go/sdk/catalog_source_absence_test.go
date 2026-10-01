@@ -3,6 +3,7 @@ package sdk
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -68,18 +69,11 @@ func TestEachAuthSelectorActuallyChangesTheRow(t *testing.T) {
 	}
 }
 
-func TestEachMalformedAuthSelectorReplacesTheRowDefault(t *testing.T) {
+func TestEachMalformedAuthSelectorIsRefused(t *testing.T) {
 	for _, shape := range []string{"null", "number", "invented"} {
 		client := newTestClient(t, scenarioOAP, "OAPX_TEST_CATALOG_AUTH="+shape)
-		listed, err := client.Models.List(testContext(t), ListModelsRequest{IncludeLoginRequired: boolPtr(true)})
-		if err != nil {
-			t.Fatalf("auth selector %q must list: %v", shape, err)
-		}
-		if len(listed.Models) != 1 {
-			t.Fatalf("auth selector %q must publish one row, got %d", shape, len(listed.Models))
-		}
-		if got := listed.Models[0].AuthStatus; got == AuthAuthenticated {
-			t.Errorf("auth selector %q left the row at %q: the selector did not take effect", shape, got)
+		if _, err := client.Models.List(testContext(t), ListModelsRequest{IncludeLoginRequired: boolPtr(true)}); err == nil {
+			t.Fatalf("auth selector %q must be refused", shape)
 		}
 	}
 }
@@ -87,6 +81,8 @@ func TestEachMalformedAuthSelectorReplacesTheRowDefault(t *testing.T) {
 func TestAnUnsupportedAuthSelectorFailsTheListing(t *testing.T) {
 	for _, selector := range []string{"stated:expired", "no-such-selector", "expired "} {
 		func() {
+			t.Setenv(EnvBinaryPath, "")
+			t.Setenv(EnvBinaryURL, "")
 			opts := &Options{
 				BinaryPath: osArgsZero(),
 				Args:       []string{},
@@ -112,20 +108,16 @@ func TestAnUnsupportedAuthSelectorFailsTheListing(t *testing.T) {
 	}
 }
 
-func TestAMalformedAuthStatusIsCarriedRatherThanJudgedByThisReader(t *testing.T) {
-	for shape, want := range map[string]AuthStatus{
-		"null":     "",
-		"number":   "",
-		"invented": "retired",
-	} {
+func TestAMalformedPresentAuthStatusIsRefusedBeforeAnyFilter(t *testing.T) {
+	for _, shape := range []string{"null", "number", "invented"} {
 		client := newTestClient(t, scenarioOAP, "OAPX_TEST_CATALOG_AUTH="+shape)
-		listed, err := client.Models.List(testContext(t), ListModelsRequest{IncludeLoginRequired: boolPtr(true)})
-		if err != nil {
-			t.Fatalf("auth selector %q must list: %v", shape, err)
+		_, err := client.Models.List(testContext(t), ListModelsRequest{IncludeLoginRequired: boolPtr(true)})
+		if err == nil {
+			t.Fatalf("auth selector %q must be refused, not carried", shape)
 		}
-		if got := listed.Models[0].AuthStatus; got != want {
-			t.Errorf("auth selector %q read as %q, want %q: jsonutil.str drops a non-string to empty",
-				shape, got, want)
+		var protoErr *ProtocolError
+		if !errors.As(err, &protoErr) || protoErr.Code != CodeMalformedResponse {
+			t.Errorf("auth selector %q refused with %v, want malformed_response", shape, err)
 		}
 	}
 }
@@ -140,8 +132,8 @@ func TestAnOmittedAuthStatusReachesTheRowWithNoValueAtAll(t *testing.T) {
 	if len(listed.Models) != 1 {
 		t.Fatalf("an omitted auth_status must publish one row, got %d", len(listed.Models))
 	}
-	if got := listed.Models[0].AuthStatus; got != "" {
-		t.Errorf("an omitted auth_status read as %q, want the empty value a missing key produces", got)
+	if got := listed.Models[0].AuthStatus; got != AuthUnknown {
+		t.Errorf("an omitted auth_status read as %q, want the unknown value", got)
 	}
 }
 

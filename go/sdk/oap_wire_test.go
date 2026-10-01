@@ -341,7 +341,7 @@ func selectedCatalogModel() (map[string]any, bool) {
 	model := map[string]any{
 		"model_ref": "fixture/other:selected@" + lifecycleShape + sourceShape + authShape,
 		"model_id":  identity, "provider_id": "fixture",
-		"wire": "other", "auth_status": "authenticated",
+		"wire": "other",
 		"capabilities": []string{"chat", "streaming"},
 	}
 	if authShape != "" {

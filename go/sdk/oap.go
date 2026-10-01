@@ -338,12 +338,16 @@ func (s *ModelsService) oapList(ctx context.Context, req ListModelsRequest) (*Li
 		if req.IncludeDeprecated != nil && !*req.IncludeDeprecated && lifecycle != nil && *lifecycle == LifecycleDeprecated {
 			continue
 		}
-		if req.IncludeLoginRequired != nil && !*req.IncludeLoginRequired && model.str("auth_status") == "login_required" {
+		auth, err := oapModelAuth(model)
+		if err != nil {
+			return nil, err
+		}
+		if req.IncludeLoginRequired != nil && !*req.IncludeLoginRequired && auth == AuthLoginRequired {
 			continue
 		}
 		descriptor := ModelDescriptor{ModelRef: model.str("model_ref"), ModelID: model.str("model_id"),
 			DisplayName: model.str("display_name"), ProviderID: model.str("provider_id"), API: model.str("wire"),
-			AuthStatus: AuthStatus(model.str("auth_status")), Lifecycle: lifecycle,
+			AuthStatus: auth, Lifecycle: lifecycle,
 			Source: source, ContextWindow: model.intOr(0, "context_window"),
 			MaxOutputTokens: model.intOr(0, "max_output_tokens"), ReasoningDefault: ReasoningLevel(model.str("reasoning_default"))}
 		if descriptor.DisplayName == "" {
@@ -875,6 +879,22 @@ func oapModelSource(model jsonObject) (*ModelSource, error) {
 		return nil, &ProtocolError{Code: CodeMalformedResponse, Message: "model source has unknown value: " + name}
 	}
 	return &mapped, nil
+}
+
+func oapModelAuth(model jsonObject) (AuthStatus, error) {
+	held, present := model["auth_status"]
+	if !present {
+		return AuthUnknown, nil
+	}
+	text, ok := held.(string)
+	if !ok {
+		return "", &ProtocolError{Code: CodeMalformedResponse, Message: "auth_status is not a string"}
+	}
+	switch AuthStatus(text) {
+	case AuthAuthenticated, AuthLoginRequired, AuthExpired, AuthRefreshing, AuthLoginInProgress, AuthFailed, AuthUnknown:
+		return AuthStatus(text), nil
+	}
+	return "", &ProtocolError{Code: CodeMalformedResponse, Message: "auth_status is outside the enum"}
 }
 
 func (s *AuthService) oapListProviders(ctx context.Context) ([]ProviderAuthInfo, error) {
