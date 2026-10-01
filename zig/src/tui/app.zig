@@ -1360,6 +1360,7 @@ pub const App = struct {
         defer loaded.deinit(self.allocator);
         const new_session_id = try self.allocator.dupe(u8, loaded.metadata.session_id);
         self.discardPendingEvents();
+        self.state.clearHeldAfterAbort();
         self.pending_session_reset = false;
         self.quarantine_events = false;
         for (self.quarantine_buffer.items) |*buf_ev| {
@@ -2590,8 +2591,12 @@ pub const App = struct {
         defer self.allocator.free(text);
         const echo = try std.mem.join(self.allocator, "\n\n", held[@min(self.state.held_after_abort_echoed, held.len)..]);
         defer self.allocator.free(echo);
+        const sent = self.sendUserTurnEchoing(text, echo) catch false;
         self.state.clearHeldAfterAbort();
-        try self.sendUserTurnEchoing(text, echo);
+        if (sent) return;
+        const restored = self.state.composer.buffer.items.len == 0;
+        if (restored) try self.state.replaceComposerBuffer(text);
+        try self.state.appendTranscript(.@"error", if (restored) "The queued messages could not be sent; they are back in the composer." else "The queued messages could not be sent, and the composer was not empty, so they were not restored.");
     }
 
     fn applyRuntimeEvent(self: *App, event: tui_runtime.TuiEvent) !void {
@@ -2685,10 +2690,10 @@ pub const App = struct {
     }
 
     fn sendUserTurn(self: *App, trimmed: []const u8) !void {
-        return self.sendUserTurnEchoing(trimmed, trimmed);
+        _ = try self.sendUserTurnEchoing(trimmed, trimmed);
     }
 
-    fn sendUserTurnEchoing(self: *App, trimmed: []const u8, echo: []const u8) !void {
+    fn sendUserTurnEchoing(self: *App, trimmed: []const u8, echo: []const u8) !bool {
         self.applyPendingSessionResetSync() catch |err| {
             if (err == error.PendingSessionReset) {
                 try self.state.appendTranscript(.@"error", "Session reset pending; wait for the current run to finish.");
@@ -2705,7 +2710,7 @@ pub const App = struct {
                 try self.enqueueWorktreeMessage(trimmed);
                 try self.state.appendTranscript(.system, "Worktree setup is still running; your message is queued and will be sent when ready.");
             }
-            return;
+            return true;
         }
         if (self.mode_settings.auto_worktree and self.working_dir.len > 0 and self.worktree_job == null and self.worktree_management_job == null and !self.worktree_attempted and self.session_turns == 0) {
             const home = compat.getEnvVarOwned(self.allocator, "HOME") catch null;
@@ -2725,7 +2730,7 @@ pub const App = struct {
                     self.worktree_job = job;
                     self.held_user_message = held;
                     self.worktree_attempted = true;
-                    return;
+                    return true;
                 }
             }
         }
@@ -2739,12 +2744,13 @@ pub const App = struct {
                 if (err == error.QueueFull) return err;
                 try self.state.status.setError(self.allocator, @errorName(err));
                 try self.state.appendTranscript(.@"error", @errorName(err));
-                return;
+                return false;
             };
         }
         self.session_turns += 1;
         if (echo.len > 0) try self.state.appendUserMessage(echo);
         self.refreshQueuedCounts();
+        return true;
     }
 
     fn autoCompactThreshold(self: *const App) ?u64 {
@@ -5612,6 +5618,25 @@ test "esc during a run sends the queued messages as a new run once the aborted o
     try std.testing.expectEqual(@as(usize, 1), echoes);
 }
 
+test "held messages that cannot be sent go back to the composer instead of being lost" {
+    var mock = MockAppSession{ .submit_error = error.NoModelConfigured };
+    defer mock.deinit();
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.session = mock.session();
+    app.state.status.streaming = true;
+    try app.state.appendQueuedFollowUp("then open a PR");
+
+    try app.submit("/abort");
+    try mock.eventStream().push(.{ .agent_end = .{ .reason = .cancelled } });
+    try app.drainEvents();
+
+    try std.testing.expectEqual(@as(usize, 0), app.state.held_after_abort.items.len);
+    try std.testing.expectEqualStrings("then open a PR", app.state.composer.text());
+    const last = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expectEqualStrings("The queued messages could not be sent; they are back in the composer.", last.text.items);
+}
+
 test "autocompact holds a turn until the compaction it started has finished" {
     var mock = MockAppSession{ .history_messages = &auto_compact_history };
     defer mock.deinit();
@@ -6797,6 +6822,7 @@ const MockAppSession = struct {
     compact_focus: []u8 = &.{},
     compact_transcripts: std.ArrayList([]u8) = .empty,
     submitted: std.ArrayList([]u8) = .empty,
+    submit_error: ?anyerror = null,
 
     fn session(self: *MockAppSession) tui_runtime.TuiSession {
         return .{
@@ -6866,6 +6892,7 @@ const MockAppSession = struct {
 
     fn submitTurn(ctx: ?*anyopaque, text: []const u8) anyerror!void {
         const self = ptr(ctx);
+        if (self.submit_error) |err| return err;
         self.submit_count += 1;
         const owned = try std.testing.allocator.dupe(u8, text);
         errdefer std.testing.allocator.free(owned);
@@ -7769,6 +7796,39 @@ test "resume clears a compaction the saved session never finished" {
     try std.testing.expectEqualStrings("interrupted", app.session_id);
     try std.testing.expect(!app.state.status.compacting);
     try std.testing.expect(!app.state.status.streaming);
+}
+
+test "resuming another session drops messages held from an abort in the one left" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+
+    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    errdefer std.testing.allocator.destroy(runtime);
+    runtime.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = unusedStream } });
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.runtime = runtime;
+    app.store = try session_store.Store.init(std.testing.allocator, base);
+
+    var meta = session_store.SessionMetadata{
+        .session_id = try std.testing.allocator.dupe(u8, "elsewhere"),
+        .model = try std.testing.allocator.dupe(u8, ""),
+        .provider = try std.testing.allocator.dupe(u8, ""),
+        .last_active = 1,
+    };
+    defer meta.deinit(std.testing.allocator);
+    try app.store.?.save(meta, .{ .agent_start = .{} });
+
+    try app.state.appendQueuedFollowUp("meant for the session being left");
+    try app.state.holdQueuedAfterAbort();
+    try std.testing.expectEqual(@as(usize, 1), app.state.held_after_abort.items.len);
+
+    try app.loadSessions();
+    try app.resumeSelectedSession();
+    try std.testing.expectEqualStrings("elsewhere", app.session_id);
+    try std.testing.expectEqual(@as(usize, 0), app.state.held_after_abort.items.len);
 }
 
 test "resume restores the session's thinking level, and a change after it is saved to that session" {
