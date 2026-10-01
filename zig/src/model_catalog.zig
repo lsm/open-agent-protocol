@@ -705,7 +705,7 @@ fn appendCatalogTargetModels(
     if (discovered) |models| {
         if (models.len > 0) {
             if (provider_catalog.modelsDevKey(target.id)) |key| {
-                if (lacksLimits(models)) {
+                if (lacksFigures(models)) {
                     if (models_dev.provider(allocator, key)) |listed| {
                         for (models) |*model| fillFromModelsDev(target.id, model, listed);
                     }
@@ -1190,9 +1190,10 @@ const ModelsDev = struct {
     }
 };
 
-fn lacksLimits(models: []const DiscoveredModel) bool {
+fn lacksFigures(models: []const DiscoveredModel) bool {
     for (models) |model| {
         if (model.context_window == null or model.max_tokens == null) return true;
+        if (model.reasoning == null or model.image_input == null) return true;
     }
     return false;
 }
@@ -1324,6 +1325,8 @@ fn parseCatalogModels(allocator: std.mem.Allocator, data: []const u8) ![]Discove
         if (model.image_input == null) {
             if (listNamesImage(&item.object, "modalities") or listNamesImage(&item.object, "input_modalities")) {
                 model.image_input = true;
+            } else if (holdsList(&item.object, "modalities") or holdsList(&item.object, "input_modalities")) {
+                model.image_input = false;
             }
         }
         try models.append(allocator, model);
@@ -1335,6 +1338,11 @@ fn positiveU32(value: ?u32) ?u32 {
     const found = value orelse return null;
     if (found == 0) return null;
     return found;
+}
+
+fn holdsList(obj: *const std.json.ObjectMap, key: []const u8) bool {
+    const value = obj.get(key) orelse return false;
+    return value == .array;
 }
 
 fn listNamesImage(obj: *const std.json.ObjectMap, key: []const u8) bool {
@@ -4811,4 +4819,29 @@ test "the models.dev cache subset frees what it built on every allocation failur
     var parsed = try parseModelsDev(std.testing.allocator, models_dev_fixture);
     defer parsed.deinit();
     try std.testing.checkAllAllocationFailures(std.testing.allocator, modelsDevSubsetProbe, .{parsed.value});
+}
+
+test "a model missing only its reasoning or image input still sends the row to models.dev" {
+    const complete = [_]DiscoveredModel{.{ .id = "a", .context_window = 1, .max_tokens = 1, .reasoning = false, .image_input = false }};
+    try std.testing.expect(!lacksFigures(&complete));
+    const no_reasoning = [_]DiscoveredModel{.{ .id = "a", .context_window = 1, .max_tokens = 1, .image_input = false }};
+    try std.testing.expect(lacksFigures(&no_reasoning));
+    const no_image = [_]DiscoveredModel{.{ .id = "a", .context_window = 1, .max_tokens = 1, .reasoning = false }};
+    try std.testing.expect(lacksFigures(&no_image));
+}
+
+test "a listing's text-only modality list is a text-only claim models.dev cannot override" {
+    const models = try parseCatalogModels(std.testing.allocator,
+        \\{"data":[{"id":"deepseek-v4-flash","input_modalities":["text"]},{"id":"bare"}]}
+    );
+    defer freeDiscoveredModels(std.testing.allocator, models);
+    try std.testing.expectEqual(@as(?bool, false), models[0].image_input);
+    try std.testing.expectEqual(@as(?bool, null), models[1].image_input);
+
+    var parsed = try parseModelsDev(std.testing.allocator, models_dev_fixture);
+    defer parsed.deinit();
+    const listed = &parsed.value.object.getPtr("opencode-go").?.object.getPtr("models").?.object;
+    fillFromModelsDev("opencode-go", &models[0], listed);
+    try std.testing.expectEqual(@as(?bool, false), models[0].image_input);
+    try std.testing.expectEqual(@as(?u32, 1_000_000), models[0].context_window);
 }
