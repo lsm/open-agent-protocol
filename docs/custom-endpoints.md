@@ -282,6 +282,45 @@ code, so every row that declares one is routed by it — `OLLAMA_BASE_URL`,
 row that declares no variable has no per-row override and can only be moved by
 `OAPX_BASE_URL`.
 
+A base the catalogue already records is **not** an override. A catalogue target
+is re-resolved onto an override wire only when the base in hand differs from the
+base the catalogue records for the selected wire and region, so a provider whose
+catalogueued base becomes resolvable keeps the wire it is configured for instead
+of being read as though an operator had redirected it. `deepseek` is the case
+this covers: with nothing set it resolves the `anthropic-messages` base
+`https://api.deepseek.com/anthropic`, and that catalogueued value is not an
+override.
+
+**The test for an override is value inequality, and the boundary is recorded
+rather than left implied.** An operator who sets a row's `base_url_env` to
+exactly the value the catalogue already records is indistinguishable here from an
+operator who sets nothing, so the configured wire is kept. That is a change, and
+it is observable: setting `DEEPSEEK_BASE_URL` to the catalogueued Anthropic base
+used to be read as an override and moved the daemon onto `openai-completions`, so
+naming a provider's own default changed which protocol it spoke. Keeping the
+configured wire is the point. The cost is that a provider which ever gains an
+override *wire* mapping will find an override equal to its catalogueued base does
+not select that mapping, and a base differing only in trailing whitespace or a
+trailing `/v1` is normalised before it is compared.
+
+Which wire an override selects is unchanged and remains a separate question: the
+mapping is still per provider, `deepseek` still maps an override to
+`openai-completions`, and a provider with no mapping keeps its own wire whatever
+base it is given. Only the question of *whether* an override is present changed.
+
+The precedence is pinned where callers reach it rather than through the resolver
+alone. `OAPX_BASE_URL` and a row's own `base_url_env` are set through the
+runtime's test environment seam and read back through `defaultBaseUrlForRef`, so
+each step is exercised on the public path: an empty override falls back to the
+catalogue, a row override wins over the catalogue, a global override wins over
+the row, and a versioned override is normalized. The resulting wire is then pinned
+through `catalogEndpointWithOverrides` in both directions — a base equal to the
+catalogueued one keeps `anthropic-messages`, and a differing one moves the target
+and hands back a target that owns what it built. Both directions are pinned
+because the defect is a false positive that only appears once the catalogueued
+base starts resolving, so a control that only exercises the resolver would have
+passed against the broken code.
+
 ## Capabilities
 
 Capability detection is otherwise a hostname guess, which cannot work for an

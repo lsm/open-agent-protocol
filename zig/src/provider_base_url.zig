@@ -44,6 +44,7 @@ const anthropic_messages_base_url = provider_catalog.baseUrlOrCompileError("anth
 const openai_responses_base_url = provider_catalog.baseUrlOrCompileError("openai", "openai-responses", null);
 const openai_completions_base_url = provider_catalog.baseUrlOrCompileError("openai", "openai-completions", null);
 const deepseek_completions_base_url = provider_catalog.baseUrlOrCompileError("deepseek", "openai-completions", null);
+const deepseek_anthropic_base_url = provider_catalog.baseUrlOrCompileError("deepseek", "anthropic-messages", null);
 const codex_responses_base_url = provider_catalog.baseUrlOrCompileError("openai-codex", "openai-codex-responses", null);
 const kimi_china_base_url = provider_catalog.baseUrlOrCompileError("kimi", "openai-completions", "china");
 const kimi_global_base_url = provider_catalog.baseUrlOrCompileError("kimi", "openai-completions", "global");
@@ -103,6 +104,8 @@ pub fn baseUrlWithOverrides(allocator: std.mem.Allocator, provider_id: []const u
         if (std.mem.eql(u8, api, "openai-responses")) openai_responses_base_url else openai_completions_base_url
     else if (std.mem.eql(u8, provider_id, "deepseek") and std.mem.eql(u8, api, "openai-completions"))
         deepseek_completions_base_url
+    else if (std.mem.eql(u8, provider_id, "deepseek") and std.mem.eql(u8, api, "anthropic-messages"))
+        deepseek_anthropic_base_url
     else if (std.mem.eql(u8, provider_id, "openai-codex") and std.mem.eql(u8, api, "openai-codex-responses"))
         codex_responses_base_url
     else if (std.mem.eql(u8, provider_id, "kimi") and std.mem.eql(u8, api, "openai-completions"))
@@ -601,6 +604,46 @@ test "baseUrlWithOverrides resolves production catalog pairs" {
     const codex_wrong_provider = try baseUrlWithOverrides(allocator, "openai", "openai-codex-responses", .{});
     defer allocator.free(codex_wrong_provider);
     try std.testing.expectEqualStrings("", codex_wrong_provider);
+}
+
+test "the deepseek anthropic pair resolves its catalogued base rather than no base at all" {
+    const allocator = std.testing.allocator;
+    const anthropic = try baseUrlWithOverrides(allocator, "deepseek", "anthropic-messages", .{});
+    defer allocator.free(anthropic);
+    try std.testing.expectEqualStrings(provider_catalog.baseUrl("deepseek", "anthropic-messages", null).?, anthropic);
+    const completions = try baseUrlWithOverrides(allocator, "deepseek", "openai-completions", .{});
+    defer allocator.free(completions);
+    try std.testing.expectEqualStrings(provider_catalog.baseUrl("deepseek", "openai-completions", null).?, completions);
+}
+
+test "the deepseek anthropic pair is reached through the public entry, defaulted, empty, overridden and normalized" {
+    const allocator = std.testing.allocator;
+    const row_env = provider_catalog.baseUrlEnv("deepseek")[0];
+    const global_env = provider_catalog.global_base_url_env;
+    const catalogued = provider_catalog.baseUrl("deepseek", "anthropic-messages", null).?;
+    defer compat.clearTestEnv();
+
+    try compat.setTestEnv(allocator, row_env, "");
+    try compat.setTestEnv(allocator, global_env, "");
+    const defaulted = try defaultBaseUrlForRef(allocator, "deepseek", "anthropic-messages");
+    defer allocator.free(defaulted);
+    try std.testing.expectEqualStrings(catalogued, defaulted);
+
+    try compat.setTestEnv(allocator, row_env, "https://proxy.invalid/deepseek");
+    const rowed = try defaultBaseUrlForRef(allocator, "deepseek", "anthropic-messages");
+    defer allocator.free(rowed);
+    try std.testing.expectEqualStrings("https://proxy.invalid/deepseek", rowed);
+
+    try compat.setTestEnv(allocator, global_env, "https://everywhere.invalid");
+    const global = try defaultBaseUrlForRef(allocator, "deepseek", "anthropic-messages");
+    defer allocator.free(global);
+    try std.testing.expectEqualStrings("https://everywhere.invalid", global);
+
+    try compat.setTestEnv(allocator, global_env, "");
+    try compat.setTestEnv(allocator, row_env, "https://proxy.invalid/v1");
+    const normalized = try defaultBaseUrlForRef(allocator, "deepseek", "anthropic-messages");
+    defer allocator.free(normalized);
+    try std.testing.expectEqualStrings("https://proxy.invalid", normalized);
 }
 
 test "oauthOriginAllowedWithSources binds vendor tokens to vendor origins" {
