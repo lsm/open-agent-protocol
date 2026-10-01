@@ -8213,6 +8213,18 @@ test "a cancelled run never schedules a continue" {
     try std.testing.expect(!harness.transcriptHas("Continuing in"));
 }
 
+test "a payment failure never schedules a continue" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("opencode-go request failed: HTTP 402 {\"error\":{\"message\":\"Insufficient balance\"}}", .@"error");
+    try std.testing.expect(!harness.app.auto_continue.pending());
+
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+    try std.testing.expect(!harness.transcriptHas("Continuing in"));
+}
+
 test "an auth failure never schedules a continue" {
     var harness = try auto_continue_harness.init();
     defer harness.deinit();
