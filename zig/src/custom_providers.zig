@@ -174,6 +174,161 @@ pub fn configPath(allocator: std.mem.Allocator) ![]u8 {
     return std.fs.path.join(allocator, &.{ home, ".oapx", config_file_name });
 }
 
+pub const AddSpec = struct {
+    id: []const u8,
+    base_url: []const u8,
+    api: ?[]const u8 = null,
+    env_key: ?[]const u8 = null,
+    auth_none: bool = false,
+};
+
+pub const AddError = error{
+    OutOfMemory,
+    InvalidProviderId,
+    ReservedProviderId,
+    DuplicateProviderId,
+    MissingBaseUrl,
+    InvalidBaseUrl,
+    UnsupportedApi,
+    InvalidAuthMode,
+    InvalidConfig,
+    ConflictingAuth,
+    WriteFailed,
+};
+
+pub const AddOutcome = struct {
+    id: []const u8,
+    api: []const u8,
+    base_url: []const u8,
+    auth: AuthKind,
+
+    pub const AuthKind = enum { keychain, environment, none };
+};
+
+fn addSpecAuthKind(spec: AddSpec) AddError!AddOutcome.AuthKind {
+    const has_env = spec.env_key != null and spec.env_key.?.len > 0;
+    if (has_env and spec.auth_none) return AddError.ConflictingAuth;
+    if (spec.auth_none) return .none;
+    if (has_env) return .environment;
+    if (spec.env_key) |name| {
+        if (name.len == 0) return AddError.InvalidAuthMode;
+    }
+    return .keychain;
+}
+
+fn addSpecEntry(allocator: std.mem.Allocator, spec: AddSpec) !std.json.Value {
+    var object: std.json.ObjectMap = .empty;
+    try object.put(allocator, "id", .{ .string = spec.id });
+    try object.put(allocator, "base_url", .{ .string = spec.base_url });
+    if (spec.api) |api| try object.put(allocator, "api", .{ .string = api });
+    switch (try addSpecAuthKind(spec)) {
+        .keychain => {},
+        .environment => try object.put(allocator, "auth", .{ .object = blk: {
+            var auth: std.json.ObjectMap = .empty;
+            try auth.put(allocator, "env", .{ .string = spec.env_key.? });
+            break :blk auth;
+        } }),
+        .none => try object.put(allocator, "auth", .{ .string = "none" }),
+    }
+    return .{ .object = object };
+}
+
+fn addSpecValidate(spec: AddSpec) AddError!void {
+    validateId(spec.id) catch |err| switch (err) {
+        ConfigError.MissingProviderId => return AddError.InvalidProviderId,
+        ConfigError.InvalidProviderId => return AddError.InvalidProviderId,
+        ConfigError.ReservedProviderId => return AddError.ReservedProviderId,
+        else => return AddError.InvalidProviderId,
+    };
+    if (spec.base_url.len == 0) return AddError.MissingBaseUrl;
+    const trimmed = provider_base_url.normalizeVersionedBaseUrl(spec.base_url);
+    if (trimmed.len == 0) return AddError.MissingBaseUrl;
+    _ = std.Uri.parse(trimmed) catch return AddError.InvalidBaseUrl;
+    if (spec.api) |api| {
+        if (!isSupportedApi(api)) return AddError.UnsupportedApi;
+    }
+    _ = try addSpecAuthKind(spec);
+}
+
+pub fn addProvider(allocator: std.mem.Allocator, path: []const u8, spec: AddSpec) AddError!AddOutcome {
+    try addSpecValidate(spec);
+    const auth = try addSpecAuthKind(spec);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    const existing = compat_mod.fs.readFileAlloc(scratch, compat_mod.fs.getCwd(), path, max_config_bytes) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.FileNotFound => null,
+        else => null,
+    };
+
+    var root: std.json.ObjectMap = .empty;
+    if (existing) |data| {
+        if (std.mem.trim(u8, data, " \t\r\n").len > 0) {
+            const parsed = std.json.parseFromSliceLeaky(std.json.Value, scratch, data, .{}) catch
+                return AddError.InvalidConfig;
+            if (parsed != .object) return AddError.InvalidConfig;
+            root = parsed.object;
+        }
+    }
+
+    var list: std.json.Array = if (root.get("providers")) |providers| blk: {
+        if (providers != .array) return AddError.InvalidConfig;
+        break :blk providers.array;
+    } else std.json.Array.init(scratch);
+
+    for (list.items) |entry| {
+        if (entry != .object) return AddError.InvalidConfig;
+        const id = objectString(&entry.object, "id") orelse continue;
+        if (std.mem.eql(u8, id, spec.id)) return AddError.DuplicateProviderId;
+    }
+
+    try list.append(try addSpecEntry(scratch, spec));
+    try root.put(scratch, "providers", .{ .array = list });
+
+    const serialized = std.json.Stringify.valueAlloc(scratch, std.json.Value{ .object = root }, .{ .whitespace = .indent_2 }) catch
+        return error.OutOfMemory;
+
+    var check = parseConfig(scratch, serialized) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return AddError.InvalidConfig,
+    };
+    check.deinit(scratch);
+
+    if (std.fs.path.dirname(path)) |parent| compat_mod.fs.createDir(compat_mod.fs.getCwd(), parent) catch {};
+
+    const tmp_path = std.fmt.allocPrint(scratch, "{s}.tmp.{d}.{x}", .{ path, compat_mod.time.nowMillis(), compat_mod.random.int(u64) }) catch
+        return error.OutOfMemory;
+    compat_mod.fs.atomicReplace(compat_mod.fs.getCwd(), path, tmp_path, serialized) catch
+        return AddError.WriteFailed;
+
+    const resolved_api = spec.api orelse supported_apis[0];
+    const owned_base = provider_base_url.normalizeVersionedBaseUrl(spec.base_url);
+
+    const owned_id = try allocator.dupe(u8, spec.id);
+    errdefer allocator.free(owned_id);
+    const owned_api = try allocator.dupe(u8, resolved_api);
+    errdefer allocator.free(owned_api);
+    const owned_url = try allocator.dupe(u8, owned_base);
+    errdefer allocator.free(owned_url);
+
+    return .{
+        .id = owned_id,
+        .api = owned_api,
+        .base_url = owned_url,
+        .auth = auth,
+    };
+}
+
+pub fn deinitAddOutcome(allocator: std.mem.Allocator, outcome: *AddOutcome) void {
+    allocator.free(outcome.id);
+    allocator.free(outcome.api);
+    allocator.free(outcome.base_url);
+    outcome.* = undefined;
+}
+
 pub fn load(allocator: std.mem.Allocator, max_bytes: usize) ![]CustomProvider {
     var config = try loadConfig(allocator, max_bytes);
     return config.takeProviders(allocator);
@@ -1053,4 +1208,166 @@ test "custom providers normalise a versioned base url to the origin the provider
         defer provider.deinit(testing.allocator);
         try testing.expectEqualStrings(case.want, provider.base_url);
     }
+}
+
+fn addTmpPath(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir) ![]u8 {
+    const base = try std.fs.path.join(allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "providers-add" });
+    defer allocator.free(base);
+    try compat_mod.fs.createDir(compat_mod.fs.getCwd(), base);
+    return std.fs.path.join(allocator, &.{ base, config_file_name });
+}
+
+fn addReadFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    return compat_mod.fs.readFileAlloc(allocator, compat_mod.fs.getCwd(), path, max_config_bytes);
+}
+
+test "adding a provider writes a file the loader reads back with the same origin" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try addTmpPath(testing.allocator, &tmp);
+    defer testing.allocator.free(path);
+
+    var outcome = try addProvider(testing.allocator, path, .{
+        .id = "groq",
+        .base_url = "https://api.groq.com/openai/v1",
+        .api = "openai-completions",
+        .env_key = "GROQ_API_KEY",
+    });
+    defer deinitAddOutcome(testing.allocator, &outcome);
+    try testing.expectEqualStrings("groq", outcome.id);
+    try testing.expectEqualStrings("https://api.groq.com/openai", outcome.base_url);
+    try testing.expectEqual(AddOutcome.AuthKind.environment, outcome.auth);
+
+    const data = try addReadFile(testing.allocator, path);
+    defer testing.allocator.free(data);
+    const providers = try parse(testing.allocator, data);
+    defer deinitProviders(testing.allocator, providers);
+    try testing.expectEqual(@as(usize, 1), providers.len);
+    try testing.expectEqualStrings("groq", providers[0].id);
+    try testing.expectEqualStrings("https://api.groq.com/openai", providers[0].base_url);
+    try testing.expectEqualStrings("GROQ_API_KEY", providers[0].env_key.?);
+}
+
+test "adding a provider keeps every entry and override already in the file" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try addTmpPath(testing.allocator, &tmp);
+    defer testing.allocator.free(path);
+
+    try compat_mod.fs.writeFile(compat_mod.fs.getCwd(), path,
+        \\{"providers":[{"id":"first","base_url":"https://first.test","auth":"none"}],"overrides":[{"id":"deepseek","base_url":"https://proxy.test"}]}
+    );
+
+    var outcome = try addProvider(testing.allocator, path, .{
+        .id = "second",
+        .base_url = "https://second.test",
+    });
+    defer deinitAddOutcome(testing.allocator, &outcome);
+
+    const data = try addReadFile(testing.allocator, path);
+    defer testing.allocator.free(data);
+    var config = try parseConfig(testing.allocator, data);
+    defer config.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 2), config.providers.len);
+    try testing.expectEqualStrings("first", config.providers[0].id);
+    try testing.expect(config.providers[0].auth_none);
+    try testing.expectEqualStrings("second", config.providers[1].id);
+    try testing.expectEqual(@as(usize, 1), config.overrides.len);
+    try testing.expectEqualStrings("deepseek", config.overrides[0].id);
+    try testing.expectEqualStrings("https://proxy.test", config.overrides[0].base_url.?);
+}
+
+test "adding a provider starts a file that does not exist yet" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try addTmpPath(testing.allocator, &tmp);
+    defer testing.allocator.free(path);
+
+    var outcome = try addProvider(testing.allocator, path, .{
+        .id = "local",
+        .base_url = "http://localhost:8000/v1",
+        .auth_none = true,
+    });
+    defer deinitAddOutcome(testing.allocator, &outcome);
+    try testing.expectEqual(AddOutcome.AuthKind.none, outcome.auth);
+
+    const data = try addReadFile(testing.allocator, path);
+    defer testing.allocator.free(data);
+    const providers = try parse(testing.allocator, data);
+    defer deinitProviders(testing.allocator, providers);
+    try testing.expectEqual(@as(usize, 1), providers.len);
+    try testing.expect(providers[0].auth_none);
+}
+
+test "adding a provider refuses a duplicate, a reserved id, a bad url and an unsupported api" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try addTmpPath(testing.allocator, &tmp);
+    defer testing.allocator.free(path);
+
+    try compat_mod.fs.writeFile(compat_mod.fs.getCwd(), path,
+        \\{"providers":[{"id":"taken","base_url":"https://taken.test"}]}
+    );
+
+    const cases = [_]struct { spec: AddSpec, want: AddError }{
+        .{ .spec = .{ .id = "taken", .base_url = "https://dupe.test" }, .want = AddError.DuplicateProviderId },
+        .{ .spec = .{ .id = "anthropic", .base_url = "https://reserved.test" }, .want = AddError.ReservedProviderId },
+        .{ .spec = .{ .id = "bad url", .base_url = "https://x.test" }, .want = AddError.InvalidProviderId },
+        .{ .spec = .{ .id = "empty", .base_url = "" }, .want = AddError.MissingBaseUrl },
+        .{ .spec = .{ .id = "junk", .base_url = "not a url" }, .want = AddError.InvalidBaseUrl },
+        .{ .spec = .{ .id = "api", .base_url = "https://x.test", .api = "gemini" }, .want = AddError.UnsupportedApi },
+        .{ .spec = .{ .id = "both", .base_url = "https://x.test", .env_key = "K", .auth_none = true }, .want = AddError.ConflictingAuth },
+        .{ .spec = .{ .id = "noenv", .base_url = "https://x.test", .env_key = "" }, .want = AddError.InvalidAuthMode },
+    };
+    for (cases) |case| {
+        try testing.expectError(case.want, addProvider(testing.allocator, path, case.spec));
+    }
+
+    const data = try addReadFile(testing.allocator, path);
+    defer testing.allocator.free(data);
+    const providers = try parse(testing.allocator, data);
+    defer deinitProviders(testing.allocator, providers);
+    try testing.expectEqual(@as(usize, 1), providers.len);
+    try testing.expectEqualStrings("taken", providers[0].id);
+}
+
+test "adding a provider refuses a file already holding a stray and leaves it untouched" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try addTmpPath(testing.allocator, &tmp);
+    defer testing.allocator.free(path);
+
+    try compat_mod.fs.writeFile(compat_mod.fs.getCwd(), path, "{\"providers\": \"nope\"}");
+    try testing.expectError(AddError.InvalidConfig, addProvider(testing.allocator, path, .{
+        .id = "new",
+        .base_url = "https://new.test",
+    }));
+
+    const data = try addReadFile(testing.allocator, path);
+    defer testing.allocator.free(data);
+    try testing.expectEqualStrings("{\"providers\": \"nope\"}", data);
+}
+
+test "adding a provider leaves no temporary file behind" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try addTmpPath(testing.allocator, &tmp);
+    defer testing.allocator.free(path);
+
+    var outcome = try addProvider(testing.allocator, path, .{
+        .id = "one",
+        .base_url = "https://one.test",
+    });
+    defer deinitAddOutcome(testing.allocator, &outcome);
+
+    const dir_path = std.fs.path.dirname(path).?;
+    var dir = try compat_mod.fs.getCwd().openDir(compat_mod.fs.defaultIo(), dir_path, .{ .iterate = true });
+    defer dir.close(compat_mod.fs.defaultIo());
+    var it = dir.iterate();
+    var names: usize = 0;
+    while (try it.next(compat_mod.fs.defaultIo())) |entry| {
+        names += 1;
+        try testing.expect(std.mem.indexOf(u8, entry.name, ".tmp.") == null);
+    }
+    try testing.expectEqual(@as(usize, 1), names);
 }

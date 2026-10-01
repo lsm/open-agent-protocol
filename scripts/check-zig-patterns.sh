@@ -154,6 +154,7 @@ zig/src/compat/random.zig|pub fn randomBytes(allocator: std.mem.Allocator, len: 
 zig/src/compat/random.zig|pub fn randomIntRangeLessThan(comptime T: type, upper_bound: T) T {
 zig/src/agent/agent.zig|        compat.random.fillRandomBytes(&bytes);
 zig/src/model_catalog.zig|    const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp.{d}.{x}", .{ path, compat.time.nowMillis(), compat.random.int(u64) });
+zig/src/custom_providers.zig|    const tmp_path = std.fmt.allocPrint(scratch, "{s}.tmp.{d}.{x}", .{ path, compat_mod.time.nowMillis(), compat_mod.random.int(u64) }) catch
 zig/src/providers/sse_parser.zig|    const random = prng.random();
 zig/src/providers/sse_parser.zig|    var prng = std.Random.DefaultPrng.init(seed);
 zig/src/transports/transport_retry.zig|        return prng.random().intRangeAtMost(u64, self.base_delay_ms, capped);
