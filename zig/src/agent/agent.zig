@@ -266,6 +266,13 @@ pub const Agent = struct {
         self._state.model = model;
     }
 
+    fn ensureSessionId(self: *Agent) !void {
+        if (self._session_id != null) return;
+        var bytes: [8]u8 = undefined;
+        compat.random.fillRandomBytes(&bytes);
+        self._session_id = try std.fmt.allocPrint(self._allocator, "oapx-{s}", .{&std.fmt.bytesToHex(bytes, .lower)});
+    }
+
     pub fn setSessionId(self: *Agent, session_id: ?[]const u8) !void {
         const next: ?[]const u8 = if (session_id) |id| try self._allocator.dupe(u8, id) else null;
         if (self._session_id) |previous| self._allocator.free(previous);
@@ -593,6 +600,7 @@ pub const Agent = struct {
             messages = converted.?;
         }
 
+        try self.ensureSessionId();
         const stream = try self._protocol.stream(model, .{
             .system_prompt = ai_types.OwnedSlice(u8).initBorrowed(self._state.system_prompt),
             .messages = messages,
@@ -1198,6 +1206,7 @@ pub const Agent = struct {
             }
         }
 
+        try self.ensureSessionId();
         const config = agent_loop.AgentLoopConfig{
             .model = model,
             .protocol = self._protocol,
@@ -1636,6 +1645,25 @@ test "Agent async completion signals waitForIdle" {
 
     try std.testing.expect(agent.isIdle());
     try std.testing.expect(agent._thread == null);
+}
+
+test "Agent without a session id makes one and keeps it across runs" {
+    var capture = CaptureOptionsCtx{};
+    var agent = Agent.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = captureOptionsStreamFn, .ctx = &capture } });
+    defer agent.deinit();
+    agent.setModel(test_model);
+
+    const first_text = try std.testing.allocator.dupe(u8, "hello");
+    try agent.prompt(@as([]const ai_types.Message, &.{.{ .user = .{ .content = .{ .text = first_text }, .timestamp = 0 } }}));
+    var first: [32]u8 = undefined;
+    const first_len = capture.session_id_len;
+    @memcpy(first[0..first_len], capture.session_id[0..first_len]);
+    try std.testing.expect(std.mem.startsWith(u8, first[0..first_len], "oapx-"));
+
+    try agent.replaceMessages(&.{});
+    const second_text = try std.testing.allocator.dupe(u8, "again");
+    try agent.prompt(@as([]const ai_types.Message, &.{.{ .user = .{ .content = .{ .text = second_text }, .timestamp = 0 } }}));
+    try std.testing.expectEqualStrings(first[0..first_len], capture.session_id[0..capture.session_id_len]);
 }
 
 test "Agent sends the session id it was given, and a later one replaces it" {
