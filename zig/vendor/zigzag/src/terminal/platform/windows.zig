@@ -303,9 +303,31 @@ pub fn flush(handle: windows.HANDLE) void {
     _ = handle;
 }
 
+var resize_initialized: bool = false;
+var cached_cols: windows.SHORT = 0;
+var cached_rows: windows.SHORT = 0;
+
 pub fn setupSignals() !void {
 }
 
-pub fn checkResize() bool {
+pub fn checkResize(handle: windows.HANDLE) bool {
+    var info: CONSOLE_SCREEN_BUFFER_INFO = undefined;
+    if (!GetConsoleScreenBufferInfo(handle, &info).toBool()) return false;
+
+    const cols = info.srWindow.Right - info.srWindow.Left + 1;
+    const rows = info.srWindow.Bottom - info.srWindow.Top + 1;
+
+    if (!resize_initialized) {
+        resize_initialized = true;
+        cached_cols = cols;
+        cached_rows = rows;
+        return false;
+    }
+
+    if (cols != cached_cols or rows != cached_rows) {
+        cached_cols = cols;
+        cached_rows = rows;
+        return true;
+    }
     return false;
 }

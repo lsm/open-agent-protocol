@@ -3,7 +3,7 @@ const std = @import("std");
 const FixedWriter = std.Io.Writer.fixed;
 const builtin = @import("builtin");
 pub const ansi = @import("ansi.zig");
-pub const screen = @import("screen.zig");
+pub const frame = @import("frame.zig");
 const unicode = @import("../unicode.zig");
 const Environment = @import("../core/environment.zig").Environment;
 
@@ -15,6 +15,8 @@ else if (builtin.os.tag == .windows)
 else
     @import("platform/posix.zig");
 const mouse = @import("../input/mouse.zig");
+
+pub const input_mode_reset = "\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
 
 pub const Size = platform.Size;
 pub const TerminalError = platform.TerminalError;
@@ -284,7 +286,7 @@ pub const Terminal = struct {
         try self.writeBytes(ansi.kitty_keyboard_reset);
         try self.writeBytes(ansi.bracketed_paste_disable);
         try self.writeBytes("\x1b[?1007l");
-        try self.writeBytes(mouse.disableSequence(.normal));
+        try self.writeBytes(input_mode_reset);
 
         if (self.config.alt_screen) {
             try self.writeBytes(ansi.alt_screen_enter);
@@ -392,8 +394,13 @@ pub const Terminal = struct {
     }
 
     pub fn checkResize(self: *Terminal) bool {
-        _ = self;
-        return platform.checkResize();
+        if (is_wasm) {
+            return platform.checkResize();
+        } else if (builtin.os.tag == .windows) {
+            return platform.checkResize(self.state.stdout_handle);
+        } else {
+            return platform.checkResize();
+        }
     }
 
     pub fn writer(self: *Terminal) *std.Io.Writer {
@@ -954,10 +961,7 @@ pub const Terminal = struct {
         const env = self.environment;
         const term_features = env.term_features;
 
-        const kitty_candidate = env.looksLikeKittyTerminal() or
-            env.termProgramEquals("WezTerm") or
-            env.termContains("wezterm") or
-            env.termContains("ghostty");
+        const kitty_candidate = env.looksLikeKittyGraphicsTerminal();
         const iterm_candidate = env.looksLikeIterm2Terminal() or env.termProgramEquals("WezTerm");
         const in_multiplexer = env.isInsideMultiplexer();
 
@@ -968,7 +972,7 @@ pub const Terminal = struct {
         if (kitty_candidate) {
             kitty = self.queryKittyGraphicsSupport() catch false;
             if (!kitty and !in_multiplexer) {
-                kitty = env.has_kitty_window;
+                kitty = true;
             }
         }
 
@@ -1305,7 +1309,7 @@ pub const Terminal = struct {
         var collected_len: usize = 0;
         const start = std.Io.Clock.Timestamp.now(self.io, .boot);
 
-        while (withinDeadline(self.io, start, 180)) {
+        while (withinDeadline(self.io, start, 500)) {
             var chunk: [128]u8 = undefined;
             const n = self.readInput(&chunk, 30) catch 0;
             if (n == 0) continue;
@@ -1340,8 +1344,11 @@ pub const Terminal = struct {
             const params = bytes[content_start..semicolon];
             const payload = bytes[semicolon + 1 .. st_index];
 
-            if (std.mem.indexOf(u8, params, expected_id) != null) {
-                return std.mem.startsWith(u8, payload, "OK");
+            var param_it = std.mem.splitScalar(u8, params, ',');
+            while (param_it.next()) |param| {
+                if (std.mem.eql(u8, param, expected_id)) {
+                    return std.mem.startsWith(u8, payload, "OK");
+                }
             }
 
             search_from = st_index + 2;
@@ -1773,4 +1780,36 @@ test "parseOsc52Response tmux passthrough ST" {
     try std.testing.expectEqual(@as(usize, 0), parsed.consume_start);
     try std.testing.expectEqual(bytes.len, parsed.consume_end);
     try std.testing.expectEqualStrings("YQ==", parsed.payload_b64);
+}
+
+test "parseKittyGraphicsProbeResponse OK reply means supported" {
+    const bytes = "\x1b_Gi=9931;OK\x1b\\";
+    try std.testing.expectEqual(@as(?bool, true), Terminal.parseKittyGraphicsProbeResponse(bytes, 9931));
+}
+
+test "parseKittyGraphicsProbeResponse OK reply after stale prefix" {
+    const bytes = "\x1b[?2027;2$y\x1b_Gi=9931;OK\x1b\\";
+    try std.testing.expectEqual(@as(?bool, true), Terminal.parseKittyGraphicsProbeResponse(bytes, 9931));
+}
+
+test "parseKittyGraphicsProbeResponse error reply means unsupported" {
+    const bytes = "\x1b_Gi=9931;ENOENT:bad\x1b\\";
+    try std.testing.expectEqual(@as(?bool, false), Terminal.parseKittyGraphicsProbeResponse(bytes, 9931));
+}
+
+test "parseKittyGraphicsProbeResponse truncated reply keeps reading" {
+    const bytes = "\x1b_Gi=9931;OK";
+    try std.testing.expectEqual(@as(?bool, null), Terminal.parseKittyGraphicsProbeResponse(bytes, 9931));
+}
+
+test "parseKittyGraphicsProbeResponse superstring id does not match" {
+    const bytes = "\x1b_Gi=99312;OK\x1b\\";
+    try std.testing.expectEqual(@as(?bool, null), Terminal.parseKittyGraphicsProbeResponse(bytes, 9931));
+}
+
+test "input_mode_reset clears every mouse-tracking mode the framework enabled" {
+    try std.testing.expect(std.mem.indexOf(u8, input_mode_reset, "?1000l") != null);
+    try std.testing.expect(std.mem.indexOf(u8, input_mode_reset, "?1002l") != null);
+    try std.testing.expect(std.mem.indexOf(u8, input_mode_reset, "?1003l") != null);
+    try std.testing.expect(std.mem.indexOf(u8, input_mode_reset, "?1006l") != null);
 }

@@ -482,6 +482,12 @@ pub const ComposerState = struct {
     }
 
     pub fn insertPaste(self: *ComposerState, allocator: std.mem.Allocator, bytes: []const u8) !void {
+        if (bytes.len > 0 and bytes[0] == '\n') {
+            self.normalizeCursor();
+            if (self.cursor > 0 and self.buffer.items[self.cursor - 1] == '\r') {
+                _ = self.deleteBeforeCursor();
+            }
+        }
         if (std.mem.indexOf(u8, bytes, "\r\n") == null) return self.insertSlice(allocator, bytes);
         const normalized = try std.mem.replaceOwned(u8, allocator, bytes, "\r\n", "\n");
         defer allocator.free(normalized);
@@ -3151,6 +3157,16 @@ test "Composer paste normalises CRLF into LF" {
     try std.testing.expectEqual(@as(usize, 13), state.composer.cursor);
     try state.composer.insertPaste(std.testing.allocator, "\r\nfour");
     try std.testing.expectEqualStrings("one\ntwo\nthree\nfour", state.composer.text());
+}
+
+test "Composer paste drops a carriage return split across two events" {
+    var state = AppState.init(std.testing.allocator);
+    defer state.deinit();
+
+    try state.composer.insertPaste(std.testing.allocator, "one\r");
+    try state.composer.insertPaste(std.testing.allocator, "\ntwo");
+    try std.testing.expectEqualStrings("one\ntwo", state.composer.text());
+    try std.testing.expectEqual(@as(usize, 7), state.composer.cursor);
 }
 
 test "Composer clear resets the scroll row and goal column" {

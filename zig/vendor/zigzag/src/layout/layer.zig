@@ -2,6 +2,7 @@
 const std = @import("std");
 const Writer = std.Io.Writer;
 const measure = @import("measure.zig");
+const unicode = @import("../unicode.zig");
 
 pub const Layer = struct {
     content: []const u8,
@@ -42,17 +43,14 @@ pub const LayerStack = struct {
         self.layers.clearRetainingCapacity();
     }
 
-    pub fn render(self: *const LayerStack, allocator: std.mem.Allocator) []const u8 {
+    pub fn render(self: *const LayerStack, allocator: std.mem.Allocator) ![]const u8 {
         const w: usize = self.width;
         const h: usize = self.height;
 
-        const grid = allocator.alloc(Cell, w * h) catch return "";
+        const bg = [1]u8{self.background};
+        const background: Cell = .{ .content = &bg, .ansi_prefix = "" };
 
-        for (grid) |*cell| {
-            cell.* = .{ .char = self.background, .ansi_prefix = "" };
-        }
-
-        const sorted = allocator.alloc(Layer, self.layers.items.len) catch return "";
+        const sorted = try allocator.alloc(Layer, self.layers.items.len);
         @memcpy(sorted, self.layers.items);
         std.mem.sort(Layer, sorted, {}, struct {
             fn lessThan(_: void, a: Layer, b: Layer) bool {
@@ -60,23 +58,52 @@ pub const LayerStack = struct {
             }
         }.lessThan);
 
-        for (sorted) |layer| {
-            self.paintLayer(grid, w, h, layer);
+        const cells = w * h;
+        const planes = try allocator.alloc(?Cell, sorted.len * cells);
+        @memset(planes, null);
+        for (sorted, 0..) |layer, index| {
+            try paintLayer(allocator, planes[index * cells ..][0..cells], w, h, layer);
+        }
+
+        const grid = try allocator.alloc(Cell, cells);
+        @memset(grid, background);
+        const covered = try allocator.alloc(bool, cells);
+        @memset(covered, false);
+        var index = sorted.len;
+        while (index > 0) {
+            index -= 1;
+            const plane = planes[index * cells ..][0..cells];
+            for (0..h) |row| {
+                for (0..w) |col| {
+                    const at = row * w + col;
+                    const cell = plane[at] orelse continue;
+                    if (cell.content.len == 0) continue;
+                    const wide = col + 1 < w and plane[at + 1] != null and plane[at + 1].?.content.len == 0;
+                    if (covered[at] or (wide and covered[at + 1])) continue;
+                    grid[at] = cell;
+                    covered[at] = true;
+                    if (wide) {
+                        grid[at + 1] = .{ .content = "" };
+                        covered[at + 1] = true;
+                    }
+                }
+            }
         }
 
         var result: Writer.Allocating = .init(allocator);
         const writer = &result.writer;
 
         for (0..h) |row| {
-            if (row > 0) writer.writeByte('\n') catch {};
+            if (row > 0) try writer.writeByte('\n');
             for (0..w) |col| {
                 const cell = grid[row * w + col];
-                if (cell.ansi_prefix.len > 0) {
-                    writer.writeAll(cell.ansi_prefix) catch {};
-                    writer.writeByte(cell.char) catch {};
-                    writer.writeAll("\x1b[0m") catch {};
+                if (cell.content.len == 0) continue;
+                if (cell.ansi_prefix.len > 0 or std.mem.indexOfScalar(u8, cell.content, 0x1b) != null) {
+                    try writer.writeAll(cell.ansi_prefix);
+                    try writer.writeAll(cell.content);
+                    try writer.writeAll("\x1b[0m");
                 } else {
-                    writer.writeByte(cell.char) catch {};
+                    try writer.writeAll(cell.content);
                 }
             }
         }
@@ -84,19 +111,24 @@ pub const LayerStack = struct {
         return result.toArrayList().items;
     }
 
-    fn paintLayer(self: *const LayerStack, grid: []Cell, w: usize, h: usize, layer: Layer) void {
-        _ = self;
+    fn paintLayer(allocator: std.mem.Allocator, plane: []?Cell, w: usize, h: usize, layer: Layer) !void {
         const content = layer.content;
         var row: usize = layer.y;
         var col: usize = layer.x;
         var i: usize = 0;
         var current_ansi: []const u8 = "";
+        var last_cell: ?usize = null;
+        var last_start: usize = 0;
+        var last_end: usize = 0;
+        var last_sliced = true;
+        var last_style: []const u8 = "";
 
         while (i < content.len and row < h) {
             if (content[i] == '\n') {
                 row += 1;
                 col = layer.x;
                 i += 1;
+                last_cell = null;
                 continue;
             }
 
@@ -115,22 +147,66 @@ pub const LayerStack = struct {
                 continue;
             }
 
-            if (col < w) {
-                const is_transparent = layer.transparent and content[i] == ' ' and current_ansi.len == 0;
-                if (!is_transparent) {
-                    grid[row * w + col] = .{
-                        .char = content[i],
-                        .ansi_prefix = current_ansi,
-                    };
+            const start = i;
+            const char_len = std.unicode.utf8ByteSequenceLength(content[i]) catch 1;
+            const end = @min(i + char_len, content.len);
+            const char = content[i..end];
+            const codepoint: u21 = std.unicode.utf8Decode(char) catch content[i];
+            const char_width = measure.charWidth(codepoint);
+            i = end;
+
+            if (char_width == 0) {
+                if (attachesToPrevious(codepoint)) {
+                    if (last_cell) |at| {
+                        const restyle = !std.mem.eql(u8, current_ansi, last_style);
+                        if (last_sliced and last_end == start and !restyle) {
+                            plane[at].?.content = content[last_start..end];
+                        } else if (restyle) {
+                            plane[at].?.content = try std.mem.concat(allocator, u8, &.{ plane[at].?.content, "\x1b[0m", current_ansi, char });
+                            last_style = current_ansi;
+                            last_sliced = false;
+                        } else {
+                            plane[at].?.content = try std.mem.concat(allocator, u8, &.{ plane[at].?.content, char });
+                            last_sliced = false;
+                        }
+                        last_end = end;
+                    }
                 }
-                col += 1;
+                continue;
             }
-            i += 1;
+
+            const is_transparent = layer.transparent and codepoint == ' ' and current_ansi.len == 0;
+            if (!is_transparent and col + char_width <= w) {
+                const at = row * w + col;
+                plane[at] = .{
+                    .content = char,
+                    .ansi_prefix = current_ansi,
+                };
+                last_cell = at;
+                last_start = start;
+                last_end = end;
+                last_sliced = true;
+                last_style = current_ansi;
+                if (char_width == 2) {
+                    plane[at + 1] = .{ .content = "" };
+                }
+            } else {
+                last_cell = null;
+            }
+            col += char_width;
         }
     }
 };
 
+fn attachesToPrevious(codepoint: u21) bool {
+    if (unicode.codepointWidth(codepoint) != 0) return false;
+    return switch (codepoint) {
+        0x200D, 0xFE0E, 0xFE0F, 0x20E3 => false,
+        else => true,
+    };
+}
+
 const Cell = struct {
-    char: u8 = ' ',
+    content: []const u8 = " ",
     ansi_prefix: []const u8 = "",
 };
