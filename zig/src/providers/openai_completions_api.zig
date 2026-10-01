@@ -785,6 +785,7 @@ const ReplyTrace = struct {
     chunks: usize = 0,
     first: Kept = .{},
     last: Kept = .{},
+    finish: Kept = .{},
     headers: [reply_trace_headers.len]Kept = [_]Kept{.{}} ** reply_trace_headers.len,
 
     const Kept = struct {
@@ -802,6 +803,11 @@ const ReplyTrace = struct {
             return self.buf[0..self.len];
         }
     };
+
+    fn noteFinish(self: *ReplyTrace, data: []const u8) void {
+        if (std.mem.eql(u8, data, "[DONE]")) return;
+        self.finish.keep(data);
+    }
 
     fn noteHeaders(self: *ReplyTrace, head: anytype) void {
         if (std.mem.find(u8, head.bytes, "\r\n") == null) return;
@@ -838,7 +844,9 @@ const ReplyTrace = struct {
         defer first.deinit(allocator);
         var last = try chunkFacts(allocator, self.last.slice());
         defer last.deinit(allocator);
-        finish = last.finish_reason orelse first.finish_reason;
+        var finishing = try chunkFacts(allocator, self.finish.slice());
+        defer finishing.deinit(allocator);
+        finish = finishing.finish_reason orelse last.finish_reason orelse first.finish_reason;
         id = first.id orelse last.id;
         if (finish) |reason| try writer.print("finish_reason: {s}", .{reason}) else try writer.writeAll("no finish_reason");
         const input = usage.input + usage.cache_read;
@@ -1039,7 +1047,8 @@ fn parseChunk(
                             }
                         }
                     }
-                } else if (findReasoningField(d.object)) |reasoning| {
+                }
+                if (findReasoningField(d.object)) |reasoning| {
                     if (reasoning_signature.* == null) {
                         reasoning_signature.* = try allocator.dupe(u8, reasoning.field);
                     }
@@ -1572,7 +1581,10 @@ fn runThread(ctx: *ThreadCtx) void {
             };
             switch (outcome) {
                 .more => {},
-                .finished => finished = true,
+                .finished => {
+                    finished = true;
+                    trace.noteFinish(ev.data);
+                },
                 .stream_error => {
                     const message = streamErrorMessage(allocator, ev.data);
                     defer if (message) |owned| allocator.free(owned);
@@ -3843,6 +3855,15 @@ test "a stream that ends with no reply fails instead of settling as a finished t
     try std.testing.expect(try streamErrorFor(MockCompletionsServer.complete_stream) == null);
 }
 
+test "a delta carrying a null or empty tool_calls beside its content still delivers the content" {
+    const body =
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"reasoning_content\":\"plan\",\"tool_calls\":null},\"finish_reason\":null}]}\n\n" ++
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\",\"tool_calls\":[]},\"finish_reason\":null}]}\n\n" ++
+        "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":null},\"finish_reason\":\"stop\"}]}\n\n" ++
+        "data: [DONE]\n\n";
+    try std.testing.expect(try streamErrorFor(body) == null);
+}
+
 test "an empty reply names its finish reason, usage, chunk count, id, the gateway's request headers and the last chunk" {
     const body =
         "data: {\"id\":\"chatcmpl-empty\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n" ++
@@ -3884,6 +3905,19 @@ fn replyTraceDescribeProbe(allocator: std.mem.Allocator) !void {
     trace.observe("{\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}");
     const message = try trace.describe(allocator, "empty", .{ .input = 5, .output = 1 });
     allocator.free(message);
+}
+
+test "a reply trace names the finish reason a middle chunk carried" {
+    var trace: ReplyTrace = .{};
+    trace.observe("{\"id\":\"chatcmpl-m\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\"},\"finish_reason\":null}]}");
+    trace.observe("{\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}");
+    trace.noteFinish("{\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}");
+    trace.observe("{\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":1}}");
+    trace.observe("[DONE]");
+    trace.noteFinish("[DONE]");
+    const message = try trace.describe(std.testing.allocator, "empty", .{ .input = 5, .output = 1 });
+    defer std.testing.allocator.free(message);
+    try std.testing.expect(std.mem.startsWith(u8, message, "empty (finish_reason: stop;"));
 }
 
 test "a reply trace's description frees what it built on every allocation failure" {
