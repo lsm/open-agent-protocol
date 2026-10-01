@@ -851,6 +851,66 @@ test "a cited name is cleaned and its pointer unescaped, so the ref matches the 
     try std.testing.expect(try judgesAsAccepted(allocator, &registry, read.branches, envelope));
 }
 
+test "one unpinned branch in a pack takes the pack's pinned branch with it" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cases = [_]struct { dir: []const u8, types: []const u8, refused: bool }{
+        .{ .dir = "mixed", .types =
+        \\[
+        \\  {"type": "com.example.mixed.good", "role": "event", "schema": "types.schema.json#/$defs/good"},
+        \\  {"type": "com.example.mixed.bad", "role": "event", "schema": "types.schema.json#/$defs/plain"}
+        \\]
+        , .refused = true },
+        .{ .dir = "both-pinned", .types =
+        \\[
+        \\  {"type": "com.example.mixed.good", "role": "event", "schema": "types.schema.json#/$defs/good"},
+        \\  {"type": "com.example.mixed.other", "role": "event", "schema": "types.schema.json#/$defs/other"}
+        \\]
+        , .refused = false },
+    };
+    const members =
+        \\[{"payload_type": "com.example.mixed.good", "member": "note", "schema": {"type": "string"}}]
+    ;
+    const document =
+        \\{"$schema": "https://json-schema.org/draft/2020-12/schema", "$defs": {"good": {"type": "object", "required": ["type", "id", "session_id"], "properties": {"type": {"const": "com.example.mixed.good"}, "id": {"type": "string"}, "session_id": {"type": "string"}}}, "other": {"type": "object", "required": ["type", "id", "session_id"], "properties": {"type": {"const": "com.example.mixed.other"}, "id": {"type": "string"}, "session_id": {"type": "string"}}}, "plain": {"type": "object", "required": ["type"], "properties": {"type": {"type": "string"}}}}}
+    ;
+    for (cases) |c| {
+        try tmp.dir.createDir(std.testing.io, c.dir, .default_dir);
+        const document_path = try std.fmt.allocPrint(allocator, "{s}/types.schema.json", .{c.dir});
+        defer allocator.free(document_path);
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = document_path, .data = document });
+        const descriptor = try std.fmt.allocPrint(allocator,
+            \\{{"id": "com.example.mixed", "version": "1.0.0", "schemas": ["types.schema.json"], "envelope_types": {s}, "payload_members": {s}}}
+        , .{ c.types, members });
+        defer allocator.free(descriptor);
+        const pack = try std.fmt.allocPrint(allocator, "{s}/pack.json", .{c.dir});
+        defer allocator.free(pack);
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = pack, .data = descriptor });
+    }
+    for (cases) |c| {
+        var registry = try jsonschema.Registry.initFromBundled(allocator);
+        defer registry.deinit();
+        const root = try tmp.dir.realPathFileAlloc(std.testing.io, c.dir, allocator);
+        defer allocator.free(root);
+        const one = [_][]const u8{root};
+        var read = try load(std.testing.io, allocator, &registry, &one);
+        defer read.deinit();
+        if (c.refused) {
+            try std.testing.expect(carriesCode(read.refusals, pack_branch_unpinned));
+            try std.testing.expectEqual(@as(usize, 0), read.branches.len);
+            try std.testing.expectEqual(@as(usize, 0), read.types.len);
+            try std.testing.expectEqual(@as(usize, 0), read.members.len);
+        } else {
+            try std.testing.expectEqual(@as(usize, 0), read.refusals.len);
+            try std.testing.expectEqual(@as(usize, 2), read.branches.len);
+            try std.testing.expectEqual(@as(usize, 2), read.types.len);
+            try std.testing.expectEqual(@as(usize, 1), read.members.len);
+            try std.testing.expectEqualStrings("note", read.members[0].name);
+            try std.testing.expectEqualStrings("com.example.mixed.good", read.members[0].payload_type);
+        }
+    }
+}
 test "a branch that does not pin its own type is refused, and the manifest fixtures carry the codes" {
     const allocator = std.testing.allocator;
     const cases = [_]struct { dir: []const u8, code: []const u8 }{
