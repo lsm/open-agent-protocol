@@ -3517,6 +3517,16 @@ const MockCompletionsServer = struct {
         return error.StreamTooLong;
     }
 
+    fn headerValue(head: []const u8, name: []const u8) ?[]const u8 {
+        var lines = std.mem.splitSequence(u8, head, "\r\n");
+        while (lines.next()) |line| {
+            const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+            if (!std.ascii.eqlIgnoreCase(line[0..colon], name)) continue;
+            return std.mem.trim(u8, line[colon + 1 ..], " ");
+        }
+        return null;
+    }
+
     fn serve(self: *MockCompletionsServer) void {
         defer self.served.store(true, .release);
 
@@ -3541,10 +3551,10 @@ const MockCompletionsServer = struct {
         if (std.mem.indexOf(u8, body_slice, "\"stream\":true") != null) {
             self.saw_stream_flag.store(true, .release);
         }
-        if (std.ascii.indexOfIgnoreCase(head, "x-opencode-session: ses-tui-1\r\n") != null) {
+        if (std.mem.eql(u8, headerValue(head, "x-opencode-session") orelse "", "ses-tui-1")) {
             self.saw_session_header.store(true, .release);
         }
-        if (std.ascii.indexOfIgnoreCase(head, "user-agent: " ++ client_user_agent ++ "\r\n") != null) {
+        if (std.mem.eql(u8, headerValue(head, "user-agent") orelse "", client_user_agent)) {
             self.saw_client_agent.store(true, .release);
         }
 
