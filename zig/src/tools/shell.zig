@@ -16,7 +16,7 @@ const end_directory_script =
     \\eval "$__oap_cmd"
     \\__oap_rc=$?
     \\set +x
-    \\printf '%s' "$(pwd)" > "$__oap_path"
+    \\pwd > "$__oap_path"
     \\exit "$__oap_rc"
 ;
 
@@ -55,12 +55,22 @@ const MarkerDir = struct {
     fn read(self: MarkerDir, io: std.Io, allocator: std.mem.Allocator) !?[]u8 {
         var dir = std.Io.Dir.openDirAbsolute(io, self.path, .{}) catch return null;
         defer dir.close(io);
-        const data = dir.readFileAlloc(io, self.name, allocator, .limited(4096)) catch return null;
+        const raw = dir.readFileAlloc(io, self.name, allocator, .limited(4096)) catch return null;
+        const data = if (raw.len > 0 and raw[raw.len - 1] == '\n') raw[0 .. raw.len - 1] else raw;
         if (data.len == 0) {
-            allocator.free(data);
+            allocator.free(raw);
             return null;
         }
-        return data;
+        if (data.ptr != raw.ptr or data.len != raw.len) {
+            const holding = allocator.alloc(u8, data.len) catch {
+                allocator.free(raw);
+                return null;
+            };
+            @memcpy(holding, data);
+            allocator.free(raw);
+            return holding;
+        }
+        return raw;
     }
 
     fn remove(self: MarkerDir, io: std.Io) void {
@@ -436,20 +446,38 @@ const MarkerCase = struct {
     }
 };
 
-test "an exhausted allocator leaves no private directory behind" {
-    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, MarkerCase.run, .{});
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    const cwd = try std.process.currentPathAlloc(common.defaultIo(), std.testing.allocator);
-    defer std.testing.allocator.free(cwd);
-    const root = try std.Io.Dir.path.join(std.testing.allocator, &.{ cwd, ".zig-cache", "tmp", tmp.sub_path[0..] });
-    defer std.testing.allocator.free(root);
-    var dir = try tmp.dir.openDir(common.defaultIo(), ".", .{ .iterate = true });
+fn countMarkers(root: []const u8, out: *[64][64]u8) usize {
+    var dir = std.Io.Dir.openDirAbsolute(common.defaultIo(), root, .{ .iterate = true }) catch return 0;
     defer dir.close(common.defaultIo());
     var it: std.Io.Dir.Iterator = dir.iterate();
-    while (try it.next(common.defaultIo())) |entry| {
-        if (std.mem.startsWith(u8, entry.name, "oap-cwd-")) return error.TestUnexpectedResult;
+    var n: usize = 0;
+    while (it.next(common.defaultIo()) catch null) |entry| {
+        if (!std.mem.startsWith(u8, entry.name, "oap-cwd-")) continue;
+        if (n >= out.len or entry.name.len > out[n].len) continue;
+        @memset(&out[n], 0);
+        @memcpy(out[n][0..entry.name.len], entry.name);
+        n += 1;
+    }
+    return n;
+}
+
+test "an exhausted allocator leaves no private directory behind" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const base = compat.getEnvVarOwned(std.testing.allocator, "TMPDIR") catch null;
+    defer if (base) |value| std.testing.allocator.free(value);
+    const candidate = std.mem.trimEnd(u8, base orelse "/tmp", "/");
+    const root = if (candidate.len == 0 or !std.Io.Dir.path.isAbsolute(candidate)) "/tmp" else candidate;
+    var before: [64][64]u8 = undefined;
+    const seen_before = countMarkers(root, &before);
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, MarkerCase.run, .{});
+    var after: [64][64]u8 = undefined;
+    const seen_after = countMarkers(root, &after);
+    for (after[0..seen_after]) |name| {
+        var existed = false;
+        for (before[0..seen_before]) |prior| {
+            if (std.mem.eql(u8, &prior, &name)) existed = true;
+        }
+        if (!existed) return error.TestUnexpectedResult;
     }
 }
 
