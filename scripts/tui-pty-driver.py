@@ -1105,7 +1105,7 @@ def findUserEntryEcho(session, text):
 
 
 def scenario_steer_abort(args):
-    run = SweepRun(args, "steer-abort", 'hold|tool:shell_execute#{"description":"hold the turn open","workspace_root":"/tmp","command":"sleep 5"}|text:steer-consumed-done')
+    run = SweepRun(args, "steer-abort", 'hold|text:held-steer-sent|tool:shell_execute#{"description":"hold the turn open","workspace_root":"/tmp","command":"sleep 5"}|text:steer-consumed-done')
     try:
         run.session.wait_for(WELCOME_MARKER, args.startup_timeout, "welcome banner")
         run.settle()
@@ -1138,6 +1138,14 @@ def scenario_steer_abort(args):
         if not aborted_rows or not you_rows or b"steer this turn" not in rows[echo_row] or aborted_rows[-1] - you_rows[-1] > 8:
             raise ScenarioError("steer-abort: steer echo is not in the transcript directly above the abort row")
         run.note("/abort during a held stream cancels the turn, clears the streaming status, and the flushed history renders the steered text as a permanent 'You' entry directly above the abort row")
+
+        run.session.wait_for(b"held-steer-sent", 10.0, "the held steer sent as a new turn after the abort", since=abort_from)
+        run.settle(1.0)
+        run.frame("held-steer-sent")
+        echo_rows = [row for row in run.session.screen_rows() if b"steer this turn" in row]
+        if len(echo_rows) != 1:
+            raise ScenarioError(f"steer-abort: the held steer should show as exactly one transcript row once sent, found {len(echo_rows)}")
+        run.note("the steer still queued at the abort is sent as the next turn once the aborted run ends, and is not echoed a second time")
 
         run.session.type_text("run the slow tool")
         run.session.send(KEY_ENTER, "Enter (submit tool turn)")

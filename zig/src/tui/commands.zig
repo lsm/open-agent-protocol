@@ -9,6 +9,7 @@ pub const CommandKind = enum {
     model,
     login,
     logout,
+    provider,
     status,
     @"resume",
     rename,
@@ -44,6 +45,7 @@ pub const CommandAction = enum {
     open_model_picker,
     refresh_models,
     logout_provider,
+    add_provider,
     open_login_picker,
     open_permission_picker,
     open_settings_picker,
@@ -92,6 +94,7 @@ pub const commands = [_]CommandInfo{
     .{ .name = "rename", .kind = .rename, .usage = "/rename <title>", .description = "Rename this session", .handler = handleRename },
     .{ .name = "permissions", .kind = .permissions, .usage = "/permissions [ask|bypass]", .description = "Pick or set tool permission mode", .handler = handlePermissions },
     .{ .name = "perm", .kind = .permissions, .usage = "/perm [ask|bypass]", .description = "Pick or set tool permission mode", .handler = handlePermissions },
+    .{ .name = "provider", .kind = .provider, .usage = "/provider add <id> <base_url> [--api <api>] [--env <NAME> | --no-auth]", .description = "Declare a custom provider in ~/.oapx/providers.json", .handler = handleProvider },
     .{ .name = "think", .kind = .think, .usage = "/think [off|low|medium|high|xhigh|max]", .description = "Show or set the thinking level", .handler = handleThink },
     .{ .name = "clear", .kind = .clear, .usage = "/clear", .description = "Clear transcript display", .handler = handleClear },
     .{ .name = "compact", .kind = .compact, .usage = "/compact [focus]", .description = "Summarize the conversation to free context", .handler = handleCompact },
@@ -253,6 +256,16 @@ fn runIsActive(ctx: CommandContext) bool {
     if (ctx.state.status.streaming or ctx.state.status.compacting) return true;
     const runtime = ctx.runtime orelse return false;
     return !runtime.isIdle();
+}
+
+pub const provider_usage = "usage: /provider add <id> <base_url> [--api openai-completions|openai-responses|anthropic-messages] [--env <NAME> | --no-auth]";
+
+fn handleProvider(ctx: CommandContext, command: Command) !CommandResult {
+    const arg = command.arg orelse return .{ .output = try ctx.allocator.dupe(u8, provider_usage), .is_error = true };
+    var words = std.mem.tokenizeAny(u8, arg, " \t");
+    const verb = words.next() orelse return .{ .output = try ctx.allocator.dupe(u8, provider_usage), .is_error = true };
+    if (!std.mem.eql(u8, verb, "add") or words.peek() == null) return .{ .output = try ctx.allocator.dupe(u8, provider_usage), .is_error = true };
+    return .{ .action = .add_provider };
 }
 
 fn handleLogout(ctx: CommandContext, command: Command) !CommandResult {
@@ -514,10 +527,22 @@ fn handleAbort(ctx: CommandContext, command: Command) !CommandResult {
     }
     const active = ctx.state.status.streaming or
         (ctx.runtime != null and ctx.runtime.?.stream_active);
+    if (!ctx.state.status.streaming and ctx.state.held_after_abort.items.len > 0) {
+        const dropped = ctx.state.held_after_abort.items.len;
+        ctx.state.clearHeldAfterAbort();
+        return .{ .output = try std.fmt.allocPrint(ctx.allocator, "Dropped the {d} queued message{s}; they will not be sent.", .{ dropped, if (dropped == 1) "" else "s" }) };
+    }
     if (active and ctx.state.stream_aborted and !ctx.state.status.streaming) {
         return .{ .output = try ctx.allocator.dupe(u8, "Still stopping: the step that was running when you aborted is ending.") };
     }
     if (active) {
+        if (ctx.session) |session| {
+            ctx.state.reconcileSteers(session.steersConsumedCount());
+            ctx.state.setQueuedCounts(session.queuedCounts());
+        } else if (ctx.runtime) |runtime| {
+            ctx.state.reconcileSteers(runtime.steersConsumedCount());
+            ctx.state.setQueuedCounts(runtime.queuedCounts());
+        }
         if (ctx.session) |session| {
             session.cancel();
             session.clearQueuedMessages();
@@ -530,12 +555,13 @@ fn handleAbort(ctx: CommandContext, command: Command) !CommandResult {
         ctx.state.status.streaming = false;
         ctx.state.telemetry.rate.messageAborted();
         ctx.state.stream_aborted = true;
-        ctx.state.clearPendingSteers();
-        ctx.state.clearPendingFollowUps();
+        try ctx.state.holdQueuedAfterAbort();
         if (ctx.state.mode == .approval) {
             ctx.state.approval.deinit(ctx.allocator);
             ctx.state.mode = .normal;
         }
+        const held = ctx.state.held_after_abort.items.len;
+        if (held > 0) return .{ .output = try std.fmt.allocPrint(ctx.allocator, "Turn aborted. Sending the {d} queued message{s} once it stops; press esc again to drop {s}.", .{ held, if (held == 1) "" else "s", if (held == 1) "it" else "them" }) };
         return .{ .output = try ctx.allocator.dupe(u8, "Turn aborted.") };
     }
     return .{ .output = try ctx.allocator.dupe(u8, "Nothing to abort — agent is idle.") };
@@ -1034,24 +1060,52 @@ test "abort when streaming cancels session" {
     try std.testing.expectEqual(@as(usize, 1), mock.cancel_count);
 }
 
-test "abort when streaming drops queued steers but keeps their echoes" {
+test "abort when streaming holds queued messages to send once the run stops" {
     var state = tui_state.AppState.init(std.testing.allocator);
     defer state.deinit();
     state.status.streaming = true;
     try state.appendSteeredMessage("steer before abort");
+    try state.appendQueuedFollowUp("follow-up before abort");
 
-    var mock = MockAbortSession{};
+    var mock = MockAbortSession{ .queued_counts = .{ .follow_up = 1 } };
     defer mock.deinit();
     var session = mock.session();
 
     var result = try dispatch(.{ .allocator = std.testing.allocator, .state = &state, .session = &session }, .{ .kind = .abort });
     defer result.deinit(std.testing.allocator);
 
-    try std.testing.expectEqualStrings("Turn aborted.", result.output);
+    try std.testing.expectEqualStrings("Turn aborted. Sending the 2 queued messages once it stops; press esc again to drop them.", result.output);
     try std.testing.expectEqual(@as(usize, 1), mock.clear_count);
     try std.testing.expectEqual(@as(usize, 0), state.pending_steers.items.len);
+    try std.testing.expectEqual(@as(usize, 0), state.pending_follow_ups.items.len);
+    try std.testing.expectEqual(@as(usize, 2), state.held_after_abort.items.len);
+    try std.testing.expectEqualStrings("steer before abort", state.held_after_abort.items[0]);
+    try std.testing.expectEqualStrings("follow-up before abort", state.held_after_abort.items[1]);
+    try std.testing.expectEqual(@as(usize, 1), state.held_after_abort_echoed);
     try std.testing.expectEqual(@as(usize, 1), state.transcript.items.len);
     try std.testing.expectEqualStrings("steer before abort", state.transcript.items[0].text.items);
+
+    var again = try dispatch(.{ .allocator = std.testing.allocator, .state = &state, .session = &session }, .{ .kind = .abort });
+    defer again.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("Dropped the 2 queued messages; they will not be sent.", again.output);
+    try std.testing.expectEqual(@as(usize, 0), state.held_after_abort.items.len);
+}
+
+test "abort does not hold a steer the run already consumed" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    state.status.streaming = true;
+    try state.appendSteeredMessage("already folded into the run");
+    try state.appendSteeredMessage("still waiting");
+
+    var mock = MockAbortSession{ .steers_consumed = 1 };
+    defer mock.deinit();
+    var session = mock.session();
+    var result = try dispatch(.{ .allocator = std.testing.allocator, .state = &state, .session = &session }, .{ .kind = .abort });
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), state.held_after_abort.items.len);
+    try std.testing.expectEqualStrings("still waiting", state.held_after_abort.items[0]);
 }
 
 test "logout and model refresh wait for a turn the status has not caught up with" {
@@ -1148,6 +1202,7 @@ test "double abort is harmless after first cancellation" {
 }
 
 const MockAbortSession = struct {
+    queued_counts: tui_runtime.QueuedCounts = .{},
     cancel_count: usize = 0,
     clear_count: usize = 0,
     steers_consumed: u64 = 0,
@@ -1206,8 +1261,7 @@ const MockAbortSession = struct {
     }
 
     fn mockQueuedCounts(ctx: ?*anyopaque) tui_runtime.QueuedCounts {
-        _ = ctx;
-        return .{};
+        return ptr(ctx).queued_counts;
     }
 
     fn mockSteersConsumed(ctx: ?*anyopaque) u64 {

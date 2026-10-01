@@ -418,7 +418,9 @@ follow-up that is sent when the turn stops (it waits above the composer until th
 and the inline window reserves its rows so no transcript row hides behind it; a
 draft starting with `/` is never queued),
 `Shift+Enter` newline, `Esc` clear draft →
-abort turn → close modal, `Ctrl+C` abort/clear first and quit on a second press
+abort turn → close modal (aborting holds the steers and follow-ups not yet consumed and
+sends them, joined, as a new turn once the aborted run ends; a second `Esc` before then
+drops them), `Ctrl+C` abort/clear first and quit on a second press
 within ~1.5 s (immediate quit when idle with an empty composer), `Ctrl+D` quit on an
 empty idle composer, `Tab` complete the slash command the palette selects,
 `Ctrl+Y` copy the last reply, `Shift+Tab` cycle thinking, `Up/Down` move the slash

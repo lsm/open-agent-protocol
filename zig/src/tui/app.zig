@@ -963,6 +963,8 @@ pub const App = struct {
     compaction_offset: u64 = 0,
     pending_thinking: std.ArrayList(u8) = .empty,
     pending_after_compaction: ?[]u8 = null,
+    pending_after_compaction_echo: ?[]u8 = null,
+    runtime_echo_suppressed: []u8 = &.{},
     compaction_just_ended: ?bool = null,
     session_title: []u8 = &.{},
     session_title_generated: bool = false,
@@ -1087,6 +1089,8 @@ pub const App = struct {
         if (self.written_provider.len > 0) self.allocator.free(self.written_provider);
         self.pending_thinking.deinit(self.allocator);
         if (self.pending_after_compaction) |pending| self.allocator.free(pending);
+        if (self.pending_after_compaction_echo) |echo| self.allocator.free(echo);
+        if (self.runtime_echo_suppressed.len > 0) self.allocator.free(self.runtime_echo_suppressed);
         if (self.rate_model.len > 0) self.allocator.free(self.rate_model);
         if (self.rate_provider.len > 0) self.allocator.free(self.rate_provider);
         if (self.session_title.len > 0) self.allocator.free(self.session_title);
@@ -1307,6 +1311,7 @@ pub const App = struct {
         self.discardPendingWorktreeSidecar();
         const store = self.store orelse return error.NoStoreConfigured;
         try self.dropPendingAfterCompaction("the session was resumed before the compaction finished");
+        self.state.clearHeldAfterAbort();
         if (self.state.session_index >= self.state.sessions.items.len) return;
         const selected = self.state.sessions.items[self.state.session_index];
         const runtime = if (self.runtime) |r| r else return error.NoRuntimeConfigured;
@@ -1930,6 +1935,55 @@ pub const App = struct {
         try self.state.appendTranscript(.system, msg);
     }
 
+    fn flagValue(word: ?[]const u8) ?[]const u8 {
+        const value = word orelse return null;
+        if (std.mem.startsWith(u8, value, "--")) return null;
+        return value;
+    }
+
+    fn parseProviderAdd(arg: []const u8) ?custom_providers.NewProvider {
+        var words = std.mem.tokenizeAny(u8, arg, " \t");
+        if (!std.mem.eql(u8, words.next() orelse return null, "add")) return null;
+        var new = custom_providers.NewProvider{
+            .id = flagValue(words.next()) orelse return null,
+            .base_url = flagValue(words.next()) orelse return null,
+        };
+        while (words.next()) |word| {
+            if (std.mem.eql(u8, word, "--api")) {
+                new.api = flagValue(words.next()) orelse return null;
+            } else if (std.mem.eql(u8, word, "--env")) {
+                if (new.auth_none) return null;
+                new.env = flagValue(words.next()) orelse return null;
+            } else if (std.mem.eql(u8, word, "--no-auth")) {
+                if (new.env != null) return null;
+                new.auth_none = true;
+            } else return null;
+        }
+        return new;
+    }
+
+    fn addProvider(self: *App, arg: []const u8) !void {
+        const new = parseProviderAdd(arg) orelse {
+            try self.state.appendTranscript(.@"error", tui_commands.provider_usage);
+            return;
+        };
+        const path = custom_providers.addProvider(self.allocator, new) catch |err| {
+            const msg = try std.fmt.allocPrint(self.allocator, "could not declare {s}: {s}", .{ new.id, @errorName(err) });
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.@"error", msg);
+            return;
+        };
+        defer self.allocator.free(path);
+        const next = if (new.auth_none)
+            try std.fmt.allocPrint(self.allocator, "Declared {s} in {s}, with no credential. Run /model refresh to list its models.", .{ new.id, path })
+        else if (new.env) |name|
+            try std.fmt.allocPrint(self.allocator, "Declared {s} in {s}; it reads its key from {s}. Run /model refresh to list its models.", .{ new.id, path, name })
+        else
+            try std.fmt.allocPrint(self.allocator, "Declared {s} in {s}. Run /login {s} to add its key.", .{ new.id, path, new.id });
+        defer self.allocator.free(next);
+        try self.state.appendTranscript(.system, next);
+    }
+
     fn logoutProviderId(name: []const u8) []const u8 {
         if (provider_catalog.provider(name) != null) return name;
         const index = loginProviderIndex(name) orelse return name;
@@ -2330,7 +2384,7 @@ pub const App = struct {
     }
 
     fn scheduleAutoContinue(self: *App) void {
-        if (self.state.queue.total() > 0) {
+        if (self.state.queue.total() > 0 or self.state.held_after_abort.items.len > 0) {
             self.auto_continue.onUserTurn();
             return;
         }
@@ -2376,6 +2430,8 @@ pub const App = struct {
             self.held_user_message = &.{};
             defer self.allocator.free(message);
             try self.submit(message);
+        } else if (self.state.held_after_abort.items.len > 0) {
+            _ = try self.sendHeld(null);
         }
         while (self.queued_worktree_messages.items.len > 0) {
             const message = self.queued_worktree_messages.orderedRemove(0);
@@ -2481,6 +2537,8 @@ pub const App = struct {
             self.held_user_message = &.{};
             defer self.allocator.free(message);
             try self.submit(message);
+        } else if (self.state.held_after_abort.items.len > 0) {
+            _ = try self.sendHeld(null);
         }
         try self.drainQueuedWorktreeMessageIfIdle();
     }
@@ -2500,6 +2558,7 @@ pub const App = struct {
     pub fn drainEvents(self: *App) !void {
         var session = &(self.session orelse return);
         var completed_agent_end = false;
+        var run_ended = false;
         while (session.popEvent()) |event| {
             var ev = event;
             defer ev.deinit(self.allocator);
@@ -2541,6 +2600,7 @@ pub const App = struct {
                 }
             }
             if (try self.noteTerminalEvent(ev)) completed_agent_end = true;
+            if (ev == .agent_end) run_ended = true;
             self.saveEvent(ev);
             try self.applyRuntimeEvent(ev);
         }
@@ -2578,6 +2638,43 @@ pub const App = struct {
             try self.sendPendingAfterCompaction(completed, resumed_run or self.state.status.streaming);
         }
         if (!completed_agent_end or self.state.queue.total() == 0) try self.drainQueuedWorktreeMessageIfIdle();
+        if (run_ended) try self.sendHeldAfterAbort();
+    }
+
+    fn worktreeSetupRunning(self: *const App) bool {
+        return self.worktree_job != null or self.worktree_management_job != null;
+    }
+
+    fn sendHeld(self: *App, typed: ?[]const u8) !bool {
+        if (self.worktreeSetupRunning()) return true;
+        const held = self.state.held_after_abort.items;
+        var parts = std.ArrayList([]const u8).empty;
+        defer parts.deinit(self.allocator);
+        try parts.appendSlice(self.allocator, held);
+        if (typed) |extra| try parts.append(self.allocator, extra);
+        const text = try std.mem.join(self.allocator, "\n\n", parts.items);
+        defer self.allocator.free(text);
+        const echo = try std.mem.join(self.allocator, "\n\n", parts.items[@min(self.state.held_after_abort_echoed, held.len)..]);
+        defer self.allocator.free(echo);
+        const sent = if (try self.compactBeforeTurnEchoing(text, echo)) true else try self.sendUserTurnEchoing(text, echo);
+        if (sent) self.state.clearHeldAfterAbort();
+        return sent;
+    }
+
+    fn sendHeldAfterAbort(self: *App) !void {
+        const held = self.state.held_after_abort.items;
+        if (held.len == 0) return;
+        const text = try std.mem.join(self.allocator, "\n\n", held);
+        defer self.allocator.free(text);
+        const sent = self.sendHeld(null) catch false;
+        if (sent) return;
+        if (self.state.composer.buffer.items.len > 0) {
+            try self.state.appendTranscript(.@"error", "The queued messages could not be sent; they are kept and go out with your next message, or press esc to drop them.");
+            return;
+        }
+        self.state.clearHeldAfterAbort();
+        try self.state.replaceComposerBuffer(text);
+        try self.state.appendTranscript(.@"error", "The queued messages could not be sent; they are back in the composer.");
     }
 
     fn applyRuntimeEvent(self: *App, event: tui_runtime.TuiEvent) !void {
@@ -2610,6 +2707,11 @@ pub const App = struct {
     fn appendRuntimeUserMessage(self: *App, text: []const u8) !void {
         const trimmed = std.mem.trim(u8, text, " \t\r\n");
         if (trimmed.len == 0) return;
+        if (self.runtime_echo_suppressed.len > 0 and std.mem.eql(u8, trimmed, self.runtime_echo_suppressed)) {
+            self.allocator.free(self.runtime_echo_suppressed);
+            self.runtime_echo_suppressed = &.{};
+            return;
+        }
         if (self.state.transcript.items.len > 0) {
             const last = &self.state.transcript.items[self.state.transcript.items.len - 1];
             if (last.kind == .user and std.mem.eql(u8, last.text.items, trimmed)) return;
@@ -2666,11 +2768,19 @@ pub const App = struct {
         if (trimmed[0] == '/') return try self.submitCommand(trimmed);
         self.forgetRunError();
         self.userTookOver();
+        if (self.state.held_after_abort.items.len > 0 and !self.worktreeSetupRunning()) {
+            _ = try self.sendHeld(trimmed);
+            return;
+        }
         if (try self.compactBeforeTurn(trimmed)) return;
         try self.sendUserTurn(trimmed);
     }
 
     fn sendUserTurn(self: *App, trimmed: []const u8) !void {
+        _ = try self.sendUserTurnEchoing(trimmed, trimmed);
+    }
+
+    fn sendUserTurnEchoing(self: *App, trimmed: []const u8, echo: []const u8) !bool {
         self.applyPendingSessionResetSync() catch |err| {
             if (err == error.PendingSessionReset) {
                 try self.state.appendTranscript(.@"error", "Session reset pending; wait for the current run to finish.");
@@ -2687,7 +2797,7 @@ pub const App = struct {
                 try self.enqueueWorktreeMessage(trimmed);
                 try self.state.appendTranscript(.system, "Worktree setup is still running; your message is queued and will be sent when ready.");
             }
-            return;
+            return true;
         }
         if (self.mode_settings.auto_worktree and self.working_dir.len > 0 and self.worktree_job == null and self.worktree_management_job == null and !self.worktree_attempted and self.session_turns == 0) {
             const home = compat.getEnvVarOwned(self.allocator, "HOME") catch null;
@@ -2707,7 +2817,7 @@ pub const App = struct {
                     self.worktree_job = job;
                     self.held_user_message = held;
                     self.worktree_attempted = true;
-                    return;
+                    return true;
                 }
             }
         }
@@ -2721,12 +2831,18 @@ pub const App = struct {
                 if (err == error.QueueFull) return err;
                 try self.state.status.setError(self.allocator, @errorName(err));
                 try self.state.appendTranscript(.@"error", @errorName(err));
-                return;
+                return false;
             };
         }
         self.session_turns += 1;
-        try self.state.appendUserMessage(trimmed);
+        if (!std.mem.eql(u8, echo, trimmed)) {
+            const suppressed = try self.allocator.dupe(u8, std.mem.trim(u8, trimmed, " \t\r\n"));
+            if (self.runtime_echo_suppressed.len > 0) self.allocator.free(self.runtime_echo_suppressed);
+            self.runtime_echo_suppressed = suppressed;
+        }
+        if (echo.len > 0) try self.state.appendUserMessage(echo);
         self.refreshQueuedCounts();
+        return true;
     }
 
     fn autoCompactThreshold(self: *const App) ?u64 {
@@ -2765,6 +2881,10 @@ pub const App = struct {
     }
 
     fn compactBeforeTurn(self: *App, text: []const u8) !bool {
+        return self.compactBeforeTurnEchoing(text, text);
+    }
+
+    fn compactBeforeTurnEchoing(self: *App, text: []const u8, echo: []const u8) !bool {
         const runtime = self.runtime orelse return false;
         const model = runtime.currentModel() orelse return false;
         const at = tui_state.autoCompactAt(self.state.autocompact, model) orelse return false;
@@ -2777,11 +2897,14 @@ pub const App = struct {
 
         const pending = try self.allocator.dupe(u8, text);
         errdefer self.allocator.free(pending);
+        const pending_echo = try self.allocator.dupe(u8, echo);
+        errdefer self.allocator.free(pending_echo);
         const msg = try std.fmt.allocPrint(self.allocator, "context is at {d} of {d} tokens, past the {d} where it compacts; compacting before this turn.", .{ tokens, model.context_window, at });
         defer self.allocator.free(msg);
         try self.state.appendTranscript(.system, msg);
         try self.startCompaction("");
         self.pending_after_compaction = pending;
+        self.pending_after_compaction_echo = pending_echo;
         return true;
     }
 
@@ -2789,20 +2912,31 @@ pub const App = struct {
         const pending = self.pending_after_compaction orelse return;
         self.pending_after_compaction = null;
         defer self.allocator.free(pending);
+        const echo = self.pending_after_compaction_echo;
+        self.pending_after_compaction_echo = null;
+        defer if (echo) |owned| self.allocator.free(owned);
         if (!completed) {
             try self.state.appendTranscript(.system, "the automatic compaction did not finish; sending the message with the history unchanged");
         }
         if (busy) {
-            try self.steer(pending);
+            const shown = echo orelse pending;
+            if (std.mem.eql(u8, shown, pending)) return try self.steer(pending);
+            if (self.session) |*session| {
+                try session.steer(pending);
+                try self.state.appendSteeredMessageEchoing(pending, shown);
+                self.refreshQueuedCounts();
+            }
             return;
         }
-        try self.sendUserTurn(pending);
+        _ = try self.sendUserTurnEchoing(pending, echo orelse pending);
     }
 
     fn dropPendingAfterCompaction(self: *App, reason: []const u8) !void {
         const pending = self.pending_after_compaction orelse return;
         self.pending_after_compaction = null;
         defer self.allocator.free(pending);
+        if (self.pending_after_compaction_echo) |echo| self.allocator.free(echo);
+        self.pending_after_compaction_echo = null;
         const msg = try std.fmt.allocPrint(self.allocator, "a message waiting on an automatic compaction was not sent: {s}.", .{reason});
         defer self.allocator.free(msg);
         try self.state.appendTranscript(.system, msg);
@@ -2896,6 +3030,7 @@ pub const App = struct {
             .rename_session => try self.renameSession(command.arg orelse ""),
             .refresh_models => try self.reportModelRefresh(self.refreshModels(), "refreshing models failed"),
             .logout_provider => try self.logoutProvider(command.arg orelse ""),
+            .add_provider => try self.addProvider(command.arg orelse ""),
             .none => {},
         }
         if (command.kind == .model and command.arg != null and result.action != .refresh_models) self.persistCurrentModel();
@@ -3740,7 +3875,7 @@ pub const TuiModel = struct {
             app.state.composer.clear();
             return;
         }
-        if (streamActive(app)) {
+        if (streamActive(app) or app.state.held_after_abort.items.len > 0) {
             abortTurn(app);
             return;
         }
@@ -3889,7 +4024,12 @@ pub const TuiModel = struct {
     const max_queued_rows: usize = 3;
 
     fn renderQueuedFollowUps(allocator: std.mem.Allocator, state: *const tui_state.AppState, width: usize) ![]const u8 {
-        const pending = state.pending_follow_ups.items;
+        const held = state.held_after_abort.items[@min(state.held_after_abort_echoed, state.held_after_abort.items.len)..];
+        var waiting = std.ArrayList([]const u8).empty;
+        defer waiting.deinit(allocator);
+        try waiting.appendSlice(allocator, held);
+        try waiting.appendSlice(allocator, state.pending_follow_ups.items);
+        const pending = waiting.items;
         if (pending.len == 0) return "";
         var out: std.Io.Writer.Allocating = .init(allocator);
         errdefer out.deinit();
@@ -4735,6 +4875,46 @@ test "App logout removes only that provider's saved credential" {
     try std.testing.expect(storage.providers.contains("other-gateway"));
 }
 
+test "App /provider add declares a provider that /login then accepts" {
+    var env = try TempHome.init("home-provider-add");
+    defer env.deinit();
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    try std.testing.expect(!app.isDeclaredCustomProvider("gateway"));
+
+    try app.submit("/provider add gateway https://gw.test/v1 --api openai-responses");
+    const said = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expectEqual(tui_state.TranscriptKind.system, said.kind);
+    try std.testing.expect(std.mem.endsWith(u8, said.text.items, "Run /login gateway to add its key."));
+    try std.testing.expect(app.isDeclaredCustomProvider("gateway"));
+
+    try app.submit("/login gateway");
+    const pending = app.login orelse return error.TestExpectedLogin;
+    try std.testing.expectEqualStrings("gateway", pending.provider_id);
+    for (app.state.transcript.items) |entry| try std.testing.expect(std.mem.indexOf(u8, entry.text.items, "unknown login provider") == null);
+    app.finishLogin();
+
+    try app.submit("/provider add gateway https://other.test");
+    const refused = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expectEqualStrings("could not declare gateway: DuplicateProviderId", refused.text.items);
+
+    inline for (.{
+        "/provider add other https://other.test --env A --no-auth",
+        "/provider add other https://other.test --env --no-auth",
+        "/provider add other https://other.test --api --env A",
+        "/provider add --env A https://other.test",
+    }) |input| {
+        try app.submit(input);
+        try std.testing.expectEqualStrings(tui_commands.provider_usage, app.state.transcript.items[app.state.transcript.items.len - 1].text.items);
+    }
+
+    const providers = try custom_providers.load(std.testing.allocator, custom_providers.max_config_bytes);
+    defer custom_providers.deinitProviders(std.testing.allocator, providers);
+    try std.testing.expectEqual(@as(usize, 1), providers.len);
+    try std.testing.expectEqualStrings("openai-responses", providers[0].api);
+}
+
 test "App only offers an api-key login for a declared custom provider" {
     var env = try TempHome.init("home-custom-login");
     defer env.deinit();
@@ -5563,6 +5743,144 @@ const auto_compact_test_model = ai_types.Model{
     .context_window = 100_000,
     .max_tokens = 1024,
 };
+
+test "esc during a run sends the queued messages as a new run once the aborted one ends" {
+    var mock = MockAppSession{ .queued_counts = .{ .follow_up = 1 } };
+    defer mock.deinit();
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.session = mock.session();
+    app.state.status.streaming = true;
+    try app.state.appendSteeredMessage("check the logs first");
+    try app.state.appendQueuedFollowUp("then open a PR");
+
+    try app.submit("/abort");
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+    try std.testing.expectEqual(@as(usize, 2), app.state.held_after_abort.items.len);
+
+    try mock.eventStream().push(.{ .agent_end = .{ .reason = .cancelled } });
+    try app.drainEvents();
+
+    try std.testing.expectEqual(@as(usize, 1), mock.submit_count);
+    try std.testing.expectEqualStrings("check the logs first\n\nthen open a PR", mock.submitted.items[0]);
+    try std.testing.expectEqual(@as(usize, 0), app.state.held_after_abort.items.len);
+    try mock.eventStream().push(.{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "check the logs first\n\nthen open a PR")) } });
+    try app.drainEvents();
+    const last = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expectEqual(tui_state.TranscriptKind.user, last.kind);
+    try std.testing.expectEqualStrings("then open a PR", last.text.items);
+    var echoes: usize = 0;
+    for (app.state.transcript.items) |entry| {
+        if (entry.kind == .user and std.mem.eql(u8, entry.text.items, "check the logs first")) echoes += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), echoes);
+}
+
+test "held follow-ups stay in the queued rows until they are sent" {
+    var mock = MockAppSession{ .queued_counts = .{ .follow_up = 1 } };
+    defer mock.deinit();
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.session = mock.session();
+    app.state.status.streaming = true;
+    try app.state.appendSteeredMessage("shown already");
+    try app.state.appendQueuedFollowUp("then open a PR");
+    try app.submit("/abort");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const rows = try TuiModel.renderQueuedFollowUps(arena.allocator(), &app.state, 80);
+    try std.testing.expect(std.mem.indexOf(u8, rows, "queued  then open a PR") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rows, "shown already") == null);
+}
+
+test "held messages that fail to send while a draft is open are kept for the next message" {
+    var mock = MockAppSession{ .submit_error = error.NoModelConfigured, .queued_counts = .{ .follow_up = 1 } };
+    defer mock.deinit();
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.session = mock.session();
+    app.state.status.streaming = true;
+    try app.state.appendQueuedFollowUp("then open a PR");
+    try app.submit("/abort");
+    try app.state.replaceComposerBuffer("a draft in progress");
+
+    try mock.eventStream().push(.{ .agent_end = .{ .reason = .cancelled } });
+    try app.drainEvents();
+
+    try std.testing.expectEqual(@as(usize, 1), app.state.held_after_abort.items.len);
+    try std.testing.expectEqualStrings("a draft in progress", app.state.composer.text());
+    const last = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expectEqualStrings("The queued messages could not be sent; they are kept and go out with your next message, or press esc to drop them.", last.text.items);
+}
+
+test "held messages that cannot be sent go back to the composer instead of being lost" {
+    var mock = MockAppSession{ .submit_error = error.NoModelConfigured, .queued_counts = .{ .follow_up = 1 } };
+    defer mock.deinit();
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.session = mock.session();
+    app.state.status.streaming = true;
+    try app.state.appendQueuedFollowUp("then open a PR");
+
+    try app.submit("/abort");
+    try mock.eventStream().push(.{ .agent_end = .{ .reason = .cancelled } });
+    try app.drainEvents();
+
+    try std.testing.expectEqual(@as(usize, 0), app.state.held_after_abort.items.len);
+    try std.testing.expectEqualStrings("then open a PR", app.state.composer.text());
+    const last = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expectEqualStrings("The queued messages could not be sent; they are back in the composer.", last.text.items);
+}
+
+test "a message typed while an aborted run winds down carries the held messages with it" {
+    var mock = MockAppSession{ .queued_counts = .{ .follow_up = 1 } };
+    defer mock.deinit();
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.session = mock.session();
+    app.state.status.streaming = true;
+    try app.state.appendQueuedFollowUp("then open a PR");
+
+    try app.submit("/abort");
+    try app.submit("and add a test");
+    try std.testing.expectEqual(@as(usize, 1), mock.submit_count);
+    try std.testing.expectEqualStrings("then open a PR\n\nand add a test", mock.submitted.items[0]);
+    try std.testing.expectEqual(@as(usize, 0), app.state.held_after_abort.items.len);
+
+    try mock.eventStream().push(.{ .agent_end = .{ .reason = .cancelled } });
+    try app.drainEvents();
+    try std.testing.expectEqual(@as(usize, 1), mock.submit_count);
+}
+
+test "held messages wait for the automatic compaction a typed turn would wait for" {
+    var mock = MockAppSession{ .history_messages = &auto_compact_history, .queued_counts = .{ .follow_up = 1 } };
+    defer mock.deinit();
+    var app = try autoCompactTestApp(&mock);
+    defer app.deinit();
+    app.state.status.streaming = true;
+    try app.state.appendSteeredMessage("check the logs first");
+    try app.state.appendQueuedFollowUp("then open a PR");
+
+    try app.submit("/abort");
+    try mock.eventStream().push(.{ .agent_end = .{ .reason = .cancelled } });
+    try app.drainEvents();
+    try std.testing.expectEqual(@as(usize, 1), mock.compact_count);
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+
+    try mock.eventStream().push(.{ .compaction_end = .{
+        .outcome = .completed,
+        .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "summary")),
+    } });
+    try app.drainEvents();
+    try std.testing.expectEqual(@as(usize, 1), mock.submit_count);
+    try std.testing.expectEqualStrings("check the logs first\n\nthen open a PR", mock.submitted.items[0]);
+    var echoes: usize = 0;
+    for (app.state.transcript.items) |entry| {
+        if (entry.kind == .user and std.mem.indexOf(u8, entry.text.items, "check the logs first") != null) echoes += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), echoes);
+}
 
 test "autocompact holds a turn until the compaction it started has finished" {
     var mock = MockAppSession{ .history_messages = &auto_compact_history };
@@ -6748,6 +7066,8 @@ const MockAppSession = struct {
     compact_count: usize = 0,
     compact_focus: []u8 = &.{},
     compact_transcripts: std.ArrayList([]u8) = .empty,
+    submitted: std.ArrayList([]u8) = .empty,
+    submit_error: ?anyerror = null,
 
     fn session(self: *MockAppSession) tui_runtime.TuiSession {
         return .{
@@ -6816,9 +7136,12 @@ const MockAppSession = struct {
     }
 
     fn submitTurn(ctx: ?*anyopaque, text: []const u8) anyerror!void {
-        _ = text;
         const self = ptr(ctx);
+        if (self.submit_error) |err| return err;
         self.submit_count += 1;
+        const owned = try std.testing.allocator.dupe(u8, text);
+        errdefer std.testing.allocator.free(owned);
+        try self.submitted.append(std.testing.allocator, owned);
     }
 
     fn steer(ctx: ?*anyopaque, text: []const u8) anyerror!void {
@@ -6888,6 +7211,8 @@ const MockAppSession = struct {
 
     fn deinit(self: *MockAppSession) void {
         if (self.events_initialized) self.events.deinit();
+        for (self.submitted.items) |text| std.testing.allocator.free(text);
+        self.submitted.deinit(std.testing.allocator);
         std.testing.allocator.free(self.compact_focus);
         for (self.compact_transcripts.items) |path| std.testing.allocator.free(path);
         self.compact_transcripts.deinit(std.testing.allocator);
@@ -7716,6 +8041,39 @@ test "resume clears a compaction the saved session never finished" {
     try std.testing.expectEqualStrings("interrupted", app.session_id);
     try std.testing.expect(!app.state.status.compacting);
     try std.testing.expect(!app.state.status.streaming);
+}
+
+test "resuming another session drops messages held from an abort in the one left" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+
+    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    errdefer std.testing.allocator.destroy(runtime);
+    runtime.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = unusedStream } });
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.runtime = runtime;
+    app.store = try session_store.Store.init(std.testing.allocator, base);
+
+    var meta = session_store.SessionMetadata{
+        .session_id = try std.testing.allocator.dupe(u8, "elsewhere"),
+        .model = try std.testing.allocator.dupe(u8, ""),
+        .provider = try std.testing.allocator.dupe(u8, ""),
+        .last_active = 1,
+    };
+    defer meta.deinit(std.testing.allocator);
+    try app.store.?.save(meta, .{ .agent_start = .{} });
+
+    try app.state.appendQueuedFollowUp("meant for the session being left");
+    try app.state.holdQueuedAfterAbort();
+    try std.testing.expectEqual(@as(usize, 1), app.state.held_after_abort.items.len);
+
+    try app.loadSessions();
+    try app.resumeSelectedSession();
+    try std.testing.expectEqualStrings("elsewhere", app.session_id);
+    try std.testing.expectEqual(@as(usize, 0), app.state.held_after_abort.items.len);
 }
 
 test "resume restores the session's thinking level, and a change after it is saved to that session" {

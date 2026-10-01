@@ -346,7 +346,6 @@ pub const TokenRateSet = struct {
         if (self.previous.hasFigure()) return self.previous;
         return .{};
     }
-
 };
 
 pub fn estimateTokenBytes(bytes: u64) u64 {
@@ -678,6 +677,8 @@ pub const AppState = struct {
     pending_steers: std.ArrayList([]u8) = .empty,
     steers_reconciled: u64 = 0,
     pending_follow_ups: std.ArrayList([]u8) = .empty,
+    held_after_abort: std.ArrayList([]u8) = .empty,
+    held_after_abort_echoed: usize = 0,
     picker_filter: std.ArrayList(u8) = .empty,
 
     pub fn init(allocator: std.mem.Allocator) AppState {
@@ -705,6 +706,8 @@ pub const AppState = struct {
         self.pending_steers.deinit(self.allocator);
         self.clearPendingFollowUps();
         self.pending_follow_ups.deinit(self.allocator);
+        self.clearHeldAfterAbort();
+        self.held_after_abort.deinit(self.allocator);
         self.picker_filter.deinit(self.allocator);
         if (self.last_tool_calls_json.len > 0) self.allocator.free(self.last_tool_calls_json);
         if (self.cwd_display.len > 0) self.allocator.free(self.cwd_display);
@@ -861,11 +864,16 @@ pub const AppState = struct {
     }
 
     pub fn appendSteeredMessage(self: *AppState, text: []const u8) !void {
+        return self.appendSteeredMessageEchoing(text, text);
+    }
+
+    pub fn appendSteeredMessageEchoing(self: *AppState, text: []const u8, echo: []const u8) !void {
         const owned = try self.allocator.dupe(u8, text);
         errdefer self.allocator.free(owned);
         try self.pending_steers.append(self.allocator, owned);
         errdefer _ = self.pending_steers.pop();
-        try self.appendUserMessage(text);
+        if (echo.len == 0) return;
+        try self.appendUserMessage(echo);
         if (self.active_user_entry) |index| {
             if (index < self.transcript.items.len and self.transcript.items[index].kind == .user) return;
         }
@@ -895,6 +903,21 @@ pub const AppState = struct {
     pub fn clearPendingFollowUps(self: *AppState) void {
         for (self.pending_follow_ups.items) |pending| self.allocator.free(pending);
         self.pending_follow_ups.clearRetainingCapacity();
+    }
+
+    pub fn holdQueuedAfterAbort(self: *AppState) !void {
+        try self.held_after_abort.ensureUnusedCapacity(self.allocator, self.pending_steers.items.len + self.pending_follow_ups.items.len);
+        if (self.held_after_abort.items.len == 0) self.held_after_abort_echoed = self.pending_steers.items.len;
+        self.held_after_abort.appendSliceAssumeCapacity(self.pending_steers.items);
+        self.held_after_abort.appendSliceAssumeCapacity(self.pending_follow_ups.items);
+        self.pending_steers.clearRetainingCapacity();
+        self.pending_follow_ups.clearRetainingCapacity();
+    }
+
+    pub fn clearHeldAfterAbort(self: *AppState) void {
+        for (self.held_after_abort.items) |held| self.allocator.free(held);
+        self.held_after_abort.clearRetainingCapacity();
+        self.held_after_abort_echoed = 0;
     }
 
     pub fn toolById(self: *const AppState, id: []const u8) ?*const ToolEntry {
@@ -2531,7 +2554,6 @@ test "bytes convert at the agent's own divisor" {
     try std.testing.expectEqual(@as(u64, 2), estimateTokenBytes(5));
     try std.testing.expectEqual(@as(u64, 100), estimateTokenBytes(400));
 }
-
 
 test "AppState applies transcript and tool events" {
     var state = AppState.init(std.testing.allocator);
@@ -4287,4 +4309,15 @@ test "AppState updates backpressure status fields" {
     try state.applyEvent(.{ .backpressure_status = .{ .active = false, .dropped_count = 3 } });
     try std.testing.expect(!state.backpressure_active);
     try std.testing.expectEqual(@as(u64, 3), state.dropped_event_count);
+}
+
+test "a steer sent with a narrower echo is tracked whole but shown only as its echo" {
+    var state = AppState.init(std.testing.allocator);
+    defer state.deinit();
+    try state.appendSteeredMessageEchoing("shown before\n\nnew part", "new part");
+    try state.appendSteeredMessageEchoing("shown before", "");
+    try std.testing.expectEqual(@as(usize, 2), state.pending_steers.items.len);
+    try std.testing.expectEqualStrings("shown before\n\nnew part", state.pending_steers.items[0]);
+    try std.testing.expectEqual(@as(usize, 1), state.transcript.items.len);
+    try std.testing.expectEqualStrings("new part", state.transcript.items[0].text.items);
 }
