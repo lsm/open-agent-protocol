@@ -609,12 +609,14 @@ was settled by #656 either.
   above.** Go registers patterns that include the method (`mux.HandleFunc("GET /adapters", ...)`,
   `servehttp/server.go:69`) and the module targets `go 1.26`, where `http.ServeMux` answers a request
   whose path matches but whose method does not with `405 Method Not Allowed` and an `Allow` header.
-  The Zig hub contains **no** `405` at all, and `answer()` (`http.zig:378-383`) never inspects
-  `request.method` — the only method-aware function in the file is `bodyAllowedFor` at `:368`, which
-  exists to exclude `HEAD` and decides nothing about routing. So a wrong method on a known path is
-  `404` here and `405` in Go. **No test name in either tree mentions `405`**, so nothing
-  pins the behaviour either way. The open question is what the draft says a wrong method should
-  answer, and it is recorded as open. **It is recorded here as a separate question on purpose.** The
+  The `http.zig` response path has no `405` — `answer()` (`http.zig:378-383`) never
+  inspects `request.method`, and `bodyAllowedFor` at `:368` only excludes `HEAD`. The **router**,
+  however, does distinguish it: `route()` in `zig/src/hub/routes.zig:174` returns
+  `.method_not_allowed` for a known path with the wrong method, distinct from `.not_found`, so the
+  hub is method-aware below the HTTP dispatcher even though `answer()` is not. Whether that
+  distinction is served as an HTTP `405` on the wrong-method path is the open question; it is not
+  settled here, so the open question is what the draft says a wrong method should
+  answer. **It is recorded here as a separate question on purpose.** The
   fact that both this and the row above are decided by the order of checks inside one function is a
   *coincidence of implementation*, and the unproved suggestion that the `405` and the media-precedence
   questions must therefore be settled as **one** decision is **not** carried forward as settled
@@ -626,15 +628,16 @@ was settled by #656 either.
   `drain_total_cap_bytes = 1 MiB` (`:207`) while `max_body_bytes` is 16 MiB (`:7`), so a request
   declaring between 1 MiB and 16 MiB with a non-JSON `Content-Type` is refused `415` by the gate and
   then drained **short**, leaving bytes unread at close — which is the condition the drain paragraph
-  below, at `:637`-`:640`, identifies as able to reset the connection and discard the refusal. **No test exercises that
+  below, at `:639`-`:645`, identifies as able to reset the connection and discard the refusal. **No test exercises that
   case.** The `415` proof sends bodies of `"xx"`, `"{}"` and `""`; the over-cap declared sizes in
   `hub_toobig_test.go` are the `413` path, not this one. One correction to the reason this gap was
   previously carried with: it used to be blamed on a test helper that capped writes at 256 KiB, and
   **that cap no longer exists** — `writeBody` at `hub_largebody_test.go:190` writes the full declared
   amount in 32 KiB blocks. So the absence is not a helper limitation any more; it is simply that no
   test asks the question. **What is still unknown is unchanged and is not claimed either way here:**
-  whether the daemon's `415` survives the close in that window. The `413` complete-answer proof and
-  the drain-cap proof cover their own cases and do not cover this one. Carried forward from #656.
+  whether the daemon's `415` survives the close in that window. The `413` complete-answer proof,
+  the `413` large-body real-socket proof (`TestHubAddrRefusesALargeRefusedHeadOverARealSocket`) and the
+  drain-cap proof cover their own cases and do not cover this one. Carried forward from #656.
 
 **A body the daemon refused to read is drained before the socket closes.** A
 `403` or a `413` is answered without reading the body the head declared, and a
