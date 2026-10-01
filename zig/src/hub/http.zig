@@ -389,7 +389,63 @@ pub fn declaresJson(content_type: ?[]const u8) bool {
     const named = content_type orelse return false;
     const media = std.mem.trim(u8, named, " \t");
     const cut = std.mem.indexOfScalar(u8, media, ';') orelse media.len;
-    return std.ascii.eqlIgnoreCase(std.mem.trim(u8, media[0..cut], " \t"), "application/json");
+    if (!std.ascii.eqlIgnoreCase(std.mem.trim(u8, media[0..cut], " \t"), "application/json")) return false;
+    return parametersWellFormed(media[cut..]);
+}
+
+fn parametersWellFormed(rest: []const u8) bool {
+    var seen: [32][]const u8 = undefined;
+    var seen_len: usize = 0;
+    var i: usize = 0;
+    while (i < rest.len and rest[i] == ';') {
+        i += 1;
+        while (i < rest.len and (rest[i] == ' ' or rest[i] == '\t')) i += 1;
+        const name_start = i;
+        while (i < rest.len and isTokenChar(rest[i])) i += 1;
+        if (i == name_start) return false;
+        const name = rest[name_start..i];
+        while (i < rest.len and (rest[i] == ' ' or rest[i] == '\t')) i += 1;
+        if (i >= rest.len or rest[i] != '=') return false;
+        i += 1;
+        while (i < rest.len and (rest[i] == ' ' or rest[i] == '\t')) i += 1;
+        if (i < rest.len and rest[i] == '"') {
+            i += 1;
+            var closed = false;
+            while (i < rest.len) {
+                if (rest[i] == '\\' and i + 1 < rest.len) {
+                    i += 2;
+                    continue;
+                }
+                if (rest[i] == '"') {
+                    closed = true;
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            if (!closed) return false;
+        } else {
+            const value_start = i;
+            while (i < rest.len and isTokenChar(rest[i])) i += 1;
+            if (i == value_start) return false;
+        }
+        for (seen[0..seen_len]) |prior| {
+            if (std.ascii.eqlIgnoreCase(prior, name)) return false;
+        }
+        if (seen_len >= seen.len) return false;
+        seen[seen_len] = name;
+        seen_len += 1;
+        while (i < rest.len and (rest[i] == ' ' or rest[i] == '\t')) i += 1;
+        if (i < rest.len and rest[i] != ';') return false;
+    }
+    return true;
+}
+
+fn isTokenChar(c: u8) bool {
+    return switch (c) {
+        '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~' => true,
+        else => (c >= '0' and c <= '9') or (c >= 'A' and c <= 'Z') or (c >= 'a' and c <= 'z'),
+    };
 }
 
 pub fn writeAnswer(stream: *compat.net.Stream, arena: std.mem.Allocator, next_id: u64, given: Answer, body_allowed: bool) !void {
@@ -555,6 +611,27 @@ test "a charset is admitted, because application/json registers no parameters" {
     defer tabbed.deinit(testing.allocator);
     try testing.expectEqual(Answer.not_found, answer(loopback, tabbed));
     try testing.expectEqual(Answer.not_found, answer(loopback, spaced));
+}
+
+test "a malformed media-type parameter is refused, as net/http refuses it" {
+    const loopback: []const []const u8 = &.{};
+    for ([_][]const u8{
+        "application/json; charset",
+        "application/json; charset=",
+        "application/json; =utf-8",
+        "application/json; charset=\"unterminated",
+        "application/json; charset=utf-8; charset=utf-16",
+        "application/json; charset utf-8",
+    }) |value| {
+        const raw = try std.fmt.allocPrint(testing.allocator, "POST /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: {s}\r\nContent-Length: 2\r\n\r\n{{}}", .{value});
+        defer testing.allocator.free(raw);
+        var request = try requestOver(raw);
+        defer request.deinit(testing.allocator);
+        try testing.expectEqualStrings("unsupported_media_type", answer(loopback, request).refusal.code);
+    }
+    var quoted = try requestOver("POST /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: application/json; charset=\"utf-8\"\r\nContent-Length: 2\r\n\r\n{}");
+    defer quoted.deinit(testing.allocator);
+    try testing.expectEqual(Answer.not_found, answer(loopback, quoted));
 }
 
 test "a request with no body names no media type and is not refused for it" {
