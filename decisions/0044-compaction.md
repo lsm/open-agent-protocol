@@ -10,7 +10,9 @@ Amends: nothing. Extends
 [Decision 0002](0002-admission-before-start.md) without amending either, and
 leans on [Decision 0007](0007-queue-delivery.md) and
 [Decision 0013](0013-steer.md) for what happens to a message that arrives
-while a compaction runs
+while a compaction runs, extending 0013's `invalid_steer_target` reason
+vocabulary by one reason (below), so it settles with 0013 rather than ahead
+of it
 Gated by: [Decision 0003](0003-staged-unit-graduation.md)
 Tracks: #613, and gap G6 of [`docs/tui-oap-seam.md`](../docs/tui-oap-seam.md)
 
@@ -71,6 +73,8 @@ of those events.
   degraded control does.
 - `continue`: when `true`, the run goes on to a model turn once the history is
   replaced, with no new user message. Absent means `false`.
+- `allow_degraded_features`, as on submit and open: the keys of degraded
+  controls the caller accepts.
 - `metadata`, as on submit.
 
 `session.compact.response` carries the members a submit response does — the
@@ -154,14 +158,19 @@ session, and the units that already exist decide it:
   is admitted against the run and applied at the first safe boundary after the
   compaction — the start of the model turn that follows it. A compaction run
   without `continue` has no model turn to steer, and a steer against it fails
-  before admission with `invalid_steer_target`, `details.reason:
-  "not_steerable"`, the reason T4 already defines.
+  before admission with `invalid_steer_target` and a new reason,
+  `details.reason: "no_model_turn"`. T4 closes `not_steerable` to the one
+  `cancelling` state and reserves extending the vocabulary for a later
+  decision; this is that extension. `no_model_turn` is a lifecycle reason and
+  ranks with `not_steerable`, after `cross_session` and `unknown_target`; a
+  compaction run that is also `cancelling` reports `not_steerable`, because
+  accepted cancellation is the stronger fact.
 - With neither, it is refused `illegal_run_transition`, as any submit to a busy
   session is under Decision 0001. Holding it is the control layer's choice,
   not the endpoint's.
 
-No new rule is needed here, and that is the reason to model the compaction as
-a run.
+Apart from the one steer reason, no new rule is needed here, and that is the
+reason to model the compaction as a run.
 
 ### Continuing after a compaction
 
