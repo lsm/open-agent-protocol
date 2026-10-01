@@ -864,11 +864,16 @@ pub const AppState = struct {
     }
 
     pub fn appendSteeredMessage(self: *AppState, text: []const u8) !void {
+        return self.appendSteeredMessageEchoing(text, text);
+    }
+
+    pub fn appendSteeredMessageEchoing(self: *AppState, text: []const u8, echo: []const u8) !void {
         const owned = try self.allocator.dupe(u8, text);
         errdefer self.allocator.free(owned);
         try self.pending_steers.append(self.allocator, owned);
         errdefer _ = self.pending_steers.pop();
-        try self.appendUserMessage(text);
+        if (echo.len == 0) return;
+        try self.appendUserMessage(echo);
         if (self.active_user_entry) |index| {
             if (index < self.transcript.items.len and self.transcript.items[index].kind == .user) return;
         }
@@ -4304,4 +4309,15 @@ test "AppState updates backpressure status fields" {
     try state.applyEvent(.{ .backpressure_status = .{ .active = false, .dropped_count = 3 } });
     try std.testing.expect(!state.backpressure_active);
     try std.testing.expectEqual(@as(u64, 3), state.dropped_event_count);
+}
+
+test "a steer sent with a narrower echo is tracked whole but shown only as its echo" {
+    var state = AppState.init(std.testing.allocator);
+    defer state.deinit();
+    try state.appendSteeredMessageEchoing("shown before\n\nnew part", "new part");
+    try state.appendSteeredMessageEchoing("shown before", "");
+    try std.testing.expectEqual(@as(usize, 2), state.pending_steers.items.len);
+    try std.testing.expectEqualStrings("shown before\n\nnew part", state.pending_steers.items[0]);
+    try std.testing.expectEqual(@as(usize, 1), state.transcript.items.len);
+    try std.testing.expectEqualStrings("new part", state.transcript.items[0].text.items);
 }

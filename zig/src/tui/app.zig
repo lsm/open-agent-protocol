@@ -2381,6 +2381,8 @@ pub const App = struct {
             self.held_user_message = &.{};
             defer self.allocator.free(message);
             try self.submit(message);
+        } else if (self.state.held_after_abort.items.len > 0) {
+            _ = try self.sendHeld(null);
         }
         while (self.queued_worktree_messages.items.len > 0) {
             const message = self.queued_worktree_messages.orderedRemove(0);
@@ -2486,6 +2488,8 @@ pub const App = struct {
             self.held_user_message = &.{};
             defer self.allocator.free(message);
             try self.submit(message);
+        } else if (self.state.held_after_abort.items.len > 0) {
+            _ = try self.sendHeld(null);
         }
         try self.drainQueuedWorktreeMessageIfIdle();
     }
@@ -2588,7 +2592,12 @@ pub const App = struct {
         if (run_ended) try self.sendHeldAfterAbort();
     }
 
+    fn worktreeSetupRunning(self: *const App) bool {
+        return self.worktree_job != null or self.worktree_management_job != null;
+    }
+
     fn sendHeld(self: *App, typed: ?[]const u8) !bool {
+        if (self.worktreeSetupRunning()) return true;
         const held = self.state.held_after_abort.items;
         var parts = std.ArrayList([]const u8).empty;
         defer parts.deinit(self.allocator);
@@ -2710,7 +2719,7 @@ pub const App = struct {
         if (trimmed[0] == '/') return try self.submitCommand(trimmed);
         self.forgetRunError();
         self.userTookOver();
-        if (self.state.held_after_abort.items.len > 0) {
+        if (self.state.held_after_abort.items.len > 0 and !self.worktreeSetupRunning()) {
             _ = try self.sendHeld(trimmed);
             return;
         }
@@ -2861,7 +2870,13 @@ pub const App = struct {
             try self.state.appendTranscript(.system, "the automatic compaction did not finish; sending the message with the history unchanged");
         }
         if (busy) {
-            try self.steer(pending);
+            const shown = echo orelse pending;
+            if (std.mem.eql(u8, shown, pending)) return try self.steer(pending);
+            if (self.session) |*session| {
+                try session.steer(pending);
+                try self.state.appendSteeredMessageEchoing(pending, shown);
+                self.refreshQueuedCounts();
+            }
             return;
         }
         _ = try self.sendUserTurnEchoing(pending, echo orelse pending);
