@@ -1227,10 +1227,10 @@ fn loadModelsDev(allocator: std.mem.Allocator, mode: CatalogLoadMode) ?std.json.
         return parseModelsDev(allocator, body) catch null;
     }
     if (mode == .allow_cache) {
-        if (loadCachedModelsDev(allocator, anthropic_catalog_max_age_ms)) |parsed| return parsed;
+        if (loadCachedModelsDev(allocator)) |parsed| return parsed;
     }
     if (fetchModelsDev(allocator)) |parsed| return parsed;
-    return loadCachedModelsDev(allocator, null);
+    return loadCachedModelsDev(allocator);
 }
 
 fn parseModelsDev(allocator: std.mem.Allocator, body: []const u8) !std.json.Parsed(std.json.Value) {
@@ -1242,13 +1242,9 @@ fn parseModelsDev(allocator: std.mem.Allocator, body: []const u8) !std.json.Pars
     return parsed;
 }
 
-fn loadCachedModelsDev(allocator: std.mem.Allocator, max_age_ms: ?i64) ?std.json.Parsed(std.json.Value) {
+fn loadCachedModelsDev(allocator: std.mem.Allocator) ?std.json.Parsed(std.json.Value) {
     const path = makaiCatalogPath(allocator, models_dev_cache_name) catch return null;
     defer allocator.free(path);
-    if (max_age_ms) |max_age| {
-        const modified = compat.fs.modifiedMillis(compat.fs.getCwd(), path) catch return null;
-        if (!catalogIsFresh(modified, compat.time.nowMillis(), max_age)) return null;
-    }
     const data = compat.fs.readFileAlloc(allocator, compat.fs.getCwd(), path, max_models_dev_bytes) catch return null;
     defer allocator.free(data);
     return parseModelsDev(allocator, data) catch null;
