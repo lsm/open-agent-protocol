@@ -1940,6 +1940,16 @@ pub const App = struct {
         for (provider_catalog.all) |row| {
             if (provider_catalog.sharesCredentialEnvWith(provider_id, row.id)) try shared.append(self.allocator, row.id);
         }
+        if (self.login) |pending| {
+            var affected = std.mem.eql(u8, pending.provider_id, provider_id);
+            for (shared.items) |id| affected = affected or std.mem.eql(u8, pending.provider_id, id);
+            if (affected) {
+                const msg = try std.fmt.allocPrint(self.allocator, "a login to {s} is in progress; cancel it before logging out", .{pending.provider_id});
+                defer self.allocator.free(msg);
+                try self.state.appendTranscript(.@"error", msg);
+                return;
+            }
+        }
         const removed = oauth_storage.AuthStorage.removeStored(self.allocator, provider_id, shared.items) catch |err| {
             const msg = try std.fmt.allocPrint(self.allocator, "logout failed: {s}", .{@errorName(err)});
             defer self.allocator.free(msg);
@@ -4693,6 +4703,12 @@ test "App logout removes only that provider's saved credential" {
     try compat.fs.writeFile(compat.fs.getCwd(), config_path,
         \\{"providers":[{"id":"gateway","base_url":"https://gw.test","auth":{"env":"HOME"}}]}
     );
+
+    app.login = try tui_login.LoginSession.startApiKey(std.testing.allocator, "gateway");
+    try app.submit("/logout gateway");
+    try std.testing.expectEqualStrings("a login to gateway is in progress; cancel it before logging out", app.state.transcript.items[0].text.items);
+    app.finishLogin();
+    app.state.clearTranscript();
 
     try app.submit("/logout gateway");
     try std.testing.expectEqualStrings("logged out of gateway", app.state.transcript.items[0].text.items);

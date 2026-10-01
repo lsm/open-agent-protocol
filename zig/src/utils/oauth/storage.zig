@@ -977,8 +977,8 @@ pub const AuthStorage = struct {
     pub fn removeStored(allocator: std.mem.Allocator, provider_id: []const u8, shared_key_ids: []const []const u8) !bool {
         var file = try loadFromFileOpening(allocator, null, .only_missing_is_empty);
         defer file.deinit();
-        const file_removed = file.removeCredentials(provider_id, shared_key_ids);
-        var removed = false;
+        var removed = file.removeCredentials(provider_id, shared_key_ids);
+        if (removed) try file.saveToFile();
         if (shouldUseKeychain()) {
             switch (try loadFromKeychainWithCodexImport(allocator, false)) {
                 .found => |found| {
@@ -992,10 +992,6 @@ pub const AuthStorage = struct {
                 .not_found => {},
                 .unavailable, .needs_interaction, .busy => return error.KeychainUnavailable,
             }
-        }
-        if (file_removed) {
-            try file.saveToFile();
-            removed = true;
         }
         return removed;
     }
