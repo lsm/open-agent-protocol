@@ -1139,7 +1139,7 @@ def scenario_steer_abort(args):
             raise ScenarioError("steer-abort: steer echo is not in the transcript directly above the abort row")
         run.note("/abort during a held stream cancels the turn, clears the streaming status, and the flushed history renders the steered text as a permanent 'You' entry directly above the abort row")
 
-        run.session.wait_for(b"held-steer-sent", 10.0, "the held steer sent as a new turn after the abort")
+        run.session.wait_for(b"held-steer-sent", 10.0, "the held steer sent as a new turn after the abort", since=abort_from)
         run.settle(1.0)
         run.frame("held-steer-sent")
         if run.session.plain.count(plain_text(b"steer this turn")) < 1:
