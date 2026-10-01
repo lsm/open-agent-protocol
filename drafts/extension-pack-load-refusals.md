@@ -219,6 +219,22 @@ is stated per shape, because it is not uniformly nothing:
   `response` nor `event`, so the type bypasses request correlation and its
   declared capability enforcement while the pack loads. `goap` rejects both
   shapes through its schema.
+- an `envelope_types` entry whose **`refusals` is not an array**, or is an array
+  with non-string items, is accepted: a non-array reads as absent through
+  `arrayField` (`packs.zig:371`) and a non-string item is discarded by `asString`
+  (`packs.zig:373`), so the pack loads with an empty or partial refusal list.
+  `goap` rejects both through its schema.
+- a response entry whose **`replies_to` is absent, non-string, or names no
+  request** is accepted: `responseFor` (`packs.zig:487-500`) silently skips
+  every non-match and selects the first match, so an unknown target leaves the
+  response uncorrelated while the pack loads, and a second response naming the
+  same request is not refused as ambiguous. `goap` refuses unknown and ambiguous
+  reply targets.
+- a **string-valued but invalid `id` or `version`** is accepted: the loader only
+  checks that each is a string (`packs.zig:282-283`) and enforces neither the
+  descriptor schema's reverse-DNS `id` pattern nor its non-empty `version`
+  (`schema/v0.1/pack.schema.json:9-16`), so a pack with `"id":"x"` or
+  `"version":""` loads. `goap` rejects those values.
 
 A descriptor that **omits `schemas` entirely**, or sets `"schemas": []`, is also
 accepted, and the empty field contributes **no schema documents and so no
