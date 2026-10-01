@@ -138,7 +138,7 @@ pub fn execute(
     defer allocator.free(marker_path);
     const prepared: ?[]u8 = if (windows) null else try prepareMarker(allocator, &marker, &marker_path);
     const argv: []const []const u8 = if (prepared) |marker_file|
-        &.{ "/bin/sh", "-c", end_directory_script, "sh", command, marker_file }
+        &.{ "/bin/sh", "-c", end_directory_script, "/bin/sh", command, marker_file }
     else if (windows)
         &.{ "cmd.exe", "/C", command }
     else
