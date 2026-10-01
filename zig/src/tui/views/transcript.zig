@@ -1010,7 +1010,7 @@ fn renderAssistantText(allocator: std.mem.Allocator, text: []const u8, width: us
             if (styled) {
                 try writeStyledProseLine(allocator, writer, line, width);
             } else {
-                try wrapPlainLine(allocator, writer, line, width);
+                try wrapPlainLine(allocator, writer, line, width, false);
             }
             continue;
         }
@@ -1191,7 +1191,7 @@ fn writeTable(allocator: std.mem.Allocator, writer: *std.Io.Writer, header: []co
                 continue;
             }
             var out: std.Io.Writer.Allocating = .init(arena);
-            try wrapPlainLine(arena, &out.writer, cell, widths[c]);
+            try wrapPlainLine(arena, &out.writer, cell, widths[c], true);
             var parts = std.ArrayList([]const u8).empty;
             var split = std.mem.splitScalar(u8, out.written(), '\n');
             while (split.next()) |part| try parts.append(arena, part);
@@ -1415,7 +1415,7 @@ fn writeStyledProseLine(allocator: std.mem.Allocator, writer: *std.Io.Writer, li
 
     var wrapped: std.Io.Writer.Allocating = .init(allocator);
     defer wrapped.deinit();
-    try wrapPlainLine(allocator, &wrapped.writer, content, wrap_width);
+    try wrapPlainLine(allocator, &wrapped.writer, content, wrap_width, true);
 
     const row_style = switch (block.kind) {
         .heading => tui_theme.heading(),
@@ -1648,13 +1648,13 @@ fn isFenceClose(line: []const u8, open_char: u8, open_len: usize) bool {
     return n == trimmed.len;
 }
 
-fn flushWrapRow(writer: *std.Io.Writer, buf: *std.ArrayList(u8), col: *usize, pending_newline: *bool, pad_from: *?usize) !void {
+fn flushWrapRow(writer: *std.Io.Writer, buf: *std.ArrayList(u8), col: *usize, pending_newline: *bool, pad_from: *?usize, encoded: bool) !void {
     var split = std.mem.lastIndexOfScalar(u8, buf.items, ' ') orelse lastCharStart(buf.items);
     if (pad_from.*) |pf| {
         if (split >= pf) split = lastCharStart(buf.items);
     }
     if (std.mem.trim(u8, buf.items[0..split], " ").len == 0) split = lastCharStart(buf.items);
-    split = keepEscapeAtomic(buf.items, split);
+    if (encoded) split = keepEscapeAtomic(buf.items, split);
     if (pending_newline.*) {
         try writer.writeByte('\n');
         pending_newline.* = false;
@@ -1664,7 +1664,7 @@ fn flushWrapRow(writer: *std.Io.Writer, buf: *std.ArrayList(u8), col: *usize, pe
     const tail_len = buf.items.len - tail_start;
     std.mem.copyForwards(u8, buf.items[0..tail_len], buf.items[tail_start..]);
     buf.shrinkRetainingCapacity(tail_len);
-    col.* = escapedVisibleWidth(buf.items);
+    col.* = if (encoded) escapedVisibleWidth(buf.items) else tui_text.visibleWidth(buf.items);
     if (tail_len > 0) {
         try writer.writeByte('\n');
     } else {
@@ -1673,7 +1673,7 @@ fn flushWrapRow(writer: *std.Io.Writer, buf: *std.ArrayList(u8), col: *usize, pe
     pad_from.* = null;
 }
 
-fn wrapPlainLine(allocator: std.mem.Allocator, writer: *std.Io.Writer, line: []const u8, max_width: usize) !void {
+fn wrapPlainLine(allocator: std.mem.Allocator, writer: *std.Io.Writer, line: []const u8, max_width: usize, encoded: bool) !void {
     if (max_width == 0 or line.len == 0) {
         try writer.writeAll(line);
         return;
@@ -1728,7 +1728,7 @@ fn wrapPlainLine(allocator: std.mem.Allocator, writer: *std.Io.Writer, line: []c
             col += 1;
             i += 1;
             pad_from = null;
-        } else if (std.mem.startsWith(u8, line[i..], link_escape) and i + link_escape.len < line.len) {
+        } else if (encoded and std.mem.startsWith(u8, line[i..], link_escape) and i + link_escape.len < line.len) {
             const inner_i = i + link_escape.len;
             const inner_len = std.unicode.utf8ByteSequenceLength(line[inner_i]) catch 1;
             if (inner_i + inner_len > line.len) break;
@@ -1751,12 +1751,12 @@ fn wrapPlainLine(allocator: std.mem.Allocator, writer: *std.Io.Writer, line: []c
                 continue;
             }
             try buf.appendSlice(allocator, line[i .. i + len]);
-            if (codepoint != 0xE000 and codepoint != 0xE001) {
+            if (!encoded or (codepoint != 0xE000 and codepoint != 0xE001)) {
                 col += zz.measure.charWidth(@intCast(codepoint));
             }
             i += len;
         }
-        if (col > max_width) try flushWrapRow(writer, &buf, &col, &pending_newline, &pad_from);
+        if (col > max_width) try flushWrapRow(writer, &buf, &col, &pending_newline, &pad_from, encoded);
     }
     if (pending_newline) {
         if (std.mem.trim(u8, buf.items, " ").len > 0) {
@@ -2305,6 +2305,26 @@ test "an escape pair is never split across a wrap and the glyph survives" {
     const plain = try stripEscapesForTest(std.testing.allocator, styled);
     defer std.testing.allocator.free(plain);
     try std.testing.expectEqualStrings("abcdefgh\n\u{E000}", plain);
+}
+
+test "a literal marker in plain text is measured at its real width" {
+    const plain = try renderAssistantPlain(std.testing.allocator, "abcdefgh\u{E000}", 8);
+    defer std.testing.allocator.free(plain);
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, plain, "\n") + 1);
+    try std.testing.expectEqualStrings("abcdefgh\n\u{E000}", plain);
+}
+
+test "a literal sentinel and its follower in plain text keep full width" {
+    const plain = try renderAssistantPlain(std.testing.allocator, "1234567\u{E002}x", 8);
+    defer std.testing.allocator.free(plain);
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, plain, "\n") + 1);
+    try std.testing.expectEqualStrings("1234567\u{E002}\nx", plain);
+}
+
+test "a plain line ending in a literal sentinel wraps without panic" {
+    const plain = try renderAssistantPlain(std.testing.allocator, "abcdefgh\u{E002}", 8);
+    defer std.testing.allocator.free(plain);
+    try std.testing.expectEqualStrings("abcdefgh\n\u{E002}", plain);
 }
 
 test "a bare escape sentinel in plain text does not decode past the end" {
@@ -3235,7 +3255,7 @@ test "transcript allows tildes in tilde-fence info strings" {
 test "transcript drops malformed multibyte leads without passing controls" {
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
-    try wrapPlainLine(std.testing.allocator, &out.writer, "a\xC2\x1B[2Jb", 40);
+    try wrapPlainLine(std.testing.allocator, &out.writer, "a\xC2\x1B[2Jb", 40, true);
 
     try std.testing.expectEqualStrings("ab", out.written());
 }
