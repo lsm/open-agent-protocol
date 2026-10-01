@@ -4,6 +4,23 @@ Where the two DeepSeek facts live, who may change them, and what is
 still not decided. Written with the change that moves both facts into one
 place.
 
+## Alignment with the Go record
+
+This cut is the Zig side of the handoff the Go record
+(`docs/go-deepseek-request-compatibility.md`, section **Zig handoff**) prescribes,
+integrated by section rather than by parallel edits. Each section it names:
+
+- **Effort mapping** — the table in this record matches that record's `minimal/low →
+  low`, `medium/high/xhigh → high`, `max/ultra → max`; the Go table is its [Effort
+  mapping] section.
+- **Identity** — `usesDeepSeekWire` combines the same two signals the Go
+  `IsDeepSeekModel` does, additively, and the Go record's [Identity] section states
+  the same rule.
+- **Host fallback** — this record keeps the host test unconditional, as the Go
+  record's [Host fallback and the residual ambiguity] section does.
+- **`none`/off** — not decided here and not decided in the Go record; both leave it
+  to the owner.
+
 ## One table, one identity predicate
 
 `zig/src/utils/provider_caps.zig` now holds both:
