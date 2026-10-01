@@ -1448,7 +1448,7 @@ fn writeInlineStyled(allocator: std.mem.Allocator, writer: *std.Io.Writer, row: 
     defer literal.deinit(allocator);
     var i: usize = 0;
     while (i < row.len) {
-        if (std.mem.startsWith(u8, row[i..], link_escape)) {
+        if (std.mem.startsWith(u8, row[i..], link_escape) and i + link_escape.len < row.len) {
             const next_i = i + link_escape.len;
             const next_len = std.unicode.utf8ByteSequenceLength(row[next_i]) catch 1;
             if (next_i + next_len > row.len) break;
@@ -1728,7 +1728,7 @@ fn wrapPlainLine(allocator: std.mem.Allocator, writer: *std.Io.Writer, line: []c
             col += 1;
             i += 1;
             pad_from = null;
-        } else if (std.mem.startsWith(u8, line[i..], link_escape)) {
+        } else if (std.mem.startsWith(u8, line[i..], link_escape) and i + link_escape.len < line.len) {
             const inner_i = i + link_escape.len;
             const inner_len = std.unicode.utf8ByteSequenceLength(line[inner_i]) catch 1;
             if (inner_i + inner_len > line.len) break;
@@ -2305,6 +2305,12 @@ test "an escape pair is never split across a wrap and the glyph survives" {
     const plain = try stripEscapesForTest(std.testing.allocator, styled);
     defer std.testing.allocator.free(plain);
     try std.testing.expectEqualStrings("abcdefgh\n\u{E000}", plain);
+}
+
+test "a bare escape sentinel in plain text does not decode past the end" {
+    const plain = try renderAssistantPlain(std.testing.allocator, "tail\u{E002}", 40);
+    defer std.testing.allocator.free(plain);
+    try std.testing.expectEqualStrings("tail\u{E002}", plain);
 }
 
 test "a literal escape sentinel survives a hard wrap" {
