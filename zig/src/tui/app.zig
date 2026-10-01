@@ -4799,6 +4799,12 @@ test "App /provider add declares a provider that /login then accepts" {
     try std.testing.expect(std.mem.endsWith(u8, said.text.items, "Run /login gateway to add its key."));
     try std.testing.expect(app.isDeclaredCustomProvider("gateway"));
 
+    try app.submit("/login gateway");
+    const pending = app.login orelse return error.TestExpectedLogin;
+    try std.testing.expectEqualStrings("gateway", pending.provider_id);
+    for (app.state.transcript.items) |entry| try std.testing.expect(std.mem.indexOf(u8, entry.text.items, "unknown login provider") == null);
+    app.finishLogin();
+
     try app.submit("/provider add gateway https://other.test");
     const refused = app.state.transcript.items[app.state.transcript.items.len - 1];
     try std.testing.expectEqualStrings("could not declare gateway: DuplicateProviderId", refused.text.items);
