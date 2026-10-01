@@ -180,16 +180,24 @@ is stated per shape, because it is not uniformly nothing:
   **no member**. `goap` rejects the same entry, because the descriptor schema
   requires `payload_type`, `member` and `schema` on every entry
   (`schema/v0.1/pack.schema.json:86`).
+- an `envelope_types` entry whose **`type` is absent or not a string** (for
+  example `{"schema":"types.schema.json#/$defs/thing"}`) is skipped by both
+  passes — the types pass (`packs.zig:367`) and the branch pass (`packs.zig:388`)
+  — so the load succeeds and the entry contributes **neither a type nor a
+  branch**. `goap` rejects it, because the descriptor schema requires `type`
+  (`schema/v0.1/pack.schema.json:41-43`).
 
 A descriptor that **omits `schemas` entirely**, or sets `"schemas": []`, is also
-accepted and contributes nothing. The loader only type-checks the field
-(`packs.zig:311-313`: a non-array is `InvalidPackDescriptor`) and never enforces
-the descriptor schema's `required: ["id","version","schemas"]` and
-`minItems: 1` (`schema/v0.1/pack.schema.json:7,15-20`), so a pack that the spec
-calls invalid — one with no contributed schemas — loads clean. This is a peer and
-spec divergence and belongs with the shape-refusal work, not with this record's
-per-shape contribution list; it is named here so the list does not read as
-exhaustive.
+accepted, and the empty field contributes **no schema documents and so no
+branches** — though `envelope_types` entries still contribute their declared
+types through the skip paths above, so such a pack is not necessarily empty of
+vocabulary. The loader only type-checks the field (`packs.zig:311-313`: a
+non-array is `InvalidPackDescriptor`) and never enforces the descriptor schema's
+`required: ["id","version","schemas"]` and `minItems: 1`
+(`schema/v0.1/pack.schema.json:7,15-20`), so a pack that the spec calls invalid —
+one with no contributed schemas — loads clean. This is a peer and spec divergence
+and belongs with the shape-refusal work, not with this record's per-shape
+contribution list; it is named here so the list does not read as exhaustive.
 
 ## Limits of this record
 
