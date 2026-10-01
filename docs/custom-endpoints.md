@@ -8,6 +8,24 @@ OpenAI-compatible API.
 Declared providers appear in `/model`, the status bar and print mode alongside
 the built-in ones.
 
+The file can be written by hand, or by `/provider add` from the TUI:
+
+```
+/provider add <id> <base_url> [--api <api>] [--env <NAME>|--no-auth]
+```
+
+`/provider add groq https://api.groq.com/openai/v1 --env GROQ_API_KEY` appends
+one provider and leaves every other entry and override in the file exactly as it
+was. `--api` is one of the three wire names below and defaults to
+`openai-completions`; `--env` names the variable to read the key from; `--no-auth`
+declares a server that wants no credential; neither flag means the key comes from
+the keychain and `/login <id>` is the next step. The command validates the entry
+with the same parser the loader uses and refuses an invalid one by name
+(`InvalidBaseUrl`, `ReservedProviderId`, `DuplicateProviderId`, …), so a file it
+writes is a file the next load accepts. The write is a temporary file and a
+rename, because a half-written file disables every custom provider until it
+parses again. A malformed line is answered with the usage and changes nothing.
+
 ```json
 {
   "providers": [

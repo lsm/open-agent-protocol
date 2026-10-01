@@ -1988,6 +1988,53 @@ pub const App = struct {
         try self.reportModelRefresh(self.refreshModels(), "logged out but refreshing models failed");
     }
 
+    fn addProviderEntry(self: *App, add: tui_commands.ProviderAdd) !void {
+        const path = custom_providers.configPath(self.allocator) catch |err| {
+            const msg = try std.fmt.allocPrint(self.allocator, "could not locate providers.json: {s}", .{@errorName(err)});
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.@"error", msg);
+            return;
+        };
+        defer self.allocator.free(path);
+
+        var outcome = custom_providers.addProvider(self.allocator, path, .{
+            .id = add.id,
+            .base_url = add.base_url,
+            .api = add.api,
+            .env_key = add.env_key,
+            .auth_none = add.auth_none,
+        }) catch |err| {
+            const msg = try std.fmt.allocPrint(self.allocator, "{s} was not added: {s}", .{ add.id, @errorName(err) });
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.@"error", msg);
+            if (err == custom_providers.AddError.DuplicateProviderId) {
+                try self.state.appendTranscript(.system, "remove its entry from providers.json first, or pick another id");
+            }
+            return;
+        };
+        defer custom_providers.deinitAddOutcome(self.allocator, &outcome);
+
+        const msg = try std.fmt.allocPrint(self.allocator, "added {s} to {s}: {s} ({s})", .{ outcome.id, path, outcome.base_url, outcome.api });
+        defer self.allocator.free(msg);
+        try self.state.appendTranscript(.system, msg);
+
+        switch (outcome.auth) {
+            .keychain => {
+                const hint = try std.fmt.allocPrint(self.allocator, "run /login {s} to store its key", .{outcome.id});
+                defer self.allocator.free(hint);
+                try self.state.appendTranscript(.system, hint);
+            },
+            .environment => {
+                const hint = try std.fmt.allocPrint(self.allocator, "{s} is read from the environment", .{outcome.id});
+                defer self.allocator.free(hint);
+                try self.state.appendTranscript(.system, hint);
+            },
+            .none => {},
+        }
+
+        try self.reportModelRefresh(self.refreshModels(), "provider added but refreshing models failed");
+    }
+
     fn submitLoginInput(self: *App, text: []const u8) void {
         const session = self.login orelse {
             self.state.mode = .normal;
@@ -2896,6 +2943,7 @@ pub const App = struct {
             .rename_session => try self.renameSession(command.arg orelse ""),
             .refresh_models => try self.reportModelRefresh(self.refreshModels(), "refreshing models failed"),
             .logout_provider => try self.logoutProvider(command.arg orelse ""),
+            .add_provider => if (result.provider_add) |add| try self.addProviderEntry(add),
             .none => {},
         }
         if (command.kind == .model and command.arg != null and result.action != .refresh_models) self.persistCurrentModel();
@@ -8669,4 +8717,30 @@ test "a run that ends clean leaves no error text for a later failure" {
     try harness.mock.eventStream().push(.{ .agent_end = .{ .reason = .completed } });
     try harness.app.drainEvents();
     try std.testing.expectEqualStrings("", harness.app.run_error_text);
+}
+
+test "the provider command writes the endpoint the loader then reads" {
+    var env = try TempHome.init("home-provider-add");
+    defer env.deinit();
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+
+    try app.submit("/provider add gateway https://gw.internal/anthropic --api anthropic-messages");
+    const path = try custom_providers.configPath(std.testing.allocator);
+    defer std.testing.allocator.free(path);
+    const data = try compat.fs.readFileAlloc(std.testing.allocator, compat.fs.getCwd(), path, custom_providers.max_config_bytes);
+    defer std.testing.allocator.free(data);
+
+    const providers = try custom_providers.parse(std.testing.allocator, data);
+    defer custom_providers.deinitProviders(std.testing.allocator, providers);
+    try std.testing.expectEqual(@as(usize, 1), providers.len);
+    try std.testing.expectEqualStrings("gateway", providers[0].id);
+    try std.testing.expectEqualStrings("anthropic-messages", providers[0].api);
+    try std.testing.expectEqualStrings("https://gw.internal/anthropic", providers[0].base_url);
+
+    try app.submit("/provider add gateway https://other.test");
+    const after = try compat.fs.readFileAlloc(std.testing.allocator, compat.fs.getCwd(), path, custom_providers.max_config_bytes);
+    defer std.testing.allocator.free(after);
+    try std.testing.expectEqualStrings(data, after);
 }
