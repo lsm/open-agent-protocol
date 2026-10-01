@@ -261,7 +261,7 @@ pub fn addProvider(allocator: std.mem.Allocator, path: []const u8, spec: AddSpec
     const existing = compat_mod.fs.readFileAlloc(scratch, compat_mod.fs.getCwd(), path, max_config_bytes) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.FileNotFound => null,
-        else => null,
+        else => return AddError.InvalidConfig,
     };
 
     var root: std.json.ObjectMap = .empty;
@@ -297,13 +297,6 @@ pub fn addProvider(allocator: std.mem.Allocator, path: []const u8, spec: AddSpec
     };
     check.deinit(scratch);
 
-    if (std.fs.path.dirname(path)) |parent| compat_mod.fs.createDir(compat_mod.fs.getCwd(), parent) catch {};
-
-    const tmp_path = std.fmt.allocPrint(scratch, "{s}.tmp.{d}.{x}", .{ path, compat_mod.time.nowMillis(), compat_mod.random.int(u64) }) catch
-        return error.OutOfMemory;
-    compat_mod.fs.atomicReplace(compat_mod.fs.getCwd(), path, tmp_path, serialized) catch
-        return AddError.WriteFailed;
-
     const resolved_api = spec.api orelse supported_apis[0];
     const owned_base = provider_base_url.normalizeVersionedBaseUrl(spec.base_url);
 
@@ -313,6 +306,13 @@ pub fn addProvider(allocator: std.mem.Allocator, path: []const u8, spec: AddSpec
     errdefer allocator.free(owned_api);
     const owned_url = try allocator.dupe(u8, owned_base);
     errdefer allocator.free(owned_url);
+
+    if (std.fs.path.dirname(path)) |parent| compat_mod.fs.createDir(compat_mod.fs.getCwd(), parent) catch {};
+
+    const tmp_path = std.fmt.allocPrint(scratch, "{s}.tmp.{d}.{x}", .{ path, compat_mod.time.nowMillis(), compat_mod.random.int(u64) }) catch
+        return error.OutOfMemory;
+    compat_mod.fs.atomicReplace(compat_mod.fs.getCwd(), path, tmp_path, serialized) catch
+        return AddError.WriteFailed;
 
     return .{
         .id = owned_id,
@@ -1218,7 +1218,7 @@ fn addTmpPath(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir) ![]u8 {
 }
 
 fn addReadFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    return compat_mod.fs.readFileAlloc(allocator, compat_mod.fs.getCwd(), path, max_config_bytes);
+    return compat_mod.fs.readFileAlloc(allocator, compat_mod.fs.getCwd(), path, max_config_bytes * 2);
 }
 
 test "adding a provider writes a file the loader reads back with the same origin" {
@@ -1370,4 +1370,51 @@ test "adding a provider leaves no temporary file behind" {
         try testing.expect(std.mem.indexOf(u8, entry.name, ".tmp.") == null);
     }
     try testing.expectEqual(@as(usize, 1), names);
+}
+
+test "adding a provider refuses a file it cannot read rather than replacing it" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try addTmpPath(testing.allocator, &tmp);
+    defer testing.allocator.free(path);
+
+    const oversized = try testing.allocator.alloc(u8, max_config_bytes + 1);
+    defer testing.allocator.free(oversized);
+    @memset(oversized, 'x');
+    try compat_mod.fs.writeFile(compat_mod.fs.getCwd(), path, oversized);
+
+    try testing.expectError(AddError.InvalidConfig, addProvider(testing.allocator, path, .{
+        .id = "new",
+        .base_url = "https://new.test",
+    }));
+
+    const data = try addReadFile(testing.allocator, path);
+    defer testing.allocator.free(data);
+    try testing.expectEqual(oversized.len, data.len);
+    try testing.expectEqualStrings(oversized, data);
+}
+
+fn addProviderProbe(allocator: std.mem.Allocator) !void {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try addTmpPath(allocator, &tmp);
+    defer allocator.free(path);
+
+    var outcome = try addProvider(allocator, path, .{
+        .id = "probe",
+        .base_url = "https://probe.test",
+        .env_key = "PROBE_KEY",
+    });
+    defer deinitAddOutcome(allocator, &outcome);
+
+    const data = try addReadFile(allocator, path);
+    defer allocator.free(data);
+    const providers = try parse(allocator, data);
+    defer deinitProviders(allocator, providers);
+    try testing.expectEqual(@as(usize, 1), providers.len);
+    try testing.expectEqualStrings("probe", providers[0].id);
+}
+
+test "adding a provider frees every allocation when one fails, and a failure writes nothing" {
+    try testing.checkAllAllocationFailures(testing.allocator, addProviderProbe, .{});
 }
