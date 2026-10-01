@@ -1930,19 +1930,25 @@ pub const App = struct {
         try self.state.appendTranscript(.system, msg);
     }
 
+    fn flagValue(word: ?[]const u8) ?[]const u8 {
+        const value = word orelse return null;
+        if (std.mem.startsWith(u8, value, "--")) return null;
+        return value;
+    }
+
     fn parseProviderAdd(arg: []const u8) ?custom_providers.NewProvider {
         var words = std.mem.tokenizeAny(u8, arg, " \t");
         if (!std.mem.eql(u8, words.next() orelse return null, "add")) return null;
         var new = custom_providers.NewProvider{
-            .id = words.next() orelse return null,
-            .base_url = words.next() orelse return null,
+            .id = flagValue(words.next()) orelse return null,
+            .base_url = flagValue(words.next()) orelse return null,
         };
         while (words.next()) |word| {
             if (std.mem.eql(u8, word, "--api")) {
-                new.api = words.next() orelse return null;
+                new.api = flagValue(words.next()) orelse return null;
             } else if (std.mem.eql(u8, word, "--env")) {
                 if (new.auth_none) return null;
-                new.env = words.next() orelse return null;
+                new.env = flagValue(words.next()) orelse return null;
             } else if (std.mem.eql(u8, word, "--no-auth")) {
                 if (new.env != null) return null;
                 new.auth_none = true;
@@ -4797,8 +4803,15 @@ test "App /provider add declares a provider that /login then accepts" {
     const refused = app.state.transcript.items[app.state.transcript.items.len - 1];
     try std.testing.expectEqualStrings("could not declare gateway: DuplicateProviderId", refused.text.items);
 
-    try app.submit("/provider add other https://other.test --env A --no-auth");
-    try std.testing.expectEqualStrings(tui_commands.provider_usage, app.state.transcript.items[app.state.transcript.items.len - 1].text.items);
+    inline for (.{
+        "/provider add other https://other.test --env A --no-auth",
+        "/provider add other https://other.test --env --no-auth",
+        "/provider add other https://other.test --api --env A",
+        "/provider add --env A https://other.test",
+    }) |input| {
+        try app.submit(input);
+        try std.testing.expectEqualStrings(tui_commands.provider_usage, app.state.transcript.items[app.state.transcript.items.len - 1].text.items);
+    }
 
     const providers = try custom_providers.load(std.testing.allocator, custom_providers.max_config_bytes);
     defer custom_providers.deinitProviders(std.testing.allocator, providers);
