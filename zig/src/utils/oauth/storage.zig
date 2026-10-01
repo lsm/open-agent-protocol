@@ -968,14 +968,21 @@ pub const AuthStorage = struct {
     }
 
     pub fn removeStored(allocator: std.mem.Allocator, provider_id: []const u8) !bool {
-        var stored = try loadDefaultStoredOnly(allocator);
-        defer stored.deinit();
         var removed = false;
-        if (stored.removeProvider(provider_id)) {
-            try stored.persist();
-            removed = true;
+        if (shouldUseKeychain()) {
+            switch (try loadFromKeychainWithCodexImport(allocator, false)) {
+                .found => |found| {
+                    var stored = found;
+                    defer stored.deinit();
+                    if (stored.removeProvider(provider_id)) {
+                        try saveToKeychain(&stored);
+                        removed = true;
+                    }
+                },
+                .not_found => {},
+                .unavailable, .needs_interaction, .busy => return error.KeychainUnavailable,
+            }
         }
-        if (stored.save_fn == null) return removed;
         var file = try loadFromFile(allocator);
         defer file.deinit();
         if (file.removeProvider(provider_id)) {

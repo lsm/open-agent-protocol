@@ -1925,6 +1925,15 @@ pub const App = struct {
         try self.state.appendTranscript(.system, msg);
     }
 
+    fn noteEnvironmentCredential(self: *App, provider_id: []const u8, name: []const u8) !void {
+        const value = compat.getEnvVarOwned(self.allocator, name) catch return;
+        defer self.allocator.free(value);
+        if (value.len == 0) return;
+        const msg = try std.fmt.allocPrint(self.allocator, "{s} is still set, so {s} stays signed in", .{ name, provider_id });
+        defer self.allocator.free(msg);
+        try self.state.appendTranscript(.system, msg);
+    }
+
     fn logoutProvider(self: *App, provider_id: []const u8) !void {
         const removed = oauth_storage.AuthStorage.removeStored(self.allocator, provider_id) catch |err| {
             const msg = try std.fmt.allocPrint(self.allocator, "logout failed: {s}", .{@errorName(err)});
@@ -1936,15 +1945,15 @@ pub const App = struct {
         defer self.allocator.free(outcome);
         try self.state.appendTranscript(.system, outcome);
         if (provider_catalog.provider(provider_id)) |row| {
-            for (row.credential_env) |name| {
-                const value = compat.getEnvVarOwned(self.allocator, name) catch continue;
-                defer self.allocator.free(value);
-                if (value.len == 0) continue;
-                const msg = try std.fmt.allocPrint(self.allocator, "{s} is still set, so {s} stays signed in", .{ name, provider_id });
-                defer self.allocator.free(msg);
-                try self.state.appendTranscript(.system, msg);
-            }
+            for (row.credential_env) |name| try self.noteEnvironmentCredential(provider_id, name);
         }
+        if (custom_providers.load(self.allocator, custom_providers.max_config_bytes)) |providers| {
+            defer custom_providers.deinitProviders(self.allocator, providers);
+            for (providers) |provider| {
+                if (!std.mem.eql(u8, provider.id, provider_id)) continue;
+                if (provider.env_key) |name| try self.noteEnvironmentCredential(provider_id, name);
+            }
+        } else |_| {}
         if (std.mem.eql(u8, provider_id, "openai-codex")) {
             try self.state.appendTranscript(.system, "oapx imports the Codex CLI's login while it has one; sign out there too to drop openai-codex");
         }
@@ -4657,12 +4666,18 @@ test "App logout removes only that provider's saved credential" {
         defer creds.deinit(std.testing.allocator);
         try app.saveLoginCredentials(id, creds, true);
     }
+    const config_path = try std.fs.path.join(std.testing.allocator, &.{ env.home, ".oapx", "providers.json" });
+    defer std.testing.allocator.free(config_path);
+    try compat.fs.writeFile(compat.fs.getCwd(), config_path,
+        \\{"providers":[{"id":"gateway","base_url":"https://gw.test","auth":{"env":"HOME"}}]}
+    );
 
     try app.submit("/logout gateway");
     try std.testing.expectEqualStrings("logged out of gateway", app.state.transcript.items[0].text.items);
+    try std.testing.expectEqualStrings("HOME is still set, so gateway stays signed in", app.state.transcript.items[1].text.items);
+    const before = app.state.transcript.items.len;
     try app.submit("/logout gateway");
-    const last = app.state.transcript.items[app.state.transcript.items.len - 1];
-    try std.testing.expectEqualStrings("no saved credential for gateway", last.text.items);
+    try std.testing.expectEqualStrings("no saved credential for gateway", app.state.transcript.items[before].text.items);
 
     var storage = try oauth_storage.AuthStorage.loadFromFile(std.testing.allocator);
     defer storage.deinit();

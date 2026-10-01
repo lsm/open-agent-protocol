@@ -177,8 +177,11 @@ fails with `DuplicateOverride` rather than depending on which line won.
 - **Keychain**, which is preferred. `/login <id>` prompts for the key and stores
   it under that provider id, the same path Kimi uses. The input is masked.
   `/logout <id>` removes that one provider's credential from the keychain and
-  from `~/.oapx/auth.json`, and leaves every other provider's alone. It cannot
-  remove a credential set in the environment, nor the Codex CLI login that
+  from `~/.oapx/auth.json`, and leaves every other provider's alone. It fails
+  rather than touching only the file when the keychain is locked or busy, since
+  a later load would read the untouched keychain item first. It cannot
+  remove a credential set in the environment (a catalog variable or a custom
+  provider's `auth.env`), nor the Codex CLI login that
   `openai-codex` imports, and says so when either still applies.
 - **Environment**, by naming a variable in `auth.env`. The name is not a secret;
   the value never enters the file.
