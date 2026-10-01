@@ -612,11 +612,13 @@ was settled by #656 either.
   The `http.zig` response path has no `405` — `answer()` (`http.zig:378-383`) never
   inspects `request.method`, and `bodyAllowedFor` at `:368` only excludes `HEAD`. The **router**,
   however, does distinguish it: `route()` in `zig/src/hub/routes.zig:174` returns
-  `.method_not_allowed` for a known path with the wrong method, distinct from `.not_found`, so the
-  hub is method-aware below the HTTP dispatcher even though `answer()` is not. Whether that
-  distinction is served as an HTTP `405` on the wrong-method path is the open question; it is not
-  settled here, so the open question is what the draft says a wrong method should
-  answer. **It is recorded here as a separate question on purpose.** The
+  `.method_not_allowed` for a known path with the wrong method, distinct from `.not_found`. That
+  distinction is **not wired into the running hub**: no module imports `routes.zig` — `build.zig`
+  builds `hub_routes_mod` for its standalone test only — and `runHubHttp`
+  (`zig/src/tools/makai.zig:1582-1594`) never calls `route()`, answering `.not_found` past the gates.
+  So the running hub answers a wrong method on a known path `404`, and whether it should answer
+  `405` is the open question; it is not settled here, so the open question is what the draft says a
+  wrong method should answer. **It is recorded here as a separate question on purpose.** The
   fact that both this and the row above are decided by the order of checks inside one function is a
   *coincidence of implementation*, and the unproved suggestion that the `405` and the media-precedence
   questions must therefore be settled as **one** decision is **not** carried forward as settled
@@ -636,7 +638,8 @@ was settled by #656 either.
   amount in 32 KiB blocks. So the absence is not a helper limitation any more; it is simply that no
   test asks the question. **What is still unknown is unchanged and is not claimed either way here:**
   whether the daemon's `415` survives the close in that window. The `413` complete-answer proof,
-  the `413` large-body real-socket proof (`TestHubAddrRefusesALargeRefusedHeadOverARealSocket`) and the
+  the `413` real-socket proof (`TestHubAddrAnswersAComplete413BeforeTheWholeDeclaredBodyIsSent`),
+  the `403` real-socket proof (`TestHubAddrRefusesALargeRefusedHeadOverARealSocket`) and the
   drain-cap proof cover their own cases and do not cover this one. Carried forward from #656.
 
 **A body the daemon refused to read is drained before the socket closes.** A
