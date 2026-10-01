@@ -245,10 +245,26 @@ is stated per shape, because it is not uniformly nothing:
   registered without walking its references or trial-compiling the bundle, so the
   pack loads and a later trace can be left unjudged when resolution is reached.
   `goap` refuses it with `pack_external_ref` (`go/validation/pack.go:863-881`).
-- a well-shaped **payload member targeting a type the core vocabulary does not
-  define** is appended, because `gather` never consults the core vocabulary
-  (`fixtures/packs/bad-member-target-unknown` loads). `goap` refuses it with
-  `pack_member_target_unknown` (`go/validation/pack.go:450-457`).
+- an `envelope_types` entry with **no `role` field at all** is accepted
+  (`fixtures/packs/bad-role-undeclared` loads), like the malformed-role case
+  above. `goap` refuses it with `pack_role_undeclared`
+  (`go/validation/pack.go:368`).
+- a **payload member whose `member` name is unprefixed or in a foreign
+  namespace** is appended, because `gather` checks the namespace of declared
+  types and keys but not of member names. `goap` refuses it uncoded, or
+  `pack_foreign_prefix`, through the same namespace containment check it applies
+  to every name (`go/validation/pack.go:327`).
+- a well-shaped **`capability` on a gate that is absent from `capability_keys`**
+  is attached and the load succeeds, because `typeCapability` reads the matching
+  gate entry without checking membership. `goap` refuses it, uncoded or
+  `pack_foreign_prefix`, when the name is outside the pack namespace, and records
+  an uncoded refusal otherwise (`go/validation/pack.go:407-413`).
+- a well-shaped **payload member targeting `capabilities.updated` under a gate**
+  is appended (`fixtures/packs/bad-member-on-capabilities-updated` loads);
+  `capabilities.updated` is a core type, but it introduces a revision and has no
+  descriptor of its own, so a gate on it has nothing to judge against. `goap`
+  refuses it with `pack_member_target_unknown`
+  (`go/validation/pack.go:455-458`).
 - a **declared response that carries a gate of its own** loads:
   `typeCapability` merely reads the matching entry and succeeds
   (`fixtures/packs/bad-response-gated`). `goap` refuses it with
