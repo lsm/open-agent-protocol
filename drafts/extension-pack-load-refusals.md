@@ -259,6 +259,16 @@ is stated per shape, because it is not uniformly nothing:
   gate entry without checking membership. `goap` refuses it, uncoded or
   `pack_foreign_prefix`, when the name is outside the pack namespace, and records
   an uncoded refusal otherwise (`go/validation/pack.go:407-413`).
+- a gate that names **both a `capability` and `ungated`**, or **neither**, is
+  accepted: `typeCapability` returns whichever the entry holds and the load
+  proceeds. `goap` refuses it — the modes are exclusive and exactly one must be
+  present (`go/validation/pack.go:402-406`).
+- a gate whose **`payload_type` targets a type no `envelope_types` entry
+  declares** is accepted; the gate simply never matches at enforcement time.
+  `goap` refuses a gate on an undeclared type.
+- **duplicate gate declarations** — two `gates` entries naming the same type (or
+  the same `payload_type`/`member`) are both kept and the load succeeds, where
+  `goap` records a duplicate.
 - a well-shaped **payload member targeting `capabilities.updated` under a gate**
   is appended (`fixtures/packs/bad-member-on-capabilities-updated` loads);
   `capabilities.updated` is a core type, but it introduces a revision and has no
