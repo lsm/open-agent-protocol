@@ -112,6 +112,17 @@ history as too long. A `threshold` or `overflow` compaction happens inside
 whatever run was executing — usually a submit's, between two of its turns —
 and that run carries on afterwards or fails, as the endpoint's loop decides.
 
+An endpoint compacts on its own **only inside a run**. It never self-admits
+one: a run exists because a request admitted it, and a compaction is no
+exception. A threshold the history crosses while the session is idle — at a
+run's settlement, say — is therefore deferred to the next admitted run, where
+the compaction is the first thing the run does after `run.started` and before
+its first model turn, carrying `reason: "threshold"`. So an idle endpoint never
+changes the history silently: it either waits for the next run, where the
+change is sequenced, or the control layer asks for it with
+`session.compact.request`. The TUI's pre-turn `/autocompact` check is the
+second case today; on the protocol it may be either.
+
 The history is replaced **only** by an `ended` whose `outcome` is
 `completed`. A failed or cancelled compaction leaves the history exactly as it
 was, so a control layer never has to reconstruct a half-applied replacement.
