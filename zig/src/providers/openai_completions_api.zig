@@ -2001,12 +2001,6 @@ test "OpenCode Go gets a conversation id, the session's when there is one, else 
     try std.testing.expect(std.mem.startsWith(u8, client_user_agent, "oapx/"));
 }
 
-fn deepSeekEffort(effort: []const u8) []const u8 {
-    if (std.mem.eql(u8, effort, "minimal") or std.mem.eql(u8, effort, "low")) return "low";
-    if (std.mem.eql(u8, effort, "xhigh") or std.mem.eql(u8, effort, "max")) return "max";
-    return "high";
-}
-
 fn thinkingLevelToString(level: ai_types.ThinkingLevel) []const u8 {
     return switch (level) {
         .off => "off",
