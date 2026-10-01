@@ -73,6 +73,13 @@
       "request_url": "https://api.moonshot.ai/v1/chat/completions"
     },
     {
+      "id": "opencode-go",
+      "wire": "openai-completions",
+      "base_url": "https://opencode.ai/zen/go/v1",
+      "models_url": "https://opencode.ai/zen/go/v1/models",
+      "request_url": "https://opencode.ai/zen/go/v1/chat/completions"
+    },
+    {
       "id": "alibaba-coding-plan",
       "wire": "openai-completions",
       "base_url": "https://coding-intl.dashscope.aliyuncs.com/v1",
@@ -99,13 +106,6 @@
       "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3",
       "models_url": "https://ark.cn-beijing.volces.com/api/coding/v3/models",
       "request_url": "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions"
-    },
-    {
-      "id": "opencode-go",
-      "wire": "openai-completions",
-      "base_url": "https://opencode.ai/zen/go/v1",
-      "models_url": "https://opencode.ai/zen/go/v1/models",
-      "request_url": "https://opencode.ai/zen/go/v1/chat/completions"
     },
     {
       "id": "openai-codex",
