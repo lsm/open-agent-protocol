@@ -615,8 +615,10 @@ tool progress) go to `<session>.stream.jsonl`, which a resume does not read; a r
 thinking is also written to the conversation when the reply ends, folded into records
 of up to about 700 KB. The model and provider are written with the first record and
 again when they change, and `<session>.meta.json` holds them with the creation and
-last-active times and the offset of the last completed compaction, so a resume starts
-there and reads up to 256 KB before it for the screen; when no completed compaction
+last-active times, the thinking level, and the offset of the last completed compaction.
+`/resume` restores the session's thinking level (a session saved before it was recorded
+keeps the current one), and `/think` or `Shift+Tab` saves a change straight to the index.
+A resume starts from that offset and reads up to 256 KB before it for the screen; when no completed compaction
 loads from there, as after a torn write, it reads the whole file. `/resume` lists
 sessions from these index files as `title · local date and time · model`. A session's
 title is the first line of its first message until its first reply ends; the current

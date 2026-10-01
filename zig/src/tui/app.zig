@@ -1373,6 +1373,10 @@ pub const App = struct {
         if (self.session_id.len > 0) self.allocator.free(self.session_id);
         self.session_id = new_session_id;
         try self.giveRuntimeSessionId();
+        if (loaded.metadata.thinking_level) |level| {
+            runtime.setThinkingLevel(level);
+            self.state.thinking_level = runtime.thinkingLevel();
+        }
         try self.restoreCompactionTranscripts(store, &loaded);
         try self.state.status.setSessionId(self.allocator, self.session_id);
         if (runtime.currentModel()) |model| {
@@ -2292,6 +2296,7 @@ pub const App = struct {
             .model = self.state.status.model,
             .provider = self.state.status.provider,
             .last_active = compat.time.nowMillis(),
+            .thinking_level = self.state.thinking_level,
         };
     }
 
@@ -2901,6 +2906,7 @@ pub const App = struct {
         if (command.kind == .context and !result.is_error and command.arg != null) self.persistContextWindow();
         if (command.kind == .output and !result.is_error and command.arg != null) self.persistOutput();
         if (command.kind == .autocompact and !result.is_error and command.arg != null) self.persistAutoCompact();
+        if (command.kind == .think and !result.is_error and command.arg != null) self.persistThinkingLevel();
         if (result.output.len > 0) {
             try self.state.appendTranscript(if (result.is_error) .@"error" else .system, result.output);
             if (result.is_error) try self.state.status.setError(self.allocator, result.output);
@@ -3063,6 +3069,12 @@ pub const App = struct {
     fn cycleThinkingLevel(self: *App) void {
         const level = self.state.cycleThinkingLevel();
         if (self.runtime) |runtime| runtime.setThinkingLevel(level);
+        self.persistThinkingLevel();
+    }
+
+    fn persistThinkingLevel(self: *App) void {
+        if (!self.session_written) return;
+        if (self.store) |store| self.saveSessionIndex(store);
     }
 
     pub fn refreshCwdDisplay(self: *App) !void {
@@ -7704,6 +7716,46 @@ test "resume clears a compaction the saved session never finished" {
     try std.testing.expectEqualStrings("interrupted", app.session_id);
     try std.testing.expect(!app.state.status.compacting);
     try std.testing.expect(!app.state.status.streaming);
+}
+
+test "resume restores the session's thinking level, and a change after it is saved to that session" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+
+    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    errdefer std.testing.allocator.destroy(runtime);
+    runtime.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = unusedStream } });
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.runtime = runtime;
+    app.store = try session_store.Store.init(std.testing.allocator, base);
+    runtime.setThinkingLevel(.low);
+    app.state.thinking_level = .low;
+
+    var meta = session_store.SessionMetadata{
+        .session_id = try std.testing.allocator.dupe(u8, "deep-thinker"),
+        .model = try std.testing.allocator.dupe(u8, ""),
+        .provider = try std.testing.allocator.dupe(u8, ""),
+        .last_active = 1,
+        .thinking_level = .high,
+    };
+    defer meta.deinit(std.testing.allocator);
+    try app.store.?.save(meta, .{ .agent_start = .{} });
+    try app.store.?.saveIndex(meta);
+
+    try app.loadSessions();
+    try app.resumeSelectedSession();
+    try std.testing.expectEqual(ai_types.ThinkingLevel.high, app.state.thinking_level);
+    try std.testing.expectEqual(ai_types.ThinkingLevel.high, runtime.thinkingLevel());
+
+    app.cycleThinkingLevel();
+    const cycled = app.state.thinking_level;
+    try std.testing.expect(cycled != .high);
+    var index = try app.store.?.loadIndex("deep-thinker");
+    defer index.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(?ai_types.ThinkingLevel, cycled), index.thinking_level);
 }
 
 test "resume keeps every compaction transcript when it loads from the last compaction" {
