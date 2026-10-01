@@ -966,6 +966,7 @@ pub const App = struct {
     compaction_just_ended: ?bool = null,
     session_title: []u8 = &.{},
     session_title_generated: bool = false,
+    session_title_renamed: bool = false,
     first_user_text: []u8 = &.{},
     title_session_id: []u8 = &.{},
     run_error_text: []u8 = &.{},
@@ -2031,8 +2032,26 @@ pub const App = struct {
         return true;
     }
 
+    fn renameSession(self: *App, text: []const u8) !void {
+        const line = titleLine(text);
+        if (line.len == 0) {
+            try self.state.appendTranscript(.@"error", "usage: /rename <title>");
+            return;
+        }
+        const title = try self.allocator.dupe(u8, line);
+        if (self.session_title.len > 0) self.allocator.free(self.session_title);
+        self.session_title = title;
+        self.session_title_renamed = true;
+        if (self.session_written) {
+            if (self.store) |store| self.saveSessionIndex(store);
+        }
+        const message = try std.fmt.allocPrint(self.allocator, "Session renamed to \"{s}\"", .{title});
+        defer self.allocator.free(message);
+        try self.state.appendTranscript(.system, message);
+    }
+
     fn requestSessionTitle(self: *App) void {
-        if (self.session_title_generated or self.first_user_text.len == 0) return;
+        if (self.session_title_generated or self.session_title_renamed or self.first_user_text.len == 0) return;
         const runtime = self.runtime orelse return;
         const session_id = self.allocator.dupe(u8, self.session_id) catch return;
         if (!(runtime.requestTitle(self.first_user_text) catch false)) {
@@ -2052,6 +2071,10 @@ pub const App = struct {
         if (!std.mem.eql(u8, session_id, self.session_id)) {
             defer self.allocator.free(title);
             if (self.store) |store| store.saveGeneratedTitle(session_id, title) catch {};
+            return;
+        }
+        if (self.session_title_renamed) {
+            self.allocator.free(title);
             return;
         }
         if (self.session_title.len > 0) self.allocator.free(self.session_title);
@@ -2127,6 +2150,7 @@ pub const App = struct {
         meta.compactions = @intCast(self.compaction_transcripts.items.len);
         meta.title = self.session_title;
         meta.title_generated = self.session_title_generated;
+        meta.title_renamed = self.session_title_renamed;
         store.saveIndex(meta) catch {};
     }
 
@@ -2140,6 +2164,7 @@ pub const App = struct {
         if (self.session_title.len > 0) self.allocator.free(self.session_title);
         self.session_title = title;
         self.session_title_generated = metadata.title_generated;
+        self.session_title_renamed = metadata.title_renamed;
         if (self.first_user_text.len > 0) self.allocator.free(self.first_user_text);
         self.first_user_text = &.{};
     }
@@ -2783,6 +2808,7 @@ pub const App = struct {
             .open_settings_picker => self.openPicker(.settings),
             .start_login_provider => try self.startLoginProviderName(result.login_provider),
             .compact => try self.startCompaction(command.arg orelse ""),
+            .rename_session => try self.renameSession(command.arg orelse ""),
             .none => {},
         }
         if (command.kind == .model and command.arg != null) self.persistCurrentModel();
@@ -5752,6 +5778,81 @@ test "App files a generated title under the session that asked for it" {
     try std.testing.expectEqual(@as(usize, 0), app.session_title.len);
     try std.testing.expect(!app.session_title_generated);
     try std.testing.expectError(error.FileNotFound, app.store.?.loadIndex("resumed-session"));
+}
+
+test "App rename names the session and keeps the name over a generated title" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "sessions" });
+    defer std.testing.allocator.free(base);
+    var app = try sessionTestApp(base, "renamed-session");
+    defer app.deinit();
+
+    var provider = fixture_provider.MockProvider.init(.{ .steps = &.{.{ .text = "\"Resume freeze fix.\"" }} });
+    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    runtime.* = tui_runtime.TuiRuntime.init(std.testing.allocator, .{
+        .protocol = provider.protocolClient(),
+        .models = &[_]ai_types.Model{defaultModel()},
+        .generate_titles = true,
+    }) catch |err| {
+        std.testing.allocator.destroy(runtime);
+        return err;
+    };
+    app.runtime = runtime;
+
+    var first = tui_runtime.TuiEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "the resume freezes on long sessions")) } };
+    defer first.deinit(std.testing.allocator);
+    app.saveEvent(first);
+    app.saveEvent(.{ .agent_end = .{ .reason = .completed } });
+    runtime.waitForTitleRequest();
+
+    try app.submit("/rename  Freeze hunt\nsecond line");
+    app.collectGeneratedTitle();
+
+    var index = try app.store.?.loadIndex("renamed-session");
+    defer index.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("Freeze hunt", index.title);
+    try std.testing.expect(index.title_renamed);
+    try std.testing.expect(!index.title_generated);
+    try std.testing.expectEqualStrings("Freeze hunt", app.session_title);
+    const last = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expectEqual(tui_state.TranscriptKind.system, last.kind);
+    try std.testing.expectEqualStrings("Session renamed to \"Freeze hunt\"", last.text.items);
+}
+
+test "App rename before the first message keeps the name and asks for no title" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "sessions" });
+    defer std.testing.allocator.free(base);
+    var app = try sessionTestApp(base, "named-first");
+    defer app.deinit();
+
+    var provider = fixture_provider.MockProvider.init(.{ .steps = &.{.{ .text = "\"Resume freeze fix.\"" }} });
+    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    runtime.* = tui_runtime.TuiRuntime.init(std.testing.allocator, .{
+        .protocol = provider.protocolClient(),
+        .models = &[_]ai_types.Model{defaultModel()},
+        .generate_titles = true,
+    }) catch |err| {
+        std.testing.allocator.destroy(runtime);
+        return err;
+    };
+    app.runtime = runtime;
+
+    try app.submit("/rename Freeze hunt");
+    try std.testing.expectError(error.FileNotFound, app.store.?.loadIndex("named-first"));
+
+    var first = tui_runtime.TuiEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "the resume freezes on long sessions")) } };
+    defer first.deinit(std.testing.allocator);
+    app.saveEvent(first);
+    app.saveEvent(.{ .agent_end = .{ .reason = .completed } });
+
+    var index = try app.store.?.loadIndex("named-first");
+    defer index.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("Freeze hunt", index.title);
+    try std.testing.expect(index.title_renamed);
+    try std.testing.expectEqual(@as(usize, 0), provider.call_count);
 }
 
 test "App clear_transcript clears the tool registry" {

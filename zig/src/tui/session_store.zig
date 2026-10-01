@@ -141,6 +141,7 @@ pub const SessionMetadata = struct {
     compactions: u32 = 0,
     title: []u8 = &.{},
     title_generated: bool = false,
+    title_renamed: bool = false,
 
     pub fn deinit(self: *SessionMetadata, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
@@ -251,6 +252,7 @@ pub const Store = struct {
     pub fn saveGeneratedTitle(self: Store, session_id: []const u8, title: []const u8) !void {
         var meta = try self.loadIndex(session_id);
         defer meta.deinit(self.allocator);
+        if (meta.title_renamed) return;
         try replaceString(self.allocator, &meta.title, title);
         meta.title_generated = true;
         try self.saveIndex(meta);
@@ -471,6 +473,7 @@ fn serializeIndex(allocator: std.mem.Allocator, meta: SessionMetadata) ![]u8 {
     try w.writeIntField("compactions", meta.compactions);
     try w.writeStringField("title", meta.title);
     try w.writeBoolField("title_generated", meta.title_generated);
+    try w.writeBoolField("title_renamed", meta.title_renamed);
     try w.endObject();
     return buf.toOwnedSlice(allocator);
 }
@@ -494,6 +497,7 @@ fn parseIndex(allocator: std.mem.Allocator, session_id: []const u8, data: []cons
         if (v.len > 0) meta.title = try allocator.dupe(u8, v);
     }
     meta.title_generated = boolField(obj, "title_generated", false);
+    meta.title_renamed = boolField(obj, "title_renamed", false);
     return meta;
 }
 
@@ -2102,6 +2106,28 @@ test "list falls back to the first record's metadata when the tail has none" {
 fn parseIndexProbe(allocator: std.mem.Allocator) !void {
     var meta = try parseIndex(allocator, "s1", "{\"session_id\":\"s1\",\"model\":\"m\",\"provider\":\"p\",\"created_at\":1,\"last_active\":2,\"compaction_offset\":3,\"compactions\":2,\"title\":\"t\",\"title_generated\":true}");
     meta.deinit(allocator);
+}
+
+test "a generated title does not replace a session's chosen name" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try tmpBase(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+    var store = try Store.init(std.testing.allocator, base);
+    defer store.deinit();
+
+    var meta = try defaultMetadata(std.testing.allocator, "renamed");
+    defer meta.deinit(std.testing.allocator);
+    try replaceString(std.testing.allocator, &meta.title, "My name");
+    meta.title_renamed = true;
+    try store.saveIndex(meta);
+    try store.saveGeneratedTitle("renamed", "Generated name");
+
+    var index = try store.loadIndex("renamed");
+    defer index.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("My name", index.title);
+    try std.testing.expect(index.title_renamed);
+    try std.testing.expect(!index.title_generated);
 }
 
 test "parseIndex survives an allocation failure at every step" {
