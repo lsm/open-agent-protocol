@@ -93,31 +93,6 @@
       "docs": "https://opencode.ai/docs/zen"
     },
     {
-      "id": "opencode-go",
-      "display_name": "OpenCode Go",
-      "auth": [
-        "api_key"
-      ],
-      "offering": "api_key",
-      "status": "current",
-      "credential_env": [
-        "OPENCODE_API_KEY"
-      ],
-      "wires": [
-        "openai-completions"
-      ],
-      "base_url_source": "static",
-      "endpoints": [
-        {
-          "wire": "openai-completions",
-          "base_url": "https://opencode.ai/zen/go/v1",
-          "carries_version": true
-        }
-      ],
-      "models_endpoint": "/models",
-      "docs": "https://opencode.ai/docs/go"
-    },
-    {
       "id": "openrouter",
       "display_name": "OpenRouter",
       "auth": [
@@ -338,6 +313,31 @@
       ],
       "models_endpoint": "/models",
       "docs": "https://www.volcengine.com/docs/82379/1928261"
+    },
+    {
+      "id": "opencode-go",
+      "display_name": "OpenCode Go",
+      "auth": [
+        "api_key"
+      ],
+      "offering": "coding_plan",
+      "status": "current",
+      "credential_env": [
+        "OPENCODE_API_KEY"
+      ],
+      "wires": [
+        "openai-completions"
+      ],
+      "base_url_source": "static",
+      "endpoints": [
+        {
+          "wire": "openai-completions",
+          "base_url": "https://opencode.ai/zen/go/v1",
+          "carries_version": true
+        }
+      ],
+      "models_endpoint": "/models",
+      "docs": "https://opencode.ai/docs/go"
     },
     {
       "id": "openai-codex",
