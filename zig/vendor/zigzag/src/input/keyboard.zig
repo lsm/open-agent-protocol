@@ -136,6 +136,59 @@ fn frameCsi(data: []const u8) Frame {
 
 const StringTerm = enum { bel_or_st, st_only };
 
+fn discardKind(data: []const u8) ?InputParser.Discard {
+    const at = wrappedStart(data) + 1;
+    if (at >= data.len) return null;
+    return switch (data[at]) {
+        '[' => blk: {
+            var i = at + 1;
+            while (i < data.len and data[i] >= 0x30 and data[i] <= 0x3f) : (i += 1) {}
+            break :blk if (i < data.len and data[i] >= 0x20 and data[i] <= 0x2f) .csi_intermediate else .csi;
+        },
+        ']' => .string_bel_or_st,
+        'P', '_', '^', 'X' => .string_st,
+        else => null,
+    };
+}
+
+fn wrappedStart(data: []const u8) usize {
+    var i: usize = 0;
+    while (i + 1 < data.len and data[i + 1] == 0x1b) : (i += 1) {}
+    return i;
+}
+
+fn skipDiscarded(state: *InputParser.Discard, data: []const u8) usize {
+    switch (state.*) {
+        .none => return 0,
+        .csi, .csi_intermediate => {
+            var i: usize = 0;
+            if (state.* == .csi) {
+                while (i < data.len and data[i] >= 0x30 and data[i] <= 0x3f) : (i += 1) {}
+                if (i < data.len and data[i] >= 0x20 and data[i] <= 0x2f) state.* = .csi_intermediate;
+            }
+            while (i < data.len and data[i] >= 0x20 and data[i] <= 0x2f) : (i += 1) {}
+            if (i == data.len) return i;
+            state.* = .none;
+            return if (data[i] >= 0x40 and data[i] <= 0x7e) i + 1 else i;
+        },
+        .string_bel_or_st, .string_st => {
+            var i: usize = 0;
+            while (i < data.len) : (i += 1) {
+                if (data[i] == 0x07 and state.* == .string_bel_or_st) {
+                    state.* = .none;
+                    return i + 1;
+                }
+                if (data[i] == 0x1b) {
+                    if (i + 1 == data.len) return i;
+                    state.* = .none;
+                    return if (data[i + 1] == '\\') i + 2 else i;
+                }
+            }
+            return i;
+        },
+    }
+}
+
 fn frameString(data: []const u8, term: StringTerm) Frame {
     var i: usize = 2;
     while (i < data.len) : (i += 1) {
@@ -453,6 +506,9 @@ pub const InputParser = struct {
     holding: bool = false,
     holding_since_ns: u64 = 0,
     escape_timeout_ns: u64 = default_escape_timeout_ns,
+    discarding: Discard = .none,
+
+    const Discard = enum { none, csi, csi_intermediate, string_bel_or_st, string_st };
 
     pub fn feed(
         self: *InputParser,
@@ -486,6 +542,7 @@ pub const InputParser = struct {
     pub fn reset(self: *InputParser) void {
         self.clearBuffer();
         self.in_paste = false;
+        self.discarding = .none;
     }
 
     fn clearBuffer(self: *InputParser) void {
@@ -504,6 +561,18 @@ pub const InputParser = struct {
 
         while (offset < self.len) {
             const chunk = self.buf[offset..self.len];
+
+            if (self.discarding != .none) {
+                const waited = now_ns -| self.holding_since_ns;
+                if (chunk.len == 1 and chunk[0] == 0x1b and self.holding and waited >= self.escape_timeout_ns) {
+                    self.discarding = .none;
+                    continue;
+                }
+                offset += skipDiscarded(&self.discarding, chunk);
+                if (self.discarding != .none) break;
+                self.holding = false;
+                continue;
+            }
 
             if (self.in_paste) {
                 const consumed = try self.drainPaste(allocator, results, chunk, force);
@@ -525,9 +594,25 @@ pub const InputParser = struct {
                     offset += parsed.consumed;
                 },
                 .incomplete => {
+                    if (offset == 0 and self.len == self.buf.len and chunk[0] == 0x1b) {
+                        const wrapped = wrappedStart(chunk);
+                        if (wrapped > 0 and std.mem.startsWith(u8, chunk[wrapped..], paste_start)) {
+                            offset = wrapped;
+                            continue;
+                        }
+                        if (discardKind(chunk)) |kind| {
+                            self.discarding = kind;
+                            offset = self.len;
+                            if (kind != .csi and chunk[chunk.len - 1] == 0x1b) offset -= 1;
+                            break;
+                        }
+                    }
+
                     const waited = now_ns -| self.holding_since_ns;
                     const timed_out = self.holding and waited >= self.escape_timeout_ns;
                     if (!force and !timed_out) break;
+
+                    if (force and offset > 0 and chunk[0] == 0x1b) break;
 
                     const parsed = parseFlush(chunk);
                     if (parsed.consumed == 0) break;
