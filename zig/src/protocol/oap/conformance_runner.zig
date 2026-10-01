@@ -328,8 +328,44 @@ const Runner = struct {
 
 
     fn pullUntil(self: *Runner, deadline: Deadline) !void {
-        if (deadline.expired()) return error.ProbeBudgetExpired;
-        const frame = try self.client.next(deadline.budget()) orelse return error.ProbeBudgetExpired;
+        while (true) {
+            const maybe = try self.client.next(deadline.budget());
+            if (maybe) |frame| {
+                try self.keepFrame(frame);
+                return;
+            }
+            if (deadline.expired()) return error.ProbeBudgetExpired;
+        }
+    }
+
+    fn takeAnswer(self: *Runner, id: []const u8) ?oap_types.Envelope {
+        for (self.responses.items, 0..) |*candidate, index| {
+            const reply = candidate.in_reply_to orelse continue;
+            if (std.mem.eql(u8, reply, id)) return self.responses.orderedRemove(index);
+        }
+        return null;
+    }
+
+    fn answer(self: *Runner, id: []const u8, deadline: Deadline) !oap_types.Envelope {
+        while (true) {
+            if (self.takeAnswer(id)) |found| return found;
+            if (!deadline.expired()) {
+                try self.pullUntil(deadline);
+                continue;
+            }
+            const more = try self.drainBuffered(deadline);
+            if (self.takeAnswer(id)) |found| return found;
+            if (!more) return error.ProbeBudgetExpired;
+        }
+    }
+
+    fn drainBuffered(self: *Runner, deadline: Deadline) !bool {
+        const frame = try self.client.next(deadline.budget()) orelse return false;
+        self.keepFrame(frame) catch |err| return err;
+        return true;
+    }
+
+    fn keepFrame(self: *Runner, frame: endpoint_client.Frame) !void {
         if (frame == .control) {
             const control = try parseControl(self.allocator, frame.control);
             self.controls.append(self.allocator, control) catch |err| {
@@ -351,22 +387,6 @@ const Runner = struct {
             envelope.deinit(self.allocator);
             return err;
         };
-    }
-
-    fn takeAnswer(self: *Runner, id: []const u8) ?oap_types.Envelope {
-        for (self.responses.items, 0..) |*candidate, index| {
-            const reply = candidate.in_reply_to orelse continue;
-            if (std.mem.eql(u8, reply, id)) return self.responses.orderedRemove(index);
-        }
-        return null;
-    }
-
-    fn answer(self: *Runner, id: []const u8, deadline: Deadline) !oap_types.Envelope {
-        while (true) {
-            if (self.takeAnswer(id)) |found| return found;
-            if (deadline.expired()) return error.ProbeBudgetExpired;
-            try self.pullUntil(deadline);
-        }
     }
 
     fn takeControl(self: *Runner, id: []const u8) ?ControlFrame {
@@ -415,8 +435,12 @@ const Runner = struct {
 
     fn nextEvent(self: *Runner, deadline: Deadline) !oap_types.Envelope {
         while (self.events.items.len == 0) {
-            if (deadline.expired()) return error.ProbeBudgetExpired;
-            try self.pullUntil(deadline);
+            if (!deadline.expired()) {
+                try self.pullUntil(deadline);
+                continue;
+            }
+            const more = try self.drainBuffered(deadline);
+            if (self.events.items.len == 0 and !more) return error.ProbeBudgetExpired;
         }
         return self.events.orderedRemove(0);
     }
@@ -821,12 +845,13 @@ const Runner = struct {
         var recovered = self.request(.{
             .session_state_request = .{ .session_id = probe_session },
         }, null, self.probeDeadline()) catch |err| {
+            const why = recoveryFailureReason(err, self.reasonOf(err));
             try self.failOwned(
                 name,
                 try std.fmt.allocPrint(
                     self.allocator,
                     "the endpoint stopped answering after a recoverable protocol error: {s}",
-                    .{self.reasonOf(err)},
+                    .{why},
                 ),
             );
             return;
@@ -900,6 +925,11 @@ const Runner = struct {
     fn reasonOf(self: *const Runner, err: anyerror) []const u8 {
         if (err == error.ConformanceRefused and self.refusal.len != 0) return self.refusal;
         return @errorName(err);
+    }
+
+    fn recoveryFailureReason(err: anyerror, named: []const u8) []const u8 {
+        if (err == error.ProbeBudgetExpired) return "the session_state probe ran out of its budget without an answer";
+        return named;
     }
 
     fn scriptedMessages(self: *Runner) ![]oap_types.Message {
@@ -1357,6 +1387,17 @@ test "a revision this endpoint never issued is judged, not waved through" {
     try std.testing.expectEqualStrings(
         "refused \"invalid_request\", want \"stale_capabilities\"",
         stale.detail,
+    );
+}
+
+test "a spent recovery budget is explained, not printed as the raw error" {
+    try std.testing.expectEqualStrings(
+        "the session_state probe ran out of its budget without an answer",
+        Runner.recoveryFailureReason(error.ProbeBudgetExpired, "ProbeBudgetExpired"),
+    );
+    try std.testing.expectEqualStrings(
+        "unsupported_feature: this endpoint will not be asked again",
+        Runner.recoveryFailureReason(error.ConformanceRefused, "unsupported_feature: this endpoint will not be asked again"),
     );
 }
 
@@ -1827,10 +1868,68 @@ test "an event already buffered when the budget runs out is still delivered" {
     try std.testing.expectEqualStrings("b1", delivered.id);
 }
 
+test "an event buffered behind another frame is delivered after the deadline" {
+    const response =
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"a3","in_reply_to":"conformance-request-3","payload":{"session_id":"conformance","status":"idle"}}
+    ;
+    const event =
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"e1","sequence":1,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","status":"running"}}
+    ;
+    var runner: Runner = .{
+        .allocator = std.testing.allocator,
+        .client = endpoint_client.Client.init(std.testing.allocator),
+        .report = .{ .allocator = std.testing.allocator, .endpoint = "" },
+        .session = "conformance",
+    };
+    defer {
+        for (runner.events.items) |*envelope| envelope.deinit(std.testing.allocator);
+        runner.events.deinit(std.testing.allocator);
+        for (runner.responses.items) |*envelope| envelope.deinit(std.testing.allocator);
+        runner.responses.deinit(std.testing.allocator);
+        runner.client.deinit();
+    }
+    try runner.client.pending.appendSlice(std.testing.allocator, response ++ "\n" ++ event ++ "\n");
+
+    const spent = Deadline.start(std.testing.io, 0);
+    try std.testing.expect(spent.expired());
+    var found = try runner.nextEvent(spent);
+    defer found.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("e1", found.id);
+}
+
+test "an answer buffered behind another frame is drained after the deadline" {
+    const response =
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"a3","in_reply_to":"conformance-request-3","payload":{"session_id":"conformance","status":"idle"}}
+    ;
+    const event =
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"e1","sequence":1,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","status":"running"}}
+    ;
+    var runner: Runner = .{
+        .allocator = std.testing.allocator,
+        .client = endpoint_client.Client.init(std.testing.allocator),
+        .report = .{ .allocator = std.testing.allocator, .endpoint = "" },
+        .session = "conformance",
+    };
+    defer {
+        for (runner.events.items) |*envelope| envelope.deinit(std.testing.allocator);
+        runner.events.deinit(std.testing.allocator);
+        for (runner.responses.items) |*envelope| envelope.deinit(std.testing.allocator);
+        runner.responses.deinit(std.testing.allocator);
+        runner.client.deinit();
+    }
+    try runner.client.pending.appendSlice(std.testing.allocator, event ++ "\n" ++ response ++ "\n");
+
+    const spent = Deadline.start(std.testing.io, 0);
+    try std.testing.expect(spent.expired());
+    var found = try runner.answer("conformance-request-3", spent);
+    defer found.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("a3", found.id);
+}
+
 test "a run that never settles is reported as a spent budget, not as silence" {
     var runner: Runner = .{
         .allocator = std.testing.allocator,
-        .client = undefined,
+        .client = endpoint_client.Client.init(std.testing.allocator),
         .report = .{ .allocator = std.testing.allocator, .endpoint = "" },
         .session = "conformance",
         .run_id = "run-1",
@@ -1841,6 +1940,7 @@ test "a run that never settles is reported as a spent budget, not as silence" {
             std.testing.allocator.free(check.detail);
         }
         runner.report.checks.deinit(std.testing.allocator);
+        runner.client.deinit();
     }
 
     const spent = Deadline.start(std.testing.io, 0);

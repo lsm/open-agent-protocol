@@ -109,7 +109,13 @@ pub const Client = struct {
     pub fn close(self: *Client) void {
         self.closeStdin();
         if (self.child) |*child| {
-            _ = child.wait(self.io()) catch {};
+            var waited: i64 = 0;
+            while (waited < close_grace_ms) {
+                if (tryExitPosix(child, self.io()) != null) break;
+                std.Io.sleep(self.io(), .fromMilliseconds(exit_poll_ms), .boot) catch {};
+                waited += exit_poll_ms;
+            }
+            if (child.id != null) child.kill(self.io());
             self.child = null;
         }
         self.closed = true;
@@ -153,7 +159,6 @@ pub const Client = struct {
 
     pub fn next(self: *Client, budget: Budget) !?Frame {
         while (true) {
-            if (budget.expired()) return null;
             if (try self.takeLine()) |line| {
                 const trimmed = std.mem.trim(u8, line, " \t\r");
                 if (trimmed.len == 0) continue;
@@ -199,6 +204,7 @@ pub const Client = struct {
 };
 
 const exit_poll_ms: i64 = 25;
+const close_grace_ms: i64 = 250;
 
 fn tryExitPosix(child: *std.process.Child, io: std.Io) ?std.process.Child.Term {
     if (builtin.os.tag == .windows) return tryExitWindows(child, io);
@@ -365,6 +371,18 @@ test "a line carrying a newline is refused rather than split into two frames" {
     var client = Client.init(std.testing.allocator);
     defer client.deinit();
     try std.testing.expectError(Error.EmbeddedNewline, client.write("{\"a\":1}\n{\"b\":2}"));
+}
+
+test "a buffered line is delivered even after the budget has elapsed" {
+    var client = Client.init(std.testing.allocator);
+    defer client.deinit();
+    try client.pending.appendSlice(std.testing.allocator, "{\"protocol\":\"open-agent-protocol\",\"id\":\"q1\"}\n");
+
+    const spent = Budget.until(std.testing.io, 0);
+    try std.testing.expect(spent.expired());
+    const frame = try client.next(spent);
+    try std.testing.expect(frame != null);
+    try std.testing.expectEqualStrings("{\"protocol\":\"open-agent-protocol\",\"id\":\"q1\"}", frame.?.envelope);
 }
 
 test "a frame over the bound fails closed rather than truncating" {
