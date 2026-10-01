@@ -579,25 +579,31 @@ test "a loaded pack's schemas are registered under keys its own refs resolve" {
         ,
     });
 
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "literal/back\\slash.schema.json", .data =
-            \\{"$schema": "https://json-schema.org/draft/2020-12/schema", "$defs": {"thing": {"type": "object", "required": ["type", "session_id"], "properties": {"type": {"const": "com.example.literal.thing"}, "session_id": {"type": "string"}}}}}
-        ,
-    });
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "literal/pack.json", .data =
-            \\{"id": "com.example.literal", "version": "1.0.0", "schemas": ["back\\slash.schema.json"], "envelope_types": [{"type": "com.example.literal.thing", "role": "event", "schema": "back\\slash.schema.json#/$defs/thing"}]}
-        ,
-    });
+    if (comptime std.Io.Dir.path.sep == '/') {
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "literal/back\\slash.schema.json", .data =
+                \\{"$schema": "https://json-schema.org/draft/2020-12/schema", "$defs": {"thing": {"type": "object", "required": ["type", "session_id"], "properties": {"type": {"const": "com.example.literal.thing"}, "session_id": {"type": "string"}}}}}
+            ,
+        });
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "literal/pack.json", .data =
+                \\{"id": "com.example.literal", "version": "1.0.0", "schemas": ["back\\slash.schema.json"], "envelope_types": [{"type": "com.example.literal.thing", "role": "event", "schema": "back\\slash.schema.json#/$defs/thing"}]}
+            ,
+        });
+    }
 
     var registry = try jsonschema.Registry.initFromBundled(allocator);
     defer registry.deinit();
 
-    const cases = [_]struct { dir: []const u8, declared: []const u8 }{
+    const Case = struct { dir: []const u8, declared: []const u8 };
+    const portable = [_]Case{
         .{ .dir = "staying", .declared = "com.example.ok.thing" },
         .{ .dir = "aliased", .declared = "com.example.alias.thing" },
         .{ .dir = "cleaned", .declared = "com.example.clean.thing" },
         .{ .dir = "nested", .declared = "com.example.nested.thing" },
+    };
+    const with_literal = portable ++ [_]Case{
         .{ .dir = "literal", .declared = "com.example.literal.thing" },
     };
+    const cases = if (comptime std.Io.Dir.path.sep == '/') with_literal else portable;
 
     for (cases) |case| {
         const root = try tmp.dir.realPathFileAlloc(std.testing.io, case.dir, allocator);
@@ -616,7 +622,11 @@ test "a loaded pack's schemas are registered under keys its own refs resolve" {
         try std.testing.expect(!try judgesAsAccepted(allocator, &registry, read.branches, short));
     }
 
-    try std.testing.expect(registry.root("https://open-agent-protocol.local/ext/com.example.literal/1.0.0/back\\slash.schema.json") != null);
+    if (comptime std.Io.Dir.path.sep == '/') {
+        try std.testing.expect(registry.root("https://open-agent-protocol.local/ext/com.example.literal/1.0.0/back\\slash.schema.json") != null);
+    }
+    try std.testing.expect(registry.root("https://open-agent-protocol.local/ext/com.example.nested/1.0.0/sub/note.schema.json") != null);
+    try std.testing.expect(registry.root("https://open-agent-protocol.local/ext/com.example.nested/1.0.0/sub\\note.schema.json") == null);
 }
 
 test "a descriptor schema path is read only when it lands beneath the pack root" {
