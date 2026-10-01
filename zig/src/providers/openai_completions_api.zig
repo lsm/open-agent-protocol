@@ -1585,52 +1585,9 @@ fn runThread(ctx: *ThreadCtx) void {
     const content_count: usize = if (has_thinking) 1 else 0;
     const content_count_final = content_count + (if (has_text) @as(usize, 1) else @as(usize, 0)) + tool_call_count;
 
-    if (content_count_final == 0 and stop_reason != .length) {
+    if (content_count_final == 0) {
         ctx.deinit();
         stream.completeWithError(if (finished) "the model returned an empty reply" else "the stream ended before the model replied");
-        return;
-    }
-
-    if (content_count_final == 0) {
-        var content = allocator.alloc(ai_types.AssistantContent, 1) catch {
-            ctx.deinit();
-            stream.completeWithError("oom building result");
-            return;
-        };
-        content[0] = .{ .text = .{ .text = "" } };
-        const api = allocator.dupe(u8, model.api) catch {
-            ai_types.deinitAssistantContent(allocator, content);
-            ctx.deinit();
-            stream.completeWithError("oom building result");
-            return;
-        };
-        const provider = allocator.dupe(u8, model.provider) catch {
-            allocator.free(api);
-            ai_types.deinitAssistantContent(allocator, content);
-            ctx.deinit();
-            stream.completeWithError("oom building result");
-            return;
-        };
-        const model_id = allocator.dupe(u8, model.id) catch {
-            allocator.free(api);
-            allocator.free(provider);
-            ai_types.deinitAssistantContent(allocator, content);
-            ctx.deinit();
-            stream.completeWithError("oom building result");
-            return;
-        };
-        const out = ai_types.AssistantMessage{
-            .content = content,
-            .api = api,
-            .provider = provider,
-            .model = model_id,
-            .usage = usage,
-            .stop_reason = stop_reason,
-            .timestamp = compat_mod.time.nowMillis(),
-            .is_owned = true,
-        };
-        ctx.deinit();
-        ai_types.settleProviderOutcome(stream, out);
         return;
     }
 
@@ -3696,6 +3653,10 @@ test "a stream that ends with no reply fails instead of settling as a finished t
         },
         .{
             .body = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+            .want = "the model returned an empty reply",
+        },
+        .{
+            .body = "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n\n",
             .want = "the model returned an empty reply",
         },
         .{
