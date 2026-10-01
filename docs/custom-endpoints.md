@@ -37,6 +37,21 @@ the built-in ones.
 }
 ```
 
+## Declaring one from the TUI
+
+`/provider add <id> <base_url> [--api <api>] [--env <NAME> | --no-auth]` appends an
+entry to the file instead of editing it by hand. The api defaults to
+`openai-completions`; with neither flag the key comes from `/login <id>`, which the
+command names when it finishes. The new entry is checked with the same parser the
+loader uses before anything is written, so the command refuses exactly what the
+loader would, with the loader's error name (`ReservedProviderId`,
+`DuplicateProviderId`, `InvalidBaseUrl`, …), and it refuses to touch a file that
+does not parse. Existing entries, their unmodelled members and `overrides` are kept
+as written, since the entry is added to the file's JSON rather than to the parsed
+providers, and the file is replaced by a rename, never rewritten in place. Fields the
+command has no flag for — `name`, `headers`, `models`, `capabilities` — are still
+added by editing the file.
+
 ## Fields
 
 | Field | Required | Meaning |
