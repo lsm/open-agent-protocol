@@ -193,6 +193,69 @@ pub fn loadConfig(allocator: std.mem.Allocator, max_bytes: usize) !Config {
     return parseConfig(allocator, data);
 }
 
+pub const NewProvider = struct {
+    id: []const u8,
+    base_url: []const u8,
+    api: ?[]const u8 = null,
+    env: ?[]const u8 = null,
+    auth_none: bool = false,
+};
+
+pub fn appendProvider(allocator: std.mem.Allocator, existing: ?[]const u8, new: NewProvider) ![]u8 {
+    if (existing) |data| {
+        var current = try parseConfig(allocator, data);
+        current.deinit(allocator);
+    }
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var root = std.json.Value{ .object = .empty };
+    if (existing) |data| root = try std.json.parseFromSliceLeaky(std.json.Value, arena, data, .{});
+    if (root != .object) return ConfigError.InvalidConfig;
+
+    var entry = std.json.ObjectMap.empty;
+    try entry.put(arena, "id", .{ .string = new.id });
+    try entry.put(arena, "base_url", .{ .string = new.base_url });
+    if (new.api) |api| try entry.put(arena, "api", .{ .string = api });
+    if (new.auth_none) {
+        try entry.put(arena, "auth", .{ .string = "none" });
+    } else if (new.env) |name| {
+        var auth = std.json.ObjectMap.empty;
+        try auth.put(arena, "env", .{ .string = name });
+        try entry.put(arena, "auth", .{ .object = auth });
+    }
+
+    const providers = try root.object.getOrPut(arena, "providers");
+    if (!providers.found_existing) providers.value_ptr.* = .{ .array = std.json.Array.init(arena) };
+    if (providers.value_ptr.* != .array) return ConfigError.InvalidConfig;
+    try providers.value_ptr.array.append(.{ .object = entry });
+
+    const text = try std.json.Stringify.valueAlloc(allocator, root, .{ .whitespace = .indent_2 });
+    errdefer allocator.free(text);
+    var checked = try parseConfig(allocator, text);
+    checked.deinit(allocator);
+    return text;
+}
+
+pub fn addProvider(allocator: std.mem.Allocator, new: NewProvider) ![]u8 {
+    const path = try configPath(allocator);
+    errdefer allocator.free(path);
+    const cwd = compat_mod.fs.getCwd();
+    const existing: ?[]u8 = compat_mod.fs.readFileAlloc(allocator, cwd, path, max_config_bytes) catch |err| switch (err) {
+        error.FileNotFound => null,
+        else => return err,
+    };
+    defer if (existing) |data| allocator.free(data);
+    const text = try appendProvider(allocator, existing, new);
+    defer allocator.free(text);
+    if (std.fs.path.dirname(path)) |dir| try compat_mod.fs.createDir(cwd, dir);
+    const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp", .{path});
+    defer allocator.free(tmp_path);
+    try compat_mod.fs.atomicReplace(cwd, path, tmp_path, text);
+    return path;
+}
+
 pub fn deinitOverrides(allocator: std.mem.Allocator, overrides: []Override) void {
     for (overrides) |*override| override.deinit(allocator);
     allocator.free(overrides);
@@ -1053,4 +1116,61 @@ test "custom providers normalise a versioned base url to the origin the provider
         defer provider.deinit(testing.allocator);
         try testing.expectEqualStrings(case.want, provider.base_url);
     }
+}
+
+test "appendProvider writes a provider the loader reads back field for field" {
+    const text = try appendProvider(testing.allocator, null, .{ .id = "gateway", .base_url = "https://gw.test/v1", .api = "openai-responses", .env = "GW_KEY" });
+    defer testing.allocator.free(text);
+    const providers = try parse(testing.allocator, text);
+    defer deinitProviders(testing.allocator, providers);
+    try testing.expectEqual(@as(usize, 1), providers.len);
+    try testing.expectEqualStrings("gateway", providers[0].id);
+    try testing.expectEqualStrings("openai-responses", providers[0].api);
+    try testing.expectEqualStrings("GW_KEY", providers[0].env_key.?);
+    try testing.expect(!providers[0].auth_none);
+
+    const keyless = try appendProvider(testing.allocator, null, .{ .id = "local", .base_url = "http://127.0.0.1:8080", .auth_none = true });
+    defer testing.allocator.free(keyless);
+    const local = try parse(testing.allocator, keyless);
+    defer deinitProviders(testing.allocator, local);
+    try testing.expect(local[0].auth_none);
+    try testing.expectEqualStrings("openai-completions", local[0].api);
+}
+
+test "appendProvider keeps every existing entry, member and override as written" {
+    const existing =
+        \\{"providers":[{"id":"first","base_url":"https://one.test/v1","x-note":"kept"}],
+        \\ "overrides":[{"id":"deepseek","base_url":"https://proxy.test"}]}
+    ;
+    const text = try appendProvider(testing.allocator, existing, .{ .id = "second", .base_url = "https://two.test" });
+    defer testing.allocator.free(text);
+    try testing.expect(std.mem.indexOf(u8, text, "\"https://one.test/v1\"") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "\"x-note\": \"kept\"") != null);
+    var config = try parseConfig(testing.allocator, text);
+    defer config.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 2), config.providers.len);
+    try testing.expectEqualStrings("first", config.providers[0].id);
+    try testing.expectEqualStrings("second", config.providers[1].id);
+    try testing.expectEqual(@as(usize, 1), config.overrides.len);
+}
+
+test "appendProvider refuses what the loader refuses, with the loader's error" {
+    const existing =
+        \\{"providers":[{"id":"gateway","base_url":"https://gw.test"}]}
+    ;
+    try testing.expectError(ConfigError.ReservedProviderId, appendProvider(testing.allocator, null, .{ .id = "openai", .base_url = "https://x.test" }));
+    try testing.expectError(ConfigError.InvalidProviderId, appendProvider(testing.allocator, null, .{ .id = "my gateway", .base_url = "https://x.test" }));
+    try testing.expectError(ConfigError.DuplicateProviderId, appendProvider(testing.allocator, existing, .{ .id = "gateway", .base_url = "https://x.test" }));
+    try testing.expectError(ConfigError.UnsupportedApi, appendProvider(testing.allocator, null, .{ .id = "gw", .base_url = "https://x.test", .api = "grpc" }));
+    try testing.expectError(ConfigError.InvalidAuthMode, appendProvider(testing.allocator, null, .{ .id = "gw", .base_url = "https://x.test", .env = "" }));
+    try testing.expectError(ConfigError.InvalidConfig, appendProvider(testing.allocator, "{\"providers\":{}}", .{ .id = "gw", .base_url = "https://x.test" }));
+}
+
+fn appendProviderProbe(allocator: std.mem.Allocator) !void {
+    const text = try appendProvider(allocator, "{\"providers\":[{\"id\":\"first\",\"base_url\":\"https://one.test\"}]}", .{ .id = "second", .base_url = "https://two.test", .env = "KEY" });
+    allocator.free(text);
+}
+
+test "appendProvider frees what it built on every allocation failure" {
+    try testing.checkAllAllocationFailures(std.heap.smp_allocator, appendProviderProbe, .{});
 }

@@ -1930,6 +1930,55 @@ pub const App = struct {
         try self.state.appendTranscript(.system, msg);
     }
 
+    fn flagValue(word: ?[]const u8) ?[]const u8 {
+        const value = word orelse return null;
+        if (std.mem.startsWith(u8, value, "--")) return null;
+        return value;
+    }
+
+    fn parseProviderAdd(arg: []const u8) ?custom_providers.NewProvider {
+        var words = std.mem.tokenizeAny(u8, arg, " \t");
+        if (!std.mem.eql(u8, words.next() orelse return null, "add")) return null;
+        var new = custom_providers.NewProvider{
+            .id = flagValue(words.next()) orelse return null,
+            .base_url = flagValue(words.next()) orelse return null,
+        };
+        while (words.next()) |word| {
+            if (std.mem.eql(u8, word, "--api")) {
+                new.api = flagValue(words.next()) orelse return null;
+            } else if (std.mem.eql(u8, word, "--env")) {
+                if (new.auth_none) return null;
+                new.env = flagValue(words.next()) orelse return null;
+            } else if (std.mem.eql(u8, word, "--no-auth")) {
+                if (new.env != null) return null;
+                new.auth_none = true;
+            } else return null;
+        }
+        return new;
+    }
+
+    fn addProvider(self: *App, arg: []const u8) !void {
+        const new = parseProviderAdd(arg) orelse {
+            try self.state.appendTranscript(.@"error", tui_commands.provider_usage);
+            return;
+        };
+        const path = custom_providers.addProvider(self.allocator, new) catch |err| {
+            const msg = try std.fmt.allocPrint(self.allocator, "could not declare {s}: {s}", .{ new.id, @errorName(err) });
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.@"error", msg);
+            return;
+        };
+        defer self.allocator.free(path);
+        const next = if (new.auth_none)
+            try std.fmt.allocPrint(self.allocator, "Declared {s} in {s}, with no credential. Run /model refresh to list its models.", .{ new.id, path })
+        else if (new.env) |name|
+            try std.fmt.allocPrint(self.allocator, "Declared {s} in {s}; it reads its key from {s}. Run /model refresh to list its models.", .{ new.id, path, name })
+        else
+            try std.fmt.allocPrint(self.allocator, "Declared {s} in {s}. Run /login {s} to add its key.", .{ new.id, path, new.id });
+        defer self.allocator.free(next);
+        try self.state.appendTranscript(.system, next);
+    }
+
     fn logoutProviderId(name: []const u8) []const u8 {
         if (provider_catalog.provider(name) != null) return name;
         const index = loginProviderIndex(name) orelse return name;
@@ -2896,6 +2945,7 @@ pub const App = struct {
             .rename_session => try self.renameSession(command.arg orelse ""),
             .refresh_models => try self.reportModelRefresh(self.refreshModels(), "refreshing models failed"),
             .logout_provider => try self.logoutProvider(command.arg orelse ""),
+            .add_provider => try self.addProvider(command.arg orelse ""),
             .none => {},
         }
         if (command.kind == .model and command.arg != null and result.action != .refresh_models) self.persistCurrentModel();
@@ -4733,6 +4783,46 @@ test "App logout removes only that provider's saved credential" {
     defer storage.deinit();
     try std.testing.expect(!storage.providers.contains("gateway"));
     try std.testing.expect(storage.providers.contains("other-gateway"));
+}
+
+test "App /provider add declares a provider that /login then accepts" {
+    var env = try TempHome.init("home-provider-add");
+    defer env.deinit();
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    try std.testing.expect(!app.isDeclaredCustomProvider("gateway"));
+
+    try app.submit("/provider add gateway https://gw.test/v1 --api openai-responses");
+    const said = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expectEqual(tui_state.TranscriptKind.system, said.kind);
+    try std.testing.expect(std.mem.endsWith(u8, said.text.items, "Run /login gateway to add its key."));
+    try std.testing.expect(app.isDeclaredCustomProvider("gateway"));
+
+    try app.submit("/login gateway");
+    const pending = app.login orelse return error.TestExpectedLogin;
+    try std.testing.expectEqualStrings("gateway", pending.provider_id);
+    for (app.state.transcript.items) |entry| try std.testing.expect(std.mem.indexOf(u8, entry.text.items, "unknown login provider") == null);
+    app.finishLogin();
+
+    try app.submit("/provider add gateway https://other.test");
+    const refused = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expectEqualStrings("could not declare gateway: DuplicateProviderId", refused.text.items);
+
+    inline for (.{
+        "/provider add other https://other.test --env A --no-auth",
+        "/provider add other https://other.test --env --no-auth",
+        "/provider add other https://other.test --api --env A",
+        "/provider add --env A https://other.test",
+    }) |input| {
+        try app.submit(input);
+        try std.testing.expectEqualStrings(tui_commands.provider_usage, app.state.transcript.items[app.state.transcript.items.len - 1].text.items);
+    }
+
+    const providers = try custom_providers.load(std.testing.allocator, custom_providers.max_config_bytes);
+    defer custom_providers.deinitProviders(std.testing.allocator, providers);
+    try std.testing.expectEqual(@as(usize, 1), providers.len);
+    try std.testing.expectEqualStrings("openai-responses", providers[0].api);
 }
 
 test "App only offers an api-key login for a declared custom provider" {
