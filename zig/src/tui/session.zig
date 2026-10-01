@@ -31,16 +31,17 @@ pub const ToolApprovalCallback = *const fn (
 pub const TuiEvent = union(enum) {
     agent_start: struct { generation: u32 = 0 },
     turn_start: struct { generation: u32 = 0 },
-    message_start: struct { generation: u32 = 0, role: MessageRole },
-    text_delta: struct { generation: u32 = 0, content_index: usize, delta: OwnedSlice(u8) },
-    thinking_delta: struct { generation: u32 = 0, content_index: usize, delta: OwnedSlice(u8) },
-    tool_call_delta: struct { generation: u32 = 0, content_index: usize, delta: OwnedSlice(u8) },
+    message_start: struct { generation: u32 = 0, at_ms: i64 = 0, role: MessageRole },
+    text_delta: struct { generation: u32 = 0, at_ms: i64 = 0, content_index: usize, delta: OwnedSlice(u8) },
+    thinking_delta: struct { generation: u32 = 0, at_ms: i64 = 0, content_index: usize, delta: OwnedSlice(u8) },
+    tool_call_delta: struct { generation: u32 = 0, at_ms: i64 = 0, content_index: usize, delta: OwnedSlice(u8) },
     provider_event: struct {
         generation: u32 = 0,
         event_json: OwnedSlice(u8),
     },
     message_end: struct {
         generation: u32 = 0,
+        at_ms: i64 = 0,
         role: MessageRole,
         text: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
         content_json: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
@@ -169,6 +170,17 @@ pub const TuiEvent = union(enum) {
             .compaction_end => |p| p.generation,
             .@"error" => |p| p.generation,
         };
+    }
+
+    pub fn stamp(self: *TuiEvent, now_ms: i64) void {
+        switch (self.*) {
+            .message_start => |*p| p.at_ms = now_ms,
+            .text_delta => |*p| p.at_ms = now_ms,
+            .thinking_delta => |*p| p.at_ms = now_ms,
+            .tool_call_delta => |*p| p.at_ms = now_ms,
+            .message_end => |*p| p.at_ms = now_ms,
+            else => {},
+        }
     }
 
     pub fn setGeneration(self: *TuiEvent, gen: u32) void {
