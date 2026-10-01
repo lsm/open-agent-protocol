@@ -184,6 +184,7 @@ pub const AddSpec = struct {
 
 pub const AddError = error{
     OutOfMemory,
+    TooLarge,
     InvalidProviderId,
     ReservedProviderId,
     DuplicateProviderId,
@@ -267,8 +268,10 @@ pub fn addProvider(allocator: std.mem.Allocator, path: []const u8, spec: AddSpec
     var root: std.json.ObjectMap = .empty;
     if (existing) |data| {
         if (std.mem.trim(u8, data, " \t\r\n").len > 0) {
-            const parsed = std.json.parseFromSliceLeaky(std.json.Value, scratch, data, .{}) catch
-                return AddError.InvalidConfig;
+            const parsed = std.json.parseFromSliceLeaky(std.json.Value, scratch, data, .{}) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return AddError.InvalidConfig,
+            };
             if (parsed != .object) return AddError.InvalidConfig;
             root = parsed.object;
         }
@@ -290,6 +293,7 @@ pub fn addProvider(allocator: std.mem.Allocator, path: []const u8, spec: AddSpec
 
     const serialized = std.json.Stringify.valueAlloc(scratch, std.json.Value{ .object = root }, .{ .whitespace = .indent_2 }) catch
         return error.OutOfMemory;
+    if (serialized.len > max_config_bytes) return AddError.TooLarge;
 
     var check = parseConfig(scratch, serialized) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -1417,4 +1421,32 @@ fn addProviderProbe(allocator: std.mem.Allocator) !void {
 
 test "adding a provider frees every allocation when one fails, and a failure writes nothing" {
     try testing.checkAllAllocationFailures(testing.allocator, addProviderProbe, .{});
+}
+
+test "adding a provider refuses to write a file past the limit the loader reads" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try addTmpPath(testing.allocator, &tmp);
+    defer testing.allocator.free(path);
+
+    const template = "{{\"providers\":[{{\"id\":\"big\",\"base_url\":\"https://big.test\",\"headers\":{{\"X-Pad\":\"{s}\"}}}}]}}";
+    const pad_len = max_config_bytes - 8 - std.fmt.count(template, .{""});
+    const padding = try testing.allocator.alloc(u8, pad_len);
+    defer testing.allocator.free(padding);
+    @memset(padding, 'a');
+
+    const existing = try std.fmt.allocPrint(testing.allocator, template, .{padding});
+    defer testing.allocator.free(existing);
+    try testing.expect(existing.len < max_config_bytes);
+    try compat_mod.fs.writeFile(compat_mod.fs.getCwd(), path, existing);
+
+    const added = addProvider(testing.allocator, path, .{
+        .id = "extra",
+        .base_url = "https://extra.test",
+    });
+    try testing.expectError(AddError.TooLarge, added);
+
+    const after = try addReadFile(testing.allocator, path);
+    defer testing.allocator.free(after);
+    try testing.expectEqualStrings(existing, after);
 }
