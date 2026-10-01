@@ -1934,7 +1934,15 @@ pub const App = struct {
         try self.state.appendTranscript(.system, msg);
     }
 
-    fn logoutProvider(self: *App, provider_id: []const u8) !void {
+    fn logoutProviderId(name: []const u8) []const u8 {
+        if (provider_catalog.provider(name) != null) return name;
+        const index = loginProviderIndex(name) orelse return name;
+        const row = loginProviderAt(index) orelse return name;
+        return row.id;
+    }
+
+    fn logoutProvider(self: *App, requested: []const u8) !void {
+        const provider_id = logoutProviderId(requested);
         const removed = oauth_storage.AuthStorage.removeStored(self.allocator, provider_id) catch |err| {
             const msg = try std.fmt.allocPrint(self.allocator, "logout failed: {s}", .{@errorName(err)});
             defer self.allocator.free(msg);
@@ -4649,6 +4657,14 @@ test "App stores a custom provider key under its own id" {
         .api_key => |key| try std.testing.expectEqualStrings("gateway-secret", key),
         else => return error.UnexpectedAuthKind,
     }
+}
+
+test "App logout resolves the aliases login accepts" {
+    try std.testing.expectEqualStrings("openai-codex", App.logoutProviderId("codex"));
+    try std.testing.expectEqualStrings("github-copilot", App.logoutProviderId("github"));
+    try std.testing.expectEqualStrings("kimi", App.logoutProviderId("moonshot"));
+    try std.testing.expectEqualStrings("opencode-go", App.logoutProviderId("opencode-go"));
+    try std.testing.expectEqualStrings("gateway", App.logoutProviderId("gateway"));
 }
 
 test "App logout removes only that provider's saved credential" {

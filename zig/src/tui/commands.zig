@@ -221,7 +221,10 @@ fn handleHelp(ctx: CommandContext, command: Command) !CommandResult {
 
 fn handleModel(ctx: CommandContext, command: Command) !CommandResult {
     if (command.arg) |model_id| {
-        if (std.mem.eql(u8, model_id, "refresh")) return .{ .action = .refresh_models };
+        if (std.mem.eql(u8, model_id, "refresh")) {
+            if (ctx.state.status.streaming or ctx.state.status.compacting) return .{ .output = try ctx.allocator.dupe(u8, "A turn is running; refresh models once it finishes."), .is_error = true };
+            return .{ .action = .refresh_models };
+        }
         if (ctx.session) |session| {
             try session.switchModel(model_id);
         } else if (ctx.runtime) |runtime| {
@@ -248,7 +251,7 @@ fn handleLogin(ctx: CommandContext, command: Command) !CommandResult {
 
 fn handleLogout(ctx: CommandContext, command: Command) !CommandResult {
     if (command.arg == null) return .{ .output = try ctx.allocator.dupe(u8, "usage: /logout <provider>"), .is_error = true };
-    if (ctx.state.status.streaming) return .{ .output = try ctx.allocator.dupe(u8, "A turn is running; log out once it finishes."), .is_error = true };
+    if (ctx.state.status.streaming or ctx.state.status.compacting) return .{ .output = try ctx.allocator.dupe(u8, "A turn is running; log out once it finishes."), .is_error = true };
     return .{ .action = .logout_provider };
 }
 
@@ -850,6 +853,10 @@ test "model refresh and logout hand their work to the app" {
     defer busy.deinit(std.testing.allocator);
     try std.testing.expectEqual(CommandAction.none, busy.action);
     try std.testing.expect(busy.is_error);
+    var busy_refresh = try dispatch(.{ .allocator = std.testing.allocator, .state = &state }, try parse("/model refresh"));
+    defer busy_refresh.deinit(std.testing.allocator);
+    try std.testing.expectEqual(CommandAction.none, busy_refresh.action);
+    try std.testing.expect(busy_refresh.is_error);
 }
 
 test "resume opens the session picker when sessions exist" {
