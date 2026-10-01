@@ -10,6 +10,7 @@ pub const CommandKind = enum {
     login,
     status,
     @"resume",
+    rename,
     permissions,
     think,
     clear,
@@ -38,6 +39,7 @@ pub const CommandAction = enum {
     quit,
     clear_transcript,
     open_session_picker,
+    rename_session,
     open_model_picker,
     open_login_picker,
     open_permission_picker,
@@ -83,6 +85,7 @@ pub const commands = [_]CommandInfo{
     .{ .name = "status", .kind = .status, .usage = "/status", .description = "Show session status", .handler = handleStatus },
     .{ .name = "sessions", .kind = .@"resume", .usage = "/sessions", .description = "Open saved sessions", .handler = handleSessions },
     .{ .name = "resume", .kind = .@"resume", .usage = "/resume", .description = "Open saved sessions", .handler = handleSessions },
+    .{ .name = "rename", .kind = .rename, .usage = "/rename <title>", .description = "Rename this session", .handler = handleRename },
     .{ .name = "permissions", .kind = .permissions, .usage = "/permissions [ask|bypass]", .description = "Pick or set tool permission mode", .handler = handlePermissions },
     .{ .name = "perm", .kind = .permissions, .usage = "/perm [ask|bypass]", .description = "Pick or set tool permission mode", .handler = handlePermissions },
     .{ .name = "think", .kind = .think, .usage = "/think [off|low|medium|high|xhigh|max]", .description = "Show or set the thinking level", .handler = handleThink },
@@ -318,6 +321,11 @@ fn handleSettings(ctx: CommandContext, command: Command) !CommandResult {
     _ = ctx;
     _ = command;
     return .{ .action = .open_settings_picker };
+}
+
+fn handleRename(ctx: CommandContext, command: Command) !CommandResult {
+    if (command.arg == null) return .{ .output = try ctx.allocator.dupe(u8, "usage: /rename <title>"), .is_error = true };
+    return .{ .action = .rename_session };
 }
 
 fn handleClear(ctx: CommandContext, command: Command) !CommandResult {
@@ -867,6 +875,25 @@ test "perm alias parses as permissions command" {
     const command = try parse("/perm ask");
     try std.testing.expectEqual(CommandKind.permissions, command.kind);
     try std.testing.expectEqualStrings("ask", command.arg.?);
+}
+
+test "rename hands its title to the app and refuses an empty one" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+
+    const command = try parse("/rename  Resume freeze fix ");
+    try std.testing.expectEqual(CommandKind.rename, command.kind);
+    try std.testing.expectEqualStrings("Resume freeze fix", command.arg.?);
+    var renamed = try dispatch(.{ .allocator = std.testing.allocator, .state = &state }, command);
+    defer renamed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(CommandAction.rename_session, renamed.action);
+    try std.testing.expect(!renamed.is_error);
+
+    var empty = try dispatch(.{ .allocator = std.testing.allocator, .state = &state }, try parse("/rename"));
+    defer empty.deinit(std.testing.allocator);
+    try std.testing.expectEqual(CommandAction.none, empty.action);
+    try std.testing.expect(empty.is_error);
+    try std.testing.expectEqualStrings("usage: /rename <title>", empty.output);
 }
 
 test "runtime dependent commands dispatch to no-runtime errors" {

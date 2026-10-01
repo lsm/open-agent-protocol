@@ -618,7 +618,10 @@ loads from there, as after a torn write, it reads the whole file. `/resume` list
 sessions from these index files as `title · local date and time · model`. A session's
 title is the first line of its first message until its first reply ends; the current
 model is then asked, once and in the background, for a title of at most six words,
-which replaces it. Sessions from before the index take their first message from the
+which replaces it. `/rename <title>` sets the title to the first line of its argument,
+cut at 60 bytes, and marks it `title_renamed` in the index, so neither the first message
+nor a generated title replaces it afterwards; renaming a session with no records yet
+holds the name until its first record is written. Sessions from before the index take their first message from the
 head of the file. Files written before this layout still load, skipping their provider
 events, tool-call deltas and tool progress unparsed.
 
