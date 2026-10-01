@@ -963,6 +963,7 @@ pub const App = struct {
     compaction_offset: u64 = 0,
     pending_thinking: std.ArrayList(u8) = .empty,
     pending_after_compaction: ?[]u8 = null,
+    pending_after_compaction_echo: ?[]u8 = null,
     compaction_just_ended: ?bool = null,
     session_title: []u8 = &.{},
     session_title_generated: bool = false,
@@ -1087,6 +1088,7 @@ pub const App = struct {
         if (self.written_provider.len > 0) self.allocator.free(self.written_provider);
         self.pending_thinking.deinit(self.allocator);
         if (self.pending_after_compaction) |pending| self.allocator.free(pending);
+        if (self.pending_after_compaction_echo) |echo| self.allocator.free(echo);
         if (self.rate_model.len > 0) self.allocator.free(self.rate_model);
         if (self.rate_provider.len > 0) self.allocator.free(self.rate_provider);
         if (self.session_title.len > 0) self.allocator.free(self.session_title);
@@ -2584,14 +2586,27 @@ pub const App = struct {
         if (run_ended) try self.sendHeldAfterAbort();
     }
 
+    fn sendHeld(self: *App, typed: ?[]const u8) !bool {
+        const held = self.state.held_after_abort.items;
+        var parts = std.ArrayList([]const u8).empty;
+        defer parts.deinit(self.allocator);
+        try parts.appendSlice(self.allocator, held);
+        if (typed) |extra| try parts.append(self.allocator, extra);
+        const text = try std.mem.join(self.allocator, "\n\n", parts.items);
+        defer self.allocator.free(text);
+        const echo = try std.mem.join(self.allocator, "\n\n", parts.items[@min(self.state.held_after_abort_echoed, held.len)..]);
+        defer self.allocator.free(echo);
+        const sent = if (try self.compactBeforeTurnEchoing(text, echo)) true else try self.sendUserTurnEchoing(text, echo);
+        if (sent) self.state.clearHeldAfterAbort();
+        return sent;
+    }
+
     fn sendHeldAfterAbort(self: *App) !void {
         const held = self.state.held_after_abort.items;
         if (held.len == 0) return;
         const text = try std.mem.join(self.allocator, "\n\n", held);
         defer self.allocator.free(text);
-        const echo = try std.mem.join(self.allocator, "\n\n", held[@min(self.state.held_after_abort_echoed, held.len)..]);
-        defer self.allocator.free(echo);
-        const sent = self.sendUserTurnEchoing(text, echo) catch false;
+        const sent = self.sendHeld(null) catch false;
         self.state.clearHeldAfterAbort();
         if (sent) return;
         const restored = self.state.composer.buffer.items.len == 0;
@@ -2685,6 +2700,10 @@ pub const App = struct {
         if (trimmed[0] == '/') return try self.submitCommand(trimmed);
         self.forgetRunError();
         self.userTookOver();
+        if (self.state.held_after_abort.items.len > 0) {
+            _ = try self.sendHeld(trimmed);
+            return;
+        }
         if (try self.compactBeforeTurn(trimmed)) return;
         try self.sendUserTurn(trimmed);
     }
@@ -2789,6 +2808,10 @@ pub const App = struct {
     }
 
     fn compactBeforeTurn(self: *App, text: []const u8) !bool {
+        return self.compactBeforeTurnEchoing(text, text);
+    }
+
+    fn compactBeforeTurnEchoing(self: *App, text: []const u8, echo: []const u8) !bool {
         const runtime = self.runtime orelse return false;
         const model = runtime.currentModel() orelse return false;
         const at = tui_state.autoCompactAt(self.state.autocompact, model) orelse return false;
@@ -2801,11 +2824,14 @@ pub const App = struct {
 
         const pending = try self.allocator.dupe(u8, text);
         errdefer self.allocator.free(pending);
+        const pending_echo = try self.allocator.dupe(u8, echo);
+        errdefer self.allocator.free(pending_echo);
         const msg = try std.fmt.allocPrint(self.allocator, "context is at {d} of {d} tokens, past the {d} where it compacts; compacting before this turn.", .{ tokens, model.context_window, at });
         defer self.allocator.free(msg);
         try self.state.appendTranscript(.system, msg);
         try self.startCompaction("");
         self.pending_after_compaction = pending;
+        self.pending_after_compaction_echo = pending_echo;
         return true;
     }
 
@@ -2813,6 +2839,9 @@ pub const App = struct {
         const pending = self.pending_after_compaction orelse return;
         self.pending_after_compaction = null;
         defer self.allocator.free(pending);
+        const echo = self.pending_after_compaction_echo;
+        self.pending_after_compaction_echo = null;
+        defer if (echo) |owned| self.allocator.free(owned);
         if (!completed) {
             try self.state.appendTranscript(.system, "the automatic compaction did not finish; sending the message with the history unchanged");
         }
@@ -2820,13 +2849,15 @@ pub const App = struct {
             try self.steer(pending);
             return;
         }
-        try self.sendUserTurn(pending);
+        _ = try self.sendUserTurnEchoing(pending, echo orelse pending);
     }
 
     fn dropPendingAfterCompaction(self: *App, reason: []const u8) !void {
         const pending = self.pending_after_compaction orelse return;
         self.pending_after_compaction = null;
         defer self.allocator.free(pending);
+        if (self.pending_after_compaction_echo) |echo| self.allocator.free(echo);
+        self.pending_after_compaction_echo = null;
         const msg = try std.fmt.allocPrint(self.allocator, "a message waiting on an automatic compaction was not sent: {s}.", .{reason});
         defer self.allocator.free(msg);
         try self.state.appendTranscript(.system, msg);
@@ -5635,6 +5666,55 @@ test "held messages that cannot be sent go back to the composer instead of being
     try std.testing.expectEqualStrings("then open a PR", app.state.composer.text());
     const last = app.state.transcript.items[app.state.transcript.items.len - 1];
     try std.testing.expectEqualStrings("The queued messages could not be sent; they are back in the composer.", last.text.items);
+}
+
+test "a message typed while an aborted run winds down carries the held messages with it" {
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.session = mock.session();
+    app.state.status.streaming = true;
+    try app.state.appendQueuedFollowUp("then open a PR");
+
+    try app.submit("/abort");
+    try app.submit("and add a test");
+    try std.testing.expectEqual(@as(usize, 1), mock.submit_count);
+    try std.testing.expectEqualStrings("then open a PR\n\nand add a test", mock.submitted.items[0]);
+    try std.testing.expectEqual(@as(usize, 0), app.state.held_after_abort.items.len);
+
+    try mock.eventStream().push(.{ .agent_end = .{ .reason = .cancelled } });
+    try app.drainEvents();
+    try std.testing.expectEqual(@as(usize, 1), mock.submit_count);
+}
+
+test "held messages wait for the automatic compaction a typed turn would wait for" {
+    var mock = MockAppSession{ .history_messages = &auto_compact_history };
+    defer mock.deinit();
+    var app = try autoCompactTestApp(&mock);
+    defer app.deinit();
+    app.state.status.streaming = true;
+    try app.state.appendSteeredMessage("check the logs first");
+    try app.state.appendQueuedFollowUp("then open a PR");
+
+    try app.submit("/abort");
+    try mock.eventStream().push(.{ .agent_end = .{ .reason = .cancelled } });
+    try app.drainEvents();
+    try std.testing.expectEqual(@as(usize, 1), mock.compact_count);
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+
+    try mock.eventStream().push(.{ .compaction_end = .{
+        .outcome = .completed,
+        .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "summary")),
+    } });
+    try app.drainEvents();
+    try std.testing.expectEqual(@as(usize, 1), mock.submit_count);
+    try std.testing.expectEqualStrings("check the logs first\n\nthen open a PR", mock.submitted.items[0]);
+    var echoes: usize = 0;
+    for (app.state.transcript.items) |entry| {
+        if (entry.kind == .user and std.mem.indexOf(u8, entry.text.items, "check the logs first") != null) echoes += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), echoes);
 }
 
 test "autocompact holds a turn until the compaction it started has finished" {
