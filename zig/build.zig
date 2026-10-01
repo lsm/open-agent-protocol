@@ -815,6 +815,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "pre_transform", .module = pre_transform_mod },
             .{ .name = "string_builder", .module = string_builder_mod },
             .{ .name = "compat", .module = compat_mod },
+            .{ .name = "provider_caps", .module = provider_caps_mod },
         },
     });
 

@@ -36,7 +36,13 @@ fn mergeCompat(model: ai_types.Model) MergedCompat {
     const is_openai_native = provider_caps.isOpenAIHost(model.base_url);
     const honors_native_caps = is_openai_native or isTransparentOpenAIProxy(model);
     const detected_developer_role = if (honors_native_caps) caps.supports_developer_role else false;
-    const detected_reasoning_effort = if (honors_native_caps or provider_caps.isDeepSeek(model.base_url)) caps.supports_reasoning_effort else false;
+    const deepseek_wire = provider_caps.usesDeepSeekWire(model.provider, model.base_url);
+    const detected_reasoning_effort = if (deepseek_wire and model.reasoning and caps.supports_reasoning_effort == false and provider_caps.isExplicitDeepSeekVendor(model.provider))
+        true
+    else if (honors_native_caps or deepseek_wire)
+        caps.supports_reasoning_effort
+    else
+        false;
     const detected_max_tokens_field: []const u8 = if (honors_native_caps) caps.max_tokens_field else "max_tokens";
 
     return .{
@@ -646,7 +652,7 @@ fn buildRequestBody(
     }
     if (options.getReasoningEffort()) |effort| {
         if (model.reasoning and merged.supports_reasoning_effort) {
-            try w.writeStringField("reasoning_effort", if (provider_caps.isDeepSeek(model.base_url)) deepSeekEffort(effort) else effort);
+            try w.writeStringField("reasoning_effort", if (provider_caps.usesDeepSeekWire(model.provider, model.base_url)) provider_caps.deepSeekEffort(effort) else effort);
         }
     }
     if (context.tools) |tools| {
@@ -1995,12 +2001,6 @@ test "OpenCode Go gets a conversation id, the session's when there is one, else 
     try std.testing.expect(std.mem.startsWith(u8, client_user_agent, "oapx/"));
 }
 
-fn deepSeekEffort(effort: []const u8) []const u8 {
-    if (std.mem.eql(u8, effort, "minimal") or std.mem.eql(u8, effort, "low")) return "low";
-    if (std.mem.eql(u8, effort, "xhigh") or std.mem.eql(u8, effort, "max")) return "max";
-    return "high";
-}
-
 fn thinkingLevelToString(level: ai_types.ThinkingLevel) []const u8 {
     return switch (level) {
         .off => "off",
@@ -2030,7 +2030,12 @@ pub fn streamSimpleOpenAICompletions(
         .cancel_token = o.cancel_token,
         .on_payload_fn = o.on_payload_fn,
         .on_payload_ctx = o.on_payload_ctx,
-        .reasoning_effort = if (o.reasoning) |r| ai_types.OwnedSlice(u8).initBorrowed(thinkingLevelToString(r)) else ai_types.OwnedSlice(u8).initBorrowed(""),
+        .reasoning_effort = if (o.reasoning) |r| ai_types.OwnedSlice(u8).initBorrowed(
+            if (provider_caps.usesDeepSeekWire(model.provider, model.base_url))
+                provider_caps.deepSeekEffort(@tagName(r))
+            else
+                thinkingLevelToString(r),
+        ) else ai_types.OwnedSlice(u8).initBorrowed(""),
     }, allocator);
 }
 
@@ -2450,7 +2455,9 @@ test "a deepseek request carries the thinking level as one of deepseek's three e
         .{ .level = "low", .sent = "low" },
         .{ .level = "medium", .sent = "high" },
         .{ .level = "high", .sent = "high" },
-        .{ .level = "xhigh", .sent = "max" },
+        .{ .level = "xhigh", .sent = "high" },
+        .{ .level = "max", .sent = "max" },
+        .{ .level = "ultra", .sent = "max" },
     };
     for (cases) |case| {
         const body = try buildRequestBody(model, .{ .messages = &messages }, .{

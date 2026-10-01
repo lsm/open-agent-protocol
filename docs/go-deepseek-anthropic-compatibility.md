@@ -111,27 +111,30 @@ both are left unanswered rather than resolved by defaulting.
 
 ## Identity scope, stated precisely
 
-The branch is keyed on the **provider label** `deepseek` alone. It does not
-inspect the base-URL host, and it adds no URL policy and no new precedence rule.
-The reasoning condition is applied by the enclosing guard, so the effective gate is
-`reasoning and provider == "deepseek"`.
+This **Go** writer's branch is keyed on the **provider label** `deepseek` alone:
+`anthropic_request.go` gates on `model.Provider == "deepseek"` and inspects no
+host. The Zig writer widened its equivalent branch to
+`reasoning and usesDeepSeekWire(provider, base_url)`, so the two writers **diverge
+in scope**: Zig takes the branch for a model on a `deepseek.com` host under another
+label, Go does not. The divergence is recorded rather than aligned; whether the Go
+gate should widen is a separate question.
 
 Consequences, stated so they are not over-read:
 
 - a model configured with the `deepseek` provider takes this branch **whatever its
   base URL is**, including a non-vendor proxy;
 - a model on a `deepseek.com` host whose provider label is something else does
-  **not** take it. It takes the Claude budget path, and its `budget_tokens` will be
-  ignored.
+  **not** take it in Go. It takes the Claude budget path, and its `budget_tokens`
+  will be ignored. (The Zig writer, widened, does take it.)
 
 Whether a provider label may override a host remains an **open** question and this
 cut does not decide it. The above is a consequence of keying on the label, recorded
 rather than defended.
 
-This scope matches the Zig writer, which gates the same branch on
-`model.reasoning and model.provider == "deepseek"` and likewise inspects no host.
-That is a statement of parity of **scope** only, not of behaviour: the two writers
-still differ in the table they apply and in how they express off.
+The Zig writer gates the same branch on
+`model.reasoning and usesDeepSeekWire(model.provider, model.base_url)`, so the two
+writers differ in **scope** here (Go label-only, Zig additive) as well as in the
+table they apply and in how they express off.
 
 ## Off and `none`, still open
 
