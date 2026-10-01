@@ -271,6 +271,16 @@ is stated per shape, because it is not uniformly nothing:
 - **duplicate gate declarations** — two `gates` entries naming the same type (or
   the same `payload_type`/`member`) are both kept and the load succeeds, where
   `goap` records a duplicate.
+- a gate that supplies **both a `type` and the `payload_type`/`member` pair** is
+  accepted; `typeCapability` and `memberCapability` each read the entry
+  independently, so no conflict is raised. `goap` refuses the ambiguous gate.
+- a gate whose **`ungated` value is not a boolean** (for example `"false"`) is
+  accepted; `typeCapability` reads only the `capability` member and ignores the
+  wrong-shaped `ungated`. `goap` rejects it through the descriptor schema.
+- **array uniqueness is not enforced**: repeated values in `schemas`,
+  `capability_keys`, `error_codes` or an `envelope_types` refusal list are
+  accepted with duplicates kept, where the descriptor schema's `uniqueItems`
+  makes them invalid and `goap` refuses them.
 - a well-shaped **payload member targeting `capabilities.updated` under a gate**
   is appended (`fixtures/packs/bad-member-on-capabilities-updated` loads);
   `capabilities.updated` is a core type, but it introduces a revision and has no
