@@ -202,12 +202,23 @@ is stated per shape, because it is not uniformly nothing:
   item shape is checked. `depends_on` is not read by this loader at all. `goap`
   rejects every one of these shapes through the descriptor schema. The CLI note
   discloses the same class; this paragraph is the record's statement of it.
+  Alongside `depends_on`, the **`fixtures` field is also wholly unread**: `gather`
+  never looks it up, so a nonexistent or escaping fixture path is accepted and the
+  pack-corpus completeness checks `goap` derives from a fixture manifest never
+  run — even a valid manifest contributes no checks. `goap` reads `fixtures` and
+  can refuse the pack on it; this loader cannot.
 - a **`gates` entry whose `capability` (or `payload_type`/`member`/`type`) is not
   a string** is not refused: `gateString` converts the wrong shape to an empty
   string (`packs.zig:462-466`), the entry then matches nothing or matches with an
   empty capability, and an empty capability is ignored, so **capability
   enforcement is silently skipped for that gate** while the load succeeds. `goap`
   rejects the descriptor through its schema.
+- an `envelope_types` entry whose **`role` is not a string** becomes `""` at
+  `packs.zig:377`, and a string the semantic machine does not recognise is
+  retained as written; in both cases the role matches neither `request`,
+  `response` nor `event`, so the type bypasses request correlation and its
+  declared capability enforcement while the pack loads. `goap` rejects both
+  shapes through its schema.
 
 A descriptor that **omits `schemas` entirely**, or sets `"schemas": []`, is also
 accepted, and the empty field contributes **no schema documents and so no
