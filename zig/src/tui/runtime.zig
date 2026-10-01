@@ -1029,6 +1029,7 @@ pub const TuiRuntime = struct {
     fn push(self: *TuiRuntime, event: TuiEvent) void {
         var mutable = event;
         mutable.setGeneration(self.current_generation);
+        mutable.stamp(compat.time.nowMillis());
         self.pushDroppingOldestCounted(mutable);
         self.flushDroppedWarning();
     }
@@ -1036,6 +1037,7 @@ pub const TuiRuntime = struct {
     fn pushTerminal(self: *TuiRuntime, event: TuiEvent) void {
         var mutable = event;
         mutable.setGeneration(self.current_generation);
+        mutable.stamp(compat.time.nowMillis());
         self.pushDroppingOldestCounted(mutable);
         self.flushDroppedWarningDroppingOldest();
     }

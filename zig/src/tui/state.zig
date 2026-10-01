@@ -200,6 +200,10 @@ pub const ApprovalState = struct {
     }
 };
 
+fn eventTime(at_ms: i64) i64 {
+    return if (at_ms > 0) at_ms else compat.time.nowMillis();
+}
+
 pub const TokenRate = struct {
     output_tokens: u64 = 0,
     stream_ms: u64 = 0,
@@ -228,6 +232,8 @@ pub const TokenRateSet = struct {
     run_active: bool = false,
     live_min_ms: i64 = 1_000,
 
+    const min_measured_ms: u64 = 100;
+
     pub fn messageStarted(self: *TokenRateSet, now_ms: i64) void {
         self.message_bytes = 0;
         self.message_first_ms = now_ms;
@@ -246,7 +252,7 @@ pub const TokenRateSet = struct {
             return;
         }
         const span: u64 = if (now_ms > self.message_first_ms) @intCast(now_ms - self.message_first_ms) else 0;
-        if (span > 0) {
+        if (span >= min_measured_ms) {
             if (output_tokens > 0) {
                 self.turn_measured.output_tokens += output_tokens;
                 self.turn_measured.stream_ms += span;
@@ -1020,25 +1026,25 @@ pub const AppState = struct {
             },
             .message_start => |payload| switch (payload.role) {
                 .assistant => {
-                    self.telemetry.rate.messageStarted(compat.time.nowMillis());
+                    self.telemetry.rate.messageStarted(eventTime(payload.at_ms));
                     self.active_assistant_entry = try self.appendEmptyTranscript(.assistant);
                 },
                 .user => self.active_user_entry = try self.ensureTrailingEntry(.user),
                 .tool_result => self.active_tool_result_entry = try self.appendEmptyTranscript(.tool),
             },
             .text_delta => |payload| {
-                self.telemetry.rate.produced(payload.delta.slice().len, compat.time.nowMillis());
+                self.telemetry.rate.produced(payload.delta.slice().len, eventTime(payload.at_ms));
                 try self.appendDelta(.assistant, payload.delta.slice());
             },
             .thinking_delta => |payload| {
-                self.telemetry.rate.produced(payload.delta.slice().len, compat.time.nowMillis());
+                self.telemetry.rate.produced(payload.delta.slice().len, eventTime(payload.at_ms));
                 try self.appendThinkingDelta(payload.delta.slice());
             },
-            .tool_call_delta => |payload| self.telemetry.rate.produced(payload.delta.slice().len, compat.time.nowMillis()),
+            .tool_call_delta => |payload| self.telemetry.rate.produced(payload.delta.slice().len, eventTime(payload.at_ms)),
             .provider_event => {},
             .message_end => |payload| switch (payload.role) {
                 .assistant => {
-                    self.telemetry.rate.messageEnded(compat.time.nowMillis(), payload.output_tokens);
+                    self.telemetry.rate.messageEnded(eventTime(payload.at_ms), payload.output_tokens);
                     self.active_thinking_entry = null;
                     try self.finishTranscriptEntry(.assistant, payload.text.slice(), &self.active_assistant_entry);
                     try self.rememberToolCalls(payload.tool_calls_json.slice());
@@ -2103,6 +2109,30 @@ pub fn noopToolForTest(
     _ = on_update;
     _ = allocator;
     return error.NotImplemented;
+}
+
+test "a reply drained in one pass is timed from when its events were queued, not when they were applied" {
+    var state = AppState.init(std.testing.allocator);
+    defer state.deinit();
+
+    try state.applyEvent(.{ .turn_start = .{} });
+    try state.applyEvent(.{ .message_start = .{ .at_ms = 1_000, .role = .assistant } });
+    try state.applyEvent(.{ .text_delta = .{ .at_ms = 1_500, .content_index = 0, .delta = ai_types.OwnedSlice(u8).initBorrowed("hello") } });
+    try state.applyEvent(.{ .message_end = .{ .at_ms = 5_000, .role = .assistant, .text = ai_types.OwnedSlice(u8).initBorrowed("hello"), .output_tokens = 400 } });
+    try state.applyEvent(.{ .turn_end = .{ .stop_reason = .stop } });
+
+    try std.testing.expectEqual(@as(u64, 100), state.telemetry.rate.previous.perSecond());
+}
+
+test "a reply measured over less than a tenth of a second is left out rather than reported" {
+    var rate = TokenRateSet{};
+    rate.messageStarted(1_000);
+    rate.produced(400, 1_000);
+    rate.messageEnded(1_001, 1_199);
+    rate.turnEnded();
+
+    try std.testing.expect(!rate.previous.hasFigure());
+    try std.testing.expect(!rate.average.hasFigure());
 }
 
 test "a measured turn reports the provider's own output tokens" {
