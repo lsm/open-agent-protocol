@@ -220,6 +220,19 @@ is stated per shape, because it is not uniformly nothing:
   empty capability, and an empty capability is ignored, so **capability
   enforcement is silently skipped for that gate** while the load succeeds. `goap`
   rejects the descriptor through its schema.
+- a declared request or event with **no matching `gates` entry at all** (or no
+  `gates` field) is accepted: `typeCapability` returns `""` (`packs.zig:468`),
+  `gather` succeeds, and `packEnvelope` skips capability enforcement because it
+  only checks non-empty capabilities. `goap` refuses this case with
+  `pack_ungated_type` (`go/validation/pack.go:431-437`).
+- two `payload_members` entries naming the **same `payload_type` and `member`**
+  are both appended and the pack loads: `gather` dedups types
+  (`packs.zig:366-368`) but not members (`packs.zig:349-360`). `goap` refuses the
+  descriptor with `pack_member_duplicate` (`go/validation/pack.go:441-447`).
+- an `envelope_types` **refusal code that is not declared in the pack's
+  `error_codes`** is copied into the type metadata with no membership check and
+  the pack loads. `goap` refuses the same descriptor with
+  `pack_refusal_undeclared` (`go/validation/pack.go:385-389`).
 - an `envelope_types` entry whose **`role` is not a string** becomes `""` at
   `packs.zig:377`, and a string the semantic machine does not recognise is
   retained as written; in both cases the role matches neither `request`,
