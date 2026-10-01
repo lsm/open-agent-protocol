@@ -216,10 +216,20 @@ pub fn historyBudget(context_window: u32, fixed_tokens: u64, max_output: u32) ?u
     return usable -| (fixed_tokens + max_output);
 }
 
-pub fn isAtShare(estimated_tokens: u64, context_window: u32, share_percent: u8) bool {
-    if (context_window == 0 or share_percent == 0) return false;
-    const reached = (@as(u64, context_window) * share_percent + 99) / 100;
-    return estimated_tokens >= reached;
+pub const reply_room_tokens: u32 = 32_000;
+
+pub fn autoCompactReserve(context_window: u32, max_output: u32) u64 {
+    const window: u64 = context_window;
+    const reply: u64 = if (max_output == 0) reply_room_tokens else @min(max_output, reply_room_tokens);
+    return @min(@max(window / 5, default_max_output_tokens + reply), window / 2);
+}
+
+pub fn autoCompactAt(context_window: u32, max_output: u32) u64 {
+    return context_window - autoCompactReserve(context_window, max_output);
+}
+
+pub fn shareAt(context_window: u32, share_percent: u8) u64 {
+    return (@as(u64, context_window) * share_percent + 99) / 100;
 }
 
 pub fn firstIncluded(messages: []const ai_types.Message, budget: ?u64) ?usize {
@@ -325,7 +335,7 @@ fn historyMessagesProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "historyMessages survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, historyMessagesProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, historyMessagesProbe, .{});
 }
 
 fn ownedOptionsProbe(allocator: std.mem.Allocator) !void {
@@ -335,7 +345,7 @@ fn ownedOptionsProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "OwnedOptions.init survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, ownedOptionsProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, ownedOptionsProbe, .{});
 }
 
 test "firstIncluded keeps everything without a budget and cuts at a user turn with one" {
@@ -360,6 +370,17 @@ test "isContextOverflow recognizes provider overflow errors and nothing else" {
     try std.testing.expect(!isContextOverflow("rate limit reached"));
 }
 
+test "autoCompactAt keeps a fifth of a large window free, and room for a summary and a reply in a small one" {
+    try std.testing.expectEqual(@as(u64, 838_861), autoCompactAt(1_048_576, 393_216));
+    try std.testing.expectEqual(@as(u64, 320_000), autoCompactAt(400_000, 128_000));
+    try std.testing.expectEqual(@as(u64, 148_000), autoCompactAt(200_000, 64_000));
+    try std.testing.expectEqual(@as(u64, 92_000), autoCompactAt(128_000, 16_000));
+    try std.testing.expectEqual(@as(u64, 36_000), autoCompactAt(64_000, 8_000));
+    try std.testing.expectEqual(@as(u64, 16_000), autoCompactAt(32_000, 8_000));
+    try std.testing.expectEqual(@as(u64, 76_000), autoCompactAt(128_000, 0));
+    try std.testing.expectEqual(@as(u64, 0), autoCompactAt(0, 8_000));
+}
+
 test "shrunkBudget keeps three quarters of what the rejected request carried" {
     const messages = [_]ai_types.Message{ userText("a" ** 400), userText("b" ** 400) };
     try std.testing.expectEqual(@as(?u64, 157), shrunkBudget(&messages));
@@ -372,14 +393,9 @@ test "historyBudget reserves the fixed prompt and the summary out of most of the
     try std.testing.expectEqual(@as(?u64, 0), historyBudget(1000, 900, 100));
 }
 
-test "isAtShare is at or above the share, and never for an unknown window" {
-    try std.testing.expect(!isAtShare(1_000_000, 0, 80));
-    try std.testing.expect(!isAtShare(1_000_000, 1_000_000, 0));
-    try std.testing.expect(!isAtShare(799_999, 1_000_000, 80));
-    try std.testing.expect(isAtShare(800_000, 1_000_000, 80));
-    try std.testing.expect(isAtShare(800_001, 1_000_000, 80));
-    try std.testing.expect(isAtShare(3, 3, 100));
-    try std.testing.expect(!isAtShare(2, 3, 100));
-    try std.testing.expect(!isAtShare(1, 3, 80));
-    try std.testing.expect(isAtShare(1_000_000_000, 2_000_000_000, 50));
+test "shareAt rounds the share of the window up to a whole token" {
+    try std.testing.expectEqual(@as(u64, 800_000), shareAt(1_000_000, 80));
+    try std.testing.expectEqual(@as(u64, 3), shareAt(3, 100));
+    try std.testing.expectEqual(@as(u64, 3), shareAt(3, 80));
+    try std.testing.expectEqual(@as(u64, 1_000_000_000), shareAt(2_000_000_000, 50));
 }

@@ -623,5 +623,5 @@ fn feedEveryShape(allocator: std.mem.Allocator) !void {
 }
 
 test "SSEParser - feeding propagates every allocation failure and leaks nothing" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, feedEveryShape, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, feedEveryShape, .{});
 }

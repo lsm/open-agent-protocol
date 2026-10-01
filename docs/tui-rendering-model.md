@@ -152,8 +152,20 @@ code paths; add a transcript row instead.
   left-aligned soft block; assistant prose gets inline styling (bold, italic, code
   spans), bullets, numbered lists, headings, block quotes, and fenced code blocks with
   a language tag — all applied to rows *after* the #254 sanitizer and wrapper, one
-  self-contained styled row at a time. `renderAssistantPlain` remains the unstyled
-  wrap engine and its exact-output tests are unchanged.
+  self-contained styled row at a time. A GFM table (a header row, then a `|---|`
+  separator with as many cells, then rows until a blank or pipe-less line) renders
+  as aligned columns split by a dim `│`, with a dim `─┼─` rule under a bold header
+  and the separator's `:` alignment honoured. When the table is wider than the
+  transcript the widest columns give way first and cells wrap inside their column;
+  when there is not room for three columns' worth of cells it falls back to prose
+  rows. A header without its separator stays prose, so a table streams in as text
+  and snaps into columns once the separator arrives. A line of three or more `-`,
+  `*` or `_` is a dim rule across the width. `[text](url)` and `<url>` show as
+  underlined link text carrying an OSC 8 hyperlink, kept on every row a wrapped link
+  spans; only an `http(s)` target with no space or control byte becomes a hyperlink,
+  anything else keeps just its text, and a link inside a code span stays literal.
+  `renderAssistantPlain`
+  remains the unstyled wrap engine and its exact-output tests are unchanged.
 - Tool calls: one row, `◆ Label  argument` on the left, status on the right
   (`⠋ running`, `◌ awaiting approval`, `✓ 342B · ~87 tok`, `✗ failed`,
   `■ interrupted`). Result rows render as dim `⎿` lines capped at eight rows. The row
@@ -452,18 +464,50 @@ ceiling is lower. Each drop is a System entry naming the window, the model and w
 takes, and the model's own window is in effect from then on. Setting a window below what
 the model reports is never dropped.
 
+## Output limit
+
+A reply asks for at most 32,768 output tokens by default, or the model's own maximum when
+that is lower. `/output <tokens>` sets another count, `/output max` asks for the model's
+maximum, `/output auto` restores the default, and `/output` with no argument reports the
+count in effect and the ceiling. A count above the maximum the model reports is refused;
+a model that reports none accepts any count. A saved count above the maximum of a model
+switched to later is lowered to that maximum when the request is made, so no request asks
+for more than the model writes. Whatever is asked for is lowered again to what the context
+window leaves.
+
+Only under the default, and only when the default is below the model's maximum, does a
+reply cut off at the limit raise it to that maximum for the rest of the run: a cut-off tool
+call is answered with the usual error and retried, and cut-off text is followed by one
+request to continue from where it stopped. `/output` reports this only when it applies. A
+count set with `/output`, `/output max`, a model that reports no maximum, and a reply cut
+off at the maximum all end the run as before. The setting is kept in `~/.oapx/config.json` under
+`mode.output`, as `"max"` or a count, and absent for the default.
+
 ## Automatic compaction
 
-`/autocompact <percent>` sets the share of the context window at which the session compacts
-itself, `/autocompact off` turns that off, and `/autocompact` with no argument reports the
-share in effect. `off` is what a session starts with, so nothing compacts on its own until
-it is asked to. A percent sign is optional (`80` and `80%` are the same request) and the
-share must be between 1 and 100: `0`, `101`, a sign, a decimal and anything that is not
-digits are refused. `/status` carries the share on its own line, so the value is visible
-without a second command.
+A session compacts itself before a turn once its context reaches a point set by the model.
+`auto`, which a session starts with, puts that point where the window still holds a reserve:
+a fifth of the window, or room for the 20,000-token summary plus one reply (the model's
+output limit, capped at 32,000) when that is more, but never more than half the window. On a
+1M window that is 80%; on 200k with a 64k output limit, 74%; on 128k with 16k, 72%; on 64k
+with 8k, 56%; on 32k, 50%. The window and the output limit are the model's own, from its
+provider's model list, and the catalog's conservative defaults (a 128k window, 8,192 output
+tokens) stand in when the list does not say.
 
-The share measures the same figure the context gauge shows — the prompt estimate the
-provider was last sent — plus the message about to be sent, against the window in effect.
+`/autocompact <percent>` sets a share of the window instead, `/autocompact off` turns it
+off, `/autocompact auto` returns to the default, and `/autocompact` with no argument reports
+the setting and, for `auto`, the token count it compacts at. The setting is saved in
+`config.json` under `mode.autocompact` as `"auto"`, `"off"` or a whole number, and a value
+that is none of those reads as `auto`. A percent sign is optional (`80` and `80%` are the
+same request) and the share must be between 1 and 100: `0`, `101`, a sign, a decimal and
+anything that is not digits are refused. `/status` carries the setting on its own line, so
+the value is visible without a second command.
+
+The point is measured against the larger of two counts: the prompt estimate the context gauge
+shows, and the prompt the provider last reported plus an estimate of what came after it (the
+count the output limit uses). The message about to be sent is added to that, against the
+window in effect. When the provider reports more than the estimate, compaction can fire while
+the gauge still reads below the point.
 It fires before a turn is submitted rather than during one, because a turn that has already
 overflowed is the failure this avoids. A message typed while a turn is streaming or a
 compaction is running takes the normal path, and the next submit is the one that measures
@@ -478,6 +522,20 @@ the tick thread. A `/resume` that lands before the compaction ends drops the hel
 with a note saying so, at the top of the resume, so it cannot be sent into the session that
 replaced it. A session whose history is already a summary, or empty, is not compacted
 again, and one automatic compaction runs at a time.
+
+A run that crosses the same point while it is working compacts between two of its turns,
+so a long tool loop no longer has to end before the history can shrink. Before each turn
+after the first, the agent measures its own history the way the output limit does (the
+provider's last reported prompt plus an estimate of what came after it) and, once that
+reaches the point, writes the same summary `/compact` writes, saves the history it replaces
+as the session's next transcript, installs the summary and acknowledgement, and adds one
+user message asking the model to carry on with the task from the summary. The transcript
+shows the compaction as it does for `/compact`, the run keeps streaming through it, and a
+message typed meanwhile is steered as usual. A failed or cancelled compaction leaves the
+history as it was and the run goes on (a cancel then ends the run at its next check). The
+session log records it as a `compaction_end` marked `"in_run": true`, so a resumed session
+starts from that summary exactly as it would from a `/compact`. The point is set when a run
+starts, so an `/autocompact` change applies from the next run.
 
 ## Recovery after a provider error
 

@@ -3,6 +3,18 @@ const agent = @import("agent");
 const ai_types = @import("ai_types");
 const tui_runtime = @import("tui_runtime");
 const compat = @import("compat");
+const tui_config = @import("tui_config");
+
+pub const AutoCompactSetting = tui_config.AutoCompact;
+
+pub fn autoCompactAt(setting: AutoCompactSetting, model: ai_types.Model) ?u64 {
+    if (model.context_window == 0) return null;
+    return switch (setting) {
+        .off => null,
+        .percent => |percent| agent.compaction.shareAt(model.context_window, percent),
+        .auto => agent.compaction.autoCompactAt(model.context_window, model.max_tokens),
+    };
+}
 
 pub const AppMode = enum {
     normal,
@@ -620,7 +632,7 @@ pub const AppState = struct {
     telemetry: TelemetryState = .{},
     preview: PreviewState = .{},
     thinking_level: ai_types.ThinkingLevel = .low,
-    autocompact_percent: ?u8 = null,
+    autocompact: AutoCompactSetting = .auto,
     login_input_secret: bool = false,
     anim_tick: u64 = 0,
     transcript_scroll: usize = 0,
@@ -1120,15 +1132,17 @@ pub const AppState = struct {
                 self.dropped_event_count = payload.dropped_count;
             },
             .compaction_start => {
-                self.status.streaming = true;
                 self.status.compacting = true;
+                self.status.streaming = true;
                 self.markStreamingStarted();
             },
             .compaction_end => |payload| {
-                self.status.streaming = false;
                 self.status.compacting = false;
-                self.markStreamingStopped();
-                self.stream_aborted = false;
+                if (!payload.in_run) {
+                    self.status.streaming = false;
+                    self.markStreamingStopped();
+                    self.stream_aborted = false;
+                }
                 switch (payload.outcome) {
                     .completed => {
                         self.telemetry.estimated_tokens = payload.tokens_after;
@@ -1157,6 +1171,7 @@ pub const AppState = struct {
                 self.telemetry.rate.turnEnded();
                 self.telemetry.rate.runEnded();
                 self.status.streaming = false;
+                self.status.compacting = false;
                 self.markStreamingStopped();
                 self.stream_aborted = false;
                 try self.finalizeInterruptedTools();

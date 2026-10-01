@@ -891,10 +891,14 @@ fn writeEvent(w: *json_writer.JsonWriter, event: tui_session.TuiEvent) !void {
             try w.writeBoolField("active", p.active);
             try w.writeIntField("dropped_count", p.dropped_count);
         },
-        .compaction_start => try w.writeStringField("type", "compaction_start"),
+        .compaction_start => |p| {
+            try w.writeStringField("type", "compaction_start");
+            if (p.in_run) try w.writeBoolField("in_run", true);
+        },
         .compaction_end => |p| {
             try w.writeStringField("type", "compaction_end");
             try w.writeStringField("outcome", @tagName(p.outcome));
+            if (p.in_run) try w.writeBoolField("in_run", true);
             try w.writeStringField("text", p.text.slice());
             try w.writeStringField("transcript", p.transcript.slice());
             try w.writeStringField("message", p.message.slice());
@@ -1047,7 +1051,7 @@ fn parseEvent(allocator: std.mem.Allocator, value: std.json.Value) !tui_session.
         .dropped_count = uint64Field(obj, "dropped_count") orelse 0,
     } };
     if (std.mem.eql(u8, kind, "error")) return .{ .@"error" = .{ .message = try owned(allocator, stringField(obj, "message") orelse "") } };
-    if (std.mem.eql(u8, kind, "compaction_start")) return .{ .compaction_start = .{} };
+    if (std.mem.eql(u8, kind, "compaction_start")) return .{ .compaction_start = .{ .in_run = boolField(obj, "in_run", false) } };
     if (std.mem.eql(u8, kind, "compaction_end")) {
         const text = try allocator.dupe(u8, stringField(obj, "text") orelse "");
         errdefer allocator.free(text);
@@ -1056,6 +1060,7 @@ fn parseEvent(allocator: std.mem.Allocator, value: std.json.Value) !tui_session.
         const message = try allocator.dupe(u8, stringField(obj, "message") orelse "");
 
         return .{ .compaction_end = .{
+            .in_run = boolField(obj, "in_run", false),
             .outcome = parseCompactionOutcome(stringField(obj, "outcome") orelse "failed"),
             .text = OwnedSlice(u8).initOwned(text),
             .transcript = OwnedSlice(u8).initOwned(transcript),
@@ -1928,6 +1933,41 @@ test "load starts at the indexed compaction and keeps a display tail before it" 
     try std.testing.expect(events[events.len - 1] == .message_end);
 }
 
+test "load starts at an indexed compaction made inside a run and keeps it marked as one" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try tmpBase(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+    var store = try Store.init(std.testing.allocator, base);
+    defer store.deinit();
+    var meta = try testMeta("in-run");
+    defer meta.deinit(std.testing.allocator);
+
+    try saveText(store, meta, .user, "old question");
+    try store.save(meta, .{ .compaction_start = .{ .in_run = true } });
+    const offset = try store.conversationBytes("in-run");
+    var compacted = tui_session.TuiEvent{ .compaction_end = .{
+        .in_run = true,
+        .outcome = .completed,
+        .text = try owned(std.testing.allocator, agent.compaction.header ++ " Summary follows.\n\n<summary>\nkept state\n</summary>"),
+        .messages_before = 1,
+    } };
+    defer compacted.deinit(std.testing.allocator);
+    try store.save(meta, compacted);
+    try saveText(store, meta, .user, "carry on");
+    meta.compaction_offset = offset;
+    try store.saveIndex(meta);
+
+    var loaded = try store.load("in-run");
+    defer loaded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 3), loaded.messages.items.len);
+    try std.testing.expectEqualStrings("kept state", agent.compaction.summaryOf(loaded.messages.items[0].user.content.text));
+    try std.testing.expectEqualStrings("carry on", loaded.messages.items[2].user.content.text);
+    const events = loaded.events.items;
+    try std.testing.expect(events[events.len - 2] == .compaction_end);
+    try std.testing.expect(events[events.len - 2].compaction_end.in_run);
+}
+
 test "load reads the whole file when the indexed offset does not start a compaction" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -2065,7 +2105,7 @@ fn parseIndexProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "parseIndex survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, parseIndexProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, parseIndexProbe, .{});
 }
 
 fn parseArtifactsProbe(allocator: std.mem.Allocator) !void {
@@ -2080,7 +2120,7 @@ fn parseArtifactsProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "parseArtifacts survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, parseArtifactsProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, parseArtifactsProbe, .{});
 }
 
 fn parseToolResultFromPayloadProbe(allocator: std.mem.Allocator) !void {
@@ -2104,7 +2144,7 @@ fn parseToolResultFromPayloadProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "parseToolResultFromPayload survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, parseToolResultFromPayloadProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, parseToolResultFromPayloadProbe, .{});
 }
 
 fn parseEventProbe(allocator: std.mem.Allocator) !void {
@@ -2133,7 +2173,7 @@ fn parseEventProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "parseEvent survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, parseEventProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, parseEventProbe, .{});
 }
 
 fn toolResultFromFieldsProbe(allocator: std.mem.Allocator) !void {
@@ -2149,7 +2189,7 @@ fn toolResultFromFieldsProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "toolResultFromFields survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, toolResultFromFieldsProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, toolResultFromFieldsProbe, .{});
 }
 
 fn parseMessageToolResultProbe(allocator: std.mem.Allocator) !void {
@@ -2165,7 +2205,7 @@ fn parseMessageToolResultProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "parseMessage tool_result survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, parseMessageToolResultProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, parseMessageToolResultProbe, .{});
 }
 
 fn parseAssistantContentProbe(allocator: std.mem.Allocator) !void {
@@ -2190,7 +2230,7 @@ fn parseAssistantContentProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "parseAssistantContent survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, parseAssistantContentProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, parseAssistantContentProbe, .{});
 }
 
 fn parseUserContentPartProbe(allocator: std.mem.Allocator) !void {
@@ -2211,7 +2251,7 @@ fn parseUserContentPartProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "parseUserContentPart survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, parseUserContentPartProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, parseUserContentPartProbe, .{});
 }
 
 fn assistantMessageBuildersProbe(allocator: std.mem.Allocator) !void {
@@ -2237,7 +2277,7 @@ fn assistantMessageBuildersProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "assistant message builders survive an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, assistantMessageBuildersProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, assistantMessageBuildersProbe, .{});
 }
 
 fn saveText(store: Store, meta: SessionMetadata, role: tui_session.TuiEvent.MessageRole, text: []const u8) !void {
@@ -2414,9 +2454,9 @@ test "saveTranscript survives an allocation failure at every step" {
     defer tmp.cleanup();
     const base = try tmpBase(std.testing.allocator, &tmp);
     defer std.testing.allocator.free(base);
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, saveTranscriptProbe, .{base});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, saveTranscriptProbe, .{base});
 }
 
 test "serializeTranscript survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, serializeTranscriptProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, serializeTranscriptProbe, .{});
 }

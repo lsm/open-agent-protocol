@@ -173,7 +173,11 @@ fn inflated(estimate: u64) u64 {
     return estimate + estimate / 3;
 }
 
-fn promptTokens(context: ai_types.Context) u64 {
+fn headroom(context_window: u64) u64 {
+    return @max(full_window_output_tokens, context_window / 64);
+}
+
+pub fn promptTokens(context: ai_types.Context) u64 {
     const messages = context.messages;
     var index = messages.len;
     while (index > 0) {
@@ -190,11 +194,35 @@ fn promptTokens(context: ai_types.Context) u64 {
 pub fn outputLimit(model: ai_types.Model, requested: ?u32, context: ai_types.Context) ?u32 {
     const wanted: u64 = requested orelse model.max_tokens;
     if (model.context_window == 0 or wanted == 0) return requested;
-    const prompt = promptTokens(context);
+    const prompt = promptTokens(context) + headroom(model.context_window);
     if (model.context_window <= prompt) return @intCast(@min(wanted, full_window_output_tokens));
     const room = model.context_window - prompt;
     if (room >= wanted) return requested;
     return @intCast(room);
+}
+
+pub const default_output_tokens: u32 = 32_768;
+
+pub const OutputSetting = union(enum) {
+    auto,
+    max,
+    tokens: u32,
+};
+
+pub fn outputRequest(model: ai_types.Model, setting: OutputSetting) u32 {
+    const asked: u32 = switch (setting) {
+        .auto => default_output_tokens,
+        .max => if (model.max_tokens > 0) model.max_tokens else default_output_tokens,
+        .tokens => |count| count,
+    };
+    if (model.max_tokens == 0) return asked;
+    return @min(asked, model.max_tokens);
+}
+
+fn raisedOutput(requested: ?u32, model: ai_types.Model) ?u32 {
+    const current = requested orelse return null;
+    if (current >= model.max_tokens) return null;
+    return model.max_tokens;
 }
 
 fn outputLimitModel(context_window: u32, max_tokens: u32) ai_types.Model {
@@ -212,11 +240,36 @@ fn outputLimitModel(context_window: u32, max_tokens: u32) ai_types.Model {
     };
 }
 
-test "outputLimit asks for no more output than the context window leaves after an estimated prompt, and leaves an unset limit unset when it fits" {
+test "outputRequest asks for the default, the model's maximum, or a count, and never above the maximum the model reports" {
+    const large = outputLimitModel(1_048_576, 393_216);
+    try std.testing.expectEqual(default_output_tokens, outputRequest(large, .auto));
+    try std.testing.expectEqual(@as(u32, 393_216), outputRequest(large, .max));
+    try std.testing.expectEqual(@as(u32, 100_000), outputRequest(large, .{ .tokens = 100_000 }));
+    try std.testing.expectEqual(@as(u32, 393_216), outputRequest(large, .{ .tokens = 500_000 }));
+
+    const small = outputLimitModel(128_000, 8_192);
+    try std.testing.expectEqual(@as(u32, 8_192), outputRequest(small, .auto));
+    try std.testing.expectEqual(@as(u32, 8_192), outputRequest(small, .{ .tokens = 20_000 }));
+
+    const unreported = outputLimitModel(128_000, 0);
+    try std.testing.expectEqual(default_output_tokens, outputRequest(unreported, .auto));
+    try std.testing.expectEqual(default_output_tokens, outputRequest(unreported, .max));
+    try std.testing.expectEqual(@as(u32, 50_000), outputRequest(unreported, .{ .tokens = 50_000 }));
+}
+
+test "raisedOutput lifts a limit below the model's maximum to it, and nothing else" {
+    const model = outputLimitModel(1_048_576, 393_216);
+    try std.testing.expectEqual(@as(?u32, 393_216), raisedOutput(32_768, model));
+    try std.testing.expectEqual(@as(?u32, null), raisedOutput(393_216, model));
+    try std.testing.expectEqual(@as(?u32, null), raisedOutput(null, model));
+    try std.testing.expectEqual(@as(?u32, null), raisedOutput(32_768, outputLimitModel(128_000, 0)));
+}
+
+test "outputLimit asks for no more output than the context window leaves after an estimated prompt and its headroom, and leaves an unset limit unset when it fits" {
     const text = "a" ** 3000;
     const messages = [_]ai_types.Message{.{ .user = .{ .content = .{ .text = text }, .timestamp = 0 } }};
     const context: ai_types.Context = .{ .messages = &messages };
-    const prompt = inflated(estimatePromptTokens(context));
+    const prompt = inflated(estimatePromptTokens(context)) + full_window_output_tokens;
 
     try std.testing.expectEqual(@as(?u32, @intCast(10_000 - prompt)), outputLimit(outputLimitModel(10_000, 9_000), null, context));
     try std.testing.expectEqual(@as(?u32, 500), outputLimit(outputLimitModel(10_000, 9_000), 500, context));
@@ -242,9 +295,32 @@ test "outputLimit counts the prompt from the provider's last report when a reply
         .{ .user = .{ .content = .{ .text = "b" ** 400 }, .timestamp = 0 } },
     };
     const context: ai_types.Context = .{ .messages = &messages };
-    const prompt = 6_000 + 3_000 + 800 + 200 + inflated(estimateMessages(messages[2..]).estimated_tokens);
+    const prompt = 6_000 + 3_000 + 800 + 200 + inflated(estimateMessages(messages[2..]).estimated_tokens) + full_window_output_tokens;
 
     try std.testing.expectEqual(@as(?u32, @intCast(20_000 - prompt)), outputLimit(outputLimitModel(20_000, 19_000), null, context));
+}
+
+test "outputLimit leaves a sixty-fourth of a large window unasked, so a prompt the estimate undercounts still fits" {
+    const messages = [_]ai_types.Message{
+        .{ .user = .{ .content = .{ .text = "a" ** 400 }, .timestamp = 0 } },
+        .{ .assistant = .{
+            .content = &.{.{ .text = .{ .text = "ok" } }},
+            .api = "test-api",
+            .provider = "test-provider",
+            .model = "test-model",
+            .usage = .{ .input = 656_000, .output = 100, .cache_read = 0, .cache_write = 0 },
+            .stop_reason = .stop,
+            .timestamp = 0,
+        } },
+        .{ .user = .{ .content = .{ .text = "b" ** 400 }, .timestamp = 0 } },
+    };
+    const context: ai_types.Context = .{ .messages = &messages };
+    const window: u32 = 1_048_576;
+    const prompt = 656_000 + 100 + inflated(estimateMessages(messages[2..]).estimated_tokens);
+    const asked = outputLimit(outputLimitModel(window, 393_216), null, context).?;
+
+    try std.testing.expectEqual(@as(u32, @intCast(window - prompt - window / 64)), asked);
+    try std.testing.expect(prompt + asked + 16_000 <= window);
 }
 
 fn pushAgentEvent(event_stream: *AgentEventStream, event: AgentEvent) !void {
@@ -406,7 +482,7 @@ fn buildAndFreeTruncatedToolCallResult(allocator: std.mem.Allocator, tool_name: 
 }
 
 test "truncatedToolCallResult frees what it built when an allocation fails" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, buildAndFreeTruncatedToolCallResult, .{"write"});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, buildAndFreeTruncatedToolCallResult, .{"write"});
 }
 
 fn rejectedToolResult(allocator: std.mem.Allocator) !AgentToolResult {
@@ -1182,9 +1258,10 @@ fn withinTurnLimit(iterations: u32, max_iterations: ?u32) bool {
     return iterations < limit;
 }
 
-const TurnOutcome = enum { failed, answered, called_tools, reasoned_only };
+const TurnOutcome = enum { failed, answered, called_tools, reasoned_only, cut_off };
 
 pub const answer_request_text = "Your last reply held only reasoning and no answer. Write your answer now.";
+pub const continue_request_text = "Your last reply was cut off at the output limit. Continue from exactly where it stopped.";
 
 fn reasonedWithoutAnswer(content: []const ai_types.AssistantContent) bool {
     var reasoned = false;
@@ -1199,8 +1276,15 @@ fn reasonedWithoutAnswer(content: []const ai_types.AssistantContent) bool {
     return reasoned;
 }
 
-fn answerRequest(allocator: std.mem.Allocator) !ai_types.Message {
-    const text = try allocator.dupe(u8, answer_request_text);
+fn requestMessage(allocator: std.mem.Allocator, request_text: []const u8) !ai_types.Message {
+    const text = try allocator.dupe(u8, request_text);
+    return .{ .user = .{ .content = .{ .text = text }, .timestamp = compat.time.nowMillis() } };
+}
+
+pub const compacted_request_text = "The conversation was compacted in the middle of this task. Carry on with the task from where it stopped, using the summary above.";
+
+fn compactedRequest(allocator: std.mem.Allocator) !ai_types.Message {
+    const text = try allocator.dupe(u8, compacted_request_text);
     return .{ .user = .{ .content = .{ .text = text }, .timestamp = compat.time.nowMillis() } };
 }
 
@@ -1283,12 +1367,12 @@ test "turnOutcome marks a finished reply that holds only reasoning" {
     try std.testing.expectEqual(TurnOutcome.answered, outcomeOf(.stop, &blank, 0));
 }
 
-test "answerRequest survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, answerRequestProbe, .{});
+test "requestMessage survives an allocation failure at every step" {
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, requestMessageProbe, .{});
 }
 
-fn answerRequestProbe(allocator: std.mem.Allocator) !void {
-    var message = try answerRequest(allocator);
+fn requestMessageProbe(allocator: std.mem.Allocator) !void {
+    var message = try requestMessage(allocator, answer_request_text);
     message.deinit(allocator);
 }
 
@@ -1336,6 +1420,7 @@ fn runLoop(
     var cancelled_run = false;
     var cut_off_tool_turns: u32 = 0;
     var asked_for_answer = false;
+    var turn_config = config;
 
     outer: while (withinTurnLimit(state.iterations, config.max_iterations)) {
         if (config.cancel_token) |token| {
@@ -1351,6 +1436,30 @@ fn runLoop(
                 ended_before_cap = true;
                 cancelled_run = true;
                 break :outer;
+            }
+            if (state.iterations > 0) {
+                if (config.compact_between_turns_fn) |compact| {
+                    if (try compact(config.compact_between_turns_ctx, context, event_stream)) {
+                        const request = try compactedRequest(context.allocator);
+                        context.appendMessage(request) catch |err| {
+                            var owned = request;
+                            owned.deinit(context.allocator);
+                            return err;
+                        };
+                        try pushAgentEvent(event_stream, .{ .message_start = .{
+                            .message = request,
+                        } });
+                        try pushAgentEvent(event_stream, .{ .message_end = .{
+                            .message = request,
+                        } });
+                        try appendClonedStateMessage(&state.messages, allocator, request);
+                    }
+                    if (runCancelled(config)) {
+                        ended_before_cap = true;
+                        cancelled_run = true;
+                        break :outer;
+                    }
+                }
             }
             var steering_messages: ?[]const ai_types.Message = null;
             if (config.get_steering_messages_fn) |get_steering| {
@@ -1380,7 +1489,7 @@ fn runLoop(
             const assistant_message = streamAssistantResponse(
                 allocator,
                 context,
-                config,
+                turn_config,
                 event_stream,
             ) catch |err| {
                 const error_content = [_]ai_types.AssistantContent{.{
@@ -1415,8 +1524,11 @@ fn runLoop(
             try setFinalMessage(&state, allocator, assistant_message);
             try appendClonedStateMessage(&state.messages, allocator, .{ .assistant = assistant_message });
 
+            const raised = if (config.raise_max_tokens_on_cut_off and assistant_message.stop_reason == .length) raisedOutput(turn_config.max_tokens, config.model) else null;
+            if (raised) |higher| turn_config.max_tokens = higher;
             const outcome = switch (turnOutcome(assistant_message, cut_off_tool_turns)) {
                 .reasoned_only => if (asked_for_answer) TurnOutcome.answered else TurnOutcome.reasoned_only,
+                .answered => if (raised != null) TurnOutcome.cut_off else TurnOutcome.answered,
                 else => |value| value,
             };
             cut_off_tool_turns = if (outcome == .called_tools and assistant_message.stop_reason == .length) cut_off_tool_turns + 1 else 0;
@@ -1486,15 +1598,15 @@ fn runLoop(
                     ended_before_cap = true;
                     break :outer;
                 },
-                .reasoned_only => {
-                    asked_for_answer = true;
+                .reasoned_only, .cut_off => {
+                    if (outcome == .reasoned_only) asked_for_answer = true;
                     try pushAgentEvent(event_stream, .{ .turn_end = .{
                         .message = assistant_message,
                         .tool_results = types.OwnedSlice(ai_types.ToolResultMessage).initBorrowed(&.{}),
                     } });
                     try context.appendMessage(.{ .assistant = assistant_message });
 
-                    const request = try answerRequest(context.allocator);
+                    const request = try requestMessage(context.allocator, if (outcome == .reasoned_only) answer_request_text else continue_request_text);
                     context.appendMessage(request) catch |err| {
                         var owned = request;
                         owned.deinit(context.allocator);
@@ -2770,7 +2882,7 @@ test "a message already in the results list is not freed again when the stream c
 
 test "an exhausted allocator loses nothing across the tool handoff" {
     if (@import("builtin").os.tag == .wasi) return error.SkipZigTest;
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, HandoffCase.run, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, HandoffCase.run, .{});
 }
 
 test "a tool result's working directory survives the loop and is freed with the message" {

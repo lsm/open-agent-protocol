@@ -171,7 +171,7 @@ fn runtimeModelsFoldProbe(allocator: std.mem.Allocator) !void {
 
 test "runtime models fold the catalog's default alias into the fallback and keep one owner per model" {
     try runtimeModelsFoldProbe(std.testing.allocator);
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, runtimeModelsFoldProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, runtimeModelsFoldProbe, .{});
 }
 
 fn isDatedVariantOf(id: []const u8, base: []const u8) bool {
@@ -577,7 +577,7 @@ fn refreshGitBranchProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "gitHeadLabel survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, refreshGitBranchProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, refreshGitBranchProbe, .{});
 }
 
 test "collapseHome shortens the home directory only on a path component boundary" {
@@ -600,7 +600,7 @@ fn collapseHomeProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "collapseHome survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, collapseHomeProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, collapseHomeProbe, .{});
 }
 
 test "Context requestClearScreen discards history queued before the request" {
@@ -730,6 +730,7 @@ pub const ProductionRuntime = struct {
             .permission_engine = &self.permission_engine,
             .workspace_root = self.permission_engine.workspace_root,
             .context_window = self.context_window,
+            .output = agentOutput(self.mode_settings.output),
             .run_async = true,
             .compact_output = self.mode_settings.compact_output,
             .auto_worktree = self.mode_settings.auto_worktree,
@@ -1150,6 +1151,7 @@ pub const App = struct {
             .agent_end => |payload| return payload.reason == .completed,
             .compaction_end => |payload| {
                 if (payload.outcome == .completed) try self.recordCompactionTranscript(payload.transcript.slice());
+                if (payload.in_run) return false;
                 self.compaction_just_ended = payload.outcome == .completed;
                 return true;
             },
@@ -2392,7 +2394,7 @@ pub const App = struct {
 
             if (self.quarantine_events) {
                 const is_lifecycle = ev == .agent_start or ev == .turn_start or ev == .compaction_start;
-                const is_terminal = ev == .agent_end or ev == .@"error" or ev == .compaction_end;
+                const is_terminal = ev == .agent_end or ev == .@"error" or (ev == .compaction_end and !ev.compaction_end.in_run);
                 if (is_lifecycle or is_terminal) {
                     self.quarantine_events = false;
                     {
@@ -2593,6 +2595,7 @@ pub const App = struct {
             }
         }
         self.state.stream_aborted = false;
+        if (!self.state.status.streaming) self.armAutoCompact();
         if (self.session) |*session| {
             session.submitTurn(trimmed) catch |err| {
                 if (err == error.QueueFull) return err;
@@ -2606,32 +2609,55 @@ pub const App = struct {
         self.refreshQueuedCounts();
     }
 
+    fn autoCompactThreshold(self: *const App) ?u64 {
+        const runtime = self.runtime orelse return null;
+        const model = runtime.currentModel() orelse return null;
+        return tui_state.autoCompactAt(self.state.autocompact, model);
+    }
+
+    fn armAutoCompact(self: *App) void {
+        const runtime = self.runtime orelse return;
+        runtime.armAutoCompact(self.autoCompactThreshold(), self.compaction_transcripts.items, .{ .ctx = self, .save_fn = saveRunTranscript }) catch {};
+    }
+
+    fn saveRunTranscript(ctx: ?*anyopaque, allocator: std.mem.Allocator, index: usize, history: []const ai_types.Message) ?[]u8 {
+        const self: *App = @ptrCast(@alignCast(ctx.?));
+        const store = self.store orelse return null;
+        if (self.session_id.len == 0) return null;
+        const saved = store.saveTranscript(self.session_id, index, history) catch return null;
+        defer store.allocator.free(saved);
+        return allocator.dupe(u8, saved) catch null;
+    }
+
     fn contextWindowInEffect(self: *const App) u64 {
         const runtime = self.runtime orelse return 0;
         const model = runtime.currentModel() orelse return 0;
         return model.context_window;
     }
 
-    fn estimatedTokensForTurn(self: *const App, text: []const u8) u64 {
+    fn estimatedTokensForTurn(self: *const App, history: []const ai_types.Message, text: []const u8) u64 {
         const message: ai_types.Message = .{ .user = .{
             .content = .{ .text = text },
             .timestamp = 0,
         } };
-        return self.state.telemetry.estimated_tokens + agent.estimateMessageTokens(message);
+        const counted = @max(self.state.telemetry.estimated_tokens, agent.promptTokens(.{ .messages = history }));
+        return counted + agent.estimateMessageTokens(message);
     }
 
     fn compactBeforeTurn(self: *App, text: []const u8) !bool {
-        const share = self.state.autocompact_percent orelse return false;
+        const runtime = self.runtime orelse return false;
+        const model = runtime.currentModel() orelse return false;
+        const at = tui_state.autoCompactAt(self.state.autocompact, model) orelse return false;
         if (self.pending_after_compaction != null) return false;
         if (self.state.status.streaming or self.state.status.compacting) return false;
         const history = if (self.session) |*session| session.history() else return false;
         if (history.len == 0 or agent.compaction.isCompacted(history)) return false;
-        const window = self.contextWindowInEffect();
-        if (!agent.compaction.isAtShare(self.estimatedTokensForTurn(text), @intCast(window), share)) return false;
+        const tokens = self.estimatedTokensForTurn(history, text);
+        if (tokens < at) return false;
 
         const pending = try self.allocator.dupe(u8, text);
         errdefer self.allocator.free(pending);
-        const msg = try std.fmt.allocPrint(self.allocator, "context is at {d}% of {d} tokens; compacting before this turn.", .{ share, window });
+        const msg = try std.fmt.allocPrint(self.allocator, "context is at {d} of {d} tokens, past the {d} where it compacts; compacting before this turn.", .{ tokens, model.context_window, at });
         defer self.allocator.free(msg);
         try self.state.appendTranscript(.system, msg);
         try self.startCompaction("");
@@ -2755,6 +2781,8 @@ pub const App = struct {
             else => {},
         }
         if (command.kind == .context and !result.is_error and command.arg != null) self.persistContextWindow();
+        if (command.kind == .output and !result.is_error and command.arg != null) self.persistOutput();
+        if (command.kind == .autocompact and !result.is_error and command.arg != null) self.persistAutoCompact();
         if (result.output.len > 0) {
             try self.state.appendTranscript(if (result.is_error) .@"error" else .system, result.output);
             if (result.is_error) try self.state.status.setError(self.allocator, result.output);
@@ -2800,6 +2828,7 @@ pub const App = struct {
         defer cfg.deinit(self.allocator);
         var mode = self.mode_settings;
         mode.context_window = cfg.mode.context_window;
+        mode.output = cfg.mode.output;
         cfg.mode = mode;
         try store.save(cfg);
     }
@@ -2838,6 +2867,42 @@ pub const App = struct {
         self.mode_settings.context_window = window;
         if (cfg.mode.context_window == window) return;
         cfg.mode.context_window = window;
+        store.save(cfg) catch |err| self.recordError(@errorName(err)) catch {};
+    }
+
+    fn persistOutput(self: *App) void {
+        const runtime = self.runtime orelse return;
+        const setting = savedOutput(runtime.outputSetting());
+        self.mode_settings.output = setting;
+        var store = tui_config.Store.initDefault(self.allocator) catch |err| {
+            self.recordError(@errorName(err)) catch {};
+            return;
+        };
+        defer store.deinit();
+        var cfg = store.load() catch |err| {
+            self.recordError(@errorName(err)) catch {};
+            return;
+        };
+        defer cfg.deinit(self.allocator);
+        if (std.meta.eql(cfg.mode.output, setting)) return;
+        cfg.mode.output = setting;
+        store.save(cfg) catch |err| self.recordError(@errorName(err)) catch {};
+    }
+
+    fn persistAutoCompact(self: *App) void {
+        self.mode_settings.autocompact = self.state.autocompact;
+        var store = tui_config.Store.initDefault(self.allocator) catch |err| {
+            self.recordError(@errorName(err)) catch {};
+            return;
+        };
+        defer store.deinit();
+        var cfg = store.load() catch |err| {
+            self.recordError(@errorName(err)) catch {};
+            return;
+        };
+        defer cfg.deinit(self.allocator);
+        if (std.meta.eql(cfg.mode.autocompact, self.state.autocompact)) return;
+        cfg.mode.autocompact = self.state.autocompact;
         store.save(cfg) catch |err| self.recordError(@errorName(err)) catch {};
     }
 
@@ -3134,6 +3199,7 @@ pub const RenderMode = enum {
 pub const TuiModel = struct {
     app: ?App = null,
     options: tui_runtime.TuiRuntimeOptions = .{},
+    autocompact: tui_config.AutoCompact = .auto,
     render_mode: RenderMode = .auto,
 
     pub const Msg = union(enum) {
@@ -3153,6 +3219,8 @@ pub const TuiModel = struct {
             break :blk fallback;
         };
         if (self.app) |*app| {
+            app.state.autocompact = self.autocompact;
+            app.mode_settings.autocompact = self.autocompact;
             app.start() catch |err| {
                 app.state.status.setError(app.allocator, @errorName(err)) catch {};
                 app.state.appendTranscript(.@"error", @errorName(err)) catch {};
@@ -4295,7 +4363,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32) !void
     }
 
     var program = zz.Program(TuiModel).initWithOptions(allocator, io, &environ_map, tuiProgramOptions());
-    program.model = .{ .options = options };
+    program.model = .{ .options = options, .autocompact = production.mode_settings.autocompact };
     defer program.deinit();
     try program.run();
 }
@@ -5275,9 +5343,30 @@ fn autoCompactTestApp(mock: *MockAppSession) !App {
     var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{auto_compact_test_model} });
     errdefer app.deinit();
     app.session = mock.session();
-    app.state.autocompact_percent = 50;
+    app.state.autocompact = .{ .percent = 50 };
     app.state.telemetry.estimated_tokens = 60_000;
     return app;
+}
+
+fn agentOutput(setting: tui_config.Output) agent.OutputSetting {
+    return switch (setting) {
+        .auto => .auto,
+        .max => .max,
+        .tokens => |count| .{ .tokens = count },
+    };
+}
+
+fn savedOutput(setting: agent.OutputSetting) tui_config.Output {
+    return switch (setting) {
+        .auto => .auto,
+        .max => .max,
+        .tokens => |count| .{ .tokens = count },
+    };
+}
+
+test "an output setting reaches the runtime as it was saved" {
+    const saved = [_]tui_config.Output{ .auto, .max, .{ .tokens = 64_000 } };
+    for (saved) |setting| try std.testing.expectEqual(setting, savedOutput(agentOutput(setting)));
 }
 
 const auto_compact_test_model = ai_types.Model{
@@ -5349,11 +5438,56 @@ test "autocompact leaves a turn alone below the share, and when it is off" {
     try std.testing.expect(app.pending_after_compaction == null);
 
     app.state.telemetry.estimated_tokens = 60_000;
-    app.state.autocompact_percent = null;
+    app.state.autocompact = .off;
     try app.submit("over the share, but off");
 
     try std.testing.expectEqual(@as(usize, 0), mock.compact_count);
     try std.testing.expectEqual(@as(usize, 2), mock.submit_count);
+}
+
+test "autocompact by default compacts where the window leaves room for a summary and a reply" {
+    var mock = MockAppSession{ .history_messages = &auto_compact_history };
+    defer mock.deinit();
+    var app = try autoCompactTestApp(&mock);
+    defer app.deinit();
+    app.state.autocompact = .auto;
+    const at = agent.compaction.autoCompactAt(auto_compact_test_model.context_window, auto_compact_test_model.max_tokens);
+
+    app.state.telemetry.estimated_tokens = at - 1_000;
+    try app.submit("under the point");
+    try std.testing.expectEqual(@as(usize, 0), mock.compact_count);
+    try std.testing.expectEqual(@as(usize, 1), mock.submit_count);
+
+    app.state.telemetry.estimated_tokens = at;
+    try app.submit("at the point");
+    try std.testing.expectEqual(@as(usize, 1), mock.compact_count);
+    try std.testing.expectEqual(@as(usize, 1), mock.submit_count);
+}
+
+const reported_history = [_]ai_types.Message{
+    .{ .user = .{ .content = .{ .text = "first question" }, .timestamp = 0 } },
+    .{ .assistant = .{
+        .content = &.{.{ .text = .{ .text = "first answer" } }},
+        .api = "test-api",
+        .provider = "test-provider",
+        .model = "model-a",
+        .usage = .{ .input = 55_000, .output = 100, .cache_read = 5_000 },
+        .stop_reason = .stop,
+        .timestamp = 0,
+    } },
+};
+
+test "autocompact counts the context from the provider's last report when the estimate reads lower" {
+    var mock = MockAppSession{ .history_messages = &reported_history };
+    defer mock.deinit();
+    var app = try autoCompactTestApp(&mock);
+    defer app.deinit();
+    app.state.telemetry.estimated_tokens = 1_000;
+
+    try app.submit("second question");
+
+    try std.testing.expectEqual(@as(usize, 1), mock.compact_count);
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
 }
 
 test "autocompact steers the held turn rather than blocking on a run the queue resumed" {
@@ -7684,6 +7818,40 @@ test "App /compact archives the history and hands the model every transcript so 
     try std.testing.expectEqual(tui_state.TranscriptKind.system, notice.kind);
     try std.testing.expect(std.mem.startsWith(u8, notice.text.items, "conversation compacted · 2 messages · ~2.4k → ~300 tokens"));
     try std.testing.expect(std.mem.indexOf(u8, notice.text.items, "kept state") != null);
+}
+
+test "App holds a run as streaming through a compaction made inside it, even after the turn before it ended, and records its transcript" {
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    var mock = MockAppSession{ .history_messages = &compaction_history };
+    defer mock.deinit();
+    app.session = mock.session();
+    try mock.eventStream().push(.{ .turn_end = .{ .stop_reason = .tool_use } });
+    try app.drainEvents();
+    try std.testing.expect(!app.state.status.streaming);
+
+    try mock.eventStream().push(.{ .compaction_start = .{ .in_run = true } });
+    try app.drainEvents();
+    try std.testing.expect(app.state.status.compacting);
+    try std.testing.expect(app.state.status.streaming);
+
+    try mock.eventStream().push(.{ .compaction_end = .{
+        .in_run = true,
+        .outcome = .completed,
+        .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, agent.compaction.header ++ " x\n\n<summary>\nkept state\n</summary>")),
+        .transcript = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "/s/s1/compaction-1.jsonl")),
+        .messages_before = 2,
+        .tokens_before = 2400,
+        .tokens_after = 300,
+    } });
+    try app.drainEvents();
+
+    try std.testing.expect(app.state.status.streaming);
+    try std.testing.expect(!app.state.status.compacting);
+    try std.testing.expect(app.compaction_just_ended == null);
+    try std.testing.expectEqual(@as(usize, 1), app.compaction_transcripts.items.len);
+    try std.testing.expectEqualStrings("/s/s1/compaction-1.jsonl", app.compaction_transcripts.items[0]);
+    try std.testing.expectEqual(@as(usize, 300), app.state.status.context_used);
 }
 
 test "App /compact reports an empty or freshly compacted history without compacting" {
