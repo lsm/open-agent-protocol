@@ -383,10 +383,16 @@ pub fn makeTextResultWithArtifact(allocator: std.mem.Allocator, options: TextRes
     const key = try std.fmt.allocPrint(allocator, "{s}:{s}", .{ options.tool_name, options.call_id });
     defer allocator.free(key);
 
-    var reference = if (options.store) |store|
-        try store.write(.{ .content = options.text, .mime_type = "text/plain", .description = key })
+    const stored_body = if (options.stderr.len > 0)
+        try std.fmt.allocPrint(allocator, "{s}\nstderr:\n{s}", .{ options.text, options.stderr })
     else
-        try makeFileArtifactReference(allocator, key, options.text, raw_bytes);
+        try allocator.dupe(u8, options.text);
+    defer allocator.free(stored_body);
+
+    var reference = if (options.store) |store|
+        try store.write(.{ .content = stored_body, .mime_type = "text/plain", .description = key })
+    else
+        try makeFileArtifactReference(allocator, key, stored_body, raw_bytes);
     errdefer reference.deinit(if (options.store) |store| store.allocator else allocator);
 
     const artifact_uri = reference.getUri() orelse reference.artifact_id;
@@ -442,10 +448,13 @@ fn summarizeArtifactBackedOutput(allocator: std.mem.Allocator, text: []const u8,
     const tail_start = if (text.len > snippet_bytes) text.len - snippet_bytes else 0;
     const tail = text[tail_start..];
     if (stderr.len > 0) {
+        const stderr_head = stderr[0..@min(stderr.len, snippet_bytes)];
+        const stderr_tail_start = if (stderr.len > snippet_bytes) stderr.len - snippet_bytes else 0;
+        const stderr_tail = stderr[stderr_tail_start..];
         return std.fmt.allocPrint(
             allocator,
-            "output stored as artifact\nbytes: {d}\nlines: {d}\nartifact_reference: {s}\nmodel_safe_retrieval: use artifact_retrieve mode \"preview\" (default), \"range\", or \"grep\" with this reference. Use \"full_for_context\" only when the complete output is required by the model.\ndisplay: the full output stays on disk at the artifact path; the transcript shows a capped preview only.\nhead:\n{s}\ntail:\n{s}\nstderr:\n{s}",
-            .{ text.len, countLines(text), artifact_path, head, tail, stderr },
+            "output stored as artifact\nbytes: {d}\nlines: {d}\nartifact_reference: {s}\nmodel_safe_retrieval: use artifact_retrieve mode \"preview\" (default), \"range\", or \"grep\" with this reference. Use \"full_for_context\" only when the complete output is required by the model.\ndisplay: the full output stays on disk at the artifact path; the transcript shows a capped preview only.\nhead:\n{s}\ntail:\n{s}\nstderr:\n{s}\n{s}",
+            .{ text.len, countLines(text), artifact_path, head, tail, stderr_head, stderr_tail },
         );
     }
     return std.fmt.allocPrint(
