@@ -990,17 +990,28 @@ fn wantsConversationId(model: ai_types.Model) bool {
     return std.mem.eql(u8, model.provider, "opencode-go");
 }
 
+fn hashField(hasher: *std.hash.Wyhash, tag: u8, bytes: []const u8) void {
+    var length: [8]u8 = undefined;
+    std.mem.writeInt(u64, &length, bytes.len, .little);
+    hasher.update(&.{tag});
+    hasher.update(&length);
+    hasher.update(bytes);
+}
+
 fn conversationId(allocator: std.mem.Allocator, session_id: ?[]const u8, context: ai_types.Context) ![]u8 {
     if (session_id) |id| return allocator.dupe(u8, id);
     var hasher = std.hash.Wyhash.init(0);
-    hasher.update(context.system_prompt.slice());
+    hashField(&hasher, 's', context.system_prompt.slice());
     for (context.messages) |message| {
         if (message != .user) continue;
         switch (message.user.content) {
-            .text => |text| hasher.update(text),
+            .text => |text| hashField(&hasher, 't', text),
             .parts => |parts| for (parts) |part| switch (part) {
-                .text => |text| hasher.update(text.text),
-                .image => {},
+                .text => |text| hashField(&hasher, 't', text.text),
+                .image => |image| {
+                    hashField(&hasher, 'm', image.mime_type);
+                    hashField(&hasher, 'i', image.data);
+                },
             },
         }
         break;
@@ -1807,6 +1818,21 @@ test "OpenCode Go gets a conversation id, the session's when there is one, else 
     try std.testing.expectEqualStrings(a, b);
     try std.testing.expect(!std.mem.eql(u8, a, c));
     try std.testing.expect(std.mem.startsWith(u8, a, "oapx-"));
+
+    const image_a = [_]ai_types.UserContentPart{.{ .image = .{ .data = "aaaa", .mime_type = "image/png" } }};
+    const image_b = [_]ai_types.UserContentPart{.{ .image = .{ .data = "bbbb", .mime_type = "image/png" } }};
+    const split = [_]ai_types.UserContentPart{ .{ .text = .{ .text = "plan the " } }, .{ .text = .{ .text = "work" } } };
+    const pictured_a = [_]ai_types.Message{.{ .user = .{ .content = .{ .parts = &image_a }, .timestamp = 0 } }};
+    const pictured_b = [_]ai_types.Message{.{ .user = .{ .content = .{ .parts = &image_b }, .timestamp = 0 } }};
+    const split_message = [_]ai_types.Message{.{ .user = .{ .content = .{ .parts = &split }, .timestamp = 0 } }};
+    const pa = try conversationId(allocator, null, .{ .messages = &pictured_a });
+    defer allocator.free(pa);
+    const pb = try conversationId(allocator, null, .{ .messages = &pictured_b });
+    defer allocator.free(pb);
+    const sp = try conversationId(allocator, null, .{ .messages = &split_message });
+    defer allocator.free(sp);
+    try std.testing.expect(!std.mem.eql(u8, pa, pb));
+    try std.testing.expect(!std.mem.eql(u8, sp, a));
     try std.testing.expect(std.mem.startsWith(u8, client_user_agent, "oapx/"));
 }
 
