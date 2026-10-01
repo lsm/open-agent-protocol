@@ -104,9 +104,11 @@ is consulted only for where a peer-parity claim is made and is recorded as such.
 ## The registry key and the cited name
 
 The key at registration is the normalised schema name
-`toSlash(lexicalRelative(schemas[index]))` (`packs.zig:330`), and at citation time
-the branch normalises the cited name the same way before lookup (`packs.zig:393-402`),
-matching `document.name` (`packs.zig:418`). The two sides are therefore **equal
+`toSlash(lexicalRelative(schemas[index]))` — `names[index]` holds the lexically
+cleaned path (`packs.zig:330`) and the normalised key is built at `packs.zig:335-336`
+— and at citation time the branch normalises the cited name the same way
+(`packs.zig:396-401`) before comparing it to `document.name` (`packs.zig:401`). The
+two sides are therefore **equal
 canonical names after normalisation**, not one value carried from the descriptor —
 they are independently derived from different source strings and agree only once
 both have been cleaned. Go cleans both sides too, which is why the earlier
@@ -122,8 +124,8 @@ These shapes load and **contribute**, so they are not on the skipped list:
   and `//types.schema.json#/$defs/thing` are both **accepted, with no refusal**,
   and a pack whose citation is spelled that way still contributes its branch.
   `cleanRelative` drops the empty separator (`packs.zig:83`), the registration
-  loop keys the document by the *normalised* name (`packs.zig:330`), and the branch
-  site normalises the cited name the same way (`packs.zig:393-402`), so the cited
+  loop keys the document by the *normalised* name (`packs.zig:335-336`), and the
+  branch site normalises the cited name the same way (`packs.zig:396-401`), so the cited
   spelling and the registered key are the same string after normalisation and the
   lookup succeeds; the branch is appended and the pack contributes it.
 
@@ -166,8 +168,12 @@ is stated per shape, because it is not uniformly nothing:
   is a **contract question about Decision 0004 §140** and is with the owner; it is
   deliberately not answered here, because `fixtures/packs/*/pack.json` treats
   `type` as the only required field.
-- a **wrong-shaped but present** `schema` is a separate matter from absence and
-  has its own repair.
+- an `envelope_types` entry whose `schema` is **present but not a string** (for
+  example `"schema": 7`) takes the same `stringField(...) orelse continue` path
+  (`packs.zig:393`) as an absent one, so it likewise contributes **its declared
+  type** but **no branch**. It is a separate matter from absence and has its own
+  repair, but its contribution is the same shape and is recorded here so the
+  per-shape definition above holds for every input the loader currently accepts.
 
 ## Limits of this record
 
