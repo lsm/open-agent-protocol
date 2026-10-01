@@ -23,7 +23,7 @@ tested.
 |---|---|
 | `pack_unprefixed_name` | a `capability_keys` entry, `error_codes` entry or declared `envelope_types` type that does not begin with the pack's own `id` + `.` |
 | `pack_foreign_prefix` | as above, for a name in a foreign namespace |
-| `pack_id_collision` | two loaded packs with equal ids, or whose ids prefix one another |
+| `pack_id_collision` | two loaded packs with **distinct roots** and equal ids, or ids that prefix one another; the same directory supplied twice is skipped before the collision check (`packs.zig:285`), so it is not a collision |
 | `pack_branch_unpinned` | a contributed branch whose resolved schema is an object with no `properties.type.const` |
 | `pack_branch_undeclared_type` | a branch whose `const` names a type other than its own declared one |
 | *(no code)* | a `schema` ref naming a file the descriptor does not contribute; a pointer that resolves to nothing; a pointer that lands on a non-object; a cited name that climbs out. A cited name with a **leading separator** is *not* refused — it normalises and is accepted; see below |
@@ -233,6 +233,18 @@ is stated per shape, because it is not uniformly nothing:
   `error_codes`** is copied into the type metadata with no membership check and
   the pack loads. `goap` refuses the same descriptor with
   `pack_refusal_undeclared` (`go/validation/pack.go:385-389`).
+- a well-shaped **`payload_members` entry with no matching gate** is appended
+  with an empty capability by `memberCapability` and the load succeeds with no
+  gate enforced. `goap` refuses it with `pack_ungated_type`
+  (`go/validation/pack.go:472-474`).
+- a **payload member that restates a core payload member** is appended without a
+  check against the core payload, and `memberGates` can then impose a pack
+  capability on that existing core field, changing core validation. `goap` refuses
+  it with `pack_restates_core_member` (`go/validation/pack.go:462`).
+- a schema containing an **external `$ref`, `$dynamicRef` or foreign `$id`** is
+  registered without walking its references or trial-compiling the bundle, so the
+  pack loads and a later trace can be left unjudged when resolution is reached.
+  `goap` refuses it with `pack_external_ref` (`go/validation/pack.go:863-881`).
 - an `envelope_types` entry whose **`role` is not a string** becomes `""` at
   `packs.zig:377`, and a string the semantic machine does not recognise is
   retained as written; in both cases the role matches neither `request`,
