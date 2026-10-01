@@ -977,23 +977,20 @@ pub const AuthStorage = struct {
     pub fn removeStored(allocator: std.mem.Allocator, provider_id: []const u8, shared_key_ids: []const []const u8) !bool {
         var file = try loadFromFileOpening(allocator, null, .only_missing_is_empty);
         defer file.deinit();
-        var removed = file.removeCredentials(provider_id, shared_key_ids);
-        if (removed) try file.saveToFile();
+        var keychain: ?AuthStorage = null;
+        defer if (keychain) |*stored| stored.deinit();
         if (shouldUseKeychain()) {
             switch (try loadFromKeychainWithCodexImport(allocator, false)) {
-                .found => |found| {
-                    var stored = found;
-                    defer stored.deinit();
-                    if (stored.removeCredentials(provider_id, shared_key_ids)) {
-                        try saveToKeychain(&stored);
-                        removed = true;
-                    }
-                },
+                .found => |found| keychain = found,
                 .not_found => {},
                 .unavailable, .needs_interaction, .busy => return error.KeychainUnavailable,
             }
         }
-        return removed;
+        const file_removed = file.removeCredentials(provider_id, shared_key_ids);
+        const keychain_removed = if (keychain) |*stored| stored.removeCredentials(provider_id, shared_key_ids) else false;
+        if (file_removed) try file.saveToFile();
+        if (keychain_removed) try saveToKeychain(&keychain.?);
+        return file_removed or keychain_removed;
     }
 
     fn removeCredentials(self: *AuthStorage, provider_id: []const u8, shared_key_ids: []const []const u8) bool {
