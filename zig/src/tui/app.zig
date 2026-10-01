@@ -2330,7 +2330,7 @@ pub const App = struct {
     }
 
     fn scheduleAutoContinue(self: *App) void {
-        if (self.state.queue.total() > 0) {
+        if (self.state.queue.total() > 0 or self.state.held_after_abort.items.len > 0) {
             self.auto_continue.onUserTurn();
             return;
         }
@@ -2500,6 +2500,7 @@ pub const App = struct {
     pub fn drainEvents(self: *App) !void {
         var session = &(self.session orelse return);
         var completed_agent_end = false;
+        var run_ended = false;
         while (session.popEvent()) |event| {
             var ev = event;
             defer ev.deinit(self.allocator);
@@ -2541,6 +2542,7 @@ pub const App = struct {
                 }
             }
             if (try self.noteTerminalEvent(ev)) completed_agent_end = true;
+            if (ev == .agent_end) run_ended = true;
             self.saveEvent(ev);
             try self.applyRuntimeEvent(ev);
         }
@@ -2578,6 +2580,18 @@ pub const App = struct {
             try self.sendPendingAfterCompaction(completed, resumed_run or self.state.status.streaming);
         }
         if (!completed_agent_end or self.state.queue.total() == 0) try self.drainQueuedWorktreeMessageIfIdle();
+        if (run_ended) try self.sendHeldAfterAbort();
+    }
+
+    fn sendHeldAfterAbort(self: *App) !void {
+        const held = self.state.held_after_abort.items;
+        if (held.len == 0) return;
+        const text = try std.mem.join(self.allocator, "\n\n", held);
+        defer self.allocator.free(text);
+        const echo = try std.mem.join(self.allocator, "\n\n", held[@min(self.state.held_after_abort_echoed, held.len)..]);
+        defer self.allocator.free(echo);
+        self.state.clearHeldAfterAbort();
+        try self.sendUserTurnEchoing(text, echo);
     }
 
     fn applyRuntimeEvent(self: *App, event: tui_runtime.TuiEvent) !void {
@@ -2671,6 +2685,10 @@ pub const App = struct {
     }
 
     fn sendUserTurn(self: *App, trimmed: []const u8) !void {
+        return self.sendUserTurnEchoing(trimmed, trimmed);
+    }
+
+    fn sendUserTurnEchoing(self: *App, trimmed: []const u8, echo: []const u8) !void {
         self.applyPendingSessionResetSync() catch |err| {
             if (err == error.PendingSessionReset) {
                 try self.state.appendTranscript(.@"error", "Session reset pending; wait for the current run to finish.");
@@ -2725,7 +2743,7 @@ pub const App = struct {
             };
         }
         self.session_turns += 1;
-        try self.state.appendUserMessage(trimmed);
+        if (echo.len > 0) try self.state.appendUserMessage(echo);
         self.refreshQueuedCounts();
     }
 
@@ -5564,6 +5582,36 @@ const auto_compact_test_model = ai_types.Model{
     .max_tokens = 1024,
 };
 
+test "esc during a run sends the queued messages as a new run once the aborted one ends" {
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.session = mock.session();
+    app.state.status.streaming = true;
+    try app.state.appendSteeredMessage("check the logs first");
+    try app.state.appendQueuedFollowUp("then open a PR");
+
+    try app.submit("/abort");
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+    try std.testing.expectEqual(@as(usize, 2), app.state.held_after_abort.items.len);
+
+    try mock.eventStream().push(.{ .agent_end = .{ .reason = .cancelled } });
+    try app.drainEvents();
+
+    try std.testing.expectEqual(@as(usize, 1), mock.submit_count);
+    try std.testing.expectEqualStrings("check the logs first\n\nthen open a PR", mock.submitted.items[0]);
+    try std.testing.expectEqual(@as(usize, 0), app.state.held_after_abort.items.len);
+    const last = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expectEqual(tui_state.TranscriptKind.user, last.kind);
+    try std.testing.expectEqualStrings("then open a PR", last.text.items);
+    var echoes: usize = 0;
+    for (app.state.transcript.items) |entry| {
+        if (entry.kind == .user and std.mem.eql(u8, entry.text.items, "check the logs first")) echoes += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), echoes);
+}
+
 test "autocompact holds a turn until the compaction it started has finished" {
     var mock = MockAppSession{ .history_messages = &auto_compact_history };
     defer mock.deinit();
@@ -6748,6 +6796,7 @@ const MockAppSession = struct {
     compact_count: usize = 0,
     compact_focus: []u8 = &.{},
     compact_transcripts: std.ArrayList([]u8) = .empty,
+    submitted: std.ArrayList([]u8) = .empty,
 
     fn session(self: *MockAppSession) tui_runtime.TuiSession {
         return .{
@@ -6816,9 +6865,11 @@ const MockAppSession = struct {
     }
 
     fn submitTurn(ctx: ?*anyopaque, text: []const u8) anyerror!void {
-        _ = text;
         const self = ptr(ctx);
         self.submit_count += 1;
+        const owned = try std.testing.allocator.dupe(u8, text);
+        errdefer std.testing.allocator.free(owned);
+        try self.submitted.append(std.testing.allocator, owned);
     }
 
     fn steer(ctx: ?*anyopaque, text: []const u8) anyerror!void {
@@ -6888,6 +6939,8 @@ const MockAppSession = struct {
 
     fn deinit(self: *MockAppSession) void {
         if (self.events_initialized) self.events.deinit();
+        for (self.submitted.items) |text| std.testing.allocator.free(text);
+        self.submitted.deinit(std.testing.allocator);
         std.testing.allocator.free(self.compact_focus);
         for (self.compact_transcripts.items) |path| std.testing.allocator.free(path);
         self.compact_transcripts.deinit(std.testing.allocator);

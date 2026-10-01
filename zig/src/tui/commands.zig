@@ -514,6 +514,11 @@ fn handleAbort(ctx: CommandContext, command: Command) !CommandResult {
     }
     const active = ctx.state.status.streaming or
         (ctx.runtime != null and ctx.runtime.?.stream_active);
+    if (!ctx.state.status.streaming and ctx.state.held_after_abort.items.len > 0) {
+        const dropped = ctx.state.held_after_abort.items.len;
+        ctx.state.clearHeldAfterAbort();
+        return .{ .output = try std.fmt.allocPrint(ctx.allocator, "Dropped the {d} queued message{s}; they will not be sent.", .{ dropped, if (dropped == 1) "" else "s" }) };
+    }
     if (active and ctx.state.stream_aborted and !ctx.state.status.streaming) {
         return .{ .output = try ctx.allocator.dupe(u8, "Still stopping: the step that was running when you aborted is ending.") };
     }
@@ -530,12 +535,13 @@ fn handleAbort(ctx: CommandContext, command: Command) !CommandResult {
         ctx.state.status.streaming = false;
         ctx.state.telemetry.rate.messageAborted();
         ctx.state.stream_aborted = true;
-        ctx.state.clearPendingSteers();
-        ctx.state.clearPendingFollowUps();
+        try ctx.state.holdQueuedAfterAbort();
         if (ctx.state.mode == .approval) {
             ctx.state.approval.deinit(ctx.allocator);
             ctx.state.mode = .normal;
         }
+        const held = ctx.state.held_after_abort.items.len;
+        if (held > 0) return .{ .output = try std.fmt.allocPrint(ctx.allocator, "Turn aborted. Sending the {d} queued message{s} once it stops; press esc again to drop {s}.", .{ held, if (held == 1) "" else "s", if (held == 1) "it" else "them" }) };
         return .{ .output = try ctx.allocator.dupe(u8, "Turn aborted.") };
     }
     return .{ .output = try ctx.allocator.dupe(u8, "Nothing to abort — agent is idle.") };
@@ -1034,11 +1040,12 @@ test "abort when streaming cancels session" {
     try std.testing.expectEqual(@as(usize, 1), mock.cancel_count);
 }
 
-test "abort when streaming drops queued steers but keeps their echoes" {
+test "abort when streaming holds queued messages to send once the run stops" {
     var state = tui_state.AppState.init(std.testing.allocator);
     defer state.deinit();
     state.status.streaming = true;
     try state.appendSteeredMessage("steer before abort");
+    try state.appendQueuedFollowUp("follow-up before abort");
 
     var mock = MockAbortSession{};
     defer mock.deinit();
@@ -1047,11 +1054,21 @@ test "abort when streaming drops queued steers but keeps their echoes" {
     var result = try dispatch(.{ .allocator = std.testing.allocator, .state = &state, .session = &session }, .{ .kind = .abort });
     defer result.deinit(std.testing.allocator);
 
-    try std.testing.expectEqualStrings("Turn aborted.", result.output);
+    try std.testing.expectEqualStrings("Turn aborted. Sending the 2 queued messages once it stops; press esc again to drop them.", result.output);
     try std.testing.expectEqual(@as(usize, 1), mock.clear_count);
     try std.testing.expectEqual(@as(usize, 0), state.pending_steers.items.len);
+    try std.testing.expectEqual(@as(usize, 0), state.pending_follow_ups.items.len);
+    try std.testing.expectEqual(@as(usize, 2), state.held_after_abort.items.len);
+    try std.testing.expectEqualStrings("steer before abort", state.held_after_abort.items[0]);
+    try std.testing.expectEqualStrings("follow-up before abort", state.held_after_abort.items[1]);
+    try std.testing.expectEqual(@as(usize, 1), state.held_after_abort_echoed);
     try std.testing.expectEqual(@as(usize, 1), state.transcript.items.len);
     try std.testing.expectEqualStrings("steer before abort", state.transcript.items[0].text.items);
+
+    var again = try dispatch(.{ .allocator = std.testing.allocator, .state = &state, .session = &session }, .{ .kind = .abort });
+    defer again.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("Dropped the 2 queued messages; they will not be sent.", again.output);
+    try std.testing.expectEqual(@as(usize, 0), state.held_after_abort.items.len);
 }
 
 test "logout and model refresh wait for a turn the status has not caught up with" {

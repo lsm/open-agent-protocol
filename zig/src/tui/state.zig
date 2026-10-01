@@ -346,7 +346,6 @@ pub const TokenRateSet = struct {
         if (self.previous.hasFigure()) return self.previous;
         return .{};
     }
-
 };
 
 pub fn estimateTokenBytes(bytes: u64) u64 {
@@ -678,6 +677,8 @@ pub const AppState = struct {
     pending_steers: std.ArrayList([]u8) = .empty,
     steers_reconciled: u64 = 0,
     pending_follow_ups: std.ArrayList([]u8) = .empty,
+    held_after_abort: std.ArrayList([]u8) = .empty,
+    held_after_abort_echoed: usize = 0,
     picker_filter: std.ArrayList(u8) = .empty,
 
     pub fn init(allocator: std.mem.Allocator) AppState {
@@ -705,6 +706,8 @@ pub const AppState = struct {
         self.pending_steers.deinit(self.allocator);
         self.clearPendingFollowUps();
         self.pending_follow_ups.deinit(self.allocator);
+        self.clearHeldAfterAbort();
+        self.held_after_abort.deinit(self.allocator);
         self.picker_filter.deinit(self.allocator);
         if (self.last_tool_calls_json.len > 0) self.allocator.free(self.last_tool_calls_json);
         if (self.cwd_display.len > 0) self.allocator.free(self.cwd_display);
@@ -895,6 +898,21 @@ pub const AppState = struct {
     pub fn clearPendingFollowUps(self: *AppState) void {
         for (self.pending_follow_ups.items) |pending| self.allocator.free(pending);
         self.pending_follow_ups.clearRetainingCapacity();
+    }
+
+    pub fn holdQueuedAfterAbort(self: *AppState) !void {
+        try self.held_after_abort.ensureUnusedCapacity(self.allocator, self.pending_steers.items.len + self.pending_follow_ups.items.len);
+        if (self.held_after_abort.items.len == 0) self.held_after_abort_echoed = self.pending_steers.items.len;
+        self.held_after_abort.appendSliceAssumeCapacity(self.pending_steers.items);
+        self.held_after_abort.appendSliceAssumeCapacity(self.pending_follow_ups.items);
+        self.pending_steers.clearRetainingCapacity();
+        self.pending_follow_ups.clearRetainingCapacity();
+    }
+
+    pub fn clearHeldAfterAbort(self: *AppState) void {
+        for (self.held_after_abort.items) |held| self.allocator.free(held);
+        self.held_after_abort.clearRetainingCapacity();
+        self.held_after_abort_echoed = 0;
     }
 
     pub fn toolById(self: *const AppState, id: []const u8) ?*const ToolEntry {
@@ -2531,7 +2549,6 @@ test "bytes convert at the agent's own divisor" {
     try std.testing.expectEqual(@as(u64, 2), estimateTokenBytes(5));
     try std.testing.expectEqual(@as(u64, 100), estimateTokenBytes(400));
 }
-
 
 test "AppState applies transcript and tool events" {
     var state = AppState.init(std.testing.allocator);
