@@ -186,6 +186,17 @@ is stated per shape, because it is not uniformly nothing:
   — so the load succeeds and the entry contributes **neither a type nor a
   branch**. `goap` rejects it, because the descriptor schema requires `type`
   (`schema/v0.1/pack.schema.json:41-43`).
+- a **whole field that is present but not an array** is skipped as a unit:
+  `payload_members`, `envelope_types` and `gates` are read through `arrayField`
+  or guarded on being an array (`packs.zig:349`, `:364`, `:386`, `:347`), so an
+  object or string in their place reads as absent and that field contributes
+  nothing at all — no members, no types, no branches, no gates. The same holds
+  for a non-array `capability_keys` or `error_codes` (`packs.zig:289-306`),
+  though those two *do* refuse `InvalidPackDescriptor` when they are an array
+  containing a non-string item, so their container shape is skipped while their
+  item shape is checked. `depends_on` is not read by this loader at all. `goap`
+  rejects every one of these shapes through the descriptor schema. The CLI note
+  discloses the same class; this paragraph is the record's statement of it.
 
 A descriptor that **omits `schemas` entirely**, or sets `"schemas": []`, is also
 accepted, and the empty field contributes **no schema documents and so no
