@@ -263,9 +263,11 @@ is stated per shape, because it is not uniformly nothing:
   accepted: `typeCapability` returns whichever the entry holds and the load
   proceeds. `goap` refuses it — the modes are exclusive and exactly one must be
   present (`go/validation/pack.go:402-406`).
-- a gate whose **`payload_type` targets a type no `envelope_types` entry
-  declares** is accepted; the gate simply never matches at enforcement time.
-  `goap` refuses a gate on an undeclared type.
+- a gate that names an **`envelope_types` type no entry declares** (a `type` field
+  the descriptor does not list) is accepted here; `goap` refuses it, but only
+  because its undeclared-type check runs when the gate carries a `type`
+  (`go/validation/pack.go:414-418`). A member gate whose `payload_type` is
+  undeclared is **not** refused by `goap` either, so the two sides agree there.
 - **duplicate gate declarations** — two `gates` entries naming the same type (or
   the same `payload_type`/`member`) are both kept and the load succeeds, where
   `goap` records a duplicate.
