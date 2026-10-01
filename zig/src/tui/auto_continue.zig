@@ -44,6 +44,8 @@ const payment_markers = [_][]const u8{
     "insufficient_balance",
     "insufficient funds",
     "insufficient_quota",
+    "usage_limit_reached",
+    "usage limit",
 };
 
 pub fn isAuthFailure(error_text: []const u8) bool {
@@ -147,6 +149,8 @@ test "classify skips a payment failure, which a replay would only repeat" {
     try std.testing.expectEqual(Skip.payment, classify("request failed with status code 402", false).skip);
     try std.testing.expectEqual(Skip.payment, classify("{\"error\":{\"code\":\"insufficient_quota\"}}", false).skip);
     try std.testing.expectEqual(Skip.payment, classify("Payment Required", false).skip);
+    try std.testing.expectEqual(Skip.payment, classify("openai-codex request failed: HTTP 429 (usage_limit_reached: The usage limit has been reached)", false).skip);
+    try std.testing.expectEqual(Skip.payment, classify("openai-codex request failed: HTTP 429 (access_terminated_error: You've reached your 5-hour usage limit)", false).skip);
 }
 
 test "isPaymentFailure ignores a status that is not a payment status" {

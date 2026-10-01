@@ -565,8 +565,9 @@ the user message it sent visible in the transcript like any other turn. It does
 this once per failure streak: if the automatic continue fails too, that is left
 to the user, and a clean run or a turn the user sends themselves starts a fresh
 streak. It never does it after an abort, after a 401 or 403 (the credential has
-to be fixed, not replayed), after a 402 or a provider saying the balance or quota
-is spent (the account has to be funded, and a replay is another refused request),
+to be fixed, not replayed), after a 402 or a provider saying the balance, quota
+or usage limit is spent (the account has to be funded or the limit has to reset,
+and a replay is another refused request),
 or when the error is a context overflow that
 `/compact` handles. Anything the user does inside the delay — submitting,
 steering, queueing a follow-up, `Esc` or `Ctrl+C` — drops the pending continue,
