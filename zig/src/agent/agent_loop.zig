@@ -201,6 +201,30 @@ pub fn outputLimit(model: ai_types.Model, requested: ?u32, context: ai_types.Con
     return @intCast(room);
 }
 
+pub const default_output_tokens: u32 = 32_768;
+
+pub const OutputSetting = union(enum) {
+    auto,
+    max,
+    tokens: u32,
+};
+
+pub fn outputRequest(model: ai_types.Model, setting: OutputSetting) u32 {
+    const asked: u32 = switch (setting) {
+        .auto => default_output_tokens,
+        .max => if (model.max_tokens > 0) model.max_tokens else default_output_tokens,
+        .tokens => |count| count,
+    };
+    if (model.max_tokens == 0) return asked;
+    return @min(asked, model.max_tokens);
+}
+
+fn raisedOutput(requested: ?u32, model: ai_types.Model) ?u32 {
+    const current = requested orelse return null;
+    if (current >= model.max_tokens) return null;
+    return model.max_tokens;
+}
+
 fn outputLimitModel(context_window: u32, max_tokens: u32) ai_types.Model {
     return .{
         .id = "test-model",
@@ -214,6 +238,31 @@ fn outputLimitModel(context_window: u32, max_tokens: u32) ai_types.Model {
         .context_window = context_window,
         .max_tokens = max_tokens,
     };
+}
+
+test "outputRequest asks for the default, the model's maximum, or a count, and never above the maximum the model reports" {
+    const large = outputLimitModel(1_048_576, 393_216);
+    try std.testing.expectEqual(default_output_tokens, outputRequest(large, .auto));
+    try std.testing.expectEqual(@as(u32, 393_216), outputRequest(large, .max));
+    try std.testing.expectEqual(@as(u32, 100_000), outputRequest(large, .{ .tokens = 100_000 }));
+    try std.testing.expectEqual(@as(u32, 393_216), outputRequest(large, .{ .tokens = 500_000 }));
+
+    const small = outputLimitModel(128_000, 8_192);
+    try std.testing.expectEqual(@as(u32, 8_192), outputRequest(small, .auto));
+    try std.testing.expectEqual(@as(u32, 8_192), outputRequest(small, .{ .tokens = 20_000 }));
+
+    const unreported = outputLimitModel(128_000, 0);
+    try std.testing.expectEqual(default_output_tokens, outputRequest(unreported, .auto));
+    try std.testing.expectEqual(default_output_tokens, outputRequest(unreported, .max));
+    try std.testing.expectEqual(@as(u32, 50_000), outputRequest(unreported, .{ .tokens = 50_000 }));
+}
+
+test "raisedOutput lifts a limit below the model's maximum to it, and nothing else" {
+    const model = outputLimitModel(1_048_576, 393_216);
+    try std.testing.expectEqual(@as(?u32, 393_216), raisedOutput(32_768, model));
+    try std.testing.expectEqual(@as(?u32, null), raisedOutput(393_216, model));
+    try std.testing.expectEqual(@as(?u32, null), raisedOutput(null, model));
+    try std.testing.expectEqual(@as(?u32, null), raisedOutput(32_768, outputLimitModel(128_000, 0)));
 }
 
 test "outputLimit asks for no more output than the context window leaves after an estimated prompt and its headroom, and leaves an unset limit unset when it fits" {
@@ -1209,9 +1258,10 @@ fn withinTurnLimit(iterations: u32, max_iterations: ?u32) bool {
     return iterations < limit;
 }
 
-const TurnOutcome = enum { failed, answered, called_tools, reasoned_only };
+const TurnOutcome = enum { failed, answered, called_tools, reasoned_only, cut_off };
 
 pub const answer_request_text = "Your last reply held only reasoning and no answer. Write your answer now.";
+pub const continue_request_text = "Your last reply was cut off at the output limit. Continue from exactly where it stopped.";
 
 fn reasonedWithoutAnswer(content: []const ai_types.AssistantContent) bool {
     var reasoned = false;
@@ -1226,8 +1276,8 @@ fn reasonedWithoutAnswer(content: []const ai_types.AssistantContent) bool {
     return reasoned;
 }
 
-fn answerRequest(allocator: std.mem.Allocator) !ai_types.Message {
-    const text = try allocator.dupe(u8, answer_request_text);
+fn requestMessage(allocator: std.mem.Allocator, request_text: []const u8) !ai_types.Message {
+    const text = try allocator.dupe(u8, request_text);
     return .{ .user = .{ .content = .{ .text = text }, .timestamp = compat.time.nowMillis() } };
 }
 
@@ -1317,12 +1367,12 @@ test "turnOutcome marks a finished reply that holds only reasoning" {
     try std.testing.expectEqual(TurnOutcome.answered, outcomeOf(.stop, &blank, 0));
 }
 
-test "answerRequest survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, answerRequestProbe, .{});
+test "requestMessage survives an allocation failure at every step" {
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, requestMessageProbe, .{});
 }
 
-fn answerRequestProbe(allocator: std.mem.Allocator) !void {
-    var message = try answerRequest(allocator);
+fn requestMessageProbe(allocator: std.mem.Allocator) !void {
+    var message = try requestMessage(allocator, answer_request_text);
     message.deinit(allocator);
 }
 
@@ -1370,6 +1420,7 @@ fn runLoop(
     var cancelled_run = false;
     var cut_off_tool_turns: u32 = 0;
     var asked_for_answer = false;
+    var turn_config = config;
 
     outer: while (withinTurnLimit(state.iterations, config.max_iterations)) {
         if (config.cancel_token) |token| {
@@ -1438,7 +1489,7 @@ fn runLoop(
             const assistant_message = streamAssistantResponse(
                 allocator,
                 context,
-                config,
+                turn_config,
                 event_stream,
             ) catch |err| {
                 const error_content = [_]ai_types.AssistantContent{.{
@@ -1473,8 +1524,11 @@ fn runLoop(
             try setFinalMessage(&state, allocator, assistant_message);
             try appendClonedStateMessage(&state.messages, allocator, .{ .assistant = assistant_message });
 
+            const raised = if (config.raise_max_tokens_on_cut_off and assistant_message.stop_reason == .length) raisedOutput(turn_config.max_tokens, config.model) else null;
+            if (raised) |higher| turn_config.max_tokens = higher;
             const outcome = switch (turnOutcome(assistant_message, cut_off_tool_turns)) {
                 .reasoned_only => if (asked_for_answer) TurnOutcome.answered else TurnOutcome.reasoned_only,
+                .answered => if (raised != null) TurnOutcome.cut_off else TurnOutcome.answered,
                 else => |value| value,
             };
             cut_off_tool_turns = if (outcome == .called_tools and assistant_message.stop_reason == .length) cut_off_tool_turns + 1 else 0;
@@ -1544,15 +1598,15 @@ fn runLoop(
                     ended_before_cap = true;
                     break :outer;
                 },
-                .reasoned_only => {
-                    asked_for_answer = true;
+                .reasoned_only, .cut_off => {
+                    if (outcome == .reasoned_only) asked_for_answer = true;
                     try pushAgentEvent(event_stream, .{ .turn_end = .{
                         .message = assistant_message,
                         .tool_results = types.OwnedSlice(ai_types.ToolResultMessage).initBorrowed(&.{}),
                     } });
                     try context.appendMessage(.{ .assistant = assistant_message });
 
-                    const request = try answerRequest(context.allocator);
+                    const request = try requestMessage(context.allocator, if (outcome == .reasoned_only) answer_request_text else continue_request_text);
                     context.appendMessage(request) catch |err| {
                         var owned = request;
                         owned.deinit(context.allocator);

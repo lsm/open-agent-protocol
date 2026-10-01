@@ -67,6 +67,7 @@ pub const TuiRuntimeOptions = struct {
     run_async: bool = true,
     generate_titles: bool = false,
     context_window: ?u32 = null,
+    output: agent.OutputSetting = .auto,
 };
 
 pub const ContextWindowError = error{
@@ -209,6 +210,7 @@ pub const TuiRuntime = struct {
     permission_engine: ?*permission.PermissionEngine,
     permission_mode: PermissionMode = .bypass,
     thinking_level: ai_types.ThinkingLevel = .low,
+    output: agent.OutputSetting = .auto,
     context_window: ?u32 = null,
     suspended_context_window: ?u32 = null,
     context_window_refused: ?u32 = null,
@@ -297,6 +299,7 @@ pub const TuiRuntime = struct {
             .permission_mode = options.permission_mode,
             .thinking_level = normalizeTuiThinkingLevel(options.thinking_level),
             .context_window = options.context_window,
+            .output = options.output,
             .compact_output = options.compact_output,
             .run_async = options.run_async,
             .generate_titles = options.generate_titles,
@@ -394,6 +397,7 @@ pub const TuiRuntime = struct {
         try self.local_agent.?.setSystemPrompt(system_prompt);
         if (self.selected_model_index) |idx| self.local_agent.?.setModel(self.effectiveModel(self.models[idx]));
         self.local_agent.?.setThinkingLevel(self.thinking_level);
+        self.local_agent.?.setOutput(self.output);
         self.tool_protocol.server.tools.clearRetainingCapacity();
         try self.tool_protocol.server.registerTools(self.wrapped_tools);
         self.local_agent.?.setTools(self.wrapped_tools);
@@ -629,6 +633,23 @@ pub const TuiRuntime = struct {
         const normalized = normalizeTuiThinkingLevel(level);
         self.thinking_level = normalized;
         if (self.local_agent) |*local| local.setThinkingLevel(normalized);
+    }
+
+    pub fn outputSetting(self: *const TuiRuntime) agent.OutputSetting {
+        return self.output;
+    }
+
+    pub fn setOutput(self: *TuiRuntime, setting: agent.OutputSetting) error{ AboveMaximum, AgentAlreadyStreaming }!void {
+        if (self.local_agent) |*local| {
+            if (!local.isIdle()) return error.AgentAlreadyStreaming;
+        }
+        if (setting == .tokens) {
+            if (self.currentModel()) |model| {
+                if (model.max_tokens > 0 and setting.tokens > model.max_tokens) return error.AboveMaximum;
+            }
+        }
+        self.output = setting;
+        if (self.local_agent) |*local| local.setOutput(setting);
     }
 
     pub fn setPermissionMode(self: *TuiRuntime, mode: PermissionMode) !void {

@@ -425,6 +425,7 @@ pub const AgentLoopConfig = struct {
 
     temperature: ?f32 = null,
     max_tokens: ?u32 = null,
+    raise_max_tokens_on_cut_off: bool = false,
     api_key: ?[]const u8 = null,
     cancel_token: ?ai_types.CancelToken = null,
     thinking_level: ai_types.ThinkingLevel = .minimal,
