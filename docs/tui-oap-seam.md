@@ -217,6 +217,44 @@ tool definitions are #374's subject and gate the TUI's tools step. Filed as
   declines to replay it (G1), so this does not become `transcript.load` unless
   G1 is closed.
 
+## What the endpoint actually puts on the wire
+
+For the three session operations the endpoint serves natively, the proof that a control
+works is in the payload the endpoint produced, not in the fact that a reply arrived. The
+client writes each request at these sites, and the endpoint answers at those:
+
+| op | request | client | response | endpoint |
+| --- | --- | --- | --- | --- |
+| `start` | `session_open_request` | `tui/oap_client.zig:105` | `session_open_response` | `protocol/oap/server.zig:864` |
+| `submit_turn` | `message_submit_request` | `tui/oap_client.zig:118` | `message_submit_response` | `protocol/oap/server.zig:1208` |
+| `switch_model` | `session_model_switch_request` | `tui/oap_client.zig:133` | `session_model_switch_response`, `session_state_updated` | `protocol/oap/server.zig:813`, `:898` |
+
+Three payload facts carry more weight than the rest:
+
+- `submit_turn` answers with `requested_delivery`, `effective_delivery` and `admission`.
+  The endpoint resolves the TUI's `auto` to `effective_delivery = .start` and
+  `admission = .started` (`protocol/oap/server.zig:1213`, `:1215`). That is the payload
+  form of G2: neither `session.message.delivery.queue` nor
+  `session.message.delivery.steer` appears in `advertised_features`, and the resolution
+  above is why a submitted turn cannot reach them.
+- `switch_model` answers with both `model_id` and `previous_model_id`
+  (`protocol/oap/server.zig:816`), so a switch is checkable in both directions. The
+  catalog is not a fixed set — models are registered with `Server.addModel`
+  (`protocol/oap/server.zig:222`), so a test that wants a second model adds one rather
+  than naming a model it hopes exists.
+- `session.open` answers with the full `SessionState`, whose `status` is `.idle` and whose
+  `active_run_id` is null until a run exists.
+
+`zig/src/tui/oap_ops_parity.zig` asserts all of the above against a real
+`oap_server.Server` over `transports/in_process.zig`, and mutating each of
+`protocol/oap/server.zig:816`, `:1213` and `:1215` fails the corresponding test.
+
+Cancellation is the degraded case, and its wire evidence is at
+`protocol/oap/server.zig:1609`, where a settled `.cancelled` run sets the session's status
+to `.closed` while a completed or failed run leaves it `.idle`; `publishSessionState`
+(`:876`) then emits that as `session_state_updated`. That is the whole of G1's
+session-scoped teardown, observable rather than inferred.
+
 ## Open against the draft
 
 The map is complete against what exists. Two things it cannot settle, both now

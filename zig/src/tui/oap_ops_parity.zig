@@ -68,6 +68,7 @@ const Exchange = struct {
     pipe: *in_process.SerializedPipe,
     server: oap_server.Server,
     client: oap_client.Client,
+    replies: std.ArrayList(oap_types.Envelope) = .empty,
 
     fn init(allocator: std.mem.Allocator) !Exchange {
         const pipe = try allocator.create(in_process.SerializedPipe);
@@ -89,6 +90,8 @@ const Exchange = struct {
     }
 
     fn deinit(self: *Exchange) void {
+        for (self.replies.items) |*reply| reply.deinit(self.allocator);
+        self.replies.deinit(self.allocator);
         self.client.deinit();
         self.server.deinit();
         self.pipe.deinit();
@@ -113,13 +116,42 @@ const Exchange = struct {
         var seen: usize = 0;
         while (try self.client.recv()) |env| {
             var owned = env;
-            defer owned.deinit(self.allocator);
+            errdefer owned.deinit(self.allocator);
             try self.client.absorb(owned);
+            try self.replies.append(self.allocator, owned);
             seen += 1;
         }
         return seen;
     }
 };
+
+fn findOpenReply(replies: []const oap_types.Envelope) ?oap_types.SessionState {
+    for (replies) |reply| {
+        if (reply.payload == .session_open_response) return reply.payload.session_open_response;
+    }
+    return null;
+}
+
+fn findSubmitReply(replies: []const oap_types.Envelope) ?oap_types.MessageSubmitResponse {
+    for (replies) |reply| {
+        if (reply.payload == .message_submit_response) return reply.payload.message_submit_response;
+    }
+    return null;
+}
+
+fn findSwitchReply(replies: []const oap_types.Envelope) ?oap_types.SessionModelSwitchResponse {
+    for (replies) |reply| {
+        if (reply.payload == .session_model_switch_response) return reply.payload.session_model_switch_response;
+    }
+    return null;
+}
+
+fn findStateUpdate(replies: []const oap_types.Envelope) ?oap_types.SessionState {
+    for (replies) |reply| {
+        if (reply.payload == .session_state_updated) return reply.payload.session_state_updated;
+    }
+    return null;
+}
 
 test "the op matrix covers every session operation the TUI exposes" {
     const ops = std.meta.fields(tui_session.TuiSessionOps);
@@ -186,6 +218,76 @@ test "the supported common operations carry real agent-control traffic" {
 
     try exchange.client.switchModel("anthropic/anthropic-messages@m");
     try std.testing.expect(try exchange.step() > 0);
+}
+
+test "a session open replies with the session the client adopted, and answers its request" {
+    var exchange = try Exchange.init(std.testing.allocator);
+    defer exchange.deinit();
+    exchange.start();
+    try exchange.client.initialize();
+    _ = try exchange.step();
+    try exchange.client.openSession();
+    _ = try exchange.step();
+
+    const reply = findOpenReply(exchange.replies.items) orelse return error.NoSessionOpenReply;
+    try std.testing.expectEqualStrings(reply.session_id, exchange.client.session_id.?);
+    try std.testing.expect(reply.status == .idle);
+    try std.testing.expect(reply.active_run_id == null);
+    try std.testing.expect(reply.current_model_id != null);
+    try std.testing.expectEqual(@as(usize, 0), exchange.client.outstanding.count());
+}
+
+test "a submitted turn is admitted with a run the client adopted, and auto delivery never becomes steer or queue" {
+    var exchange = try Exchange.init(std.testing.allocator);
+    defer exchange.deinit();
+    exchange.start();
+    try exchange.client.initialize();
+    _ = try exchange.step();
+    try exchange.client.openSession();
+    _ = try exchange.step();
+    try exchange.client.submit("go on");
+    _ = try exchange.step();
+
+    const reply = findSubmitReply(exchange.replies.items) orelse return error.NoSubmitReply;
+    try std.testing.expect(reply.accepted);
+    try std.testing.expectEqualStrings(reply.session_id, exchange.client.session_id.?);
+    const run_id = reply.run_id orelse return error.SubmitReplyCarriedNoRun;
+    try std.testing.expectEqualStrings(run_id, exchange.client.pending_run_id.?);
+    try std.testing.expect(!std.mem.eql(u8, run_id, reply.session_id));
+    try std.testing.expect(reply.requested_delivery == .auto);
+    try std.testing.expect(reply.effective_delivery == .start);
+    try std.testing.expect(reply.admission == .started);
+    try std.testing.expectEqual(@as(usize, 0), exchange.client.outstanding.count());
+}
+
+test "a model switch reports the model the session moved to, and the one it left" {
+    var exchange = try Exchange.init(std.testing.allocator);
+    defer exchange.deinit();
+    exchange.start();
+    try exchange.client.initialize();
+    _ = try exchange.step();
+    try exchange.client.openSession();
+    _ = try exchange.step();
+
+    const opened = findOpenReply(exchange.replies.items) orelse return error.NoSessionOpenReply;
+    const before = opened.current_model_id.?;
+    try exchange.server.addModel("anthropic/anthropic-messages@second");
+    const target = "anthropic/anthropic-messages@second";
+    try exchange.client.switchModel(target);
+    _ = try exchange.step();
+
+    const reply = findSwitchReply(exchange.replies.items) orelse return error.NoModelSwitchReply;
+    try std.testing.expectEqualStrings(reply.session_id, exchange.client.session_id.?);
+    try std.testing.expectEqualStrings(reply.model_id, target);
+    const previous = reply.previous_model_id orelse return error.SwitchReplyCarriedNoPreviousModel;
+    try std.testing.expectEqualStrings(previous, before);
+    try std.testing.expect(!std.mem.eql(u8, previous, target));
+    try std.testing.expectEqual(@as(usize, 0), exchange.client.outstanding.count());
+
+    const state = findStateUpdate(exchange.replies.items) orelse return error.NoSessionStateUpdate;
+    try std.testing.expectEqualStrings(state.current_model_id.?, target);
+    try std.testing.expectEqualStrings(state.session_id, exchange.client.session_id.?);
+    try std.testing.expect(state.status == .idle);
 }
 
 test "an operation the endpoint does not serve is refused without a request on the wire" {
