@@ -105,13 +105,21 @@ arm. `mapThinkingLevelToEffort` in the Anthropic file still maps its
 is an owner question, and neither adding an `off` mapping nor ratifying a
 vendor fallback is done in this change.
 
-The **residual collapse** is in `provider_protocol_bridge.zig:149`, whose
-`thinkingEffort` maps `.xhigh` and `.max` to `"max"` for every protocol-driven
-request, so a DeepSeek model on the Anthropic wire still sends `max` for `xhigh`
-(the shared table then maps `max` to `max`). That collapsing site is a separate
-concern, belongs to the level-mapping work, and is left where it is. The Anthropic
-file's own `mapThinkingLevelToEffort` (`anthropic_messages_api.zig`) is untouched
-too, but it only feeds the `opus-4-6` adaptive branch, not the DeepSeek branch.
+The **residual collapse** is in `provider_protocol_bridge.zig`, in two arms keyed
+by the request's wire:
+
+- the **completions** arm (`reasoningEffort`, `:116-121`), which DeepSeek's default
+  wire takes (`provider_base_url.zig:56`), maps `.xhigh` and `.max` to `"high"`
+  for every model that is not an `xhigh`-supporting one — so a DeepSeek completion
+  request asking for `max` still sends `high`;
+- the **Anthropic** arm (`thinkingEffort`, `:149`), which maps `.xhigh` and `.max`
+  to `"max"` for every protocol-driven request, so a DeepSeek model there sends
+  `max` for `xhigh`.
+
+Both collapsing sites are a separate concern, belong to the level-mapping work, and
+are left where they are. The Anthropic file's own `mapThinkingLevelToEffort`
+(`anthropic_messages_api.zig`) is untouched too, but it only feeds the `opus-4-6`
+adaptive branch, not the DeepSeek branch.
 
 ## What these controls establish
 
