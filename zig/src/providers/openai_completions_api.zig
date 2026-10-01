@@ -2014,8 +2014,7 @@ fn thinkingLevelToString(level: ai_types.ThinkingLevel) []const u8 {
         .low => "low",
         .medium => "medium",
         .high => "high",
-        .xhigh => "xhigh",
-        .max => "max",
+        .xhigh, .max => "xhigh",
     };
 }
 
@@ -2037,7 +2036,12 @@ pub fn streamSimpleOpenAICompletions(
         .cancel_token = o.cancel_token,
         .on_payload_fn = o.on_payload_fn,
         .on_payload_ctx = o.on_payload_ctx,
-        .reasoning_effort = if (o.reasoning) |r| ai_types.OwnedSlice(u8).initBorrowed(thinkingLevelToString(r)) else ai_types.OwnedSlice(u8).initBorrowed(""),
+        .reasoning_effort = if (o.reasoning) |r| ai_types.OwnedSlice(u8).initBorrowed(
+            if (provider_caps.usesDeepSeekWire(model.provider, model.base_url))
+                provider_caps.deepSeekEffort(@tagName(r))
+            else
+                thinkingLevelToString(r),
+        ) else ai_types.OwnedSlice(u8).initBorrowed(""),
     }, allocator);
 }
 

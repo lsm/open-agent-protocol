@@ -70,12 +70,11 @@ fuzzy: a prefix or substring match would let a vendor named
 `deepseek-eu` inherit DeepSeek's thinking behaviour on the strength of
 its name.
 
-The gap that remains: on the **Anthropic** wire a model that names some *other*
-vendor but is served by DeepSeek is not recognised, and neither is a DeepSeek
-model whose vendor id is spelled with a case difference. On the
-**completions** wire the host test does recognise it (`usesDeepSeekWire("openai",
-"https://api.deepseek.com")` is true), but see the inert-vendor-arm finding: the
-capability it would carry is not consulted there. That is a vendor-label
+The gap that remains: a DeepSeek model whose vendor id is spelled with a case
+difference is not recognised by the vendor test. A model that names some *other*
+vendor but is served by DeepSeek **is** recognised on both wires — on Anthropic by
+`thinksWhenAsked` (`anthropic_messages_api.zig:110`), which calls `usesDeepSeekWire`,
+and on completions by the capability merge — because both include the host test. That is a vendor-label
 question and it is separate from, and does not wait on, the catalog
 question about which models a vendor is allowed to claim. The label gap
 is closed by a label change; the catalog question is a schema decision
