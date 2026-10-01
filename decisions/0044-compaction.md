@@ -84,8 +84,9 @@ required `session_id`, `accepted`, `submission_id`, `requested_delivery`,
 resolves to `start` and the run starts. On a busy session `auto` resolves to
 `queue` only where `session.message.delivery.queue` is advertised, and the
 compaction becomes a reservation that promotes like any other under Decision
-0007; otherwise it is refused `illegal_run_transition`, exactly as a second
-submit would be under Decision 0001.
+0007; otherwise it is refused with the wire's `run_active`, exactly as a
+second submit would be, and a refusal under any other code is the validator's
+`illegal_run_transition`.
 
 Reusing the run is the point. A compaction admitted this way is cancelled with
 `run.cancel.request`, holds the session's one execution slot while it runs,
@@ -176,8 +177,8 @@ session, and the units that already exist decide it:
   ranks with `not_steerable`, after `cross_session` and `unknown_target`; a
   compaction run that is also `cancelling` reports `not_steerable`, because
   accepted cancellation is the stronger fact.
-- With neither, it is refused `illegal_run_transition`, as any submit to a busy
-  session is under Decision 0001. Holding it is the control layer's choice,
+- With neither, it is refused with the wire's `run_active`, as any submit to
+  a busy session is. Holding it is the control layer's choice,
   not the endpoint's.
 
 Apart from the one steer reason, no new rule is needed here, and that is the
