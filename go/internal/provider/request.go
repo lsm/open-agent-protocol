@@ -447,7 +447,7 @@ func BuildRequestBody(model Model, ctx Context, options StreamOptions) []byte {
 	if options.ReasoningEffort != "" {
 		if model.Reasoning && merged.SupportsReasoningEffort {
 			effort := options.ReasoningEffort
-			if isDeepSeekURL(model.BaseURL, model.HasBaseURL) {
+			if IsDeepSeekModel(model) {
 				effort = deepSeekEffort(effort)
 			}
 			body = body.with(member("reasoning_effort", jsonString(effort)))
@@ -507,7 +507,7 @@ func deepSeekEffort(effort string) string {
 	switch effort {
 	case "minimal", "low":
 		return "low"
-	case "xhigh", "max":
+	case "max", "ultra":
 		return "max"
 	}
 	return "high"
