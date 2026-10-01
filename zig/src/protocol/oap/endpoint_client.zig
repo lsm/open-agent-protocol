@@ -109,8 +109,6 @@ pub const Client = struct {
     pub fn close(self: *Client) void {
         self.closeStdin();
         if (self.child) |*child| {
-            // Bounded teardown: an endpoint that ignores stdin EOF must not hang
-            // the caller on an error path, so wait for a short grace and then kill.
             var waited: i64 = 0;
             while (waited < close_grace_ms) {
                 if (tryExitPosix(child, self.io()) != null) break;
@@ -161,9 +159,6 @@ pub const Client = struct {
 
     pub fn next(self: *Client, budget: Budget) !?Frame {
         while (true) {
-            // A line already buffered is delivered even once the budget has
-            // elapsed: the budget bounds how long to wait for more input, not
-            // whether data that has already arrived may be read.
             if (try self.takeLine()) |line| {
                 const trimmed = std.mem.trim(u8, line, " \t\r");
                 if (trimmed.len == 0) continue;
