@@ -103,7 +103,7 @@ test "every catalogued row is listed with a display name" {
 test "every catalogued row is listed, including the ones the runtime cannot load yet" {
     const listed = [_][]const u8{
         "openai",       "anthropic",    "opencode",        "openrouter",
-        "deepseek",     "zai-coding-plan", "kimi",         "alibaba-coding-plan",
+        "deepseek",     "zai-coding-plan", "kimi",         "opencode-go",     "alibaba-coding-plan",
         "minimax-coding-plan", "tencent-coding-plan", "volcengine-coding-plan", "openai-codex",
         "xiaomi-token-plan-cn", "xiaomi-token-plan-sgp", "xiaomi-token-plan-ams", "deepinfra",
         "xiaomi",       "vercel",       "zenmux",          "ollama",

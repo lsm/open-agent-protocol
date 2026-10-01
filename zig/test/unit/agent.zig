@@ -1,4 +1,3 @@
-
 const std = @import("std");
 const compat = @import("compat");
 const ai_types = @import("ai_types");
@@ -243,7 +242,10 @@ test "agentLoop: basic single turn with text response" {
         allocator.destroy(stream);
     }
 
-    while (stream.wait()) |_| {}
+    while (stream.wait()) |event| {
+        var owned_event = event;
+        owned_event.deinit(allocator);
+    }
 
     const result = stream.getResult().?;
     try testing.expectEqual(@as(usize, 2), result.messages.slice().len);
@@ -371,7 +373,10 @@ test "agentLoop: handles provider error" {
         allocator.destroy(stream);
     }
 
-    while (stream.wait()) |_| {}
+    while (stream.wait()) |event| {
+        var owned_event = event;
+        owned_event.deinit(allocator);
+    }
 
     const result = stream.getResult().?;
     try testing.expect(result.final_message.stop_reason == .@"error");
@@ -406,6 +411,8 @@ test "agentLoop: iteration cap reports max_turns on agent_end" {
 
     var agent_end_termination: ?agent_types.AgentTermination = null;
     while (stream.wait()) |event| {
+        var owned_event = event;
+        defer owned_event.deinit(allocator);
         switch (event) {
             .agent_end => |payload| agent_end_termination = payload.termination,
             else => {},
@@ -450,6 +457,8 @@ test "agentLoop: zero max_iterations still reports max_turns termination" {
 
     var agent_end_termination: ?agent_types.AgentTermination = null;
     while (stream.wait()) |event| {
+        var owned_event = event;
+        defer owned_event.deinit(allocator);
         switch (event) {
             .agent_end => |payload| agent_end_termination = payload.termination,
             else => {},
@@ -495,6 +504,8 @@ test "agentLoop: cancellation reports cancelled termination" {
 
     var agent_end_termination: ?agent_types.AgentTermination = null;
     while (stream.wait()) |event| {
+        var owned_event = event;
+        defer owned_event.deinit(allocator);
         switch (event) {
             .agent_end => |payload| agent_end_termination = payload.termination,
             else => {},
@@ -541,7 +552,10 @@ test "ProtocolOptions: passed through to protocol client" {
         allocator.destroy(stream);
     }
 
-    while (stream.wait()) |_| {}
+    while (stream.wait()) |event| {
+        var owned_event = event;
+        owned_event.deinit(allocator);
+    }
 
     const seen = state.last_options.?;
     try testing.expectEqual(@as(?f32, 0.25), seen.temperature);
@@ -577,7 +591,10 @@ test "agentLoop: cancellation token stops before protocol stream call" {
         stream.deinit();
         allocator.destroy(stream);
     }
-    while (stream.wait()) |_| {}
+    while (stream.wait()) |event| {
+        var owned_event = event;
+        owned_event.deinit(allocator);
+    }
 
     const result = stream.getResult().?;
     try testing.expectEqual(@as(usize, 0), result.iterations);
@@ -608,7 +625,10 @@ test "agentLoop: max_iterations caps repeated tool_use loop" {
         stream.deinit();
         allocator.destroy(stream);
     }
-    while (stream.wait()) |_| {}
+    while (stream.wait()) |event| {
+        var owned_event = event;
+        owned_event.deinit(allocator);
+    }
 
     const result = stream.getResult().?;
     try testing.expectEqual(@as(usize, 2), result.iterations);
@@ -670,6 +690,8 @@ test "agentLoop: without max_iterations a run keeps calling tools past a hundred
 
     var agent_end_termination: ?agent_types.AgentTermination = .max_turns;
     while (stream.wait()) |event| {
+        var owned_event = event;
+        defer owned_event.deinit(allocator);
         switch (event) {
             .agent_end => |payload| agent_end_termination = payload.termination,
             else => {},
@@ -718,7 +740,10 @@ test "agentLoop: a tool call in a reply reported as stop still runs" {
         stream.deinit();
         allocator.destroy(stream);
     }
-    while (stream.wait()) |_| {}
+    while (stream.wait()) |event| {
+        var owned_event = event;
+        owned_event.deinit(allocator);
+    }
 
     const result = stream.getResult().?;
     try testing.expectEqual(@as(usize, 1), probe.runs);
@@ -761,7 +786,10 @@ test "agentLoop: a tool call cut off at the output limit is answered with an err
         stream.deinit();
         allocator.destroy(stream);
     }
-    while (stream.wait()) |_| {}
+    while (stream.wait()) |event| {
+        var owned_event = event;
+        owned_event.deinit(allocator);
+    }
 
     const result = stream.getResult().?;
     var answers: usize = 0;
@@ -812,7 +840,10 @@ test "agentLoop: a run whose tool calls keep getting cut off ends after three er
         stream.deinit();
         allocator.destroy(stream);
     }
-    while (stream.wait()) |_| {}
+    while (stream.wait()) |event| {
+        var owned_event = event;
+        owned_event.deinit(allocator);
+    }
 
     const result = stream.getResult().?;
     var answers: usize = 0;

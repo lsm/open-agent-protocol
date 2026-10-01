@@ -3037,7 +3037,7 @@ test "every new payload decoder frees what it built when an allocation fails" {
         prefix ++ "capabilities.updated\",\"payload\":{\"previous_revision\":\"r0\",\"reason\":\"why\"}}",
     };
     for (lines) |line| {
-        try std.testing.checkAllAllocationFailures(std.testing.allocator, decodeAndRelease, .{line});
+        try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, decodeAndRelease, .{line});
     }
 }
 

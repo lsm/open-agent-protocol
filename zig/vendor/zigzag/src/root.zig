@@ -5,6 +5,7 @@ pub const program = @import("core/program.zig");
 pub const Program = program.Program;
 pub const Cmd = program.Cmd;
 pub const command = @import("core/command.zig");
+pub const model = @import("core/model.zig");
 pub const Environment = @import("core/environment.zig").Environment;
 pub const async_task = @import("core/async_task.zig");
 pub const AsyncRunner = async_task.AsyncRunner;
@@ -37,13 +38,16 @@ pub const lerp = animation.lerp;
 pub const terminal = @import("terminal/terminal.zig");
 pub const Terminal = terminal.Terminal;
 pub const ansi = terminal.ansi;
-pub const screen = terminal.screen;
+pub const frame = terminal.frame;
+pub const FrameRenderer = frame.Renderer;
+pub const RenderMode = frame.Mode;
 
 pub const input = struct {
     pub const keyboard = @import("input/keyboard.zig");
     pub const mouse = @import("input/mouse.zig");
     pub const keys = @import("input/keys.zig");
 };
+pub const InputParser = input.keyboard.InputParser;
 pub const Key = input.keys.Key;
 pub const KeyEvent = input.keys.KeyEvent;
 pub const Modifiers = input.keys.Modifiers;
@@ -89,6 +93,10 @@ pub const testing = struct {
     pub const snapshot = @import("testing/snapshot.zig");
     pub const expectSnapshot = snapshot.expectSnapshot;
     pub const expectSnapshotOpts = snapshot.expectSnapshotOpts;
+    pub const harness = @import("testing/harness.zig");
+    pub const Harness = harness.Harness;
+    pub const HarnessOptions = harness.Options;
+    pub const stripAnsi = harness.stripAnsi;
 };
 
 pub const components = struct {
@@ -294,7 +302,9 @@ pub const AdaptiveColor = color.AdaptiveColor;
 pub const CompleteColor = color.CompleteColor;
 pub const CompleteAdaptiveColor = color.CompleteAdaptiveColor;
 
+pub const overflow = @import("style/overflow.zig");
 pub const Overflow = style.Overflow;
+pub const applyOverflow = overflow.applyOverflow;
 
 pub const StyleRange = style.StyleRange;
 pub const renderWithRanges = style.renderWithRanges;

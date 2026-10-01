@@ -79,7 +79,7 @@ pub const Client = struct {
         return .{ .allocator = allocator, .threaded = std.Io.Threaded.init(allocator, .{}) };
     }
 
-    fn io(self: *Client) std.Io {
+    pub fn io(self: *Client) std.Io {
         return self.threaded.io();
     }
 
@@ -123,7 +123,13 @@ pub const Client = struct {
     pub fn close(self: *Client) void {
         self.closeStdin();
         if (self.child) |*child| {
-            _ = child.wait(self.io()) catch {};
+            var waited: i64 = 0;
+            while (waited < close_grace_ms) {
+                if (tryExitPosix(child, self.io()) != null) break;
+                std.Io.sleep(self.io(), .fromMilliseconds(exit_poll_ms), .boot) catch {};
+                waited += exit_poll_ms;
+            }
+            if (child.id != null) child.kill(self.io());
             self.child = null;
         }
         self.closed = true;
@@ -177,6 +183,17 @@ pub const Client = struct {
         return self.nextBounded(Budget.fromTimeout(timeout, self.io()));
     }
 
+    pub fn nextBuffered(self: *Client) !?Frame {
+        while (true) {
+            if (try self.takeLine()) |line| {
+                const trimmed = std.mem.trim(u8, line, " \t\r");
+                if (trimmed.len == 0) continue;
+                return try classify(trimmed);
+            }
+            return null;
+        }
+    }
+
     pub fn nextBounded(self: *Client, allowance: Budget) !?Frame {
         while (true) {
             if (try self.takeLine()) |line| {
@@ -227,6 +244,7 @@ pub const Client = struct {
 };
 
 const exit_poll_ms: i64 = 25;
+const close_grace_ms: i64 = 250;
 
 fn tryExitPosix(child: *std.process.Child, io: std.Io) ?std.process.Child.Term {
     if (builtin.os.tag == .windows) return tryExitWindows(child, io);

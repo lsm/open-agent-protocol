@@ -14,6 +14,7 @@ const retry = @import("retry");
 const pre_transform = @import("pre_transform");
 const StringBuilder = @import("string_builder").StringBuilder;
 const compat_mod = @import("compat");
+const version = @import("version_options").version;
 
 const MergedCompat = struct {
     supports_store: bool,
@@ -707,8 +708,10 @@ const ThreadCtx = struct {
     on_payload_ctx: ?*anyopaque = null,
     retry_config: ?ai_types.RetryConfig = null,
     ping_interval_ms: ?u64 = null,
+    conversation_id: ?[]u8 = null,
 
     fn deinit(self: *ThreadCtx) void {
+        if (self.conversation_id) |id| self.allocator.free(id);
         self.allocator.free(self.api_key);
         self.allocator.free(self.request_body);
         var mut_context = self.context;
@@ -981,6 +984,41 @@ fn pushEvent(stream: *event_stream.AssistantMessageEventStream, event: ai_types.
     _ = stream.pushBlocking(event);
 }
 
+const client_user_agent = "oapx/" ++ version;
+
+fn wantsConversationId(model: ai_types.Model) bool {
+    return std.mem.eql(u8, model.provider, "opencode-go");
+}
+
+fn hashField(hasher: *std.hash.Wyhash, tag: u8, bytes: []const u8) void {
+    var length: [8]u8 = undefined;
+    std.mem.writeInt(u64, &length, bytes.len, .little);
+    hasher.update(&.{tag});
+    hasher.update(&length);
+    hasher.update(bytes);
+}
+
+fn conversationId(allocator: std.mem.Allocator, session_id: ?[]const u8, context: ai_types.Context) ![]u8 {
+    if (session_id) |id| return allocator.dupe(u8, id);
+    var hasher = std.hash.Wyhash.init(0);
+    hashField(&hasher, 's', context.system_prompt.slice());
+    for (context.messages) |message| {
+        if (message != .user) continue;
+        switch (message.user.content) {
+            .text => |text| hashField(&hasher, 't', text),
+            .parts => |parts| for (parts) |part| switch (part) {
+                .text => |text| hashField(&hasher, 't', text.text),
+                .image => |image| {
+                    hashField(&hasher, 'm', image.mime_type);
+                    hashField(&hasher, 'i', image.data);
+                },
+            },
+        }
+        break;
+    }
+    return std.fmt.allocPrint(allocator, "oapx-{x:0>16}", .{hasher.final()});
+}
+
 fn isKimiModel(model: ai_types.Model) bool {
     return std.mem.eql(u8, model.provider, "kimi");
 }
@@ -1120,8 +1158,18 @@ fn runThread(ctx: *ThreadCtx) void {
         }
     }
 
+    if (ctx.conversation_id) |id| {
+        headers.append(allocator, .{ .name = "x-opencode-session", .value = id }) catch {
+            ctx.deinit();
+            stream.completeWithError("oom headers");
+            return;
+        };
+    }
+
     const user_agent_override: ?[]const u8 = if (isKimiModel(model))
         "claude-code/0.1.0"
+    else if (wantsConversationId(model))
+        client_user_agent
     else
         null;
 
@@ -1702,6 +1750,9 @@ pub fn streamOpenAICompletions(
     const req_body = try buildRequestBody(owned_model, owned_context, resolved, allocator);
     errdefer allocator.free(req_body);
 
+    const conversation_id: ?[]u8 = if (wantsConversationId(owned_model)) try conversationId(allocator, resolved.getSessionId(), owned_context) else null;
+    errdefer if (conversation_id) |id| allocator.free(id);
+
     const s = try allocator.create(event_stream.AssistantMessageEventStream);
     errdefer allocator.destroy(s);
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
@@ -1731,11 +1782,58 @@ pub fn streamOpenAICompletions(
         .on_payload_ctx = resolved.on_payload_ctx,
         .retry_config = resolved.retry,
         .ping_interval_ms = resolved.ping_interval_ms,
+        .conversation_id = conversation_id,
     };
 
     const th = try std.Thread.spawn(.{}, runThread, .{ctx});
     th.detach();
     return s;
+}
+
+test "OpenCode Go gets a conversation id, the session's when there is one, else one stable across a conversation's turns" {
+    const allocator = std.testing.allocator;
+    var model = traceModel("https://opencode.ai/zen/go/v1");
+    model.provider = "opencode-go";
+    try std.testing.expect(wantsConversationId(model));
+    model.provider = "opencode";
+    try std.testing.expect(!wantsConversationId(model));
+
+    const first = [_]ai_types.Message{.{ .user = .{ .content = .{ .text = "plan the work" }, .timestamp = 0 } }};
+    const later = [_]ai_types.Message{
+        .{ .user = .{ .content = .{ .text = "plan the work" }, .timestamp = 0 } },
+        .{ .user = .{ .content = .{ .text = "and then do it" }, .timestamp = 1 } },
+    };
+    const other = [_]ai_types.Message{.{ .user = .{ .content = .{ .text = "something else" }, .timestamp = 0 } }};
+
+    const given = try conversationId(allocator, "ses-tui-1", .{ .messages = &first });
+    defer allocator.free(given);
+    try std.testing.expectEqualStrings("ses-tui-1", given);
+
+    const a = try conversationId(allocator, null, .{ .messages = &first });
+    defer allocator.free(a);
+    const b = try conversationId(allocator, null, .{ .messages = &later });
+    defer allocator.free(b);
+    const c = try conversationId(allocator, null, .{ .messages = &other });
+    defer allocator.free(c);
+    try std.testing.expectEqualStrings(a, b);
+    try std.testing.expect(!std.mem.eql(u8, a, c));
+    try std.testing.expect(std.mem.startsWith(u8, a, "oapx-"));
+
+    const image_a = [_]ai_types.UserContentPart{.{ .image = .{ .data = "aaaa", .mime_type = "image/png" } }};
+    const image_b = [_]ai_types.UserContentPart{.{ .image = .{ .data = "bbbb", .mime_type = "image/png" } }};
+    const split = [_]ai_types.UserContentPart{ .{ .text = .{ .text = "plan the " } }, .{ .text = .{ .text = "work" } } };
+    const pictured_a = [_]ai_types.Message{.{ .user = .{ .content = .{ .parts = &image_a }, .timestamp = 0 } }};
+    const pictured_b = [_]ai_types.Message{.{ .user = .{ .content = .{ .parts = &image_b }, .timestamp = 0 } }};
+    const split_message = [_]ai_types.Message{.{ .user = .{ .content = .{ .parts = &split }, .timestamp = 0 } }};
+    const pa = try conversationId(allocator, null, .{ .messages = &pictured_a });
+    defer allocator.free(pa);
+    const pb = try conversationId(allocator, null, .{ .messages = &pictured_b });
+    defer allocator.free(pb);
+    const sp = try conversationId(allocator, null, .{ .messages = &split_message });
+    defer allocator.free(sp);
+    try std.testing.expect(!std.mem.eql(u8, pa, pb));
+    try std.testing.expect(!std.mem.eql(u8, sp, a));
+    try std.testing.expect(std.mem.startsWith(u8, client_user_agent, "oapx/"));
 }
 
 fn deepSeekEffort(effort: []const u8) []const u8 {
@@ -3374,6 +3472,8 @@ const MockCompletionsServer = struct {
     served: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     saw_chat_path: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     saw_stream_flag: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    saw_session_header: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    saw_client_agent: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     const trace_events =
         \\data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"regression-model","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":null}]}
@@ -3443,6 +3543,16 @@ const MockCompletionsServer = struct {
         return error.StreamTooLong;
     }
 
+    fn headerValue(head: []const u8, name: []const u8) ?[]const u8 {
+        var lines = std.mem.splitSequence(u8, head, "\r\n");
+        while (lines.next()) |line| {
+            const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+            if (!std.ascii.eqlIgnoreCase(line[0..colon], name)) continue;
+            return std.mem.trim(u8, line[colon + 1 ..], " ");
+        }
+        return null;
+    }
+
     fn serve(self: *MockCompletionsServer) void {
         defer self.served.store(true, .release);
 
@@ -3466,6 +3576,12 @@ const MockCompletionsServer = struct {
         }
         if (std.mem.indexOf(u8, body_slice, "\"stream\":true") != null) {
             self.saw_stream_flag.store(true, .release);
+        }
+        if (std.mem.eql(u8, headerValue(head, "x-opencode-session") orelse "", "ses-tui-1")) {
+            self.saw_session_header.store(true, .release);
+        }
+        if (std.mem.eql(u8, headerValue(head, "user-agent") orelse "", client_user_agent)) {
+            self.saw_client_agent.store(true, .release);
         }
 
         var head_buffer: [128]u8 = undefined;
@@ -3500,6 +3616,44 @@ fn traceContext() ai_types.Context {
         const items = [_]ai_types.Message{.{ .user = .{ .content = .{ .text = "hello" }, .timestamp = 0 } }};
     }.items[0..];
     return .{ .messages = messages };
+}
+
+test "an OpenCode Go request names this client and carries the session id" {
+    const allocator = std.testing.allocator;
+
+    var mock = try MockCompletionsServer.listen(MockCompletionsServer.complete_stream);
+    var stopped = false;
+    defer if (!stopped) mock.stop();
+
+    const base_url = try mock.baseUrl(allocator);
+    defer allocator.free(base_url);
+    try mock.start();
+
+    var model = traceModel(base_url);
+    model.provider = "opencode-go";
+    const stream = try streamOpenAICompletions(
+        model,
+        traceContext(),
+        .{
+            .api_key = ai_types.OwnedSlice(u8).initBorrowed("test-key"),
+            .session_id = ai_types.OwnedSlice(u8).initBorrowed("ses-tui-1"),
+        },
+        allocator,
+    );
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+    while (stream.wait()) |event| {
+        var polled = event;
+        ai_types.deinitAssistantMessageEvent(allocator, &polled);
+    }
+    try std.testing.expect(stream.waitForThread(5_000));
+    mock.stop();
+    stopped = true;
+
+    try std.testing.expect(mock.saw_session_header.load(.acquire));
+    try std.testing.expect(mock.saw_client_agent.load(.acquire));
 }
 
 test "a streamed text thinking and tool call reports indices that diverge from the terminal assembly order" {
@@ -3587,6 +3741,8 @@ var cleanup_held: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
 var cleanup_gate: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
 var cleanup_window: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
 var cleanup_paused: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
+var cleanup_waits: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
+var cleanup_paused_gate: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
 
 fn defaultIo() std.Io {
     return if (@import("builtin").is_test) std.testing.io else std.Io.Threaded.global_single_threaded.io();
@@ -3599,14 +3755,34 @@ fn awaitCleanupRelease() void {
     const io = defaultIo();
     while (true) {
         const seen = cleanup_gate.load(.acquire);
+        if (cleanup_window.load(.acquire) == 1) awaitCleanupWindow(io);
         if (cleanup_hold.load(.acquire) == 0) break;
-        if (cleanup_window.load(.acquire) == 1) {
-            _ = cleanup_paused.store(true, .release);
-            while (cleanup_window.load(.acquire) == 1) {
-                io.futexWaitTimeout(u32, &cleanup_window.raw, cleanup_window.load(.acquire), boundedWait()) catch {};
-            }
-        }
+        _ = cleanup_waits.fetchAdd(1, .release);
         io.futexWaitTimeout(u32, &cleanup_gate.raw, seen, boundedWait()) catch {};
+    }
+}
+
+fn awaitCleanupWindow(io: std.Io) void {
+    _ = cleanup_paused_gate.fetchAdd(1, .release);
+    _ = cleanup_paused.store(true, .release);
+    defaultIo().futexWake(u32, &cleanup_paused_gate.raw, std.math.maxInt(u32));
+    while (cleanup_window.load(.acquire) == 1) {
+        io.futexWaitTimeout(u32, &cleanup_window.raw, cleanup_window.load(.acquire), boundedWait()) catch {};
+    }
+}
+
+fn expectCleanupPaused() !void {
+    const io = defaultIo();
+    var rounds: usize = 0;
+    while (!cleanup_paused.load(.acquire) and rounds < 200) : (rounds += 1) {
+        io.futexWaitTimeout(u32, &cleanup_paused_gate.raw, cleanup_paused_gate.load(.acquire), boundedWait()) catch {};
+    }
+    if (!cleanup_paused.load(.acquire)) {
+        std.debug.print("producer never reached the held publish: held={d} paused={any} window={d} waits={d}\n", .{
+            cleanup_held.load(.acquire), cleanup_paused.load(.acquire),
+            cleanup_window.load(.acquire), cleanup_waits.load(.acquire),
+        });
+        return error.TestUnexpectedResult;
     }
 }
 
@@ -3641,12 +3817,13 @@ test "a release inside the snapshot-to-wait window still reaches the producer" {
     const allocator = std.testing.allocator;
     cleanup_held.store(0, .release);
     cleanup_paused.store(false, .release);
+    cleanup_waits.store(0, .release);
     holdCleanup();
-    cleanup_window.store(1, .release);
     defer {
         cleanup_window.store(0, .release);
         releaseCleanupGate();
     }
+    cleanup_window.store(1, .release);
 
     var mock = try MockCompletionsServer.listen(MockCompletionsServer.complete_stream);
     defer mock.stop();
@@ -3672,18 +3849,16 @@ test "a release inside the snapshot-to-wait window still reaches the producer" {
         defer ai_types.deinitAssistantMessageEvent(allocator, &polled);
     }
 
-    var spins: usize = 0;
-    while (!cleanup_paused.load(.acquire) and spins < 400) : (spins += 1) {
-        std.Thread.yield() catch {};
-    }
-    try std.testing.expect(cleanup_paused.load(.acquire));
+    try expectCleanupPaused();
     try std.testing.expect(!stream.waitForThread(100));
 
+    const waits_before_release = cleanup_waits.load(.acquire);
     releaseCleanupGate();
     cleanup_window.store(0, .release);
     wakeCleanupWaiters();
 
     try std.testing.expect(stream.waitForThread(5_000));
+    try std.testing.expectEqual(waits_before_release, cleanup_waits.load(.acquire));
     try std.testing.expect(stream.getError() == null);
 }
 

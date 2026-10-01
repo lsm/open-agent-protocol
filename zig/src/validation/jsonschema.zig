@@ -980,7 +980,7 @@ test "a registry owns the names it duplicated, wherever they sit" {
 }
 
 test "a registry frees a duplicated name exactly once, on every allocation failure" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, struct {
         fn run(allocator: std.mem.Allocator) !void {
             var registry = Registry{ .allocator = allocator };
             defer registry.deinit();

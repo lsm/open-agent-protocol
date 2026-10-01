@@ -248,13 +248,11 @@ test "distributed fullstack github: agent loop via provider+tool protocols witho
     var saw_tool_start = false;
     var saw_tool_end = false;
     while (stream.wait()) |event| {
+        var owned_event = event;
+        defer owned_event.deinit(allocator);
         switch (event) {
             .tool_execution_start => saw_tool_start = true,
             .tool_execution_end => saw_tool_end = true,
-            .message_update => |u| {
-                var owned_event = u.event;
-                ai_types.deinitAssistantMessageEvent(allocator, &owned_event);
-            },
             else => {},
         }
     }

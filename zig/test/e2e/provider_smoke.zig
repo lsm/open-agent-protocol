@@ -27,6 +27,7 @@ const rows = [_]Row{
     .{ .id = "kimi", .model = "kimi-k2.7-code" },
     .{ .id = "zai-coding-plan", .model = "glm-4.6" },
     .{ .id = "opencode", .model = "grok-code-fast-1" },
+    .{ .id = "opencode-go", .model = "deepseek-v4-flash" },
     .{ .id = "openrouter", .model = "openai/gpt-4o-mini" },
 };
 

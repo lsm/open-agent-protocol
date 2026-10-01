@@ -460,7 +460,7 @@ fn sendFailureProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "a request that fails to send is not left outstanding" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, sendFailureProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, sendFailureProbe, .{});
 }
 
 test "an initialize response with no revision asks for capabilities rather than stalling" {
@@ -609,7 +609,7 @@ fn rememberProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "the client's remembered fields survive an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, rememberProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, rememberProbe, .{});
 }
 
 test "a session is opened only after initialize" {

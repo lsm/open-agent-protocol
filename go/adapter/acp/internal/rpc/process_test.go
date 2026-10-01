@@ -7,11 +7,17 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
+
+const surviveBackstop = 5 * time.Minute
+
+const gracefulExitAllowance = 5 * time.Second
 
 func TestACPHelperProcess(t *testing.T) {
 
@@ -70,8 +76,13 @@ func TestACPHelperProcess(t *testing.T) {
 	for {
 		message, err = reader.Decode()
 		if err != nil {
-			if mode == "stay-alive" {
-				select {}
+			switch mode {
+			case "stay-alive":
+				surviveStdinClosed()
+			case "leaves-cleanly-on-eof":
+				return
+			case "exits-nonzero-on-eof":
+				os.Exit(3)
 			}
 			return
 		}
@@ -87,6 +98,16 @@ func TestACPHelperProcess(t *testing.T) {
 				return
 			}
 		}
+	}
+}
+
+func surviveStdinClosed() {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	select {
+	case <-signals:
+	case <-time.After(surviveBackstop):
 	}
 }
 
@@ -232,6 +253,33 @@ func TestProcessConcurrentCloseReturnsSameResult(t *testing.T) {
 	}
 	if err := process.Close(context.Background()); err == nil || err.Error() != first {
 		t.Fatalf("repeat=%v want=%q", err, first)
+	}
+	if !strings.Contains(first, "shutdown timed out") {
+		t.Fatalf("close reported %q, so the helper answered stdin EOF instead of staying alive until the shutdown timeout forced a kill", first)
+	}
+}
+
+func TestCloseRejectsAHelperThatLeavesOnStdinEOF(t *testing.T) {
+	for _, testCase := range []struct {
+		mode string
+		why  string
+	}{
+		{"leaves-cleanly-on-eof", "a helper that returned on stdin EOF"},
+		{"exits-nonzero-on-eof", "a helper that exited non-zero on stdin EOF"},
+	} {
+		t.Run(testCase.mode, func(t *testing.T) {
+			config := helperConfig(testCase.mode)
+			config.ShutdownTimeout = gracefulExitAllowance
+			process, err := Start(context.Background(), config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer process.Close(context.Background())
+			err = process.Close(context.Background())
+			if err != nil && strings.Contains(err.Error(), "shutdown timed out") {
+				t.Fatalf("close reported a forced kill for %s, so this test cannot tell a survivor from %s", testCase.why, testCase.why)
+			}
+		})
 	}
 }
 

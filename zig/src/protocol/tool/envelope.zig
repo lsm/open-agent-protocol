@@ -1050,7 +1050,7 @@ fn toolRegisterProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "tool_register survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, toolRegisterProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, toolRegisterProbe, .{});
 }
 
 fn toolListResponseProbe(allocator: std.mem.Allocator) !void {
@@ -1062,7 +1062,7 @@ fn toolListResponseProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "tool_list_response survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, toolListResponseProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, toolListResponseProbe, .{});
 }
 
 test "a malformed tool entry after a good one is rejected without leaking" {

@@ -345,6 +345,16 @@ pub fn serializeAgentLoopEvent(
             try w.writeIntField("estimated_tokens", payload.estimated_tokens);
             try w.writeIntField("item_count", payload.item_count);
         },
+        .compaction_start => {
+            try w.writeStringField("type", "compaction_start");
+        },
+        .compaction_end => |payload| {
+            try w.writeStringField("type", "compaction_end");
+            try w.writeStringField("outcome", @tagName(payload.outcome));
+            try w.writeIntField("messages_before", payload.messages_before);
+            try w.writeIntField("tokens_before", payload.tokens_before);
+            try w.writeIntField("tokens_after", payload.tokens_after);
+        },
         .tool_execution_start => |payload| {
             try w.writeStringField("type", "tool_execution_start");
             try w.writeStringField("tool_call_id", payload.tool_call_id);
@@ -362,7 +372,7 @@ pub fn serializeAgentLoopEvent(
             try w.writeStringField("tool_call_id", payload.tool_call_id);
             try w.writeStringField("tool_name", payload.tool_name);
             try w.writeStringField("result_json", payload.result_json);
-            if (payload.content_json.len > 0) try w.writeStringField("content_json", payload.content_json);
+            if (payload.content_json.slice().len > 0) try w.writeStringField("content_json", payload.content_json.slice());
             try w.writeBoolField("is_error", payload.is_error);
             try w.writeIntField("args_bytes", payload.args_bytes);
             try w.writeIntField("raw_result_bytes", payload.raw_result_bytes);

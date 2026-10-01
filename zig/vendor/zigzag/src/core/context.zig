@@ -7,6 +7,7 @@ const unicode_mod = @import("../unicode.zig");
 const Logger = @import("log.zig").Logger;
 const theme_mod = @import("../style/theme.zig");
 const Environment = @import("environment.zig").Environment;
+const frame_mod = @import("../terminal/frame.zig");
 
 pub const Context = struct {
     allocator: std.mem.Allocator,
@@ -340,4 +341,8 @@ pub const Options = struct {
     suspend_enabled: bool = true,
 
     ctrl_c_quits: bool = true,
+
+    escape_timeout_ms: u32 = 50,
+
+    render_mode: frame_mod.Mode = .diff,
 };

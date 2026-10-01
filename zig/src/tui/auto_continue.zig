@@ -6,6 +6,7 @@ pub const default_delay_ms: u64 = 3_000;
 
 pub const Skip = enum {
     authentication,
+    payment,
     context_overflow,
     streak_exhausted,
 };
@@ -34,8 +35,25 @@ const auth_markers = [_][]const u8{
     "expired token",
 };
 
+const payment_markers = [_][]const u8{
+    "http 402",
+    "status 402",
+    "status code 402",
+    "payment required",
+    "insufficient balance",
+    "insufficient_balance",
+    "insufficient funds",
+    "insufficient_quota",
+    "usage_limit_reached",
+    "usage limit",
+};
+
 pub fn isAuthFailure(error_text: []const u8) bool {
     return containsAny(error_text, &auth_markers);
+}
+
+pub fn isPaymentFailure(error_text: []const u8) bool {
+    return containsAny(error_text, &payment_markers);
 }
 
 pub fn isOverflowFailure(error_text: []const u8) bool {
@@ -45,6 +63,7 @@ pub fn isOverflowFailure(error_text: []const u8) bool {
 pub fn classify(error_text: []const u8, already_continued: bool) Decision {
     if (already_continued) return .{ .skip = .streak_exhausted };
     if (isAuthFailure(error_text)) return .{ .skip = .authentication };
+    if (isPaymentFailure(error_text)) return .{ .skip = .payment };
     if (isOverflowFailure(error_text)) return .{ .skip = .context_overflow };
     return .{ .send_after = default_delay_ms };
 }
@@ -123,6 +142,21 @@ test "classify skips an auth failure" {
     try std.testing.expectEqual(Skip.authentication, classify("azure request failed: HTTP 403", false).skip);
     try std.testing.expectEqual(Skip.authentication, classify("{\"error\":{\"type\":\"invalid_api_key\"}}", false).skip);
     try std.testing.expectEqual(Skip.authentication, classify("invalid authentication credentials", false).skip);
+}
+
+test "classify skips a payment failure, which a replay would only repeat" {
+    try std.testing.expectEqual(Skip.payment, classify("opencode-go request failed: HTTP 402 {\"error\":{\"message\":\"Insufficient balance\"}}", false).skip);
+    try std.testing.expectEqual(Skip.payment, classify("request failed with status code 402", false).skip);
+    try std.testing.expectEqual(Skip.payment, classify("{\"error\":{\"code\":\"insufficient_quota\"}}", false).skip);
+    try std.testing.expectEqual(Skip.payment, classify("Payment Required", false).skip);
+    try std.testing.expectEqual(Skip.payment, classify("openai-codex request failed: HTTP 429 (usage_limit_reached: The usage limit has been reached)", false).skip);
+    try std.testing.expectEqual(Skip.payment, classify("openai-codex request failed: HTTP 429 (access_terminated_error: You've reached your 5-hour usage limit)", false).skip);
+}
+
+test "isPaymentFailure ignores a status that is not a payment status" {
+    try std.testing.expect(!isPaymentFailure("openai request failed: HTTP 400 invalid_request_error"));
+    try std.testing.expect(!isPaymentFailure("openai request failed: HTTP 429 rate limited"));
+    try std.testing.expect(!isPaymentFailure(""));
 }
 
 test "classify skips a context overflow that compaction handles" {

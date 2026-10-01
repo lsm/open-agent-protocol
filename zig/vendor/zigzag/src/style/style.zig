@@ -574,10 +574,10 @@ pub const Style = struct {
         const content_height = measure.height(processed_text);
 
         var target_width = content_width;
-        var target_height = content_height;
+        var target_height = @max(content_height, 1);
 
         if (self.width_val) |w| target_width = w;
-        if (self.height_val) |h| target_height = h;
+        if (self.height_val) |h| target_height = @max(target_height, h);
         if (self.max_width_val) |mw| target_width = @min(target_width, mw);
         if (self.max_height_val) |mh| target_height = @min(target_height, mh);
 
@@ -637,7 +637,15 @@ pub const Style = struct {
             @as(usize, if (self.border_sides.top) 1 else 0) -|
             @as(usize, if (self.border_sides.bottom) 1 else 0);
 
-        _ = inner_height;
+        const line_count = std.mem.count(u8, text, "\n") + 1;
+        const fill = if (self.inline_mode) 0 else inner_height -| line_count;
+        const fill_top: usize = switch (self.align_vertical) {
+            .top => 0,
+            .middle => fill / 2,
+            .bottom => fill,
+        };
+        const fill_bottom = fill - fill_top;
+        const visible_lines = @min(line_count, inner_height);
 
         try self.writeStyleStart(writer);
 
@@ -658,9 +666,19 @@ pub const Style = struct {
             try self.writeContentLine(writer, "", inner_width);
         }
 
+        for (0..fill_top) |_| {
+            try self.writeContentLine(writer, "", inner_width);
+        }
+
         var lines = std.mem.splitScalar(u8, text, '\n');
-        while (lines.next()) |line| {
+        var emitted: usize = 0;
+        while (emitted < visible_lines) : (emitted += 1) {
+            const line = lines.next() orelse break;
             try self.writeContentLine(writer, line, inner_width);
+        }
+
+        for (0..fill_bottom) |_| {
+            try self.writeContentLine(writer, "", inner_width);
         }
 
         for (0..self.padding_val.bottom) |_| {

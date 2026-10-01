@@ -267,6 +267,19 @@ written here: nothing in this runtime spells a catalogued base URL. The two
 values discovery does not carry are the same defaults a custom provider starts
 from, 128000 and 8192, until a wire reports better ones.
 
+A row whose listing names models without their limits can name a `models_dev`
+key, as both OpenCode rows do. A discovered model with no context window, output
+limit, reasoning flag or image input of its own then takes the figure
+[models.dev](https://models.dev) publishes for the same model id under that key;
+a figure the listing or the row's `models` entry gives is never replaced, and a
+model models.dev does not list keeps the defaults. The full listing is fetched
+without credentials only when such a row has a credential and a model lacking a
+limit, and the providers the catalog names are kept at
+`~/.oapx/model_catalog/models-dev.json`. An ordinary load reads that copy however
+old and fetches only when there is none, so models.dev being unreachable never
+delays a start that has fetched once; a model refresh fetches it again, falling
+back to the copy, then to the defaults.
+
 The base URL a discovered row uses is resolved the way every other row's is, in
 the order `provider_base_url` documents: `OAPX_BASE_URL` first, then the row's
 `base_url_env` (`DEEPSEEK_BASE_URL`, `OPENAI_BASE_URL`, …), then the catalog. So
@@ -281,6 +294,45 @@ code, so every row that declares one is routed by it — `OLLAMA_BASE_URL`,
 `AZURE_OPENAI_BASE_URL` and `GOOGLE_BASE_URL` as much as `DEEPSEEK_BASE_URL`. A
 row that declares no variable has no per-row override and can only be moved by
 `OAPX_BASE_URL`.
+
+A base the catalogue already records is **not** an override. A catalogue target
+is re-resolved onto an override wire only when the base in hand differs from the
+base the catalogue records for the selected wire and region, so a provider whose
+catalogueued base becomes resolvable keeps the wire it is configured for instead
+of being read as though an operator had redirected it. `deepseek` is the case
+this covers: with nothing set it resolves the `anthropic-messages` base
+`https://api.deepseek.com/anthropic`, and that catalogueued value is not an
+override.
+
+**The test for an override is value inequality, and the boundary is recorded
+rather than left implied.** An operator who sets a row's `base_url_env` to
+exactly the value the catalogue already records is indistinguishable here from an
+operator who sets nothing, so the configured wire is kept. That is a change, and
+it is observable: setting `DEEPSEEK_BASE_URL` to the catalogueued Anthropic base
+used to be read as an override and moved the daemon onto `openai-completions`, so
+naming a provider's own default changed which protocol it spoke. Keeping the
+configured wire is the point. The cost is that a provider which ever gains an
+override *wire* mapping will find an override equal to its catalogueued base does
+not select that mapping, and a base differing only in trailing whitespace or a
+trailing `/v1` is normalised before it is compared.
+
+Which wire an override selects is unchanged and remains a separate question: the
+mapping is still per provider, `deepseek` still maps an override to
+`openai-completions`, and a provider with no mapping keeps its own wire whatever
+base it is given. Only the question of *whether* an override is present changed.
+
+The precedence is pinned where callers reach it rather than through the resolver
+alone. `OAPX_BASE_URL` and a row's own `base_url_env` are set through the
+runtime's test environment seam and read back through `defaultBaseUrlForRef`, so
+each step is exercised on the public path: an empty override falls back to the
+catalogue, a row override wins over the catalogue, a global override wins over
+the row, and a versioned override is normalized. The resulting wire is then pinned
+through `catalogEndpointWithOverrides` in both directions — a base equal to the
+catalogueued one keeps `anthropic-messages`, and a differing one moves the target
+and hands back a target that owns what it built. Both directions are pinned
+because the defect is a false positive that only appears once the catalogueued
+base starts resolving, so a control that only exercises the resolver would have
+passed against the broken code.
 
 ## Capabilities
 

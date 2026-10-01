@@ -207,7 +207,7 @@ pub const DevConsole = struct {
                             if (!still_alive) conn.close(io);
                         }
                         tcp.connections.clearRetainingCapacity();
-                        tcp.connections.appendSlice(keep.items) catch {};
+                        tcp.connections.appendSliceAssumeCapacity(keep.items);
                     }
                 },
             }

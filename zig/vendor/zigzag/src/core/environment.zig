@@ -67,6 +67,14 @@ pub const Environment = struct {
         return self.has_kitty_window or self.termContains("kitty");
     }
 
+    pub fn looksLikeKittyGraphicsTerminal(self: *const Environment) bool {
+        return self.looksLikeKittyTerminal() or
+            self.termContains("ghostty") or
+            self.termProgramEquals("ghostty") or
+            self.termContains("wezterm") or
+            self.termProgramEquals("WezTerm");
+    }
+
     pub fn looksLikeIterm2Terminal(self: *const Environment) bool {
         return self.termProgramEquals("iTerm.app") or self.lcTerminalEquals("iTerm2");
     }
@@ -119,3 +127,12 @@ pub const Environment = struct {
         return null;
     }
 };
+
+test "looksLikeKittyGraphicsTerminal recognizes graphics-capable terminals" {
+    try std.testing.expect((Environment{ .term = "xterm-ghostty" }).looksLikeKittyGraphicsTerminal());
+    try std.testing.expect((Environment{ .term_program = "ghostty" }).looksLikeKittyGraphicsTerminal());
+    try std.testing.expect((Environment{ .has_kitty_window = true }).looksLikeKittyGraphicsTerminal());
+    try std.testing.expect((Environment{ .term = "xterm-kitty" }).looksLikeKittyGraphicsTerminal());
+    try std.testing.expect((Environment{ .term_program = "WezTerm" }).looksLikeKittyGraphicsTerminal());
+    try std.testing.expect(!(Environment{ .term = "xterm-256color" }).looksLikeKittyGraphicsTerminal());
+}
