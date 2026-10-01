@@ -121,8 +121,13 @@ resolve.
 These shapes load and **contribute**, so they are not on the skipped list:
 
 - a cited name **spelled with a leading separator** — `/types.schema.json#/$defs/thing`
-  and `//types.schema.json#/$defs/thing` are both **accepted, with no refusal**,
-  and a pack whose citation is spelled that way still contributes its branch.
+  and `//types.schema.json#/$defs/thing` are both **accepted, with no refusal** on
+  POSIX, where `cleanRelative` splits on `/` and drops the empty part, and a pack
+  whose citation is spelled that way still contributes its branch. On Windows the
+  split is on the native separator, so a leading `/` is **not** dropped there: the
+  cited name keeps it, the lookup misses, and the loader records the same uncoded
+  refusal as any unresolvable citation. The acceptance below is the measured POSIX
+  outcome and is not universal.
   `cleanRelative` drops the empty separator (`packs.zig:83`), the registration
   loop keys the document by the *normalised* name (`packs.zig:335-336`), and the
   branch site normalises the cited name the same way (`packs.zig:396-401`), so the cited
@@ -197,6 +202,12 @@ is stated per shape, because it is not uniformly nothing:
   item shape is checked. `depends_on` is not read by this loader at all. `goap`
   rejects every one of these shapes through the descriptor schema. The CLI note
   discloses the same class; this paragraph is the record's statement of it.
+- a **`gates` entry whose `capability` (or `payload_type`/`member`/`type`) is not
+  a string** is not refused: `gateString` converts the wrong shape to an empty
+  string (`packs.zig:462-466`), the entry then matches nothing or matches with an
+  empty capability, and an empty capability is ignored, so **capability
+  enforcement is silently skipped for that gate** while the load succeeds. `goap`
+  rejects the descriptor through its schema.
 
 A descriptor that **omits `schemas` entirely**, or sets `"schemas": []`, is also
 accepted, and the empty field contributes **no schema documents and so no
