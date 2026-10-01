@@ -1941,7 +1941,12 @@ pub const App = struct {
 
     fn logoutProvider(self: *App, requested: []const u8) !void {
         const provider_id = logoutProviderId(requested);
-        const removed = oauth_storage.AuthStorage.removeStored(self.allocator, provider_id) catch |err| {
+        var shared: std.ArrayList([]const u8) = .empty;
+        defer shared.deinit(self.allocator);
+        for (provider_catalog.all) |row| {
+            if (provider_catalog.sharesCredentialEnvWith(provider_id, row.id)) try shared.append(self.allocator, row.id);
+        }
+        const removed = oauth_storage.AuthStorage.removeStored(self.allocator, provider_id, shared.items) catch |err| {
             const msg = try std.fmt.allocPrint(self.allocator, "logout failed: {s}", .{@errorName(err)});
             defer self.allocator.free(msg);
             try self.state.appendTranscript(.@"error", msg);
@@ -1950,6 +1955,13 @@ pub const App = struct {
         const outcome = try std.fmt.allocPrint(self.allocator, "{s} {s}", .{ if (removed) "logged out of" else "no saved credential for", provider_id });
         defer self.allocator.free(outcome);
         try self.state.appendTranscript(.system, outcome);
+        if (removed and shared.items.len > 0) {
+            const names = try std.mem.join(self.allocator, ", ", shared.items);
+            defer self.allocator.free(names);
+            const msg = try std.fmt.allocPrint(self.allocator, "{s} shares its key with {s}, so their saved copies of it are removed too", .{ provider_id, names });
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.system, msg);
+        }
         if (provider_catalog.provider(provider_id)) |row| {
             for (row.credential_env) |name| try self.noteEnvironmentCredential(provider_id, name);
         }
