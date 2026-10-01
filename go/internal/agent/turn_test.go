@@ -370,3 +370,13 @@ func TestATurnCancelledBeforeItStartedDeliversNothing(t *testing.T) {
 		}
 	}
 }
+
+func TestAnAnthropicTurnKeepsTheRawEffortLevelForDeepSeek(t *testing.T) {
+	merged := anthropicOptions(provider.StreamOptions{ReasoningEffort: "xhigh"})
+	if merged.ThinkingLevel != "xhigh" {
+		t.Fatalf("ThinkingLevel=%q, want the raw level so a provider can map it itself", merged.ThinkingLevel)
+	}
+	if merged.ThinkingEffort == "" {
+		t.Fatalf("ThinkingEffort lost the Claude-mapped effort")
+	}
+}
