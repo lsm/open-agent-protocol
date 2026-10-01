@@ -245,6 +245,19 @@ is stated per shape, because it is not uniformly nothing:
   registered without walking its references or trial-compiling the bundle, so the
   pack loads and a later trace can be left unjudged when resolution is reached.
   `goap` refuses it with `pack_external_ref` (`go/validation/pack.go:863-881`).
+- a well-shaped **payload member targeting a type the core vocabulary does not
+  define** is appended, because `gather` never consults the core vocabulary
+  (`fixtures/packs/bad-member-target-unknown` loads). `goap` refuses it with
+  `pack_member_target_unknown` (`go/validation/pack.go:450-457`).
+- a **declared response that carries a gate of its own** loads:
+  `typeCapability` merely reads the matching entry and succeeds
+  (`fixtures/packs/bad-response-gated`). `goap` refuses it with
+  `pack_response_gated` (`go/validation/pack.go:414-423`), because a response
+  derives its gate from the request it answers.
+- a **well-shaped `depends_on` naming a pack that is not loaded** is accepted,
+  because the field is never read at all (`fixtures/packs/bad-dependency-missing`
+  loads). `goap` refuses it with `pack_dependency_missing`
+  (`go/validation/pack.go:774-791`).
 - an `envelope_types` entry whose **`role` is not a string** becomes `""` at
   `packs.zig:377`, and a string the semantic machine does not recognise is
   retained as written; in both cases the role matches neither `request`,
