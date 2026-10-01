@@ -21,30 +21,44 @@ pub const Spawn = struct {
 
 pub const Budget = struct {
     io: std.Io,
-    started: std.Io.Timestamp,
-    budget_ms: i64,
+    limit: ?std.Io.Clock.Timestamp,
 
-    pub fn until(io: std.Io, budget_ms: i64) Budget {
+    pub fn leftOf(limit: std.Io.Clock.Timestamp, now: std.Io.Clock.Timestamp) i96 {
+        return now.durationTo(limit).raw.nanoseconds;
+    }
+
+    fn fromTimeout(given: std.Io.Timeout, io: std.Io) Budget {
+        return .{ .io = io, .limit = given.toTimestamp(io) };
+    }
+
+    fn until(io: std.Io, budget_ms: i64) Budget {
         return .{
             .io = io,
-            .started = std.Io.Timestamp.now(io, .awake),
-            .budget_ms = @max(budget_ms, 0),
+            .limit = std.Io.Clock.Timestamp.now(io, .awake).addDuration(.{
+                .raw = .fromMilliseconds(@max(budget_ms, 0)),
+                .clock = .awake,
+            }),
         };
     }
 
-    pub fn remainingMs(self: Budget) i64 {
-        const spent = self.started.durationTo(std.Io.Timestamp.now(self.io, .awake));
-        return self.budget_ms - @as(i64, @intCast(@divTrunc(spent.toNanoseconds(), std.time.ns_per_ms)));
+    pub fn unbounded() Budget {
+        return .{ .io = undefined, .limit = null };
+    }
+
+    fn leftNanoseconds(self: Budget) ?i96 {
+        const limit = self.limit orelse return null;
+        return leftOf(limit, std.Io.Clock.Timestamp.now(self.io, limit.clock));
     }
 
     pub fn expired(self: Budget) bool {
-        return self.remainingMs() <= 0;
+        const left = self.leftNanoseconds() orelse return false;
+        return left <= 0;
     }
 
     pub fn timeout(self: Budget) std.Io.Timeout {
-        return .{
-            .duration = .{ .raw = std.Io.Duration.fromMilliseconds(@max(self.remainingMs(), 1)), .clock = .boot },
-        };
+        const limit = self.limit orelse return .none;
+        const spend = @max(leftOf(limit, std.Io.Clock.Timestamp.now(self.io, limit.clock)), 1);
+        return .{ .duration = .{ .raw = .fromNanoseconds(spend), .clock = limit.clock } };
     }
 };
 
@@ -157,15 +171,41 @@ pub const Client = struct {
         try stdin.writeStreamingAll(self.io(), "\n");
     }
 
-    pub fn next(self: *Client, budget: Budget) !?Frame {
+    pub fn budget(self: *Client, budget_ms: i64) Budget {
+        return Budget.until(self.io(), budget_ms);
+    }
+
+    pub fn budgetFor(self: *Client, timeout: std.Io.Timeout) Budget {
+        return Budget.fromTimeout(timeout, self.io());
+    }
+
+    pub fn next(self: *Client, timeout: std.Io.Timeout) !?Frame {
+        return self.nextBounded(Budget.fromTimeout(timeout, self.io()));
+    }
+
+    pub fn nextBuffered(self: *Client) !?Frame {
         while (true) {
             if (try self.takeLine()) |line| {
                 const trimmed = std.mem.trim(u8, line, " \t\r");
                 if (trimmed.len == 0) continue;
                 return try classify(trimmed);
             }
-            if (budget.expired()) return null;
-            const filled = try self.fill(budget.timeout());
+            return null;
+        }
+    }
+
+    pub fn nextBounded(self: *Client, allowance: Budget) !?Frame {
+        while (true) {
+            if (try self.takeLine()) |line| {
+                const trimmed = std.mem.trim(u8, line, " \t\r");
+                if (trimmed.len == 0) {
+                    if (allowance.expired()) return null;
+                    continue;
+                }
+                return try classify(trimmed);
+            }
+            if (allowance.expired()) return null;
+            const filled = try self.fill(allowance.timeout());
             if (!filled) return null;
         }
     }
@@ -352,11 +392,12 @@ test "a line written to an endpoint comes back framed, and the buffer is the cli
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var client = Client.spawn(std.testing.allocator, .{ .command = "/bin/cat" }) catch return error.SkipZigTest;
     defer client.deinit();
+    defer stopChild(&client);
 
     const sent = "{\"protocol\":\"open-agent-protocol\",\"id\":\"q1\",\"type\":\"capabilities.request\"}";
     try client.write(sent);
 
-    const deadline = Budget.until(std.testing.io, 5000);
+    const deadline: std.Io.Timeout = .{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(5000), .clock = .awake } };
     var seen: ?Frame = null;
     var attempts: usize = 0;
     while (seen == null and attempts < 20) : (attempts += 1) {
@@ -371,18 +412,6 @@ test "a line carrying a newline is refused rather than split into two frames" {
     var client = Client.init(std.testing.allocator);
     defer client.deinit();
     try std.testing.expectError(Error.EmbeddedNewline, client.write("{\"a\":1}\n{\"b\":2}"));
-}
-
-test "a buffered line is delivered even after the budget has elapsed" {
-    var client = Client.init(std.testing.allocator);
-    defer client.deinit();
-    try client.pending.appendSlice(std.testing.allocator, "{\"protocol\":\"open-agent-protocol\",\"id\":\"q1\"}\n");
-
-    const spent = Budget.until(std.testing.io, 0);
-    try std.testing.expect(spent.expired());
-    const frame = try client.next(spent);
-    try std.testing.expect(frame != null);
-    try std.testing.expectEqualStrings("{\"protocol\":\"open-agent-protocol\",\"id\":\"q1\"}", frame.?.envelope);
 }
 
 test "a frame over the bound fails closed rather than truncating" {
@@ -408,7 +437,7 @@ fn probeHome(allowlist: []const []const u8, inherit: bool) ![]const u8 {
         .environment = names.items,
     });
     defer client.deinit();
-    const deadline = Budget.until(std.testing.io, 5000);
+    const deadline: std.Io.Timeout = .{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(5000), .clock = .awake } };
     var attempts: usize = 0;
     while (attempts < 20) : (attempts += 1) {
         const frame = try client.next(deadline) orelse continue;
@@ -446,10 +475,11 @@ test "the client drives a real endpoint binary when the operator names one" {
         .environment = &.{ "HOME", "PATH" },
     });
     defer client.deinit();
+    defer stopChild(&client);
 
     try client.write("{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"capabilities.request\",\"id\":\"q1\",\"payload\":{}}");
 
-    const deadline = Budget.until(std.testing.io, 10000);
+    const deadline: std.Io.Timeout = .{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(10000), .clock = .awake } };
     var attempts: usize = 0;
     while (attempts < 60) : (attempts += 1) {
         const frame = try client.next(deadline) orelse continue;
@@ -471,4 +501,243 @@ test "a child inherits this process's environment unless the allowlist says othe
     const inherited = try probeHome(&.{}, true);
     defer std.testing.allocator.free(inherited);
     try std.testing.expectEqualStrings(ambient, inherited);
+}
+
+test "a budget keeps the shape and clock of the timeout it was given" {
+    var client = Client.init(std.testing.allocator);
+    defer client.deinit();
+    const io = client.io();
+
+    const unbounded = Budget.fromTimeout(.none, io);
+    try std.testing.expect(unbounded.limit == null);
+    try std.testing.expect(unbounded.timeout() == .none);
+
+    const opened = std.Io.Clock.Timestamp.now(io, .awake);
+    const by_duration = Budget.fromTimeout(
+        .{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(60000), .clock = .awake } },
+        io,
+    );
+    try std.testing.expect(by_duration.limit != null);
+    try std.testing.expect(by_duration.timeout() == .duration);
+    try std.testing.expect(by_duration.limit.?.clock == .awake);
+    try std.testing.expect(Budget.leftOf(by_duration.limit.?, opened) > 0);
+
+    const given = std.Io.Clock.Timestamp.now(io, .awake).addDuration(.{ .raw = std.Io.Duration.fromMilliseconds(60000), .clock = .awake });
+    const by_deadline = Budget.fromTimeout(.{ .deadline = given }, io);
+    try std.testing.expect(by_deadline.limit != null);
+    try std.testing.expect(by_deadline.timeout() == .duration);
+    try std.testing.expect(by_deadline.limit.?.clock == .awake);
+    try std.testing.expectEqual(given.raw.nanoseconds, by_deadline.limit.?.raw.nanoseconds);
+
+    const spent: Budget = .{ .io = io, .limit = opened };
+    try std.testing.expect(spent.expired());
+    try std.testing.expect(std.meta.activeTag(spent.timeout()) == .duration);
+}
+
+
+test "the budget arithmetic keeps sub-millisecond precision without a live clock" {
+    var client = Client.init(std.testing.allocator);
+    defer client.deinit();
+    const io = client.io();
+    const base = std.Io.Clock.Timestamp.now(io, .awake);
+
+    var at = base;
+    try std.testing.expectEqual(@as(i64, 0), @as(i64, @intCast(Budget.leftOf(at, at))));
+    at = at.addDuration(.{ .raw = .fromNanoseconds(500_000), .clock = .awake });
+    try std.testing.expectEqual(@as(i64, 500_000), @as(i64, @intCast(Budget.leftOf(at, base))));
+    const one_nanosecond = base.addDuration(.{ .raw = .fromNanoseconds(1), .clock = .awake });
+    try std.testing.expectEqual(@as(i64, 1), @as(i64, @intCast(Budget.leftOf(one_nanosecond, base))));
+    const past = base.subDuration(.{ .raw = .fromMilliseconds(5), .clock = .awake });
+    try std.testing.expect(Budget.leftOf(past, base) < 0);
+
+    const spent: Budget = .{ .io = io, .limit = past };
+    try std.testing.expect(spent.expired());
+    try std.testing.expect(std.meta.activeTag(spent.timeout()) == .duration);
+    try std.testing.expect(std.meta.activeTag(Budget.unbounded().timeout()) == .none);
+}
+
+const partial_tail =
+    \\printf 'partial'; sleep 1.5; echo '{"control":"late"}'
+;
+
+const flood_tail =
+    \\i=0; while [ $i -lt 100 ]; do echo; i=$((i+1)); sleep 0.02; done; echo '{"control":"after"}'
+;
+
+const short_budget_ms: i64 = 400;
+const open_budget_ms: i64 = 15_000;
+const bounded_call_limit_ns: i64 = 30_000_000_000;
+
+const OwnedFrame = struct {
+    control: bool,
+    text: []u8,
+};
+
+const Reading = struct {
+    elapsed_ns: i64,
+    frame: ?OwnedFrame,
+
+    fn deinit(self: Reading, allocator: std.mem.Allocator) void {
+        if (self.frame) |frame| allocator.free(frame.text);
+    }
+};
+
+fn own(allocator: std.mem.Allocator, frame: ?Frame) !?OwnedFrame {
+    const seen = frame orelse return null;
+    return switch (seen) {
+        .control => |text| .{ .control = true, .text = try allocator.dupe(u8, text) },
+        .envelope => |text| .{ .control = false, .text = try allocator.dupe(u8, text) },
+    };
+}
+
+fn readUnder(client: *Client, budget: Budget) !Reading {
+    const started = std.Io.Clock.Timestamp.now(std.testing.io, .awake);
+    const frame = try client.nextBounded(budget);
+    const finished = std.Io.Clock.Timestamp.now(std.testing.io, .awake);
+    return .{
+        .elapsed_ns = @intCast(started.durationTo(finished).raw.nanoseconds),
+        .frame = try own(std.testing.allocator, frame),
+    };
+}
+
+fn stopChild(client: *Client) void {
+    _ = client.waitExit(300) catch {};
+}
+
+const Drain = struct {
+    elapsed_ns: i64,
+    reads: usize,
+    expired: bool,
+    frame: ?OwnedFrame,
+
+    fn deinit(self: Drain, allocator: std.mem.Allocator) void {
+        if (self.frame) |frame| allocator.free(frame.text);
+    }
+};
+
+fn drainUnder(client: *Client, budget: Budget) !Drain {
+    var elapsed: i64 = 0;
+    var reads: usize = 0;
+    while (budget.expired() == false and elapsed < bounded_call_limit_ns) {
+        const one = try readUnder(client, budget);
+        elapsed += one.elapsed_ns;
+        reads += 1;
+        if (one.frame) |owned| return .{ .elapsed_ns = elapsed, .reads = reads, .expired = budget.expired(), .frame = owned };
+        one.deinit(std.testing.allocator);
+    }
+    return .{ .elapsed_ns = elapsed, .reads = reads, .expired = budget.expired(), .frame = null };
+}
+
+test "a spent budget stops on the first buffered blank instead of draining the buffer" {
+    var client = Client.init(std.testing.allocator);
+    defer client.deinit();
+    try client.pending.appendNTimes(std.testing.allocator, '\n', 4096);
+
+    const spent: Budget = .{ .io = client.io(), .limit = std.Io.Clock.Timestamp.now(client.io(), .awake).subDuration(.{ .raw = .fromMilliseconds(5), .clock = .awake }) };
+    try std.testing.expect(spent.expired());
+
+    const frame = try client.nextBounded(spent);
+    try std.testing.expect(frame == null);
+    try std.testing.expect(client.pending.items.len > 0);
+}
+
+test "none, duration and deadline each read the same frame from one child" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var client = try Client.spawn(std.testing.allocator, .{ .command = "/bin/cat" });
+    defer client.deinit();
+    defer stopChild(&client);
+    const io = client.io();
+    const sent = "{\"protocol\":\"open-agent-protocol\",\"id\":\"q1\"}";
+
+    const shapes = [_]Budget{
+        Budget.unbounded(),
+        Budget.fromTimeout(
+            .{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(60000), .clock = .awake } },
+            io,
+        ),
+        Budget.fromTimeout(
+            .{ .deadline = std.Io.Clock.Timestamp.now(io, .awake).addDuration(.{ .raw = std.Io.Duration.fromMilliseconds(60000), .clock = .awake }) },
+            io,
+        ),
+    };
+
+    for (shapes) |budget| {
+        try client.write(sent);
+        var attempts: usize = 0;
+        var seen: ?Frame = null;
+        while (seen == null and attempts < 20) : (attempts += 1) {
+            seen = try client.nextBounded(budget);
+        }
+        try std.testing.expect(seen != null);
+        try std.testing.expect(seen.? == .envelope);
+        try std.testing.expectEqualStrings(sent, seen.?.envelope);
+    }
+
+    try std.testing.expect(shapes[0].limit == null);
+    try std.testing.expect(shapes[0].timeout() == .none);
+    try std.testing.expect(shapes[0].expired() == false);
+    try std.testing.expect(shapes[2].limit.?.clock == .awake);
+    try std.testing.expect(shapes[2].timeout() == .duration);
+}
+
+test "a complete frame already buffered is returned even when the budget is spent" {
+    var client = Client.init(std.testing.allocator);
+    defer client.deinit();
+    const sent = "{\"protocol\":\"open-agent-protocol\",\"id\":\"q1\"}";
+    try client.pending.appendSlice(std.testing.allocator, sent);
+    try client.pending.append(std.testing.allocator, '\n');
+
+    const spent: Budget = .{ .io = client.io(), .limit = std.Io.Clock.Timestamp.now(client.io(), .awake).subDuration(.{ .raw = .fromMilliseconds(5), .clock = .awake }) };
+    try std.testing.expect(spent.expired());
+
+    const frame = try client.nextBounded(spent);
+    try std.testing.expect(frame != null);
+    try std.testing.expect(frame.? == .envelope);
+    try std.testing.expectEqualStrings(sent, frame.?.envelope);
+}
+
+test "a short budget returns nothing on a partial line, and the same child then yields its frame" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var client = try Client.spawn(allocator, .{ .command = "/bin/sh", .args = &.{ "-c", partial_tail } });
+    defer client.deinit();
+    defer stopChild(&client);
+
+    const short = client.budget(short_budget_ms);
+    const drained = try drainUnder(&client, short);
+    defer drained.deinit(allocator);
+    try std.testing.expect(drained.frame == null);
+    try std.testing.expect(drained.expired);
+    try std.testing.expect(drained.reads > 0);
+    try std.testing.expect(drained.elapsed_ns < bounded_call_limit_ns);
+    try std.testing.expect(client.pending.items.len > 0);
+
+    const opened = try readUnder(&client, client.budget(open_budget_ms));
+    defer opened.deinit(allocator);
+    try std.testing.expect(opened.frame != null);
+    try std.testing.expect(opened.frame.?.control);
+    try std.testing.expectEqualStrings("partial{\"control\":\"late\"}", opened.frame.?.text);
+    try std.testing.expect(client.pending.items.len == 0);
+}
+
+test "a short budget returns nothing on a blank flood, and the same child then yields its frame" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var client = try Client.spawn(allocator, .{ .command = "/bin/sh", .args = &.{ "-c", flood_tail } });
+    defer client.deinit();
+    defer stopChild(&client);
+
+    const short = client.budget(short_budget_ms);
+    const drained = try drainUnder(&client, short);
+    defer drained.deinit(allocator);
+    try std.testing.expect(drained.frame == null);
+    try std.testing.expect(drained.expired);
+    try std.testing.expect(drained.reads > 0);
+    try std.testing.expect(drained.elapsed_ns < bounded_call_limit_ns);
+
+    const opened = try readUnder(&client, client.budget(open_budget_ms));
+    defer opened.deinit(allocator);
+    try std.testing.expect(opened.frame != null);
+    try std.testing.expect(opened.frame.?.control);
+    try std.testing.expectEqualStrings("{\"control\":\"after\"}", opened.frame.?.text);
 }

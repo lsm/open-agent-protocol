@@ -100,6 +100,49 @@ connections; an endpoint has exactly one consumer — the process holding the
 other end of the pipe — and it is already attached. Nothing can be missed, so
 nothing needs to be joined.
 
+## How a reader bounds a wait
+
+A reader on this binding has to answer one question on every call: how long
+may I wait for the endpoint to say something? The Zig reader takes that as a
+budget and normalises it once, up front, into an absolute deadline.
+
+The three shapes a caller can hand it mean the same thing and differ only in
+where the deadline comes from:
+
+- **no limit** — wait as long as it takes. There is no deadline, and the
+  reader reports that it is waiting without a bound rather than inventing one.
+- **a duration** — a relative allowance, turned once into an absolute stamp
+  when the budget is built, so a slow read cannot silently restart it.
+- **a deadline** — an absolute stamp the caller already computed, carried
+  through unchanged.
+
+Whatever the shape, the clock the caller chose is the clock the budget reads,
+and the remaining time is handed to each read as a duration on that same
+clock. The remainder is carried in nanoseconds and never rounded to
+milliseconds, so a sub-millisecond allowance is a very short wait rather than
+no wait at all.
+
+A read returns a frame as soon as one is available, and returns nothing when
+the budget is spent. Two rules follow from that and are worth stating
+separately, because both were wrong at some point:
+
+- **A budget bounds the wait; it does not extend it.** Each read inside a
+  budget is given only what is left. Re-deriving the full allowance per read
+  turns a bounded wait into an unbounded one, which is the failure this
+  shape exists to prevent.
+- **Data already in hand is delivered even once the budget is spent.** The
+  budget gates the *next* read, not frames that have already been read. A
+  complete line sitting in the buffer is returned even if the deadline passed
+  while the reader was descheduled, because discarding it would report a
+  silent endpoint for one that in fact answered. Blank lines carry no
+  information, so once the budget is spent they are dropped and the read
+  ends.
+
+The reader treats a read that wakes with no bytes as "nothing right now"
+rather than "nothing ever", so a bounded read can return before its deadline
+if the reader is woken without data. The deadline is therefore an upper bound
+on the wait, not a promise to use all of it.
+
 ## What ends a session, and the exit contract
 
 There is no `session.close.request` envelope in v0.1. On this binding the pipe

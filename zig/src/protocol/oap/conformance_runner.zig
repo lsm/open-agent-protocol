@@ -131,7 +131,13 @@ const Deadline = struct {
     }
 
     fn budget(self: Deadline) endpoint_client.Budget {
-        return .{ .io = self.io, .started = self.started, .budget_ms = self.budget_ms };
+        return .{
+            .io = self.io,
+            .limit = std.Io.Clock.Timestamp.now(self.io, .awake).addDuration(.{
+                .raw = .fromMilliseconds(@max(self.remainingMs(), 0)),
+                .clock = .awake,
+            }),
+        };
     }
 };
 
@@ -329,7 +335,12 @@ const Runner = struct {
 
     fn pullUntil(self: *Runner, deadline: Deadline) !void {
         while (true) {
-            const maybe = try self.client.next(deadline.budget());
+            if (try self.client.nextBuffered()) |frame| {
+                try self.keepFrame(frame);
+                return;
+            }
+            if (deadline.expired()) return error.ProbeBudgetExpired;
+            const maybe = try self.client.next(deadline.timeout());
             if (maybe) |frame| {
                 try self.keepFrame(frame);
                 return;
@@ -360,7 +371,8 @@ const Runner = struct {
     }
 
     fn drainBuffered(self: *Runner, deadline: Deadline) !bool {
-        const frame = try self.client.next(deadline.budget()) orelse return false;
+        _ = deadline;
+        const frame = try self.client.nextBuffered() orelse return false;
         self.keepFrame(frame) catch |err| return err;
         return true;
     }
@@ -400,7 +412,7 @@ const Runner = struct {
         while (true) {
             if (self.takeControl(id)) |found| return found;
             if (deadline.expired()) return error.ControlBudgetExpired;
-            const frame = self.client.next(deadline.budget()) catch |err| {
+            const frame = self.client.next(deadline.timeout()) catch |err| {
                 if (err == endpoint_client.Error.EndpointClosed) break;
                 return err;
             } orelse continue;
@@ -944,7 +956,7 @@ const Runner = struct {
     fn drain(self: *Runner, deadline: Deadline) !void {
         while (true) {
             if (deadline.expired()) return;
-            const frame = (self.client.next(deadline.budget()) catch |err| {
+            const frame = (self.client.next(deadline.timeout()) catch |err| {
                 if (err == endpoint_client.Error.EndpointClosed) return;
                 try self.fail("frames the endpoint writes after the run completes decode", @errorName(err));
                 return;
