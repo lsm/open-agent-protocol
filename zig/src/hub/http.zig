@@ -369,10 +369,160 @@ pub fn bodyAllowedFor(method: []const u8) bool {
     return !std.ascii.eqlIgnoreCase(method, "HEAD");
 }
 
+pub const media_refused = Refusal{
+    .status = "415 Unsupported Media Type",
+    .code = "unsupported_media_type",
+    .message = "a request with a body declares application/json; the daemon reads no other media type",
+};
+
 pub fn answer(allow: []const []const u8, request: Request) Answer {
     if (request.origin) return .{ .refusal = origin_refused };
     if (hostRefused(allow, request.host)) return .{ .refusal = host_refused };
+    if (carriesBody(request) and !declaresJson(request.content_type)) return .{ .refusal = media_refused };
     return .not_found;
+}
+
+pub fn carriesBody(request: Request) bool {
+    return request.content_length > 0;
+}
+
+pub fn declaresJson(content_type: ?[]const u8) bool {
+    const named = content_type orelse return false;
+    const media = std.mem.trim(u8, named, " \t");
+    const cut = std.mem.indexOfScalar(u8, media, ';') orelse media.len;
+    if (!std.ascii.eqlIgnoreCase(std.mem.trim(u8, media[0..cut], " \t"), "application/json")) return false;
+    return parametersWellFormed(media[cut..]);
+}
+
+const parameter_store_bytes = 2 * max_header_bytes;
+
+fn parametersWellFormed(parameters: []const u8) bool {
+    var store: [parameter_store_bytes]u8 = undefined;
+    var used: usize = 0;
+    var rest = std.mem.trim(u8, parameters, " \t");
+    while (true) {
+        rest = std.mem.trimStart(u8, rest, " \t");
+        if (rest.len == 0) return true;
+        if (rest[0] != ';') return false;
+        rest = std.mem.trimStart(u8, rest[1..], " \t");
+        if (rest.len == 0) return true;
+        if (rest[0] == ';') return false;
+        const name_end = std.mem.indexOfScalar(u8, rest, '=') orelse return false;
+        const name = std.mem.trim(u8, rest[0..name_end], " \t");
+        if (!isToken(name)) return false;
+        var after = std.mem.trimStart(u8, rest[name_end + 1 ..], " \t");
+        const entry = used;
+        if (entry + 4 + name.len >= store[0..].len) return false;
+        if (after.len > 0 and after[0] == '"') {
+            const closed = closingQuote(after) orelse return false;
+            const raw = after[1..closed];
+            if (entry + 4 + name.len + raw.len > store[0..].len) return false;
+            used = appendQuoted(store[0..], entry, name, raw);
+            after = std.mem.trim(u8, after[closed + 1 ..], " \t");
+            if (after.len != 0 and after[0] != ';') return false;
+        } else {
+            const next = std.mem.indexOfScalar(u8, after, ';') orelse after.len;
+            const value = std.mem.trim(u8, after[0..next], " \t");
+            if (!isToken(value)) return false;
+            if (entry + 4 + name.len + value.len > store[0..].len) return false;
+            used = appendToken(store[0..], entry, name, value);
+            after = after[next..];
+        }
+        if (entryHasConflict(store[0..used], entry, name)) return false;
+        const semi = std.mem.indexOfScalar(u8, after, ';') orelse after.len;
+        if (semi == after.len) {
+            if (std.mem.trim(u8, after, " \t").len != 0) return false;
+            return true;
+        }
+        rest = after[semi..];
+    }
+}
+
+fn writeHeader(store: []u8, entry: usize, name_len: usize, value_len: usize) void {
+    std.mem.writeInt(u16, store[entry..][0..2], @intCast(name_len), .big);
+    std.mem.writeInt(u16, store[entry + 2 ..][0..2], @intCast(value_len), .big);
+}
+
+fn appendToken(store: []u8, entry: usize, name: []const u8, value: []const u8) usize {
+    writeHeader(store, entry, name.len, value.len);
+    var cursor = entry + 4;
+    @memcpy(store[cursor..][0..name.len], name);
+    cursor += name.len;
+    @memcpy(store[cursor..][0..value.len], value);
+    return cursor + value.len;
+}
+
+fn escapeAt(raw: []const u8, at: usize) bool {
+    return raw[at] == '\\' and at + 1 < raw.len and isTspecial(raw[at + 1]);
+}
+
+fn isTspecial(byte: u8) bool {
+    return std.mem.indexOfScalar(u8, "()<>@,;:\\\"/[]?=", byte) != null;
+}
+
+fn appendQuoted(store: []u8, entry: usize, name: []const u8, raw: []const u8) usize {
+    var decoded: usize = 0;
+    var at: usize = 0;
+    while (at < raw.len) : (at += 1) {
+        if (escapeAt(raw, at)) at += 1;
+        decoded += 1;
+    }
+    writeHeader(store, entry, name.len, decoded);
+    var cursor = entry + 4;
+    @memcpy(store[cursor..][0..name.len], name);
+    cursor += name.len;
+    at = 0;
+    while (at < raw.len) : (at += 1) {
+        if (escapeAt(raw, at)) {
+            store[cursor] = raw[at + 1];
+            cursor += 1;
+            at += 1;
+            continue;
+        }
+        store[cursor] = raw[at];
+        cursor += 1;
+    }
+    return cursor;
+}
+
+fn entryHasConflict(store: []u8, entry: usize, name: []const u8) bool {
+    const this_value_len = std.mem.readInt(u16, store[entry + 2 ..][0..2], .big);
+    const this_value = store[entry + 4 + name.len ..][0..this_value_len];
+    var at: usize = 0;
+    while (at < entry) {
+        const prior_name_len = std.mem.readInt(u16, store[at..][0..2], .big);
+        const prior_value_len = std.mem.readInt(u16, store[at + 2 ..][0..2], .big);
+        const prior_name = store[at + 4 ..][0..prior_name_len];
+        const prior_value = store[at + 4 + prior_name_len ..][0..prior_value_len];
+        if (std.ascii.eqlIgnoreCase(prior_name, name) and
+            (prior_value_len != this_value.len or !std.mem.eql(u8, prior_value, this_value)))
+        {
+            return true;
+        }
+        at += 4 + prior_name_len + prior_value_len;
+    }
+    return false;
+}
+
+fn closingQuote(quoted: []const u8) ?usize {
+    var at: usize = 1;
+    while (at < quoted.len) : (at += 1) {
+        if (quoted[at] == '\\') {
+            at += 1;
+            continue;
+        }
+        if (quoted[at] == '"') return at;
+    }
+    return null;
+}
+
+fn isToken(text: []const u8) bool {
+    if (text.len == 0) return false;
+    for (text) |byte| {
+        if (std.ascii.isAlphanumeric(byte)) continue;
+        if (std.mem.indexOfScalar(u8, "!#$%&'*+-.^_`|~{}", byte) == null) return false;
+    }
+    return true;
 }
 
 pub fn writeAnswer(stream: *compat.net.Stream, arena: std.mem.Allocator, next_id: u64, given: Answer, body_allowed: bool) !void {
@@ -505,6 +655,211 @@ fn requestOver(raw: []const u8) !Request {
     defer pipe.close();
     try pipe.client.writeAll(raw);
     return readRequest(testing.allocator, &pipe.accepted, header_read_ms, idle_read_ms, test_cycle_ms, always_going, fresh());
+}
+
+test "a body must declare application/json, and only that" {
+    const loopback: []const []const u8 = &.{};
+
+    var wrong = try requestOver("POST /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\n{}");
+    defer wrong.deinit(testing.allocator);
+    try testing.expectEqualStrings("unsupported_media_type", answer(loopback, wrong).refusal.code);
+
+    var silent = try requestOver("POST /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Length: 2\r\n\r\n{}");
+    defer silent.deinit(testing.allocator);
+    try testing.expectEqualStrings("unsupported_media_type", answer(loopback, silent).refusal.code);
+
+    var right = try requestOver("POST /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}");
+    defer right.deinit(testing.allocator);
+    try testing.expectEqual(Answer.not_found, answer(loopback, right));
+}
+
+test "a charset is admitted, because application/json registers no parameters" {
+    const loopback: []const []const u8 = &.{};
+    for ([_][]const u8{ "utf-8", "utf8", "UTF-8", "latin1", "us-ascii", "not-a-charset" }) |charset| {
+        const raw = try std.fmt.allocPrint(testing.allocator, "POST /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: application/json; charset={s}\r\nContent-Length: 2\r\n\r\n{{}}", .{charset});
+        defer testing.allocator.free(raw);
+        var request = try requestOver(raw);
+        defer request.deinit(testing.allocator);
+        try testing.expectEqual(Answer.not_found, answer(loopback, request));
+    }
+    var spaced = try requestOver("POST /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type:  Application/JSON ; charset=utf-8\r\nContent-Length: 2\r\n\r\n{}");
+    defer spaced.deinit(testing.allocator);
+    var tabbed = try requestOver("POST /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type:\tapplication/json\t;\tcharset=utf-8\r\nContent-Length: 2\r\n\r\n{}");
+    defer tabbed.deinit(testing.allocator);
+    try testing.expectEqual(Answer.not_found, answer(loopback, tabbed));
+    try testing.expectEqual(Answer.not_found, answer(loopback, spaced));
+}
+
+test "a request with no body names no media type and is not refused for it" {
+    const loopback: []const []const u8 = &.{};
+    var listing = try requestOver("GET /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\n\r\n");
+    defer listing.deinit(testing.allocator);
+    try testing.expectEqual(Answer.not_found, answer(loopback, listing));
+}
+
+test "a parameter list that Go refuses is refused here too, and one it admits is admitted" {
+    const loopback: []const []const u8 = &.{};
+    for ([_][]const u8{
+        "application/json; charset",
+        "application/json; charset=",
+        "application/json; =utf-8",
+        "application/json; charset=utf-8; x",
+        "application/json; x=\"unterminated",
+        "application/json;;",
+        "application/json; ;",
+        "application/json;charset=\"utf-8\" junk; x=1",
+        "application/json; a=1; a=2",
+        "application/json; CHARSET=utf-8; charset=UTF-8",
+        "application/json; a=\"x\\\"y\"; a=\"x\\\\y\"",
+        "application/json; a=1; a=\"2\"",
+        "application/json; a=\"x\"; a=\"y\"",
+    }) |declared| {
+        const raw = try std.fmt.allocPrint(testing.allocator, "POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: {s}\r\nContent-Length: 2\r\n\r\n{{}}", .{declared});
+        defer testing.allocator.free(raw);
+        var request = try requestOver(raw);
+        defer request.deinit(testing.allocator);
+        try testing.expectEqualStrings("unsupported_media_type", answer(loopback, request).refusal.code);
+    }
+    for ([_][]const u8{
+        "application/json",
+        "application/json;",
+        "application/json ; charset=utf-8",
+        "application/json;charset=utf-8;x=1",
+        "application/json; charset=\"utf-8\"",
+        "application/json; charset =utf-8",
+        "application/json; charset= utf-8",
+        "application/json; charset=\"a\\\"b\"",
+        "application/json; charset=\"a;b\"",
+        "application/json; charset= \"utf-8\"",
+        "application/json; a=1; a=1",
+        "application/json; a=\"x\"; a=x",
+        "application/json; a=\"x\"; a=\"x\"",
+        "application/json; A=1; a=1",
+        "application/json; a=1; a=\"1\"",
+        "application/json; a=\"x\\\"y\"; a=\"x\\\"y\"",
+        "application/json; a={b}",
+        "application/json; a={b}; c=1",
+        "application/json; a=$b",
+        "application/json; a=^b",
+    }) |declared| {
+        const raw = try std.fmt.allocPrint(testing.allocator, "POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: {s}\r\nContent-Length: 2\r\n\r\n{{}}", .{declared});
+        defer testing.allocator.free(raw);
+        var request = try requestOver(raw);
+        defer request.deinit(testing.allocator);
+        try testing.expectEqual(Answer.not_found, answer(loopback, request));
+    }
+}
+
+test "sixty-five parameters and a long value are admitted, because the header bound is the limit" {
+    const loopback: []const []const u8 = &.{};
+    for ([_]usize{ 64, 65, 200 }) |count| {
+        var list: std.ArrayListUnmanaged(u8) = .empty;
+        defer list.deinit(testing.allocator);
+        try list.appendSlice(testing.allocator, "application/json");
+        for (0..count) |index| {
+            const piece = try std.fmt.allocPrint(testing.allocator, "; p{d}={d}", .{ index, index });
+            defer testing.allocator.free(piece);
+            try list.appendSlice(testing.allocator, piece);
+        }
+        const raw = try std.fmt.allocPrint(testing.allocator, "POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: {s}\r\nContent-Length: 2\r\n\r\n{{}}", .{list.items});
+        defer testing.allocator.free(raw);
+        var request = try requestOver(raw);
+        defer request.deinit(testing.allocator);
+        try testing.expectEqual(Answer.not_found, answer(loopback, request));
+    }
+    const long_value = "x" ** 2048;
+    const long_raw = try std.fmt.allocPrint(testing.allocator, "POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: application/json; a={s}\r\nContent-Length: 2\r\n\r\n{{}}", .{long_value});
+    defer testing.allocator.free(long_raw);
+    var long_request = try requestOver(long_raw);
+    defer long_request.deinit(testing.allocator);
+    try testing.expectEqual(Answer.not_found, answer(loopback, long_request));
+}
+
+test "a backslash is consumed only before a tspecial, which is what Go does" {
+    const loopback: []const []const u8 = &.{};
+    for ([_][]const u8{
+        "application/json; a=\"C:\\\\path\"; a=\"C:\\\\path\"",
+        "application/json; a=\"x\\\\qy\"; a=\"x\\\\qy\"",
+    }) |declared| {
+        const raw = try std.fmt.allocPrint(testing.allocator, "POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: {s}\r\nContent-Length: 2\r\n\r\n{{}}", .{declared});
+        defer testing.allocator.free(raw);
+        var request = try requestOver(raw);
+        defer request.deinit(testing.allocator);
+        try testing.expectEqual(Answer.not_found, answer(loopback, request));
+    }
+    for ([_][]const u8{
+        "application/json; a=\"C:\\\\path\\\\x\"; a=C:pathx",
+        "application/json; a=\"C:\\\\path\"; a=\"C:path\"",
+        "application/json; a=\"x\\\\qy\"; a=\"xqy\"",
+        "application/json; a=\"x\\\\1\"; a=\"x1\"",
+        "application/json; a=\"x\\\\\\\\\"; a=\"x\\\\\"",
+        "application/json; a=\"x\\\\\\\"\"; a=\"x\\\"\"",
+        "application/json; a=\"x\\\\ \"; a=\"x \"",
+        "application/json; a=\"x\\\\\\\"\"; a=x\\\"",
+        "application/json; a=\"a\\\\;b=c\"; a=\"a;b=c\"",
+    }) |declared| {
+        const raw = try std.fmt.allocPrint(testing.allocator, "POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: {s}\r\nContent-Length: 2\r\n\r\n{{}}", .{declared});
+        defer testing.allocator.free(raw);
+        var request = try requestOver(raw);
+        defer request.deinit(testing.allocator);
+        try testing.expectEqualStrings("unsupported_media_type", answer(loopback, request).refusal.code);
+    }
+}
+
+test "an empty parameter value is admitted quoted and refused bare, as Go does" {
+    const loopback: []const []const u8 = &.{};
+    const cases = [_]struct { declared: []const u8, refused: bool }{
+        .{ .declared = "application/json; a=\"\"", .refused = false },
+        .{ .declared = "application/json; a=\"\"; b=1", .refused = false },
+        .{ .declared = "application/json; a=; b=1", .refused = true },
+        .{ .declared = "application/json; a=; b=;", .refused = true },
+        .{ .declared = "application/json; a=; b=1; c=2", .refused = true },
+        .{ .declared = "application/json; a=;", .refused = true },
+        .{ .declared = "application/json; a=\"\" b=1", .refused = true },
+    };
+    for (cases) |case| {
+        const raw = try std.fmt.allocPrint(testing.allocator, "POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: {s}\r\nContent-Length: 2\r\n\r\n{{}}", .{case.declared});
+        defer testing.allocator.free(raw);
+        var request = try requestOver(raw);
+        defer request.deinit(testing.allocator);
+        if (case.refused) {
+            try testing.expectEqualStrings("unsupported_media_type", answer(loopback, request).refusal.code);
+        } else {
+            try testing.expectEqual(Answer.not_found, answer(loopback, request));
+        }
+    }
+}
+
+test "a zero-length body with a wrong media type is not gated, because the gate reads length" {
+    const loopback: []const []const u8 = &.{};
+    var posted = try requestOver("POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: text/plain\r\nContent-Length: 0\r\n\r\n");
+    defer posted.deinit(testing.allocator);
+    try testing.expect(!carriesBody(posted));
+    try testing.expectEqual(Answer.not_found, answer(loopback, posted));
+
+    var empty = try requestOver("POST /adapters/a/sessions HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: text/plain\r\n\r\n");
+    defer empty.deinit(testing.allocator);
+    try testing.expect(!carriesBody(empty));
+    try testing.expectEqual(Answer.not_found, answer(loopback, empty));
+
+    var closed = try requestOver("POST /sessions/s/close HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: text/plain\r\nContent-Length: 0\r\n\r\n");
+    defer closed.deinit(testing.allocator);
+    try testing.expect(!carriesBody(closed));
+    try testing.expectEqual(Answer.not_found, answer(loopback, closed));
+}
+
+test "a listing carrying a body with a wrong media type is gated, because the gate reads the head" {
+    const loopback: []const []const u8 = &.{};
+    var listing = try requestOver("GET /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nContent-Type: text/plain\r\nContent-Length: 4\r\n\r\nbody");
+    defer listing.deinit(testing.allocator);
+    try testing.expect(carriesBody(listing));
+    try testing.expectEqualStrings("unsupported_media_type", answer(loopback, listing).refusal.code);
+}
+
+test "the Origin refusal is still the one that comes first" {
+    var request = try requestOver("POST /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\nOrigin: http://elsewhere.test\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\n{}");
+    defer request.deinit(testing.allocator);
+    try testing.expectEqualStrings("cross_origin_request", answer(&.{}, request).refusal.code);
 }
 
 test "a HEAD request is read like any other, so the answer can be shaped from its method" {
@@ -1003,7 +1358,9 @@ test "a drain gives up rather than waiting on a peer that sends nothing more" {
     defer pipe.close();
     const started = compat.time.nowMillis();
     _ = drain(&pipe.accepted, 4096, always_going);
-    try testing.expect(compat.time.nowMillis() - started < 2000);
+    const spent = compat.time.nowMillis() - started;
+    const one_round_ms: u64 = @intCast(@max(drain_cycle_ms, 0));
+    try testing.expect(spent < 10 * one_round_ms);
 }
 
 test "a drain stops at its byte cap and reports what it consumed" {
@@ -1012,6 +1369,9 @@ test "a drain stops at its byte cap and reports what it consumed" {
     defer pipe.close();
     const wanted_cap: usize = 1024 * 1024;
     try testing.expectEqual(wanted_cap, drain_total_cap_bytes);
+    const wanted_round: usize = 64 * 1024;
+    try testing.expectEqual(wanted_round, drain_cap_bytes);
+    try testing.expectEqual(@as(i32, 50), drain_cycle_ms);
     const owed: usize = wanted_cap + 512 * 1024;
     var writer = try std.Thread.spawn(.{}, flood, .{ &pipe.client, owed });
     const spent = drain(&pipe.accepted, owed, always_going);
@@ -1062,6 +1422,67 @@ test "a drain reads on a long-lived process, because its budget is elapsed not u
     try testing.expect(up > @as(u64, @intCast(drain_total_ms)));
     try pipe.client.writeAll("v" ** 4096);
     try testing.expectEqual(@as(usize, 4096), drain(&pipe.accepted, 4096, always_going));
+}
+
+const spends_the_budget = struct {
+    client: *compat.net.Stream,
+    entered: u64 = 0,
+    entered_at: bool = false,
+    observed: u64 = 0,
+    buffered: usize = 0,
+    polls: usize = 0,
+    write_failed: bool = false,
+
+    fn budget() u64 {
+        return @as(u64, @intCast(@max(drain_total_ms, 0)));
+    }
+
+    fn check(context: *const anyopaque) bool {
+        const self: *@This() = @ptrCast(@alignCast(@constCast(context)));
+        self.polls += 1;
+        if (self.buffered != 0) return true;
+        var now = elapsedMs() catch return true;
+        if (!self.entered_at) {
+            self.entered_at = true;
+            self.entered = now;
+        }
+        while (now -| self.entered < budget()) {
+            compat.time.sleepMs(5);
+            now = elapsedMs() catch return true;
+        }
+        self.observed = now -| self.entered;
+        self.client.writeAll("q" ** 4096) catch {
+            self.write_failed = true;
+            return true;
+        };
+        self.buffered = 4096;
+        return true;
+    }
+};
+
+test "a drain whose elapsed budget is already spent consumes nothing, though the bytes are buffered and reachable" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var pipe = try Pipe.open();
+    defer pipe.close();
+    var spender = spends_the_budget{ .client = &pipe.client };
+    const keeping: KeepGoing = .{ .context = &spender, .check = spends_the_budget.check };
+    const spent = drain(&pipe.accepted, 8192, keeping);
+    try testing.expect(spender.observed >= spends_the_budget.budget());
+    try testing.expect(!spender.write_failed);
+    try testing.expectEqual(@as(usize, 4096), spender.buffered);
+    try testing.expectEqual(@as(usize, 0), spent);
+    try testing.expectEqual(@as(usize, 1), spender.polls);
+
+    const read_deadline = (elapsedMs() catch return error.TestUnexpectedResult) + 2000;
+    var scratch: [1024]u8 = undefined;
+    var queued: usize = 0;
+    while (queued < 4096) {
+        const n = readUntil(&pipe.accepted, scratch[0..], read_deadline, drain_cycle_ms, always_going) catch break;
+        if (n == 0) break;
+        for (scratch[0..n]) |byte| try testing.expectEqual(@as(u8, 'q'), byte);
+        queued += n;
+    }
+    try testing.expectEqual(@as(usize, 4096), queued);
 }
 
 const stop_after_one = struct {

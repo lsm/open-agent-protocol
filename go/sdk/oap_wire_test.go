@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -39,6 +40,14 @@ func runOAPHost() {
 			response.CapabilityRevision = "fake-rev-1"
 			fakeEmit(response)
 		case "provider.models.list.request":
+			if selected, ok := selectedCatalogSourceModel(); ok {
+				fakeEmit(oapFakeReply(request, "provider.models.list.response", map[string]any{"models": []map[string]any{selected}}))
+				break
+			}
+			if selected, ok := selectedCatalogLifecycleModel(); ok {
+				fakeEmit(oapFakeReply(request, "provider.models.list.response", map[string]any{"models": []map[string]any{selected}}))
+				break
+			}
 			fakeEmit(oapFakeReply(request, "provider.models.list.response", map[string]any{"models": []map[string]any{{
 				"model_ref": "fixture/other:test@ok", "model_id": "ok", "provider_id": "fixture", "wire": "other",
 				"auth_status": "authenticated", "lifecycle": "stable", "source": "fallback",
@@ -193,8 +202,8 @@ func TestOAPCombinedFakeHost(t *testing.T) {
 	if err != nil || len(models.Models) != 1 {
 		t.Fatalf("models: %v, %+v", err, models)
 	}
-	if models.Models[0].Source != SourceStaticFallback {
-		t.Fatalf("fallback source was not normalized: %q", models.Models[0].Source)
+	if models.Models[0].Source == nil || *models.Models[0].Source != SourceStaticFallback {
+		t.Fatalf("fallback source was not normalized: %v", models.Models[0].Source)
 	}
 	response, err := client.Provider.Complete(ctx, CompletionRequest{ModelRef: models.Models[0].ModelRef, Messages: []Message{UserMessage("hi")}})
 	if err != nil || response.Message.Text != "hello" {
@@ -313,4 +322,68 @@ func TestOAPCombinedHostWire(t *testing.T) {
 	if err != nil || len(providers) == 0 {
 		t.Fatalf("auth providers: %v, %+v", err, providers)
 	}
+}
+
+func selectedCatalogLifecycleModel() (map[string]any, bool) {
+	shape := ""
+	for _, entry := range os.Environ() {
+		if value, ok := strings.CutPrefix(entry, "OAPX_TEST_CATALOG_LIFECYCLE="); ok {
+			shape = value
+		}
+	}
+	if shape == "" {
+		return nil, false
+	}
+	model := map[string]any{
+		"model_ref": "fixture/other:lifecycle@" + shape, "model_id": shape, "provider_id": "fixture",
+		"wire": "other", "auth_status": "authenticated", "source": "fallback",
+		"capabilities": []string{"chat", "streaming"},
+	}
+	switch shape {
+	case "absent":
+	case "stable", "preview", "deprecated":
+		model["lifecycle"] = shape
+	case "invented":
+		model["lifecycle"] = "retired"
+	case "empty":
+		model["lifecycle"] = ""
+	case "null":
+		model["lifecycle"] = nil
+	case "wrong-type":
+		model["lifecycle"] = float64(7)
+	}
+	return model, true
+}
+
+func selectedCatalogSourceModel() (map[string]any, bool) {
+	shape := ""
+	for _, entry := range os.Environ() {
+		if value, ok := strings.CutPrefix(entry, "OAPX_TEST_CATALOG_SOURCE="); ok {
+			shape = value
+		}
+	}
+	if shape == "" {
+		return nil, false
+	}
+	model := map[string]any{
+		"model_ref": "fixture/other:source@" + shape, "model_id": shape, "provider_id": "fixture",
+		"wire": "other", "auth_status": "authenticated", "lifecycle": "stable",
+		"capabilities": []string{"chat", "streaming"},
+	}
+	switch shape {
+	case "absent":
+	case "discovered":
+		model["source"] = "discovered"
+	case "fallback":
+		model["source"] = "fallback"
+	case "invented":
+		model["source"] = "invented-source"
+	case "empty":
+		model["source"] = ""
+	case "null":
+		model["source"] = nil
+	case "wrong-type":
+		model["source"] = float64(7)
+	}
+	return model, true
 }

@@ -226,12 +226,12 @@ pub const ColorProfile = enum {
     };
 
     pub fn detect(hints: DetectionHints) ColorProfile {
-        if (comptime builtin.os.tag == .windows) {
-            return .true_color;
-        }
-
         if (hints.no_color) {
             return .ascii;
+        }
+
+        if (comptime builtin.os.tag == .windows) {
+            return .true_color;
         }
 
         if (std.mem.eql(u8, hints.color_term, "truecolor") or
@@ -261,10 +261,6 @@ pub const ColorProfile = enum {
 };
 
 pub fn hasDarkBackground(color_fg_bg: []const u8) bool {
-    if (comptime builtin.os.tag == .windows) {
-        return true;
-    }
-
     if (color_fg_bg.len > 0) {
         if (std.mem.lastIndexOfScalar(u8, color_fg_bg, ';')) |idx| {
             const bg_str = color_fg_bg[idx + 1 ..];

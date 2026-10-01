@@ -182,6 +182,8 @@ func assistantContentValue(a *AssistantContent, model Model, merged MergedCompat
 		return textPartArray(visibleThinkings(a.Parts))
 	case merged.RequiresThinkingAsText:
 		return jsonString("")
+	case shape.hasThinking:
+		return jsonString("")
 	default:
 		return jsonNull{}
 	}
@@ -444,7 +446,11 @@ func BuildRequestBody(model Model, ctx Context, options StreamOptions) []byte {
 	}
 	if options.ReasoningEffort != "" {
 		if model.Reasoning && merged.SupportsReasoningEffort {
-			body = body.with(member("reasoning_effort", jsonString(options.ReasoningEffort)))
+			effort := options.ReasoningEffort
+			if IsDeepSeekModel(model) {
+				effort = deepSeekEffort(effort)
+			}
+			body = body.with(member("reasoning_effort", jsonString(effort)))
 		}
 	}
 	if len(ctx.Tools) > 0 {
@@ -495,4 +501,14 @@ func toolChoiceValue(choice ToolChoice) (jsonValue, bool) {
 		}, true
 	}
 	return nil, false
+}
+
+func deepSeekEffort(effort string) string {
+	switch effort {
+	case "minimal", "low":
+		return "low"
+	case "max", "ultra":
+		return "max"
+	}
+	return "high"
 }

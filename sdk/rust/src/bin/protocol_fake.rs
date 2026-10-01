@@ -193,6 +193,19 @@ fn model_descriptor() -> Value {
         Some("invented") => model["source"] = json!("invented-source"),
         _ => {}
     }
+    match std::env::var("OAP_SDK_FAKE_LIFECYCLE").ok().as_deref() {
+        Some("absent") => {
+            model
+                .as_object_mut()
+                .expect("an object")
+                .remove("lifecycle");
+        }
+        Some("null") => model["lifecycle"] = Value::Null,
+        Some("number") => model["lifecycle"] = json!(7),
+        Some("invented") => model["lifecycle"] = json!("retired"),
+        Some("deprecated") => model["lifecycle"] = json!("deprecated"),
+        _ => {}
+    }
     model
 }
 

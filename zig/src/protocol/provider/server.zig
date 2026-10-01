@@ -5100,5 +5100,5 @@ fn streamRegistrationProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "handleStreamRequest leaks nothing when registration allocation fails" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, streamRegistrationProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, streamRegistrationProbe, .{});
 }

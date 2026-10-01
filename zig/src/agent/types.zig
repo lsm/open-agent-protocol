@@ -23,6 +23,24 @@ pub const AgentEndPayload = struct {
     }
 };
 
+pub const CompactionOutcome = enum { completed, cancelled, failed };
+
+pub const CompactionEndPayload = struct {
+    outcome: CompactionOutcome,
+    text: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+    transcript: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+    message: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+    messages_before: u64 = 0,
+    tokens_before: u64 = 0,
+    tokens_after: u64 = 0,
+
+    pub fn deinit(self: *CompactionEndPayload, allocator: std.mem.Allocator) void {
+        self.text.deinit(allocator);
+        self.transcript.deinit(allocator);
+        self.message.deinit(allocator);
+    }
+};
+
 pub const TurnEndPayload = struct {
     message: ai_types.AssistantMessage,
     tool_results: OwnedSlice(ai_types.ToolResultMessage) = OwnedSlice(ai_types.ToolResultMessage).initBorrowed(&.{}),
@@ -103,7 +121,7 @@ pub const ToolExecutionEndPayload = struct {
     tool_call_id: []const u8,
     tool_name: []const u8,
     result_json: []const u8,
-    content_json: []const u8 = "",
+    content_json: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
     is_error: bool,
     args_bytes: u64 = 0,
     raw_result_bytes: u64 = 0,
@@ -134,11 +152,16 @@ pub const AgentEvent = union(enum) {
     tool_execution_update: ToolExecutionUpdatePayload,
     tool_execution_end: ToolExecutionEndPayload,
 
+    compaction_start: void,
+    compaction_end: CompactionEndPayload,
+
     run_failed: AgentFailurePayload,
 
     pub fn deinit(self: *AgentEvent, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .message_update => |*payload| payload.deinit(allocator),
+            .compaction_end => |*payload| payload.deinit(allocator),
+            .tool_execution_end => |*payload| payload.content_json.deinit(allocator),
             .run_failed => |*payload| payload.deinit(allocator),
             else => {},
         }
@@ -166,16 +189,29 @@ pub const AgentToolResult = struct {
     details_json: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
     artifacts: OwnedSlice(ArtifactReference) = OwnedSlice(ArtifactReference).initBorrowed(&.{}),
     is_error: bool = false,
+    working_directory: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+    working_directory_observed: bool = false,
 
     pub fn getDetailsJson(self: *const AgentToolResult) ?[]const u8 {
         const details = self.details_json.slice();
         return if (details.len > 0) details else null;
     }
 
+    pub fn workingDirectory(self: *const AgentToolResult) ?[]const u8 {
+        const directory = self.working_directory.slice();
+        return if (directory.len > 0) directory else null;
+    }
+
+    pub fn observedWorkingDirectory(self: *const AgentToolResult) ?[]const u8 {
+        if (!self.working_directory_observed) return null;
+        return self.workingDirectory();
+    }
+
     pub fn deinit(self: *AgentToolResult, allocator: std.mem.Allocator) void {
         self.content.deinit(allocator);
         self.details_json.deinit(allocator);
         self.artifacts.deinit(allocator);
+        self.working_directory.deinit(allocator);
     }
 };
 
@@ -353,6 +389,12 @@ pub const GetSteeringMessagesFn = *const fn (
     allocator: std.mem.Allocator,
 ) anyerror!?[]const ai_types.Message;
 
+pub const CompactBetweenTurnsFn = *const fn (
+    ctx: ?*anyopaque,
+    context: *AgentContext,
+    event_stream: *AgentEventStream,
+) anyerror!bool;
+
 pub const GetFollowUpMessagesFn = *const fn (
     ctx: ?*anyopaque,
     allocator: std.mem.Allocator,
@@ -384,6 +426,7 @@ pub const AgentLoopConfig = struct {
 
     temperature: ?f32 = null,
     max_tokens: ?u32 = null,
+    raise_max_tokens_on_cut_off: bool = false,
     api_key: ?[]const u8 = null,
     cancel_token: ?ai_types.CancelToken = null,
     thinking_level: ai_types.ThinkingLevel = .minimal,
@@ -399,6 +442,8 @@ pub const AgentLoopConfig = struct {
     get_steering_messages_ctx: ?*anyopaque = null,
     get_follow_up_messages_fn: ?GetFollowUpMessagesFn = null,
     get_follow_up_messages_ctx: ?*anyopaque = null,
+    compact_between_turns_fn: ?CompactBetweenTurnsFn = null,
+    compact_between_turns_ctx: ?*anyopaque = null,
     convert_to_llm_fn: ?ConvertToLlmFn = null,
     convert_to_llm_ctx: ?*anyopaque = null,
     get_api_key_fn: ?GetApiKeyFn = null,
@@ -486,6 +531,7 @@ pub const AgentState = struct {
 };
 
 pub const AgentLoopResult = struct {
+    pub const Retention = StreamRetention;
     messages: OwnedSlice(ai_types.Message),
     final_message: ai_types.AssistantMessage,
     iterations: u32,
@@ -495,6 +541,42 @@ pub const AgentLoopResult = struct {
         self.messages.deinit(allocator);
         var final = self.final_message;
         final.deinit(allocator);
+    }
+};
+
+pub const StreamRetention = struct {
+    allocator: std.mem.Allocator,
+    parked: [3]?ai_types.AssistantMessage = .{ null, null, null },
+    result: ?AgentLoopResult = null,
+
+    pub fn init(allocator: std.mem.Allocator) StreamRetention {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn park(self: *StreamRetention, message: ai_types.AssistantMessage) void {
+        for (&self.parked) |*slot| {
+            if (slot.* == null) {
+                slot.* = message;
+                return;
+            }
+        }
+        unreachable;
+    }
+
+    pub fn retainResult(self: *StreamRetention, result: AgentLoopResult) void {
+        self.result = result;
+    }
+
+    pub fn deinit(self: *StreamRetention) void {
+        for (&self.parked) |*slot| {
+            if (slot.*) |*message| message.deinit(self.allocator);
+            slot.* = null;
+        }
+        if (self.result) |result| {
+            var owned = result;
+            owned.deinit(self.allocator);
+            self.result = null;
+        }
     }
 };
 

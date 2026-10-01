@@ -520,7 +520,7 @@ func TestTextOnlyPartsAreJoinedWithANewlineWhenThereAreNoImages(t *testing.T) {
 	}
 }
 
-func TestAnAssistantWithThinkingAsTextWritesItInsideTheContentArray(t *testing.T) {
+func TestADeepSeekAssistantPassesItsReasoningBackAsReasoningContent(t *testing.T) {
 	model := loopbackModel()
 	model.BaseURL = "https://api.deepseek.com"
 	ctx := Context{Messages: []Message{{Assistant: &AssistantContent{API: "openai-completions", Provider: "local", Model: "local-model", Parts: []ContentPart{
@@ -528,8 +528,111 @@ func TestAnAssistantWithThinkingAsTextWritesItInsideTheContentArray(t *testing.T
 		{Text: &TextPart{Text: "answer"}},
 	}}}}}
 	got := messages(t, BuildRequestBody(model, ctx, StreamOptions{}))[0].(map[string]any)
+	if got["reasoning_content"] != "step" {
+		t.Errorf("reasoning_content = %v, want the thinking passed back as reasoning", got["reasoning_content"])
+	}
+	parts := got["content"].([]any)
+	if len(parts) != 1 || parts[0].(map[string]any)["text"] != "answer" {
+		t.Errorf("content = %v, want only the answer", parts)
+	}
+}
+
+func TestAReplyHoldingOnlyReasoningKeepsItsReasoningAndStillHasContent(t *testing.T) {
+	model := loopbackModel()
+	model.BaseURL = "https://api.deepseek.com"
+	ctx := Context{Messages: []Message{{Assistant: &AssistantContent{API: "openai-completions", Provider: "local", Model: "local-model", Parts: []ContentPart{
+		{Thinking: &ThinkingPart{Thinking: "the plan, written as reasoning"}},
+	}}}}}
+	got := messages(t, BuildRequestBody(model, ctx, StreamOptions{}))[0].(map[string]any)
+	if got["reasoning_content"] != "the plan, written as reasoning" {
+		t.Errorf("reasoning_content = %v, want the reasoning kept as reasoning", got["reasoning_content"])
+	}
+	if got["content"] != "" {
+		t.Errorf("content = %v, want an empty string, since deepseek refuses a message with neither content nor tool calls", got["content"])
+	}
+}
+
+func TestAReasoningOnlyReplyKeepsItsReasoningOnARequestCarryingTools(t *testing.T) {
+	model := loopbackModel()
+	model.BaseURL = "https://api.deepseek.com"
+	ctx := Context{
+		Messages: []Message{{Assistant: &AssistantContent{API: "openai-completions", Provider: "local", Model: "local-model", Parts: []ContentPart{
+			{Thinking: &ThinkingPart{Thinking: "weighing the options"}},
+		}}}},
+		Tools: []Tool{{Name: "lookup", Description: "d", Parameters: json.RawMessage(`{"type":"object"}`)}},
+	}
+	got := messages(t, BuildRequestBody(model, ctx, StreamOptions{}))[0].(map[string]any)
+	if got["reasoning_content"] != "weighing the options" {
+		t.Errorf("reasoning_content = %v, want the reasoning kept, since deepseek requires all prior reasoning on a request carrying tools", got["reasoning_content"])
+	}
+	if got["content"] != "" {
+		t.Errorf("content = %v, want an empty string, so the message is not left with neither content nor tool calls", got["content"])
+	}
+}
+
+func TestAReasoningReplyBesideTextAndAToolCallIsUnchanged(t *testing.T) {
+	model := loopbackModel()
+	model.BaseURL = "https://api.deepseek.com"
+	ctx := Context{Messages: []Message{{Assistant: &AssistantContent{API: "openai-completions", Provider: "local", Model: "local-model", Parts: []ContentPart{
+		{Thinking: &ThinkingPart{Thinking: "deciding"}},
+		{Text: &TextPart{Text: "answer"}},
+		{ToolCall: &ToolCall{ID: "call_1", Name: "lookup", Arguments: "{}"}},
+	}}}}}
+	got := messages(t, BuildRequestBody(model, ctx, StreamOptions{}))[0].(map[string]any)
+	if got["reasoning_content"] != "deciding" {
+		t.Errorf("reasoning_content = %v, want the reasoning beside the answer", got["reasoning_content"])
+	}
+	parts, ok := got["content"].([]any)
+	if !ok || len(parts) != 1 || parts[0].(map[string]any)["text"] != "answer" {
+		t.Errorf("content = %v, want only the answer, not the reasoning folded in", got["content"])
+	}
+	if _, ok := got["tool_calls"]; !ok {
+		t.Errorf("the tool call is dropped: %v", got)
+	}
+}
+
+func TestAModelThatAsksForItsThinkingAsTextStillGetsItInsideTheContent(t *testing.T) {
+	model := loopbackModel()
+	model.BaseURL = "https://api.deepseek.com"
+	model.Compat = CompatOptions{RequiresThinkingAsText: boolPtr(true)}
+	ctx := Context{
+		Messages: []Message{{Assistant: &AssistantContent{API: "openai-completions", Provider: "local", Model: "local-model", Parts: []ContentPart{
+			{Thinking: &ThinkingPart{Thinking: "only reasoning here"}},
+		}}}},
+		Tools: []Tool{{Name: "lookup", Description: "d", Parameters: json.RawMessage(`{"type":"object"}`)}},
+	}
+	got := messages(t, BuildRequestBody(model, ctx, StreamOptions{}))[0].(map[string]any)
 	if _, ok := got["reasoning_content"]; ok {
-		t.Errorf("deepseek wants the thinking as text, so there is no separate member: %v", got)
+		t.Errorf("the model declared that it takes its thinking as text, so there is no separate member: %v", got)
+	}
+	parts, ok := got["content"].([]any)
+	if !ok || len(parts) != 1 || parts[0].(map[string]any)["text"] != "only reasoning here" {
+		t.Errorf("content = %v, want the reasoning as the only content part, even on a request carrying tools", got["content"])
+	}
+}
+
+func TestADeepSeekRequestSendsOneOfItsDocumentedEfforts(t *testing.T) {
+	model := loopbackModel()
+	model.BaseURL = "https://api.deepseek.com"
+	model.Reasoning = true
+	for level, sent := range map[string]string{"minimal": "low", "low": "low", "medium": "high", "high": "high", "xhigh": "high", "max": "max", "ultra": "max"} {
+		got := decode(t, BuildRequestBody(model, Context{}, StreamOptions{ReasoningEffort: level}))
+		if got["reasoning_effort"] != sent {
+			t.Errorf("level %q sent %v, want %q", level, got["reasoning_effort"], sent)
+		}
+	}
+}
+
+func TestAnAssistantWithThinkingAsTextWritesItInsideTheContentArray(t *testing.T) {
+	model := loopbackModel()
+	model.Compat = CompatOptions{RequiresThinkingAsText: boolPtr(true)}
+	ctx := Context{Messages: []Message{{Assistant: &AssistantContent{API: "openai-completions", Provider: "local", Model: "local-model", Parts: []ContentPart{
+		{Thinking: &ThinkingPart{Thinking: "step"}},
+		{Text: &TextPart{Text: "answer"}},
+	}}}}}
+	got := messages(t, BuildRequestBody(model, ctx, StreamOptions{}))[0].(map[string]any)
+	if _, ok := got["reasoning_content"]; ok {
+		t.Errorf("the model asks for its thinking as text, so there is no separate member: %v", got)
 	}
 	parts := got["content"].([]any)
 	if len(parts) != 2 {
@@ -574,4 +677,108 @@ func TestAnEmptyToolSchemaBecomesAnEmptyObject(t *testing.T) {
 	if _, ok := parsed["parameters"].(map[string]any); !ok {
 		t.Errorf("parameters = %v, want an empty object rather than nothing", parsed["parameters"])
 	}
+}
+
+func TestDeepSeekEffortMappingFollowsIdentityBehindANonVendorProxy(t *testing.T) {
+	proxied := openAIModel()
+	proxied.Provider = "deepseek"
+	proxied.BaseURL = "https://gateway.corp/v1"
+	proxied.HasBaseURL = true
+	proxied.Reasoning = true
+	body := decode(t, BuildRequestBody(proxied, Context{}, StreamOptions{ReasoningEffort: "minimal"}))
+	if got := body["reasoning_effort"]; got != "low" {
+		t.Fatalf("reasoning_effort = %v, want \"low\": a deepseek model behind a proxy must still get the deepseek mapping", got)
+	}
+
+}
+
+func TestDeepSeekEffortMappingMatchesTheDocumentedTable(t *testing.T) {
+	for _, want := range []struct {
+		requested string
+		actual    string
+	}{
+		{"minimal", "low"},
+		{"low", "low"},
+		{"medium", "high"},
+		{"high", "high"},
+		{"xhigh", "high"},
+		{"max", "max"},
+		{"ultra", "max"},
+	} {
+		if got := deepSeekEffort(want.requested); got != want.actual {
+			t.Errorf("deepSeekEffort(%q) = %q, want %q", want.requested, got, want.actual)
+		}
+	}
+}
+
+func TestDeepSeekPublicEffortOptionsMapToTheWireValue(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		requested string
+		want      any
+	}{
+		{"documented low stays low", "low", "low"},
+		{"documented medium becomes high", "medium", "high"},
+		{"documented high stays high", "high", "high"},
+		{"documented xhigh becomes high not max", "xhigh", "high"},
+		{"documented max stays max", "max", "max"},
+		{"documented ultra becomes max", "ultra", "max"},
+		{"an absent effort writes no field", "", nil},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			model := openAIModel()
+			model.Provider = "deepseek"
+			model.BaseURL = "https://gateway.corp/v1"
+			model.HasBaseURL = true
+			model.Reasoning = true
+			body := decode(t, BuildRequestBody(model, Context{}, StreamOptions{ReasoningEffort: testCase.requested}))
+			got, present := body["reasoning_effort"]
+			if testCase.want == nil {
+				if present {
+					t.Fatalf("an absent effort wrote reasoning_effort=%v, want the field omitted", got)
+				}
+				return
+			}
+			if !present || got != testCase.want {
+				t.Fatalf("reasoning_effort = %v (present=%v), want %v", got, present, testCase.want)
+			}
+		})
+	}
+}
+
+func TestDeepSeekCompanionBehaviourRecord(t *testing.T) {
+	t.Run("identity is additive and never removes an existing host match", func(t *testing.T) {
+		if !IsDeepSeekModel(Model{BaseURL: "https://api.deepseek.com/v1", HasBaseURL: true}) {
+			t.Error("the host match that existed before this change is gone")
+		}
+		if !IsDeepSeekModel(Model{Provider: "deepseek", BaseURL: "https://gateway.corp/v1", HasBaseURL: true}) {
+			t.Error("a configured deepseek identity behind a non-vendor proxy is not recognised")
+		}
+		if IsDeepSeekModel(Model{Provider: "openai", BaseURL: "https://gateway.corp/v1", HasBaseURL: true}) {
+			t.Error("an unrelated vendor on an unrelated host is treated as deepseek")
+		}
+	})
+
+	t.Run("a proxied deepseek reasoning model reaches the wire with its effort", func(t *testing.T) {
+		model := openAIModel()
+		model.Provider = "deepseek"
+		model.BaseURL = "https://gateway.corp/v1"
+		model.HasBaseURL = true
+		model.Reasoning = true
+		if !MergeCompat(model).SupportsReasoningEffort {
+			t.Fatal("the capability is false, so no reasoning_effort is written at all")
+		}
+		if got := decode(t, BuildRequestBody(model, Context{}, StreamOptions{ReasoningEffort: "high"}))["reasoning_effort"]; got != "high" {
+			t.Fatalf("reasoning_effort = %v, want high", got)
+		}
+	})
+
+	t.Run("absence stays distinguishable from a value", func(t *testing.T) {
+		model := openAIModel()
+		model.Provider = "deepseek"
+		model.Reasoning = true
+		if _, present := decode(t, BuildRequestBody(model, Context{}, StreamOptions{}))["reasoning_effort"]; present {
+			t.Error("an absent effort wrote a field")
+		}
+	})
 }

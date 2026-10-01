@@ -2487,7 +2487,7 @@ fn detailsUnderFailure(arena: std.mem.Allocator) !void {
 }
 
 test "a refusal detail that cannot be put releases the map it had already grown" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, detailsUnderFailure, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, detailsUnderFailure, .{});
 }
 
 test "a refusal detail borrows its key and value rather than copying them" {

@@ -171,7 +171,7 @@ fn runtimeModelsFoldProbe(allocator: std.mem.Allocator) !void {
 
 test "runtime models fold the catalog's default alias into the fallback and keep one owner per model" {
     try runtimeModelsFoldProbe(std.testing.allocator);
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, runtimeModelsFoldProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, runtimeModelsFoldProbe, .{});
 }
 
 fn isDatedVariantOf(id: []const u8, base: []const u8) bool {
@@ -204,6 +204,7 @@ test "App loginStatusFor reports stored, environment and expired credentials" {
     } });
 
     try std.testing.expectEqual(App.LoginStatus.api_key, App.loginStatusFor(&storage, "kimi", false));
+    try std.testing.expectEqual(App.LoginStatus.env_key, App.loginStatusFor(&storage, "kimi", true));
     try std.testing.expectEqual(App.LoginStatus.oauth, App.loginStatusFor(&storage, "anthropic", false));
     try std.testing.expectEqual(App.LoginStatus.env_key, App.loginStatusFor(null, "anthropic", true));
     try std.testing.expectEqual(App.LoginStatus.none, App.loginStatusFor(null, "kimi", false));
@@ -576,7 +577,7 @@ fn refreshGitBranchProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "gitHeadLabel survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, refreshGitBranchProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, refreshGitBranchProbe, .{});
 }
 
 test "collapseHome shortens the home directory only on a path component boundary" {
@@ -599,7 +600,7 @@ fn collapseHomeProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "collapseHome survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, collapseHomeProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, collapseHomeProbe, .{});
 }
 
 test "Context requestClearScreen discards history queued before the request" {
@@ -623,8 +624,8 @@ test "TuiModel login picker shows which providers are logged in" {
     defer tctx.deinit();
     tctx.ctx.width = 80;
     tctx.ctx.height = 24;
-    model.app.?.login_status[0] = .oauth;
-    model.app.?.login_status[3] = .api_key;
+    model.app.?.login_status[App.loginProviderCatalogIndex("anthropic").?] = .oauth;
+    model.app.?.login_status[App.loginProviderCatalogIndex("kimi").?] = .api_key;
     model.app.?.state.mode = .picker;
     model.app.?.state.picker_kind = .login;
 
@@ -729,6 +730,7 @@ pub const ProductionRuntime = struct {
             .permission_engine = &self.permission_engine,
             .workspace_root = self.permission_engine.workspace_root,
             .context_window = self.context_window,
+            .output = agentOutput(self.mode_settings.output),
             .run_async = true,
             .compact_output = self.mode_settings.compact_output,
             .auto_worktree = self.mode_settings.auto_worktree,
@@ -941,7 +943,7 @@ pub const App = struct {
     last_view_height: usize = 8,
     inline_history_flushed: usize = 0,
     inline_flushed_rows: usize = 0,
-    login_status: [login_providers.len]LoginStatus = [_]LoginStatus{.none} ** login_providers.len,
+    login_status: [provider_catalog.all.len]LoginStatus = [_]LoginStatus{.none} ** provider_catalog.all.len,
     pending_session_reset: bool = false,
     quarantine_events: bool = false,
     quarantine_generation: u32 = 0,
@@ -964,6 +966,7 @@ pub const App = struct {
     compaction_just_ended: ?bool = null,
     session_title: []u8 = &.{},
     session_title_generated: bool = false,
+    session_title_renamed: bool = false,
     first_user_text: []u8 = &.{},
     title_session_id: []u8 = &.{},
     run_error_text: []u8 = &.{},
@@ -1149,6 +1152,7 @@ pub const App = struct {
             .agent_end => |payload| return payload.reason == .completed,
             .compaction_end => |payload| {
                 if (payload.outcome == .completed) try self.recordCompactionTranscript(payload.transcript.slice());
+                if (payload.in_run) return false;
                 self.compaction_just_ended = payload.outcome == .completed;
                 return true;
             },
@@ -1160,6 +1164,12 @@ pub const App = struct {
         if (self.session_id.len > 0) return;
         self.session_id = generateSessionId(self.allocator) catch try self.allocator.dupe(u8, "default");
         try self.state.status.setSessionId(self.allocator, self.session_id);
+        try self.giveRuntimeSessionId();
+    }
+
+    fn giveRuntimeSessionId(self: *App) !void {
+        const runtime = self.runtime orelse return;
+        try runtime.setSessionId(self.session_id);
     }
 
     pub fn loadSessions(self: *App) !void {
@@ -1362,6 +1372,11 @@ pub const App = struct {
         self.inline_flushed_rows = 0;
         if (self.session_id.len > 0) self.allocator.free(self.session_id);
         self.session_id = new_session_id;
+        try self.giveRuntimeSessionId();
+        if (loaded.metadata.thinking_level) |level| {
+            runtime.setThinkingLevel(level);
+            self.state.thinking_level = runtime.thinkingLevel();
+        }
         try self.restoreCompactionTranscripts(store, &loaded);
         try self.state.status.setSessionId(self.allocator, self.session_id);
         if (runtime.currentModel()) |model| {
@@ -1394,17 +1409,66 @@ pub const App = struct {
         self.saveSessionIndex(store);
     }
 
-    const login_providers = [_][]const u8{ "anthropic", "github-copilot", "openai-codex", "kimi" };
-    const login_env_keys = [_][]const []const u8{
-        provider_catalog.credentialEnv("anthropic"),
-        provider_catalog.credentialEnv("github-copilot"),
-        provider_catalog.credentialEnv("openai-codex"),
-        provider_catalog.credentialEnv("kimi"),
-    };
+    fn loginDiscoveryAvailable(id: []const u8) bool {
+        return model_catalog.supportsCatalogModelDiscovery(id);
+    }
+
+    fn loginProviderGroupLabel(row: provider_catalog.Provider) []const u8 {
+        if (provider_catalog.sharesCredentialEnv(row.id) and row.credential_env.len > 0) return row.credential_env[0];
+        return row.display_name orelse row.id;
+    }
+
+    fn supportsLogin(row: provider_catalog.Provider) bool {
+        for (row.auth) |kind| {
+            if (kind == .api_key or kind == .oauth) return true;
+        }
+        return false;
+    }
+
+    fn hasEarlierSharedCredential(index: usize) bool {
+        const row = provider_catalog.all[index];
+        for (provider_catalog.all[0..index]) |earlier| {
+            for (row.credential_env) |name| {
+                for (earlier.credential_env) |earlier_name| {
+                    if (std.mem.eql(u8, name, earlier_name)) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    fn loginProviderCount() usize {
+        var count: usize = 0;
+        for (provider_catalog.all, 0..) |row, index| {
+            if (supportsLogin(row) and !hasEarlierSharedCredential(index)) count += 1;
+        }
+        return count;
+    }
+
+    fn loginProviderAt(index: usize) ?provider_catalog.Provider {
+        var visible_index: usize = 0;
+        for (0..2) |availability_pass| {
+            for (provider_catalog.all, 0..) |row, catalog_index| {
+                if (!supportsLogin(row) or hasEarlierSharedCredential(catalog_index)) continue;
+                if (loginDiscoveryAvailable(row.id) != (availability_pass == 0)) continue;
+                if (visible_index == index) return row;
+                visible_index += 1;
+            }
+        }
+        return null;
+    }
+
+    fn loginProviderCatalogIndex(provider_id: []const u8) ?usize {
+        for (provider_catalog.all, 0..) |row, index| {
+            if (std.mem.eql(u8, row.id, provider_id)) return index;
+        }
+        return null;
+    }
 
     pub const LoginStatus = enum { none, api_key, env_key, oauth, expired };
 
     pub fn loginStatusFor(storage: ?*const oauth_storage.AuthStorage, provider_id: []const u8, env_key_present: bool) LoginStatus {
+        if (env_key_present) return .env_key;
         if (storage) |stored| {
             if (stored.providers.get(provider_id)) |auth| {
                 return switch (auth) {
@@ -1413,7 +1477,7 @@ pub const App = struct {
                 };
             }
         }
-        return if (env_key_present) .env_key else .none;
+        return .none;
     }
 
     pub fn loginBadge(status: LoginStatus) ?[]const u8 {
@@ -1430,37 +1494,52 @@ pub const App = struct {
         var loaded: ?oauth_storage.AuthStorage = oauth_storage.AuthStorage.loadDefaultStoredOnly(self.allocator) catch null;
         defer if (loaded) |*storage| storage.deinit();
         const storage: ?*const oauth_storage.AuthStorage = if (loaded) |*stored| stored else null;
-        for (login_providers, 0..) |provider, i| {
+        for (provider_catalog.all, 0..) |provider, i| {
             var env_present = false;
-            for (login_env_keys[i]) |name| {
+            for (provider.credential_env) |name| {
                 if (compat.getEnvVarOwned(self.allocator, name)) |value| {
                     env_present = env_present or value.len > 0;
                     self.allocator.free(value);
                 } else |_| {}
             }
-            self.login_status[i] = loginStatusFor(storage, provider, env_present);
+            self.login_status[i] = loginStatusFor(storage, provider.id, env_present);
         }
     }
 
     const permission_modes = [_]tui_runtime.PermissionMode{ .bypass, .ask };
 
-    fn loginProviderEnum(idx: usize) tui_login.Provider {
-        return switch (idx) {
-            0 => .anthropic,
-            1 => .github_copilot,
-            2 => .openai_codex,
-            3 => .kimi,
-            else => .anthropic,
-        };
+    fn startCatalogLogin(self: *App, provider_id: []const u8) !*tui_login.LoginSession {
+        if (std.mem.eql(u8, provider_id, "anthropic")) return tui_login.LoginSession.start(self.allocator, .anthropic);
+        if (std.mem.eql(u8, provider_id, "github-copilot")) return tui_login.LoginSession.start(self.allocator, .github_copilot);
+        if (std.mem.eql(u8, provider_id, "openai-codex")) return tui_login.LoginSession.start(self.allocator, .openai_codex);
+        if (std.mem.eql(u8, provider_id, "kimi")) return tui_login.LoginSession.start(self.allocator, .kimi);
+        return tui_login.LoginSession.startApiKey(self.allocator, provider_id);
+    }
+
+    fn startCatalogLoginProvider(self: *App, provider_id: []const u8) !void {
+        const row = provider_catalog.provider(provider_id) orelse return error.UnknownLoginProvider;
+        for (row.auth) |kind| {
+            if (kind == .oauth) return error.UnsupportedOAuthProvider;
+        }
+        try self.startCustomLogin(provider_id);
     }
 
     fn loginProviderIndex(provider_id: []const u8) ?usize {
-        for (login_providers, 0..) |provider, idx| {
-            if (std.mem.eql(u8, provider_id, provider)) return idx;
+        for (0..loginProviderCount()) |index| {
+            const row = loginProviderAt(index) orelse continue;
+            if (std.mem.eql(u8, provider_id, row.id)) return index;
+            if (std.mem.eql(u8, row.id, "openai-codex") and (std.mem.eql(u8, provider_id, "codex") or std.mem.eql(u8, provider_id, "openai"))) return index;
+            if (std.mem.eql(u8, row.id, "github-copilot") and std.mem.eql(u8, provider_id, "github")) return index;
+            if (std.mem.eql(u8, row.id, "kimi") and std.mem.eql(u8, provider_id, "moonshot")) return index;
+            if (provider_catalog.sharesCredentialEnv(row.id)) {
+                const target = provider_catalog.provider(provider_id) orelse continue;
+                for (row.credential_env) |name| {
+                    for (target.credential_env) |target_name| {
+                        if (std.mem.eql(u8, name, target_name)) return index;
+                    }
+                }
+            }
         }
-        if (std.mem.eql(u8, provider_id, "codex") or std.mem.eql(u8, provider_id, "openai")) return 2;
-        if (std.mem.eql(u8, provider_id, "github")) return 1;
-        if (std.mem.eql(u8, provider_id, "moonshot")) return 3;
         return null;
     }
 
@@ -1499,7 +1578,7 @@ pub const App = struct {
     fn pickerSourceCount(self: *const App) usize {
         return switch (self.state.picker_kind) {
             .model => if (self.runtime) |runtime| runtime.availableModels().len else 0,
-            .login => login_providers.len,
+            .login => loginProviderCount(),
             .permission => permission_modes.len,
             .settings => 2,
         };
@@ -1512,7 +1591,11 @@ pub const App = struct {
                 const is_current = if (current) |active| std.mem.eql(u8, active.id, model.id) else false;
                 break :model_item .{ .label = model.id, .detail = model.provider, .badge = if (is_current) tui_theme.glyph.system ++ " current" else null };
             } else .{ .label = "" },
-            .login => .{ .label = login_providers[index], .badge = loginBadge(self.login_status[index]) },
+            .login => if (loginProviderAt(index)) |row| .{
+                .label = loginProviderGroupLabel(row),
+                .detail = if (loginDiscoveryAvailable(row.id)) row.id else "models unavailable",
+                .badge = if (loginDiscoveryAvailable(row.id)) loginBadge(self.login_status[loginProviderCatalogIndex(row.id).?]) else "unavailable",
+            } else .{ .label = "" },
             .permission => .{ .label = @tagName(permission_modes[index]), .detail = TuiModel.permissionModeDetail(permission_modes[index]) },
             .settings => .{ .label = if (index == 0) "Compact output" else "Automatic worktrees", .detail = if (index == 0) "Reduce tool output in the transcript" else "Create an isolated Git worktree for each session", .badge = if ((if (index == 0) self.mode_settings.compact_output else self.mode_settings.auto_worktree)) "on" else "off" },
         };
@@ -1566,13 +1649,18 @@ pub const App = struct {
     }
 
     fn startLoginProviderIndex(self: *App, idx: usize) !void {
-        const provider = login_providers[idx];
+        const row = loginProviderAt(idx) orelse return;
+        const provider = row.id;
+        if (!loginDiscoveryAvailable(provider)) {
+            try self.state.appendTranscript(.system, "model discovery is not available for this provider yet");
+            return;
+        }
         self.state.mode = .normal;
         if (self.login != null) {
             try self.state.appendTranscript(.system, "a login is already in progress");
             return;
         }
-        self.login = tui_login.LoginSession.start(self.allocator, loginProviderEnum(idx)) catch |err| {
+        self.login = self.startCatalogLogin(provider) catch |err| {
             const msg = try std.fmt.allocPrint(self.allocator, "could not start login for {s}: {s}", .{ provider, @errorName(err) });
             defer self.allocator.free(msg);
             try self.state.appendTranscript(.@"error", msg);
@@ -1628,6 +1716,16 @@ pub const App = struct {
     }
 
     fn startLoginProviderName(self: *App, provider_id: []const u8) !void {
+        if (provider_catalog.provider(provider_id)) |row| {
+            if (supportsLogin(row)) {
+                if (!loginDiscoveryAvailable(provider_id)) {
+                    try self.state.appendTranscript(.system, "model discovery is not available for this provider yet");
+                    return;
+                }
+                if (loginProviderIndex(provider_id)) |idx| return self.startLoginProviderIndex(idx);
+                return self.startCatalogLoginProvider(provider_id);
+            }
+        }
         const idx = loginProviderIndex(provider_id) orelse {
             if (self.isDeclaredCustomProvider(provider_id)) return self.startCustomLogin(provider_id);
             const msg = try std.fmt.allocPrint(self.allocator, "unknown login provider: {s}", .{provider_id});
@@ -1683,17 +1781,11 @@ pub const App = struct {
                 self.finishLogin();
                 if (save_err) |_| {
                     self.refreshLoginStatus();
-                    const refresh_err = self.refreshModelsAfterLogin();
+                    const switched = self.refreshModels();
                     const msg = try std.fmt.allocPrint(self.allocator, "logged in to {s}", .{provider_id});
                     defer self.allocator.free(msg);
                     try self.state.appendTranscript(.system, msg);
-                    if (refresh_err) |_| {
-                        try self.state.appendTranscript(.system, "model catalog refreshed");
-                    } else |err| {
-                        const refresh_msg = try std.fmt.allocPrint(self.allocator, "login succeeded but refreshing models failed: {s}", .{@errorName(err)});
-                        defer self.allocator.free(refresh_msg);
-                        try self.state.appendTranscript(.@"error", refresh_msg);
-                    }
+                    try self.reportModelRefresh(switched, "login succeeded but refreshing models failed");
                 } else |err| {
                     const msg = try std.fmt.allocPrint(self.allocator, "login succeeded but saving credentials failed: {s}", .{@errorName(err)});
                     defer self.allocator.free(msg);
@@ -1752,6 +1844,28 @@ pub const App = struct {
                 try storage.providers.put(key, .{ .api_key = api_key });
             }
             owned = true;
+            if (provider_catalog.sharesCredentialEnv(provider_id)) {
+                const row = provider_catalog.provider(provider_id) orelse return error.UnknownLoginProvider;
+                for (provider_catalog.all) |sibling| {
+                    if (std.mem.eql(u8, sibling.id, provider_id)) continue;
+                    var shares_env = false;
+                    for (row.credential_env) |name| {
+                        for (sibling.credential_env) |sibling_name| {
+                            if (std.mem.eql(u8, name, sibling_name)) shares_env = true;
+                        }
+                    }
+                    if (!shares_env) continue;
+                    const sibling_key = try self.allocator.dupe(u8, sibling.id);
+                    errdefer self.allocator.free(sibling_key);
+                    const sibling_secret = try self.allocator.dupe(u8, creds.access);
+                    errdefer self.allocator.free(sibling_secret);
+                    if (storage.providers.fetchRemove(sibling.id)) |removed| {
+                        self.allocator.free(removed.key);
+                        removed.value.deinit(self.allocator);
+                    }
+                    try storage.providers.put(sibling_key, .{ .api_key = sibling_secret });
+                }
+            }
             try storage.persist();
             return;
         }
@@ -1780,12 +1894,98 @@ pub const App = struct {
         try storage.persist();
     }
 
-    fn refreshModelsAfterLogin(self: *App) !void {
-        const runtime = self.runtime orelse return;
-        const current_model = runtime.currentModel();
+    fn refreshModels(self: *App) !bool {
+        const runtime = self.runtime orelse return false;
         const models = try loadRuntimeModelsFresh(self.allocator);
         defer model_catalog.deinitModels(self.allocator, models);
-        try runtime.replaceModels(models, current_model);
+        try runtime.replaceModels(models, runtime.currentModel());
+        const model = runtime.currentModel() orelse return false;
+        const switched = !std.mem.eql(u8, model.id, self.state.status.model) or
+            !std.mem.eql(u8, model.provider, self.state.status.provider);
+        if (switched) try self.state.status.setModel(self.allocator, model.id, model.provider);
+        self.applyContextWindow();
+        return switched;
+    }
+
+    fn reportModelRefresh(self: *App, switched: anyerror!bool, failure: []const u8) !void {
+        const changed = switched catch |err| {
+            const msg = try std.fmt.allocPrint(self.allocator, "{s}: {s}", .{ failure, @errorName(err) });
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.@"error", msg);
+            return;
+        };
+        try self.state.appendTranscript(.system, "model catalog refreshed");
+        if (!changed) return;
+        const msg = try std.fmt.allocPrint(self.allocator, "model switched to {s}/{s}", .{ self.state.status.provider, self.state.status.model });
+        defer self.allocator.free(msg);
+        try self.state.appendTranscript(.system, msg);
+    }
+
+    fn noteEnvironmentCredential(self: *App, provider_id: []const u8, name: []const u8) !void {
+        const value = compat.getEnvVarOwned(self.allocator, name) catch return;
+        defer self.allocator.free(value);
+        if (value.len == 0) return;
+        const msg = try std.fmt.allocPrint(self.allocator, "{s} is still set, so {s} stays signed in", .{ name, provider_id });
+        defer self.allocator.free(msg);
+        try self.state.appendTranscript(.system, msg);
+    }
+
+    fn logoutProviderId(name: []const u8) []const u8 {
+        if (provider_catalog.provider(name) != null) return name;
+        const index = loginProviderIndex(name) orelse return name;
+        const row = loginProviderAt(index) orelse return name;
+        return row.id;
+    }
+
+    fn logoutProvider(self: *App, requested: []const u8) !void {
+        const provider_id = logoutProviderId(requested);
+        var shared: std.ArrayList([]const u8) = .empty;
+        defer shared.deinit(self.allocator);
+        for (provider_catalog.all) |row| {
+            if (provider_catalog.sharesCredentialEnvWith(provider_id, row.id)) try shared.append(self.allocator, row.id);
+        }
+        if (self.login) |pending| {
+            var affected = std.mem.eql(u8, pending.provider_id, provider_id);
+            for (shared.items) |id| affected = affected or std.mem.eql(u8, pending.provider_id, id);
+            if (affected) {
+                const msg = try std.fmt.allocPrint(self.allocator, "a login to {s} is in progress; cancel it before logging out", .{pending.provider_id});
+                defer self.allocator.free(msg);
+                try self.state.appendTranscript(.@"error", msg);
+                return;
+            }
+        }
+        const removed = oauth_storage.AuthStorage.removeStored(self.allocator, provider_id, shared.items) catch |err| {
+            const msg = try std.fmt.allocPrint(self.allocator, "logout failed: {s}", .{@errorName(err)});
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.@"error", msg);
+            return;
+        };
+        const outcome = try std.fmt.allocPrint(self.allocator, "{s} {s}", .{ if (removed) "logged out of" else "no saved credential for", provider_id });
+        defer self.allocator.free(outcome);
+        try self.state.appendTranscript(.system, outcome);
+        if (removed and shared.items.len > 0) {
+            const names = try std.mem.join(self.allocator, ", ", shared.items);
+            defer self.allocator.free(names);
+            const msg = try std.fmt.allocPrint(self.allocator, "{s} shares its key with {s}, so their saved copies of it are removed too", .{ provider_id, names });
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.system, msg);
+        }
+        if (provider_catalog.provider(provider_id)) |row| {
+            for (row.credential_env) |name| try self.noteEnvironmentCredential(provider_id, name);
+        }
+        if (custom_providers.load(self.allocator, custom_providers.max_config_bytes)) |providers| {
+            defer custom_providers.deinitProviders(self.allocator, providers);
+            for (providers) |provider| {
+                if (!std.mem.eql(u8, provider.id, provider_id)) continue;
+                if (provider.env_key) |name| try self.noteEnvironmentCredential(provider_id, name);
+            }
+        } else |_| {}
+        if (std.mem.eql(u8, provider_id, "openai-codex")) {
+            try self.state.appendTranscript(.system, "oapx imports the Codex CLI's login while it has one; sign out there too to drop openai-codex");
+        }
+        if (!removed) return;
+        self.refreshLoginStatus();
+        try self.reportModelRefresh(self.refreshModels(), "logged out but refreshing models failed");
     }
 
     fn submitLoginInput(self: *App, text: []const u8) void {
@@ -1916,8 +2116,26 @@ pub const App = struct {
         return true;
     }
 
+    fn renameSession(self: *App, text: []const u8) !void {
+        const line = titleLine(text);
+        if (line.len == 0) {
+            try self.state.appendTranscript(.@"error", "usage: /rename <title>");
+            return;
+        }
+        const title = try self.allocator.dupe(u8, line);
+        if (self.session_title.len > 0) self.allocator.free(self.session_title);
+        self.session_title = title;
+        self.session_title_renamed = true;
+        if (self.session_written) {
+            if (self.store) |store| self.saveSessionIndex(store);
+        }
+        const message = try std.fmt.allocPrint(self.allocator, "Session renamed to \"{s}\"", .{title});
+        defer self.allocator.free(message);
+        try self.state.appendTranscript(.system, message);
+    }
+
     fn requestSessionTitle(self: *App) void {
-        if (self.session_title_generated or self.first_user_text.len == 0) return;
+        if (self.session_title_generated or self.session_title_renamed or self.first_user_text.len == 0) return;
         const runtime = self.runtime orelse return;
         const session_id = self.allocator.dupe(u8, self.session_id) catch return;
         if (!(runtime.requestTitle(self.first_user_text) catch false)) {
@@ -1937,6 +2155,10 @@ pub const App = struct {
         if (!std.mem.eql(u8, session_id, self.session_id)) {
             defer self.allocator.free(title);
             if (self.store) |store| store.saveGeneratedTitle(session_id, title) catch {};
+            return;
+        }
+        if (self.session_title_renamed) {
+            self.allocator.free(title);
             return;
         }
         if (self.session_title.len > 0) self.allocator.free(self.session_title);
@@ -2012,6 +2234,7 @@ pub const App = struct {
         meta.compactions = @intCast(self.compaction_transcripts.items.len);
         meta.title = self.session_title;
         meta.title_generated = self.session_title_generated;
+        meta.title_renamed = self.session_title_renamed;
         store.saveIndex(meta) catch {};
     }
 
@@ -2025,6 +2248,7 @@ pub const App = struct {
         if (self.session_title.len > 0) self.allocator.free(self.session_title);
         self.session_title = title;
         self.session_title_generated = metadata.title_generated;
+        self.session_title_renamed = metadata.title_renamed;
         if (self.first_user_text.len > 0) self.allocator.free(self.first_user_text);
         self.first_user_text = &.{};
     }
@@ -2072,6 +2296,7 @@ pub const App = struct {
             .model = self.state.status.model,
             .provider = self.state.status.provider,
             .last_active = compat.time.nowMillis(),
+            .thinking_level = self.state.thinking_level,
         };
     }
 
@@ -2286,7 +2511,7 @@ pub const App = struct {
 
             if (self.quarantine_events) {
                 const is_lifecycle = ev == .agent_start or ev == .turn_start or ev == .compaction_start;
-                const is_terminal = ev == .agent_end or ev == .@"error" or ev == .compaction_end;
+                const is_terminal = ev == .agent_end or ev == .@"error" or (ev == .compaction_end and !ev.compaction_end.in_run);
                 if (is_lifecycle or is_terminal) {
                     self.quarantine_events = false;
                     {
@@ -2487,6 +2712,10 @@ pub const App = struct {
             }
         }
         self.state.stream_aborted = false;
+        if (!self.state.status.streaming) {
+            self.armAutoCompact();
+            try self.giveRuntimeSessionId();
+        }
         if (self.session) |*session| {
             session.submitTurn(trimmed) catch |err| {
                 if (err == error.QueueFull) return err;
@@ -2500,32 +2729,55 @@ pub const App = struct {
         self.refreshQueuedCounts();
     }
 
+    fn autoCompactThreshold(self: *const App) ?u64 {
+        const runtime = self.runtime orelse return null;
+        const model = runtime.currentModel() orelse return null;
+        return tui_state.autoCompactAt(self.state.autocompact, model);
+    }
+
+    fn armAutoCompact(self: *App) void {
+        const runtime = self.runtime orelse return;
+        runtime.armAutoCompact(self.autoCompactThreshold(), self.compaction_transcripts.items, .{ .ctx = self, .save_fn = saveRunTranscript }) catch {};
+    }
+
+    fn saveRunTranscript(ctx: ?*anyopaque, allocator: std.mem.Allocator, index: usize, history: []const ai_types.Message) ?[]u8 {
+        const self: *App = @ptrCast(@alignCast(ctx.?));
+        const store = self.store orelse return null;
+        if (self.session_id.len == 0) return null;
+        const saved = store.saveTranscript(self.session_id, index, history) catch return null;
+        defer store.allocator.free(saved);
+        return allocator.dupe(u8, saved) catch null;
+    }
+
     fn contextWindowInEffect(self: *const App) u64 {
         const runtime = self.runtime orelse return 0;
         const model = runtime.currentModel() orelse return 0;
         return model.context_window;
     }
 
-    fn estimatedTokensForTurn(self: *const App, text: []const u8) u64 {
+    fn estimatedTokensForTurn(self: *const App, history: []const ai_types.Message, text: []const u8) u64 {
         const message: ai_types.Message = .{ .user = .{
             .content = .{ .text = text },
             .timestamp = 0,
         } };
-        return self.state.telemetry.estimated_tokens + agent.estimateMessageTokens(message);
+        const counted = @max(self.state.telemetry.estimated_tokens, agent.promptTokens(.{ .messages = history }));
+        return counted + agent.estimateMessageTokens(message);
     }
 
     fn compactBeforeTurn(self: *App, text: []const u8) !bool {
-        const share = self.state.autocompact_percent orelse return false;
+        const runtime = self.runtime orelse return false;
+        const model = runtime.currentModel() orelse return false;
+        const at = tui_state.autoCompactAt(self.state.autocompact, model) orelse return false;
         if (self.pending_after_compaction != null) return false;
         if (self.state.status.streaming or self.state.status.compacting) return false;
         const history = if (self.session) |*session| session.history() else return false;
         if (history.len == 0 or agent.compaction.isCompacted(history)) return false;
-        const window = self.contextWindowInEffect();
-        if (!agent.compaction.isAtShare(self.estimatedTokensForTurn(text), @intCast(window), share)) return false;
+        const tokens = self.estimatedTokensForTurn(history, text);
+        if (tokens < at) return false;
 
         const pending = try self.allocator.dupe(u8, text);
         errdefer self.allocator.free(pending);
-        const msg = try std.fmt.allocPrint(self.allocator, "context is at {d}% of {d} tokens; compacting before this turn.", .{ share, window });
+        const msg = try std.fmt.allocPrint(self.allocator, "context is at {d} of {d} tokens, past the {d} where it compacts; compacting before this turn.", .{ tokens, model.context_window, at });
         defer self.allocator.free(msg);
         try self.state.appendTranscript(.system, msg);
         try self.startCompaction("");
@@ -2641,14 +2893,20 @@ pub const App = struct {
             .open_settings_picker => self.openPicker(.settings),
             .start_login_provider => try self.startLoginProviderName(result.login_provider),
             .compact => try self.startCompaction(command.arg orelse ""),
+            .rename_session => try self.renameSession(command.arg orelse ""),
+            .refresh_models => try self.reportModelRefresh(self.refreshModels(), "refreshing models failed"),
+            .logout_provider => try self.logoutProvider(command.arg orelse ""),
             .none => {},
         }
-        if ((command.kind == .model or command.kind == .provider) and command.arg != null) self.persistCurrentModel();
+        if (command.kind == .model and command.arg != null and result.action != .refresh_models) self.persistCurrentModel();
         switch (command.kind) {
-            .context, .model, .provider => self.applyContextWindow(),
+            .context, .model => self.applyContextWindow(),
             else => {},
         }
         if (command.kind == .context and !result.is_error and command.arg != null) self.persistContextWindow();
+        if (command.kind == .output and !result.is_error and command.arg != null) self.persistOutput();
+        if (command.kind == .autocompact and !result.is_error and command.arg != null) self.persistAutoCompact();
+        if (command.kind == .think and !result.is_error and command.arg != null) self.persistThinkingLevel();
         if (result.output.len > 0) {
             try self.state.appendTranscript(if (result.is_error) .@"error" else .system, result.output);
             if (result.is_error) try self.state.status.setError(self.allocator, result.output);
@@ -2694,6 +2952,7 @@ pub const App = struct {
         defer cfg.deinit(self.allocator);
         var mode = self.mode_settings;
         mode.context_window = cfg.mode.context_window;
+        mode.output = cfg.mode.output;
         cfg.mode = mode;
         try store.save(cfg);
     }
@@ -2732,6 +2991,42 @@ pub const App = struct {
         self.mode_settings.context_window = window;
         if (cfg.mode.context_window == window) return;
         cfg.mode.context_window = window;
+        store.save(cfg) catch |err| self.recordError(@errorName(err)) catch {};
+    }
+
+    fn persistOutput(self: *App) void {
+        const runtime = self.runtime orelse return;
+        const setting = savedOutput(runtime.outputSetting());
+        self.mode_settings.output = setting;
+        var store = tui_config.Store.initDefault(self.allocator) catch |err| {
+            self.recordError(@errorName(err)) catch {};
+            return;
+        };
+        defer store.deinit();
+        var cfg = store.load() catch |err| {
+            self.recordError(@errorName(err)) catch {};
+            return;
+        };
+        defer cfg.deinit(self.allocator);
+        if (std.meta.eql(cfg.mode.output, setting)) return;
+        cfg.mode.output = setting;
+        store.save(cfg) catch |err| self.recordError(@errorName(err)) catch {};
+    }
+
+    fn persistAutoCompact(self: *App) void {
+        self.mode_settings.autocompact = self.state.autocompact;
+        var store = tui_config.Store.initDefault(self.allocator) catch |err| {
+            self.recordError(@errorName(err)) catch {};
+            return;
+        };
+        defer store.deinit();
+        var cfg = store.load() catch |err| {
+            self.recordError(@errorName(err)) catch {};
+            return;
+        };
+        defer cfg.deinit(self.allocator);
+        if (std.meta.eql(cfg.mode.autocompact, self.state.autocompact)) return;
+        cfg.mode.autocompact = self.state.autocompact;
         store.save(cfg) catch |err| self.recordError(@errorName(err)) catch {};
     }
 
@@ -2774,6 +3069,12 @@ pub const App = struct {
     fn cycleThinkingLevel(self: *App) void {
         const level = self.state.cycleThinkingLevel();
         if (self.runtime) |runtime| runtime.setThinkingLevel(level);
+        self.persistThinkingLevel();
+    }
+
+    fn persistThinkingLevel(self: *App) void {
+        if (!self.session_written) return;
+        if (self.store) |store| self.saveSessionIndex(store);
     }
 
     pub fn refreshCwdDisplay(self: *App) !void {
@@ -3028,6 +3329,7 @@ pub const RenderMode = enum {
 pub const TuiModel = struct {
     app: ?App = null,
     options: tui_runtime.TuiRuntimeOptions = .{},
+    autocompact: tui_config.AutoCompact = .auto,
     render_mode: RenderMode = .auto,
 
     pub const Msg = union(enum) {
@@ -3047,6 +3349,8 @@ pub const TuiModel = struct {
             break :blk fallback;
         };
         if (self.app) |*app| {
+            app.state.autocompact = self.autocompact;
+            app.mode_settings.autocompact = self.autocompact;
             app.start() catch |err| {
                 app.state.status.setError(app.allocator, @errorName(err)) catch {};
                 app.state.appendTranscript(.@"error", @errorName(err)) catch {};
@@ -4189,7 +4493,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32) !void
     }
 
     var program = zz.Program(TuiModel).initWithOptions(allocator, io, &environ_map, tuiProgramOptions());
-    program.model = .{ .options = options };
+    program.model = .{ .options = options, .autocompact = production.mode_settings.autocompact };
     defer program.deinit();
     try program.run();
 }
@@ -4317,9 +4621,13 @@ test "App refreshes runtime models after login" {
     app.runtime = runtime;
 
     try std.testing.expectEqual(@as(usize, 2), runtime.availableModels().len);
-    try app.refreshModelsAfterLogin();
+    try std.testing.expect(try app.refreshModels());
     try std.testing.expectEqual(@as(usize, 1), runtime.availableModels().len);
     try std.testing.expectEqualStrings(defaultModel().id, runtime.currentModel().?.id);
+    try std.testing.expectEqualStrings(defaultModel().id, app.state.status.model);
+    app.state.status.context_limit = 1;
+    try std.testing.expect(!try app.refreshModels());
+    try std.testing.expectEqual(@as(u64, runtime.contextWindow()), @as(u64, app.state.status.context_limit));
 }
 
 const TempHome = struct {
@@ -4377,6 +4685,54 @@ test "App stores a custom provider key under its own id" {
         .api_key => |key| try std.testing.expectEqualStrings("gateway-secret", key),
         else => return error.UnexpectedAuthKind,
     }
+}
+
+test "App logout resolves the aliases login accepts" {
+    try std.testing.expectEqualStrings("openai-codex", App.logoutProviderId("codex"));
+    try std.testing.expectEqualStrings("github-copilot", App.logoutProviderId("github"));
+    try std.testing.expectEqualStrings("kimi", App.logoutProviderId("moonshot"));
+    try std.testing.expectEqualStrings("opencode-go", App.logoutProviderId("opencode-go"));
+    try std.testing.expectEqualStrings("gateway", App.logoutProviderId("gateway"));
+}
+
+test "App logout removes only that provider's saved credential" {
+    var env = try TempHome.init("home-logout");
+    defer env.deinit();
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    inline for (.{ "gateway", "other-gateway" }) |id| {
+        const creds = oauth_storage.Credentials{
+            .refresh = try std.testing.allocator.dupe(u8, ""),
+            .access = try std.testing.allocator.dupe(u8, id ++ "-secret"),
+            .expires = std.math.maxInt(i64),
+        };
+        defer creds.deinit(std.testing.allocator);
+        try app.saveLoginCredentials(id, creds, true);
+    }
+    const config_path = try std.fs.path.join(std.testing.allocator, &.{ env.home, ".oapx", "providers.json" });
+    defer std.testing.allocator.free(config_path);
+    try compat.fs.writeFile(compat.fs.getCwd(), config_path,
+        \\{"providers":[{"id":"gateway","base_url":"https://gw.test","auth":{"env":"HOME"}}]}
+    );
+
+    app.login = try tui_login.LoginSession.startApiKey(std.testing.allocator, "gateway");
+    try app.submit("/logout gateway");
+    try std.testing.expectEqualStrings("a login to gateway is in progress; cancel it before logging out", app.state.transcript.items[0].text.items);
+    app.finishLogin();
+    app.state.clearTranscript();
+
+    try app.submit("/logout gateway");
+    try std.testing.expectEqualStrings("logged out of gateway", app.state.transcript.items[0].text.items);
+    try std.testing.expectEqualStrings("HOME is still set, so gateway stays signed in", app.state.transcript.items[1].text.items);
+    const before = app.state.transcript.items.len;
+    try app.submit("/logout gateway");
+    try std.testing.expectEqualStrings("no saved credential for gateway", app.state.transcript.items[before].text.items);
+
+    var storage = try oauth_storage.AuthStorage.loadFromFile(std.testing.allocator);
+    defer storage.deinit();
+    try std.testing.expect(!storage.providers.contains("gateway"));
+    try std.testing.expect(storage.providers.contains("other-gateway"));
 }
 
 test "App only offers an api-key login for a declared custom provider" {
@@ -4660,7 +5016,7 @@ test "TuiModel typing after a palette move resets the selection" {
     _ = model.update(.{ .key = .{ .key = .{ .char = 'p' } } }, &tctx.ctx);
     try std.testing.expectEqual(@as(usize, 0), model.app.?.slashSelection());
     _ = model.update(.{ .key = .{ .key = .tab } }, &tctx.ctx);
-    try std.testing.expectEqualStrings("/provider ", model.app.?.state.composer.text());
+    try std.testing.expectEqualStrings("/permissions ", model.app.?.state.composer.text());
 }
 
 test "TuiModel arrow keys keep walking history once a recalled entry is shown" {
@@ -5169,9 +5525,30 @@ fn autoCompactTestApp(mock: *MockAppSession) !App {
     var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{auto_compact_test_model} });
     errdefer app.deinit();
     app.session = mock.session();
-    app.state.autocompact_percent = 50;
+    app.state.autocompact = .{ .percent = 50 };
     app.state.telemetry.estimated_tokens = 60_000;
     return app;
+}
+
+fn agentOutput(setting: tui_config.Output) agent.OutputSetting {
+    return switch (setting) {
+        .auto => .auto,
+        .max => .max,
+        .tokens => |count| .{ .tokens = count },
+    };
+}
+
+fn savedOutput(setting: agent.OutputSetting) tui_config.Output {
+    return switch (setting) {
+        .auto => .auto,
+        .max => .max,
+        .tokens => |count| .{ .tokens = count },
+    };
+}
+
+test "an output setting reaches the runtime as it was saved" {
+    const saved = [_]tui_config.Output{ .auto, .max, .{ .tokens = 64_000 } };
+    for (saved) |setting| try std.testing.expectEqual(setting, savedOutput(agentOutput(setting)));
 }
 
 const auto_compact_test_model = ai_types.Model{
@@ -5243,11 +5620,56 @@ test "autocompact leaves a turn alone below the share, and when it is off" {
     try std.testing.expect(app.pending_after_compaction == null);
 
     app.state.telemetry.estimated_tokens = 60_000;
-    app.state.autocompact_percent = null;
+    app.state.autocompact = .off;
     try app.submit("over the share, but off");
 
     try std.testing.expectEqual(@as(usize, 0), mock.compact_count);
     try std.testing.expectEqual(@as(usize, 2), mock.submit_count);
+}
+
+test "autocompact by default compacts where the window leaves room for a summary and a reply" {
+    var mock = MockAppSession{ .history_messages = &auto_compact_history };
+    defer mock.deinit();
+    var app = try autoCompactTestApp(&mock);
+    defer app.deinit();
+    app.state.autocompact = .auto;
+    const at = agent.compaction.autoCompactAt(auto_compact_test_model.context_window, auto_compact_test_model.max_tokens);
+
+    app.state.telemetry.estimated_tokens = at - 1_000;
+    try app.submit("under the point");
+    try std.testing.expectEqual(@as(usize, 0), mock.compact_count);
+    try std.testing.expectEqual(@as(usize, 1), mock.submit_count);
+
+    app.state.telemetry.estimated_tokens = at;
+    try app.submit("at the point");
+    try std.testing.expectEqual(@as(usize, 1), mock.compact_count);
+    try std.testing.expectEqual(@as(usize, 1), mock.submit_count);
+}
+
+const reported_history = [_]ai_types.Message{
+    .{ .user = .{ .content = .{ .text = "first question" }, .timestamp = 0 } },
+    .{ .assistant = .{
+        .content = &.{.{ .text = .{ .text = "first answer" } }},
+        .api = "test-api",
+        .provider = "test-provider",
+        .model = "model-a",
+        .usage = .{ .input = 55_000, .output = 100, .cache_read = 5_000 },
+        .stop_reason = .stop,
+        .timestamp = 0,
+    } },
+};
+
+test "autocompact counts the context from the provider's last report when the estimate reads lower" {
+    var mock = MockAppSession{ .history_messages = &reported_history };
+    defer mock.deinit();
+    var app = try autoCompactTestApp(&mock);
+    defer app.deinit();
+    app.state.telemetry.estimated_tokens = 1_000;
+
+    try app.submit("second question");
+
+    try std.testing.expectEqual(@as(usize, 1), mock.compact_count);
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
 }
 
 test "autocompact steers the held turn rather than blocking on a run the queue resumed" {
@@ -5504,6 +5926,81 @@ test "App files a generated title under the session that asked for it" {
     try std.testing.expectError(error.FileNotFound, app.store.?.loadIndex("resumed-session"));
 }
 
+test "App rename names the session and keeps the name over a generated title" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "sessions" });
+    defer std.testing.allocator.free(base);
+    var app = try sessionTestApp(base, "renamed-session");
+    defer app.deinit();
+
+    var provider = fixture_provider.MockProvider.init(.{ .steps = &.{.{ .text = "\"Resume freeze fix.\"" }} });
+    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    runtime.* = tui_runtime.TuiRuntime.init(std.testing.allocator, .{
+        .protocol = provider.protocolClient(),
+        .models = &[_]ai_types.Model{defaultModel()},
+        .generate_titles = true,
+    }) catch |err| {
+        std.testing.allocator.destroy(runtime);
+        return err;
+    };
+    app.runtime = runtime;
+
+    var first = tui_runtime.TuiEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "the resume freezes on long sessions")) } };
+    defer first.deinit(std.testing.allocator);
+    app.saveEvent(first);
+    app.saveEvent(.{ .agent_end = .{ .reason = .completed } });
+    runtime.waitForTitleRequest();
+
+    try app.submit("/rename  Freeze hunt\nsecond line");
+    app.collectGeneratedTitle();
+
+    var index = try app.store.?.loadIndex("renamed-session");
+    defer index.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("Freeze hunt", index.title);
+    try std.testing.expect(index.title_renamed);
+    try std.testing.expect(!index.title_generated);
+    try std.testing.expectEqualStrings("Freeze hunt", app.session_title);
+    const last = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expectEqual(tui_state.TranscriptKind.system, last.kind);
+    try std.testing.expectEqualStrings("Session renamed to \"Freeze hunt\"", last.text.items);
+}
+
+test "App rename before the first message keeps the name and asks for no title" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "sessions" });
+    defer std.testing.allocator.free(base);
+    var app = try sessionTestApp(base, "named-first");
+    defer app.deinit();
+
+    var provider = fixture_provider.MockProvider.init(.{ .steps = &.{.{ .text = "\"Resume freeze fix.\"" }} });
+    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    runtime.* = tui_runtime.TuiRuntime.init(std.testing.allocator, .{
+        .protocol = provider.protocolClient(),
+        .models = &[_]ai_types.Model{defaultModel()},
+        .generate_titles = true,
+    }) catch |err| {
+        std.testing.allocator.destroy(runtime);
+        return err;
+    };
+    app.runtime = runtime;
+
+    try app.submit("/rename Freeze hunt");
+    try std.testing.expectError(error.FileNotFound, app.store.?.loadIndex("named-first"));
+
+    var first = tui_runtime.TuiEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "the resume freezes on long sessions")) } };
+    defer first.deinit(std.testing.allocator);
+    app.saveEvent(first);
+    app.saveEvent(.{ .agent_end = .{ .reason = .completed } });
+
+    var index = try app.store.?.loadIndex("named-first");
+    defer index.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("Freeze hunt", index.title);
+    try std.testing.expect(index.title_renamed);
+    try std.testing.expectEqual(@as(usize, 0), provider.call_count);
+}
+
 test "App clear_transcript clears the tool registry" {
     var app = App.initWithoutRuntime(std.testing.allocator);
     defer app.deinit();
@@ -5639,15 +6136,72 @@ test "App saves Kimi login credentials as api key" {
     }
 }
 
-test "App login status scans KIMI_API_KEY for the kimi provider" {
-    const kimi_slot = App.loginProviderIndex("kimi").?;
-
-    var exported = false;
-    for (App.login_env_keys[kimi_slot]) |name| {
-        if (std.mem.eql(u8, name, "KIMI_API_KEY")) exported = true;
+test "App saves one Xiaomi login for every catalog row sharing its key" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "home" });
+    defer std.testing.allocator.free(home);
+    try compat.fs.createDir(compat.fs.getCwd(), home);
+    const previous_home = std.process.Environ.getAlloc(std.testing.environ, std.testing.allocator, "HOME") catch null;
+    defer {
+        if (previous_home) |value| {
+            const value_z = std.testing.allocator.dupeZ(u8, value) catch null;
+            if (value_z) |home_z| {
+                defer std.testing.allocator.free(home_z);
+                _ = setenv("HOME", home_z.ptr, 1);
+            }
+            std.testing.allocator.free(value);
+        } else {
+            _ = unsetenv("HOME");
+        }
     }
-    try std.testing.expect(exported);
+    const home_z = try std.testing.allocator.dupeZ(u8, home);
+    defer std.testing.allocator.free(home_z);
+    _ = setenv("HOME", home_z.ptr, 1);
 
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    const creds = oauth_storage.Credentials{
+        .refresh = try std.testing.allocator.dupe(u8, ""),
+        .access = try std.testing.allocator.dupe(u8, "xiaomi-test-key"),
+        .expires = std.math.maxInt(i64),
+    };
+    defer creds.deinit(std.testing.allocator);
+
+    try app.saveLoginCredentials("xiaomi-token-plan-cn", creds, true);
+
+    var storage = try oauth_storage.AuthStorage.loadFromFile(std.testing.allocator);
+    defer storage.deinit();
+    const providers = [_][]const u8{ "xiaomi-token-plan-cn", "xiaomi-token-plan-sgp", "xiaomi-token-plan-ams", "xiaomi" };
+    for (providers) |provider_id| {
+        const auth = storage.providers.get(provider_id) orelse return error.MissingSharedKeyProvider;
+        switch (auth) {
+            .api_key => |key| try std.testing.expectEqualStrings("xiaomi-test-key", key),
+            .oauth => return error.ExpectedApiKeyAuth,
+        }
+    }
+}
+
+test "App login discovery availability follows the model catalog loader" {
+    for (provider_catalog.all) |row| {
+        try std.testing.expectEqual(model_catalog.supportsCatalogModelDiscovery(row.id), App.loginDiscoveryAvailable(row.id));
+    }
+    try std.testing.expect(!App.loginDiscoveryAvailable("google"));
+    try std.testing.expect(!App.loginDiscoveryAvailable("ollama"));
+    try std.testing.expect(!App.loginDiscoveryAvailable("azure"));
+}
+
+test "App login picker follows catalog order and groups shared credentials" {
+    try std.testing.expectEqualStrings("openai", App.loginProviderAt(0).?.id);
+    try std.testing.expectEqualStrings("anthropic", App.loginProviderAt(1).?.id);
+    try std.testing.expect(App.loginProviderIndex("xiaomi") != null);
+    try std.testing.expect(App.loginProviderIndex("xiaomi-token-plan-cn") != null);
+    try std.testing.expectEqual(App.loginProviderIndex("xiaomi").?, App.loginProviderIndex("xiaomi-token-plan-cn").?);
+    try std.testing.expect(App.loginProviderAt(App.loginProviderIndex("xiaomi-token-plan-cn").?).?.display_name != null);
+    try std.testing.expect(App.loginProviderIndex("google") != null);
+    try std.testing.expect(!App.loginDiscoveryAvailable("google"));
+    try std.testing.expect(App.loginProviderIndex("ollama") != null);
+    try std.testing.expect(App.loginProviderCatalogIndex("kimi") != null);
     try std.testing.expectEqual(App.LoginStatus.env_key, App.loginStatusFor(null, "kimi", true));
     try std.testing.expectEqual(App.LoginStatus.none, App.loginStatusFor(null, "kimi", false));
 }
@@ -5661,9 +6215,10 @@ test "multi-line /help output renders all lines into transcript view" {
     defer std.testing.allocator.free(rendered);
 
     const expect = [_][]const u8{
-        "/help",   "/model", "/provider",    "/status",
-        "/resume", "/login", "/permissions", "/abort",
-        "/clear",  "/quit",  "/think",
+        "/help",   "/model", "/status",
+        "/resume", "/login", "/permissions",
+        "/abort",  "/clear", "/quit",
+        "/think",
     };
     for (expect) |needle| {
         if (std.mem.indexOf(u8, rendered, needle) == null) {
@@ -6075,6 +6630,23 @@ test "App a model command leaves the gauge on the window in effect" {
     try app.submit("/model gpt-5-codex");
     try std.testing.expectEqual(@as(u64, 200_000), app.state.telemetry.context_window);
     try std.testing.expectEqual(@as(usize, 200_000), app.state.status.context_limit);
+}
+
+test "App restores a model's one-million context window after switching back" {
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ gpt_model, kimi_model } });
+    defer app.deinit();
+
+    try app.submit("/context 1m");
+    try std.testing.expectEqual(@as(usize, 1_000_000), app.state.status.context_limit);
+
+    try app.submit("/model kimi-k2.7-code");
+    try std.testing.expectEqual(@as(usize, 262_144), app.state.status.context_limit);
+    try std.testing.expectEqual(@as(u64, 262_144), app.state.telemetry.context_window);
+
+    try app.submit("/model gpt-5-codex");
+    try std.testing.expectEqual(@as(usize, 1_000_000), app.state.status.context_limit);
+    try std.testing.expectEqual(@as(u64, 1_000_000), app.state.telemetry.context_window);
+    try std.testing.expectEqual(@as(u32, 1_000_000), app.runtime.?.currentModel().?.context_window);
 }
 
 test "App a catalog refresh that drops the window leaves the gauge on the model's own" {
@@ -7146,6 +7718,46 @@ test "resume clears a compaction the saved session never finished" {
     try std.testing.expect(!app.state.status.streaming);
 }
 
+test "resume restores the session's thinking level, and a change after it is saved to that session" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+
+    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    errdefer std.testing.allocator.destroy(runtime);
+    runtime.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = unusedStream } });
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.runtime = runtime;
+    app.store = try session_store.Store.init(std.testing.allocator, base);
+    runtime.setThinkingLevel(.low);
+    app.state.thinking_level = .low;
+
+    var meta = session_store.SessionMetadata{
+        .session_id = try std.testing.allocator.dupe(u8, "deep-thinker"),
+        .model = try std.testing.allocator.dupe(u8, ""),
+        .provider = try std.testing.allocator.dupe(u8, ""),
+        .last_active = 1,
+        .thinking_level = .high,
+    };
+    defer meta.deinit(std.testing.allocator);
+    try app.store.?.save(meta, .{ .agent_start = .{} });
+    try app.store.?.saveIndex(meta);
+
+    try app.loadSessions();
+    try app.resumeSelectedSession();
+    try std.testing.expectEqual(ai_types.ThinkingLevel.high, app.state.thinking_level);
+    try std.testing.expectEqual(ai_types.ThinkingLevel.high, runtime.thinkingLevel());
+
+    app.cycleThinkingLevel();
+    const cycled = app.state.thinking_level;
+    try std.testing.expect(cycled != .high);
+    var index = try app.store.?.loadIndex("deep-thinker");
+    defer index.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(?ai_types.ThinkingLevel, cycled), index.thinking_level);
+}
+
 test "resume keeps every compaction transcript when it loads from the last compaction" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -7505,6 +8117,40 @@ test "App /compact archives the history and hands the model every transcript so 
     try std.testing.expect(std.mem.indexOf(u8, notice.text.items, "kept state") != null);
 }
 
+test "App holds a run as streaming through a compaction made inside it, even after the turn before it ended, and records its transcript" {
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    var mock = MockAppSession{ .history_messages = &compaction_history };
+    defer mock.deinit();
+    app.session = mock.session();
+    try mock.eventStream().push(.{ .turn_end = .{ .stop_reason = .tool_use } });
+    try app.drainEvents();
+    try std.testing.expect(!app.state.status.streaming);
+
+    try mock.eventStream().push(.{ .compaction_start = .{ .in_run = true } });
+    try app.drainEvents();
+    try std.testing.expect(app.state.status.compacting);
+    try std.testing.expect(app.state.status.streaming);
+
+    try mock.eventStream().push(.{ .compaction_end = .{
+        .in_run = true,
+        .outcome = .completed,
+        .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, agent.compaction.header ++ " x\n\n<summary>\nkept state\n</summary>")),
+        .transcript = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "/s/s1/compaction-1.jsonl")),
+        .messages_before = 2,
+        .tokens_before = 2400,
+        .tokens_after = 300,
+    } });
+    try app.drainEvents();
+
+    try std.testing.expect(app.state.status.streaming);
+    try std.testing.expect(!app.state.status.compacting);
+    try std.testing.expect(app.compaction_just_ended == null);
+    try std.testing.expectEqual(@as(usize, 1), app.compaction_transcripts.items.len);
+    try std.testing.expectEqualStrings("/s/s1/compaction-1.jsonl", app.compaction_transcripts.items[0]);
+    try std.testing.expectEqual(@as(usize, 300), app.state.status.context_used);
+}
+
 test "App /compact reports an empty or freshly compacted history without compacting" {
     var app = App.initWithoutRuntime(std.testing.allocator);
     defer app.deinit();
@@ -7746,6 +8392,18 @@ test "a cancelled run never schedules a continue" {
     defer harness.deinit();
 
     try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .cancelled);
+    try std.testing.expect(!harness.app.auto_continue.pending());
+
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+    try std.testing.expect(!harness.transcriptHas("Continuing in"));
+}
+
+test "a payment failure never schedules a continue" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("opencode-go request failed: HTTP 402 {\"error\":{\"message\":\"Insufficient balance\"}}", .@"error");
     try std.testing.expect(!harness.app.auto_continue.pending());
 
     harness.pastDelay();

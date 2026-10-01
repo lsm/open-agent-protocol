@@ -2,6 +2,7 @@ const std = @import("std");
 const ai_types = @import("ai_types");
 
 pub fn EventStream(comptime T: type, comptime R: type) type {
+    const Retention = if (@typeInfo(R) == .@"struct" and @hasDecl(R, "Retention")) R.Retention else void;
     return struct {
         const Self = @This();
         pub const DEINIT_THREAD_JOIN_TIMEOUT_MS = 120_000;
@@ -36,6 +37,7 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
         wait_for_thread_on_deinit: bool = false,
         join_timeout_ms: u64 = DEINIT_THREAD_JOIN_TIMEOUT_MS,
         ownership: Ownership = .borrowed,
+        retention: Retention,
 
         pub fn init(allocator: std.mem.Allocator) Self {
             var published: [RING_BUFFER_SIZE]std.atomic.Value(bool) = undefined;
@@ -52,6 +54,7 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
                 .thread_done = std.atomic.Value(bool).init(false),
                 .abandoned = std.atomic.Value(bool).init(false),
                 .allocator = allocator,
+                .retention = if (Retention == void) {} else Retention.init(allocator),
             };
         }
 
@@ -164,6 +167,8 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
             if (self.err_msg) |msg| {
                 if (!self.err_msg_static) self.allocator.free(msg);
             }
+
+            if (Retention != void) self.retention.deinit();
 
             self.* = undefined;
         }
@@ -408,6 +413,32 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
             return count;
         }
 
+        pub fn evictWhere(self: *Self, context: anytype, comptime evicts: fn (@TypeOf(context), *T) bool) usize {
+            self.mutex.lockUncancelable(defaultIo());
+            defer self.mutex.unlock(defaultIo());
+
+            const current_tail = self.tail.load(.acquire);
+            const current_head = self.head.load(.acquire);
+            var read = current_tail;
+            var write = current_tail;
+            var evicted: usize = 0;
+            while (read != current_head) : (read = (read + 1) & RING_BUFFER_MASK) {
+                while (!self.published[read].load(.acquire)) {
+                    std.Thread.yield() catch {};
+                }
+                self.published[read].store(false, .release);
+                if (evicts(context, &self.ring_buffer[read])) {
+                    evicted += 1;
+                    continue;
+                }
+                if (write != read) self.ring_buffer[write] = self.ring_buffer[read];
+                self.published[write].store(true, .release);
+                write = (write + 1) & RING_BUFFER_MASK;
+            }
+            self.head.store(write, .release);
+            return evicted;
+        }
+
         pub fn wait(self: *Self) ?T {
             var futex_value = self.futex.load(.acquire);
 
@@ -516,6 +547,31 @@ test "EventStream push and poll" {
     try std.testing.expectEqual(@as(?u32, 1), stream.poll());
     try std.testing.expectEqual(@as(?u32, 2), stream.poll());
     try std.testing.expectEqual(@as(?u32, 3), stream.poll());
+    try std.testing.expectEqual(@as(?u32, null), stream.poll());
+}
+
+fn evictsOdd(_: void, value: *u32) bool {
+    return value.* % 2 == 1;
+}
+
+test "EventStream evictWhere removes what the predicate takes, keeps the rest in order, and frees their room" {
+    const TestStream = EventStream(u32, bool);
+    var stream = TestStream.init(std.testing.allocator);
+    defer stream.deinit();
+
+    for (0..TestStream.usable_capacity) |i| try stream.push(@intCast(i));
+    try std.testing.expectError(error.QueueFull, stream.push(9_999));
+    _ = stream.poll();
+
+    const evicted = stream.evictWhere({}, evictsOdd);
+    try std.testing.expectEqual(@as(usize, TestStream.usable_capacity / 2), evicted);
+
+    try stream.push(10_000);
+    var expected: u32 = 2;
+    while (expected < TestStream.usable_capacity) : (expected += 2) {
+        try std.testing.expectEqual(@as(?u32, expected), stream.poll());
+    }
+    try std.testing.expectEqual(@as(?u32, 10_000), stream.poll());
     try std.testing.expectEqual(@as(?u32, null), stream.poll());
 }
 
