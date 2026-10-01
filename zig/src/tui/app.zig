@@ -1309,6 +1309,7 @@ pub const App = struct {
         self.discardPendingWorktreeSidecar();
         const store = self.store orelse return error.NoStoreConfigured;
         try self.dropPendingAfterCompaction("the session was resumed before the compaction finished");
+        self.state.clearHeldAfterAbort();
         if (self.state.session_index >= self.state.sessions.items.len) return;
         const selected = self.state.sessions.items[self.state.session_index];
         const runtime = if (self.runtime) |r| r else return error.NoRuntimeConfigured;
@@ -1362,7 +1363,6 @@ pub const App = struct {
         defer loaded.deinit(self.allocator);
         const new_session_id = try self.allocator.dupe(u8, loaded.metadata.session_id);
         self.discardPendingEvents();
-        self.state.clearHeldAfterAbort();
         self.pending_session_reset = false;
         self.quarantine_events = false;
         for (self.quarantine_buffer.items) |*buf_ev| {
