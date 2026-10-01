@@ -162,8 +162,14 @@ code paths; add a transcript row instead.
   and snaps into columns once the separator arrives. A line of three or more `-`,
   `*` or `_` is a dim rule across the width. `[text](url)` and `<url>` show as
   underlined link text carrying an OSC 8 hyperlink, kept on every row a wrapped link
-  spans; only an `http(s)` target with no space or control byte becomes a hyperlink,
-  anything else keeps just its text, and a link inside a code span stays literal.
+  spans and on every segment of a label an inline code span splits, so an inline code
+  span inside a link label keeps the link rather than dropping the target; only an
+  `http(s)` target with no space or control byte becomes a hyperlink, anything else
+  keeps just its text, and a link source inside an outer code span stays literal.
+  Link tracking is out of band: the renderer's internal markers never consume wrap
+  width, and a literal U+E000/U+E001 in prose, a label or a code span is escaped and
+  preserved exactly rather than replaced, so a link whose visible label exactly fills
+  the width stays on one row.
   `renderAssistantPlain`
   remains the unstyled wrap engine and its exact-output tests are unchanged.
 - Tool calls: one row, `◆ Label  argument` on the left, status on the right

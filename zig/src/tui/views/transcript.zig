@@ -1010,7 +1010,7 @@ fn renderAssistantText(allocator: std.mem.Allocator, text: []const u8, width: us
             if (styled) {
                 try writeStyledProseLine(allocator, writer, line, width);
             } else {
-                try wrapPlainLine(allocator, writer, line, width);
+                try wrapPlainLine(allocator, writer, line, width, false);
             }
             continue;
         }
@@ -1191,7 +1191,7 @@ fn writeTable(allocator: std.mem.Allocator, writer: *std.Io.Writer, header: []co
                 continue;
             }
             var out: std.Io.Writer.Allocating = .init(arena);
-            try wrapPlainLine(arena, &out.writer, cell, widths[c]);
+            try wrapPlainLine(arena, &out.writer, cell, widths[c], true);
             var parts = std.ArrayList([]const u8).empty;
             var split = std.mem.splitScalar(u8, out.written(), '\n');
             while (split.next()) |part| try parts.append(arena, part);
@@ -1267,6 +1267,7 @@ fn writeThematicBreak(allocator: std.mem.Allocator, writer: *std.Io.Writer, widt
 
 const link_open = "\u{E000}";
 const link_close = "\u{E001}";
+const link_escape = "\u{E002}";
 
 const LinkCursor = struct {
     urls: []const ?[]const u8 = &.{},
@@ -1318,10 +1319,17 @@ fn safeLinkTarget(target: []const u8) ?[]const u8 {
     return target;
 }
 
-fn nextLinkMarker(text: []const u8, from: usize) ?usize {
+fn nextLinkBoundary(text: []const u8, from: usize) ?usize {
     var i = from;
-    while (i < text.len) : (i += 1) {
+    while (i < text.len) {
+        if (std.mem.startsWith(u8, text[i..], link_escape)) {
+            const next_i = i + link_escape.len;
+            const next_len = std.unicode.utf8ByteSequenceLength(text[next_i]) catch 1;
+            i = @min(next_i + next_len, text.len);
+            continue;
+        }
         if (isLinkMarkerAt(text, i)) return i;
+        i += 1;
     }
     return null;
 }
@@ -1330,11 +1338,12 @@ fn isLinkMarkerAt(text: []const u8, i: usize) bool {
     return std.mem.startsWith(u8, text[i..], link_open) or std.mem.startsWith(u8, text[i..], link_close);
 }
 
-fn appendNeutralized(allocator: std.mem.Allocator, out: *std.ArrayList(u8), text: []const u8) !void {
+fn appendEscaped(allocator: std.mem.Allocator, out: *std.ArrayList(u8), text: []const u8) !void {
     var i: usize = 0;
     while (i < text.len) {
-        if (isLinkMarkerAt(text, i)) {
-            try out.appendSlice(allocator, "\u{FFFD}");
+        if (isLinkMarkerAt(text, i) or std.mem.startsWith(u8, text[i..], link_escape)) {
+            try out.appendSlice(allocator, link_escape);
+            try out.appendSlice(allocator, text[i .. i + link_open.len]);
             i += link_open.len;
             continue;
         }
@@ -1344,13 +1353,14 @@ fn appendNeutralized(allocator: std.mem.Allocator, out: *std.ArrayList(u8), text
 }
 
 fn extractLinks(allocator: std.mem.Allocator, text: []const u8, urls: *std.ArrayList(?[]const u8)) ![]const u8 {
-    if (std.mem.indexOfAny(u8, text, "[<") == null and std.mem.indexOf(u8, text, link_open) == null and std.mem.indexOf(u8, text, link_close) == null) return text;
+    if (std.mem.indexOfAny(u8, text, "[<") == null and std.mem.indexOf(u8, text, link_open) == null and std.mem.indexOf(u8, text, link_close) == null and std.mem.indexOf(u8, text, link_escape) == null) return text;
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
     var i: usize = 0;
     while (i < text.len) {
-        if (isLinkMarkerAt(text, i)) {
-            try out.appendSlice(allocator, "\u{FFFD}");
+        if (isLinkMarkerAt(text, i) or std.mem.startsWith(u8, text[i..], link_escape)) {
+            try out.appendSlice(allocator, link_escape);
+            try out.appendSlice(allocator, text[i .. i + link_open.len]);
             i += link_open.len;
             continue;
         }
@@ -1358,14 +1368,14 @@ fn extractLinks(allocator: std.mem.Allocator, text: []const u8, urls: *std.Array
             var run: usize = 0;
             while (i + run < text.len and text[i + run] == '`') run += 1;
             const end = if (findCodeClose(text, i + run, run)) |close| close + run else i + run;
-            try appendNeutralized(allocator, &out, text[i..end]);
+            try appendEscaped(allocator, &out, text[i..end]);
             i = end;
             continue;
         }
         if (text[i] == '[' and !(i > 0 and text[i - 1] == '!')) {
             if (matchLink(text, i)) |link| {
                 try out.appendSlice(allocator, link_open);
-                try appendNeutralized(allocator, &out, link.label);
+                try appendEscaped(allocator, &out, link.label);
                 try out.appendSlice(allocator, link_close);
                 try urls.append(allocator, safeLinkTarget(link.target));
                 i = link.end;
@@ -1405,7 +1415,7 @@ fn writeStyledProseLine(allocator: std.mem.Allocator, writer: *std.Io.Writer, li
 
     var wrapped: std.Io.Writer.Allocating = .init(allocator);
     defer wrapped.deinit();
-    try wrapPlainLine(allocator, &wrapped.writer, content, wrap_width);
+    try wrapPlainLine(allocator, &wrapped.writer, content, wrap_width, true);
 
     const row_style = switch (block.kind) {
         .heading => tui_theme.heading(),
@@ -1434,12 +1444,22 @@ fn writeStyledProseLine(allocator: std.mem.Allocator, writer: *std.Io.Writer, li
 }
 
 fn writeInlineStyled(allocator: std.mem.Allocator, writer: *std.Io.Writer, row: []const u8, base_style: zz.Style, links: *LinkCursor) !void {
-    var literal_start: usize = 0;
+    var literal = std.ArrayList(u8).empty;
+    defer literal.deinit(allocator);
     var i: usize = 0;
     while (i < row.len) {
+        if (std.mem.startsWith(u8, row[i..], link_escape) and i + link_escape.len < row.len) {
+            const next_i = i + link_escape.len;
+            const next_len = std.unicode.utf8ByteSequenceLength(row[next_i]) catch 1;
+            if (next_i + next_len > row.len) break;
+            try literal.appendSlice(allocator, row[next_i .. next_i + next_len]);
+            i = next_i + next_len;
+            continue;
+        }
         const opens = std.mem.startsWith(u8, row[i..], link_open);
         if (opens or std.mem.startsWith(u8, row[i..], link_close)) {
-            try flushLiteral(allocator, writer, row[literal_start..i], base_style, links);
+            try flushLiteral(allocator, writer, literal.items, base_style, links);
+            literal.clearRetainingCapacity();
             if (opens) {
                 links.active = links.next;
                 links.next += 1;
@@ -1447,30 +1467,31 @@ fn writeInlineStyled(allocator: std.mem.Allocator, writer: *std.Io.Writer, row: 
                 links.active = null;
             }
             i += link_open.len;
-            literal_start = i;
             continue;
         }
         if (row[i] == '`') {
             var run: usize = 0;
             while (i + run < row.len and row[i + run] == '`') run += 1;
-            const bound = nextLinkMarker(row, i + run) orelse row.len;
+            const bound = nextLinkBoundary(row, i + run) orelse row.len;
             if (findCodeClose(row[0..bound], i + run, run)) |close| {
-                try flushLiteral(allocator, writer, row[literal_start..i], base_style, links);
+                try flushLiteral(allocator, writer, literal.items, base_style, links);
+                literal.clearRetainingCapacity();
                 const inner = std.mem.trim(u8, row[i + run .. close], " ");
                 if (inner.len > 0) {
-                    const styled = try tui_theme.inlineCode().render(allocator, inner);
-                    defer allocator.free(styled);
-                    try writer.writeAll(styled);
+                    const decoded = try decodeEscapes(allocator, inner);
+                    defer if (decoded.ptr != inner.ptr) allocator.free(decoded);
+                    try flushLinked(allocator, writer, decoded, tui_theme.inlineCode(), links);
                 }
                 i = close + run;
-                literal_start = i;
                 continue;
             }
+            try literal.appendSlice(allocator, row[i .. i + run]);
             i += run;
             continue;
         }
         if (matchEmphasis(row, i)) |span| {
-            try flushLiteral(allocator, writer, row[literal_start..i], base_style, links);
+            try flushLiteral(allocator, writer, literal.items, base_style, links);
+            literal.clearRetainingCapacity();
             const inner = row[i + span.marker_len .. span.close];
             const style = if (span.strong) base_style.bold(true) else base_style.italic(true);
             var inner_out: std.Io.Writer.Allocating = .init(allocator);
@@ -1478,23 +1499,27 @@ fn writeInlineStyled(allocator: std.mem.Allocator, writer: *std.Io.Writer, row: 
             try writeInlineStyled(allocator, &inner_out.writer, inner, style, links);
             try writer.writeAll(inner_out.written());
             i = span.close + span.marker_len;
-            literal_start = i;
             continue;
         }
+        try literal.append(allocator, row[i]);
         i += 1;
     }
-    try flushLiteral(allocator, writer, row[literal_start..], base_style, links);
+    try flushLiteral(allocator, writer, literal.items, base_style, links);
 }
 
-fn flushLiteral(allocator: std.mem.Allocator, writer: *std.Io.Writer, text: []const u8, style: zz.Style, links: *LinkCursor) !void {
+fn flushLiteral(allocator: std.mem.Allocator, writer: *std.Io.Writer, text: []const u8, base_style: zz.Style, links: *LinkCursor) !void {
+    try flushLinked(allocator, writer, text, base_style, links);
+}
+
+fn flushLinked(allocator: std.mem.Allocator, writer: *std.Io.Writer, text: []const u8, base_style: zz.Style, links: *LinkCursor) !void {
     if (text.len == 0) return;
     const index = links.active orelse {
-        const styled = try style.render(allocator, text);
+        const styled = try base_style.render(allocator, text);
         defer allocator.free(styled);
         try writer.writeAll(styled);
         return;
     };
-    const styled = try tui_theme.link().inherit(style).render(allocator, text);
+    const styled = try tui_theme.link().inherit(base_style).render(allocator, text);
     defer allocator.free(styled);
     const target = if (index < links.urls.len) links.urls[index] else null;
     if (target) |url| {
@@ -1502,6 +1527,26 @@ fn flushLiteral(allocator: std.mem.Allocator, writer: *std.Io.Writer, text: []co
     } else {
         try writer.writeAll(styled);
     }
+}
+
+fn decodeEscapes(allocator: std.mem.Allocator, text: []const u8) ![]const u8 {
+    if (std.mem.indexOf(u8, text, link_escape) == null) return text;
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    var i: usize = 0;
+    while (i < text.len) {
+        if (std.mem.startsWith(u8, text[i..], link_escape)) {
+            const next_i = i + link_escape.len;
+            const next_len = std.unicode.utf8ByteSequenceLength(text[next_i]) catch 1;
+            if (next_i + next_len > text.len) break;
+            try out.appendSlice(allocator, text[next_i .. next_i + next_len]);
+            i = next_i + next_len;
+            continue;
+        }
+        try out.append(allocator, text[i]);
+        i += 1;
+    }
+    return out.toOwnedSlice(allocator);
 }
 
 fn findCodeClose(row: []const u8, from: usize, run: usize) ?usize {
@@ -1603,12 +1648,13 @@ fn isFenceClose(line: []const u8, open_char: u8, open_len: usize) bool {
     return n == trimmed.len;
 }
 
-fn flushWrapRow(writer: *std.Io.Writer, buf: *std.ArrayList(u8), col: *usize, pending_newline: *bool, pad_from: *?usize) !void {
+fn flushWrapRow(writer: *std.Io.Writer, buf: *std.ArrayList(u8), col: *usize, pending_newline: *bool, pad_from: *?usize, encoded: bool) !void {
     var split = std.mem.lastIndexOfScalar(u8, buf.items, ' ') orelse lastCharStart(buf.items);
     if (pad_from.*) |pf| {
         if (split >= pf) split = lastCharStart(buf.items);
     }
     if (std.mem.trim(u8, buf.items[0..split], " ").len == 0) split = lastCharStart(buf.items);
+    if (encoded) split = keepEscapeAtomic(buf.items, split);
     if (pending_newline.*) {
         try writer.writeByte('\n');
         pending_newline.* = false;
@@ -1618,7 +1664,7 @@ fn flushWrapRow(writer: *std.Io.Writer, buf: *std.ArrayList(u8), col: *usize, pe
     const tail_len = buf.items.len - tail_start;
     std.mem.copyForwards(u8, buf.items[0..tail_len], buf.items[tail_start..]);
     buf.shrinkRetainingCapacity(tail_len);
-    col.* = tui_text.visibleWidth(buf.items);
+    col.* = if (encoded) escapedVisibleWidth(buf.items) else tui_text.visibleWidth(buf.items);
     if (tail_len > 0) {
         try writer.writeByte('\n');
     } else {
@@ -1627,7 +1673,7 @@ fn flushWrapRow(writer: *std.Io.Writer, buf: *std.ArrayList(u8), col: *usize, pe
     pad_from.* = null;
 }
 
-fn wrapPlainLine(allocator: std.mem.Allocator, writer: *std.Io.Writer, line: []const u8, max_width: usize) !void {
+fn wrapPlainLine(allocator: std.mem.Allocator, writer: *std.Io.Writer, line: []const u8, max_width: usize, encoded: bool) !void {
     if (max_width == 0 or line.len == 0) {
         try writer.writeAll(line);
         return;
@@ -1682,6 +1728,17 @@ fn wrapPlainLine(allocator: std.mem.Allocator, writer: *std.Io.Writer, line: []c
             col += 1;
             i += 1;
             pad_from = null;
+        } else if (encoded and std.mem.startsWith(u8, line[i..], link_escape) and i + link_escape.len < line.len) {
+            const inner_i = i + link_escape.len;
+            const inner_len = std.unicode.utf8ByteSequenceLength(line[inner_i]) catch 1;
+            if (inner_i + inner_len > line.len) break;
+            const inner_cp = std.unicode.utf8Decode(line[inner_i .. inner_i + inner_len]) catch {
+                i += link_escape.len;
+                continue;
+            };
+            try buf.appendSlice(allocator, line[i .. inner_i + inner_len]);
+            col += zz.measure.charWidth(@intCast(inner_cp));
+            i = inner_i + inner_len;
         } else {
             const len = std.unicode.utf8ByteSequenceLength(c) catch 1;
             if (i + len > line.len) break;
@@ -1694,10 +1751,12 @@ fn wrapPlainLine(allocator: std.mem.Allocator, writer: *std.Io.Writer, line: []c
                 continue;
             }
             try buf.appendSlice(allocator, line[i .. i + len]);
-            col += zz.measure.charWidth(@intCast(codepoint));
+            if (!encoded or (codepoint != 0xE000 and codepoint != 0xE001)) {
+                col += zz.measure.charWidth(@intCast(codepoint));
+            }
             i += len;
         }
-        if (col > max_width) try flushWrapRow(writer, &buf, &col, &pending_newline, &pad_from);
+        if (col > max_width) try flushWrapRow(writer, &buf, &col, &pending_newline, &pad_from, encoded);
     }
     if (pending_newline) {
         if (std.mem.trim(u8, buf.items, " ").len > 0) {
@@ -1716,6 +1775,49 @@ fn lastCharStart(buf: []const u8) usize {
         if ((buf[i] & 0xc0) != 0x80) return i;
     }
     return 0;
+}
+
+fn keepEscapeAtomic(buf: []const u8, split: usize) usize {
+    var i: usize = 0;
+    while (i < buf.len) {
+        if (std.mem.startsWith(u8, buf[i..], link_escape)) {
+            const payload_i = i + link_escape.len;
+            const payload_len = std.unicode.utf8ByteSequenceLength(buf[payload_i]) catch 1;
+            if (payload_i <= split and split < payload_i + payload_len) return i;
+            i = @min(payload_i + payload_len, buf.len);
+            continue;
+        }
+        i += std.unicode.utf8ByteSequenceLength(buf[i]) catch 1;
+    }
+    return split;
+}
+
+fn escapedVisibleWidth(buf: []const u8) usize {
+    var width: usize = 0;
+    var i: usize = 0;
+    while (i < buf.len) {
+        if (std.mem.startsWith(u8, buf[i..], link_escape)) {
+            const next_i = i + link_escape.len;
+            const next_len = std.unicode.utf8ByteSequenceLength(buf[next_i]) catch 1;
+            if (next_i + next_len > buf.len) break;
+            const cp = std.unicode.utf8Decode(buf[next_i .. next_i + next_len]) catch {
+                i = next_i;
+                continue;
+            };
+            width += zz.measure.charWidth(@intCast(cp));
+            i = next_i + next_len;
+            continue;
+        }
+        const len = std.unicode.utf8ByteSequenceLength(buf[i]) catch 1;
+        if (i + len > buf.len) break;
+        const cp = std.unicode.utf8Decode(buf[i .. i + len]) catch {
+            i += 1;
+            continue;
+        };
+        if (cp != 0xE000 and cp != 0xE001) width += zz.measure.charWidth(@intCast(cp));
+        i += len;
+    }
+    return width;
 }
 
 fn stripControls(allocator: std.mem.Allocator, line: []const u8) ![]u8 {
@@ -2106,9 +2208,10 @@ test "a private-use character in the text cannot pose as a link marker" {
     defer std.testing.allocator.free(styled);
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, styled, "\x1b]8;id="));
     try std.testing.expect(std.mem.indexOf(u8, styled, ";https://example.com/ok\x1b\\") != null);
+    try std.testing.expect(std.mem.indexOf(u8, styled, "\u{E002}") == null);
     const plain = try stripEscapesForTest(std.testing.allocator, styled);
     defer std.testing.allocator.free(plain);
-    try std.testing.expectEqualStrings("odd \u{FFFD}glyph\u{FFFD} then ok", plain);
+    try std.testing.expectEqualStrings("odd \u{E000}glyph\u{E001} then ok", plain);
 }
 
 test "a table cell's escape sequences and control bytes never reach the terminal" {
@@ -2126,9 +2229,10 @@ test "a marker character inside a link label cannot shift a later link's target"
     defer std.testing.allocator.free(styled);
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, styled, ";https://one.example\x1b\\"));
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, styled, ";https://two.example\x1b\\"));
+    try std.testing.expect(std.mem.indexOf(u8, styled, "\u{E002}") == null);
     const plain = try stripEscapesForTest(std.testing.allocator, styled);
     defer std.testing.allocator.free(plain);
-    try std.testing.expectEqualStrings("a\u{FFFD}b c", plain);
+    try std.testing.expectEqualStrings("a\u{E000}b c", plain);
 }
 
 test "a backtick inside a link label cannot pair with one outside the link" {
@@ -2147,13 +2251,94 @@ test "a backtick inside a link label cannot pair with one outside the link" {
 test "a marker character inside a code span stays inside it and shifts no link" {
     const styled = try renderAssistantStyled(std.testing.allocator, "`x\u{E000}y` and [k](https://b.example)", 80);
     defer std.testing.allocator.free(styled);
-    const probe = try tui_theme.inlineCode().render(std.testing.allocator, "x\u{FFFD}y");
+    const probe = try tui_theme.inlineCode().render(std.testing.allocator, "x\u{E000}y");
     defer std.testing.allocator.free(probe);
     try std.testing.expect(std.mem.indexOf(u8, styled, probe) != null);
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, styled, "\x1b]8;id="));
     const plain = try stripEscapesForTest(std.testing.allocator, styled);
     defer std.testing.allocator.free(plain);
-    try std.testing.expectEqualStrings("x\u{FFFD}y and k", plain);
+    try std.testing.expectEqualStrings("x\u{E000}y and k", plain);
+}
+
+test "an inline code span in a link label keeps the link, whole and mixed" {
+    const styled = try renderAssistantStyled(std.testing.allocator, "[`code`](https://c.example) and [pre `mid` post](https://d.example)", 80);
+    defer std.testing.allocator.free(styled);
+    try std.testing.expect(std.mem.indexOf(u8, styled, ";https://c.example\x1b\\") != null);
+    try std.testing.expect(std.mem.indexOf(u8, styled, ";https://d.example\x1b\\") != null);
+    const opens = std.mem.count(u8, styled, "\x1b]8;id=");
+    const closes = std.mem.count(u8, styled, "\x1b]8;;\x1b\\");
+    try std.testing.expectEqual(opens, closes);
+    try std.testing.expect(opens >= 2);
+    const plain = try stripEscapesForTest(std.testing.allocator, styled);
+    defer std.testing.allocator.free(plain);
+    try std.testing.expectEqualStrings("code and pre mid post", plain);
+}
+
+test "an inline code span in a link label outside a link keeps no hyperlink" {
+    const styled = try renderAssistantStyled(std.testing.allocator, "outer `[x](https://e.example)` tail", 80);
+    defer std.testing.allocator.free(styled);
+    try std.testing.expect(std.mem.indexOf(u8, styled, "\x1b]8;id=") == null);
+    const plain = try stripEscapesForTest(std.testing.allocator, styled);
+    defer std.testing.allocator.free(plain);
+    try std.testing.expectEqualStrings("outer [x](https://e.example) tail", plain);
+}
+
+test "a link whose visible label exactly fills the width stays on one row" {
+    const styled = try renderAssistantStyled(std.testing.allocator, "[abcdefgh](https://e.example)", 8);
+    defer std.testing.allocator.free(styled);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, styled, "\n") + 1 - std.mem.count(u8, styled, "\n"));
+    var rows = std.mem.splitScalar(u8, styled, '\n');
+    var count: usize = 0;
+    while (rows.next()) |row| : (count += 1) {
+        try std.testing.expect(std.mem.indexOf(u8, row, ";https://e.example\x1b\\") != null);
+    }
+    try std.testing.expectEqual(@as(usize, 1), count);
+    const plain = try stripEscapesForTest(std.testing.allocator, styled);
+    defer std.testing.allocator.free(plain);
+    try std.testing.expectEqualStrings("abcdefgh", plain);
+}
+
+test "an escape pair is never split across a wrap and the glyph survives" {
+    const styled = try renderAssistantStyled(std.testing.allocator, "abcdefgh\u{E000}", 8);
+    defer std.testing.allocator.free(styled);
+    try std.testing.expect(std.mem.indexOf(u8, styled, "\u{E002}") == null);
+    const plain = try stripEscapesForTest(std.testing.allocator, styled);
+    defer std.testing.allocator.free(plain);
+    try std.testing.expectEqualStrings("abcdefgh\n\u{E000}", plain);
+}
+
+test "a literal marker in plain text is measured at its real width" {
+    const plain = try renderAssistantPlain(std.testing.allocator, "abcdefgh\u{E000}", 8);
+    defer std.testing.allocator.free(plain);
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, plain, "\n") + 1);
+    try std.testing.expectEqualStrings("abcdefgh\n\u{E000}", plain);
+}
+
+test "a literal sentinel and its follower in plain text keep full width" {
+    const plain = try renderAssistantPlain(std.testing.allocator, "1234567\u{E002}x", 8);
+    defer std.testing.allocator.free(plain);
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, plain, "\n") + 1);
+    try std.testing.expectEqualStrings("1234567\u{E002}\nx", plain);
+}
+
+test "a plain line ending in a literal sentinel wraps without panic" {
+    const plain = try renderAssistantPlain(std.testing.allocator, "abcdefgh\u{E002}", 8);
+    defer std.testing.allocator.free(plain);
+    try std.testing.expectEqualStrings("abcdefgh\n\u{E002}", plain);
+}
+
+test "a bare escape sentinel in plain text does not decode past the end" {
+    const plain = try renderAssistantPlain(std.testing.allocator, "tail\u{E002}", 40);
+    defer std.testing.allocator.free(plain);
+    try std.testing.expectEqualStrings("tail\u{E002}", plain);
+}
+
+test "a literal escape sentinel survives a hard wrap" {
+    const styled = try renderAssistantStyled(std.testing.allocator, "\u{E002}x", 1);
+    defer std.testing.allocator.free(styled);
+    const plain = try stripEscapesForTest(std.testing.allocator, styled);
+    defer std.testing.allocator.free(plain);
+    try std.testing.expectEqualStrings("\u{E002}x", plain);
 }
 
 test "a link target keeps its balanced parentheses" {
@@ -3070,7 +3255,7 @@ test "transcript allows tildes in tilde-fence info strings" {
 test "transcript drops malformed multibyte leads without passing controls" {
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
-    try wrapPlainLine(std.testing.allocator, &out.writer, "a\xC2\x1B[2Jb", 40);
+    try wrapPlainLine(std.testing.allocator, &out.writer, "a\xC2\x1B[2Jb", 40, true);
 
     try std.testing.expectEqualStrings("ab", out.written());
 }
