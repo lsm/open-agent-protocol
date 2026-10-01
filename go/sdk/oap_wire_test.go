@@ -3,6 +3,7 @@ package sdk
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -40,11 +41,7 @@ func runOAPHost() {
 			response.CapabilityRevision = "fake-rev-1"
 			fakeEmit(response)
 		case "provider.models.list.request":
-			if selected, ok := selectedCatalogSourceModel(); ok {
-				fakeEmit(oapFakeReply(request, "provider.models.list.response", map[string]any{"models": []map[string]any{selected}}))
-				break
-			}
-			if selected, ok := selectedCatalogLifecycleModel(); ok {
+			if selected, ok := selectedCatalogModel(); ok {
 				fakeEmit(oapFakeReply(request, "provider.models.list.response", map[string]any{"models": []map[string]any{selected}}))
 				break
 			}
@@ -324,66 +321,92 @@ func TestOAPCombinedHostWire(t *testing.T) {
 	}
 }
 
-func selectedCatalogLifecycleModel() (map[string]any, bool) {
-	shape := ""
-	for _, entry := range os.Environ() {
-		if value, ok := strings.CutPrefix(entry, "OAPX_TEST_CATALOG_LIFECYCLE="); ok {
-			shape = value
-		}
-	}
-	if shape == "" {
-		return nil, false
-	}
-	model := map[string]any{
-		"model_ref": "fixture/other:lifecycle@" + shape, "model_id": shape, "provider_id": "fixture",
-		"wire": "other", "auth_status": "authenticated", "source": "fallback",
-		"capabilities": []string{"chat", "streaming"},
-	}
-	switch shape {
-	case "absent":
-	case "stable", "preview", "deprecated":
-		model["lifecycle"] = shape
-	case "invented":
-		model["lifecycle"] = "retired"
-	case "empty":
-		model["lifecycle"] = ""
-	case "null":
-		model["lifecycle"] = nil
-	case "wrong-type":
-		model["lifecycle"] = float64(7)
-	}
-	return model, true
-}
-
-func selectedCatalogSourceModel() (map[string]any, bool) {
-	shape := ""
+func selectedCatalogModel() (map[string]any, bool) {
+	sourceShape, lifecycleShape, authShape := "", "", ""
 	for _, entry := range os.Environ() {
 		if value, ok := strings.CutPrefix(entry, "OAPX_TEST_CATALOG_SOURCE="); ok {
-			shape = value
+			sourceShape = value
+		}
+		if value, ok := strings.CutPrefix(entry, "OAPX_TEST_CATALOG_LIFECYCLE="); ok {
+			lifecycleShape = value
+		}
+		if value, ok := strings.CutPrefix(entry, "OAPX_TEST_CATALOG_AUTH="); ok {
+			authShape = value
 		}
 	}
-	if shape == "" {
+	if sourceShape == "" && lifecycleShape == "" && authShape == "" {
 		return nil, false
 	}
+	identity := firstNonEmpty(lifecycleShape, sourceShape, authShape)
 	model := map[string]any{
-		"model_ref": "fixture/other:source@" + shape, "model_id": shape, "provider_id": "fixture",
-		"wire": "other", "auth_status": "authenticated", "lifecycle": "stable",
+		"model_ref": "fixture/other:selected@" + lifecycleShape + sourceShape + authShape,
+		"model_id":  identity, "provider_id": "fixture",
+		"wire":         "other",
 		"capabilities": []string{"chat", "streaming"},
 	}
-	switch shape {
-	case "absent":
-	case "discovered":
-		model["source"] = "discovered"
-	case "fallback":
-		model["source"] = "fallback"
-	case "invented":
-		model["source"] = "invented-source"
-	case "empty":
-		model["source"] = ""
-	case "null":
-		model["source"] = nil
-	case "wrong-type":
-		model["source"] = float64(7)
+	if authShape != "" {
+		switch authShape {
+		case "authenticated":
+			model["auth_status"] = "authenticated"
+		case "login_required":
+			model["auth_status"] = "login_required"
+		case "expired":
+			model["auth_status"] = "expired"
+		case "refreshing":
+			model["auth_status"] = "refreshing"
+		case "login_in_progress":
+			model["auth_status"] = "login_in_progress"
+		case "failed":
+			model["auth_status"] = "failed"
+		case "unknown":
+			model["auth_status"] = "unknown"
+		case "absent":
+			delete(model, "auth_status")
+		case "null":
+			model["auth_status"] = nil
+		case "number":
+			model["auth_status"] = float64(7)
+		case "invented":
+			model["auth_status"] = "retired"
+		default:
+			fmt.Fprintf(os.Stderr, "unsupported OAPX_TEST_CATALOG_AUTH selector %q\n", authShape)
+			os.Exit(3)
+		}
+		model["model_ref"] = "fixture/other:selected@" + identity
+	}
+	if lifecycleShape != "" {
+		switch lifecycleShape {
+		case "absent":
+		case "stable", "preview", "deprecated":
+			model["lifecycle"] = lifecycleShape
+		case "null":
+			model["lifecycle"] = nil
+		case "empty":
+			model["lifecycle"] = ""
+		case "number", "wrong-type":
+			model["lifecycle"] = float64(7)
+		case "invented":
+			model["lifecycle"] = "retired"
+		}
+	}
+	if sourceShape != "" {
+		switch sourceShape {
+		case "absent":
+		case "discovered", "fallback":
+			model["source"] = sourceShape
+		case "null":
+			model["source"] = nil
+		case "empty":
+			model["source"] = ""
+		case "wrong-type":
+			model["source"] = float64(7)
+		case "invented":
+			model["source"] = "invented-source"
+		case "shared-alias-dynamic":
+			model["source"] = "dynamic"
+		case "shared-alias-static-fallback":
+			model["source"] = "static_fallback"
+		}
 	}
 	return model, true
 }

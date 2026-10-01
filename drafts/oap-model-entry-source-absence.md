@@ -192,3 +192,23 @@ has no filter exemption: a present `null`, wrong type or unrecognised literal
 is refused for **every** received entry, and only then may the reader skip it.
 The Python change validates once per entry before any local `continue`, and a
 negative control reinstates the old ordering to show the cases fail.
+
+**Go had the same ordering and was the last SDK with it.** In
+`ModelsService.oapList` (`go/sdk/oap.go:303`), which is where
+`ModelsService.List` dispatches when the transport is OAP
+(`go/sdk/models.go:142`), the four filters on `wire`, `model_id`, `lifecycle`
+and `auth_status` ran before `oapModelSource` and `oapModelLifecycle`, so a row
+any of those filters dropped was never validated: `lifecycle` stating
+`deprecated` together with `source` stating `null` returned an empty list and no
+error under `IncludeDeprecated: false`. Both members are now validated once per received
+entry, before the first `continue`, and the deprecation filter reads the
+validated value — which also needs a nil check, since `*lifecycle ==
+LifecycleDeprecated` would panic on an absent member, the same reason Rust's
+comparison needed an explicit `Some(...)`.
+
+Rust and TypeScript were never affected, and in different shapes: Rust
+deserialises the whole descriptor before its filter, and TypeScript's `map()`
+validates before its `filter()`. Seven Go subtests cover the deprecated, api,
+model_id and auth_status filters, each first proving with a valid row that its
+filter really skips, then that a present `null` is refused anyway; the negative
+control is main's own ordering and fails all seven.
