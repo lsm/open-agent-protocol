@@ -152,6 +152,13 @@ fn findStateUpdate(replies: []const oap_types.Envelope) ?oap_types.SessionState 
     }
     return null;
 }
+fn findCancelReply(replies: []const oap_types.Envelope) ?oap_types.RunCancelResponse {
+    for (replies) |reply| {
+        if (reply.payload == .run_cancel_response) return reply.payload.run_cancel_response;
+    }
+    return null;
+}
+
 
 test "the op matrix covers every session operation the TUI exposes" {
     const ops = std.meta.fields(tui_session.TuiSessionOps);
@@ -376,4 +383,170 @@ test "the client's own initialize is accepted, so the version it sends is the se
     try exchange.client.initialize();
     try std.testing.expectEqual(@as(usize, 1), try exchange.step());
     try std.testing.expect(exchange.client.capability_revision != null);
+}
+
+fn openAndSubmit(exchange: *Exchange) !void {
+    try exchange.client.initialize();
+    _ = try exchange.step();
+    try exchange.client.openSession();
+    _ = try exchange.step();
+    try exchange.client.submit("go on");
+    _ = try exchange.step();
+}
+
+test "a cancel acknowledges intent and does not itself emit a terminal" {
+    var exchange = try Exchange.init(std.testing.allocator);
+    defer exchange.deinit();
+    exchange.start();
+    try openAndSubmit(&exchange);
+
+    const run_id = exchange.client.pending_run_id.?;
+    try exchange.client.cancel();
+    _ = try exchange.step();
+
+    const ack = findCancelReply(exchange.replies.items) orelse return error.NoCancelReply;
+    try std.testing.expect(ack.accepted);
+    try std.testing.expectEqualStrings(run_id, ack.run_id);
+    try std.testing.expectEqualStrings(run_id, exchange.client.pending_run_id.?);
+    try std.testing.expectEqual(@as(u64, 0), exchange.client.error_responses);
+}
+
+test "settling a cancelled run closes its session, which is the advertised run.cancel degradation" {
+    var exchange = try Exchange.init(std.testing.allocator);
+    defer exchange.deinit();
+    exchange.start();
+    try openAndSubmit(&exchange);
+
+    const session_id = exchange.client.session_id.?;
+    try exchange.client.cancel();
+    _ = try exchange.step();
+    try exchange.server.settleCancelled(session_id, "test");
+    _ = try exchange.step();
+
+    try std.testing.expect(exchange.client.pending_run_id == null);
+    try std.testing.expect(exchange.client.session_id == null);
+    try std.testing.expectEqual(Support.degraded, advertisedLevel("run.cancel"));
+    const reason = degradedReason("run.cancel").?;
+    try std.testing.expect(std.mem.indexOf(u8, reason, "session") != null);
+}
+
+test "a closed session is not reattachable, which is the advertised session.state degradation" {
+    var exchange = try Exchange.init(std.testing.allocator);
+    defer exchange.deinit();
+    exchange.start();
+    try openAndSubmit(&exchange);
+
+    const allocator = std.testing.allocator;
+    const first = try allocator.dupe(u8, exchange.client.session_id.?);
+    defer allocator.free(first);
+    const session_id = exchange.client.session_id.?;
+    try exchange.client.cancel();
+    _ = try exchange.step();
+    try exchange.server.settleCancelled(session_id, "test");
+    _ = try exchange.step();
+    try std.testing.expect(exchange.client.session_id == null);
+
+    try exchange.client.openSession();
+    _ = try exchange.step();
+    const second = exchange.client.session_id.?;
+    try std.testing.expect(!std.mem.eql(u8, first, second));
+    try std.testing.expectEqual(Support.degraded, advertisedLevel("session.state"));
+    try std.testing.expect(degradedReason("session.state") != null);
+}
+
+test "a cancel naming a session the endpoint does not know is refused with a typed code" {
+    var exchange = try Exchange.init(std.testing.allocator);
+    defer exchange.deinit();
+    exchange.start();
+    try exchange.client.initialize();
+    _ = try exchange.step();
+    try exchange.client.openSession();
+    _ = try exchange.step();
+    try exchange.client.submit("go on");
+    _ = try exchange.step();
+
+    const envelope = oap_types.Envelope{
+        .id = "req-cancel-unknown-session",
+        .payload = .{ .run_cancel_request = .{
+            .session_id = "sess-does-not-exist",
+            .run_id = "run-does-not-exist",
+        } },
+    };
+    const line = try oap_envelope.serializeEnvelope(envelope, std.testing.allocator);
+    defer std.testing.allocator.free(line);
+    var sender = exchange.pipe.clientSender();
+    try sender.write(line);
+
+    var inbound = exchange.pipe.serverReceiver();
+    while (try inbound.readLine(std.testing.allocator)) |request| {
+        defer std.testing.allocator.free(request);
+        try exchange.server.handleLine(request);
+    }
+
+    var refused: usize = 0;
+    while (exchange.server.popOutbound()) |reply| {
+        defer std.testing.allocator.free(reply);
+        var parsed = try oap_envelope.deserializeEnvelope(reply, std.testing.allocator);
+        defer parsed.deinit(std.testing.allocator);
+        if (parsed.payload != .error_response) continue;
+        refused += 1;
+        try std.testing.expectEqualStrings(oap_types.EmittedErrorCode.session_not_found.text(), parsed.payload.error_response.code);
+    }
+    try std.testing.expectEqual(@as(usize, 1), refused);
+}
+
+test "a cancel with no run on the session is refused as run_not_found" {
+    var exchange = try Exchange.init(std.testing.allocator);
+    defer exchange.deinit();
+    exchange.start();
+    try exchange.client.initialize();
+    _ = try exchange.step();
+    try exchange.client.openSession();
+    _ = try exchange.step();
+
+    const session_id = exchange.client.session_id.?;
+    const envelope = oap_types.Envelope{
+        .id = "req-cancel-no-run",
+        .payload = .{ .run_cancel_request = .{
+            .session_id = session_id,
+            .run_id = "run-never-started",
+        } },
+    };
+    const line = try oap_envelope.serializeEnvelope(envelope, std.testing.allocator);
+    defer std.testing.allocator.free(line);
+    var sender = exchange.pipe.clientSender();
+    try sender.write(line);
+
+    var inbound = exchange.pipe.serverReceiver();
+    while (try inbound.readLine(std.testing.allocator)) |request| {
+        defer std.testing.allocator.free(request);
+        try exchange.server.handleLine(request);
+    }
+
+    var refused: usize = 0;
+    while (exchange.server.popOutbound()) |reply| {
+        defer std.testing.allocator.free(reply);
+        var parsed = try oap_envelope.deserializeEnvelope(reply, std.testing.allocator);
+        defer parsed.deinit(std.testing.allocator);
+        if (parsed.payload != .error_response) continue;
+        refused += 1;
+        try std.testing.expectEqualStrings(oap_types.EmittedErrorCode.run_not_found.text(), parsed.payload.error_response.code);
+    }
+    try std.testing.expectEqual(@as(usize, 1), refused);
+}
+
+test "a model switch outside the session catalog is refused with model_not_found" {
+    var exchange = try Exchange.init(std.testing.allocator);
+    defer exchange.deinit();
+    exchange.start();
+    try exchange.client.initialize();
+    _ = try exchange.step();
+    try exchange.client.openSession();
+    _ = try exchange.step();
+
+    try exchange.client.switchModel("no-such-provider/no-such-model");
+    _ = try exchange.step();
+    try std.testing.expectEqual(@as(u64, 1), exchange.client.error_responses);
+    try std.testing.expectEqualStrings(oap_types.EmittedErrorCode.model_not_found.text(), exchange.client.last_error.?);
+    try std.testing.expectEqual(Support.native, advertisedLevel("session.model.switch"));
 }
