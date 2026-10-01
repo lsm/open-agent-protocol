@@ -1904,10 +1904,8 @@ pub const App = struct {
         const model = runtime.currentModel() orelse return false;
         const switched = !std.mem.eql(u8, model.id, self.state.status.model) or
             !std.mem.eql(u8, model.provider, self.state.status.provider);
-        if (switched) {
-            try self.state.status.setModel(self.allocator, model.id, model.provider);
-            self.applyContextWindow();
-        }
+        if (switched) try self.state.status.setModel(self.allocator, model.id, model.provider);
+        self.applyContextWindow();
         return switched;
     }
 
@@ -4599,7 +4597,9 @@ test "App refreshes runtime models after login" {
     try std.testing.expectEqual(@as(usize, 1), runtime.availableModels().len);
     try std.testing.expectEqualStrings(defaultModel().id, runtime.currentModel().?.id);
     try std.testing.expectEqualStrings(defaultModel().id, app.state.status.model);
+    app.state.status.context_limit = 1;
     try std.testing.expect(!try app.refreshModels());
+    try std.testing.expectEqual(@as(u64, runtime.contextWindow()), @as(u64, app.state.status.context_limit));
 }
 
 const TempHome = struct {
