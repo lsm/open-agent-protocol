@@ -420,6 +420,12 @@ pub const TuiRuntime = struct {
         self.started = false;
     }
 
+    pub fn isIdle(self: *TuiRuntime) bool {
+        if (self.stream_active) return false;
+        if (self.local_agent) |*local| return local.isIdle();
+        return true;
+    }
+
     pub fn canSteer(_: *const TuiRuntime) bool {
         return true;
     }

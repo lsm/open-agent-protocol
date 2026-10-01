@@ -176,6 +176,16 @@ fails with `DuplicateOverride` rather than depending on which line won.
 
 - **Keychain**, which is preferred. `/login <id>` prompts for the key and stores
   it under that provider id, the same path Kimi uses. The input is masked.
+  `/logout <id>` removes that one provider's credential from the keychain and
+  from `~/.oapx/auth.json`, along with the copies of an API key that login saved
+  for providers reading the same variable (`opencode` and `opencode-go`), since
+  either copy would still sign the provider in. Every other credential is left
+  alone. It fails
+  rather than touching only the file when the keychain is locked or busy, since
+  a later load would read the untouched keychain item first. It cannot
+  remove a credential set in the environment (a catalog variable or a custom
+  provider's `auth.env`), nor the Codex CLI login that
+  `openai-codex` imports, and says so when either still applies.
 - **Environment**, by naming a variable in `auth.env`. The name is not a secret;
   the value never enters the file.
 
@@ -231,12 +241,14 @@ cover provider streaming**, deliberately. A streaming response has no whole-body
 read to bound, and a read deadline there would kill a turn whenever a model
 thinks for longer than the timeout.
 
-The fetch happens off that path. A successful `/login <id>` refreshes every
-catalog, which is what populates the cache the first time, and a refresh
+The fetch happens off that path. A successful `/login <id>`, a `/logout <id>`
+that removed a credential, and `/model refresh` each refresh every catalog, which
+is what populates the cache the first time, and a refresh
 requests `<base_url>/v1/models`, writes the cache, and falls back to the cached
 copy however old when it fails. An endpoint keyed from `auth` rather than the keychain has
-no login step, so it serves its declared `models` list until some other login
-triggers a refresh.
+no login step, so it serves its declared `models` list until `/model refresh` or
+some other login triggers one. When the refreshed list no longer holds the active
+model, the TUI moves to the first model it does hold and says so.
 
 The declared list is a fallback **only** when discovery produced nothing at all.
 When discovery succeeds, its result is filtered by the list and that is what you
