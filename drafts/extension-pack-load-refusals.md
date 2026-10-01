@@ -207,6 +207,13 @@ is stated per shape, because it is not uniformly nothing:
   pack-corpus completeness checks `goap` derives from a fixture manifest never
   run — even a valid manifest contributes no checks. `goap` reads `fixtures` and
   can refuse the pack on it; this loader cannot.
+  An **unknown property**, top-level or nested — for example a misspelled
+  `envelop_types` in place of `envelope_types` — is likewise ignored: `gather`
+  retrieves only the keys it knows and never rejects extras, so the intended
+  declarations are silently dropped and the pack loads. The descriptor schema
+  sets `additionalProperties: false` at every level
+  (`schema/v0.1/pack.schema.json:32,63,78,92,100`), so `goap` refuses such a
+  descriptor.
 - a **`gates` entry whose `capability` (or `payload_type`/`member`/`type`) is not
   a string** is not refused: `gateString` converts the wrong shape to an empty
   string (`packs.zig:462-466`), the entry then matches nothing or matches with an
