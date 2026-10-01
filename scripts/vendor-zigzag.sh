@@ -46,6 +46,10 @@ fs.writeFileSync(file, text.slice(0, start) + "    _ = test_files;" + text.slice
 ' "$dest/build.zig"
 
 git add -A "$dest"
-node scripts/check-no-comments.mjs --write
+files=()
+while IFS= read -r -d '' file; do
+  files+=("$file")
+done < <(git ls-files -z -- "$dest/*.zig" "$dest/*.ts")
+node scripts/check-no-comments.mjs --write --files "${files[@]}"
 git add -A "$dest"
 echo "vendored lsm/zigzag $sha (${paths[*]})"
