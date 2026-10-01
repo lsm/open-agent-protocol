@@ -9,6 +9,7 @@ pub const CommandKind = enum {
     model,
     login,
     logout,
+    provider,
     status,
     @"resume",
     rename,
@@ -44,6 +45,7 @@ pub const CommandAction = enum {
     open_model_picker,
     refresh_models,
     logout_provider,
+    add_provider,
     open_login_picker,
     open_permission_picker,
     open_settings_picker,
@@ -51,15 +53,33 @@ pub const CommandAction = enum {
     compact,
 };
 
+pub const ProviderAdd = struct {
+    id: []u8,
+    base_url: []u8,
+    api: ?[]u8 = null,
+    env_key: ?[]u8 = null,
+    auth_none: bool = false,
+
+    pub fn deinit(self: *ProviderAdd, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.base_url);
+        if (self.api) |api| allocator.free(api);
+        if (self.env_key) |key| allocator.free(key);
+        self.* = undefined;
+    }
+};
+
 pub const CommandResult = struct {
     action: CommandAction = .none,
     output: []u8 = &.{},
     login_provider: []u8 = &.{},
+    provider_add: ?ProviderAdd = null,
     is_error: bool = false,
 
     pub fn deinit(self: *CommandResult, allocator: std.mem.Allocator) void {
         if (self.output.len > 0) allocator.free(self.output);
         if (self.login_provider.len > 0) allocator.free(self.login_provider);
+        if (self.provider_add) |*add| add.deinit(allocator);
         self.* = undefined;
     }
 };
@@ -92,6 +112,7 @@ pub const commands = [_]CommandInfo{
     .{ .name = "rename", .kind = .rename, .usage = "/rename <title>", .description = "Rename this session", .handler = handleRename },
     .{ .name = "permissions", .kind = .permissions, .usage = "/permissions [ask|bypass]", .description = "Pick or set tool permission mode", .handler = handlePermissions },
     .{ .name = "perm", .kind = .permissions, .usage = "/perm [ask|bypass]", .description = "Pick or set tool permission mode", .handler = handlePermissions },
+    .{ .name = "provider", .kind = .provider, .usage = "/provider add <id> <base_url> [--api <api>] [--env <NAME>|--no-auth]", .description = "Declare a custom OpenAI- or Anthropic-compatible endpoint", .handler = handleProvider },
     .{ .name = "think", .kind = .think, .usage = "/think [off|low|medium|high|xhigh|max]", .description = "Show or set the thinking level", .handler = handleThink },
     .{ .name = "clear", .kind = .clear, .usage = "/clear", .description = "Clear transcript display", .handler = handleClear },
     .{ .name = "compact", .kind = .compact, .usage = "/compact [focus]", .description = "Summarize the conversation to free context", .handler = handleCompact },
@@ -259,6 +280,54 @@ fn handleLogout(ctx: CommandContext, command: Command) !CommandResult {
     if (command.arg == null) return .{ .output = try ctx.allocator.dupe(u8, "usage: /logout <provider>"), .is_error = true };
     if (runIsActive(ctx)) return .{ .output = try ctx.allocator.dupe(u8, "A turn is running; log out once it finishes."), .is_error = true };
     return .{ .action = .logout_provider };
+}
+
+const provider_add_usage = "usage: /provider add <id> <base_url> [--api openai-completions|openai-responses|anthropic-messages] [--env NAME|--no-auth]";
+
+fn handleProvider(ctx: CommandContext, command: Command) !CommandResult {
+    const arg = command.arg orelse return .{ .output = try ctx.allocator.dupe(u8, provider_add_usage), .is_error = true };
+    var words = std.mem.tokenizeAny(u8, arg, " \t\r\n");
+    const verb = words.next() orelse return .{ .output = try ctx.allocator.dupe(u8, provider_add_usage), .is_error = true };
+    if (!std.mem.eql(u8, verb, "add")) {
+        return .{
+            .output = try std.fmt.allocPrint(ctx.allocator, "unknown subcommand: {s}\n{s}", .{ verb, provider_add_usage }),
+            .is_error = true,
+        };
+    }
+    const id = words.next() orelse return .{ .output = try ctx.allocator.dupe(u8, provider_add_usage), .is_error = true };
+    const base_url = words.next() orelse return .{ .output = try ctx.allocator.dupe(u8, provider_add_usage), .is_error = true };
+
+    var api: ?[]const u8 = null;
+    var env_key: ?[]const u8 = null;
+    var auth_none = false;
+    while (words.next()) |flag| {
+        if (std.mem.eql(u8, flag, "--no-auth")) {
+            if (auth_none or env_key != null) return .{ .output = try ctx.allocator.dupe(u8, "--no-auth cannot be combined with --env"), .is_error = true };
+            auth_none = true;
+        } else if (std.mem.eql(u8, flag, "--api")) {
+            if (api != null) return .{ .output = try ctx.allocator.dupe(u8, "--api given more than once"), .is_error = true };
+            api = words.next() orelse return .{ .output = try ctx.allocator.dupe(u8, "--api needs a value"), .is_error = true };
+        } else if (std.mem.eql(u8, flag, "--env")) {
+            if (env_key != null or auth_none) return .{ .output = try ctx.allocator.dupe(u8, "--env cannot be combined with --no-auth or given twice"), .is_error = true };
+            env_key = words.next() orelse return .{ .output = try ctx.allocator.dupe(u8, "--env needs a NAME"), .is_error = true };
+        } else {
+            return .{
+                .output = try std.fmt.allocPrint(ctx.allocator, "unknown flag: {s}\n{s}", .{ flag, provider_add_usage }),
+                .is_error = true,
+            };
+        }
+    }
+    if (runIsActive(ctx)) return .{ .output = try ctx.allocator.dupe(u8, "A turn is running; add the provider once it finishes."), .is_error = true };
+
+    var add = ProviderAdd{
+        .id = try ctx.allocator.dupe(u8, id),
+        .base_url = try ctx.allocator.dupe(u8, base_url),
+        .auth_none = auth_none,
+    };
+    errdefer add.deinit(ctx.allocator);
+    if (api) |value| add.api = try ctx.allocator.dupe(u8, value);
+    if (env_key) |value| add.env_key = try ctx.allocator.dupe(u8, value);
+    return .{ .action = .add_provider, .provider_add = add };
 }
 
 fn handleStatus(ctx: CommandContext, command: Command) !CommandResult {
@@ -1297,4 +1366,68 @@ test "think refuses a level the TUI does not offer and keeps the current one" {
         try std.testing.expect(std.mem.startsWith(u8, result.output, "unknown thinking level: "));
         try std.testing.expectEqual(ai_types.ThinkingLevel.medium, state.thinking_level);
     }
+}
+
+test "provider add parses the id, base url and each auth form" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    const ctx = CommandContext{ .allocator = std.testing.allocator, .state = &state };
+
+    var keychain = try dispatch(ctx, .{ .kind = .provider, .arg = "add gateway https://gw.internal/anthropic --api anthropic-messages" });
+    defer keychain.deinit(std.testing.allocator);
+    try std.testing.expect(!keychain.is_error);
+    try std.testing.expectEqual(CommandAction.add_provider, keychain.action);
+    try std.testing.expectEqualStrings("gateway", keychain.provider_add.?.id);
+    try std.testing.expectEqualStrings("https://gw.internal/anthropic", keychain.provider_add.?.base_url);
+    try std.testing.expectEqualStrings("anthropic-messages", keychain.provider_add.?.api.?);
+    try std.testing.expect(keychain.provider_add.?.env_key == null);
+    try std.testing.expect(!keychain.provider_add.?.auth_none);
+
+    var env = try dispatch(ctx, .{ .kind = .provider, .arg = "add groq https://api.groq.com/openai/v1 --env GROQ_API_KEY" });
+    defer env.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("GROQ_API_KEY", env.provider_add.?.env_key.?);
+    try std.testing.expect(env.provider_add.?.api == null);
+    try std.testing.expect(!env.provider_add.?.auth_none);
+
+    var none = try dispatch(ctx, .{ .kind = .provider, .arg = "add local http://localhost:8000/v1 --no-auth" });
+    defer none.deinit(std.testing.allocator);
+    try std.testing.expect(none.provider_add.?.auth_none);
+    try std.testing.expect(none.provider_add.?.env_key == null);
+}
+
+test "provider add refuses a malformed line with the usage rather than acting" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    const ctx = CommandContext{ .allocator = std.testing.allocator, .state = &state };
+
+    for ([_][]const u8{
+        "",
+        "add",
+        "add only-id",
+        "remove gateway",
+        "add gw https://gw.test --api",
+        "add gw https://gw.test --env",
+        "add gw https://gw.test --no-auth --env K",
+        "add gw https://gw.test --env K --no-auth",
+        "add gw https://gw.test --api openai-completions --api anthropic-messages",
+        "add gw https://gw.test --auth none",
+    }) |arg| {
+        var result = try dispatch(ctx, .{ .kind = .provider, .arg = arg });
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(result.is_error);
+        try std.testing.expectEqual(CommandAction.none, result.action);
+        try std.testing.expect(result.provider_add == null);
+    }
+
+    var bare = try dispatch(ctx, .{ .kind = .provider });
+    defer bare.deinit(std.testing.allocator);
+    try std.testing.expect(bare.is_error);
+    try std.testing.expect(std.mem.startsWith(u8, bare.output, "usage: /provider add "));
+}
+
+test "provider add is reachable as a command and the result frees its spec" {
+    const parsed = try parse("/provider add local http://localhost:8000/v1 --no-auth");
+    try std.testing.expectEqual(CommandKind.provider, parsed.kind);
+    try std.testing.expectEqualStrings("add local http://localhost:8000/v1 --no-auth", parsed.arg.?);
+    try std.testing.expect(findCommandByKind(.provider) != null);
 }
