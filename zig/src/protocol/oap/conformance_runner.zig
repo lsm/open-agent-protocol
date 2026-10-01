@@ -328,15 +328,53 @@ const Runner = struct {
 
 
     fn pullUntil(self: *Runner, deadline: Deadline) !void {
-        // next() returns null both when the deadline has elapsed and on an early
-        // wake with no bytes, which fill() permits; only the deadline ends the
-        // correlation, so a no-byte wake retries under the same absolute deadline.
-        const frame = while (true) {
-            if (deadline.expired()) return error.ProbeBudgetExpired;
+        // A frame already buffered is drained even once the deadline has elapsed,
+        // because the budget bounds waiting for new input, not reading what has
+        // arrived; next() returns null only when there is nothing buffered and
+        // either the deadline is spent or it woke with no bytes, which fill permits.
+        while (true) {
             const maybe = try self.client.next(deadline.budget());
-            if (maybe) |frame| break frame;
+            if (maybe) |frame| {
+                try self.keepFrame(frame);
+                return;
+            }
             if (deadline.expired()) return error.ProbeBudgetExpired;
-        };
+        }
+    }
+
+    fn takeAnswer(self: *Runner, id: []const u8) ?oap_types.Envelope {
+        for (self.responses.items, 0..) |*candidate, index| {
+            const reply = candidate.in_reply_to orelse continue;
+            if (std.mem.eql(u8, reply, id)) return self.responses.orderedRemove(index);
+        }
+        return null;
+    }
+
+    fn answer(self: *Runner, id: []const u8, deadline: Deadline) !oap_types.Envelope {
+        while (true) {
+            if (self.takeAnswer(id)) |found| return found;
+            // Drain what is already buffered before honouring the deadline: the
+            // wanted answer may sit behind another frame in the same read.
+            if (!deadline.expired()) {
+                try self.pullUntil(deadline);
+                continue;
+            }
+            const more = try self.drainBuffered(deadline);
+            if (self.takeAnswer(id)) |found| return found;
+            if (!more) return error.ProbeBudgetExpired;
+        }
+    }
+
+    // Reads frames the client already holds without waiting for new input; returns
+    // false once none remain, so an expired deadline is honoured only after the
+    // buffer is empty.
+    fn drainBuffered(self: *Runner, deadline: Deadline) !bool {
+        const frame = try self.client.next(deadline.budget()) orelse return false;
+        self.keepFrame(frame) catch |err| return err;
+        return true;
+    }
+
+    fn keepFrame(self: *Runner, frame: endpoint_client.Frame) !void {
         if (frame == .control) {
             const control = try parseControl(self.allocator, frame.control);
             self.controls.append(self.allocator, control) catch |err| {
@@ -358,22 +396,6 @@ const Runner = struct {
             envelope.deinit(self.allocator);
             return err;
         };
-    }
-
-    fn takeAnswer(self: *Runner, id: []const u8) ?oap_types.Envelope {
-        for (self.responses.items, 0..) |*candidate, index| {
-            const reply = candidate.in_reply_to orelse continue;
-            if (std.mem.eql(u8, reply, id)) return self.responses.orderedRemove(index);
-        }
-        return null;
-    }
-
-    fn answer(self: *Runner, id: []const u8, deadline: Deadline) !oap_types.Envelope {
-        while (true) {
-            if (self.takeAnswer(id)) |found| return found;
-            if (deadline.expired()) return error.ProbeBudgetExpired;
-            try self.pullUntil(deadline);
-        }
     }
 
     fn takeControl(self: *Runner, id: []const u8) ?ControlFrame {
@@ -422,8 +444,8 @@ const Runner = struct {
 
     fn nextEvent(self: *Runner, deadline: Deadline) !oap_types.Envelope {
         while (self.events.items.len == 0) {
-            if (deadline.expired()) return error.ProbeBudgetExpired;
             try self.pullUntil(deadline);
+            if (self.events.items.len == 0 and deadline.expired()) return error.ProbeBudgetExpired;
         }
         return self.events.orderedRemove(0);
     }
@@ -1851,10 +1873,40 @@ test "an event already buffered when the budget runs out is still delivered" {
     try std.testing.expectEqualStrings("b1", delivered.id);
 }
 
+test "an answer buffered behind another frame is drained after the deadline" {
+    const response =
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"a3","in_reply_to":"conformance-request-3","payload":{"session_id":"conformance","status":"idle"}}
+    ;
+    const event =
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"run.started","id":"e1","sequence":1,"run_id":"run-1","payload":{"session_id":"conformance","run_id":"run-1","status":"running"}}
+    ;
+    var runner: Runner = .{
+        .allocator = std.testing.allocator,
+        .client = endpoint_client.Client.init(std.testing.allocator),
+        .report = .{ .allocator = std.testing.allocator, .endpoint = "" },
+        .session = "conformance",
+    };
+    defer {
+        for (runner.events.items) |*envelope| envelope.deinit(std.testing.allocator);
+        runner.events.deinit(std.testing.allocator);
+        for (runner.responses.items) |*envelope| envelope.deinit(std.testing.allocator);
+        runner.responses.deinit(std.testing.allocator);
+        runner.client.deinit();
+    }
+    // One read delivered an unrelated event ahead of the correlated response.
+    try runner.client.pending.appendSlice(std.testing.allocator, event ++ "\n" ++ response ++ "\n");
+
+    const spent = Deadline.start(std.testing.io, 0);
+    try std.testing.expect(spent.expired());
+    var found = try runner.answer("conformance-request-3", spent);
+    defer found.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("a3", found.id);
+}
+
 test "a run that never settles is reported as a spent budget, not as silence" {
     var runner: Runner = .{
         .allocator = std.testing.allocator,
-        .client = undefined,
+        .client = endpoint_client.Client.init(std.testing.allocator),
         .report = .{ .allocator = std.testing.allocator, .endpoint = "" },
         .session = "conformance",
         .run_id = "run-1",
@@ -1865,6 +1917,7 @@ test "a run that never settles is reported as a spent budget, not as silence" {
             std.testing.allocator.free(check.detail);
         }
         runner.report.checks.deinit(std.testing.allocator);
+        runner.client.deinit();
     }
 
     const spent = Deadline.start(std.testing.io, 0);
