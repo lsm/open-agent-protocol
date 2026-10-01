@@ -470,6 +470,25 @@ ceiling is lower. Each drop is a System entry naming the window, the model and w
 takes, and the model's own window is in effect from then on. Setting a window below what
 the model reports is never dropped.
 
+## Output limit
+
+A reply asks for at most 32,768 output tokens by default, or the model's own maximum when
+that is lower. `/output <tokens>` sets another count, `/output max` asks for the model's
+maximum, `/output auto` restores the default, and `/output` with no argument reports the
+count in effect and the ceiling. A count above the maximum the model reports is refused;
+a model that reports none accepts any count. A saved count above the maximum of a model
+switched to later is lowered to that maximum when the request is made, so no request asks
+for more than the model writes. Whatever is asked for is lowered again to what the context
+window leaves.
+
+Only under the default, and only when the default is below the model's maximum, does a
+reply cut off at the limit raise it to that maximum for the rest of the run: a cut-off tool
+call is answered with the usual error and retried, and cut-off text is followed by one
+request to continue from where it stopped. `/output` reports this only when it applies. A
+count set with `/output`, `/output max`, a model that reports no maximum, and a reply cut
+off at the maximum all end the run as before. The setting is kept in `~/.oapx/config.json` under
+`mode.output`, as `"max"` or a count, and absent for the default.
+
 ## Automatic compaction
 
 A session compacts itself before a turn once its context reaches a point set by the model.

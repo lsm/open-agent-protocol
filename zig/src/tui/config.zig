@@ -21,6 +21,12 @@ pub const ToolPermission = struct {
     }
 };
 
+pub const Output = union(enum) {
+    auto,
+    max,
+    tokens: u32,
+};
+
 pub const AutoCompact = union(enum) {
     auto,
     off,
@@ -30,6 +36,7 @@ pub const AutoCompact = union(enum) {
 pub const ModeSettings = struct {
     compact_output: bool = true,
     context_window: ?u32 = null,
+    output: Output = .auto,
     auto_worktree: bool = false,
     autocompact: AutoCompact = .auto,
 };
@@ -167,6 +174,7 @@ fn parseConfig(allocator: std.mem.Allocator, data: []const u8) !Config {
         .object => |mode_obj| {
             cfg.mode.compact_output = boolField(mode_obj, "compact_output", cfg.mode.compact_output);
             cfg.mode.context_window = positiveIntField(mode_obj, "context_window");
+            cfg.mode.output = outputField(mode_obj);
             cfg.mode.auto_worktree = boolField(mode_obj, "auto_worktree", cfg.mode.auto_worktree);
             cfg.mode.autocompact = autoCompactField(mode_obj);
         },
@@ -201,6 +209,11 @@ fn serializeConfig(allocator: std.mem.Allocator, cfg: Config) ![]u8 {
         try w.writeIntField("context_window", window);
     }
     try w.writeBoolField("auto_worktree", cfg.mode.auto_worktree);
+    switch (cfg.mode.output) {
+        .auto => {},
+        .max => try w.writeStringField("output", "max"),
+        .tokens => |count| try w.writeIntField("output", count),
+    }
     switch (cfg.mode.autocompact) {
         .auto => try w.writeStringField("autocompact", "auto"),
         .off => try w.writeStringField("autocompact", "off"),
@@ -230,6 +243,13 @@ fn positiveIntField(obj: std.json.ObjectMap, key: []const u8) ?u32 {
         .integer => |n| if (n > 0) std.math.cast(u32, n) else null,
         else => null,
     };
+}
+
+fn outputField(obj: std.json.ObjectMap) Output {
+    if (positiveIntField(obj, "output")) |count| return .{ .tokens = count };
+    const text = stringField(obj, "output") orelse return .auto;
+    if (std.mem.eql(u8, text, "max")) return .max;
+    return .auto;
 }
 
 fn autoCompactField(obj: std.json.ObjectMap) AutoCompact {
@@ -286,6 +306,31 @@ test "save config reload preserves model provider and api" {
     try std.testing.expectEqual(ToolPermission.Mode.deny, loaded.permissions.items[0].mode);
     try std.testing.expectEqual(false, loaded.mode.compact_output);
     try std.testing.expectEqual(true, loaded.mode.auto_worktree);
+}
+
+test "an output setting survives a save, and auto is written as nothing" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try tmpBase(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+
+    var store = try Store.init(std.testing.allocator, base);
+    defer store.deinit();
+
+    var cfg = try Config.defaults(std.testing.allocator);
+    defer cfg.deinit(std.testing.allocator);
+    const settings = [_]Output{ .max, .{ .tokens = 64_000 }, .auto };
+    for (settings) |setting| {
+        cfg.mode.output = setting;
+        try store.save(cfg);
+        var loaded = try store.load();
+        defer loaded.deinit(std.testing.allocator);
+        try std.testing.expectEqual(setting, loaded.mode.output);
+    }
+
+    const text = try serializeConfig(std.testing.allocator, cfg);
+    defer std.testing.allocator.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "\"output\"") == null);
 }
 
 test "a context window survives a save and an absent one stays absent" {

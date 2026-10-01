@@ -730,6 +730,7 @@ pub const ProductionRuntime = struct {
             .permission_engine = &self.permission_engine,
             .workspace_root = self.permission_engine.workspace_root,
             .context_window = self.context_window,
+            .output = agentOutput(self.mode_settings.output),
             .run_async = true,
             .compact_output = self.mode_settings.compact_output,
             .auto_worktree = self.mode_settings.auto_worktree,
@@ -2780,6 +2781,7 @@ pub const App = struct {
             else => {},
         }
         if (command.kind == .context and !result.is_error and command.arg != null) self.persistContextWindow();
+        if (command.kind == .output and !result.is_error and command.arg != null) self.persistOutput();
         if (command.kind == .autocompact and !result.is_error and command.arg != null) self.persistAutoCompact();
         if (result.output.len > 0) {
             try self.state.appendTranscript(if (result.is_error) .@"error" else .system, result.output);
@@ -2826,6 +2828,7 @@ pub const App = struct {
         defer cfg.deinit(self.allocator);
         var mode = self.mode_settings;
         mode.context_window = cfg.mode.context_window;
+        mode.output = cfg.mode.output;
         cfg.mode = mode;
         try store.save(cfg);
     }
@@ -2864,6 +2867,25 @@ pub const App = struct {
         self.mode_settings.context_window = window;
         if (cfg.mode.context_window == window) return;
         cfg.mode.context_window = window;
+        store.save(cfg) catch |err| self.recordError(@errorName(err)) catch {};
+    }
+
+    fn persistOutput(self: *App) void {
+        const runtime = self.runtime orelse return;
+        const setting = savedOutput(runtime.outputSetting());
+        self.mode_settings.output = setting;
+        var store = tui_config.Store.initDefault(self.allocator) catch |err| {
+            self.recordError(@errorName(err)) catch {};
+            return;
+        };
+        defer store.deinit();
+        var cfg = store.load() catch |err| {
+            self.recordError(@errorName(err)) catch {};
+            return;
+        };
+        defer cfg.deinit(self.allocator);
+        if (std.meta.eql(cfg.mode.output, setting)) return;
+        cfg.mode.output = setting;
         store.save(cfg) catch |err| self.recordError(@errorName(err)) catch {};
     }
 
@@ -5324,6 +5346,27 @@ fn autoCompactTestApp(mock: *MockAppSession) !App {
     app.state.autocompact = .{ .percent = 50 };
     app.state.telemetry.estimated_tokens = 60_000;
     return app;
+}
+
+fn agentOutput(setting: tui_config.Output) agent.OutputSetting {
+    return switch (setting) {
+        .auto => .auto,
+        .max => .max,
+        .tokens => |count| .{ .tokens = count },
+    };
+}
+
+fn savedOutput(setting: agent.OutputSetting) tui_config.Output {
+    return switch (setting) {
+        .auto => .auto,
+        .max => .max,
+        .tokens => |count| .{ .tokens = count },
+    };
+}
+
+test "an output setting reaches the runtime as it was saved" {
+    const saved = [_]tui_config.Output{ .auto, .max, .{ .tokens = 64_000 } };
+    for (saved) |setting| try std.testing.expectEqual(setting, savedOutput(agentOutput(setting)));
 }
 
 const auto_compact_test_model = ai_types.Model{

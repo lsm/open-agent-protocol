@@ -1,5 +1,6 @@
 const std = @import("std");
 const ai_types = @import("ai_types");
+const agent = @import("agent");
 const tui_runtime = @import("tui_runtime");
 const tui_state = @import("tui_state");
 
@@ -14,6 +15,7 @@ pub const CommandKind = enum {
     clear,
     compact,
     context,
+    output,
     autocompact,
     settings,
     abort,
@@ -87,6 +89,7 @@ pub const commands = [_]CommandInfo{
     .{ .name = "clear", .kind = .clear, .usage = "/clear", .description = "Clear transcript display", .handler = handleClear },
     .{ .name = "compact", .kind = .compact, .usage = "/compact [focus]", .description = "Summarize the conversation to free context", .handler = handleCompact },
     .{ .name = "context", .kind = .context, .usage = "/context [tokens|default]", .description = "Show or set the context window for this session", .handler = handleContext },
+    .{ .name = "output", .kind = .output, .usage = "/output [auto|max|tokens]", .description = "Show or set how much output a reply may ask for", .handler = handleOutput },
     .{ .name = "autocompact", .kind = .autocompact, .usage = "/autocompact [auto|percent|off]", .description = "Show or set when the conversation compacts on its own", .handler = handleAutoCompact },
     .{ .name = "settings", .kind = .settings, .usage = "/settings", .description = "Configure TUI settings", .handler = handleSettings },
     .{ .name = "abort", .kind = .abort, .usage = "/abort", .description = "Cancel the active streaming turn", .handler = handleAbort },
@@ -376,6 +379,56 @@ fn contextWindowReport(allocator: std.mem.Allocator, runtime: *tui_runtime.TuiRu
     return out.toOwnedSlice();
 }
 
+fn handleOutput(ctx: CommandContext, command: Command) !CommandResult {
+    const runtime = ctx.runtime orelse return error.NoRuntimeConfigured;
+    const model = runtime.currentModel() orelse return error.NoModelConfigured;
+    const arg = command.arg orelse return .{ .output = try outputReport(ctx.allocator, runtime) };
+    const setting: agent.OutputSetting = if (std.ascii.eqlIgnoreCase(arg, "auto"))
+        .auto
+    else if (std.ascii.eqlIgnoreCase(arg, "max"))
+        .max
+    else
+        .{ .tokens = tui_runtime.parseContextWindow(arg) catch {
+            return .{
+                .output = try std.fmt.allocPrint(ctx.allocator, "not a token count: {s}. Give auto, max, or a whole number, optionally with k, such as 64k", .{arg}),
+                .is_error = true,
+            };
+        } };
+    runtime.setOutput(setting) catch |err| switch (err) {
+        error.AboveMaximum => return .{
+            .output = try std.fmt.allocPrint(ctx.allocator, "{s} writes at most {d} tokens in a reply; {d} is above it. /output max asks for all of it.", .{ model.id, model.max_tokens, setting.tokens }),
+            .is_error = true,
+        },
+        error.AgentAlreadyStreaming => return .{
+            .output = try ctx.allocator.dupe(u8, "A turn is running; set the output limit once it finishes."),
+            .is_error = true,
+        },
+    };
+    return .{ .output = try outputReport(ctx.allocator, runtime) };
+}
+
+fn outputReport(allocator: std.mem.Allocator, runtime: *tui_runtime.TuiRuntime) ![]u8 {
+    const model = runtime.currentModel() orelse return allocator.dupe(u8, "no model");
+    const setting = runtime.outputSetting();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    const writer = &out.writer;
+    try writer.print("output: {s}, {d} tokens a reply for {s}", .{ switch (setting) {
+        .auto => "auto",
+        .max => "max",
+        .tokens => "set",
+    }, agent.outputRequest(model, setting), model.id });
+    if (model.max_tokens > 0) {
+        try writer.print(", up to {d}", .{model.max_tokens});
+        if (setting == .auto and agent.outputRequest(model, setting) < model.max_tokens) {
+            try writer.print(". A reply cut off below that is continued once at {d}", .{model.max_tokens});
+        }
+    } else {
+        try writer.writeAll(", and the model reports no maximum of its own");
+    }
+    try writer.writeAll(". /output auto restores the default.");
+    return out.toOwnedSlice();
+}
+
 fn handleAutoCompact(ctx: CommandContext, command: Command) !CommandResult {
     const arg = command.arg orelse return .{ .output = try autoCompactReport(ctx) };
     if (std.ascii.eqlIgnoreCase(arg, "off") or std.ascii.eqlIgnoreCase(arg, "none")) {
@@ -579,6 +632,42 @@ test "context sets the window for the session and names the model and the window
     defer reset.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(u64, 128_000), runtime.contextWindow());
     try std.testing.expect(std.mem.indexOf(u8, reset.output, "context window: 128000 for gpt-5-codex (openai)") != null);
+}
+
+test "output sets how much a reply asks for, and refuses more than the model writes" {
+    const models = [_]ai_types.Model{context_test_model};
+    var runtime = try contextTestRuntime(&models);
+    defer runtime.deinit();
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    const ctx = CommandContext{ .allocator = std.testing.allocator, .state = &state, .runtime = &runtime };
+
+    var shown = try dispatch(ctx, .{ .kind = .output });
+    defer shown.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, shown.output, "output: auto, 16384 tokens a reply for gpt-5-codex, up to 16384") != null);
+
+    var set = try dispatch(ctx, .{ .kind = .output, .arg = "8k" });
+    defer set.deinit(std.testing.allocator);
+    try std.testing.expect(!set.is_error);
+    try std.testing.expectEqual(agent.OutputSetting{ .tokens = 8_000 }, runtime.outputSetting());
+    try std.testing.expect(std.mem.indexOf(u8, set.output, "output: set, 8000 tokens a reply") != null);
+    try std.testing.expect(std.mem.indexOf(u8, set.output, "continued") == null);
+    try std.testing.expect(std.mem.indexOf(u8, shown.output, "continued") == null);
+
+    var refused = try dispatch(ctx, .{ .kind = .output, .arg = "20k" });
+    defer refused.deinit(std.testing.allocator);
+    try std.testing.expect(refused.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, refused.output, "gpt-5-codex writes at most 16384 tokens in a reply; 20000 is above it") != null);
+    try std.testing.expectEqual(agent.OutputSetting{ .tokens = 8_000 }, runtime.outputSetting());
+
+    var max = try dispatch(ctx, .{ .kind = .output, .arg = "max" });
+    defer max.deinit(std.testing.allocator);
+    try std.testing.expectEqual(agent.OutputSetting.max, runtime.outputSetting());
+
+    var bad = try dispatch(ctx, .{ .kind = .output, .arg = "lots" });
+    defer bad.deinit(std.testing.allocator);
+    try std.testing.expect(bad.is_error);
+    try std.testing.expectEqual(agent.OutputSetting.max, runtime.outputSetting());
 }
 
 test "context refuses a window above the ceiling and says what the ceiling is" {
