@@ -2607,11 +2607,14 @@ pub const App = struct {
         const text = try std.mem.join(self.allocator, "\n\n", held);
         defer self.allocator.free(text);
         const sent = self.sendHeld(null) catch false;
-        self.state.clearHeldAfterAbort();
         if (sent) return;
-        const restored = self.state.composer.buffer.items.len == 0;
-        if (restored) try self.state.replaceComposerBuffer(text);
-        try self.state.appendTranscript(.@"error", if (restored) "The queued messages could not be sent; they are back in the composer." else "The queued messages could not be sent, and the composer was not empty, so they were not restored.");
+        if (self.state.composer.buffer.items.len > 0) {
+            try self.state.appendTranscript(.@"error", "The queued messages could not be sent; they are kept and go out with your next message, or press esc to drop them.");
+            return;
+        }
+        self.state.clearHeldAfterAbort();
+        try self.state.replaceComposerBuffer(text);
+        try self.state.appendTranscript(.@"error", "The queued messages could not be sent; they are back in the composer.");
     }
 
     fn applyRuntimeEvent(self: *App, event: tui_runtime.TuiEvent) !void {
@@ -3795,7 +3798,7 @@ pub const TuiModel = struct {
             app.state.composer.clear();
             return;
         }
-        if (streamActive(app)) {
+        if (streamActive(app) or app.state.held_after_abort.items.len > 0) {
             abortTurn(app);
             return;
         }
@@ -3944,7 +3947,12 @@ pub const TuiModel = struct {
     const max_queued_rows: usize = 3;
 
     fn renderQueuedFollowUps(allocator: std.mem.Allocator, state: *const tui_state.AppState, width: usize) ![]const u8 {
-        const pending = state.pending_follow_ups.items;
+        const held = state.held_after_abort.items[@min(state.held_after_abort_echoed, state.held_after_abort.items.len)..];
+        var waiting = std.ArrayList([]const u8).empty;
+        defer waiting.deinit(allocator);
+        try waiting.appendSlice(allocator, held);
+        try waiting.appendSlice(allocator, state.pending_follow_ups.items);
+        const pending = waiting.items;
         if (pending.len == 0) return "";
         var out: std.Io.Writer.Allocating = .init(allocator);
         errdefer out.deinit();
@@ -5620,7 +5628,7 @@ const auto_compact_test_model = ai_types.Model{
 };
 
 test "esc during a run sends the queued messages as a new run once the aborted one ends" {
-    var mock = MockAppSession{};
+    var mock = MockAppSession{ .queued_counts = .{ .follow_up = 1 } };
     defer mock.deinit();
     var app = App.initWithoutRuntime(std.testing.allocator);
     defer app.deinit();
@@ -5649,8 +5657,46 @@ test "esc during a run sends the queued messages as a new run once the aborted o
     try std.testing.expectEqual(@as(usize, 1), echoes);
 }
 
+test "held follow-ups stay in the queued rows until they are sent" {
+    var mock = MockAppSession{ .queued_counts = .{ .follow_up = 1 } };
+    defer mock.deinit();
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.session = mock.session();
+    app.state.status.streaming = true;
+    try app.state.appendSteeredMessage("shown already");
+    try app.state.appendQueuedFollowUp("then open a PR");
+    try app.submit("/abort");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const rows = try TuiModel.renderQueuedFollowUps(arena.allocator(), &app.state, 80);
+    try std.testing.expect(std.mem.indexOf(u8, rows, "queued  then open a PR") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rows, "shown already") == null);
+}
+
+test "held messages that fail to send while a draft is open are kept for the next message" {
+    var mock = MockAppSession{ .submit_error = error.NoModelConfigured, .queued_counts = .{ .follow_up = 1 } };
+    defer mock.deinit();
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.session = mock.session();
+    app.state.status.streaming = true;
+    try app.state.appendQueuedFollowUp("then open a PR");
+    try app.submit("/abort");
+    try app.state.replaceComposerBuffer("a draft in progress");
+
+    try mock.eventStream().push(.{ .agent_end = .{ .reason = .cancelled } });
+    try app.drainEvents();
+
+    try std.testing.expectEqual(@as(usize, 1), app.state.held_after_abort.items.len);
+    try std.testing.expectEqualStrings("a draft in progress", app.state.composer.text());
+    const last = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expectEqualStrings("The queued messages could not be sent; they are kept and go out with your next message, or press esc to drop them.", last.text.items);
+}
+
 test "held messages that cannot be sent go back to the composer instead of being lost" {
-    var mock = MockAppSession{ .submit_error = error.NoModelConfigured };
+    var mock = MockAppSession{ .submit_error = error.NoModelConfigured, .queued_counts = .{ .follow_up = 1 } };
     defer mock.deinit();
     var app = App.initWithoutRuntime(std.testing.allocator);
     defer app.deinit();
@@ -5669,7 +5715,7 @@ test "held messages that cannot be sent go back to the composer instead of being
 }
 
 test "a message typed while an aborted run winds down carries the held messages with it" {
-    var mock = MockAppSession{};
+    var mock = MockAppSession{ .queued_counts = .{ .follow_up = 1 } };
     defer mock.deinit();
     var app = App.initWithoutRuntime(std.testing.allocator);
     defer app.deinit();
@@ -5689,7 +5735,7 @@ test "a message typed while an aborted run winds down carries the held messages 
 }
 
 test "held messages wait for the automatic compaction a typed turn would wait for" {
-    var mock = MockAppSession{ .history_messages = &auto_compact_history };
+    var mock = MockAppSession{ .history_messages = &auto_compact_history, .queued_counts = .{ .follow_up = 1 } };
     defer mock.deinit();
     var app = try autoCompactTestApp(&mock);
     defer app.deinit();

@@ -1142,8 +1142,9 @@ def scenario_steer_abort(args):
         run.session.wait_for(b"held-steer-sent", 10.0, "the held steer sent as a new turn after the abort", since=abort_from)
         run.settle(1.0)
         run.frame("held-steer-sent")
-        if run.session.plain.count(plain_text(b"steer this turn")) < 1:
-            raise ScenarioError("steer-abort: the held steer's echo vanished when it was sent")
+        echo_rows = [row for row in run.session.screen_rows() if b"steer this turn" in row]
+        if len(echo_rows) != 1:
+            raise ScenarioError(f"steer-abort: the held steer should show as exactly one transcript row once sent, found {len(echo_rows)}")
         run.note("the steer still queued at the abort is sent as the next turn once the aborted run ends, and is not echoed a second time")
 
         run.session.type_text("run the slow tool")

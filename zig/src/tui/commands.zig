@@ -524,6 +524,13 @@ fn handleAbort(ctx: CommandContext, command: Command) !CommandResult {
     }
     if (active) {
         if (ctx.session) |session| {
+            ctx.state.reconcileSteers(session.steersConsumedCount());
+            ctx.state.setQueuedCounts(session.queuedCounts());
+        } else if (ctx.runtime) |runtime| {
+            ctx.state.reconcileSteers(runtime.steersConsumedCount());
+            ctx.state.setQueuedCounts(runtime.queuedCounts());
+        }
+        if (ctx.session) |session| {
             session.cancel();
             session.clearQueuedMessages();
         } else if (ctx.runtime) |runtime| {
@@ -1047,7 +1054,7 @@ test "abort when streaming holds queued messages to send once the run stops" {
     try state.appendSteeredMessage("steer before abort");
     try state.appendQueuedFollowUp("follow-up before abort");
 
-    var mock = MockAbortSession{};
+    var mock = MockAbortSession{ .queued_counts = .{ .follow_up = 1 } };
     defer mock.deinit();
     var session = mock.session();
 
@@ -1069,6 +1076,23 @@ test "abort when streaming holds queued messages to send once the run stops" {
     defer again.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("Dropped the 2 queued messages; they will not be sent.", again.output);
     try std.testing.expectEqual(@as(usize, 0), state.held_after_abort.items.len);
+}
+
+test "abort does not hold a steer the run already consumed" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    state.status.streaming = true;
+    try state.appendSteeredMessage("already folded into the run");
+    try state.appendSteeredMessage("still waiting");
+
+    var mock = MockAbortSession{ .steers_consumed = 1 };
+    defer mock.deinit();
+    var session = mock.session();
+    var result = try dispatch(.{ .allocator = std.testing.allocator, .state = &state, .session = &session }, .{ .kind = .abort });
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), state.held_after_abort.items.len);
+    try std.testing.expectEqualStrings("still waiting", state.held_after_abort.items[0]);
 }
 
 test "logout and model refresh wait for a turn the status has not caught up with" {
@@ -1165,6 +1189,7 @@ test "double abort is harmless after first cancellation" {
 }
 
 const MockAbortSession = struct {
+    queued_counts: tui_runtime.QueuedCounts = .{},
     cancel_count: usize = 0,
     clear_count: usize = 0,
     steers_consumed: u64 = 0,
@@ -1223,8 +1248,7 @@ const MockAbortSession = struct {
     }
 
     fn mockQueuedCounts(ctx: ?*anyopaque) tui_runtime.QueuedCounts {
-        _ = ctx;
-        return .{};
+        return ptr(ctx).queued_counts;
     }
 
     fn mockSteersConsumed(ctx: ?*anyopaque) u64 {
