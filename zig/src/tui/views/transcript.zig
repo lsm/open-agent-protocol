@@ -1777,16 +1777,21 @@ fn lastCharStart(buf: []const u8) usize {
     return 0;
 }
 
-// An escape sentinel and the glyph it protects are one display unit; a wrap split
-// must not land between them or the emitted row decodes past its own end.
 fn keepEscapeAtomic(buf: []const u8, split: usize) usize {
-    if (split < link_escape.len) return split;
-    if (std.mem.startsWith(u8, buf[split - link_escape.len ..], link_escape)) return split - link_escape.len;
+    var i: usize = 0;
+    while (i < buf.len) {
+        if (std.mem.startsWith(u8, buf[i..], link_escape)) {
+            const payload_i = i + link_escape.len;
+            const payload_len = std.unicode.utf8ByteSequenceLength(buf[payload_i]) catch 1;
+            if (payload_i <= split and split < payload_i + payload_len) return i;
+            i = @min(payload_i + payload_len, buf.len);
+            continue;
+        }
+        i += std.unicode.utf8ByteSequenceLength(buf[i]) catch 1;
+    }
     return split;
 }
 
-// The width of a wrapped row: literal escaped glyphs count by the glyph, an
-// internal link marker counts nothing because writeInlineStyled consumes it.
 fn escapedVisibleWidth(buf: []const u8) usize {
     var width: usize = 0;
     var i: usize = 0;
@@ -2300,6 +2305,14 @@ test "an escape pair is never split across a wrap and the glyph survives" {
     const plain = try stripEscapesForTest(std.testing.allocator, styled);
     defer std.testing.allocator.free(plain);
     try std.testing.expectEqualStrings("abcdefgh\n\u{E000}", plain);
+}
+
+test "a literal escape sentinel survives a hard wrap" {
+    const styled = try renderAssistantStyled(std.testing.allocator, "\u{E002}x", 1);
+    defer std.testing.allocator.free(styled);
+    const plain = try stripEscapesForTest(std.testing.allocator, styled);
+    defer std.testing.allocator.free(plain);
+    try std.testing.expectEqualStrings("\u{E002}x", plain);
 }
 
 test "a link target keeps its balanced parentheses" {
