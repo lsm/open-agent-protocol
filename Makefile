@@ -25,7 +25,7 @@ endif
 
 install: build
 	mkdir -p "$(PREFIX)/bin"
-	tmp="$(PREFIX)/bin/.oapx.install.$$$$" && cp zig/zig-out/bin/oapx "$$tmp" && mv -f "$$tmp" "$(PREFIX)/bin/oapx"
+	tmp="$(PREFIX)/bin/.oapx.install.$$$$" && trap 'rm -f "$$tmp"' EXIT && cp zig/zig-out/bin/oapx "$$tmp" && mv -f "$$tmp" "$(PREFIX)/bin/oapx"
 
 tui: build
 	./zig/zig-out/bin/oapx --tui $(ARGS)
