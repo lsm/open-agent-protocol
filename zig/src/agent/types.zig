@@ -531,6 +531,7 @@ pub const AgentState = struct {
 };
 
 pub const AgentLoopResult = struct {
+    pub const Retention = StreamRetention;
     messages: OwnedSlice(ai_types.Message),
     final_message: ai_types.AssistantMessage,
     iterations: u32,
@@ -540,6 +541,42 @@ pub const AgentLoopResult = struct {
         self.messages.deinit(allocator);
         var final = self.final_message;
         final.deinit(allocator);
+    }
+};
+
+pub const StreamRetention = struct {
+    allocator: std.mem.Allocator,
+    parked: [3]?ai_types.AssistantMessage = .{ null, null, null },
+    result: ?AgentLoopResult = null,
+
+    pub fn init(allocator: std.mem.Allocator) StreamRetention {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn park(self: *StreamRetention, message: ai_types.AssistantMessage) void {
+        for (&self.parked) |*slot| {
+            if (slot.* == null) {
+                slot.* = message;
+                return;
+            }
+        }
+        unreachable;
+    }
+
+    pub fn retainResult(self: *StreamRetention, result: AgentLoopResult) void {
+        self.result = result;
+    }
+
+    pub fn deinit(self: *StreamRetention) void {
+        for (&self.parked) |*slot| {
+            if (slot.*) |*message| message.deinit(self.allocator);
+            slot.* = null;
+        }
+        if (self.result) |result| {
+            var owned = result;
+            owned.deinit(self.allocator);
+            self.result = null;
+        }
     }
 };
 

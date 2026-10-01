@@ -1345,6 +1345,317 @@ test "turnOutcome ends the run on a reply without tool calls, even one reporting
     try std.testing.expectEqual(TurnOutcome.answered, outcomeOf(.length, &.{}, 0));
 }
 
+const ReplyCtx = struct {
+    text: []const u8,
+    stop_reason: ai_types.StopReason,
+    reasoning_only: bool = false,
+};
+
+fn replyStream(
+    ctx: ?*anyopaque,
+    model: ai_types.Model,
+    context: ai_types.Context,
+    options: types.ProtocolOptions,
+    allocator: std.mem.Allocator,
+) anyerror!*event_stream_module.AssistantMessageEventStream {
+    _ = context;
+    _ = options;
+    const reply = @as(*ReplyCtx, @ptrCast(@alignCast(ctx.?)));
+    const stream_ptr = try allocator.create(event_stream_module.AssistantMessageEventStream);
+    errdefer allocator.destroy(stream_ptr);
+    stream_ptr.* = event_stream_module.AssistantMessageEventStream.init(allocator);
+    const blocks = try allocator.alloc(ai_types.AssistantContent, 1);
+    errdefer allocator.free(blocks);
+    const text = try allocator.dupe(u8, reply.text);
+    errdefer allocator.free(text);
+    blocks[0] = if (reply.reasoning_only) .{ .thinking = .{ .thinking = text } } else .{ .text = .{ .text = text } };
+    const api = try allocator.dupe(u8, model.api);
+    errdefer allocator.free(api);
+    const provider = try allocator.dupe(u8, model.provider);
+    errdefer allocator.free(provider);
+    const owned_model = try allocator.dupe(u8, model.id);
+    errdefer allocator.free(owned_model);
+    stream_ptr.complete(.{
+        .content = blocks,
+        .api = api,
+        .provider = provider,
+        .model = owned_model,
+        .usage = .{},
+        .stop_reason = reply.stop_reason,
+        .timestamp = 0,
+        .is_owned = true,
+    });
+    return stream_ptr;
+}
+
+fn steeringCallbackFails(ctx: ?*anyopaque, allocator: std.mem.Allocator) anyerror!?[]ai_types.Message {
+    const seen: *usize = @ptrCast(@alignCast(ctx.?));
+    _ = allocator;
+    seen.* += 1;
+    if (seen.* > 1) return error.SteeringFailed;
+    return null;
+}
+
+test "a message the context already owns is not freed again when a later callback fails" {
+    const model = testModel();
+    var events_storage: AgentEventStream = undefined;
+    const events = &events_storage;
+    events.* = AgentEventStream.init(std.testing.allocator);
+    defer events.deinit();
+
+    var context = AgentContext.init(std.testing.allocator);
+    defer context.deinit();
+
+    var steering_calls: usize = 0;
+    const answered = ReplyCtx{ .text = "reply", .stop_reason = .stop };
+    try std.testing.expectError(error.SteeringFailed, runLoop(std.testing.allocator, &.{}, &context, .{
+        .model = model,
+        .protocol = .{ .stream_fn = replyStream, .ctx = @constCast(&answered) },
+        .max_iterations = 2,
+        .get_steering_messages_fn = steeringCallbackFails,
+        .get_steering_messages_ctx = &steering_calls,
+    }, events, &events.retention));
+    try std.testing.expect(steering_calls > 1);
+
+    while (events.poll()) |event| {
+        var mutable = event;
+        defer mutable.deinit(std.testing.allocator);
+        switch (mutable) {
+            .message_end => |payload| {
+                try std.testing.expectEqualStrings("reply", payload.message.assistant.content[0].text.text);
+            },
+            .turn_end => |payload| {
+                try std.testing.expectEqualStrings("reply", payload.message.content[0].text.text);
+            },
+            else => {},
+        }
+    }
+}
+
+fn erroredStream(
+    ctx: ?*anyopaque,
+    model: ai_types.Model,
+    context: ai_types.Context,
+    options: types.ProtocolOptions,
+    allocator: std.mem.Allocator,
+) anyerror!*event_stream_module.AssistantMessageEventStream {
+    _ = ctx;
+    _ = model;
+    _ = context;
+    _ = options;
+    const stream_ptr = try allocator.create(event_stream_module.AssistantMessageEventStream);
+    errdefer allocator.destroy(stream_ptr);
+    stream_ptr.* = event_stream_module.AssistantMessageEventStream.init(allocator);
+    stream_ptr.completeWithError("provider said no");
+    return stream_ptr;
+}
+
+
+
+test "an errored turn's events stay readable after the message is released" {
+    const model = testModel();
+    var events_storage: AgentEventStream = undefined;
+    const events = &events_storage;
+    events.* = AgentEventStream.init(std.testing.allocator);
+    defer events.deinit();
+
+    var context = AgentContext.init(std.testing.allocator);
+    defer context.deinit();
+
+    try runLoop(std.testing.allocator, &.{}, &context, .{
+        .model = model,
+        .protocol = .{ .stream_fn = erroredStream },
+        .max_iterations = 1,
+    }, events, &events.retention);
+
+    var saw_turn_end = false;
+    while (events.poll()) |event| {
+        var mutable = event;
+        defer mutable.deinit(std.testing.allocator);
+        switch (mutable) {
+            .turn_end => |payload| {
+                saw_turn_end = true;
+                try std.testing.expectEqualStrings("provider said no", payload.message.error_message.slice());
+            },
+            else => {},
+        }
+    }
+    try std.testing.expect(saw_turn_end);
+}
+
+test "an aborted turn's events stay readable after the message is released" {
+    const model = testModel();
+    var events_storage: AgentEventStream = undefined;
+    const events = &events_storage;
+    events.* = AgentEventStream.init(std.testing.allocator);
+    defer events.deinit();
+
+    var context = AgentContext.init(std.testing.allocator);
+    defer context.deinit();
+    const aborted = ReplyCtx{ .text = "partial", .stop_reason = .aborted };
+
+    try runLoop(std.testing.allocator, &.{}, &context, .{
+        .model = model,
+        .protocol = .{ .stream_fn = replyStream, .ctx = @constCast(&aborted) },
+        .max_iterations = 1,
+    }, events, &events.retention);
+
+    var saw_message_end = false;
+    while (events.poll()) |event| {
+        var mutable = event;
+        defer mutable.deinit(std.testing.allocator);
+        switch (mutable) {
+            .message_end => |payload| {
+                saw_message_end = true;
+                try std.testing.expectEqualStrings("partial", payload.message.assistant.content[0].text.text);
+            },
+            else => {},
+        }
+    }
+    try std.testing.expect(saw_message_end);
+}
+
+test "an aborted turn frees the message the stream handed over" {
+    const model = testModel();
+    var events_storage: AgentEventStream = undefined;
+    const events = &events_storage;
+    events.* = AgentEventStream.init(std.testing.allocator);
+    defer events.deinit();
+
+    var context = AgentContext.init(std.testing.allocator);
+    defer context.deinit();
+    const aborted = ReplyCtx{ .text = "partial", .stop_reason = .aborted };
+    const config = AgentLoopConfig{
+        .model = model,
+        .protocol = .{ .stream_fn = replyStream, .ctx = @constCast(&aborted) },
+        .max_iterations = 1,
+    };
+    try runLoop(std.testing.allocator, &.{}, &context, config, events, &events.retention);
+    var saw_turn_end = false;
+    while (events.poll()) |event| {
+        var ev = event;
+        defer ev.deinit(std.testing.allocator);
+        if (ev == .turn_end) saw_turn_end = true;
+    }
+    try std.testing.expect(saw_turn_end);
+}
+
+fn failOnAgentEndClone(allocator: std.mem.Allocator, event: AgentEvent) error{OutOfMemory}!AgentEvent {
+    _ = allocator;
+    return switch (event) {
+        .agent_end => error.OutOfMemory,
+        else => event,
+    };
+}
+
+fn failOnMessageStartClone(allocator: std.mem.Allocator, event: AgentEvent) error{OutOfMemory}!AgentEvent {
+    _ = allocator;
+    return switch (event) {
+        .message_start => error.OutOfMemory,
+        else => event,
+    };
+}
+
+test "a rejected final publication leaves the events already queued readable" {
+    const allocator = std.testing.allocator;
+    var events_storage = AgentEventStream.init(allocator);
+    defer events_storage.deinit();
+    const events = &events_storage;
+    events.ownership = .{ .owned = failOnAgentEndClone };
+    var context = AgentContext.init(allocator);
+    defer context.deinit();
+    const aborted = ReplyCtx{ .text = "partial", .stop_reason = .aborted };
+
+    try std.testing.expectError(error.StreamCompleted, runLoop(allocator, &.{}, &context, .{
+        .model = testModel(),
+        .protocol = .{ .stream_fn = replyStream, .ctx = @constCast(&aborted) },
+        .max_iterations = 1,
+    }, events, &events.retention));
+
+    try std.testing.expect(events.retention.result != null);
+    try std.testing.expect(events.getResult() == null);
+
+    var saw_turn_end = false;
+    while (events.poll()) |event| {
+        var drained = event;
+        defer drained.deinit(allocator);
+        switch (drained) {
+            .turn_end => |payload| {
+                saw_turn_end = true;
+                try std.testing.expectEqualStrings("partial", payload.message.content[0].text.text);
+                try std.testing.expectEqual(ai_types.StopReason.aborted, payload.message.stop_reason);
+            },
+            else => {},
+        }
+    }
+    try std.testing.expect(saw_turn_end);
+}
+
+test "a failed run publishes the error and leaves the queued events readable" {
+    const allocator = std.testing.allocator;
+    var events_storage = AgentEventStream.init(allocator);
+    defer events_storage.deinit();
+    const events = &events_storage;
+    events.ownership = .{ .owned = failOnMessageStartClone };
+    var context = AgentContext.init(allocator);
+    defer context.deinit();
+    const answered = ReplyCtx{ .text = "the answer, written as reasoning", .stop_reason = .stop, .reasoning_only = true };
+    var steering_calls: usize = 0;
+    const runner = try allocator.create(RunLoopThreadCtx);
+    runner.* = .{
+        .allocator = allocator,
+        .prompts = &.{},
+        .context = &context,
+        .config = .{
+            .model = testModel(),
+            .protocol = .{ .stream_fn = replyStream, .ctx = @constCast(&answered) },
+            .max_iterations = 2,
+            .get_steering_messages_fn = steeringCallbackFails,
+            .get_steering_messages_ctx = &steering_calls,
+        },
+        .stream = events,
+    };
+    runLoopThread(runner);
+
+    try std.testing.expectEqualStrings("StreamCompleted", events.getError().?);
+    try std.testing.expect(events.getResult() == null);
+
+    var saw_turn_end = false;
+    while (events.poll()) |event| {
+        var drained = event;
+        defer drained.deinit(allocator);
+        switch (drained) {
+            .turn_end => |payload| {
+                saw_turn_end = true;
+                try std.testing.expectEqualStrings("the answer, written as reasoning", payload.message.content[0].thinking.thinking);
+            },
+            else => {},
+        }
+    }
+    try std.testing.expect(saw_turn_end);
+}
+
+fn handoffProbe(allocator: std.mem.Allocator) !void {
+    var events = AgentEventStream.init(allocator);
+    defer events.deinit();
+    var context = AgentContext.init(allocator);
+    defer context.deinit();
+    const aborted = ReplyCtx{ .text = "partial", .stop_reason = .aborted };
+    try runLoop(allocator, &.{}, &context, .{
+        .model = testModel(),
+        .protocol = .{ .stream_fn = replyStream, .ctx = @constCast(&aborted) },
+        .max_iterations = 1,
+    }, &events, &events.retention);
+    while (events.poll()) |event| {
+        var drained = event;
+        drained.deinit(allocator);
+    }
+}
+
+test "the parked hand-off survives an exhausted allocator" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, handoffProbe, .{});
+}
+
 test "turnOutcome never runs the tool calls of a failed, aborted or filtered reply" {
     const calls = [_]ai_types.AssistantContent{
         .{ .tool_call = .{ .id = "call_1", .name = "read", .arguments_json = "{}" } },
@@ -1396,6 +1707,7 @@ fn runLoop(
     context: *AgentContext,
     config: AgentLoopConfig,
     event_stream: *AgentEventStream,
+    retained: *types.StreamRetention,
 ) !void {
     var state = LoopState{
         .messages = std.ArrayList(ai_types.Message).empty,
@@ -1403,6 +1715,10 @@ fn runLoop(
         .final_message = null,
     };
     defer state.deinit(allocator);
+    errdefer if (state.final_message) |final_message| {
+        state.final_message = null;
+        retained.park(final_message);
+    };
 
     if (prompts) |initial_prompts| {
         for (initial_prompts) |prompt| {
@@ -1526,6 +1842,9 @@ fn runLoop(
             };
 
             state.iterations += 1;
+            const loop_owns_message = assistant_message.is_owned or assistant_message.error_message.is_owned;
+            var message_transferred = false;
+            errdefer if (loop_owns_message and !message_transferred) retained.park(assistant_message);
             try setFinalMessage(&state, allocator, assistant_message);
             try appendClonedStateMessage(&state.messages, allocator, .{ .assistant = assistant_message });
 
@@ -1545,9 +1864,9 @@ fn runLoop(
                         .message = final_error_msg,
                         .tool_results = types.OwnedSlice(ai_types.ToolResultMessage).initBorrowed(&.{}),
                     } });
-                    if (assistant_message.error_message.is_owned) {
-                        var owned_assistant_message = assistant_message;
-                        owned_assistant_message.deinit(allocator);
+                    if (loop_owns_message) {
+                        retained.park(assistant_message);
+                        message_transferred = true;
                     }
                     ended_before_cap = true;
                     break :outer;
@@ -1559,6 +1878,7 @@ fn runLoop(
                     } });
 
                     try context.appendMessage(.{ .assistant = assistant_message });
+                    message_transferred = true;
 
                     if (config.get_steering_messages_fn) |get_steering| {
                         if (try get_steering(config.get_steering_messages_ctx, allocator)) |queued_steering| {
@@ -1610,6 +1930,7 @@ fn runLoop(
                         .tool_results = types.OwnedSlice(ai_types.ToolResultMessage).initBorrowed(&.{}),
                     } });
                     try context.appendMessage(.{ .assistant = assistant_message });
+                    message_transferred = true;
 
                     const request = try requestMessage(context.allocator, if (outcome == .reasoned_only) answer_request_text else continue_request_text);
                     context.appendMessage(request) catch |err| {
@@ -1640,6 +1961,7 @@ fn runLoop(
                     } });
 
                     try context.appendMessage(.{ .assistant = assistant_message });
+                    message_transferred = true;
 
                     for (tool_result.tool_results) |tool_result_msg| {
                         const msg: ai_types.Message = .{ .tool_result = tool_result_msg };
@@ -1698,12 +2020,14 @@ fn runLoop(
         };
     };
 
-    const result = AgentLoopResult{
+    var result = AgentLoopResult{
         .messages = owned_slice_mod.OwnedSlice(ai_types.Message).initOwned(result_messages),
         .final_message = result_final_message,
         .iterations = state.iterations,
         .termination = termination,
     };
+    var result_owned = false;
+    errdefer if (!result_owned) retained.retainResult(result);
 
     try pushAgentEvent(event_stream, .{
         .agent_end = .{
@@ -1713,6 +2037,7 @@ fn runLoop(
         },
     });
 
+    result_owned = true;
     event_stream.complete(result);
 }
 
@@ -1730,7 +2055,7 @@ fn runLoopThread(ctx: *RunLoopThreadCtx) void {
     const allocator = ctx.allocator;
     const stream = ctx.stream;
 
-    runLoop(allocator, ctx.prompts, ctx.context, ctx.config, stream) catch |err| {
+    runLoop(allocator, ctx.prompts, ctx.context, ctx.config, stream, &stream.retention) catch |err| {
         stream.completeWithError(@errorName(err));
     };
 
