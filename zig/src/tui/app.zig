@@ -1777,17 +1777,11 @@ pub const App = struct {
                 self.finishLogin();
                 if (save_err) |_| {
                     self.refreshLoginStatus();
-                    const refresh_err = self.refreshModels();
+                    const switched = self.refreshModels();
                     const msg = try std.fmt.allocPrint(self.allocator, "logged in to {s}", .{provider_id});
                     defer self.allocator.free(msg);
                     try self.state.appendTranscript(.system, msg);
-                    if (refresh_err) |_| {
-                        try self.state.appendTranscript(.system, "model catalog refreshed");
-                    } else |err| {
-                        const refresh_msg = try std.fmt.allocPrint(self.allocator, "login succeeded but refreshing models failed: {s}", .{@errorName(err)});
-                        defer self.allocator.free(refresh_msg);
-                        try self.state.appendTranscript(.@"error", refresh_msg);
-                    }
+                    try self.reportModelRefresh(switched, "login succeeded but refreshing models failed");
                 } else |err| {
                     const msg = try std.fmt.allocPrint(self.allocator, "login succeeded but saving credentials failed: {s}", .{@errorName(err)});
                     defer self.allocator.free(msg);
