@@ -142,6 +142,7 @@ pub const SessionMetadata = struct {
     title: []u8 = &.{},
     title_generated: bool = false,
     title_renamed: bool = false,
+    thinking_level: ?ai_types.ThinkingLevel = null,
 
     pub fn deinit(self: *SessionMetadata, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
@@ -474,6 +475,7 @@ fn serializeIndex(allocator: std.mem.Allocator, meta: SessionMetadata) ![]u8 {
     try w.writeStringField("title", meta.title);
     try w.writeBoolField("title_generated", meta.title_generated);
     try w.writeBoolField("title_renamed", meta.title_renamed);
+    if (meta.thinking_level) |level| try w.writeStringField("thinking_level", @tagName(level));
     try w.endObject();
     return buf.toOwnedSlice(allocator);
 }
@@ -498,6 +500,7 @@ fn parseIndex(allocator: std.mem.Allocator, session_id: []const u8, data: []cons
     }
     meta.title_generated = boolField(obj, "title_generated", false);
     meta.title_renamed = boolField(obj, "title_renamed", false);
+    if (stringField(obj, "thinking_level")) |v| meta.thinking_level = std.meta.stringToEnum(ai_types.ThinkingLevel, v);
     return meta;
 }
 
@@ -2128,6 +2131,29 @@ test "a generated title does not replace a session's chosen name" {
     try std.testing.expectEqualStrings("My name", index.title);
     try std.testing.expect(index.title_renamed);
     try std.testing.expect(!index.title_generated);
+}
+
+test "a session's index keeps its thinking level, and an index without one reads as unset" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try tmpBase(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+    var store = try Store.init(std.testing.allocator, base);
+    defer store.deinit();
+
+    var meta = try defaultMetadata(std.testing.allocator, "thinks");
+    defer meta.deinit(std.testing.allocator);
+    meta.thinking_level = .xhigh;
+    try store.saveIndex(meta);
+    try store.saveGeneratedTitle("thinks", "Generated name");
+
+    var index = try store.loadIndex("thinks");
+    defer index.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(?ai_types.ThinkingLevel, .xhigh), index.thinking_level);
+
+    var bare = try parseIndex(std.testing.allocator, "bare", "{\"model\":\"m\",\"thinking_level\":\"loud\"}");
+    defer bare.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(?ai_types.ThinkingLevel, null), bare.thinking_level);
 }
 
 test "parseIndex survives an allocation failure at every step" {
