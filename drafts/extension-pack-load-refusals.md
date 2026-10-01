@@ -174,6 +174,12 @@ is stated per shape, because it is not uniformly nothing:
   type** but **no branch**. It is a separate matter from absence and has its own
   repair, but its contribution is the same shape and is recorded here so the
   per-shape definition above holds for every input the loader currently accepts.
+- a **`payload_members` entry** missing `payload_type` or `member` (or carrying
+  them as non-strings), or whose `schema` is absent or not an object, is skipped
+  the same way (`packs.zig:351-354`): the load succeeds and the entry contributes
+  **no member**. `goap` rejects the same entry, because the descriptor schema
+  requires `payload_type`, `member` and `schema` on every entry
+  (`schema/v0.1/pack.schema.json:86`).
 
 A descriptor that **omits `schemas` entirely**, or sets `"schemas": []`, is also
 accepted and contributes nothing. The loader only type-checks the field
