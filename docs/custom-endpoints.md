@@ -267,6 +267,17 @@ written here: nothing in this runtime spells a catalogued base URL. The two
 values discovery does not carry are the same defaults a custom provider starts
 from, 128000 and 8192, until a wire reports better ones.
 
+A row whose listing names models without their limits can name a `models_dev`
+key, as both OpenCode rows do. A discovered model with no context window, output
+limit, reasoning flag or image input of its own then takes the figure
+[models.dev](https://models.dev) publishes for the same model id under that key;
+a figure the listing or the row's `models` entry gives is never replaced, and a
+model models.dev does not list keeps the defaults. The full listing is fetched
+without credentials at most once a day, only when such a row has a credential and
+a model lacking a limit, and the providers the catalog names are kept at
+`~/.oapx/model_catalog/models-dev.json`. A failed fetch falls back to that copy
+however old, then to the defaults; a model refresh fetches it again.
+
 The base URL a discovered row uses is resolved the way every other row's is, in
 the order `provider_base_url` documents: `OAPX_BASE_URL` first, then the row's
 `base_url_env` (`DEEPSEEK_BASE_URL`, `OPENAI_BASE_URL`, …), then the catalog. So
