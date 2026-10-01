@@ -725,7 +725,7 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   Two things a reader might assume are covered here are not: this site's drain amount, and the
   existence of the time bound.
 - **the total-time guard's presence, through the injected callback that already exists** — the row at
-  `:615-621` pins that the 2500 ms budget is **elapsed rather than uptime** and is explicit that it does
+  `:655-663` pins that the 2500 ms budget is **elapsed rather than uptime** and is explicit that it does
   **not** pin the guard's presence, because that test's bytes are already buffered when `drain` starts.
   `a drain whose elapsed budget is already spent consumes nothing, though the bytes are buffered and
   reachable` pins the presence, through the **existing public `KeepGoing`** at `:104-110` and the injection
