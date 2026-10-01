@@ -266,6 +266,19 @@ pub const Agent = struct {
         self._state.model = model;
     }
 
+    fn ensureSessionId(self: *Agent) !void {
+        if (self._session_id != null) return;
+        var bytes: [8]u8 = undefined;
+        compat.random.fillRandomBytes(&bytes);
+        self._session_id = try std.fmt.allocPrint(self._allocator, "oapx-{s}", .{&std.fmt.bytesToHex(bytes, .lower)});
+    }
+
+    pub fn setSessionId(self: *Agent, session_id: ?[]const u8) !void {
+        const next: ?[]const u8 = if (session_id) |id| try self._allocator.dupe(u8, id) else null;
+        if (self._session_id) |previous| self._allocator.free(previous);
+        self._session_id = next;
+    }
+
     pub fn setThinkingLevel(self: *Agent, level: ai_types.ThinkingLevel) void {
         self._state.thinking_level = level;
     }
@@ -587,6 +600,7 @@ pub const Agent = struct {
             messages = converted.?;
         }
 
+        try self.ensureSessionId();
         const stream = try self._protocol.stream(model, .{
             .system_prompt = ai_types.OwnedSlice(u8).initBorrowed(self._state.system_prompt),
             .messages = messages,
@@ -1192,6 +1206,7 @@ pub const Agent = struct {
             }
         }
 
+        try self.ensureSessionId();
         const config = agent_loop.AgentLoopConfig{
             .model = model,
             .protocol = self._protocol,
@@ -1571,6 +1586,8 @@ fn createDelayedErrorProtocol() types.ProtocolClient {
 
 const CaptureOptionsCtx = struct {
     max_tokens: ?u32 = null,
+    session_id: [32]u8 = undefined,
+    session_id_len: usize = 0,
 };
 
 fn captureOptionsStreamFn(
@@ -1583,6 +1600,10 @@ fn captureOptionsStreamFn(
     _ = context;
     const capture: *CaptureOptionsCtx = @ptrCast(@alignCast(ctx.?));
     capture.max_tokens = options.max_tokens;
+    if (options.session_id) |sid| {
+        capture.session_id_len = @min(sid.len, capture.session_id.len);
+        @memcpy(capture.session_id[0..capture.session_id_len], sid[0..capture.session_id_len]);
+    }
 
     const stream = try allocator.create(event_stream_mod.AssistantMessageEventStream);
     stream.* = event_stream_mod.AssistantMessageEventStream.init(allocator);
@@ -1624,6 +1645,40 @@ test "Agent async completion signals waitForIdle" {
 
     try std.testing.expect(agent.isIdle());
     try std.testing.expect(agent._thread == null);
+}
+
+test "Agent without a session id makes one and keeps it across runs" {
+    var capture = CaptureOptionsCtx{};
+    var agent = Agent.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = captureOptionsStreamFn, .ctx = &capture } });
+    defer agent.deinit();
+    agent.setModel(test_model);
+
+    const first_text = try std.testing.allocator.dupe(u8, "hello");
+    try agent.prompt(@as([]const ai_types.Message, &.{.{ .user = .{ .content = .{ .text = first_text }, .timestamp = 0 } }}));
+    var first: [32]u8 = undefined;
+    const first_len = capture.session_id_len;
+    @memcpy(first[0..first_len], capture.session_id[0..first_len]);
+    try std.testing.expect(std.mem.startsWith(u8, first[0..first_len], "oapx-"));
+
+    try agent.replaceMessages(&.{});
+    const second_text = try std.testing.allocator.dupe(u8, "again");
+    try agent.prompt(@as([]const ai_types.Message, &.{.{ .user = .{ .content = .{ .text = second_text }, .timestamp = 0 } }}));
+    try std.testing.expectEqualStrings(first[0..first_len], capture.session_id[0..capture.session_id_len]);
+}
+
+test "Agent sends the session id it was given, and a later one replaces it" {
+    var capture = CaptureOptionsCtx{};
+    var agent = Agent.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = captureOptionsStreamFn, .ctx = &capture } });
+    defer agent.deinit();
+    agent.setModel(test_model);
+    try agent.setSessionId("first-session");
+    try agent.setSessionId("tui-session-1");
+
+    const text = try std.testing.allocator.dupe(u8, "hello");
+    const message = ai_types.Message{ .user = .{ .content = .{ .text = text }, .timestamp = 0 } };
+    try agent.prompt(@as([]const ai_types.Message, &.{message}));
+
+    try std.testing.expectEqualStrings("tui-session-1", capture.session_id[0..capture.session_id_len]);
 }
 
 test "Agent passes model max_tokens to protocol" {

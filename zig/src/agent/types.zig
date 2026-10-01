@@ -121,7 +121,7 @@ pub const ToolExecutionEndPayload = struct {
     tool_call_id: []const u8,
     tool_name: []const u8,
     result_json: []const u8,
-    content_json: []const u8 = "",
+    content_json: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
     is_error: bool,
     args_bytes: u64 = 0,
     raw_result_bytes: u64 = 0,
@@ -161,6 +161,7 @@ pub const AgentEvent = union(enum) {
         switch (self.*) {
             .message_update => |*payload| payload.deinit(allocator),
             .compaction_end => |*payload| payload.deinit(allocator),
+            .tool_execution_end => |*payload| payload.content_json.deinit(allocator),
             .run_failed => |*payload| payload.deinit(allocator),
             else => {},
         }

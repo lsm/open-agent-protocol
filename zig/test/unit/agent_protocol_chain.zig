@@ -127,7 +127,10 @@ test "distributed chain: protocol/agent -> agent_loop -> protocol/provider" {
         allocator.destroy(loop_stream);
     }
 
-    while (loop_stream.wait()) |_| {}
+    while (loop_stream.wait()) |event| {
+        var owned_event = event;
+        owned_event.deinit(allocator);
+    }
     const loop_result = loop_stream.getResult().?;
     try std.testing.expect(loop_result.final_message.stop_reason == .stop);
 

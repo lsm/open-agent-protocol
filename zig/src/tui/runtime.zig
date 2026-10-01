@@ -222,6 +222,7 @@ pub const TuiRuntime = struct {
     compact_output: bool = false,
     run_async: bool = true,
     compaction_transcript: []u8 = &.{},
+    session_id: []u8 = &.{},
     transcript_writer: ?TranscriptWriter = null,
     run_transcripts: std.ArrayList([]u8) = .empty,
     run_transcript_saved: []const u8 = "",
@@ -364,6 +365,7 @@ pub const TuiRuntime = struct {
         self.tool_protocol.deinit();
         self.allocator.free(self.workspace_root);
         self.allocator.free(self.compaction_transcript);
+        self.allocator.free(self.session_id);
         self.clearRunTranscripts();
         self.run_transcripts.deinit(self.allocator);
         self.allocator.free(self.approval_contexts);
@@ -397,6 +399,7 @@ pub const TuiRuntime = struct {
         try self.local_agent.?.setSystemPrompt(system_prompt);
         if (self.selected_model_index) |idx| self.local_agent.?.setModel(self.effectiveModel(self.models[idx]));
         self.local_agent.?.setThinkingLevel(self.thinking_level);
+        try self.applySessionId();
         self.local_agent.?.setOutput(self.output);
         self.tool_protocol.server.tools.clearRetainingCapacity();
         try self.tool_protocol.server.registerTools(self.wrapped_tools);
@@ -829,6 +832,20 @@ pub const TuiRuntime = struct {
         ctx: ?*anyopaque,
         save_fn: *const fn (ctx: ?*anyopaque, allocator: std.mem.Allocator, index: usize, history: []const ai_types.Message) ?[]u8,
     };
+
+    pub fn setSessionId(self: *TuiRuntime, session_id: []const u8) !void {
+        const owned = try self.allocator.dupe(u8, session_id);
+        self.allocator.free(self.session_id);
+        self.session_id = owned;
+        const local = &(self.local_agent orelse return);
+        if (!local.isIdle()) return error.AgentAlreadyStreaming;
+        try self.applySessionId();
+    }
+
+    fn applySessionId(self: *TuiRuntime) !void {
+        const local = &(self.local_agent orelse return);
+        try local.setSessionId(if (self.session_id.len > 0) self.session_id else null);
+    }
 
     pub fn armAutoCompact(self: *TuiRuntime, at: ?u64, transcripts: []const []const u8, writer: ?TranscriptWriter) !void {
         if (!self.started) try self.start();
@@ -2790,6 +2807,21 @@ test "local runtime reports steering available" {
     defer runtime.deinit();
     try std.testing.expect(runtime.canSteer());
     try std.testing.expect(runtime.createSession().canSteer());
+}
+
+test "a session id set before the agent starts reaches it at start, and a later one replaces it" {
+    var mock = MockProtocolCtx{};
+    const models = [_]ai_types.Model{test_model_a};
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .protocol = makeProtocol(&mock), .models = &models });
+    defer runtime.deinit();
+
+    try runtime.setSessionId("ses-before-start");
+    try std.testing.expect(runtime.local_agent == null);
+    try runtime.start();
+    try std.testing.expectEqualStrings("ses-before-start", runtime.local_agent.?._session_id.?);
+
+    try runtime.setSessionId("ses-resumed");
+    try std.testing.expectEqualStrings("ses-resumed", runtime.local_agent.?._session_id.?);
 }
 
 test "runtime clears queued messages before replacing messages" {

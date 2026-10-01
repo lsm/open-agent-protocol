@@ -1163,6 +1163,12 @@ pub const App = struct {
         if (self.session_id.len > 0) return;
         self.session_id = generateSessionId(self.allocator) catch try self.allocator.dupe(u8, "default");
         try self.state.status.setSessionId(self.allocator, self.session_id);
+        try self.giveRuntimeSessionId();
+    }
+
+    fn giveRuntimeSessionId(self: *App) !void {
+        const runtime = self.runtime orelse return;
+        try runtime.setSessionId(self.session_id);
     }
 
     pub fn loadSessions(self: *App) !void {
@@ -1365,6 +1371,7 @@ pub const App = struct {
         self.inline_flushed_rows = 0;
         if (self.session_id.len > 0) self.allocator.free(self.session_id);
         self.session_id = new_session_id;
+        try self.giveRuntimeSessionId();
         try self.restoreCompactionTranscripts(store, &loaded);
         try self.state.status.setSessionId(self.allocator, self.session_id);
         if (runtime.currentModel()) |model| {
@@ -2595,7 +2602,10 @@ pub const App = struct {
             }
         }
         self.state.stream_aborted = false;
-        if (!self.state.status.streaming) self.armAutoCompact();
+        if (!self.state.status.streaming) {
+            self.armAutoCompact();
+            try self.giveRuntimeSessionId();
+        }
         if (self.session) |*session| {
             session.submitTurn(trimmed) catch |err| {
                 if (err == error.QueueFull) return err;

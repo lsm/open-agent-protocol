@@ -663,7 +663,8 @@ fn finalizeToolExecution(
     const returned_usage = measureToolResult(owned);
 
     const content_json = try serializeToolResultContent(allocator, owned.content.slice());
-    defer allocator.free(content_json);
+    var content_json_owned = true;
+    defer if (content_json_owned) allocator.free(content_json);
     const args_bytes: u64 = @intCast(args_json.len);
 
     var tool_result_msg = try createToolResultMessage(allocator, tool_call, owned, is_error);
@@ -679,11 +680,12 @@ fn finalizeToolExecution(
     const event_result_json = appended.getDetailsJson() orelse "null";
     const event_artifacts = appended.artifacts.slice();
 
-    try pushAgentEvent(event_stream, .{ .tool_execution_end = .{
+    content_json_owned = false;
+    pushAgentEvent(event_stream, .{ .tool_execution_end = .{
         .tool_call_id = tool_call.id,
         .tool_name = tool_call.name,
         .result_json = event_result_json,
-        .content_json = content_json,
+        .content_json = types.OwnedSlice(u8).initOwned(content_json),
         .is_error = is_error,
         .args_bytes = args_bytes,
         .raw_result_bytes = raw_usage.result_bytes,
@@ -695,7 +697,10 @@ fn finalizeToolExecution(
         .estimated_returned_tokens = returned_usage.estimated_tokens + estimateTextTokens(args_json.len),
         .artifact_count = returned_usage.artifact_count,
         .artifacts = event_artifacts,
-    } });
+    } }) catch |err| {
+        allocator.free(content_json);
+        return err;
+    };
 }
 
 fn runLegacyApproval(tool: AgentTool, approval_request: types.ToolApprovalRequest, allocator: std.mem.Allocator) types.ToolApprovalDecision {
@@ -2178,6 +2183,8 @@ test "executeToolCalls uses protocol executor when configured" {
 
     var saw_update = false;
     while (agent_events.poll()) |evt| {
+        var owned_evt = evt;
+        defer owned_evt.deinit(allocator);
         if (evt == .tool_execution_update) saw_update = true;
     }
     try std.testing.expect(protocol_ctx.saw_update);
@@ -2484,6 +2491,8 @@ test "executeToolCalls applies output middleware and reports byte telemetry" {
 
     var saw_end = false;
     while (agent_events.poll()) |evt| {
+        var owned_evt = evt;
+        defer owned_evt.deinit(allocator);
         if (evt == .tool_execution_end) {
             saw_end = true;
             try std.testing.expect(evt.tool_execution_end.raw_total_bytes > 0);
@@ -2565,6 +2574,8 @@ test "executeToolCalls emits terminal events on protocol cancellation" {
     var start_count: usize = 0;
     var end_count: usize = 0;
     while (agent_events.poll()) |evt| {
+        var owned_evt = evt;
+        defer owned_evt.deinit(allocator);
         switch (evt) {
             .tool_execution_start => start_count += 1,
             .tool_execution_end => end_count += 1,

@@ -554,6 +554,7 @@ const catalog_loader_rows = [_][]const u8{
     "deepseek",
     "openrouter",
     "opencode",
+    "opencode-go",
     "vercel",
     "zenmux",
     "deepinfra",
@@ -3382,7 +3383,7 @@ fn countVersions(url: []const u8) usize {
 
 test "a carries-version row's listing and its request agree under an override" {
     const rows = [_][]const u8{
-        "opencode",          "openrouter",              "vercel",            "zenmux",           "deepinfra",
+        "opencode",          "opencode-go",             "openrouter",        "vercel",           "zenmux",           "deepinfra",
         "zai-coding-plan",   "alibaba-coding-plan",     "minimax-coding-plan", "tencent-coding-plan", "volcengine-coding-plan",
     };
     for (rows) |id| {
@@ -3581,7 +3582,7 @@ test "a row with no implemented wire, endpoint or models listing has no target" 
 }
 
 test "every gateway row the loader enables has its own target, wire and version fact" {
-    const gateways = [_][]const u8{ "openrouter", "opencode", "vercel", "zenmux", "deepinfra" };
+    const gateways = [_][]const u8{ "openrouter", "opencode", "opencode-go", "vercel", "zenmux", "deepinfra" };
     for (gateways) |id| {
         const target = catalogTarget(id) orelse return error.TestExpectedTarget;
         try std.testing.expectEqualStrings(id, target.id);
@@ -3595,6 +3596,7 @@ test "a gateway row's discovered models carry that row's base and its own listin
     const cases = [_]struct { id: []const u8, env: []const u8, model: []const u8 }{
         .{ .id = "openrouter", .env = "OPENROUTER_API_KEY", .model = "openai/gpt-4o-mini" },
         .{ .id = "opencode", .env = "OPENCODE_API_KEY", .model = "grok-code-fast-1" },
+        .{ .id = "opencode-go", .env = "OPENCODE_API_KEY", .model = "deepseek-v4.1-flash" },
         .{ .id = "vercel", .env = "AI_GATEWAY_API_KEY", .model = "anthropic/claude-sonnet-4.5" },
         .{ .id = "zenmux", .env = "ZENMUX_API_KEY", .model = "bigseek/code" },
         .{ .id = "deepinfra", .env = "DEEPINFRA_API_KEY", .model = "meta-llama/Llama-3.3-70B-Instruct" },
@@ -3650,6 +3652,7 @@ test "the production loader enables deepseek, every gateway and every coding pla
         "deepseek",
         "openrouter",
         "opencode",
+        "opencode-go",
         "vercel",
         "zenmux",
         "deepinfra",
