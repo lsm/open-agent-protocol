@@ -630,7 +630,7 @@ was settled by #656 either.
   `drain_total_cap_bytes = 1 MiB` (`:207`) while `max_body_bytes` is 16 MiB (`:7`), so a request
   declaring between 1 MiB and 16 MiB with a non-JSON `Content-Type` is refused `415` by the gate and
   then drained **short**, leaving bytes unread at close — which is the condition the drain paragraph
-  below, at `:639`-`:645`, identifies as able to reset the connection and discard the refusal. **No test exercises that
+  below, at `:645`-`:649`, identifies as able to reset the connection and discard the refusal. **No test exercises that
   case.** The `415` proof sends bodies of `"xx"`, `"{}"` and `""`; the over-cap declared sizes in
   `hub_toobig_test.go` are the `413` path, not this one. One correction to the reason this gap was
   previously carried with: it used to be blamed on a test helper that capped writes at 256 KiB, and
