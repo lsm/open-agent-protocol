@@ -121,13 +121,11 @@ resolve.
 These shapes load and **contribute**, so they are not on the skipped list:
 
 - a cited name **spelled with a leading separator** — `/types.schema.json#/$defs/thing`
-  and `//types.schema.json#/$defs/thing` are both **accepted, with no refusal** on
-  POSIX, where `cleanRelative` splits on `/` and drops the empty part, and a pack
-  whose citation is spelled that way still contributes its branch. On Windows the
-  split is on the native separator, so a leading `/` is **not** dropped there: the
-  cited name keeps it, the lookup misses, and the loader records the same uncoded
-  refusal as any unresolvable citation. The acceptance below is the measured POSIX
-  outcome and is not universal.
+  and `//types.schema.json#/$defs/thing` are both **accepted, with no refusal**:
+  `cleanRelative` splits on `std.Io.Dir.path.isSep` (`packs.zig:80`), which matches
+  both `/` and `\` on Windows and `/` elsewhere, so the empty part before the
+  separator is dropped on every platform and a pack whose citation is spelled that
+  way contributes its branch.
   `cleanRelative` drops the empty separator (`packs.zig:83`), the registration
   loop keys the document by the *normalised* name (`packs.zig:335-336`), and the
   branch site normalises the cited name the same way (`packs.zig:396-401`), so the cited
@@ -251,14 +249,17 @@ is stated per shape, because it is not uniformly nothing:
   (`go/validation/pack.go:368`).
 - a **payload member whose `member` name is unprefixed or in a foreign
   namespace** is appended, because `gather` checks the namespace of declared
-  types and keys but not of member names. `goap` refuses it uncoded, or
-  `pack_foreign_prefix`, through the same namespace containment check it applies
-  to every name (`go/validation/pack.go:327`).
+  types and keys but not of member names. `goap` refuses it with
+  `pack_unprefixed_name` when the name lacks the pack's own prefix and
+  `pack_foreign_prefix` when it is in another namespace, through the same
+  containment check it applies to every name
+  (`go/validation/pack.go:322-331`, `containmentRefusal` at `:540-551`).
 - a well-shaped **`capability` on a gate that is absent from `capability_keys`**
   is attached and the load succeeds, because `typeCapability` reads the matching
-  gate entry without checking membership. `goap` refuses it, uncoded or
-  `pack_foreign_prefix`, when the name is outside the pack namespace, and records
-  an uncoded refusal otherwise (`go/validation/pack.go:407-413`).
+  gate entry without checking membership. `goap` refuses a name outside the pack
+  namespace with `pack_unprefixed_name` or `pack_foreign_prefix`, and records an
+  **uncoded** refusal only for a name inside the namespace that is absent from
+  `capability_keys` (`go/validation/pack.go:407-413`, `:540-551`).
 - a gate that names **both a `capability` and `ungated`**, or **neither**, is
   accepted: `typeCapability` returns whichever the entry holds and the load
   proceeds. `goap` refuses it — the modes are exclusive and exactly one must be
@@ -273,7 +274,11 @@ is stated per shape, because it is not uniformly nothing:
   `goap` records a duplicate.
 - a gate that supplies **both a `type` and the `payload_type`/`member` pair** is
   accepted; `typeCapability` and `memberCapability` each read the entry
-  independently, so no conflict is raised. `goap` refuses the ambiguous gate.
+  independently, so no conflict is raised. `goap` does not refuse the combination
+  either — it keys such a gate under its `type` and ignores the member keys
+  (`go/validation/pack.go:394-401`, `index` at `:485-490`) — so the two sides agree
+  here, and only a separately declared matching payload member is later refused
+  `pack_ungated_type`.
 - a gate whose **`ungated` value is not a boolean** (for example `"false"`) is
   accepted; `typeCapability` reads only the `capability` member and ignores the
   wrong-shaped `ungated`. `goap` rejects it through the descriptor schema.
