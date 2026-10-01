@@ -207,6 +207,11 @@
           "minLength": 1,
           "pattern": "^/"
         },
+        "models_dev": {
+          "description": "The key this provider is listed under at models.dev, for a row whose own listing names its models but not their limits. A discovered model the listing gave no context window, output limit, reasoning or image input takes the figure models.dev publishes for the model of the same id under this key; a figure the listing or a `models` entry gives is never replaced. Absent means models.dev is never consulted for this row.",
+          "type": "string",
+          "minLength": 1
+        },
         "context_window": {
           "description": "The context window in tokens, as this provider's own figures give it, for every model of this row that has no `models` entry saying otherwise. Absent means the generic default, which is a guess and a low one; a model the provider describes itself with a larger window is served the row's figure unless its entry corrects it.",
           "type": "integer",
