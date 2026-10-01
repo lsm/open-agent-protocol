@@ -222,7 +222,7 @@ fn handleHelp(ctx: CommandContext, command: Command) !CommandResult {
 fn handleModel(ctx: CommandContext, command: Command) !CommandResult {
     if (command.arg) |model_id| {
         if (std.mem.eql(u8, model_id, "refresh")) {
-            if (ctx.state.status.streaming or ctx.state.status.compacting) return .{ .output = try ctx.allocator.dupe(u8, "A turn is running; refresh models once it finishes."), .is_error = true };
+            if (runIsActive(ctx)) return .{ .output = try ctx.allocator.dupe(u8, "A turn is running; refresh models once it finishes."), .is_error = true };
             return .{ .action = .refresh_models };
         }
         if (ctx.session) |session| {
@@ -249,9 +249,15 @@ fn handleLogin(ctx: CommandContext, command: Command) !CommandResult {
     return .{ .action = .open_login_picker };
 }
 
+fn runIsActive(ctx: CommandContext) bool {
+    if (ctx.state.status.streaming or ctx.state.status.compacting) return true;
+    const runtime = ctx.runtime orelse return false;
+    return !runtime.isIdle();
+}
+
 fn handleLogout(ctx: CommandContext, command: Command) !CommandResult {
     if (command.arg == null) return .{ .output = try ctx.allocator.dupe(u8, "usage: /logout <provider>"), .is_error = true };
-    if (ctx.state.status.streaming or ctx.state.status.compacting) return .{ .output = try ctx.allocator.dupe(u8, "A turn is running; log out once it finishes."), .is_error = true };
+    if (runIsActive(ctx)) return .{ .output = try ctx.allocator.dupe(u8, "A turn is running; log out once it finishes."), .is_error = true };
     return .{ .action = .logout_provider };
 }
 
@@ -1046,6 +1052,23 @@ test "abort when streaming drops queued steers but keeps their echoes" {
     try std.testing.expectEqual(@as(usize, 0), state.pending_steers.items.len);
     try std.testing.expectEqual(@as(usize, 1), state.transcript.items.len);
     try std.testing.expectEqualStrings("steer before abort", state.transcript.items[0].text.items);
+}
+
+test "logout and model refresh wait for a turn the status has not caught up with" {
+    var runtime = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{});
+    defer runtime.deinit();
+    runtime.stream_active = true;
+
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    try std.testing.expect(!state.status.streaming);
+
+    inline for (.{ "/logout opencode-go", "/model refresh" }) |input| {
+        var result = try dispatch(.{ .allocator = std.testing.allocator, .state = &state, .runtime = &runtime }, try parse(input));
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expectEqual(CommandAction.none, result.action);
+        try std.testing.expect(result.is_error);
+    }
 }
 
 test "abort cancels active turn before streaming status is set" {
