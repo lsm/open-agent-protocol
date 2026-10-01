@@ -108,12 +108,12 @@ func TestAnUnsupportedAuthSelectorFailsTheListing(t *testing.T) {
 	}
 }
 
-func TestAMalformedPresentAuthStatusIsRefusedBeforeAnyFilter(t *testing.T) {
+func TestAMalformedPresentAuthStatusIsRefusedEvenWhenAFilterWouldDropTheRow(t *testing.T) {
 	for _, shape := range []string{"null", "number", "invented"} {
 		client := newTestClient(t, scenarioOAP, "OAPX_TEST_CATALOG_AUTH="+shape)
-		_, err := client.Models.List(testContext(t), ListModelsRequest{IncludeLoginRequired: boolPtr(true)})
+		_, err := client.Models.List(testContext(t), ListModelsRequest{API: "no-such-wire"})
 		if err == nil {
-			t.Fatalf("auth selector %q must be refused, not carried", shape)
+			t.Fatalf("auth selector %q must be refused before a filter drops its row", shape)
 		}
 		var protoErr *ProtocolError
 		if !errors.As(err, &protoErr) || protoErr.Code != CodeMalformedResponse {

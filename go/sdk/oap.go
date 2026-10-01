@@ -329,6 +329,10 @@ func (s *ModelsService) oapList(ctx context.Context, req ListModelsRequest) (*Li
 		if err != nil {
 			return nil, err
 		}
+		auth, err := oapModelAuth(model)
+		if err != nil {
+			return nil, err
+		}
 		if req.API != "" && model.str("wire") != req.API {
 			continue
 		}
@@ -337,10 +341,6 @@ func (s *ModelsService) oapList(ctx context.Context, req ListModelsRequest) (*Li
 		}
 		if req.IncludeDeprecated != nil && !*req.IncludeDeprecated && lifecycle != nil && *lifecycle == LifecycleDeprecated {
 			continue
-		}
-		auth, err := oapModelAuth(model)
-		if err != nil {
-			return nil, err
 		}
 		if req.IncludeLoginRequired != nil && !*req.IncludeLoginRequired && auth == AuthLoginRequired {
 			continue
