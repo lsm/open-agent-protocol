@@ -105,10 +105,13 @@ arm. `mapThinkingLevelToEffort` in the Anthropic file still maps its
 is an owner question, and neither adding an `off` mapping nor ratifying a
 vendor fallback is done in this change.
 
-The Anthropic file's own `mapThinkingLevelToEffort` is also untouched, so
-it still collapses `xhigh` and `max` before the shared table sees them.
-That collapsing is a separate concern, belongs to the level-mapping work,
-and is left where it is.
+The **residual collapse** is in `provider_protocol_bridge.zig:149`, whose
+`thinkingEffort` maps `.xhigh` and `.max` to `"max"` for every protocol-driven
+request, so a DeepSeek model on the Anthropic wire still sends `max` for `xhigh`
+(the shared table then maps `max` to `max`). That collapsing site is a separate
+concern, belongs to the level-mapping work, and is left where it is. The Anthropic
+file's own `mapThinkingLevelToEffort` (`anthropic_messages_api.zig`) is untouched
+too, but it only feeds the `opus-4-6` adaptive branch, not the DeepSeek branch.
 
 ## What these controls establish
 
