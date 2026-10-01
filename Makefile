@@ -2,12 +2,14 @@ ZIG ?= zig
 ARGS ?=
 OPTIMIZE ?= ReleaseSafe
 OAPX_CODESIGN_IDENTITY ?=
+PREFIX ?= $(HOME)/.local
 ZIG_GLOBAL_CACHE := $(shell $(ZIG) env 2>/dev/null | sed -n 's/.*global_cache_dir[" ]*[:=] *"\([^"]*\)".*/\1/p')
 
-.PHONY: help build tui test test-tui check clean clean-all
+.PHONY: help build install tui test test-tui check clean clean-all
 
 help:
 	@echo "make build      build oapx into zig/zig-out/bin, ReleaseSafe (OPTIMIZE=Debug for a debug build; OAPX_CODESIGN_IDENTITY=<sha1> to sign)"
+	@echo "make install    build, then put oapx in $(PREFIX)/bin (PREFIX=<dir> to change)"
 	@echo "make tui        build, then start the TUI (extra flags: make tui ARGS='--model ...')"
 	@echo "make test       run every unit test group"
 	@echo "make test-tui   run the TUI unit tests"
@@ -20,6 +22,10 @@ build:
 ifneq ($(OAPX_CODESIGN_IDENTITY),)
 	codesign --force --identifier ai.hyperneo.oap --sign "$(OAPX_CODESIGN_IDENTITY)" zig/zig-out/bin/oapx
 endif
+
+install: build
+	mkdir -p "$(PREFIX)/bin"
+	tmp="$(PREFIX)/bin/.oapx.install.$$$$" && cp zig/zig-out/bin/oapx "$$tmp" && mv -f "$$tmp" "$(PREFIX)/bin/oapx"
 
 tui: build
 	./zig/zig-out/bin/oapx --tui $(ARGS)
