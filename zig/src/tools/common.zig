@@ -381,7 +381,7 @@ fn combinedOutputLen(text: []const u8, stderr: []const u8) usize {
 pub fn makeTextResultWithArtifact(allocator: std.mem.Allocator, options: TextResultOptions) !TextResult {
     const raw_bytes = combinedOutputLen(options.text, options.stderr);
     const limit = options.limits.forTool(options.tool_name);
-    const should_store = options.force_artifact or options.text.len > limit;
+    const should_store = options.force_artifact or raw_bytes > limit;
     if (!should_store) {
         const body = try combinedOutput(allocator, options.text, options.stderr);
         defer allocator.free(body);
@@ -589,6 +589,37 @@ test "artifact helper respects per-tool limits" {
     var file_made = try makeTextResultWithArtifact(std.testing.allocator, .{ .tool_name = "file_read", .call_id = "file", .text = buf, .limits = .{ .shell = 8, .file = 32, .search = 32, .fallback = 32 } });
     defer file_made.deinit(std.testing.allocator);
     try std.testing.expect(!file_made.compressed);
+    try cleanupArtifacts();
+}
+
+test "tool results remain inline through 32 KiB and store once the combined output passes it" {
+    var artifact_root = TestArtifactRoot.init();
+    defer artifact_root.deinit();
+    const limits = ToolOutputLimits{ .shell = tool_output_threshold, .file = tool_output_threshold, .search = tool_output_threshold, .fallback = tool_output_threshold };
+
+    const at_limit = try std.testing.allocator.alloc(u8, tool_output_threshold);
+    defer std.testing.allocator.free(at_limit);
+    @memset(at_limit, 'x');
+    var inline_result = try makeTextResultWithArtifact(std.testing.allocator, .{ .tool_name = "shell_execute", .call_id = "at", .text = at_limit, .limits = limits });
+    defer inline_result.deinit(std.testing.allocator);
+    try std.testing.expect(!inline_result.compressed);
+
+    const over = try std.testing.allocator.alloc(u8, tool_output_threshold + 1);
+    defer std.testing.allocator.free(over);
+    @memset(over, 'x');
+    var stored = try makeTextResultWithArtifact(std.testing.allocator, .{ .tool_name = "shell_execute", .call_id = "over", .text = over, .limits = limits });
+    defer stored.deinit(std.testing.allocator);
+    try std.testing.expect(stored.compressed);
+
+    const small = try std.testing.allocator.alloc(u8, 1);
+    defer std.testing.allocator.free(small);
+    @memset(small, 'x');
+    const stderr = try std.testing.allocator.alloc(u8, tool_output_threshold);
+    defer std.testing.allocator.free(stderr);
+    @memset(stderr, 'e');
+    var stderr_triggered = try makeTextResultWithArtifact(std.testing.allocator, .{ .tool_name = "shell_execute", .call_id = "err", .text = small, .stderr = stderr, .limits = limits });
+    defer stderr_triggered.deinit(std.testing.allocator);
+    try std.testing.expect(stderr_triggered.compressed);
     try cleanupArtifacts();
 }
 
