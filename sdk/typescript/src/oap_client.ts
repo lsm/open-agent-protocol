@@ -417,6 +417,19 @@ function oapModelLifecycle(value: unknown): { lifecycle?: ModelLifecycle } {
   );
 }
 
+function oapModelAuthStatus(value: unknown): { auth_status: ModelDescriptor["auth_status"] } {
+  if (value === undefined) {
+    return { auth_status: "unknown" };
+  }
+  if (typeof value === "string" && (AUTH_STATUSES as readonly string[]).includes(value)) {
+    return { auth_status: value as ModelDescriptor["auth_status"] };
+  }
+  throw new MakaiProtocolError(
+    "provider model entry auth_status must be one of authenticated, login_required, expired, refreshing, login_in_progress, failed or unknown when present",
+    "malformed_response",
+  );
+}
+
 function oapModelSource(value: unknown): { source?: ModelSource } {
   if (value === undefined) {
     return {};
@@ -438,9 +451,11 @@ class OapModelsApi implements MakaiModelsApi {
   async list(request: ListModelsRequest = {}): Promise<ListModelsResponse> {
     const frame = await this.transport.request(OAP_PROVIDER_PROFILE, "provider.models.list.request", request.provider_id ? { provider_id: request.provider_id } : {});
     if (frame.type !== "provider.models.list.response" || !Array.isArray(frame.payload.models)) throw new MakaiProtocolError("invalid provider.models.list.response", "malformed_response");
-    const models: ModelDescriptor[] = frame.payload.models.filter(isRecord).map((raw) => ({
+    const models: ModelDescriptor[] = frame.payload.models.map((raw) => {
+      if (!isRecord(raw)) throw new MakaiProtocolError("provider model entry must be an object", "malformed_response");
+      return ({
       model_ref: str(raw.model_ref), model_id: str(raw.model_id), display_name: str(raw.display_name) || str(raw.model_id),
-      provider_id: str(raw.provider_id), api: str(raw.wire), auth_status: (str(raw.auth_status) || "unknown") as ModelDescriptor["auth_status"],
+      provider_id: str(raw.provider_id), api: str(raw.wire), ...oapModelAuthStatus(raw.auth_status),
       ...oapModelLifecycle(raw.lifecycle),
       capabilities: Array.isArray(raw.capabilities) ? raw.capabilities.filter((v): v is ModelDescriptor["capabilities"][number] => typeof v === "string") : [],
       ...oapModelSource(raw.source),
@@ -452,7 +467,8 @@ class OapModelsApi implements MakaiModelsApi {
       ...(Array.isArray(raw.reasoning_levels) ? { reasoning_levels: raw.reasoning_levels.filter((v): v is string => typeof v === "string") as NonNullable<ModelDescriptor["reasoning_levels"]> } : {}),
       ...(typeof raw.release_date === "string" ? { release_date: raw.release_date } : {}),
       ...(typeof raw.family === "string" ? { family: raw.family } : {}),
-    })).filter((model) => (!request.api || model.api === request.api) && (!request.model_id || model.model_id === request.model_id) && (request.include_deprecated || model.lifecycle !== "deprecated") && (request.include_login_required || model.auth_status !== "login_required"));
+    });
+    }).filter((model) => (!request.api || model.api === request.api) && (!request.model_id || model.model_id === request.model_id) && (request.include_deprecated || model.lifecycle !== "deprecated") && (request.include_login_required || model.auth_status !== "login_required"));
     const catalog = isRecord(frame.payload.catalog)
       ? {
           ...(typeof frame.payload.catalog.observed_at_ms === "number" ? { observed_at_ms: frame.payload.catalog.observed_at_ms } : {}),

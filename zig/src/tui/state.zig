@@ -3,6 +3,18 @@ const agent = @import("agent");
 const ai_types = @import("ai_types");
 const tui_runtime = @import("tui_runtime");
 const compat = @import("compat");
+const tui_config = @import("tui_config");
+
+pub const AutoCompactSetting = tui_config.AutoCompact;
+
+pub fn autoCompactAt(setting: AutoCompactSetting, model: ai_types.Model) ?u64 {
+    if (model.context_window == 0) return null;
+    return switch (setting) {
+        .off => null,
+        .percent => |percent| agent.compaction.shareAt(model.context_window, percent),
+        .auto => agent.compaction.autoCompactAt(model.context_window, model.max_tokens),
+    };
+}
 
 pub const AppMode = enum {
     normal,
@@ -188,6 +200,10 @@ pub const ApprovalState = struct {
     }
 };
 
+fn eventTime(at_ms: i64) i64 {
+    return if (at_ms > 0) at_ms else compat.time.nowMillis();
+}
+
 pub const TokenRate = struct {
     output_tokens: u64 = 0,
     stream_ms: u64 = 0,
@@ -216,6 +232,8 @@ pub const TokenRateSet = struct {
     run_active: bool = false,
     live_min_ms: i64 = 1_000,
 
+    const min_measured_ms: u64 = 100;
+
     pub fn messageStarted(self: *TokenRateSet, now_ms: i64) void {
         self.message_bytes = 0;
         self.message_first_ms = now_ms;
@@ -234,7 +252,7 @@ pub const TokenRateSet = struct {
             return;
         }
         const span: u64 = if (now_ms > self.message_first_ms) @intCast(now_ms - self.message_first_ms) else 0;
-        if (span > 0) {
+        if (span >= min_measured_ms) {
             if (output_tokens > 0) {
                 self.turn_measured.output_tokens += output_tokens;
                 self.turn_measured.stream_ms += span;
@@ -464,6 +482,12 @@ pub const ComposerState = struct {
     }
 
     pub fn insertPaste(self: *ComposerState, allocator: std.mem.Allocator, bytes: []const u8) !void {
+        if (bytes.len > 0 and bytes[0] == '\n') {
+            self.normalizeCursor();
+            if (self.cursor > 0 and self.buffer.items[self.cursor - 1] == '\r') {
+                _ = self.deleteBeforeCursor();
+            }
+        }
         if (std.mem.indexOf(u8, bytes, "\r\n") == null) return self.insertSlice(allocator, bytes);
         const normalized = try std.mem.replaceOwned(u8, allocator, bytes, "\r\n", "\n");
         defer allocator.free(normalized);
@@ -620,7 +644,7 @@ pub const AppState = struct {
     telemetry: TelemetryState = .{},
     preview: PreviewState = .{},
     thinking_level: ai_types.ThinkingLevel = .low,
-    autocompact_percent: ?u8 = null,
+    autocompact: AutoCompactSetting = .auto,
     login_input_secret: bool = false,
     anim_tick: u64 = 0,
     transcript_scroll: usize = 0,
@@ -1008,25 +1032,25 @@ pub const AppState = struct {
             },
             .message_start => |payload| switch (payload.role) {
                 .assistant => {
-                    self.telemetry.rate.messageStarted(compat.time.nowMillis());
+                    self.telemetry.rate.messageStarted(eventTime(payload.at_ms));
                     self.active_assistant_entry = try self.appendEmptyTranscript(.assistant);
                 },
                 .user => self.active_user_entry = try self.ensureTrailingEntry(.user),
                 .tool_result => self.active_tool_result_entry = try self.appendEmptyTranscript(.tool),
             },
             .text_delta => |payload| {
-                self.telemetry.rate.produced(payload.delta.slice().len, compat.time.nowMillis());
+                self.telemetry.rate.produced(payload.delta.slice().len, eventTime(payload.at_ms));
                 try self.appendDelta(.assistant, payload.delta.slice());
             },
             .thinking_delta => |payload| {
-                self.telemetry.rate.produced(payload.delta.slice().len, compat.time.nowMillis());
+                self.telemetry.rate.produced(payload.delta.slice().len, eventTime(payload.at_ms));
                 try self.appendThinkingDelta(payload.delta.slice());
             },
-            .tool_call_delta => |payload| self.telemetry.rate.produced(payload.delta.slice().len, compat.time.nowMillis()),
+            .tool_call_delta => |payload| self.telemetry.rate.produced(payload.delta.slice().len, eventTime(payload.at_ms)),
             .provider_event => {},
             .message_end => |payload| switch (payload.role) {
                 .assistant => {
-                    self.telemetry.rate.messageEnded(compat.time.nowMillis(), payload.output_tokens);
+                    self.telemetry.rate.messageEnded(eventTime(payload.at_ms), payload.output_tokens);
                     self.active_thinking_entry = null;
                     try self.finishTranscriptEntry(.assistant, payload.text.slice(), &self.active_assistant_entry);
                     try self.rememberToolCalls(payload.tool_calls_json.slice());
@@ -1120,15 +1144,17 @@ pub const AppState = struct {
                 self.dropped_event_count = payload.dropped_count;
             },
             .compaction_start => {
-                self.status.streaming = true;
                 self.status.compacting = true;
+                self.status.streaming = true;
                 self.markStreamingStarted();
             },
             .compaction_end => |payload| {
-                self.status.streaming = false;
                 self.status.compacting = false;
-                self.markStreamingStopped();
-                self.stream_aborted = false;
+                if (!payload.in_run) {
+                    self.status.streaming = false;
+                    self.markStreamingStopped();
+                    self.stream_aborted = false;
+                }
                 switch (payload.outcome) {
                     .completed => {
                         self.telemetry.estimated_tokens = payload.tokens_after;
@@ -1157,6 +1183,7 @@ pub const AppState = struct {
                 self.telemetry.rate.turnEnded();
                 self.telemetry.rate.runEnded();
                 self.status.streaming = false;
+                self.status.compacting = false;
                 self.markStreamingStopped();
                 self.stream_aborted = false;
                 try self.finalizeInterruptedTools();
@@ -2088,6 +2115,30 @@ pub fn noopToolForTest(
     _ = on_update;
     _ = allocator;
     return error.NotImplemented;
+}
+
+test "a reply drained in one pass is timed from when its events were queued, not when they were applied" {
+    var state = AppState.init(std.testing.allocator);
+    defer state.deinit();
+
+    try state.applyEvent(.{ .turn_start = .{} });
+    try state.applyEvent(.{ .message_start = .{ .at_ms = 1_000, .role = .assistant } });
+    try state.applyEvent(.{ .text_delta = .{ .at_ms = 1_500, .content_index = 0, .delta = ai_types.OwnedSlice(u8).initBorrowed("hello") } });
+    try state.applyEvent(.{ .message_end = .{ .at_ms = 5_000, .role = .assistant, .text = ai_types.OwnedSlice(u8).initBorrowed("hello"), .output_tokens = 400 } });
+    try state.applyEvent(.{ .turn_end = .{ .stop_reason = .stop } });
+
+    try std.testing.expectEqual(@as(u64, 100), state.telemetry.rate.previous.perSecond());
+}
+
+test "a reply measured over less than a tenth of a second is left out rather than reported" {
+    var rate = TokenRateSet{};
+    rate.messageStarted(1_000);
+    rate.produced(400, 1_000);
+    rate.messageEnded(1_001, 1_199);
+    rate.turnEnded();
+
+    try std.testing.expect(!rate.previous.hasFigure());
+    try std.testing.expect(!rate.average.hasFigure());
 }
 
 test "a measured turn reports the provider's own output tokens" {
@@ -3106,6 +3157,16 @@ test "Composer paste normalises CRLF into LF" {
     try std.testing.expectEqual(@as(usize, 13), state.composer.cursor);
     try state.composer.insertPaste(std.testing.allocator, "\r\nfour");
     try std.testing.expectEqualStrings("one\ntwo\nthree\nfour", state.composer.text());
+}
+
+test "Composer paste drops a carriage return split across two events" {
+    var state = AppState.init(std.testing.allocator);
+    defer state.deinit();
+
+    try state.composer.insertPaste(std.testing.allocator, "one\r");
+    try state.composer.insertPaste(std.testing.allocator, "\ntwo");
+    try std.testing.expectEqualStrings("one\ntwo", state.composer.text());
+    try std.testing.expectEqual(@as(usize, 7), state.composer.cursor);
 }
 
 test "Composer clear resets the scroll row and goal column" {

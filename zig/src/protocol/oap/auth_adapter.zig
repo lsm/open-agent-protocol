@@ -816,9 +816,9 @@ fn authFlowAllocationProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "auth providers translation survives allocation failures" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, authProvidersAllocationProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, authProvidersAllocationProbe, .{});
 }
 
 test "auth login, cancellation, and disconnect survive allocation failures" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, authFlowAllocationProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, authFlowAllocationProbe, .{});
 }

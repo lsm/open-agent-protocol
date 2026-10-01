@@ -113,7 +113,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     validator_mod.addImport("jsonschema", jsonschema_mod);
+    validator_mod.addImport("packs", packs_mod);
+    validator_mod.addImport("semantic", semantic_mod);
     validator_mod.addImport("tolerate", tolerate_mod);
+    validator_mod.addOptions("build_options", gate_options);
     const packs_test = b.addTest(.{ .root_module = packs_mod });
     const validator_test = b.addTest(.{ .root_module = validator_mod });
     const semantic_gate_mod = b.createModule(.{
@@ -773,6 +776,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
+            .{ .name = "version_options", .module = version_module },
             .{ .name = "provider_catalog", .module = provider_catalog_mod },
             .{ .name = "ai_types", .module = ai_types_mod },
             .{ .name = "event_stream", .module = event_stream_mod },
@@ -1904,7 +1908,7 @@ pub fn build(b: *std.Build) void {
     const tools_common_mod = b.createModule(.{ .root_source_file = b.path("src/tools/common.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent", .module = agent_mod }, .{ .name = "artifact/store", .module = artifact_store_mod }, .{ .name = "compat", .module = compat_mod } } });
     const tools_process_runner_mod = b.createModule(.{ .root_source_file = b.path("src/tools/process_runner.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "compat", .module = compat_mod }, .{ .name = "tools/common", .module = tools_common_mod } } });
     const tools_artifact_mod = b.createModule(.{ .root_source_file = b.path("src/tools/artifact.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent", .module = agent_mod }, .{ .name = "tools/common", .module = tools_common_mod } } });
-    const tools_shell_mod = b.createModule(.{ .root_source_file = b.path("src/tools/shell.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent", .module = agent_mod }, .{ .name = "tools/common", .module = tools_common_mod }, .{ .name = "tools/process_runner", .module = tools_process_runner_mod } } });
+    const tools_shell_mod = b.createModule(.{ .root_source_file = b.path("src/tools/shell.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "compat", .module = compat_mod }, .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent", .module = agent_mod }, .{ .name = "tools/common", .module = tools_common_mod }, .{ .name = "tools/process_runner", .module = tools_process_runner_mod } } });
     const tools_file_mod = b.createModule(.{ .root_source_file = b.path("src/tools/file.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent", .module = agent_mod }, .{ .name = "tools/common", .module = tools_common_mod } } });
     const tools_edit_mod = b.createModule(.{ .root_source_file = b.path("src/tools/edit.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent", .module = agent_mod }, .{ .name = "tools/common", .module = tools_common_mod } } });
     const tools_hashline_mod = b.createModule(.{ .root_source_file = b.path("src/tools/hashline.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent", .module = agent_mod }, .{ .name = "tools/common", .module = tools_common_mod }, .{ .name = "protocol_tool_types", .module = protocol_tool_types_mod } } });
@@ -2027,6 +2031,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "ai_types", .module = ai_types_mod },
             .{ .name = "tui_runtime", .module = tui_runtime_mod },
             .{ .name = "owned_slice", .module = owned_slice_mod },
+            .{ .name = "tui_config", .module = tui_config_mod },
         },
     });
 
@@ -2035,6 +2040,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
+            .{ .name = "agent", .module = agent_mod },
             .{ .name = "ai_types", .module = ai_types_mod },
             .{ .name = "compat", .module = compat_mod },
             .{ .name = "tui_runtime", .module = tui_runtime_mod },
@@ -2077,7 +2083,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "oauth/openai_codex", .module = oauth_openai_codex_mod },
         },
     });
-
 
     const tui_fixture_mod = b.createModule(.{
         .root_source_file = b.path("src/tui/fixture_provider.zig"),
@@ -2941,34 +2946,34 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(agent_provider_protocol_bridge_test).step);
     test_step.dependOn(&b.addRunArtifact(agent_oap_provider_bridge_test).step);
     test_step.dependOn(&b.addRunArtifact(agent_oap_remote_provider_transport_test).step);
-    test_step.dependOn(&b.addRunArtifact(tui_session_test).step);
-    test_step.dependOn(&b.addRunArtifact(tui_config_test).step);
-    test_step.dependOn(&b.addRunArtifact(tui_runtime_test).step);
-    test_step.dependOn(&b.addRunArtifact(tui_session_store_test).step);
-    test_step.dependOn(&b.addRunArtifact(tui_state_test).step);
-    test_step.dependOn(&b.addRunArtifact(tui_oap_client_test).step);
-    test_step.dependOn(&b.addRunArtifact(tui_oap_ops_parity_test).step);
-    test_step.dependOn(&b.addRunArtifact(tui_auto_continue_test).step);
-    test_step.dependOn(&b.addRunArtifact(tui_commands_test).step);
-    test_step.dependOn(&b.addRunArtifact(tui_login_test).step);
-    test_step.dependOn(&b.addRunArtifact(model_catalog_test).step);
-    test_step.dependOn(&b.addRunArtifact(tui_app_test).step);
-    test_step.dependOn(&b.addRunArtifact(tui_theme_test).step);
-    test_step.dependOn(&b.addRunArtifact(tui_text_test).step);
-    test_step.dependOn(&b.addRunArtifact(tui_render_test).step);
-    test_step.dependOn(&b.addRunArtifact(tui_shell_highlight_test).step);
-    test_step.dependOn(&b.addRunArtifact(tui_view_transcript_test).step);
-    test_step.dependOn(&b.addRunArtifact(tui_view_composer_test).step);
-    test_step.dependOn(&b.addRunArtifact(tui_view_status_bar_test).step);
-    test_step.dependOn(&b.addRunArtifact(tui_view_approval_test).step);
-    test_step.dependOn(&b.addRunArtifact(tui_view_session_picker_test).step);
-    test_step.dependOn(&b.addRunArtifact(tui_view_menu_picker_test).step);
-    test_step.dependOn(&b.addRunArtifact(tui_fixture_test).step);
-    test_step.dependOn(&b.addRunArtifact(tui_worktree_test).step);
-    test_step.dependOn(&b.addRunArtifact(tui_tests_scenarios_test).step);
-    test_step.dependOn(&b.addRunArtifact(tui_tests_e2e_test).step);
-    test_step.dependOn(&b.addRunArtifact(tui_tests_mock_transport_test).step);
-    test_step.dependOn(&b.addRunArtifact(tui_tests_fixtures_test).step);
+    test_step.dependOn(&isolatedHomeRun(b, tui_session_test, "test/tui_session_test").step);
+    test_step.dependOn(&isolatedHomeRun(b, tui_config_test, "test/tui_config_test").step);
+    test_step.dependOn(&isolatedHomeRun(b, tui_runtime_test, "test/tui_runtime_test").step);
+    test_step.dependOn(&isolatedHomeRun(b, tui_session_store_test, "test/tui_session_store_test").step);
+    test_step.dependOn(&isolatedHomeRun(b, tui_state_test, "test/tui_state_test").step);
+    test_step.dependOn(&isolatedHomeRun(b, tui_oap_client_test, "test/tui_oap_client_test").step);
+    test_step.dependOn(&isolatedHomeRun(b, tui_oap_ops_parity_test, "test/tui_oap_ops_parity_test").step);
+    test_step.dependOn(&isolatedHomeRun(b, tui_auto_continue_test, "test/tui_auto_continue_test").step);
+    test_step.dependOn(&isolatedHomeRun(b, tui_commands_test, "test/tui_commands_test").step);
+    test_step.dependOn(&isolatedHomeRun(b, tui_login_test, "test/tui_login_test").step);
+    test_step.dependOn(&isolatedHomeRun(b, model_catalog_test, "test/model_catalog_test").step);
+    test_step.dependOn(&isolatedHomeRun(b, tui_app_test, "test/tui_app_test").step);
+    test_step.dependOn(&isolatedHomeRun(b, tui_theme_test, "test/tui_theme_test").step);
+    test_step.dependOn(&isolatedHomeRun(b, tui_text_test, "test/tui_text_test").step);
+    test_step.dependOn(&isolatedHomeRun(b, tui_render_test, "test/tui_render_test").step);
+    test_step.dependOn(&isolatedHomeRun(b, tui_shell_highlight_test, "test/tui_shell_highlight_test").step);
+    test_step.dependOn(&isolatedHomeRun(b, tui_view_transcript_test, "test/tui_view_transcript_test").step);
+    test_step.dependOn(&isolatedHomeRun(b, tui_view_composer_test, "test/tui_view_composer_test").step);
+    test_step.dependOn(&isolatedHomeRun(b, tui_view_status_bar_test, "test/tui_view_status_bar_test").step);
+    test_step.dependOn(&isolatedHomeRun(b, tui_view_approval_test, "test/tui_view_approval_test").step);
+    test_step.dependOn(&isolatedHomeRun(b, tui_view_session_picker_test, "test/tui_view_session_picker_test").step);
+    test_step.dependOn(&isolatedHomeRun(b, tui_view_menu_picker_test, "test/tui_view_menu_picker_test").step);
+    test_step.dependOn(&isolatedHomeRun(b, tui_fixture_test, "test/tui_fixture_test").step);
+    test_step.dependOn(&isolatedHomeRun(b, tui_worktree_test, "test/tui_worktree_test").step);
+    test_step.dependOn(&isolatedHomeRun(b, tui_tests_scenarios_test, "test/tui_tests_scenarios_test").step);
+    test_step.dependOn(&isolatedHomeRun(b, tui_tests_e2e_test, "test/tui_tests_e2e_test").step);
+    test_step.dependOn(&isolatedHomeRun(b, tui_tests_mock_transport_test, "test/tui_tests_mock_transport_test").step);
+    test_step.dependOn(&isolatedHomeRun(b, tui_tests_fixtures_test, "test/tui_tests_fixtures_test").step);
     test_step.dependOn(&b.addRunArtifact(tools_process_runner_test).step);
     test_step.dependOn(&b.addRunArtifact(agent_test).step);
     test_step.dependOn(&b.addRunArtifact(agent_protocol_chain_test).step);
@@ -3210,34 +3215,34 @@ pub fn build(b: *std.Build) void {
     test_unit_agent_chain_step.dependOn(&b.addRunArtifact(agent_protocol_chain_test).step);
 
     const test_unit_tui_step = b.step("test-unit-tui", "Run TUI runtime unit tests");
-    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_session_test).step);
-    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_config_test).step);
-    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_runtime_test).step);
-    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_session_store_test).step);
-    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_state_test).step);
-    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_oap_client_test).step);
-    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_oap_ops_parity_test).step);
-    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_auto_continue_test).step);
-    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_commands_test).step);
-    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_login_test).step);
-    test_unit_tui_step.dependOn(&b.addRunArtifact(model_catalog_test).step);
-    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_app_test).step);
-    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_theme_test).step);
-    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_text_test).step);
-    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_render_test).step);
-    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_shell_highlight_test).step);
-    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_view_transcript_test).step);
-    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_view_composer_test).step);
-    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_view_status_bar_test).step);
-    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_view_approval_test).step);
-    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_view_session_picker_test).step);
-    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_view_menu_picker_test).step);
-    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_fixture_test).step);
-    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_worktree_test).step);
-    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_tests_scenarios_test).step);
-    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_tests_e2e_test).step);
-    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_tests_mock_transport_test).step);
-    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_tests_fixtures_test).step);
+    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_session_test, "test-unit-tui/tui_session_test").step);
+    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_config_test, "test-unit-tui/tui_config_test").step);
+    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_runtime_test, "test-unit-tui/tui_runtime_test").step);
+    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_session_store_test, "test-unit-tui/tui_session_store_test").step);
+    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_state_test, "test-unit-tui/tui_state_test").step);
+    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_oap_client_test, "test-unit-tui/tui_oap_client_test").step);
+    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_oap_ops_parity_test, "test-unit-tui/tui_oap_ops_parity_test").step);
+    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_auto_continue_test, "test-unit-tui/tui_auto_continue_test").step);
+    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_commands_test, "test-unit-tui/tui_commands_test").step);
+    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_login_test, "test-unit-tui/tui_login_test").step);
+    test_unit_tui_step.dependOn(&isolatedHomeRun(b, model_catalog_test, "test-unit-tui/model_catalog_test").step);
+    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_app_test, "test-unit-tui/tui_app_test").step);
+    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_theme_test, "test-unit-tui/tui_theme_test").step);
+    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_text_test, "test-unit-tui/tui_text_test").step);
+    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_render_test, "test-unit-tui/tui_render_test").step);
+    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_shell_highlight_test, "test-unit-tui/tui_shell_highlight_test").step);
+    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_view_transcript_test, "test-unit-tui/tui_view_transcript_test").step);
+    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_view_composer_test, "test-unit-tui/tui_view_composer_test").step);
+    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_view_status_bar_test, "test-unit-tui/tui_view_status_bar_test").step);
+    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_view_approval_test, "test-unit-tui/tui_view_approval_test").step);
+    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_view_session_picker_test, "test-unit-tui/tui_view_session_picker_test").step);
+    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_view_menu_picker_test, "test-unit-tui/tui_view_menu_picker_test").step);
+    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_fixture_test, "test-unit-tui/tui_fixture_test").step);
+    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_worktree_test, "test-unit-tui/tui_worktree_test").step);
+    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_tests_scenarios_test, "test-unit-tui/tui_tests_scenarios_test").step);
+    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_tests_e2e_test, "test-unit-tui/tui_tests_e2e_test").step);
+    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_tests_mock_transport_test, "test-unit-tui/tui_tests_mock_transport_test").step);
+    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_tests_fixtures_test, "test-unit-tui/tui_tests_fixtures_test").step);
 
     const test_e2e_anthropic_step = b.step("test-e2e-anthropic", "Run Anthropic E2E tests");
     test_e2e_anthropic_step.dependOn(&b.addRunArtifact(e2e_anthropic_test).step);
@@ -3319,6 +3324,17 @@ pub fn build(b: *std.Build) void {
     b.modules.put(b.allocator, b.dupe("agent"), agent_mod) catch @panic("OOM");
 }
 
+fn isolatedHomeRun(b: *std.Build, artifact: *std.Build.Step.Compile, name: []const u8) *std.Build.Step.Run {
+    const run = b.addRunArtifact(artifact);
+    const home = b.pathFromRoot(b.fmt(".zig-cache/test-home/{s}", .{name}));
+    run.setEnvironmentVariable("HOME", home);
+    if (b.graph.host.result.os.tag != .windows) {
+        const wipe = b.addSystemCommand(&.{ "rm", "-rf", home });
+        run.step.dependOn(&wipe.step);
+    }
+    return run;
+}
+
 fn macOsSdkDir(b: *std.Build) ?[]const u8 {
     if (b.graph.environ_map.get("SDKROOT")) |sdkroot| {
         if (sdkroot.len > 0) return sdkroot;
@@ -3370,6 +3386,7 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
         base_url_source: ?[]const u8 = null,
         endpoints: []const Endpoint = &.{},
         models_endpoint: ?[]const u8 = null,
+        models_dev: ?[]const u8 = null,
         context_window: ?u32 = null,
         max_context_window: ?u32 = null,
         max_tokens: ?u32 = null,
@@ -3444,7 +3461,7 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
     out.appendSlice(gpa, "pub const Endpoint = struct {\n    wire: []const u8,\n    base_url: []const u8,\n    region: ?[]const u8 = null,\n    carries_version: bool = false,\n};\n\n") catch @panic("out of memory");
     out.appendSlice(gpa, "pub const Model = struct {\n    id: []const u8,\n    name: ?[]const u8 = null,\n    context_window: ?u32 = null,\n    max_context_window: ?u32 = null,\n    max_tokens: ?u32 = null,\n};\n\n") catch @panic("out of memory");
     out.appendSlice(gpa, "pub const OAuthOrigin = struct {\n    exact: []const []const u8 = &.{},\n    domain: ?[]const u8 = null,\n    credential_declares_origin: bool = false,\n};\n\n") catch @panic("out of memory");
-    out.appendSlice(gpa, "pub const Provider = struct {\n    id: []const u8,\n    display_name: ?[]const u8 = null,\n    auth: []const AuthKind = &.{},\n    offering: ?Offering = null,\n    status: ?Status = null,\n    credential_env: []const []const u8 = &.{},\n    base_url_env: []const []const u8 = &.{},\n    region_env: ?[]const u8 = null,\n    default_region: ?[]const u8 = null,\n    wires: []const []const u8 = &.{},\n    base_url_source: ?[]const u8 = null,\n    endpoints: []const Endpoint = &.{},\n    models_endpoint: ?[]const u8 = null,\n    context_window: ?u32 = null,\n    max_context_window: ?u32 = null,\n    max_tokens: ?u32 = null,\n    models: []const Model = &.{},\n    oauth_origin: ?OAuthOrigin = null,\n    docs: ?[]const u8 = null,\n};\n\n") catch @panic("out of memory");
+    out.appendSlice(gpa, "pub const Provider = struct {\n    id: []const u8,\n    display_name: ?[]const u8 = null,\n    auth: []const AuthKind = &.{},\n    offering: ?Offering = null,\n    status: ?Status = null,\n    credential_env: []const []const u8 = &.{},\n    base_url_env: []const []const u8 = &.{},\n    region_env: ?[]const u8 = null,\n    default_region: ?[]const u8 = null,\n    wires: []const []const u8 = &.{},\n    base_url_source: ?[]const u8 = null,\n    endpoints: []const Endpoint = &.{},\n    models_endpoint: ?[]const u8 = null,\n    models_dev: ?[]const u8 = null,\n    context_window: ?u32 = null,\n    max_context_window: ?u32 = null,\n    max_tokens: ?u32 = null,\n    models: []const Model = &.{},\n    oauth_origin: ?OAuthOrigin = null,\n    docs: ?[]const u8 = null,\n};\n\n") catch @panic("out of memory");
     out.appendSlice(gpa, "pub const providers: []const Provider = &.{\n") catch @panic("out of memory");
     for (catalog.providers) |row| {
         out.print(gpa, "    .{{\n        .id = \"{f}\",\n", .{std.zig.fmtString(row.id)}) catch @panic("out of memory");
@@ -3496,6 +3513,9 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
         }
         if (row.models_endpoint) |path_text| {
             out.print(gpa, "        .models_endpoint = \"{f}\",\n", .{std.zig.fmtString(path_text)}) catch @panic("out of memory");
+        }
+        if (row.models_dev) |key| {
+            out.print(gpa, "        .models_dev = \"{f}\",\n", .{std.zig.fmtString(key)}) catch @panic("out of memory");
         }
         if (row.context_window) |window| {
             out.print(gpa, "        .context_window = {d},\n", .{window}) catch @panic("out of memory");

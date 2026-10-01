@@ -90,6 +90,7 @@
         }
       ],
       "models_endpoint": "/models",
+      "models_dev": "opencode",
       "docs": "https://opencode.ai/docs/zen"
     },
     {
@@ -132,6 +133,7 @@
         "DEEPSEEK_BASE_URL"
       ],
       "wires": [
+        "anthropic-messages",
         "openai-completions"
       ],
       "base_url_source": "static",
@@ -139,6 +141,10 @@
         {
           "wire": "openai-completions",
           "base_url": "https://api.deepseek.com"
+        },
+        {
+          "wire": "anthropic-messages",
+          "base_url": "https://api.deepseek.com/anthropic"
         }
       ],
       "models_endpoint": "/v1/models",
@@ -208,6 +214,32 @@
         }
       ],
       "docs": "https://www.kimi.com/code/docs"
+    },
+    {
+      "id": "opencode-go",
+      "display_name": "OpenCode Go",
+      "auth": [
+        "api_key"
+      ],
+      "offering": "coding_plan",
+      "status": "current",
+      "credential_env": [
+        "OPENCODE_API_KEY"
+      ],
+      "wires": [
+        "openai-completions"
+      ],
+      "base_url_source": "static",
+      "endpoints": [
+        {
+          "wire": "openai-completions",
+          "base_url": "https://opencode.ai/zen/go/v1",
+          "carries_version": true
+        }
+      ],
+      "models_endpoint": "/models",
+      "models_dev": "opencode-go",
+      "docs": "https://opencode.ai/docs/go"
     },
     {
       "id": "alibaba-coding-plan",

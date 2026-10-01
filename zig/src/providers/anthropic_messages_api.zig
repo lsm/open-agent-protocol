@@ -49,7 +49,7 @@ fn anthropicIsAuthFailure(err_msg: []const u8) bool {
 
 fn allowsAnonymous(model: ai_types.Model) bool {
     if (!model.allows_anonymous) return false;
-    return !std.mem.eql(u8, model.provider, "anthropic");
+    return !std.mem.eql(u8, model.provider, "anthropic") and !std.mem.eql(u8, model.provider, "deepseek");
 }
 
 fn envApiKeyForProvider(allocator: std.mem.Allocator, provider_id: []const u8) ?[]const u8 {
@@ -104,6 +104,16 @@ fn isAnthropicHost(base_url: []const u8) bool {
     const host = uri.host orelse return false;
     const value = host.percent_encoded;
     return std.ascii.eqlIgnoreCase(value, "api.anthropic.com");
+}
+
+fn thinksWhenAsked(model: ai_types.Model) bool {
+    return model.reasoning and std.mem.eql(u8, model.provider, "deepseek");
+}
+
+fn deepSeekEffort(effort: []const u8) []const u8 {
+    if (std.mem.eql(u8, effort, "minimal") or std.mem.eql(u8, effort, "low")) return "low";
+    if (std.mem.eql(u8, effort, "xhigh") or std.mem.eql(u8, effort, "max")) return "max";
+    return "high";
 }
 
 fn supportsAdaptiveThinking(model_id: []const u8) bool {
@@ -283,7 +293,7 @@ fn buildRequestBody(model: ai_types.Model, context: ai_types.Context, options: a
     try w.writeBoolField("stream", true);
 
     const emits_thinking = options.thinking_enabled and model.reasoning and
-        (supportsAdaptiveThinking(model.id) or requested_max > 1024);
+        (thinksWhenAsked(model) or supportsAdaptiveThinking(model.id) or requested_max > 1024);
     if (options.temperature) |t| {
         if (emits_thinking and t != 1) {} else {
             try w.writeKey("temperature");
@@ -758,7 +768,20 @@ fn buildRequestBody(model: ai_types.Model, context: ai_types.Context, options: a
         }
     }
 
-    if (options.thinking_enabled and model.reasoning) {
+    if (thinksWhenAsked(model)) {
+        try w.writeKey("thinking");
+        try w.beginObject();
+        try w.writeStringField("type", if (options.thinking_enabled) "enabled" else "disabled");
+        try w.endObject();
+        if (options.thinking_enabled) {
+            if (options.getThinkingEffort()) |effort| {
+                try w.writeKey("output_config");
+                try w.beginObject();
+                try w.writeStringField("effort", deepSeekEffort(effort));
+                try w.endObject();
+            }
+        }
+    } else if (options.thinking_enabled and model.reasoning) {
         if (supportsAdaptiveThinking(model.id)) {
             try w.writeKey("thinking");
             try w.beginObject();
@@ -1840,6 +1863,8 @@ test "anonymous streaming is opt-in and never applies to the anthropic vendor id
     var vendor = opted;
     vendor.provider = "anthropic";
     try std.testing.expect(!allowsAnonymous(vendor));
+    vendor.provider = "deepseek";
+    try std.testing.expect(!allowsAnonymous(vendor));
 }
 
 test "anthropic headers carry no credential when the key is empty" {
@@ -1969,6 +1994,55 @@ test "buildRequestBody includes cache_control in system prompt" {
     try std.testing.expect(std.mem.find(u8, body, "\"system\":[") != null);
     try std.testing.expect(std.mem.find(u8, body, "\"cache_control\":{\"type\":\"ephemeral\"}") != null);
     try std.testing.expect(std.mem.find(u8, body, "\"ttl\"") == null);
+}
+
+fn deepSeekRequestBody(options: ai_types.StreamOptions) ![]u8 {
+    const model = ai_types.Model{
+        .id = "deepseek-flash",
+        .name = "DeepSeek Flash",
+        .api = "anthropic-messages",
+        .provider = "deepseek",
+        .base_url = provider_catalog.baseUrl("deepseek", "anthropic-messages", null).?,
+        .reasoning = true,
+        .input = &[_][]const u8{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1_048_576,
+        .max_tokens = 393_216,
+    };
+    const messages = [_]ai_types.Message{.{ .user = .{ .content = .{ .text = "hi" }, .timestamp = 0 } }};
+    return buildRequestBody(model, .{ .messages = &messages }, options, std.testing.allocator, false);
+}
+
+test "a deepseek request turns thinking off by saying so, since deepseek thinks when told nothing" {
+    const body = try deepSeekRequestBody(.{ .max_tokens = 1024 });
+    defer std.testing.allocator.free(body);
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, body, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("disabled", parsed.value.object.get("thinking").?.object.get("type").?.string);
+    try std.testing.expect(parsed.value.object.get("output_config") == null);
+}
+
+test "a deepseek request with thinking on carries the effort as one of deepseek's three" {
+    const cases = [_]struct { effort: []const u8, sent: []const u8 }{
+        .{ .effort = "low", .sent = "low" },
+        .{ .effort = "medium", .sent = "high" },
+        .{ .effort = "high", .sent = "high" },
+        .{ .effort = "max", .sent = "max" },
+    };
+    for (cases) |case| {
+        const body = try deepSeekRequestBody(.{
+            .max_tokens = 1024,
+            .thinking_enabled = true,
+            .thinking_effort = ai_types.OwnedSlice(u8).initBorrowed(case.effort),
+        });
+        defer std.testing.allocator.free(body);
+        const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, body, .{});
+        defer parsed.deinit();
+        const thinking = parsed.value.object.get("thinking").?.object;
+        try std.testing.expectEqualStrings("enabled", thinking.get("type").?.string);
+        try std.testing.expect(thinking.get("budget_tokens") == null);
+        try std.testing.expectEqualStrings(case.sent, parsed.value.object.get("output_config").?.object.get("effort").?.string);
+    }
 }
 
 test "buildRequestBody includes ttl for long retention on anthropic url" {

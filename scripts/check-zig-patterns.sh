@@ -152,6 +152,7 @@ zig/src/compat/random.zig|pub const DeterministicSource = struct {
 zig/src/compat/random.zig|pub fn fillRandomBytes(buf: []u8) void {
 zig/src/compat/random.zig|pub fn randomBytes(allocator: std.mem.Allocator, len: usize) ![]u8 {
 zig/src/compat/random.zig|pub fn randomIntRangeLessThan(comptime T: type, upper_bound: T) T {
+zig/src/agent/agent.zig|        compat.random.fillRandomBytes(&bytes);
 zig/src/model_catalog.zig|    const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp.{d}.{x}", .{ path, compat.time.nowMillis(), compat.random.int(u64) });
 zig/src/providers/sse_parser.zig|    const random = prng.random();
 zig/src/providers/sse_parser.zig|    var prng = std.Random.DefaultPrng.init(seed);
@@ -251,6 +252,7 @@ echo "[patterns] checking secure entropy call sites are present..."
 expected_secure_entropy_sites="$(cat <<'SECURE'
 zig/src/adapter/claude/adapter.zig|        compat.random.fillSecureBytes(&entropy);
 zig/src/compat/random.zig|        const secure_value = secureIntRangeLessThan(usize, 62);
+zig/src/tools/shell.zig|        compat.random.fillSecureBytes(&bytes);
 zig/src/compat/random.zig|        const secure_value = secureIntRangeLessThan(usize, 62);
 zig/src/compat/random.zig|        fillSecureBytes(&bytes);
 zig/src/compat/random.zig|    const SecureHelper = @TypeOf(fillSecureBytes);
@@ -375,7 +377,6 @@ done
 
 known_multi_alloc_literals="$(cat <<'LITERALS'
 zig/src/agent/agent.zig|                .data = try self._allocator.dupe(u8, i.data),
-zig/src/agent/agent_loop.zig|        .tool_call_id = try allocator.dupe(u8, tool_call.id),
 zig/src/agent/agent_loop.zig|        .tool_call_id = try allocator.dupe(u8, tool_call.id),
 zig/src/agent/provider_protocol_bridge.zig|        .api_key = if (options.api_key) |k| try allocator.dupe(u8, k) else null,
 zig/src/protocol/auth/server.zig|                .id = OwnedSlice(u8).initOwned(try self.allocator.dupe(u8, definition.id)),

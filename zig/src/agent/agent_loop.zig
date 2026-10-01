@@ -167,6 +167,162 @@ pub fn estimateMessageTokens(message: ai_types.Message) u64 {
     return estimateMessage(message).estimated_tokens;
 }
 
+const full_window_output_tokens: u64 = 1024;
+
+fn inflated(estimate: u64) u64 {
+    return estimate + estimate / 3;
+}
+
+fn headroom(context_window: u64) u64 {
+    return @max(full_window_output_tokens, context_window / 64);
+}
+
+pub fn promptTokens(context: ai_types.Context) u64 {
+    const messages = context.messages;
+    var index = messages.len;
+    while (index > 0) {
+        index -= 1;
+        if (messages[index] != .assistant) continue;
+        const usage = messages[index].assistant.usage;
+        const reported = usage.input + usage.cache_read + usage.cache_write;
+        if (reported == 0) continue;
+        return reported + usage.output + inflated(estimateMessages(messages[index + 1 ..]).estimated_tokens);
+    }
+    return inflated(estimatePromptTokens(context));
+}
+
+pub fn outputLimit(model: ai_types.Model, requested: ?u32, context: ai_types.Context) ?u32 {
+    const wanted: u64 = requested orelse model.max_tokens;
+    if (model.context_window == 0 or wanted == 0) return requested;
+    const prompt = promptTokens(context) + headroom(model.context_window);
+    if (model.context_window <= prompt) return @intCast(@min(wanted, full_window_output_tokens));
+    const room = model.context_window - prompt;
+    if (room >= wanted) return requested;
+    return @intCast(room);
+}
+
+pub const default_output_tokens: u32 = 32_768;
+
+pub const OutputSetting = union(enum) {
+    auto,
+    max,
+    tokens: u32,
+};
+
+pub fn outputRequest(model: ai_types.Model, setting: OutputSetting) u32 {
+    const asked: u32 = switch (setting) {
+        .auto => default_output_tokens,
+        .max => if (model.max_tokens > 0) model.max_tokens else default_output_tokens,
+        .tokens => |count| count,
+    };
+    if (model.max_tokens == 0) return asked;
+    return @min(asked, model.max_tokens);
+}
+
+fn raisedOutput(requested: ?u32, model: ai_types.Model) ?u32 {
+    const current = requested orelse return null;
+    if (current >= model.max_tokens) return null;
+    return model.max_tokens;
+}
+
+fn outputLimitModel(context_window: u32, max_tokens: u32) ai_types.Model {
+    return .{
+        .id = "test-model",
+        .name = "Test",
+        .api = "test-api",
+        .provider = "test-provider",
+        .base_url = "",
+        .reasoning = false,
+        .input = &.{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = context_window,
+        .max_tokens = max_tokens,
+    };
+}
+
+test "outputRequest asks for the default, the model's maximum, or a count, and never above the maximum the model reports" {
+    const large = outputLimitModel(1_048_576, 393_216);
+    try std.testing.expectEqual(default_output_tokens, outputRequest(large, .auto));
+    try std.testing.expectEqual(@as(u32, 393_216), outputRequest(large, .max));
+    try std.testing.expectEqual(@as(u32, 100_000), outputRequest(large, .{ .tokens = 100_000 }));
+    try std.testing.expectEqual(@as(u32, 393_216), outputRequest(large, .{ .tokens = 500_000 }));
+
+    const small = outputLimitModel(128_000, 8_192);
+    try std.testing.expectEqual(@as(u32, 8_192), outputRequest(small, .auto));
+    try std.testing.expectEqual(@as(u32, 8_192), outputRequest(small, .{ .tokens = 20_000 }));
+
+    const unreported = outputLimitModel(128_000, 0);
+    try std.testing.expectEqual(default_output_tokens, outputRequest(unreported, .auto));
+    try std.testing.expectEqual(default_output_tokens, outputRequest(unreported, .max));
+    try std.testing.expectEqual(@as(u32, 50_000), outputRequest(unreported, .{ .tokens = 50_000 }));
+}
+
+test "raisedOutput lifts a limit below the model's maximum to it, and nothing else" {
+    const model = outputLimitModel(1_048_576, 393_216);
+    try std.testing.expectEqual(@as(?u32, 393_216), raisedOutput(32_768, model));
+    try std.testing.expectEqual(@as(?u32, null), raisedOutput(393_216, model));
+    try std.testing.expectEqual(@as(?u32, null), raisedOutput(null, model));
+    try std.testing.expectEqual(@as(?u32, null), raisedOutput(32_768, outputLimitModel(128_000, 0)));
+}
+
+test "outputLimit asks for no more output than the context window leaves after an estimated prompt and its headroom, and leaves an unset limit unset when it fits" {
+    const text = "a" ** 3000;
+    const messages = [_]ai_types.Message{.{ .user = .{ .content = .{ .text = text }, .timestamp = 0 } }};
+    const context: ai_types.Context = .{ .messages = &messages };
+    const prompt = inflated(estimatePromptTokens(context)) + full_window_output_tokens;
+
+    try std.testing.expectEqual(@as(?u32, @intCast(10_000 - prompt)), outputLimit(outputLimitModel(10_000, 9_000), null, context));
+    try std.testing.expectEqual(@as(?u32, 500), outputLimit(outputLimitModel(10_000, 9_000), 500, context));
+    try std.testing.expectEqual(@as(?u32, 1024), outputLimit(outputLimitModel(@intCast(prompt), 9_000), null, context));
+    try std.testing.expectEqual(@as(?u32, 700), outputLimit(outputLimitModel(@intCast(prompt), 700), null, context));
+    try std.testing.expectEqual(@as(?u32, 500), outputLimit(outputLimitModel(@intCast(prompt + 500), 9_000), null, context));
+    try std.testing.expectEqual(@as(?u32, 9_000), outputLimit(outputLimitModel(0, 9_000), 9_000, context));
+    try std.testing.expectEqual(@as(?u32, null), outputLimit(outputLimitModel(1_000_000, 9_000), null, context));
+}
+
+test "outputLimit counts the prompt from the provider's last report when a reply carries one" {
+    const messages = [_]ai_types.Message{
+        .{ .user = .{ .content = .{ .text = "a" ** 40_000 }, .timestamp = 0 } },
+        .{ .assistant = .{
+            .content = &.{.{ .text = .{ .text = "ok" } }},
+            .api = "test-api",
+            .provider = "test-provider",
+            .model = "test-model",
+            .usage = .{ .input = 6_000, .output = 200, .cache_read = 3_000, .cache_write = 800 },
+            .stop_reason = .stop,
+            .timestamp = 0,
+        } },
+        .{ .user = .{ .content = .{ .text = "b" ** 400 }, .timestamp = 0 } },
+    };
+    const context: ai_types.Context = .{ .messages = &messages };
+    const prompt = 6_000 + 3_000 + 800 + 200 + inflated(estimateMessages(messages[2..]).estimated_tokens) + full_window_output_tokens;
+
+    try std.testing.expectEqual(@as(?u32, @intCast(20_000 - prompt)), outputLimit(outputLimitModel(20_000, 19_000), null, context));
+}
+
+test "outputLimit leaves a sixty-fourth of a large window unasked, so a prompt the estimate undercounts still fits" {
+    const messages = [_]ai_types.Message{
+        .{ .user = .{ .content = .{ .text = "a" ** 400 }, .timestamp = 0 } },
+        .{ .assistant = .{
+            .content = &.{.{ .text = .{ .text = "ok" } }},
+            .api = "test-api",
+            .provider = "test-provider",
+            .model = "test-model",
+            .usage = .{ .input = 656_000, .output = 100, .cache_read = 0, .cache_write = 0 },
+            .stop_reason = .stop,
+            .timestamp = 0,
+        } },
+        .{ .user = .{ .content = .{ .text = "b" ** 400 }, .timestamp = 0 } },
+    };
+    const context: ai_types.Context = .{ .messages = &messages };
+    const window: u32 = 1_048_576;
+    const prompt = 656_000 + 100 + inflated(estimateMessages(messages[2..]).estimated_tokens);
+    const asked = outputLimit(outputLimitModel(window, 393_216), null, context).?;
+
+    try std.testing.expectEqual(@as(u32, @intCast(window - prompt - window / 64)), asked);
+    try std.testing.expect(prompt + asked + 16_000 <= window);
+}
+
 fn pushAgentEvent(event_stream: *AgentEventStream, event: AgentEvent) !void {
     if (!event_stream.pushBlocking(event)) {
         return error.StreamCompleted;
@@ -326,7 +482,7 @@ fn buildAndFreeTruncatedToolCallResult(allocator: std.mem.Allocator, tool_name: 
 }
 
 test "truncatedToolCallResult frees what it built when an allocation fails" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, buildAndFreeTruncatedToolCallResult, .{"write"});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, buildAndFreeTruncatedToolCallResult, .{"write"});
 }
 
 fn rejectedToolResult(allocator: std.mem.Allocator) !AgentToolResult {
@@ -347,6 +503,11 @@ fn createToolResultMessage(
     result: AgentToolResult,
     is_error: bool,
 ) !ai_types.ToolResultMessage {
+    const tool_call_id = try allocator.dupe(u8, tool_call.id);
+    errdefer allocator.free(tool_call_id);
+    const tool_name = try allocator.dupe(u8, tool_call.name);
+    errdefer allocator.free(tool_name);
+
     const details_json = if (result.getDetailsJson()) |details|
         if (result.details_json.is_owned)
             ai_types.OwnedSlice(u8).initOwned(@constCast(details))
@@ -364,12 +525,25 @@ fn createToolResultMessage(
     else
         ai_types.OwnedSlice(ai_types.ArtifactReference).initBorrowed(result.artifacts.slice());
 
+    return makeToolResultMessage(tool_call_id, tool_name, result, details_json, artifacts, is_error);
+}
+
+fn makeToolResultMessage(
+    tool_call_id: []const u8,
+    tool_name: []const u8,
+    result: AgentToolResult,
+    details_json: ai_types.OwnedSlice(u8),
+    artifacts: ai_types.OwnedSlice(ai_types.ArtifactReference),
+    is_error: bool,
+) ai_types.ToolResultMessage {
     return .{
-        .tool_call_id = try allocator.dupe(u8, tool_call.id),
-        .tool_name = try allocator.dupe(u8, tool_call.name),
+        .tool_call_id = tool_call_id,
+        .tool_name = tool_name,
         .content = result.content.slice(),
         .details_json = details_json,
         .artifacts = artifacts,
+        .working_directory = result.working_directory,
+        .working_directory_observed = result.working_directory_observed,
         .is_error = is_error,
         .timestamp = compat.time.nowMillis(),
     };
@@ -467,8 +641,15 @@ fn finalizeToolExecution(
 ) !void {
     const raw_usage = measureToolResult(result.*);
 
+    var owned = result.*;
+    errdefer owned.deinit(allocator);
+    result.content = ai_types.OwnedSlice(ai_types.UserContentPart).initBorrowed(&.{});
+    result.details_json = ai_types.OwnedSlice(u8).initBorrowed("");
+    result.artifacts = ai_types.OwnedSlice(ai_types.ArtifactReference).initBorrowed(&.{});
+    result.working_directory = ai_types.OwnedSlice(u8).initBorrowed("");
+
     if (config.tool_output_middleware_fn) |middleware| {
-        try middleware(config.tool_output_middleware_ctx, .{
+        middleware(config.tool_output_middleware_ctx, .{
             .tool_call_id = tool_call.id,
             .tool_name = tool_call.name,
             .args_json = args_json,
@@ -476,20 +657,35 @@ fn finalizeToolExecution(
             .raw_result_bytes = raw_usage.result_bytes,
             .raw_details_bytes = raw_usage.details_bytes,
             .raw_total_bytes = raw_usage.total_bytes,
-        }, result, allocator);
+        }, &owned, allocator) catch |err| return err;
     }
 
-    const returned_usage = measureToolResult(result.*);
-    const result_json = result.getDetailsJson() orelse "null";
-    const content_json = try serializeToolResultContent(allocator, result.content.slice());
-    defer allocator.free(content_json);
+    const returned_usage = measureToolResult(owned);
+
+    const content_json = try serializeToolResultContent(allocator, owned.content.slice());
+    var content_json_owned = true;
+    defer if (content_json_owned) allocator.free(content_json);
     const args_bytes: u64 = @intCast(args_json.len);
 
-    try pushAgentEvent(event_stream, .{ .tool_execution_end = .{
+    var tool_result_msg = try createToolResultMessage(allocator, tool_call, owned, is_error);
+    var unreached = tool_result_msg;
+    var message_listed = false;
+    errdefer if (!message_listed) unreached.deinit(allocator);
+    owned = AgentToolResult{};
+    try results.append(allocator, tool_result_msg);
+    tool_result_msg = undefined;
+    message_listed = true;
+
+    const appended = &results.items[results.items.len - 1];
+    const event_result_json = appended.getDetailsJson() orelse "null";
+    const event_artifacts = appended.artifacts.slice();
+
+    content_json_owned = false;
+    pushAgentEvent(event_stream, .{ .tool_execution_end = .{
         .tool_call_id = tool_call.id,
         .tool_name = tool_call.name,
-        .result_json = result_json,
-        .content_json = content_json,
+        .result_json = event_result_json,
+        .content_json = types.OwnedSlice(u8).initOwned(content_json),
         .is_error = is_error,
         .args_bytes = args_bytes,
         .raw_result_bytes = raw_usage.result_bytes,
@@ -500,11 +696,11 @@ fn finalizeToolExecution(
         .returned_total_bytes = returned_usage.total_bytes + args_bytes,
         .estimated_returned_tokens = returned_usage.estimated_tokens + estimateTextTokens(args_json.len),
         .artifact_count = returned_usage.artifact_count,
-        .artifacts = result.artifacts.slice(),
-    } });
-
-    const tool_result_msg = try createToolResultMessage(allocator, tool_call, result.*, is_error);
-    try results.append(allocator, tool_result_msg);
+        .artifacts = event_artifacts,
+    } }) catch |err| {
+        allocator.free(content_json);
+        return err;
+    };
 }
 
 fn runLegacyApproval(tool: AgentTool, approval_request: types.ToolApprovalRequest, allocator: std.mem.Allocator) types.ToolApprovalDecision {
@@ -877,7 +1073,7 @@ fn streamAssistantResponse(
         .thinking_budgets = config.thinking_budgets,
         .max_retry_delay_ms = config.max_retry_delay_ms orelse 60_000,
         .temperature = config.temperature,
-        .max_tokens = config.max_tokens,
+        .max_tokens = outputLimit(config.model, config.max_tokens, llm_context),
     };
 
     const provider_stream = try config.protocol.stream(
@@ -970,8 +1166,7 @@ fn streamAssistantResponse(
                 } });
                 final_transferred = true;
             },
-            .keepalive => {
-            },
+            .keepalive => {},
         }
     }
 
@@ -1058,12 +1253,45 @@ fn setFinalMessage(state: *LoopState, allocator: std.mem.Allocator, msg: ai_type
     state.final_message = cloned;
 }
 
+fn runCancelled(config: AgentLoopConfig) bool {
+    const token = config.cancel_token orelse return false;
+    return token.isCancelled();
+}
+
 fn withinTurnLimit(iterations: u32, max_iterations: ?u32) bool {
     const limit = max_iterations orelse return true;
     return iterations < limit;
 }
 
-const TurnOutcome = enum { failed, answered, called_tools };
+const TurnOutcome = enum { failed, answered, called_tools, reasoned_only, cut_off };
+
+pub const answer_request_text = "Your last reply held only reasoning and no answer. Write your answer now.";
+pub const continue_request_text = "Your last reply was cut off at the output limit. Continue from exactly where it stopped.";
+
+fn reasonedWithoutAnswer(content: []const ai_types.AssistantContent) bool {
+    var reasoned = false;
+    for (content) |block| switch (block) {
+        .text => |t| if (std.mem.trim(u8, t.text, " \t\r\n").len > 0) return false,
+        .thinking => |t| {
+            if (std.mem.trim(u8, t.thinking, " \t\r\n").len > 0) reasoned = true;
+        },
+        .tool_call => return false,
+        .image => {},
+    };
+    return reasoned;
+}
+
+fn requestMessage(allocator: std.mem.Allocator, request_text: []const u8) !ai_types.Message {
+    const text = try allocator.dupe(u8, request_text);
+    return .{ .user = .{ .content = .{ .text = text }, .timestamp = compat.time.nowMillis() } };
+}
+
+pub const compacted_request_text = "The conversation was compacted in the middle of this task. Carry on with the task from where it stopped, using the summary above.";
+
+fn compactedRequest(allocator: std.mem.Allocator) !ai_types.Message {
+    const text = try allocator.dupe(u8, compacted_request_text);
+    return .{ .user = .{ .content = .{ .text = text }, .timestamp = compat.time.nowMillis() } };
+}
 
 const max_cut_off_tool_turns: u32 = 3;
 
@@ -1077,6 +1305,7 @@ fn turnOutcome(message: ai_types.AssistantMessage, cut_off_tool_turns: u32) Turn
     for (message.content) |block| {
         if (block == .tool_call) return .called_tools;
     }
+    if (message.stop_reason == .stop and reasonedWithoutAnswer(message.content)) return .reasoned_only;
     return .answered;
 }
 
@@ -1116,6 +1345,317 @@ test "turnOutcome ends the run on a reply without tool calls, even one reporting
     try std.testing.expectEqual(TurnOutcome.answered, outcomeOf(.length, &.{}, 0));
 }
 
+const ReplyCtx = struct {
+    text: []const u8,
+    stop_reason: ai_types.StopReason,
+    reasoning_only: bool = false,
+};
+
+fn replyStream(
+    ctx: ?*anyopaque,
+    model: ai_types.Model,
+    context: ai_types.Context,
+    options: types.ProtocolOptions,
+    allocator: std.mem.Allocator,
+) anyerror!*event_stream_module.AssistantMessageEventStream {
+    _ = context;
+    _ = options;
+    const reply = @as(*ReplyCtx, @ptrCast(@alignCast(ctx.?)));
+    const stream_ptr = try allocator.create(event_stream_module.AssistantMessageEventStream);
+    errdefer allocator.destroy(stream_ptr);
+    stream_ptr.* = event_stream_module.AssistantMessageEventStream.init(allocator);
+    const blocks = try allocator.alloc(ai_types.AssistantContent, 1);
+    errdefer allocator.free(blocks);
+    const text = try allocator.dupe(u8, reply.text);
+    errdefer allocator.free(text);
+    blocks[0] = if (reply.reasoning_only) .{ .thinking = .{ .thinking = text } } else .{ .text = .{ .text = text } };
+    const api = try allocator.dupe(u8, model.api);
+    errdefer allocator.free(api);
+    const provider = try allocator.dupe(u8, model.provider);
+    errdefer allocator.free(provider);
+    const owned_model = try allocator.dupe(u8, model.id);
+    errdefer allocator.free(owned_model);
+    stream_ptr.complete(.{
+        .content = blocks,
+        .api = api,
+        .provider = provider,
+        .model = owned_model,
+        .usage = .{},
+        .stop_reason = reply.stop_reason,
+        .timestamp = 0,
+        .is_owned = true,
+    });
+    return stream_ptr;
+}
+
+fn steeringCallbackFails(ctx: ?*anyopaque, allocator: std.mem.Allocator) anyerror!?[]ai_types.Message {
+    const seen: *usize = @ptrCast(@alignCast(ctx.?));
+    _ = allocator;
+    seen.* += 1;
+    if (seen.* > 1) return error.SteeringFailed;
+    return null;
+}
+
+test "a message the context already owns is not freed again when a later callback fails" {
+    const model = testModel();
+    var events_storage: AgentEventStream = undefined;
+    const events = &events_storage;
+    events.* = AgentEventStream.init(std.testing.allocator);
+    defer events.deinit();
+
+    var context = AgentContext.init(std.testing.allocator);
+    defer context.deinit();
+
+    var steering_calls: usize = 0;
+    const answered = ReplyCtx{ .text = "reply", .stop_reason = .stop };
+    try std.testing.expectError(error.SteeringFailed, runLoop(std.testing.allocator, &.{}, &context, .{
+        .model = model,
+        .protocol = .{ .stream_fn = replyStream, .ctx = @constCast(&answered) },
+        .max_iterations = 2,
+        .get_steering_messages_fn = steeringCallbackFails,
+        .get_steering_messages_ctx = &steering_calls,
+    }, events, &events.retention));
+    try std.testing.expect(steering_calls > 1);
+
+    while (events.poll()) |event| {
+        var mutable = event;
+        defer mutable.deinit(std.testing.allocator);
+        switch (mutable) {
+            .message_end => |payload| {
+                try std.testing.expectEqualStrings("reply", payload.message.assistant.content[0].text.text);
+            },
+            .turn_end => |payload| {
+                try std.testing.expectEqualStrings("reply", payload.message.content[0].text.text);
+            },
+            else => {},
+        }
+    }
+}
+
+fn erroredStream(
+    ctx: ?*anyopaque,
+    model: ai_types.Model,
+    context: ai_types.Context,
+    options: types.ProtocolOptions,
+    allocator: std.mem.Allocator,
+) anyerror!*event_stream_module.AssistantMessageEventStream {
+    _ = ctx;
+    _ = model;
+    _ = context;
+    _ = options;
+    const stream_ptr = try allocator.create(event_stream_module.AssistantMessageEventStream);
+    errdefer allocator.destroy(stream_ptr);
+    stream_ptr.* = event_stream_module.AssistantMessageEventStream.init(allocator);
+    stream_ptr.completeWithError("provider said no");
+    return stream_ptr;
+}
+
+
+
+test "an errored turn's events stay readable after the message is released" {
+    const model = testModel();
+    var events_storage: AgentEventStream = undefined;
+    const events = &events_storage;
+    events.* = AgentEventStream.init(std.testing.allocator);
+    defer events.deinit();
+
+    var context = AgentContext.init(std.testing.allocator);
+    defer context.deinit();
+
+    try runLoop(std.testing.allocator, &.{}, &context, .{
+        .model = model,
+        .protocol = .{ .stream_fn = erroredStream },
+        .max_iterations = 1,
+    }, events, &events.retention);
+
+    var saw_turn_end = false;
+    while (events.poll()) |event| {
+        var mutable = event;
+        defer mutable.deinit(std.testing.allocator);
+        switch (mutable) {
+            .turn_end => |payload| {
+                saw_turn_end = true;
+                try std.testing.expectEqualStrings("provider said no", payload.message.error_message.slice());
+            },
+            else => {},
+        }
+    }
+    try std.testing.expect(saw_turn_end);
+}
+
+test "an aborted turn's events stay readable after the message is released" {
+    const model = testModel();
+    var events_storage: AgentEventStream = undefined;
+    const events = &events_storage;
+    events.* = AgentEventStream.init(std.testing.allocator);
+    defer events.deinit();
+
+    var context = AgentContext.init(std.testing.allocator);
+    defer context.deinit();
+    const aborted = ReplyCtx{ .text = "partial", .stop_reason = .aborted };
+
+    try runLoop(std.testing.allocator, &.{}, &context, .{
+        .model = model,
+        .protocol = .{ .stream_fn = replyStream, .ctx = @constCast(&aborted) },
+        .max_iterations = 1,
+    }, events, &events.retention);
+
+    var saw_message_end = false;
+    while (events.poll()) |event| {
+        var mutable = event;
+        defer mutable.deinit(std.testing.allocator);
+        switch (mutable) {
+            .message_end => |payload| {
+                saw_message_end = true;
+                try std.testing.expectEqualStrings("partial", payload.message.assistant.content[0].text.text);
+            },
+            else => {},
+        }
+    }
+    try std.testing.expect(saw_message_end);
+}
+
+test "an aborted turn frees the message the stream handed over" {
+    const model = testModel();
+    var events_storage: AgentEventStream = undefined;
+    const events = &events_storage;
+    events.* = AgentEventStream.init(std.testing.allocator);
+    defer events.deinit();
+
+    var context = AgentContext.init(std.testing.allocator);
+    defer context.deinit();
+    const aborted = ReplyCtx{ .text = "partial", .stop_reason = .aborted };
+    const config = AgentLoopConfig{
+        .model = model,
+        .protocol = .{ .stream_fn = replyStream, .ctx = @constCast(&aborted) },
+        .max_iterations = 1,
+    };
+    try runLoop(std.testing.allocator, &.{}, &context, config, events, &events.retention);
+    var saw_turn_end = false;
+    while (events.poll()) |event| {
+        var ev = event;
+        defer ev.deinit(std.testing.allocator);
+        if (ev == .turn_end) saw_turn_end = true;
+    }
+    try std.testing.expect(saw_turn_end);
+}
+
+fn failOnAgentEndClone(allocator: std.mem.Allocator, event: AgentEvent) error{OutOfMemory}!AgentEvent {
+    _ = allocator;
+    return switch (event) {
+        .agent_end => error.OutOfMemory,
+        else => event,
+    };
+}
+
+fn failOnMessageStartClone(allocator: std.mem.Allocator, event: AgentEvent) error{OutOfMemory}!AgentEvent {
+    _ = allocator;
+    return switch (event) {
+        .message_start => error.OutOfMemory,
+        else => event,
+    };
+}
+
+test "a rejected final publication leaves the events already queued readable" {
+    const allocator = std.testing.allocator;
+    var events_storage = AgentEventStream.init(allocator);
+    defer events_storage.deinit();
+    const events = &events_storage;
+    events.ownership = .{ .owned = failOnAgentEndClone };
+    var context = AgentContext.init(allocator);
+    defer context.deinit();
+    const aborted = ReplyCtx{ .text = "partial", .stop_reason = .aborted };
+
+    try std.testing.expectError(error.StreamCompleted, runLoop(allocator, &.{}, &context, .{
+        .model = testModel(),
+        .protocol = .{ .stream_fn = replyStream, .ctx = @constCast(&aborted) },
+        .max_iterations = 1,
+    }, events, &events.retention));
+
+    try std.testing.expect(events.retention.result != null);
+    try std.testing.expect(events.getResult() == null);
+
+    var saw_turn_end = false;
+    while (events.poll()) |event| {
+        var drained = event;
+        defer drained.deinit(allocator);
+        switch (drained) {
+            .turn_end => |payload| {
+                saw_turn_end = true;
+                try std.testing.expectEqualStrings("partial", payload.message.content[0].text.text);
+                try std.testing.expectEqual(ai_types.StopReason.aborted, payload.message.stop_reason);
+            },
+            else => {},
+        }
+    }
+    try std.testing.expect(saw_turn_end);
+}
+
+test "a failed run publishes the error and leaves the queued events readable" {
+    const allocator = std.testing.allocator;
+    var events_storage = AgentEventStream.init(allocator);
+    defer events_storage.deinit();
+    const events = &events_storage;
+    events.ownership = .{ .owned = failOnMessageStartClone };
+    var context = AgentContext.init(allocator);
+    defer context.deinit();
+    const answered = ReplyCtx{ .text = "the answer, written as reasoning", .stop_reason = .stop, .reasoning_only = true };
+    var steering_calls: usize = 0;
+    const runner = try allocator.create(RunLoopThreadCtx);
+    runner.* = .{
+        .allocator = allocator,
+        .prompts = &.{},
+        .context = &context,
+        .config = .{
+            .model = testModel(),
+            .protocol = .{ .stream_fn = replyStream, .ctx = @constCast(&answered) },
+            .max_iterations = 2,
+            .get_steering_messages_fn = steeringCallbackFails,
+            .get_steering_messages_ctx = &steering_calls,
+        },
+        .stream = events,
+    };
+    runLoopThread(runner);
+
+    try std.testing.expectEqualStrings("StreamCompleted", events.getError().?);
+    try std.testing.expect(events.getResult() == null);
+
+    var saw_turn_end = false;
+    while (events.poll()) |event| {
+        var drained = event;
+        defer drained.deinit(allocator);
+        switch (drained) {
+            .turn_end => |payload| {
+                saw_turn_end = true;
+                try std.testing.expectEqualStrings("the answer, written as reasoning", payload.message.content[0].thinking.thinking);
+            },
+            else => {},
+        }
+    }
+    try std.testing.expect(saw_turn_end);
+}
+
+fn handoffProbe(allocator: std.mem.Allocator) !void {
+    var events = AgentEventStream.init(allocator);
+    defer events.deinit();
+    var context = AgentContext.init(allocator);
+    defer context.deinit();
+    const aborted = ReplyCtx{ .text = "partial", .stop_reason = .aborted };
+    try runLoop(allocator, &.{}, &context, .{
+        .model = testModel(),
+        .protocol = .{ .stream_fn = replyStream, .ctx = @constCast(&aborted) },
+        .max_iterations = 1,
+    }, &events, &events.retention);
+    while (events.poll()) |event| {
+        var drained = event;
+        drained.deinit(allocator);
+    }
+}
+
+test "the parked hand-off survives an exhausted allocator" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, handoffProbe, .{});
+}
+
 test "turnOutcome never runs the tool calls of a failed, aborted or filtered reply" {
     const calls = [_]ai_types.AssistantContent{
         .{ .tool_call = .{ .id = "call_1", .name = "read", .arguments_json = "{}" } },
@@ -1123,6 +1663,33 @@ test "turnOutcome never runs the tool calls of a failed, aborted or filtered rep
     try std.testing.expectEqual(TurnOutcome.failed, outcomeOf(.@"error", &calls, 0));
     try std.testing.expectEqual(TurnOutcome.failed, outcomeOf(.aborted, &calls, 0));
     try std.testing.expectEqual(TurnOutcome.answered, outcomeOf(.content_filter, &calls, 0));
+}
+
+test "turnOutcome marks a finished reply that holds only reasoning" {
+    const reasoning = [_]ai_types.AssistantContent{.{ .thinking = .{ .thinking = "the answer, written as reasoning" } }};
+    try std.testing.expectEqual(TurnOutcome.reasoned_only, outcomeOf(.stop, &reasoning, 0));
+    try std.testing.expectEqual(TurnOutcome.answered, outcomeOf(.length, &reasoning, 0));
+
+    const answered = [_]ai_types.AssistantContent{
+        .{ .thinking = .{ .thinking = "plan" } },
+        .{ .text = .{ .text = "the answer" } },
+    };
+    try std.testing.expectEqual(TurnOutcome.answered, outcomeOf(.stop, &answered, 0));
+
+    const blank = [_]ai_types.AssistantContent{
+        .{ .thinking = .{ .thinking = " \n" } },
+        .{ .text = .{ .text = "\n" } },
+    };
+    try std.testing.expectEqual(TurnOutcome.answered, outcomeOf(.stop, &blank, 0));
+}
+
+test "requestMessage survives an allocation failure at every step" {
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, requestMessageProbe, .{});
+}
+
+fn requestMessageProbe(allocator: std.mem.Allocator) !void {
+    var message = try requestMessage(allocator, answer_request_text);
+    message.deinit(allocator);
 }
 
 test "turnOutcome ends the run on a cut-off tool call once three in a row were answered" {
@@ -1140,6 +1707,7 @@ fn runLoop(
     context: *AgentContext,
     config: AgentLoopConfig,
     event_stream: *AgentEventStream,
+    retained: *types.StreamRetention,
 ) !void {
     var state = LoopState{
         .messages = std.ArrayList(ai_types.Message).empty,
@@ -1147,6 +1715,10 @@ fn runLoop(
         .final_message = null,
     };
     defer state.deinit(allocator);
+    errdefer if (state.final_message) |final_message| {
+        state.final_message = null;
+        retained.park(final_message);
+    };
 
     if (prompts) |initial_prompts| {
         for (initial_prompts) |prompt| {
@@ -1168,6 +1740,8 @@ fn runLoop(
     var ended_before_cap = false;
     var cancelled_run = false;
     var cut_off_tool_turns: u32 = 0;
+    var asked_for_answer = false;
+    var turn_config = config;
 
     outer: while (withinTurnLimit(state.iterations, config.max_iterations)) {
         if (config.cancel_token) |token| {
@@ -1179,6 +1753,35 @@ fn runLoop(
         }
 
         while (withinTurnLimit(state.iterations, config.max_iterations)) {
+            if (runCancelled(config)) {
+                ended_before_cap = true;
+                cancelled_run = true;
+                break :outer;
+            }
+            if (state.iterations > 0) {
+                if (config.compact_between_turns_fn) |compact| {
+                    if (try compact(config.compact_between_turns_ctx, context, event_stream)) {
+                        const request = try compactedRequest(context.allocator);
+                        context.appendMessage(request) catch |err| {
+                            var owned = request;
+                            owned.deinit(context.allocator);
+                            return err;
+                        };
+                        try pushAgentEvent(event_stream, .{ .message_start = .{
+                            .message = request,
+                        } });
+                        try pushAgentEvent(event_stream, .{ .message_end = .{
+                            .message = request,
+                        } });
+                        try appendClonedStateMessage(&state.messages, allocator, request);
+                    }
+                    if (runCancelled(config)) {
+                        ended_before_cap = true;
+                        cancelled_run = true;
+                        break :outer;
+                    }
+                }
+            }
             var steering_messages: ?[]const ai_types.Message = null;
             if (config.get_steering_messages_fn) |get_steering| {
                 steering_messages = try get_steering(config.get_steering_messages_ctx, allocator);
@@ -1207,7 +1810,7 @@ fn runLoop(
             const assistant_message = streamAssistantResponse(
                 allocator,
                 context,
-                config,
+                turn_config,
                 event_stream,
             ) catch |err| {
                 const error_content = [_]ai_types.AssistantContent{.{
@@ -1234,25 +1837,36 @@ fn runLoop(
                 } });
 
                 ended_before_cap = true;
+                cancelled_run = runCancelled(config);
                 break :outer;
             };
 
             state.iterations += 1;
+            const loop_owns_message = assistant_message.is_owned or assistant_message.error_message.is_owned;
+            var message_transferred = false;
+            errdefer if (loop_owns_message and !message_transferred) retained.park(assistant_message);
             try setFinalMessage(&state, allocator, assistant_message);
             try appendClonedStateMessage(&state.messages, allocator, .{ .assistant = assistant_message });
 
-            const outcome = turnOutcome(assistant_message, cut_off_tool_turns);
+            const raised = if (config.raise_max_tokens_on_cut_off and assistant_message.stop_reason == .length) raisedOutput(turn_config.max_tokens, config.model) else null;
+            if (raised) |higher| turn_config.max_tokens = higher;
+            const outcome = switch (turnOutcome(assistant_message, cut_off_tool_turns)) {
+                .reasoned_only => if (asked_for_answer) TurnOutcome.answered else TurnOutcome.reasoned_only,
+                .answered => if (raised != null) TurnOutcome.cut_off else TurnOutcome.answered,
+                else => |value| value,
+            };
             cut_off_tool_turns = if (outcome == .called_tools and assistant_message.stop_reason == .length) cut_off_tool_turns + 1 else 0;
             switch (outcome) {
                 .failed => {
+                    cancelled_run = runCancelled(config);
                     const final_error_msg = state.final_message orelse assistant_message;
                     try pushAgentEvent(event_stream, .{ .turn_end = .{
                         .message = final_error_msg,
                         .tool_results = types.OwnedSlice(ai_types.ToolResultMessage).initBorrowed(&.{}),
                     } });
-                    if (assistant_message.error_message.is_owned) {
-                        var owned_assistant_message = assistant_message;
-                        owned_assistant_message.deinit(allocator);
+                    if (loop_owns_message) {
+                        retained.park(assistant_message);
+                        message_transferred = true;
                     }
                     ended_before_cap = true;
                     break :outer;
@@ -1264,6 +1878,7 @@ fn runLoop(
                     } });
 
                     try context.appendMessage(.{ .assistant = assistant_message });
+                    message_transferred = true;
 
                     if (config.get_steering_messages_fn) |get_steering| {
                         if (try get_steering(config.get_steering_messages_ctx, allocator)) |queued_steering| {
@@ -1308,6 +1923,29 @@ fn runLoop(
                     ended_before_cap = true;
                     break :outer;
                 },
+                .reasoned_only, .cut_off => {
+                    if (outcome == .reasoned_only) asked_for_answer = true;
+                    try pushAgentEvent(event_stream, .{ .turn_end = .{
+                        .message = assistant_message,
+                        .tool_results = types.OwnedSlice(ai_types.ToolResultMessage).initBorrowed(&.{}),
+                    } });
+                    try context.appendMessage(.{ .assistant = assistant_message });
+                    message_transferred = true;
+
+                    const request = try requestMessage(context.allocator, if (outcome == .reasoned_only) answer_request_text else continue_request_text);
+                    context.appendMessage(request) catch |err| {
+                        var owned = request;
+                        owned.deinit(context.allocator);
+                        return err;
+                    };
+                    try pushAgentEvent(event_stream, .{ .message_start = .{
+                        .message = request,
+                    } });
+                    try pushAgentEvent(event_stream, .{ .message_end = .{
+                        .message = request,
+                    } });
+                    try appendClonedStateMessage(&state.messages, allocator, request);
+                },
                 .called_tools => {
                     var tool_result = try executeToolCalls(
                         allocator,
@@ -1323,6 +1961,7 @@ fn runLoop(
                     } });
 
                     try context.appendMessage(.{ .assistant = assistant_message });
+                    message_transferred = true;
 
                     for (tool_result.tool_results) |tool_result_msg| {
                         const msg: ai_types.Message = .{ .tool_result = tool_result_msg };
@@ -1381,12 +2020,14 @@ fn runLoop(
         };
     };
 
-    const result = AgentLoopResult{
+    var result = AgentLoopResult{
         .messages = owned_slice_mod.OwnedSlice(ai_types.Message).initOwned(result_messages),
         .final_message = result_final_message,
         .iterations = state.iterations,
         .termination = termination,
     };
+    var result_owned = false;
+    errdefer if (!result_owned) retained.retainResult(result);
 
     try pushAgentEvent(event_stream, .{
         .agent_end = .{
@@ -1396,6 +2037,7 @@ fn runLoop(
         },
     });
 
+    result_owned = true;
     event_stream.complete(result);
 }
 
@@ -1413,7 +2055,7 @@ fn runLoopThread(ctx: *RunLoopThreadCtx) void {
     const allocator = ctx.allocator;
     const stream = ctx.stream;
 
-    runLoop(allocator, ctx.prompts, ctx.context, ctx.config, stream) catch |err| {
+    runLoop(allocator, ctx.prompts, ctx.context, ctx.config, stream, &stream.retention) catch |err| {
         stream.completeWithError(@errorName(err));
     };
 
@@ -1866,6 +2508,8 @@ test "executeToolCalls uses protocol executor when configured" {
 
     var saw_update = false;
     while (agent_events.poll()) |evt| {
+        var owned_evt = evt;
+        defer owned_evt.deinit(allocator);
         if (evt == .tool_execution_update) saw_update = true;
     }
     try std.testing.expect(protocol_ctx.saw_update);
@@ -2172,6 +2816,8 @@ test "executeToolCalls applies output middleware and reports byte telemetry" {
 
     var saw_end = false;
     while (agent_events.poll()) |evt| {
+        var owned_evt = evt;
+        defer owned_evt.deinit(allocator);
         if (evt == .tool_execution_end) {
             saw_end = true;
             try std.testing.expect(evt.tool_execution_end.raw_total_bytes > 0);
@@ -2253,6 +2899,8 @@ test "executeToolCalls emits terminal events on protocol cancellation" {
     var start_count: usize = 0;
     var end_count: usize = 0;
     while (agent_events.poll()) |evt| {
+        var owned_evt = evt;
+        defer owned_evt.deinit(allocator);
         switch (evt) {
             .tool_execution_start => start_count += 1,
             .tool_execution_end => end_count += 1,
@@ -2331,4 +2979,248 @@ test "executeToolCalls frees the results it built when a later step fails" {
         &agent_events,
     ));
     try std.testing.expectEqual(@as(usize, 1), protocol_ctx.call_count);
+}
+
+fn testModel() ai_types.Model {
+    return .{
+        .id = "test-model",
+        .name = "Test",
+        .api = "test-api",
+        .provider = "test-provider",
+        .base_url = "",
+        .reasoning = false,
+        .input = &.{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1024,
+        .max_tokens = 256,
+    };
+}
+
+fn directoryReportingExecute(
+    ctx: ?*anyopaque,
+    tool_call_id: []const u8,
+    tool_name: []const u8,
+    args_json: []const u8,
+    cancel_token: ?ai_types.CancelToken,
+    on_update_ctx: ?*anyopaque,
+    on_update: ?types.ToolUpdateCallback,
+    allocator: std.mem.Allocator,
+) anyerror!types.AgentToolResult {
+    _ = ctx;
+    _ = tool_call_id;
+    _ = tool_name;
+    _ = args_json;
+    _ = cancel_token;
+    _ = on_update_ctx;
+    _ = on_update;
+    const text = try allocator.dupe(u8, "done");
+    errdefer allocator.free(text);
+    const parts = try allocator.alloc(ai_types.UserContentPart, 1);
+    errdefer allocator.free(parts);
+    parts[0] = .{ .text = .{ .text = text } };
+    const details = try allocator.dupe(u8, "{\"ok\":true}");
+    errdefer allocator.free(details);
+    const directory = try allocator.dupe(u8, "/observed/dir");
+    errdefer allocator.free(directory);
+    const artifacts = try allocator.alloc(ai_types.ArtifactReference, 1);
+    errdefer allocator.free(artifacts);
+    artifacts[0] = .{ .artifact_id = try allocator.dupe(u8, "artifact-1") };
+    return types.AgentToolResult{
+        .content = ai_types.OwnedSlice(ai_types.UserContentPart).initOwned(parts),
+        .details_json = ai_types.OwnedSlice(u8).initOwned(details),
+        .artifacts = ai_types.OwnedSlice(ai_types.ArtifactReference).initOwned(artifacts),
+        .working_directory = ai_types.OwnedSlice(u8).initOwned(directory),
+        .working_directory_observed = true,
+    };
+}
+
+const directoryReportingTool = types.AgentTool{
+    .label = "Directory Reporting Tool",
+    .name = "dirtool",
+    .description = "Reports a working directory.",
+    .parameters_schema_json = "{\"type\":\"object\",\"properties\":{},\"required\":[],\"additionalProperties\":false}",
+    .execute = struct {
+        fn run(
+            tool_call_id: []const u8,
+            args_json: []const u8,
+            cancel_token: ?ai_types.CancelToken,
+            on_update_ctx: ?*anyopaque,
+            on_update: ?types.ToolUpdateCallback,
+            allocator: std.mem.Allocator,
+        ) anyerror!types.AgentToolResult {
+            return directoryReportingExecute(null, tool_call_id, "dirtool", args_json, cancel_token, on_update_ctx, on_update, allocator);
+        }
+    }.run,
+};
+
+fn runDirectoryReportingTool(allocator: std.mem.Allocator) !void {
+    const tool_list = [_]types.AgentTool{directoryReportingTool};
+    const tools_slice: []const types.AgentTool = &tool_list;
+    const content = [_]ai_types.AssistantContent{
+        .{ .tool_call = .{ .id = "call_dir", .name = "dirtool", .arguments_json = "{}" } },
+    };
+    const assistant_message = ai_types.AssistantMessage{
+        .content = &content,
+        .api = "test-api",
+        .provider = "test-provider",
+        .model = "test-model",
+        .usage = .{},
+        .stop_reason = .tool_use,
+        .timestamp = 0,
+    };
+    const model = testModel();
+    var events_storage: AgentEventStream = undefined;
+    const events = &events_storage;
+    events.* = AgentEventStream.init(allocator);
+    defer events.deinit();
+
+    const result = try executeToolCalls(
+        allocator,
+        assistant_message,
+        .{
+            .model = model,
+            .protocol = .{ .stream_fn = undefined },
+            .tools = tools_slice,
+            .execute_tool_via_protocol_fn = directoryReportingExecute,
+        },
+        events,
+    );
+    var owned = result;
+    defer owned.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), owned.tool_results.len);
+    try std.testing.expectEqualStrings("/observed/dir", owned.tool_results[0].observedWorkingDirectory().?);
+}
+
+const HandoffCase = struct {
+    let_pass: bool = false,
+
+    fn run(allocator: std.mem.Allocator) !void {
+        var self = HandoffCase{};
+        self.drive(allocator, true) catch |err| switch (err) {
+            error.OutOfMemory, error.MiddlewareRefused => {},
+            else => return err,
+        };
+        self.drive(allocator, false) catch |err| switch (err) {
+            error.OutOfMemory, error.MiddlewareRefused => return err,
+            else => return err,
+        };
+    }
+
+    fn drive(self: *HandoffCase, allocator: std.mem.Allocator, middleware_fails: bool) !void {
+        const tool_list = [_]types.AgentTool{directoryReportingTool};
+        const content = [_]ai_types.AssistantContent{
+            .{ .tool_call = .{ .id = "call_dir", .name = "dirtool", .arguments_json = "{}" } },
+        };
+        const assistant_message = ai_types.AssistantMessage{
+            .content = &content,
+            .api = "test-api",
+            .provider = "test-provider",
+            .model = "test-model",
+            .usage = .{},
+            .stop_reason = .tool_use,
+            .timestamp = 0,
+        };
+        const model = testModel();
+        var events_storage: AgentEventStream = undefined;
+        const events = &events_storage;
+        events.* = AgentEventStream.init(allocator);
+        defer events.deinit();
+        defer drainEvents(events, allocator);
+
+        self.let_pass = !middleware_fails;
+        const result = executeToolCalls(
+            allocator,
+            assistant_message,
+            .{
+                .model = model,
+                .protocol = .{ .stream_fn = undefined },
+                .tools = &tool_list,
+                .execute_tool_via_protocol_fn = directoryReportingExecute,
+                .tool_output_middleware_fn = failingMiddleware,
+                .tool_output_middleware_ctx = self,
+            },
+            events,
+        ) catch |err| return err;
+        var owned = result;
+        defer owned.deinit(allocator);
+        for (owned.tool_results) |message| {
+            var clone = try ai_types.cloneMessage(allocator, .{ .tool_result = message });
+            clone.deinit(allocator);
+        }
+    }
+};
+
+fn drainEvents(events: *AgentEventStream, allocator: std.mem.Allocator) void {
+    while (events.poll()) |event| {
+        var drained = event;
+        drained.deinit(allocator);
+    }
+}
+
+fn failingMiddleware(
+    ctx: ?*anyopaque,
+    input: types.ToolOutputMiddlewareInput,
+    result: *types.AgentToolResult,
+    allocator: std.mem.Allocator,
+) anyerror!void {
+    const self: *HandoffCase = @ptrCast(@alignCast(ctx.?));
+    _ = input;
+    _ = result;
+    _ = allocator;
+    if (!self.let_pass) return error.MiddlewareRefused;
+}
+
+test "a message already in the results list is not freed again when the stream closes mid-turn" {
+    var events_storage: AgentEventStream = undefined;
+    const events = &events_storage;
+    events.* = AgentEventStream.init(std.testing.allocator);
+    defer events.deinit();
+    events.complete(.{
+        .messages = types.OwnedSlice(ai_types.Message).initBorrowed(&.{}),
+        .final_message = .{ .content = &.{}, .api = "a", .provider = "p", .model = "m", .usage = .{}, .stop_reason = .stop, .timestamp = 0 },
+        .iterations = 0,
+    });
+    while (events.poll()) |_| {}
+
+    var results_storage: std.ArrayList(ai_types.ToolResultMessage) = .empty;
+    defer {
+        for (results_storage.items) |*item| item.deinit(std.testing.allocator);
+        results_storage.deinit(std.testing.allocator);
+    }
+
+    const text = try std.testing.allocator.dupe(u8, "done");
+    const parts = try std.testing.allocator.alloc(ai_types.UserContentPart, 1);
+    parts[0] = .{ .text = .{ .text = text } };
+    const details = try std.testing.allocator.dupe(u8, "{\"ok\":true}");
+    const directory = try std.testing.allocator.dupe(u8, "/observed/dir");
+    var result = AgentToolResult{
+        .content = ai_types.OwnedSlice(ai_types.UserContentPart).initOwned(parts),
+        .details_json = ai_types.OwnedSlice(u8).initOwned(details),
+        .working_directory = ai_types.OwnedSlice(u8).initOwned(directory),
+        .working_directory_observed = true,
+    };
+
+    try std.testing.expectError(error.StreamCompleted, finalizeToolExecution(
+        std.testing.allocator,
+        .{ .model = testModel(), .protocol = .{ .stream_fn = undefined } },
+        events,
+        &results_storage,
+        .{ .id = "call-1", .name = "dirtool", .arguments_json = "{}" },
+        "{}",
+        &result,
+        false,
+    ));
+
+    try std.testing.expectEqual(@as(usize, 1), results_storage.items.len);
+    try std.testing.expectEqualStrings("call-1", results_storage.items[0].tool_call_id);
+    try std.testing.expectEqualStrings("/observed/dir", results_storage.items[0].workingDirectory().?);
+}
+
+test "an exhausted allocator loses nothing across the tool handoff" {
+    if (@import("builtin").os.tag == .wasi) return error.SkipZigTest;
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, HandoffCase.run, .{});
+}
+
+test "a tool result's working directory survives the loop and is freed with the message" {
+    try runDirectoryReportingTool(std.testing.allocator);
 }

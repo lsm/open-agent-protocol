@@ -21,8 +21,8 @@ already legal and no schema change is needed.
 ## Serving behaviour: none for the built-in rows
 
 `populateOapProviderCatalog` already sets `.source = .fallback` explicitly
-on every built-in row. Those rows state their provenance, so this change
-alters nothing about what they publish. It is the *unspecified* case that
+on every built-in row. Those rows state their provenance, so the
+`source` change alters nothing about what they publish. It is the *unspecified* case that
 changes: an entry that states nothing now publishes nothing.
 
 ## What this does not fix
@@ -36,10 +36,9 @@ provenance change behind one review.
 
 That separation held, and it is now history rather than a plan. #673 landed
 the `source` half first; this document's companion change, the `lifecycle`
-half, is what follows it. On this branch both members are
+half, is what follows it. After both, both members are
 `?ModelLifecycle = null` and `?ModelSource = null`, and the `lifecycle`
-correction described in `drafts/oap-model-entry-absence.md` is the one landing
-here.
+correction described in `drafts/oap-model-entry-absence.md` is #665.
 
 **The SDK readers were decided separately, and they have now landed.** When
 this was written, `sdk/typescript` still mapped the OAP wire into the native
@@ -98,9 +97,10 @@ distinct halves — not three re-decode round-trips.
 
 ### Historical measurement — before the reader migrations
 
-Measured on this branch's original base, which predates #688, #690, #705,
-#709, #710 and #712. **Kept as evidence of what the gap was**, not as a
-description of any current tree; the row for every migrated SDK is now false.
+Measured on the `source` change's original base, which predates every reader
+migration: #688, #690 and #705 for `source`, and #709, #710 and #712 for
+`lifecycle`. **Kept as evidence of what the gap was**, not as a description of
+any current tree; the row for every migrated SDK is now false.
 
 | SDK | absent lifecycle | absent source | mode |
 |---|---|---|---|
@@ -139,11 +139,12 @@ Migrated and on main:
 | Rust | #688 | #709 |
 | Go | #690 | #710 |
 | TypeScript | #705 | #712 |
+| Python | #724 | #724 |
 
-### Python is still a gap, and it is not small
+### Python: the gap, and what closed it
 
-Audited on current main. Python has the same defect class in **both** of its
-readers, and neither is fixed:
+Audited on the base of the `source` change, Python had the same defect class in
+**both** of its readers, and neither was fixed:
 
 - `sdk/python/src/oap_sdk/_oap.py:244` — `lifecycle=item.get("lifecycle", "stable")`
   invents `stable` for an absent member, and a member present as `null`
@@ -163,8 +164,31 @@ The OAP reader's deprecation filter at `_oap.py:233` is already correct: it
 compares against the literal `"deprecated"`, so an absent member does not
 match and the model stays in the listing.
 
-Python is being migrated as its own reader cut from fresh main, under the same
-absence-versus-present-null policy as the three reviewed readers. It is
-recorded here as an open gap rather than folded into this change, which is
-wire-side: a sparse wire is already legal, so a reader lagging behind it is a
-separate defect with a separate review.
+That audit is kept as the record of what the gap was. **Python is now
+migrated in #724**, under the same absence-versus-present-null policy
+as the three readers above: both members are optional on the shared
+descriptor, both readers tell an absent key from a present value, and a
+present `null`, wrong type or unrecognised literal is a malformed response
+naming the field. Its sixteen cases cover both seams through a real fake
+process each, including every direction of the deprecation filter on the OAP
+side.
+
+One asymmetry worth recording because it is easy to assume the wrong way: the
+**shared** reader has no client-side deprecation filter at all. It forwards
+`include_deprecated` to the server and keeps whatever comes back; the filter
+exists only on the OAP seam. Its test asserts that it does *not* drop entries
+locally, because asserting that it filters would be asserting behaviour it
+never had.
+
+All four SDK readers now implement the owner decision, so no reader is open.
+
+**Validating a member is not the same as validating it before the reader's
+filters run.** The OAP reader skips an entry whose `api`, `model_id`,
+`lifecycle` or `auth_status` does not match the request. Validating only where
+the descriptor is constructed means a row skipped by any of those filters is
+never validated at all — `lifecycle="deprecated"` with a present `null` source
+then returns an empty list instead of a malformed response. The owner contract
+has no filter exemption: a present `null`, wrong type or unrecognised literal
+is refused for **every** received entry, and only then may the reader skip it.
+The Python change validates once per entry before any local `continue`, and a
+negative control reinstates the old ordering to show the cases fail.

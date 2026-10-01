@@ -5,7 +5,7 @@ pub const CreateFlags = std.Io.Dir.CreateFileOptions;
 pub const File = std.Io.File;
 pub const Dir = std.Io.Dir;
 
-fn defaultIo() std.Io {
+pub fn defaultIo() std.Io {
     return if (@import("builtin").is_test)
         std.testing.io
     else

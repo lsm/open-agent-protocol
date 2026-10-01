@@ -16,6 +16,12 @@ function event(profile, type, payload, scope = {}) {
   send({ profile }, type, payload, scope);
 }
 
+const SUPPORTED_AUTH = new Set([
+  "absent", "null", "number", "empty", "invented",
+  "authenticated", "login_required", "expired",
+  "refreshing", "login_in_progress", "failed", "unknown",
+]);
+
 function fixtureModel() {
   const model = { model_ref: "fixture/openai-responses@mock", model_id: "mock", provider_id: "fixture", wire: "openai-responses", capabilities: ["chat", "streaming"], lifecycle: "stable", source: "discovered", auth_status: "authenticated", cost: { input: 3, output: 15, cache_read: 0.3, cache_write: 3.75 }, input_modalities: ["text", "image"], reasoning_levels: ["off", "medium", "high"], release_date: "2025-09-29", family: "mock-family" };
   switch (process.env.OAP_FIXTURE_SOURCE) {
@@ -36,6 +42,27 @@ function fixtureModel() {
     case "preview": model.lifecycle = "preview"; break;
     case "deprecated": model.lifecycle = "deprecated"; break;
     default: break;
+  }
+  if (process.env.OAP_FIXTURE_ENTRY === "nonobject") return "not-an-object";
+  if (process.env.OAP_FIXTURE_ENTRY === "trailing-nonobject") return [model, 7];
+  switch (process.env.OAP_FIXTURE_AUTH) {
+    case "absent": delete model.auth_status; break;
+    case "null": model.auth_status = null; break;
+    case "number": model.auth_status = 7; break;
+    case "invented": model.auth_status = "retired"; break;
+    case "empty": model.auth_status = ""; break;
+    case "authenticated": model.auth_status = "authenticated"; break;
+    case "login_required": model.auth_status = "login_required"; break;
+    case "expired": model.auth_status = "expired"; break;
+    case "refreshing": model.auth_status = "refreshing"; break;
+    case "login_in_progress": model.auth_status = "login_in_progress"; break;
+    case "failed": model.auth_status = "failed"; break;
+    case "unknown": model.auth_status = "unknown"; break;
+    default: break;
+  }
+  const selector = process.env.OAP_FIXTURE_AUTH;
+  if (selector && !SUPPORTED_AUTH.has(selector)) {
+    throw new Error(`unsupported OAP_FIXTURE_AUTH selector: ${selector}`);
   }
   return model;
 }
@@ -75,7 +102,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       break;
     case `${provider}:provider.models.list.request`:
       send(request, "provider.models.list.response", {
-        models: [fixtureModel()],
+        models: Array.isArray(fixtureModel()) ? fixtureModel() : [fixtureModel()],
         catalog: { observed_at_ms: 1_759_100_000_000, complete: true },
       });
       break;

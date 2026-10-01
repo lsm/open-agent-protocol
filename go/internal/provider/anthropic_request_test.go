@@ -457,14 +457,18 @@ func TestAToolCarriesItsSchemaUnderInputSchema(t *testing.T) {
 	}
 }
 
-func TestTheAnonymityRuleExcludesOneVendorNotFour(t *testing.T) {
+func TestTheAnonymityRuleExcludesTheVendorsThisWireServes(t *testing.T) {
 	allowed := Model{Provider: "openai", AllowsAnonymous: true, HasBaseURL: true, BaseURL: "https://api.openai.com"}
 	if !AllowsAnonymousWith(allowed, AnthropicAnonymousBlocked) {
 		t.Error("openai is not on this client's blocked list")
 	}
 	blocked := Model{Provider: "anthropic", AllowsAnonymous: true, HasBaseURL: true, BaseURL: "https://api.anthropic.com"}
 	if AllowsAnonymousWith(blocked, AnthropicAnonymousBlocked) {
-		t.Error("anthropic is the one vendor this client blocks")
+		t.Error("anthropic is a vendor this client serves, so it is blocked")
+	}
+	deepseek := Model{Provider: "deepseek", AllowsAnonymous: true, HasBaseURL: true, BaseURL: "https://api.deepseek.com/anthropic"}
+	if AllowsAnonymousWith(deepseek, AnthropicAnonymousBlocked) {
+		t.Error("deepseek is served on this wire too, so it is blocked")
 	}
 	if !AllowsAnonymousWith(blocked, OpenAIAnonymousBlocked) {
 		t.Error("the openai list does not name anthropic, so reusing it here would let an anthropic model through anonymously: the two lists are separate on purpose")
@@ -787,5 +791,138 @@ func TestABudgetForTheLevelWinsOverTheFallback(t *testing.T) {
 	got := AnthropicThinkingForLevel("high", map[string]int{"high": 9000})
 	if got.ThinkingBudgetTokens != 9000 {
 		t.Errorf("a budget for the level gives %+v, want the caller's 9000 rather than the 2048 fallback", got)
+	}
+}
+
+func deepSeekOnAnthropic() Model {
+	return Model{
+		ID: "deepseek-reasoner", API: AnthropicWire, Provider: "deepseek",
+		BaseURL: "https://api.deepseek.com/anthropic", HasBaseURL: true,
+		MaxTokens: 30000, Reasoning: true, HasCompat: true,
+	}
+}
+
+func thinkingOf(t *testing.T, body []byte) (string, string, bool) {
+	t.Helper()
+	parsed := decode(t, body)
+	kind := ""
+	if thinking, ok := parsed["thinking"].(map[string]any); ok {
+		kind, _ = thinking["type"].(string)
+	}
+	effort := ""
+	if config, ok := parsed["output_config"].(map[string]any); ok {
+		effort, _ = config["effort"].(string)
+	}
+	return kind, effort, parsed["thinking"] != nil
+}
+
+func TestDeepSeekOnThisWireIsSentEnabledWithTheDocumentedEffort(t *testing.T) {
+	for level, want := range map[string]string{
+		"minimal": "low", "low": "low", "medium": "high",
+		"high": "high", "xhigh": "high", "max": "max", "ultra": "max",
+	} {
+		body, _ := BuildAnthropicRequestBody(deepSeekOnAnthropic(), Context{}, AnthropicThinkingForLevel(level, nil), "")
+		kind, effort, present := thinkingOf(t, body)
+		if !present || kind != "enabled" {
+			t.Errorf("level %q: thinking = %q (present %v), want enabled", level, kind, present)
+		}
+		if effort != want {
+			t.Errorf("level %q: effort = %q, want %q", level, effort, want)
+		}
+	}
+}
+
+func TestDeepSeekThinkingSurvivesATokenLimitThatWouldSuppressClaude(t *testing.T) {
+	model := deepSeekOnAnthropic()
+	options := AnthropicThinkingForLevel("high", nil)
+	options.MaxTokens = 512
+	options.HasMaxTokens = true
+	body, _ := BuildAnthropicRequestBody(model, Context{}, options, "")
+	kind, effort, present := thinkingOf(t, body)
+	if !present || kind != "enabled" || effort != "high" {
+		t.Errorf("thinking = %q effort = %q present = %v, want enabled/high below the claude budget limit", kind, effort, present)
+	}
+	if got := decode(t, body)["max_tokens"]; got != float64(512) {
+		t.Errorf("max_tokens = %v, want the caller's 512 unchanged, since the fix does not raise it", got)
+	}
+	claude := anthropicModel()
+	claude.Reasoning = true
+	claudeBody, _ := BuildAnthropicRequestBody(claude, Context{}, options, "")
+	if _, _, wrote := thinkingOf(t, claudeBody); wrote {
+		t.Error("the claude budget branch wrote thinking at this limit, so the two are not being compared like for like")
+	}
+}
+
+func TestAHandBuiltEffortIsCarriedVerbatimAndTheRawLevelWins(t *testing.T) {
+	for _, wire := range []string{"low", "high", "max"} {
+		options := AnthropicOptions{ThinkingEnabled: true, ThinkingEffort: wire}
+		body, _ := BuildAnthropicRequestBody(deepSeekOnAnthropic(), Context{}, options, "")
+		if _, effort, _ := thinkingOf(t, body); effort != wire {
+			t.Errorf("a hand-built %q was sent as %q, want it carried verbatim", wire, effort)
+		}
+	}
+	both := AnthropicOptions{ThinkingEnabled: true, ThinkingEffort: "max", ThinkingLevel: "xhigh"}
+	body, _ := BuildAnthropicRequestBody(deepSeekOnAnthropic(), Context{}, both, "")
+	if _, effort, _ := thinkingOf(t, body); effort != "high" {
+		t.Errorf("effort = %q, want high: the raw level xhigh maps to high and outranks the hand-built max", effort)
+	}
+	undocumented := AnthropicOptions{ThinkingEnabled: true, ThinkingEffort: "medium"}
+	body, _ = BuildAnthropicRequestBody(deepSeekOnAnthropic(), Context{}, undocumented, "")
+	if _, effort, present := thinkingOf(t, body); present && effort != "" {
+		t.Errorf("a hand-built %q produced effort %q, want no output_config at all", "medium", effort)
+	}
+}
+
+func TestTheClaudePathsAreUntouchedByTheDeepSeekBranch(t *testing.T) {
+	adaptive := anthropicModel()
+	adaptive.ID = "claude-opus-4-6"
+	adaptive.Reasoning = true
+	options := AnthropicOptions{ThinkingEnabled: true, ThinkingEffort: "high"}
+	body, _ := BuildAnthropicRequestBody(adaptive, Context{}, options, "")
+	kind, effort, present := thinkingOf(t, body)
+	if !present || kind != "adaptive" || effort != "high" {
+		t.Errorf("adaptive claude: thinking = %q effort = %q present = %v, want adaptive/high", kind, effort, present)
+	}
+	if budget, present := decode(t, body)["thinking"].(map[string]any)["budget_tokens"]; present && budget != nil {
+		t.Errorf("the adaptive claude path grew a budget_tokens member: %v", budget)
+	}
+
+	plain := anthropicModel()
+	plain.Reasoning = true
+	body, _ = BuildAnthropicRequestBody(plain, Context{}, AnthropicThinkingForLevel("high", nil), "")
+	thinking, _ := decode(t, body)["thinking"].(map[string]any)
+	if thinking["type"] != "enabled" || thinking["budget_tokens"] == nil {
+		t.Errorf("non-adaptive claude = %v, want enabled with budget_tokens", thinking)
+	}
+}
+
+func TestTheBranchFollowsTheProviderLabelAndNotTheHost(t *testing.T) {
+	proxied := deepSeekOnAnthropic()
+	proxied.BaseURL = "https://gateway.internal/v1"
+	body, _ := BuildAnthropicRequestBody(proxied, Context{}, AnthropicThinkingForLevel("high", nil), "")
+	if kind, effort, _ := thinkingOf(t, body); kind != "enabled" || effort != "high" {
+		t.Errorf("a deepseek model behind a proxy got thinking = %q effort = %q, want enabled/high", kind, effort)
+	}
+
+	mislabelled := deepSeekOnAnthropic()
+	mislabelled.Provider = "openai"
+	body, _ = BuildAnthropicRequestBody(mislabelled, Context{}, AnthropicThinkingForLevel("high", nil), "")
+	thinking, _ := decode(t, body)["thinking"].(map[string]any)
+	if thinking["type"] != "enabled" || thinking["budget_tokens"] == nil {
+		t.Errorf("a deepseek host under another label = %v, want the claude budget branch, since the label decides", thinking)
+	}
+}
+
+func TestOffAndNoneOnThisWire(t *testing.T) {
+	for _, level := range []string{"", "off"} {
+		body, _ := BuildAnthropicRequestBody(deepSeekOnAnthropic(), Context{}, AnthropicThinkingForLevel(level, nil), "")
+		if _, _, present := thinkingOf(t, body); present {
+			t.Errorf("level %q wrote a thinking member, want the member omitted", level)
+		}
+	}
+	body, _ := BuildAnthropicRequestBody(deepSeekOnAnthropic(), Context{}, AnthropicThinkingForLevel("none", nil), "")
+	kind, effort, present := thinkingOf(t, body)
+	if !present || kind != "enabled" || effort != "high" {
+		t.Errorf("none: thinking = %q effort = %q present = %v, want enabled/high, which is the recorded gap", kind, effort, present)
 	}
 }
