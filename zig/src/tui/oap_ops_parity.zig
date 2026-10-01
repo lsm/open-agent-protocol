@@ -152,6 +152,13 @@ fn findStateUpdate(replies: []const oap_types.Envelope) ?oap_types.SessionState 
     }
     return null;
 }
+fn findCancelReply(replies: []const oap_types.Envelope) ?oap_types.RunCancelResponse {
+    for (replies) |reply| {
+        if (reply.payload == .run_cancel_response) return reply.payload.run_cancel_response;
+    }
+    return null;
+}
+
 
 test "the op matrix covers every session operation the TUI exposes" {
     const ops = std.meta.fields(tui_session.TuiSessionOps);
@@ -397,6 +404,9 @@ test "a cancel acknowledges intent and does not itself emit a terminal" {
     try exchange.client.cancel();
     _ = try exchange.step();
 
+    const ack = findCancelReply(exchange.replies.items) orelse return error.NoCancelReply;
+    try std.testing.expect(ack.accepted);
+    try std.testing.expectEqualStrings(run_id, ack.run_id);
     try std.testing.expectEqualStrings(run_id, exchange.client.pending_run_id.?);
     try std.testing.expectEqual(@as(u64, 0), exchange.client.error_responses);
 }
