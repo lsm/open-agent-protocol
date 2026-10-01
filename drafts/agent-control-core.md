@@ -678,6 +678,7 @@ Common optional core features:
 - `action.tools.progress`
 - `action.permissions`
 - `user_input`
+- `session.compact` and `run.compaction` (proposed; [Decision 0044](../decisions/0044-compaction.md))
 
 Support levels are:
 
@@ -787,7 +788,8 @@ These are deliberately outside the core for now:
 - control-layer-provided tool definitions;
 - hooks, subagents, background tasks, and task notifications;
 - telemetry, cost accounting, rate-limit events, and retry detail;
-- context compaction controls;
+- context compaction controls, which [Decision 0044](../decisions/0044-compaction.md) proposes
+  as the optional `+compaction` unit;
 - full provider-native model stream passthrough;
 - durable cross-process replay and full stream-convergence protocols.
 
