@@ -2,18 +2,18 @@
 const std = @import("std");
 const Context = @import("context.zig").Context;
 const command = @import("command.zig");
+const model_contract = @import("model.zig");
 
 pub fn SubProgram(comptime ChildModel: type, comptime ParentMsg: type) type {
-    comptime {
-        if (!@hasDecl(ChildModel, "Msg")) @compileError("ChildModel must have a 'Msg' type");
-        if (!@hasDecl(ChildModel, "init")) @compileError("ChildModel must have an 'init' function");
-        if (!@hasDecl(ChildModel, "update")) @compileError("ChildModel must have an 'update' function");
-        if (!@hasDecl(ChildModel, "view")) @compileError("ChildModel must have a 'view' function");
-    }
+    model_contract.validate(ChildModel, "ChildModel");
 
     const ChildMsg = ChildModel.Msg;
     const ChildCmd = command.Cmd(ChildMsg);
     const ParentCmd = command.Cmd(ParentMsg);
+
+    const InitResult = model_contract.Result(@TypeOf(ChildModel.init), ParentCmd);
+    const UpdateResult = model_contract.Result(@TypeOf(ChildModel.update), ParentCmd);
+    const ViewResult = model_contract.Result(@TypeOf(ChildModel.view), []const u8);
 
     return struct {
         model: ChildModel = undefined,
@@ -22,19 +22,25 @@ pub fn SubProgram(comptime ChildModel: type, comptime ParentMsg: type) type {
 
         const Self = @This();
 
-        pub fn init(self: *Self, ctx: *Context) ParentCmd {
-            const child_cmd = self.model.init(ctx);
+        pub fn init(self: *Self, ctx: *Context) InitResult {
+            const child_cmd = if (comptime model_contract.returnsError(@TypeOf(ChildModel.init)))
+                try self.model.init(ctx)
+            else
+                self.model.init(ctx);
             self.initialized = true;
             return self.translateCmd(child_cmd);
         }
 
-        pub fn update(self: *Self, child_msg: ChildMsg, ctx: *Context) ParentCmd {
+        pub fn update(self: *Self, child_msg: ChildMsg, ctx: *Context) UpdateResult {
             if (!self.initialized) return .none;
-            const child_cmd = self.model.update(child_msg, ctx);
+            const child_cmd = if (comptime model_contract.returnsError(@TypeOf(ChildModel.update)))
+                try self.model.update(child_msg, ctx)
+            else
+                self.model.update(child_msg, ctx);
             return self.translateCmd(child_cmd);
         }
 
-        pub fn view(self: *const Self, ctx: *const Context) []const u8 {
+        pub fn view(self: *const Self, ctx: *const Context) ViewResult {
             if (!self.initialized) return "";
             return self.model.view(ctx);
         }
@@ -59,6 +65,7 @@ pub fn SubProgram(comptime ChildModel: type, comptime ParentMsg: type) type {
                 .exit_alt_screen => .exit_alt_screen,
                 .set_title => |t| .{ .set_title = t },
                 .println => |l| .{ .println = l },
+                .repaint => .repaint,
                 .batch => .none,
                 .sequence => .none,
                 .image_file => |img| .{ .image_file = img },

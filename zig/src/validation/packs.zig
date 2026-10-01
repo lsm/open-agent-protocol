@@ -579,25 +579,31 @@ test "a loaded pack's schemas are registered under keys its own refs resolve" {
         ,
     });
 
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "literal/back\\slash.schema.json", .data =
-            \\{"$schema": "https://json-schema.org/draft/2020-12/schema", "$defs": {"thing": {"type": "object", "required": ["type", "session_id"], "properties": {"type": {"const": "com.example.literal.thing"}, "session_id": {"type": "string"}}}}}
-        ,
-    });
-    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "literal/pack.json", .data =
-            \\{"id": "com.example.literal", "version": "1.0.0", "schemas": ["back\\slash.schema.json"], "envelope_types": [{"type": "com.example.literal.thing", "role": "event", "schema": "back\\slash.schema.json#/$defs/thing"}]}
-        ,
-    });
+    if (comptime std.Io.Dir.path.sep == '/') {
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "literal/back\\slash.schema.json", .data =
+                \\{"$schema": "https://json-schema.org/draft/2020-12/schema", "$defs": {"thing": {"type": "object", "required": ["type", "session_id"], "properties": {"type": {"const": "com.example.literal.thing"}, "session_id": {"type": "string"}}}}}
+            ,
+        });
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "literal/pack.json", .data =
+                \\{"id": "com.example.literal", "version": "1.0.0", "schemas": ["back\\slash.schema.json"], "envelope_types": [{"type": "com.example.literal.thing", "role": "event", "schema": "back\\slash.schema.json#/$defs/thing"}]}
+            ,
+        });
+    }
 
     var registry = try jsonschema.Registry.initFromBundled(allocator);
     defer registry.deinit();
 
-    const cases = [_]struct { dir: []const u8, declared: []const u8 }{
+    const Case = struct { dir: []const u8, declared: []const u8 };
+    const portable = [_]Case{
         .{ .dir = "staying", .declared = "com.example.ok.thing" },
         .{ .dir = "aliased", .declared = "com.example.alias.thing" },
         .{ .dir = "cleaned", .declared = "com.example.clean.thing" },
         .{ .dir = "nested", .declared = "com.example.nested.thing" },
+    };
+    const with_literal = portable ++ [_]Case{
         .{ .dir = "literal", .declared = "com.example.literal.thing" },
     };
+    const cases = if (comptime std.Io.Dir.path.sep == '/') with_literal else portable;
 
     for (cases) |case| {
         const root = try tmp.dir.realPathFileAlloc(std.testing.io, case.dir, allocator);
@@ -616,7 +622,11 @@ test "a loaded pack's schemas are registered under keys its own refs resolve" {
         try std.testing.expect(!try judgesAsAccepted(allocator, &registry, read.branches, short));
     }
 
-    try std.testing.expect(registry.root("https://open-agent-protocol.local/ext/com.example.literal/1.0.0/back\\slash.schema.json") != null);
+    if (comptime std.Io.Dir.path.sep == '/') {
+        try std.testing.expect(registry.root("https://open-agent-protocol.local/ext/com.example.literal/1.0.0/back\\slash.schema.json") != null);
+    }
+    try std.testing.expect(registry.root("https://open-agent-protocol.local/ext/com.example.nested/1.0.0/sub/note.schema.json") != null);
+    try std.testing.expect(registry.root("https://open-agent-protocol.local/ext/com.example.nested/1.0.0/sub\\note.schema.json") == null);
 }
 
 test "a descriptor schema path is read only when it lands beneath the pack root" {
@@ -841,6 +851,66 @@ test "a cited name is cleaned and its pointer unescaped, so the ref matches the 
     try std.testing.expect(try judgesAsAccepted(allocator, &registry, read.branches, envelope));
 }
 
+test "one unpinned branch in a pack takes the pack's pinned branch with it" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cases = [_]struct { dir: []const u8, types: []const u8, refused: bool }{
+        .{ .dir = "mixed", .types =
+        \\[
+        \\  {"type": "com.example.mixed.good", "role": "event", "schema": "types.schema.json#/$defs/good"},
+        \\  {"type": "com.example.mixed.bad", "role": "event", "schema": "types.schema.json#/$defs/plain"}
+        \\]
+        , .refused = true },
+        .{ .dir = "both-pinned", .types =
+        \\[
+        \\  {"type": "com.example.mixed.good", "role": "event", "schema": "types.schema.json#/$defs/good"},
+        \\  {"type": "com.example.mixed.other", "role": "event", "schema": "types.schema.json#/$defs/other"}
+        \\]
+        , .refused = false },
+    };
+    const members =
+        \\[{"payload_type": "com.example.mixed.good", "member": "note", "schema": {"type": "string"}}]
+    ;
+    const document =
+        \\{"$schema": "https://json-schema.org/draft/2020-12/schema", "$defs": {"good": {"type": "object", "required": ["type", "id", "session_id"], "properties": {"type": {"const": "com.example.mixed.good"}, "id": {"type": "string"}, "session_id": {"type": "string"}}}, "other": {"type": "object", "required": ["type", "id", "session_id"], "properties": {"type": {"const": "com.example.mixed.other"}, "id": {"type": "string"}, "session_id": {"type": "string"}}}, "plain": {"type": "object", "required": ["type"], "properties": {"type": {"type": "string"}}}}}
+    ;
+    for (cases) |c| {
+        try tmp.dir.createDir(std.testing.io, c.dir, .default_dir);
+        const document_path = try std.fmt.allocPrint(allocator, "{s}/types.schema.json", .{c.dir});
+        defer allocator.free(document_path);
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = document_path, .data = document });
+        const descriptor = try std.fmt.allocPrint(allocator,
+            \\{{"id": "com.example.mixed", "version": "1.0.0", "schemas": ["types.schema.json"], "envelope_types": {s}, "payload_members": {s}}}
+        , .{ c.types, members });
+        defer allocator.free(descriptor);
+        const pack = try std.fmt.allocPrint(allocator, "{s}/pack.json", .{c.dir});
+        defer allocator.free(pack);
+        try tmp.dir.writeFile(std.testing.io, .{ .sub_path = pack, .data = descriptor });
+    }
+    for (cases) |c| {
+        var registry = try jsonschema.Registry.initFromBundled(allocator);
+        defer registry.deinit();
+        const root = try tmp.dir.realPathFileAlloc(std.testing.io, c.dir, allocator);
+        defer allocator.free(root);
+        const one = [_][]const u8{root};
+        var read = try load(std.testing.io, allocator, &registry, &one);
+        defer read.deinit();
+        if (c.refused) {
+            try std.testing.expect(carriesCode(read.refusals, pack_branch_unpinned));
+            try std.testing.expectEqual(@as(usize, 0), read.branches.len);
+            try std.testing.expectEqual(@as(usize, 0), read.types.len);
+            try std.testing.expectEqual(@as(usize, 0), read.members.len);
+        } else {
+            try std.testing.expectEqual(@as(usize, 0), read.refusals.len);
+            try std.testing.expectEqual(@as(usize, 2), read.branches.len);
+            try std.testing.expectEqual(@as(usize, 2), read.types.len);
+            try std.testing.expectEqual(@as(usize, 1), read.members.len);
+            try std.testing.expectEqualStrings("note", read.members[0].name);
+            try std.testing.expectEqualStrings("com.example.mixed.good", read.members[0].payload_type);
+        }
+    }
+}
 test "a branch that does not pin its own type is refused, and the manifest fixtures carry the codes" {
     const allocator = std.testing.allocator;
     const cases = [_]struct { dir: []const u8, code: []const u8 }{
@@ -920,7 +990,7 @@ test "a schema path cleans without an arena, and a failed allocation does not le
             try std.testing.expectError(error.InvalidPackDescriptor, lexicalRelative(allocator, "../outside/away.schema.json"));
         }
     };
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, Runner.run, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, Runner.run, .{});
 }
 
 fn carriesCode(refusals: []const Refusal, code: []const u8) bool {

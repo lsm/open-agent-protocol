@@ -93,6 +93,29 @@ func mapThinkingLevelToEffort(level string) string {
 	return "low"
 }
 
+func deepSeekAnthropicEffort(level string) string {
+	switch level {
+	case "minimal", "low":
+		return "low"
+	case "medium", "high", "xhigh":
+		return "high"
+	case "max", "ultra":
+		return "max"
+	}
+	return "high"
+}
+
+func deepSeekAnthropicEffortFor(options AnthropicOptions) (string, bool) {
+	if options.ThinkingLevel != "" {
+		return deepSeekAnthropicEffort(options.ThinkingLevel), true
+	}
+	switch options.ThinkingEffort {
+	case "low", "high", "max":
+		return options.ThinkingEffort, true
+	}
+	return "", false
+}
+
 func defaultThinkingBudget(level string, budgets map[string]int) int {
 	fallbacks := map[string]int{"minimal": 256, "low": 512, "medium": 1024, "high": 2048, "xhigh": 4096}
 	if level == "off" {
@@ -110,7 +133,7 @@ func AnthropicThinkingForLevel(level string, budgets map[string]int) AnthropicOp
 	if level == "" || level == "off" {
 		return AnthropicOptions{}
 	}
-	out := AnthropicOptions{ThinkingEnabled: true, ThinkingEffort: mapThinkingLevelToEffort(level)}
+	out := AnthropicOptions{ThinkingEnabled: true, ThinkingEffort: mapThinkingLevelToEffort(level), ThinkingLevel: level}
 	if budget := defaultThinkingBudget(level, budgets); budget > 0 {
 		out.ThinkingBudgetTokens = budget
 		out.HasThinkingBudget = true
@@ -167,6 +190,7 @@ type AnthropicOptions struct {
 	ThinkingBudgetTokens int
 	HasThinkingBudget    bool
 	ThinkingEffort       string
+	ThinkingLevel        string
 	UserID               string
 	HasUserID            bool
 	ToolChoiceType       string
@@ -263,7 +287,12 @@ func BuildAnthropicRequestBody(model Model, ctx Context, options AnthropicOption
 		body = body.with(member("metadata", jsonObject{member("user_id", jsonString(options.UserID))}))
 	}
 	if options.ThinkingEnabled && model.Reasoning {
-		if supportsAdaptiveThinking(model.ID) {
+		if model.Provider == "deepseek" {
+			body = body.with(member("thinking", jsonObject{member("type", jsonString("enabled"))}))
+			if effort, ok := deepSeekAnthropicEffortFor(options); ok {
+				body = body.with(member("output_config", jsonObject{member("effort", jsonString(effort))}))
+			}
+		} else if supportsAdaptiveThinking(model.ID) {
 			body = body.with(member("thinking", jsonObject{member("type", jsonString("adaptive"))}))
 			if options.ThinkingEffort != "" {
 				body = body.with(member("output_config", jsonObject{member("effort", jsonString(options.ThinkingEffort))}))

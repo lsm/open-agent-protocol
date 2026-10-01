@@ -87,6 +87,7 @@ func anthropicOptions(options provider.StreamOptions) provider.AnthropicOptions 
 		out.ThinkingEffort = thinking.ThinkingEffort
 		out.ThinkingBudgetTokens = thinking.ThinkingBudgetTokens
 		out.HasThinkingBudget = thinking.HasThinkingBudget
+		out.ThinkingLevel = thinking.ThinkingLevel
 	}
 	return out
 }

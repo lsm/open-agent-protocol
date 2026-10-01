@@ -68,7 +68,7 @@ security posture, and a port carries all of them or is not conformant.
 | **`Host` allowlisted on a loopback bind** | When the bind address names `localhost`, `127.0.0.1` or `::1`, only requests whose `Host` header names one of those three are served; anything else is refused `403`. Comparison is case-insensitive and the port is stripped, and **a bracketed host has to carry a port**, which is what Go's split produces: `Host: [::1]` with no port is refused, and so is one that opens a bracket it never closes. A non-loopback bind has no allowlist. | `TestHostAllowlist`, `TestLoopbackHosts`. Zig: `a Host header is compared without its port and without case` and `a bind that is not loopback has no allowlist, so nothing is refused`, against a real listener — refused as an `error.response` carrying `unrecognized_host`, which is what `D1` fixed in Go |
 | **`Origin` refused on every route** | A request carrying any `Origin` header is refused `403 cross_origin_request`. The check wraps the whole mux rather than living in the routes that read a body, so it covers `close` and every route not yet written. | `TestEveryRouteRefusesABrowserOrigin`, `TestReadRequestRefusesBrowserOrigins`, `TestTheOriginBoundaryHoldsWithoutAHostAllowlist`. Zig: `a request carrying both an Origin and a foreign Host is refused the Origin first` and `the daemon answers over a real socket, and the bytes say which refusal it was` — both over a real listener, so the order and the bytes on the wire are pinned rather than asserted |
 | **`environment` is an allowlist** | A child process inherits nothing ambient. An adapter entry's `environment` names the variables forwarded: a bare `NAME` forwards the daemon's own value (an unset name is omitted), `NAME=value` passes through literally. A tool source's `environment` takes the same form with one stricter rule — a bare `NAME` the daemon does not carry fails at startup, naming the source and the variable, because that entry is the credential list of one executable the daemon itself launches. | `TestResolveEnvironment`, `TestLoadRegistryToolSourceNeedsEveryNameItLists`, `TestCallerEnvironmentNeverNamesAVariableTwice`. Zig: the transport builds the child's environment from the list alone rather than from its own, pinned by `the child sees exactly the environment it was given and nothing ambient`, and the hub's registry hands each adapter exactly what the document resolved, pinned by `the hub's registry builds every entry a document names, and a child inherits only the variables its entry lists` |
-| **A restart ends every live session** | Run children are per-session and no adapter survives the process, so a restart ends every harness process. Under [Decision 0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md) a session outlives its process and close releases it, so no entry accumulates; reopening one is staged as T7, and until it lands a client that reconnects to a restarted hub finds no session. | The restart: `TestServeSessionsClosedOnShutdown`. The release: none yet — `TestHubSessionCloseSemantics` and `TestSessionsListingAcrossLifecycle` still pin the kept entry, which D2 records. |
+| **A restart ends every live session** | Run children are per-session and no adapter survives the process, so a restart ends every harness process. Under [Decision 0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md) a session outlives its process and close releases it, so no entry accumulates; reopening one is staged as T7, and until it lands a client that reconnects to a restarted hub finds no session. | The restart: **none** — a restart ending every live session has no pinning test. `TestServeShutdownSweepIsNotAbandoned` is the closest, but as the sweep row below measures, it stays green when `hub.CloseSessions` is never invoked, so no test observes a session reaching a closed state (see that row for the full limit). The release: none yet — `TestHubSessionCloseSemantics` and `TestSessionsListingAcrossLifecycle` still pin the kept entry, which D2 records. |
 | **A binding record holds no credential** | `--bindings <path>` appends one record per open: the session id, the adapter and its pin, the home, the working directory the adapter entry was configured with (omitted when the hub does not know one — never the daemon's own), the model, and the tool source ids. It never records the request's environment, a credential, or a resolved environment value — a record of what was asked must not become a copy of what was secret — and the file is created `0o600`. History is appended rather than replaced, and a torn tail is truncated on the next write or the next open, keeping the longest prefix of records that decode, so one crash cannot leave the log permanently unreadable | `TestAnOpenIsRecordedAsABindingAndNothingSensitiveIs` (opens a session and asserts the written bytes carry neither), `TestTheStoreFileIsNotWorldReadable` (the mode), `TestATornTailIsTruncatedSoTheStoreKeepsWorking`, `TestATornTailIsTruncatedWhenTheStoreIsOpenedAgain`, `TestACorruptLineThatKeepsItsNewlineIsTruncatedToo` and `TestACorruptLineIsTruncatedWhenTheStoreIsOpenedAgain` (the repair), `TestACloseAndADuplicateOpenCannotInterleaveTheirRecords` (a close never lands between an open and its registration), and `TestARolledBackOpenIsRecordedAsOpenedAndThenClosed` and `TestARefusedDuplicateOpenIsRecordedAsARefusalAndNothingElse` and `TestTheRecordsDirectoryIsTheAdaptersOwnAndIsOmittedWhenUnknown` (what a record claims) |
 | **No payload or environment logging** | The hub, its codecs and its clients never log envelope payloads or resolved environment values. | `TestDaemonOutputNeverCarriesEnvironmentValues` (environment values, through the listing and a load failure); no test pins the payload half |
 
@@ -612,6 +612,46 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   raising `drain_total_cap_bytes` to 1 GiB fails it with `expected 1048576, found 1073741824`. The real-socket test separately pins that a cap
   is *observable from outside the process*, asserting a lower bound on transferred bytes plus a
   complete 403 — never an upper one
+- **the 64 KiB round cap, and the round's own deadline — pinned as _configuration_ at this head, which is
+  a weaker claim than the bullets around it and is not a removal proof.** Of the four
+  bounds the row above names, the 64 KiB round cap was **the one no bullet covered**: that row says the
+  port "reads in 64 KiB rounds". It does discuss the round deadline at `:601` — that the deadline
+  **reuses the `now` that round already read** — but only as a property of the clock; it never gives a
+  round a **time bound of its own**, where it names the 1 MiB and the 2500 ms outright. So the narrow
+  claim is that `drain_cap_bytes` and `drain_cycle_ms` are two bounds the row leaves **unnamed**, and
+  until now each was named only in the source: `drain_cap_bytes` at its definition (`:205`) and its use
+  (`:219`), `drain_cycle_ms` where `drain` builds the round deadline from it at `:220`
+  (`const deadline = now + ...drain_cycle_ms...`). Neither was asserted anywhere, so the ledger stated
+  a bound no test would notice losing. `a drain stops at its byte cap and reports what it consumed` now
+  carries `wanted_round = 64 * 1024` and `expectEqual(@as(i32, 50), drain_cycle_ms)` beside the
+  1 MiB assertion it already had, in the same carrying-its-own-literal shape, so the constant and the
+  expectation cannot move together. `a drain gives up rather than waiting on a peer that sends nothing
+  more` no longer accepts any elapsed time under 2000 ms for a silent peer, which was 40× the 50 ms
+  round it is supposed to honour and let a 1500 ms cycle pass; it now requires the drain back within
+  **10 round cycles** of the constant, so the bound tracks the constant instead of drifting from it —
+  a response-time bound **derived** from the constant, not evidence that the per-round deadline is read.
+  **What these equalities do not prove, stated plainly because it is the limit of the evidence:** they
+  pin the two constants' **values**, not that `drain` *uses* them. Bypassing the use while keeping the
+  constants — taking `owed` from `drain_total_cap_bytes` instead of `drain_cap_bytes` at `:219` — **compiles
+  and leaves every assertion here green**, and no such control is presented, because the per-round cap is
+  not independently observable through `drain`'s surface: the 1 MiB total and the 2500 ms total both
+  dominate it, so a wider round changes no observable byte count. The round deadline is **not** in that
+  position, and the row should not have put it there. A `:220` substitute that keeps both constants but
+  builds the deadline from something larger — `drain_total_ms` is the case that matters — blocks a silent
+  peer for ~2500 ms and so **fails** the 10-cycle bound, and that is **run, not inspected**: building the
+  deadline from `drain_total_ms` instead compiles clean and fails `EXIT=1` in `a drain gives up rather
+  than waiting on a peer that sends nothing more`, with both constants still holding 64 KiB and 50, so
+  the `expectEqual` assertions pass and only the derived bound objects. What the derived bound pins is
+  therefore a **ceiling**: a round deadline substituted at **500 ms or more** is caught, and one
+  substituted **below 500 ms** — a hardcoded shorter wait, say — is not. So the bound does real work on
+  the deadline, and none at all on the round cap. So this bullet says only that the ledger's
+  64 KiB and one-cycle figures are now **asserted rather than merely stated**, and it does not close the
+  per-round cap or the per-round deadline the way the 1 MiB bullet and the guard-presence row do theirs.
+  **Both measured, not assumed:** against `main` as it stood, raising `drain_cap_bytes` to 1 MiB left
+  the suite `EXIT=0` and raising `drain_cycle_ms` to 1500 left it `EXIT=0` — both compile, and neither
+  was caught. With these assertions the same two mutations fail, with `expected 65536, found 1048576`
+  and `expected 50, found 1500`. The round cap is a **shape** bound rather than a total, so it is
+  asserted as the constant it is; the total remains pinned separately by the 1 MiB bullet above
 - **the 2500 ms elapsed budget, and that it is elapsed rather than uptime** — `a drain reads on a
   long-lived process, because its budget is elapsed not uptime` seeds the clock, waits
   `drain_total_ms + 200` under a bound, asserts the clock is past the budget, and drains again;
@@ -647,14 +687,14 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   9.2–10.8 MB unbounded — but a threshold on them would be a machine-dependent constant rather than a
   bound, and the same build produced 1.70 MB and 3.13 MB on two runs of one case, so none is asserted.
   **What the existing unit tests do and do not cover, stated precisely so this row does not overstate
-  them:** `http.zig:1369` pins the **byte cap** — it asserts `drain_total_cap_bytes` against its own
-  literal and drains past it — while `http.zig:1412` pins only that the budget is **elapsed rather
+  them:** `http.zig:1371` pins the **byte cap** — it asserts `drain_total_cap_bytes` against its own
+  literal and drains past it — while `http.zig:1417` pins only that the budget is **elapsed rather
   than uptime**, exactly as the row above records, and that row's finding stands unchanged:
   **neutralising the time guard leaves it green, so the time bound's presence was a gap until the
   already-spent-budget proof below closed it.** What
   is **not** pinned anywhere is that the 413 path *reaches* `drain` at all, and no client can observe
   that without the threshold just declined. An earlier revision of this work claimed the mutation
-  failed when both bounds were removed, and a second claimed the budget was pinned at `:1412`. The
+  failed when both bounds were removed, and a second claimed the budget was pinned at `:1417`. The
   first does not hold and the second contradicts the row above. Both are withdrawn.
 - **the `readBody` failure path answers completely, and the daemon gives up on a peer that stops** —
   `makai.zig:1591` is the third and last `drain` call site, and the only one none of the rows above
@@ -667,7 +707,8 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   `code: request_read`, `protocol: open-agent-protocol`, `version: 0.1`,
   `profile: open-agent-protocol.agent-control-core`, and the synthetic correlation `oap-error-1`
   replying to `oap-request-1` that `refusalEnvelope` builds at `http.zig:292-298` and the existing
-  unit test at `:1561` already pins for all four refusals — delivered while the client had sent
+  unit test `a refusal is an error.response naming its code, correlated to a request that never
+  arrived` at `:1617` already pins for all four refusals — delivered while the client had sent
   **4096 of the 8 MiB it declared**. The answer arriving at all is the "gave up" claim: a
   daemon waiting for the declared body would have said nothing and the read would have timed out.
   **Two negative controls fail it:** `readBody` treating a short body as complete answers `404`, and
@@ -677,14 +718,14 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   the drain reaches this client. So the **`content_length -| filled` arithmetic and this site's
   reachability are unproved** by this test, by the rows above, and by anything else on main, and no
   threshold is inferred from transferred bytes to stand in for them. **Of the two drain bounds, the
-  byte cap is pinned** — `:1369` asserts `drain_total_cap_bytes` against its own literal and drains
-  past it — and the **elapsed-versus-uptime comparison is pinned** at `:1412`, but **the time guard's
+  byte cap is pinned** — `:1371` asserts `drain_total_cap_bytes` against its own literal and drains
+  past it — and the **elapsed-versus-uptime comparison is pinned** at `:1417`, but **the time guard's
   presence was NOT pinned by this row**, exactly as the row above then stated; it is now pinned by the
   already-spent-budget proof, which is about the guard itself and not about any client's drain amount.
   Two things a reader might assume are covered here are not: this site's drain amount, and the
   existence of the time bound.
 - **the total-time guard's presence, through the injected callback that already exists** — the row at
-  `:615-621` pins that the 2500 ms budget is **elapsed rather than uptime** and is explicit that it does
+  `:655-663` pins that the 2500 ms budget is **elapsed rather than uptime** and is explicit that it does
   **not** pin the guard's presence, because that test's bytes are already buffered when `drain` starts.
   `a drain whose elapsed budget is already spent consumes nothing, though the bytes are buffered and
   reachable` pins the presence, through the **existing public `KeepGoing`** at `:104-110` and the injection
@@ -806,6 +847,50 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   defect fixed here), a proof reporting an exit when the bound elapses, the helper no longer ignoring
   `SIGINT`, and a proof returning "alive" without waiting, which the elapsed assertion catches and which
   nothing else here would. A **test binary** dies on `SIGINT` despite the ignore and a standalone one survives, which is why the helper is a separate program.
+
+- **the shutdown sweep is not abandoned — pinned, and this is a narrower claim than the row it
+  replaces.** The previous wording said the session "is actually closed" and that "the wiring" is
+  pinned; **both overstated what any test here can show, and the skipped-call control below is the
+  measurement that says so.** `TestServeSessionsClosedOnShutdown` opened a
+  session, asserted it appeared in `/sessions` **before** shutdown, called `cancel()` and then
+  `expectServeExit` — which checks only that `runHub` returned `nil`. It never asserted anything
+  about the session being **closed**, so the test's name claimed a fact its body never looked at. The
+  production line it exists to cover is `serve.go:120`, `hub.CloseSessions(sessionShutdown)`, and
+  nothing in the tree constrained it. `startServe` also sent `runHub`'s stderr to `io.Discard`, so
+  even the sweep's own abandonment log — `serve.go:251`, "shutdown budget exhausted before closing
+  session" — was invisible to every test. **The captured buffer is read only after the writer is finished**, and
+  that is structural rather than a sleep: `startServe` sends on `done` only after `runHub` returns
+  (`serve_test.go:128`), `expectServeExit` receives from `done` (`:154`), and the test reads the buffer
+  after that, so every write the daemon made happens-before the read. `syncBuffer` is mutex-guarded as
+  well, and the test is green under `go test -race` unmutated and red under it when the sweep is
+  abandoned, with no data race in either case. **The mutation, run:** giving that site a
+  `context.WithTimeout(context.Background(), 0)`, so the sweep context is born expired and
+  `CloseSessions` closes **zero** sessions. It **compiles**, and on `main` as it stood
+  `TestServeSessionsClosedOnShutdown` was **green** with that defect in place. `startServe` now
+  returns a captured `*syncBuffer` for stderr, and the test fails if the sweep was abandoned, so the
+  same mutation now fails it. **What this proves, stated at its limit:** it pins that the shutdown
+  sweep is **not abandoned** — and the second control below is the measurement that bounds how far
+  that goes.
+  **The second control was run, not argued:** replacing `hub.CloseSessions(sessionShutdown)` at
+  `serve.go:120` with `_ = sessionShutdown` — a source-valid change that leaves `sessionShutdown`
+  used and **skips the call entirely** — also **compiles**, and the test is **green** with the sweep
+  never invoked at all. So the passing case does **not** distinguish "swept" from "never called", and
+  this row does not claim it does.
+  **What is pinned, exactly:** when `CloseSessions` **is** invoked, its budget is not spent before the
+  first session — the one decision the `serve.go:118`-`:120` wiring makes that any observable here can
+  reach. **What is not pinned here:** that `runHub` invokes it at all, and that any session reached a
+  closed state. Neither is observed by this PR's test: the HTTP listener is already shut down at
+  `serve.go:113` before `CloseSessions` at `:120`, so no request can ask afterwards; the `Hub` and
+  its registry are locals of `runHub`; and the memory adapter's `Close` is silent. `startServe`
+  retains stdout and now stderr, and `go/serve/registry.go:327`-`:371` builds a configurable
+  `executable` for the process-backed kinds, so a **future** test can host a helper that records its
+  own EOF or exit through a temporary file or an inherited descriptor and make a skipped
+  `CloseSessions` observable **without** a production diagnostic. Closing the gap that way, or with a
+  close diagnostic in `go/serve/serve.go`, is follow-up work and is not taken here; this row records
+  only that the current control does not cover it. Every layer **below** `runHub` is covered directly in
+  `go/serve/session_test.go`, so the sweep's own per-session behaviour is well covered; what is not
+  covered is that `runHub` reaches it. The stdio sibling at `serve.go:138` uses the same pattern and
+  is **not** covered either; it is recorded here rather than left implied.
 
 The two pre-existing tests — `a body the daemon refused to read is drained before
 the socket closes, or the close resets the answer away` and `a drain gives up

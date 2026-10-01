@@ -118,13 +118,14 @@ func (s *syncBuffer) String() string {
 	return s.buffer.String()
 }
 
-func startServe(t *testing.T, args []string) (string, func(), <-chan error) {
+func startServe(t *testing.T, args []string) (string, func(), <-chan error, *syncBuffer) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	stdout := &syncBuffer{}
+	stderr := &syncBuffer{}
 	done := make(chan error, 1)
-	go func() { done <- runHub(ctx, args, nil, stdout, io.Discard) }()
+	go func() { done <- runHub(ctx, args, nil, stdout, stderr) }()
 
 	address := ""
 	deadline := time.Now().Add(5 * time.Second)
@@ -144,7 +145,7 @@ func startServe(t *testing.T, args []string) (string, func(), <-chan error) {
 	if host, _, err := net.SplitHostPort(strings.TrimPrefix(address, "http://")); err != nil || host != "127.0.0.1" {
 		t.Fatalf("serve bound a non-loopback address: %s", address)
 	}
-	return address, cancel, done
+	return address, cancel, done, stderr
 }
 
 func expectServeExit(t *testing.T, done <-chan error) {
@@ -160,7 +161,7 @@ func expectServeExit(t *testing.T, done <-chan error) {
 }
 
 func TestServeLifecycleOverRealListener(t *testing.T) {
-	address, cancel, done := startServe(t, []string{"--config", writeServeConfig(t), "--addr", "127.0.0.1:0"})
+	address, cancel, done, _ := startServe(t, []string{"--config", writeServeConfig(t), "--addr", "127.0.0.1:0"})
 
 	response, err := http.Get(address + "/adapters")
 	if err != nil {
@@ -215,8 +216,8 @@ func TestServeLifecycleOverRealListener(t *testing.T) {
 	expectServeExit(t, done)
 }
 
-func TestServeSessionsClosedOnShutdown(t *testing.T) {
-	address, cancel, done := startServe(t, []string{"--config", writeServeConfig(t), "--addr", "127.0.0.1:0"})
+func TestServeShutdownSweepIsNotAbandoned(t *testing.T) {
+	address, cancel, done, stderr := startServe(t, []string{"--config", writeServeConfig(t), "--addr", "127.0.0.1:0"})
 
 	envelope, err := protocol.NewEnvelope(protocol.TypeSessionOpenRequest, "serve-close-open", protocol.SessionOpenRequest{SessionID: "serve-close"})
 	if err != nil {
@@ -245,6 +246,9 @@ func TestServeSessionsClosedOnShutdown(t *testing.T) {
 
 	cancel()
 	expectServeExit(t, done)
+	if strings.Contains(stderr.String(), "shutdown budget exhausted before closing session") {
+		t.Fatalf("the shutdown sweep was abandoned before closing any session: %s", stderr.String())
+	}
 }
 
 func TestLoopbackHosts(t *testing.T) {

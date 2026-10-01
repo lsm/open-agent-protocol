@@ -876,3 +876,83 @@ func TestUsageInStreamingDefaultsOnAndMergesEverythingElse(t *testing.T) {
 		t.Errorf("thinking format = %q, want the openai default", merged.ThinkingFormat)
 	}
 }
+
+func TestDeepSeekIdentityFollowsTheConfiguredProviderNotOnlyTheHost(t *testing.T) {
+	for _, testCase := range []struct {
+		name     string
+		model    Model
+		wantDeep bool
+		why      string
+	}{
+		{
+			name:     "a non-vendor proxy keeps deepseek identity",
+			model:    Model{Provider: "deepseek", BaseURL: "https://gateway.corp/v1", HasBaseURL: true},
+			wantDeep: true,
+			why:      "the operator configured deepseek, so a proxy host must not erase it",
+		},
+		{
+			name:     "a deepseek host under another provider is still deepseek",
+			model:    Model{Provider: "openai", BaseURL: "https://api.deepseek.com/v1", HasBaseURL: true},
+			wantDeep: true,
+			why:      "the host is still the signal, because Provider is not reliably a vendor identity",
+		},
+		{
+			name:     "a non-deepseek nonvendor proxy is not deepseek",
+			model:    Model{Provider: "openai", BaseURL: "https://gateway.corp/v1", HasBaseURL: true},
+			wantDeep: false,
+			why:      "an unrelated vendor on an unrelated host must be left alone",
+		},
+		{
+			name:     "a host that merely contains deepseek is not deepseek",
+			model:    Model{BaseURL: "https://deepseek.com.evil.test/v1", HasBaseURL: true},
+			wantDeep: false,
+			why:      "a lookalike host must not pass the subdomain test",
+		},
+		{
+			name:     "a deepseek subdomain counts",
+			model:    Model{BaseURL: "https://gateway.deepseek.com/v1", HasBaseURL: true},
+			wantDeep: true,
+			why:      "a real deepseek subdomain is still deepseek",
+		},
+		{
+			name:     "no provider configured still trusts the host",
+			model:    Model{BaseURL: "https://api.deepseek.com/v1", HasBaseURL: true},
+			wantDeep: true,
+			why:      "with no identity to go on, the host is the only signal left",
+		},
+		{
+			name:     "a vendor with no deepseek host is not deepseek",
+			model:    Model{Provider: "anthropic", BaseURL: "https://api.anthropic.com/v1", HasBaseURL: true},
+			wantDeep: false,
+			why:      "an unrelated vendor must not pick up deepseek handling",
+		},
+		{
+			name:     "no provider and no base url is not deepseek",
+			model:    Model{},
+			wantDeep: false,
+			why:      "absence of both signals is absence of identity",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := IsDeepSeekModel(testCase.model); got != testCase.wantDeep {
+				t.Fatalf("IsDeepSeekModel = %v, want %v: %s", got, testCase.wantDeep, testCase.why)
+			}
+		})
+	}
+}
+
+func TestDeepSeekIdentityDrivesReasoningEffortSupport(t *testing.T) {
+	hostOnly := Model{BaseURL: "https://api.deepseek.com/v1", HasBaseURL: true, Reasoning: true}
+	if !MergeCompat(hostOnly).SupportsReasoningEffort {
+		t.Fatal("a deepseek host with no provider configured lost reasoning-effort support, so the URL fallback regressed")
+	}
+	proxied := Model{Provider: "deepseek", BaseURL: "https://gateway.corp/v1", HasBaseURL: true, Reasoning: true}
+	if !MergeCompat(proxied).SupportsReasoningEffort {
+		t.Fatal("a deepseek model behind a non-vendor proxy lost reasoning-effort support, which is the false negative this repair is for")
+	}
+	notReasoning := proxied
+	notReasoning.Reasoning = false
+	if MergeCompat(notReasoning).SupportsReasoningEffort {
+		t.Fatal("a deepseek model that is not a reasoning model claims effort support")
+	}
+}

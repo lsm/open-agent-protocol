@@ -1,5 +1,6 @@
 const std = @import("std");
 const ai_types = @import("ai_types");
+const agent = @import("agent");
 const tui_runtime = @import("tui_runtime");
 const tui_state = @import("tui_state");
 
@@ -7,13 +8,16 @@ pub const CommandKind = enum {
     help,
     model,
     login,
+    logout,
     status,
     @"resume",
+    rename,
     permissions,
     think,
     clear,
     compact,
     context,
+    output,
     autocompact,
     settings,
     abort,
@@ -36,7 +40,10 @@ pub const CommandAction = enum {
     quit,
     clear_transcript,
     open_session_picker,
+    rename_session,
     open_model_picker,
+    refresh_models,
+    logout_provider,
     open_login_picker,
     open_permission_picker,
     open_settings_picker,
@@ -76,18 +83,21 @@ pub const CommandInfo = struct {
 
 pub const commands = [_]CommandInfo{
     .{ .name = "help", .kind = .help, .usage = "/help", .description = "List available commands", .handler = handleHelp },
-    .{ .name = "model", .kind = .model, .usage = "/model [name]", .description = "Open model picker or switch active model", .handler = handleModel },
+    .{ .name = "model", .kind = .model, .usage = "/model [name|refresh]", .description = "Open model picker, switch active model, or refetch every provider's models", .handler = handleModel },
     .{ .name = "login", .kind = .login, .usage = "/login [provider]", .description = "Sign in to a provider", .handler = handleLogin },
+    .{ .name = "logout", .kind = .logout, .usage = "/logout <provider>", .description = "Remove a provider's saved credential", .handler = handleLogout },
     .{ .name = "status", .kind = .status, .usage = "/status", .description = "Show session status", .handler = handleStatus },
     .{ .name = "sessions", .kind = .@"resume", .usage = "/sessions", .description = "Open saved sessions", .handler = handleSessions },
     .{ .name = "resume", .kind = .@"resume", .usage = "/resume", .description = "Open saved sessions", .handler = handleSessions },
+    .{ .name = "rename", .kind = .rename, .usage = "/rename <title>", .description = "Rename this session", .handler = handleRename },
     .{ .name = "permissions", .kind = .permissions, .usage = "/permissions [ask|bypass]", .description = "Pick or set tool permission mode", .handler = handlePermissions },
     .{ .name = "perm", .kind = .permissions, .usage = "/perm [ask|bypass]", .description = "Pick or set tool permission mode", .handler = handlePermissions },
     .{ .name = "think", .kind = .think, .usage = "/think [off|low|medium|high|xhigh|max]", .description = "Show or set the thinking level", .handler = handleThink },
     .{ .name = "clear", .kind = .clear, .usage = "/clear", .description = "Clear transcript display", .handler = handleClear },
     .{ .name = "compact", .kind = .compact, .usage = "/compact [focus]", .description = "Summarize the conversation to free context", .handler = handleCompact },
     .{ .name = "context", .kind = .context, .usage = "/context [tokens|default]", .description = "Show or set the context window for this session", .handler = handleContext },
-    .{ .name = "autocompact", .kind = .autocompact, .usage = "/autocompact [percent|off]", .description = "Show or set the share of the window that compacts on its own", .handler = handleAutoCompact },
+    .{ .name = "output", .kind = .output, .usage = "/output [auto|max|tokens]", .description = "Show or set how much output a reply may ask for", .handler = handleOutput },
+    .{ .name = "autocompact", .kind = .autocompact, .usage = "/autocompact [auto|percent|off]", .description = "Show or set when the conversation compacts on its own", .handler = handleAutoCompact },
     .{ .name = "settings", .kind = .settings, .usage = "/settings", .description = "Configure TUI settings", .handler = handleSettings },
     .{ .name = "abort", .kind = .abort, .usage = "/abort", .description = "Cancel the active streaming turn", .handler = handleAbort },
     .{ .name = "quit", .kind = .quit, .usage = "/quit", .description = "Exit TUI", .handler = handleQuit },
@@ -211,6 +221,10 @@ fn handleHelp(ctx: CommandContext, command: Command) !CommandResult {
 
 fn handleModel(ctx: CommandContext, command: Command) !CommandResult {
     if (command.arg) |model_id| {
+        if (std.mem.eql(u8, model_id, "refresh")) {
+            if (runIsActive(ctx)) return .{ .output = try ctx.allocator.dupe(u8, "A turn is running; refresh models once it finishes."), .is_error = true };
+            return .{ .action = .refresh_models };
+        }
         if (ctx.session) |session| {
             try session.switchModel(model_id);
         } else if (ctx.runtime) |runtime| {
@@ -235,6 +249,18 @@ fn handleLogin(ctx: CommandContext, command: Command) !CommandResult {
     return .{ .action = .open_login_picker };
 }
 
+fn runIsActive(ctx: CommandContext) bool {
+    if (ctx.state.status.streaming or ctx.state.status.compacting) return true;
+    const runtime = ctx.runtime orelse return false;
+    return !runtime.isIdle();
+}
+
+fn handleLogout(ctx: CommandContext, command: Command) !CommandResult {
+    if (command.arg == null) return .{ .output = try ctx.allocator.dupe(u8, "usage: /logout <provider>"), .is_error = true };
+    if (runIsActive(ctx)) return .{ .output = try ctx.allocator.dupe(u8, "A turn is running; log out once it finishes."), .is_error = true };
+    return .{ .action = .logout_provider };
+}
+
 fn handleStatus(ctx: CommandContext, command: Command) !CommandResult {
     _ = command;
     const status = ctx.state.status;
@@ -249,10 +275,10 @@ fn handleStatus(ctx: CommandContext, command: Command) !CommandResult {
         status.context_limit,
         if (status.streaming) "yes" else "no",
     });
-    if (ctx.state.autocompact_percent) |percent| {
-        try writer.print("{d}%", .{percent});
-    } else {
-        try writer.writeAll("off");
+    switch (ctx.state.autocompact) {
+        .auto => try writer.writeAll("auto"),
+        .off => try writer.writeAll("off"),
+        .percent => |percent| try writer.print("{d}%", .{percent}),
     }
     return .{ .output = try out.toOwnedSlice() };
 }
@@ -317,6 +343,11 @@ fn handleSettings(ctx: CommandContext, command: Command) !CommandResult {
     return .{ .action = .open_settings_picker };
 }
 
+fn handleRename(ctx: CommandContext, command: Command) !CommandResult {
+    if (command.arg == null) return .{ .output = try ctx.allocator.dupe(u8, "usage: /rename <title>"), .is_error = true };
+    return .{ .action = .rename_session };
+}
+
 fn handleClear(ctx: CommandContext, command: Command) !CommandResult {
     _ = command;
     return .{ .action = .clear_transcript, .output = try ctx.allocator.dupe(u8, "transcript cleared") };
@@ -376,25 +407,86 @@ fn contextWindowReport(allocator: std.mem.Allocator, runtime: *tui_runtime.TuiRu
     return out.toOwnedSlice();
 }
 
-fn handleAutoCompact(ctx: CommandContext, command: Command) !CommandResult {
-    const arg = command.arg orelse return .{ .output = try autoCompactReport(ctx.allocator, ctx.state.autocompact_percent) };
-    if (std.ascii.eqlIgnoreCase(arg, "off") or std.ascii.eqlIgnoreCase(arg, "none")) {
-        ctx.state.autocompact_percent = null;
-        return .{ .output = try autoCompactReport(ctx.allocator, null) };
-    }
-    const percent = parseAutoCompactShare(arg) orelse {
-        return .{
-            .output = try std.fmt.allocPrint(ctx.allocator, "not a share of the context window: {s}. Give a whole number from 1 to 100, optionally with a % sign, or off", .{arg}),
+fn handleOutput(ctx: CommandContext, command: Command) !CommandResult {
+    const runtime = ctx.runtime orelse return error.NoRuntimeConfigured;
+    const model = runtime.currentModel() orelse return error.NoModelConfigured;
+    const arg = command.arg orelse return .{ .output = try outputReport(ctx.allocator, runtime) };
+    const setting: agent.OutputSetting = if (std.ascii.eqlIgnoreCase(arg, "auto"))
+        .auto
+    else if (std.ascii.eqlIgnoreCase(arg, "max"))
+        .max
+    else
+        .{ .tokens = tui_runtime.parseContextWindow(arg) catch {
+            return .{
+                .output = try std.fmt.allocPrint(ctx.allocator, "not a token count: {s}. Give auto, max, or a whole number, optionally with k, such as 64k", .{arg}),
+                .is_error = true,
+            };
+        } };
+    runtime.setOutput(setting) catch |err| switch (err) {
+        error.AboveMaximum => return .{
+            .output = try std.fmt.allocPrint(ctx.allocator, "{s} writes at most {d} tokens in a reply; {d} is above it. /output max asks for all of it.", .{ model.id, model.max_tokens, setting.tokens }),
             .is_error = true,
-        };
+        },
+        error.AgentAlreadyStreaming => return .{
+            .output = try ctx.allocator.dupe(u8, "A turn is running; set the output limit once it finishes."),
+            .is_error = true,
+        },
     };
-    ctx.state.autocompact_percent = percent;
-    return .{ .output = try autoCompactReport(ctx.allocator, percent) };
+    return .{ .output = try outputReport(ctx.allocator, runtime) };
 }
 
-fn autoCompactReport(allocator: std.mem.Allocator, percent: ?u8) ![]u8 {
-    const held = percent orelse return allocator.dupe(u8, "autocompact: off. The conversation is compacted only when you run /compact");
-    return std.fmt.allocPrint(allocator, "autocompact: {d}% of the context window.", .{held});
+fn outputReport(allocator: std.mem.Allocator, runtime: *tui_runtime.TuiRuntime) ![]u8 {
+    const model = runtime.currentModel() orelse return allocator.dupe(u8, "no model");
+    const setting = runtime.outputSetting();
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    const writer = &out.writer;
+    try writer.print("output: {s}, {d} tokens a reply for {s}", .{ switch (setting) {
+        .auto => "auto",
+        .max => "max",
+        .tokens => "set",
+    }, agent.outputRequest(model, setting), model.id });
+    if (model.max_tokens > 0) {
+        try writer.print(", up to {d}", .{model.max_tokens});
+        if (setting == .auto and agent.outputRequest(model, setting) < model.max_tokens) {
+            try writer.print(". A reply cut off below that is continued once at {d}", .{model.max_tokens});
+        }
+    } else {
+        try writer.writeAll(", and the model reports no maximum of its own");
+    }
+    try writer.writeAll(". /output auto restores the default.");
+    return out.toOwnedSlice();
+}
+
+fn handleAutoCompact(ctx: CommandContext, command: Command) !CommandResult {
+    const arg = command.arg orelse return .{ .output = try autoCompactReport(ctx) };
+    if (std.ascii.eqlIgnoreCase(arg, "off") or std.ascii.eqlIgnoreCase(arg, "none")) {
+        ctx.state.autocompact = .off;
+    } else if (std.ascii.eqlIgnoreCase(arg, "auto")) {
+        ctx.state.autocompact = .auto;
+    } else {
+        const percent = parseAutoCompactShare(arg) orelse {
+            return .{
+                .output = try std.fmt.allocPrint(ctx.allocator, "not a share of the context window: {s}. Give a whole number from 1 to 100, optionally with a % sign, or auto, or off", .{arg}),
+                .is_error = true,
+            };
+        };
+        ctx.state.autocompact = .{ .percent = percent };
+    }
+    return .{ .output = try autoCompactReport(ctx) };
+}
+
+fn autoCompactReport(ctx: CommandContext) ![]u8 {
+    const allocator = ctx.allocator;
+    switch (ctx.state.autocompact) {
+        .off => return allocator.dupe(u8, "autocompact: off. The conversation is compacted only when you run /compact"),
+        .percent => |percent| return std.fmt.allocPrint(allocator, "autocompact: {d}% of the context window.", .{percent}),
+        .auto => {
+            const runtime = ctx.runtime orelse return allocator.dupe(u8, "autocompact: auto, at a point set by the model's context window and output limit.");
+            const model = runtime.currentModel() orelse return allocator.dupe(u8, "autocompact: auto, at a point set by the model's context window and output limit.");
+            const at = tui_state.autoCompactAt(.auto, model) orelse return allocator.dupe(u8, "autocompact: auto, but the model reports no context window, so nothing compacts on its own.");
+            return std.fmt.allocPrint(allocator, "autocompact: auto, at {d} of the {d}-token context window, keeping room for a summary and a reply.", .{ at, model.context_window });
+        },
+    }
 }
 
 fn parseAutoCompactShare(value: []const u8) ?u8 {
@@ -422,6 +514,9 @@ fn handleAbort(ctx: CommandContext, command: Command) !CommandResult {
     }
     const active = ctx.state.status.streaming or
         (ctx.runtime != null and ctx.runtime.?.stream_active);
+    if (active and ctx.state.stream_aborted and !ctx.state.status.streaming) {
+        return .{ .output = try ctx.allocator.dupe(u8, "Still stopping: the step that was running when you aborted is ending.") };
+    }
     if (active) {
         if (ctx.session) |session| {
             session.cancel();
@@ -567,6 +662,42 @@ test "context sets the window for the session and names the model and the window
     try std.testing.expect(std.mem.indexOf(u8, reset.output, "context window: 128000 for gpt-5-codex (openai)") != null);
 }
 
+test "output sets how much a reply asks for, and refuses more than the model writes" {
+    const models = [_]ai_types.Model{context_test_model};
+    var runtime = try contextTestRuntime(&models);
+    defer runtime.deinit();
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    const ctx = CommandContext{ .allocator = std.testing.allocator, .state = &state, .runtime = &runtime };
+
+    var shown = try dispatch(ctx, .{ .kind = .output });
+    defer shown.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, shown.output, "output: auto, 16384 tokens a reply for gpt-5-codex, up to 16384") != null);
+
+    var set = try dispatch(ctx, .{ .kind = .output, .arg = "8k" });
+    defer set.deinit(std.testing.allocator);
+    try std.testing.expect(!set.is_error);
+    try std.testing.expectEqual(agent.OutputSetting{ .tokens = 8_000 }, runtime.outputSetting());
+    try std.testing.expect(std.mem.indexOf(u8, set.output, "output: set, 8000 tokens a reply") != null);
+    try std.testing.expect(std.mem.indexOf(u8, set.output, "continued") == null);
+    try std.testing.expect(std.mem.indexOf(u8, shown.output, "continued") == null);
+
+    var refused = try dispatch(ctx, .{ .kind = .output, .arg = "20k" });
+    defer refused.deinit(std.testing.allocator);
+    try std.testing.expect(refused.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, refused.output, "gpt-5-codex writes at most 16384 tokens in a reply; 20000 is above it") != null);
+    try std.testing.expectEqual(agent.OutputSetting{ .tokens = 8_000 }, runtime.outputSetting());
+
+    var max = try dispatch(ctx, .{ .kind = .output, .arg = "max" });
+    defer max.deinit(std.testing.allocator);
+    try std.testing.expectEqual(agent.OutputSetting.max, runtime.outputSetting());
+
+    var bad = try dispatch(ctx, .{ .kind = .output, .arg = "lots" });
+    defer bad.deinit(std.testing.allocator);
+    try std.testing.expect(bad.is_error);
+    try std.testing.expectEqual(agent.OutputSetting.max, runtime.outputSetting());
+}
+
 test "context refuses a window above the ceiling and says what the ceiling is" {
     const models = [_]ai_types.Model{context_test_model};
     var runtime = try contextTestRuntime(&models);
@@ -624,17 +755,18 @@ test "autocompact sets, reports and turns off the share for the session" {
 
     var shown = try dispatch(ctx, .{ .kind = .autocompact });
     defer shown.deinit(std.testing.allocator);
-    try std.testing.expectEqualStrings("autocompact: off. The conversation is compacted only when you run /compact", shown.output);
+    try std.testing.expect(state.autocompact == .auto);
+    try std.testing.expect(std.mem.startsWith(u8, shown.output, "autocompact: auto"));
 
     var set = try dispatch(ctx, .{ .kind = .autocompact, .arg = "80%" });
     defer set.deinit(std.testing.allocator);
     try std.testing.expect(!set.is_error);
-    try std.testing.expectEqual(@as(?u8, 80), state.autocompact_percent);
+    try std.testing.expectEqualDeep(tui_state.AutoCompactSetting{ .percent = 80 }, state.autocompact);
     try std.testing.expectEqualStrings("autocompact: 80% of the context window.", set.output);
 
     var bare = try dispatch(ctx, .{ .kind = .autocompact, .arg = "55" });
     defer bare.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(?u8, 55), state.autocompact_percent);
+    try std.testing.expectEqualDeep(tui_state.AutoCompactSetting{ .percent = 55 }, state.autocompact);
 
     var again = try dispatch(ctx, .{ .kind = .autocompact });
     defer again.deinit(std.testing.allocator);
@@ -642,8 +774,12 @@ test "autocompact sets, reports and turns off the share for the session" {
 
     var off = try dispatch(ctx, .{ .kind = .autocompact, .arg = "off" });
     defer off.deinit(std.testing.allocator);
-    try std.testing.expect(state.autocompact_percent == null);
+    try std.testing.expect(state.autocompact == .off);
     try std.testing.expect(std.mem.indexOf(u8, off.output, "autocompact: off") != null);
+
+    var auto = try dispatch(ctx, .{ .kind = .autocompact, .arg = "auto" });
+    defer auto.deinit(std.testing.allocator);
+    try std.testing.expect(state.autocompact == .auto);
 }
 
 test "autocompact refuses a share that is not a percentage of the window" {
@@ -657,7 +793,7 @@ test "autocompact refuses a share that is not a percentage of the window" {
         var result = try dispatch(ctx, .{ .kind = .autocompact, .arg = bad });
         defer result.deinit(std.testing.allocator);
         try std.testing.expect(result.is_error);
-        try std.testing.expectEqual(@as(?u8, 80), state.autocompact_percent);
+        try std.testing.expectEqualDeep(tui_state.AutoCompactSetting{ .percent = 80 }, state.autocompact);
     }
     for ([_][]const u8{ "1", "1%", "100", "100%" }) |good| {
         var result = try dispatch(ctx, .{ .kind = .autocompact, .arg = good });
@@ -672,11 +808,16 @@ test "status reports the autocompact share beside the context it measures" {
     try state.status.setModel(std.testing.allocator, "model-a", "provider-a");
     const ctx = CommandContext{ .allocator = std.testing.allocator, .state = &state };
 
+    var auto = try dispatch(ctx, .{ .kind = .status });
+    defer auto.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, auto.output, "autocompact: auto") != null);
+
+    state.autocompact = .off;
     var off = try dispatch(ctx, .{ .kind = .status });
     defer off.deinit(std.testing.allocator);
     try std.testing.expect(std.mem.indexOf(u8, off.output, "autocompact: off") != null);
 
-    state.autocompact_percent = 80;
+    state.autocompact = .{ .percent = 80 };
     var on = try dispatch(ctx, .{ .kind = .status });
     defer on.deinit(std.testing.allocator);
     try std.testing.expect(std.mem.indexOf(u8, on.output, "autocompact: 80%") != null);
@@ -691,6 +832,37 @@ test "login command can target a provider directly" {
 
     try std.testing.expectEqual(CommandAction.start_login_provider, result.action);
     try std.testing.expectEqualStrings("openai-codex", result.login_provider);
+}
+
+test "model refresh and logout hand their work to the app" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+
+    var refresh = try dispatch(.{ .allocator = std.testing.allocator, .state = &state }, try parse("/model refresh"));
+    defer refresh.deinit(std.testing.allocator);
+    try std.testing.expectEqual(CommandAction.refresh_models, refresh.action);
+
+    const logout = try parse("/logout opencode-go");
+    try std.testing.expectEqual(CommandKind.logout, logout.kind);
+    try std.testing.expectEqualStrings("opencode-go", logout.arg.?);
+    var out = try dispatch(.{ .allocator = std.testing.allocator, .state = &state }, logout);
+    defer out.deinit(std.testing.allocator);
+    try std.testing.expectEqual(CommandAction.logout_provider, out.action);
+
+    var bare = try dispatch(.{ .allocator = std.testing.allocator, .state = &state }, try parse("/logout"));
+    defer bare.deinit(std.testing.allocator);
+    try std.testing.expectEqual(CommandAction.none, bare.action);
+    try std.testing.expectEqualStrings("usage: /logout <provider>", bare.output);
+
+    state.status.streaming = true;
+    var busy = try dispatch(.{ .allocator = std.testing.allocator, .state = &state }, logout);
+    defer busy.deinit(std.testing.allocator);
+    try std.testing.expectEqual(CommandAction.none, busy.action);
+    try std.testing.expect(busy.is_error);
+    var busy_refresh = try dispatch(.{ .allocator = std.testing.allocator, .state = &state }, try parse("/model refresh"));
+    defer busy_refresh.deinit(std.testing.allocator);
+    try std.testing.expectEqual(CommandAction.none, busy_refresh.action);
+    try std.testing.expect(busy_refresh.is_error);
 }
 
 test "resume opens the session picker when sessions exist" {
@@ -754,6 +926,25 @@ test "perm alias parses as permissions command" {
     const command = try parse("/perm ask");
     try std.testing.expectEqual(CommandKind.permissions, command.kind);
     try std.testing.expectEqualStrings("ask", command.arg.?);
+}
+
+test "rename hands its title to the app and refuses an empty one" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+
+    const command = try parse("/rename  Resume freeze fix ");
+    try std.testing.expectEqual(CommandKind.rename, command.kind);
+    try std.testing.expectEqualStrings("Resume freeze fix", command.arg.?);
+    var renamed = try dispatch(.{ .allocator = std.testing.allocator, .state = &state }, command);
+    defer renamed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(CommandAction.rename_session, renamed.action);
+    try std.testing.expect(!renamed.is_error);
+
+    var empty = try dispatch(.{ .allocator = std.testing.allocator, .state = &state }, try parse("/rename"));
+    defer empty.deinit(std.testing.allocator);
+    try std.testing.expectEqual(CommandAction.none, empty.action);
+    try std.testing.expect(empty.is_error);
+    try std.testing.expectEqualStrings("usage: /rename <title>", empty.output);
 }
 
 test "runtime dependent commands dispatch to no-runtime errors" {
@@ -863,6 +1054,23 @@ test "abort when streaming drops queued steers but keeps their echoes" {
     try std.testing.expectEqualStrings("steer before abort", state.transcript.items[0].text.items);
 }
 
+test "logout and model refresh wait for a turn the status has not caught up with" {
+    var runtime = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{});
+    defer runtime.deinit();
+    runtime.stream_active = true;
+
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    try std.testing.expect(!state.status.streaming);
+
+    inline for (.{ "/logout opencode-go", "/model refresh" }) |input| {
+        var result = try dispatch(.{ .allocator = std.testing.allocator, .state = &state, .runtime = &runtime }, try parse(input));
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expectEqual(CommandAction.none, result.action);
+        try std.testing.expect(result.is_error);
+    }
+}
+
 test "abort cancels active turn before streaming status is set" {
     var runtime = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{});
     defer runtime.deinit();
@@ -878,6 +1086,25 @@ test "abort cancels active turn before streaming status is set" {
     try std.testing.expect(!state.status.streaming);
     try std.testing.expect(state.stream_aborted);
     try std.testing.expect(runtime.cancelled.load(.acquire));
+}
+
+test "a second abort while the run winds down says it is stopping instead of aborting again" {
+    var runtime = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{});
+    defer runtime.deinit();
+    runtime.stream_active = true;
+
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    const ctx = CommandContext{ .allocator = std.testing.allocator, .state = &state, .runtime = &runtime };
+
+    var first = try dispatch(ctx, .{ .kind = .abort });
+    defer first.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("Turn aborted.", first.output);
+
+    var second = try dispatch(ctx, .{ .kind = .abort });
+    defer second.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.startsWith(u8, second.output, "Still stopping"));
+    try std.testing.expect(state.stream_aborted);
 }
 
 test "abort during approval clears approval state" {

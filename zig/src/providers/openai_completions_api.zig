@@ -14,6 +14,7 @@ const retry = @import("retry");
 const pre_transform = @import("pre_transform");
 const StringBuilder = @import("string_builder").StringBuilder;
 const compat_mod = @import("compat");
+const version = @import("version_options").version;
 
 const MergedCompat = struct {
     supports_store: bool,
@@ -35,7 +36,13 @@ fn mergeCompat(model: ai_types.Model) MergedCompat {
     const is_openai_native = provider_caps.isOpenAIHost(model.base_url);
     const honors_native_caps = is_openai_native or isTransparentOpenAIProxy(model);
     const detected_developer_role = if (honors_native_caps) caps.supports_developer_role else false;
-    const detected_reasoning_effort = if (honors_native_caps or provider_caps.usesDeepSeekWire(model.provider, model.base_url)) caps.supports_reasoning_effort else false;
+    const deepseek_wire = provider_caps.usesDeepSeekWire(model.provider, model.base_url);
+    const detected_reasoning_effort = if (deepseek_wire and model.reasoning and caps.supports_reasoning_effort == false and provider_caps.isExplicitDeepSeekVendor(model.provider))
+        true
+    else if (honors_native_caps or deepseek_wire)
+        caps.supports_reasoning_effort
+    else
+        false;
     const detected_max_tokens_field: []const u8 = if (honors_native_caps) caps.max_tokens_field else "max_tokens";
 
     return .{
@@ -707,8 +714,10 @@ const ThreadCtx = struct {
     on_payload_ctx: ?*anyopaque = null,
     retry_config: ?ai_types.RetryConfig = null,
     ping_interval_ms: ?u64 = null,
+    conversation_id: ?[]u8 = null,
 
     fn deinit(self: *ThreadCtx) void {
+        if (self.conversation_id) |id| self.allocator.free(id);
         self.allocator.free(self.api_key);
         self.allocator.free(self.request_body);
         var mut_context = self.context;
@@ -767,6 +776,135 @@ fn canCompletePartialTextOnStreamError(text_len: usize, thinking_len: usize, too
     return tool_call_count == 0 and (text_len > 0 or thinking_len > 0);
 }
 
+const ChunkOutcome = enum { more, finished, stream_error };
+
+const reply_trace_headers = [_][]const u8{ "x-request-id", "request-id", "x-opencode-endpoint-id", "x-opencode-log-id" };
+const reply_trace_bytes = 400;
+
+const ReplyTrace = struct {
+    chunks: usize = 0,
+    first: Kept = .{},
+    last: Kept = .{},
+    headers: [reply_trace_headers.len]Kept = [_]Kept{.{}} ** reply_trace_headers.len,
+
+    const Kept = struct {
+        buf: [reply_trace_bytes]u8 = undefined,
+        len: usize = 0,
+        cut: bool = false,
+
+        fn keep(self: *Kept, bytes: []const u8) void {
+            self.len = @min(bytes.len, self.buf.len);
+            @memcpy(self.buf[0..self.len], bytes[0..self.len]);
+            self.cut = bytes.len > self.buf.len;
+        }
+
+        fn slice(self: *const Kept) []const u8 {
+            return self.buf[0..self.len];
+        }
+    };
+
+    fn noteHeaders(self: *ReplyTrace, head: anytype) void {
+        if (std.mem.find(u8, head.bytes, "\r\n") == null) return;
+        var headers = head.iterateHeaders();
+        while (headers.next()) |header| {
+            for (reply_trace_headers, 0..) |name, index| {
+                if (std.ascii.eqlIgnoreCase(header.name, name)) self.headers[index].keep(header.value);
+            }
+        }
+    }
+
+    fn observe(self: *ReplyTrace, data: []const u8) void {
+        self.chunks += 1;
+        if (std.mem.eql(u8, data, "[DONE]")) return;
+        if (self.first.len == 0) self.first.keep(data);
+        self.last.keep(data);
+    }
+
+    fn describe(self: *const ReplyTrace, allocator: std.mem.Allocator, summary: []const u8, usage: ai_types.Usage) ![]u8 {
+        var out: std.Io.Writer.Allocating = .init(allocator);
+        errdefer out.deinit();
+        self.writeDescription(allocator, &out.writer, summary, usage) catch |err| switch (err) {
+            error.WriteFailed => return error.OutOfMemory,
+            else => |other| return other,
+        };
+        return out.toOwnedSlice();
+    }
+
+    fn writeDescription(self: *const ReplyTrace, allocator: std.mem.Allocator, writer: *std.Io.Writer, summary: []const u8, usage: ai_types.Usage) !void {
+        try writer.print("{s} (", .{summary});
+        var finish: ?[]const u8 = null;
+        var id: ?[]const u8 = null;
+        var first = try chunkFacts(allocator, self.first.slice());
+        defer first.deinit(allocator);
+        var last = try chunkFacts(allocator, self.last.slice());
+        defer last.deinit(allocator);
+        finish = last.finish_reason orelse first.finish_reason;
+        id = first.id orelse last.id;
+        if (finish) |reason| try writer.print("finish_reason: {s}", .{reason}) else try writer.writeAll("no finish_reason");
+        const input = usage.input + usage.cache_read;
+        if (input + usage.output > 0) {
+            try writer.print("; usage: {d} input ({d} cached), {d} output", .{ input, usage.cache_read, usage.output });
+        } else {
+            try writer.writeAll("; no usage reported");
+        }
+        try writer.print("; {d} chunk{s}", .{ self.chunks, if (self.chunks == 1) "" else "s" });
+        if (id) |value| try writer.print("; id: {s}", .{value});
+        for (reply_trace_headers, self.headers) |name, value| {
+            if (value.len > 0) try writer.print("; {s}: {s}", .{ name, value.slice() });
+        }
+        if (self.last.len > 0) try writer.print("; last chunk: {s}{s}", .{ self.last.slice(), if (self.last.cut) "…" else "" });
+        try writer.writeByte(')');
+    }
+};
+
+const ChunkFacts = struct {
+    finish_reason: ?[]u8 = null,
+    id: ?[]u8 = null,
+
+    fn deinit(self: *ChunkFacts, allocator: std.mem.Allocator) void {
+        if (self.finish_reason) |value| allocator.free(value);
+        if (self.id) |value| allocator.free(value);
+        self.* = undefined;
+    }
+};
+
+fn chunkFacts(allocator: std.mem.Allocator, data: []const u8) !ChunkFacts {
+    if (data.len == 0) return .{};
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, data, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return .{},
+    };
+    defer parsed.deinit();
+    if (parsed.value != .object) return .{};
+    var facts: ChunkFacts = .{};
+    errdefer facts.deinit(allocator);
+    if (parsed.value.object.get("id")) |value| {
+        if (value == .string and value.string.len > 0) facts.id = try allocator.dupe(u8, value.string);
+    }
+    const choices = parsed.value.object.get("choices") orelse return facts;
+    if (choices != .array or choices.array.items.len == 0) return facts;
+    const choice = choices.array.items[0];
+    if (choice != .object) return facts;
+    if (choice.object.get("finish_reason")) |value| {
+        if (value == .string) facts.finish_reason = try allocator.dupe(u8, value.string);
+    }
+    return facts;
+}
+
+fn streamErrorMessage(allocator: std.mem.Allocator, data: []const u8) ?[]u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, data, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const reported = parsed.value.object.get("error") orelse return null;
+    const message = switch (reported) {
+        .string => |text| text,
+        .object => |object| if (object.get("message")) |found| (if (found == .string) found.string else "") else "",
+        else => "",
+    };
+    if (message.len == 0) return std.fmt.allocPrint(allocator, "provider stream error: {f}", .{std.json.fmt(reported, .{})}) catch null;
+    return std.fmt.allocPrint(allocator, "provider stream error: {s}", .{message}) catch null;
+}
+
 fn parseChunk(
     data: []const u8,
     text: *std.ArrayList(u8),
@@ -778,14 +916,18 @@ fn parseChunk(
     tool_call_events: *std.ArrayList(ToolCallEvent),
     reasoning_detail_events: *std.ArrayList(ReasoningDetailEvent),
     allocator: std.mem.Allocator,
-) !void {
-    if (std.mem.eql(u8, data, "[DONE]")) return;
+) !ChunkOutcome {
+    if (std.mem.eql(u8, data, "[DONE]")) return .finished;
 
-    var parsed = std.json.parseFromSlice(std.json.Value, allocator, data, .{}) catch return;
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, data, .{}) catch return .more;
     defer parsed.deinit();
 
     const root = parsed.value;
-    if (root != .object) return;
+    if (root != .object) return .more;
+    if (root.object.get("error")) |reported| {
+        if (reported != .null) return .stream_error;
+    }
+    var finished = false;
 
     if (root.object.get("usage")) |u| {
         if (u == .object) {
@@ -825,12 +967,13 @@ fn parseChunk(
     }
 
     if (root.object.get("choices")) |choices| {
-        if (choices != .array or choices.array.items.len == 0) return;
+        if (choices != .array or choices.array.items.len == 0) return .more;
         const ch = choices.array.items[0];
-        if (ch != .object) return;
+        if (ch != .object) return .more;
 
         if (ch.object.get("finish_reason")) |fr| {
             if (fr == .string) {
+                finished = true;
                 if (std.mem.eql(u8, fr.string, "length")) stop_reason.* = .length else if (std.mem.eql(u8, fr.string, "tool_calls")) stop_reason.* = .tool_use else if (std.mem.eql(u8, fr.string, "content_filter")) stop_reason.* = .@"error" else stop_reason.* = .stop;
             }
         }
@@ -951,6 +1094,7 @@ fn parseChunk(
             }
         }
     }
+    return if (finished) .finished else .more;
 }
 
 pub const wires: []const []const u8 = &.{"openai-completions"};
@@ -979,6 +1123,41 @@ fn buildBearerAuthValue(allocator: std.mem.Allocator, token: []const u8) ![]u8 {
 
 fn pushEvent(stream: *event_stream.AssistantMessageEventStream, event: ai_types.AssistantMessageEvent) void {
     _ = stream.pushBlocking(event);
+}
+
+const client_user_agent = "oapx/" ++ version;
+
+fn wantsConversationId(model: ai_types.Model) bool {
+    return std.mem.eql(u8, model.provider, "opencode-go");
+}
+
+fn hashField(hasher: *std.hash.Wyhash, tag: u8, bytes: []const u8) void {
+    var length: [8]u8 = undefined;
+    std.mem.writeInt(u64, &length, bytes.len, .little);
+    hasher.update(&.{tag});
+    hasher.update(&length);
+    hasher.update(bytes);
+}
+
+fn conversationId(allocator: std.mem.Allocator, session_id: ?[]const u8, context: ai_types.Context) ![]u8 {
+    if (session_id) |id| return allocator.dupe(u8, id);
+    var hasher = std.hash.Wyhash.init(0);
+    hashField(&hasher, 's', context.system_prompt.slice());
+    for (context.messages) |message| {
+        if (message != .user) continue;
+        switch (message.user.content) {
+            .text => |text| hashField(&hasher, 't', text),
+            .parts => |parts| for (parts) |part| switch (part) {
+                .text => |text| hashField(&hasher, 't', text.text),
+                .image => |image| {
+                    hashField(&hasher, 'm', image.mime_type);
+                    hashField(&hasher, 'i', image.data);
+                },
+            },
+        }
+        break;
+    }
+    return std.fmt.allocPrint(allocator, "oapx-{x:0>16}", .{hasher.final()});
 }
 
 fn isKimiModel(model: ai_types.Model) bool {
@@ -1120,8 +1299,18 @@ fn runThread(ctx: *ThreadCtx) void {
         }
     }
 
+    if (ctx.conversation_id) |id| {
+        headers.append(allocator, .{ .name = "x-opencode-session", .value = id }) catch {
+            ctx.deinit();
+            stream.completeWithError("oom headers");
+            return;
+        };
+    }
+
     const user_agent_override: ?[]const u8 = if (isKimiModel(model))
         "claude-code/0.1.0"
+    else if (wantsConversationId(model))
+        client_user_agent
     else
         null;
 
@@ -1303,6 +1492,9 @@ fn runThread(ctx: *ThreadCtx) void {
     }
     var next_content_index: usize = 0;
     var tool_call_count: usize = 0;
+    var finished = false;
+    var trace: ReplyTrace = .{};
+    trace.noteHeaders(&response.head);
 
     var transfer_buf: [4096]u8 = undefined;
     var read_buf: [8192]u8 = undefined;
@@ -1356,6 +1548,7 @@ fn runThread(ctx: *ThreadCtx) void {
         };
 
         for (events) |ev| {
+            trace.observe(ev.data);
             for (tool_call_events.items) |*tce| {
                 @constCast(tce).deinit(allocator);
             }
@@ -1368,7 +1561,7 @@ fn runThread(ctx: *ThreadCtx) void {
             const prev_text_len = text.items.len;
             const prev_thinking_len = thinking.items.len;
 
-            parseChunk(ev.data, &text, &thinking, &usage, &stop_reason, &current_block, &reasoning_signature, &tool_call_events, &reasoning_detail_events, allocator) catch {
+            const outcome = parseChunk(ev.data, &text, &thinking, &usage, &stop_reason, &current_block, &reasoning_signature, &tool_call_events, &reasoning_detail_events, allocator) catch {
                 if (canCompletePartialTextOnStreamError(text.items.len, thinking.items.len, tool_call_count)) {
                     stop_reason = .length;
                     break :read_loop;
@@ -1377,6 +1570,17 @@ fn runThread(ctx: *ThreadCtx) void {
                 stream.completeWithError("json parse error");
                 return;
             };
+            switch (outcome) {
+                .more => {},
+                .finished => finished = true,
+                .stream_error => {
+                    const message = streamErrorMessage(allocator, ev.data);
+                    defer if (message) |owned| allocator.free(owned);
+                    ctx.deinit();
+                    stream.completeWithError(message orelse "provider stream error");
+                    return;
+                },
+            }
 
             if (text.items.len > prev_text_len) {
                 const delta = text.items[prev_text_len..];
@@ -1502,6 +1706,15 @@ fn runThread(ctx: *ThreadCtx) void {
     const has_text = text.items.len > 0;
     const content_count: usize = if (has_thinking) 1 else 0;
     const content_count_final = content_count + (if (has_text) @as(usize, 1) else @as(usize, 0)) + tool_call_count;
+
+    if (content_count_final == 0 and stop_reason != .length) {
+        const summary = if (finished) "the model returned an empty reply" else "the stream ended before the model replied";
+        const message = trace.describe(allocator, summary, usage) catch null;
+        defer if (message) |owned| allocator.free(owned);
+        ctx.deinit();
+        stream.completeWithError(message orelse summary);
+        return;
+    }
 
     if (content_count_final == 0) {
         var content = allocator.alloc(ai_types.AssistantContent, 1) catch {
@@ -1702,6 +1915,9 @@ pub fn streamOpenAICompletions(
     const req_body = try buildRequestBody(owned_model, owned_context, resolved, allocator);
     errdefer allocator.free(req_body);
 
+    const conversation_id: ?[]u8 = if (wantsConversationId(owned_model)) try conversationId(allocator, resolved.getSessionId(), owned_context) else null;
+    errdefer if (conversation_id) |id| allocator.free(id);
+
     const s = try allocator.create(event_stream.AssistantMessageEventStream);
     errdefer allocator.destroy(s);
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
@@ -1731,11 +1947,64 @@ pub fn streamOpenAICompletions(
         .on_payload_ctx = resolved.on_payload_ctx,
         .retry_config = resolved.retry,
         .ping_interval_ms = resolved.ping_interval_ms,
+        .conversation_id = conversation_id,
     };
 
     const th = try std.Thread.spawn(.{}, runThread, .{ctx});
     th.detach();
     return s;
+}
+
+test "OpenCode Go gets a conversation id, the session's when there is one, else one stable across a conversation's turns" {
+    const allocator = std.testing.allocator;
+    var model = traceModel("https://opencode.ai/zen/go/v1");
+    model.provider = "opencode-go";
+    try std.testing.expect(wantsConversationId(model));
+    model.provider = "opencode";
+    try std.testing.expect(!wantsConversationId(model));
+
+    const first = [_]ai_types.Message{.{ .user = .{ .content = .{ .text = "plan the work" }, .timestamp = 0 } }};
+    const later = [_]ai_types.Message{
+        .{ .user = .{ .content = .{ .text = "plan the work" }, .timestamp = 0 } },
+        .{ .user = .{ .content = .{ .text = "and then do it" }, .timestamp = 1 } },
+    };
+    const other = [_]ai_types.Message{.{ .user = .{ .content = .{ .text = "something else" }, .timestamp = 0 } }};
+
+    const given = try conversationId(allocator, "ses-tui-1", .{ .messages = &first });
+    defer allocator.free(given);
+    try std.testing.expectEqualStrings("ses-tui-1", given);
+
+    const a = try conversationId(allocator, null, .{ .messages = &first });
+    defer allocator.free(a);
+    const b = try conversationId(allocator, null, .{ .messages = &later });
+    defer allocator.free(b);
+    const c = try conversationId(allocator, null, .{ .messages = &other });
+    defer allocator.free(c);
+    try std.testing.expectEqualStrings(a, b);
+    try std.testing.expect(!std.mem.eql(u8, a, c));
+    try std.testing.expect(std.mem.startsWith(u8, a, "oapx-"));
+
+    const image_a = [_]ai_types.UserContentPart{.{ .image = .{ .data = "aaaa", .mime_type = "image/png" } }};
+    const image_b = [_]ai_types.UserContentPart{.{ .image = .{ .data = "bbbb", .mime_type = "image/png" } }};
+    const split = [_]ai_types.UserContentPart{ .{ .text = .{ .text = "plan the " } }, .{ .text = .{ .text = "work" } } };
+    const pictured_a = [_]ai_types.Message{.{ .user = .{ .content = .{ .parts = &image_a }, .timestamp = 0 } }};
+    const pictured_b = [_]ai_types.Message{.{ .user = .{ .content = .{ .parts = &image_b }, .timestamp = 0 } }};
+    const split_message = [_]ai_types.Message{.{ .user = .{ .content = .{ .parts = &split }, .timestamp = 0 } }};
+    const pa = try conversationId(allocator, null, .{ .messages = &pictured_a });
+    defer allocator.free(pa);
+    const pb = try conversationId(allocator, null, .{ .messages = &pictured_b });
+    defer allocator.free(pb);
+    const sp = try conversationId(allocator, null, .{ .messages = &split_message });
+    defer allocator.free(sp);
+    try std.testing.expect(!std.mem.eql(u8, pa, pb));
+    try std.testing.expect(!std.mem.eql(u8, sp, a));
+    try std.testing.expect(std.mem.startsWith(u8, client_user_agent, "oapx/"));
+}
+
+fn deepSeekEffort(effort: []const u8) []const u8 {
+    if (std.mem.eql(u8, effort, "minimal") or std.mem.eql(u8, effort, "low")) return "low";
+    if (std.mem.eql(u8, effort, "xhigh") or std.mem.eql(u8, effort, "max")) return "max";
+    return "high";
 }
 
 fn thinkingLevelToString(level: ai_types.ThinkingLevel) []const u8 {
@@ -1986,7 +2255,7 @@ test "parseChunk ignores a chunk that is not json and a json value that is not a
         "null",
     };
     for (chunks) |chunk| {
-        try parseChunk(
+        _ = try parseChunk(
             chunk,
             &text,
             &thinking,
@@ -2040,7 +2309,7 @@ test "parseChunk keeps reading after a chunk it could not read" {
         "{\"choices\":[{\"delta\":{\"content\":\"kept\"}}]}",
     };
     for (args) |chunk| {
-        try parseChunk(
+        _ = try parseChunk(
             chunk,
             &text,
             &thinking,
@@ -2288,7 +2557,7 @@ test "parseChunk does not leak memory with reasoning content" {
         \\{"choices":[{"delta":{"reasoning_content":"Let me think about this..."}}]}
     ;
 
-    try parseChunk(
+    _ = try parseChunk(
         chunk_data,
         &text,
         &thinking,
@@ -2339,7 +2608,7 @@ test "parseChunk handles multiple chunks without leaking" {
     };
 
     for (chunks) |chunk| {
-        try parseChunk(
+        _ = try parseChunk(
             chunk,
             &text,
             &thinking,
@@ -2388,7 +2657,7 @@ test "parseChunk handles tool_calls without leaking" {
         \\{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_abc123","type":"function","function":{"name":"bash","arguments":""}}]}}]}
     ;
 
-    try parseChunk(
+    _ = try parseChunk(
         chunk1,
         &text,
         &thinking,
@@ -2416,7 +2685,7 @@ test "parseChunk handles tool_calls without leaking" {
         \\{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"cmd\": \"ls\""}}]}}]}
     ;
 
-    try parseChunk(
+    _ = try parseChunk(
         chunk2,
         &text,
         &thinking,
@@ -2443,7 +2712,7 @@ test "parseChunk handles tool_calls without leaking" {
         \\{"choices":[{"finish_reason":"tool_calls"}]}
     ;
 
-    try parseChunk(
+    _ = try parseChunk(
         chunk3,
         &text,
         &thinking,
@@ -2490,7 +2759,7 @@ test "parseChunk handles multiple tool_calls" {
         \\{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_001","type":"function","function":{"name":"read","arguments":""}}]}}]}
     ;
 
-    try parseChunk(
+    _ = try parseChunk(
         chunk1,
         &text,
         &thinking,
@@ -2516,7 +2785,7 @@ test "parseChunk handles multiple tool_calls" {
         \\{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_002","type":"function","function":{"name":"write","arguments":""}}]}}]}
     ;
 
-    try parseChunk(
+    _ = try parseChunk(
         chunk2,
         &text,
         &thinking,
@@ -2543,7 +2812,7 @@ test "parseChunk handles multiple tool_calls" {
         \\{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":"}}]}}]}
     ;
 
-    try parseChunk(
+    _ = try parseChunk(
         chunk3,
         &text,
         &thinking,
@@ -2998,7 +3267,7 @@ test "parseChunk extracts reasoning_details for encrypted reasoning round-trip" 
         \\{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_abc123","type":"function","function":{"name":"bash","arguments":""}}]}}]}
     ;
 
-    try parseChunk(
+    _ = try parseChunk(
         chunk1,
         &text,
         &thinking,
@@ -3021,7 +3290,7 @@ test "parseChunk extracts reasoning_details for encrypted reasoning round-trip" 
         \\{"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.encrypted","id":"call_abc123","data":"encrypted_data_here"}]}}]}
     ;
 
-    try parseChunk(
+    _ = try parseChunk(
         chunk2,
         &text,
         &thinking,
@@ -3073,7 +3342,7 @@ test "parseChunk encodes a reasoning detail's id and data rather than splicing t
         \\{"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.encrypted","id":"call\"1","data":"a\"b\\c"}]}}]}
     ;
 
-    try parseChunk(
+    _ = try parseChunk(
         chunk,
         &text,
         &thinking,
@@ -3141,7 +3410,7 @@ test "a reasoning detail carrying a quote leaves the request body parseable" {
         \\{"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.encrypted","id":"call_abc123","data":"a\"b"}]}}]}
     ;
 
-    try parseChunk(
+    _ = try parseChunk(
         chunk,
         &text,
         &thinking,
@@ -3371,6 +3640,9 @@ const MockCompletionsServer = struct {
     served: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     saw_chat_path: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     saw_stream_flag: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    saw_session_header: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    saw_client_agent: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    response_headers: []const u8 = "",
 
     const trace_events =
         \\data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"regression-model","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":null}]}
@@ -3440,6 +3712,16 @@ const MockCompletionsServer = struct {
         return error.StreamTooLong;
     }
 
+    fn headerValue(head: []const u8, name: []const u8) ?[]const u8 {
+        var lines = std.mem.splitSequence(u8, head, "\r\n");
+        while (lines.next()) |line| {
+            const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+            if (!std.ascii.eqlIgnoreCase(line[0..colon], name)) continue;
+            return std.mem.trim(u8, line[colon + 1 ..], " ");
+        }
+        return null;
+    }
+
     fn serve(self: *MockCompletionsServer) void {
         defer self.served.store(true, .release);
 
@@ -3464,12 +3746,18 @@ const MockCompletionsServer = struct {
         if (std.mem.indexOf(u8, body_slice, "\"stream\":true") != null) {
             self.saw_stream_flag.store(true, .release);
         }
+        if (std.mem.eql(u8, headerValue(head, "x-opencode-session") orelse "", "ses-tui-1")) {
+            self.saw_session_header.store(true, .release);
+        }
+        if (std.mem.eql(u8, headerValue(head, "user-agent") orelse "", client_user_agent)) {
+            self.saw_client_agent.store(true, .release);
+        }
 
-        var head_buffer: [128]u8 = undefined;
+        var head_buffer: [512]u8 = undefined;
         const response_head = std.fmt.bufPrint(
             &head_buffer,
-            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n",
-            .{self.body.len},
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {d}\r\n{s}Connection: close\r\n\r\n",
+            .{ self.body.len, self.response_headers },
         ) catch return;
 
         conn.stream.writeAll(response_head) catch return;
@@ -3497,6 +3785,149 @@ fn traceContext() ai_types.Context {
         const items = [_]ai_types.Message{.{ .user = .{ .content = .{ .text = "hello" }, .timestamp = 0 } }};
     }.items[0..];
     return .{ .messages = messages };
+}
+
+fn streamErrorFor(body: []const u8) !?[]u8 {
+    return streamErrorWithHeaders(body, "");
+}
+
+fn streamErrorWithHeaders(body: []const u8, response_headers: []const u8) !?[]u8 {
+    const allocator = std.testing.allocator;
+    var mock = try MockCompletionsServer.listen(body);
+    mock.response_headers = response_headers;
+    var stopped = false;
+    defer if (!stopped) mock.stop();
+    const base_url = try mock.baseUrl(allocator);
+    defer allocator.free(base_url);
+    try mock.start();
+
+    const stream = try streamOpenAICompletions(
+        traceModel(base_url),
+        traceContext(),
+        .{ .api_key = ai_types.OwnedSlice(u8).initBorrowed("test-key") },
+        allocator,
+    );
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+    while (stream.wait()) |event| {
+        var polled = event;
+        ai_types.deinitAssistantMessageEvent(allocator, &polled);
+    }
+    try std.testing.expect(stream.waitForThread(5_000));
+    mock.stop();
+    stopped = true;
+    const reported = stream.getError() orelse return null;
+    return try allocator.dupe(u8, reported);
+}
+
+test "a stream that ends with no reply fails instead of settling as a finished turn" {
+    const cases = [_]struct { body: []const u8, want: []const u8 }{
+        .{
+            .body = "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n",
+            .want = "the stream ended before the model replied",
+        },
+        .{
+            .body = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+            .want = "the model returned an empty reply",
+        },
+        .{
+            .body = "data: {\"error\":{\"message\":\"upstream overloaded\",\"code\":529}}\n\ndata: [DONE]\n\n",
+            .want = "provider stream error: upstream overloaded",
+        },
+    };
+    for (cases) |case| {
+        const reported = try streamErrorFor(case.body) orelse return error.TestExpectedStreamError;
+        defer std.testing.allocator.free(reported);
+        try std.testing.expect(std.mem.startsWith(u8, reported, case.want));
+    }
+    try std.testing.expect(try streamErrorFor(MockCompletionsServer.complete_stream) == null);
+}
+
+test "an empty reply names its finish reason, usage, chunk count, id, the gateway's request headers and the last chunk" {
+    const body =
+        "data: {\"id\":\"chatcmpl-empty\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n" ++
+        "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":612034,\"prompt_tokens_details\":{\"cached_tokens\":600000},\"completion_tokens\":0}}\n\n" ++
+        "data: [DONE]\n\n";
+    const reported = try streamErrorWithHeaders(body, "x-opencode-endpoint-id: orcarouter-dsv4.1flash\r\nx-opencode-log-id: log-42\r\n") orelse return error.TestExpectedStreamError;
+    defer std.testing.allocator.free(reported);
+    try std.testing.expectEqualStrings(
+        "the model returned an empty reply (finish_reason: stop; usage: 612034 input (600000 cached), 0 output; 3 chunks; id: chatcmpl-empty; x-opencode-endpoint-id: orcarouter-dsv4.1flash; x-opencode-log-id: log-42; last chunk: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":612034,\"prompt_tokens_details\":{\"cached_tokens\":600000},\"completion_tokens\":0}})",
+        reported,
+    );
+}
+
+test "a stream cut before any reply says it saw no finish reason and no usage" {
+    const reported = try streamErrorFor("data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\n") orelse return error.TestExpectedStreamError;
+    defer std.testing.allocator.free(reported);
+    try std.testing.expectEqualStrings(
+        "the stream ended before the model replied (no finish_reason; no usage reported; 1 chunk; last chunk: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]})",
+        reported,
+    );
+}
+
+test "a reply trace keeps a long chunk's head and marks it cut" {
+    var trace: ReplyTrace = .{};
+    const long = "{\"choices\":[]," ++ ("\"x\":1," ** 100) ++ "\"y\":2}";
+    trace.observe(long);
+    trace.observe("[DONE]");
+    try std.testing.expectEqual(@as(usize, 2), trace.chunks);
+    try std.testing.expectEqual(@as(usize, reply_trace_bytes), trace.last.len);
+    try std.testing.expect(trace.last.cut);
+    const message = try trace.describe(std.testing.allocator, "empty", .{});
+    defer std.testing.allocator.free(message);
+    try std.testing.expect(std.mem.endsWith(u8, message, "…)"));
+}
+
+fn replyTraceDescribeProbe(allocator: std.mem.Allocator) !void {
+    var trace: ReplyTrace = .{};
+    trace.observe("{\"id\":\"chatcmpl-a\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":null}]}");
+    trace.observe("{\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}");
+    const message = try trace.describe(allocator, "empty", .{ .input = 5, .output = 1 });
+    allocator.free(message);
+}
+
+test "a reply trace's description frees what it built on every allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, replyTraceDescribeProbe, .{});
+}
+
+test "an OpenCode Go request names this client and carries the session id" {
+    const allocator = std.testing.allocator;
+
+    var mock = try MockCompletionsServer.listen(MockCompletionsServer.complete_stream);
+    var stopped = false;
+    defer if (!stopped) mock.stop();
+
+    const base_url = try mock.baseUrl(allocator);
+    defer allocator.free(base_url);
+    try mock.start();
+
+    var model = traceModel(base_url);
+    model.provider = "opencode-go";
+    const stream = try streamOpenAICompletions(
+        model,
+        traceContext(),
+        .{
+            .api_key = ai_types.OwnedSlice(u8).initBorrowed("test-key"),
+            .session_id = ai_types.OwnedSlice(u8).initBorrowed("ses-tui-1"),
+        },
+        allocator,
+    );
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+    while (stream.wait()) |event| {
+        var polled = event;
+        ai_types.deinitAssistantMessageEvent(allocator, &polled);
+    }
+    try std.testing.expect(stream.waitForThread(5_000));
+    mock.stop();
+    stopped = true;
+
+    try std.testing.expect(mock.saw_session_header.load(.acquire));
+    try std.testing.expect(mock.saw_client_agent.load(.acquire));
 }
 
 test "a streamed text thinking and tool call reports indices that diverge from the terminal assembly order" {
@@ -3584,6 +4015,8 @@ var cleanup_held: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
 var cleanup_gate: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
 var cleanup_window: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
 var cleanup_paused: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
+var cleanup_waits: std.atomic.Value(usize) = std.atomic.Value(usize).init(0);
+var cleanup_paused_gate: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
 
 fn defaultIo() std.Io {
     return if (@import("builtin").is_test) std.testing.io else std.Io.Threaded.global_single_threaded.io();
@@ -3596,14 +4029,34 @@ fn awaitCleanupRelease() void {
     const io = defaultIo();
     while (true) {
         const seen = cleanup_gate.load(.acquire);
+        if (cleanup_window.load(.acquire) == 1) awaitCleanupWindow(io);
         if (cleanup_hold.load(.acquire) == 0) break;
-        if (cleanup_window.load(.acquire) == 1) {
-            _ = cleanup_paused.store(true, .release);
-            while (cleanup_window.load(.acquire) == 1) {
-                io.futexWaitTimeout(u32, &cleanup_window.raw, cleanup_window.load(.acquire), boundedWait()) catch {};
-            }
-        }
+        _ = cleanup_waits.fetchAdd(1, .release);
         io.futexWaitTimeout(u32, &cleanup_gate.raw, seen, boundedWait()) catch {};
+    }
+}
+
+fn awaitCleanupWindow(io: std.Io) void {
+    _ = cleanup_paused_gate.fetchAdd(1, .release);
+    _ = cleanup_paused.store(true, .release);
+    defaultIo().futexWake(u32, &cleanup_paused_gate.raw, std.math.maxInt(u32));
+    while (cleanup_window.load(.acquire) == 1) {
+        io.futexWaitTimeout(u32, &cleanup_window.raw, cleanup_window.load(.acquire), boundedWait()) catch {};
+    }
+}
+
+fn expectCleanupPaused() !void {
+    const io = defaultIo();
+    var rounds: usize = 0;
+    while (!cleanup_paused.load(.acquire) and rounds < 200) : (rounds += 1) {
+        io.futexWaitTimeout(u32, &cleanup_paused_gate.raw, cleanup_paused_gate.load(.acquire), boundedWait()) catch {};
+    }
+    if (!cleanup_paused.load(.acquire)) {
+        std.debug.print("producer never reached the held publish: held={d} paused={any} window={d} waits={d}\n", .{
+            cleanup_held.load(.acquire),   cleanup_paused.load(.acquire),
+            cleanup_window.load(.acquire), cleanup_waits.load(.acquire),
+        });
+        return error.TestUnexpectedResult;
     }
 }
 
@@ -3638,12 +4091,13 @@ test "a release inside the snapshot-to-wait window still reaches the producer" {
     const allocator = std.testing.allocator;
     cleanup_held.store(0, .release);
     cleanup_paused.store(false, .release);
+    cleanup_waits.store(0, .release);
     holdCleanup();
-    cleanup_window.store(1, .release);
     defer {
         cleanup_window.store(0, .release);
         releaseCleanupGate();
     }
+    cleanup_window.store(1, .release);
 
     var mock = try MockCompletionsServer.listen(MockCompletionsServer.complete_stream);
     defer mock.stop();
@@ -3669,18 +4123,16 @@ test "a release inside the snapshot-to-wait window still reaches the producer" {
         defer ai_types.deinitAssistantMessageEvent(allocator, &polled);
     }
 
-    var spins: usize = 0;
-    while (!cleanup_paused.load(.acquire) and spins < 400) : (spins += 1) {
-        std.Thread.yield() catch {};
-    }
-    try std.testing.expect(cleanup_paused.load(.acquire));
+    try expectCleanupPaused();
     try std.testing.expect(!stream.waitForThread(100));
 
+    const waits_before_release = cleanup_waits.load(.acquire);
     releaseCleanupGate();
     cleanup_window.store(0, .release);
     wakeCleanupWaiters();
 
     try std.testing.expect(stream.waitForThread(5_000));
+    try std.testing.expectEqual(waits_before_release, cleanup_waits.load(.acquire));
     try std.testing.expect(stream.getError() == null);
 }
 

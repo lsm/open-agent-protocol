@@ -1883,7 +1883,7 @@ fn runConformance(
     var environment = std.ArrayList([]const u8).empty;
     defer environment.deinit(allocator);
     var session: []const u8 = "conformance";
-    var line_deadline_ms: i64 = @intCast(oap_conformance.default_line_deadline_ms);
+    var probe_budget_ms: i64 = oap_conformance.default_probe_budget_ms;
     var exit_grace_ms: i64 = oap_conformance.default_exit_grace_ms;
 
     var index: usize = 0;
@@ -1942,15 +1942,15 @@ fn runConformance(
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--timeout-ms=")) {
-            line_deadline_ms = std.fmt.parseInt(i64, arg["--timeout-ms=".len..], 10) catch return error.InvalidArgument;
-            if (line_deadline_ms <= 0) return error.InvalidArgument;
+            probe_budget_ms = std.fmt.parseInt(i64, arg["--timeout-ms=".len..], 10) catch return error.InvalidArgument;
+            if (probe_budget_ms <= 0) return error.InvalidArgument;
             continue;
         }
         if (std.mem.eql(u8, arg, "--timeout-ms")) {
             index += 1;
             if (index >= args.len) return error.InvalidArgument;
-            line_deadline_ms = std.fmt.parseInt(i64, args[index], 10) catch return error.InvalidArgument;
-            if (line_deadline_ms <= 0) return error.InvalidArgument;
+            probe_budget_ms = std.fmt.parseInt(i64, args[index], 10) catch return error.InvalidArgument;
+            if (probe_budget_ms <= 0) return error.InvalidArgument;
             continue;
         }
         try endpoint_args.append(allocator, arg);
@@ -1966,7 +1966,7 @@ fn runConformance(
         .args = endpoint_args.items,
         .environment = environment.items,
         .session_id = session,
-        .line_deadline_ms = line_deadline_ms,
+        .probe_budget_ms = probe_budget_ms,
         .exit_grace_ms = exit_grace_ms,
     }) catch |err| {
         try compat.stdio.writeAll(stderr, try std.fmt.allocPrint(allocator, "conformance: {s}\n", .{@errorName(err)}));
@@ -2138,7 +2138,7 @@ fn lineOf(items: []const TraceItem, index: usize) usize {
 }
 
 const partial_semantic_note = "semantic rules partial: this validator has not ported every rule; goap validate checks them all";
-const partial_load_note = "pack load checks partial: a descriptor whose id, version or schemas is the wrong shape is refused, a schemas path is checked to stay relative, lexically contained and beneath the pack root with symlinks resolved, and a declared name outside the pack's own id or an id overlapping another's is refused; a refusal now fails the whole load and prints its codes, so no pack is silently dropped. Other descriptor fields are not shape-checked, so a wrong-shaped payload_members or envelope_types reads as absent and contributes nothing, and a schema ref that is absent or carries no fragment is skipped without a refusal. A ref that names a file the pack does not contribute, or a pointer that does not resolve, is registered as a branch anyway and leaves the interpreter unable to judge any trace at all, so one unresolved ref removes validation for every trace. The rest of Decision 0004's load refusals do not run, and a pack's payload members are not widened, so a pack goap refuses may be accepted here and a trace carrying a declared member is refused schema_invalid";
+const partial_load_note = "pack load checks partial: a descriptor whose id, version or schemas is the wrong shape is refused, a schemas path is checked to stay relative, lexically contained and beneath the pack root with symlinks resolved, and a declared name outside the pack's own id or an id overlapping another's is refused; a refusal now fails the whole load and prints its codes, so no pack is silently dropped. Other descriptor fields are not shape-checked, so a wrong-shaped payload_members or envelope_types reads as absent, a payload_members entry missing payload_type, member or an object schema contributes no member, and a schema ref that is absent or not a string is skipped without a refusal. A ref that names a file the pack does not contribute, or a pointer that does not resolve or does not land on an object, is refused with no code and the load fails; a branch whose resolved schema carries no type const is refused pack_branch_unpinned, and one whose const names a type other than its own declared type is refused pack_branch_undeclared_type. A schema ref carrying no fragment is judged against the document itself, so it is accepted when that document carries the pin and refused pack_branch_unpinned when it does not; a cited name that climbs out is refused with no code. A cited name spelled with a leading separator is not a spelling the descriptor's schemas lists, but it normalises to the same name that is registered, so the branch resolves and is accepted; a declared type with no usable (absent or non-string) schema is skipped for its branch rather than refused, though its type is still registered. The rest of Decision 0004's load refusals do not run, and a pack's payload members are not widened, so a pack goap refuses may be accepted here and a trace carrying a declared member is refused schema_invalid in strict mode; in tolerant mode the core schemas are widened and the member subschema is not run on its own, so a declared member can pass unchecked";
 
 fn writeHumanReport(out: *std.ArrayList(u8), allocator: std.mem.Allocator, path: []const u8, verdict: ValidateVerdict) !void {
     switch (verdict) {
@@ -2355,6 +2355,8 @@ fn printUsage(file: std.Io.File) !void {
         \\  oapx validate [--format human|json] [--mode strict|tolerant] [--pack DIR]... <trace.json>...
         \\  oapx conformance --command CMD [--session <id>] [--timeout-ms <n>]
         \\                        [--exit-grace-ms <n>] [--env NAME]... [--format text|json]
+        \\                   --timeout-ms bounds one probe: the whole correlation,
+        \\                   not each line, so unrelated frames cannot extend it.
         \\  oapx auth providers [--json]
         \\  oapx auth login --provider <id> [--json]
         \\  oapx --version

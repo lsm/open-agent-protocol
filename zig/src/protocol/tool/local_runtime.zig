@@ -702,7 +702,7 @@ fn cloneArtifactsToToolProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "cloneArtifactsToTool survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, cloneArtifactsToToolProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, cloneArtifactsToToolProbe, .{});
 }
 
 fn cloneArtifactsToAgentProbe(allocator: std.mem.Allocator) !void {
@@ -731,7 +731,7 @@ fn cloneArtifactsToAgentProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "cloneArtifactsToAgent survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, cloneArtifactsToAgentProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, cloneArtifactsToAgentProbe, .{});
 }
 
 fn toolMetadataFromAgentToolProbe(allocator: std.mem.Allocator) !void {
@@ -769,7 +769,7 @@ fn toolMetadataFromAgentToolProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "toolMetadataFromAgentTool survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, toolMetadataFromAgentToolProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, toolMetadataFromAgentToolProbe, .{});
 }
 
 fn toolListHandoffProbe(allocator: std.mem.Allocator) !void {
@@ -818,7 +818,7 @@ fn toolListHandoffProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "tool_list handoff to metas.append survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, toolListHandoffProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, toolListHandoffProbe, .{});
 }
 
 fn nextExecuteEnvelopeProbe(allocator: std.mem.Allocator) !void {
@@ -835,5 +835,5 @@ fn nextExecuteEnvelopeProbe(allocator: std.mem.Allocator) !void {
 }
 
 test "nextExecuteEnvelope survives an allocation failure at every step" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, nextExecuteEnvelopeProbe, .{});
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, nextExecuteEnvelopeProbe, .{});
 }

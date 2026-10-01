@@ -104,35 +104,27 @@ pub fn compressAnsi(allocator: std.mem.Allocator, input: []const u8) ![]const u8
     var last_was_reset = false;
 
     while (i < input.len) {
-        if (i + 1 < input.len and input[i] == 0x1b and input[i + 1] == '[') {
-            var seq_end = i + 2;
-            while (seq_end < input.len) {
-                const c = input[seq_end];
-                if ((c >= 'A' and c <= 'Z') or (c >= 'a' and c <= 'z')) {
-                    seq_end += 1;
-                    break;
-                }
-                seq_end += 1;
-            }
-
-            const seq = input[i..seq_end];
-
-            if (std.mem.eql(u8, seq, ansi.reset)) {
-                if (!last_was_reset) {
-                    try writer.writeAll(seq);
-                    last_was_reset = true;
-                }
-            } else {
-                try writer.writeAll(seq);
-                last_was_reset = false;
-            }
-
-            i = seq_end;
-        } else {
+        const seq_len = ansi.escapeSequenceLen(input, i);
+        if (seq_len == 0) {
             try writer.writeByte(input[i]);
             last_was_reset = false;
             i += 1;
+            continue;
         }
+
+        const seq = input[i..][0..seq_len];
+        i += seq_len;
+
+        if (std.mem.eql(u8, seq, ansi.reset)) {
+            if (!last_was_reset) {
+                try writer.writeAll(seq);
+                last_was_reset = true;
+            }
+            continue;
+        }
+
+        try writer.writeAll(seq);
+        last_was_reset = false;
     }
 
     return result.toOwnedSlice();
