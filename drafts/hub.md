@@ -837,16 +837,16 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   this row does not claim it does.
   **What is pinned, exactly:** when `CloseSessions` **is** invoked, its budget is not spent before the
   first session — the one decision the `serve.go:118`-`:120` wiring makes that any observable here can
-  reach. **What is not pinned:** that `runHub` invokes it at all, and that any session reached a
-  closed state. Both are absent because **no observable for them exists through `runHub`**, which is a
-  property of the surfaces rather than an omission in the test: the HTTP listener is already shut down
-  at `serve.go:113` before `CloseSessions` at `:120`, so no request can ask afterwards; the `Hub` and
-  its registry are locals of `runHub`; the memory adapter's `Close` is silent; and while a `runHub`
-  test can configure any of the eight adapter kinds `go/serve/registry.go:327`-`:371` builds, the
-  process-backed kinds close through `runHub`'s own stdout/stderr, which the harness discards, so
-  a test cannot observe whether any of them closed. Closing this needs either a close diagnostic in
-  `go/serve/serve.go` or an injection point for the `Hub` into `runHub` — **both are production
-  changes and neither is taken here.** Every layer **below** `runHub` is covered directly in
+  reach. **What is not pinned here:** that `runHub` invokes it at all, and that any session reached a
+  closed state. Neither is observed by this PR's test: the HTTP listener is already shut down at
+  `serve.go:113` before `CloseSessions` at `:120`, so no request can ask afterwards; the `Hub` and
+  its registry are locals of `runHub`; and the memory adapter's `Close` is silent. `startServe`
+  retains stdout and now stderr, and `go/serve/registry.go:327`-`:371` builds a configurable
+  `executable` for the process-backed kinds, so a **future** test can host a helper that records its
+  own EOF or exit through a temporary file or an inherited descriptor and make a skipped
+  `CloseSessions` observable **without** a production diagnostic. Closing the gap that way, or with a
+  close diagnostic in `go/serve/serve.go`, is follow-up work and is not taken here; this row records
+  only that the current control does not cover it. Every layer **below** `runHub` is covered directly in
   `go/serve/session_test.go`, so the sweep's own per-session behaviour is well covered; what is not
   covered is that `runHub` reaches it. The stdio sibling at `serve.go:138` uses the same pattern and
   is **not** covered either; it is recorded here rather than left implied.
