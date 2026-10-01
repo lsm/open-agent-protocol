@@ -40,7 +40,7 @@ call it. Adding a third caller cannot introduce a fourth table.
 `anthropic_messages_api` did not import `provider_caps`, so this cut adds
 the one line it needs, in the same commit:
 
-    zig/build.zig, inside anthropic_messages_api_mod (line 797), .imports:
+    zig/build.zig, inside `anthropic_messages_api_mod` (line 798), whose `.imports` gains the `provider_caps` entry at line 818:
     .{ .name = "provider_caps", .module = provider_caps_mod },
 
 `provider_caps_mod` is declared at line 707, above that use, so nothing
