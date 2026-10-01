@@ -155,14 +155,16 @@ These shapes load and **contribute**, so they are not on the skipped list:
 ## Skipped, not refused
 
 Named so the disclosure shrinks with the code rather than lagging it. "Skipped"
-means the load **succeeds** but the shape contributes **no branch, member or type**
-the loader can see — it is neither refused nor used:
+means the load **succeeds** and the shape is neither refused nor used for the
+**branch** it would otherwise contribute; what each shape contributes beyond that
+is stated per shape, because it is not uniformly nothing:
 
 - an `envelope_types` entry with **no `schema` field at all** — the branch-schema
-  check is skipped, so the entry contributes no branch, and the declared type
-  reaches the semantic machine anyway. `goap` refuses it. Whether absence should be
-  refused is a **contract question about Decision 0004 §140** and is with the owner;
-  it is deliberately not answered here, because `fixtures/packs/*/pack.json` treats
+  check is skipped, so the entry contributes **no branch**, but its declared
+  `type` is appended to the pack's types before that check runs and so **does**
+  reach the semantic machine. `goap` refuses it. Whether absence should be refused
+  is a **contract question about Decision 0004 §140** and is with the owner; it is
+  deliberately not answered here, because `fixtures/packs/*/pack.json` treats
   `type` as the only required field.
 - a **wrong-shaped but present** `schema` is a separate matter from absence and
   has its own repair.
@@ -176,5 +178,6 @@ the loader can see — it is neither refused nor used:
   platform.
 - `checkAllAllocationFailures` is deliberately not applied to `gather`; the
   freeing test in `validator.zig` covers `Validator.init`, not the loader.
-- "Skipped" above means the load succeeds and the shape contributes nothing the
-  loader can see. It does not mean the trace is judged correctly.
+- "Skipped" above means the load succeeds and the shape contributes no **branch**;
+  an absent schema still leaves the declared type visible to the loader. It does
+  not mean the trace is judged correctly.
