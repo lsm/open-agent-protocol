@@ -68,7 +68,7 @@ security posture, and a port carries all of them or is not conformant.
 | **`Host` allowlisted on a loopback bind** | When the bind address names `localhost`, `127.0.0.1` or `::1`, only requests whose `Host` header names one of those three are served; anything else is refused `403`. Comparison is case-insensitive and the port is stripped, and **a bracketed host has to carry a port**, which is what Go's split produces: `Host: [::1]` with no port is refused, and so is one that opens a bracket it never closes. A non-loopback bind has no allowlist. | `TestHostAllowlist`, `TestLoopbackHosts`. Zig: `a Host header is compared without its port and without case` and `a bind that is not loopback has no allowlist, so nothing is refused`, against a real listener — refused as an `error.response` carrying `unrecognized_host`, which is what `D1` fixed in Go |
 | **`Origin` refused on every route** | A request carrying any `Origin` header is refused `403 cross_origin_request`. The check wraps the whole mux rather than living in the routes that read a body, so it covers `close` and every route not yet written. | `TestEveryRouteRefusesABrowserOrigin`, `TestReadRequestRefusesBrowserOrigins`, `TestTheOriginBoundaryHoldsWithoutAHostAllowlist`. Zig: `a request carrying both an Origin and a foreign Host is refused the Origin first` and `the daemon answers over a real socket, and the bytes say which refusal it was` — both over a real listener, so the order and the bytes on the wire are pinned rather than asserted |
 | **`environment` is an allowlist** | A child process inherits nothing ambient. An adapter entry's `environment` names the variables forwarded: a bare `NAME` forwards the daemon's own value (an unset name is omitted), `NAME=value` passes through literally. A tool source's `environment` takes the same form with one stricter rule — a bare `NAME` the daemon does not carry fails at startup, naming the source and the variable, because that entry is the credential list of one executable the daemon itself launches. | `TestResolveEnvironment`, `TestLoadRegistryToolSourceNeedsEveryNameItLists`, `TestCallerEnvironmentNeverNamesAVariableTwice`. Zig: the transport builds the child's environment from the list alone rather than from its own, pinned by `the child sees exactly the environment it was given and nothing ambient`, and the hub's registry hands each adapter exactly what the document resolved, pinned by `the hub's registry builds every entry a document names, and a child inherits only the variables its entry lists` |
-| **A restart ends every live session** | Run children are per-session and no adapter survives the process, so a restart ends every harness process. Under [Decision 0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md) a session outlives its process and close releases it, so no entry accumulates; reopening one is staged as T7, and until it lands a client that reconnects to a restarted hub finds no session. | The restart: `TestServeSessionsClosedOnShutdown`. The release: none yet — `TestHubSessionCloseSemantics` and `TestSessionsListingAcrossLifecycle` still pin the kept entry, which D2 records. |
+| **A restart ends every live session** | Run children are per-session and no adapter survives the process, so a restart ends every harness process. Under [Decision 0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md) a session outlives its process and close releases it, so no entry accumulates; reopening one is staged as T7, and until it lands a client that reconnects to a restarted hub finds no session. | The restart: **none** — a restart ending every live session has no pinning test. `TestServeShutdownSweepIsNotAbandoned` is the closest, but as the sweep row below measures, it stays green when `hub.CloseSessions` is never invoked, so no test observes a session reaching a closed state (see that row for the full limit). The release: none yet — `TestHubSessionCloseSemantics` and `TestSessionsListingAcrossLifecycle` still pin the kept entry, which D2 records. |
 | **A binding record holds no credential** | `--bindings <path>` appends one record per open: the session id, the adapter and its pin, the home, the working directory the adapter entry was configured with (omitted when the hub does not know one — never the daemon's own), the model, and the tool source ids. It never records the request's environment, a credential, or a resolved environment value — a record of what was asked must not become a copy of what was secret — and the file is created `0o600`. History is appended rather than replaced, and a torn tail is truncated on the next write or the next open, keeping the longest prefix of records that decode, so one crash cannot leave the log permanently unreadable | `TestAnOpenIsRecordedAsABindingAndNothingSensitiveIs` (opens a session and asserts the written bytes carry neither), `TestTheStoreFileIsNotWorldReadable` (the mode), `TestATornTailIsTruncatedSoTheStoreKeepsWorking`, `TestATornTailIsTruncatedWhenTheStoreIsOpenedAgain`, `TestACorruptLineThatKeepsItsNewlineIsTruncatedToo` and `TestACorruptLineIsTruncatedWhenTheStoreIsOpenedAgain` (the repair), `TestACloseAndADuplicateOpenCannotInterleaveTheirRecords` (a close never lands between an open and its registration), and `TestARolledBackOpenIsRecordedAsOpenedAndThenClosed` and `TestARefusedDuplicateOpenIsRecordedAsARefusalAndNothingElse` and `TestTheRecordsDirectoryIsTheAdaptersOwnAndIsOmittedWhenUnknown` (what a record claims) |
 | **No payload or environment logging** | The hub, its codecs and its clients never log envelope payloads or resolved environment values. | `TestDaemonOutputNeverCarriesEnvironmentValues` (environment values, through the listing and a load failure); no test pins the payload half |
 
@@ -847,6 +847,50 @@ removed. **That was false, and was measured rather than assumed.** The pinning t
   defect fixed here), a proof reporting an exit when the bound elapses, the helper no longer ignoring
   `SIGINT`, and a proof returning "alive" without waiting, which the elapsed assertion catches and which
   nothing else here would. A **test binary** dies on `SIGINT` despite the ignore and a standalone one survives, which is why the helper is a separate program.
+
+- **the shutdown sweep is not abandoned — pinned, and this is a narrower claim than the row it
+  replaces.** The previous wording said the session "is actually closed" and that "the wiring" is
+  pinned; **both overstated what any test here can show, and the skipped-call control below is the
+  measurement that says so.** `TestServeSessionsClosedOnShutdown` opened a
+  session, asserted it appeared in `/sessions` **before** shutdown, called `cancel()` and then
+  `expectServeExit` — which checks only that `runHub` returned `nil`. It never asserted anything
+  about the session being **closed**, so the test's name claimed a fact its body never looked at. The
+  production line it exists to cover is `serve.go:120`, `hub.CloseSessions(sessionShutdown)`, and
+  nothing in the tree constrained it. `startServe` also sent `runHub`'s stderr to `io.Discard`, so
+  even the sweep's own abandonment log — `serve.go:251`, "shutdown budget exhausted before closing
+  session" — was invisible to every test. **The captured buffer is read only after the writer is finished**, and
+  that is structural rather than a sleep: `startServe` sends on `done` only after `runHub` returns
+  (`serve_test.go:128`), `expectServeExit` receives from `done` (`:154`), and the test reads the buffer
+  after that, so every write the daemon made happens-before the read. `syncBuffer` is mutex-guarded as
+  well, and the test is green under `go test -race` unmutated and red under it when the sweep is
+  abandoned, with no data race in either case. **The mutation, run:** giving that site a
+  `context.WithTimeout(context.Background(), 0)`, so the sweep context is born expired and
+  `CloseSessions` closes **zero** sessions. It **compiles**, and on `main` as it stood
+  `TestServeSessionsClosedOnShutdown` was **green** with that defect in place. `startServe` now
+  returns a captured `*syncBuffer` for stderr, and the test fails if the sweep was abandoned, so the
+  same mutation now fails it. **What this proves, stated at its limit:** it pins that the shutdown
+  sweep is **not abandoned** — and the second control below is the measurement that bounds how far
+  that goes.
+  **The second control was run, not argued:** replacing `hub.CloseSessions(sessionShutdown)` at
+  `serve.go:120` with `_ = sessionShutdown` — a source-valid change that leaves `sessionShutdown`
+  used and **skips the call entirely** — also **compiles**, and the test is **green** with the sweep
+  never invoked at all. So the passing case does **not** distinguish "swept" from "never called", and
+  this row does not claim it does.
+  **What is pinned, exactly:** when `CloseSessions` **is** invoked, its budget is not spent before the
+  first session — the one decision the `serve.go:118`-`:120` wiring makes that any observable here can
+  reach. **What is not pinned here:** that `runHub` invokes it at all, and that any session reached a
+  closed state. Neither is observed by this PR's test: the HTTP listener is already shut down at
+  `serve.go:113` before `CloseSessions` at `:120`, so no request can ask afterwards; the `Hub` and
+  its registry are locals of `runHub`; and the memory adapter's `Close` is silent. `startServe`
+  retains stdout and now stderr, and `go/serve/registry.go:327`-`:371` builds a configurable
+  `executable` for the process-backed kinds, so a **future** test can host a helper that records its
+  own EOF or exit through a temporary file or an inherited descriptor and make a skipped
+  `CloseSessions` observable **without** a production diagnostic. Closing the gap that way, or with a
+  close diagnostic in `go/serve/serve.go`, is follow-up work and is not taken here; this row records
+  only that the current control does not cover it. Every layer **below** `runHub` is covered directly in
+  `go/serve/session_test.go`, so the sweep's own per-session behaviour is well covered; what is not
+  covered is that `runHub` reaches it. The stdio sibling at `serve.go:138` uses the same pattern and
+  is **not** covered either; it is recorded here rather than left implied.
 
 The two pre-existing tests — `a body the daemon refused to read is drained before
 the socket closes, or the close resets the answer away` and `a drain gives up
