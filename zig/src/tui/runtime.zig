@@ -532,6 +532,7 @@ pub const TuiRuntime = struct {
         }
 
         if (self.remote) |remote| {
+            if (self.stream_active) return error.AgentAlreadyStreaming;
             if (self.started) {
                 const before = if (self.selected_model_index) |idx| self.models[idx] else null;
                 const after = if (next_selected) |idx| owned_next[idx] else null;

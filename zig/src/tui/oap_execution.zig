@@ -887,3 +887,18 @@ test "a stopped execution restarts with a live pump" {
     try drainTurn(&runtime, &seen);
     try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
 }
+
+test "a model refresh during a turn over OAP is refused rather than switching the running session" {
+    var script = Script{ .wait_for_cancel = true };
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+    try runtime.submitTurn("wait");
+    try testing.expect(!runtime.isIdle());
+    try testing.expectError(error.AgentAlreadyStreaming, runtime.replaceModels(&.{scripted_model}, null));
+    runtime.cancel();
+    var seen = Seen{};
+    defer seen.deinit();
+    try drainTurn(&runtime, &seen);
+}

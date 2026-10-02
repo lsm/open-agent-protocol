@@ -1944,6 +1944,7 @@ pub const App = struct {
 
     fn runtimeBusy(self: *App) bool {
         const runtime = self.runtime orelse return false;
+        if (runtime.remote != null) return !runtime.isIdle();
         const local = if (runtime.local_agent) |*agent_ref| agent_ref else return false;
         return !local.isIdle();
     }
