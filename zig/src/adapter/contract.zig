@@ -4,6 +4,7 @@ const oap_types = @import("oap_types");
 pub const Failure = error{
     Unavailable,
     SessionClosed,
+    UnknownSession,
     RunActive,
     InvalidSubmission,
     RunNotFound,
@@ -28,6 +29,7 @@ pub const feature_tools_list = "action.tools.list";
 pub const feature_tools_provide = "action.tools.provide";
 pub const feature_tool_sources_attach = "action.tool_sources.attach";
 pub const feature_open_subscribe = "session.open.subscribe";
+pub const feature_open_reopen = "session.open.reopen";
 pub const feature_submit = "session.message.submit";
 
 pub const Refusal = struct {
@@ -111,6 +113,7 @@ pub const OpenRequest = struct {
     allow_degraded_features: []const []const u8 = &.{},
     tools_json: ?[]const u8 = null,
     tool_sources_json: ?[]const u8 = null,
+    reopen: bool = false,
 };
 
 pub const Catalog = struct {
@@ -312,6 +315,7 @@ pub fn refuseUnadvertisedOpenElections(descriptor: Descriptor, request: *const o
     const elections = [_]struct { key: []const u8, present: bool }{
         .{ .key = feature_tool_sources_attach, .present = carriesEntries(request.tool_sources_json) },
         .{ .key = feature_open_subscribe, .present = request.subscribe },
+        .{ .key = feature_open_reopen, .present = request.reopen },
         .{ .key = feature_tools_provide, .present = carriesEntries(request.tools_json) },
     };
     for (elections) |election| {
