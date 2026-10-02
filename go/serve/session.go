@@ -353,6 +353,9 @@ func (s *Session) Published(request protocol.EnvelopeID) {
 func (s *Session) waitGateLifted(run protocol.RunID) {
 	s.mu.Lock()
 	for s.gate != nil && s.gate.run == run {
+		if s.gate.drainPending() {
+			s.gate.finishDrain()
+		}
 		s.gateCond.Wait()
 	}
 	s.mu.Unlock()
@@ -790,6 +793,7 @@ func (s *Session) broadcastDrain() {
 		close(s.drainWake)
 		s.drainWake = nil
 	}
+	s.gateCond.Broadcast()
 	s.mu.Unlock()
 }
 

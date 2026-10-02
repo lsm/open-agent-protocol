@@ -16,6 +16,8 @@ type steerStubSession struct {
 	failures []error
 	refusal  *base.InvalidSteerTargetError
 	steerRun protocol.RunID
+	steered  chan struct{}
+	hold     chan struct{}
 }
 
 func (s *steerStubSession) Submit(_ context.Context, submit base.SubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
@@ -28,11 +30,17 @@ func (s *steerStubSession) Submit(_ context.Context, submit base.SubmitRequest) 
 			MessageIDs: []protocol.MessageID{"m-1"},
 		}, s.stream, nil
 	case protocol.DeliverySteer:
+		if s.steered != nil {
+			close(s.steered)
+		}
 		for _, envelope := range s.emits {
 			s.stream <- base.Result{Envelope: envelope}
 		}
 		for _, failure := range s.failures {
 			s.stream <- base.Result{Error: failure}
+		}
+		if s.hold != nil {
+			<-s.hold
 		}
 		if s.refusal != nil {
 			return protocol.MessageSubmitResponse{}, nil, s.refusal
@@ -394,6 +402,46 @@ func TestASteerDrainHandsAnErrorResultBackToTheReader(t *testing.T) {
 	state := sub.terminal.Load()
 	if state == nil || !state.overflow || state.run != "run-1" {
 		t.Fatalf("terminal state = %+v, want the overflow for run-1", state)
+	}
+	entry.Published("req-steer")
+}
+
+func TestAReaderThatEndsWhileADrainIsPendingDoesNotStallTheSubmit(t *testing.T) {
+	stub := &steerStubSession{
+		stream:   make(chan base.Result, 4),
+		steerRun: "run-1",
+		steered:  make(chan struct{}),
+		hold:     make(chan struct{}),
+	}
+	entry := newSession("stub", "stub", stub, nil)
+	startStubRun(t, entry)
+	subscribeToRun(t, entry)
+
+	submitted := make(chan error, 1)
+	started := time.Now()
+	go func() {
+		_, err := entry.Submit(context.Background(), steerSubmit("req-steer"))
+		submitted <- err
+	}()
+	select {
+	case <-stub.steered:
+	case <-time.After(testTimeout):
+		t.Fatal("the adapter never saw the steer")
+	}
+	close(stub.stream)
+	time.Sleep(100 * time.Millisecond)
+	close(stub.hold)
+
+	select {
+	case err := <-submitted:
+		if err != nil {
+			t.Fatal(err)
+		}
+		if elapsed := time.Since(started); elapsed > 2*time.Second {
+			t.Fatalf("the submit waited %s for a drain the reader could not serve", elapsed)
+		}
+	case <-time.After(testTimeout):
+		t.Fatal("the steer submit never returned")
 	}
 	entry.Published("req-steer")
 }
