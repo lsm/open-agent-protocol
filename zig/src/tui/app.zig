@@ -1418,7 +1418,7 @@ pub const App = struct {
         return model_catalog.supportsCatalogModelDiscovery(id);
     }
 
-    fn loginProviderGroupLabel(row: provider_catalog.Provider) []const u8 {
+    fn loginProviderLabel(row: provider_catalog.Provider) []const u8 {
         return row.display_name orelse row.id;
     }
 
@@ -1576,7 +1576,7 @@ pub const App = struct {
                 break :model_item .{ .label = model.id, .detail = model.provider, .badge = if (is_current) tui_theme.glyph.system ++ " current" else null };
             } else .{ .label = "" },
             .login => if (loginProviderAt(index)) |row| .{
-                .label = loginProviderGroupLabel(row),
+                .label = loginProviderLabel(row),
                 .detail = if (loginDiscoveryAvailable(row.id)) row.id else "models unavailable",
                 .badge = if (loginDiscoveryAvailable(row.id)) loginBadge(self.login_status[loginProviderCatalogIndex(row.id).?]) else "unavailable",
             } else .{ .label = "" },

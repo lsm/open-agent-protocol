@@ -195,7 +195,8 @@ fails with `DuplicateOverride` rather than depending on which line won.
   from `~/.oapx/auth.json`, and leaves every other credential alone. A stored key
   belongs to the row it was saved for: providers reading the same environment
   variable (`opencode-zen` and `opencode-go`, the Xiaomi regions) each log in on
-  their own. It fails
+  their own. Earlier builds saved a login's key under every such row; those
+  copies stay until `/logout` names each row. It fails
   rather than touching only the file when the keychain is locked or busy, since
   a later load would read the untouched keychain item first. It cannot
   remove a credential set in the environment (a catalog variable or a custom
