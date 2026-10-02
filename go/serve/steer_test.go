@@ -445,3 +445,20 @@ func TestAReaderThatEndsWhileADrainIsPendingDoesNotStallTheSubmit(t *testing.T) 
 	}
 	entry.Published("req-steer")
 }
+
+func TestWhatADrainWithholdsAfterItsGateLiftsStillReachesSubscribers(t *testing.T) {
+	stub := &steerStubSession{stream: make(chan base.Result, 4)}
+	entry := newSession("stub", "stub", stub, nil)
+	sub := subscribeToRun(t, entry)
+
+	gate := &steerGate{run: "run-1", request: "req-steer", drainedCh: make(chan struct{})}
+	entry.mu.Lock()
+	entry.gate = gate
+	entry.mu.Unlock()
+	entry.liftSteerGate(gate)
+
+	entry.withhold(gate, steerStubDelta(1))
+	if envelope := nextEnvelope(t, sub); envelope.Type != protocol.TypeContentDelta {
+		t.Fatalf("delivered %s, want the envelope the drain withheld after the lift", envelope.Type)
+	}
+}

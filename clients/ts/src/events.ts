@@ -118,7 +118,9 @@ export class EventStream implements AsyncIterable<Envelope> {
           ]);
           if (raced === null) continue;
           envelope = raced.value;
+          this.inflight = null;
         } catch (err) {
+          this.inflight = null;
           if (!(err instanceof ConnectionDrop)) {
             throw err;
           }
@@ -156,10 +158,7 @@ export class EventStream implements AsyncIterable<Envelope> {
     if (!this.inflight) {
       const started = this.poll();
       this.inflight = started;
-      const clear = (): void => {
-        if (this.inflight === started) this.inflight = null;
-      };
-      started.then(clear, clear);
+      started.catch(() => {});
     }
     return this.inflight;
   }

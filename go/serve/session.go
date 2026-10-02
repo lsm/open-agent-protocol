@@ -849,6 +849,11 @@ func (s *Session) drainGate(gate *steerGate, stream base.EventStream) (base.Resu
 
 func (s *Session) withhold(gate *steerGate, envelope protocol.Envelope) {
 	s.mu.Lock()
+	if s.gate != gate {
+		s.deliverLocked(envelope)
+		s.mu.Unlock()
+		return
+	}
 	gate.withheld = append(gate.withheld, envelope)
 	s.mu.Unlock()
 }
