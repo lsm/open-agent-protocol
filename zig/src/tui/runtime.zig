@@ -965,7 +965,7 @@ pub const TuiRuntime = struct {
         if (!self.started) try self.start();
         if (self.remote) |remote| {
             if (self.currentModel() == null) return error.NoModelConfigured;
-            if (self.stream_active) return error.AgentAlreadyStreaming;
+            if (self.stream_active) return remote.vtable.follow_up(remote.ctx, text);
             self.resetEventStreamForTurn();
             self.cancelled.store(false, .release);
             self.completed = false;

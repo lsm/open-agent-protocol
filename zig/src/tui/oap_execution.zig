@@ -246,12 +246,15 @@ pub const OapExecution = struct {
         const payload = try self.submission(a, text, "queue");
         const id = try self.reserveId(a, "queue");
         const kept_text = try self.allocator.dupe(u8, text);
-        errdefer self.allocator.free(kept_text);
-        const kept_id = try self.allocator.dupe(u8, id);
-        errdefer self.allocator.free(kept_id);
+        const kept_id = self.allocator.dupe(u8, id) catch |err| {
+            self.allocator.free(kept_text);
+            return err;
+        };
         self.lockInbound();
         self.queued_runs.append(self.allocator, .{ .text = kept_text, .submit_id = kept_id }) catch |err| {
             self.inbound_mutex.unlock();
+            self.allocator.free(kept_text);
+            self.allocator.free(kept_id);
             return err;
         };
         self.inbound_mutex.unlock();
@@ -352,7 +355,7 @@ pub const OapExecution = struct {
         defer self.inbound_mutex.unlock();
         if (self.queued_runs.items.len == 0) return null;
         const head = &self.queued_runs.items[0];
-        if (head.dropped or (head.run_id.len > 0 and !std.mem.eql(u8, head.run_id, run_id))) return null;
+        if (head.dropped or head.run_id.len == 0 or !std.mem.eql(u8, head.run_id, run_id)) return null;
         var taken = self.queued_runs.orderedRemove(0);
         const text = taken.text;
         taken.text = &.{};
@@ -396,6 +399,10 @@ pub const OapExecution = struct {
 
     fn cancel(ctx: *anyopaque) void {
         const self = cast(ctx);
+        if (self.awaiting_promotion) {
+            self.dropQueued();
+            return;
+        }
         self.sendCancel() catch {};
     }
 
@@ -1528,6 +1535,7 @@ test "a model refresh during a turn over OAP is refused rather than switching th
 
 const Captured = struct {
     ends: usize = 0,
+    user_messages: usize = 0,
 
     fn sink(self: *Captured) tui_runtime.EventSink {
         return .{ .ctx = self, .push = push };
@@ -1538,6 +1546,7 @@ const Captured = struct {
         var owned = event;
         defer owned.deinit(testing.allocator);
         if (owned == .agent_end) self.ends += 1;
+        if (owned == .message_end and owned.message_end.role == .user) self.user_messages += 1;
     }
 };
 
@@ -1568,4 +1577,26 @@ test "a held turn ends when the reservation it waits on settles without ever sta
     try testing.expectEqual(@as(usize, 1), captured.ends);
     try testing.expect(!execution.turn_open.load(.acquire));
     try testing.expectEqual(@as(usize, 0), execution.queued_runs.items.len);
+}
+
+test "a reservation not yet admitted is never taken by the current run's own start" {
+    var script = Script{};
+    const models = [_]ai_types.Model{scripted_model};
+    const execution = try OapExecution.create(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+    });
+    defer execution.destroy();
+    var captured = Captured{};
+    execution.sink = captured.sink();
+    execution.turn_open.store(true, .release);
+    try execution.queued_runs.append(testing.allocator, .{
+        .text = try testing.allocator.dupe(u8, "later"),
+        .submit_id = try testing.allocator.dupe(u8, "queue-1"),
+    });
+
+    try execution.translateLine("{\"type\":\"run.started\",\"payload\":{\"session_id\":\"s\",\"run_id\":\"run-1\",\"status\":\"running\"}}");
+    try testing.expectEqual(@as(usize, 0), captured.user_messages);
+    try testing.expectEqual(@as(usize, 1), execution.queued_runs.items.len);
 }
