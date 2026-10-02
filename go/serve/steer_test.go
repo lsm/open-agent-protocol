@@ -171,7 +171,10 @@ func TestASteeredAdmissionAdoptsNoRunAndHoldsTheTargetStream(t *testing.T) {
 
 	expectNoEnvelope(t, sub, "a settlement the adapter emitted inside Submit")
 
-	entry.Published()
+	entry.Published("some-other-request")
+	expectNoEnvelope(t, sub, "an unrelated submit's Published")
+
+	entry.Published("req-steer")
 	envelope := nextEnvelope(t, sub)
 	if envelope.Type != protocol.TypeRunSteerApplied {
 		t.Fatalf("published %s, want the settlement", envelope.Type)
@@ -208,7 +211,7 @@ func TestASteerRefusalPublishesOnlyUpToItsBoundary(t *testing.T) {
 	}
 	expectNoEnvelope(t, sub, "a refusal's withheld settlement")
 
-	entry.Published()
+	entry.Published("req-steer")
 	if envelope := nextEnvelope(t, sub); envelope.Type != protocol.TypeRunSteerDropped {
 		t.Fatalf("published %s, want the withheld settlement", envelope.Type)
 	}
@@ -229,7 +232,7 @@ func TestASteerRefusalWithoutABoundaryWithholdsEverythingEmittedSinceArming(t *t
 	}
 	expectNoEnvelope(t, sub, "a boundary-free refusal")
 
-	entry.Published()
+	entry.Published("req-steer")
 	if envelope := nextEnvelope(t, sub); envelope.Type != protocol.TypeContentDelta {
 		t.Fatalf("published %s, want the withheld prefix in order", envelope.Type)
 	}
@@ -294,12 +297,13 @@ func TestAPublishedCallWithoutAGateIsANoOp(t *testing.T) {
 	stub := &steerStubSession{stream: make(chan base.Result, 4), steerRun: "run-1"}
 	entry := newSession("stub", "stub", stub, nil)
 	startStubRun(t, entry)
-	entry.Published()
-	entry.Published()
+	entry.Published("req-steer")
+	entry.Published("")
 	if _, err := entry.Submit(context.Background(), steerSubmit("req-steer")); err != nil {
 		t.Fatal(err)
 	}
-	entry.Published()
+	entry.Published("some-other-request")
+	entry.Published("req-steer")
 }
 
 func TestASteerGateIsLiftedWhenTheSessionCloses(t *testing.T) {

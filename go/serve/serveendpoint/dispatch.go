@@ -307,7 +307,7 @@ func (s *Server) submit(ctx context.Context, streams context.Context, e protocol
 	admission, err := entry.Submit(ctx, base.SubmitRequest{Request: request, EnvelopeID: e.ID})
 	if err != nil {
 		subscription.Close()
-		return protocol.Envelope{}, func() { s.hub.Published(entry.ID()) }, err
+		return protocol.Envelope{}, func() { s.hub.Published(entry.ID(), e.ID) }, err
 	}
 	answer, err := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitResponse, s.nextID("response"), admission)
 	if err != nil {
@@ -320,7 +320,7 @@ func (s *Server) submit(ctx context.Context, streams context.Context, e protocol
 	answer.CapabilityRevision = e.CapabilityRevision
 	if admission.Admission == protocol.AdmissionSteered {
 		subscription.Close()
-		return answer, func() { s.hub.Published(entry.ID()) }, nil
+		return answer, func() { s.hub.Published(entry.ID(), e.ID) }, nil
 	}
 
 	start := func() {

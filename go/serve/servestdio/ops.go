@@ -131,14 +131,24 @@ func (s *Server) serveRequest(ctx context.Context, run *runState, request reques
 			return
 		}
 		s.serveOpen(ctx, run, request, lines)
-		s.hub.Published(protocol.SessionID(request.SessionID))
+		s.hub.Published(protocol.SessionID(request.SessionID), submittedEnvelopeID(request))
 		return
 	}
 	result, werr := s.dispatch(ctx, request)
 	s.respond(ctx, lines, request, result, werr)
 	if request.Op == opSubmit {
-		s.hub.Published(protocol.SessionID(request.SessionID))
+		s.hub.Published(protocol.SessionID(request.SessionID), submittedEnvelopeID(request))
 	}
+}
+
+func submittedEnvelopeID(request requestLine) protocol.EnvelopeID {
+	var envelope struct {
+		ID protocol.EnvelopeID `json:"id"`
+	}
+	if err := json.Unmarshal(request.Request, &envelope); err != nil {
+		return ""
+	}
+	return envelope.ID
 }
 
 func (s *Server) respond(ctx context.Context, lines chan<- outLine, request requestLine, result json.RawMessage, werr *wireError) bool {

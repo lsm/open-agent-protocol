@@ -153,9 +153,9 @@ func (h *Hub) Binding() binding.Store {
 	return h.bindings
 }
 
-func (h *Hub) Published(id protocol.SessionID) {
+func (h *Hub) Published(id protocol.SessionID, request protocol.EnvelopeID) {
 	if entry, err := h.Session(id); err == nil {
-		entry.Published()
+		entry.Published(request)
 	}
 }
 

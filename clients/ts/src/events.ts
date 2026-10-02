@@ -73,6 +73,7 @@ export class EventStream implements AsyncIterable<Envelope> {
   private emptyCycles = 0;
   private backoffMs = 0;
   private buffered: SSEFrame[] = [];
+  private inflight: Promise<Envelope> | null = null;
   private iterator: AsyncIterator<Envelope> | null = null;
 
   constructor(
@@ -110,7 +111,12 @@ export class EventStream implements AsyncIterable<Envelope> {
         if (!this.conn) await this.connect();
         let envelope: Envelope;
         try {
-          envelope = await this.poll();
+          const raced = await Promise.race([
+            this.pollOnce().then((value) => ({ value })),
+            this.session.releaseWake().then(() => null),
+          ]);
+          if (raced === null) continue;
+          envelope = raced.value;
         } catch (err) {
           if (!(err instanceof ConnectionDrop)) {
             throw err;
@@ -143,6 +149,18 @@ export class EventStream implements AsyncIterable<Envelope> {
     } finally {
       this.closeConn();
     }
+  }
+
+  private pollOnce(): Promise<Envelope> {
+    if (!this.inflight) {
+      const started = this.poll();
+      this.inflight = started;
+      const clear = (): void => {
+        if (this.inflight === started) this.inflight = null;
+      };
+      started.then(clear, clear);
+    }
+    return this.inflight;
   }
 
   private async connect(): Promise<void> {

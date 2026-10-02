@@ -335,14 +335,14 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.writeSubmitError(w, err, envelope)
 		flushResponse(w)
-		s.hub.Published(entry.ID())
+		s.hub.Published(entry.ID(), envelope.ID)
 		return
 	}
 	response, err := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitResponse, s.nextID("response"), admission)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "internal", err.Error(), envelope)
 		flushResponse(w)
-		s.hub.Published(entry.ID())
+		s.hub.Published(entry.ID(), envelope.ID)
 		return
 	}
 	response.InReplyTo = envelope.ID
@@ -351,7 +351,7 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	response.CapabilityRevision = envelope.CapabilityRevision
 	writeEnvelope(w, http.StatusOK, response)
 	flushResponse(w)
-	s.hub.Published(entry.ID())
+	s.hub.Published(entry.ID(), envelope.ID)
 }
 
 func flushResponse(w http.ResponseWriter) {

@@ -123,6 +123,7 @@ const steerDrainDeadline = 5 * time.Second
 
 type steerGate struct {
 	run      protocol.RunID
+	request  protocol.EnvelopeID
 	boundary uint64
 	withheld []protocol.Envelope
 	deadline *time.Timer
@@ -259,7 +260,7 @@ func (s *Session) SwitchModel(ctx context.Context, request protocol.SessionModel
 	return response, state, nil
 }
 
-func (s *Session) armSteerGate(ctx context.Context, run protocol.RunID) (*steerGate, error) {
+func (s *Session) armSteerGate(ctx context.Context, run protocol.RunID, request protocol.EnvelopeID) (*steerGate, error) {
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
@@ -280,7 +281,7 @@ func (s *Session) armSteerGate(ctx context.Context, run protocol.RunID) (*steerG
 	if s.closed {
 		return nil, base.ErrSessionClosed
 	}
-	gate := &steerGate{run: run, boundary: s.sequences[run], drainedCh: make(chan struct{})}
+	gate := &steerGate{run: run, request: request, boundary: s.sequences[run], drainedCh: make(chan struct{})}
 	s.gate = gate
 	gate.deadline = time.AfterFunc(steerGateDeadline, func() { s.liftSteerGate(gate) })
 	return gate, nil
@@ -316,18 +317,20 @@ func (s *Session) liftSteerGate(gate *steerGate) {
 		gate.deadline.Stop()
 	}
 	s.gateCond.Broadcast()
-	s.mu.Unlock()
 	for _, envelope := range withheld {
-		s.publish(envelope)
+		s.deliverLocked(envelope)
 	}
+	s.mu.Unlock()
 }
 
-func (s *Session) Published() { s.liftSteerGate(s.heldGate()) }
-
-func (s *Session) heldGate() *steerGate {
+func (s *Session) Published(request protocol.EnvelopeID) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.gate
+	gate := s.gate
+	s.mu.Unlock()
+	if gate == nil || gate.request != request {
+		return
+	}
+	s.liftSteerGate(gate)
 }
 
 func (s *Session) waitGateLifted(run protocol.RunID) {
@@ -389,7 +392,7 @@ func (s *Session) submitSteer(ctx context.Context, submit base.SubmitRequest) (p
 	if owner, known := s.runOwner(target); known && owner != s.id {
 		return protocol.MessageSubmitResponse{}, &base.InvalidSteerTargetError{RunID: target, Reason: base.SteerReasonCrossSession}
 	}
-	gate, err := s.armSteerGate(ctx, target)
+	gate, err := s.armSteerGate(ctx, target, submit.EnvelopeID)
 	if err != nil {
 		return protocol.MessageSubmitResponse{}, err
 	}
@@ -419,15 +422,16 @@ func (s *Session) submitSteer(ctx context.Context, submit base.SubmitRequest) (p
 		}
 		return admission, err
 	}
-	if stream != nil {
-		s.adoptOrphan(stream)
-	}
 	boundary := gate.boundary
 	if admission.TargetSequence != nil {
 		boundary = *admission.TargetSequence
 	}
 	s.releaseToBoundary(gate, boundary)
-	s.releaseReservation()
+	if stream != nil {
+		s.adoptOrphan(stream)
+	} else {
+		s.releaseReservation()
+	}
 	return admission, nil
 }
 
@@ -1060,6 +1064,9 @@ func (s *Session) markClosed() {
 		s.gate = nil
 		s.gateCond.Broadcast()
 	}
+	for _, envelope := range withheld {
+		s.deliverLocked(envelope)
+	}
 	var errored []*subscriber
 	var failed *terminalState
 	switch {
@@ -1089,9 +1096,6 @@ func (s *Session) markClosed() {
 	default:
 		s.mu.Unlock()
 		s.finishSubs(nil)
-	}
-	for _, envelope := range withheld {
-		s.publish(envelope)
 	}
 	s.deliverDeferredError(errored, failed)
 	if releasing {

@@ -45,6 +45,8 @@ export type OpenOptions = { sessionId?: string; participant?: string };
 
 export class OapSession {
   private outstanding = new Set<string>();
+  private wakeFire: (() => void) | null = null;
+  private wakePromise: Promise<void> | null = null;
   private held = new Map<string, Envelope[]>();
   private released: Envelope[] = [];
 
@@ -65,6 +67,23 @@ export class OapSession {
     if (!carried) return;
     this.held.delete(id);
     this.released.push(...carried);
+    this.fireWake();
+  }
+
+  releaseWake(): Promise<void> {
+    if (!this.wakeFire) {
+      this.wakePromise = new Promise<void>((resolve) => {
+        this.wakeFire = resolve;
+      });
+    }
+    return this.wakePromise as Promise<void>;
+  }
+
+  private fireWake(): void {
+    const fire = this.wakeFire;
+    this.wakeFire = null;
+    this.wakePromise = null;
+    if (fire) fire();
   }
 
   holdSteer(envelope: Envelope): boolean {
