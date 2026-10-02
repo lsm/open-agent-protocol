@@ -2,6 +2,7 @@ package serve
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -234,6 +235,58 @@ func TestASteerRefusalWithoutABoundaryWithholdsEverythingEmittedSinceArming(t *t
 	}
 	if envelope := nextEnvelope(t, sub); envelope.Type != protocol.TypeRunSteerDropped {
 		t.Fatalf("published %s, want the withheld settlement", envelope.Type)
+	}
+}
+
+func TestASteerNamingAnotherSessionsRunIsRefused(t *testing.T) {
+	stub := &steerStubSession{stream: make(chan base.Result, 4), steerRun: "run-1"}
+	index := &runIndex{}
+	index.claim("elsewhere", "run-foreign")
+	entry := newSession("stub", "stub", stub, nil)
+	entry.runs = index
+	startStubRun(t, entry)
+
+	submit := steerSubmit("req-steer")
+	submit.Request.TargetRunID = "run-foreign"
+	_, err := entry.Submit(context.Background(), submit)
+	var refusal *base.InvalidSteerTargetError
+	if !errors.As(err, &refusal) || refusal.Reason != base.SteerReasonCrossSession || refusal.RunID != "run-foreign" {
+		t.Fatalf("steer = %v, want a cross_session refusal", err)
+	}
+}
+
+func TestASteerNamingAnotherSessionsRunIsRefusedThroughTheHub(t *testing.T) {
+	registry := NewRegistry()
+	if err := registry.Register("memory", base.NewMemory(base.Config{JournalCapacity: 64})); err != nil {
+		t.Fatal(err)
+	}
+	hub := New(registry, Options{})
+	ctx := context.Background()
+	first, _, err := hub.Open(ctx, "memory", base.OpenRequest{SessionID: "first", Participant: protocol.Participant{ID: "user"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := hub.Open(ctx, "memory", base.OpenRequest{SessionID: "second", Participant: protocol.Participant{ID: "user"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admission, err := first.Submit(ctx, base.SubmitRequest{Request: protocol.MessageSubmitRequest{
+		SessionID: "first", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = second.Submit(ctx, base.SubmitRequest{
+		EnvelopeID: "req-steer",
+		Request: protocol.MessageSubmitRequest{
+			SessionID: "second", Delivery: protocol.DeliverySteer, TargetRunID: admission.RunID,
+			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("wait")}},
+		},
+	})
+	var refusal *base.InvalidSteerTargetError
+	if !errors.As(err, &refusal) || refusal.Reason != base.SteerReasonCrossSession {
+		t.Fatalf("steer = %v, want a cross_session refusal", err)
 	}
 }
 

@@ -16,10 +16,37 @@ import (
 type sessionRegistry struct {
 	mu       sync.RWMutex
 	sessions map[protocol.SessionID]*Session
+	runs     *runIndex
 }
 
 func newSessionRegistry() *sessionRegistry {
-	return &sessionRegistry{sessions: make(map[protocol.SessionID]*Session)}
+	return &sessionRegistry{sessions: make(map[protocol.SessionID]*Session), runs: &runIndex{}}
+}
+
+type runIndex struct {
+	mu    sync.RWMutex
+	owner map[protocol.RunID]protocol.SessionID
+}
+
+func (r *runIndex) claim(session protocol.SessionID, run protocol.RunID) {
+	if run == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.owner == nil {
+		r.owner = make(map[protocol.RunID]protocol.SessionID)
+	}
+	if _, exists := r.owner[run]; !exists {
+		r.owner[run] = session
+	}
+}
+
+func (r *runIndex) ownerOf(run protocol.RunID) (protocol.SessionID, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	owner, ok := r.owner[run]
+	return owner, ok
 }
 
 func (r *sessionRegistry) get(id protocol.SessionID) (*Session, bool) {
@@ -82,6 +109,8 @@ type Session struct {
 	sequences    map[protocol.RunID]uint64
 
 	finished map[protocol.RunID]bool
+
+	runs *runIndex
 
 	drainWake chan struct{}
 	gateCond  *sync.Cond
@@ -343,12 +372,22 @@ func (s *Session) Submit(ctx context.Context, submit base.SubmitRequest) (protoc
 	return admission, nil
 }
 
+func (s *Session) runOwner(run protocol.RunID) (protocol.SessionID, bool) {
+	if s.runs == nil {
+		return "", false
+	}
+	return s.runs.ownerOf(run)
+}
+
 func (s *Session) submitSteer(ctx context.Context, submit base.SubmitRequest) (protocol.MessageSubmitResponse, error) {
 	target := submit.Request.TargetRunID
 	if target == "" {
 		if current, ok := s.currentRun(); ok {
 			target = current
 		}
+	}
+	if owner, known := s.runOwner(target); known && owner != s.id {
+		return protocol.MessageSubmitResponse{}, &base.InvalidSteerTargetError{RunID: target, Reason: base.SteerReasonCrossSession}
 	}
 	gate, err := s.armSteerGate(ctx, target)
 	if err != nil {
@@ -603,7 +642,15 @@ func (s *Session) bindRun(runID protocol.RunID, reserved uint64) protocol.RunID 
 	return runID
 }
 
+func (s *Session) claimRun(runID protocol.RunID) {
+	if s.runs == nil {
+		return
+	}
+	s.runs.claim(s.id, runID)
+}
+
 func (s *Session) startRun(runID protocol.RunID, stream base.EventStream) {
+	s.claimRun(runID)
 	s.mu.Lock()
 	s.readers++
 	s.runID = runID
@@ -616,6 +663,7 @@ func (s *Session) startRun(runID protocol.RunID, stream base.EventStream) {
 }
 
 func (s *Session) adoptRun(runID protocol.RunID, stream base.EventStream, queued bool) {
+	s.claimRun(runID)
 	s.mu.Lock()
 	s.reservations--
 	s.readers++

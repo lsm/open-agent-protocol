@@ -90,6 +90,7 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 		h.sessions.remove(released.id, released)
 		h.recordBinding(context.Background(), released.binding, binding.ActionClosed, h.now())
 	})
+	entry.runs = h.sessions.runs
 	opened := h.openRecord(ctx, adapterName, implementation, state, request)
 	entry.binding = opened
 	settled := err != nil || state.Status == protocol.SessionClosed
