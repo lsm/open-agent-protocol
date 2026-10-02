@@ -30,10 +30,14 @@ export const EnvelopeType = {
   SessionProviderAttachResponse: 'session.provider.attach.response',
   SessionMessageSubmitRequest: 'session.message.submit.request',
   SessionMessageSubmitResponse: 'session.message.submit.response',
+  SessionCompactRequest: 'session.compact.request',
+  SessionCompactResponse: 'session.compact.response',
   RunCancelRequest: 'run.cancel.request',
   RunCancelResponse: 'run.cancel.response',
   RunSteerApplied: 'run.steer.applied',
   RunSteerDropped: 'run.steer.dropped',
+  RunCompactionStarted: 'run.compaction.started',
+  RunCompactionEnded: 'run.compaction.ended',
   RunStarted: 'run.started',
   RunStatusUpdated: 'run.status.updated',
   ContentDelta: 'content.delta',
@@ -841,6 +845,49 @@ export interface RunSteerAppliedPayload {
   request_id: string;
   message_ids: string[];
   boundary: SteerBoundary;
+}
+
+export type CompactionReason = 'requested' | 'threshold' | 'overflow';
+
+export type CompactionOutcome = 'completed' | 'failed' | 'cancelled';
+
+export interface RunCompactionStartedPayload {
+  session_id: string;
+  run_id: string;
+  compaction_id: string;
+  reason: CompactionReason;
+  history_tokens?: number;
+}
+
+export interface RunCompactionEndedPayload {
+  session_id: string;
+  run_id: string;
+  compaction_id: string;
+  outcome: CompactionOutcome;
+  summary?: Message;
+  history_tokens?: number;
+  error?: ProtocolError;
+}
+
+export interface SessionCompactRequest {
+  session_id: string;
+  delivery?: RequestedDeliveryMode;
+  focus?: string;
+  continue?: boolean;
+  allow_degraded_features?: string[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface SessionCompactResponse {
+  session_id: string;
+  accepted: boolean;
+  submission_id: string;
+  requested_delivery: RequestedDeliveryMode;
+  effective_delivery: EffectiveDeliveryMode;
+  delivery_resolution?: string;
+  admission: Admission;
+  run_id?: string;
+  status?: RunStatus;
 }
 
 export interface RunSteerDroppedPayload {
