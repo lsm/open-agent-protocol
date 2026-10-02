@@ -569,7 +569,12 @@ pub const Session = struct {
         }
         if (run.status == .cancelling) return .{ .session_id = self.id, .run_id = owned_run_id, .accepted = true, .status = .cancelling };
         if (!run.started) {
-            run.status = .cancelling;
+            var scratch = std.heap.ArenaAllocator.init(self.gpa);
+            defer scratch.deinit();
+            var payload = Payload.init(scratch.allocator());
+            try payload.run(self, run);
+            try payload.put("reason", .{ .string = "cancelled before promotion" });
+            try self.emit(run, "run.cancelled", payload.value(), true);
             return .{ .session_id = self.id, .run_id = owned_run_id, .accepted = true, .status = .cancelling };
         }
         run.status = .cancelling;
@@ -587,26 +592,10 @@ pub const Session = struct {
         return .{ .session_id = self.id, .run_id = owned_run_id, .accepted = true, .status = .cancelling };
     }
 
-    fn settleReservations(self: *Session) contract.Failure!bool {
-        var moved = false;
-        for (self.runs.items) |run| {
-            if (run.started or run.terminal or run.status != .cancelling) continue;
-            var scratch = std.heap.ArenaAllocator.init(self.gpa);
-            defer scratch.deinit();
-            var payload = Payload.init(scratch.allocator());
-            try payload.run(self, run);
-            try payload.put("reason", .{ .string = "cancelled before promotion" });
-            try self.emit(run, "run.cancelled", payload.value(), true);
-            moved = true;
-        }
-        return moved;
-    }
-
     fn pump(ptr: *anyopaque, wait_ns: u64) contract.Failure!bool {
         _ = wait_ns;
         const self = cast(ptr);
-        var moved = try self.settleReservations();
-        moved = try self.promote() or moved;
+        var moved = try self.promote();
         const stream = self.runtime.streamEvents();
         while (stream.poll()) |event| {
             var owned = event;
@@ -1758,8 +1747,6 @@ fn wireCancel(wire: *Wire, run_id: []const u8) !void {
     const scope = try std.fmt.allocPrint(a, "{s},\"run_id\":\"{s}\"", .{ wire_scope, run_id });
     const payload = try std.fmt.allocPrint(a, "{{\"session_id\":\"wire-session\",\"run_id\":\"{s}\"}}", .{run_id});
     try wire.send("run.cancel.request", scope, try parseValue(a, payload));
-    _ = try wire.endpoint.pump(0);
-    try wire.collect();
 }
 
 fn wireState(wire: *Wire, queued: usize, executing: bool) !void {
@@ -1812,6 +1799,7 @@ test "idle explicit queue reserves before promotion, preserves admission order a
     const last = wireLast(&wire, "session.message.submit.response").object.get("payload").?.object;
     try wireState(&wire, 3, false);
     try wireCancel(&wire, middle.get("run_id").?.string);
+    try wireState(&wire, 2, false);
     try wireUntilSettled(&wire, 3);
     try wireState(&wire, 0, false);
     var started: usize = 0;
@@ -1825,7 +1813,7 @@ test "idle explicit queue reserves before promotion, preserves admission order a
     try wire.validate();
 }
 
-test "a blocked primary admits up to the disclosed bound, frees cancelled slots, and never executes cancelled reservations" {
+test "buffered reservation cancellation frees a full queue slot before the next submit without executing cancelled work" {
     var script = Script{ .tool_first = true };
     var wire: Wire = undefined;
     wire.init(&script);
@@ -1931,4 +1919,37 @@ test "an allocation failure preparing admission publishes nothing and starts no 
         try harness.untilTerminal();
         break;
     }
+}
+
+test "buffered reservation cancellation makes idle activity, model switch and close available without a pump" {
+    var script = Script{};
+    var wire: Wire = undefined;
+    wire.init(&script);
+    defer wire.deinit();
+    try wireOpen(&wire);
+    var reserved: [queue_capacity][]const u8 = undefined;
+    for (&reserved) |*id| {
+        _ = try wireSubmit(&wire, "queue");
+        id.* = wireLast(&wire, "session.message.submit.response").object.get("payload").?.object.get("run_id").?.string;
+    }
+    for (reserved) |id| try wireCancel(&wire, id);
+    try wireState(&wire, 0, false);
+    try testing.expectEqual(contract.Activity.idle, wire.endpoint.entries.items[0].session.activity());
+    const a = wire.arena.allocator();
+    try wire.send("session.model.switch.request", wire_scope, try parseValue(a,
+        \\{"session_id":"wire-session","model_id":"scripted/openai-completions@other-model"}
+    ));
+    try testing.expectEqualStrings("scripted/openai-completions@other-model", wireLast(&wire, "session.model.switch.response").object.get("payload").?.object.get("model_id").?.string);
+    var owner = Adapter.init(testing.allocator, wire.owner.options);
+    var refusal = contract.Refusal{};
+    const session = try owner.adapter().open(a, .{ .participant = "user" }, &refusal);
+    var closed = false;
+    defer if (!closed) session.teardown();
+    var messages = [_]oap_types.Message{.{ .role = .user, .content = .{ .text = "queued" } }};
+    const admission = try session.submit(a, &.{ .session_id = session.id(), .messages = &messages, .delivery = .queue }, "close-submit", &refusal);
+    _ = try session.cancel(a, admission.run_id.?, &refusal);
+    try session.close();
+    closed = true;
+    try testing.expectEqual(@as(usize, 0), script.calls);
+    try wire.validate();
 }

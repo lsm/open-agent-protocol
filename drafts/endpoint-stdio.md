@@ -83,11 +83,18 @@ what the protocol promises:
 - Run-scoped events of one run arrive in emission order and carry a positive,
   contiguous per-run `sequence`.
 - Requests and responses do not consume a sequence.
-- **No ordering is promised between a response and an event.** An endpoint that
-  emits a run's first events inside its submit handling may write them before
+- **No general ordering is promised between a response and an event.** An
+  endpoint that emits a run's first events inside its submit handling may write them before
   the submit's own acknowledgement, and a host that assumes otherwise will
   deadlock against a conformant endpoint. A host reads whichever line arrives
   and dispatches on `in_reply_to`.
+
+Cancellation settlement has its core ordering: an accepted
+`run.cancel.response` precedes the `run.cancelled` it confirms, including for an
+unstarted queue reservation. The Zig adapter endpoint writes that acknowledgement
+before draining cancellation events. Its oapx adapter releases a cancelled
+reservation within the request, so a buffered next submit or model switch sees
+the freed capacity without an intervening pump.
 
 ## Streaming is implicit
 

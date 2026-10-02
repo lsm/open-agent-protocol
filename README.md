@@ -78,6 +78,8 @@ reserves up to eight waiting runs behind one executing run and promotes them in
 admission order. Busy `auto` joins that queue; explicit `queue` reserves even
 when idle. `session.state.active_runs` lists the reservations with their queue
 positions, so clients can count follow-ups and cancel them before execution.
+Cancelling a reservation frees its slot within that request; the acknowledgement
+precedes its terminal event, and a buffered next request sees the released slot.
 The descriptor discloses both bounds. Replay retains up to 65536 events across
 the session's runs and reports gaps after eviction. Compaction
 (Decision 0044) is not carried yet.
