@@ -798,6 +798,7 @@ pub const Frontend = struct {
             .metadata = metadata,
             .capability_revision = envelope.capability_revision,
             .subscribe = open.subscribe,
+            .reopen = open.reopen,
             .allow_degraded_features = open.allow_degraded_features,
             .tools_json = open.tools_json,
             .tool_sources_json = try substitutedSources(arena, self.hub, open.tool_sources_json),
@@ -829,6 +830,7 @@ pub const Frontend = struct {
         return switch (err) {
             error.UnknownAdapter => .{ .code = "unknown_adapter", .message = try std.fmt.allocPrint(arena, "no adapter is registered as \"{s}\"", .{request.adapter orelse ""}) },
             error.SessionExists => .{ .code = "session_exists", .message = "the session id is already open" },
+            error.UnknownSession => .{ .code = "unknown_session", .message = if (refused.reason.message.len > 0) refused.reason.message else "no closed session is kept under that id" },
             error.SessionClosed => .{ .code = "session_closed", .message = "the session was already closed when the open probed it" },
             error.StaleCapabilities => try refusalWith(arena, "stale_capabilities", "the open cites a capability revision that is no longer current", try arena.dupe(oap_types.DetailEntry, &.{
                 .{ .key = "expected_revision", .value = refused.expected_revision },

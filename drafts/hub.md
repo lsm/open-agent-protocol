@@ -1205,6 +1205,16 @@ nowhere to put a reason (D12).
   closed when the open probed it), `probe_failed`, `open_failed` (502),
   `request_cancelled`, `internal` — and, when the request set `subscribe`, the
   subscription bound can refuse this op specifically.
+- **reopen:** a request setting `reopen` is gated on `session.open.reopen` as
+  `subscribe` is on its key. One naming a session still open is `session_exists`,
+  checked before the adapter is asked; one the adapter holds nothing for is
+  `unknown_session` (404). A successful reopen's state declares
+  `recovery.recovered`, and a binding store records it as `reopened`. Close is an
+  ordinary close of the adapter's session in both trees, so an adapter that keeps
+  what it closed can be asked to reopen it. Pinned by
+  `TestAReopenIsRecordedAsReopenedAfterTheClose`,
+  `TestTheElectionGateRefusesAReopenTheAdapterDoesNotAdvertise` and the Zig hub's
+  `a closed session reopens through the hub once` test.
 - **pinned by:** `TestOpenOpOpensASession`, `TestOpenOpRefusals`,
   `TestOpenRefusalsAreBounded`, `TestHubOpenRejections`,
   `TestHubOpenDefaultsParticipant`, `TestHubOpenClosesSessionWhenStateFails`,

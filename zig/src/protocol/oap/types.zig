@@ -717,6 +717,7 @@ pub const CapabilitiesResponse = struct {
 pub const SessionOpenRequest = struct {
     session_id: ?[]const u8 = null,
     subscribe: bool = false,
+    reopen: bool = false,
     message_json: ?[]const u8 = null,
     tools_json: ?[]const u8 = null,
     tool_sources_json: ?[]const u8 = null,
@@ -893,6 +894,7 @@ pub const SessionState = struct {
     updated_at_ms: ?i64 = null,
     metadata_json: ?[]const u8 = null,
     sources: []ToolSourceDescriptor = &.{},
+    recovered: bool = false,
     as_of: ?SessionCapture = null,
 
     pub fn deinit(self: *SessionState, allocator: std.mem.Allocator) void {

@@ -74,6 +74,9 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 	if request.Participant.ID == "" {
 		request.Participant.ID = DefaultParticipant
 	}
+	if _, live := h.sessions.get(request.SessionID); request.Reopen && live {
+		return nil, protocol.SessionState{}, &SessionExistsError{ID: request.SessionID}
+	}
 	session, err := implementation.Open(ctx, request)
 	if err != nil {
 		return nil, protocol.SessionState{}, err
@@ -93,14 +96,18 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 	opened := h.openRecord(ctx, adapterName, implementation, state, request)
 	entry.binding = opened
 	settled := err != nil || state.Status == protocol.SessionClosed
+	began := binding.ActionOpened
+	if request.Reopen {
+		began = binding.ActionReopened
+	}
 	h.bindingMu.Lock()
 	var added error
 	if settled {
 		entry.binding = binding.Record{}
-		h.recordBinding(ctx, opened, binding.ActionOpened, state.UpdatedAtMS)
+		h.recordBinding(ctx, opened, began, state.UpdatedAtMS)
 		h.recordBinding(ctx, opened, binding.ActionClosed, h.now())
 	} else if added = h.sessions.add(entry); added == nil {
-		h.recordBinding(ctx, opened, binding.ActionOpened, state.UpdatedAtMS)
+		h.recordBinding(ctx, opened, began, state.UpdatedAtMS)
 	} else {
 		h.recordBinding(ctx, opened, binding.ActionRefused, h.now())
 	}
@@ -266,7 +273,7 @@ func (h *Hub) CloseSessions(ctx context.Context) {
 var (
 	ErrUnknownAdapter = errors.New("serve: unknown adapter")
 
-	ErrUnknownSession = errors.New("serve: unknown session")
+	ErrUnknownSession = base.ErrUnknownSession
 
 	ErrSessionExists = errors.New("serve: session already exists")
 
@@ -282,12 +289,7 @@ type UnknownAdapterError struct {
 func (e *UnknownAdapterError) Error() string { return fmt.Sprintf("no adapter %q", e.Name) }
 func (e *UnknownAdapterError) Unwrap() error { return ErrUnknownAdapter }
 
-type UnknownSessionError struct {
-	ID protocol.SessionID
-}
-
-func (e *UnknownSessionError) Error() string { return fmt.Sprintf("no session %q", e.ID) }
-func (e *UnknownSessionError) Unwrap() error { return ErrUnknownSession }
+type UnknownSessionError = base.UnknownSessionError
 
 type SessionExistsError struct {
 	ID protocol.SessionID

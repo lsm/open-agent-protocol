@@ -22,8 +22,15 @@ type CompoundResult struct {
 	Admission    *protocol.MessageSubmitResponse
 }
 
-func SubscribeGate(ctx context.Context, hub *Hub, name string, revision string, request protocol.SessionOpenRequest) (string, error) {
-	if !request.Subscribe {
+func ElectionGate(ctx context.Context, hub *Hub, name string, revision string, request protocol.SessionOpenRequest) (string, error) {
+	var elected []string
+	if request.Subscribe {
+		elected = append(elected, protocol.FeatureOpenSubscribe)
+	}
+	if request.Reopen {
+		elected = append(elected, protocol.FeatureOpenReopen)
+	}
+	if len(elected) == 0 {
 		return "", nil
 	}
 	descriptor, err := hub.Probe(ctx, name)
@@ -33,12 +40,14 @@ func SubscribeGate(ctx context.Context, hub *Hub, name string, revision string, 
 	if revision != "" && revision != descriptor.CapabilityRevision {
 		return "", &StaleRevisionError{Expected: descriptor.CapabilityRevision, Current: revision}
 	}
-	support, advertised := descriptor.Capabilities.EffectiveSupport(protocol.FeatureOpenSubscribe)
-	if !advertised || support.Level == "" || support.Level == protocol.SupportUnavailable {
-		return "", &base.UnsupportedControlError{Feature: protocol.FeatureOpenSubscribe, Reason: base.ControlUnadvertised}
-	}
-	if support.Level == protocol.SupportDegraded && !request.AllowsDegraded(protocol.FeatureOpenSubscribe) {
-		return "", &base.DegradedControlError{Feature: protocol.FeatureOpenSubscribe}
+	for _, key := range elected {
+		support, advertised := descriptor.Capabilities.EffectiveSupport(key)
+		if !advertised || support.Level == "" || support.Level == protocol.SupportUnavailable {
+			return "", &base.UnsupportedControlError{Feature: key, Reason: base.ControlUnadvertised}
+		}
+		if support.Level == protocol.SupportDegraded && !request.AllowsDegraded(key) {
+			return "", &base.DegradedControlError{Feature: key}
+		}
 	}
 	return descriptor.CapabilityRevision, nil
 }

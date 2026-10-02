@@ -79,6 +79,7 @@ pub const OpenRequest = struct {
     metadata: ?std.json.Value = null,
     capability_revision: ?[]const u8 = null,
     subscribe: bool = false,
+    reopen: bool = false,
     allow_degraded_features: []const []const u8 = &.{},
     tools_json: ?[]const u8 = null,
     tool_sources_json: ?[]const u8 = null,
@@ -87,6 +88,7 @@ pub const OpenRequest = struct {
         return .{
             .session_id = if (self.session_id.len > 0) self.session_id else null,
             .subscribe = self.subscribe,
+            .reopen = self.reopen,
             .tools_json = self.tools_json,
             .tool_sources_json = self.tool_sources_json,
             .allow_degraded_features = self.allow_degraded_features,
@@ -101,6 +103,7 @@ pub const OpenRequest = struct {
             .allow_degraded_features = self.allow_degraded_features,
             .tools_json = self.tools_json,
             .tool_sources_json = self.tool_sources_json,
+            .reopen = self.reopen,
         };
     }
 };
@@ -665,6 +668,11 @@ pub const Hub = struct {
             else => |failure| return failure,
         };
         if (reported.active_run_id != null or reported.active_runs.len > 0) return error.RunActive;
+        if (entry.session.close()) |_| {
+            entry.session_closed = true;
+        } else |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+        }
         self.releaseSession(entry);
     }
 
@@ -1260,6 +1268,7 @@ fn submitFor(arena: std.mem.Allocator, session_id: []const u8) !oap_types.Messag
 
 test "a hub registers an adapter, names it, and refuses an unknown one" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{});
     defer hub.deinit();
     try testing.expectError(error.UnknownAdapter, hub.probe("nobody"));
@@ -1276,6 +1285,7 @@ test "a hub registers an adapter, names it, and refuses an unknown one" {
 
 test "a hub opens many sessions, each with its own journal" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{});
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -1313,6 +1323,7 @@ test "a hub opens many sessions, each with its own journal" {
 
 test "an adapter-assigned session id that is already taken is refused, not adopted twice" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{});
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -1333,6 +1344,7 @@ test "an adapter-assigned session id that is already taken is refused, not adopt
 
 test "a cursor may name an admitted run whose events have not arrived yet" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 64, .journal_capacity = 256 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -1380,6 +1392,7 @@ test "a backend that cannot make progress ends its stream, and the session stays
 
 test "the current run follows the events, so an unqualified cursor reaches a promoted run" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256, .journal_capacity = 256 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -1411,6 +1424,7 @@ test "the current run follows the events, so an unqualified cursor reaches a pro
 
 test "a subscriber that falls behind is ended with a cursor on the run that overflowed" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 4, .journal_capacity = 256 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -1441,6 +1455,7 @@ test "a subscriber that falls behind is ended with a cursor on the run that over
 
 test "a replay that outgrows the mailbox names the replayed run, not the session's current one" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 2, .journal_capacity = 256 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -1474,6 +1489,7 @@ test "a replay that outgrows the mailbox names the replayed run, not the session
 
 test "the overflow cursor is where the client stopped after draining, not where the queue filled" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 4, .journal_capacity = 256 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -1544,6 +1560,7 @@ test "a loss on a settled run names the live current run, which is what Go's can
 
 test "a loss on a newer run names the newer run rather than the one being read" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 8, .journal_capacity = 256 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -1578,6 +1595,7 @@ fn runNumber(run_id: []const u8) usize {
 
 test "an overflowed hold is adopted so the adopter learns the cursor it lost" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 2, .journal_capacity = 256, .hold_ns = 50 * std.time.ns_per_ms });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -1599,6 +1617,7 @@ test "an overflowed hold is adopted so the adopter learns the cursor it lost" {
 
 test "a finished subscription is reclaimed, so a long-lived hub's memory is bounded" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 4, .journal_capacity = 256 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -1619,6 +1638,7 @@ test "a finished subscription is reclaimed, so a long-lived hub's memory is boun
 
 test "a subscription that closes with events queued leaves the hub with nothing outstanding" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 8, .journal_capacity = 256 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -1642,6 +1662,7 @@ test "a subscription that closes with events queued leaves the hub with nothing 
 
 test "a resumed subscription ends at the terminal it replays" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256, .journal_capacity = 256 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -1720,6 +1741,7 @@ test "a run's terminal ends the stream even when a later run numbers higher" {
 
 test "a run's terminal envelope never becomes the session's current run" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 64, .journal_capacity = 64 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -1741,6 +1763,7 @@ test "a run's terminal envelope never becomes the session's current run" {
 
 test "the registry lists and names its adapters in sorted order" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{});
     defer hub.deinit();
     try hub.register("zulu", adapter.adapter());
@@ -1765,6 +1788,7 @@ test "the registry lists and names its adapters in sorted order" {
 
 test "a replay larger than the mailbox seeds a cursor instead of growing without bound" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 3, .journal_capacity = 64 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -1793,6 +1817,7 @@ test "a replay larger than the mailbox seeds a cursor instead of growing without
 
 test "a registry document's journal capacity is read, and its zero keeps the default" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{});
     defer hub.deinit();
     var scratch = std.heap.ArenaAllocator.init(testing.allocator);
@@ -1816,6 +1841,7 @@ test "a registry document's journal capacity is read, and its zero keeps the def
 
 test "a hub built with no journal capacity keeps nothing" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .journal_capacity = 0 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -1840,6 +1866,7 @@ fn scripted(context: *anyopaque, arena: std.mem.Allocator, entry: config.Adapter
 
 test "a cursor sitting on a settled run's terminal ends at once and hears nothing later" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256, .journal_capacity = 3 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -1870,6 +1897,7 @@ test "a cursor sitting on a settled run's terminal ends at once and hears nothin
 
 test "a queued run's id can be named by a cursor before it has emitted" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 64, .journal_capacity = 256 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -1911,6 +1939,7 @@ test "a descriptor that loses its revision is listed with an error, not as healt
 
 test "a queued admission does not become the session's current run" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 64, .journal_capacity = 256 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -1937,6 +1966,7 @@ test "a queued admission does not become the session's current run" {
 
 test "a subscriber that read nothing is told the run it lost, at that run's first sequence" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 2, .journal_capacity = 256 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -1956,6 +1986,7 @@ test "a subscriber that read nothing is told the run it lost, at that run's firs
 
 test "a subscriber inside its bound receives every envelope" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256, .journal_capacity = 256 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -1976,6 +2007,7 @@ test "a subscriber inside its bound receives every envelope" {
 
 test "a cursor older than the journal is a gap, never fake continuity" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 64, .journal_capacity = 3 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -2000,6 +2032,7 @@ test "a cursor older than the journal is a gap, never fake continuity" {
 
 test "a cursor within the journal replays the suffix, and an unrunnable one is refused" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 64, .journal_capacity = 256 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -2024,6 +2057,7 @@ test "a cursor within the journal replays the suffix, and an unrunnable one is r
 
 test "a session with no run to replay says so rather than parking" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{});
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -2036,6 +2070,7 @@ test "a session with no run to replay says so rather than parking" {
 
 test "a subscribing open registers before its message runs, so it misses nothing" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -2056,6 +2091,7 @@ test "a subscribing open registers before its message runs, so it misses nothing
 
 test "a held subscription is adopted by the request that follows" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -2079,6 +2115,7 @@ test "a held subscription is adopted by the request that follows" {
 
 test "a hold nothing adopts is released when its window closes" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .hold_ns = 50 * std.time.ns_per_ms });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -2106,6 +2143,7 @@ test "a hold nothing adopts is released when its window closes" {
 
 test "an expired hold with events queued leaves the hub with nothing outstanding" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256, .hold_ns = 50 * std.time.ns_per_ms });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -2132,6 +2170,7 @@ test "an expired hold with events queued leaves the hub with nothing outstanding
 
 test "a cursor-bearing subscription does not adopt a hold, and releases it" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .hold_ns = 50 * std.time.ns_per_ms, .journal_capacity = 256 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -2154,6 +2193,7 @@ test "a cursor-bearing subscription does not adopt a hold, and releases it" {
 
 test "closing a session ends every subscription under it, and releases the session" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 8 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -2175,6 +2215,7 @@ test "closing a session ends every subscription under it, and releases the sessi
 
 test "a released session's id is free again, and its memory is gone" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 8, .journal_capacity = 64 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -2211,6 +2252,7 @@ test "a released session's id is free again, and its memory is gone" {
 
 test "a released session's hold does not follow its id into the next session" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 8, .journal_capacity = 64, .hold_ns = 10 * std.time.ns_per_s });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -2241,6 +2283,7 @@ test "close hands its entry over under allocation failure" {
     try testing.checkAllAllocationFailures(testing.allocator, struct {
         fn attempt(gpa: std.mem.Allocator) !void {
             var adapter = memory.Adapter.init(gpa);
+            defer adapter.deinit();
             var hub = Hub.init(gpa, testClock, .{ .stream_queue = 4, .journal_capacity = 4 });
             defer hub.deinit();
             try hub.register("memory", adapter.adapter());
@@ -2258,6 +2301,7 @@ test "close hands its entry over under allocation failure" {
 
 test "a close refuses while a run is live, and a released session is unknown" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256, .journal_capacity = 256 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -2280,6 +2324,7 @@ test "a close refuses while a run is live, and a released session is unknown" {
 
 test "a subscription ends after it is handed the run's terminal envelope" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256, .journal_capacity = 256 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -2307,6 +2352,7 @@ test "a subscription ends after it is handed the run's terminal envelope" {
 
 test "a session-scoped request may not address another session" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{});
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -2321,6 +2367,7 @@ test "a session-scoped request may not address another session" {
 
 test "a resolution may not answer a gate opened on another session" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 64, .journal_capacity = 256 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -2362,6 +2409,7 @@ test "a resolution may not answer a gate opened on another session" {
 
 test "a cursor may name the overflow a hold reported, which the discard just freed" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 2, .journal_capacity = 256, .hold_ns = 50 * std.time.ns_per_ms });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -2388,6 +2436,7 @@ test "a cursor may name the overflow a hold reported, which the discard just fre
 
 test "a catalog is checked before it is served, and stamped with its revision" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{});
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -2411,6 +2460,7 @@ test "a catalog is checked before it is served, and stamped with its revision" {
 
 test "a subscribing open is gated on the revision the host asked for" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{});
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -2428,19 +2478,20 @@ test "a subscribing open is gated on the revision the host asked for" {
     const matched = try hub.open(arena, "memory", .{
         .session_id = "matched",
         .subscribe = true,
-        .capability_revision = "reference-memory-v12",
+        .capability_revision = "reference-memory-v13",
     });
-    try testing.expectEqualStrings("reference-memory-v12", matched.revision);
+    try testing.expectEqualStrings("reference-memory-v13", matched.revision);
 
     const unstated = try hub.open(arena, "memory", .{
         .session_id = "unstated",
         .subscribe = true,
     });
-    try testing.expectEqualStrings("reference-memory-v12", unstated.revision);
+    try testing.expectEqualStrings("reference-memory-v13", unstated.revision);
 }
 
 test "the revision gate fires for a subscribing or attaching open, and for no other" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{});
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -2568,6 +2619,7 @@ test "the shutdown sweep cancels a live run before it releases the session" {
 
 test "closeSessions settles every session" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{});
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -2594,6 +2646,7 @@ test "closeSessions settles every session" {
 
 test "the registry refuses a name twice and an unlabelled descriptor" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{});
     defer hub.deinit();
     try testing.expectError(error.AdapterDescriptorUnbound, hub.register("bare", bareAdapter()));
@@ -2603,6 +2656,7 @@ test "the registry refuses a name twice and an unlabelled descriptor" {
 
 test "the listing carries every registered adapter with its revision" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{});
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -2621,6 +2675,7 @@ test "register hands off its name under allocation failure" {
     try testing.checkAllAllocationFailures(testing.allocator, struct {
         fn attempt(gpa: std.mem.Allocator) !void {
             var adapter = memory.Adapter.init(gpa);
+            defer adapter.deinit();
             var hub = Hub.init(gpa, testClock, .{});
             defer hub.deinit();
             try hub.register("memory", adapter.adapter());
@@ -2632,6 +2687,7 @@ test "open hands off a session, its name and its run under allocation failure" {
     try testing.checkAllAllocationFailures(testing.allocator, struct {
         fn attempt(gpa: std.mem.Allocator) !void {
             var adapter = memory.Adapter.init(gpa);
+            defer adapter.deinit();
             var hub = Hub.init(gpa, testClock, .{});
             defer hub.deinit();
             try hub.register("memory", adapter.adapter());
@@ -2643,6 +2699,7 @@ test "open hands off a session, its name and its run under allocation failure" {
     try testing.checkAllAllocationFailures(testing.allocator, struct {
         fn attempt(gpa: std.mem.Allocator) !void {
             var adapter = memory.Adapter.init(gpa);
+            defer adapter.deinit();
             var hub = Hub.init(gpa, testClock, .{});
             defer hub.deinit();
             try hub.register("memory", adapter.adapter());
@@ -2657,6 +2714,7 @@ test "subscribe, replay and pump hand off their queues under allocation failure"
     try testing.checkAllAllocationFailures(testing.allocator, struct {
         fn attempt(gpa: std.mem.Allocator) !void {
             var adapter = memory.Adapter.init(gpa);
+            defer adapter.deinit();
             var hub = Hub.init(gpa, testClock, .{ .stream_queue = 4, .journal_capacity = 4 });
             defer hub.deinit();
             try hub.register("memory", adapter.adapter());
@@ -2673,6 +2731,7 @@ test "subscribe, replay and pump hand off their queues under allocation failure"
     try testing.checkAllAllocationFailures(testing.allocator, struct {
         fn attempt(gpa: std.mem.Allocator) !void {
             var adapter = memory.Adapter.init(gpa);
+            defer adapter.deinit();
             var hub = Hub.init(gpa, testClock, .{ .stream_queue = 4, .journal_capacity = 4 });
             defer hub.deinit();
             try hub.register("memory", adapter.adapter());
@@ -2692,6 +2751,7 @@ test "hold, listing and sessions hand off under allocation failure" {
     try testing.checkAllAllocationFailures(testing.allocator, struct {
         fn attempt(gpa: std.mem.Allocator) !void {
             var adapter = memory.Adapter.init(gpa);
+            defer adapter.deinit();
             var hub = Hub.init(gpa, testClock, .{});
             defer hub.deinit();
             try hub.register("memory", adapter.adapter());
@@ -3050,6 +3110,7 @@ test "a close that never stops refusing is given the attempts the draft names, a
 test "one wedged session is given a share of the window, and the session beside it is still closed" {
     var stubborn = Stubborn{ .session_id = "wedged", .settle_after = std.math.maxInt(usize) };
     var settles = memory.Adapter.init(testing.allocator);
+    defer settles.deinit();
     const window = 50 * std.time.ns_per_ms;
     var hub = Hub.init(testing.allocator, testClock, .{ .shutdown_ns = window });
     defer hub.deinit();
@@ -3095,6 +3156,7 @@ test "the sweep waits no longer than the window it was given" {
 test "a session whose own state call overruns its share leaves the rest unattempted, and the sweep says so" {
     var overrunning = Stubborn{ .session_id = "slow", .settle_after = std.math.maxInt(usize), .state_ns = 60 * std.time.ns_per_ms };
     var settles = memory.Adapter.init(testing.allocator);
+    defer settles.deinit();
     const window = 50 * std.time.ns_per_ms;
     var hub = Hub.init(testing.allocator, testClock, .{ .shutdown_ns = window });
     defer hub.deinit();
@@ -3295,6 +3357,7 @@ test "a session that reports no handle keeps the timed pump" {
 
 test "the subscriber count has its own bound, not the mailbox depth" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 2, .max_subscriptions = 3 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -3310,6 +3373,7 @@ test "the subscriber count has its own bound, not the mailbox depth" {
 
 test "a subscription that has read its terminal stops occupying a ceiling slot" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256, .max_subscriptions = 1, .journal_capacity = 256 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -3337,6 +3401,7 @@ test "a subscription that has read its terminal stops occupying a ceiling slot" 
 
 test "an ended subscription keeps its handle until close, and close reclaims it" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256, .journal_capacity = 256 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -3363,6 +3428,7 @@ test "an ended subscription keeps its handle until close, and close reclaims it"
 
 test "a replay that already lost events never takes a ceiling slot" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 2, .max_subscriptions = 1, .journal_capacity = 256 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -3386,6 +3452,7 @@ test "a replay that already lost events never takes a ceiling slot" {
 
 test "a hub with no subscriber bound takes any number of them" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 2 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -3398,6 +3465,7 @@ test "a hub with no subscriber bound takes any number of them" {
 
 test "an overflow cursor survives the mailbox being drained across a run boundary" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 4, .journal_capacity = 256 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
@@ -3476,4 +3544,22 @@ fn bareOpen(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.OpenReq
     _ = request;
     _ = refusal;
     return error.Unavailable;
+}
+
+test "a closed session reopens through the hub once, and a reopen of a live or unknown session is refused" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{});
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    _ = try hub.open(arena, "memory", .{ .session_id = "kept" });
+    try hub.close(arena, "kept");
+    const reopened = try hub.open(arena, "memory", .{ .session_id = "kept", .reopen = true });
+    try testing.expect(reopened.state.recovered);
+    try testing.expectError(error.SessionExists, hub.open(arena, "memory", .{ .session_id = "kept", .reopen = true }));
+    try testing.expectError(error.UnknownSession, hub.open(arena, "memory", .{ .session_id = "ghost", .reopen = true }));
 }
