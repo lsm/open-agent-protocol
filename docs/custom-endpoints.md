@@ -57,6 +57,12 @@ added by editing the file.
 the models. It refuses an id the file does not declare (`ProviderNotDeclared`), and
 waits while a turn is running.
 
+`/provider list` prints what the file declares: one line per custom provider with its
+api, base URL, where its key comes from (`no credential`, `key from <NAME>`, or a key
+saved by `/login`), and how many models it declares, followed by any `overrides` and
+which members each one sets. It reads the file without writing it, and with nothing
+declared it says so and names `/provider add` rather than printing an empty list.
+
 ## Fields
 
 | Field | Required | Meaning |

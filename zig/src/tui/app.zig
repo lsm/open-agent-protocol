@@ -654,6 +654,33 @@ test "collapseHome survives an allocation failure at every step" {
     try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, collapseHomeProbe, .{});
 }
 
+test "a transcript verbosity change reprints from the first entry, and a status-only change does not" {
+    var env = try TempHome.init("home-verbosity-redraw");
+    defer env.deinit();
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.inline_history_flushed = 3;
+    app.inline_flushed_rows = 2;
+
+    try app.submit("/verbose status verbose");
+    try std.testing.expect(!app.pending_clear_screen);
+    try std.testing.expectEqual(@as(usize, 3), app.inline_history_flushed);
+
+    try app.submit("/verbose quiet");
+    if (App.terminalKeepsScrollback()) {
+        try std.testing.expect(!app.pending_clear_screen);
+        try std.testing.expectEqualStrings("earlier rows keep their old verbosity; run /redraw to reprint them", app.state.transcript.items[app.state.transcript.items.len - 1].text.items);
+    } else {
+        try std.testing.expect(app.pending_clear_screen);
+        try std.testing.expectEqual(@as(usize, 0), app.inline_history_flushed);
+        try std.testing.expectEqual(@as(usize, 0), app.inline_flushed_rows);
+    }
+
+    app.pending_clear_screen = false;
+    try app.cycleVerbosity();
+    try std.testing.expectEqual(tui_state.Verbosity.all(.normal), app.state.verbosity);
+}
+
 test "Context requestClearScreen discards history queued before the request" {
     var tctx: TestContext = undefined;
     tctx.setup();
@@ -2105,6 +2132,76 @@ pub const App = struct {
         try self.state.appendTranscript(.system, next);
     }
 
+    fn listProviders(self: *App) !void {
+        var config = custom_providers.loadConfigStrict(self.allocator, custom_providers.max_config_bytes) catch |err| {
+            const msg = try std.fmt.allocPrint(self.allocator, "could not read the provider config: {s}", .{@errorName(err)});
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.@"error", msg);
+            return;
+        };
+        defer config.deinit(self.allocator);
+        const owned_path = custom_providers.configPath(self.allocator) catch null;
+        defer if (owned_path) |path| self.allocator.free(path);
+        const path = owned_path orelse custom_providers.config_file_name;
+        if (config.providers.len == 0 and config.overrides.len == 0) {
+            const msg = try std.fmt.allocPrint(self.allocator, "no providers are declared in {s}; /provider add <id> <base_url> declares one", .{path});
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.system, msg);
+            return;
+        }
+        var out: std.Io.Writer.Allocating = .init(self.allocator);
+        defer out.deinit();
+        const writer = &out.writer;
+        if (config.providers.len > 0) {
+            try writer.print("providers declared in {s}:", .{path});
+        }
+        for (config.providers) |provider| {
+            try writer.print("\n  {s} ({s}), {s}, {s}, ", .{ provider.id, provider.name, provider.api, provider.base_url });
+            if (provider.auth_none) {
+                try writer.writeAll("no credential");
+            } else if (provider.env_key) |key| {
+                try writer.print("key from {s}", .{key});
+            } else {
+                try writer.writeAll("saved key");
+            }
+            if (provider.models.len == 0) {
+                try writer.writeAll(", every discovered model");
+            } else {
+                try writer.print(", {d} declared models", .{provider.models.len});
+            }
+        }
+        if (config.overrides.len > 0) {
+            if (config.providers.len > 0) {
+                try writer.writeAll("\noverrides on catalogued rows:");
+            } else {
+                try writer.print("overrides on catalogued rows in {s}:", .{path});
+            }
+            for (config.overrides) |override| {
+                try writer.print("\n  {s}:", .{override.id});
+                var first = true;
+                if (override.base_url != null) {
+                    try writer.writeAll(" base_url");
+                    first = false;
+                }
+                if (override.carries_version != null) {
+                    if (!first) try writer.writeAll(",");
+                    try writer.writeAll(" carries_version");
+                    first = false;
+                }
+                if (override.headers.len > 0) {
+                    if (!first) try writer.writeAll(",");
+                    try writer.writeAll(" headers");
+                    first = false;
+                }
+                if (override.models.len > 0) {
+                    if (!first) try writer.writeAll(",");
+                    try writer.print(" {d} models", .{override.models.len});
+                }
+            }
+        }
+        try self.state.appendTranscript(.system, out.written());
+    }
+
     fn removeProvider(self: *App, arg: []const u8) !void {
         var words = std.mem.tokenizeAny(u8, arg, " \t");
         _ = words.next();
@@ -3188,6 +3285,7 @@ pub const App = struct {
             return;
         };
 
+        const verbosity_before = self.state.verbosity;
         var result = tui_commands.dispatch(.{
             .allocator = self.allocator,
             .state = &self.state,
@@ -3233,7 +3331,9 @@ pub const App = struct {
             .refresh_models => try self.refreshModelsInBackground(),
             .logout_provider => try self.logoutProvider(command.arg orelse ""),
             .add_provider => try self.addProvider(command.arg orelse ""),
+            .redraw => self.requestRedraw(),
             .remove_provider => try self.removeProvider(command.arg orelse ""),
+            .list_providers => try self.listProviders(),
             .none => {},
         }
         if (command.kind == .model and command.arg != null and result.action != .refresh_models) self.persistCurrentModel();
@@ -3244,7 +3344,10 @@ pub const App = struct {
         if (command.kind == .context and !result.is_error and command.arg != null) self.persistContextWindow();
         if (command.kind == .output and !result.is_error and command.arg != null) self.persistOutput();
         if (command.kind == .autocompact and !result.is_error and command.arg != null) self.persistAutoCompact();
-        if (command.kind == .verbose and !result.is_error and command.arg != null) self.persistVerbosity();
+        if (command.kind == .verbose and !result.is_error and command.arg != null) {
+            self.persistVerbosity();
+            try self.redrawAfterVerbosity(verbosity_before);
+        }
         if (command.kind == .think and !result.is_error and command.arg != null) self.persistThinkingLevel();
         if (result.output.len > 0) {
             try self.state.appendTranscript(if (result.is_error) .@"error" else .system, result.output);
@@ -3367,6 +3470,40 @@ pub const App = struct {
         if (std.meta.eql(cfg.mode.autocompact, self.state.autocompact)) return;
         cfg.mode.autocompact = self.state.autocompact;
         store.save(cfg) catch |err| self.recordError(@errorName(err)) catch {};
+    }
+
+    fn requestRedraw(self: *App) void {
+        self.inline_history_flushed = 0;
+        self.inline_flushed_rows = 0;
+        self.pending_clear_screen = true;
+    }
+
+    fn redrawAfterVerbosity(self: *App, before: tui_state.Verbosity) !void {
+        if (before.transcriptEquals(self.state.verbosity)) return;
+        if (!self.state.status.streaming and !self.runtimeBusy() and !terminalKeepsScrollback()) {
+            self.requestRedraw();
+            return;
+        }
+        try self.state.appendTranscript(.system, "earlier rows keep their old verbosity; run /redraw to reprint them");
+    }
+
+    fn terminalKeepsScrollback() bool {
+        for ([_][]const u8{ "TMUX", "STY" }) |name| {
+            const value = compat.getEnvVarOwned(std.heap.page_allocator, name) catch continue;
+            defer std.heap.page_allocator.free(value);
+            if (value.len > 0) return true;
+        }
+        return false;
+    }
+
+    pub fn cycleVerbosity(self: *App) !void {
+        const before = self.state.verbosity;
+        self.state.verbosity = before.cycled();
+        self.persistVerbosity();
+        const msg = try std.fmt.allocPrint(self.allocator, "verbosity: {t} (ctrl+o cycles)", .{self.state.verbosity.thinking});
+        defer self.allocator.free(msg);
+        try self.state.appendTranscript(.system, msg);
+        try self.redrawAfterVerbosity(before);
     }
 
     fn persistVerbosity(self: *App) void {
@@ -3735,6 +3872,14 @@ pub const TuiModel = struct {
                         'c' => return self.handleInterrupt(app, ctx),
                         'd' => {
                             if (app.state.composer.buffer.items.len == 0 and app.state.mode == .normal and !app.state.status.streaming) return self.quitCmd(app, ctx);
+                            return .none;
+                        },
+                        'o' => {
+                            app.cycleVerbosity() catch |err| app.recordError(@errorName(err)) catch {};
+                            if (app.pending_clear_screen) {
+                                app.pending_clear_screen = false;
+                                if (self.inlineMode(ctx)) ctx.requestClearScreen();
+                            }
                             return .none;
                         },
                         'y' => {
@@ -5213,6 +5358,61 @@ test "App /provider del deletes a declared provider and refuses one that is not 
 
     try app.submit("/provider del");
     try std.testing.expectEqualStrings(tui_commands.provider_usage, app.state.transcript.items[app.state.transcript.items.len - 1].text.items);
+}
+
+test "App /provider list names what is declared and says so when nothing is" {
+    var env = try TempHome.init("home-provider-list");
+    defer env.deinit();
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    try app.submit("/provider list");
+    const empty = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expectEqual(tui_state.TranscriptKind.system, empty.kind);
+    try std.testing.expect(std.mem.startsWith(u8, empty.text.items, "no providers are declared in "));
+    try std.testing.expect(std.mem.endsWith(u8, empty.text.items, "/provider add <id> <base_url> declares one"));
+
+    try app.submit("/provider add gateway https://gw.test/v1 --no-auth");
+    try app.submit("/provider add other https://other.test --env OTHER_KEY");
+    try app.submit("/provider list");
+    const listed = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expectEqual(tui_state.TranscriptKind.system, listed.kind);
+    try std.testing.expect(std.mem.startsWith(u8, listed.text.items, "providers declared in "));
+    try std.testing.expect(std.mem.indexOf(u8, listed.text.items, "gateway (gateway), openai-completions, https://gw.test, no credential, every discovered model") != null);
+    try std.testing.expect(std.mem.indexOf(u8, listed.text.items, "other (other), openai-completions, https://other.test, key from OTHER_KEY, every discovered model") != null);
+
+    try app.submit("/provider list extra");
+    try std.testing.expectEqualStrings(tui_commands.provider_usage, app.state.transcript.items[app.state.transcript.items.len - 1].text.items);
+
+    const config_path = try std.fs.path.join(std.testing.allocator, &.{ env.home, ".oapx", "providers.json" });
+    defer std.testing.allocator.free(config_path);
+    try compat.fs.writeFile(compat.fs.getCwd(), config_path, "{\"overrides\":[{\"id\":\"openai\",\"base_url\":\"https://proxy.test\"}]}");
+
+    try app.submit("/provider list");
+    const only_overrides = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expect(std.mem.startsWith(u8, only_overrides.text.items, "overrides on catalogued rows in "));
+    try std.testing.expect(std.mem.indexOf(u8, only_overrides.text.items, "  openai: base_url") != null);
+}
+
+test "App /provider list reports a config it cannot read instead of calling it empty" {
+    var env = try TempHome.init("home-provider-list-unreadable");
+    defer env.deinit();
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+
+    const config_path = try std.fs.path.join(std.testing.allocator, &.{ env.home, ".oapx", "providers.json" });
+    defer std.testing.allocator.free(config_path);
+    try app.submit("/provider add gateway https://gw.test/v1");
+    const oversized = try std.testing.allocator.alloc(u8, custom_providers.max_config_bytes + 1);
+    defer std.testing.allocator.free(oversized);
+    @memset(oversized, ' ');
+    try compat.fs.writeFile(compat.fs.getCwd(), config_path, oversized);
+
+    try app.submit("/provider list");
+    const said = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expectEqual(tui_state.TranscriptKind.@"error", said.kind);
+    try std.testing.expect(std.mem.startsWith(u8, said.text.items, "could not read the provider config: "));
 }
 
 test "App only offers an api-key login for a declared custom provider" {

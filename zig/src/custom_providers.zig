@@ -180,17 +180,38 @@ pub fn load(allocator: std.mem.Allocator, max_bytes: usize) ![]CustomProvider {
 }
 
 pub fn loadConfig(allocator: std.mem.Allocator, max_bytes: usize) !Config {
+    return loadConfigMode(allocator, max_bytes, .treat_unreadable_as_empty);
+}
+
+pub fn loadConfigStrict(allocator: std.mem.Allocator, max_bytes: usize) !Config {
+    return loadConfigMode(allocator, max_bytes, .report_unreadable);
+}
+
+const UnreadableConfig = enum { treat_unreadable_as_empty, report_unreadable };
+
+fn loadConfigMode(allocator: std.mem.Allocator, max_bytes: usize, unreadable: UnreadableConfig) !Config {
     const path = configPath(allocator) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
-        else => return .{ .providers = try allocator.alloc(CustomProvider, 0), .overrides = try allocator.alloc(Override, 0) },
+        else => return emptyConfig(allocator),
     };
     defer allocator.free(path);
     const data = compat_mod.fs.readFileAlloc(allocator, compat_mod.fs.getCwd(), path, max_bytes) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
-        else => return .{ .providers = try allocator.alloc(CustomProvider, 0), .overrides = try allocator.alloc(Override, 0) },
+        error.FileNotFound => return emptyConfig(allocator),
+        else => switch (unreadable) {
+            .treat_unreadable_as_empty => return emptyConfig(allocator),
+            .report_unreadable => return err,
+        },
     };
     defer allocator.free(data);
     return parseConfig(allocator, data);
+}
+
+fn emptyConfig(allocator: std.mem.Allocator) !Config {
+    return .{
+        .providers = try allocator.alloc(CustomProvider, 0),
+        .overrides = try allocator.alloc(Override, 0),
+    };
 }
 
 pub const NewProvider = struct {
