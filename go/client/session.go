@@ -18,9 +18,7 @@ type Session struct {
 
 	steerMu     sync.Mutex
 	outstanding map[protocol.EnvelopeID]bool
-	heldSteers  map[protocol.EnvelopeID][]protocol.Envelope
-	released    []protocol.Envelope
-	wake        chan struct{}
+	heldSteers  map[protocol.EnvelopeID]map[*EventStream][]protocol.Envelope
 }
 
 func (s *Session) beginSubmit(id protocol.EnvelopeID) {
@@ -28,7 +26,7 @@ func (s *Session) beginSubmit(id protocol.EnvelopeID) {
 	defer s.steerMu.Unlock()
 	if s.outstanding == nil {
 		s.outstanding = make(map[protocol.EnvelopeID]bool)
-		s.heldSteers = make(map[protocol.EnvelopeID][]protocol.Envelope)
+		s.heldSteers = make(map[protocol.EnvelopeID]map[*EventStream][]protocol.Envelope)
 	}
 	s.outstanding[id] = true
 }
@@ -40,17 +38,16 @@ func (s *Session) endSubmit(id protocol.EnvelopeID) {
 		return
 	}
 	delete(s.outstanding, id)
-	if held := s.heldSteers[id]; len(held) > 0 {
-		s.released = append(s.released, held...)
-		delete(s.heldSteers, id)
-		if s.wake != nil {
-			close(s.wake)
-			s.wake = nil
+	for stream, held := range s.heldSteers[id] {
+		if len(held) == 0 {
+			continue
 		}
+		stream.releaseSteer(held)
 	}
+	delete(s.heldSteers, id)
 }
 
-func (s *Session) holdSteer(envelope protocol.Envelope) bool {
+func (s *Session) holdSteer(stream *EventStream, envelope protocol.Envelope) bool {
 	request := steerSettlementRequest(envelope)
 	if request == "" {
 		return false
@@ -60,22 +57,36 @@ func (s *Session) holdSteer(envelope protocol.Envelope) bool {
 	if !s.outstanding[request] {
 		return false
 	}
-	s.heldSteers[request] = append(s.heldSteers[request], envelope)
+	held := s.heldSteers[request]
+	if held == nil {
+		held = make(map[*EventStream][]protocol.Envelope)
+		s.heldSteers[request] = held
+	}
+	held[stream] = append(held[stream], envelope)
 	return true
 }
 
-func (s *Session) takeSteer() (protocol.Envelope, chan struct{}, bool) {
+func (es *EventStream) releaseSteer(held []protocol.Envelope) {
+	es.released = append(es.released, held...)
+	if es.wake != nil {
+		close(es.wake)
+		es.wake = nil
+	}
+}
+
+func (es *EventStream) takeSteer() (protocol.Envelope, chan struct{}, bool) {
+	s := es.session
 	s.steerMu.Lock()
 	defer s.steerMu.Unlock()
-	if s.wake == nil {
-		s.wake = make(chan struct{})
+	if es.wake == nil {
+		es.wake = make(chan struct{})
 	}
-	if len(s.released) == 0 {
-		return protocol.Envelope{}, s.wake, false
+	if len(es.released) == 0 {
+		return protocol.Envelope{}, es.wake, false
 	}
-	envelope := s.released[0]
-	s.released = s.released[1:]
-	return envelope, s.wake, true
+	envelope := es.released[0]
+	es.released = es.released[1:]
+	return envelope, es.wake, true
 }
 
 func steerSettlementRequest(envelope protocol.Envelope) protocol.EnvelopeID {

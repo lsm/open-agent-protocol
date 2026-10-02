@@ -45,10 +45,7 @@ export type OpenOptions = { sessionId?: string; participant?: string };
 
 export class OapSession {
   private outstanding = new Set<string>();
-  private wakeFire: (() => void) | null = null;
-  private wakePromise: Promise<void> | null = null;
-  private held = new Map<string, Envelope[]>();
-  private released: Envelope[] = [];
+  private held = new Map<string, Map<EventStream, Envelope[]>>();
 
   constructor(
     private readonly client: OapClient,
@@ -66,37 +63,23 @@ export class OapSession {
     const carried = this.held.get(id);
     if (!carried) return;
     this.held.delete(id);
-    this.released.push(...carried);
-    this.fireWake();
-  }
-
-  releaseWake(): Promise<void> {
-    if (!this.wakeFire) {
-      this.wakePromise = new Promise<void>((resolve) => {
-        this.wakeFire = resolve;
-      });
+    for (const [stream, envelopes] of carried) {
+      stream.releaseSteer(envelopes);
     }
-    return this.wakePromise as Promise<void>;
   }
 
-  private fireWake(): void {
-    const fire = this.wakeFire;
-    this.wakeFire = null;
-    this.wakePromise = null;
-    if (fire) fire();
-  }
-
-  holdSteer(envelope: Envelope): boolean {
+  holdSteer(stream: EventStream, envelope: Envelope): boolean {
     const request = steerSettlementRequest(envelope);
     if (request === '' || !this.outstanding.has(request)) return false;
-    const carried = this.held.get(request);
-    if (carried) carried.push(envelope);
-    else this.held.set(request, [envelope]);
+    let carried = this.held.get(request);
+    if (!carried) {
+      carried = new Map();
+      this.held.set(request, carried);
+    }
+    const mine = carried.get(stream);
+    if (mine) mine.push(envelope);
+    else carried.set(stream, [envelope]);
     return true;
-  }
-
-  takeSteer(): Envelope | null {
-    return this.released.shift() ?? null;
   }
 
   get id(): string {

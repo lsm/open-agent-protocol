@@ -16,6 +16,7 @@ type steerStubSession struct {
 	failures []error
 	refusal  *base.InvalidSteerTargetError
 	steerRun protocol.RunID
+	boundary uint64
 	steered  chan struct{}
 	hold     chan struct{}
 }
@@ -46,6 +47,9 @@ func (s *steerStubSession) Submit(_ context.Context, submit base.SubmitRequest) 
 			return protocol.MessageSubmitResponse{}, nil, s.refusal
 		}
 		boundary := uint64(1)
+		if s.boundary != 0 {
+			boundary = s.boundary
+		}
 		return protocol.MessageSubmitResponse{
 			SessionID: "stub", Accepted: true, SubmissionID: "sub-steer",
 			RequestedDelivery: protocol.DeliverySteer, EffectiveDelivery: protocol.EffectiveDeliverySteer,
@@ -457,7 +461,7 @@ func TestWhatADrainWithholdsAfterItsGateLiftsStillReachesSubscribers(t *testing.
 	entry.mu.Unlock()
 	entry.liftSteerGate(gate)
 
-	entry.drainInto(gate, steerStubDelta(1))
+	entry.drainInto(steerStubDelta(1))
 	if envelope := nextEnvelope(t, sub); envelope.Type != protocol.TypeContentDelta {
 		t.Fatalf("delivered %s, want the envelope the drain withheld after the lift", envelope.Type)
 	}
@@ -568,4 +572,103 @@ func TestACancelledSteerSubmitDoesNotWaitForTheOtherGate(t *testing.T) {
 		t.Fatal("a cancelled steer waited on the gate condition")
 	}
 	entry.Published("req-first")
+}
+
+func TestADrainMovesTheWholeBacklogIntoTheGate(t *testing.T) {
+	stub := &steerStubSession{stream: make(chan base.Result, 4)}
+	entry := newSession("stub", "stub", stub, nil)
+	sub := subscribeToRun(t, entry)
+
+	gate := &steerGate{run: "run-1", request: "req-steer", boundary: 2, drainedCh: make(chan struct{})}
+	entry.mu.Lock()
+	entry.gate = gate
+	entry.mu.Unlock()
+
+	backlog := make(chan base.Result, 4)
+	backlog <- base.Result{Envelope: steerStubDelta(1)}
+	backlog <- base.Result{Envelope: steerStubDelta(2)}
+	backlog <- base.Result{Envelope: steerStubDelta(3)}
+	close(backlog)
+
+	if _, ready, ok := entry.drainGate(gate, backlog); ok || ready {
+		t.Fatal("a drain of a closed backlog reported a result the reader still owes")
+	}
+	entry.mu.Lock()
+	withheld := len(entry.gate.withheld)
+	entry.mu.Unlock()
+	if withheld != 3 {
+		t.Fatalf("the drain withheld %d of the 3 queued envelopes, so the one behind the first waited for the release", withheld)
+	}
+
+	entry.releaseToBoundary(gate, 2)
+	for want := uint64(1); want <= 2; want++ {
+		envelope := nextEnvelope(t, sub)
+		if envelope.Type != protocol.TypeContentDelta || envelope.Sequence == nil || *envelope.Sequence != want {
+			t.Fatalf("the boundary released %s at %v, want delta %d", envelope.Type, envelope.Sequence, want)
+		}
+	}
+	expectNoEnvelope(t, sub, "a delta behind the boundary")
+
+	entry.Published("req-steer")
+	envelope := nextEnvelope(t, sub)
+	if envelope.Sequence == nil || *envelope.Sequence != 3 {
+		t.Fatalf("the release published %s at %v, want delta 3", envelope.Type, envelope.Sequence)
+	}
+}
+
+func TestOnlyTheGatesRunReaderTakesItsDrain(t *testing.T) {
+	stub := &steerStubSession{stream: make(chan base.Result, 4)}
+	entry := newSession("stub", "stub", stub, nil)
+
+	gate := &steerGate{run: "run-1", request: "req-steer", drainedCh: make(chan struct{})}
+	entry.mu.Lock()
+	entry.gate = gate
+	entry.mu.Unlock()
+	gate.markDrainRequested()
+
+	if taken := entry.drainingGate("run-2"); taken != nil {
+		t.Fatal("a reader of another run took the drain")
+	}
+	if taken := entry.drainingGate("run-1"); taken != gate {
+		t.Fatal("the reader of the gate's run did not take the drain")
+	}
+	if signal := entry.drainSignal("run-2"); signal == closedSignal {
+		t.Fatal("a reader of another run was handed a closed drain signal")
+	}
+	entry.Published("req-steer")
+}
+
+func TestAwaitingADrainEndsWhenTheGateIsDisowned(t *testing.T) {
+	disown := map[string]func(entry *Session, gate *steerGate){
+		"a concurrent close": func(entry *Session, _ *steerGate) { entry.markClosed() },
+		"the deadline":       func(entry *Session, gate *steerGate) { entry.liftSteerGate(gate) },
+	}
+	for name, drop := range disown {
+		t.Run(name, func(t *testing.T) {
+			stub := &steerStubSession{stream: make(chan base.Result, 4)}
+			entry := newSession("stub", "stub", stub, nil)
+			startStubRun(t, entry)
+			subscribeToRun(t, entry)
+
+			gate := &steerGate{run: "run-1", request: "req-steer", drainedCh: make(chan struct{})}
+			entry.mu.Lock()
+			entry.gate = gate
+			entry.mu.Unlock()
+			gate.markDrainRequested()
+
+			waited := make(chan struct{})
+			go func() {
+				entry.awaitDrain(gate, 1)
+				close(waited)
+			}()
+			time.Sleep(50 * time.Millisecond)
+			drop(entry, gate)
+
+			select {
+			case <-waited:
+			case <-time.After(2 * time.Second):
+				t.Fatal("the submit waited on a drain no reader could serve once the gate was disowned")
+			}
+		})
+	}
 }

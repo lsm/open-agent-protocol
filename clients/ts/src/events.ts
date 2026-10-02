@@ -75,6 +75,9 @@ export class EventStream implements AsyncIterable<Envelope> {
   private buffered: SSEFrame[] = [];
   private inflight: Promise<Envelope> | null = null;
   private iterator: AsyncIterator<Envelope> | null = null;
+  private released: Envelope[] = [];
+  private wakeFire: (() => void) | null = null;
+  private wakePromise: Promise<void> | null = null;
 
   constructor(
     session: OapSession,
@@ -103,8 +106,8 @@ export class EventStream implements AsyncIterable<Envelope> {
     try {
       await this.ready;
       for (;;) {
-        const wake = this.session.releaseWake();
-        const released = this.session.takeSteer();
+        const wake = this.releaseWake();
+        const released = this.takeSteer();
         if (released) {
           yield released;
           continue;
@@ -146,7 +149,7 @@ export class EventStream implements AsyncIterable<Envelope> {
           }
           continue;
         }
-        if (this.session.holdSteer(envelope)) continue;
+        if (this.holdSteer(envelope)) continue;
         yield envelope;
       }
     } finally {
@@ -161,6 +164,31 @@ export class EventStream implements AsyncIterable<Envelope> {
       started.catch(() => {});
     }
     return this.inflight;
+  }
+
+  private holdSteer(envelope: Envelope): boolean {
+    return this.session.holdSteer(this, envelope);
+  }
+
+  releaseSteer(envelopes: Envelope[]): void {
+    this.released.push(...envelopes);
+    const fire = this.wakeFire;
+    this.wakeFire = null;
+    this.wakePromise = null;
+    if (fire) fire();
+  }
+
+  private takeSteer(): Envelope | null {
+    return this.released.shift() ?? null;
+  }
+
+  private releaseWake(): Promise<void> {
+    if (!this.wakeFire) {
+      this.wakePromise = new Promise<void>((resolve) => {
+        this.wakeFire = resolve;
+      });
+    }
+    return this.wakePromise as Promise<void>;
   }
 
   private async connect(): Promise<void> {

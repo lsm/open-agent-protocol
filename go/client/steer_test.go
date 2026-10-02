@@ -170,12 +170,13 @@ func TestClientDeliversASettlementForAnUnknownRequestInOrder(t *testing.T) {
 
 func TestAReaderTakesTheWakeChannelWithTheEmptyRelease(t *testing.T) {
 	session := &Session{}
+	stream := &EventStream{session: session}
 	session.beginSubmit("req-steer")
 	settlement := steerSettlement()
-	if !session.holdSteer(settlement) {
+	if !session.holdSteer(stream, settlement) {
 		t.Fatal("the settlement was not held for its outstanding submit")
 	}
-	_, wake, ok := session.takeSteer()
+	_, wake, ok := stream.takeSteer()
 	if ok {
 		t.Fatal("a settlement was released before its submit returned")
 	}
@@ -185,9 +186,30 @@ func TestAReaderTakesTheWakeChannelWithTheEmptyRelease(t *testing.T) {
 	case <-time.After(testTimeout):
 		t.Fatal("the release never closed the channel the reader took with the empty check")
 	}
-	released, _, ok := session.takeSteer()
+	released, _, ok := stream.takeSteer()
 	if !ok || released.ID != settlement.ID {
 		t.Fatalf("takeSteer = %q, %v, want the released settlement", released.ID, ok)
+	}
+}
+
+func TestAReleaseReachesOnlyTheStreamThatHeldIt(t *testing.T) {
+	session := &Session{}
+	holder := &EventStream{session: session}
+	other := &EventStream{session: session}
+	session.beginSubmit("req-steer")
+
+	settlement := steerSettlement()
+	if !session.holdSteer(holder, settlement) {
+		t.Fatal("the settlement was not held for its outstanding submit")
+	}
+	session.endSubmit("req-steer")
+
+	if stolen, _, ok := other.takeSteer(); ok {
+		t.Fatalf("a stream that held nothing took %q", stolen.ID)
+	}
+	released, _, ok := holder.takeSteer()
+	if !ok || released.ID != settlement.ID {
+		t.Fatalf("takeSteer = %q, %v, want the settlement its stream held", released.ID, ok)
 	}
 }
 
@@ -218,7 +240,7 @@ func TestClientWakesAReaderWaitingOnAnIdleStreamForARelease(t *testing.T) {
 	settlement := steerSettlement()
 	session.beginSubmit("req-steer")
 	time.Sleep(100 * time.Millisecond)
-	if !session.holdSteer(settlement) {
+	if !session.holdSteer(stream, settlement) {
 		t.Fatal("the settlement was not held for its outstanding submit")
 	}
 	session.endSubmit("req-steer")

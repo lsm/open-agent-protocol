@@ -73,6 +73,9 @@ type EventStream struct {
 	err      error
 
 	inflight chan polled
+
+	released []protocol.Envelope
+	wake     chan struct{}
 }
 
 type polled struct {
@@ -97,7 +100,7 @@ func (es *EventStream) Next() (protocol.Envelope, error) {
 		return protocol.Envelope{}, io.EOF
 	}
 	for {
-		released, wake, ok := es.session.takeSteer()
+		released, wake, ok := es.takeSteer()
 		if ok {
 			return released, nil
 		}
@@ -119,7 +122,7 @@ func (es *EventStream) Next() (protocol.Envelope, error) {
 			continue
 		}
 		if err == nil {
-			if es.session.holdSteer(envelope) {
+			if es.session.holdSteer(es, envelope) {
 				continue
 			}
 			return envelope, nil
