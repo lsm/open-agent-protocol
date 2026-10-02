@@ -29,6 +29,7 @@ var memoryParityScenarios = map[string][]string{
 		`{"protocol": "open-agent-protocol", "version": "0.1", "profile": "open-agent-protocol.agent-control-core", "type": "protocol.initialize.request", "id": "i1", "payload": {"protocol_versions": ["0.1"], "profiles": ["open-agent-protocol.agent-control-core"], "participant": {"id": "user"}}}`,
 		`{"protocol": "open-agent-protocol", "version": "0.1", "profile": "open-agent-protocol.agent-control-core", "type": "session.open.request", "id": "o1", "payload": {"session_id": "ghost", "reopen": true}}`,
 		`{"protocol": "open-agent-protocol", "version": "0.1", "profile": "open-agent-protocol.agent-control-core", "type": "session.open.request", "id": "o2", "payload": {"session_id": "fresh"}}`,
+		`{"protocol": "open-agent-protocol", "version": "0.1", "profile": "open-agent-protocol.agent-control-core", "type": "session.open.request", "id": "o3", "payload": {"session_id": "fresh", "reopen": true}}`,
 	},
 	"steer refusals": {
 		`{"protocol": "open-agent-protocol", "version": "0.1", "profile": "open-agent-protocol.agent-control-core", "type": "protocol.initialize.request", "id": "i1", "payload": {"protocol_versions": ["0.1"], "profiles": ["open-agent-protocol.agent-control-core"], "participant": {"id": "user"}}}`,
