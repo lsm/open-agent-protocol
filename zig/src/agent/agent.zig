@@ -1295,7 +1295,12 @@ pub const Agent = struct {
                 },
                 .compaction_end => |e| {
                     if (e.outcome == .completed) {
-                        try self.adoptCompactedHistory(e.text.slice(), self._state.model orelse model);
+                        const current = current: {
+                            self._mutex.lockUncancelable(defaultIo());
+                            defer self._mutex.unlock(defaultIo());
+                            break :current self._state.model orelse model;
+                        };
+                        try self.adoptCompactedHistory(e.text.slice(), current);
                         compacted_in_run = true;
                     }
                 },
