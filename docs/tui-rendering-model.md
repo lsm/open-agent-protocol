@@ -416,8 +416,8 @@ code paths; add a transcript row instead.
 `Enter` send (steer while streaming), `Tab` while streaming queue the draft as a
 follow-up that is sent when the turn stops (it waits above the composer until then,
 and the inline window reserves its rows so no transcript row hides behind it; a
-draft starting with `/` is never queued, except the commands listed under
-"Commands during a run"),
+draft starting with `/` is never queued, except `/compact`, which then compacts once
+the run ends, and the commands listed under "Commands during a run"),
 `Shift+Enter` newline, `Esc` clear draft →
 abort turn → close modal (aborting holds the steers and follow-ups not yet consumed and
 sends them, joined, as a new turn once the aborted run ends; a second `Esc` before then
@@ -648,6 +648,13 @@ starts with the summary before it, so the chain reaches the first message. When 
 history does not fit in one request, the oldest turns are left out and the summary
 says so. A provider error that reports an overflow retries with a quarter less
 history, up to three attempts.
+
+During a turn, `/compact [focus]` with `Enter` steers: the run compacts before its
+next turn, the way automatic compaction does, and carries on from the summary; if the
+run ends with no further turn, it compacts right after. With `Tab` it is queued: the
+run finishes, queued follow-ups included, and then it compacts. Only one request is
+held, whichever key made it: a later `/compact` replaces the earlier one, and
+resuming another session drops it.
 
 While compacting, the status bar reads `compacting` and `Enter` and `Tab` queue the
 draft. `Esc` cancels the compaction and leaves the history unchanged, but keeps the

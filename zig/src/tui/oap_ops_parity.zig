@@ -34,6 +34,8 @@ const OPS = [_]Op{
     .{ .name = "current_model", .feature = "session.model.switch", .expected = .native },
     .{ .name = "decide_tool_approval", .feature = "action.permissions", .expected = .unadvertised, .blocked_by = "action.permissions is not implemented" },
     .{ .name = "stream_events", .feature = "run.streaming", .expected = .native },
+    .{ .name = "request_compaction", .feature = "", .expected = .unadvertised, .blocked_by = "no protocol verb; compaction stays on the direct path" },
+    .{ .name = "take_compaction_request", .feature = "", .expected = .unadvertised, .blocked_by = "no protocol verb; compaction stays on the direct path" },
 };
 
 fn supportOf(level: oap_types.SupportLevel) Support {
