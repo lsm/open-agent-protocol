@@ -1833,6 +1833,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "protocol_runtime", .module = protocol_runtime_mod },
             .{ .name = "tool_local_runtime", .module = protocol_tool_local_runtime_mod },
             .{ .name = "transports/in_process", .module = in_process_transport_mod },
+            .{ .name = "provider_caps", .module = provider_caps_mod },
         },
     });
 
