@@ -500,6 +500,26 @@ count set with `/output`, `/output max`, a model that reports no maximum, and a 
 off at the maximum all end the run as before. The setting is kept in `~/.oapx/config.json` under
 `mode.output`, as `"max"` or a count, and absent for the default.
 
+## Status
+
+`/status` writes one report to the transcript, in six groups:
+
+- **Session:** title, id, how long ago it started, working directory, Git branch,
+  compactions so far and turns.
+- **Model:** provider/model, whether it reasons, thinking level, context window
+  (marked when set with `/context`) and output limit.
+- **Usage:** context used of the window and its share, the estimated input cost of
+  the next request when the model reports a price, the last reply's input, output
+  and cache-read tokens, the same summed over this sitting (it starts again on a
+  resume), and the token rate.
+- **Run:** idle, streaming, compacting or refreshing models; queued steers and
+  follow-ups; commands held for the run's end; a pending model switch; a held
+  compaction.
+- **Settings:** permission mode, the autocompact point in tokens, verbosity per part
+  and automatic worktrees.
+- **Auth:** how the current provider is signed in (saved key, environment variable,
+  OAuth, expired, or a custom provider), never the credential itself.
+
 ## Verbosity
 
 `/verbose` sets how much the transcript and the status bar show. It has five parts,

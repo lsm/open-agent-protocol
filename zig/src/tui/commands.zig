@@ -50,6 +50,7 @@ pub const CommandAction = enum {
     refresh_models,
     logout_provider,
     add_provider,
+    show_status,
     compact_during_run,
     redraw,
     remove_provider,
@@ -292,25 +293,9 @@ fn handleLogout(ctx: CommandContext, command: Command) !CommandResult {
 }
 
 fn handleStatus(ctx: CommandContext, command: Command) !CommandResult {
+    _ = ctx;
     _ = command;
-    const status = ctx.state.status;
-    var out: std.Io.Writer.Allocating = .init(ctx.allocator);
-    const writer = &out.writer;
-    try writer.print("session: {s}\nmodel: {s}\nprovider: {s}\nturns: {d}\ncontext: {d}/{d}\nstreaming: {s}\nautocompact: ", .{
-        if (status.session_id.len > 0) status.session_id else "(current)",
-        if (status.model.len > 0) status.model else "none",
-        if (status.provider.len > 0) status.provider else "none",
-        status.turn_count,
-        status.context_used,
-        status.context_limit,
-        if (status.streaming) "yes" else "no",
-    });
-    switch (ctx.state.autocompact) {
-        .auto => try writer.writeAll("auto"),
-        .off => try writer.writeAll("off"),
-        .percent => |percent| try writer.print("{d}%", .{percent}),
-    }
-    return .{ .output = try out.toOwnedSlice() };
+    return .{ .action = .show_status };
 }
 
 fn handleSessions(ctx: CommandContext, command: Command) !CommandResult {
@@ -682,6 +667,8 @@ test "dispatch reaches command handlers" {
             try std.testing.expectEqual(CommandAction.open_session_picker, result.action);
         } else if (kind == .permissions) {
             try std.testing.expectEqual(CommandAction.open_permission_picker, result.action);
+        } else if (kind == .status) {
+            try std.testing.expectEqual(CommandAction.show_status, result.action);
         } else {
             try std.testing.expect(result.output.len > 0);
         }
@@ -883,25 +870,12 @@ test "autocompact refuses a share that is not a percentage of the window" {
     }
 }
 
-test "status reports the autocompact share beside the context it measures" {
+test "status hands the report to the app" {
     var state = tui_state.AppState.init(std.testing.allocator);
     defer state.deinit();
-    try state.status.setModel(std.testing.allocator, "model-a", "provider-a");
-    const ctx = CommandContext{ .allocator = std.testing.allocator, .state = &state };
-
-    var auto = try dispatch(ctx, .{ .kind = .status });
-    defer auto.deinit(std.testing.allocator);
-    try std.testing.expect(std.mem.indexOf(u8, auto.output, "autocompact: auto") != null);
-
-    state.autocompact = .off;
-    var off = try dispatch(ctx, .{ .kind = .status });
-    defer off.deinit(std.testing.allocator);
-    try std.testing.expect(std.mem.indexOf(u8, off.output, "autocompact: off") != null);
-
-    state.autocompact = .{ .percent = 80 };
-    var on = try dispatch(ctx, .{ .kind = .status });
-    defer on.deinit(std.testing.allocator);
-    try std.testing.expect(std.mem.indexOf(u8, on.output, "autocompact: 80%") != null);
+    var result = try dispatch(.{ .allocator = std.testing.allocator, .state = &state }, .{ .kind = .status });
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqual(CommandAction.show_status, result.action);
 }
 
 test "login command can target a provider directly" {

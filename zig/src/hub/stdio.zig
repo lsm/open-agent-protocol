@@ -854,6 +854,7 @@ pub const Frontend = struct {
             })),
             error.UnsupportedFeature, error.ToolCatalogUnavailable => try refusalWith(arena, "unsupported_feature", "the adapter does not advertise a feature the request elected", try detailForReason(arena, refused.reason)),
             error.CapabilityDegraded => try refusalWith(arena, "capability_degraded", "a feature the request did not opt into is degraded", try featureOnly(arena, refused.reason)),
+            error.ModelNotFound => try refusalWith(arena, "model_not_found", "the open names a model the adapter's catalog does not carry", try arena.dupe(oap_types.DetailEntry, &.{.{ .key = "model_id", .value = refused.reason.model_id }})),
             error.AdapterDescriptorUnbound => .{ .code = "internal", .message = "the adapter descriptor carries no capability revision" },
             error.BackendFailed => .{ .code = "probe_failed", .message = "the adapter's probe refused" },
             error.OutOfMemory => error.OutOfMemory,

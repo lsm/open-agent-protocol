@@ -1419,6 +1419,25 @@ const HubRegistry = struct {
     allocator: std.mem.Allocator,
     environ: *const std.process.Environ.Map,
     surface: ConfigSurface,
+    production: ?*tui_app.ProductionRuntime = null,
+
+    fn deinit(self: *HubRegistry) void {
+        if (self.production) |production| {
+            production.deinit();
+            self.allocator.destroy(production);
+        }
+        self.* = undefined;
+    }
+
+    fn runtime(self: *HubRegistry) !*tui_app.ProductionRuntime {
+        if (self.production) |production| return production;
+        const production = try self.allocator.create(tui_app.ProductionRuntime);
+        errdefer self.allocator.destroy(production);
+        production.* = try tui_app.ProductionRuntime.init(self.allocator, .{});
+        production.initBridge();
+        self.production = production;
+        return production;
+    }
 
     fn build(context: *anyopaque, arena: std.mem.Allocator, entry: adapter_config.AdapterEntry) adapter_contract.Failure!adapter_contract.Adapter {
         const self: *HubRegistry = @ptrCast(@alignCast(context));
@@ -1469,6 +1488,12 @@ const HubRegistry = struct {
             built.* = memory_adapter.Adapter.init(self.allocator);
             return built.adapter();
         }
+        if (std.mem.eql(u8, entry.kind, "oapx")) {
+            const production = self.runtime() catch |failure| return self.reported(failure);
+            const built = try arena.create(oapx_adapter.Adapter);
+            built.* = oapx_adapter.Adapter.init(self.allocator, production.options());
+            return built.adapter();
+        }
         return self.refuse(entry);
     }
 
@@ -1479,7 +1504,7 @@ const HubRegistry = struct {
     }
 
     fn refuse(self: *HubRegistry, entry: adapter_config.AdapterEntry) adapter_contract.Failure {
-        self.surface.refuse("{s} \"{s}\" is of type \"{s}\", which oapx does not know; it serves claude, codex, pi, acp, hermes, deepseek, opencode and memory", .{ self.surface.noun, entry.name, entry.kind }) catch {};
+        self.surface.refuse("{s} \"{s}\" is of type \"{s}\", which oapx does not know; it serves claude, codex, pi, acp, hermes, deepseek, opencode, memory and oapx", .{ self.surface.noun, entry.name, entry.kind }) catch {};
         return error.Unavailable;
     }
 };
@@ -1639,6 +1664,7 @@ fn runHub(
     }
     const tool_sources = try hubConfiguredSources(arena, file.tool_sources);
     var registry = HubRegistry{ .allocator = allocator, .environ = &environ, .surface = surface };
+    defer registry.deinit();
     var core = hub.Hub.init(allocator, wallClockNanoseconds, .{ .tool_sources = tool_sources });
     defer core.deinit();
     if (config == null) {
@@ -9437,7 +9463,7 @@ test "the hub's registry refuses an entry of a type it does not know, naming the
     complained_on.close(std.testing.io);
     const complained = try tmp.dir.readFileAlloc(std.testing.io, "stderr", allocator, .limited(4096));
     defer allocator.free(complained);
-    try std.testing.expectEqualStrings("oapx hub: adapter \"ghost\" is of type \"ghost\", which oapx does not know; it serves claude, codex, pi, acp, hermes, deepseek, opencode and memory\n", complained);
+    try std.testing.expectEqualStrings("oapx hub: adapter \"ghost\" is of type \"ghost\", which oapx does not know; it serves claude, codex, pi, acp, hermes, deepseek, opencode, memory and oapx\n", complained);
 }
 
 test "the hub's registry reports a known adapter's own requirement once, not as an unknown type" {
