@@ -950,14 +950,14 @@ def scenario_commands(args):
         run.note(f"/help lists all {len(RATIFIED_COMMANDS)} ratified commands")
 
         status_from = len(run.session.plain)
-        run.command("/status", "session:")
+        run.command("/status", "Session")
         field_positions = []
-        for field in ("session:", "model:", "provider:", "turns:", "context:", "streaming:"):
+        for field in ("Session", "title", "Model", "Usage", "Run", "Settings", "Auth"):
             position = run.session.plain.find(plain_text(field.encode()), status_from)
             if position < 0:
                 raise ScenarioError(f"commands: /status output missing {field!r}")
             field_positions.append(position)
-        if field_positions != sorted(field_positions) or field_positions[-1] - field_positions[0] > 6 * (args.width + 8):
+        if field_positions != sorted(field_positions) or field_positions[-1] - field_positions[0] > 48 * (args.width + 8):
             raise ScenarioError("commands: /status fields did not render as one contiguous status block")
 
         run.command("/model", "Select model")
