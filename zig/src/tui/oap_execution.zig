@@ -40,8 +40,25 @@ pub const OapExecution = struct {
     text: std.ArrayList(u8) = .empty,
     session_models: std.ArrayList([]u8) = .empty,
     pending_permission: ?PendingPermission = null,
+    queued_runs: std.ArrayList(QueuedRun) = .empty,
     output_tokens: u64 = 0,
     closed_messages: usize = 0,
+    awaiting_promotion: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    cancelling: bool = false,
+
+    const QueuedRun = struct {
+        text: []u8,
+        submit_id: []u8,
+        run_id: []u8 = &.{},
+        dropped: bool = false,
+
+        fn deinit(self: *QueuedRun, allocator: std.mem.Allocator) void {
+            allocator.free(self.text);
+            allocator.free(self.submit_id);
+            allocator.free(self.run_id);
+            self.* = undefined;
+        }
+    };
 
     const PendingPermission = struct {
         interaction_id: []u8,
@@ -106,6 +123,8 @@ pub const OapExecution = struct {
         self.forgetSessionModels();
         self.session_models.deinit(allocator);
         self.forgetPermission();
+        for (self.queued_runs.items) |*queued| queued.deinit(allocator);
+        self.queued_runs.deinit(allocator);
         allocator.free(self.revision);
         allocator.free(self.session_id);
         allocator.free(self.run_id);
@@ -123,6 +142,9 @@ pub const OapExecution = struct {
         .cancel = cancel,
         .switch_model = switchModel,
         .decide_approval = decideApproval,
+        .follow_up = followUp,
+        .clear_queued = clearQueued,
+        .queued = queuedCount,
         .stop = stop,
     };
 
@@ -251,6 +273,174 @@ pub const OapExecution = struct {
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
         const a = scratch.allocator();
+        const payload = try self.submission(a, text, "auto");
+        self.lockInbound();
+        self.allocator.free(self.run_id);
+        self.run_id = &.{};
+        self.cancel_pending.store(false, .release);
+        self.cancelling = false;
+        self.inbound_mutex.unlock();
+        self.turn_open.store(true, .release);
+        errdefer self.turn_open.store(false, .release);
+        _ = try self.enqueue(a, "session.message.submit.request", "submit", payload, null);
+    }
+
+    fn followUp(ctx: *anyopaque, text: []const u8) anyerror!void {
+        const self = cast(ctx);
+        if (self.hub != null) return error.UnavailableOverOap;
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        const payload = try self.submission(a, text, "queue");
+        const id = try self.reserveId(a, "queue");
+        const kept_text = try self.allocator.dupe(u8, text);
+        const kept_id = self.allocator.dupe(u8, id) catch |err| {
+            self.allocator.free(kept_text);
+            return err;
+        };
+        self.lockInbound();
+        if (!self.turn_open.load(.acquire) or self.cancelling) {
+            self.inbound_mutex.unlock();
+            self.allocator.free(kept_text);
+            self.allocator.free(kept_id);
+            return error.AgentAlreadyStreaming;
+        }
+        self.queued_runs.append(self.allocator, .{ .text = kept_text, .submit_id = kept_id }) catch |err| {
+            self.inbound_mutex.unlock();
+            self.allocator.free(kept_text);
+            self.allocator.free(kept_id);
+            return err;
+        };
+        self.inbound_mutex.unlock();
+        self.enqueueWithId(a, "session.message.submit.request", id, payload, null) catch |err| {
+            self.lockInbound();
+            var dropped = self.queued_runs.pop().?;
+            self.inbound_mutex.unlock();
+            dropped.deinit(self.allocator);
+            return err;
+        };
+    }
+
+    fn clearQueued(ctx: *anyopaque) void {
+        cast(ctx).dropQueued();
+    }
+
+    fn queuedCount(ctx: *anyopaque) usize {
+        const self = cast(ctx);
+        self.lockInbound();
+        defer self.inbound_mutex.unlock();
+        var count: usize = 0;
+        for (self.queued_runs.items) |queued| {
+            if (!queued.dropped) count += 1;
+        }
+        return count;
+    }
+
+    fn dropQueued(self: *OapExecution) void {
+        var cancels: std.ArrayList([]u8) = .empty;
+        defer {
+            for (cancels.items) |run_id| self.allocator.free(run_id);
+            cancels.deinit(self.allocator);
+        }
+        self.lockInbound();
+        var index: usize = 0;
+        while (index < self.queued_runs.items.len) {
+            const queued = &self.queued_runs.items[index];
+            if (queued.run_id.len == 0) {
+                queued.dropped = true;
+                index += 1;
+                continue;
+            }
+            var taken = self.queued_runs.orderedRemove(index);
+            if (cancels.append(self.allocator, taken.run_id)) |_| {
+                taken.run_id = &.{};
+            } else |_| {}
+            taken.deinit(self.allocator);
+        }
+        self.inbound_mutex.unlock();
+        for (cancels.items) |run_id| self.cancelRun(run_id) catch {};
+    }
+
+    fn cancelRun(self: *OapExecution, run_id: []const u8) !void {
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        var payload = Map.init(a);
+        try payload.put("session_id", .{ .string = self.session_id });
+        try payload.put("run_id", .{ .string = run_id });
+        _ = try self.enqueue(a, "run.cancel.request", "cancel", payload.value(), run_id);
+    }
+
+    fn admitQueued(self: *OapExecution, submit_id: []const u8, run_id: []const u8) !void {
+        const kept = try self.allocator.dupe(u8, run_id);
+        var cancel_now = false;
+        self.lockInbound();
+        for (self.queued_runs.items, 0..) |*queued, index| {
+            if (!std.mem.eql(u8, queued.submit_id, submit_id)) continue;
+            if (queued.dropped) {
+                var taken = self.queued_runs.orderedRemove(index);
+                taken.deinit(self.allocator);
+                cancel_now = true;
+                break;
+            }
+            self.allocator.free(queued.run_id);
+            queued.run_id = kept;
+            self.inbound_mutex.unlock();
+            return;
+        }
+        self.inbound_mutex.unlock();
+        defer self.allocator.free(kept);
+        if (cancel_now) try self.cancelRun(kept);
+    }
+
+    fn refuseQueued(self: *OapExecution, submit_id: []const u8) void {
+        self.lockInbound();
+        defer self.inbound_mutex.unlock();
+        for (self.queued_runs.items, 0..) |queued, index| {
+            if (!std.mem.eql(u8, queued.submit_id, submit_id)) continue;
+            var taken = self.queued_runs.orderedRemove(index);
+            taken.deinit(self.allocator);
+            return;
+        }
+    }
+
+    fn takePromoted(self: *OapExecution, run_id: []const u8) ?[]u8 {
+        self.lockInbound();
+        defer self.inbound_mutex.unlock();
+        if (self.queued_runs.items.len == 0) return null;
+        const head = &self.queued_runs.items[0];
+        if (head.dropped or head.run_id.len == 0 or !std.mem.eql(u8, head.run_id, run_id)) return null;
+        var taken = self.queued_runs.orderedRemove(0);
+        const text = taken.text;
+        taken.text = &.{};
+        taken.deinit(self.allocator);
+        return text;
+    }
+
+    fn holdOrClose(self: *OapExecution) bool {
+        self.lockInbound();
+        defer self.inbound_mutex.unlock();
+        for (self.queued_runs.items) |queued| {
+            if (!queued.dropped) return true;
+        }
+        self.turn_open.store(false, .release);
+        return false;
+    }
+
+    fn closeTurn(self: *OapExecution) void {
+        self.lockInbound();
+        defer self.inbound_mutex.unlock();
+        self.turn_open.store(false, .release);
+    }
+
+    fn isCurrentRun(self: *OapExecution, body: std.json.ObjectMap) bool {
+        const named = stringOf(body, "run_id") orelse return true;
+        self.lockInbound();
+        defer self.inbound_mutex.unlock();
+        return self.run_id.len == 0 or std.mem.eql(u8, named, self.run_id);
+    }
+
+    fn submission(self: *OapExecution, a: std.mem.Allocator, text: []const u8, delivery: []const u8) !std.json.Value {
         var part = Map.init(a);
         try part.put("type", .{ .string = "text" });
         try part.put("text", .{ .string = text });
@@ -264,19 +454,19 @@ pub const OapExecution = struct {
         var payload = Map.init(a);
         try payload.put("session_id", .{ .string = self.session_id });
         try payload.put("messages", .{ .array = messages });
-        try payload.put("delivery", .{ .string = "auto" });
-        self.lockInbound();
-        self.allocator.free(self.run_id);
-        self.run_id = &.{};
-        self.cancel_pending.store(false, .release);
-        self.inbound_mutex.unlock();
-        self.turn_open.store(true, .release);
-        errdefer self.turn_open.store(false, .release);
-        try self.enqueue(a, "session.message.submit.request", "submit", payload.value(), null);
+        try payload.put("delivery", .{ .string = delivery });
+        return payload.value();
     }
 
     fn cancel(ctx: *anyopaque) void {
         const self = cast(ctx);
+        self.lockInbound();
+        self.cancelling = true;
+        self.inbound_mutex.unlock();
+        if (self.awaiting_promotion.load(.acquire)) {
+            self.dropQueued();
+            return;
+        }
         self.sendCancel() catch {};
     }
 
@@ -298,7 +488,7 @@ pub const OapExecution = struct {
         var payload = Map.init(a);
         try payload.put("session_id", .{ .string = self.session_id });
         try payload.put("run_id", .{ .string = run_id });
-        try self.enqueue(a, "run.cancel.request", "cancel", payload.value(), run_id);
+        _ = try self.enqueue(a, "run.cancel.request", "cancel", payload.value(), run_id);
     }
 
     fn forgetSessionModels(self: *OapExecution) void {
@@ -323,7 +513,7 @@ pub const OapExecution = struct {
         var payload = Map.init(a);
         try payload.put("session_id", .{ .string = self.session_id });
         try payload.put("model_id", .{ .string = ref });
-        try self.enqueue(a, "session.model.switch.request", "switch", payload.value(), null);
+        _ = try self.enqueue(a, "session.model.switch.request", "switch", payload.value(), null);
     }
 
     fn decideApproval(ctx: *anyopaque, tool_call_id: []const u8, granted: bool) anyerror!void {
@@ -352,7 +542,7 @@ pub const OapExecution = struct {
         try payload.put("run_id", .{ .string = pending.run_id });
         try payload.put("granted", .{ .bool = granted });
         try payload.put("choice_id", .{ .string = if (granted) "approve" else "deny" });
-        try self.enqueue(a, "action.permission.resolve.request", "resolve", payload.value(), pending.run_id);
+        _ = try self.enqueue(a, "action.permission.resolve.request", "resolve", payload.value(), pending.run_id);
     }
 
     fn forgetPermission(self: *OapExecution) void {
@@ -395,13 +585,19 @@ pub const OapExecution = struct {
         while (!self.inbound_mutex.tryLock()) std.atomic.spinLoopHint();
     }
 
-    fn enqueue(self: *OapExecution, a: std.mem.Allocator, kind: []const u8, prefix: []const u8, payload: std.json.Value, run_id: ?[]const u8) !void {
+    fn enqueue(self: *OapExecution, a: std.mem.Allocator, kind: []const u8, prefix: []const u8, payload: std.json.Value, run_id: ?[]const u8) ![]u8 {
+        const id = try self.reserveId(a, prefix);
+        try self.enqueueWithId(a, kind, id, payload, run_id);
+        return id;
+    }
+
+    fn reserveId(self: *OapExecution, a: std.mem.Allocator, prefix: []const u8) ![]u8 {
         self.lockInbound();
-        const id = self.nextId(a, prefix) catch |err| {
-            self.inbound_mutex.unlock();
-            return err;
-        };
-        self.inbound_mutex.unlock();
+        defer self.inbound_mutex.unlock();
+        return self.nextId(a, prefix);
+    }
+
+    fn enqueueWithId(self: *OapExecution, a: std.mem.Allocator, kind: []const u8, id: []const u8, payload: std.json.Value, run_id: ?[]const u8) !void {
         const line = try self.envelope(a, kind, id, payload, true, run_id);
         const owned = try self.allocator.dupe(u8, line);
         errdefer self.allocator.free(owned);
@@ -487,6 +683,7 @@ pub const OapExecution = struct {
             self.deliver(.{ .system_warning = .{ .message = try self.ownedText(message) } });
             if (self.turn_open.load(.acquire)) {
                 self.sendCancel() catch {};
+                self.dropQueued();
                 try self.closeAssistant(.@"error");
                 self.endTurn(.@"error");
             }
@@ -499,15 +696,45 @@ pub const OapExecution = struct {
             const message = if (payload) |body| errorMessage(body) else "the endpoint refused the request";
             if (std.mem.startsWith(u8, reply_to, "submit-")) {
                 self.deliver(.{ .@"error" = .{ .message = try self.ownedText(message) } });
+                self.closeTurn();
+                self.dropQueued();
                 self.endTurn(.@"error");
+            } else if (std.mem.startsWith(u8, reply_to, "queue-")) {
+                self.refuseQueued(reply_to);
+                self.deliver(.{ .system_warning = .{ .message = try self.ownedText(message) } });
+                if (self.awaiting_promotion.load(.acquire) and !self.holdOrClose()) self.endTurn(.completed);
             } else {
                 self.deliver(.{ .system_warning = .{ .message = try self.ownedText(message) } });
             }
             return;
         }
         const body = payload orelse return;
+        if (std.mem.eql(u8, kind, "session.message.submit.response")) {
+            const reply_to = stringOf(root, "in_reply_to") orelse "";
+            if (!std.mem.startsWith(u8, reply_to, "queue-")) return;
+            try self.admitQueued(reply_to, stringOf(body, "run_id") orelse "");
+            return;
+        }
         if (std.mem.eql(u8, kind, "run.started")) {
             const run_id = stringOf(body, "run_id") orelse "";
+            if (self.turn_open.load(.acquire)) {
+                if (self.takePromoted(run_id)) |text| {
+                    self.awaiting_promotion.store(false, .release);
+                    defer self.allocator.free(text);
+                    const kept = try self.allocator.dupe(u8, run_id);
+                    self.lockInbound();
+                    self.allocator.free(self.run_id);
+                    self.run_id = kept;
+                    self.inbound_mutex.unlock();
+                    self.text.clearRetainingCapacity();
+                    self.in_assistant = false;
+                    self.closed_messages = 0;
+                    self.deliver(.{ .message_end = .{ .role = .user, .text = try self.ownedText(text) } });
+                    self.deliver(.{ .turn_start = .{} });
+                    if (self.cancel_pending.swap(false, .acq_rel)) try self.sendCancel();
+                    return;
+                }
+            }
             const kept = try self.allocator.dupe(u8, run_id);
             self.lockInbound();
             self.allocator.free(self.run_id);
@@ -579,6 +806,12 @@ pub const OapExecution = struct {
         }
         if (std.mem.eql(u8, kind, "run.completed") or std.mem.eql(u8, kind, "run.failed") or std.mem.eql(u8, kind, "run.cancelled")) {
             if (!self.turn_open.load(.acquire)) return;
+            if (!self.isCurrentRun(body)) {
+                if (std.mem.eql(u8, kind, "run.failed")) self.deliver(.{ .system_warning = .{ .message = try self.ownedText(errorMessage(body)) } });
+                self.settleReserved(stringOf(body, "run_id") orelse "");
+                if (self.awaiting_promotion.load(.acquire) and !self.holdOrClose()) self.endTurn(.completed);
+                return;
+            }
             self.output_tokens = if (self.closed_messages == 0) usageTokens(body) else 0;
             if (contextTokens(root)) |tokens| self.deliver(.{ .context_usage = .{ .estimated_tokens = tokens } });
         }
@@ -600,6 +833,10 @@ pub const OapExecution = struct {
             }
             try self.closeAssistant(stop_reason);
             self.deliver(.{ .turn_end = .{ .stop_reason = stop_reason } });
+            if (self.holdOrClose()) {
+                self.awaiting_promotion.store(true, .release);
+                return;
+            }
             self.endTurn(.completed);
             return;
         }
@@ -608,18 +845,35 @@ pub const OapExecution = struct {
             try self.closeAssistant(.@"error");
             const message = if (body.get("error")) |value| (if (value == .object) errorMessage(value.object) else "the run failed") else "the run failed";
             self.deliver(.{ .@"error" = .{ .message = try self.ownedText(message) } });
+            self.closeTurn();
+            self.dropQueued();
             self.endTurn(.@"error");
             return;
         }
         if (std.mem.eql(u8, kind, "run.cancelled")) {
             if (!self.turn_open.load(.acquire)) return;
             try self.closeAssistant(.aborted);
+            self.closeTurn();
+            self.dropQueued();
             self.endTurn(.cancelled);
             return;
         }
     }
 
+    fn settleReserved(self: *OapExecution, run_id: []const u8) void {
+        if (run_id.len == 0) return;
+        self.lockInbound();
+        defer self.inbound_mutex.unlock();
+        for (self.queued_runs.items, 0..) |queued, index| {
+            if (!std.mem.eql(u8, queued.run_id, run_id)) continue;
+            var taken = self.queued_runs.orderedRemove(index);
+            taken.deinit(self.allocator);
+            return;
+        }
+    }
+
     fn endTurn(self: *OapExecution, reason: tui_session.TuiEndReason) void {
+        self.awaiting_promotion.store(false, .release);
         self.turn_open.store(false, .release);
         self.output_tokens = 0;
         self.closed_messages = 0;
@@ -742,6 +996,8 @@ const Script = struct {
     calls: usize = 0,
     output_tokens: u64 = 0,
     preamble: []const u8 = "",
+    hold_first: bool = false,
+    released: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     last_thinking: ai_types.ThinkingLevel = .off,
 };
 
@@ -800,6 +1056,12 @@ fn scriptedStream(ctx: ?*anyopaque, model: ai_types.Model, context: ai_types.Con
     const script: *Script = @ptrCast(@alignCast(ctx.?));
     script.last_thinking = options.thinking_level;
     script.calls += 1;
+    if (script.hold_first and script.calls == 1) {
+        var waits: usize = 0;
+        while (!script.released.load(.acquire) and waits < 5000) : (waits += 1) {
+            std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
+        }
+    }
     const stream = try allocator.create(event_stream.AssistantMessageEventStream);
     stream.* = event_stream.AssistantMessageEventStream.init(allocator);
     if (script.tool_first and script.calls == 1) {
@@ -841,10 +1103,12 @@ const Seen = struct {
     output_limit_warned: bool = false,
     output_tokens: u64 = 0,
     context_tokens: ?u64 = null,
+    user_text: std.ArrayList(u8) = .empty,
 
     fn deinit(self: *Seen) void {
         self.text.deinit(testing.allocator);
         self.final_text.deinit(testing.allocator);
+        self.user_text.deinit(testing.allocator);
     }
 };
 
@@ -866,6 +1130,8 @@ fn drainTurn(runtime: *tui_runtime.TuiRuntime, seen: *Seen) !void {
                     seen.output_tokens = payload.output_tokens;
                     seen.final_text.clearRetainingCapacity();
                     try seen.final_text.appendSlice(testing.allocator, payload.text.slice());
+                } else if (payload.role == .user) {
+                    try seen.user_text.appendSlice(testing.allocator, payload.text.slice());
                 },
                 .agent_end => |payload| {
                     seen.end = payload.reason;
@@ -1010,6 +1276,103 @@ test "cancelling a turn over OAP ends it cancelled and the next turn runs on the
     try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), next.end);
 }
 
+fn waitForRun(execution: *OapExecution) void {
+    var waits: usize = 0;
+    while (waits < 2000) : (waits += 1) {
+        execution.lockInbound();
+        const known = execution.run_id.len > 0;
+        execution.inbound_mutex.unlock();
+        if (known) return;
+        std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
+    }
+}
+
+fn waitForReservation(execution: *OapExecution) void {
+    var waits: usize = 0;
+    while (waits < 2000) : (waits += 1) {
+        execution.lockInbound();
+        const admitted = execution.queued_runs.items.len > 0 and execution.queued_runs.items[0].run_id.len > 0;
+        execution.inbound_mutex.unlock();
+        if (admitted) return;
+        std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
+    }
+}
+
+test "a follow-up queued during a turn over OAP runs after it inside the same turn" {
+    var script = Script{ .hold_first = true };
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+
+    try runtime.submitTurn("first");
+    waitForRun(execution);
+    try runtime.followUp("second");
+    try testing.expectEqual(@as(usize, 1), runtime.queuedCounts().follow_up);
+    waitForReservation(execution);
+    script.released.store(true, .release);
+
+    var seen = Seen{};
+    defer seen.deinit();
+    try drainTurn(&runtime, &seen);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+    try testing.expectEqual(@as(usize, 1), seen.agent_starts);
+    try testing.expectEqual(@as(usize, 2), script.calls);
+    try testing.expectEqualStrings("second", seen.user_text.items);
+    try testing.expectEqualStrings("over the wireover the wire", seen.text.items);
+    try testing.expectEqual(@as(usize, 0), runtime.queuedCounts().follow_up);
+}
+
+test "clearing a follow-up queued over OAP cancels its reservation, so the turn ends after the first run" {
+    var script = Script{ .hold_first = true };
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+
+    try runtime.submitTurn("first");
+    waitForRun(execution);
+    try runtime.followUp("second");
+    waitForReservation(execution);
+    runtime.clearQueuedMessages();
+    try testing.expectEqual(@as(usize, 0), runtime.queuedCounts().follow_up);
+    script.released.store(true, .release);
+
+    var seen = Seen{};
+    defer seen.deinit();
+    try drainTurn(&runtime, &seen);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+    try testing.expectEqual(@as(usize, 1), script.calls);
+    try testing.expectEqual(@as(usize, 0), seen.user_text.items.len);
+
+    try runtime.submitTurn("third");
+    var next = Seen{};
+    defer next.deinit();
+    try drainTurn(&runtime, &next);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), next.end);
+    var settle: usize = 0;
+    while (settle < 300 and script.calls <= 2) : (settle += 1) {
+        std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
+    }
+    try testing.expectEqual(@as(usize, 2), script.calls);
+}
+
+test "a follow-up sent while no turn runs over OAP starts one" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+
+    try runtime.start();
+    try runtime.followUp("now");
+    var seen = Seen{};
+    defer seen.deinit();
+    try drainTurn(&runtime, &seen);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+    try testing.expectEqual(@as(usize, 1), script.calls);
+}
+
 test "a runtime over OAP refuses what the protocol path cannot carry yet" {
     var script = Script{};
     var execution: *OapExecution = undefined;
@@ -1017,7 +1380,6 @@ test "a runtime over OAP refuses what the protocol path cannot carry yet" {
     defer execution.destroy();
     defer runtime.deinit();
     try testing.expectError(error.UnavailableOverOap, runtime.steer("x"));
-    try testing.expectError(error.UnavailableOverOap, runtime.followUp("x"));
     try testing.expectError(error.UnavailableOverOap, runtime.compact(.{}));
     try testing.expectError(error.UnavailableOverOap, runtime.resumeSession());
 }
@@ -1239,4 +1601,160 @@ test "a model refresh during a turn over OAP is refused rather than switching th
     var seen = Seen{};
     defer seen.deinit();
     try drainTurn(&runtime, &seen);
+}
+
+const Captured = struct {
+    ends: usize = 0,
+    user_messages: usize = 0,
+    warnings: usize = 0,
+
+    fn sink(self: *Captured) tui_runtime.EventSink {
+        return .{ .ctx = self, .push = push };
+    }
+
+    fn push(ctx: *anyopaque, event: TuiEvent) void {
+        const self: *Captured = @ptrCast(@alignCast(ctx));
+        var owned = event;
+        defer owned.deinit(testing.allocator);
+        if (owned == .agent_end) self.ends += 1;
+        if (owned == .system_warning) self.warnings += 1;
+        if (owned == .message_end and owned.message_end.role == .user) self.user_messages += 1;
+    }
+};
+
+test "a held turn ends when the reservation it waits on settles without ever starting" {
+    var script = Script{};
+    const models = [_]ai_types.Model{scripted_model};
+    const execution = try OapExecution.create(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+    });
+    defer execution.destroy();
+    var captured = Captured{};
+    execution.sink = captured.sink();
+    execution.run_id = try testing.allocator.dupe(u8, "run-1");
+    execution.turn_open.store(true, .release);
+    try execution.queued_runs.append(testing.allocator, .{
+        .text = try testing.allocator.dupe(u8, "later"),
+        .submit_id = try testing.allocator.dupe(u8, "queue-1"),
+        .run_id = try testing.allocator.dupe(u8, "run-2"),
+    });
+
+    try execution.translateLine("{\"type\":\"run.completed\",\"payload\":{\"session_id\":\"s\",\"run_id\":\"run-1\",\"stop_reason\":\"end_turn\",\"final_response\":{\"role\":\"assistant\",\"content\":\"done\"}}}");
+    try testing.expectEqual(@as(usize, 0), captured.ends);
+    try testing.expect(execution.turn_open.load(.acquire));
+
+    try execution.translateLine("{\"type\":\"run.cancelled\",\"payload\":{\"session_id\":\"s\",\"run_id\":\"run-2\"}}");
+    try testing.expectEqual(@as(usize, 1), captured.ends);
+    try testing.expect(!execution.turn_open.load(.acquire));
+    try testing.expectEqual(@as(usize, 0), execution.queued_runs.items.len);
+}
+
+test "a reserved follow-up that fails before it starts says why instead of vanishing" {
+    var script = Script{};
+    const models = [_]ai_types.Model{scripted_model};
+    const execution = try OapExecution.create(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+    });
+    defer execution.destroy();
+    var captured = Captured{};
+    execution.sink = captured.sink();
+    execution.run_id = try testing.allocator.dupe(u8, "run-1");
+    execution.turn_open.store(true, .release);
+    try execution.queued_runs.append(testing.allocator, .{
+        .text = try testing.allocator.dupe(u8, "later"),
+        .submit_id = try testing.allocator.dupe(u8, "queue-1"),
+        .run_id = try testing.allocator.dupe(u8, "run-2"),
+    });
+
+    try execution.translateLine("{\"type\":\"run.completed\",\"payload\":{\"session_id\":\"s\",\"run_id\":\"run-1\",\"stop_reason\":\"end_turn\",\"final_response\":{\"role\":\"assistant\",\"content\":\"done\"}}}");
+    try testing.expectEqual(@as(usize, 0), captured.warnings);
+    try execution.translateLine("{\"type\":\"run.failed\",\"payload\":{\"session_id\":\"s\",\"run_id\":\"run-2\",\"error\":{\"code\":\"backend_failed\",\"message\":\"the follow-up could not start\"}}}");
+    try testing.expectEqual(@as(usize, 1), captured.warnings);
+    try testing.expectEqual(@as(usize, 1), captured.ends);
+    try testing.expect(!execution.turn_open.load(.acquire));
+}
+
+test "a follow-up is refused once the turn is cancelling or closed, rather than queued where nothing will run it" {
+    var script = Script{};
+    const models = [_]ai_types.Model{scripted_model};
+    const execution = try OapExecution.create(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+    });
+    defer execution.destroy();
+    var captured = Captured{};
+    execution.sink = captured.sink();
+    execution.run_id = try testing.allocator.dupe(u8, "run-1");
+    execution.turn_open.store(true, .release);
+
+    OapExecution.cancel(execution);
+    try testing.expectError(error.AgentAlreadyStreaming, OapExecution.followUp(execution, "after the abort"));
+    try testing.expectEqual(@as(usize, 0), execution.queued_runs.items.len);
+
+    execution.cancelling = false;
+    try execution.translateLine("{\"type\":\"run.completed\",\"payload\":{\"session_id\":\"s\",\"run_id\":\"run-1\",\"stop_reason\":\"end_turn\",\"final_response\":{\"role\":\"assistant\",\"content\":\"done\"}}}");
+    try testing.expectEqual(@as(usize, 1), captured.ends);
+    try testing.expectError(error.AgentAlreadyStreaming, OapExecution.followUp(execution, "after the end"));
+    try testing.expectEqual(@as(usize, 0), execution.queued_runs.items.len);
+}
+
+test "a follow-up on a hub-attached session is refused locally, so the composer keeps it" {
+    const execution = try OapExecution.attach(testing.allocator, "http://127.0.0.1:1", "memory");
+    defer execution.destroy();
+    execution.turn_open.store(true, .release);
+    try testing.expectError(error.UnavailableOverOap, OapExecution.followUp(execution, "later"));
+    try testing.expectEqual(@as(usize, 0), execution.queued_runs.items.len);
+}
+
+test "a held turn ends when the endpoint refuses the last reservation it waits on" {
+    var script = Script{};
+    const models = [_]ai_types.Model{scripted_model};
+    const execution = try OapExecution.create(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+    });
+    defer execution.destroy();
+    var captured = Captured{};
+    execution.sink = captured.sink();
+    execution.run_id = try testing.allocator.dupe(u8, "run-1");
+    execution.turn_open.store(true, .release);
+    try execution.queued_runs.append(testing.allocator, .{
+        .text = try testing.allocator.dupe(u8, "later"),
+        .submit_id = try testing.allocator.dupe(u8, "queue-1"),
+    });
+
+    try execution.translateLine("{\"type\":\"run.completed\",\"payload\":{\"session_id\":\"s\",\"run_id\":\"run-1\",\"stop_reason\":\"end_turn\",\"final_response\":{\"role\":\"assistant\",\"content\":\"done\"}}}");
+    try testing.expectEqual(@as(usize, 0), captured.ends);
+    try execution.translateLine("{\"type\":\"error.response\",\"in_reply_to\":\"queue-1\",\"payload\":{\"error\":{\"code\":\"queue_full\",\"message\":\"the queue is full\"}}}");
+    try testing.expectEqual(@as(usize, 1), captured.warnings);
+    try testing.expectEqual(@as(usize, 1), captured.ends);
+    try testing.expect(!execution.turn_open.load(.acquire));
+}
+
+test "a reservation not yet admitted is never taken by the current run's own start" {
+    var script = Script{};
+    const models = [_]ai_types.Model{scripted_model};
+    const execution = try OapExecution.create(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+    });
+    defer execution.destroy();
+    var captured = Captured{};
+    execution.sink = captured.sink();
+    execution.turn_open.store(true, .release);
+    try execution.queued_runs.append(testing.allocator, .{
+        .text = try testing.allocator.dupe(u8, "later"),
+        .submit_id = try testing.allocator.dupe(u8, "queue-1"),
+    });
+
+    try execution.translateLine("{\"type\":\"run.started\",\"payload\":{\"session_id\":\"s\",\"run_id\":\"run-1\",\"status\":\"running\"}}");
+    try testing.expectEqual(@as(usize, 0), captured.user_messages);
+    try testing.expectEqual(@as(usize, 1), execution.queued_runs.items.len);
 }
