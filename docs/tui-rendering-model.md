@@ -547,7 +547,7 @@ each `quiet`, `normal` (the default) or `verbose`:
 | part | `quiet` | `normal` | `verbose` |
 |---|---|---|---|
 | `thinking` | one line counting the hidden lines | the first ten lines | every line |
-| `tools` | each call's title row only | title row, argument and up to twelve command rows | every command row, and the arguments of a non-shell call |
+| `tools` | each call's title row, with its description, command or path on that row | title row, argument and up to twelve command rows | every command row, and the arguments of a non-shell call |
 | `output` | no result rows | result rows of a running or failed call, up to eight | every row, and a finished call's output under its row |
 | `notices` | background and progress notices hidden (catalog refreshed, worktree setup, clipboard); replies to commands, failures and errors still shown | shown | shown, as with `normal` |
 | `status` | model, context, queue, state, and permissions when not `ask` | as now | adds the session id |
@@ -567,6 +567,22 @@ when no turn is running and the TUI is not inside tmux or screen (`TMUX`, `STY`)
 which may ignore the scrollback clear and leave both copies; otherwise it says to
 run `/redraw`. A `status` change never redraws, since the status bar is redrawn
 every frame anyway.
+
+## Zen
+
+`/zen` (or `/zen on`, `/zen off`) hides the transcript. In its place is a slow
+black-and-white flow drawn in half-block cells, with counts of the thinking
+blocks, tool calls and replies since zen began and one dim line naming the
+current tool. When the run ends, the last reply (or the error that ended it)
+replaces the flow. The composer, the status bar and approval prompts stay as
+they are. While zen is on, nothing is printed into the scrollback; leaving it
+prints what was held back at the current verbosity.
+
+Zen is the one display setting the model sees. The next prompt after `/zen`
+carries a short note, ahead of the user's text, asking the agent to work
+without narrating and to finish with one concise reply; the prompt after
+leaving zen carries a note lifting that. Only the user's own text is echoed in
+the transcript. Switching on and back off before sending anything sends no note.
 
 ## Automatic compaction
 

@@ -29,6 +29,7 @@ const status_bar_view = @import("tui_view_status_bar");
 const approval_view = @import("tui_view_approval");
 const session_picker_view = @import("tui_view_session_picker");
 const menu_picker_view = @import("tui_view_menu_picker");
+const zen_view = @import("tui_view_zen");
 const tui_render = @import("tui_render");
 const permission = @import("permission");
 const fixture_provider = @import("tui_fixture");
@@ -1034,6 +1035,7 @@ pub const App = struct {
     quarantine_buffer: std.ArrayList(tui_runtime.TuiEvent) = .empty,
     pending_clipboard: ?[]u8 = null,
     interrupt_armed_tick: ?u64 = null,
+    zen_flow: ?zen_view.Flow = null,
     pending_clear_screen: bool = false,
     slash_index: usize = 0,
     slash_index_query: u64 = 0,
@@ -3294,7 +3296,27 @@ pub const App = struct {
     }
 
     fn sendUserTurn(self: *App, trimmed: []const u8) !void {
-        _ = try self.sendUserTurnEchoing(trimmed, trimmed);
+        const note = self.state.zen.noteText() orelse {
+            _ = try self.sendUserTurnEchoing(trimmed, trimmed);
+            return;
+        };
+        const noted = try std.fmt.allocPrint(self.allocator, "{s}\n\n{s}", .{ note, trimmed });
+        defer self.allocator.free(noted);
+        if (try self.sendUserTurnEchoing(noted, trimmed)) self.state.zen.note = .none;
+    }
+
+    const zen_step_seconds: f32 = 0.05;
+
+    fn stepZen(self: *App) void {
+        if (!self.state.zen.on) {
+            self.zen_flow = null;
+            return;
+        }
+        if (self.zen_flow) |*flow| {
+            flow.step(zen_step_seconds);
+        } else {
+            self.zen_flow = zen_view.Flow.init();
+        }
     }
 
     fn sendUserTurnEchoing(self: *App, trimmed: []const u8, echo: []const u8) !bool {
@@ -4419,6 +4441,7 @@ pub const TuiModel = struct {
             .window_size => self.refillInlineWindowAfterResize(app, ctx) catch |err| app.recordError(@errorName(err)) catch {},
             .tick => {
                 app.state.anim_tick +%= 1;
+                app.stepZen();
                 app.drainEvents() catch {};
                 app.pumpAutoContinue(compat.time.nowMillis());
                 app.pollLogin() catch {};
@@ -4525,7 +4548,7 @@ pub const TuiModel = struct {
         if (self.inlineMode(ctx)) {
             const fixed = countLines(chrome.status) + countLines(chrome.composer) + countLines(chrome.extra) + 1;
             const body_budget = height -| fixed;
-            const body = renderInlineBody(app, ctx, width, body_budget) catch "";
+            const body = if (app.state.zen.on) renderZenBody(app, ctx.allocator, width, body_budget) catch "" else renderInlineBody(app, ctx, width, body_budget) catch "";
             var parts: [5][]const u8 = undefined;
             var len: usize = 0;
             if (body.len > 0) {
@@ -4548,8 +4571,44 @@ pub const TuiModel = struct {
 
         const fixed = countLines(chrome.status) + countLines(chrome.composer) + @max(countLines(chrome.extra), 1);
         const transcript_height = if (height > fixed) height - fixed else 3;
-        const transcript = transcript_view.render(ctx.allocator, &app.state, .{ .width = width, .height = transcript_height, .anim_tick = app.state.anim_tick }) catch "";
+        const transcript = if (app.state.zen.on) renderZenBody(app, ctx.allocator, width, transcript_height) catch "" else transcript_view.render(ctx.allocator, &app.state, .{ .width = width, .height = transcript_height, .anim_tick = app.state.anim_tick }) catch "";
         return tui_render.joinVertical(ctx.allocator, &.{ transcript, chrome.extra, chrome.composer, chrome.status }) catch "";
+    }
+
+    fn renderZenBody(app: *App, allocator: std.mem.Allocator, width: usize, budget: usize) ![]const u8 {
+        if (app.zen_flow == null) app.zen_flow = zen_view.Flow.init();
+        const entries = app.state.transcript.items;
+        const counts = tui_state.zenCounts(entries, app.state.zen.start_index);
+        const running = streamActive(app);
+        var activity: []const u8 = "";
+        if (counts.last_activity) |index| {
+            const entry = &entries[index];
+            if (entry.kind == .thinking) {
+                activity = "thinking";
+            } else if (transcript_view.toolTitle(entry.text.items)) |title| {
+                activity = if (title.arg.len > 0) try std.fmt.allocPrint(allocator, "{s}  {s}", .{ title.label, title.arg }) else title.label;
+            }
+        }
+        var final_block: []const u8 = "";
+        var failed = false;
+        if (!running) {
+            if (counts.final) |index| {
+                const entry = &entries[index];
+                failed = entry.kind == .@"error";
+                final_block = try transcript_view.renderTranscriptEntryWith(allocator, entry, width, .{});
+            }
+        }
+        const body = try zen_view.render(allocator, &app.zen_flow.?, .{
+            .width = width,
+            .height = budget,
+            .counts = .{ .thinking = counts.thinking, .tools = counts.tools, .messages = counts.messages },
+            .running = running,
+            .elapsed_ms = app.state.status.streaming_elapsed_ms,
+            .activity = activity,
+            .final_block = final_block,
+            .failed = failed,
+        });
+        return tailLines(allocator, body, budget);
     }
 
     const Chrome = struct {
@@ -4793,6 +4852,7 @@ pub const TuiModel = struct {
 
     fn flushInlineHistory(self: *TuiModel, app: *App, ctx: *zz.Context, include_active: bool) !void {
         if (!self.inlineMode(ctx)) return;
+        if (app.state.zen.on and !include_active) return;
         const entries = app.state.transcript.items;
         if (app.inline_history_flushed >= entries.len) return;
         app.state.advanceSummaryScanFloor();

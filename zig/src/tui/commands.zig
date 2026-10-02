@@ -23,6 +23,7 @@ pub const CommandKind = enum {
     output,
     autocompact,
     verbose,
+    zen,
     redraw,
     settings,
     abort,
@@ -111,6 +112,7 @@ pub const commands = [_]CommandInfo{
     .{ .name = "output", .kind = .output, .usage = "/output [auto|max|tokens]", .description = "Show or set how much output a reply may ask for", .handler = handleOutput },
     .{ .name = "autocompact", .kind = .autocompact, .usage = "/autocompact [auto|percent|off]", .description = "Show or set when the conversation compacts on its own", .handler = handleAutoCompact },
     .{ .name = "verbose", .kind = .verbose, .usage = "/verbose [quiet|normal|verbose] | /verbose <thinking|tools|output|notices|status> <level>", .description = "Show or set how much the transcript and status bar show", .handler = handleVerbose },
+    .{ .name = "zen", .kind = .zen, .usage = "/zen [on|off]", .description = "Hide the transcript behind a flow and show only the final reply; tells the agent to work quietly", .handler = handleZen },
     .{ .name = "redraw", .kind = .redraw, .usage = "/redraw", .description = "Clear the terminal and reprint the session at the current verbosity", .handler = handleRedraw },
     .{ .name = "settings", .kind = .settings, .usage = "/settings", .description = "Configure TUI settings", .handler = handleSettings },
     .{ .name = "abort", .kind = .abort, .usage = "/abort", .description = "Cancel the active streaming turn", .handler = handleAbort },
@@ -499,6 +501,18 @@ fn handleVerbose(ctx: CommandContext, command: Command) !CommandResult {
     return .{ .output = try verbosityReport(ctx) };
 }
 
+pub const zen_usage = "usage: /zen [on|off]";
+
+fn handleZen(ctx: CommandContext, command: Command) !CommandResult {
+    const on = if (command.arg) |arg| blk: {
+        if (std.ascii.eqlIgnoreCase(arg, "on")) break :blk true;
+        if (std.ascii.eqlIgnoreCase(arg, "off")) break :blk false;
+        return .{ .output = try ctx.allocator.dupe(u8, zen_usage), .is_error = true };
+    } else !ctx.state.zen.on;
+    if (on) ctx.state.zen.enter(ctx.state.transcript.items.len) else ctx.state.zen.leave();
+    return .{ .output = try ctx.allocator.dupe(u8, if (on) "zen on: the agent is asked to work quietly; /zen again to return" else "zen off") };
+}
+
 fn handleRedraw(ctx: CommandContext, command: Command) !CommandResult {
     _ = command;
     if (runIsActive(ctx)) return .{ .output = try ctx.allocator.dupe(u8, "A turn is running; redraw once it finishes."), .is_error = true };
@@ -868,6 +882,34 @@ test "autocompact refuses a share that is not a percentage of the window" {
         defer result.deinit(std.testing.allocator);
         try std.testing.expect(!result.is_error);
     }
+}
+
+test "zen toggles, takes on and off, and refuses anything else" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    const ctx: CommandContext = .{ .allocator = std.testing.allocator, .state = &state };
+    try state.appendTranscript(.user, "earlier");
+
+    var on = try dispatch(ctx, try parse("/zen"));
+    defer on.deinit(std.testing.allocator);
+    try std.testing.expect(state.zen.on);
+    try std.testing.expectEqual(@as(usize, 1), state.zen.start_index);
+    try std.testing.expectEqual(tui_state.ZenNote.enter, state.zen.note);
+
+    var off = try dispatch(ctx, try parse("/zen off"));
+    defer off.deinit(std.testing.allocator);
+    try std.testing.expect(!state.zen.on);
+    try std.testing.expectEqual(tui_state.ZenNote.none, state.zen.note);
+
+    var explicit = try dispatch(ctx, try parse("/zen ON"));
+    defer explicit.deinit(std.testing.allocator);
+    try std.testing.expect(state.zen.on);
+
+    var bad = try dispatch(ctx, try parse("/zen loud"));
+    defer bad.deinit(std.testing.allocator);
+    try std.testing.expect(bad.is_error);
+    try std.testing.expectEqualStrings(zen_usage, bad.output);
+    try std.testing.expect(state.zen.on);
 }
 
 test "status hands the report to the app" {
