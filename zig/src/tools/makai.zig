@@ -6975,9 +6975,7 @@ test "the built-in fallback rows publish no lifecycle, because none states one" 
         }
     }
 
-    const request = try std.fmt.allocPrint(allocator,
-        "{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"{s}\",\"type\":\"provider.models.list.request\",\"id\":\"q1\",\"payload\":{{}}}}",
-        .{oap_provider_types.PROFILE});
+    const request = try std.fmt.allocPrint(allocator, "{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"{s}\",\"type\":\"provider.models.list.request\",\"id\":\"q1\",\"payload\":{{}}}}", .{oap_provider_types.PROFILE});
     defer allocator.free(request);
     try server.handleLine(request);
 
