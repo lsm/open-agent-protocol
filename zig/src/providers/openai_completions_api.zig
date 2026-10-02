@@ -2497,7 +2497,7 @@ test "an opencode request carries the effort opencode offers the model, and none
     const cases = [_]struct { provider: []const u8, id: []const u8, level: []const u8, sent: ?[]const u8 }{
         .{ .provider = "opencode-go", .id = "deepseek-v4.1-flash", .level = "xhigh", .sent = "max" },
         .{ .provider = "opencode-go", .id = "deepseek-v4.1-flash", .level = "low", .sent = "low" },
-        .{ .provider = "opencode", .id = "gpt-6-luna", .level = "medium", .sent = "medium" },
+        .{ .provider = "opencode-zen", .id = "gpt-6-luna", .level = "medium", .sent = "medium" },
         .{ .provider = "opencode-go", .id = "kimi-k3", .level = "high", .sent = null },
     };
     for (cases) |case| {

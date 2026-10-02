@@ -135,7 +135,7 @@ pub fn deepSeekEffort(effort: []const u8) []const u8 {
 }
 
 pub fn isOpenCodeGateway(vendor_id: []const u8) bool {
-    return std.mem.eql(u8, vendor_id, "opencode") or std.mem.eql(u8, vendor_id, "opencode-go");
+    return std.mem.eql(u8, vendor_id, "opencode-zen") or std.mem.eql(u8, vendor_id, "opencode-go");
 }
 
 pub fn openCodeEffort(model_id: []const u8, effort: []const u8) ?[]const u8 {
@@ -970,7 +970,7 @@ test "the deepseek level table follows the published mapping" {
 }
 
 test "opencode sends each model family the efforts opencode itself offers it" {
-    try std.testing.expect(isOpenCodeGateway("opencode"));
+    try std.testing.expect(isOpenCodeGateway("opencode-zen"));
     try std.testing.expect(isOpenCodeGateway("opencode-go"));
     try std.testing.expect(!isOpenCodeGateway("deepseek"));
     try std.testing.expectEqualStrings("low", openCodeEffort("deepseek-v4.1-flash", "minimal").?);

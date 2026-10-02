@@ -69,7 +69,7 @@ rather than a guess.
 
 ## OpenCode
 
-`opencode` and `opencode-go` serve many vendors' models through one
+`opencode-zen` and `opencode-go` serve many vendors' models through one
 completions endpoint and pass `reasoning_effort` through to the backend.
 Without it, a backend chooses: on `opencode-go`, DeepSeek V4.1 Flash served
 by DeepSeek's own API reasoned on most replies, and served by a vLLM host
