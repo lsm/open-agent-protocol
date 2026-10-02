@@ -613,8 +613,10 @@ A few commands change what the running turn depends on, so during a run they do 
 apply at once:
 
 - `/model <name>` with `Enter` steers: the run switches to that model before its
-  next turn (the request's key follows the new model's provider), and the TUI
-  selects and saves it when the run ends. With `Tab` it waits for the run to end.
+  next turn (the request's key follows the new model's provider, and the output
+  request is capped at the new model's maximum), and the TUI selects and saves it
+  when the run ends. A model-list refresh that lands first drops the pending switch,
+  since the list it pointed into is replaced; run `/model` again after it. With `Tab` it waits for the run to end.
 - `/context <tokens|default>`, `/output <setting>`, `/logout <provider>` and
   `/provider del <id>`, with `Enter` or `Tab`, wait for the run to end and then run
   in the order given.

@@ -1760,7 +1760,12 @@ fn runLoop(
             }
             if (state.iterations > 0) {
                 if (config.next_model_fn) |next_model| {
-                    if (next_model(config.next_model_ctx)) |model| turn_config.model = model;
+                    if (next_model(config.next_model_ctx)) |model| {
+                        turn_config.model = model;
+                        if (turn_config.max_tokens) |requested| {
+                            if (model.max_tokens > 0 and requested > model.max_tokens) turn_config.max_tokens = model.max_tokens;
+                        }
+                    }
                 }
                 if (config.compact_between_turns_fn) |compact| {
                     if (try compact(config.compact_between_turns_ctx, context, event_stream)) {

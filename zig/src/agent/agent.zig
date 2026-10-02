@@ -2309,6 +2309,7 @@ const MidRunMock = struct {
     carried_on: usize = 0,
     reported_input: u64 = 9_000,
     model_ids: [4][]const u8 = .{ "", "", "", "" },
+    max_tokens: [4]u32 = .{ 0, 0, 0, 0 },
 };
 
 fn midRunStreamFn(
@@ -2318,9 +2319,11 @@ fn midRunStreamFn(
     options: types.ProtocolOptions,
     allocator: std.mem.Allocator,
 ) anyerror!*event_stream_mod.AssistantMessageEventStream {
-    _ = options;
     const mock: *MidRunMock = @ptrCast(@alignCast(ctx.?));
-    if (mock.calls < mock.model_ids.len) mock.model_ids[mock.calls] = model.id;
+    if (mock.calls < mock.model_ids.len) {
+        mock.model_ids[mock.calls] = model.id;
+        mock.max_tokens[mock.calls] = options.max_tokens orelse 0;
+    }
     mock.calls += 1;
     const last = context.messages[context.messages.len - 1];
     const last_text: []const u8 = if (last == .user and last.user.content == .text) last.user.content.text else "";
@@ -2417,6 +2420,7 @@ test "a model switch requested during a run takes effect from the next turn" {
     var events = CompactionEvents{};
     var next = test_model;
     next.id = "next-model";
+    next.max_tokens = 512;
 
     agent.requestModelSwitch(next);
     try runMidRun(&agent, &events, null);
@@ -2424,6 +2428,8 @@ test "a model switch requested during a run takes effect from the next turn" {
     try std.testing.expectEqual(@as(usize, 2), mock.calls);
     try std.testing.expectEqualStrings(test_model.id, mock.model_ids[0]);
     try std.testing.expectEqualStrings("next-model", mock.model_ids[1]);
+    try std.testing.expect(mock.max_tokens[0] > 512);
+    try std.testing.expectEqual(@as(u32, 512), mock.max_tokens[1]);
     try std.testing.expect(Agent.nextModel(&agent) == null);
 }
 
