@@ -4281,6 +4281,16 @@ slice does not make the unit executable: binding and client ordering, and native
 pi execution, remain the gates still ahead, so nothing here advertises a
 capability the surfaces cannot yet exercise end to end.
 
+The third slice is step 3 of the same gate: pi executes steer natively. The
+adapter sends pi's `steer` command, admits against the started target with its
+last emitted sequence, settles the guidance at the turn boundary pi injects it,
+drops a pending steer before the run's terminal, and reports `pending_steers` on
+the target's `active_runs` entry. Both trees advertise
+`session.message.delivery.steer` at `emulated`, which moves the pin's capability
+revision to `pi-v0.87.1-oap-v2` in both ports, and the corpus case
+`native-controls` reclassifies its `steer` round trip from `required-unmapped` to
+mapped.
+
 The record also defers the `settled_steers` session-state surface below to its
 own decision, rather than graduating it inside this unit.
 

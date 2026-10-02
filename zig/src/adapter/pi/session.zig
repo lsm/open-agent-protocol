@@ -546,14 +546,14 @@ fn closedMembers(part: std.json.Value, allowed: []const []const u8) !void {
 }
 
 const ignored_events = [_][]const u8{
-    "auto_retry_start",                  "auto_retry_end",
-    "turn_start",
-    "message_start",                     "queue_update",
-    "compaction_start",                  "compaction_end",
-    "entry_appended",                    "session_info_changed",
-    "thinking_level_changed",            "summarization_retry_scheduled",
-    "summarization_retry_attempt_start", "summarization_retry_finished",
-    "bash_execution_update",             "extension_error",
+    "auto_retry_start",              "auto_retry_end",
+    "turn_start",                    "message_start",
+    "queue_update",                  "compaction_start",
+    "compaction_end",                "entry_appended",
+    "session_info_changed",          "thinking_level_changed",
+    "summarization_retry_scheduled", "summarization_retry_attempt_start",
+    "summarization_retry_finished",  "bash_execution_update",
+    "extension_error",
 };
 
 pub fn open(reducer: *Reducer) !void {
@@ -2386,4 +2386,74 @@ test "every member the reducer types is one the codec admits for that event" {
             return error.MemberTheCodecRefuses;
         }
     }
+}
+
+fn envelopeOfType(reducer: *Reducer, kind: []const u8) ?std.json.Value {
+    for (reducer.emitted.items) |envelope| {
+        if (std.mem.eql(u8, textOf(envelope, "type"), kind)) return envelope;
+    }
+    return null;
+}
+
+fn countOfType(reducer: *Reducer, kind: []const u8) usize {
+    var count: usize = 0;
+    for (reducer.emitted.items) |envelope| {
+        if (std.mem.eql(u8, textOf(envelope, "type"), kind)) count += 1;
+    }
+    return count;
+}
+
+test "a pending steer settles at the turn boundary" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var reducer = try started(arena.allocator());
+    try reducer.admitSteer("submission-1", "request-1", &.{"message-1"});
+    try std.testing.expectEqual(@as(usize, 1), reducer.pendingSteers().len);
+
+    try apply(&reducer, try parse(arena.allocator(), "{\"type\":\"turn_end\",\"message\":{},\"toolResults\":[]}"));
+    const applied = envelopeOfType(&reducer, "run.steer.applied") orelse return error.MissingSettlement;
+    const payload = memberOf(applied, "payload") orelse return error.MissingPayload;
+    try std.testing.expectEqualStrings("submission-1", textOf(payload, "submission_id"));
+    try std.testing.expectEqualStrings("request-1", textOf(payload, "request_id"));
+    try std.testing.expectEqualStrings("turn", textOf(payload, "boundary"));
+    try std.testing.expectEqualStrings(reducer.run_id, textOf(payload, "run_id"));
+    const ids = memberOf(payload, "message_ids") orelse return error.MissingPayload;
+    try std.testing.expectEqual(@as(usize, 1), ids.array.items.len);
+    try std.testing.expectEqualStrings("message-1", ids.array.items[0].string);
+    try std.testing.expectEqual(@as(usize, 0), reducer.pendingSteers().len);
+}
+
+test "a settled steer is not settled by the next turn boundary" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var reducer = try started(arena.allocator());
+    try reducer.admitSteer("submission-1", "request-1", &.{"message-1"});
+    const turn = "{\"type\":\"turn_end\",\"message\":{},\"toolResults\":[]}";
+    try apply(&reducer, try parse(arena.allocator(), turn));
+    try apply(&reducer, try parse(arena.allocator(), turn));
+    try std.testing.expectEqual(@as(usize, 1), countOfType(&reducer, "run.steer.applied"));
+}
+
+test "a pending steer drops before the run's terminal" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var reducer = try replay(arena.allocator(), &.{
+        agentEndWith("[{\"type\":\"text\",\"text\":\"done\"}]"),
+    });
+    try reducer.admitSteer("submission-1", "request-1", &.{"message-1"});
+    try apply(&reducer, try parse(arena.allocator(), settled_text));
+
+    var types: [4][]const u8 = undefined;
+    const emitted = typesOf(&reducer, &types);
+    try std.testing.expectEqual(@as(usize, 3), emitted.len);
+    try std.testing.expectEqualStrings("run.started", emitted[0]);
+    try std.testing.expectEqualStrings("run.steer.dropped", emitted[1]);
+    try std.testing.expectEqualStrings("run.completed", emitted[2]);
+    const dropped = envelopeOfType(&reducer, "run.steer.dropped") orelse return error.MissingDrop;
+    const payload = memberOf(dropped, "payload") orelse return error.MissingPayload;
+    try std.testing.expectEqualStrings("submission-1", textOf(payload, "submission_id"));
+    try std.testing.expectEqualStrings("request-1", textOf(payload, "request_id"));
+    const reason = memberOf(payload, "reason") orelse return error.MissingPayload;
+    try std.testing.expectEqualStrings("run_terminated", textOf(reason, "code"));
+    try std.testing.expectEqual(@as(usize, 0), reducer.pendingSteers().len);
 }
