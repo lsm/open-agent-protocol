@@ -282,11 +282,11 @@ pub fn sharesCredentialEnvWith(id: []const u8, other: []const u8) bool {
 }
 
 test "rows reading one credential variable share it, and a row does not share with itself" {
-    try std.testing.expect(sharesCredentialEnvWith("opencode-go", "opencode"));
-    try std.testing.expect(sharesCredentialEnvWith("opencode", "opencode-go"));
-    try std.testing.expect(!sharesCredentialEnvWith("opencode", "opencode"));
-    try std.testing.expect(!sharesCredentialEnvWith("opencode", "deepseek"));
-    try std.testing.expect(!sharesCredentialEnvWith("no-such-provider", "opencode"));
+    try std.testing.expect(sharesCredentialEnvWith("opencode-go", "opencode-zen"));
+    try std.testing.expect(sharesCredentialEnvWith("opencode-zen", "opencode-go"));
+    try std.testing.expect(!sharesCredentialEnvWith("opencode-zen", "opencode-zen"));
+    try std.testing.expect(!sharesCredentialEnvWith("opencode-zen", "deepseek"));
+    try std.testing.expect(!sharesCredentialEnvWith("no-such-provider", "opencode-zen"));
 }
 
 pub fn modelsEndpoint(id: []const u8) ?[]const u8 {
@@ -661,7 +661,7 @@ test "a models listing is recorded only where the provider answers one" {
     try std.testing.expect(modelsEndpoint("github-copilot") == null);
     try std.testing.expect(modelsEndpoint("ollama") == null);
     try std.testing.expect(modelsEndpoint("no-such-provider") == null);
-    try std.testing.expectEqualStrings("opencode", modelsDevKey("opencode").?);
+    try std.testing.expectEqualStrings("opencode", modelsDevKey("opencode-zen").?);
     try std.testing.expectEqualStrings("opencode-go", modelsDevKey("opencode-go").?);
     try std.testing.expect(modelsDevKey("deepseek") == null);
     try std.testing.expect(modelsDevKey("no-such-provider") == null);
@@ -993,7 +993,7 @@ test "a listing and its request agree about the version, under an override and w
         .{ .id = "openrouter", .wire = "openai-completions" },
         .{ .id = "vercel", .wire = "openai-completions" },
         .{ .id = "zenmux", .wire = "openai-completions" },
-        .{ .id = "opencode", .wire = "openai-completions" },
+        .{ .id = "opencode-zen", .wire = "openai-completions" },
         .{ .id = "deepinfra", .wire = "openai-completions" },
         .{ .id = "deepseek", .wire = "openai-completions" },
         .{ .id = "anthropic", .wire = "anthropic-messages" },

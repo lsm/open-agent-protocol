@@ -211,7 +211,7 @@ test "an empty environment variable counts as unset" {
 test "a key stored for one row answers a row that reads the same credential variable" {
     var store = emptyStorage(testing.allocator);
     defer store.deinit();
-    try store.providers.put(try testing.allocator.dupe(u8, "opencode"), .{ .api_key = try testing.allocator.dupe(u8, "zen-key") });
+    try store.providers.put(try testing.allocator.dupe(u8, "opencode-zen"), .{ .api_key = try testing.allocator.dupe(u8, "zen-key") });
     var found = (try lookup(testing.allocator, &.{}, &store, "opencode-go")).?;
     defer found.deinit(testing.allocator);
     try testing.expectEqual(Source.stored, found.source);

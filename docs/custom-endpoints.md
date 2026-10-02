@@ -193,7 +193,7 @@ fails with `DuplicateOverride` rather than depending on which line won.
   it under that provider id, the same path Kimi uses. The input is masked.
   `/logout <id>` removes that one provider's credential from the keychain and
   from `~/.oapx/auth.json`, along with the copies of an API key that login saved
-  for providers reading the same variable (`opencode` and `opencode-go`), since
+  for providers reading the same variable (`opencode-zen` and `opencode-go`), since
   either copy would still sign the provider in. Every other credential is left
   alone. It fails
   rather than touching only the file when the keychain is locked or busy, since
