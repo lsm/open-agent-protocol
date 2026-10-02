@@ -23,9 +23,13 @@ before a tool call keeps the per-message estimates rather than counting its toke
 A follow-up queued during a turn is submitted with `delivery: "queue"`, and the turn stays
 open until each reservation has been promoted and run, so it reads as one turn as it does
 locally; clearing the queue or aborting cancels the reservations. Resume, compaction and steering
-refuse with `UnavailableOverOap` until their gaps below close. The map that
-follows predates this and still describes the server path `oapx serve agent`
-without `--backend` uses.
+refuse with `UnavailableOverOap` until their gaps below close. `oapx tui --attach URL` runs the
+same execution over a running hub's HTTP wire (`zig/src/tui/hub_link.zig`): each envelope
+goes to its route, and each run is followed on its own SSE stream replayed from its first
+event, read by polling the socket on the execution's pump thread. A model switch, which
+the hub has no route for, is refused to its request, and a model the hub's catalog lacks
+leaves the session on the hub's default with a warning. The map that follows predates
+this and still describes the server path `oapx serve agent` without `--backend` uses.
 
 Every claim here was read off `origin/main` at `cbfa3b96d6`. The endpoint's own
 capability list is the authority on what it can serve, and where that list

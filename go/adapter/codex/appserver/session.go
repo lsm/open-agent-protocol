@@ -1063,3 +1063,7 @@ func terminalStatus(typ protocol.EnvelopeType) protocol.RunStatus {
 }
 
 var _ adapter.Session = (*session)(nil)
+
+func (session *session) NativeSessionID() string {
+	return session.threadID
+}

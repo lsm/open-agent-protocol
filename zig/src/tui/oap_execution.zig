@@ -7,6 +7,7 @@ const tui_runtime = @import("tui_runtime");
 const tui_session = @import("tui_session");
 const adapter_endpoint = @import("adapter_endpoint");
 const oapx_adapter = @import("oapx_adapter");
+const hub_link = @import("hub_link");
 const OwnedSlice = @import("owned_slice").OwnedSlice;
 
 const TuiEvent = tui_session.TuiEvent;
@@ -21,8 +22,9 @@ pub const in_process_frame_limit: usize = 64 << 20;
 
 pub const OapExecution = struct {
     allocator: std.mem.Allocator,
-    adapter: *oapx_adapter.Adapter,
-    endpoint: adapter_endpoint.Endpoint,
+    adapter: ?*oapx_adapter.Adapter = null,
+    endpoint: ?adapter_endpoint.Endpoint = null,
+    hub: ?*hub_link.HubLink = null,
     sink: ?tui_runtime.EventSink = null,
     revision: []u8 = &.{},
     session_id: []u8 = &.{},
@@ -84,10 +86,37 @@ pub const OapExecution = struct {
         return self;
     }
 
+    pub fn attach(allocator: std.mem.Allocator, base: []const u8, adapter_name: []const u8) !*OapExecution {
+        const link = try hub_link.HubLink.create(allocator, base, adapter_name);
+        errdefer link.destroy();
+        const self = try allocator.create(OapExecution);
+        self.* = .{ .allocator = allocator, .hub = link };
+        return self;
+    }
+
+    fn sendLine(self: *OapExecution, line: []const u8) !void {
+        if (self.hub) |link| return link.handleLine(line);
+        try self.endpoint.?.handleLine(line);
+    }
+
+    fn pumpLink(self: *OapExecution) !bool {
+        if (self.hub) |link| return link.pump();
+        return self.endpoint.?.pump(0);
+    }
+
+    fn popLine(self: *OapExecution) ?[]u8 {
+        if (self.hub) |link| return link.popOutbound();
+        return self.endpoint.?.popOutbound();
+    }
+
     pub fn destroy(self: *OapExecution) void {
         const allocator = self.allocator;
         self.halt();
-        self.endpoint.deinit();
+        if (self.endpoint) |*endpoint| endpoint.deinit();
+        if (self.hub) |link| {
+            link.closeSession();
+            link.destroy();
+        }
         for (self.inbound.items) |line| allocator.free(line);
         self.inbound.deinit(allocator);
         self.text.deinit(allocator);
@@ -99,7 +128,7 @@ pub const OapExecution = struct {
         allocator.free(self.revision);
         allocator.free(self.session_id);
         allocator.free(self.run_id);
-        allocator.destroy(self.adapter);
+        if (self.adapter) |adapter| allocator.destroy(adapter);
         allocator.destroy(self);
     }
 
@@ -133,7 +162,11 @@ pub const OapExecution = struct {
         var initialize = Map.init(a);
         try initialize.put("protocol_versions", try strings(a, &.{protocol_version}));
         try initialize.put("profiles", try strings(a, &.{profile}));
-        const initialized = try self.exchange(a, "protocol.initialize.request", initialize.value(), false);
+        var empty = Map.init(a);
+        const initialized = if (self.hub != null)
+            try self.exchange(a, "capabilities.request", empty.value(), false)
+        else
+            try self.exchange(a, "protocol.initialize.request", initialize.value(), false);
         const revision = initialized.object.get("capability_revision") orelse return error.OapInitializeFailed;
         if (revision != .string) return error.OapInitializeFailed;
         const kept_revision = try self.allocator.dupe(u8, revision.string);
@@ -151,11 +184,23 @@ pub const OapExecution = struct {
         try settings_map.put("permission_mode", .{ .string = @tagName(settings.permission_mode) });
         if (settings.workspace_root.len > 0) try settings_map.put("workspace_root", .{ .string = settings.workspace_root });
         try settings_map.put("user_input", .{ .bool = false });
+        if (self.hub != null) {
+            if (settings.model) |model| try settings_map.put("model", .{ .string = try modelRef(a, model) });
+        }
         var metadata = Map.init(a);
         try metadata.put(oapx_adapter.settings_key, settings_map.value());
         var open = Map.init(a);
         try open.put("metadata", metadata.value());
-        const opened = try self.exchange(a, "session.open.request", open.value(), true);
+        const opened = self.exchange(a, "session.open.request", open.value(), true) catch |err| retry: {
+            if (err != error.OapRequestRefused or self.hub == null or settings.model == null) return err;
+            _ = settings_map.map.swapRemove("model");
+            try metadata.put(oapx_adapter.settings_key, settings_map.value());
+            try open.put("metadata", metadata.value());
+            const reopened = try self.exchange(a, "session.open.request", open.value(), true);
+            const message = try std.fmt.allocPrint(self.allocator, "the hub refused to open the session on {s}, so it runs on the hub's default model", .{try modelRef(a, settings.model.?)});
+            self.deliver(.{ .system_warning = .{ .message = OwnedSlice(u8).initOwned(message) } });
+            break :retry reopened;
+        };
         const payload = opened.object.get("payload") orelse return error.OapOpenFailed;
         if (payload != .object) return error.OapOpenFailed;
         const session_id = payload.object.get("session_id") orelse return error.OapOpenFailed;
@@ -184,8 +229,8 @@ pub const OapExecution = struct {
             }
         }
 
-        if (settings.model) |model| {
-            const wanted = try modelRef(a, model);
+        if (settings.model != null and self.hub == null) {
+            const wanted = try modelRef(a, settings.model.?);
             var switch_map = Map.init(a);
             try switch_map.put("session_id", .{ .string = self.session_id });
             try switch_map.put("model_id", .{ .string = wanted });
@@ -204,10 +249,10 @@ pub const OapExecution = struct {
     fn exchange(self: *OapExecution, a: std.mem.Allocator, kind: []const u8, payload: std.json.Value, scoped: bool) !std.json.Value {
         const id = try self.nextId(a, "start");
         const line = try self.envelope(a, kind, id, payload, scoped, null);
-        try self.endpoint.handleLine(line);
+        try self.sendLine(line);
         var attempts: usize = 0;
         while (attempts < startup_attempts) : (attempts += 1) {
-            while (self.endpoint.popOutbound()) |answer| {
+            while (self.popLine()) |answer| {
                 defer self.allocator.free(answer);
                 const parsed = std.json.parseFromSliceLeaky(std.json.Value, a, try a.dupe(u8, answer), .{}) catch continue;
                 if (parsed != .object) continue;
@@ -217,7 +262,7 @@ pub const OapExecution = struct {
                 if (answered == .string and std.mem.eql(u8, answered.string, "error.response")) return error.OapRequestRefused;
                 return parsed;
             }
-            _ = try self.endpoint.pump(0);
+            _ = try self.pumpLink();
             compat.time.sleepNs(std.time.ns_per_ms);
         }
         return error.OapRequestUnanswered;
@@ -594,11 +639,11 @@ pub const OapExecution = struct {
         var moved = false;
         while (self.takeInbound()) |line| {
             defer self.allocator.free(line);
-            try self.endpoint.handleLine(line);
+            try self.sendLine(line);
             moved = true;
         }
-        if (try self.endpoint.pump(0)) moved = true;
-        while (self.endpoint.popOutbound()) |line| {
+        if (try self.pumpLink()) moved = true;
+        while (self.popLine()) |line| {
             defer self.allocator.free(line);
             try self.translateLine(line);
             moved = true;

@@ -5293,14 +5293,20 @@ fn preferredContextWindow(stored: ?u32, flag: ?u32) ?u32 {
     return flag orelse stored;
 }
 
-pub const over_oap_notice = "oapx tui: this session runs over OAP through the in-process endpoint. Resume, compaction, steering and the model's questions to you are not carried over OAP yet, an \"always\" answer to a tool approval applies to that call only, and the thinking level, context window, output limit and workspace are fixed when the session opens; use oapx --tui for them.";
+pub const over_oap_notice = "oapx tui: this session runs over OAP, through the in-process endpoint or the hub it is attached to. Resume, compaction, steering and the model's questions to you are not carried over OAP yet, an \"always\" answer to a tool approval applies to that call only, and the thinking level, context window, output limit and workspace are fixed when the session opens; use oapx --tui for them.";
 pub const over_oap_setting_refusal = tui_commands.over_oap_setting_refusal;
 
 pub fn run(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32) !void {
-    return runWith(allocator, io, context_window, false);
+    return runWith(allocator, io, context_window, .local);
 }
 
-pub fn runWith(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32, over_oap: bool) !void {
+pub const Execution = union(enum) {
+    local,
+    in_process,
+    attach: struct { url: []const u8, adapter: []const u8 },
+};
+
+pub fn runWith(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32, execution_mode: Execution) !void {
     var environ_map = try compat.createEnvMap(allocator);
     defer environ_map.deinit();
 
@@ -5323,8 +5329,11 @@ pub fn runWith(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32, o
     }
     var execution: ?*tui_oap_execution.OapExecution = null;
     defer if (execution) |owned| owned.destroy();
-    if (over_oap) {
-        execution = try tui_oap_execution.OapExecution.create(allocator, options);
+    if (execution_mode != .local) {
+        execution = switch (execution_mode) {
+            .attach => |target| try tui_oap_execution.OapExecution.attach(allocator, target.url, target.adapter),
+            else => try tui_oap_execution.OapExecution.create(allocator, options),
+        };
         options.remote = execution.?.remote();
         options.generate_titles = false;
         options.auto_worktree = false;
