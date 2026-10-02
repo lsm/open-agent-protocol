@@ -716,6 +716,7 @@ fn runLegacyApproval(tool: AgentTool, approval_request: types.ToolApprovalReques
 const ToolExecutionResult = struct {
     tool_results: []ai_types.ToolResultMessage,
     compact_args: [][]u8 = &.{},
+    retained_args: [][]u8 = &.{},
     has_steering: bool,
     steering_messages: ?[]const ai_types.Message,
 
@@ -726,6 +727,8 @@ const ToolExecutionResult = struct {
         allocator.free(self.tool_results);
         for (self.compact_args) |args| allocator.free(args);
         allocator.free(self.compact_args);
+        for (self.retained_args) |args| allocator.free(args);
+        allocator.free(self.retained_args);
         if (self.steering_messages) |msgs| {
             const mut_msgs: []ai_types.Message = @constCast(msgs);
             for (mut_msgs) |*msg| msg.deinit(allocator);
@@ -737,6 +740,8 @@ const ToolExecutionResult = struct {
         allocator.free(self.tool_results);
         for (self.compact_args) |args| allocator.free(args);
         allocator.free(self.compact_args);
+        for (self.retained_args) |args| allocator.free(args);
+        allocator.free(self.retained_args);
         if (self.steering_messages) |msgs| {
             const mut_msgs: []ai_types.Message = @constCast(msgs);
             for (mut_msgs) |*msg| msg.deinit(allocator);
@@ -865,6 +870,11 @@ fn executeToolCalls(
         for (compact_args.items) |args| allocator.free(args);
         compact_args.deinit(allocator);
     }
+    var retained_args: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (retained_args.items) |args| allocator.free(args);
+        retained_args.deinit(allocator);
+    }
     var has_steering = false;
     var steering_messages: ?[]const ai_types.Message = null;
     errdefer if (steering_messages) |msgs| {
@@ -900,6 +910,16 @@ fn executeToolCalls(
                 try finalizeToolExecution(allocator, config, event_stream, &results, tool_call, execution_args, &result, is_error);
                 continue;
             };
+            const effective_args = if (config.rewrite_tool_args_fn) |rewrite| blk: {
+                const rewritten = try rewrite(config.rewrite_tool_args_ctx, tool_call.name, validated_args, allocator);
+                if (rewritten) |owned| {
+                    errdefer allocator.free(owned);
+                    try retained_args.append(allocator, owned);
+                    break :blk owned;
+                }
+                break :blk validated_args;
+            } else validated_args;
+            execution_args = effective_args;
             const should_compact = if (config.compact_tool_output) supportsCompactToolOutput(allocator, t) catch |err| {
                 result = try createErrorResult(allocator, err);
                 is_error = true;
@@ -907,7 +927,7 @@ fn executeToolCalls(
                 continue;
             } else false;
             if (should_compact) {
-                const owned_args = withCompactToolOutput(allocator, validated_args) catch |err| {
+                const owned_args = withCompactToolOutput(allocator, effective_args) catch |err| {
                     result = try createErrorResult(allocator, err);
                     is_error = true;
                     try finalizeToolExecution(allocator, config, event_stream, &results, tool_call, execution_args, &result, is_error);
@@ -924,7 +944,7 @@ fn executeToolCalls(
                 .args_json = execution_args,
             };
             if (config.permission_engine) |engine| {
-                const policy_decision = engine.evaluateTool(t.operation, tool_call.name, validated_args);
+                const policy_decision = engine.evaluateTool(t.operation, tool_call.name, effective_args);
                 if (policy_decision == .deny) {
                     result = try rejectedToolResult(allocator);
                     is_error = true;
@@ -940,7 +960,7 @@ fn executeToolCalls(
                         continue;
                     }
                     if (legacy_decision == .approve_always) {
-                        const call = permission.parseToolCallOf(allocator, t.operation, tool_call.name, validated_args) catch null;
+                        const call = permission.parseToolCallOf(allocator, t.operation, tool_call.name, effective_args) catch null;
                         if (call) |parsed_call| {
                             defer permission.deinitParsedToolCall(allocator, parsed_call);
                             if (permission.canPersistDecision(parsed_call)) engine.persistDecision(parsed_call, .allow) catch {};
@@ -948,7 +968,7 @@ fn executeToolCalls(
                     }
 
                     if (policy_decision == .prompt and engine.approval_callback != null and legacy_decision != .approve_always) {
-                        const decision = try engine.approveTool(t.operation, tool_call.name, validated_args);
+                        const decision = try engine.approveTool(t.operation, tool_call.name, effective_args);
                         if (decision == .reject or decision == .reject_always) {
                             result = try rejectedToolResult(allocator);
                             is_error = true;
@@ -1021,9 +1041,11 @@ fn executeToolCalls(
         allocator.free(tool_results);
     }
     const owned_compact_args = try compact_args.toOwnedSlice(allocator);
+    const owned_retained_args = try retained_args.toOwnedSlice(allocator);
     return .{
         .tool_results = tool_results,
         .compact_args = owned_compact_args,
+        .retained_args = owned_retained_args,
         .has_steering = has_steering,
         .steering_messages = steering_messages,
     };
