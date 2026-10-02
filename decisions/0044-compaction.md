@@ -118,7 +118,10 @@ one: a run exists because a request admitted it, and a compaction is no
 exception. A threshold the history crosses while the session is idle — at a
 run's settlement, say — is therefore deferred to the next admitted run, where
 the compaction is the first thing the run does after `run.started` and before
-its first model turn, carrying `reason: "threshold"`. So an idle endpoint never
+its first model turn, carrying `reason: "threshold"`. When that next run was
+admitted by `session.compact.request`, its `requested` compaction satisfies
+the deferral and no separate `threshold` compaction is published: the run
+still carries exactly one compaction, and it is the requested one. So an idle endpoint never
 changes the history silently: it either waits for the next run, where the
 change is sequenced, or the control layer asks for it with
 `session.compact.request`. The TUI's pre-turn `/autocompact` check is the
