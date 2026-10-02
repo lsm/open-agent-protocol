@@ -370,6 +370,8 @@ func (s *Server) openOp(ctx context.Context, request requestLine, stream context
 		ToolSources:           attachments,
 		Tools:                 payload.Tools,
 		Reopen:                payload.Reopen,
+		ReasoningLevel:        payload.ReasoningLevel,
+		CompactionPolicy:      payload.CompactionPolicy,
 	}
 	if payload.Metadata != nil {
 		open.Metadata = make(map[string]any, len(payload.Metadata))

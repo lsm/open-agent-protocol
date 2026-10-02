@@ -40,6 +40,7 @@ pub const ReasoningLevel = enum {
     medium,
     high,
     xhigh,
+    max,
 };
 
 pub const MetadataEntry = struct {
