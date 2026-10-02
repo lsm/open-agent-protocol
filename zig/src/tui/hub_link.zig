@@ -114,6 +114,7 @@ pub const HubLink = struct {
             return self.refuse(a, id, "hub_unreadable", try std.fmt.allocPrint(a, "the hub answered {d} with a body that is not an envelope", .{fetched.status}));
         };
         if (answer != .object) return self.refuse(a, id, "hub_unreadable", "the hub answered with a body that is not an envelope");
+        if (try self.queuedBehind(a, answer.object, id)) return;
         try self.observe(a, answer.object);
         var correlated = answer.object;
         try correlated.put(a, "in_reply_to", .{ .string = id });
@@ -135,6 +136,36 @@ pub const HubLink = struct {
             if (!std.mem.eql(u8, textOf(body, "admission") orelse "", "started")) return;
             try self.follow(a, run_id);
         }
+    }
+
+    fn queuedBehind(self: *HubLink, a: std.mem.Allocator, answer: std.json.ObjectMap, id: []const u8) !bool {
+        if (!std.mem.eql(u8, textOf(answer, "type") orelse "", "session.message.submit.response")) return false;
+        const body = if (answer.get("payload")) |value| (if (value == .object) value.object else return false) else return false;
+        if (!std.mem.eql(u8, textOf(body, "admission") orelse "", "queued")) return false;
+        if (textOf(body, "run_id")) |run_id| {
+            var cancel_payload: std.json.ObjectMap = .empty;
+            try cancel_payload.put(a, "session_id", .{ .string = self.session_id });
+            try cancel_payload.put(a, "run_id", .{ .string = run_id });
+            var cancel: std.json.ObjectMap = .empty;
+            try cancel.put(a, "protocol", .{ .string = protocol_name });
+            try cancel.put(a, "version", .{ .string = protocol_version });
+            try cancel.put(a, "profile", .{ .string = profile });
+            try cancel.put(a, "type", .{ .string = "run.cancel.request" });
+            try cancel.put(a, "id", .{ .string = "hub-link-withdraw" });
+            try cancel.put(a, "session_id", .{ .string = self.session_id });
+            try cancel.put(a, "run_id", .{ .string = run_id });
+            try cancel.put(a, "payload", .{ .object = cancel_payload });
+            const line = try std.json.Stringify.valueAlloc(a, std.json.Value{ .object = cancel }, .{});
+            const target = try self.path(a, "/sessions/", self.session_id, "/cancel");
+            const url = try std.fmt.allocPrint(a, "{s}{s}", .{ self.base, target });
+            const headers = [_]std.http.Header{.{ .name = "Content-Type", .value = "application/json" }};
+            if (compat.http.fetch(self.allocator, url, .{ .method = .POST, .body = line, .extra_headers = &headers, .timeout_ms = request_timeout_ms })) |answered| {
+                var owned = answered;
+                owned.deinit(self.allocator);
+            } else |_| {}
+        }
+        try self.refuse(a, id, "session_busy", "the hub queued this turn behind a run of this session still in flight, which this terminal no longer follows; the reservation was withdrawn, so wait for that run or cancel it from another client");
+        return true;
     }
 
     fn follow(self: *HubLink, a: std.mem.Allocator, run_id: []const u8) !void {

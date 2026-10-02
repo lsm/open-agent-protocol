@@ -2410,6 +2410,7 @@ const TuiArgs = struct {
     context_window: ?u32 = null,
     attach: ?[]const u8 = null,
     adapter: []const u8 = "oapx",
+    adapter_named: bool = false,
 };
 
 fn parseTuiArgs(args: []const []const u8) TuiArgError!TuiArgs {
@@ -2420,7 +2421,12 @@ fn parseTuiArgs(args: []const []const u8) TuiArgError!TuiArgs {
         if (std.mem.eql(u8, arg, "--attach") or std.mem.eql(u8, arg, "--adapter")) {
             if (index + 1 >= args.len) return error.UnknownOption;
             index += 1;
-            if (std.mem.eql(u8, arg, "--attach")) parsed.attach = args[index] else parsed.adapter = args[index];
+            if (std.mem.eql(u8, arg, "--attach")) {
+                parsed.attach = args[index];
+            } else {
+                parsed.adapter = args[index];
+                parsed.adapter_named = true;
+            }
             continue;
         }
         if (!std.mem.eql(u8, arg, "--context-window")) return error.UnknownOption;
@@ -2441,6 +2447,11 @@ fn runTuiOverOap(allocator: std.mem.Allocator, io: std.Io, args: []const []const
         try printUsage(stderr);
         return error.InvalidArgument;
     };
+    if (parsed.attach == null and parsed.adapter_named) {
+        try compat.stdio.writeAll(stderr, "--adapter names the hub adapter --attach opens a session on, so it needs --attach\n\n");
+        try printUsage(stderr);
+        return error.InvalidArgument;
+    }
     const mode: tui_app.Execution = if (parsed.attach) |url| .{ .attach = .{ .url = url, .adapter = parsed.adapter } } else .in_process;
     try tui_app.runWith(allocator, io, parsed.context_window, mode);
 }

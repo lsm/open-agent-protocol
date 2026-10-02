@@ -169,7 +169,16 @@ pub const OapExecution = struct {
         try metadata.put(oapx_adapter.settings_key, settings_map.value());
         var open = Map.init(a);
         try open.put("metadata", metadata.value());
-        const opened = try self.exchange(a, "session.open.request", open.value(), true);
+        const opened = self.exchange(a, "session.open.request", open.value(), true) catch |err| retry: {
+            if (err != error.OapRequestRefused or self.hub == null or settings.model == null) return err;
+            _ = settings_map.map.swapRemove("model");
+            try metadata.put(oapx_adapter.settings_key, settings_map.value());
+            try open.put("metadata", metadata.value());
+            const reopened = try self.exchange(a, "session.open.request", open.value(), true);
+            const message = try std.fmt.allocPrint(self.allocator, "the hub refused to open the session on {s}, so it runs on the hub's default model", .{try modelRef(a, settings.model.?)});
+            self.deliver(.{ .system_warning = .{ .message = OwnedSlice(u8).initOwned(message) } });
+            break :retry reopened;
+        };
         const payload = opened.object.get("payload") orelse return error.OapOpenFailed;
         if (payload != .object) return error.OapOpenFailed;
         const session_id = payload.object.get("session_id") orelse return error.OapOpenFailed;
