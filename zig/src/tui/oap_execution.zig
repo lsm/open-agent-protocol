@@ -38,6 +38,7 @@ pub const OapExecution = struct {
     text: std.ArrayList(u8) = .empty,
     session_models: std.ArrayList([]u8) = .empty,
     pending_permission: ?PendingPermission = null,
+    output_tokens: u64 = 0,
 
     const PendingPermission = struct {
         interaction_id: []u8,
@@ -529,6 +530,11 @@ pub const OapExecution = struct {
             self.deliver(.{ .tool_execution_end = .{ .tool_call_id = call_id, .tool_name = name, .result_json = result_json, .is_error = failed } });
             return;
         }
+        if (std.mem.eql(u8, kind, "run.completed") or std.mem.eql(u8, kind, "run.failed") or std.mem.eql(u8, kind, "run.cancelled")) {
+            if (!self.turn_open.load(.acquire)) return;
+            self.output_tokens = usageTokens(body);
+            if (contextTokens(root)) |tokens| self.deliver(.{ .context_usage = .{ .estimated_tokens = tokens } });
+        }
         if (std.mem.eql(u8, kind, "run.completed")) {
             if (!self.turn_open.load(.acquire)) return;
             const stop_reason = stopReason(stringOf(body, "stop_reason") orelse "end_turn");
@@ -568,6 +574,7 @@ pub const OapExecution = struct {
 
     fn endTurn(self: *OapExecution, reason: tui_session.TuiEndReason) void {
         self.turn_open.store(false, .release);
+        self.output_tokens = 0;
         self.forgetPermission();
         self.deliver(.{ .agent_end = .{ .reason = reason } });
     }
@@ -582,7 +589,9 @@ pub const OapExecution = struct {
     fn closeAssistant(self: *OapExecution, stop_reason: ai_types.StopReason) !void {
         if (!self.in_assistant) return;
         self.in_assistant = false;
-        self.deliver(.{ .message_end = .{ .role = .assistant, .text = try self.ownedText(self.text.items), .stop_reason = stop_reason } });
+        const output_tokens = self.output_tokens;
+        self.output_tokens = 0;
+        self.deliver(.{ .message_end = .{ .role = .assistant, .text = try self.ownedText(self.text.items), .stop_reason = stop_reason, .output_tokens = output_tokens } });
         self.text.clearRetainingCapacity();
     }
 };
@@ -628,6 +637,22 @@ fn errorMessage(body: std.json.ObjectMap) []const u8 {
     return stringOf(body, "message") orelse "the endpoint refused the request";
 }
 
+fn usageTokens(body: std.json.ObjectMap) u64 {
+    const usage = body.get("usage") orelse return 0;
+    if (usage != .object) return 0;
+    const tokens = usage.object.get("output_tokens") orelse return 0;
+    return if (tokens == .integer and tokens.integer > 0) @intCast(tokens.integer) else 0;
+}
+
+fn contextTokens(root: std.json.ObjectMap) ?u64 {
+    const extensions = root.get("extensions") orelse return null;
+    if (extensions != .object) return null;
+    const ours = extensions.object.get(oapx_adapter.settings_key) orelse return null;
+    if (ours != .object) return null;
+    const tokens = ours.object.get("context_tokens") orelse return null;
+    return if (tokens == .integer and tokens.integer >= 0) @intCast(tokens.integer) else null;
+}
+
 fn jsonText(allocator: std.mem.Allocator, value: ?std.json.Value) ![]u8 {
     const present = value orelse return allocator.dupe(u8, "");
     if (present == .string) return allocator.dupe(u8, present.string);
@@ -666,6 +691,7 @@ const Script = struct {
     stop_reason: ai_types.StopReason = .stop,
     tool_first: bool = false,
     calls: usize = 0,
+    output_tokens: u64 = 0,
     last_thinking: ai_types.ThinkingLevel = .off,
 };
 
@@ -743,8 +769,12 @@ fn scriptedStream(ctx: ?*anyopaque, model: ai_types.Model, context: ai_types.Con
     const partial = bareMessage(script.stop_reason);
     try stream.push(.{ .start = .{ .partial = partial } });
     try stream.push(.{ .text_delta = .{ .content_index = 0, .delta = script.reply, .partial = partial } });
-    try stream.push(.{ .done = .{ .reason = script.stop_reason, .message = try scriptedMessage(allocator, script.reply, script.stop_reason) } });
-    stream.complete(try scriptedMessage(allocator, script.reply, script.stop_reason));
+    var done = try scriptedMessage(allocator, script.reply, script.stop_reason);
+    done.usage.output = script.output_tokens;
+    try stream.push(.{ .done = .{ .reason = script.stop_reason, .message = done } });
+    var settled = try scriptedMessage(allocator, script.reply, script.stop_reason);
+    settled.usage.output = script.output_tokens;
+    stream.complete(settled);
     return stream;
 }
 
@@ -755,6 +785,8 @@ const Seen = struct {
     agent_starts: usize = 0,
     warnings: usize = 0,
     output_limit_warned: bool = false,
+    output_tokens: u64 = 0,
+    context_tokens: ?u64 = null,
 
     fn deinit(self: *Seen) void {
         self.text.deinit(testing.allocator);
@@ -775,7 +807,9 @@ fn drainTurn(runtime: *tui_runtime.TuiRuntime, seen: *Seen) !void {
                     if (std.mem.indexOf(u8, payload.message.slice(), "output token limit") != null) seen.output_limit_warned = true;
                 },
                 .text_delta => |payload| try seen.text.appendSlice(testing.allocator, payload.delta.slice()),
+                .context_usage => |payload| seen.context_tokens = payload.estimated_tokens,
                 .message_end => |payload| if (payload.role == .assistant) {
+                    seen.output_tokens = payload.output_tokens;
                     seen.final_text.clearRetainingCapacity();
                     try seen.final_text.appendSlice(testing.allocator, payload.text.slice());
                 },
@@ -825,6 +859,23 @@ test "a turn submitted to a runtime over OAP streams back as the events the term
     try testing.expectEqualStrings("over the wire", seen.final_text.items);
     try testing.expectEqual(ai_types.ThinkingLevel.high, script.last_thinking);
     try testing.expect(runtime.isIdle());
+}
+
+test "a turn over OAP reports its output tokens and the context it filled to the status bar" {
+    var script = Script{ .output_tokens = 42 };
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .off);
+    defer execution.destroy();
+    defer runtime.deinit();
+
+    try runtime.submitTurn("count");
+    var seen = Seen{};
+    defer seen.deinit();
+    try drainTurn(&runtime, &seen);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+    try testing.expectEqual(@as(u64, 42), seen.output_tokens);
+    try testing.expect(seen.context_tokens != null);
+    try testing.expect(seen.context_tokens.? > 0);
 }
 
 test "a reply over OAP that stops at its output token limit warns the user as the local runtime does" {
