@@ -234,8 +234,15 @@ func (a *Adapter) start(ctx context.Context, req base.OpenRequest) (Client, stri
 	if err != nil {
 		return nil, "", err
 	}
+	if req.ReasoningLevel == "" && patch == "" {
+		return a.config.Factory.Start(ctx)
+	}
 	if a.process == nil {
-		return nil, "", &base.UnsupportedControlError{Feature: protocol.FeatureSessionReasoning, Reason: base.ControlUnsatisfiable, Detail: "a supplied factory starts the runtime, so the adapter cannot configure it"}
+		feature, field := protocol.FeatureSessionReasoning, "reasoning_level"
+		if req.ReasoningLevel == "" {
+			feature, field = protocol.FeatureCompactionPolicy, "compaction_policy"
+		}
+		return nil, "", &base.UnsupportedControlError{Feature: feature, Reason: base.ControlUnsatisfiable, Field: field, Detail: "a supplied factory starts the runtime, so the adapter cannot configure it"}
 	}
 	pc := *a.process
 	pc.Args = append([]string(nil), pc.Args...)

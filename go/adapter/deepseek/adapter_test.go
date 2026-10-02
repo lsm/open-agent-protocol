@@ -86,3 +86,23 @@ func TestAnOpenStartsItsOwnRuntimeWithTheEffortAndACompactionPatch(t *testing.T)
 		}
 	}
 }
+
+func TestASuppliedFactoryRefusesTheSettingTheOpenCarriedAndRunsAnAutoPolicy(t *testing.T) {
+	started := 0
+	implementation, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, string, error) {
+		started++
+		return nil, "", errors.New("factory reached")
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = implementation.Open(context.Background(), base.OpenRequest{SessionID: "s", CompactionPolicy: &protocol.CompactionPolicy{Kind: protocol.CompactionOff}})
+	var refusal *base.UnsupportedControlError
+	if !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureCompactionPolicy || refusal.Field != "compaction_policy" || started != 0 {
+		t.Fatalf("open answered %v (factory started %d times), want the compaction policy named", err, started)
+	}
+	_, err = implementation.Open(context.Background(), base.OpenRequest{SessionID: "s", CompactionPolicy: &protocol.CompactionPolicy{Kind: protocol.CompactionAuto}})
+	if started != 1 || errors.As(err, &refusal) {
+		t.Fatalf("an auto policy answered %v (factory started %d times), want it to need no configuration", err, started)
+	}
+}
