@@ -99,6 +99,18 @@ An adapter entry takes exactly these members: `type`, `executable`, `args`,
 needs nothing but its name. Without `--config` the hub serves the built-in
 memory reference adapter alone.
 
+An entry of type **`oapx`** serves oapx's own agent loop, built the way
+`oapx serve agent --backend oapx` builds it: the providers, credentials and
+model catalog are the ones `~/.oapx` holds, shared by every `oapx` entry in the
+document, and each session gets its own runtime. A session's settings come from
+its open's `metadata.oapx`, the keys `oapx tui` sends — `thinking_level`,
+`context_window`, `output`, `permission_mode`, `workspace_root` and
+`user_input` — and its model from a submit's `model_id`, a `provider/api/id`
+reference, so two sessions on one hub can run different providers and models.
+This type is Zig's alone: Go has no counterpart adapter, so `goap hub` refuses
+the entry as an unknown type, and `examples/oap-serve.json` does not carry one
+because `goap hub` reads that file too (D27).
+
 A tool source entry takes exactly `kind`, `display_name`, `protocol`,
 `endpoint`, `command`, `args`, `environment`. A `process` entry must carry a
 `command`; a `kind` outside the protocol's five is refused; an entry naming one
@@ -1812,6 +1824,15 @@ are "stamped with the revision the lister served it under", and both name
 | **The fix** | `hub.OpenRequest` gains `message_json`, the hub registers the subscription before running the submission, and the answer carries `admitted_submit_requests`. For the subscribing case, the `Frontend` needs a held subscription — the same thing `events` needs — so both unblock together. This is `submit`'s work, not `open`'s: the same PR that serves `submit` on the wire is the one that can admit a message at open time. |
 | **The refusal's precedence** | It is checked **before** the adapter is looked up and before the revision gate runs, so an open naming an unregistered adapter *and* carrying a message answers `unsupported_feature` where Go answers `unknown_adapter`, and a subscribing open citing a stale revision answers `unsupported_feature` where Go answers `stale_capabilities`. Go's `openOp` looks the adapter up first and gates second, so both of those win there. Hoisting the refusal means it lives in the hub rather than the frontend, which is where it stops existing: the moment `submit` admits a message and `events` admits a subscription, neither refusal is there to be out of order. It is recorded rather than fixed because every input that reaches the difference is already divergent under this row. |
 | **Also refused here** | **A subscribing open, for the same reason and a sharper one.** `hub.open` registers a `Subscription` when `subscribe` is set, and the stdio op discarded it — the wire accepted a subscription it cannot deliver, and once `submit` lands its envelopes would queue against a subscription nothing drains. Go holds the subscription in its `Frontend`; there is no equivalent here yet, so the honest answer is to refuse until `events` exists. **This is a second divergence from the same cause** and it is why `open`'s parity cases carry no `subscribe` at all. |
+
+### D27 — an `oapx` registry entry is served by `oapx hub` and refused by `goap hub`
+
+| | |
+| --- | --- |
+| **The draft says** | A registry entry's `type` names an adapter the hub constructs; [the registry](#the-registry) lists `oapx` as Zig's own agent loop. |
+| **Go does** | Refuses the entry: `buildAdapter` has no `oapx` case, because there is no Go adapter over oapx's loop. |
+| **Zig does** | Builds it from the same production runtime `oapx serve agent --backend oapx` uses. |
+| **Why it matters** | One document is not portable between the two hubs once it names an `oapx` entry, which is why `examples/oap-serve.json` does not name one. Closing it needs a Go adapter that spawns `oapx serve agent --backend oapx` over the endpoint binding, which is adapter work rather than hub work. |
 
 ### D12 — an open's `unsupported_feature` and `capability_degraded` carried no `feature`
 
