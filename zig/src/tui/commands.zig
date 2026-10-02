@@ -47,6 +47,7 @@ pub const CommandAction = enum {
     refresh_models,
     logout_provider,
     add_provider,
+    compact_during_run,
     remove_provider,
     open_login_picker,
     open_permission_picker,
@@ -375,7 +376,7 @@ fn handleClear(ctx: CommandContext, command: Command) !CommandResult {
 fn handleCompact(ctx: CommandContext, command: Command) !CommandResult {
     _ = command;
     if (ctx.state.status.compacting) return .{ .output = try ctx.allocator.dupe(u8, "Already compacting; esc cancels.") };
-    if (ctx.state.status.streaming) return .{ .output = try ctx.allocator.dupe(u8, "A turn is running; compact once it finishes, or press esc to stop it first.") };
+    if (ctx.state.status.streaming) return .{ .action = .compact_during_run };
     return .{ .action = .compact };
 }
 
@@ -1037,7 +1038,7 @@ test "runtime dependent commands dispatch to no-runtime errors" {
     try std.testing.expectError(error.NoRuntimeConfigured, dispatch(ctx, .{ .kind = .model, .arg = "model-a" }));
 }
 
-test "compact takes its focus and waits for a running turn" {
+test "compact takes its focus and hands a running turn's request to the app" {
     const command = try parse("/compact  the parser rewrite ");
     try std.testing.expectEqual(CommandKind.compact, command.kind);
     try std.testing.expectEqualStrings("the parser rewrite", command.arg.?);
@@ -1053,8 +1054,7 @@ test "compact takes its focus and waits for a running turn" {
     state.status.streaming = true;
     var busy = try dispatch(ctx, command);
     defer busy.deinit(std.testing.allocator);
-    try std.testing.expectEqual(CommandAction.none, busy.action);
-    try std.testing.expect(std.mem.indexOf(u8, busy.output, "A turn is running") != null);
+    try std.testing.expectEqual(CommandAction.compact_during_run, busy.action);
 
     state.status.compacting = true;
     var again = try dispatch(ctx, command);

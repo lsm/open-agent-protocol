@@ -97,6 +97,7 @@ pub const Agent = struct {
     _compact_tool_output: bool,
     _output: agent_loop.OutputSetting = .auto,
     _auto_compact_at: ?u64 = null,
+    _compaction_request: ?[]u8 = null,
     _compaction_host: ?CompactionHost = null,
     _retired_messages: std.ArrayList(ai_types.Message) = .empty,
     _permission_engine: ?*types.permission.PermissionEngine,
@@ -156,6 +157,8 @@ pub const Agent = struct {
         }
 
         self.clearAllQueues();
+        if (self._compaction_request) |focus| self._allocator.free(focus);
+        self._compaction_request = null;
         self._steering_queue.deinit(self._allocator);
         self._follow_up_queue.deinit(self._allocator);
 
@@ -313,16 +316,36 @@ pub const Agent = struct {
         self._compaction_host = host;
     }
 
+    pub fn requestCompaction(self: *Agent, focus: []const u8) !void {
+        const owned = try self._allocator.dupe(u8, focus);
+        self._mutex.lockUncancelable(defaultIo());
+        defer self._mutex.unlock(defaultIo());
+        if (self._compaction_request) |previous| self._allocator.free(previous);
+        self._compaction_request = owned;
+    }
+
+    pub fn takeCompactionRequest(self: *Agent) ?[]u8 {
+        self._mutex.lockUncancelable(defaultIo());
+        defer self._mutex.unlock(defaultIo());
+        const focus = self._compaction_request;
+        self._compaction_request = null;
+        return focus;
+    }
+
     fn compactBetweenTurns(ctx: ?*anyopaque, context: *AgentContext, event_stream: *AgentEventStream) anyerror!bool {
         const self: *Agent = @ptrCast(@alignCast(ctx.?));
-        const at = self._auto_compact_at orelse return false;
         const history = context.messages.items;
+        const requested = self.takeCompactionRequest();
+        defer if (requested) |focus| self._allocator.free(focus);
         if (history.len == 0 or compaction.isCompacted(history)) return false;
-        if (agent_loop.promptTokens(.{ .messages = history }) < at) return false;
+        if (requested == null) {
+            const at = self._auto_compact_at orelse return false;
+            if (agent_loop.promptTokens(.{ .messages = history }) < at) return false;
+        }
 
         if (!event_stream.pushBlocking(.compaction_start)) return error.StreamCompleted;
         const transcripts: CompactionTranscripts = if (self._compaction_host) |host| host.transcripts_fn(host.ctx, history) else .{};
-        var summary = self.summarize(history, .{ .focus = "", .transcripts = transcripts.paths }) catch |err| Summary{
+        var summary = self.summarize(history, .{ .focus = requested orelse "", .transcripts = transcripts.paths }) catch |err| Summary{
             .result = compaction.failure(self._allocator, @errorName(err)),
         };
         if (summary.replacement) |*replacement| {
@@ -2405,6 +2428,33 @@ test "a run under the threshold, or with no threshold, does not compact" {
         try std.testing.expectEqual(@as(usize, 0), events.started);
         try std.testing.expectEqual(@as(usize, 4), agent._state.messages.items.len);
     }
+}
+
+test "a requested compaction runs between turns without a threshold and is consumed" {
+    var mock = MidRunMock{};
+    var agent = Agent.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = midRunStreamFn, .ctx = &mock } });
+    defer agent.deinit();
+    var events = CompactionEvents{};
+
+    try agent.requestCompaction("the parser rewrite");
+    try runMidRun(&agent, &events, null);
+
+    try std.testing.expectEqual(@as(usize, 1), mock.summary_requests);
+    try std.testing.expectEqual(@as(usize, 1), events.completed);
+    try std.testing.expectEqual(@as(usize, 1), mock.carried_on);
+    try std.testing.expect(agent.takeCompactionRequest() == null);
+}
+
+test "a compaction request is replaced by a later one and taken once" {
+    var mock = MidRunMock{};
+    var agent = Agent.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = midRunStreamFn, .ctx = &mock } });
+    defer agent.deinit();
+    try agent.requestCompaction("first");
+    try agent.requestCompaction("second");
+    const taken = agent.takeCompactionRequest() orelse return error.TestExpectedRequest;
+    defer std.testing.allocator.free(taken);
+    try std.testing.expectEqualStrings("second", taken);
+    try std.testing.expect(agent.takeCompactionRequest() == null);
 }
 
 test "Agent compactAsync retries with less history when the request overflows the context" {

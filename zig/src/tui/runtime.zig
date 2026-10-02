@@ -451,6 +451,8 @@ pub const TuiRuntime = struct {
                 .current_model = sessionCurrentModel,
                 .decide_tool_approval = sessionDecideToolApproval,
                 .stream_events = sessionStreamEvents,
+                .request_compaction = sessionRequestCompaction,
+                .take_compaction_request = sessionTakeCompactionRequest,
             },
         };
     }
@@ -1671,6 +1673,20 @@ fn sessionStart(ctx: ?*anyopaque) anyerror!void {
 fn sessionResume(ctx: ?*anyopaque) anyerror!void {
     const self: *TuiRuntime = @ptrCast(@alignCast(ctx.?));
     try self.resumeSession();
+}
+
+fn sessionRequestCompaction(ctx: ?*anyopaque, focus: []const u8) anyerror!void {
+    const self: *TuiRuntime = @ptrCast(@alignCast(ctx.?));
+    const local = &(self.local_agent orelse return error.RuntimeNotStarted);
+    try local.requestCompaction(focus);
+}
+
+fn sessionTakeCompactionRequest(ctx: ?*anyopaque, allocator: std.mem.Allocator) anyerror!?[]u8 {
+    const self: *TuiRuntime = @ptrCast(@alignCast(ctx.?));
+    const local = &(self.local_agent orelse return null);
+    const focus = local.takeCompactionRequest() orelse return null;
+    defer local._allocator.free(focus);
+    return try allocator.dupe(u8, focus);
 }
 
 fn sessionCompact(ctx: ?*anyopaque, options: CompactOptions) anyerror!void {

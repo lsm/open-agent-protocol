@@ -996,6 +996,7 @@ pub const App = struct {
     inline_flushed_rows: usize = 0,
     login_status: [provider_catalog.all.len]LoginStatus = [_]LoginStatus{.none} ** provider_catalog.all.len,
     pending_session_reset: bool = false,
+    pending_compaction: ?[]u8 = null,
     pending_models: ?[]ai_types.Model = null,
     model_fetch: ?*ModelFetch = null,
     model_refetch: bool = false,
@@ -1077,6 +1078,8 @@ pub const App = struct {
     }
 
     pub fn deinit(self: *App) void {
+        if (self.pending_compaction) |focus| self.allocator.free(focus);
+        self.pending_compaction = null;
         if (self.model_fetch) |fetch| {
             if (fetch.done.load(.acquire)) {
                 var outcome = fetch.finish();
@@ -2781,6 +2784,39 @@ pub const App = struct {
         }
         if (!completed_agent_end or self.state.queue.total() == 0) try self.drainQueuedWorktreeMessageIfIdle();
         if (run_ended) try self.sendHeldAfterAbort();
+        if (run_ended) try self.startCompactionAfterRun();
+    }
+
+    fn steerCompaction(self: *App, focus: []const u8) !void {
+        var session = &(self.session orelse return error.NoRuntimeConfigured);
+        if (try session.requestCompaction(focus)) {
+            try self.state.appendTranscript(.system, "compacting before the next turn of this run, or when the run ends if no turn follows");
+            return;
+        }
+        try self.queueCompaction(focus);
+    }
+
+    pub fn queueCompaction(self: *App, focus: []const u8) !void {
+        const owned = try self.allocator.dupe(u8, focus);
+        if (self.pending_compaction) |previous| self.allocator.free(previous);
+        self.pending_compaction = owned;
+        try self.state.appendTranscript(.system, "compacting when this run ends");
+    }
+
+    fn startCompactionAfterRun(self: *App) !void {
+        var session = &(self.session orelse return);
+        if (try session.takeCompactionRequest(self.allocator)) |steered| {
+            if (self.pending_compaction) |previous| self.allocator.free(previous);
+            self.pending_compaction = steered;
+        }
+        const focus = self.pending_compaction orelse return;
+        if (self.state.status.streaming or self.state.status.compacting) return;
+        if (self.runtime) |runtime| {
+            if (runtime.local_agent) |*local| local.waitForIdle();
+        }
+        self.pending_compaction = null;
+        defer self.allocator.free(focus);
+        try self.startCompaction(focus);
     }
 
     fn worktreeSetupRunning(self: *const App) bool {
@@ -3169,6 +3205,7 @@ pub const App = struct {
             .open_settings_picker => self.openPicker(.settings),
             .start_login_provider => try self.startLoginProviderName(result.login_provider),
             .compact => try self.startCompaction(command.arg orelse ""),
+            .compact_during_run => try self.steerCompaction(command.arg orelse ""),
             .rename_session => try self.renameSession(command.arg orelse ""),
             .refresh_models => try self.refreshModelsInBackground(),
             .logout_provider => try self.logoutProvider(command.arg orelse ""),
@@ -3912,7 +3949,12 @@ pub const TuiModel = struct {
                     .backspace => _ = app.state.composer.deleteBeforeCursor(),
                     .delete => _ = app.state.composer.deleteAtCursor(),
                     .tab => {
-                        if (app.state.mode == .normal and app.state.status.streaming and !isSlashDraft(app.state.composer.text())) {
+                        if (app.state.mode == .normal and app.state.status.streaming and compactDraftFocus(app.state.composer.text()) != null) {
+                            const text = app.state.composer.text();
+                            app.queueCompaction(compactDraftFocus(text).?) catch |err| app.recordError(@errorName(err)) catch {};
+                            app.state.recordComposerHistory(text) catch |err| app.recordError(@errorName(err)) catch {};
+                            app.state.composer.clear();
+                        } else if (app.state.mode == .normal and app.state.status.streaming and !isSlashDraft(app.state.composer.text())) {
                             const text = app.state.composer.text();
                             const queued = app.queueFollowUp(text) catch |err| blk: {
                                 if (err != error.PendingSessionReset) app.recordError(@errorName(err)) catch {};
@@ -4487,6 +4529,12 @@ pub const TuiModel = struct {
         return @max(app.last_view_height, 8) / 2;
     }
 };
+
+fn compactDraftFocus(text: []const u8) ?[]const u8 {
+    const command = tui_commands.parse(std.mem.trim(u8, text, " \t\r\n")) catch return null;
+    if (command.kind != .compact) return null;
+    return command.arg orelse "";
+}
 
 fn isSlashDraft(text: []const u8) bool {
     const trimmed = std.mem.trimStart(u8, text, " \t\r\n");
