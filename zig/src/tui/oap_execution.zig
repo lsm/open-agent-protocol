@@ -33,6 +33,7 @@ pub const OapExecution = struct {
     thread: ?std.Thread = null,
     stopping: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     turn_open: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    cancel_pending: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     in_assistant: bool = false,
     text: std.ArrayList(u8) = .empty,
     session_models: std.ArrayList([]u8) = .empty,
@@ -151,6 +152,7 @@ pub const OapExecution = struct {
                 else => return err,
             };
         }
+        self.stopping.store(false, .release);
         self.thread = try std.Thread.spawn(.{}, run, .{self});
     }
 
@@ -195,6 +197,11 @@ pub const OapExecution = struct {
         try payload.put("session_id", .{ .string = self.session_id });
         try payload.put("messages", .{ .array = messages });
         try payload.put("delivery", .{ .string = "auto" });
+        self.lockInbound();
+        self.allocator.free(self.run_id);
+        self.run_id = &.{};
+        self.cancel_pending.store(false, .release);
+        self.inbound_mutex.unlock();
         self.turn_open.store(true, .release);
         errdefer self.turn_open.store(false, .release);
         try self.enqueue(a, "session.message.submit.request", "submit", payload.value(), null);
@@ -214,8 +221,12 @@ pub const OapExecution = struct {
             self.inbound_mutex.unlock();
             return err;
         };
+        if (run_id.len == 0) {
+            self.cancel_pending.store(true, .release);
+            self.inbound_mutex.unlock();
+            return;
+        }
         self.inbound_mutex.unlock();
-        if (run_id.len == 0) return;
         var payload = Map.init(a);
         try payload.put("session_id", .{ .string = self.session_id });
         try payload.put("run_id", .{ .string = run_id });
@@ -385,6 +396,7 @@ pub const OapExecution = struct {
             self.in_assistant = false;
             self.deliver(.{ .agent_start = .{} });
             self.deliver(.{ .turn_start = .{} });
+            if (self.cancel_pending.swap(false, .acq_rel)) try self.sendCancel();
             return;
         }
         if (std.mem.eql(u8, kind, "content.delta")) {
@@ -407,11 +419,12 @@ pub const OapExecution = struct {
             try self.closeAssistant(.tool_use);
             const arguments = try jsonText(self.allocator, body.get("arguments_json"));
             defer self.allocator.free(arguments);
-            self.deliver(.{ .tool_execution_start = .{
-                .tool_call_id = try self.ownedText(stringOf(body, "tool_call_id") orelse ""),
-                .tool_name = try self.ownedText(stringOf(body, "name") orelse ""),
-                .args_json = try self.ownedText(arguments),
-            } });
+            var call_id = try self.ownedText(stringOf(body, "tool_call_id") orelse "");
+            errdefer call_id.deinit(self.allocator);
+            var name = try self.ownedText(stringOf(body, "name") orelse "");
+            errdefer name.deinit(self.allocator);
+            const args_json = try self.ownedText(arguments);
+            self.deliver(.{ .tool_execution_start = .{ .tool_call_id = call_id, .tool_name = name, .args_json = args_json } });
             return;
         }
         if (std.mem.eql(u8, kind, "action.call.completed") or std.mem.eql(u8, kind, "action.call.failed")) {
@@ -421,12 +434,12 @@ pub const OapExecution = struct {
             else
                 try jsonText(self.allocator, body.get("result"));
             defer self.allocator.free(result);
-            self.deliver(.{ .tool_execution_end = .{
-                .tool_call_id = try self.ownedText(stringOf(body, "tool_call_id") orelse ""),
-                .tool_name = try self.ownedText(stringOf(body, "name") orelse ""),
-                .result_json = try self.ownedText(result),
-                .is_error = failed,
-            } });
+            var call_id = try self.ownedText(stringOf(body, "tool_call_id") orelse "");
+            errdefer call_id.deinit(self.allocator);
+            var name = try self.ownedText(stringOf(body, "name") orelse "");
+            errdefer name.deinit(self.allocator);
+            const result_json = try self.ownedText(result);
+            self.deliver(.{ .tool_execution_end = .{ .tool_call_id = call_id, .tool_name = name, .result_json = result_json, .is_error = failed } });
             return;
         }
         if (std.mem.eql(u8, kind, "run.completed")) {
@@ -823,7 +836,7 @@ test "a switch to a model the OAP session does not list is refused before the ap
 
     try testing.expectError(error.ModelNotFound, runtime.switchModel("unlisted-model"));
     try testing.expectEqualStrings(scripted_model.id, runtime.currentModel().?.id);
-    try testing.expectError(error.UnavailableOverOap, runtime.replaceModels(&.{unlisted}, null));
+    try testing.expectError(error.ModelNotFound, runtime.replaceModels(&.{unlisted}, null));
     try testing.expectEqualStrings(scripted_model.id, runtime.currentModel().?.id);
 }
 
@@ -843,4 +856,33 @@ test "a lost stream warns and ends the turn instead of leaving it to stream fore
     defer seen.deinit();
     try drainTurn(&runtime, &seen);
     try testing.expectEqual(@as(?tui_session.TuiEndReason, .@"error"), seen.end);
+}
+
+test "a cancel that lands before the run has started is held and sent once it starts" {
+    var script = Script{ .wait_for_cancel = true };
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+    try runtime.submitTurn("wait");
+    runtime.cancel();
+    var seen = Seen{};
+    defer seen.deinit();
+    try drainTurn(&runtime, &seen);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .cancelled), seen.end);
+}
+
+test "a stopped execution restarts with a live pump" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+    try runtime.start();
+    runtime.stop();
+    try runtime.submitTurn("after a restart");
+    var seen = Seen{};
+    defer seen.deinit();
+    try drainTurn(&runtime, &seen);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
 }
