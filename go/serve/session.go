@@ -24,8 +24,8 @@ func newSessionRegistry() *sessionRegistry {
 }
 
 type runIndex struct {
-	mu    sync.RWMutex
-	owner map[protocol.RunID]protocol.SessionID
+	mu     sync.RWMutex
+	owners map[protocol.RunID]map[protocol.SessionID]bool
 }
 
 func (r *runIndex) claim(session protocol.SessionID, run protocol.RunID) {
@@ -34,19 +34,36 @@ func (r *runIndex) claim(session protocol.SessionID, run protocol.RunID) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.owner == nil {
-		r.owner = make(map[protocol.RunID]protocol.SessionID)
+	if r.owners == nil {
+		r.owners = make(map[protocol.RunID]map[protocol.SessionID]bool)
 	}
-	if _, exists := r.owner[run]; !exists {
-		r.owner[run] = session
+	holders := r.owners[run]
+	if holders == nil {
+		holders = make(map[protocol.SessionID]bool)
+		r.owners[run] = holders
 	}
+	holders[session] = true
 }
 
-func (r *runIndex) ownerOf(run protocol.RunID) (protocol.SessionID, bool) {
+func (r *runIndex) foreign(run protocol.RunID, self protocol.SessionID) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	owner, ok := r.owner[run]
-	return owner, ok
+	holders := r.owners[run]
+	if len(holders) == 0 || holders[self] {
+		return false
+	}
+	return true
+}
+
+func (r *runIndex) release(session protocol.SessionID) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for run, holders := range r.owners {
+		delete(holders, session)
+		if len(holders) == 0 {
+			delete(r.owners, run)
+		}
+	}
 }
 
 func (r *sessionRegistry) get(id protocol.SessionID) (*Session, bool) {
@@ -134,8 +151,9 @@ type steerGate struct {
 	doneOnce  sync.Once
 }
 
-func (g *steerGate) requestDrain(readers int) {
-	g.requested.Store(true)
+func (g *steerGate) markDrainRequested() { g.requested.Store(true) }
+
+func (g *steerGate) awaitDrain(readers int) {
 	if readers == 0 {
 		return
 	}
@@ -375,11 +393,11 @@ func (s *Session) Submit(ctx context.Context, submit base.SubmitRequest) (protoc
 	return admission, nil
 }
 
-func (s *Session) runOwner(run protocol.RunID) (protocol.SessionID, bool) {
+func (s *Session) foreignRun(run protocol.RunID) bool {
 	if s.runs == nil {
-		return "", false
+		return false
 	}
-	return s.runs.ownerOf(run)
+	return s.runs.foreign(run, s.id)
 }
 
 func (s *Session) submitSteer(ctx context.Context, submit base.SubmitRequest) (protocol.MessageSubmitResponse, error) {
@@ -389,7 +407,7 @@ func (s *Session) submitSteer(ctx context.Context, submit base.SubmitRequest) (p
 			target = current
 		}
 	}
-	if owner, known := s.runOwner(target); known && owner != s.id {
+	if s.foreignRun(target) {
 		return protocol.MessageSubmitResponse{}, &base.InvalidSteerTargetError{RunID: target, Reason: base.SteerReasonCrossSession}
 	}
 	gate, err := s.armSteerGate(ctx, target, submit.EnvelopeID)
@@ -403,8 +421,9 @@ func (s *Session) submitSteer(ctx context.Context, submit base.SubmitRequest) (p
 	s.mu.Lock()
 	readers := s.readers
 	s.mu.Unlock()
+	gate.markDrainRequested()
 	s.broadcastDrain()
-	gate.requestDrain(readers)
+	gate.awaitDrain(readers)
 	if err != nil {
 		boundary := gate.boundary
 		var refusal *base.InvalidSteerTargetError
@@ -1054,6 +1073,9 @@ func (s *Session) markClosed() {
 	s.mu.Lock()
 	releasing := !s.closed && s.release != nil
 	s.closed = true
+	if s.runs != nil {
+		s.runs.release(s.id)
+	}
 	var withheld []protocol.Envelope
 	if s.gate != nil {
 		withheld = s.gate.withheld

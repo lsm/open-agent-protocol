@@ -258,6 +258,47 @@ func TestASteerNamingAnotherSessionsRunIsRefused(t *testing.T) {
 	}
 }
 
+func TestASteerOfARepeatedRunIDIsNotForeign(t *testing.T) {
+	registry := NewRegistry()
+	if err := registry.Register("memory-a", base.NewMemory(base.Config{JournalCapacity: 64})); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register("memory-b", base.NewMemory(base.Config{JournalCapacity: 64})); err != nil {
+		t.Fatal(err)
+	}
+	hub := New(registry, Options{})
+	ctx := context.Background()
+	first, _, err := hub.Open(ctx, "memory-a", base.OpenRequest{SessionID: "first", Participant: protocol.Participant{ID: "user"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := hub.Open(ctx, "memory-b", base.OpenRequest{SessionID: "second", Participant: protocol.Participant{ID: "user"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages := []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}
+	if _, err := first.Submit(ctx, base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "first", Delivery: protocol.DeliveryAuto, Messages: messages}}); err != nil {
+		t.Fatal(err)
+	}
+	own, err := second.Submit(ctx, base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "second", Delivery: protocol.DeliveryAuto, Messages: messages}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	steer, err := second.Submit(ctx, base.SubmitRequest{
+		EnvelopeID: "req-steer",
+		Request: protocol.MessageSubmitRequest{
+			SessionID: "second", Delivery: protocol.DeliverySteer, TargetRunID: own.RunID,
+			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("wait")}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("a session's own run was refused as foreign: %v", err)
+	}
+	if steer.Admission != protocol.AdmissionSteered {
+		t.Fatalf("steer admission = %+v", steer)
+	}
+}
+
 func TestASteerNamingAnotherSessionsRunIsRefusedThroughTheHub(t *testing.T) {
 	registry := NewRegistry()
 	if err := registry.Register("memory", base.NewMemory(base.Config{JournalCapacity: 64})); err != nil {
