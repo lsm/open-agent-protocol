@@ -544,7 +544,12 @@ func (s *memorySession) steer(submit SubmitRequest) (protocol.MessageSubmitRespo
 	}
 	target, reason := s.steerTargetLocked(request.TargetRunID)
 	if reason != "" {
-		return protocol.MessageSubmitResponse{}, nil, &InvalidSteerTargetError{RunID: request.TargetRunID, Reason: reason}
+		refusal := &InvalidSteerTargetError{RunID: request.TargetRunID, Reason: reason}
+		if target != nil {
+			sequence := target.nextSequence - 1
+			refusal.TargetSequence = &sequence
+		}
+		return protocol.MessageSubmitResponse{}, nil, refusal
 	}
 	messageIDs := make([]protocol.MessageID, len(request.Messages))
 	for i := range request.Messages {

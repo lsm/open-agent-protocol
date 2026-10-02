@@ -1433,6 +1433,18 @@ func requireSteerReason(t *testing.T, err error, reason string, target protocol.
 	}
 }
 
+func requireSteerBoundary(t *testing.T, err error, want uint64) {
+	t.Helper()
+	var refusal *adapter.InvalidSteerTargetError
+	if !errors.As(err, &refusal) || refusal.TargetSequence == nil || *refusal.TargetSequence != want {
+		got := "absent"
+		if errors.As(err, &refusal) && refusal.TargetSequence != nil {
+			got = fmt.Sprint(*refusal.TargetSequence)
+		}
+		t.Fatalf("refusal boundary = %s, want %d", got, want)
+	}
+}
+
 func activeRun(t *testing.T, snapshot protocol.SessionState, run protocol.RunID) protocol.ActiveRun {
 	t.Helper()
 	for _, entry := range snapshot.ActiveRuns {
@@ -1550,12 +1562,14 @@ func TestMemorySteerTargetRefusals(t *testing.T) {
 	}
 	_, _, err = session.Submit(ctx, adapter.SubmitRequest{Request: steerRequest(reservation.RunID)})
 	requireSteerReason(t, err, adapter.SteerReasonQueued, reservation.RunID)
+	requireSteerBoundary(t, err, 0)
 
 	if _, err := session.Cancel(ctx, reservation.RunID); err != nil {
 		t.Fatal(err)
 	}
 	_, _, err = session.Submit(ctx, adapter.SubmitRequest{Request: steerRequest(reservation.RunID)})
 	requireSteerReason(t, err, adapter.SteerReasonTerminal, reservation.RunID)
+	requireSteerBoundary(t, err, 1)
 
 	drainAvailable(stream)
 	if _, err := session.Cancel(ctx, first.RunID); err != nil {
@@ -1563,6 +1577,7 @@ func TestMemorySteerTargetRefusals(t *testing.T) {
 	}
 	_, _, err = session.Submit(ctx, adapter.SubmitRequest{Request: steerRequest(first.RunID)})
 	requireSteerReason(t, err, adapter.SteerReasonTerminal, first.RunID)
+	requireSteerBoundary(t, err, 8)
 
 	idle := steerRequest("")
 	idle.SessionID = "another-session"

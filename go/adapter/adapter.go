@@ -164,6 +164,8 @@ const (
 type InvalidSteerTargetError struct {
 	RunID  protocol.RunID
 	Reason string
+
+	TargetSequence *uint64
 }
 
 func (e *InvalidSteerTargetError) Error() string {
