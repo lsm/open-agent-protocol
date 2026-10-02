@@ -225,10 +225,7 @@ fn handleHelp(ctx: CommandContext, command: Command) !CommandResult {
 
 fn handleModel(ctx: CommandContext, command: Command) !CommandResult {
     if (command.arg) |model_id| {
-        if (std.mem.eql(u8, model_id, "refresh")) {
-            if (runIsActive(ctx)) return .{ .output = try ctx.allocator.dupe(u8, "A turn is running; refresh models once it finishes."), .is_error = true };
-            return .{ .action = .refresh_models };
-        }
+        if (std.mem.eql(u8, model_id, "refresh")) return .{ .action = .refresh_models };
         if (ctx.session) |session| {
             try session.switchModel(model_id);
         } else if (ctx.runtime) |runtime| {
@@ -875,6 +872,12 @@ test "model refresh and logout hand their work to the app" {
     defer refresh.deinit(std.testing.allocator);
     try std.testing.expectEqual(CommandAction.refresh_models, refresh.action);
 
+    state.status.streaming = true;
+    var running = try dispatch(.{ .allocator = std.testing.allocator, .state = &state }, try parse("/model refresh"));
+    defer running.deinit(std.testing.allocator);
+    try std.testing.expectEqual(CommandAction.refresh_models, running.action);
+    state.status.streaming = false;
+
     const logout = try parse("/logout opencode-go");
     try std.testing.expectEqual(CommandKind.logout, logout.kind);
     try std.testing.expectEqualStrings("opencode-go", logout.arg.?);
@@ -892,10 +895,6 @@ test "model refresh and logout hand their work to the app" {
     defer busy.deinit(std.testing.allocator);
     try std.testing.expectEqual(CommandAction.none, busy.action);
     try std.testing.expect(busy.is_error);
-    var busy_refresh = try dispatch(.{ .allocator = std.testing.allocator, .state = &state }, try parse("/model refresh"));
-    defer busy_refresh.deinit(std.testing.allocator);
-    try std.testing.expectEqual(CommandAction.none, busy_refresh.action);
-    try std.testing.expect(busy_refresh.is_error);
 }
 
 test "resume opens the session picker when sessions exist" {
@@ -1115,7 +1114,7 @@ test "abort does not hold a steer the run already consumed" {
     try std.testing.expectEqualStrings("still waiting", state.held_after_abort.items[0]);
 }
 
-test "logout and model refresh wait for a turn the status has not caught up with" {
+test "logout waits for a turn the status has not caught up with" {
     var runtime = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{});
     defer runtime.deinit();
     runtime.stream_active = true;
@@ -1124,12 +1123,14 @@ test "logout and model refresh wait for a turn the status has not caught up with
     defer state.deinit();
     try std.testing.expect(!state.status.streaming);
 
-    inline for (.{ "/logout opencode-go", "/model refresh" }) |input| {
-        var result = try dispatch(.{ .allocator = std.testing.allocator, .state = &state, .runtime = &runtime }, try parse(input));
-        defer result.deinit(std.testing.allocator);
-        try std.testing.expectEqual(CommandAction.none, result.action);
-        try std.testing.expect(result.is_error);
-    }
+    var result = try dispatch(.{ .allocator = std.testing.allocator, .state = &state, .runtime = &runtime }, try parse("/logout opencode-go"));
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqual(CommandAction.none, result.action);
+    try std.testing.expect(result.is_error);
+
+    var refresh = try dispatch(.{ .allocator = std.testing.allocator, .state = &state, .runtime = &runtime }, try parse("/model refresh"));
+    defer refresh.deinit(std.testing.allocator);
+    try std.testing.expectEqual(CommandAction.refresh_models, refresh.action);
 }
 
 test "abort cancels active turn before streaming status is set" {

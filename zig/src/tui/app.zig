@@ -91,6 +91,53 @@ fn loadRuntimeModelsFresh(allocator: std.mem.Allocator) ![]ai_types.Model {
     return loadRuntimeModelsWithCatalog(allocator, model_catalog.refreshProductionModels, false);
 }
 
+fn loadRuntimeModelsFreshNoting(allocator: std.mem.Allocator, notes: *model_catalog.RefreshNotes) ![]ai_types.Model {
+    return withDefaultModel(allocator, try model_catalog.refreshProductionModelsNoting(allocator, notes));
+}
+
+const ModelFetch = struct {
+    thread: std.Thread,
+    done: std.atomic.Value(bool) = .init(false),
+    result: anyerror![]ai_types.Model = error.ModelFetchPending,
+    notes: model_catalog.RefreshNotes = .init(fetch_allocator),
+
+    const fetch_allocator = std.heap.smp_allocator;
+
+    const Outcome = struct {
+        result: anyerror![]ai_types.Model,
+        notes: model_catalog.RefreshNotes,
+
+        fn deinit(self: *Outcome) void {
+            if (self.result) |models| release(models) else |_| {}
+            self.notes.deinit();
+        }
+    };
+
+    fn start() !*ModelFetch {
+        const fetch = try fetch_allocator.create(ModelFetch);
+        errdefer fetch_allocator.destroy(fetch);
+        fetch.* = .{ .thread = undefined };
+        fetch.thread = try std.Thread.spawn(.{}, work, .{fetch});
+        return fetch;
+    }
+
+    fn work(self: *ModelFetch) void {
+        self.result = loadRuntimeModelsFreshNoting(fetch_allocator, &self.notes);
+        self.done.store(true, .release);
+    }
+
+    fn finish(self: *ModelFetch) Outcome {
+        self.thread.join();
+        const outcome: Outcome = .{ .result = self.result, .notes = self.notes };
+        fetch_allocator.destroy(self);
+        return outcome;
+    }
+
+    fn release(models: []ai_types.Model) void {
+        model_catalog.deinitModels(fetch_allocator, models);
+    }
+};
+
 fn loadRuntimeModelsWithCatalog(
     allocator: std.mem.Allocator,
     comptime loadCatalog: fn (std.mem.Allocator) anyerror![]ai_types.Model,
@@ -100,6 +147,10 @@ fn loadRuntimeModelsWithCatalog(
         try allocator.alloc(ai_types.Model, 0)
     else
         return err;
+    return withDefaultModel(allocator, catalog_models);
+}
+
+fn withDefaultModel(allocator: std.mem.Allocator, catalog_models: []ai_types.Model) ![]ai_types.Model {
     var consumed: usize = 0;
     errdefer {
         for (catalog_models[consumed..]) |*model| model.deinit(allocator);
@@ -945,6 +996,9 @@ pub const App = struct {
     inline_flushed_rows: usize = 0,
     login_status: [provider_catalog.all.len]LoginStatus = [_]LoginStatus{.none} ** provider_catalog.all.len,
     pending_session_reset: bool = false,
+    pending_models: ?[]ai_types.Model = null,
+    model_fetch: ?*ModelFetch = null,
+    model_refetch: bool = false,
     quarantine_events: bool = false,
     quarantine_generation: u32 = 0,
     quarantine_buffer: std.ArrayList(tui_runtime.TuiEvent) = .empty,
@@ -1023,6 +1077,19 @@ pub const App = struct {
     }
 
     pub fn deinit(self: *App) void {
+        if (self.model_fetch) |fetch| {
+            if (fetch.done.load(.acquire)) {
+                var outcome = fetch.finish();
+                outcome.deinit();
+            } else {
+                fetch.thread.detach();
+            }
+            self.model_fetch = null;
+        }
+        if (self.pending_models) |models| {
+            model_catalog.deinitModels(self.allocator, models);
+            self.pending_models = null;
+        }
         if (self.login) |session| {
             session.deinit();
             self.login = null;
@@ -1775,11 +1842,10 @@ pub const App = struct {
                 self.finishLogin();
                 if (save_err) |_| {
                     self.refreshLoginStatus();
-                    const switched = self.refreshModels();
                     const msg = try std.fmt.allocPrint(self.allocator, "logged in to {s}", .{provider_id});
                     defer self.allocator.free(msg);
                     try self.state.appendTranscript(.system, msg);
-                    try self.reportModelRefresh(switched, "login succeeded but refreshing models failed");
+                    try self.refreshModelsInBackground();
                 } else |err| {
                     const msg = try std.fmt.allocPrint(self.allocator, "login succeeded but saving credentials failed: {s}", .{@errorName(err)});
                     defer self.allocator.free(msg);
@@ -1804,6 +1870,7 @@ pub const App = struct {
     }
 
     fn saveLoginCredentials(self: *App, provider_id: []const u8, creds: oauth_storage.Credentials, stores_api_key: bool) !void {
+        self.discardModelFetch();
         var storage = try oauth_storage.AuthStorage.loadDefault(self.allocator);
         defer storage.deinit();
 
@@ -1867,9 +1934,92 @@ pub const App = struct {
     }
 
     fn refreshModels(self: *App) !bool {
-        const runtime = self.runtime orelse return false;
+        self.discardModelFetch();
         const models = try loadRuntimeModelsFresh(self.allocator);
         defer model_catalog.deinitModels(self.allocator, models);
+        return self.applyModels(models);
+    }
+
+    fn runtimeBusy(self: *App) bool {
+        const runtime = self.runtime orelse return false;
+        const local = if (runtime.local_agent) |*agent_ref| agent_ref else return false;
+        return !local.isIdle();
+    }
+
+    fn refreshModelsInBackground(self: *App) !void {
+        if (self.model_fetch != null) {
+            self.model_refetch = true;
+            return;
+        }
+        self.model_fetch = try ModelFetch.start();
+        self.state.status.refreshing_models = true;
+    }
+
+    fn discardModelFetch(self: *App) void {
+        const fetch = self.model_fetch orelse return;
+        self.model_fetch = null;
+        self.model_refetch = false;
+        self.state.status.refreshing_models = false;
+        var outcome = fetch.finish();
+        outcome.deinit();
+    }
+
+    fn collectModelFetch(self: *App) !void {
+        const fetch = self.model_fetch orelse return;
+        if (!fetch.done.load(.acquire)) return;
+        self.model_fetch = null;
+        var outcome = fetch.finish();
+        defer outcome.deinit();
+        if (self.model_refetch) {
+            self.model_refetch = false;
+            self.model_fetch = try ModelFetch.start();
+            return;
+        }
+        self.state.status.refreshing_models = false;
+        for (outcome.notes.items.items) |item| {
+            const msg = try std.fmt.allocPrint(self.allocator, "model refresh: {s}: {s}", .{ item.source, item.reason });
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.@"error", msg);
+        }
+        const fetched = outcome.result catch |err| {
+            const msg = try std.fmt.allocPrint(self.allocator, "refreshing models failed: {s}", .{@errorName(err)});
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.@"error", msg);
+            return;
+        };
+        const owned = try self.allocator.alloc(ai_types.Model, fetched.len);
+        var cloned: usize = 0;
+        errdefer {
+            for (owned[0..cloned]) |*model| model.deinit(self.allocator);
+            self.allocator.free(owned);
+        }
+        for (fetched, 0..) |model, index| {
+            owned[index] = try ai_types.cloneModel(self.allocator, model);
+            cloned += 1;
+        }
+        if (self.runtimeBusy()) try self.state.appendTranscript(.system, "model catalog fetched; it takes effect when this turn ends");
+        if (self.pending_models) |old| model_catalog.deinitModels(self.allocator, old);
+        self.pending_models = owned;
+    }
+
+    fn applyPendingModelsBeforeResume(self: *App) !void {
+        if (self.pending_models == null) return;
+        if (self.runtime) |runtime| {
+            if (runtime.local_agent) |*local| local.waitForIdle();
+        }
+        try self.applyPendingModels();
+    }
+
+    fn applyPendingModels(self: *App) !void {
+        const models = self.pending_models orelse return;
+        if (self.runtimeBusy()) return;
+        self.pending_models = null;
+        defer model_catalog.deinitModels(self.allocator, models);
+        try self.reportModelRefresh(self.applyModels(models), "refreshing models failed");
+    }
+
+    fn applyModels(self: *App, models: []const ai_types.Model) !bool {
+        const runtime = self.runtime orelse return false;
         try runtime.replaceModels(models, runtime.currentModel());
         const model = runtime.currentModel() orelse return false;
         const switched = !std.mem.eql(u8, model.id, self.state.status.model) or
@@ -1993,6 +2143,7 @@ pub const App = struct {
     }
 
     fn logoutProvider(self: *App, requested: []const u8) !void {
+        self.discardModelFetch();
         const provider_id = logoutProviderId(requested);
         if (self.login) |pending| {
             if (std.mem.eql(u8, pending.provider_id, provider_id)) {
@@ -2026,7 +2177,7 @@ pub const App = struct {
         }
         if (!removed) return;
         self.refreshLoginStatus();
-        try self.reportModelRefresh(self.refreshModels(), "logged out but refreshing models failed");
+        try self.refreshModelsInBackground();
     }
 
     fn submitLoginInput(self: *App, text: []const u8) void {
@@ -2610,8 +2761,11 @@ pub const App = struct {
                 self.pending_session_reset = false;
             }
         }
+        try self.collectModelFetch();
+        try self.applyPendingModels();
         var resumed_run = false;
         if (completed_agent_end and self.state.queue.total() > 0) {
+            try self.applyPendingModelsBeforeResume();
             session.resumeSession() catch |err| {
                 try self.state.status.setError(self.allocator, @errorName(err));
                 try self.state.appendTranscript(.@"error", @errorName(err));
@@ -3015,7 +3169,7 @@ pub const App = struct {
             .start_login_provider => try self.startLoginProviderName(result.login_provider),
             .compact => try self.startCompaction(command.arg orelse ""),
             .rename_session => try self.renameSession(command.arg orelse ""),
-            .refresh_models => try self.reportModelRefresh(self.refreshModels(), "refreshing models failed"),
+            .refresh_models => try self.refreshModelsInBackground(),
             .logout_provider => try self.logoutProvider(command.arg orelse ""),
             .add_provider => try self.addProvider(command.arg orelse ""),
             .remove_provider => try self.removeProvider(command.arg orelse ""),
@@ -4726,6 +4880,41 @@ test "App init seeds registered tools from runtime" {
     try std.testing.expectEqual(app.runtime.?.availableTools().len, app.state.registered_tools.items.len);
     try std.testing.expectEqualStrings("shell_execute", app.state.registered_tools.items[0].name);
     try std.testing.expect(app.runtime.?.permission_engine.?.workspace_root.len > 0);
+}
+
+test "App applies a staged catalog once the runtime is idle" {
+    const extra_model = ai_types.Model{
+        .id = "temporary-extra-model",
+        .name = "Temporary Extra",
+        .api = "test-api",
+        .provider = "test",
+        .base_url = "https://example.invalid",
+        .reasoning = false,
+        .input = &.{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1024,
+        .max_tokens = 256,
+    };
+    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    errdefer std.testing.allocator.destroy(runtime);
+    runtime.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{defaultModel()}, .initial_model_id = defaultModel().id });
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.runtime = runtime;
+
+    const staged = try std.testing.allocator.alloc(ai_types.Model, 2);
+    staged[0] = try ai_types.cloneModel(std.testing.allocator, defaultModel());
+    staged[1] = try ai_types.cloneModel(std.testing.allocator, extra_model);
+    app.pending_models = staged;
+    try app.applyPendingModels();
+    try std.testing.expect(app.pending_models == null);
+    try std.testing.expectEqual(@as(usize, 2), runtime.availableModels().len);
+    try std.testing.expectEqualStrings(defaultModel().id, runtime.currentModel().?.id);
+    var noted = false;
+    for (app.state.transcript.items) |entry| {
+        if (std.mem.eql(u8, entry.text.items, "model catalog refreshed")) noted = true;
+    }
+    try std.testing.expect(noted);
 }
 
 test "App refreshes runtime models after login" {
