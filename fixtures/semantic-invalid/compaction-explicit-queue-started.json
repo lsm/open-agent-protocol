@@ -20,9 +20,19 @@
         "id": "agent"
       },
       "features": {
+        "session.compact": {
+          "level": "native"
+        },
         "run.compaction": {
           "level": "native"
+        },
+        "session.message.delivery.queue": {
+          "level": "native"
         }
+      },
+      "limits": {
+        "max_active_runs_per_session": 2,
+        "max_queued_runs_per_session": 1
       }
     }
   },
@@ -36,7 +46,7 @@
     "capability_revision": "cap-v1",
     "payload": {
       "session_id": "s1",
-      "delivery": "auto"
+      "delivery": "queue"
     }
   },
   {
@@ -52,7 +62,7 @@
       "session_id": "s1",
       "accepted": true,
       "submission_id": "sub-compadm",
-      "requested_delivery": "auto",
+      "requested_delivery": "queue",
       "effective_delivery": "start",
       "admission": "started",
       "run_id": "r1",
@@ -114,7 +124,7 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "run.completed",
-    "id": "ev9",
+    "id": "ev4",
     "session_id": "s1",
     "run_id": "r1",
     "sequence": 4,
@@ -123,7 +133,7 @@
       "session_id": "s1",
       "run_id": "r1",
       "final_response": {
-        "id": "m-ev9",
+        "id": "m-ev4",
         "role": "assistant",
         "content": "done"
       },

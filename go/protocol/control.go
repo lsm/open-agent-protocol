@@ -644,6 +644,15 @@ func (r MessageSubmitRequest) AllowsDegraded(key string) bool {
 	return false
 }
 
+func (r SessionCompactRequest) AllowsDegraded(key string) bool {
+	for _, allowed := range r.AllowDegradedFeatures {
+		if allowed == key {
+			return true
+		}
+	}
+	return false
+}
+
 func (r MessageSubmitRequest) ToolChoicePolicy() (*ToolChoice, error) {
 	if len(r.ToolChoice) == 0 {
 		return nil, nil

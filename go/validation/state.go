@@ -15,6 +15,7 @@ type runState struct {
 	openCompaction              protocol.CompactionID
 	compactionRun               bool
 	compactionContinue          bool
+	compactionOpened            bool
 	steers                      map[protocol.SubmissionID]*steerTrack
 	id                          protocol.RunID
 	session                     protocol.SessionID
@@ -968,6 +969,7 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 	if e.Type == protocol.TypeRunCompactionStarted || e.Type == protocol.TypeRunCompactionEnded {
 		s.compactionEvent(i, line, e, r)
 	}
+	s.compactionOpening(i, line, e, r)
 	if isTerminal(e.Type) {
 		s.steerTerminal(i, line, e, r)
 		s.compactionTerminal(i, line, e, r)

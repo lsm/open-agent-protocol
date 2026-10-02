@@ -20,6 +20,9 @@
         "id": "agent"
       },
       "features": {
+        "session.compact": {
+          "level": "native"
+        },
         "run.compaction": {
           "level": "native"
         }
@@ -53,17 +56,17 @@
       "accepted": true,
       "submission_id": "sub-compadm",
       "requested_delivery": "auto",
-      "effective_delivery": "start",
-      "admission": "started",
+      "effective_delivery": "queue",
+      "admission": "queued",
       "run_id": "r1",
-      "status": "running"
+      "status": "queued"
     }
   },
   {
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
-    "type": "run.started",
+    "type": "run.failed",
     "id": "ev1",
     "session_id": "s1",
     "run_id": "r1",
@@ -72,62 +75,10 @@
     "payload": {
       "session_id": "s1",
       "run_id": "r1",
-      "status": "running"
-    }
-  },
-  {
-    "protocol": "open-agent-protocol",
-    "version": "0.1",
-    "profile": "open-agent-protocol.agent-control-core",
-    "type": "run.compaction.started",
-    "id": "ev2",
-    "session_id": "s1",
-    "run_id": "r1",
-    "sequence": 2,
-    "capability_revision": "cap-v1",
-    "payload": {
-      "session_id": "s1",
-      "run_id": "r1",
-      "compaction_id": "c1",
-      "reason": "requested"
-    }
-  },
-  {
-    "protocol": "open-agent-protocol",
-    "version": "0.1",
-    "profile": "open-agent-protocol.agent-control-core",
-    "type": "run.compaction.ended",
-    "id": "ev3",
-    "session_id": "s1",
-    "run_id": "r1",
-    "sequence": 3,
-    "capability_revision": "cap-v1",
-    "payload": {
-      "session_id": "s1",
-      "run_id": "r1",
-      "compaction_id": "c1",
-      "outcome": "completed"
-    }
-  },
-  {
-    "protocol": "open-agent-protocol",
-    "version": "0.1",
-    "profile": "open-agent-protocol.agent-control-core",
-    "type": "run.completed",
-    "id": "ev9",
-    "session_id": "s1",
-    "run_id": "r1",
-    "sequence": 4,
-    "capability_revision": "cap-v1",
-    "payload": {
-      "session_id": "s1",
-      "run_id": "r1",
-      "final_response": {
-        "id": "m-ev9",
-        "role": "assistant",
-        "content": "done"
-      },
-      "stop_reason": "compacted"
+      "error": {
+        "code": "run_failed",
+        "message": "the compaction failed"
+      }
     }
   }
 ]

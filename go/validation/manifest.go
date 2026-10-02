@@ -183,6 +183,7 @@ func diagnosticCodes() map[string]bool {
 		CodePendingToolAtTerminal, CodePendingInteractionAtTerminal,
 		CodeUnmatchedSteer, CodeDuplicateSteer, CodePendingSteerAtTerminal,
 		CodeCompactionUnpaired, CodeCompactionEndedWithoutStart, CodeCompactionOpenAtTerminal,
+		CodeCompactionRunMismatch, CodeCompactionStopReasonMismatch, CodeCompactionFailedWithoutError,
 		CodeUnmatchedTool, CodeIllegalToolTransition, CodeDuplicateInteraction,
 		CodeUnmatchedInteraction, CodeWrongInteractionResponder,
 		CodeUnavailableCapability, CodeUnhonouredCapability, CodeStaleCapabilityRevision,

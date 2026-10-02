@@ -20,6 +20,9 @@
         "id": "agent"
       },
       "features": {
+        "session.compact": {
+          "level": "native"
+        },
         "run.compaction": {
           "level": "native"
         }
@@ -46,7 +49,7 @@
     "type": "session.compact.response",
     "id": "compadm",
     "in_reply_to": "compreq",
-    "session_id": "s1",
+    "session_id": "s2",
     "capability_revision": "cap-v1",
     "payload": {
       "session_id": "s1",
@@ -114,7 +117,7 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "run.completed",
-    "id": "ev9",
+    "id": "ev4",
     "session_id": "s1",
     "run_id": "r1",
     "sequence": 4,
@@ -123,7 +126,7 @@
       "session_id": "s1",
       "run_id": "r1",
       "final_response": {
-        "id": "m-ev9",
+        "id": "m-ev4",
         "role": "assistant",
         "content": "done"
       },

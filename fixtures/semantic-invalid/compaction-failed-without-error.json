@@ -20,6 +20,9 @@
         "id": "agent"
       },
       "features": {
+        "session.compact": {
+          "level": "native"
+        },
         "run.compaction": {
           "level": "native"
         }
@@ -30,28 +33,35 @@
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
-    "type": "session.compact.request",
-    "id": "compreq",
+    "type": "session.message.submit.request",
+    "id": "sub1",
     "session_id": "s1",
     "capability_revision": "cap-v1",
     "payload": {
       "session_id": "s1",
-      "delivery": "auto"
+      "delivery": "auto",
+      "messages": [
+        {
+          "role": "user",
+          "content": "go"
+        }
+      ]
     }
   },
   {
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
-    "type": "session.compact.response",
-    "id": "compadm",
-    "in_reply_to": "compreq",
+    "type": "session.message.submit.response",
+    "id": "adm1",
+    "in_reply_to": "sub1",
     "session_id": "s1",
+    "run_id": "r1",
     "capability_revision": "cap-v1",
     "payload": {
       "session_id": "s1",
       "accepted": true,
-      "submission_id": "sub-compadm",
+      "submission_id": "sub-adm1",
       "requested_delivery": "auto",
       "effective_delivery": "start",
       "admission": "started",
@@ -89,7 +99,7 @@
       "session_id": "s1",
       "run_id": "r1",
       "compaction_id": "c1",
-      "reason": "requested"
+      "reason": "threshold"
     }
   },
   {
@@ -106,15 +116,15 @@
       "session_id": "s1",
       "run_id": "r1",
       "compaction_id": "c1",
-      "outcome": "completed"
+      "outcome": "failed"
     }
   },
   {
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
-    "type": "run.completed",
-    "id": "ev9",
+    "type": "run.failed",
+    "id": "ev4",
     "session_id": "s1",
     "run_id": "r1",
     "sequence": 4,
@@ -122,12 +132,10 @@
     "payload": {
       "session_id": "s1",
       "run_id": "r1",
-      "final_response": {
-        "id": "m-ev9",
-        "role": "assistant",
-        "content": "done"
-      },
-      "stop_reason": "compacted"
+      "error": {
+        "code": "run_failed",
+        "message": "the compaction failed"
+      }
     }
   }
 ]

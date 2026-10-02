@@ -6,6 +6,7 @@ import (
 
 type compactionTrack struct {
 	reason    protocol.CompactionReason
+	outcome   protocol.CompactionOutcome
 	startedAt int
 	endedAt   int
 }
@@ -23,6 +24,25 @@ func (s *state) compactRequest(i, line int, e protocol.Envelope) {
 	default:
 		s.add(CodeIllegalRunTransition, i, line, e, "/payload/delivery", "a compaction accepts auto or queue delivery only")
 	}
+	if p.Focus == nil {
+		return
+	}
+	level, known := s.advertisedLevel(protocol.FeatureSessionCompact)
+	if !known || level != protocol.SupportDegraded || p.AllowsDegraded(protocol.FeatureSessionCompact) {
+		return
+	}
+	if s.pendingControls == nil {
+		s.pendingControls = map[protocol.EnvelopeID]*pendingSubmit{}
+	}
+	s.pendingControls[e.ID] = &pendingSubmit{
+		satisfiable: map[string]bool{}, index: i, line: line, session: p.SessionID, revision: s.currentCapability,
+		expectation: &controlExpectation{
+			rung: rungDegradation, key: protocol.FeatureSessionCompact, pointer: "/payload/focus",
+			code: errorCapabilityDegraded, detailName: "feature", detailValue: protocol.FeatureSessionCompact,
+			diagnostic: CodeDegradedWithoutOptin,
+			message:    "a compaction focus was admitted without the caller's opt-in",
+		},
+	}
 }
 
 func (s *state) compactResponse(i, line int, e protocol.Envelope) {
@@ -33,6 +53,7 @@ func (s *state) compactResponse(i, line int, e protocol.Envelope) {
 		s.add(CodeUnmatchedResponse, i, line, e, "/in_reply_to", "compaction response answers no compaction request")
 		return
 	}
+	s.checkScope(i, line, e, p.SessionID, p.RunID)
 	var request protocol.SessionCompactRequest
 	_ = req.envelope.DecodePayload(&request)
 	if p.SessionID != request.SessionID {
@@ -76,6 +97,15 @@ func (s *state) compactResponse(i, line int, e protocol.Envelope) {
 		st = &sessionTrack{}
 		s.sessions[p.SessionID] = st
 	}
+	submitted := protocol.MessageSubmitResponse{
+		SessionID: p.SessionID, RunID: p.RunID, RequestedDelivery: p.RequestedDelivery,
+		EffectiveDelivery: p.EffectiveDelivery, DeliveryResolution: p.DeliveryResolution,
+		Admission: p.Admission, Status: p.Status,
+	}
+	if !s.queueOverlap(i, line, e, submitted, st) {
+		s.queueAdmission(i, line, e, submitted, st)
+	}
+	s.settleSubmitAdmission(i, line, e, submitted)
 	status := protocol.RunRunning
 	if queued {
 		status = protocol.RunQueued
@@ -108,6 +138,9 @@ func (s *state) compactionEvent(i, line int, e protocol.Envelope, r *runState) {
 		var p protocol.RunCompactionStartedPayload
 		_ = e.DecodePayload(&p)
 		s.checkScope(i, line, e, p.SessionID, p.RunID)
+		if r.compactionRun != (p.Reason == protocol.CompactionRequested) {
+			s.add(CodeCompactionRunMismatch, i, line, e, "/payload/reason", "a requested compaction belongs to the run a session.compact.request admitted, and no other run asks for one")
+		}
 		if r.openCompaction != "" {
 			s.add(CodeCompactionUnpaired, i, line, e, "/payload/compaction_id", "a compaction started before the previous one ended")
 			return
@@ -117,23 +150,59 @@ func (s *state) compactionEvent(i, line int, e protocol.Envelope, r *runState) {
 			return
 		}
 		r.openCompaction = p.CompactionID
+		r.compactionOpened = true
 		r.compactions[p.CompactionID] = &compactionTrack{reason: p.Reason, startedAt: i, endedAt: -1}
 	case protocol.TypeRunCompactionEnded:
 		var p protocol.RunCompactionEndedPayload
 		_ = e.DecodePayload(&p)
 		s.checkScope(i, line, e, p.SessionID, p.RunID)
+		if p.Outcome == protocol.CompactionFailed && p.Error == nil {
+			s.add(CodeCompactionFailedWithoutError, i, line, e, "/payload/error", "a failed compaction carries the error that failed it")
+		}
 		track := r.compactions[p.CompactionID]
 		if track == nil || r.openCompaction != p.CompactionID {
 			s.add(CodeCompactionEndedWithoutStart, i, line, e, "/payload/compaction_id", "compaction ended without its started event")
 			return
 		}
 		track.endedAt = i
+		track.outcome = p.Outcome
 		r.openCompaction = ""
 	}
+}
+
+func (s *state) compactionOpening(i, line int, e protocol.Envelope, r *runState) {
+	if !r.compactionRun || !r.started || r.compactionOpened || isTerminal(e.Type) {
+		return
+	}
+	switch e.Type {
+	case protocol.TypeRunStarted, protocol.TypeRunCompactionStarted:
+		return
+	}
+	s.add(CodeCompactionRunMismatch, i, line, e, "/type", "a run admitted by session.compact.request opens with its compaction")
 }
 
 func (s *state) compactionTerminal(i, line int, e protocol.Envelope, r *runState) {
 	if r.openCompaction != "" {
 		s.add(CodeCompactionOpenAtTerminal, i, line, e, "/type", "run terminated while a compaction was open")
+	}
+	if !r.compactionRun || !r.started {
+		return
+	}
+	if len(r.compactions) != 1 {
+		s.add(CodeCompactionRunMismatch, i, line, e, "/type", "a run admitted by session.compact.request carries exactly one compaction")
+		return
+	}
+	if r.compactionContinue || e.Type != protocol.TypeRunCompleted {
+		return
+	}
+	for _, track := range r.compactions {
+		if track.outcome != protocol.CompactionCompleted {
+			return
+		}
+	}
+	var p protocol.RunCompletedPayload
+	_ = e.DecodePayload(&p)
+	if p.StopReason != "compacted" {
+		s.addExpected(CodeCompactionStopReasonMismatch, i, line, e, "/payload/stop_reason", "a compaction run that did not continue settles on its compaction", "compacted", p.StopReason, string(r.id))
 	}
 }

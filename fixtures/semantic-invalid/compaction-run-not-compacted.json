@@ -20,6 +20,9 @@
         "id": "agent"
       },
       "features": {
+        "session.compact": {
+          "level": "native"
+        },
         "run.compaction": {
           "level": "native"
         }
@@ -114,7 +117,7 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "run.completed",
-    "id": "ev9",
+    "id": "ev4",
     "session_id": "s1",
     "run_id": "r1",
     "sequence": 4,
@@ -123,11 +126,11 @@
       "session_id": "s1",
       "run_id": "r1",
       "final_response": {
-        "id": "m-ev9",
+        "id": "m-ev4",
         "role": "assistant",
         "content": "done"
       },
-      "stop_reason": "compacted"
+      "stop_reason": "end_turn"
     }
   }
 ]

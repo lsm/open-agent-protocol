@@ -11209,6 +11209,182 @@
           "aspect": "gate"
         }
       ]
+    },
+    {
+      "id": "compaction-unpaired",
+      "path": "semantic-invalid/compaction-unpaired.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "compaction_unpaired"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "covers": [
+        {
+          "capability": "run.compaction",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "compaction-threshold-in-a-requested-run",
+      "path": "semantic-invalid/compaction-threshold-in-a-requested-run.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "compaction_run_mismatch"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.compact",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "compaction-run-not-compacted",
+      "path": "semantic-invalid/compaction-run-not-compacted.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "compaction_stop_reason_mismatch"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.compact",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "compaction-failed-without-error",
+      "path": "semantic-invalid/compaction-failed-without-error.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "compaction_failed_without_error"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "covers": [
+        {
+          "capability": "run.compaction",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "compaction-focus-degraded-without-optin",
+      "path": "semantic-invalid/compaction-focus-degraded-without-optin.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "degraded_without_optin"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.compact",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "compaction-queued-not-offered",
+      "path": "semantic-invalid/compaction-queued-not-offered.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.compact",
+          "aspect": "gate"
+        }
+      ]
+    },
+    {
+      "id": "compaction-explicit-queue-started",
+      "path": "semantic-invalid/compaction-explicit-queue-started.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.compact",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "compaction-response-scope-mismatch",
+      "path": "semantic-invalid/compaction-response-scope-mismatch.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "scope_mismatch"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.compact",
+          "aspect": "honour"
+        }
+      ]
     }
   ]
 }

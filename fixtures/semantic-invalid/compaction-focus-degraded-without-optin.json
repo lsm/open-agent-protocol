@@ -20,6 +20,10 @@
         "id": "agent"
       },
       "features": {
+        "session.compact": {
+          "level": "degraded",
+          "reason": "the endpoint compacts but cannot weigh focus"
+        },
         "run.compaction": {
           "level": "native"
         }
@@ -36,7 +40,8 @@
     "capability_revision": "cap-v1",
     "payload": {
       "session_id": "s1",
-      "delivery": "auto"
+      "delivery": "auto",
+      "focus": "the earlier turns"
     }
   },
   {
@@ -114,7 +119,7 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "run.completed",
-    "id": "ev9",
+    "id": "ev4",
     "session_id": "s1",
     "run_id": "r1",
     "sequence": 4,
@@ -123,7 +128,7 @@
       "session_id": "s1",
       "run_id": "r1",
       "final_response": {
-        "id": "m-ev9",
+        "id": "m-ev4",
         "role": "assistant",
         "content": "done"
       },
