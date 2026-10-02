@@ -363,6 +363,14 @@ pub const Endpoint = struct {
             }
         }
         try contract.refuseUnadvertisedOpen(descriptor, payload, refusal);
+        if (payload.reopen) {
+            if (payload.session_id) |named| {
+                if (self.find(named) != null) {
+                    const message = try std.fmt.allocPrint(arena, "session \"{s}\" already exists", .{named});
+                    return self.deny("session_exists", message, &.{});
+                }
+            }
+        }
         const tool_sources_json = try self.resolveAttachments(arena, payload.tool_sources_json, refusal);
         try self.entries.ensureUnusedCapacity(self.allocator, 1);
         const session = try self.adapter.open(arena, .{

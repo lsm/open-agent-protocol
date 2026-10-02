@@ -399,3 +399,15 @@ func TestTheElectionGateRefusesAReopenTheAdapterDoesNotAdvertise(t *testing.T) {
 		t.Fatalf("an open electing nothing was refused: %v", err)
 	}
 }
+
+func TestAReopenOfALiveSessionIsSessionExistsBeforeTheAdapterIsAsked(t *testing.T) {
+	hub := boundHub(t, serve.Options{})
+	ctx := context.Background()
+	if _, _, err := hub.Open(ctx, "memory", base.OpenRequest{SessionID: "live"}); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := hub.Open(ctx, "memory", base.OpenRequest{SessionID: "live", Reopen: true})
+	if !errors.Is(err, serve.ErrSessionExists) {
+		t.Fatalf("reopening a live session answered %v, want serve.ErrSessionExists rather than the adapter's unknown_session", err)
+	}
+}
