@@ -1,6 +1,10 @@
 const std = @import("std");
 const jsonschema = @import("jsonschema");
 
+pub const code_unmatched_steer = "unmatched_steer";
+pub const code_duplicate_steer = "duplicate_steer";
+pub const code_pending_steer_at_terminal = "pending_steer_at_terminal";
+
 pub const code_duplicate_envelope_id = "duplicate_envelope_id";
 pub const code_illegal_run_transition = "illegal_run_transition";
 pub const code_missing_run_started = "missing_run_started";
@@ -49,45 +53,20 @@ pub const code_attachment_field_in_catalog = "attachment_field_in_catalog";
 const attachment_only_members = [_][]const u8{ "command", "args", "environment" };
 
 pub const implemented = [_][]const u8{
-    code_duplicate_envelope_id,
-    code_illegal_run_transition,
-    code_missing_run_started,
-    code_missing_run_terminal,
-    code_duplicate_run_terminal,
-    code_event_after_terminal,
-    code_sequence_gap,
-    code_sequence_regression,
-    code_cancel_not_settled,
-    code_queue_order_violation,
-    code_queue_limit_exceeded,
-    code_undisclosed_queue_limit,
-    code_unavailable_capability,
-    code_stale_capability_revision,
-    code_degraded_without_optin,
-    code_unsatisfiable_control,
-    code_unapplied_control,
-    code_duplicate_tool_name,
-    code_model_not_in_catalog,
-    code_duplicate_model_id,
-    code_duplicate_provider,
-    code_ambiguous_default_model,
-    code_unannounced_catalog_change,
-    code_undisclosed_attach_modes,
-    code_duplicate_tool_source,
-    code_unmatched_tool_source,
-    code_unattributed_call,
-    code_catalog_mismatch,
-    code_undisclosed_attach_limit,
-    code_unmatched_tool,
-    code_illegal_tool_transition,
-    code_pending_tool_at_terminal,
-    code_duplicate_interaction,
-    code_unmatched_interaction,
-    code_wrong_interaction_responder,
-    code_pending_interaction_at_terminal,
-    code_resolution_payload_mismatch,
-    code_wrong_tool_owner,
-    code_undisclosed_provide_limit,
+    code_unmatched_steer,             code_duplicate_steer,             code_pending_steer_at_terminal,
+    code_duplicate_envelope_id,       code_illegal_run_transition,      code_missing_run_started,
+    code_missing_run_terminal,        code_duplicate_run_terminal,      code_event_after_terminal,
+    code_sequence_gap,                code_sequence_regression,         code_cancel_not_settled,
+    code_queue_order_violation,       code_queue_limit_exceeded,        code_undisclosed_queue_limit,
+    code_unavailable_capability,      code_stale_capability_revision,   code_degraded_without_optin,
+    code_unsatisfiable_control,       code_unapplied_control,           code_duplicate_tool_name,
+    code_model_not_in_catalog,        code_duplicate_model_id,          code_duplicate_provider,
+    code_ambiguous_default_model,     code_unannounced_catalog_change,  code_undisclosed_attach_modes,
+    code_duplicate_tool_source,       code_unmatched_tool_source,       code_unattributed_call,
+    code_catalog_mismatch,            code_undisclosed_attach_limit,    code_unmatched_tool,
+    code_illegal_tool_transition,     code_pending_tool_at_terminal,    code_duplicate_interaction,
+    code_unmatched_interaction,       code_wrong_interaction_responder, code_pending_interaction_at_terminal,
+    code_resolution_payload_mismatch, code_wrong_tool_owner,            code_undisclosed_provide_limit,
     code_attachment_field_in_catalog,
 };
 
@@ -104,12 +83,15 @@ pub const Diagnostic = struct {
 };
 
 const run_event_types = [_][]const u8{
-    "run.started",                 "run.status.updated",         "content.delta",
-    "run.completed",               "run.failed",                 "run.cancelled",
-    "action.call.requested",       "action.call.started",        "action.call.progress",
-    "action.call.completed",       "action.call.failed",         "action.call.cancelled",
-    "action.permission.requested", "action.permission.resolved", "user.input.requested",
-    "user.input.resolved",
+    "run.steer.applied",           "run.steer.dropped",
+    "run.started",                 "run.status.updated",
+    "content.delta",               "run.completed",
+    "run.failed",                  "run.cancelled",
+    "action.call.requested",       "action.call.started",
+    "action.call.progress",        "action.call.completed",
+    "action.call.failed",          "action.call.cancelled",
+    "action.permission.requested", "action.permission.resolved",
+    "user.input.requested",        "user.input.resolved",
 };
 
 fn isRunEvent(declared: []const u8) bool {
@@ -195,7 +177,19 @@ fn memberBool(container: std.json.Value, name: []const u8) bool {
     return value.bool;
 }
 
+const SteerSnapshot = struct { index: usize, envelope: std.json.Value, payload: std.json.Value };
+
+const Steer = struct {
+    request: []const u8,
+    messages: ?std.json.Value,
+    admitted_at: usize,
+    settled_at: ?usize = null,
+    settled_sequence: u64 = 0,
+    unwitnessed: bool = false,
+};
+
 const Run = struct {
+    steers: std.StringArrayHashMapUnmanaged(Steer) = .empty,
     id: []const u8,
     session: []const u8,
     admitted: bool = false,
@@ -493,6 +487,7 @@ pub const Machine = struct {
     windows: std.StringArrayHashMapUnmanaged(*Window) = .empty,
     submits: std.StringArrayHashMapUnmanaged(*Pending) = .empty,
     resolves: std.StringArrayHashMapUnmanaged(PendingResolve) = .empty,
+    steer_snapshots: std.ArrayList(SteerSnapshot) = .empty,
     descriptor_owners: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     descriptor_attribution: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
 
@@ -516,6 +511,7 @@ pub const Machine = struct {
         self.windows.deinit(self.allocator);
         self.submits.deinit(self.allocator);
         self.resolves.deinit(self.allocator);
+        self.steer_snapshots.deinit(self.allocator);
         self.descriptor_owners.deinit(self.allocator);
         self.descriptor_attribution.deinit(self.allocator);
         for (self.sessions.values()) |holder| {
@@ -795,6 +791,7 @@ pub const Machine = struct {
             if (!try self.settleControlRefusal(index, envelope, payload)) {
                 try self.settleQueueRefusal(index, envelope, payload);
             }
+            try self.steerRefusal(index, envelope, payload);
             try self.closeSubmitWindow(field(envelope, "in_reply_to"));
             return;
         }
@@ -811,6 +808,7 @@ pub const Machine = struct {
         if (std.mem.eql(u8, declared, "session.state.response") or
             std.mem.eql(u8, declared, "session.state.updated"))
         {
+            try self.steerState(index, envelope, payload);
             try self.stateDocument(index, payload, std.mem.eql(u8, declared, "session.state.updated"));
             return;
         }
@@ -2013,6 +2011,10 @@ pub const Machine = struct {
                 });
                 continue;
             }
+            if (std.mem.eql(u8, memberString(payload, "delivery"), "steer")) {
+                self.propose(&pending.control, .{ .rung = rung_unsatisfiable, .key = control.key, .pointer = controlPointer(control.key), .code = error_unsupported_feature, .reason = reason_unsatisfiable, .detail_name = "feature", .detail_value = control.key, .diagnostic = code_unsatisfiable_control });
+                continue;
+            }
             if (std.mem.eql(u8, control.key, feature_tool_selection)) try self.duplicateToolNames(index, pending);
             if (std.mem.eql(u8, control.key, feature_structured_output)) {
                 pending.controls.schema = member(payload, "output_schema");
@@ -2193,14 +2195,14 @@ pub const Machine = struct {
     fn deliveryExpectation(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value, pending: *Pending) !void {
         const delivery = memberString(payload, "delivery");
         if (delivery.len == 0 or std.mem.eql(u8, delivery, "auto")) return;
-        if (!std.mem.eql(u8, delivery, "queue")) {
+        if (!std.mem.eql(u8, delivery, "queue") and !std.mem.eql(u8, delivery, "steer")) {
             const named = try std.fmt.allocPrint(self.arena.allocator(), "delivery.{s}", .{delivery});
             try self.feature(index, envelope, named);
             return;
         }
         const key = try std.fmt.allocPrint(self.arena.allocator(), "session.message.delivery.{s}", .{delivery});
         const level = try self.controlDescriptor(index, envelope, key) orelse return;
-        if (std.mem.eql(u8, delivery, "queue") and !affirmative(level)) {
+        if (!affirmative(level)) {
             self.propose(&pending.control, .{
                 .rung = rung_capability,
                 .key = key,
@@ -2505,10 +2507,160 @@ pub const Machine = struct {
         }
     }
 
+    fn steerTarget(self: *Machine, payload: std.json.Value) struct { run: ?*Run, reason: []const u8 } {
+        const target = memberString(payload, "target_run_id");
+        const session = memberString(payload, "session_id");
+        if (target.len != 0) {
+            const run = self.runs.get(target) orelse return .{ .run = null, .reason = "unknown_target" };
+            const reason: []const u8 = if (!std.mem.eql(u8, run.session, session)) "cross_session" else if (run.terminal) "terminal" else if (std.mem.eql(u8, run.status, "cancelling")) "not_steerable" else if (!run.started) "queued" else "";
+            return .{ .run = run, .reason = reason };
+        }
+        for (self.runs.values()) |run| {
+            if (std.mem.eql(u8, run.session, session) and run.started and !run.terminal) return .{ .run = run, .reason = if (std.mem.eql(u8, run.status, "cancelling")) "not_steerable" else "" };
+        }
+        return .{ .run = null, .reason = "no_active_run" };
+    }
+
+    fn steerAdmission(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
+        _ = try self.settleSubmitAdmission(index, envelope, payload);
+        const request_id = field(envelope, "in_reply_to");
+        if (self.submits.get(request_id)) |pending| {
+            if (pending.control != null) return;
+        }
+        const request = self.requests.get(request_id) orelse return;
+        const asked = request.message orelse request.payload;
+        if (!std.mem.eql(u8, memberString(asked, "delivery"), "steer") or !std.mem.eql(u8, memberString(payload, "effective_delivery"), "steer")) {
+            try self.add(code_illegal_run_transition, index);
+            return;
+        }
+        const target = self.steerTarget(asked);
+        if (target.reason.len != 0) {
+            try self.add(code_illegal_run_transition, index);
+            return;
+        }
+        const run = target.run.?;
+        if (!std.mem.eql(u8, run.id, memberString(payload, "run_id"))) {
+            try self.add(code_scope_mismatch, index);
+            return;
+        }
+        const cursor = member(payload, "target_sequence");
+        if (cursor == null or exactInteger(cursor.?) != @as(i128, run.next - 1)) try self.add(code_illegal_run_transition, index);
+        if (!std.mem.eql(u8, run.status, memberString(payload, "status"))) try self.add(code_illegal_run_transition, index);
+        const id = memberString(payload, "submission_id");
+        if (run.steers.contains(id)) {
+            try self.add(code_duplicate_steer, index);
+            return;
+        }
+        try run.steers.put(self.arena.allocator(), id, .{ .request = request_id, .messages = member(payload, "message_ids"), .admitted_at = index });
+    }
+
+    fn steerRefusal(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
+        const id = field(envelope, "in_reply_to");
+        const request = self.requests.get(id) orelse return;
+        const asked = request.message orelse request.payload;
+        if (!std.mem.eql(u8, memberString(asked, "delivery"), "steer")) return;
+        if (self.submits.get(id)) |pending| {
+            if (pending.control != null) return;
+        }
+        const target = self.steerTarget(asked);
+        if (target.reason.len == 0) return;
+        const err = member(payload, "error") orelse return;
+        const details = member(err, "details") orelse std.json.Value{ .null = {} };
+        if (!std.mem.eql(u8, memberString(err, "code"), "invalid_steer_target") or !std.mem.eql(u8, memberString(details, "reason"), target.reason)) try self.add(code_illegal_run_transition, index);
+    }
+
+    fn steerSettlement(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value, run: *Run) !void {
+        try self.featureKeys(index, envelope, &.{"session.message.delivery.steer"});
+        const track = run.steers.getPtr(memberString(payload, "submission_id")) orelse {
+            try self.add(code_unmatched_steer, index);
+            return;
+        };
+        if (track.settled_at != null) {
+            try self.add(code_duplicate_steer, index);
+            return;
+        }
+        if (!std.mem.eql(u8, track.request, memberString(payload, "request_id"))) try self.add(code_unmatched_steer, index);
+        if (std.mem.eql(u8, field(envelope, "type"), "run.steer.applied")) {
+            if (track.messages) |messages| {
+                const actual = member(payload, "message_ids") orelse std.json.Value{ .null = {} };
+                if (!steerMessagesEqual(messages, actual)) try self.add(code_unmatched_steer, index);
+            }
+        }
+        track.settled_at = index;
+        if (member(envelope, "sequence")) |seq| {
+            if (exactInteger(seq)) |value| {
+                if (value >= 0) track.settled_sequence = @intCast(value);
+            }
+        }
+    }
+
+    fn steerState(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
+        try self.steer_snapshots.append(self.allocator, .{ .index = index, .envelope = envelope, .payload = payload });
+    }
+
+    fn closeSteerSnapshots(self: *Machine) !void {
+        for (self.steer_snapshots.items) |snapshot| {
+            const index = snapshot.index;
+            const entries = member(snapshot.payload, "active_runs") orelse continue;
+            if (entries != .array) continue;
+            const position = self.ids.get(field(snapshot.envelope, "in_reply_to")) orelse index;
+            for (entries.array.items) |entry| {
+                const run = self.runs.get(memberString(entry, "run_id")) orelse continue;
+                const held = member(entry, "pending_steers");
+                if (run.steers.count() == 0 and (held == null or held.? != .array or held.?.array.items.len == 0)) continue;
+                var mismatch = false;
+                var cursor: u64 = 0;
+                if (member(entry, "as_of_sequence")) |seq| {
+                    if (exactInteger(seq)) |value| {
+                        if (value >= 0) cursor = @intCast(value);
+                    }
+                    if (cursor >= run.next) mismatch = true;
+                } else mismatch = true;
+                var listed: std.StringArrayHashMapUnmanaged([]const u8) = .empty;
+                defer listed.deinit(self.allocator);
+                if (held) |pending| {
+                    if (pending == .array) for (pending.array.items) |item| {
+                        const id = memberString(item, "submission_id");
+                        const request = memberString(item, "request_id");
+                        const track = run.steers.get(id);
+                        if (listed.contains(id) or track == null or !std.mem.eql(u8, track.?.request, request)) mismatch = true;
+                        try listed.put(self.allocator, id, request);
+                    };
+                }
+                for (run.steers.keys(), run.steers.values()) |id, track| {
+                    var known = track.unwitnessed;
+                    if (member(entry, "admitted_submit_requests")) |anchors| {
+                        if (anchors == .array) for (anchors.array.items) |anchor| {
+                            if (anchor == .string and std.mem.eql(u8, anchor.string, track.request)) {
+                                known = true;
+                            }
+                        };
+                    }
+                    if (track.admitted_at < position and !known and (track.settled_at == null or track.settled_at.? >= position)) mismatch = true;
+                    const pending = known and (track.settled_at == null or track.settled_sequence > cursor);
+                    const actual = listed.get(id);
+                    if (pending != (actual != null and std.mem.eql(u8, actual.?, track.request))) mismatch = true;
+                }
+                if (mismatch) try self.add(code_session_state_mismatch, index);
+            }
+        }
+    }
+
     fn admit(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
         if (!memberBool(payload, "accepted")) {
             try self.add(code_illegal_run_transition, index);
             return;
+        }
+        if (std.mem.eql(u8, memberString(payload, "admission"), "steered")) {
+            try self.steerAdmission(index, envelope, payload);
+            return;
+        }
+        if (self.requests.get(field(envelope, "in_reply_to"))) |request| {
+            if (std.mem.eql(u8, memberString(request.message orelse request.payload, "delivery"), "steer")) {
+                _ = try self.settleSubmitAdmission(index, envelope, payload);
+                try self.add(code_illegal_run_transition, index);
+                return;
+            }
         }
         const run_id = memberString(payload, "run_id");
         if (run_id.len == 0) {
@@ -2706,6 +2858,7 @@ pub const Machine = struct {
                         .next = resumeSequence(recovery, run_id, unsigned(entry, "as_of_sequence")),
                         .status = status,
                         .pending = member(entry, "pending_interactions"),
+                        .pending_steers = member(entry, "pending_steers"),
                     });
                 }
             }
@@ -2728,6 +2881,7 @@ pub const Machine = struct {
         queued: bool = false,
         prior_unknown: bool = false,
         pending: ?std.json.Value = null,
+        pending_steers: ?std.json.Value = null,
     };
 
     fn introduceRecovered(self: *Machine, index: usize, holder: *Session, run_id: []const u8, session_id: []const u8, shape: Recovered) !void {
@@ -2752,6 +2906,11 @@ pub const Machine = struct {
                     _ = try self.unwitnessedInteraction(run, entry.string);
                 }
             }
+        }
+        if (shape.pending_steers) |pending| {
+            if (pending == .array) for (pending.array.items) |entry| {
+                try run.steers.put(self.arena.allocator(), memberString(entry, "submission_id"), .{ .request = memberString(entry, "request_id"), .messages = null, .admitted_at = index, .unwitnessed = true });
+            };
         }
         try self.runs.put(self.allocator, run_id, run);
         try holder.order.append(self.allocator, run_id);
@@ -2854,6 +3013,7 @@ pub const Machine = struct {
             }
             return;
         }
+        if (std.mem.eql(u8, declared, "run.steer.applied") or std.mem.eql(u8, declared, "run.steer.dropped")) try self.steerSettlement(index, envelope, member(envelope, "payload") orelse std.json.Value{ .null = {} }, state);
         try self.checkQueueOrder(index, envelope, state, declared);
 
         if (std.mem.eql(u8, declared, "run.started")) {
@@ -2926,6 +3086,12 @@ pub const Machine = struct {
                 try self.checkCompletedControls(index, body, state);
             }
             try self.sweepExcludedCalls(index, state);
+            for (state.steers.values()) |track| {
+                if (track.settled_at == null) {
+                    try self.add(code_pending_steer_at_terminal, index);
+                    break;
+                }
+            }
             try self.checkPendingAtTerminal(index, state);
             state.terminal = true;
             state.terminal_type = declared;
@@ -3256,6 +3422,7 @@ pub const Machine = struct {
     }
 
     pub fn close(self: *Machine) !void {
+        try self.closeSteerSnapshots();
         for (self.sessions.keys(), self.sessions.values()) |session_id, holder| {
             for (holder.model_anchors.items) |anchor| {
                 const request = self.requests.get(anchor.request) orelse continue;
@@ -5812,8 +5979,7 @@ test "a source list this rule cannot read is not judged, the way Go's decode is 
         \\"layers":"not-an-object"}}]
     , &.{});
 
-    try expectCodes(
-        attachment_free ++
+    try expectCodes(attachment_free ++
         \\,
         \\{"type":"action.tools.list.request","id":"l1","capability_revision":"v1","payload":{"session_id":"s"}},
         \\{"type":"action.tools.list.response","id":"l2","in_reply_to":"l1","capability_revision":"v1","session_id":"s","payload":
@@ -5835,5 +6001,13 @@ test "a null container is an absent one, and the sources beside it are still jud
         \\{"tools":{"level":"native"}},
         \\"sources":[{"id":"native","kind":"native","command":"/bin/tool"}],
         \\"layers":{"action":null,"other":{"sources":[{"id":"files","kind":"process","args":["--f"]}]}}}}]
-    , &.{code_attachment_field_in_catalog, code_attachment_field_in_catalog});
+    , &.{ code_attachment_field_in_catalog, code_attachment_field_in_catalog });
+}
+
+fn steerMessagesEqual(a: std.json.Value, b: std.json.Value) bool {
+    if (a != .array or b != .array or a.array.items.len != b.array.items.len) return false;
+    for (a.array.items, b.array.items) |left, right| {
+        if (left != .string or right != .string or !std.mem.eql(u8, left.string, right.string)) return false;
+    }
+    return true;
 }

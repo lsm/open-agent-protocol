@@ -4265,13 +4265,12 @@ long list is paged.
 
 ## T4. Steer
 
-**Status: [Decision 0013](../decisions/0013-steer.md) is proposed and adopts
-this section as its shape.** The record names one prerequisite that has not
-landed: `adapter.Session.Submit` still takes a bare
-`protocol.MessageSubmitRequest`, so no adapter can populate `request_id` on a
-steer settlement. This section assigned that change to T2, which graduated
-without it. It is a compile-time break across all nine `adapter.Session`
-implementations and should land on its own.
+**Status: [Decision 0013](../decisions/0013-steer.md) remains proposed.**
+The submit-envelope prerequisite landed in #798 (`f3e137bcbd`). The first
+graduation slice adds the steer wire types, validator diagnostics, and positive
+and negative fixtures under the `steer` unit. Reference execution, binding and
+client ordering, and native pi execution remain separate gates; these schema
+and validator additions do not advertise steer or make the unit executable.
 
 The record also defers the `settled_steers` session-state surface below to its
 own decision, rather than graduating it inside this unit.

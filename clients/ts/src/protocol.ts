@@ -32,6 +32,8 @@ export const EnvelopeType = {
   SessionMessageSubmitResponse: 'session.message.submit.response',
   RunCancelRequest: 'run.cancel.request',
   RunCancelResponse: 'run.cancel.response',
+  RunSteerApplied: 'run.steer.applied',
+  RunSteerDropped: 'run.steer.dropped',
   RunStarted: 'run.started',
   RunStatusUpdated: 'run.status.updated',
   ContentDelta: 'content.delta',
@@ -395,7 +397,13 @@ export interface SessionState {
 
 export type ActiveRunRelationship = 'primary';
 
+export interface PendingSteer {
+  submission_id: string;
+  request_id: string;
+}
+
 export interface ActiveRun {
+  pending_steers?: PendingSteer[];
   run_id: string;
   status: RunStatus;
   relationship: ActiveRunRelationship;
@@ -427,6 +435,7 @@ export type ToolChoicePolicy =
   | { allowed?: undefined; disallowed: string[] };
 
 export interface MessageSubmitRequest {
+  target_run_id?: string;
   session_id: string;
   messages: [Message, ...Message[]];
   delivery: RequestedDeliveryMode;
@@ -441,6 +450,7 @@ export interface MessageSubmitRequest {
 export type Admission = 'started' | 'queued' | 'steered' | 'side_started' | 'rejected';
 
 export interface MessageSubmitResponse {
+  target_sequence?: number;
   session_id: string;
   accepted: boolean;
   submission_id: string;
@@ -820,3 +830,22 @@ export interface UserInputCancelRequest {
 }
 
 export type UserInputCancelResponse = UserInputResolveResponse;
+
+export type SteerBoundary = "immediate" | "turn" | "tool_result" | "unknown";
+
+export interface RunSteerAppliedPayload {
+  session_id: string;
+  run_id: string;
+  submission_id: string;
+  request_id: string;
+  message_ids: string[];
+  boundary: SteerBoundary;
+}
+
+export interface RunSteerDroppedPayload {
+  session_id: string;
+  run_id: string;
+  submission_id: string;
+  request_id: string;
+  reason: ProtocolError;
+}

@@ -1,0 +1,155 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.request",
+    "id": "capq",
+    "payload": {}
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.response",
+    "id": "capr",
+    "in_reply_to": "capq",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "endpoint": {
+        "id": "agent"
+      },
+      "features": {
+        "session.message.delivery.steer": {
+          "level": "native"
+        }
+      }
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.open.request",
+    "id": "openq",
+    "capability_revision": "cap-v1",
+    "payload": {}
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.open.response",
+    "id": "openr",
+    "in_reply_to": "openq",
+    "session_id": "s1",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "session_id": "s1",
+      "status": "running",
+      "active_run_id": "r1",
+      "active_runs": [
+        {
+          "run_id": "r1",
+          "status": "running",
+          "relationship": "primary",
+          "as_of_sequence": 1,
+          "pending_steers": [
+            {
+              "submission_id": "steer1",
+              "request_id": "sub2"
+            }
+          ]
+        }
+      ],
+      "recovery": {
+        "recovered": true,
+        "previous_run_id": "r1",
+        "reason": "resumed",
+        "resume_cursor": "1"
+      }
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.state.request",
+    "id": "stateq",
+    "session_id": "s1",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "session_id": "s1"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.state.response",
+    "id": "stater",
+    "in_reply_to": "stateq",
+    "session_id": "s1",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "session_id": "s1",
+      "status": "running",
+      "active_run_id": "r1",
+      "active_runs": [
+        {
+          "run_id": "r1",
+          "status": "running",
+          "relationship": "primary",
+          "as_of_sequence": 1,
+          "pending_steers": [
+            {
+              "submission_id": "steer1",
+              "request_id": "sub2"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.steer.applied",
+    "id": "applied",
+    "session_id": "s1",
+    "run_id": "r1",
+    "sequence": 2,
+    "capability_revision": "cap-v1",
+    "payload": {
+      "session_id": "s1",
+      "run_id": "r1",
+      "submission_id": "steer1",
+      "request_id": "sub2",
+      "message_ids": [
+        "guidance"
+      ],
+      "boundary": "turn"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.completed",
+    "id": "ev2",
+    "session_id": "s1",
+    "run_id": "r1",
+    "sequence": 3,
+    "payload": {
+      "session_id": "s1",
+      "run_id": "r1",
+      "final_response": {
+        "id": "m-ev2",
+        "role": "assistant",
+        "content": "ok"
+      },
+      "stop_reason": "end_turn"
+    }
+  }
+]

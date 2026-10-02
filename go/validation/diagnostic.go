@@ -17,6 +17,9 @@ const (
 )
 
 const (
+	CodeUnmatchedSteer               = "unmatched_steer"
+	CodeDuplicateSteer               = "duplicate_steer"
+	CodePendingSteerAtTerminal       = "pending_steer_at_terminal"
 	CodeMalformedJSON                = "malformed_json"
 	CodeDuplicateKey                 = "duplicate_key"
 	CodeSchemaInvalid                = "schema_invalid"

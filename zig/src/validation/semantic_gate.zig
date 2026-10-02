@@ -10,6 +10,20 @@ const tolerant_fixtures = 3;
 const nothing_outstanding = [_][]const u8{};
 
 const partial_code_gaps = [_]struct { code: []const u8, fixtures: []const []const u8 }{
+    .{ .code = "scope_mismatch", .fixtures = &.{
+        "scope-mismatch",
+        "response-scope-mismatch",
+        "session-open-scope-mismatch",
+        "tools-list-response-unscoped",
+        "tools-list-envelope-scoped-answer-unscoped",
+        "tools-list-unscoped-answer-scoped",
+        "models-request-scope-mismatch",
+        "models-response-scope-mismatch",
+        "models-position-in-another-session",
+        "models-held-position-in-another-session",
+        "models-position-in-another-session-no-current",
+        "models-held-position-in-another-session-no-current",
+    } },
     .{ .code = "session_state_mismatch", .fixtures = &.{
         "compound-open-anchor-names-an-open-without-a-message",
         "compound-open-queued-without-position",

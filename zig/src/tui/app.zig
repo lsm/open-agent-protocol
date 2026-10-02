@@ -2103,6 +2103,41 @@ pub const App = struct {
         try self.state.appendTranscript(.system, next);
     }
 
+    fn removeProvider(self: *App, arg: []const u8) !void {
+        var words = std.mem.tokenizeAny(u8, arg, " \t");
+        _ = words.next();
+        const id = words.next() orelse {
+            try self.state.appendTranscript(.@"error", tui_commands.provider_usage);
+            return;
+        };
+        if (self.login) |pending| {
+            if (std.mem.eql(u8, pending.provider_id, id)) {
+                const msg = try std.fmt.allocPrint(self.allocator, "a login to {s} is in progress; cancel it before deleting the provider", .{id});
+                defer self.allocator.free(msg);
+                try self.state.appendTranscript(.@"error", msg);
+                return;
+            }
+        }
+        self.discardModelFetch();
+        const path = custom_providers.deleteProvider(self.allocator, id) catch |err| {
+            const msg = try std.fmt.allocPrint(self.allocator, "could not delete {s}: {s}", .{ id, @errorName(err) });
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.@"error", msg);
+            return;
+        };
+        defer self.allocator.free(path);
+        if (oauth_storage.AuthStorage.removeStored(self.allocator, id)) |key_removed| {
+            const msg = try std.fmt.allocPrint(self.allocator, "deleted {s} from {s}{s}", .{ id, path, if (key_removed) ", and its saved key" else "" });
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.system, msg);
+        } else |err| {
+            const msg = try std.fmt.allocPrint(self.allocator, "deleted {s} from {s}, but removing its saved key failed: {s}", .{ id, path, @errorName(err) });
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.@"error", msg);
+        }
+        if (self.runtime != null) try self.refreshModelsInBackground();
+    }
+
     fn logoutProviderId(name: []const u8) []const u8 {
         if (provider_catalog.provider(name) != null) return name;
         const index = loginProviderIndex(name) orelse return name;
@@ -3140,6 +3175,7 @@ pub const App = struct {
             .refresh_models => try self.refreshModelsInBackground(),
             .logout_provider => try self.logoutProvider(command.arg orelse ""),
             .add_provider => try self.addProvider(command.arg orelse ""),
+            .remove_provider => try self.removeProvider(command.arg orelse ""),
             .none => {},
         }
         if (command.kind == .model and command.arg != null and result.action != .refresh_models) self.persistCurrentModel();
@@ -5083,6 +5119,30 @@ test "App /provider add declares a provider that /login then accepts" {
     defer custom_providers.deinitProviders(std.testing.allocator, providers);
     try std.testing.expectEqual(@as(usize, 1), providers.len);
     try std.testing.expectEqualStrings("openai-responses", providers[0].api);
+}
+
+test "App /provider del deletes a declared provider and refuses one that is not declared" {
+    var env = try TempHome.init("home-provider-del");
+    defer env.deinit();
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    try app.submit("/provider add gateway https://gw.test/v1");
+    try app.submit("/provider add other https://other.test --no-auth");
+    try std.testing.expect(app.isDeclaredCustomProvider("gateway"));
+
+    try app.submit("/provider del gateway");
+    const said = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expectEqual(tui_state.TranscriptKind.system, said.kind);
+    try std.testing.expect(std.mem.startsWith(u8, said.text.items, "deleted gateway from "));
+    try std.testing.expect(!app.isDeclaredCustomProvider("gateway"));
+    try std.testing.expect(app.isDeclaredCustomProvider("other"));
+
+    try app.submit("/provider del gateway");
+    try std.testing.expectEqualStrings("could not delete gateway: ProviderNotDeclared", app.state.transcript.items[app.state.transcript.items.len - 1].text.items);
+
+    try app.submit("/provider del");
+    try std.testing.expectEqualStrings(tui_commands.provider_usage, app.state.transcript.items[app.state.transcript.items.len - 1].text.items);
 }
 
 test "App only offers an api-key login for a declared custom provider" {
