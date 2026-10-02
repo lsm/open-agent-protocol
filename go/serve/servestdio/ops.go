@@ -131,10 +131,14 @@ func (s *Server) serveRequest(ctx context.Context, run *runState, request reques
 			return
 		}
 		s.serveOpen(ctx, run, request, lines)
+		s.hub.Published(protocol.SessionID(request.SessionID))
 		return
 	}
 	result, werr := s.dispatch(ctx, request)
 	s.respond(ctx, lines, request, result, werr)
+	if request.Op == opSubmit {
+		s.hub.Published(protocol.SessionID(request.SessionID))
+	}
 }
 
 func (s *Server) respond(ctx context.Context, lines chan<- outLine, request requestLine, result json.RawMessage, werr *wireError) bool {

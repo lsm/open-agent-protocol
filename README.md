@@ -586,6 +586,7 @@ session.Submit(ctx, protocol.MessageSubmitRequest{
 	SessionID: session.ID(), Delivery: protocol.DeliveryAuto,
 	Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hi")}},
 })
+hub.Published(session.ID()) // no-op unless the submit steered a run
 for {
 	envelope, err := sub.Next()
 	if err == io.EOF {
@@ -597,6 +598,14 @@ for {
 	// resolve gates and collect content as events arrive
 }
 ```
+
+A submit that steered a run holds the target run's stream until
+`hub.Published(session.ID())`: the hub withholds the envelopes the adapter
+emitted inside the call, publishes those at or below the response's
+`target_sequence`, and releases the rest when the response has reached the
+caller. The call is a no-op for every other submit, the three bindings make it
+for you after they write the response, and a deadline releases the stream in
+order if a host forgets.
 
 Subscriptions are the daemon's SSE connections without the socket: any number
 per session, bounded per-subscription buffers, and the same typed terminal
