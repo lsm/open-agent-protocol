@@ -1321,7 +1321,12 @@ pub const TuiRuntime = struct {
         while (!self.remote_mutex.tryLock()) std.atomic.spinLoopHint();
         defer self.remote_mutex.unlock();
         switch (event) {
-            .agent_end => |payload| self.endRun(payload.reason) catch {},
+            .agent_end => |payload| {
+                if (payload.reason == .completed and self.last_turn_stop_reason == .length) {
+                    self.push(.{ .system_warning = .{ .message = OwnedSlice(u8).initBorrowed(output_limit_warning) } });
+                }
+                self.endRun(payload.reason) catch {};
+            },
             .turn_end => |payload| {
                 self.last_turn_stop_reason = payload.stop_reason;
                 self.pushTerminal(event);

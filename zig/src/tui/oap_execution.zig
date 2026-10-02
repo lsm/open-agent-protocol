@@ -576,6 +576,7 @@ const scripted_model = ai_types.Model{
 const Script = struct {
     reply: []const u8 = "over the wire",
     wait_for_cancel: bool = false,
+    stop_reason: ai_types.StopReason = .stop,
     last_thinking: ai_types.ThinkingLevel = .off,
 };
 
@@ -608,11 +609,11 @@ fn scriptedStream(ctx: ?*anyopaque, model: ai_types.Model, context: ai_types.Con
         stream.complete(bareMessage(.aborted));
         return stream;
     }
-    const partial = bareMessage(.stop);
+    const partial = bareMessage(script.stop_reason);
     try stream.push(.{ .start = .{ .partial = partial } });
     try stream.push(.{ .text_delta = .{ .content_index = 0, .delta = script.reply, .partial = partial } });
-    try stream.push(.{ .done = .{ .reason = .stop, .message = try scriptedMessage(allocator, script.reply, .stop) } });
-    stream.complete(try scriptedMessage(allocator, script.reply, .stop));
+    try stream.push(.{ .done = .{ .reason = script.stop_reason, .message = try scriptedMessage(allocator, script.reply, script.stop_reason) } });
+    stream.complete(try scriptedMessage(allocator, script.reply, script.stop_reason));
     return stream;
 }
 
@@ -621,6 +622,8 @@ const Seen = struct {
     final_text: std.ArrayList(u8) = .empty,
     end: ?tui_session.TuiEndReason = null,
     agent_starts: usize = 0,
+    warnings: usize = 0,
+    output_limit_warned: bool = false,
 
     fn deinit(self: *Seen) void {
         self.text.deinit(testing.allocator);
@@ -636,6 +639,10 @@ fn drainTurn(runtime: *tui_runtime.TuiRuntime, seen: *Seen) !void {
             defer owned_event.deinit(testing.allocator);
             switch (owned_event) {
                 .agent_start => seen.agent_starts += 1,
+                .system_warning => |payload| {
+                    seen.warnings += 1;
+                    if (std.mem.indexOf(u8, payload.message.slice(), "output token limit") != null) seen.output_limit_warned = true;
+                },
                 .text_delta => |payload| try seen.text.appendSlice(testing.allocator, payload.delta.slice()),
                 .message_end => |payload| if (payload.role == .assistant) {
                     seen.final_text.clearRetainingCapacity();
@@ -687,6 +694,28 @@ test "a turn submitted to a runtime over OAP streams back as the events the term
     try testing.expectEqualStrings("over the wire", seen.final_text.items);
     try testing.expectEqual(ai_types.ThinkingLevel.high, script.last_thinking);
     try testing.expect(runtime.isIdle());
+}
+
+test "a reply over OAP that stops at its output token limit warns the user as the local runtime does" {
+    var script = Script{ .stop_reason = .length };
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .off);
+    defer execution.destroy();
+    defer runtime.deinit();
+
+    try runtime.submitTurn("long");
+    var seen = Seen{};
+    defer seen.deinit();
+    try drainTurn(&runtime, &seen);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+    try testing.expect(seen.output_limit_warned);
+
+    script.stop_reason = .stop;
+    try runtime.submitTurn("short");
+    var next = Seen{};
+    defer next.deinit();
+    try drainTurn(&runtime, &next);
+    try testing.expectEqual(@as(usize, 0), next.warnings);
 }
 
 test "cancelling a turn over OAP ends it cancelled and the next turn runs on the same session" {

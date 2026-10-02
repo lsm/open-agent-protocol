@@ -1809,7 +1809,14 @@ pub const App = struct {
         const idx = self.pickerSourceIndex(self.state.menu_index) orelse return;
         const mode = permission_modes[idx];
         const runtime = self.runtime orelse return error.NoRuntimeConfigured;
-        try runtime.setPermissionMode(mode);
+        runtime.setPermissionMode(mode) catch |err| switch (err) {
+            error.UnavailableOverOap => {
+                self.state.mode = .normal;
+                try self.state.appendTranscript(.@"error", over_oap_setting_refusal);
+                return;
+            },
+            else => return err,
+        };
         self.state.permission_mode = mode;
         self.state.mode = .normal;
         const msg = try std.fmt.allocPrint(self.allocator, "permission mode set to {s}", .{@tagName(mode)});
