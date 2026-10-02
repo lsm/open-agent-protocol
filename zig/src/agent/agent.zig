@@ -99,6 +99,7 @@ pub const Agent = struct {
     _auto_compact_at: ?u64 = null,
     _compaction_request: ?[]u8 = null,
     _compaction_host: ?CompactionHost = null,
+    _next_model: ?ai_types.Model = null,
     _retired_messages: std.ArrayList(ai_types.Message) = .empty,
     _permission_engine: ?*types.permission.PermissionEngine,
 
@@ -309,6 +310,22 @@ pub const Agent = struct {
         const host = self._compaction_host orelse return;
         const settled = host.settled_fn orelse return;
         settled(host.ctx, completed);
+    }
+
+    pub fn requestModelSwitch(self: *Agent, model: ?ai_types.Model) void {
+        self._mutex.lockUncancelable(defaultIo());
+        defer self._mutex.unlock(defaultIo());
+        self._next_model = model;
+    }
+
+    fn nextModel(ctx: ?*anyopaque) ?ai_types.Model {
+        const self: *Agent = @ptrCast(@alignCast(ctx.?));
+        self._mutex.lockUncancelable(defaultIo());
+        defer self._mutex.unlock(defaultIo());
+        const model = self._next_model;
+        self._next_model = null;
+        if (model) |next| self._state.model = next;
+        return model;
     }
 
     pub fn setAutoCompact(self: *Agent, at: ?u64, host: ?CompactionHost) void {
@@ -1256,6 +1273,8 @@ pub const Agent = struct {
             .get_follow_up_messages_ctx = self,
             .compact_between_turns_fn = compactBetweenTurns,
             .compact_between_turns_ctx = self,
+            .next_model_fn = nextModel,
+            .next_model_ctx = self,
             .convert_to_llm_fn = self._convert_to_llm_fn,
             .convert_to_llm_ctx = self._convert_to_llm_ctx,
             .get_api_key_fn = self._get_api_key_fn,
@@ -1299,7 +1318,12 @@ pub const Agent = struct {
                 },
                 .compaction_end => |e| {
                     if (e.outcome == .completed) {
-                        try self.adoptCompactedHistory(e.text.slice(), model);
+                        const current = current: {
+                            self._mutex.lockUncancelable(defaultIo());
+                            defer self._mutex.unlock(defaultIo());
+                            break :current self._state.model orelse model;
+                        };
+                        try self.adoptCompactedHistory(e.text.slice(), current);
                         compacted_in_run = true;
                     }
                 },
@@ -2313,6 +2337,8 @@ const MidRunMock = struct {
     summary_requests: usize = 0,
     carried_on: usize = 0,
     reported_input: u64 = 9_000,
+    model_ids: [4][]const u8 = .{ "", "", "", "" },
+    max_tokens: [4]u32 = .{ 0, 0, 0, 0 },
 };
 
 fn midRunStreamFn(
@@ -2322,8 +2348,11 @@ fn midRunStreamFn(
     options: types.ProtocolOptions,
     allocator: std.mem.Allocator,
 ) anyerror!*event_stream_mod.AssistantMessageEventStream {
-    _ = options;
     const mock: *MidRunMock = @ptrCast(@alignCast(ctx.?));
+    if (mock.calls < mock.model_ids.len) {
+        mock.model_ids[mock.calls] = model.id;
+        mock.max_tokens[mock.calls] = options.max_tokens orelse 0;
+    }
     mock.calls += 1;
     const last = context.messages[context.messages.len - 1];
     const last_text: []const u8 = if (last == .user and last.user.content == .text) last.user.content.text else "";
@@ -2411,6 +2440,27 @@ test "a run past the threshold compacts between turns and carries on from the su
     try std.testing.expectEqualStrings(compaction.acknowledgement, messages[1].assistant.content[0].text.text);
     try std.testing.expectEqualStrings(agent_loop.compacted_request_text, messages[2].user.content.text);
     try std.testing.expectEqualStrings("finished", messages[3].assistant.content[0].text.text);
+}
+
+test "a model switch requested during a run takes effect from the next turn" {
+    var mock = MidRunMock{};
+    var agent = Agent.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = midRunStreamFn, .ctx = &mock } });
+    defer agent.deinit();
+    var events = CompactionEvents{};
+    var next = test_model;
+    next.id = "next-model";
+    next.max_tokens = 512;
+
+    agent.requestModelSwitch(next);
+    try runMidRun(&agent, &events, null);
+
+    try std.testing.expectEqual(@as(usize, 2), mock.calls);
+    try std.testing.expectEqualStrings(test_model.id, mock.model_ids[0]);
+    try std.testing.expectEqualStrings("next-model", mock.model_ids[1]);
+    try std.testing.expectEqualStrings("next-model", agent._state.model.?.id);
+    try std.testing.expect(mock.max_tokens[0] > 512);
+    try std.testing.expectEqual(@as(u32, 512), mock.max_tokens[1]);
+    try std.testing.expect(Agent.nextModel(&agent) == null);
 }
 
 test "a run under the threshold, or with no threshold, does not compact" {

@@ -220,6 +220,7 @@ pub const TuiRuntime = struct {
     protocol: ?agent.ProtocolClient,
     models: []ai_types.Model,
     selected_model_index: ?usize,
+    pending_model_index: ?usize = null,
     local_agent: ?agent.Agent = null,
     event_stream: TuiEventStream,
     tool_registry: local_tools.ToolRegistry,
@@ -533,6 +534,18 @@ pub const TuiRuntime = struct {
             }
         }
 
+        var next_pending: ?usize = null;
+        if (self.pending_model_index) |pending| {
+            if (pending < self.models.len) {
+                const target = self.models[pending];
+                for (owned_next, 0..) |model, idx| {
+                    if (std.mem.eql(u8, model.id, target.id) and std.mem.eql(u8, model.provider, target.provider) and std.mem.eql(u8, model.api, target.api)) {
+                        next_pending = idx;
+                        break;
+                    }
+                }
+            }
+        }
         if (self.remote) |remote| {
             if (self.stream_active) return error.AgentAlreadyStreaming;
             if (self.started) {
@@ -544,10 +557,15 @@ pub const TuiRuntime = struct {
                 }
             }
         }
+        if (self.local_agent) |*local| local.requestModelSwitch(null);
         deinitModels(self.allocator, self.models);
         self.models = owned_next;
         owned_next = &.{};
         self.selected_model_index = next_selected;
+        self.pending_model_index = next_pending;
+        if (next_pending) |idx| {
+            if (self.local_agent) |*local| local.requestModelSwitch(self.effectiveModel(self.models[idx]));
+        }
         self.reconcileContextWindowAfterModelSwitch();
 
         if (self.local_agent) |*local| {
@@ -783,6 +801,37 @@ pub const TuiRuntime = struct {
             }
         }
         return error.ModelNotFound;
+    }
+
+    pub fn requestModelSwitch(self: *TuiRuntime, model_id: []const u8) !ai_types.Model {
+        for (self.models, 0..) |model, i| {
+            if (std.mem.eql(u8, model.id, model_id)) return self.requestModelSwitchAt(i);
+        }
+        return error.ModelNotFound;
+    }
+
+    pub fn requestModelSwitchAt(self: *TuiRuntime, index: usize) !ai_types.Model {
+        if (index >= self.models.len) return error.ModelNotFound;
+        self.pending_model_index = index;
+        if (self.local_agent) |*local| local.requestModelSwitch(self.effectiveModel(self.models[index]));
+        return self.models[index];
+    }
+
+    pub fn dropPendingModelSwitch(self: *TuiRuntime) void {
+        self.pending_model_index = null;
+        if (self.local_agent) |*local| local.requestModelSwitch(null);
+    }
+
+    pub fn applyPendingModelSwitch(self: *TuiRuntime) !?ai_types.Model {
+        const index = self.pending_model_index orelse return null;
+        if (index >= self.models.len) {
+            self.pending_model_index = null;
+            return null;
+        }
+        try self.switchModelExact(self.models[index]);
+        self.pending_model_index = null;
+        if (self.local_agent) |*local| local.requestModelSwitch(null);
+        return self.models[index];
     }
 
     pub fn switchModelExact(self: *TuiRuntime, selected: ai_types.Model) !void {

@@ -1024,6 +1024,7 @@ pub const App = struct {
     inline_flushed_rows: usize = 0,
     login_status: [provider_catalog.all.len]LoginStatus = [_]LoginStatus{.none} ** provider_catalog.all.len,
     pending_session_reset: bool = false,
+    deferred_commands: std.ArrayList([]u8) = .empty,
     pending_compaction: ?[]u8 = null,
     pending_models: ?[]ai_types.Model = null,
     model_fetch: ?*ModelFetch = null,
@@ -1107,6 +1108,8 @@ pub const App = struct {
     }
 
     pub fn deinit(self: *App) void {
+        for (self.deferred_commands.items) |text| self.allocator.free(text);
+        self.deferred_commands.deinit(self.allocator);
         if (self.pending_compaction) |focus| self.allocator.free(focus);
         self.pending_compaction = null;
         if (self.model_fetch) |fetch| {
@@ -1725,7 +1728,16 @@ pub const App = struct {
             self.state.mode = .normal;
             return;
         }
-        const model = models[self.pickerSourceIndex(self.state.menu_index) orelse return];
+        const index = self.pickerSourceIndex(self.state.menu_index) orelse return;
+        const model = models[index];
+        if (self.state.status.streaming) {
+            self.state.mode = .normal;
+            const target = try runtime.requestModelSwitchAt(index);
+            const msg = try std.fmt.allocPrint(self.allocator, "switching to {s}/{s} {s}", .{ target.provider, target.id, switchTiming(runtime) });
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.system, msg);
+            return;
+        }
         if (self.session) |*session| {
             try session.switchModelExact(model);
         } else {
@@ -2061,7 +2073,16 @@ pub const App = struct {
 
     fn applyModels(self: *App, models: []const ai_types.Model) !bool {
         const runtime = self.runtime orelse return false;
+        const pending: ?[]u8 = if (runtime.pending_model_index) |idx| try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ runtime.models[idx].provider, runtime.models[idx].id }) else null;
+        defer if (pending) |name| self.allocator.free(name);
         try runtime.replaceModels(models, runtime.currentModel());
+        if (pending) |name| {
+            if (runtime.pending_model_index == null) {
+                const msg = try std.fmt.allocPrint(self.allocator, "the pending switch to {s} was dropped: the refreshed model list no longer has it", .{name});
+                defer self.allocator.free(msg);
+                try self.state.appendTranscript(.@"error", msg);
+            }
+        }
         const model = runtime.currentModel() orelse return false;
         const switched = !std.mem.eql(u8, model.id, self.state.status.model) or
             !std.mem.eql(u8, model.provider, self.state.status.provider);
@@ -2881,6 +2902,7 @@ pub const App = struct {
         var resumed_run = false;
         if (completed_agent_end and self.state.queue.total() > 0) {
             try self.applyPendingModelsBeforeResume();
+            try self.applyPendingModelSwitchBeforeRun();
             session.resumeSession() catch |err| {
                 try self.state.status.setError(self.allocator, @errorName(err));
                 try self.state.appendTranscript(.@"error", @errorName(err));
@@ -2894,8 +2916,76 @@ pub const App = struct {
             try self.sendPendingAfterCompaction(completed, resumed_run or self.state.status.streaming);
         }
         if (!completed_agent_end or self.state.queue.total() == 0) try self.drainQueuedWorktreeMessageIfIdle();
+        if (run_ended and self.state.held_after_abort.items.len > 0) try self.applyPendingModelSwitchBeforeRun();
         if (run_ended) try self.sendHeldAfterAbort();
+        if ((run_ended or run_failed) and !self.state.status.streaming) try self.applyPendingModelSwitchBeforeRun();
         try self.startCompactionAfterRun(run_ended or run_failed);
+        try self.runDeferredAfterRun();
+    }
+
+    fn steerModelSwitch(self: *App, model_id: []const u8) !void {
+        const runtime = self.runtime orelse return error.NoRuntimeConfigured;
+        const model = runtime.requestModelSwitch(model_id) catch {
+            const msg = try std.fmt.allocPrint(self.allocator, "no model named {s}", .{model_id});
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.@"error", msg);
+            return;
+        };
+        const msg = try std.fmt.allocPrint(self.allocator, "switching to {s}/{s} {s}", .{ model.provider, model.id, switchTiming(runtime) });
+        defer self.allocator.free(msg);
+        try self.state.appendTranscript(.system, msg);
+    }
+
+    pub fn deferCommand(self: *App, text: []const u8) !void {
+        const trimmed = std.mem.trim(u8, text, " \t\r\n");
+        const owned = try self.allocator.dupe(u8, trimmed);
+        errdefer self.allocator.free(owned);
+        try self.deferred_commands.append(self.allocator, owned);
+        const msg = try std.fmt.allocPrint(self.allocator, "{s} runs when this run ends", .{trimmed});
+        defer self.allocator.free(msg);
+        try self.state.appendTranscript(.system, msg);
+    }
+
+    fn runDeferredAfterRun(self: *App) !void {
+        const runtime = self.runtime orelse return;
+        if (runtime.pending_model_index == null and self.deferred_commands.items.len == 0) return;
+        if (self.state.status.streaming or self.state.status.compacting or !runtime.isIdle()) return;
+        try self.applyPendingModelSwitchBeforeRun();
+        if (self.state.queue.total() > 0) return;
+        const deferred = try self.deferred_commands.toOwnedSlice(self.allocator);
+        defer {
+            for (deferred) |text| self.allocator.free(text);
+            self.allocator.free(deferred);
+        }
+        for (deferred) |text| {
+            self.submitCommand(text) catch |err| {
+                const msg = try std.fmt.allocPrint(self.allocator, "{s} failed: {s}", .{ text, @errorName(err) });
+                defer self.allocator.free(msg);
+                try self.state.appendTranscript(.@"error", msg);
+            };
+        }
+    }
+
+    fn applyPendingModelSwitchBeforeRun(self: *App) !void {
+        const runtime = self.runtime orelse return;
+        if (runtime.pending_model_index == null) return;
+        if (runtime.local_agent) |*local| local.waitForIdle();
+        if (!runtime.isIdle()) return;
+        if (runtime.applyPendingModelSwitch()) |switched| {
+            if (switched) |model| {
+                try self.state.status.setModel(self.allocator, model.id, model.provider);
+                self.applyContextWindow();
+                self.persistCurrentModel();
+                const msg = try std.fmt.allocPrint(self.allocator, "model switched to {s}/{s}", .{ model.provider, model.id });
+                defer self.allocator.free(msg);
+                try self.state.appendTranscript(.system, msg);
+            }
+        } else |err| {
+            runtime.dropPendingModelSwitch();
+            const msg = try std.fmt.allocPrint(self.allocator, "switching model failed: {s}", .{@errorName(err)});
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.@"error", msg);
+        }
     }
 
     fn dropHeldCompaction(self: *App) void {
@@ -3091,6 +3181,7 @@ pub const App = struct {
     }
 
     fn sendUserTurnEchoing(self: *App, trimmed: []const u8, echo: []const u8) !bool {
+        if (!self.state.status.streaming and !self.runtimeBusy()) try self.applyPendingModelSwitchBeforeRun();
         self.applyPendingSessionResetSync() catch |err| {
             if (err == error.PendingSessionReset) {
                 try self.state.appendTranscript(.@"error", "Session reset pending; wait for the current run to finish.");
@@ -3290,6 +3381,17 @@ pub const App = struct {
             },
             .command => |command| command,
         };
+
+        if (self.state.status.streaming) {
+            if (command.kind == .model and command.arg != null and !std.mem.eql(u8, command.arg.?, "refresh")) {
+                try self.steerModelSwitch(command.arg.?);
+                return;
+            }
+            if (waitsForRunEnd(command)) {
+                try self.deferCommand(text);
+                return;
+            }
+        }
 
         if (command.kind == .@"resume") self.loadSessions() catch |err| {
             try self.state.status.setError(self.allocator, @errorName(err));
@@ -4145,6 +4247,11 @@ pub const TuiModel = struct {
                             app.queueCompaction(compactDraftFocus(text).?) catch |err| app.recordError(@errorName(err)) catch {};
                             app.state.recordComposerHistory(text) catch |err| app.recordError(@errorName(err)) catch {};
                             app.state.composer.clear();
+                        } else if (app.state.mode == .normal and app.state.status.streaming and queueableCommandDraft(app.state.composer.text())) {
+                            const text = app.state.composer.text();
+                            app.deferCommand(text) catch |err| app.recordError(@errorName(err)) catch {};
+                            app.state.recordComposerHistory(text) catch |err| app.recordError(@errorName(err)) catch {};
+                            app.state.composer.clear();
                         } else if (app.state.mode == .normal and app.state.status.streaming and !isSlashDraft(app.state.composer.text())) {
                             const text = app.state.composer.text();
                             const queued = app.queueFollowUp(text) catch |err| blk: {
@@ -4721,6 +4828,28 @@ pub const TuiModel = struct {
     }
 };
 
+fn switchTiming(runtime: *const tui_runtime.TuiRuntime) []const u8 {
+    return if (runtime.local_agent != null) "before the next turn of this run, or when it ends" else "when this run ends";
+}
+
+fn waitsForRunEnd(command: tui_commands.Command) bool {
+    const arg = command.arg orelse return false;
+    return switch (command.kind) {
+        .context, .output, .logout => true,
+        .provider => std.mem.startsWith(u8, arg, "del ") or std.mem.startsWith(u8, arg, "delete ") or std.mem.eql(u8, arg, "del") or std.mem.eql(u8, arg, "delete"),
+        else => false,
+    };
+}
+
+fn queueableCommandDraft(text: []const u8) bool {
+    const command = tui_commands.parse(std.mem.trim(u8, text, " \t\r\n")) catch return false;
+    if (command.kind == .model) {
+        const arg = command.arg orelse return false;
+        return !std.mem.eql(u8, arg, "refresh");
+    }
+    return waitsForRunEnd(command);
+}
+
 fn compactDraftFocus(text: []const u8) ?[]const u8 {
     const command = tui_commands.parse(std.mem.trim(u8, text, " \t\r\n")) catch return null;
     if (command.kind != .compact) return null;
@@ -5197,6 +5326,85 @@ test "App applies a staged catalog once the runtime is idle" {
         if (std.mem.eql(u8, entry.text.items, "model catalog refreshed")) noted = true;
     }
     try std.testing.expect(noted);
+}
+
+test "App steers a model switch and defers run-end commands while a run streams, then applies them" {
+    var env = try TempHome.init("home-defer-commands");
+    defer env.deinit();
+    var other = defaultModel();
+    other.id = "other-model";
+    other.name = "Other";
+    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    errdefer std.testing.allocator.destroy(runtime);
+    runtime.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ defaultModel(), other }, .initial_model_id = defaultModel().id });
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.runtime = runtime;
+
+    app.state.status.streaming = true;
+    try app.submit("/model other-model");
+    try std.testing.expectEqual(@as(?usize, 1), runtime.pending_model_index);
+    try std.testing.expectEqualStrings(defaultModel().id, runtime.currentModel().?.id);
+    try app.submit("/model missing-model");
+    try std.testing.expectEqualStrings("no model named missing-model", app.state.transcript.items[app.state.transcript.items.len - 1].text.items);
+    try app.submit("/output 4096");
+    try std.testing.expectEqual(@as(usize, 1), app.deferred_commands.items.len);
+    try std.testing.expectEqualStrings("/output 4096 runs when this run ends", app.state.transcript.items[app.state.transcript.items.len - 1].text.items);
+
+    app.state.status.streaming = false;
+    try app.runDeferredAfterRun();
+    try std.testing.expectEqualStrings("other-model", runtime.currentModel().?.id);
+    try std.testing.expectEqualStrings("other-model", app.state.status.model);
+    try std.testing.expect(runtime.pending_model_index == null);
+    try std.testing.expectEqual(@as(usize, 0), app.deferred_commands.items.len);
+    try std.testing.expectEqual(agent.OutputSetting{ .tokens = 4096 }, runtime.outputSetting());
+}
+
+test "a pending model switch applies once idle even with follow-ups queued, while held commands wait" {
+    var env = try TempHome.init("home-switch-with-queue");
+    defer env.deinit();
+    var other = defaultModel();
+    other.id = "other-model";
+    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    errdefer std.testing.allocator.destroy(runtime);
+    runtime.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ defaultModel(), other }, .initial_model_id = defaultModel().id });
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.runtime = runtime;
+
+    app.state.status.streaming = true;
+    try app.submit("/model other-model");
+    try app.submit("/output 4096");
+    app.state.status.streaming = false;
+    app.state.queue.follow_up = 1;
+
+    try app.runDeferredAfterRun();
+    try std.testing.expectEqualStrings("other-model", runtime.currentModel().?.id);
+    try std.testing.expectEqual(@as(usize, 1), app.deferred_commands.items.len);
+}
+
+test "a refreshed model list keeps a pending switch it still lists and reports one it drops" {
+    var other = defaultModel();
+    other.id = "other-model";
+    var third = defaultModel();
+    third.id = "third-model";
+    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    errdefer std.testing.allocator.destroy(runtime);
+    runtime.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ defaultModel(), other }, .initial_model_id = defaultModel().id });
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.runtime = runtime;
+
+    _ = try runtime.requestModelSwitch("other-model");
+    _ = try app.applyModels(&[_]ai_types.Model{ third, other, defaultModel() });
+    try std.testing.expectEqual(@as(?usize, 1), runtime.pending_model_index);
+    try std.testing.expectEqualStrings("other-model", runtime.models[runtime.pending_model_index.?].id);
+
+    _ = try app.applyModels(&[_]ai_types.Model{ defaultModel(), third });
+    try std.testing.expect(runtime.pending_model_index == null);
+    const said = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expectEqual(tui_state.TranscriptKind.@"error", said.kind);
+    try std.testing.expect(std.mem.indexOf(u8, said.text.items, "other-model was dropped") != null);
 }
 
 test "App refreshes runtime models after login" {
@@ -5800,7 +6008,7 @@ test "a held compaction waits while follow-ups are queued instead of blocking on
     try std.testing.expectEqualStrings("the parser", app.pending_compaction.?);
 }
 
-test "TuiModel Tab queues nothing while idle or for a slash draft" {
+test "TuiModel Tab queues no follow-up while idle or for a slash draft, and defers a run-end command" {
     var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
     defer model.deinit();
     var mock = MockAppSession{};
@@ -5821,12 +6029,18 @@ test "TuiModel Tab queues nothing while idle or for a slash draft" {
     try std.testing.expectEqual(@as(usize, 0), mock.follow_up_count);
     try std.testing.expectEqualStrings("/abort", model.app.?.state.composer.text());
 
-    for ([_][]const u8{ "/model claude", "/model ", "  /status now" }) |draft| {
+    for ([_][]const u8{ "/model ", "  /status now" }) |draft| {
         try model.app.?.state.replaceComposerBuffer(draft);
         _ = model.update(.{ .key = .{ .key = .tab } }, &tctx.ctx);
         try std.testing.expectEqual(@as(usize, 0), mock.follow_up_count);
         try std.testing.expectEqualStrings(draft, model.app.?.state.composer.text());
     }
+    try model.app.?.state.replaceComposerBuffer("/model claude");
+    _ = model.update(.{ .key = .{ .key = .tab } }, &tctx.ctx);
+    try std.testing.expectEqual(@as(usize, 0), mock.follow_up_count);
+    try std.testing.expectEqualStrings("", model.app.?.state.composer.text());
+    try std.testing.expectEqual(@as(usize, 1), model.app.?.deferred_commands.items.len);
+    try std.testing.expectEqualStrings("/model claude", model.app.?.deferred_commands.items[0]);
     try std.testing.expect(!try model.app.?.queueFollowUp("/model claude"));
     try std.testing.expectEqual(@as(usize, 0), mock.follow_up_count);
     try std.testing.expectEqual(@as(usize, 0), model.app.?.state.pending_follow_ups.items.len);
