@@ -2784,7 +2784,7 @@ pub const App = struct {
         }
         if (!completed_agent_end or self.state.queue.total() == 0) try self.drainQueuedWorktreeMessageIfIdle();
         if (run_ended) try self.sendHeldAfterAbort();
-        if (run_ended) try self.runDeferredAfterRun();
+        try self.runDeferredAfterRun();
     }
 
     fn steerModelSwitch(self: *App, model_id: []const u8) !void {
@@ -2813,8 +2813,11 @@ pub const App = struct {
     fn runDeferredAfterRun(self: *App) !void {
         const runtime = self.runtime orelse return;
         if (runtime.pending_model_index == null and self.deferred_commands.items.len == 0) return;
-        if (self.state.status.streaming or self.state.status.compacting) return;
-        if (runtime.local_agent) |*local| local.waitForIdle();
+        if (self.state.status.streaming or self.state.status.compacting or self.state.queue.total() > 0) return;
+        if (runtime.local_agent) |*local| {
+            if (!local.isIdle()) return;
+            local.waitForIdle();
+        }
         if (runtime.applyPendingModelSwitch()) |switched| {
             if (switched) |model| {
                 try self.state.status.setModel(self.allocator, model.id, model.provider);
