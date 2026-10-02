@@ -50,6 +50,7 @@ func TestOpenMessageMirrorsSubmitRequest(t *testing.T) {
 func TestOpenMessageSubmitCarriesEveryMember(t *testing.T) {
 	instructions, model := "be brief", "model-1"
 	message := OpenMessage{
+		TargetRunID:           "target-1",
 		Messages:              []Message{{Role: RoleUser, Content: TextContent("hello")}},
 		Delivery:              DeliveryAuto,
 		ModelID:               &model,

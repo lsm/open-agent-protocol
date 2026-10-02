@@ -11,6 +11,7 @@ import (
 )
 
 type runState struct {
+	steers                      map[protocol.SubmissionID]*steerTrack
 	id                          protocol.RunID
 	session                     protocol.SessionID
 	admitted, started, terminal bool
@@ -372,6 +373,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 	case protocol.TypeSessionStateResponse, protocol.TypeSessionStateUpdated:
 		var p protocol.SessionState
 		_ = e.DecodePayload(&p)
+		s.steerState(i, line, e, p)
 		if rec := s.recoveries[p.SessionID]; rec != nil && !rec.stateChecked {
 			rec.stateChecked = true
 			rec.stateSeen = true
@@ -418,7 +420,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 			s.add(CodeStaleCapabilityRevision, i, line, e, "/capability_revision", "submission occurred before refreshed capabilities")
 		}
 		s.submitControls(i, line, e, p)
-		if p.Delivery != protocol.DeliveryAuto && p.Delivery != protocol.DeliveryQueue && !(s.tolerant && foreignRequestedDelivery(p.Delivery)) {
+		if p.Delivery != protocol.DeliveryAuto && p.Delivery != protocol.DeliveryQueue && p.Delivery != protocol.DeliverySteer && !(s.tolerant && foreignRequestedDelivery(p.Delivery)) {
 
 			s.feature(i, line, e, "delivery."+string(p.Delivery))
 		}
@@ -473,6 +475,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 	case protocol.TypeErrorResponse:
 
 		s.settleControlRefusal(i, line, e)
+		s.steerRefusal(i, line, e)
 		s.settleToolSourceRefusal(i, line, e)
 		s.settleModelsRefusal(i, line, e)
 		s.settleSubscribeRefusal(i, line, e)
@@ -779,6 +782,15 @@ func (s *state) admitSubmission(i, line int, e protocol.Envelope, p protocol.Mes
 		return
 	}
 
+	if req := s.requests[e.InReplyTo]; req != nil && requestedSubmission(req).Delivery == protocol.DeliverySteer && p.Admission != protocol.AdmissionSteered {
+		s.settleSubmitAdmission(i, line, e, p)
+		s.add(CodeIllegalRunTransition, i, line, e, "/payload/admission", "explicit steer cannot admit a new run")
+		return
+	}
+	if p.Admission == protocol.AdmissionSteered {
+		s.steerAdmission(i, line, e, p)
+		return
+	}
 	switch {
 	case p.RunID == "":
 		s.add(CodeIllegalRunTransition, i, line, e, "/payload/run_id", "accepted submission must reserve a run identity")
@@ -922,6 +934,12 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 			s.add(CodeEventAfterTerminal, i, line, e, "/type", "run event occurred after terminality")
 		}
 		return
+	}
+	if e.Type == protocol.TypeRunSteerApplied || e.Type == protocol.TypeRunSteerDropped {
+		s.steerSettlement(i, line, e, r)
+	}
+	if isTerminal(e.Type) {
+		s.steerTerminal(i, line, e, r)
 	}
 	s.checkQueueOrder(i, line, e, r)
 	if e.Type == protocol.TypeRunStarted {
@@ -1510,7 +1528,7 @@ func preStartSettlement(t protocol.EnvelopeType) bool {
 }
 func isRunEvent(t protocol.EnvelopeType) bool {
 	switch t {
-	case protocol.TypeRunStarted, protocol.TypeRunStatusUpdated, protocol.TypeContentDelta, protocol.TypeRunCompleted, protocol.TypeRunFailed, protocol.TypeRunCancelled, protocol.TypeActionCallRequested, protocol.TypeActionCallStarted, protocol.TypeActionCallProgress, protocol.TypeActionCallCompleted, protocol.TypeActionCallFailed, protocol.TypeActionCallCancelled, protocol.TypeActionPermissionRequested, protocol.TypeActionPermissionResolved, protocol.TypeUserInputRequested, protocol.TypeUserInputResolved:
+	case protocol.TypeRunSteerApplied, protocol.TypeRunSteerDropped, protocol.TypeRunStarted, protocol.TypeRunStatusUpdated, protocol.TypeContentDelta, protocol.TypeRunCompleted, protocol.TypeRunFailed, protocol.TypeRunCancelled, protocol.TypeActionCallRequested, protocol.TypeActionCallStarted, protocol.TypeActionCallProgress, protocol.TypeActionCallCompleted, protocol.TypeActionCallFailed, protocol.TypeActionCallCancelled, protocol.TypeActionPermissionRequested, protocol.TypeActionPermissionResolved, protocol.TypeUserInputRequested, protocol.TypeUserInputResolved:
 		return true
 	}
 	return false

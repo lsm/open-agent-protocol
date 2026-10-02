@@ -1,0 +1,166 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.request",
+    "id": "capq",
+    "payload": {}
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.response",
+    "id": "capr",
+    "in_reply_to": "capq",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "endpoint": {
+        "id": "agent"
+      },
+      "features": {
+        "session.message.delivery.steer": {
+          "level": "native"
+        }
+      }
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.message.submit.request",
+    "id": "sub1",
+    "session_id": "s1",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "session_id": "s1",
+      "messages": [
+        {
+          "role": "user",
+          "content": "go"
+        }
+      ],
+      "delivery": "auto"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.message.submit.response",
+    "id": "adm1",
+    "in_reply_to": "sub1",
+    "session_id": "s1",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "session_id": "s1",
+      "accepted": true,
+      "submission_id": "sub-adm1",
+      "requested_delivery": "auto",
+      "effective_delivery": "start",
+      "admission": "started",
+      "run_id": "r1",
+      "status": "running"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.started",
+    "id": "ev1",
+    "session_id": "s1",
+    "run_id": "r1",
+    "sequence": 1,
+    "payload": {
+      "session_id": "s1",
+      "run_id": "r1",
+      "status": "running"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.cancel.request",
+    "id": "cancelq",
+    "session_id": "s1",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "session_id": "s1",
+      "run_id": "r1"
+    },
+    "run_id": "r1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.cancel.response",
+    "id": "cancelr",
+    "in_reply_to": "cancelq",
+    "session_id": "s1",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "session_id": "s1",
+      "run_id": "r1",
+      "accepted": true,
+      "status": "cancelling"
+    },
+    "run_id": "r1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.message.submit.request",
+    "id": "sub2",
+    "session_id": "s1",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "session_id": "s1",
+      "messages": [
+        {
+          "role": "user",
+          "content": "go"
+        }
+      ],
+      "delivery": "steer"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "error.response",
+    "id": "err1",
+    "in_reply_to": "sub2",
+    "session_id": "s1",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "error": {
+        "code": "invalid_steer_target",
+        "message": "refused",
+        "details": {
+          "reason": "not_steerable"
+        }
+      }
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.cancelled",
+    "id": "ev2",
+    "session_id": "s1",
+    "run_id": "r1",
+    "sequence": 2,
+    "payload": {
+      "session_id": "s1",
+      "run_id": "r1"
+    }
+  }
+]

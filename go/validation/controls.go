@@ -198,6 +198,10 @@ func (s *state) submitControls(i, line int, e protocol.Envelope, p protocol.Mess
 			})
 			continue
 		}
+		if p.Delivery == protocol.DeliverySteer {
+			expectations = append(expectations, &controlExpectation{rung: rungUnsatisfiable, key: control.key, pointer: controlPointer(control.key), code: errorUnsupportedFeature, reason: "unsatisfiable", detailName: "feature", detailValue: control.key, diagnostic: CodeUnsatisfiableControl, message: "steer cannot change admitted run controls"})
+			continue
+		}
 		if control.key == protocol.FeatureToolSelection {
 			s.duplicateToolNames(i, line, e, p.SessionID)
 		}
