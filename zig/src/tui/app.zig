@@ -2770,6 +2770,7 @@ pub const App = struct {
         var resumed_run = false;
         if (completed_agent_end and self.state.queue.total() > 0) {
             try self.applyPendingModelsBeforeResume();
+            try self.applyPendingModelSwitchBeforeRun();
             session.resumeSession() catch |err| {
                 try self.state.status.setError(self.allocator, @errorName(err));
                 try self.state.appendTranscript(.@"error", @errorName(err));
@@ -2783,6 +2784,7 @@ pub const App = struct {
             try self.sendPendingAfterCompaction(completed, resumed_run or self.state.status.streaming);
         }
         if (!completed_agent_end or self.state.queue.total() == 0) try self.drainQueuedWorktreeMessageIfIdle();
+        if (run_ended and self.state.held_after_abort.items.len > 0) try self.applyPendingModelSwitchBeforeRun();
         if (run_ended) try self.sendHeldAfterAbort();
         try self.runDeferredAfterRun();
     }
@@ -2816,8 +2818,20 @@ pub const App = struct {
         if (self.state.status.streaming or self.state.status.compacting or self.state.queue.total() > 0) return;
         if (runtime.local_agent) |*local| {
             if (!local.isIdle()) return;
-            local.waitForIdle();
         }
+        try self.applyPendingModelSwitchBeforeRun();
+        const deferred = try self.deferred_commands.toOwnedSlice(self.allocator);
+        defer {
+            for (deferred) |text| self.allocator.free(text);
+            self.allocator.free(deferred);
+        }
+        for (deferred) |text| try self.submitCommand(text);
+    }
+
+    fn applyPendingModelSwitchBeforeRun(self: *App) !void {
+        const runtime = self.runtime orelse return;
+        if (runtime.pending_model_index == null) return;
+        if (runtime.local_agent) |*local| local.waitForIdle();
         if (runtime.applyPendingModelSwitch()) |switched| {
             if (switched) |model| {
                 try self.state.status.setModel(self.allocator, model.id, model.provider);
@@ -2832,12 +2846,6 @@ pub const App = struct {
             defer self.allocator.free(msg);
             try self.state.appendTranscript(.@"error", msg);
         }
-        const deferred = try self.deferred_commands.toOwnedSlice(self.allocator);
-        defer {
-            for (deferred) |text| self.allocator.free(text);
-            self.allocator.free(deferred);
-        }
-        for (deferred) |text| try self.submitCommand(text);
     }
 
     fn worktreeSetupRunning(self: *const App) bool {
