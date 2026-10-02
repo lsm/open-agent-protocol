@@ -2835,7 +2835,11 @@ pub const App = struct {
         }
         self.pending_compaction = null;
         defer self.allocator.free(focus);
-        try self.startCompaction(focus);
+        self.startCompaction(focus) catch |err| {
+            const msg = try std.fmt.allocPrint(self.allocator, "the held compaction could not start: {s}", .{@errorName(err)});
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.@"error", msg);
+        };
     }
 
     fn worktreeSetupRunning(self: *const App) bool {
