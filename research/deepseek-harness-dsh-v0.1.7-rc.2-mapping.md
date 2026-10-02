@@ -379,6 +379,8 @@ template (`packages/boot/app-boot/src/profile.ts`) stacks the bundles
 `@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-sdk-app`. `dsh-sdk-app`'s patch
 disables `session-title-llm` and `hmr`, but not `compaction-basic`, so the SDK
 runtime mounts it. A further patch layer setting
-`- id: compaction-basic` with a `config` block sets both values. Nothing on the
+`- id: compaction-basic` with a `config` block sets both values, and one
+setting `disabled: true` on the same id switches automatic compaction off. The
+`dsh-sdk-app` patch disables its own entries in that same form. Nothing on the
 SDK wire changes them on a live session. This is source-read; no real-process
 trace at this pin crosses the threshold.
