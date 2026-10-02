@@ -237,6 +237,8 @@ func advertisedFeatures() map[string]protocol.FeatureSupport {
 		"capabilities":                   {Level: protocol.SupportEmulated, Reason: "conservative descriptor; per-turn system/init refresh recorded as evidence"},
 		"session.open":                   {Level: protocol.SupportEmulated, Reason: "process spawn + initialize; CLI session UUID observed on frames"},
 		"session.state":                  {Level: protocol.SupportDegraded, Reason: "reducer-owned live projection"},
+		protocol.FeatureSessionReasoning: {Level: protocol.SupportNative, Modes: []string{protocol.ModeSessionOpen}, Reason: "apply_flag_settings sets effortLevel after initialize; low through max, and the CLI has no off or minimal level, so those are refused"},
+		protocol.FeatureCompactionPolicy: {Level: protocol.SupportEmulated, Modes: []string{protocol.ModeSessionOpen}, Reason: "apply_flag_settings sets autoCompactEnabled and autoCompactWindow; tokens is the window the CLI compacts within, and share is refused"},
 		"session.message.submit":         {Level: protocol.SupportDegraded, Reason: "host-minted turn uuid correlated by the user_message_uuid echo"},
 		"session.message.delivery.auto":  {Level: protocol.SupportDegraded, Reason: "accepted only when the CLI session is idle"},
 		"session.message.delivery.queue": {Level: protocol.SupportUnavailable, Reason: "queued continuation turns are not exposed in v1"},
@@ -280,6 +282,13 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	if err := base.RefuseUnadvertisedTools(req); err != nil {
 		return nil, err
 	}
+	if err := base.RefuseUnadvertisedSettings(req, protocol.CapabilityDescriptor{Features: advertisedFeatures()}); err != nil {
+		return nil, err
+	}
+	flags, err := claudeFlags(req)
+	if err != nil {
+		return nil, err
+	}
 	client, err := a.config.Factory.Start(ctx)
 	if err != nil {
 		return nil, err
@@ -289,7 +298,7 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		id = protocol.SessionID(a.ids.NewID("session"))
 	}
 	now := a.clock.Now().UnixMilli()
-	s := &Session{client: client, clock: a.clock, ids: a.ids, journal: journal.New(a.config.JournalCapacity), expandPrompts: a.config.ExpandPrompts, participant: participant(req.Participant), state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, CurrentModelID: a.config.Model, UpdatedAtMS: now}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, interactions: map[protocol.InteractionID]*gateState{}, policyDenied: map[string]bool{}, children: map[string]*childState{}, stop: make(chan struct{})}
+	s := &Session{client: client, clock: a.clock, ids: a.ids, journal: journal.New(a.config.JournalCapacity), expandPrompts: a.config.ExpandPrompts, participant: participant(req.Participant), state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, CurrentModelID: a.config.Model, UpdatedAtMS: now, ReasoningLevel: req.ReasoningLevel, CompactionPolicy: req.CompactionPolicy}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, interactions: map[protocol.InteractionID]*gateState{}, policyDenied: map[string]bool{}, children: map[string]*childState{}, stop: make(chan struct{})}
 	go s.dispatch()
 	if a.initializeAtOpen {
 
@@ -300,7 +309,39 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 			return nil, fmt.Errorf("claude adapter: initialize exchange failed: %w", err)
 		}
 	}
+	if len(flags) > 0 {
+		flagCtx, cancel := context.WithTimeout(ctx, initializeTimeout)
+		defer cancel()
+		if err := client.Call(flagCtx, native.ApplyFlagSettingsRequest{Subtype: native.ControlApplyFlags, Settings: flags}, &struct{}{}); err != nil {
+			_ = s.Close(context.Background())
+			return nil, fmt.Errorf("claude adapter: apply_flag_settings failed: %w", err)
+		}
+	}
 	return s, nil
+}
+
+func claudeFlags(req base.OpenRequest) (map[string]any, error) {
+	flags := map[string]any{}
+	switch req.ReasoningLevel {
+	case "":
+	case protocol.ReasoningLow, protocol.ReasoningMedium, protocol.ReasoningHigh, protocol.ReasoningXHigh, protocol.ReasoningMax:
+		flags["effortLevel"] = string(req.ReasoningLevel)
+	default:
+		return nil, &base.UnsupportedControlError{Feature: protocol.FeatureSessionReasoning, Reason: base.ControlUnsatisfiable, Field: "reasoning_level", Detail: "Claude Code's effort levels are low through max"}
+	}
+	if policy := req.CompactionPolicy; policy != nil {
+		switch policy.Kind {
+		case protocol.CompactionAuto:
+		case protocol.CompactionOff:
+			flags["autoCompactEnabled"] = false
+		case protocol.CompactionTokens:
+			flags["autoCompactEnabled"] = true
+			flags["autoCompactWindow"] = policy.Tokens
+		default:
+			return nil, &base.UnsupportedControlError{Feature: protocol.FeatureCompactionPolicy, Reason: base.ControlUnsatisfiable, Field: "compaction_policy", Detail: "Claude Code takes a token window, not a share"}
+		}
+	}
+	return flags, nil
 }
 
 func participant(p protocol.Participant) protocol.ParticipantID {

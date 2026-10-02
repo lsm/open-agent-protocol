@@ -21,6 +21,8 @@ const features = [_]contract.Feature{
     .{ .key = "capabilities", .level = .emulated, .reason = "conservative descriptor; per-turn system/init refresh recorded as evidence" },
     .{ .key = "session.open", .level = .emulated, .reason = "process spawn + initialize; CLI session UUID observed on frames" },
     .{ .key = "session.state", .level = .degraded, .reason = "reducer-owned live projection" },
+    .{ .key = contract.feature_session_reasoning, .level = .native, .reason = "apply_flag_settings sets effortLevel after initialize; low through max, and the CLI has no off or minimal level, so those are refused", .modes = &.{contract.mode_session_open} },
+    .{ .key = contract.feature_compaction_policy, .level = .emulated, .reason = "apply_flag_settings sets autoCompactEnabled and autoCompactWindow; tokens is the window the CLI compacts within, and share is refused", .modes = &.{contract.mode_session_open} },
     .{ .key = "session.message.submit", .level = .degraded, .reason = "host-minted turn uuid correlated by the user_message_uuid echo" },
     .{ .key = "session.message.delivery.auto", .level = .degraded, .reason = "accepted only when the CLI session is idle" },
     .{ .key = "session.message.delivery.queue", .level = .unavailable, .reason = "queued continuation turns are not exposed in v1" },
@@ -49,6 +51,52 @@ pub const descriptor = contract.Descriptor{
     .features = &features,
     .sources = &native_sources,
 };
+
+const claude_levels = [_][]const u8{ "low", "medium", "high", "xhigh", "max" };
+
+fn claudeFlags(arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure![]const u8 {
+    var effort: []const u8 = "";
+    if (request.reasoning_level) |level| {
+        for (claude_levels) |known| {
+            if (std.mem.eql(u8, known, level)) effort = known;
+        }
+        if (effort.len == 0) return refusal.unsupportedField(contract.feature_session_reasoning, contract.reason_unsatisfiable, "reasoning_level");
+    }
+    var enabled: ?bool = null;
+    var window: ?i64 = null;
+    if (request.compaction_policy_json) |raw| {
+        const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, raw, .{}) catch return refusal.unsupportedField(contract.feature_compaction_policy, contract.reason_unsatisfiable, "compaction_policy");
+        const kind = if (parsed == .object) (if (parsed.object.get("kind")) |value| (if (value == .string) value.string else "") else "") else "";
+        if (std.mem.eql(u8, kind, "off")) {
+            enabled = false;
+        } else if (std.mem.eql(u8, kind, "tokens")) {
+            const tokens = parsed.object.get("tokens") orelse return refusal.unsupportedField(contract.feature_compaction_policy, contract.reason_unsatisfiable, "compaction_policy");
+            if (tokens != .integer) return refusal.unsupportedField(contract.feature_compaction_policy, contract.reason_unsatisfiable, "compaction_policy");
+            enabled = true;
+            window = tokens.integer;
+        } else if (!std.mem.eql(u8, kind, "auto")) {
+            return refusal.unsupportedField(contract.feature_compaction_policy, contract.reason_unsatisfiable, "compaction_policy");
+        }
+    }
+    if (effort.len == 0 and enabled == null) return "";
+    var out: std.Io.Writer.Allocating = .init(arena);
+    var json: std.json.Stringify = .{ .writer = &out.writer };
+    json.beginObject() catch return error.OutOfMemory;
+    if (enabled) |value| {
+        json.objectField("autoCompactEnabled") catch return error.OutOfMemory;
+        json.write(value) catch return error.OutOfMemory;
+    }
+    if (window) |value| {
+        json.objectField("autoCompactWindow") catch return error.OutOfMemory;
+        json.write(value) catch return error.OutOfMemory;
+    }
+    if (effort.len != 0) {
+        json.objectField("effortLevel") catch return error.OutOfMemory;
+        json.write(effort) catch return error.OutOfMemory;
+    }
+    json.endObject() catch return error.OutOfMemory;
+    return out.written();
+}
 
 const decision_question = contract.Question{ .id = "decision", .kind = .single_choice, .options = &.{ "allow", "deny" } };
 
@@ -117,7 +165,7 @@ const Call = struct {
     failure: ?[]u8 = null,
 };
 
-const ControlKind = enum { initialize, interrupt };
+const ControlKind = enum { initialize, apply_flag_settings, interrupt };
 
 pub const Session = struct {
     owner: *Adapter,
@@ -129,11 +177,22 @@ pub const Session = struct {
     requests: usize = 0,
     asks: std.ArrayList(Ask) = .empty,
     call: ?Call = null,
+    flags_json: []const u8 = "",
+    reported_level: ?[]const u8 = null,
+    reported_policy: ?[]const u8 = null,
 
     fn open(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
+        const flags = try claudeFlags(arena, request, refusal);
         const self = try construct(owner, arena, request, refusal);
         errdefer self.destroy();
         try self.control(arena, .initialize, owner.config.initialize_timeout_ns, refusal);
+        if (flags.len != 0) {
+            self.flags_json = flags;
+            try self.control(arena, .apply_flag_settings, owner.config.initialize_timeout_ns, refusal);
+        }
+        const kept = self.reducer_arena.allocator();
+        if (request.reasoning_level) |level| self.reported_level = try kept.dupe(u8, level);
+        if (request.compaction_policy_json) |policy| self.reported_policy = try kept.dupe(u8, policy);
         return self;
     }
 
@@ -376,6 +435,7 @@ pub const Session = struct {
         defer self.clearCall();
         const frame = switch (kind) {
             .initialize => try backend.initializeRequest(arena, request_id),
+            .apply_flag_settings => try backend.applyFlagsRequest(arena, request_id, self.flags_json),
             .interrupt => try backend.interruptRequest(arena, request_id),
         };
         self.engine.writeControl(frame) catch |err| {
@@ -423,6 +483,8 @@ pub const Session = struct {
             .updated_at_ms = wallClock(),
             .transcript_cursor = transcript_cursor,
             .metadata_json = metadata_json,
+            .reasoning_level = if (self.reported_level) |level| try arena.dupe(u8, level) else null,
+            .compaction_policy_json = if (self.reported_policy) |policy| try arena.dupe(u8, policy) else null,
         };
     }
 
@@ -833,6 +895,35 @@ fn expectMintedRequest(text: []const u8, prefix: []const u8, suffix: []const u8)
     try testing.expect(std.mem.endsWith(u8, text, suffix));
     try testing.expectEqual(prefix.len + 8 + suffix.len, text.len);
     for (text[prefix.len .. prefix.len + 8]) |char| try testing.expect(std.ascii.isDigit(char) or (char >= 'a' and char <= 'f'));
+}
+
+test "an open applies its effort and compaction window after initialize and reports them" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++
+        \\take; printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}\n' "$(field request_id)"
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const opened = try probe.adapter.adapter().open(probe.arena.allocator(), .{ .session_id = "s1", .participant = "user", .reasoning_level = "max", .compaction_policy_json = "{\"kind\":\"tokens\",\"tokens\":150000}" }, &refusal);
+    probe.handle = opened;
+    const written = try probe.fake.written(probe.arena.allocator());
+    try testing.expect(std.mem.indexOf(u8, written, "{\"request\":{\"settings\":{\"autoCompactEnabled\":true,\"autoCompactWindow\":150000,\"effortLevel\":\"max\"},\"subtype\":\"apply_flag_settings\"},\"request_id\":\"req_2_") != null);
+    const reported = try opened.state(probe.arena.allocator(), &refusal);
+    try testing.expectEqualStrings("max", reported.reasoning_level.?);
+    try testing.expectEqualStrings("{\"kind\":\"tokens\",\"tokens\":150000}", reported.compaction_policy_json.?);
+}
+
+test "a level or compaction form Claude Code lacks is refused before the child starts" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    try testing.expectError(error.UnsupportedFeature, probe.adapter.adapter().open(probe.arena.allocator(), .{ .session_id = "s1", .participant = "user", .reasoning_level = "minimal" }, &refusal));
+    try testing.expectEqualStrings("reasoning_level", refusal.field);
+    try testing.expectError(error.UnsupportedFeature, probe.adapter.adapter().open(probe.arena.allocator(), .{ .session_id = "s1", .participant = "user", .compaction_policy_json = "{\"kind\":\"share\",\"share_percent\":50}" }, &refusal));
+    try testing.expectEqualStrings("compaction_policy", refusal.field);
+    try testing.expectError(error.FileNotFound, probe.fake.written(probe.arena.allocator()));
 }
 
 test "an open runs the initialize exchange before handing the session out" {

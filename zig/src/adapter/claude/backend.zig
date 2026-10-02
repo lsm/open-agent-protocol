@@ -161,6 +161,11 @@ pub fn hookDeny(arena: std.mem.Allocator, request_id: []const u8, reason: []cons
     });
 }
 
+pub fn applyFlagsRequest(arena: std.mem.Allocator, request_id: []const u8, settings_json: []const u8) ![]const u8 {
+    const id = try goJSONString(arena, request_id);
+    return std.mem.concat(arena, u8, &.{ "{\"request\":{\"settings\":", settings_json, ",\"subtype\":\"apply_flag_settings\"},\"request_id\":", id, ",\"type\":\"control_request\"}" });
+}
+
 pub fn interruptRequest(arena: std.mem.Allocator, request_id: []const u8) ![]const u8 {
     const id = try goJSONString(arena, request_id);
     return std.mem.concat(arena, u8, &.{ "{\"request\":{\"subtype\":\"interrupt\"},\"request_id\":", id, ",\"type\":\"control_request\"}" });

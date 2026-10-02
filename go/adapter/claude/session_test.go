@@ -2397,3 +2397,69 @@ func TestPendingGatesAreSweptInTheOrderTheyStarted(t *testing.T) {
 		}
 	}
 }
+
+func TestAnOpenAppliesItsEffortAndCompactionWindowBeforeHandingTheSessionOut(t *testing.T) {
+	peer := newWirePeer(t)
+	implementation, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return peer.client, nil }), Model: "claude-test", Clock: &testClock{}, IDs: &testIDs{}, JournalCapacity: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := &protocol.CompactionPolicy{Kind: protocol.CompactionTokens, Tokens: 150000}
+	type result struct {
+		session base.Session
+		err     error
+	}
+	opened := make(chan result, 1)
+	go func() {
+		session, err := implementation.Open(context.Background(), base.OpenRequest{SessionID: "session", Participant: protocol.Participant{ID: "user"}, ReasoningLevel: protocol.ReasoningMax, CompactionPolicy: policy})
+		opened <- result{session, err}
+	}()
+	message, raw := peer.written()
+	var frame struct {
+		Request struct {
+			Subtype  string         `json:"subtype"`
+			Settings map[string]any `json:"settings"`
+		} `json:"request"`
+	}
+	if err := json.Unmarshal(raw, &frame); err != nil {
+		t.Fatal(err)
+	}
+	if frame.Request.Subtype != "apply_flag_settings" || frame.Request.Settings["effortLevel"] != "max" || frame.Request.Settings["autoCompactEnabled"] != true || frame.Request.Settings["autoCompactWindow"] != float64(150000) {
+		t.Fatalf("open wrote %s, want apply_flag_settings carrying the effort and the compaction window", raw)
+	}
+	peer.answerControl(message.RequestID, `{}`)
+	got := <-opened
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	defer got.session.Close(context.Background())
+	state, err := got.session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.ReasoningLevel != protocol.ReasoningMax || state.CompactionPolicy == nil || *state.CompactionPolicy != *policy {
+		t.Fatalf("state reports %q and %+v, want the settings applied", state.ReasoningLevel, state.CompactionPolicy)
+	}
+}
+
+func TestALevelOrCompactionFormClaudeLacksIsRefusedBeforeTheChildStarts(t *testing.T) {
+	started := false
+	implementation, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { started = true; return nil, errors.New("unused") }), Model: "claude-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, request := range map[string]base.OpenRequest{
+		"minimal": {SessionID: "s", ReasoningLevel: protocol.ReasoningMinimal},
+		"off":     {SessionID: "s", ReasoningLevel: protocol.ReasoningOff},
+		"share":   {SessionID: "s", CompactionPolicy: &protocol.CompactionPolicy{Kind: protocol.CompactionShare, SharePercent: 50}},
+	} {
+		_, err := implementation.Open(context.Background(), request)
+		var refusal *base.UnsupportedControlError
+		if !errors.As(err, &refusal) || refusal.Reason != base.ControlUnsatisfiable {
+			t.Fatalf("%s: open answered %v, want an unsatisfiable unsupported_feature", name, err)
+		}
+	}
+	if started {
+		t.Fatal("a refused setting started the child")
+	}
+}
