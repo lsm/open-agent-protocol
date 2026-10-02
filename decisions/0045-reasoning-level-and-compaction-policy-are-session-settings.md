@@ -258,7 +258,7 @@ decision is what those sections were recorded for.
 | Pi 0.87.1 | `--thinking` (`off`–`max`) | `set_thinking_level` | `settings.json` `compaction.enabled`, `reserveTokens` (threshold = window − reserve) | `set_auto_compaction` (on/off only) |
 | Hermes 2026.9.24 | `session.create` `reasoning_effort` | `config.set reasoning` (session scope) | `config.yaml` `compression.enabled`, `threshold` (share), `threshold_tokens` | none |
 | DeepSeek harness dsh-v0.1.7-rc.2 | `initialize` `reasoningEffort` (process-wide, opaque per model) | none | `compaction-basic` (mounted by the `sdk` profile's `dsh-base`) `thresholdRatio`, `headroomTokens`, or `disabled` (patch layer) | none |
-| OpenCode 1.18.32 | the prompt's `variant` | the prompt's `variant` | `compaction.auto`, `compaction.buffer` (reserve) via `OPENCODE_CONFIG_CONTENT` | none |
+| OpenCode 1.18.32 | the created session's model `variant` | the prompt's `variant` (V1 route) | `compaction.auto`, `compaction.buffer` (reserve) via `OPENCODE_CONFIG_CONTENT` | none |
 | ACP 1.9.1 with cagent 1.143.0 | cagent `thinking_budget` (effort or tokens) | ACP `thought_level` config option, which cagent does not implement | cagent `session_compaction`, `compaction_threshold` (share) | none |
 | `oapx` | `ThinkingLevel` (`off`–`max`) | the same | `/autocompact auto\|percent\|off` | the same |
 
