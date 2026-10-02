@@ -627,7 +627,8 @@ During a turn, `/compact [focus]` with `Enter` steers: the run compacts before i
 next turn, the way automatic compaction does, and carries on from the summary; if the
 run ends with no further turn, it compacts right after. With `Tab` it is queued: the
 run finishes, queued follow-ups included, and then it compacts. Only one request is
-held; a later `/compact` replaces the earlier one's focus.
+held, whichever key made it: a later `/compact` replaces the earlier one, and
+resuming another session drops it.
 
 While compacting, the status bar reads `compacting` and `Enter` and `Tab` queue the
 draft. `Esc` cancels the compaction and leaves the history unchanged, but keeps the

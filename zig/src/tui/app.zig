@@ -1381,6 +1381,7 @@ pub const App = struct {
         self.discardPendingWorktreeSidecar();
         const store = self.store orelse return error.NoStoreConfigured;
         try self.dropPendingAfterCompaction("the session was resumed before the compaction finished");
+        self.dropHeldCompaction();
         self.state.clearHeldAfterAbort();
         if (self.state.session_index >= self.state.sessions.items.len) return;
         const selected = self.state.sessions.items[self.state.session_index];
@@ -2787,8 +2788,18 @@ pub const App = struct {
         try self.startCompactionAfterRun(run_ended);
     }
 
+    fn dropHeldCompaction(self: *App) void {
+        if (self.pending_compaction) |focus| self.allocator.free(focus);
+        self.pending_compaction = null;
+        if (self.session) |*session| {
+            if (session.takeCompactionRequest(self.allocator) catch null) |steered| self.allocator.free(steered);
+        }
+    }
+
     fn steerCompaction(self: *App, focus: []const u8) !void {
         var session = &(self.session orelse return error.NoRuntimeConfigured);
+        if (self.pending_compaction) |queued| self.allocator.free(queued);
+        self.pending_compaction = null;
         if (try session.requestCompaction(focus)) {
             try self.state.appendTranscript(.system, "compacting before the next turn of this run, or when the run ends if no turn follows");
             return;
@@ -2798,6 +2809,9 @@ pub const App = struct {
 
     pub fn queueCompaction(self: *App, focus: []const u8) !void {
         const owned = try self.allocator.dupe(u8, focus);
+        if (self.session) |*session| {
+            if (session.takeCompactionRequest(self.allocator) catch null) |steered| self.allocator.free(steered);
+        }
         if (self.pending_compaction) |previous| self.allocator.free(previous);
         self.pending_compaction = owned;
         try self.state.appendTranscript(.system, "compacting when this run ends");
