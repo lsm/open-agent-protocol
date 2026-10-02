@@ -149,7 +149,9 @@ var unitCapabilities = map[string][]string{
 	},
 
 	"queue": {protocol.FeatureDeliveryQueue},
-	"steer": {protocol.FeatureDeliverySteer},
+
+	"compaction": {protocol.FeatureSessionCompact, protocol.FeatureRunCompaction},
+	"steer":      {protocol.FeatureDeliverySteer},
 
 	"tool-sources": {
 		protocol.FeatureToolsList,
@@ -179,6 +181,7 @@ func diagnosticCodes() map[string]bool {
 		CodeMissingRunTerminal, CodeDuplicateRunTerminal, CodeEventAfterTerminal,
 		CodePendingToolAtTerminal, CodePendingInteractionAtTerminal,
 		CodeUnmatchedSteer, CodeDuplicateSteer, CodePendingSteerAtTerminal,
+		CodeCompactionUnpaired, CodeCompactionEndedWithoutStart, CodeCompactionOpenAtTerminal,
 		CodeUnmatchedTool, CodeIllegalToolTransition, CodeDuplicateInteraction,
 		CodeUnmatchedInteraction, CodeWrongInteractionResponder,
 		CodeUnavailableCapability, CodeUnhonouredCapability, CodeStaleCapabilityRevision,

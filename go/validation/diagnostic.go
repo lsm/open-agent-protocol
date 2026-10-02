@@ -19,6 +19,9 @@ const (
 const (
 	CodeUnmatchedSteer               = "unmatched_steer"
 	CodeDuplicateSteer               = "duplicate_steer"
+	CodeCompactionUnpaired           = "compaction_unpaired"
+	CodeCompactionEndedWithoutStart  = "compaction_ended_without_start"
+	CodeCompactionOpenAtTerminal     = "compaction_open_at_terminal"
 	CodePendingSteerAtTerminal       = "pending_steer_at_terminal"
 	CodeMalformedJSON                = "malformed_json"
 	CodeDuplicateKey                 = "duplicate_key"
