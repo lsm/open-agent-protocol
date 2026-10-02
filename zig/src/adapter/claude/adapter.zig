@@ -475,6 +475,8 @@ pub const Session = struct {
         const current_model_id: ?[]const u8 = if (reducer.current_model.len > 0) try arena.dupe(u8, reducer.current_model) else null;
         const metadata_json: ?[]const u8 = if (reducer.native_session_id.len > 0) try std.json.Stringify.valueAlloc(arena, .{ .claude_native_session_id = reducer.native_session_id }, .{}) else null;
         const transcript_cursor: ?[]const u8 = if (reducer.last_sequence > 0) try std.fmt.allocPrint(arena, "{d}", .{reducer.last_sequence}) else null;
+        const reasoning_level: ?[]const u8 = if (self.reported_level) |level| try arena.dupe(u8, level) else null;
+        const compaction_policy_json: ?[]const u8 = if (self.reported_policy) |policy| try arena.dupe(u8, policy) else null;
         return .{
             .session_id = self.id,
             .status = if (active) .running else .idle,
@@ -483,8 +485,8 @@ pub const Session = struct {
             .updated_at_ms = wallClock(),
             .transcript_cursor = transcript_cursor,
             .metadata_json = metadata_json,
-            .reasoning_level = if (self.reported_level) |level| try arena.dupe(u8, level) else null,
-            .compaction_policy_json = if (self.reported_policy) |policy| try arena.dupe(u8, policy) else null,
+            .reasoning_level = reasoning_level,
+            .compaction_policy_json = compaction_policy_json,
         };
     }
 

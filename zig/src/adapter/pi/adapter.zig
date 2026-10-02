@@ -488,15 +488,18 @@ pub const Session = struct {
         const reducer = self.live();
         const active_run_id: ?[]const u8 = if (reducer) |running| try arena.dupe(u8, running.run_id) else null;
         const current_model_id: ?[]const u8 = if (self.current_model.len > 0) try arena.dupe(u8, self.current_model) else null;
+        const transcript_cursor: ?[]const u8 = if (self.cursor() > 0) try std.fmt.allocPrint(arena, "{d}", .{self.cursor()}) else null;
+        const reasoning_level: ?[]const u8 = if (self.reports_level) try arena.dupe(u8, textOf(state_data, "thinkingLevel")) else null;
+        const compaction_policy_json: ?[]const u8 = if (self.reported_policy) |policy| try arena.dupe(u8, policy) else null;
         return .{
             .session_id = self.id,
             .status = if (reducer == null) .idle else if (self.asks.items.len > 0) .waiting_for_input else .running,
             .active_run_id = active_run_id,
             .current_model_id = current_model_id,
-            .transcript_cursor = if (self.cursor() > 0) try std.fmt.allocPrint(arena, "{d}", .{self.cursor()}) else null,
+            .transcript_cursor = transcript_cursor,
             .updated_at_ms = wallClock(),
-            .reasoning_level = if (self.reports_level) try arena.dupe(u8, textOf(state_data, "thinkingLevel")) else null,
-            .compaction_policy_json = if (self.reported_policy) |policy| try arena.dupe(u8, policy) else null,
+            .reasoning_level = reasoning_level,
+            .compaction_policy_json = compaction_policy_json,
         };
     }
 
