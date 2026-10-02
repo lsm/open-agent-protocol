@@ -427,7 +427,11 @@ pub const Session = struct {
         } else {
             const prompt = try parseValue(a, native.arguments);
             try payload.put("title", prompt.object.get("title") orelse .{ .string = "User input" });
-            try payload.put("questions", prompt.object.get("questions").?);
+            const questions = prompt.object.get("questions").?;
+            for (questions.array.items) |*question| {
+                if (!question.object.contains("required")) try question.object.put(a, "required", .{ .bool = true });
+            }
+            try payload.put("questions", questions);
             try payload.put("allow_cancel", .{ .bool = false });
         }
         try self.emit(run, if (native.kind == .permission) "action.permission.requested" else "user.input.requested", payload.value(), false);
@@ -450,7 +454,7 @@ pub const Session = struct {
             .label = "Ask user",
             .name = "request_user_input",
             .description = "Ask the user for information needed to continue.",
-            .parameters_schema_json = "{\"type\":\"object\",\"required\":[\"questions\"],\"properties\":{\"title\":{\"type\":\"string\"},\"questions\":{\"type\":\"array\",\"minItems\":1,\"items\":{\"type\":\"object\",\"required\":[\"id\",\"prompt\",\"kind\"],\"properties\":{\"id\":{\"type\":\"string\",\"minLength\":1},\"prompt\":{\"type\":\"string\"},\"kind\":{\"enum\":[\"text\",\"single_choice\",\"multi_choice\"]},\"options\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"required\":[\"id\",\"label\"],\"properties\":{\"id\":{\"type\":\"string\"},\"label\":{\"type\":\"string\"}}}}}}}}}",
+            .parameters_schema_json = "{\"type\":\"object\",\"required\":[\"questions\"],\"properties\":{\"title\":{\"type\":\"string\"},\"questions\":{\"type\":\"array\",\"minItems\":1,\"items\":{\"type\":\"object\",\"required\":[\"id\",\"prompt\",\"kind\"],\"properties\":{\"id\":{\"type\":\"string\",\"minLength\":1},\"prompt\":{\"type\":\"string\"},\"kind\":{\"enum\":[\"text\",\"single_choice\",\"multi_choice\"]},\"required\":{\"type\":\"boolean\"},\"options\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"required\":[\"id\",\"label\"],\"properties\":{\"id\":{\"type\":\"string\"},\"label\":{\"type\":\"string\"}}}}}}}}}",
             .execute = unavailableInput,
             .runtime_ctx = self,
             .runtime_execute = executeInput,
@@ -1582,4 +1586,23 @@ test "native input rejects malformed questions before publishing a wait" {
         "{\"questions\":[{\"id\":\"q\",\"prompt\":\"Q?\",\"kind\":\"text\"},{\"id\":\"q\",\"prompt\":\"Again?\",\"kind\":\"text\"}]}",
         "{\"questions\":[{\"id\":\"q\",\"prompt\":\"Q?\",\"kind\":\"multi_choice\",\"options\":[{\"id\":\"a\",\"label\":\"A\"},{\"id\":\"a\",\"label\":\"Again\"}]}]}",
     }) |invalid| try testing.expectError(error.InvalidSubmission, validatePrompt(testing.allocator, invalid));
+}
+
+test "an optional question can remain unanswered while required input reaches the native tool" {
+    var script = Script{ .tool_first = true, .tool_name = "request_user_input", .tool_arguments =
+        \\{"questions":[{"id":"note","prompt":"Why?","kind":"text"},{"id":"optional","prompt":"Anything else?","kind":"text","required":false}]}
+    };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    _ = try harness.submit("ask me");
+    const pending = try waitForPrompt(&harness);
+    const questions = harness.seen.items[harness.seen.items.len - 1].value.object.get("payload").?.object.get("questions").?.array.items;
+    try testing.expect(questions[0].object.get("required").?.bool);
+    var answers = [_]oap_types.InputAnswer{.{ .question_id = "note", .text = "careful safe" }};
+    const request = oap_types.UserInputResolveRequest{ .interaction_id = pending.id, .session_id = harness.session.id(), .run_id = Session.cast(harness.session.ptr).run.?.id, .requested_by = endpoint_id, .responded_by = "user", .answers = &answers };
+    var refusal = contract.Refusal{};
+    try harness.session.resolve(harness.arena.allocator(), .{ .input = &request }, &refusal);
+    try harness.untilTerminal();
+    try testing.expect(script.received_answers.load(.acquire));
 }
