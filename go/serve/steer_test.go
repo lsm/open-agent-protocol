@@ -10,9 +10,9 @@ import (
 )
 
 type steerStubSession struct {
-	stream  chan base.Result
-	emits   []protocol.Envelope
-	refusal *base.InvalidSteerTargetError
+	stream   chan base.Result
+	emits    []protocol.Envelope
+	refusal  *base.InvalidSteerTargetError
 	steerRun protocol.RunID
 }
 
@@ -21,7 +21,7 @@ func (s *steerStubSession) Submit(_ context.Context, submit base.SubmitRequest) 
 	case protocol.DeliveryAuto:
 		return protocol.MessageSubmitResponse{
 			SessionID: "stub", Accepted: true, SubmissionID: "sub-start",
-			RequestedDelivery: protocol.DeliveryAuto, EffectiveDelivery: protocol.EffectiveDeliveryStart,
+			RequestedDelivery: protocol.DeliveryAuto, EffectiveDelivery: protocol.DeliveryStart,
 			Admission: protocol.AdmissionStarted, RunID: "run-1", Status: protocol.RunRunning,
 			MessageIDs: []protocol.MessageID{"m-1"},
 		}, s.stream, nil
