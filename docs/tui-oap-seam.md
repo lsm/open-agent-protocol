@@ -19,7 +19,10 @@ event carries `usage.output_tokens`, and the oapx adapter adds the context the r
 filled as `extensions.oapx.context_tokens`, which the TUI shows on its context gauge
 once the run ends rather than per model call. The output count is a run total, so it
 replaces the TUI's estimate only for a run with one assistant message; a run that spoke
-before a tool call keeps the per-message estimates rather than counting its tokens twice. Resume, compaction, steering and queued follow-ups
+before a tool call keeps the per-message estimates rather than counting its tokens twice.
+A follow-up queued during a turn is submitted with `delivery: "queue"`, and the turn stays
+open until each reservation has been promoted and run, so it reads as one turn as it does
+locally; clearing the queue or aborting cancels the reservations. Resume, compaction and steering
 refuse with `UnavailableOverOap` until their gaps below close. The map that
 follows predates this and still describes the server path `oapx serve agent`
 without `--backend` uses.

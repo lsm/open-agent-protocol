@@ -5293,7 +5293,7 @@ fn preferredContextWindow(stored: ?u32, flag: ?u32) ?u32 {
     return flag orelse stored;
 }
 
-pub const over_oap_notice = "oapx tui: this session runs over OAP through the in-process endpoint. Resume, compaction, steering, queued follow-ups and the model's questions to you are not carried over OAP yet, an \"always\" answer to a tool approval applies to that call only, and the thinking level, context window, output limit and workspace are fixed when the session opens; use oapx --tui for them.";
+pub const over_oap_notice = "oapx tui: this session runs over OAP through the in-process endpoint. Resume, compaction, steering and the model's questions to you are not carried over OAP yet, an \"always\" answer to a tool approval applies to that call only, and the thinking level, context window, output limit and workspace are fixed when the session opens; use oapx --tui for them.";
 pub const over_oap_setting_refusal = tui_commands.over_oap_setting_refusal;
 
 pub fn run(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32) !void {
