@@ -362,7 +362,7 @@ pub const Session = struct {
         try started.put("status", .{ .string = "running" });
         if (run.model_id.len > 0) try started.put("model_id", .{ .string = run.model_id });
         try started.put("started_at_ms", .{ .integer = self.owner.now_ms() });
-        const prepared = try self.prepareEvent(run, "run.started", started.value());
+        const prepared = try self.prepareEvent(run, "run.started", started.value(), false);
         errdefer {
             self.gpa.free(prepared.line);
             self.gpa.free(prepared.kept);
@@ -737,10 +737,10 @@ pub const Session = struct {
 
     fn emit(self: *Session, run: *Run, kind: []const u8, payload: std.json.Value, terminal: bool) contract.Failure!void {
         if (run.terminal) return;
-        self.publishEvent(run, try self.prepareEvent(run, kind, payload), kind, terminal);
+        self.publishEvent(run, try self.prepareEvent(run, kind, payload, terminal), kind, terminal);
     }
 
-    fn prepareEvent(self: *Session, run: *Run, kind: []const u8, payload: std.json.Value) contract.Failure!PreparedEvent {
+    fn prepareEvent(self: *Session, run: *Run, kind: []const u8, payload: std.json.Value, terminal: bool) contract.Failure!PreparedEvent {
         var scratch = std.heap.ArenaAllocator.init(self.gpa);
         defer scratch.deinit();
         const a = scratch.allocator();

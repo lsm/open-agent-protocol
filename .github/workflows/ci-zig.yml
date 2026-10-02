@@ -381,6 +381,41 @@ jobs:
           wait "$hub" || { echo "oapx hub --addr did not end cleanly on an interrupt"; cat "$bound"; exit 1; }
 
   # =============================================================================
+  hub-clients-ts:
+    name: Differential - the TypeScript client against oapx hub
+    needs: [unit-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: clients/ts
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: '18'
+          cache: npm
+          cache-dependency-path: clients/ts/package-lock.json
+
+      - name: Build oapx
+        working-directory: .
+        run: zig build --build-file zig/build.zig install --prefix /tmp/oapx-hub
+
+      - run: npm ci
+
+      - name: Run the clients/ts suite, the one ci.yml runs against goap hub, against oapx hub
+        env:
+          OAP_TS_HUB: /tmp/oapx-hub/bin/oapx
+        run: npm test
+
   rust-sdk:
     name: Rust SDK
     needs: [unit-tests]
