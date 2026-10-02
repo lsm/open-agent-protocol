@@ -248,46 +248,6 @@ pub fn credentialEnvIsSet(allocator: std.mem.Allocator, id: []const u8) !bool {
     }
     return false;
 }
-pub fn rowsReadingEnv(env: []const u8) usize {
-    var rows: usize = 0;
-    for (all) |row| {
-        for (row.credential_env) |declared| {
-            if (std.mem.eql(u8, declared, env)) {
-                rows += 1;
-                break;
-            }
-        }
-    }
-    return rows;
-}
-
-pub fn sharesCredentialEnv(id: []const u8) bool {
-    const row = provider(id) orelse return false;
-    for (row.credential_env) |mine| {
-        if (rowsReadingEnv(mine) > 1) return true;
-    }
-    return false;
-}
-
-pub fn sharesCredentialEnvWith(id: []const u8, other: []const u8) bool {
-    if (std.mem.eql(u8, id, other)) return false;
-    const row = provider(id) orelse return false;
-    const sibling = provider(other) orelse return false;
-    for (row.credential_env) |mine| {
-        for (sibling.credential_env) |theirs| {
-            if (std.mem.eql(u8, mine, theirs)) return true;
-        }
-    }
-    return false;
-}
-
-test "rows reading one credential variable share it, and a row does not share with itself" {
-    try std.testing.expect(sharesCredentialEnvWith("opencode-go", "opencode-zen"));
-    try std.testing.expect(sharesCredentialEnvWith("opencode-zen", "opencode-go"));
-    try std.testing.expect(!sharesCredentialEnvWith("opencode-zen", "opencode-zen"));
-    try std.testing.expect(!sharesCredentialEnvWith("opencode-zen", "deepseek"));
-    try std.testing.expect(!sharesCredentialEnvWith("no-such-provider", "opencode-zen"));
-}
 
 pub fn modelsEndpoint(id: []const u8) ?[]const u8 {
     const row = provider(id) orelse return null;
@@ -1057,29 +1017,6 @@ fn catalogTargetForTest(id: []const u8, wire_id: []const u8) ?CatalogTargetForTe
         };
     }
     return null;
-}
-
-test "one credential value opens four rows" {
-    try std.testing.expectEqual(@as(usize, 4), rowsReadingEnv("XIAOMI_API_KEY"));
-    try std.testing.expectEqual(@as(usize, 1), rowsReadingEnv("DEEPSEEK_API_KEY"));
-    try std.testing.expectEqual(@as(usize, 1), rowsReadingEnv("ANTHROPIC_API_KEY"));
-    try std.testing.expectEqual(@as(usize, 1), rowsReadingEnv("ANTHROPIC_AUTH_TOKEN"));
-    try std.testing.expectEqual(@as(usize, 0), rowsReadingEnv("NO_SUCH_VARIABLE"));
-
-    for ([_][]const u8{ "xiaomi", "xiaomi-token-plan-cn", "xiaomi-token-plan-sgp", "xiaomi-token-plan-ams" }) |id| {
-        try std.testing.expect(sharesCredentialEnv(id));
-        const row = provider(id) orelse return error.TestGroupNamesNoRow;
-        var declares = false;
-        for (row.credential_env) |declared| {
-            if (std.mem.eql(u8, declared, "XIAOMI_API_KEY")) declares = true;
-        }
-        try std.testing.expect(declares);
-    }
-
-    for ([_][]const u8{ "deepseek", "openai", "anthropic" }) |id| {
-        try std.testing.expect(!sharesCredentialEnv(id));
-    }
-    try std.testing.expect(!sharesCredentialEnv("no-such-provider"));
 }
 
 test "the catalog orders every plan a shared key opens before the row it also opens" {
