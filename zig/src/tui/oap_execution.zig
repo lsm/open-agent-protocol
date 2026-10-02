@@ -87,11 +87,18 @@ pub const OapExecution = struct {
         const initialized = try self.exchange(a, "protocol.initialize.request", initialize.value(), false);
         const revision = initialized.object.get("capability_revision") orelse return error.OapInitializeFailed;
         if (revision != .string) return error.OapInitializeFailed;
-        self.revision = try self.allocator.dupe(u8, revision.string);
+        const kept_revision = try self.allocator.dupe(u8, revision.string);
+        self.allocator.free(self.revision);
+        self.revision = kept_revision;
 
         var settings_map = Map.init(a);
         try settings_map.put("thinking_level", .{ .string = @tagName(settings.thinking_level) });
         if (settings.context_window) |window| try settings_map.put("context_window", .{ .integer = window });
+        try settings_map.put("output", switch (settings.output) {
+            .auto => .{ .string = "auto" },
+            .max => .{ .string = "max" },
+            .tokens => |count| .{ .integer = count },
+        });
         try settings_map.put("permission_mode", .{ .string = @tagName(settings.permission_mode) });
         if (settings.workspace_root.len > 0) try settings_map.put("workspace_root", .{ .string = settings.workspace_root });
         var metadata = Map.init(a);
@@ -103,13 +110,22 @@ pub const OapExecution = struct {
         if (payload != .object) return error.OapOpenFailed;
         const session_id = payload.object.get("session_id") orelse return error.OapOpenFailed;
         if (session_id != .string) return error.OapOpenFailed;
-        self.session_id = try self.allocator.dupe(u8, session_id.string);
+        const kept_session = try self.allocator.dupe(u8, session_id.string);
+        self.allocator.free(self.session_id);
+        self.session_id = kept_session;
 
         if (settings.model) |model| {
+            const wanted = try modelRef(a, model);
             var switch_map = Map.init(a);
             try switch_map.put("session_id", .{ .string = self.session_id });
-            try switch_map.put("model_id", .{ .string = try modelRef(a, model) });
-            _ = try self.exchange(a, "session.model.switch.request", switch_map.value(), true);
+            try switch_map.put("model_id", .{ .string = wanted });
+            _ = self.exchange(a, "session.model.switch.request", switch_map.value(), true) catch |err| switch (err) {
+                error.OapRequestRefused => {
+                    const message = try std.fmt.allocPrint(self.allocator, "{s} is not in the OAP session's catalog, so the session runs on its own default model; refresh or restart oapx tui to pick it up", .{wanted});
+                    self.deliver(.{ .system_warning = .{ .message = OwnedSlice(u8).initOwned(message) } });
+                },
+                else => return err,
+            };
         }
         self.thread = try std.Thread.spawn(.{}, run, .{self});
     }
@@ -682,4 +698,40 @@ test "once a session over OAP is open, settings the protocol cannot carry are re
     defer seen.deinit();
     try drainTurn(&runtime, &seen);
     try testing.expectEqual(ai_types.ThinkingLevel.high, script.last_thinking);
+}
+
+test "an open-time model the OAP session does not list leaves the session usable on its own default" {
+    var script = Script{};
+    const models = [_]ai_types.Model{scripted_model};
+    var missing = scripted_model;
+    missing.id = "missing-model";
+    const app_models = [_]ai_types.Model{ scripted_model, missing };
+    const execution = try OapExecution.create(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+    });
+    defer execution.destroy();
+    var runtime = try tui_runtime.TuiRuntime.init(testing.allocator, .{
+        .models = &app_models,
+        .initial_model_id = missing.id,
+        .remote = execution.remote(),
+    });
+    defer runtime.deinit();
+
+    try runtime.submitTurn("still works");
+    var seen = Seen{};
+    defer seen.deinit();
+    try drainTurn(&runtime, &seen);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+}
+
+test "ask mode is refused over OAP even before the session opens" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+    try testing.expectError(error.UnavailableOverOap, runtime.setPermissionMode(.ask));
+    try runtime.setPermissionMode(.bypass);
 }

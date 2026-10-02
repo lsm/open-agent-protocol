@@ -58,6 +58,7 @@ pub const RemoteSettings = struct {
     model: ?ai_types.Model,
     thinking_level: ai_types.ThinkingLevel,
     context_window: ?u32,
+    output: agent.OutputSetting,
     permission_mode: PermissionMode,
     workspace_root: []const u8,
 };
@@ -416,6 +417,7 @@ pub const TuiRuntime = struct {
                 .model = self.currentModel(),
                 .thinking_level = self.thinking_level,
                 .context_window = self.context_window,
+                .output = self.output,
                 .permission_mode = self.permission_mode,
                 .workspace_root = self.workspace_root,
             });
@@ -716,6 +718,7 @@ pub const TuiRuntime = struct {
 
     pub fn setPermissionMode(self: *TuiRuntime, mode: PermissionMode) !void {
         if (self.settingsFixedOverOap()) return error.UnavailableOverOap;
+        if (self.remote != null and mode == .ask) return error.UnavailableOverOap;
         self.permission_mode = mode;
         if (self.permission_engine) |engine| engine.setBypassAll(mode == .bypass);
         self.rebuildWrappedTools();
