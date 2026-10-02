@@ -211,7 +211,8 @@ func (implementation *Adapter) Open(ctx context.Context, request adapter.OpenReq
 		var response native.ThreadResumeResponse
 		if err := client.Call(ctx, native.MethodThreadResume, native.ThreadResumeParams{ThreadID: threadID}, &response); err != nil {
 			_ = client.Close()
-			if request.Reopen {
+			var remote *rpc.RemoteError
+			if request.Reopen && errors.As(err, &remote) {
 				return nil, &adapter.UnsupportedControlError{Feature: protocol.FeatureOpenReopen, Reason: adapter.ControlUnsatisfiable, Detail: "Codex could not load the bound thread: " + err.Error()}
 			}
 			return nil, fmt.Errorf("resume Codex thread: %w", err)

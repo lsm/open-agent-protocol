@@ -450,7 +450,10 @@ pub fn controlRefusal(arena: std.mem.Allocator, err: hubmod.Failure, reported: *
         error.RunActive => .{ .code = "run_active", .message = messageOr(reported, "the session already has a run in flight") },
         error.InvalidSubmission => .{ .code = "invalid_submission", .message = messageOr(reported, "the submission is invalid") },
         error.UnsupportedFeature, error.ToolCatalogUnavailable => {
-            const message = try std.fmt.allocPrint(arena, "unsupported input: {s} ({s})", .{ reported.feature, reported.reason });
+            const message = if (reported.detail.len > 0)
+                try std.fmt.allocPrint(arena, "unsupported input: {s} ({s}): {s}", .{ reported.feature, reported.reason, reported.detail })
+            else
+                try std.fmt.allocPrint(arena, "unsupported input: {s} ({s})", .{ reported.feature, reported.reason });
             const details = try detailsOf(arena, reported);
             return .{ .code = "unsupported_feature", .message = message, .details = details };
         },

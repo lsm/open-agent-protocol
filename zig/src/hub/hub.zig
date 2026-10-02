@@ -511,7 +511,10 @@ pub const Hub = struct {
             if (!std.mem.eql(u8, record.adapter_name, adapter_name)) return error.UnknownSession;
             native_session_id = try arena.dupe(u8, record.native_id);
         }
-        var session = try registered.adapter.open(arena, request.contractRequest(native_session_id), &refused.reason);
+        var session = registered.adapter.open(arena, request.contractRequest(native_session_id), &refused.reason) catch |err| {
+            if (request.reopen and err == error.UnknownSession) return refused.reason.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
+            return err;
+        };
         var adopted = false;
         errdefer if (!adopted) session.teardown();
         if (self.findSession(session.id()) != null) return error.SessionExists;
@@ -3720,3 +3723,26 @@ test "a reopen hands the adapter the native id its open recorded, and only under
     _ = try hub.open(arena, "native", .{ .session_id = "kept", .reopen = true });
     try testing.expectEqualStrings("native-thread", native.handed);
 }
+
+test "a reopen the hub holds a record for but the adapter has lost is unsupported_feature, not unknown_session" {
+    var inner = memory.Adapter.init(testing.allocator);
+    defer inner.deinit();
+    var native = NativeMemory{ .inner = &inner };
+    var hub = Hub.init(testing.allocator, testClock, .{});
+    defer hub.deinit();
+    try hub.register("native", native.adapter());
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    _ = try hub.open(arena, "native", .{ .session_id = "kept" });
+    try hub.close(arena, "kept");
+    var direct = contract.Refusal{};
+    const taken = try inner.adapter().open(arena, .{ .session_id = "kept", .participant = "user", .reopen = true }, &direct);
+    taken.teardown();
+
+    var refused = OpenRefusal{};
+    try testing.expectError(error.UnsupportedFeature, hub.openReporting(arena, "native", .{ .session_id = "kept", .reopen = true }, &refused));
+    try testing.expectEqualStrings(contract.feature_open_reopen, refused.reason.feature);
+}
+

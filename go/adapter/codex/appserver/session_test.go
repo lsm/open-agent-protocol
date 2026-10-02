@@ -75,7 +75,7 @@ func (client *fakeClient) Call(ctx context.Context, method string, params, resul
 			return client.resumeErr
 		}
 		if sent, ok := params.(native.ThreadResumeParams); ok && sent.ThreadID != client.threadID {
-			return fmt.Errorf("no rollout found for thread id %s", sent.ThreadID)
+			return &rpc.RemoteError{ID: rpc.IntegerID(1), Object: rpc.ErrorObject{Code: -32602, Message: "no rollout found for thread id " + sent.ThreadID}}
 		}
 		response := result.(*native.ThreadResumeResponse)
 		response.Thread.ID = client.threadID
@@ -1136,5 +1136,22 @@ func TestAReopenCodexCannotLoadIsUnsupportedFeature(t *testing.T) {
 				t.Fatalf("open answered %v, want an unsupported_feature refusal naming %s", err, protocol.FeatureOpenReopen)
 			}
 		})
+	}
+}
+
+func TestAReopenWhoseResumeNeverReachesCodexSurfacesTheTransportError(t *testing.T) {
+	client := newFakeClient()
+	client.resumeErr = context.Canceled
+	implementation, err := New(Config{
+		Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }),
+		Clock:   &fakeClock{}, IDs: &fakeIDs{}, Model: "glm-test", JournalCapacity: 32,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = implementation.Open(context.Background(), adapter.OpenRequest{SessionID: "session-1", Participant: protocol.Participant{ID: "user"}, Reopen: true, NativeSessionID: "native-thread"})
+	var refusal *adapter.UnsupportedControlError
+	if errors.As(err, &refusal) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("open answered %v, want the cancellation itself rather than unsupported_feature", err)
 	}
 }

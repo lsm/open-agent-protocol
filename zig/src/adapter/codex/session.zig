@@ -357,6 +357,8 @@ pub const Reducer = struct {
         if (self.active != null or self.envelopes.items.len != 0 or self.writes.items.len != 0) return Error.RunActive;
         const keep = arena.allocator();
         var kept = Reducer.init(arena, self.options);
+        kept.options.model = try keep.dupe(u8, self.options.model);
+        kept.options.resume_thread_id = try keep.dupe(u8, self.options.resume_thread_id);
         kept.ids = self.ids;
         kept.clock = self.clock;
         kept.next_request = self.next_request;
@@ -1902,6 +1904,24 @@ test "a compacted reducer still ignores a reused item id, fails its completion, 
     try feed(&kept, "{\"method\":\"item/completed\",\"params\":{\"threadId\":\"native-thread\",\"turnId\":\"second-turn\",\"item\":{\"type\":\"commandExecution\",\"id\":\"native-item\",\"status\":\"completed\"}}}");
     try testing.expectEqualStrings("run.failed", lastType(&kept));
     try testing.expectEqualStrings("invalid_native_action", errorCode(&kept));
+}
+
+test "a reopened reducer keeps the model it resumed under after compaction frees the arena it arrived in" {
+    var source = std.heap.ArenaAllocator.init(testing.allocator);
+    var reducer = Reducer.init(&source, .{ .resume_thread_id = "native-thread", .reopen = true });
+    try reducer.open();
+    try answerCall(&reducer, "{\"thread\":{\"id\":\"native-thread\"},\"model\":\"gpt-resumed\"}");
+    reducer.envelopes.clearRetainingCapacity();
+    reducer.writes.clearRetainingCapacity();
+    var target = std.heap.ArenaAllocator.init(testing.allocator);
+    defer target.deinit();
+    var kept = try reducer.compactInto(&target);
+    source.deinit();
+
+    try testing.expectEqualStrings("gpt-resumed", kept.options.model);
+    try testing.expectEqualStrings("native-thread", kept.options.resume_thread_id);
+    try kept.submit(.{ .messages = &.{.{ .text = "again" }} });
+    try testing.expect(std.mem.indexOf(u8, lastWrite(&kept), "\"model\":\"gpt-resumed\"") != null);
 }
 
 fn compactProbe(allocator: std.mem.Allocator) !void {

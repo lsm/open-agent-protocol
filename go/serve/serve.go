@@ -88,6 +88,10 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 		request.NativeSessionID = bound.Record.NativeSessionID
 	}
 	session, err := implementation.Open(ctx, request)
+	var gone *base.UnknownSessionError
+	if request.Reopen && h.bindings != nil && errors.As(err, &gone) {
+		return nil, protocol.SessionState{}, &base.UnsupportedControlError{Feature: protocol.FeatureOpenReopen, Reason: base.ControlUnsatisfiable, Detail: "the binding names a session the adapter can no longer load"}
+	}
 	if err != nil {
 		return nil, protocol.SessionState{}, err
 	}

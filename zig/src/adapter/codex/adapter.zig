@@ -108,7 +108,10 @@ pub const Session = struct {
         switch (try self.awaitSettled(arena, native.method_thread_start, refusal)) {
             .opened => return self,
             .refused => |refused| {
-                if (request.reopen) return refusal.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
+                if (request.reopen) {
+                    refusal.* = .{ .feature = contract.feature_open_reopen, .reason = contract.reason_unsatisfiable, .detail = try describe(arena, refused) };
+                    return error.UnsupportedFeature;
+                }
                 return refusal.fail(error.BackendFailed, try describe(arena, refused));
             },
             else => return refusal.fail(error.BackendFailed, "the codex app-server answered thread/start with an unrelated settlement"),
@@ -893,6 +896,7 @@ test "a reopen Codex cannot load is unsupported_feature" {
     defer probe.deinit();
     var refusal = contract.Refusal{};
     try testing.expectError(error.UnsupportedFeature, probe.openWith(.{ .session_id = "s1", .participant = "user", .reopen = true, .native_session_id = "native-thread" }, &refusal));
+    try testing.expect(std.mem.indexOf(u8, refusal.detail, "no rollout found") != null);
 
     var unbound = contract.Refusal{};
     try testing.expectError(error.UnsupportedFeature, probe.openWith(.{ .session_id = "s1", .participant = "user", .reopen = true }, &unbound));

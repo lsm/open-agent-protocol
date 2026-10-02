@@ -469,3 +469,31 @@ func TestAReopenHandsTheAdapterTheNativeIDItsBindingRecorded(t *testing.T) {
 		t.Fatal("a reopen with no binding reached the adapter; the code must come from the binding")
 	}
 }
+
+func TestAReopenAfterARestartTheAdapterCannotLoadIsUnsupportedFeature(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bindings.jsonl")
+	ctx := context.Background()
+	open := func() *serve.Hub {
+		store, err := binding.File(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		registry := serve.NewRegistry()
+		if err := registry.Register("memory", base.NewMemory(base.Config{JournalCapacity: 8})); err != nil {
+			t.Fatal(err)
+		}
+		return serve.New(registry, serve.Options{StreamQueue: 8, Bindings: store})
+	}
+	session, _, err := open().Open(ctx, "memory", base.OpenRequest{SessionID: "kept"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = open().Open(ctx, "memory", base.OpenRequest{SessionID: "kept", Reopen: true})
+	var refusal *base.UnsupportedControlError
+	if !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureOpenReopen || refusal.Reason != base.ControlUnsatisfiable {
+		t.Fatalf("reopening a bound session the restarted adapter lost answered %v, want unsupported_feature naming %s", err, protocol.FeatureOpenReopen)
+	}
+}
