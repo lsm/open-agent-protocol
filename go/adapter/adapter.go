@@ -77,6 +77,14 @@ type OpenRequest struct {
 	Tools []protocol.ToolDefinition
 
 	AllowDegradedFeatures []string
+
+	Reopen bool
+
+	NativeSessionID string
+}
+
+type NativeSession interface {
+	NativeSessionID() string
 }
 
 func (r OpenRequest) AllowsDegraded(key string) bool {
@@ -151,6 +159,15 @@ var (
 )
 
 var ErrModelNotFound = errors.New("adapter: model is not in the effective catalog")
+
+var ErrUnknownSession = errors.New("serve: unknown session")
+
+type UnknownSessionError struct {
+	ID protocol.SessionID
+}
+
+func (e *UnknownSessionError) Error() string { return fmt.Sprintf("no session %q", e.ID) }
+func (e *UnknownSessionError) Unwrap() error { return ErrUnknownSession }
 
 const (
 	SteerReasonNoActiveRun   = "no_active_run"

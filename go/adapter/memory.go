@@ -87,7 +87,7 @@ var attachSupport = protocol.FeatureSupport{
 	Reason: "sources are described and published back; the reference adapter runs no client for them",
 }
 
-const CapabilityRevision = "reference-memory-v12"
+const CapabilityRevision = "reference-memory-v13"
 
 var errTerminalWon = fmt.Errorf("adapter: terminal event already emitted")
 
@@ -109,6 +109,9 @@ type Memory struct {
 	clock    Clock
 	ids      IDGenerator
 	capacity int
+
+	closedMu sync.Mutex
+	closed   map[protocol.SessionID]string
 }
 
 func NewMemory(config Config) *Memory {
@@ -124,7 +127,7 @@ func NewMemory(config Config) *Memory {
 	if capacity <= 0 {
 		capacity = defaultJournalCapacity
 	}
-	return &Memory{clock: clock, ids: ids, capacity: capacity}
+	return &Memory{clock: clock, ids: ids, capacity: capacity, closed: map[protocol.SessionID]string{}}
 }
 
 func (m *Memory) Probe(context.Context) (Descriptor, error) {
@@ -133,6 +136,7 @@ func (m *Memory) Probe(context.Context) (Descriptor, error) {
 		"capabilities":                  {Level: protocol.SupportNative},
 		"session.open":                  {Level: protocol.SupportNative},
 		protocol.FeatureOpenSubscribe:   {Level: protocol.SupportNative, Reason: "the journal exists from the open, so a subscription registered there misses nothing"},
+		protocol.FeatureOpenReopen:      {Level: protocol.SupportEmulated, Reason: "a closed session's model is kept in process memory, so a reopen in the same process restores it and one after a restart is refused"},
 		"session.state":                 {Level: protocol.SupportNative},
 		"session.message.submit":        {Level: protocol.SupportNative},
 		"session.message.delivery.auto": {Level: protocol.SupportNative},
@@ -217,15 +221,39 @@ func (m *Memory) Open(ctx context.Context, request OpenRequest) (Session, error)
 	if id == "" {
 		id = protocol.SessionID(m.ids.NewID("session"))
 	}
+	model, recovery, err := m.claim(id, request.Reopen)
+	if err != nil {
+		return nil, err
+	}
 	now := m.clock.Now().UnixMilli()
 	return &memorySession{
-		clock: m.clock, ids: m.ids, capacity: m.capacity,
+		owner: m, clock: m.clock, ids: m.ids, capacity: m.capacity,
 		participant: request.Participant.ID,
-		state:       protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, UpdatedAtMS: now, Sources: sessionSources(attached)},
+		state:       protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, UpdatedAtMS: now, Sources: sessionSources(attached), CurrentModelID: model, Recovery: recovery},
 		attached:    attached,
 		provided:    provided,
 		runs:        make(map[protocol.RunID]*memoryRun),
 	}, nil
+}
+
+func (m *Memory) claim(id protocol.SessionID, reopen bool) (string, *protocol.RecoveryMetadata, error) {
+	m.closedMu.Lock()
+	defer m.closedMu.Unlock()
+	model, kept := m.closed[id]
+	delete(m.closed, id)
+	if !reopen {
+		return "", nil, nil
+	}
+	if !kept {
+		return "", nil, &UnknownSessionError{ID: id}
+	}
+	return model, &protocol.RecoveryMetadata{Recovered: true}, nil
+}
+
+func (m *Memory) keep(id protocol.SessionID, model string) {
+	m.closedMu.Lock()
+	defer m.closedMu.Unlock()
+	m.closed[id] = model
 }
 
 func admitToolSources(request OpenRequest) ([]protocol.ToolSourceAttachment, error) {
@@ -338,6 +366,7 @@ func mustJSON(value any) json.RawMessage {
 }
 
 type memorySession struct {
+	owner       *Memory
 	mu          sync.Mutex
 	emitMu      sync.Mutex
 	opMu        sync.Mutex
@@ -1463,6 +1492,9 @@ func (s *memorySession) Close(ctx context.Context) error {
 	s.state.Status = protocol.SessionClosed
 	s.state.ActiveRunID = ""
 	s.state.UpdatedAtMS = s.clock.Now().UnixMilli()
+	if s.owner != nil {
+		s.owner.keep(s.state.SessionID, s.state.CurrentModelID)
+	}
 	var subscribers []chan Result
 	for _, run := range s.runs {
 		subscribers = append(subscribers, run.subscribers...)

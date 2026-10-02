@@ -363,6 +363,14 @@ pub const Endpoint = struct {
             }
         }
         try contract.refuseUnadvertisedOpen(descriptor, payload, refusal);
+        if (payload.reopen) {
+            if (payload.session_id) |named| {
+                if (self.find(named) != null) {
+                    const message = try std.fmt.allocPrint(arena, "session \"{s}\" already exists", .{named});
+                    return self.deny("session_exists", message, &.{});
+                }
+            }
+        }
         const tool_sources_json = try self.resolveAttachments(arena, payload.tool_sources_json, refusal);
         try self.entries.ensureUnusedCapacity(self.allocator, 1);
         const session = try self.adapter.open(arena, .{
@@ -372,6 +380,7 @@ pub const Endpoint = struct {
             .allow_degraded_features = payload.allow_degraded_features,
             .tools_json = payload.tools_json,
             .tool_sources_json = tool_sources_json,
+            .reopen = payload.reopen,
         }, refusal);
         const state_now = session.state(arena, refusal) catch |failure| {
             session.teardown();
@@ -1003,6 +1012,7 @@ fn codeFor(failure: contract.Failure) Mapped {
         error.ModelNotFound => .{ .code = "model_not_found", .fallback = "adapter: model is not in the effective catalog" },
         error.InvalidSteerTarget => .{ .code = "invalid_steer_target", .fallback = "adapter: steer target cannot take guidance" },
         error.SessionClosed => .{ .code = "session_closed", .fallback = "adapter: session closed" },
+        error.UnknownSession => .{ .code = "unknown_session", .fallback = "serve: unknown session" },
         error.RunActive => .{ .code = "run_active", .fallback = "adapter: a run is already active" },
         error.InvalidSubmission => .{ .code = "invalid_submission", .fallback = "adapter: invalid submission" },
         error.RunNotFound => .{ .code = "run_not_found", .fallback = "adapter: run not found" },
