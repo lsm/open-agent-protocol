@@ -266,7 +266,7 @@ pub const Session = struct {
         var settled: std.ArrayList(oap_types.RunPosition) = .empty;
         var position: u64 = 0;
         for (self.runs.items) |run| {
-            try admitted.append(arena, run.submit_id);
+            if (!listsId(admitted.items, run.submit_id)) try admitted.append(arena, run.submit_id);
             if (run.terminal) {
                 try settled.append(arena, .{ .run_id = run.id, .sequence = run.next_sequence - 1 });
                 continue;
@@ -1031,6 +1031,13 @@ const Payload = struct {
     }
 };
 
+fn listsId(ids: []const []const u8, id: []const u8) bool {
+    for (ids) |listed| {
+        if (std.mem.eql(u8, listed, id)) return true;
+    }
+    return false;
+}
+
 const testing = std.testing;
 const agent = @import("agent");
 const event_stream = @import("event_stream");
@@ -1327,6 +1334,8 @@ test "busy auto submissions reserve runs until the disclosed queue bound is reac
     }
     try testing.expectError(error.RunActive, harness.submit("too soon"));
     var refusal = contract.Refusal{};
+    const captured = try harness.session.state(harness.arena.allocator(), &refusal);
+    try testing.expectEqual(@as(usize, 1), captured.as_of.?.admitted_submit_requests.len);
     _ = try harness.session.cancel(harness.arena.allocator(), admitted.run_id.?, &refusal);
     try harness.untilTerminal();
 }
