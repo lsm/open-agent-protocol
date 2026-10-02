@@ -264,7 +264,12 @@ requests `<base_url>/v1/models`, writes the cache, and falls back to the cached
 copy however old when it fails. An endpoint keyed from `auth` rather than the keychain has
 no login step, so it serves its declared `models` list until `/model refresh` or
 some other login triggers one. When the refreshed list no longer holds the active
-model, the TUI moves to the first model it does hold and says so.
+model, the TUI moves to the first model it does hold and says so. The refresh
+runs in the background — the status bar shows `refreshing models` — and the new
+list is swapped in once no turn is running, before any queued message starts the
+next one. A source that failed is named in the transcript, as
+`model refresh: <provider>: <reason>`: the URL and the error or HTTP status for a
+custom provider, or the parse error for `providers.json`.
 
 The declared list is a fallback **only** when discovery produced nothing at all.
 When discovery succeeds, its result is filtered by the list and that is what you
