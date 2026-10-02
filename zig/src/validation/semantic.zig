@@ -177,11 +177,15 @@ fn memberBool(container: std.json.Value, name: []const u8) bool {
     return value.bool;
 }
 
+const SteerSnapshot = struct { index: usize, envelope: std.json.Value, payload: std.json.Value };
+
 const Steer = struct {
     request: []const u8,
     messages: ?std.json.Value,
     admitted_at: usize,
     settled_at: ?usize = null,
+    settled_sequence: u64 = 0,
+    unwitnessed: bool = false,
 };
 
 const Run = struct {
@@ -483,6 +487,7 @@ pub const Machine = struct {
     windows: std.StringArrayHashMapUnmanaged(*Window) = .empty,
     submits: std.StringArrayHashMapUnmanaged(*Pending) = .empty,
     resolves: std.StringArrayHashMapUnmanaged(PendingResolve) = .empty,
+    steer_snapshots: std.ArrayList(SteerSnapshot) = .empty,
     descriptor_owners: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     descriptor_attribution: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
 
@@ -506,6 +511,7 @@ pub const Machine = struct {
         self.windows.deinit(self.allocator);
         self.submits.deinit(self.allocator);
         self.resolves.deinit(self.allocator);
+        self.steer_snapshots.deinit(self.allocator);
         self.descriptor_owners.deinit(self.allocator);
         self.descriptor_attribution.deinit(self.allocator);
         for (self.sessions.values()) |holder| {
@@ -2581,27 +2587,61 @@ pub const Machine = struct {
             }
         }
         track.settled_at = index;
+        if (member(envelope, "sequence")) |seq| {
+            if (exactInteger(seq)) |value| {
+                if (value >= 0) track.settled_sequence = @intCast(value);
+            }
+        }
     }
 
     fn steerState(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
-        const entries = member(payload, "active_runs") orelse return;
-        if (entries != .array) return;
-        const position = self.ids.get(field(envelope, "in_reply_to")) orelse index;
-        for (entries.array.items) |entry| {
-            const run = self.runs.get(memberString(entry, "run_id")) orelse continue;
-            var listed: std.StringArrayHashMapUnmanaged([]const u8) = .empty;
-            defer listed.deinit(self.allocator);
-            if (member(entry, "pending_steers")) |pending| {
-                if (pending == .array) for (pending.array.items) |held| {
-                    const id = memberString(held, "submission_id");
-                    const request = memberString(held, "request_id");
-                    const track = run.steers.get(id);
-                    if (listed.contains(id) or track == null or !std.mem.eql(u8, track.?.request, request) or (track.?.settled_at != null and track.?.settled_at.? < position)) try self.add(code_session_state_mismatch, index);
-                    try listed.put(self.allocator, id, request);
-                };
-            }
-            for (run.steers.keys(), run.steers.values()) |id, track| {
-                if (track.admitted_at < position and (track.settled_at == null or track.settled_at.? >= index) and !listed.contains(id)) try self.add(code_session_state_mismatch, index);
+        try self.steer_snapshots.append(self.allocator, .{ .index = index, .envelope = envelope, .payload = payload });
+    }
+
+    fn closeSteerSnapshots(self: *Machine) !void {
+        for (self.steer_snapshots.items) |snapshot| {
+            const index = snapshot.index;
+            const entries = member(snapshot.payload, "active_runs") orelse continue;
+            if (entries != .array) continue;
+            const position = self.ids.get(field(snapshot.envelope, "in_reply_to")) orelse index;
+            for (entries.array.items) |entry| {
+                const run = self.runs.get(memberString(entry, "run_id")) orelse continue;
+                const held = member(entry, "pending_steers");
+                if (run.steers.count() == 0 and (held == null or held.? != .array or held.?.array.items.len == 0)) continue;
+                var mismatch = false;
+                var cursor: u64 = 0;
+                if (member(entry, "as_of_sequence")) |seq| {
+                    if (exactInteger(seq)) |value| {
+                        if (value >= 0) cursor = @intCast(value);
+                    }
+                    if (cursor >= run.next) mismatch = true;
+                } else mismatch = true;
+                var listed: std.StringArrayHashMapUnmanaged([]const u8) = .empty;
+                defer listed.deinit(self.allocator);
+                if (held) |pending| {
+                    if (pending == .array) for (pending.array.items) |item| {
+                        const id = memberString(item, "submission_id");
+                        const request = memberString(item, "request_id");
+                        const track = run.steers.get(id);
+                        if (listed.contains(id) or track == null or !std.mem.eql(u8, track.?.request, request)) mismatch = true;
+                        try listed.put(self.allocator, id, request);
+                    };
+                }
+                for (run.steers.keys(), run.steers.values()) |id, track| {
+                    var known = track.unwitnessed;
+                    if (member(entry, "admitted_submit_requests")) |anchors| {
+                        if (anchors == .array) for (anchors.array.items) |anchor| {
+                            if (anchor == .string and std.mem.eql(u8, anchor.string, track.request)) {
+                                known = true;
+                            }
+                        };
+                    }
+                    if (track.admitted_at < position and !known and (track.settled_at == null or track.settled_at.? >= position)) mismatch = true;
+                    const pending = known and (track.settled_at == null or track.settled_sequence > cursor);
+                    const actual = listed.get(id);
+                    if (pending != (actual != null and std.mem.eql(u8, actual.?, track.request))) mismatch = true;
+                }
+                if (mismatch) try self.add(code_session_state_mismatch, index);
             }
         }
     }
@@ -2818,6 +2858,7 @@ pub const Machine = struct {
                         .next = resumeSequence(recovery, run_id, unsigned(entry, "as_of_sequence")),
                         .status = status,
                         .pending = member(entry, "pending_interactions"),
+                        .pending_steers = member(entry, "pending_steers"),
                     });
                 }
             }
@@ -2840,6 +2881,7 @@ pub const Machine = struct {
         queued: bool = false,
         prior_unknown: bool = false,
         pending: ?std.json.Value = null,
+        pending_steers: ?std.json.Value = null,
     };
 
     fn introduceRecovered(self: *Machine, index: usize, holder: *Session, run_id: []const u8, session_id: []const u8, shape: Recovered) !void {
@@ -2864,6 +2906,11 @@ pub const Machine = struct {
                     _ = try self.unwitnessedInteraction(run, entry.string);
                 }
             }
+        }
+        if (shape.pending_steers) |pending| {
+            if (pending == .array) for (pending.array.items) |entry| {
+                try run.steers.put(self.arena.allocator(), memberString(entry, "submission_id"), .{ .request = memberString(entry, "request_id"), .messages = null, .admitted_at = index, .unwitnessed = true });
+            };
         }
         try self.runs.put(self.allocator, run_id, run);
         try holder.order.append(self.allocator, run_id);
@@ -3375,6 +3422,7 @@ pub const Machine = struct {
     }
 
     pub fn close(self: *Machine) !void {
+        try self.closeSteerSnapshots();
         for (self.sessions.keys(), self.sessions.values()) |session_id, holder| {
             for (holder.model_anchors.items) |anchor| {
                 const request = self.requests.get(anchor.request) orelse continue;

@@ -103,30 +103,6 @@
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
-    "type": "session.message.submit.response",
-    "id": "err1",
-    "in_reply_to": "sub2",
-    "session_id": "s1",
-    "capability_revision": "cap-v1",
-    "payload": {
-      "session_id": "s1",
-      "accepted": true,
-      "submission_id": "steer1",
-      "requested_delivery": "steer",
-      "effective_delivery": "steer",
-      "admission": "steered",
-      "run_id": "r1",
-      "status": "running",
-      "target_sequence": 1,
-      "message_ids": [
-        "guidance"
-      ]
-    }
-  },
-  {
-    "protocol": "open-agent-protocol",
-    "version": "0.1",
-    "profile": "open-agent-protocol.agent-control-core",
     "type": "session.state.request",
     "id": "stateq",
     "session_id": "s1",
@@ -164,6 +140,30 @@
             "sub2"
           ]
         }
+      ]
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.message.submit.response",
+    "id": "err1",
+    "in_reply_to": "sub2",
+    "session_id": "s1",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "session_id": "s1",
+      "accepted": true,
+      "submission_id": "steer1",
+      "requested_delivery": "steer",
+      "effective_delivery": "steer",
+      "admission": "steered",
+      "run_id": "r1",
+      "status": "running",
+      "target_sequence": 1,
+      "message_ids": [
+        "guidance"
       ]
     }
   },

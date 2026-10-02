@@ -132,6 +132,7 @@ type toolTrack struct {
 	interaction protocol.InteractionID
 }
 type state struct {
+	steerSnapshots    []steerSnapshot
 	fixture           string
 	diagnostics       []Diagnostic
 	ids               map[protocol.EnvelopeID]int
@@ -1104,6 +1105,12 @@ func (s *state) introduceRecoveredRun(i, line int, st *sessionTrack, run *runSta
 	if entry == nil {
 		run.priorUnknown = true
 	}
+	if entry != nil {
+		run.steers = map[protocol.SubmissionID]*steerTrack{}
+		for _, pending := range entry.PendingSteers {
+			run.steers[pending.SubmissionID] = &steerTrack{request: pending.RequestID, admittedAt: i, settledAt: -1, opaque: true}
+		}
+	}
 	for _, id := range entryPending(entry) {
 		run.interactions[id] = &interactionState{opaque: true}
 	}
@@ -1478,6 +1485,7 @@ func (s *state) featureKeys(i, line int, e protocol.Envelope, keys []string) {
 	s.add(CodeUnavailableCapability, i, line, e, "/type", "optional feature was not affirmatively advertised")
 }
 func (s *state) close(index int) {
+	s.closeSteerSnapshots()
 	s.closeQueue()
 	s.closeSwitchObservations()
 	s.closeAuthFlows()

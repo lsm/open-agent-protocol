@@ -159,6 +159,9 @@
               "submission_id": "steer1",
               "request_id": "other"
             }
+          ],
+          "admitted_submit_requests": [
+            "sub2"
           ]
         }
       ]

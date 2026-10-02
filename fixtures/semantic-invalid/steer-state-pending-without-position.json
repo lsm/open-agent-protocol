@@ -153,7 +153,6 @@
           "run_id": "r1",
           "status": "running",
           "relationship": "primary",
-          "as_of_sequence": 1,
           "pending_steers": [
             {
               "submission_id": "steer1",

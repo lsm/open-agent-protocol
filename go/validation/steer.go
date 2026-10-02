@@ -11,6 +11,8 @@ type steerTrack struct {
 	request               protocol.EnvelopeID
 	messages              []protocol.MessageID
 	admittedAt, settledAt int
+	settledSequence       uint64
+	opaque                bool
 }
 
 func (s *state) steerTarget(p protocol.MessageSubmitRequest) (*runState, string) {
@@ -118,6 +120,9 @@ func (s *state) steerSettlement(i, line int, e protocol.Envelope, r *runState) {
 		s.add(CodeUnmatchedSteer, i, line, e, "/payload/message_ids", "settlement differs from admitted guidance")
 	}
 	track.settledAt = i
+	if e.Sequence != nil {
+		track.settledSequence = *e.Sequence
+	}
 }
 
 func (s *state) steerRefusal(i, line int, e protocol.Envelope) {
@@ -154,29 +159,62 @@ func (s *state) steerTerminal(i, line int, e protocol.Envelope, r *runState) {
 	}
 }
 
+type steerSnapshot struct {
+	index, line int
+	envelope    protocol.Envelope
+	payload     protocol.SessionState
+}
+
 func (s *state) steerState(i, line int, e protocol.Envelope, p protocol.SessionState) {
-	for _, entry := range p.ActiveRuns {
-		r := s.runs[entry.RunID]
-		if r == nil {
-			continue
-		}
+	s.steerSnapshots = append(s.steerSnapshots, steerSnapshot{i, line, e, p})
+}
+
+func (s *state) closeSteerSnapshots() {
+	for _, snapshot := range s.steerSnapshots {
+		i, line, e, p := snapshot.index, snapshot.line, snapshot.envelope, snapshot.payload
 		position := i
-		if e.Type == protocol.TypeSessionStateResponse {
-			if req := s.requests[e.InReplyTo]; req != nil {
-				position = req.index
-			}
+		if req := s.requests[e.InReplyTo]; req != nil {
+			position = req.index
 		}
-		listed := map[protocol.SubmissionID]protocol.EnvelopeID{}
-		for _, pending := range entry.PendingSteers {
-			track := r.steers[pending.SubmissionID]
-			if _, duplicate := listed[pending.SubmissionID]; duplicate || track == nil || track.request != pending.RequestID || (track.settledAt >= 0 && track.settledAt < position) {
-				s.add(CodeSessionStateMismatch, i, line, e, "/payload/active_runs", "snapshot names an incorrect pending steer")
+		for _, entry := range p.ActiveRuns {
+			r := s.runs[entry.RunID]
+			if r == nil || (len(r.steers) == 0 && len(entry.PendingSteers) == 0) {
+				continue
 			}
-			listed[pending.SubmissionID] = pending.RequestID
-		}
-		for id, track := range r.steers {
-			if track.admittedAt < position && (track.settledAt < 0 || track.settledAt >= i) && listed[id] == "" {
-				s.add(CodeSessionStateMismatch, i, line, e, "/payload/active_runs", "snapshot omits admitted pending guidance")
+			mismatch := false
+			cursor := uint64(0)
+			if entry.AsOfSequence != nil {
+				cursor = *entry.AsOfSequence
+				if cursor >= r.next {
+					continue
+				}
+			} else if len(entry.PendingSteers) > 0 || len(r.steers) > 0 {
+				mismatch = true
+			}
+			anchors := map[protocol.EnvelopeID]bool{}
+			for _, id := range entry.AdmittedSubmitRequests {
+				anchors[id] = true
+			}
+			listed := map[protocol.SubmissionID]protocol.EnvelopeID{}
+			for _, pending := range entry.PendingSteers {
+				track := r.steers[pending.SubmissionID]
+				if _, duplicate := listed[pending.SubmissionID]; duplicate || track == nil || track.request != pending.RequestID {
+					mismatch = true
+				}
+				listed[pending.SubmissionID] = pending.RequestID
+			}
+			for id, track := range r.steers {
+				known := anchors[track.request] || track.opaque
+				if track.admittedAt < position && !known && (track.settledAt < 0 || track.settledAt >= position) {
+					mismatch = true
+				}
+				pending := known && (track.settledAt < 0 || track.settledSequence > cursor)
+				if pending != (listed[id] == track.request) {
+					mismatch = true
+				}
+			}
+			if mismatch {
+				s.add(CodeSessionStateMismatch, i, line, e, "/payload/active_runs", "pending steers contradict the admission markers and run capture position")
 			}
 		}
 	}

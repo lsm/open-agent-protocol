@@ -180,6 +180,9 @@
               "submission_id": "steer1",
               "request_id": "sub2"
             }
+          ],
+          "admitted_submit_requests": [
+            "sub2"
           ]
         }
       ]

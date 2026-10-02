@@ -10383,6 +10383,96 @@
       "provenance": [
         "decisions/0013-steer.md"
       ]
+    },
+    {
+      "id": "steer-state-capture-ahead-of-settlement",
+      "path": "valid/steer-state-capture-ahead-of-settlement.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-state-capture-straddles-admission",
+      "path": "valid/steer-state-capture-straddles-admission.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-state-pending-without-position",
+      "path": "semantic-invalid/steer-state-pending-without-position.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-state-omits-admitted-marker",
+      "path": "semantic-invalid/steer-state-omits-admitted-marker.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-state-position-never-reached",
+      "path": "semantic-invalid/steer-state-position-never-reached.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-recovered-pending",
+      "path": "valid/steer-recovered-pending.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
     }
   ]
 }
