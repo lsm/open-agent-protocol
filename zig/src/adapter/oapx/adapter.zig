@@ -133,10 +133,11 @@ pub const Session = struct {
         errdefer gpa.destroy(self);
         const runtime = try gpa.create(tui_runtime.TuiRuntime);
         errdefer gpa.destroy(runtime);
-        const session_tools = try gpa.alloc(agent.AgentTool, owner.options.tools.len + 1);
+        const offers_input = offersUserInput(request.metadata);
+        const session_tools = try gpa.alloc(agent.AgentTool, owner.options.tools.len + @intFromBool(offers_input));
         defer gpa.free(session_tools);
         @memcpy(session_tools[0..owner.options.tools.len], owner.options.tools);
-        session_tools[owner.options.tools.len] = inputTool(self);
+        if (offers_input) session_tools[owner.options.tools.len] = inputTool(self);
         var options = sessionOptions(owner.options, request.metadata);
         options.tools = session_tools;
         options.tool_approval_ctx = self;
@@ -785,6 +786,15 @@ pub const Session = struct {
 };
 
 pub const settings_key = "oapx";
+
+fn offersUserInput(metadata: ?std.json.Value) bool {
+    const document = metadata orelse return true;
+    if (document != .object) return true;
+    const settings = document.object.get(settings_key) orelse return true;
+    if (settings != .object) return true;
+    const offered = settings.object.get("user_input") orelse return true;
+    return !(offered == .bool and !offered.bool);
+}
 
 pub fn sessionOptions(base: tui_runtime.TuiRuntimeOptions, metadata: ?std.json.Value) tui_runtime.TuiRuntimeOptions {
     var options = base;
@@ -1680,4 +1690,14 @@ test "an optional question can remain unanswered while required input reaches th
     try harness.session.resolve(harness.arena.allocator(), .{ .input = &request }, &refusal);
     try harness.untilTerminal();
     try testing.expect(script.received_answers.load(.acquire));
+}
+
+test "a session whose client declines user_input is not given the input tool" {
+    try testing.expect(offersUserInput(null));
+    var declined = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"oapx\":{\"user_input\":false}}", .{});
+    defer declined.deinit();
+    try testing.expect(!offersUserInput(declined.value));
+    var offered = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"oapx\":{\"user_input\":true}}", .{});
+    defer offered.deinit();
+    try testing.expect(offersUserInput(offered.value));
 }

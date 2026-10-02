@@ -268,6 +268,7 @@ pub const TuiRuntime = struct {
     title_mutex: std.atomic.Mutex = .unlocked,
     title_result: ?[]u8 = null,
     remote: ?RemoteExecution = null,
+    remote_mutex: std.atomic.Mutex = .unlocked,
 
     pub fn init(allocator: std.mem.Allocator, options: TuiRuntimeOptions) !TuiRuntime {
         var models = try cloneModels(allocator, options.models);
@@ -1106,6 +1107,11 @@ pub const TuiRuntime = struct {
     }
 
     fn resetEventStreamForTurn(self: *TuiRuntime) void {
+        const guarded = self.remote != null;
+        if (guarded) {
+            while (!self.remote_mutex.tryLock()) std.atomic.spinLoopHint();
+        }
+        defer if (guarded) self.remote_mutex.unlock();
         self.current_generation +%= 1;
         if (!self.stream_active or self.event_stream.isDone()) {
             self.event_stream.deinit();
@@ -1311,6 +1317,8 @@ pub const TuiRuntime = struct {
     }
     fn pushRemote(ctx: *anyopaque, event: TuiEvent) void {
         const self: *TuiRuntime = @ptrCast(@alignCast(ctx));
+        while (!self.remote_mutex.tryLock()) std.atomic.spinLoopHint();
+        defer self.remote_mutex.unlock();
         switch (event) {
             .agent_end => |payload| self.endRun(payload.reason) catch {},
             .turn_end => |payload| {

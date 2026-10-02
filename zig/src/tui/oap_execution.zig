@@ -106,6 +106,7 @@ pub const OapExecution = struct {
         });
         try settings_map.put("permission_mode", .{ .string = @tagName(settings.permission_mode) });
         if (settings.workspace_root.len > 0) try settings_map.put("workspace_root", .{ .string = settings.workspace_root });
+        try settings_map.put("user_input", .{ .bool = false });
         var metadata = Map.init(a);
         try metadata.put(oapx_adapter.settings_key, settings_map.value());
         var open = Map.init(a);
