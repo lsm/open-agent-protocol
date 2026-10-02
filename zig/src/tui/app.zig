@@ -1881,6 +1881,7 @@ pub const App = struct {
     }
 
     fn saveLoginCredentials(self: *App, provider_id: []const u8, creds: oauth_storage.Credentials, stores_api_key: bool) !void {
+        self.discardModelFetch();
         var storage = try oauth_storage.AuthStorage.loadDefault(self.allocator);
         defer storage.deinit();
 
@@ -2029,9 +2030,9 @@ pub const App = struct {
             owned[index] = try ai_types.cloneModel(self.allocator, model);
             cloned += 1;
         }
+        if (self.runtimeBusy()) try self.state.appendTranscript(.system, "model catalog fetched; it takes effect when this turn ends");
         if (self.pending_models) |old| model_catalog.deinitModels(self.allocator, old);
         self.pending_models = owned;
-        if (self.runtimeBusy()) try self.state.appendTranscript(.system, "model catalog fetched; it takes effect when this turn ends");
     }
 
     fn applyPendingModelsBeforeResume(self: *App) !void {
@@ -2141,6 +2142,7 @@ pub const App = struct {
     }
 
     fn logoutProvider(self: *App, requested: []const u8) !void {
+        self.discardModelFetch();
         const provider_id = logoutProviderId(requested);
         var shared: std.ArrayList([]const u8) = .empty;
         defer shared.deinit(self.allocator);
@@ -4892,7 +4894,7 @@ test "App init seeds registered tools from runtime" {
     try std.testing.expect(app.runtime.?.permission_engine.?.workspace_root.len > 0);
 }
 
-test "App applies a catalog fetched during a turn once the runtime is idle" {
+test "App applies a staged catalog once the runtime is idle" {
     const extra_model = ai_types.Model{
         .id = "temporary-extra-model",
         .name = "Temporary Extra",
