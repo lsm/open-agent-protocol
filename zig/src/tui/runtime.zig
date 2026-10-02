@@ -483,12 +483,27 @@ pub const TuiRuntime = struct {
             }
         }
 
-        self.pending_model_index = null;
+        var next_pending: ?usize = null;
+        if (self.pending_model_index) |pending| {
+            if (pending < self.models.len) {
+                const target = self.models[pending];
+                for (owned_next, 0..) |model, idx| {
+                    if (std.mem.eql(u8, model.id, target.id) and std.mem.eql(u8, model.provider, target.provider) and std.mem.eql(u8, model.api, target.api)) {
+                        next_pending = idx;
+                        break;
+                    }
+                }
+            }
+        }
         if (self.local_agent) |*local| local.requestModelSwitch(null);
         deinitModels(self.allocator, self.models);
         self.models = owned_next;
         owned_next = &.{};
         self.selected_model_index = next_selected;
+        self.pending_model_index = next_pending;
+        if (next_pending) |idx| {
+            if (self.local_agent) |*local| local.requestModelSwitch(self.effectiveModel(self.models[idx]));
+        }
         self.reconcileContextWindowAfterModelSwitch();
 
         if (self.local_agent) |*local| {

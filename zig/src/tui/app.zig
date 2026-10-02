@@ -2023,7 +2023,16 @@ pub const App = struct {
 
     fn applyModels(self: *App, models: []const ai_types.Model) !bool {
         const runtime = self.runtime orelse return false;
+        const pending: ?[]u8 = if (runtime.pending_model_index) |idx| try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ runtime.models[idx].provider, runtime.models[idx].id }) else null;
+        defer if (pending) |name| self.allocator.free(name);
         try runtime.replaceModels(models, runtime.currentModel());
+        if (pending) |name| {
+            if (runtime.pending_model_index == null) {
+                const msg = try std.fmt.allocPrint(self.allocator, "the pending switch to {s} was dropped: the refreshed model list no longer has it", .{name});
+                defer self.allocator.free(msg);
+                try self.state.appendTranscript(.@"error", msg);
+            }
+        }
         const model = runtime.currentModel() orelse return false;
         const switched = !std.mem.eql(u8, model.id, self.state.status.model) or
             !std.mem.eql(u8, model.provider, self.state.status.provider);
@@ -5074,6 +5083,30 @@ test "App steers a model switch and defers run-end commands while a run streams,
     try std.testing.expect(runtime.pending_model_index == null);
     try std.testing.expectEqual(@as(usize, 0), app.deferred_commands.items.len);
     try std.testing.expectEqual(agent.OutputSetting{ .tokens = 4096 }, runtime.outputSetting());
+}
+
+test "a refreshed model list keeps a pending switch it still lists and reports one it drops" {
+    var other = defaultModel();
+    other.id = "other-model";
+    var third = defaultModel();
+    third.id = "third-model";
+    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    errdefer std.testing.allocator.destroy(runtime);
+    runtime.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ defaultModel(), other }, .initial_model_id = defaultModel().id });
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.runtime = runtime;
+
+    _ = try runtime.requestModelSwitch("other-model");
+    _ = try app.applyModels(&[_]ai_types.Model{ third, other, defaultModel() });
+    try std.testing.expectEqual(@as(?usize, 1), runtime.pending_model_index);
+    try std.testing.expectEqualStrings("other-model", runtime.models[runtime.pending_model_index.?].id);
+
+    _ = try app.applyModels(&[_]ai_types.Model{ defaultModel(), third });
+    try std.testing.expect(runtime.pending_model_index == null);
+    const said = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expectEqual(tui_state.TranscriptKind.@"error", said.kind);
+    try std.testing.expect(std.mem.indexOf(u8, said.text.items, "other-model was dropped") != null);
 }
 
 test "App refreshes runtime models after login" {
