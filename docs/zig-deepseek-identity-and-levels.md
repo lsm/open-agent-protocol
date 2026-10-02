@@ -10,9 +10,10 @@ This cut is the Zig side of the handoff the Go record
 (`docs/go-deepseek-request-compatibility.md`, section **Zig handoff**) prescribes,
 integrated by section rather than by parallel edits. Each section it names:
 
-- **Effort mapping** — the table in this record matches that record's `minimal/low →
-  low`, `medium/high/xhigh → high`, `max/ultra → max`; the Go table is its [Effort
-  mapping] section.
+- **Effort mapping** — the Go record's table is `minimal/low → low`,
+  `medium/high/xhigh → high`, `max/ultra → max`. Zig now sends `xhigh` as `max`
+  (see [The mapping](#the-mapping)), so the two tables differ on that one row
+  until the Go side follows.
 - **Identity** — `usesDeepSeekWire` combines the same two signals the Go
   `IsDeepSeekModel` does, additively, and the Go record's [Identity] section states
   the same rule.
@@ -54,14 +55,42 @@ the lane's own and was not made while other lanes were mid-change.
 | internal level | sent as |
 |---|---|
 | `minimal`, `low` | `low` |
-| `medium`, `high`, `xhigh` | `high` |
-| `max`, `ultra` | `max` |
+| `medium`, `high` | `high` |
+| `xhigh`, `max`, `ultra` | `max` |
 | anything else | `high` (unchanged fallback; not decided here) |
 
-`xhigh` was previously sent as `max`. It is sent as `high`: the published
-table puts `xhigh` with `medium` and `high`, and reserves `max` for
-`max` and `ultra`. `ultra` was previously unhandled and fell into a
-catch-all; it is now `max` rather than a guess.
+`xhigh` is sent as `max`. The OAP provider wire's `reasoningLevel` stops at
+`xhigh` (`schema/v0.1/provider.schema.json`), so a request that crosses it
+(`reasoningEffortName` in `oap_provider_bridge.zig`) asks for `max` as
+`xhigh`. Mapping `xhigh` to `high`, as an earlier cut of this record did, left
+that path no level that asks DeepSeek for `max`. The TUI does not cross that
+wire: it streams through `provider_protocol_bridge.zig`, which now hands a
+DeepSeek or OpenCode request its level by name (`reasoningEffort`), so
+`/think max` reaches this table as `max`.
+`ultra` was previously unhandled and fell into a catch-all; it is now `max`
+rather than a guess.
+
+## OpenCode
+
+`opencode-zen` and `opencode-go` serve many vendors' models through one
+completions endpoint and pass `reasoning_effort` through to the backend.
+Without it, a backend chooses: on `opencode-go`, DeepSeek V4.1 Flash served
+by DeepSeek's own API reasoned on most replies, and served by a vLLM host
+reasoned on none. `openCodeEffort` (`provider_caps.zig`) follows OpenCode's
+own `variants` table (`packages/opencode/src/provider/transform.ts`, the
+`@ai-sdk/openai-compatible` arm):
+
+| model id contains | sent |
+|---|---|
+| `deepseek-v4` | the DeepSeek table above |
+| `glm-5.2` | `high`, or `max` for `xhigh`/`max`/`ultra` |
+| `deepseek-chat`, `-reasoner`, `-r1`, `-v3`, `minimax`, other `glm`, `kimi`, `k2p`, `qwen`, `big-pickle` | nothing; OpenCode offers no level |
+| anything else | `low`, `medium` or `high` |
+
+`off` sends nothing: the bridge hands an OpenCode request no level, and the
+writer also checks `reasoning_enabled`. A DeepSeek request keeps its earlier
+`off` → `low`. OpenCode Go accepted `reasoning_effort` of `low`,
+`high`, `xhigh`, `max` and `none` on `deepseek-v4.1-flash`.
 
 An unrecognised string keeps the **pre-existing** fallback, `high`. This
 cut does not decide that case. An earlier draft of this record claimed
@@ -108,10 +137,10 @@ vendor fallback is done in this change.
 The **residual collapse** is in `provider_protocol_bridge.zig`, in two arms keyed
 by the request's wire:
 
-- the **completions** arm (`reasoningEffort`, `:116-121`), which DeepSeek's default
-  wire takes (`provider_base_url.zig:56`), maps `.xhigh` and `.max` to `"high"`
-  for every model that is not an `xhigh`-supporting one — so a DeepSeek completion
-  request asking for `max` still sends `high`;
+- the **completions** arm (`reasoningEffort`) maps `.xhigh` and `.max` to
+  `"high"` for every model that is not an `xhigh`-supporting one, except that a
+  DeepSeek or OpenCode model now gets the level by name, so the tables in this
+  record apply to it;
 - the **Anthropic** arm (`thinkingEffort`, `:149`), which maps `.xhigh` and `.max`
   to `"max"` for every protocol-driven request, so a DeepSeek model there sends
   `max` for `xhigh`.

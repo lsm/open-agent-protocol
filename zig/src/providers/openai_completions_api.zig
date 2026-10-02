@@ -39,6 +39,8 @@ fn mergeCompat(model: ai_types.Model) MergedCompat {
     const deepseek_wire = provider_caps.usesDeepSeekWire(model.provider, model.base_url);
     const detected_reasoning_effort = if (deepseek_wire and model.reasoning and caps.supports_reasoning_effort == false and provider_caps.isExplicitDeepSeekVendor(model.provider))
         true
+    else if (provider_caps.isOpenCodeGateway(model.provider))
+        model.reasoning
     else if (honors_native_caps or deepseek_wire)
         caps.supports_reasoning_effort
     else
@@ -652,7 +654,13 @@ fn buildRequestBody(
     }
     if (options.getReasoningEffort()) |effort| {
         if (model.reasoning and merged.supports_reasoning_effort) {
-            try w.writeStringField("reasoning_effort", if (provider_caps.usesDeepSeekWire(model.provider, model.base_url)) provider_caps.deepSeekEffort(effort) else effort);
+            const sent: ?[]const u8 = if (provider_caps.isOpenCodeGateway(model.provider))
+                (if (options.reasoning_enabled) provider_caps.openCodeEffort(model.id, effort) else null)
+            else if (provider_caps.usesDeepSeekWire(model.provider, model.base_url))
+                provider_caps.deepSeekEffort(effort)
+            else
+                effort;
+            if (sent) |value| try w.writeStringField("reasoning_effort", value);
         }
     }
     if (context.tools) |tools| {
@@ -2467,7 +2475,7 @@ test "a deepseek request carries the thinking level as one of deepseek's three e
         .{ .level = "low", .sent = "low" },
         .{ .level = "medium", .sent = "high" },
         .{ .level = "high", .sent = "high" },
-        .{ .level = "xhigh", .sent = "high" },
+        .{ .level = "xhigh", .sent = "max" },
         .{ .level = "max", .sent = "max" },
         .{ .level = "ultra", .sent = "max" },
     };
@@ -2480,6 +2488,44 @@ test "a deepseek request carries the thinking level as one of deepseek's three e
         const parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
         defer parsed.deinit();
         try std.testing.expectEqualStrings(case.sent, parsed.value.object.get("reasoning_effort").?.string);
+    }
+}
+
+test "an opencode request carries the effort opencode offers the model, and none for a family it offers none" {
+    const allocator = std.testing.allocator;
+    const messages = [_]ai_types.Message{.{ .user = .{ .content = .{ .text = "hi" }, .timestamp = 0 } }};
+    const cases = [_]struct { provider: []const u8, id: []const u8, level: []const u8, sent: ?[]const u8 }{
+        .{ .provider = "opencode-go", .id = "deepseek-v4.1-flash", .level = "xhigh", .sent = "max" },
+        .{ .provider = "opencode-go", .id = "deepseek-v4.1-flash", .level = "low", .sent = "low" },
+        .{ .provider = "opencode-zen", .id = "gpt-6-luna", .level = "medium", .sent = "medium" },
+        .{ .provider = "opencode-go", .id = "kimi-k3", .level = "high", .sent = null },
+    };
+    for (cases) |case| {
+        const model = ai_types.Model{
+            .id = case.id,
+            .name = case.id,
+            .api = "openai-completions",
+            .provider = case.provider,
+            .base_url = "https://opencode.ai/zen/go/v1",
+            .reasoning = true,
+            .input = &[_][]const u8{"text"},
+            .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+            .context_window = 1_048_576,
+            .max_tokens = 100,
+        };
+        const body = try buildRequestBody(model, .{ .messages = &messages }, .{
+            .max_tokens = 100,
+            .reasoning_effort = ai_types.OwnedSlice(u8).initBorrowed(case.level),
+        }, allocator);
+        defer allocator.free(body);
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+        defer parsed.deinit();
+        const sent = parsed.value.object.get("reasoning_effort");
+        if (case.sent) |expected| {
+            try std.testing.expectEqualStrings(expected, sent.?.string);
+        } else {
+            try std.testing.expect(sent == null);
+        }
     }
 }
 
