@@ -619,7 +619,6 @@ pub const Connection = struct {
     started_ms: u64,
     progress_ms: u64,
     drain_left: usize = 0,
-    drain_spent: usize = 0,
     drain_started_ms: u64 = 0,
     peer_closed: bool = false,
     subscription: ?*hubmod.Subscription = null,
@@ -732,7 +731,6 @@ pub const Connection = struct {
                     .closed => self.peer_closed = true,
                     .bytes => |count| {
                         self.drain_left -= count;
-                        self.drain_spent += count;
                     },
                 }
             },
