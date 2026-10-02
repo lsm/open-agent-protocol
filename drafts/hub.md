@@ -1439,6 +1439,13 @@ tests are the strongest evidence the rules above hold. They are **not** the
 specification: where a client refuses something this document permits, the
 client is what a real host does and a port must satisfy it too.
 
+The `clients/ts` integration suite runs against **both** hubs: `ci.yml` builds
+`goap hub`, and the `hub-clients-ts` job in `ci-zig.yml` runs the same suite
+unchanged against the built `oapx hub`, selected by `OAP_TS_HUB`. It covers a
+whole lifecycle with both gates answered, a queued run, a reconnect after a
+client drops its stream mid-run (G2, #399), and a request body cut short by a
+half-close, which both hubs refuse `400 request_read` (G10).
+
 | rule | pinned by |
 | --- | --- |
 | A whole lifecycle — discovery, open, submit, gates, terminal, close — round-trips | `TestClientLifecycleGolden`, `TestClientDiscovery` |
