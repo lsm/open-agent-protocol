@@ -76,6 +76,7 @@ export class EventStream implements AsyncIterable<Envelope> {
   private inflight: Promise<Envelope> | null = null;
   private iterator: AsyncIterator<Envelope> | null = null;
   private released: Envelope[] = [];
+  private heldSettlement = false;
   private wakeFire: (() => void) | null = null;
   private wakePromise: Promise<void> | null = null;
 
@@ -109,7 +110,12 @@ export class EventStream implements AsyncIterable<Envelope> {
         const wake = this.releaseWake();
         const released = this.takeSteer();
         if (released) {
+          this.heldSettlement = false;
           yield released;
+          continue;
+        }
+        if (this.heldSettlement) {
+          await wake;
           continue;
         }
         if (!this.conn) await this.connect();
@@ -149,7 +155,10 @@ export class EventStream implements AsyncIterable<Envelope> {
           }
           continue;
         }
-        if (this.holdSteer(envelope)) continue;
+        if (this.holdSteer(envelope)) {
+          this.heldSettlement = true;
+          continue;
+        }
         yield envelope;
       }
     } finally {

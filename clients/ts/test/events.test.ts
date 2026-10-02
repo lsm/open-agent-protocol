@@ -566,14 +566,16 @@ test('a settlement whose admission is still outstanding is held until the respon
 
   session.beginSubmit('req-steer');
   const iterator = session.events()[Symbol.asyncIterator]();
-  const first = await iterator.next();
-  assert.equal(first.value?.type, EnvelopeType.ContentDelta);
-
+  const first = iterator.next();
+  await new Promise((resolve) => setTimeout(resolve, 50));
   session.endSubmit('req-steer');
-  const released = await iterator.next();
+
+  const released = await first;
   assert.equal(released.value?.type, EnvelopeType.RunSteerApplied);
   assert.equal(released.value?.payload['request_id'], 'req-steer');
 
+  const second = await iterator.next();
+  assert.equal(second.value?.sequence, 2);
   const last = await iterator.next();
   assert.equal(last.value?.type, EnvelopeType.RunCompleted);
   assert.equal((await iterator.next()).done, true);
@@ -610,7 +612,7 @@ test('a settlement for a request that is not outstanding is delivered in order',
   session.endSubmit('req-steer');
 });
 
-test('a release that lands during a reconnect still wakes the reader', { timeout: 10000 }, async () => {
+test('a held settlement is released across a dropped connection', { timeout: 10000 }, async () => {
   const settlement = testEnvelope({
     type: EnvelopeType.RunSteerApplied,
     sequence: 1,
@@ -625,23 +627,34 @@ test('a release that lands during a reconnect still wakes the reader', { timeout
       boundary: 'turn',
     },
   });
+  const delta = testEnvelope({
+    type: EnvelopeType.ContentDelta,
+    sequence: 2,
+    sessionId: SESSION,
+    runId: RUN,
+    payload: { session_id: SESSION, run_id: RUN, part: { type: 'text', text: 'applied' } },
+  });
   const { session, transport } = sessionWith([
     { match: LIVE, chunks: [eventFrame(settlement)] },
-    { match: /after=1$/, delayMs: 200, chunkDelayMs: 3000, chunks: [eventFrame(settlement)] },
+    { match: /after=1$/, delayMs: 100, chunks: [eventFrame(delta)] },
   ]);
   session.beginSubmit('req-steer');
   const iterator = session.events()[Symbol.asyncIterator]();
   const first = iterator.next();
-  while (transport.callsFor('/events').length < 2) await new Promise((resolve) => setTimeout(resolve, 10));
+  await new Promise((resolve) => setTimeout(resolve, 50));
   session.endSubmit('req-steer');
   const released = await Promise.race([
     first,
     new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('the release did not wake the reader across the reconnect')), 1500),
+      setTimeout(() => reject(new Error('the release did not wake the reader holding the settlement')), 1500),
     ),
   ]);
   assert.equal(released.value?.type, EnvelopeType.RunSteerApplied);
   assert.equal(released.value?.payload['request_id'], 'req-steer');
+
+  const resumed = await iterator.next();
+  assert.equal(resumed.value?.sequence, 2);
+  assert.equal(transport.callsFor('/events').length, 2);
   await iterator.return?.();
 });
 

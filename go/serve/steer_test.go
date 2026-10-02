@@ -148,6 +148,12 @@ func expectNoEnvelope(t *testing.T, sub *subscriber, what string) {
 	}
 }
 
+func testGate(run protocol.RunID, request protocol.EnvelopeID) *steerGate {
+	gate := &steerGate{request: request, drainedCh: make(chan struct{})}
+	gate.cover(run)
+	return gate
+}
+
 func steerSubmit(envelope protocol.EnvelopeID) base.SubmitRequest {
 	return base.SubmitRequest{
 		EnvelopeID: envelope,
@@ -455,7 +461,7 @@ func TestWhatADrainWithholdsAfterItsGateLiftsStillReachesSubscribers(t *testing.
 	entry := newSession("stub", "stub", stub, nil)
 	sub := subscribeToRun(t, entry)
 
-	gate := &steerGate{run: "run-1", request: "req-steer", drainedCh: make(chan struct{})}
+	gate := testGate("run-1", "req-steer")
 	entry.mu.Lock()
 	entry.gate = gate
 	entry.mu.Unlock()
@@ -472,7 +478,7 @@ func TestASettlementForTheGateRequestIsHeldWhateverRunItNames(t *testing.T) {
 	entry := newSession("stub", "stub", stub, nil)
 	sub := subscribeToRun(t, entry)
 
-	gate := &steerGate{run: "run-1", request: "req-steer", drainedCh: make(chan struct{})}
+	gate := testGate("run-1", "req-steer")
 	entry.mu.Lock()
 	entry.gate = gate
 	entry.mu.Unlock()
@@ -506,7 +512,7 @@ func TestASteerAdmissionRetargetsTheGateToTheAdmittedRun(t *testing.T) {
 	entry.mu.Lock()
 	armed := entry.gate
 	entry.mu.Unlock()
-	if armed == nil || armed.run != "run-2" {
+	if armed == nil || !armed.covers("run-2") {
 		t.Fatalf("the gate is still armed on %+v, want the admitted run", armed)
 	}
 	entry.Published("req-steer")
@@ -579,7 +585,8 @@ func TestADrainMovesTheWholeBacklogIntoTheGate(t *testing.T) {
 	entry := newSession("stub", "stub", stub, nil)
 	sub := subscribeToRun(t, entry)
 
-	gate := &steerGate{run: "run-1", request: "req-steer", boundary: 2, drainedCh: make(chan struct{})}
+	gate := testGate("run-1", "req-steer")
+	gate.boundary = 2
 	entry.mu.Lock()
 	entry.gate = gate
 	entry.mu.Unlock()
@@ -620,7 +627,7 @@ func TestOnlyTheGatesRunReaderTakesItsDrain(t *testing.T) {
 	stub := &steerStubSession{stream: make(chan base.Result, 4)}
 	entry := newSession("stub", "stub", stub, nil)
 
-	gate := &steerGate{run: "run-1", request: "req-steer", drainedCh: make(chan struct{})}
+	gate := testGate("run-1", "req-steer")
 	entry.mu.Lock()
 	entry.gate = gate
 	entry.mu.Unlock()
@@ -650,7 +657,7 @@ func TestAwaitingADrainEndsWhenTheGateIsDisowned(t *testing.T) {
 			startStubRun(t, entry)
 			subscribeToRun(t, entry)
 
-			gate := &steerGate{run: "run-1", request: "req-steer", drainedCh: make(chan struct{})}
+			gate := testGate("run-1", "req-steer")
 			entry.mu.Lock()
 			entry.gate = gate
 			entry.mu.Unlock()
@@ -670,5 +677,32 @@ func TestAwaitingADrainEndsWhenTheGateIsDisowned(t *testing.T) {
 				t.Fatal("the submit waited on a drain no reader could serve once the gate was disowned")
 			}
 		})
+	}
+}
+
+func TestASteerRefusalKeepsHoldingTheArmedRun(t *testing.T) {
+	stub := &steerStubSession{
+		stream:  make(chan base.Result, 4),
+		emits:   []protocol.Envelope{steerStubEnvelope(protocol.TypeRunSteerDropped, 2, "sub-steer", "req-steer")},
+		refusal: &base.InvalidSteerTargetError{RunID: "run-9", Reason: base.SteerReasonUnknownTarget},
+	}
+	entry := newSession("stub", "stub", stub, nil)
+	startStubRun(t, entry)
+	sub := subscribeToRun(t, entry)
+
+	if _, err := entry.Submit(context.Background(), steerSubmit("req-steer")); err == nil {
+		t.Fatal("a refused steer was admitted")
+	}
+	expectNoEnvelope(t, sub, "the refused steer's withheld settlement")
+
+	entry.publish(steerStubDelta(3))
+	expectNoEnvelope(t, sub, "an envelope of the run the gate armed on before its retarget")
+
+	entry.Published("req-steer")
+	if envelope := nextEnvelope(t, sub); envelope.Type != protocol.TypeRunSteerDropped {
+		t.Fatalf("published %s, want the withheld settlement", envelope.Type)
+	}
+	if envelope := nextEnvelope(t, sub); envelope.Sequence == nil || *envelope.Sequence != 3 {
+		t.Fatalf("published %s at %v, want the armed run's delta 3", envelope.Type, envelope.Sequence)
 	}
 }

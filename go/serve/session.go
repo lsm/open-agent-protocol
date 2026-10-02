@@ -141,7 +141,8 @@ const steerDrainDeadline = 5 * time.Second
 const steerDrainBatch = 64
 
 type steerGate struct {
-	run      protocol.RunID
+	runs     []protocol.RunID
+	unnamed  bool
 	request  protocol.EnvelopeID
 	boundary uint64
 	withheld []protocol.Envelope
@@ -153,6 +154,34 @@ type steerGate struct {
 	doneOnce  sync.Once
 }
 
+func (g *steerGate) cover(run protocol.RunID) {
+	if run == "" {
+		g.unnamed = true
+		return
+	}
+	for _, covered := range g.runs {
+		if covered == run {
+			return
+		}
+	}
+	g.runs = append(g.runs, run)
+}
+
+func (g *steerGate) covers(run protocol.RunID) bool {
+	if g.unnamed {
+		return true
+	}
+	if run == "" {
+		return false
+	}
+	for _, covered := range g.runs {
+		if covered == run {
+			return true
+		}
+	}
+	return false
+}
+
 func (g *steerGate) markDrainRequested() { g.requested.Store(true) }
 
 func (s *Session) awaitDrain(gate *steerGate, readers int) {
@@ -160,7 +189,7 @@ func (s *Session) awaitDrain(gate *steerGate, readers int) {
 		return
 	}
 	s.mu.Lock()
-	served := s.gate == gate && s.readerForLocked(gate.run)
+	served := s.gate == gate && s.gateServedLocked(gate)
 	s.mu.Unlock()
 	if !served {
 		return
@@ -171,20 +200,25 @@ func (s *Session) awaitDrain(gate *steerGate, readers int) {
 	}
 }
 
-func (s *Session) readerForLocked(run protocol.RunID) bool {
-	if run == "" {
+func (s *Session) gateServedLocked(gate *steerGate) bool {
+	if gate.unnamed {
 		return s.readers > 0
 	}
-	return s.serials[run] != 0 && !s.finished[run]
+	for _, run := range gate.runs {
+		if s.serials[run] != 0 && !s.finished[run] {
+			return true
+		}
+	}
+	return false
 }
 
 func (g *steerGate) drainPending() bool { return g.requested.Load() && !g.drained.Load() }
 
-func (g *steerGate) covers(run protocol.RunID) bool { return g.run == "" || g.run == run }
-
 func (g *steerGate) withholds(envelope protocol.Envelope) bool {
-	if g.run != "" && g.run == envelope.RunID {
-		return true
+	for _, covered := range g.runs {
+		if covered == envelope.RunID {
+			return true
+		}
 	}
 	return g.request != "" && settlementRequest(envelope) == g.request
 }
@@ -343,7 +377,8 @@ func (s *Session) armSteerGate(ctx context.Context, run protocol.RunID, request 
 	if s.closed {
 		return nil, base.ErrSessionClosed
 	}
-	gate := &steerGate{run: run, request: request, boundary: s.sequences[run], drainedCh: make(chan struct{})}
+	gate := &steerGate{request: request, boundary: s.sequences[run], drainedCh: make(chan struct{})}
+	gate.cover(run)
 	s.gate = gate
 	gate.deadline = time.AfterFunc(steerGateDeadline, func() { s.liftSteerGate(gate) })
 	return gate, nil
@@ -397,7 +432,7 @@ func (s *Session) Published(request protocol.EnvelopeID) {
 
 func (s *Session) waitGateLifted(run protocol.RunID) {
 	s.mu.Lock()
-	for s.gate != nil && s.gate.run == run {
+	for s.gate != nil && s.gate.covers(run) {
 		if s.gate.drainPending() {
 			s.gate.finishDrain()
 		}
@@ -445,8 +480,8 @@ func (s *Session) retargetGate(gate *steerGate, run protocol.RunID) {
 		return
 	}
 	s.mu.Lock()
-	if s.gate == gate && gate.run != run {
-		gate.run = run
+	if s.gate == gate {
+		gate.cover(run)
 	}
 	s.mu.Unlock()
 }

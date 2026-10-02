@@ -254,3 +254,106 @@ func TestClientWakesAReaderWaitingOnAnIdleStreamForARelease(t *testing.T) {
 		t.Fatal("the reader waiting on an idle stream was never woken for the release")
 	}
 }
+
+func TestAHeldSettlementHoldsItsStreamsPosition(t *testing.T) {
+	submitStarted := make(chan struct{})
+	var delivered atomic.Int64
+	var first sync.Once
+	settlement, admission := steerSettlement(), steerAdmission()
+	sequence := uint64(3)
+	delta, err := protocol.NewEnvelope(protocol.TypeContentDelta, "event-delta", protocol.ContentDeltaPayload{
+		SessionID: "wire", RunID: "run-1", MessageID: "m-1",
+		Part: protocol.ContentPart{Type: protocol.ContentText, Text: "later"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	delta.SessionID, delta.RunID = "wire", "run-1"
+	delta.Sequence = &sequence
+
+	c := requestStub(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			flusher, _ := w.(http.Flusher)
+			if flusher != nil {
+				flusher.Flush()
+			}
+			first.Do(func() {
+				select {
+				case <-submitStarted:
+				case <-time.After(testTimeout):
+				}
+				_, _ = io.WriteString(w, frameOf(t, settlement)+frameOf(t, delta))
+				if flusher != nil {
+					flusher.Flush()
+				}
+			})
+			time.Sleep(2 * time.Second)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		var submitted protocol.Envelope
+		if err == nil {
+			err = json.Unmarshal(body, &submitted)
+		}
+		if err != nil || submitted.ID != "req-steer" {
+			t.Errorf("submit %q: %v", string(body), err)
+			return
+		}
+		close(submitStarted)
+		time.Sleep(300 * time.Millisecond)
+		if delivered.Load() != 0 {
+			t.Error("the client read past the settlement it was holding")
+		}
+		answer, err := admission.MarshalJSON()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(answer)
+	})
+	session := &Session{client: c, id: "wire", adapter: "memory"}
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+	stream := session.Events(ctx)
+
+	next := make(chan protocol.Envelope, 1)
+	failed := make(chan error, 1)
+	go func() {
+		envelope, err := stream.Next()
+		if err != nil {
+			failed <- err
+			return
+		}
+		delivered.Add(1)
+		next <- envelope
+	}()
+
+	if _, err := session.Submit(ctx, protocol.MessageSubmitRequest{
+		SessionID: "wire", Delivery: protocol.DeliverySteer,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("wait")}},
+	}, WithEnvelopeID("req-steer")); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case envelope := <-next:
+		if envelope.Type != protocol.TypeRunSteerApplied {
+			t.Fatalf("the stream delivered %s first, want the settlement it held", envelope.Type)
+		}
+	case err := <-failed:
+		t.Fatalf("the held settlement was not released: %v", err)
+	case <-time.After(testTimeout):
+		t.Fatal("the held settlement was never released")
+	}
+	following, err := stream.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if following.Type != protocol.TypeContentDelta || following.Sequence == nil || *following.Sequence != 3 {
+		t.Fatalf("the stream delivered %s at %v, want the delta behind the settlement", following.Type, following.Sequence)
+	}
+}
