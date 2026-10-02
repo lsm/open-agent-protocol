@@ -303,8 +303,11 @@ func TestProbeIsConservative(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d.Capabilities.Features["session.message.delivery.queue"].Level != protocol.SupportUnavailable || d.Capabilities.Features["session.message.delivery.steer"].Level != protocol.SupportUnavailable || d.Capabilities.Features["action.permissions"].Level != protocol.SupportUnavailable {
+	if d.Capabilities.Features["session.message.delivery.queue"].Level != protocol.SupportUnavailable || d.Capabilities.Features["session.message.delivery.steer"].Level != protocol.SupportEmulated || d.Capabilities.Features["action.permissions"].Level != protocol.SupportUnavailable {
 		t.Fatalf("descriptor overclaims: %+v", d.Capabilities.Features)
+	}
+	if reason := d.Capabilities.Features["session.message.delivery.steer"].Reason; reason == "" {
+		t.Fatalf("steer is advertised without a reason: %+v", d.Capabilities.Features["session.message.delivery.steer"])
 	}
 	if d.CapabilityRevision != CapabilityRevision || d.MaxActiveRunsPerSession != 1 || d.InteractiveGates {
 		t.Fatalf("descriptor=%+v", d)
@@ -1502,5 +1505,177 @@ func TestPendingPromptsAreSettledInTheOrderTheyStarted(t *testing.T) {
 		if settled[i] != asked[i] {
 			t.Fatalf("settled %v, want the order they were asked in %v", settled, asked)
 		}
+	}
+}
+
+func steerRequest(requestID protocol.EnvelopeID, target protocol.RunID) base.SubmitRequest {
+	return base.SubmitRequest{
+		EnvelopeID: requestID,
+		Request: protocol.MessageSubmitRequest{
+			SessionID: "session", Delivery: protocol.DeliverySteer, TargetRunID: target,
+			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("adjust")}},
+		},
+	}
+}
+
+func sentCommand(client *fakeClient, typ native.CommandType) bool {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	for _, call := range client.calls {
+		if call.Type == typ {
+			return true
+		}
+	}
+	return false
+}
+
+func TestSteerAdmitsAgainstTheStartedRunAndSettlesAtTheTurnBoundary(t *testing.T) {
+	client := newFakeClient()
+	s := openTest(t, client, 32)
+	admission, stream := submitTest(t, s)
+	adaptertest.Next(t, stream, time.Second)
+
+	steered, steerStream, err := s.Submit(context.Background(), steerRequest("steer-request", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if steerStream != nil {
+		t.Fatal("a steer exposed a stream")
+	}
+	if steered.Admission != protocol.AdmissionSteered || steered.EffectiveDelivery != protocol.EffectiveDeliverySteer || steered.RunID != admission.RunID {
+		t.Fatalf("steer admission = %+v", steered)
+	}
+	if steered.TargetSequence == nil || *steered.TargetSequence != 1 || steered.Status != protocol.RunRunning {
+		t.Fatalf("steer admission position = %+v", steered)
+	}
+	if len(steered.MessageIDs) != 1 || steered.MessageIDs[0] == "" || steered.SubmissionID == "" {
+		t.Fatalf("steer admission identity = %+v", steered)
+	}
+	if !sentCommand(client, native.CommandSteer) {
+		t.Fatal("the steer never reached Pi's native steer command")
+	}
+
+	state, err := s.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.ActiveRuns) != 1 || len(state.ActiveRuns[0].PendingSteers) != 1 {
+		t.Fatalf("state = %+v, want one pending steer", state.ActiveRuns)
+	}
+	pending := state.ActiveRuns[0].PendingSteers[0]
+	if pending.SubmissionID != steered.SubmissionID || pending.RequestID != "steer-request" {
+		t.Fatalf("pending steer = %+v", pending)
+	}
+
+	client.emit(t, map[string]any{"type": "turn_end", "message": assistant("mid", "stop"), "toolResults": []any{}})
+	applied := adaptertest.Next(t, stream, time.Second)
+	if applied.Type != protocol.TypeRunSteerApplied {
+		t.Fatalf("settlement type = %s", applied.Type)
+	}
+	var payload protocol.RunSteerAppliedPayload
+	if err := applied.DecodePayload(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.SubmissionID != steered.SubmissionID || payload.RequestID != "steer-request" || payload.Boundary != protocol.SteerTurn || payload.RunID != admission.RunID {
+		t.Fatalf("settlement = %+v", payload)
+	}
+	if len(payload.MessageIDs) != 1 || payload.MessageIDs[0] != steered.MessageIDs[0] {
+		t.Fatalf("settlement messages = %+v", payload.MessageIDs)
+	}
+
+	settled, err := s.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(settled.ActiveRuns) != 0 {
+		t.Fatalf("a settled steer stayed pending: %+v", settled.ActiveRuns)
+	}
+	client.emit(t, map[string]any{"type": "turn_end", "message": assistant("mid", "stop"), "toolResults": []any{}})
+	select {
+	case extra := <-stream:
+		t.Fatalf("a settled steer settled twice: %s", extra.Envelope.Type)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestSteerDropsAtTheTerminalBeforeTheRunSettles(t *testing.T) {
+	client := newFakeClient()
+	s := openTest(t, client, 32)
+	admission, stream := submitTest(t, s)
+	adaptertest.Next(t, stream, time.Second)
+	if _, _, err := s.Submit(context.Background(), steerRequest("steer-request", admission.RunID)); err != nil {
+		t.Fatal(err)
+	}
+	client.emit(t, map[string]any{"type": "message_end", "message": assistant("done", "stop")})
+	client.emit(t, map[string]any{"type": "agent_end", "messages": []any{assistant("done", "stop")}, "willRetry": false})
+	client.emit(t, map[string]any{"type": "agent_settled"})
+
+	events := adaptertest.Drain(t, stream, time.Second)
+	if len(events) != 2 || events[0].Type != protocol.TypeRunSteerDropped || events[1].Type != protocol.TypeRunCompleted {
+		t.Fatalf("events = %v, want the drop before the terminal", eventTypes(events))
+	}
+	var dropped protocol.RunSteerDroppedPayload
+	if err := events[0].DecodePayload(&dropped); err != nil {
+		t.Fatal(err)
+	}
+	if dropped.SubmissionID == "" || dropped.RequestID != "steer-request" || dropped.Reason.Code != "run_terminated" {
+		t.Fatalf("drop = %+v", dropped)
+	}
+	if events[0].Sequence == nil || events[1].Sequence == nil || *events[0].Sequence >= *events[1].Sequence {
+		t.Fatalf("the drop is not in the run's sequence before the terminal: %v", events)
+	}
+}
+
+func TestSteerTargetRefusals(t *testing.T) {
+	client := newFakeClient()
+	s := openTest(t, client, 32)
+
+	_, _, err := s.Submit(context.Background(), steerRequest("steer-idle", ""))
+	var refusal *base.InvalidSteerTargetError
+	if !errors.As(err, &refusal) || refusal.Reason != base.SteerReasonNoActiveRun {
+		t.Fatalf("idle steer = %v, want no_active_run", err)
+	}
+
+	admission, stream := submitTest(t, s)
+	adaptertest.Next(t, stream, time.Second)
+	_, _, err = s.Submit(context.Background(), steerRequest("steer-unknown", "run-elsewhere"))
+	if !errors.As(err, &refusal) || refusal.Reason != base.SteerReasonUnknownTarget || refusal.TargetSequence != nil {
+		t.Fatalf("unknown target = %v, want unknown_target without a position", err)
+	}
+
+	if _, err := s.Cancel(context.Background(), admission.RunID); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = s.Submit(context.Background(), steerRequest("steer-cancelling", ""))
+	if !errors.As(err, &refusal) || refusal.Reason != base.SteerReasonNotSteerable {
+		t.Fatalf("cancelling target = %v, want not_steerable", err)
+	}
+	client.emit(t, map[string]any{"type": "message_end", "message": assistant("done", "stop")})
+	client.emit(t, map[string]any{"type": "agent_end", "messages": []any{assistant("done", "stop")}, "willRetry": false})
+	client.emit(t, map[string]any{"type": "agent_settled"})
+	adaptertest.Drain(t, stream, time.Second)
+
+	_, _, err = s.Submit(context.Background(), steerRequest("steer-terminal", admission.RunID))
+	if !errors.As(err, &refusal) || refusal.Reason != base.SteerReasonTerminal || refusal.TargetSequence == nil {
+		t.Fatalf("terminal target = %v, want terminal with a position", err)
+	}
+}
+
+func TestSteerRefusesRunControlsAsUnsatisfiable(t *testing.T) {
+	client := newFakeClient()
+	s := openTest(t, client, 32)
+	_, stream := submitTest(t, s)
+	adaptertest.Next(t, stream, time.Second)
+
+	request := steerRequest("steer-controls", "")
+	model := "model"
+	request.Request.ModelID = &model
+	_, _, err := s.Submit(context.Background(), request)
+	var refusal *base.UnsupportedControlError
+	if !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureModelSelection || refusal.Reason != base.ControlUnsatisfiable {
+		t.Fatalf("steer with a model = %v, want unsatisfiable model_selection", err)
+	}
+	if sentCommand(client, native.CommandSteer) {
+		t.Fatal("a refused steer reached Pi")
 	}
 }

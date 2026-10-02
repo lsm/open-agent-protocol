@@ -53,6 +53,12 @@ pub const Interaction = struct {
     resolved: bool = false,
 };
 
+pub const PendingSteer = struct {
+    submission_id: []const u8,
+    request_id: []const u8,
+    message_ids: []const []const u8,
+};
+
 pub const Reducer = struct {
     arena: std.mem.Allocator,
     counters: Counters = .{},
@@ -77,10 +83,53 @@ pub const Reducer = struct {
     tools: std.ArrayList(*ToolState) = .empty,
     interactions: std.ArrayList(*Interaction) = .empty,
     pending_ui: std.ArrayList(std.json.Value) = .empty,
+    steers: std.ArrayList(PendingSteer) = .empty,
     emitted: std.ArrayList(std.json.Value) = .empty,
 
     pub fn init(arena: std.mem.Allocator) Reducer {
         return .{ .arena = arena };
+    }
+
+    pub fn admitSteer(self: *Reducer, submission_id: []const u8, request_id: []const u8, message_ids: []const []const u8) !void {
+        try self.steers.append(self.arena, .{ .submission_id = submission_id, .request_id = request_id, .message_ids = message_ids });
+    }
+
+    pub fn pendingSteers(self: *Reducer) []const PendingSteer {
+        return self.steers.items;
+    }
+
+    fn settleSteers(self: *Reducer) anyerror!void {
+        if (self.steers.items.len == 0) return;
+        const pending = try self.steers.toOwnedSlice(self.arena);
+        for (pending) |steer| {
+            const payload = try self.object();
+            try payload.put(self.arena, "session_id", Reducer.str(self.session_id));
+            try payload.put(self.arena, "run_id", Reducer.str(self.run_id));
+            try payload.put(self.arena, "submission_id", Reducer.str(steer.submission_id));
+            try payload.put(self.arena, "request_id", Reducer.str(steer.request_id));
+            var ids = std.json.Array.init(self.arena);
+            for (steer.message_ids) |id| try ids.append(.{ .string = id });
+            try payload.put(self.arena, "message_ids", .{ .array = ids });
+            try payload.put(self.arena, "boundary", Reducer.str("turn"));
+            try self.emit("run.steer.applied", .{ .object = payload.* }, false);
+        }
+    }
+
+    fn dropSteers(self: *Reducer) anyerror!void {
+        if (self.steers.items.len == 0) return;
+        const pending = try self.steers.toOwnedSlice(self.arena);
+        for (pending) |steer| {
+            const payload = try self.object();
+            try payload.put(self.arena, "session_id", Reducer.str(self.session_id));
+            try payload.put(self.arena, "run_id", Reducer.str(self.run_id));
+            try payload.put(self.arena, "submission_id", Reducer.str(steer.submission_id));
+            try payload.put(self.arena, "request_id", Reducer.str(steer.request_id));
+            const reason = try self.object();
+            try reason.put(self.arena, "code", Reducer.str("run_terminated"));
+            try reason.put(self.arena, "message", Reducer.str("the run terminated before the guidance was applied"));
+            try payload.put(self.arena, "reason", .{ .object = reason.* });
+            try self.emit("run.steer.dropped", .{ .object = payload.* }, false);
+        }
     }
 
     pub fn envelopes(self: *Reducer) []std.json.Value {
@@ -103,6 +152,7 @@ pub const Reducer = struct {
 
     fn emitReplying(self: *Reducer, kind: []const u8, payload: std.json.Value, terminal: bool, reply: []const u8) ![]const u8 {
         if (self.terminal) return "";
+        if (terminal) try self.dropSteers();
         const id = try self.counters.nextID(self.arena, "event");
         const now = self.counters.nextTick();
         const map = try self.object();
@@ -497,7 +547,7 @@ fn closedMembers(part: std.json.Value, allowed: []const []const u8) !void {
 
 const ignored_events = [_][]const u8{
     "auto_retry_start",                  "auto_retry_end",
-    "turn_start",                        "turn_end",
+    "turn_start",
     "message_start",                     "queue_update",
     "compaction_start",                  "compaction_end",
     "entry_appended",                    "session_info_changed",
@@ -598,6 +648,10 @@ pub fn apply(reducer: *Reducer, event: std.json.Value) !void {
     }
     if (std.mem.eql(u8, kind, "tool_execution_end")) {
         try endTool(reducer, event);
+        return;
+    }
+    if (std.mem.eql(u8, kind, "turn_end")) {
+        try reducer.settleSteers();
         return;
     }
     if (listed(&ignored_events, kind)) return;

@@ -177,7 +177,7 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		"session.message.submit":         {Level: protocol.SupportEmulated, Reason: "successful prompt response proves admission only"},
 		"session.message.delivery.auto":  {Level: protocol.SupportEmulated, Reason: "idle auto is normalized to native prompt/start"},
 		"session.message.delivery.queue": {Level: protocol.SupportUnavailable, Reason: "v0.1 admission cannot expose Pi queued prompt semantics safely"},
-		"session.message.delivery.steer": {Level: protocol.SupportUnavailable, Reason: "v0.1 admission cannot expose Pi steering semantics safely"},
+		"session.message.delivery.steer": {Level: protocol.SupportEmulated, Reason: "guidance rides Pi's native steer command and settles at the turn boundary Pi injects it"},
 		"run.streaming":                  {Level: protocol.SupportNative}, "run.status": {Level: protocol.SupportEmulated},
 		"run.cancel":           {Level: protocol.SupportDegraded, Reason: "abort intent is local; agent_settled remains terminal authority"},
 		"run.resume":           {Level: protocol.SupportDegraded, Reason: "bounded process-memory replay"},

@@ -1,5 +1,5 @@
-{"direction":"host-to-pi","classification":"required-unmapped","fidelity":"unsupported","action":"outbound-only","raw":{"type":"steer","message":"adjust"}}
-{"direction":"pi-to-host","classification":"observed-only","fidelity":"native","action":"outbound-only","raw":{"type":"response","command":"steer","success":true}}
+{"direction":"host-to-pi","classification":"mapped","fidelity":"normalized","action":"outbound-only","raw":{"type":"steer","message":"adjust"}}
+{"direction":"pi-to-host","classification":"mapped","fidelity":"normalized","action":"outbound-only","raw":{"type":"response","command":"steer","success":true}}
 {"direction":"pi-to-host","classification":"observed-only","fidelity":"native","action":"observe","raw":{"type":"queue_update","steering":["adjust"],"followUp":[]}}
 {"direction":"host-to-pi","classification":"required-unmapped","fidelity":"unsupported","action":"outbound-only","raw":{"type":"follow_up","message":"next"}}
 {"direction":"pi-to-host","classification":"observed-only","fidelity":"native","action":"outbound-only","raw":{"type":"response","command":"follow_up","success":true}}

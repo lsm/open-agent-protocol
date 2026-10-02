@@ -26,7 +26,7 @@ const features = [_]contract.Feature{
     .{ .key = "run.streaming", .level = .native },
     .{ .key = "session.message.delivery.auto", .level = .emulated, .reason = "idle auto is normalized to native prompt/start" },
     .{ .key = "session.message.delivery.queue", .level = .unavailable, .reason = "v0.1 admission cannot expose Pi queued prompt semantics safely" },
-    .{ .key = "session.message.delivery.steer", .level = .unavailable, .reason = "v0.1 admission cannot expose Pi steering semantics safely" },
+    .{ .key = "session.message.delivery.steer", .level = .emulated, .reason = "guidance rides Pi's native steer command and settles at the turn boundary Pi injects it" },
     .{ .key = "session.message.submit", .level = .emulated, .reason = "successful prompt response proves admission only" },
     .{ .key = "session.open", .level = .emulated, .reason = "one ready Pi process is associated with one OAP session" },
     .{ .key = "session.state", .level = .emulated, .reason = "adapter projection reconciled with get_state" },
@@ -37,6 +37,16 @@ pub const descriptor = contract.Descriptor{
     .capability_revision = capability_revision,
     .features = &features,
 };
+
+const NativeContent = struct {
+    text: []const u8,
+    images: []const NativeImage,
+};
+
+const steer_reason_no_active_run = "no_active_run";
+const steer_reason_queued = "queued";
+const steer_reason_unknown_target = "unknown_target";
+const steer_reason_not_steerable = "not_steerable";
 
 pub const Config = struct {
     executable: []const u8,
@@ -270,7 +280,7 @@ pub const Session = struct {
                 }
                 try frame.put(self.owned(), "images", .{ .array = list });
             }
-            try frame.put(self.owned(), "streamingBehavior", .{ .string = "steer" });
+            if (std.mem.eql(u8, kind, "prompt")) try frame.put(self.owned(), "streamingBehavior", .{ .string = "steer" });
         }
         return .{ .id = id, .value = .{ .object = frame } };
     }
@@ -456,20 +466,19 @@ pub const Session = struct {
         const reducer = self.live();
         const active_run_id: ?[]const u8 = if (reducer) |running| try arena.dupe(u8, running.run_id) else null;
         const current_model_id: ?[]const u8 = if (self.current_model.len > 0) try arena.dupe(u8, self.current_model) else null;
+        const active_runs = try self.pendingSteerEntries(arena, reducer);
         return .{
             .session_id = self.id,
             .status = if (reducer == null) .idle else if (self.asks.items.len > 0) .waiting_for_input else .running,
             .active_run_id = active_run_id,
+            .active_runs = active_runs,
             .current_model_id = current_model_id,
             .transcript_cursor = if (self.cursor() > 0) try std.fmt.allocPrint(arena, "{d}", .{self.cursor()}) else null,
             .updated_at_ms = wallClock(),
         };
     }
 
-    fn submit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
-        _ = envelope_id;
-        const self = cast(ptr);
-        if (request.session_id.len == 0 or request.messages.len == 0 or request.delivery != .auto) return error.InvalidSubmission;
+    fn nativeContent(self: *Session, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest) contract.Failure!NativeContent {
         var texts = std.ArrayList([]const u8).empty;
         var images = std.ArrayList(NativeImage).empty;
         for (request.messages) |message| {
@@ -489,7 +498,94 @@ pub const Session = struct {
             }
         }
         if (texts.items.len == 0) return error.InvalidSubmission;
-        const joined = try std.mem.join(self.owned(), "\n\n", texts.items);
+        return .{ .text = try std.mem.join(self.owned(), "\n\n", texts.items), .images = try images.toOwnedSlice(arena) };
+    }
+
+    fn pendingSteerEntries(self: *Session, arena: std.mem.Allocator, reducer: ?*session.Reducer) contract.Failure![]oap_types.ActiveRun {
+        _ = self;
+        const running = reducer orelse return &.{};
+        const pending = running.pendingSteers();
+        if (pending.len == 0) return &.{};
+        const carried = try arena.alloc(oap_types.PendingSteer, pending.len);
+        for (pending, carried) |pending_steer, *slot| {
+            slot.* = .{ .submission_id = try arena.dupe(u8, pending_steer.submission_id), .request_id = try arena.dupe(u8, pending_steer.request_id) };
+        }
+        const entry = try arena.alloc(oap_types.ActiveRun, 1);
+        entry[0] = .{
+            .run_id = try arena.dupe(u8, running.run_id),
+            .status = .running,
+            .relationship = "primary",
+            .as_of_sequence = running.sequence - 1,
+            .pending_steers = carried,
+        };
+        return entry;
+    }
+
+    fn steerControlKey(request: *const oap_types.MessageSubmitRequest) ?[]const u8 {
+        if (request.instructions != null) return "run.instructions";
+        if (request.model_id != null) return "run.model_selection";
+        if (request.output_schema_json != null) return "run.structured_output";
+        if (request.tool_choice_json != null) return "run.tool_selection";
+        return null;
+    }
+
+    fn steer(self: *Session, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+        if (request.session_id.len == 0 or request.messages.len == 0) return error.InvalidSubmission;
+        if (steerControlKey(request)) |key| {
+            refusal.* = .{ .feature = key, .reason = contract.reason_unsatisfiable };
+            return error.UnsupportedFeature;
+        }
+        if (self.ended or self.unusable) return error.SessionClosed;
+        if (!std.mem.eql(u8, request.session_id, self.id)) return error.RunNotFound;
+        const named = request.target_run_id orelse "";
+        const reducer = self.live() orelse {
+            refusal.* = .{ .reason = steer_reason_no_active_run, .message = "adapter: steer target cannot take guidance: the session has no started run" };
+            return error.InvalidSteerTarget;
+        };
+        if (named.len > 0 and !std.mem.eql(u8, named, reducer.run_id)) {
+            refusal.* = .{ .reason = steer_reason_unknown_target, .message = try std.fmt.allocPrint(arena, "adapter: steer target cannot take guidance: run \"{s}\" is not this session's run", .{named}) };
+            return error.InvalidSteerTarget;
+        }
+        if (!reducer.started) {
+            refusal.* = .{ .reason = steer_reason_queued, .message = "adapter: steer target cannot take guidance: the run has not started" };
+            return error.InvalidSteerTarget;
+        }
+        if (reducer.cancel_intent) {
+            refusal.* = .{ .reason = steer_reason_not_steerable, .message = "adapter: steer target cannot take guidance: the run is cancelling" };
+            return error.InvalidSteerTarget;
+        }
+        const content = try self.nativeContent(arena, request);
+        _ = self.command(arena, "steer", content.text, content.images, refusal) catch |err| return err;
+        const message_ids = try arena.alloc([]const u8, request.messages.len);
+        const kept_ids = try self.owned().alloc([]const u8, request.messages.len);
+        for (request.messages, message_ids, kept_ids) |message, *slot, *kept| {
+            const given = message.id orelse "";
+            const id = if (given.len > 0) given else try reducer.counters.nextID(arena, "message");
+            slot.* = id;
+            kept.* = try self.owned().dupe(u8, id);
+        }
+        const submission_id = try reducer.counters.nextID(arena, "submission");
+        try session.Reducer.admitSteer(reducer, try self.owned().dupe(u8, submission_id), try self.owned().dupe(u8, envelope_id), kept_ids);
+        return .{
+            .session_id = self.id,
+            .accepted = true,
+            .submission_id = submission_id,
+            .requested_delivery = .steer,
+            .effective_delivery = .steer,
+            .admission = .steered,
+            .run_id = try arena.dupe(u8, reducer.run_id),
+            .status = .running,
+            .message_ids = message_ids,
+            .target_sequence = reducer.sequence - 1,
+        };
+    }
+
+    fn submit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+        const self = cast(ptr);
+        if (request.delivery == .steer) return self.steer(arena, request, envelope_id, refusal);
+        if (request.session_id.len == 0 or request.messages.len == 0 or request.delivery != .auto) return error.InvalidSubmission;
+        const content = try self.nativeContent(arena, request);
+        const joined = content.text;
         if (std.mem.startsWith(u8, joined, "/")) return error.InvalidSubmission;
         if (self.ended or self.unusable) return error.SessionClosed;
         if (!std.mem.eql(u8, request.session_id, self.id)) return error.RunNotFound;
@@ -516,7 +612,7 @@ pub const Session = struct {
         self.settled_cursor = self.cursor();
         self.reducer = reducer;
 
-        _ = self.command(arena, "prompt", joined, images.items, refusal) catch |err| {
+        _ = self.command(arena, "prompt", joined, content.images, refusal) catch |err| {
             self.reducer = null;
             self.unusable = true;
             return err;

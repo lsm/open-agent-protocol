@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -63,6 +64,13 @@ type runState struct {
 	pending      []native.Event
 	pendingUI    []native.ExtensionUIRequest
 	subscribers  []chan base.Result
+	steers       []*pendingSteer
+}
+
+type pendingSteer struct {
+	submissionID protocol.SubmissionID
+	requestID    protocol.EnvelopeID
+	messages     []protocol.MessageID
 }
 type toolState struct {
 	nativeID       string
@@ -178,6 +186,11 @@ type agentEnd struct {
 	Messages  []json.RawMessage `json:"messages"`
 	WillRetry bool              `json:"willRetry"`
 }
+type turnEnd struct {
+	Type        native.EventType `json:"type"`
+	Message     json.RawMessage  `json:"message"`
+	ToolResults json.RawMessage  `json:"toolResults"`
+}
 type wireMessage struct {
 	Role                  string            `json:"role"`
 	Content               json.RawMessage   `json:"content"`
@@ -232,6 +245,9 @@ func (s *Session) Submit(ctx context.Context, submit base.SubmitRequest) (protoc
 	req := submit.Request
 	if err := ctx.Err(); err != nil {
 		return protocol.MessageSubmitResponse{}, nil, err
+	}
+	if req.Delivery == protocol.DeliverySteer {
+		return s.steer(ctx, submit)
 	}
 	text, images, messageIDs, err := s.nativePrompt(req)
 	if err != nil {
@@ -299,7 +315,22 @@ func (s *Session) nativePrompt(req protocol.MessageSubmitRequest) (string, []nat
 	if err := base.RefuseUnadvertisedControls(req); err != nil {
 		return "", nil, nil, err
 	}
-	if req.SessionID == "" || len(req.Messages) == 0 || (req.Delivery != "" && req.Delivery != protocol.DeliveryAuto) {
+	if req.Delivery != "" && req.Delivery != protocol.DeliveryAuto {
+		return "", nil, nil, base.ErrInvalidSubmission
+	}
+	text, images, ids, err := s.nativeContent(req)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	if strings.HasPrefix(text, "/") {
+
+		return "", nil, nil, fmt.Errorf("%w: slash-command input", ErrUnsupportedInput)
+	}
+	return text, images, ids, nil
+}
+
+func (s *Session) nativeContent(req protocol.MessageSubmitRequest) (string, []native.ImageContent, []protocol.MessageID, error) {
+	if req.SessionID == "" || len(req.Messages) == 0 {
 		return "", nil, nil, base.ErrInvalidSubmission
 	}
 	var texts []string
@@ -338,12 +369,155 @@ func (s *Session) nativePrompt(req protocol.MessageSubmitRequest) (string, []nat
 	if len(texts) == 0 {
 		return "", nil, nil, fmt.Errorf("%w: prompt requires text", ErrUnsupportedInput)
 	}
-	text := strings.Join(texts, "\n\n")
-	if strings.HasPrefix(text, "/") {
+	return strings.Join(texts, "\n\n"), images, ids, nil
+}
 
-		return "", nil, nil, fmt.Errorf("%w: slash-command input", ErrUnsupportedInput)
+func (s *Session) steer(ctx context.Context, submit base.SubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+	req := submit.Request
+	if refusal := refuseSteerControls(req); refusal != nil {
+		return protocol.MessageSubmitResponse{}, nil, refusal
 	}
-	return text, images, ids, nil
+	text, images, messageIDs, err := s.nativeContent(req)
+	if err != nil {
+		return protocol.MessageSubmitResponse{}, nil, err
+	}
+	s.commandMu.Lock()
+	s.mu.Lock()
+	if s.closed || s.unusable {
+		s.mu.Unlock()
+		s.commandMu.Unlock()
+		return protocol.MessageSubmitResponse{}, nil, base.ErrSessionClosed
+	}
+	if req.SessionID != s.state.SessionID {
+		s.mu.Unlock()
+		s.commandMu.Unlock()
+		return protocol.MessageSubmitResponse{}, nil, base.ErrRunNotFound
+	}
+	target, reason := s.steerTargetLocked(req.TargetRunID)
+	if reason != "" {
+		refusal := &base.InvalidSteerTargetError{RunID: req.TargetRunID, Reason: reason}
+		if target != nil {
+			sequence := target.next - 1
+			refusal.TargetSequence = &sequence
+		}
+		s.mu.Unlock()
+		s.commandMu.Unlock()
+		return protocol.MessageSubmitResponse{}, nil, refusal
+	}
+	submissionID := protocol.SubmissionID(s.ids.NewID("submission"))
+	s.mu.Unlock()
+	err = s.callStrictLocked(ctx, native.Command{Type: native.CommandSteer, Message: &text, Images: images}, nil)
+	s.commandMu.Unlock()
+	if err != nil {
+		return protocol.MessageSubmitResponse{}, nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if target.terminal {
+		sequence := target.next - 1
+		return protocol.MessageSubmitResponse{}, nil, &base.InvalidSteerTargetError{RunID: target.id, Reason: base.SteerReasonTerminal, TargetSequence: &sequence}
+	}
+	sequence := target.next - 1
+	target.steers = append(target.steers, &pendingSteer{submissionID: submissionID, requestID: submit.EnvelopeID, messages: messageIDs})
+	s.state.UpdatedAtMS = s.clock.Now().UnixMilli()
+	return protocol.MessageSubmitResponse{
+		SessionID: req.SessionID, Accepted: true, SubmissionID: submissionID,
+		RequestedDelivery: protocol.DeliverySteer, EffectiveDelivery: protocol.EffectiveDeliverySteer,
+		Admission: protocol.AdmissionSteered, RunID: target.id, Status: target.status,
+		TargetSequence: &sequence, MessageIDs: messageIDs,
+	}, nil, nil
+}
+
+func (s *Session) steerTargetLocked(target protocol.RunID) (*runState, string) {
+	if target != "" {
+		run := s.runs[target]
+		switch {
+		case run == nil:
+			return nil, base.SteerReasonUnknownTarget
+		case run.terminal:
+			return run, base.SteerReasonTerminal
+		case run.status == protocol.RunCancelling:
+			return run, base.SteerReasonNotSteerable
+		case !run.started:
+			return run, base.SteerReasonQueued
+		default:
+			return run, ""
+		}
+	}
+	run := s.active
+	switch {
+	case run == nil || run.terminal:
+		return nil, base.SteerReasonNoActiveRun
+	case !run.started:
+		return run, base.SteerReasonQueued
+	case run.status == protocol.RunCancelling:
+		return run, base.SteerReasonNotSteerable
+	default:
+		return run, ""
+	}
+}
+
+func refuseSteerControls(request protocol.MessageSubmitRequest) error {
+	var keys []string
+	if request.Instructions != nil {
+		keys = append(keys, protocol.FeatureInstructions)
+	}
+	if request.ModelID != nil {
+		keys = append(keys, protocol.FeatureModelSelection)
+	}
+	if len(request.OutputSchema) > 0 {
+		keys = append(keys, protocol.FeatureStructuredOutput)
+	}
+	if len(request.ToolChoice) > 0 {
+		keys = append(keys, protocol.FeatureToolSelection)
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	slices.Sort(keys)
+	return &base.UnsupportedControlError{Feature: keys[0], Reason: base.ControlUnsatisfiable}
+}
+
+func (s *Session) settleSteers(run *runState, boundary protocol.SteerBoundary) {
+	pending := s.pendingSteers(run)
+	if len(pending) == 0 {
+		return
+	}
+	settled := make([]protocol.SubmissionID, 0, len(pending))
+	for _, steer := range pending {
+		applied := protocol.RunSteerAppliedPayload{
+			SessionID: s.state.SessionID, RunID: run.id,
+			SubmissionID: steer.submissionID, RequestID: steer.requestID,
+			MessageIDs: steer.messages, Boundary: boundary,
+		}
+		if _, err := s.emitEnvelope(run, protocol.TypeRunSteerApplied, applied, false, ""); err != nil {
+			return
+		}
+		settled = append(settled, steer.submissionID)
+	}
+	s.clearSteers(run, settled...)
+}
+
+func (s *Session) pendingSteers(run *runState) []*pendingSteer {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]*pendingSteer(nil), run.steers...)
+}
+
+func (s *Session) clearSteers(run *runState, settled ...protocol.SubmissionID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(settled) == 0 {
+		run.steers = nil
+		return
+	}
+	kept := run.steers[:0]
+	for _, steer := range run.steers {
+		if !slices.Contains(settled, steer.submissionID) {
+			kept = append(kept, steer)
+		}
+	}
+	run.steers = kept
 }
 
 func nativeModelID(raw json.RawMessage) string {
@@ -574,7 +748,12 @@ func (s *Session) applyEvent(event native.Event) {
 			return
 		}
 		s.settleRun(run)
-	case native.EventAutoRetryStart, native.EventAutoRetryEnd, native.EventTurnStart, native.EventTurnEnd, native.EventMessageStart, native.EventQueueUpdate, native.EventCompactionStart, native.EventCompactionEnd, native.EventEntryAppended, native.EventSessionInfoChanged, native.EventThinkingLevelChanged, native.EventSummarizationRetryScheduled, native.EventSummarizationRetryAttemptStart, native.EventSummarizationRetryFinished, native.EventBashExecutionUpdate, native.EventExtensionError:
+	case native.EventTurnEnd:
+		if !s.decodeEvent(event, &turnEnd{}) {
+			return
+		}
+		s.settleSteers(run, protocol.SteerTurn)
+	case native.EventAutoRetryStart, native.EventAutoRetryEnd, native.EventTurnStart, native.EventMessageStart, native.EventQueueUpdate, native.EventCompactionStart, native.EventCompactionEnd, native.EventEntryAppended, native.EventSessionInfoChanged, native.EventThinkingLevelChanged, native.EventSummarizationRetryScheduled, native.EventSummarizationRetryAttemptStart, native.EventSummarizationRetryFinished, native.EventBashExecutionUpdate, native.EventExtensionError:
 		return
 	default:
 		s.failRun(run, "pi_unknown_event", fmt.Sprintf("unknown event %q", event.Type))
@@ -1251,7 +1430,20 @@ func (s *Session) State(ctx context.Context) (protocol.SessionState, error) {
 	if s.closed || s.unusable {
 		return s.state, base.ErrSessionClosed
 	}
+	s.state.ActiveRuns = s.pendingSteerEntriesLocked()
 	return s.state, nil
+}
+
+func (s *Session) pendingSteerEntriesLocked() []protocol.ActiveRun {
+	if s.active == nil || len(s.active.steers) == 0 {
+		return nil
+	}
+	entry := protocol.ActiveRun{RunID: s.active.id, Status: s.active.status, Relationship: protocol.RelationshipPrimary}
+	entry.PendingSteers = make([]protocol.PendingSteer, len(s.active.steers))
+	for i, steer := range s.active.steers {
+		entry.PendingSteers[i] = protocol.PendingSteer{SubmissionID: steer.submissionID, RequestID: steer.requestID}
+	}
+	return []protocol.ActiveRun{entry}
 }
 func (s *Session) Cancel(ctx context.Context, id protocol.RunID) (protocol.RunCancelResponse, error) {
 	if err := ctx.Err(); err != nil {
@@ -1481,6 +1673,34 @@ func (s *Session) emit(run *runState, t protocol.EnvelopeType, p any, terminal b
 func (s *Session) emitEnvelope(run *runState, t protocol.EnvelopeType, p any, terminal bool, reply protocol.EnvelopeID) (protocol.Envelope, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if run.terminal {
+		return protocol.Envelope{}, errTerminalWon
+	}
+	if terminal && len(run.steers) > 0 {
+		settled := make([]protocol.SubmissionID, 0, len(run.steers))
+		for _, steer := range run.steers {
+			dropped := protocol.RunSteerDroppedPayload{
+				SessionID: s.state.SessionID, RunID: run.id,
+				SubmissionID: steer.submissionID, RequestID: steer.requestID,
+				Reason: protocol.ProtocolError{Code: "run_terminated", Message: "the run terminated before the guidance was applied"},
+			}
+			if _, err := s.emitLocked(run, protocol.TypeRunSteerDropped, dropped, false, ""); err != nil {
+				return protocol.Envelope{}, err
+			}
+			settled = append(settled, steer.submissionID)
+		}
+		kept := run.steers[:0]
+		for _, steer := range run.steers {
+			if !slices.Contains(settled, steer.submissionID) {
+				kept = append(kept, steer)
+			}
+		}
+		run.steers = kept
+	}
+	return s.emitLocked(run, t, p, terminal, reply)
+}
+
+func (s *Session) emitLocked(run *runState, t protocol.EnvelopeType, p any, terminal bool, reply protocol.EnvelopeID) (protocol.Envelope, error) {
 	if run.terminal {
 		return protocol.Envelope{}, errTerminalWon
 	}
