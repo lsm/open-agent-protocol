@@ -1970,6 +1970,25 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const oapx_adapter_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/oapx/adapter.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "contract", .module = adapter_contract_mod },
+            .{ .name = "oap_types", .module = protocol_oap_types_mod },
+            .{ .name = "compat", .module = compat_mod },
+            .{ .name = "json_encode", .module = json_encode_mod },
+            .{ .name = "ai_types", .module = ai_types_mod },
+            .{ .name = "agent", .module = agent_mod },
+            .{ .name = "event_stream", .module = event_stream_mod },
+            .{ .name = "tui_runtime", .module = tui_runtime_mod },
+            .{ .name = "tui_session", .module = tui_session_mod },
+            .{ .name = "model_ref", .module = protocol_model_ref_mod },
+        },
+    });
+    const oapx_adapter_test = b.addTest(.{ .root_module = oapx_adapter_mod });
+
     const tui_session_store_mod = b.createModule(.{
         .root_source_file = b.path("src/tui/session_store.zig"),
         .target = target,
@@ -2731,6 +2750,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "opencode_adapter", .module = opencode_adapter_mod },
             .{ .name = "hermes_adapter", .module = hermes_adapter_mod },
             .{ .name = "memory_adapter", .module = memory_adapter_mod },
+            .{ .name = "oapx_adapter", .module = oapx_adapter_mod },
             .{ .name = "hub", .module = hub_mod },
             .{ .name = "hub_http", .module = hub_http_mod },
             .{ .name = "hub_stdio", .module = hub_stdio_mod },
@@ -2848,6 +2868,8 @@ pub fn build(b: *std.Build) void {
     test_unit_adapter_step.dependOn(&b.addRunArtifact(deepseek_adapter_test).step);
     test_step.dependOn(&b.addRunArtifact(memory_adapter_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(memory_adapter_test).step);
+    test_step.dependOn(&isolatedHomeRun(b, oapx_adapter_test, "test/oapx_adapter_test").step);
+    test_unit_adapter_step.dependOn(&isolatedHomeRun(b, oapx_adapter_test, "test-unit-adapter/oapx_adapter_test").step);
     test_step.dependOn(&b.addRunArtifact(deepseek_endpoint_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(deepseek_endpoint_test).step);
     test_step.dependOn(&b.addRunArtifact(hermes_adapter_test).step);
