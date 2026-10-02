@@ -42,6 +42,7 @@ pub const OapExecution = struct {
     output_tokens: u64 = 0,
     closed_messages: usize = 0,
     awaiting_promotion: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    cancelling: bool = false,
 
     const QueuedRun = struct {
         text: []u8,
@@ -232,6 +233,7 @@ pub const OapExecution = struct {
         self.allocator.free(self.run_id);
         self.run_id = &.{};
         self.cancel_pending.store(false, .release);
+        self.cancelling = false;
         self.inbound_mutex.unlock();
         self.turn_open.store(true, .release);
         errdefer self.turn_open.store(false, .release);
@@ -251,6 +253,12 @@ pub const OapExecution = struct {
             return err;
         };
         self.lockInbound();
+        if (!self.turn_open.load(.acquire) or self.cancelling) {
+            self.inbound_mutex.unlock();
+            self.allocator.free(kept_text);
+            self.allocator.free(kept_id);
+            return error.AgentAlreadyStreaming;
+        }
         self.queued_runs.append(self.allocator, .{ .text = kept_text, .submit_id = kept_id }) catch |err| {
             self.inbound_mutex.unlock();
             self.allocator.free(kept_text);
@@ -363,13 +371,20 @@ pub const OapExecution = struct {
         return text;
     }
 
-    fn waitsOnQueued(self: *OapExecution) bool {
+    fn holdOrClose(self: *OapExecution) bool {
         self.lockInbound();
         defer self.inbound_mutex.unlock();
         for (self.queued_runs.items) |queued| {
             if (!queued.dropped) return true;
         }
+        self.turn_open.store(false, .release);
         return false;
+    }
+
+    fn closeTurn(self: *OapExecution) void {
+        self.lockInbound();
+        defer self.inbound_mutex.unlock();
+        self.turn_open.store(false, .release);
     }
 
     fn isCurrentRun(self: *OapExecution, body: std.json.ObjectMap) bool {
@@ -399,6 +414,9 @@ pub const OapExecution = struct {
 
     fn cancel(ctx: *anyopaque) void {
         const self = cast(ctx);
+        self.lockInbound();
+        self.cancelling = true;
+        self.inbound_mutex.unlock();
         if (self.awaiting_promotion.load(.acquire)) {
             self.dropQueued();
             return;
@@ -742,7 +760,7 @@ pub const OapExecution = struct {
             if (!self.isCurrentRun(body)) {
                 if (std.mem.eql(u8, kind, "run.failed")) self.deliver(.{ .system_warning = .{ .message = try self.ownedText(errorMessage(body)) } });
                 self.settleReserved(stringOf(body, "run_id") orelse "");
-                if (self.awaiting_promotion.load(.acquire) and !self.waitsOnQueued()) self.endTurn(.completed);
+                if (self.awaiting_promotion.load(.acquire) and !self.holdOrClose()) self.endTurn(.completed);
                 return;
             }
             self.output_tokens = if (self.closed_messages == 0) usageTokens(body) else 0;
@@ -766,7 +784,7 @@ pub const OapExecution = struct {
             }
             try self.closeAssistant(stop_reason);
             self.deliver(.{ .turn_end = .{ .stop_reason = stop_reason } });
-            if (self.waitsOnQueued()) {
+            if (self.holdOrClose()) {
                 self.awaiting_promotion.store(true, .release);
                 return;
             }
@@ -778,6 +796,7 @@ pub const OapExecution = struct {
             try self.closeAssistant(.@"error");
             const message = if (body.get("error")) |value| (if (value == .object) errorMessage(value.object) else "the run failed") else "the run failed";
             self.deliver(.{ .@"error" = .{ .message = try self.ownedText(message) } });
+            self.closeTurn();
             self.dropQueued();
             self.endTurn(.@"error");
             return;
@@ -785,6 +804,7 @@ pub const OapExecution = struct {
         if (std.mem.eql(u8, kind, "run.cancelled")) {
             if (!self.turn_open.load(.acquire)) return;
             try self.closeAssistant(.aborted);
+            self.closeTurn();
             self.dropQueued();
             self.endTurn(.cancelled);
             return;
@@ -1607,6 +1627,31 @@ test "a reserved follow-up that fails before it starts says why instead of vanis
     try testing.expectEqual(@as(usize, 1), captured.warnings);
     try testing.expectEqual(@as(usize, 1), captured.ends);
     try testing.expect(!execution.turn_open.load(.acquire));
+}
+
+test "a follow-up is refused once the turn is cancelling or closed, rather than queued where nothing will run it" {
+    var script = Script{};
+    const models = [_]ai_types.Model{scripted_model};
+    const execution = try OapExecution.create(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+    });
+    defer execution.destroy();
+    var captured = Captured{};
+    execution.sink = captured.sink();
+    execution.run_id = try testing.allocator.dupe(u8, "run-1");
+    execution.turn_open.store(true, .release);
+
+    OapExecution.cancel(execution);
+    try testing.expectError(error.AgentAlreadyStreaming, OapExecution.followUp(execution, "after the abort"));
+    try testing.expectEqual(@as(usize, 0), execution.queued_runs.items.len);
+
+    execution.cancelling = false;
+    try execution.translateLine("{\"type\":\"run.completed\",\"payload\":{\"session_id\":\"s\",\"run_id\":\"run-1\",\"stop_reason\":\"end_turn\",\"final_response\":{\"role\":\"assistant\",\"content\":\"done\"}}}");
+    try testing.expectEqual(@as(usize, 1), captured.ends);
+    try testing.expectError(error.AgentAlreadyStreaming, OapExecution.followUp(execution, "after the end"));
+    try testing.expectEqual(@as(usize, 0), execution.queued_runs.items.len);
 }
 
 test "a reservation not yet admitted is never taken by the current run's own start" {
