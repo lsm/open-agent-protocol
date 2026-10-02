@@ -307,15 +307,14 @@ func (s *Session) armSteerGate(ctx context.Context, run protocol.RunID, request 
 
 func (s *Session) releaseToBoundary(gate *steerGate, boundary uint64) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.gate != gate {
-		s.mu.Unlock()
 		return
 	}
 	prefix, rest := gate.split(boundary)
 	gate.withheld, gate.boundary = rest, boundary
-	s.mu.Unlock()
 	for _, envelope := range prefix {
-		s.publishThroughGate(envelope)
+		s.deliverLocked(envelope)
 	}
 }
 
@@ -803,8 +802,12 @@ func (s *Session) armedGate() *steerGate {
 func (s *Session) nextResult(run protocol.RunID, stream base.EventStream) (base.Result, bool) {
 	for {
 		if gate := s.armedGate(); gate != nil && gate.drainPending() {
-			if ok := s.drainGate(gate, stream); !ok {
+			result, ready, ok := s.drainGate(gate, stream)
+			if !ok {
 				return base.Result{}, false
+			}
+			if ready {
+				return result, true
 			}
 			continue
 		}
@@ -816,13 +819,17 @@ func (s *Session) nextResult(run protocol.RunID, stream base.EventStream) (base.
 	}
 }
 
-func (s *Session) drainGate(gate *steerGate, stream base.EventStream) bool {
+func (s *Session) drainGate(gate *steerGate, stream base.EventStream) (base.Result, bool, bool) {
 	for {
 		select {
 		case result, ok := <-stream:
 			if !ok {
 				gate.finishDrain()
-				return false
+				return base.Result{}, false, false
+			}
+			if result.Error != nil {
+				gate.finishDrain()
+				return result, true, true
 			}
 			if gate.run == result.Envelope.RunID {
 				s.withhold(gate, result.Envelope)
@@ -831,7 +838,7 @@ func (s *Session) drainGate(gate *steerGate, stream base.EventStream) bool {
 			}
 		default:
 			gate.finishDrain()
-			return true
+			return base.Result{}, false, true
 		}
 	}
 }
@@ -989,12 +996,6 @@ func (s *Session) publish(envelope protocol.Envelope) {
 		s.mu.Unlock()
 		return
 	}
-	s.deliverLocked(envelope)
-	s.mu.Unlock()
-}
-
-func (s *Session) publishThroughGate(envelope protocol.Envelope) {
-	s.mu.Lock()
 	s.deliverLocked(envelope)
 	s.mu.Unlock()
 }

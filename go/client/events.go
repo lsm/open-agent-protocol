@@ -97,7 +97,8 @@ func (es *EventStream) Next() (protocol.Envelope, error) {
 		return protocol.Envelope{}, io.EOF
 	}
 	for {
-		if released, ok := es.session.takeSteer(); ok {
+		released, wake, ok := es.session.takeSteer()
+		if ok {
 			return released, nil
 		}
 		if es.inflight == nil {
@@ -114,7 +115,7 @@ func (es *EventStream) Next() (protocol.Envelope, error) {
 		case polled := <-es.inflight:
 			es.inflight = nil
 			envelope, err = polled.envelope, polled.err
-		case <-es.session.releaseWake():
+		case <-wake:
 			continue
 		}
 		if err == nil {

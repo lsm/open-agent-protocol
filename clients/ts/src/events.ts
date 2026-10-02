@@ -103,6 +103,7 @@ export class EventStream implements AsyncIterable<Envelope> {
     try {
       await this.ready;
       for (;;) {
+        const wake = this.session.releaseWake();
         const released = this.session.takeSteer();
         if (released) {
           yield released;
@@ -113,7 +114,7 @@ export class EventStream implements AsyncIterable<Envelope> {
         try {
           const raced = await Promise.race([
             this.pollOnce().then((value) => ({ value })),
-            this.session.releaseWake().then(() => null),
+            wake.then(() => null),
           ]);
           if (raced === null) continue;
           envelope = raced.value;

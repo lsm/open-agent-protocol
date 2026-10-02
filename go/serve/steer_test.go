@@ -13,6 +13,7 @@ import (
 type steerStubSession struct {
 	stream   chan base.Result
 	emits    []protocol.Envelope
+	failures []error
 	refusal  *base.InvalidSteerTargetError
 	steerRun protocol.RunID
 }
@@ -29,6 +30,9 @@ func (s *steerStubSession) Submit(_ context.Context, submit base.SubmitRequest) 
 	case protocol.DeliverySteer:
 		for _, envelope := range s.emits {
 			s.stream <- base.Result{Envelope: envelope}
+		}
+		for _, failure := range s.failures {
+			s.stream <- base.Result{Error: failure}
 		}
 		if s.refusal != nil {
 			return protocol.MessageSubmitResponse{}, nil, s.refusal
@@ -365,4 +369,31 @@ func TestASteerGateIsLiftedWhenTheSessionCloses(t *testing.T) {
 	if gate != nil {
 		t.Fatal("the close left the gate armed")
 	}
+}
+
+func TestASteerDrainHandsAnErrorResultBackToTheReader(t *testing.T) {
+	stub := &steerStubSession{
+		stream:   make(chan base.Result, 4),
+		steerRun: "run-1",
+		failures: []error{base.ErrEventStreamOverflow},
+	}
+	entry := newSession("stub", "stub", stub, nil)
+	startStubRun(t, entry)
+	sub := subscribeToRun(t, entry)
+
+	if _, err := entry.Submit(context.Background(), steerSubmit("req-steer")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-sub.finish:
+	case envelope := <-sub.ch:
+		t.Fatalf("the drain published %q for session %q instead of handing the error back", envelope.Type, envelope.SessionID)
+	case <-time.After(testTimeout):
+		t.Fatal("the drain swallowed the stream error")
+	}
+	state := sub.terminal.Load()
+	if state == nil || !state.overflow || state.run != "run-1" {
+		t.Fatalf("terminal state = %+v, want the overflow for run-1", state)
+	}
+	entry.Published("req-steer")
 }

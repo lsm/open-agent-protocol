@@ -23,15 +23,6 @@ type Session struct {
 	wake        chan struct{}
 }
 
-func (s *Session) releaseWake() chan struct{} {
-	s.steerMu.Lock()
-	defer s.steerMu.Unlock()
-	if s.wake == nil {
-		s.wake = make(chan struct{})
-	}
-	return s.wake
-}
-
 func (s *Session) beginSubmit(id protocol.EnvelopeID) {
 	s.steerMu.Lock()
 	defer s.steerMu.Unlock()
@@ -73,15 +64,18 @@ func (s *Session) holdSteer(envelope protocol.Envelope) bool {
 	return true
 }
 
-func (s *Session) takeSteer() (protocol.Envelope, bool) {
+func (s *Session) takeSteer() (protocol.Envelope, chan struct{}, bool) {
 	s.steerMu.Lock()
 	defer s.steerMu.Unlock()
+	if s.wake == nil {
+		s.wake = make(chan struct{})
+	}
 	if len(s.released) == 0 {
-		return protocol.Envelope{}, false
+		return protocol.Envelope{}, s.wake, false
 	}
 	envelope := s.released[0]
 	s.released = s.released[1:]
-	return envelope, true
+	return envelope, s.wake, true
 }
 
 func steerSettlementRequest(envelope protocol.Envelope) protocol.EnvelopeID {

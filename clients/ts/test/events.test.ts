@@ -609,3 +609,38 @@ test('a settlement for a request that is not outstanding is delivered in order',
   );
   session.endSubmit('req-steer');
 });
+
+test('a release that lands during a reconnect still wakes the reader', { timeout: 10000 }, async () => {
+  const settlement = testEnvelope({
+    type: EnvelopeType.RunSteerApplied,
+    sequence: 1,
+    sessionId: SESSION,
+    runId: RUN,
+    payload: {
+      session_id: SESSION,
+      run_id: RUN,
+      submission_id: 'sub-steer',
+      request_id: 'req-steer',
+      message_ids: ['m-2'],
+      boundary: 'turn',
+    },
+  });
+  const { session, transport } = sessionWith([
+    { match: LIVE, chunks: [eventFrame(settlement)] },
+    { match: /after=1$/, delayMs: 200, chunkDelayMs: 3000, chunks: [eventFrame(settlement)] },
+  ]);
+  session.beginSubmit('req-steer');
+  const iterator = session.events()[Symbol.asyncIterator]();
+  const first = iterator.next();
+  while (transport.callsFor('/events').length < 2) await new Promise((resolve) => setTimeout(resolve, 10));
+  session.endSubmit('req-steer');
+  const released = await Promise.race([
+    first,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('the release did not wake the reader across the reconnect')), 1500),
+    ),
+  ]);
+  assert.equal(released.value?.type, EnvelopeType.RunSteerApplied);
+  assert.equal(released.value?.payload['request_id'], 'req-steer');
+  await iterator.return?.();
+});
