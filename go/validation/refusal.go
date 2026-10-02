@@ -37,6 +37,9 @@ func (s *state) retainedExpectations(request protocol.EnvelopeID) []*controlExpe
 	if pending := s.pendingReopens[request]; pending != nil && pending.expectation != nil {
 		retained = append(retained, pending.expectation)
 	}
+	if pending := s.pendingSettings[request]; pending != nil {
+		retained = append(retained, pending.expectations...)
+	}
 	return retained
 }
 

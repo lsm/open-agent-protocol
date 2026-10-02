@@ -41,6 +41,8 @@ pub const Options = struct {
     sandbox: []const u8 = "",
     resume_thread_id: []const u8 = "",
     reopen: bool = false,
+    settings: native.Settings = .{},
+    compaction_auto: bool = false,
     first_request_id: i64 = 1,
     id_width: usize = 0,
     revision: []const u8 = capability_revision,
@@ -315,11 +317,12 @@ pub const Reducer = struct {
                 .cwd = self.options.working_directory,
                 .approval_policy = self.options.approval_policy,
                 .sandbox = self.options.sandbox,
+                .settings = self.options.settings,
             });
             try self.call(.thread_start, native.method_thread_start, params);
             return;
         }
-        const params = try native.threadResumeParams(self.allocator(), self.options.resume_thread_id);
+        const params = try native.threadResumeParams(self.allocator(), self.options.resume_thread_id, self.options.settings);
         try self.call(.thread_resume, native.method_thread_resume, params);
     }
 
@@ -1206,6 +1209,7 @@ const Feature = struct {
     level: []const u8,
     reason: []const u8 = "",
     scope: []const u8 = "",
+    modes: []const []const u8 = &.{},
 };
 
 const tool_families = "only pinned command, file-change, and MCP item families are normalized";
@@ -1226,10 +1230,12 @@ pub const features = [_]Feature{
     .{ .name = "run.streaming", .level = "native" },
     .{ .name = "run.structured_output", .level = "unavailable", .reason = "this pin exposes no per-turn output schema" },
     .{ .name = "run.tool_selection", .level = "unavailable", .reason = "this pin exposes no per-turn tool policy" },
+    .{ .name = "session.compaction.policy", .level = "native", .reason = "thread/start's config sets model_auto_compact_token_limit for tokens; Codex has no off, and its share applies only at a turn's end, so both are refused", .modes = &.{"session_open"} },
     .{ .name = "session.message.delivery.auto", .level = "native" },
     .{ .name = "session.message.submit", .level = "native" },
     .{ .name = "session.open", .level = "native" },
     .{ .name = "session.open.reopen", .level = "native", .reason = "thread/resume reloads the thread the session's binding names and reports the model it resumed under" },
+    .{ .name = "session.reasoning", .level = "native", .reason = "thread/start's config sets model_reasoning_effort; off is Codex's none", .modes = &.{"session_open"} },
     .{ .name = "session.state", .level = "native" },
     .{ .name = "user_input", .level = "degraded", .reason = "Codex option questions normalize to OAP single-choice input" },
 };
@@ -1250,6 +1256,11 @@ pub fn descriptor(arena: std.mem.Allocator) !std.json.Value {
         try support.put(arena, "level", str(feature.level));
         if (feature.reason.len != 0) try support.put(arena, "reason", str(feature.reason));
         if (feature.scope.len != 0) try support.put(arena, "scope", str(feature.scope));
+        if (feature.modes.len != 0) {
+            var modes = std.json.Array.init(arena);
+            for (feature.modes) |mode| try modes.append(str(mode));
+            try support.put(arena, "modes", .{ .array = modes });
+        }
         try table.put(arena, feature.name, .{ .object = support });
     }
     var capabilities = std.json.ObjectMap.empty;

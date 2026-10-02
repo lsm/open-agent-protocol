@@ -148,6 +148,9 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		"action.tools.execute":           {Level: protocol.SupportUnavailable, Reason: "tools execute server-side; no client-hosted execution surface"},
 		"action.permissions":             {Level: protocol.SupportUnavailable, Reason: "durable stream carries no permission events; the polling surface is unexercised"},
 
+		protocol.FeatureSessionReasoning: {Level: protocol.SupportNative, Modes: []string{protocol.ModeSessionOpen}, Reason: "the created session's model carries the level as its variant, which the runner sends on every step; it needs a configured model, and a variant the response does not confirm is refused"},
+		protocol.FeatureCompactionPolicy: {Level: protocol.SupportUnavailable, Reason: "compaction is the server's config, fixed when its operator starts it; the adapter attaches to a running server"},
+
 		protocol.FeatureModelsList: {Level: protocol.SupportDegraded, Reason: "the models this session is observed to run, projected from the native session record and durable step events; the server's own model.list route has no pinned response shape at this revision"},
 	}
 	endpoint := protocol.EndpointDescriptor{ID: endpointID, Name: "OpenCode Server Adapter", Version: PinnedTag, Adapter: "opencode-http-sse"}
@@ -181,14 +184,34 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	if err := base.RefuseUnadvertisedTools(req); err != nil {
 		return nil, err
 	}
+	descriptor, err := a.Probe(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := base.RefuseUnadvertisedSettings(req, descriptor.Capabilities); err != nil {
+		return nil, err
+	}
+	createModel := a.config.Model
+	if req.ReasoningLevel != "" {
+		if a.config.Model == nil {
+			return nil, &base.UnsupportedControlError{Feature: protocol.FeatureSessionReasoning, Reason: base.ControlUnsatisfiable, Field: "reasoning_level", Detail: "a variant rides on a model, and this adapter has none configured"}
+		}
+		withVariant := *a.config.Model
+		withVariant.Variant = string(req.ReasoningLevel)
+		createModel = &withVariant
+	}
 	client, err := a.config.Factory.Start(ctx)
 	if err != nil {
 		return nil, err
 	}
-	info, err := client.CreateSession(ctx, httpapi.CreateSessionRequest{Agent: a.config.Agent, Model: a.config.Model})
+	info, err := client.CreateSession(ctx, httpapi.CreateSessionRequest{Agent: a.config.Agent, Model: createModel})
 	if err != nil {
 		_ = client.Close()
 		return nil, fmt.Errorf("create OpenCode session: %w", err)
+	}
+	if req.ReasoningLevel != "" && (info.Model == nil || info.Model.Variant != string(req.ReasoningLevel)) {
+		_ = client.Close()
+		return nil, &base.UnsupportedControlError{Feature: protocol.FeatureSessionReasoning, Reason: base.ControlUnsatisfiable, Field: "reasoning_level", Detail: "OpenCode did not record the variant on the session it created"}
 	}
 
 	subCtx, subCancel := context.WithCancel(context.Background())
@@ -220,7 +243,7 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		pollMax:      a.config.SettlePollMax,
 		nativeID:     info.ID,
 		participant:  req.Participant.ID,
-		state:        protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, CurrentModelID: model, UpdatedAtMS: now},
+		state:        protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, CurrentModelID: model, UpdatedAtMS: now, ReasoningLevel: req.ReasoningLevel},
 		runs:         map[protocol.RunID]*runState{},
 		pending:      map[native.MessageID]*runState{},
 		tools:        map[string]*toolState{},

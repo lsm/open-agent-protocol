@@ -1,0 +1,62 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.request",
+    "id": "capq",
+    "payload": {}
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.response",
+    "id": "capr",
+    "in_reply_to": "capq",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "endpoint": {
+        "id": "fixture.endpoint",
+        "name": "Session settings fixture endpoint"
+      },
+      "features": {
+        "session.message.delivery.auto": {
+          "level": "native"
+        }
+      }
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.open.request",
+    "id": "op",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "session_id": "s1",
+      "reasoning_level": "high"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "error.response",
+    "id": "ope",
+    "in_reply_to": "op",
+    "session_id": "s1",
+    "payload": {
+      "error": {
+        "code": "unsupported_feature",
+        "message": "this endpoint does not take a reasoning level",
+        "details": {
+          "feature": "session.reasoning",
+          "reason": "unadvertised",
+          "field": "reasoning_level"
+        }
+      }
+    }
+  }
+]

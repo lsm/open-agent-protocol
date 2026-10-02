@@ -1803,3 +1803,37 @@ func TestPendingPromptsAreSettledInTheOrderTheyStarted(t *testing.T) {
 	}
 	validateWithCapabilities(t, admitted.response, events)
 }
+
+func TestAnOpenSetsTheSessionsReasoningThroughConfigSetAndRefusesACompactionPolicy(t *testing.T) {
+	f := newFake()
+	f.queue(native.MethodConfigSet, reply{result: native.ConfigSetResult{Key: "reasoning", Value: "none"}})
+	implementation, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, string, error) { return f, "sess0001", nil }), Model: "hermes-test", Clock: &testClock{}, IDs: &testIDs{}, JournalCapacity: 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := implementation.Open(context.Background(), base.OpenRequest{SessionID: "s1", Participant: protocol.Participant{ID: "user"}, ReasoningLevel: protocol.ReasoningOff})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer opened.Close(context.Background())
+	f.callsMu.Lock()
+	calls := append([]recordedCall(nil), f.calls...)
+	f.callsMu.Unlock()
+	sent, ok := calls[0].params.(native.ConfigSetParams)
+	if len(calls) == 0 || calls[0].method != native.MethodConfigSet || !ok || sent != (native.ConfigSetParams{SessionID: "sess0001", Key: "reasoning", Value: "none"}) {
+		t.Fatalf("open called %+v, want config.set reasoning none on the created session", calls)
+	}
+	state, err := opened.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.ReasoningLevel != protocol.ReasoningOff {
+		t.Fatalf("state reports %q, want off", state.ReasoningLevel)
+	}
+
+	_, err = implementation.Open(context.Background(), base.OpenRequest{SessionID: "s2", Participant: protocol.Participant{ID: "user"}, CompactionPolicy: &protocol.CompactionPolicy{Kind: protocol.CompactionOff}})
+	var refusal *base.UnsupportedControlError
+	if !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureCompactionPolicy || refusal.Reason != base.ControlUnadvertised {
+		t.Fatalf("open answered %v, want the unavailable compaction policy refused", err)
+	}
+}

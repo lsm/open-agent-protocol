@@ -202,7 +202,7 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusNotFound, "unknown_adapter", fmt.Sprintf("no adapter %q", name), envelope)
 		return
 	}
-	open := base.OpenRequest{SessionID: request.SessionID, Participant: protocol.Participant{ID: serve.DefaultParticipant}, AllowDegradedFeatures: request.AllowDegradedFeatures, Tools: request.Tools, Reopen: request.Reopen}
+	open := base.OpenRequest{SessionID: request.SessionID, Participant: protocol.Participant{ID: serve.DefaultParticipant}, AllowDegradedFeatures: request.AllowDegradedFeatures, Tools: request.Tools, Reopen: request.Reopen, ReasoningLevel: request.ReasoningLevel, CompactionPolicy: request.CompactionPolicy}
 
 	revision, refusal := serve.AttachmentGate(r.Context(), s.hub, name, envelope.CapabilityRevision, request)
 	if refusal == nil {

@@ -30,6 +30,9 @@ pub const feature_tools_provide = "action.tools.provide";
 pub const feature_tool_sources_attach = "action.tool_sources.attach";
 pub const feature_open_subscribe = "session.open.subscribe";
 pub const feature_open_reopen = "session.open.reopen";
+pub const feature_session_reasoning = "session.reasoning";
+pub const feature_compaction_policy = "session.compaction.policy";
+pub const mode_session_open = "session_open";
 pub const feature_submit = "session.message.submit";
 
 pub const Refusal = struct {
@@ -93,6 +96,16 @@ pub const Descriptor = struct {
         }
         return .unavailable;
     }
+
+    pub fn disclosesMode(self: Descriptor, key: []const u8, mode: []const u8) bool {
+        for (self.features) |feature| {
+            if (!std.mem.eql(u8, feature.key, key)) continue;
+            for (feature.modes) |disclosed| {
+                if (std.mem.eql(u8, disclosed, mode)) return true;
+            }
+        }
+        return false;
+    }
 };
 
 pub const ConfiguredSource = struct {
@@ -115,6 +128,8 @@ pub const OpenRequest = struct {
     tool_sources_json: ?[]const u8 = null,
     reopen: bool = false,
     native_session_id: []const u8 = "",
+    reasoning_level: ?[]const u8 = null,
+    compaction_policy_json: ?[]const u8 = null,
 };
 
 pub const Catalog = struct {
@@ -332,6 +347,18 @@ pub fn refuseUnadvertisedOpenElections(descriptor: Descriptor, request: *const o
             .degraded => if (!request.allowsDegraded(election.key)) return refusal.degraded(election.key),
             .native, .emulated => {},
         }
+    }
+    const settings = [_]struct { key: []const u8, field: []const u8, present: bool }{
+        .{ .key = feature_session_reasoning, .field = "reasoning_level", .present = request.reasoning_level != null },
+        .{ .key = feature_compaction_policy, .field = "compaction_policy", .present = request.compaction_policy_json != null },
+    };
+    for (settings) |setting| {
+        if (!setting.present) continue;
+        const level = descriptor.level(setting.key);
+        if (level == .unavailable or !descriptor.disclosesMode(setting.key, mode_session_open)) {
+            return refusal.unsupportedField(setting.key, reason_unadvertised, setting.field);
+        }
+        if (level == .degraded and !request.allowsDegraded(setting.key)) return refusal.degraded(setting.key);
     }
 }
 
@@ -608,6 +635,26 @@ test "a degraded subscription at open needs the caller's consent" {
 
     const consented = oap_types.SessionOpenRequest{ .subscribe = true, .allow_degraded_features = &.{feature_open_subscribe} };
     try refuseUnadvertisedOpen(probe_descriptor, &consented, &refusal);
+}
+
+test "a session setting at open needs its feature to take it at open, and a degraded one the caller's consent" {
+    var refusal = Refusal{};
+    const live_only = [_]Feature{.{ .key = feature_session_reasoning, .level = .native, .modes = &.{"session_live"} }};
+    const asks_level = oap_types.SessionOpenRequest{ .reasoning_level = "high" };
+    try testing.expectError(error.UnsupportedFeature, refuseUnadvertisedOpenElections(.{ .endpoint = .{ .id = "e" }, .capability_revision = "r", .features = &live_only }, &asks_level, &refusal));
+    try testing.expectEqualStrings(feature_session_reasoning, refusal.feature);
+    try testing.expectEqualStrings("reasoning_level", refusal.field);
+
+    const at_open = [_]Feature{
+        .{ .key = feature_session_reasoning, .level = .native, .modes = &.{mode_session_open} },
+        .{ .key = feature_compaction_policy, .level = .degraded, .modes = &.{mode_session_open} },
+    };
+    const descriptor = Descriptor{ .endpoint = .{ .id = "e" }, .capability_revision = "r", .features = &at_open };
+    try refuseUnadvertisedOpenElections(descriptor, &asks_level, &refusal);
+    const asks_policy = oap_types.SessionOpenRequest{ .compaction_policy_json = "{\"kind\":\"off\"}" };
+    try testing.expectError(error.CapabilityDegraded, refuseUnadvertisedOpenElections(descriptor, &asks_policy, &refusal));
+    const consents = oap_types.SessionOpenRequest{ .compaction_policy_json = "{\"kind\":\"off\"}", .allow_degraded_features = &.{feature_compaction_policy} };
+    try refuseUnadvertisedOpenElections(descriptor, &consents, &refusal);
 }
 
 test "an unavailable backend refuses both probe and open, naming itself" {

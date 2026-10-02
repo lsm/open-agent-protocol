@@ -72,7 +72,7 @@ export interface ToolDefinition {
 export interface RunOptions {
   temperature?: number;
   max_tokens?: number;
-  reasoning_effort?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  reasoning_effort?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   auth_retry_policy?: AuthRetryPolicy;
   session_id?: string;
   metadata?: Record<string, string>;

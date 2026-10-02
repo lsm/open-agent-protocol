@@ -381,6 +381,8 @@ pub const Endpoint = struct {
             .tools_json = payload.tools_json,
             .tool_sources_json = tool_sources_json,
             .reopen = payload.reopen,
+            .reasoning_level = payload.reasoning_level,
+            .compaction_policy_json = payload.compaction_policy_json,
         }, refusal);
         const state_now = session.state(arena, refusal) catch |failure| {
             session.teardown();

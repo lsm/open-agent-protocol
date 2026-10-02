@@ -3,6 +3,7 @@ package serve
 import (
 	"context"
 	"github.com/lsm/open-agent-protocol/go/binding"
+	"slices"
 
 	base "github.com/lsm/open-agent-protocol/go/adapter"
 	"github.com/lsm/open-agent-protocol/go/protocol"
@@ -30,6 +31,8 @@ func ElectionGate(ctx context.Context, hub *Hub, name string, revision string, r
 	if request.Reopen {
 		elected = append(elected, protocol.FeatureOpenReopen)
 	}
+	settings := base.OpenSettingKeys(request.ReasoningLevel, request.CompactionPolicy)
+	elected = append(elected, settings...)
 	if len(elected) == 0 {
 		return "", nil
 	}
@@ -43,7 +46,10 @@ func ElectionGate(ctx context.Context, hub *Hub, name string, revision string, r
 	for _, key := range elected {
 		support, advertised := descriptor.Capabilities.EffectiveSupport(key)
 		if !advertised || support.Level == "" || support.Level == protocol.SupportUnavailable {
-			return "", &base.UnsupportedControlError{Feature: key, Reason: base.ControlUnadvertised}
+			return "", &base.UnsupportedControlError{Feature: key, Reason: base.ControlUnadvertised, Field: base.OpenSettingField(key)}
+		}
+		if slices.Contains(settings, key) && !support.DisclosesMode(protocol.ModeSessionOpen) {
+			return "", &base.UnsupportedControlError{Feature: key, Reason: base.ControlUnadvertised, Field: base.OpenSettingField(key)}
 		}
 		if support.Level == protocol.SupportDegraded && !request.AllowsDegraded(key) {
 			return "", &base.DegradedControlError{Feature: key}

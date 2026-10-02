@@ -812,6 +812,8 @@ pub const Frontend = struct {
             .allow_degraded_features = open.allow_degraded_features,
             .tools_json = open.tools_json,
             .tool_sources_json = try substitutedSources(arena, self.hub, open.tool_sources_json),
+            .reasoning_level = open.reasoning_level,
+            .compaction_policy_json = open.compaction_policy_json,
         }, &refused) catch |err| {
             try ownRevisions(arena, &refused);
             envelope.deinit(arena);
