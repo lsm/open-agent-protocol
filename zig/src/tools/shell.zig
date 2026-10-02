@@ -216,17 +216,12 @@ pub fn execute(
     });
     defer allocator.free(details);
 
-    const cwd_line = if (report.observed and !std.mem.eql(u8, end_directory, start_directory))
-        try std.fmt.allocPrint(allocator, "\ncwd: {s}", .{end_directory})
-    else
-        try allocator.dupe(u8, "");
-    defer allocator.free(cwd_line);
     const text = try std.fmt.allocPrint(allocator,
         \\stdout:
         \\{s}
         \\stderr:
-        \\{s}{s}
-    , .{ result.stdout, result.stderr, cwd_line });
+        \\{s}
+    , .{ result.stdout, result.stderr });
     defer allocator.free(text);
     var made = try common.makeTextResultWithArtifact(allocator, .{ .tool_name = "shell_execute", .call_id = tool_call_id, .text = text, .details_json = details });
     defer if (made.artifact_path) |path| allocator.free(path);
@@ -292,19 +287,6 @@ test "the reported directory is the shell's logical path, not a resolved one" {
     try std.testing.expectEqualStrings(expected, result.workingDirectory().?);
 }
 
-test "a command that moves ends its result with a cwd line" {
-    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
-    var case = try Case.init();
-    defer case.deinit();
-    var result = try case.run("call-cwd-line", "mkdir -p sub && cd sub");
-    defer result.deinit(std.testing.allocator);
-    const expected = try std.Io.Dir.path.resolve(std.testing.allocator, &.{ case.root, "sub" });
-    defer std.testing.allocator.free(expected);
-    const line = try std.fmt.allocPrint(std.testing.allocator, "\ncwd: {s}", .{expected});
-    defer std.testing.allocator.free(line);
-    try std.testing.expect(std.mem.endsWith(u8, result.content.slice()[0].text.text, line));
-}
-
 test "shell execute reports the start directory when the command does not move" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var case = try Case.init();
@@ -312,7 +294,6 @@ test "shell execute reports the start directory when the command does not move" 
     var result = try case.run("call-still", "true");
     defer result.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings(case.root, result.workingDirectory().?);
-    try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, "cwd:") == null);
 }
 
 test "shell execute reports the start directory when the command replaces the shell" {

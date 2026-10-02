@@ -805,7 +805,7 @@ pub const TuiRuntime = struct {
         self.session_cwd = owned;
     }
 
-    fn adoptReportedWorkingDirectory(self: *TuiRuntime, details_json: []const u8) void {
+    fn adoptReportedWorkingDirectory(self: *TuiRuntime, args_json: []const u8, details_json: []const u8, result: *agent.AgentToolResult) void {
         if (details_json.len == 0) return;
         var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, details_json, .{}) catch return;
         defer parsed.deinit();
@@ -814,7 +814,30 @@ pub const TuiRuntime = struct {
         if (observed != .bool or !observed.bool) return;
         const directory = parsed.value.object.get("working_directory") orelse return;
         if (directory != .string) return;
+        const started_in = startDirectoryOf(self.allocator, args_json);
+        defer if (started_in) |owned| self.allocator.free(owned);
+        if (started_in) |from| {
+            if (std.mem.eql(u8, from, directory.string)) return;
+        }
         self.adoptWorkingDirectory(directory.string);
+        self.appendWorkingDirectoryLine(result);
+    }
+
+    fn appendWorkingDirectoryLine(self: *TuiRuntime, result: *agent.AgentToolResult) void {
+        const parts = result.content.slice();
+        if (parts.len == 0) return;
+        const last = parts[parts.len - 1];
+        if (last != .text) return;
+        const merged = std.fmt.allocPrint(self.allocator, "{s}\ncwd: {s}", .{ last.text.text, self.session_cwd }) catch return;
+        const next = self.allocator.alloc(ai_types.UserContentPart, parts.len) catch {
+            self.allocator.free(merged);
+            return;
+        };
+        @memcpy(next[0 .. parts.len - 1], parts[0 .. parts.len - 1]);
+        next[parts.len - 1] = .{ .text = .{ .text = merged, .text_signature = last.text.text_signature } };
+        self.allocator.free(last.text.text);
+        if (result.content.is_owned) self.allocator.free(parts);
+        result.content = OwnedSlice(ai_types.UserContentPart).initOwned(next);
     }
 
 
@@ -1463,10 +1486,14 @@ pub const TuiRuntime = struct {
 
     fn workspaceSystemPrompt(self: *TuiRuntime) ![]u8 {
         if (self.workspace_root.len == 0) return self.allocator.dupe(u8, "");
+        const moved_rule = if (@import("builtin").os.tag == .windows)
+            "A `cd` inside a command does not persist on this platform: every call starts in the same directory."
+        else
+            "A `cd` in a `shell_execute` call changes the working directory, and its result reports the directory as a `cwd:` line.";
         return std.fmt.allocPrint(self.allocator,
             \\Default workspace root: {s}
-            \\Pass the default workspace root as `workspace_root` to work in the session's current working directory, or name another directory inside the root to work there instead; an absolute path is used as written. A `cd` in a `shell_execute` call changes the working directory, and its result reports the directory as a `cwd:` line.
-        , .{self.workspace_root});
+            \\Pass the default workspace root as `workspace_root` to work in the session's current working directory, or name another directory inside the root to work there instead; an absolute path is used as written. {s}
+        , .{ self.workspace_root, moved_rule });
     }
 
     fn messageRole(message: ai_types.Message) TuiEvent.MessageRole {
@@ -1879,7 +1906,7 @@ fn executeTuiToolProtocol(
         allocator,
     );
     if (std.mem.eql(u8, tool_name, "shell_execute")) {
-        if (result.getDetailsJson()) |details| runtime.adoptReportedWorkingDirectory(details);
+        if (result.getDetailsJson()) |details| runtime.adoptReportedWorkingDirectory(args_json, details, &result);
     }
     return result;
 }
@@ -1898,6 +1925,15 @@ fn directoryOpens(path: []const u8) bool {
     var dir = std.Io.Dir.openDirAbsolute(compat.fs.defaultIo(), path, .{}) catch return false;
     dir.close(compat.fs.defaultIo());
     return true;
+}
+
+fn startDirectoryOf(allocator: std.mem.Allocator, args_json: []const u8) ?[]u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, args_json, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const value = parsed.value.object.get("workspace_root") orelse return null;
+    if (value != .string) return null;
+    return allocator.dupe(u8, value.string) catch null;
 }
 
 fn hasAbsolutePathArgument(obj: std.json.ObjectMap) bool {
@@ -3931,6 +3967,25 @@ test "a shell result moves the working directory and leaves the prompt alone" {
     const prompt_after = try runtime.workspaceSystemPrompt();
     defer std.testing.allocator.free(prompt_after);
     try std.testing.expectEqualStrings(prompt_before, prompt_after);
+}
+
+test "only a command that moved moves the session, and the result says where it is" {
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .workspace_root = "/tmp/makai-workspace" });
+    defer runtime.deinit();
+
+    const parts = try std.testing.allocator.alloc(ai_types.UserContentPart, 1);
+    parts[0] = .{ .text = .{ .text = try std.testing.allocator.dupe(u8, "stdout:\n\nstderr:\n") } };
+    var result = agent.AgentToolResult{ .content = OwnedSlice(ai_types.UserContentPart).initOwned(parts) };
+    defer result.deinit(std.testing.allocator);
+    const details = "{\"working_directory\":\"/tmp/makai-workspace/sub\",\"working_directory_observed\":true}";
+
+    runtime.adoptReportedWorkingDirectory("{\"workspace_root\":\"/tmp/makai-workspace/sub\"}", details, &result);
+    try std.testing.expectEqualStrings("/tmp/makai-workspace", runtime.workingDirectory());
+    try std.testing.expectEqualStrings("stdout:\n\nstderr:\n", result.content.slice()[0].text.text);
+
+    runtime.adoptReportedWorkingDirectory("{\"workspace_root\":\"/tmp/makai-workspace\"}", details, &result);
+    try std.testing.expectEqualStrings("/tmp/makai-workspace/sub", runtime.workingDirectory());
+    try std.testing.expect(std.mem.endsWith(u8, result.content.slice()[0].text.text, "\ncwd: /tmp/makai-workspace/sub"));
 }
 
 test "runtime ends a run whose last reply finished without an output-limit warning" {

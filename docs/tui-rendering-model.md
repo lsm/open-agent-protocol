@@ -336,11 +336,14 @@ code paths; add a transcript row instead.
 
   The session owns a working directory, so a `cd` now persists. `shell_execute` reports the
   directory it ended in through its `details_json` (`working_directory`,
-  `working_directory_observed`), and a result whose command moved ends its text with a
-  `cwd: <dir>` line, so the model is told where it is and a compacted context still carries
-  it. The runtime adopts that directory only when it resolves lexically inside the resolved
-  session root, which stays the boundary, and falls back to the session root when the
-  working directory no longer opens.
+  `working_directory_observed`). The runtime adopts that directory only when the command
+  moved — the reported directory differs from the one the call started in — and when it
+  resolves lexically inside the resolved session root, which stays the boundary; a call
+  rooted elsewhere that did not move leaves the session where it was. When the command did
+  move, the runtime ends the result text with a `cwd: <working directory>` line, so the
+  model is told where the session now is even when the move was refused, and a compacted
+  context still carries it. The runtime falls back to the session root when the working
+  directory no longer opens.
 
   The rewrite is narrow. It replaces `workspace_root` with the working directory only when
   the model passed the session root — the default it was told — so that the root means
