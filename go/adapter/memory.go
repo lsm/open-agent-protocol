@@ -730,6 +730,7 @@ func (s *memorySession) entryLocked(run *memoryRun, position int) protocol.Activ
 		entry.PendingSteers = make([]protocol.PendingSteer, len(run.steers))
 		for i, steer := range run.steers {
 			entry.PendingSteers[i] = protocol.PendingSteer{SubmissionID: steer.submissionID, RequestID: steer.requestID}
+			entry.AdmittedSubmitRequests = append(entry.AdmittedSubmitRequests, steer.requestID)
 		}
 	}
 	if position > 0 {

@@ -1484,6 +1484,9 @@ func TestMemorySteersARunAtItsInputGate(t *testing.T) {
 	if len(entry.PendingSteers) != 1 || entry.PendingSteers[0].SubmissionID != steer.SubmissionID || entry.PendingSteers[0].RequestID != "steer-submit" {
 		t.Fatalf("pending steers = %+v", entry.PendingSteers)
 	}
+	if len(entry.AdmittedSubmitRequests) != 1 || entry.AdmittedSubmitRequests[0] != "steer-submit" {
+		t.Fatalf("admitted anchors = %v", entry.AdmittedSubmitRequests)
+	}
 	if entry.AsOfSequence == nil || *entry.AsOfSequence != *steer.TargetSequence {
 		t.Fatalf("as_of_sequence = %v, want %v", entry.AsOfSequence, steer.TargetSequence)
 	}

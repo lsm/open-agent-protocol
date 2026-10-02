@@ -344,12 +344,16 @@ pub const Session = struct {
         const pending: []const []const u8 = if (run.pending.len > 0) try arena.dupe([]const u8, &.{run.pending}) else &.{};
         const acknowledged: []const []const u8 = if (run.acknowledged and run.pending.len > 0 and std.mem.eql(u8, run.pending, run.call_id)) try arena.dupe([]const u8, &.{run.call_id}) else &.{};
         var steers: []const PendingSteer = &.{};
+        var steer_anchors: []const []const u8 = &.{};
         if (run.steers.items.len > 0) {
             const carried = try arena.alloc(PendingSteer, run.steers.items.len);
-            for (run.steers.items, carried) |pending_steer, *slot| {
+            const anchors = try arena.alloc([]const u8, run.steers.items.len);
+            for (run.steers.items, carried, anchors) |pending_steer, *slot, *anchor| {
                 slot.* = .{ .submission_id = try arena.dupe(u8, pending_steer.submission_id), .request_id = try arena.dupe(u8, pending_steer.request_id) };
+                anchor.* = try arena.dupe(u8, pending_steer.request_id);
             }
             steers = carried;
+            steer_anchors = anchors;
         }
         return .{
             .run_id = run.id,
@@ -360,6 +364,7 @@ pub const Session = struct {
             .pending_interactions = pending,
             .acknowledged_interactions = acknowledged,
             .pending_steers = steers,
+            .admitted_submit_requests = steer_anchors,
         };
     }
 
@@ -1936,6 +1941,8 @@ test "a steer is admitted at the permission gate and applied at the input gate" 
     try testing.expectEqual(@as(usize, 1), state.active_runs.len);
     try testing.expectEqualStrings(steered.submission_id, state.active_runs[0].pending_steers[0].submission_id);
     try testing.expectEqualStrings("steer-submit", state.active_runs[0].pending_steers[0].request_id);
+    try testing.expectEqual(@as(usize, 1), state.active_runs[0].admitted_submit_requests.len);
+    try testing.expectEqualStrings("steer-submit", state.active_runs[0].admitted_submit_requests[0]);
     try testing.expectEqual(steered.target_sequence.?, state.active_runs[0].as_of_sequence.?);
 
     try probe.session.drain(probe.a(), &probe.seen);
