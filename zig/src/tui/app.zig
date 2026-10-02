@@ -2844,7 +2844,13 @@ pub const App = struct {
             for (deferred) |text| self.allocator.free(text);
             self.allocator.free(deferred);
         }
-        for (deferred) |text| try self.submitCommand(text);
+        for (deferred) |text| {
+            self.submitCommand(text) catch |err| {
+                const msg = try std.fmt.allocPrint(self.allocator, "{s} failed: {s}", .{ text, @errorName(err) });
+                defer self.allocator.free(msg);
+                try self.state.appendTranscript(.@"error", msg);
+            };
+        }
     }
 
     fn applyPendingModelSwitchBeforeRun(self: *App) !void {
