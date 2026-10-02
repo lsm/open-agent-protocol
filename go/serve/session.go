@@ -103,8 +103,11 @@ type steerGate struct {
 	doneOnce  sync.Once
 }
 
-func (g *steerGate) requestDrain() {
+func (g *steerGate) requestDrain(readers int) {
 	g.drainOnce.Do(func() { close(g.drain) })
+	if readers == 0 {
+		return
+	}
 	select {
 	case <-g.drained:
 	case <-time.After(steerDrainDeadline):
@@ -347,7 +350,10 @@ func (s *Session) submitSteer(ctx context.Context, submit base.SubmitRequest) (p
 	s.reservations++
 	s.mu.Unlock()
 	admission, stream, err := s.session.Submit(ctx, submit)
-	gate.requestDrain()
+	s.mu.Lock()
+	readers := s.readers
+	s.mu.Unlock()
+	gate.requestDrain(readers)
 	if err != nil {
 		boundary := gate.boundary
 		var refusal *base.InvalidSteerTargetError
@@ -690,28 +696,50 @@ func (s *Session) gatedGate(run protocol.RunID) *steerGate {
 	return nil
 }
 
+func (s *Session) armedDrain() chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.gate != nil {
+		return s.gate.drain
+	}
+	return nil
+}
+
+func (s *Session) finishArmedDrain() {
+	s.mu.Lock()
+	if s.gate != nil {
+		s.gate.finishDrain()
+	}
+	s.mu.Unlock()
+}
+
 func (s *Session) nextResult(run protocol.RunID, stream base.EventStream) (base.Result, bool) {
 	for {
-		gate := s.gatedGate(run)
-		if gate == nil {
+		drain := s.armedDrain()
+		if drain == nil {
 			result, ok := <-stream
 			return result, ok
 		}
 		select {
 		case result, ok := <-stream:
 			return result, ok
-		case <-gate.drain:
+		case <-drain:
+			gate := s.gatedGate(run)
 			draining := true
 			for draining {
 				select {
 				case result, ok := <-stream:
 					if !ok {
-						gate.finishDrain()
+						s.finishArmedDrain()
 						return base.Result{}, false
 					}
-					s.withhold(gate, result.Envelope)
+					if gate != nil && gate.run == result.Envelope.RunID {
+						s.withhold(gate, result.Envelope)
+					} else {
+						s.publish(result.Envelope)
+					}
 				default:
-					gate.finishDrain()
+					s.finishArmedDrain()
 					draining = false
 				}
 			}
