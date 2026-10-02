@@ -1520,6 +1520,77 @@ func TestMemorySteersARunAtItsInputGate(t *testing.T) {
 	}
 }
 
+func TestMemoryStateNeverOmitsASteerItHasSettled(t *testing.T) {
+	session := newTestSession(t, 64)
+	admission, stream := submitAdmission(t, session)
+	initial := drainAvailable(stream)
+	submitSteer(t, session, steerRequest(admission.RunID), "steer-submit")
+
+	type observed struct {
+		at      *uint64
+		pending bool
+	}
+	var mu sync.Mutex
+	var seen []observed
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			snapshot, err := session.State(context.Background())
+			if err != nil {
+				continue
+			}
+			for _, entry := range snapshot.ActiveRuns {
+				if entry.RunID != admission.RunID {
+					continue
+				}
+				var at *uint64
+				if entry.AsOfSequence != nil {
+					value := *entry.AsOfSequence
+					at = &value
+				}
+				mu.Lock()
+				seen = append(seen, observed{at: at, pending: len(entry.PendingSteers) > 0})
+				mu.Unlock()
+			}
+		}
+	}()
+
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		mu.Lock()
+		count := len(seen)
+		mu.Unlock()
+		if count > 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	events := resolveScriptedGates(t, session, admission.RunID, stream, initial)
+	applied := envelopeOfType(t, events, protocol.TypeRunSteerApplied)
+	if applied.Sequence == nil {
+		t.Fatal("the applied settlement carries no sequence")
+	}
+	time.Sleep(20 * time.Millisecond)
+	close(done)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) == 0 {
+		t.Fatal("no snapshot was taken while the steer was pending")
+	}
+	for _, snapshot := range seen {
+		if snapshot.pending {
+			continue
+		}
+		if snapshot.at == nil || *snapshot.at < *applied.Sequence {
+			t.Fatalf("snapshot at %v omitted a steer that settled at %d", snapshot.at, *applied.Sequence)
+		}
+	}
+}
+
 func TestMemoryDropsSteersAtTheTerminal(t *testing.T) {
 	session := newTestSession(t, 64)
 	admission, stream := submitAdmission(t, session)

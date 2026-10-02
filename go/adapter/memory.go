@@ -622,41 +622,33 @@ func refuseSteerControls(request protocol.MessageSubmitRequest) error {
 }
 
 func (s *memorySession) settleSteers(run *memoryRun, boundary protocol.SteerBoundary) error {
-	s.mu.Lock()
-	pending := run.steers
-	run.steers = nil
-	if len(pending) > 0 {
-		s.refreshStateLocked()
-	}
-	s.mu.Unlock()
-	for _, steer := range pending {
+	for _, steer := range s.pendingSteers(run) {
 		applied := protocol.RunSteerAppliedPayload{
 			SessionID: s.state.SessionID, RunID: run.id,
 			SubmissionID: steer.submissionID, RequestID: steer.requestID,
 			MessageIDs: steer.messages, Boundary: boundary,
 		}
-		if _, err := s.publish(run, protocol.TypeRunSteerApplied, applied, false); err != nil {
+		if _, err := s.publishSettling(run, protocol.TypeRunSteerApplied, applied, false, steer.submissionID); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *memorySession) dropSteers(run *memoryRun) error {
+func (s *memorySession) pendingSteers(run *memoryRun) []*pendingSteer {
 	s.mu.Lock()
-	pending := run.steers
-	run.steers = nil
-	if len(pending) > 0 {
-		s.refreshStateLocked()
-	}
-	s.mu.Unlock()
-	for _, steer := range pending {
+	defer s.mu.Unlock()
+	return append([]*pendingSteer(nil), run.steers...)
+}
+
+func (s *memorySession) dropSteers(run *memoryRun) error {
+	for _, steer := range s.pendingSteers(run) {
 		dropped := protocol.RunSteerDroppedPayload{
 			SessionID: s.state.SessionID, RunID: run.id,
 			SubmissionID: steer.submissionID, RequestID: steer.requestID,
 			Reason: protocol.ProtocolError{Code: "run_terminated", Message: "the run terminated before the guidance was applied"},
 		}
-		if _, err := s.publish(run, protocol.TypeRunSteerDropped, dropped, false); err != nil {
+		if _, err := s.publishSettling(run, protocol.TypeRunSteerDropped, dropped, false, steer.submissionID); err != nil {
 			return err
 		}
 	}
@@ -1496,6 +1488,10 @@ func (s *memorySession) emit(run *memoryRun, typ protocol.EnvelopeType, payload 
 }
 
 func (s *memorySession) publish(run *memoryRun, typ protocol.EnvelopeType, payload any, terminal bool) (*memoryRun, error) {
+	return s.publishSettling(run, typ, payload, terminal, "")
+}
+
+func (s *memorySession) publishSettling(run *memoryRun, typ protocol.EnvelopeType, payload any, terminal bool, settled protocol.SubmissionID) (*memoryRun, error) {
 	s.emitMu.Lock()
 	defer s.emitMu.Unlock()
 
@@ -1571,6 +1567,15 @@ func (s *memorySession) publish(run *memoryRun, typ protocol.EnvelopeType, paylo
 			s.active = promoted
 		}
 		s.settled = append(s.settled, protocol.SettledRun{RunID: run.id, Sequence: sequence})
+	}
+	if settled != "" {
+		remaining := run.steers[:0]
+		for _, steer := range run.steers {
+			if steer.submissionID != settled {
+				remaining = append(remaining, steer)
+			}
+		}
+		run.steers = remaining
 	}
 	s.refreshStateLocked()
 	subscribers := append([]chan Result(nil), run.subscribers...)
