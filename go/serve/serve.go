@@ -77,7 +77,21 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 	if _, live := h.sessions.get(request.SessionID); request.Reopen && live {
 		return nil, protocol.SessionState{}, &SessionExistsError{ID: request.SessionID}
 	}
+	if request.Reopen && h.bindings != nil {
+		bound, found, err := h.bindings.Latest(ctx, string(request.SessionID))
+		if err != nil {
+			return nil, protocol.SessionState{}, err
+		}
+		if !found || bound.Record.Adapter != adapterName {
+			return nil, protocol.SessionState{}, &UnknownSessionError{ID: request.SessionID}
+		}
+		request.NativeSessionID = bound.Record.NativeSessionID
+	}
 	session, err := implementation.Open(ctx, request)
+	var gone *base.UnknownSessionError
+	if request.Reopen && h.bindings != nil && errors.As(err, &gone) {
+		return nil, protocol.SessionState{}, &base.UnsupportedControlError{Feature: protocol.FeatureOpenReopen, Reason: base.ControlUnsatisfiable, Detail: "the binding names a session the adapter can no longer load"}
+	}
 	if err != nil {
 		return nil, protocol.SessionState{}, err
 	}
@@ -94,6 +108,9 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 		h.recordBinding(context.Background(), released.binding, binding.ActionClosed, h.now())
 	})
 	opened := h.openRecord(ctx, adapterName, implementation, state, request)
+	if native, ok := session.(base.NativeSession); ok {
+		opened.NativeSessionID = native.NativeSessionID()
+	}
 	entry.binding = opened
 	settled := err != nil || state.Status == protocol.SessionClosed
 	began := binding.ActionOpened

@@ -1254,15 +1254,25 @@ nowhere to put a reason (D12).
   subscription bound can refuse this op specifically.
 - **reopen:** a request setting `reopen` is gated on `session.open.reopen` as
   `subscribe` is on its key. One naming a session still open is `session_exists`,
-  checked before the adapter is asked; one the adapter holds nothing for is
-  `unknown_session` (404). A successful reopen's state declares
+  checked before the adapter is asked. A hub records, for every session it
+  opens, the adapter and the native id the session reports (Go in its binding
+  store, Zig in memory for the hub's lifetime). A reopen with no record, or a
+  record naming another adapter, is `unknown_session` (404) without asking the
+  adapter; otherwise the adapter is handed the recorded native id, and a record
+  the adapter can no longer load is `unsupported_feature` (400) naming
+  `session.open.reopen`, because the code comes from the record's existence and
+  not from the adapter's reply. A successful reopen's state declares
   `recovery.recovered`, and a binding store records it as `reopened`. Close is an
   ordinary close of the adapter's session in both trees, so an adapter that keeps
   what it closed can be asked to reopen it. Pinned by
   `TestAReopenIsRecordedAsReopenedAfterTheClose`,
   `TestAReopenOfALiveSessionIsSessionExistsBeforeTheAdapterIsAsked`,
-  `TestTheElectionGateRefusesAReopenTheAdapterDoesNotAdvertise` and the Zig hub's
-  `a closed session reopens through the hub once` test.
+  `TestTheElectionGateRefusesAReopenTheAdapterDoesNotAdvertise`,
+  `TestAReopenHandsTheAdapterTheNativeIDItsBindingRecorded`,
+  `TestAReopenAfterARestartTheAdapterCannotLoadIsUnsupportedFeature` and the Zig
+  hub's `a closed session reopens through the hub once`, `a reopen hands the
+  adapter the native id its open recorded` and `a reopen the hub holds a record
+  for but the adapter has lost` tests.
 - **pinned by:** `TestOpenOpOpensASession`, `TestOpenOpRefusals`,
   `TestOpenRefusalsAreBounded`, `TestHubOpenRejections`,
   `TestHubOpenDefaultsParticipant`, `TestHubOpenClosesSessionWhenStateFails`,

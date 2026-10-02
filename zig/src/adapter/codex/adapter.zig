@@ -99,6 +99,7 @@ pub const Session = struct {
     retained: usize = 0,
 
     fn open(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
+        if (request.reopen and request.native_session_id.len == 0) return refusal.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
         const self = try construct(owner, arena, request, refusal);
         errdefer self.destroy();
         try self.handshake(arena, refusal);
@@ -106,7 +107,13 @@ pub const Session = struct {
         try self.flush();
         switch (try self.awaitSettled(arena, native.method_thread_start, refusal)) {
             .opened => return self,
-            .refused => |refused| return refusal.fail(error.BackendFailed, try describe(arena, refused)),
+            .refused => |refused| {
+                if (request.reopen) {
+                    refusal.* = .{ .feature = contract.feature_open_reopen, .reason = contract.reason_unsatisfiable, .detail = try describe(arena, refused) };
+                    return error.UnsupportedFeature;
+                }
+                return refusal.fail(error.BackendFailed, try describe(arena, refused));
+            },
             else => return refusal.fail(error.BackendFailed, "the codex app-server answered thread/start with an unrelated settlement"),
         }
     }
@@ -124,6 +131,7 @@ pub const Session = struct {
         errdefer gpa.destroy(reducer_arena);
         reducer_arena.* = std.heap.ArenaAllocator.init(gpa);
         errdefer reducer_arena.deinit();
+        const resume_thread_id: []const u8 = if (request.reopen) try reducer_arena.allocator().dupe(u8, request.native_session_id) else "";
         const argv = try std.mem.concat(arena, []const u8, &.{ config.args, &app_server_args });
         const transport = process.Transport.open(gpa, .{
             .executable = config.executable,
@@ -151,6 +159,8 @@ pub const Session = struct {
                 .working_directory = config.working_directory orelse "",
                 .approval_policy = config.approval_policy,
                 .sandbox = config.sandbox,
+                .resume_thread_id = resume_thread_id,
+                .reopen = request.reopen,
                 .revision = capability_revision,
                 .counter = &owner.ids,
                 .now_ms = wallClock,
@@ -179,7 +189,12 @@ pub const Session = struct {
         .readable = readable,
         .activity = activity,
         .close = close,
+        .native_id = nativeId,
     };
+
+    fn nativeId(ptr: *anyopaque) []const u8 {
+        return cast(ptr).reducer.thread_id;
+    }
 
     fn cast(ptr: *anyopaque) *Session {
         return @ptrCast(@alignCast(ptr));
@@ -333,6 +348,7 @@ pub const Session = struct {
             .current_model_id = current_model_id,
             .transcript_cursor = transcript_cursor,
             .updated_at_ms = if (current.updated_at_ms > 0) current.updated_at_ms else null,
+            .recovered = current.recovered,
         };
     }
 
@@ -662,7 +678,11 @@ const Probe = struct {
     }
 
     fn open(self: *Probe, refusal: *contract.Refusal) !contract.Session {
-        const opened = try self.adapter.adapter().vtable.open(&self.adapter, self.arena.allocator(), .{ .session_id = "s1", .participant = "user" }, refusal);
+        return self.openWith(.{ .session_id = "s1", .participant = "user" }, refusal);
+    }
+
+    fn openWith(self: *Probe, request: contract.OpenRequest, refusal: *contract.Refusal) !contract.Session {
+        const opened = try self.adapter.adapter().vtable.open(&self.adapter, self.arena.allocator(), request, refusal);
         self.handle = opened;
         return opened;
     }
@@ -840,6 +860,46 @@ test "a cancel interrupts the exact turn, answers cancelling, and the run settle
     var seen = std.ArrayList(contract.Event).empty;
     _ = try probe.pumpUntil("run.cancelled", &seen);
     try testing.expectError(error.RunNotFound, probe.handle.?.cancel(probe.arena.allocator(), "run-unknown", &refusal));
+}
+
+const fake_resume_prelude =
+    \\#!/bin/sh
+    \\exec 3>>"$(dirname "$0")/stdin.log"
+    \\take() { IFS= read -r line || exit 0; printf '%s\n' "$line" >&3; }
+    \\take; printf '{"id":0,"result":{"userAgent":"codex-fake","codexHome":"/codex","platformFamily":"unix","platformOs":"linux"}}\n'
+    \\take
+    \\
+;
+
+test "a reopen resumes the bound thread and reports the model it resumed under" {
+    var probe: Probe = undefined;
+    try probe.init(fake_resume_prelude ++
+        \\take; printf '{"id":1,"result":{"thread":{"id":"native-thread"},"model":"gpt-resumed","modelProvider":"openai","cwd":"/work","approvalPolicy":"never","approvalsReviewer":"user","sandbox":{"type":"readOnly"}}}\n'
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const opened = try probe.openWith(.{ .session_id = "s1", .participant = "user", .reopen = true, .native_session_id = "native-thread" }, &refusal);
+    try testing.expectEqualStrings("native-thread", opened.nativeId());
+    _ = try probe.waitWritten("{\"id\":1,\"method\":\"thread/resume\",\"params\":{\"threadId\":\"native-thread\"}}");
+    const reopened = try opened.state(probe.arena.allocator(), &refusal);
+    try testing.expect(reopened.recovered);
+    try testing.expectEqualStrings("gpt-resumed", reopened.current_model_id.?);
+}
+
+test "a reopen Codex cannot load is unsupported_feature" {
+    var probe: Probe = undefined;
+    try probe.init(fake_resume_prelude ++
+        \\take; printf '{"id":1,"error":{"code":-32602,"message":"no rollout found for thread id native-thread"}}\n'
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    try testing.expectError(error.UnsupportedFeature, probe.openWith(.{ .session_id = "s1", .participant = "user", .reopen = true, .native_session_id = "native-thread" }, &refusal));
+    try testing.expect(std.mem.indexOf(u8, refusal.detail, "no rollout found") != null);
+
+    var unbound = contract.Refusal{};
+    try testing.expectError(error.UnsupportedFeature, probe.openWith(.{ .session_id = "s1", .participant = "user", .reopen = true }, &unbound));
 }
 
 test "a child that exits before answering initialize refuses the open, naming why" {
