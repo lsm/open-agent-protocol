@@ -1667,7 +1667,7 @@ func TestSteerTargetRefusals(t *testing.T) {
 	}
 }
 
-func TestSteerRefusesRunControlsAsUnsatisfiable(t *testing.T) {
+func TestSteerRefusesRunControlsAsUnadvertised(t *testing.T) {
 	client := newFakeClient()
 	s := openTest(t, client, 32)
 	_, stream := submitTest(t, s)
@@ -1678,8 +1678,8 @@ func TestSteerRefusesRunControlsAsUnsatisfiable(t *testing.T) {
 	request.Request.ModelID = &model
 	_, _, err := s.Submit(context.Background(), request)
 	var refusal *base.UnsupportedControlError
-	if !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureModelSelection || refusal.Reason != base.ControlUnsatisfiable {
-		t.Fatalf("steer with a model = %v, want unsatisfiable model_selection", err)
+	if !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureModelSelection || refusal.Reason != base.ControlUnadvertised {
+		t.Fatalf("steer with a model = %v, want unadvertised model_selection", err)
 	}
 	if sentCommand(client, native.CommandSteer) {
 		t.Fatal("a refused steer reached Pi")

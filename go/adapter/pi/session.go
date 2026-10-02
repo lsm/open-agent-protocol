@@ -412,6 +412,8 @@ func (s *Session) steer(ctx context.Context, submit base.SubmitRequest) (protoco
 	if err != nil {
 		return protocol.MessageSubmitResponse{}, nil, err
 	}
+	s.reduceMu.Lock()
+	defer s.reduceMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if target.terminal || target.status == protocol.RunCancelling {
@@ -462,24 +464,20 @@ func (s *Session) steerTargetLocked(target protocol.RunID) (*runState, string) {
 }
 
 func refuseSteerControls(request protocol.MessageSubmitRequest) error {
-	var keys []string
-	if request.Instructions != nil {
-		keys = append(keys, protocol.FeatureInstructions)
+	for _, control := range []struct {
+		key     string
+		present bool
+	}{
+		{protocol.FeatureInstructions, request.Instructions != nil},
+		{protocol.FeatureModelSelection, request.ModelID != nil},
+		{protocol.FeatureStructuredOutput, len(request.OutputSchema) > 0},
+		{protocol.FeatureToolSelection, len(request.ToolChoice) > 0},
+	} {
+		if control.present {
+			return &base.UnsupportedControlError{Feature: control.key, Reason: base.ControlUnadvertised}
+		}
 	}
-	if request.ModelID != nil {
-		keys = append(keys, protocol.FeatureModelSelection)
-	}
-	if len(request.OutputSchema) > 0 {
-		keys = append(keys, protocol.FeatureStructuredOutput)
-	}
-	if len(request.ToolChoice) > 0 {
-		keys = append(keys, protocol.FeatureToolSelection)
-	}
-	if len(keys) == 0 {
-		return nil
-	}
-	slices.Sort(keys)
-	return &base.UnsupportedControlError{Feature: keys[0], Reason: base.ControlUnsatisfiable}
+	return nil
 }
 
 func (s *Session) settleSteers(run *runState, boundary protocol.SteerBoundary) {

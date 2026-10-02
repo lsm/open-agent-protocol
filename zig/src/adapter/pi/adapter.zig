@@ -548,7 +548,7 @@ pub const Session = struct {
     fn steer(self: *Session, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
         if (request.session_id.len == 0 or request.messages.len == 0) return error.InvalidSubmission;
         if (steerControlKey(request)) |key| {
-            refusal.* = .{ .feature = key, .reason = contract.reason_unsatisfiable };
+            refusal.* = .{ .feature = key, .reason = contract.reason_unadvertised };
             return error.UnsupportedFeature;
         }
         if (self.ended or self.unusable) return error.SessionClosed;
@@ -1497,11 +1497,9 @@ test "a steer naming another run is refused without reaching Pi" {
 }
 
 const fake_settled_before_steer =
-    \\take; printf '{"type":"agent_end","messages":[" ++ assistant_hello ++ "],"willRetry":false}\n'
-    \\printf '{"type":"agent_settled"}\n'
-    \\printf '{"type":"response","id":"req_3","command":"steer","success":true}\n'
-    \\
-;
+    "take; printf '%s\\n' '{\"type\":\"agent_end\",\"messages\":[" ++ assistant_hello ++ "],\"willRetry\":false}'\n" ++
+    "printf '{\"type\":\"agent_settled\"}\n'\n" ++
+    "printf '{\"type\":\"response\",\"id\":\"req_3\",\"command\":\"steer\",\"success\":true}\n'\n";
 
 test "a steer naming a settled run is refused as terminal" {
     var probe: Probe = undefined;
@@ -1529,6 +1527,10 @@ test "a steer whose target settles while the steer is in flight is refused" {
     var request = try steerRequest(probe.arena.allocator(), admitted.run_id);
     try testing.expectError(error.InvalidSteerTarget, probe.handle.?.submit(probe.arena.allocator(), &request, "steer-request", &refusal));
     try testing.expectEqualStrings("terminal", refusal.reason);
+
+    var settled = std.ArrayList(contract.Event).empty;
+    const completed = try probe.pumpUntil("run.completed", &settled);
+    try testing.expect(std.mem.indexOf(u8, completed.line, "run.completed") != null);
 }
 
 const fake_dialog_open = fake_prompt_accepted ++
