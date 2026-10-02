@@ -100,6 +100,14 @@ pub const Reducer = struct {
         return self.steers.items;
     }
 
+    pub fn runStatus(self: *Reducer) []const u8 {
+        if (self.cancel_intent) return "cancelling";
+        for (self.interactions.items) |interaction| {
+            if (!interaction.resolved) return "waiting_for_input";
+        }
+        return "running";
+    }
+
     pub fn admittedSteerRequests(self: *Reducer) []const []const u8 {
         return self.admitted_steers.items;
     }

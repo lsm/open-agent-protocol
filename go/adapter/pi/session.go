@@ -414,9 +414,13 @@ func (s *Session) steer(ctx context.Context, submit base.SubmitRequest) (protoco
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if target.terminal {
+	if target.terminal || target.status == protocol.RunCancelling {
+		reason := base.SteerReasonTerminal
+		if !target.terminal {
+			reason = base.SteerReasonNotSteerable
+		}
 		sequence := target.next - 1
-		return protocol.MessageSubmitResponse{}, nil, &base.InvalidSteerTargetError{RunID: target.id, Reason: base.SteerReasonTerminal, TargetSequence: &sequence}
+		return protocol.MessageSubmitResponse{}, nil, &base.InvalidSteerTargetError{RunID: target.id, Reason: reason, TargetSequence: &sequence}
 	}
 	sequence := target.next - 1
 	target.steers = append(target.steers, &pendingSteer{submissionID: submissionID, requestID: submit.EnvelopeID, messages: messageIDs})
@@ -448,10 +452,8 @@ func (s *Session) steerTargetLocked(target protocol.RunID) (*runState, string) {
 	}
 	run := s.active
 	switch {
-	case run == nil || run.terminal:
+	case run == nil || run.terminal || !run.started:
 		return nil, base.SteerReasonNoActiveRun
-	case !run.started:
-		return run, base.SteerReasonQueued
 	case run.status == protocol.RunCancelling:
 		return run, base.SteerReasonNotSteerable
 	default:

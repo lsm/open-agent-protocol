@@ -521,13 +521,20 @@ pub const Session = struct {
         const entry = try arena.alloc(oap_types.ActiveRun, 1);
         entry[0] = .{
             .run_id = try arena.dupe(u8, running.run_id),
-            .status = .running,
+            .status = reducerStatus(running),
             .relationship = "primary",
             .as_of_sequence = running.sequence - 1,
             .admitted_submit_requests = carried_anchors,
             .pending_steers = carried,
         };
         return entry;
+    }
+
+    fn reducerStatus(reducer: *session.Reducer) oap_types.RunStatus {
+        const status = reducer.runStatus();
+        if (std.mem.eql(u8, status, "cancelling")) return .cancelling;
+        if (std.mem.eql(u8, status, "waiting_for_input")) return .waiting_for_input;
+        return .running;
     }
 
     fn steerControlKey(request: *const oap_types.MessageSubmitRequest) ?[]const u8 {
@@ -548,7 +555,10 @@ pub const Session = struct {
         if (!std.mem.eql(u8, request.session_id, self.id)) return error.RunNotFound;
         const named = request.target_run_id orelse "";
         const reducer = self.live() orelse {
-            const reason = if (named.len > 0 and self.statuses.contains(named)) steer_reason_terminal else steer_reason_no_active_run;
+            const reason = if (named.len > 0)
+                (if (self.statuses.contains(named)) steer_reason_terminal else steer_reason_unknown_target)
+            else
+                steer_reason_no_active_run;
             refusal.* = .{ .reason = reason, .message = "adapter: steer target cannot take guidance: the session has no started run" };
             return error.InvalidSteerTarget;
         };
@@ -558,7 +568,8 @@ pub const Session = struct {
             return error.InvalidSteerTarget;
         }
         if (!reducer.started) {
-            refusal.* = .{ .reason = steer_reason_queued, .message = "adapter: steer target cannot take guidance: the run has not started" };
+            const reason = if (named.len > 0) steer_reason_queued else steer_reason_no_active_run;
+            refusal.* = .{ .reason = reason, .message = "adapter: steer target cannot take guidance: the run has not started" };
             return error.InvalidSteerTarget;
         }
         if (reducer.cancel_intent) {
@@ -590,7 +601,7 @@ pub const Session = struct {
             .effective_delivery = .steer,
             .admission = .steered,
             .run_id = try arena.dupe(u8, reducer.run_id),
-            .status = .running,
+            .status = reducerStatus(reducer),
             .message_ids = message_ids,
             .target_sequence = reducer.sequence - 1,
         };
@@ -1518,4 +1529,39 @@ test "a steer whose target settles while the steer is in flight is refused" {
     var request = try steerRequest(probe.arena.allocator(), admitted.run_id);
     try testing.expectError(error.InvalidSteerTarget, probe.handle.?.submit(probe.arena.allocator(), &request, "steer-request", &refusal));
     try testing.expectEqualStrings("terminal", refusal.reason);
+}
+
+const fake_dialog_open = fake_prompt_accepted ++
+    "printf '%s\\n' '{\"type\":\"extension_ui_request\",\"id\":\"ui-1\",\"method\":\"confirm\",\"title\":\"Proceed?\",\"message\":\"Continue\"}'\n" ++
+    "take; printf '{\"type\":\"response\",\"id\":\"req_3\",\"command\":\"steer\",\"success\":true}\n'\n" ++
+    "";
+
+test "a steer during an extension dialog reports the waiting status" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_dialog_open ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    const admitted = try probe.submit("hello", &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    _ = try probe.pumpUntil("user.input.requested", &seen);
+
+    var request = try steerRequest(probe.arena.allocator(), admitted.run_id);
+    const steered = try probe.handle.?.submit(probe.arena.allocator(), &request, "steer-request", &refusal);
+    try testing.expectEqual(oap_types.RunStatus.waiting_for_input, steered.status.?);
+}
+
+test "a steer naming an unknown run on an idle session is refused as unknown_target" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_text_turn ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    _ = try probe.submit("hello", &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    _ = try probe.pumpUntil("run.completed", &seen);
+
+    var request = try steerRequest(probe.arena.allocator(), "run-typo");
+    try testing.expectError(error.InvalidSteerTarget, probe.handle.?.submit(probe.arena.allocator(), &request, "steer-request", &refusal));
+    try testing.expectEqualStrings("unknown_target", refusal.reason);
 }
