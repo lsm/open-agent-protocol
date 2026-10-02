@@ -105,8 +105,13 @@ model catalog are the ones `~/.oapx` holds, shared by every `oapx` entry in the
 document, and each session gets its own runtime. A session's settings come from
 its open's `metadata.oapx`, the keys `oapx tui` sends — `thinking_level`,
 `context_window`, `output`, `permission_mode`, `workspace_root` and
-`user_input` — and its model from a submit's `model_id`, a `provider/api/id`
-reference, so two sessions on one hub can run different providers and models.
+`user_input` — plus `model`, a `provider/api@id` reference as the session's
+model catalog prints it, so two sessions on one hub can run different providers
+and models. An open naming a model the catalog lacks is refused
+`model_not_found` with the `model_id` it named. The model is fixed for the
+session's life over the hub: the adapter does not advertise
+`run.model_selection`, so a submit carrying `model_id` is refused
+`unsupported_feature`, and the hub has no op for `session.model.switch`.
 This type is Zig's alone: Go has no counterpart adapter, so `goap hub` refuses
 the entry as an unknown type, and `examples/oap-serve.json` does not carry one
 because `goap hub` reads that file too (D27).

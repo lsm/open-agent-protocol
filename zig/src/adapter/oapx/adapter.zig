@@ -139,6 +139,7 @@ pub const Session = struct {
         @memcpy(session_tools[0..owner.options.tools.len], owner.options.tools);
         if (offers_input) session_tools[owner.options.tools.len] = inputTool(self);
         var options = sessionOptions(owner.options, request.metadata);
+        if (try requestedModel(gpa, owner.options.models, request.metadata, refusal)) |chosen| options.initial_model = chosen;
         options.tools = session_tools;
         options.tool_approval_ctx = self;
         options.tool_approval_callback = approveTool;
@@ -834,6 +835,24 @@ pub fn sessionOptions(base: tui_runtime.TuiRuntimeOptions, metadata: ?std.json.V
     return options;
 }
 
+pub fn requestedModel(
+    allocator: std.mem.Allocator,
+    available: []const ai_types.Model,
+    metadata: ?std.json.Value,
+    refusal: *contract.Refusal,
+) contract.Failure!?tui_runtime.InitialModelRef {
+    const document = metadata orelse return null;
+    if (document != .object) return null;
+    const settings = document.object.get(settings_key) orelse return null;
+    if (settings != .object) return null;
+    const named = settings.object.get("model") orelse return null;
+    if (named != .string or named.string.len == 0) return null;
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+    const chosen = (try findModel(scratch.allocator(), available, named.string)) orelse return refusal.missingModel(named.string);
+    return .{ .id = chosen.id, .provider = chosen.provider, .api = chosen.api };
+}
+
 fn refFor(allocator: std.mem.Allocator, model: ai_types.Model) ![]u8 {
     return model_ref.formatModelRef(allocator, model.provider, model.api, model.id);
 }
@@ -1339,6 +1358,30 @@ test "an open's oapx metadata sets the session's thinking level, window, output 
     try testing.expectEqual(@as(?u32, null), kept.context_window);
     try testing.expect(kept.output == .auto);
     try testing.expectEqualStrings("/base", kept.workspace_root);
+}
+
+test "an open's oapx metadata names the session's model by the reference the catalog prints, and one it lacks refuses the open" {
+    var script = Script{};
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const a = harness.arena.allocator();
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"oapx":{"model":"scripted/openai-completions@other-model"}}
+    , .{});
+    defer parsed.deinit();
+    var refusal = contract.Refusal{};
+    const chosen = try harness.owner.adapter().open(a, .{ .participant = "user", .session_id = "picked", .metadata = parsed.value }, &refusal);
+    defer chosen.teardown();
+    const opened = try chosen.state(a, &refusal);
+    try testing.expectEqualStrings("scripted/openai-completions@other-model", opened.current_model_id.?);
+
+    var missing = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"oapx":{"model":"scripted/openai-completions@missing"}}
+    , .{});
+    defer missing.deinit();
+    try testing.expectError(error.ModelNotFound, harness.owner.adapter().open(a, .{ .participant = "user", .session_id = "lacking", .metadata = missing.value }, &refusal));
+    try testing.expectEqualStrings("scripted/openai-completions@missing", refusal.model_id);
 }
 
 test "an open's oapx metadata can ask for ask mode, which this adapter now answers with permission interactions" {
