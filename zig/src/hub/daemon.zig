@@ -14,6 +14,7 @@ pub const max_connections: usize = 64;
 pub const stream_cycle_ms: i32 = 10;
 pub const io_cycle_ms: i32 = 50;
 pub const batch_limit: usize = 64;
+pub const stop_grace_ms: i64 = 1000;
 
 const text_plain = "text/plain; charset=utf-8";
 const ok_status = "200 OK";
@@ -689,6 +690,22 @@ pub const Connections = struct {
         thread: ?std.Thread = null,
         done: std.atomic.Value(bool) = .init(false),
         stream: compat.net.Stream = undefined,
+        guard: std.Io.Mutex = .init,
+        closed: bool = false,
+
+        fn finish(self: *Slot) void {
+            self.guard.lockUncancelable(io());
+            self.stream.close();
+            self.closed = true;
+            self.guard.unlock(io());
+            self.done.store(true, .release);
+        }
+
+        fn interrupt(self: *Slot) void {
+            self.guard.lockUncancelable(io());
+            defer self.guard.unlock(io());
+            if (!self.closed) self.stream.shutdownHow(.both);
+        }
     };
 
     pub fn reap(self: *Connections) void {
@@ -712,14 +729,14 @@ pub const Connections = struct {
 
     fn run(daemon: *Daemon, slot: *Slot) void {
         serveConnection(daemon, &slot.stream);
-        slot.stream.close();
-        slot.done.store(true, .release);
+        slot.finish();
     }
 
     pub fn serve(self: *Connections, daemon: *Daemon, stream: compat.net.Stream) void {
         for (&self.slots) |*slot| {
             if (slot.thread != null) continue;
             slot.stream = stream;
+            slot.closed = false;
             slot.done.store(false, .release);
             slot.thread = std.Thread.spawn(.{}, run, .{ daemon, slot }) catch {
                 run(daemon, slot);
@@ -731,7 +748,19 @@ pub const Connections = struct {
         refused.close();
     }
 
+    fn settled(self: *Connections) bool {
+        for (&self.slots) |*slot| {
+            if (slot.thread != null and !slot.done.load(.acquire)) return false;
+        }
+        return true;
+    }
+
     pub fn joinAll(self: *Connections) void {
+        const until = compat.time.nowMillis() + stop_grace_ms;
+        while (!self.settled() and compat.time.nowMillis() < until) compat.time.sleepMs(5);
+        for (&self.slots) |*slot| {
+            if (slot.thread != null and !slot.done.load(.acquire)) slot.interrupt();
+        }
         for (&self.slots) |*slot| {
             const thread = slot.thread orelse continue;
             thread.join();

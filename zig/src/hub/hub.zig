@@ -1184,7 +1184,7 @@ pub const Hub = struct {
                 continue;
             }
             _ = self.holds.orderedRemove(index);
-            held.subscription.held = false;
+            self.release(held.subscription, .session_closed);
         }
         self.removeSession(entry);
     }
@@ -2229,6 +2229,24 @@ test "a released session's id is free again, and its memory is gone" {
     try testing.expectEqual(@as(usize, 1), hub.sessionCount());
 
     subscription.close();
+    try hub.pump(testing.allocator, 0);
+    try testing.expectEqual(@as(usize, 0), hub.subscriptions.items.len);
+}
+
+test "a hold its session closes under is released, so the next pump reclaims it" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256 });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "memory", .{ .session_id = "closing", .subscribe = true });
+    _ = try hub.holdSubscription(opened.subscription.?);
+    try testing.expectEqual(@as(usize, 1), hub.subscriptions.items.len);
+    try hub.close(arena, "closing");
+    try testing.expectEqual(@as(usize, 0), hub.holds.items.len);
     try hub.pump(testing.allocator, 0);
     try testing.expectEqual(@as(usize, 0), hub.subscriptions.items.len);
 }

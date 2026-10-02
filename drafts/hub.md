@@ -431,7 +431,10 @@ waits in the kernel's listen backlog until a connection ends — no status is se
 for having reached the bound, which is what the rule above asks of a port. A
 stream polls its own socket while it has nothing to write, so a client that hangs
 up mid-stream releases its connection and its subscription without an event
-having to fail first. Zig: `an open event stream does not hold the daemon:
+having to fail first. A stop gives every connection 1 s to notice it and end; one still
+running after that — a stream blocked writing to a client that stopped reading
+— has its socket shut down under it, so the blocked write returns and the
+daemon still exits rather than waiting on a reader that will never drain. Zig: `an open event stream does not hold the daemon:
 another connection is answered while it streams`, `a client that hangs up
 mid-stream releases its subscription without an event to write`, and
 `stopping the daemon ends an open stream rather than waiting it out`.
