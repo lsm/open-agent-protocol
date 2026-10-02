@@ -423,7 +423,7 @@ sends them, joined, as a new turn once the aborted run ends; a second `Esc` befo
 drops them), `Ctrl+C` abort/clear first and quit on a second press
 within ~1.5 s (immediate quit when idle with an empty composer), `Ctrl+D` quit on an
 empty idle composer, `Tab` complete the slash command the palette selects,
-`Ctrl+Y` copy the last reply, `Shift+Tab` cycle thinking, `Up/Down` move the slash
+`Ctrl+Y` copy the last reply, `Ctrl+O` cycle verbosity, `Shift+Tab` cycle thinking, `Up/Down` move the slash
 palette's selection while it is open; otherwise they move the cursor one visual row
 inside the draft (keeping the goal column across consecutive presses, snapping to the
 start of a wide codepoint) and, at the first/last row, walk history — once a recalled
@@ -516,8 +516,17 @@ each `quiet`, `normal` (the default) or `verbose`:
 `/verbose quiet` then `/verbose status verbose` keeps the transcript terse and the
 status bar full. `/verbose` alone reports all five. The setting is saved in
 `~/.oapx/config.json` under `mode.verbosity`. It changes only what is drawn: the
-session file and what the model sees are the same at every level, and in inline
-mode rows already printed to the scrollback keep the level they were printed with.
+session file and what the model sees are the same at every level. `Ctrl+O` cycles
+every part through `quiet`, `normal` and `verbose` (a mixed setting goes to `normal`).
+
+The TUI prints finished entries into the terminal's own scrollback, which it cannot
+edit afterwards. `/redraw` clears the screen and the scrollback and reprints the
+session at the current level; that also clears what the terminal showed before oapx
+started. A change to `thinking`, `tools`, `output` or `notices` redraws on its own
+when no turn is running and the TUI is not inside tmux or screen (`TMUX`, `STY`),
+which may ignore the scrollback clear and leave both copies; otherwise it says to
+run `/redraw`. A `status` change never redraws, since the status bar is redrawn
+every frame anyway.
 
 ## Automatic compaction
 
