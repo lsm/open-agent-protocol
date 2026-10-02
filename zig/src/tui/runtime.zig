@@ -810,9 +810,10 @@ pub const TuiRuntime = struct {
         var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, details_json, .{}) catch return;
         defer parsed.deinit();
         if (parsed.value != .object) return;
-        const observed = parsed.value.object.get("working_directory_observed") orelse return;
+        const details = detailsObject(parsed.value.object) orelse return;
+        const observed = details.get("working_directory_observed") orelse return;
         if (observed != .bool or !observed.bool) return;
-        const directory = parsed.value.object.get("working_directory") orelse return;
+        const directory = details.get("working_directory") orelse return;
         if (directory != .string) return;
         const started_in = startDirectoryOf(self.allocator, args_json);
         defer if (started_in) |owned| self.allocator.free(owned);
@@ -1925,6 +1926,13 @@ fn directoryOpens(path: []const u8) bool {
     var dir = std.Io.Dir.openDirAbsolute(compat.fs.defaultIo(), path, .{}) catch return false;
     dir.close(compat.fs.defaultIo());
     return true;
+}
+
+fn detailsObject(object: std.json.ObjectMap) ?std.json.ObjectMap {
+    if (object.get("working_directory_observed") != null) return object;
+    const nested = object.get("details") orelse return null;
+    if (nested != .object) return null;
+    return nested.object;
 }
 
 fn startDirectoryOf(allocator: std.mem.Allocator, args_json: []const u8) ?[]u8 {
@@ -3986,6 +3994,11 @@ test "only a command that moved moves the session, and the result says where it 
     runtime.adoptReportedWorkingDirectory("{\"workspace_root\":\"/tmp/makai-workspace\"}", details, &result);
     try std.testing.expectEqualStrings("/tmp/makai-workspace/sub", runtime.workingDirectory());
     try std.testing.expect(std.mem.endsWith(u8, result.content.slice()[0].text.text, "\ncwd: /tmp/makai-workspace/sub"));
+
+    const big = "{\"raw_bytes\":40000,\"compressed\":true,\"details\":{\"working_directory\":\"/tmp/makai-workspace/big\",\"working_directory_observed\":true}}";
+    runtime.adoptReportedWorkingDirectory("{\"workspace_root\":\"/tmp/makai-workspace\"}", big, &result);
+    try std.testing.expectEqualStrings("/tmp/makai-workspace/big", runtime.workingDirectory());
+    try std.testing.expect(std.mem.endsWith(u8, result.content.slice()[0].text.text, "\ncwd: /tmp/makai-workspace/big"));
 }
 
 test "runtime ends a run whose last reply finished without an output-limit warning" {
