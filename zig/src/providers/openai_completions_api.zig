@@ -655,7 +655,7 @@ fn buildRequestBody(
     if (options.getReasoningEffort()) |effort| {
         if (model.reasoning and merged.supports_reasoning_effort) {
             const sent: ?[]const u8 = if (provider_caps.isOpenCodeGateway(model.provider))
-                provider_caps.openCodeEffort(model.id, effort)
+                (if (options.reasoning_enabled) provider_caps.openCodeEffort(model.id, effort) else null)
             else if (provider_caps.usesDeepSeekWire(model.provider, model.base_url))
                 provider_caps.deepSeekEffort(effort)
             else

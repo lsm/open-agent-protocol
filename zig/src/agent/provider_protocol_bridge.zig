@@ -8,6 +8,7 @@ const protocol_server = @import("protocol_server");
 const protocol_client = @import("protocol_client");
 const protocol_runtime = @import("protocol_runtime");
 const in_process = @import("transports/in_process");
+const provider_caps = @import("provider_caps");
 
 const ProtocolServer = protocol_server.ProtocolServer;
 const ProtocolClient = protocol_client.ProtocolClient;
@@ -111,7 +112,10 @@ fn drainClientEvents(client: *ProtocolClient, out_stream: *event_stream.Assistan
     return drained;
 }
 
-fn reasoningEffort(level: ai_types.ThinkingLevel, model_id: []const u8) []const u8 {
+fn reasoningEffort(level: ai_types.ThinkingLevel, model: ai_types.Model) []const u8 {
+    if (provider_caps.isOpenCodeGateway(model.provider)) return if (level == .off) "" else @tagName(level);
+    if (provider_caps.usesDeepSeekWire(model.provider, model.base_url) and level != .off) return @tagName(level);
+    const model_id = model.id;
     return switch (level) {
         .off => if (isGpt51OrLater(model_id)) "none" else "low",
         .minimal => "low",
@@ -174,8 +178,8 @@ fn thinkingBudget(level: ai_types.ThinkingLevel, budgets: ?ai_types.ThinkingBudg
     };
 }
 
-fn streamOptionsFromProtocolOptions(options: agent_types.ProtocolOptions, model_id: []const u8, api_key: ?[]const u8, session_id: ?[]const u8) ai_types.StreamOptions {
-    const reason_effort = reasoningEffort(options.thinking_level, model_id);
+fn streamOptionsFromProtocolOptions(options: agent_types.ProtocolOptions, model: ai_types.Model, api_key: ?[]const u8, session_id: ?[]const u8) ai_types.StreamOptions {
+    const reason_effort = reasoningEffort(options.thinking_level, model);
     const think_effort = thinkingEffort(options.thinking_level);
     return .{
         .api_key = if (api_key) |k| ai_types.OwnedSlice(u8).initBorrowed(k) else ai_types.OwnedSlice(u8).initBorrowed(""),
@@ -221,7 +225,7 @@ fn runStreamThread(ctx: *StreamThreadContext) void {
         .allocator = ctx.allocator,
     };
 
-    const stream_options = streamOptionsFromProtocolOptions(ctx.options, ctx.model.id, ctx.api_key, ctx.session_id);
+    const stream_options = streamOptionsFromProtocolOptions(ctx.options, ctx.model, ctx.api_key, ctx.session_id);
 
     var request_model = ctx.model;
     request_model.is_owned = false;
@@ -403,17 +407,17 @@ test "InProcessProviderProtocolBridge smoke test" {
 }
 
 test "provider protocol bridge maps max to each provider's highest level" {
-    const claude = streamOptionsFromProtocolOptions(.{ .thinking_level = .max }, "claude-opus-4-6", null, null);
+    const claude = streamOptionsFromProtocolOptions(.{ .thinking_level = .max }, bridgeTestModel("openai", "claude-opus-4-6"), null, null);
     try std.testing.expectEqualStrings("max", claude.getThinkingEffort().?);
     try std.testing.expectEqual(@as(?u32, 8192), claude.thinking_budget_tokens);
 
-    const budgeted = streamOptionsFromProtocolOptions(.{ .thinking_level = .max, .thinking_budgets = .{ .max = 16384 } }, "claude-opus-4-6", null, null);
+    const budgeted = streamOptionsFromProtocolOptions(.{ .thinking_level = .max, .thinking_budgets = .{ .max = 16384 } }, bridgeTestModel("openai", "claude-opus-4-6"), null, null);
     try std.testing.expectEqual(@as(?u32, 16384), budgeted.thinking_budget_tokens);
 
-    const gpt52 = streamOptionsFromProtocolOptions(.{ .thinking_level = .max }, "gpt-5.2", null, null);
+    const gpt52 = streamOptionsFromProtocolOptions(.{ .thinking_level = .max }, bridgeTestModel("openai", "gpt-5.2"), null, null);
     try std.testing.expectEqualStrings("xhigh", gpt52.getReasoningEffort().?);
 
-    const gpt51 = streamOptionsFromProtocolOptions(.{ .thinking_level = .max }, "gpt-5.1", null, null);
+    const gpt51 = streamOptionsFromProtocolOptions(.{ .thinking_level = .max }, bridgeTestModel("openai", "gpt-5.1"), null, null);
     try std.testing.expectEqualStrings("high", gpt51.getReasoningEffort().?);
 }
 
@@ -423,7 +427,7 @@ test "provider protocol bridge maps thinking level to stream options" {
         .session_id = "sid",
         .thinking_level = .xhigh,
         .thinking_budgets = .{ .xhigh = 8192 },
-    }, "gpt-5.1", "key", "sid");
+    }, bridgeTestModel("openai", "gpt-5.1"), "key", "sid");
 
     try std.testing.expect(opts.thinking_enabled);
     try std.testing.expect(opts.reasoning_enabled);
@@ -431,24 +435,24 @@ test "provider protocol bridge maps thinking level to stream options" {
     try std.testing.expectEqualStrings("max", opts.getThinkingEffort().?);
     try std.testing.expectEqualStrings("high", opts.getReasoningEffort().?);
 
-    const codex_max = streamOptionsFromProtocolOptions(.{ .thinking_level = .xhigh }, "gpt-5.1-codex-max", null, null);
+    const codex_max = streamOptionsFromProtocolOptions(.{ .thinking_level = .xhigh }, bridgeTestModel("openai", "gpt-5.1-codex-max"), null, null);
     try std.testing.expectEqualStrings("xhigh", codex_max.getReasoningEffort().?);
 
-    const gpt52_xhigh = streamOptionsFromProtocolOptions(.{ .thinking_level = .xhigh }, "gpt-5.2", null, null);
+    const gpt52_xhigh = streamOptionsFromProtocolOptions(.{ .thinking_level = .xhigh }, bridgeTestModel("openai", "gpt-5.2"), null, null);
     try std.testing.expectEqualStrings("xhigh", gpt52_xhigh.getReasoningEffort().?);
 
-    const gpt52_off = streamOptionsFromProtocolOptions(.{ .thinking_level = .off }, "gpt-5.2", null, null);
+    const gpt52_off = streamOptionsFromProtocolOptions(.{ .thinking_level = .off }, bridgeTestModel("openai", "gpt-5.2"), null, null);
     try std.testing.expectEqualStrings("none", gpt52_off.getReasoningEffort().?);
-    const gpt5_off = streamOptionsFromProtocolOptions(.{ .thinking_level = .off }, "gpt-5", null, null);
+    const gpt5_off = streamOptionsFromProtocolOptions(.{ .thinking_level = .off }, bridgeTestModel("openai", "gpt-5"), null, null);
     try std.testing.expectEqualStrings("low", gpt5_off.getReasoningEffort().?);
 
-    const off = streamOptionsFromProtocolOptions(.{ .thinking_level = .off }, "gpt-5.1", null, null);
+    const off = streamOptionsFromProtocolOptions(.{ .thinking_level = .off }, bridgeTestModel("openai", "gpt-5.1"), null, null);
     try std.testing.expect(!off.thinking_enabled);
     try std.testing.expect(!off.reasoning_enabled);
     try std.testing.expect(off.getThinkingEffort() == null);
     try std.testing.expectEqualStrings("none", off.getReasoningEffort().?);
 
-    const minimal = streamOptionsFromProtocolOptions(.{ .thinking_level = .minimal }, "gpt-5", null, null);
+    const minimal = streamOptionsFromProtocolOptions(.{ .thinking_level = .minimal }, bridgeTestModel("openai", "gpt-5"), null, null);
     try std.testing.expectEqualStrings("low", minimal.getReasoningEffort().?);
 }
 
@@ -879,4 +883,39 @@ test "a stream that goes silent for the idle window fails as timed out" {
     }
 
     try std.testing.expectEqualStrings("Provider protocol stream timed out", stream.getError() orelse "");
+}
+
+fn bridgeTestModel(provider: []const u8, id: []const u8) ai_types.Model {
+    return .{
+        .id = id,
+        .name = id,
+        .api = "openai-completions",
+        .provider = provider,
+        .base_url = "",
+        .reasoning = true,
+        .input = &[_][]const u8{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 128_000,
+        .max_tokens = 100,
+    };
+}
+
+test "deepseek and opencode receive the thinking level by name, and opencode nothing when it is off" {
+    const levels = [_]struct { level: ai_types.ThinkingLevel, deepseek: []const u8, opencode: ?[]const u8 }{
+        .{ .level = .off, .deepseek = "low", .opencode = null },
+        .{ .level = .medium, .deepseek = "medium", .opencode = "medium" },
+        .{ .level = .xhigh, .deepseek = "xhigh", .opencode = "xhigh" },
+        .{ .level = .max, .deepseek = "max", .opencode = "max" },
+    };
+    for (levels) |case| {
+        const deepseek = streamOptionsFromProtocolOptions(.{ .thinking_level = case.level }, bridgeTestModel("deepseek", "deepseek-flash"), null, null);
+        try std.testing.expectEqualStrings(case.deepseek, deepseek.getReasoningEffort().?);
+        const opencode = streamOptionsFromProtocolOptions(.{ .thinking_level = case.level }, bridgeTestModel("opencode-go", "deepseek-v4.1-flash"), null, null);
+        if (case.opencode) |expected| {
+            try std.testing.expectEqualStrings(expected, opencode.getReasoningEffort().?);
+        } else {
+            try std.testing.expect(opencode.getReasoningEffort() == null);
+            try std.testing.expect(!opencode.reasoning_enabled);
+        }
+    }
 }
