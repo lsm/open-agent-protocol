@@ -289,6 +289,12 @@ pub const ToolOutputMiddlewareFn = *const fn (
     result: *AgentToolResult,
     allocator: std.mem.Allocator,
 ) anyerror!void;
+pub const ToolArgsRewriteFn = *const fn (
+    ctx: ?*anyopaque,
+    tool_name: []const u8,
+    args_json: []const u8,
+    allocator: std.mem.Allocator,
+) anyerror!?[]u8;
 
 pub const ToolApprovalDecision = permission.ApprovalDecision;
 
@@ -423,6 +429,8 @@ pub const AgentLoopConfig = struct {
     execute_tool_via_protocol_ctx: ?*anyopaque = null,
     tool_output_middleware_fn: ?ToolOutputMiddlewareFn = null,
     tool_output_middleware_ctx: ?*anyopaque = null,
+    rewrite_tool_args_fn: ?ToolArgsRewriteFn = null,
+    rewrite_tool_args_ctx: ?*anyopaque = null,
     permission_engine: ?*permission.PermissionEngine = null,
     compact_tool_output: bool = false,
 
