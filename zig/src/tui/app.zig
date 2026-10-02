@@ -1695,7 +1695,16 @@ pub const App = struct {
             self.state.mode = .normal;
             return;
         }
-        const model = models[self.pickerSourceIndex(self.state.menu_index) orelse return];
+        const index = self.pickerSourceIndex(self.state.menu_index) orelse return;
+        const model = models[index];
+        if (self.state.status.streaming) {
+            self.state.mode = .normal;
+            const target = try runtime.requestModelSwitchAt(index);
+            const msg = try std.fmt.allocPrint(self.allocator, "switching to {s}/{s} before the next turn of this run, or when it ends", .{ target.provider, target.id });
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.system, msg);
+            return;
+        }
         if (self.session) |*session| {
             try session.switchModelExact(model);
         } else {
@@ -2824,11 +2833,12 @@ pub const App = struct {
     fn runDeferredAfterRun(self: *App) !void {
         const runtime = self.runtime orelse return;
         if (runtime.pending_model_index == null and self.deferred_commands.items.len == 0) return;
-        if (self.state.status.streaming or self.state.status.compacting or self.state.queue.total() > 0) return;
+        if (self.state.status.streaming or self.state.status.compacting) return;
         if (runtime.local_agent) |*local| {
             if (!local.isIdle()) return;
         }
         try self.applyPendingModelSwitchBeforeRun();
+        if (self.state.queue.total() > 0) return;
         const deferred = try self.deferred_commands.toOwnedSlice(self.allocator);
         defer {
             for (deferred) |text| self.allocator.free(text);
@@ -2997,6 +3007,7 @@ pub const App = struct {
     }
 
     fn sendUserTurnEchoing(self: *App, trimmed: []const u8, echo: []const u8) !bool {
+        if (!self.state.status.streaming and !self.runtimeBusy()) try self.applyPendingModelSwitchBeforeRun();
         self.applyPendingSessionResetSync() catch |err| {
             if (err == error.PendingSessionReset) {
                 try self.state.appendTranscript(.@"error", "Session reset pending; wait for the current run to finish.");
@@ -3197,7 +3208,7 @@ pub const App = struct {
             .command => |command| command,
         };
 
-        if (self.state.status.streaming and !self.state.status.compacting) {
+        if (self.state.status.streaming) {
             if (command.kind == .model and command.arg != null and !std.mem.eql(u8, command.arg.?, "refresh")) {
                 try self.steerModelSwitch(command.arg.?);
                 return;
@@ -3997,7 +4008,7 @@ pub const TuiModel = struct {
                     .backspace => _ = app.state.composer.deleteBeforeCursor(),
                     .delete => _ = app.state.composer.deleteAtCursor(),
                     .tab => {
-                        if (app.state.mode == .normal and app.state.status.streaming and !app.state.status.compacting and queueableCommandDraft(app.state.composer.text())) {
+                        if (app.state.mode == .normal and app.state.status.streaming and queueableCommandDraft(app.state.composer.text())) {
                             const text = app.state.composer.text();
                             app.deferCommand(text) catch |err| app.recordError(@errorName(err)) catch {};
                             app.state.recordComposerHistory(text) catch |err| app.recordError(@errorName(err)) catch {};
@@ -5083,6 +5094,29 @@ test "App steers a model switch and defers run-end commands while a run streams,
     try std.testing.expect(runtime.pending_model_index == null);
     try std.testing.expectEqual(@as(usize, 0), app.deferred_commands.items.len);
     try std.testing.expectEqual(agent.OutputSetting{ .tokens = 4096 }, runtime.outputSetting());
+}
+
+test "a pending model switch applies once idle even with follow-ups queued, while held commands wait" {
+    var env = try TempHome.init("home-switch-with-queue");
+    defer env.deinit();
+    var other = defaultModel();
+    other.id = "other-model";
+    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    errdefer std.testing.allocator.destroy(runtime);
+    runtime.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ defaultModel(), other }, .initial_model_id = defaultModel().id });
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.runtime = runtime;
+
+    app.state.status.streaming = true;
+    try app.submit("/model other-model");
+    try app.submit("/output 4096");
+    app.state.status.streaming = false;
+    app.state.queue.follow_up = 1;
+
+    try app.runDeferredAfterRun();
+    try std.testing.expectEqualStrings("other-model", runtime.currentModel().?.id);
+    try std.testing.expectEqual(@as(usize, 1), app.deferred_commands.items.len);
 }
 
 test "a refreshed model list keeps a pending switch it still lists and reports one it drops" {

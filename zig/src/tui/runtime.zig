@@ -729,12 +729,16 @@ pub const TuiRuntime = struct {
 
     pub fn requestModelSwitch(self: *TuiRuntime, model_id: []const u8) !ai_types.Model {
         for (self.models, 0..) |model, i| {
-            if (!std.mem.eql(u8, model.id, model_id)) continue;
-            self.pending_model_index = i;
-            if (self.local_agent) |*local| local.requestModelSwitch(self.effectiveModel(self.models[i]));
-            return model;
+            if (std.mem.eql(u8, model.id, model_id)) return self.requestModelSwitchAt(i);
         }
         return error.ModelNotFound;
+    }
+
+    pub fn requestModelSwitchAt(self: *TuiRuntime, index: usize) !ai_types.Model {
+        if (index >= self.models.len) return error.ModelNotFound;
+        self.pending_model_index = index;
+        if (self.local_agent) |*local| local.requestModelSwitch(self.effectiveModel(self.models[index]));
+        return self.models[index];
     }
 
     pub fn applyPendingModelSwitch(self: *TuiRuntime) !?ai_types.Model {
