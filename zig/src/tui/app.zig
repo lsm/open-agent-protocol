@@ -1035,7 +1035,6 @@ pub const App = struct {
     quarantine_buffer: std.ArrayList(tui_runtime.TuiEvent) = .empty,
     pending_clipboard: ?[]u8 = null,
     interrupt_armed_tick: ?u64 = null,
-    zen_flow: ?zen_view.Flow = null,
     pending_clear_screen: bool = false,
     slash_index: usize = 0,
     slash_index_query: u64 = 0,
@@ -3304,17 +3303,6 @@ pub const App = struct {
         return try std.fmt.allocPrint(self.allocator, "{s}\n\n{s}", .{ note, text });
     }
 
-    const zen_step_seconds: f32 = 0.05;
-
-    fn stepZen(self: *App) void {
-        if (!self.state.zen.on) return;
-        if (self.zen_flow) |*flow| {
-            flow.step(zen_step_seconds);
-        } else {
-            self.zen_flow = zen_view.Flow.init();
-        }
-    }
-
     fn sendUserTurnEchoing(self: *App, trimmed: []const u8, echo: []const u8) !bool {
         if (!self.state.status.streaming and !self.runtimeBusy()) try self.applyPendingModelSwitchBeforeRun();
         self.applyPendingSessionResetSync() catch |err| {
@@ -4444,7 +4432,6 @@ pub const TuiModel = struct {
             .window_size => self.refillInlineWindowAfterResize(app, ctx) catch |err| app.recordError(@errorName(err)) catch {},
             .tick => {
                 app.state.anim_tick +%= 1;
-                app.stepZen();
                 app.drainEvents() catch {};
                 app.pumpAutoContinue(compat.time.nowMillis());
                 app.pollLogin() catch {};
@@ -4579,7 +4566,6 @@ pub const TuiModel = struct {
     }
 
     fn renderZenBody(app: *App, allocator: std.mem.Allocator, width: usize, budget: usize) ![]const u8 {
-        if (app.zen_flow == null) app.zen_flow = zen_view.Flow.init();
         const entries = app.state.transcript.items;
         const counts = tui_state.zenCounts(entries, app.state.zen.start_index);
         const running = streamActive(app);
@@ -4601,7 +4587,8 @@ pub const TuiModel = struct {
                 final_block = try transcript_view.renderTranscriptEntryWith(allocator, entry, width, .{});
             }
         }
-        const body = try zen_view.render(allocator, &app.zen_flow.?, .{
+        const body = try zen_view.render(allocator, .{
+            .tick = app.state.anim_tick,
             .width = width,
             .height = budget,
             .counts = .{ .thinking = counts.thinking, .tools = counts.tools, .messages = counts.messages },
