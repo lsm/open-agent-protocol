@@ -52,6 +52,11 @@ providers, and the file is replaced by a rename, never rewritten in place. Field
 command has no flag for — `name`, `headers`, `models`, `capabilities` — are still
 added by editing the file.
 
+`/provider del <id>` removes that entry the same way, keeping every other entry and
+`overrides` as written, deletes the key `/login <id>` saved for it, and refreshes
+the models. It refuses an id the file does not declare (`ProviderNotDeclared`), and
+waits while a turn is running.
+
 ## Fields
 
 | Field | Required | Meaning |
