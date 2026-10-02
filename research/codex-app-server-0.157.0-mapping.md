@@ -264,3 +264,45 @@ source at this pin rather than observed from this pin's binary. The
 method this move removed answers `-32600` as an unknown variant, so Codex
 refuses an absent method with an invalid-request code rather than a
 method-not-found one, which is the same shape as the missing-rollout answer.
+
+## Reasoning level and compaction at 0.157.0
+
+Recorded for [Decision 0045](../decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md).
+Every line is read from the source at `00c972ed5d6ff6499317fd41b7f23605b8e6850d`;
+the last paragraph says what was checked against the binary.
+
+**Reasoning level.**
+
+- `ThreadStartParams` (`codex-rs/app-server-protocol/src/protocol/v2/thread.rs`)
+  has no effort member. It takes `config`, a map of config-path overrides, and
+  `thread_processor.rs` applies those as request overrides, so
+  `config: {"model_reasoning_effort": "<level>"}` sets the thread's level at open.
+  `thread/resume` takes the same map.
+- `TurnStartParams.effort` (`v2/turn.rs`) is documented as overriding "the
+  reasoning effort for this turn and subsequent turns", so a level can be
+  changed on a live thread with the next `turn/start`, not with a separate
+  request.
+- `ReasoningEffort` (`codex-rs/protocol/src/openai_models.rs`) is `none`,
+  `minimal`, `low`, `medium` (the default), `high`, `xhigh`, `max`, `ultra`,
+  `persistent`, or a model-defined string it does not know yet. `none` is
+  OAP's `off`; `ultra` and `persistent` have no OAP value.
+- `ThreadResumeResponse.reasoningEffort` reports the level the thread last ran
+  under.
+
+**Compaction.** Two config keys in `codex-rs/core/src/config/mod.rs`, both
+reachable through `thread/start`'s `config` map:
+
+- `model_auto_compact_token_limit` — "token usage threshold triggering
+  auto-compaction", in tokens.
+- `model_post_turn_compact_threshold_percent` — the share of the usable
+  context window that triggers a compaction at the end of a turn; `0` disables
+  that turn-end compaction.
+
+No thread or turn request at this pin carries either key, so the policy is set
+when the thread starts and is not changed on a live thread. The source read
+found no key that switches the token-limit trigger off.
+
+**What was checked.** The installed `codex-cli 0.157.0` binary carries the
+strings `model_reasoning_effort`, `model_auto_compact_token_limit` and
+`model_post_turn_compact_threshold_percent`. No real-process trace sets either
+setting, so their effect on a running thread is source-read, not observed.

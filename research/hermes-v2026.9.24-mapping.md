@@ -443,3 +443,32 @@ refusing — the case 0039's binding record has to remove, and the reason this
 ledger matters to #448: the reload already exists on the wire, and the adapter
 is one `session.resume` away from it. Nothing above was observed on a running
 gateway; it is all read from the source at the pin.
+
+## Reasoning level and compaction at v2026.9.24
+
+Recorded for [Decision 0045](../decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md).
+Read from the source at `f97608f178d1ffeca59860195ab7da295f7c8e5f`.
+
+**Reasoning level.**
+
+- `session.create` takes `reasoning_effort` (`tui_gateway/methods_session.py`).
+- `config.set` with key `reasoning` changes it on a live session
+  (`tui_gateway/methods_config_set.py`). That is the session scope unless
+  `scope: "global"` is passed. It replaces the running agent's
+  `reasoning_config` and emits `session.info`, and `reasoning` is in the
+  gateway's `_SESSION_SCOPED_KEYS`.
+- Values are parsed by `hermes_constants.parse_reasoning_effort`: `minimal`,
+  `low`, `medium`, `high`, `xhigh`, `max` or `ultra`, while `none`, `false` and
+  `disabled` switch reasoning off.
+
+**Compaction.** `config.yaml` under `HERMES_HOME`, section `compression`:
+
+- `enabled` (default true);
+- `threshold`, a fraction of the context window (default 0.50; a model under
+  512K is floored at 0.75);
+- `threshold_tokens`, an absolute cap (default 256000). Compression fires at
+  the lower of the two thresholds.
+
+`agent/agent_init.py` reads these when an agent is built, so they take effect
+for a session created after the file is written. `config.set` has no
+compression key, so nothing changes them on a live session.

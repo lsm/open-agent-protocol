@@ -357,3 +357,25 @@ wire it speaks, so it declines rather than reading the files behind the
 harness's back.** Reaching it would take a new SDK request first and an
 adapter change second, and until the first exists, #448's DeepSeek step has
 nothing to bind to.
+
+## Reasoning level and compaction at dsh-v0.1.7-rc.2
+
+Recorded for [Decision 0045](../decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md).
+Read from the source at `477b4f420553e8a52c2fbccc464d7561b239c443`.
+
+**Reasoning level.** `initialize` takes `reasoningEffort`
+(`packages/sdk/protocol/src/types.ts`), "adapter-owned … for the selected
+provider/model route". It applies to every agent the SDK server creates. The
+value is a branded `ReasoningEffortId`, an opaque id owned by the model
+adapter, not an enum. `SessionPromptParams` carries none, so the level is set
+once per process and never changed on a live session.
+
+**Compaction.** The base bundle (`packages/bundle/base/cordis.patch.yml`) mounts
+`compaction-basic`. Its config (`packages/compaction/compaction-basic`) sets the
+threshold as `floor(min(W × thresholdRatio, W − O − headroomTokens))`, with
+`thresholdRatio` (default 0.8) and `headroomTokens` (default 65536). The
+runtime is launched with `--profile sdk --patch <file>`, so a further patch
+layer can set both. Nothing on the SDK wire changes them on a live session.
+This read did not confirm which bundles the `sdk` profile stacks, so whether
+the SDK runtime mounts `compaction-basic` at all is still to be checked
+against a real process.

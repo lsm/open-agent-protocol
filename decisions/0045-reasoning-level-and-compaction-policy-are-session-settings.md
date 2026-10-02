@@ -32,11 +32,12 @@ express either through OAP:
   `reasoningLevel` in `provider.schema.json`, the `reasoning` object in
   `inference.schema.json` — but the agent-control profile never says what
   level a session runs at.
-- **Every adapter drops the setting.** Pi's adapter refuses an unknown
-  thinking level at open but never sets one. Codex 0.157.0 answers
-  `thread/resume` with the `reasoningEffort` the thread last ran under, and the
-  adapter decodes and drops it. Hermes and the DeepSeek harness take a
-  reasoning effort when the session is created, and nothing passes one in.
+- **Every harness has both, and every adapter drops them.** Each of the seven
+  pinned harnesses takes a reasoning level and a compaction policy at least
+  when a session starts (Evidence, below). None of the adapters passes either
+  in. Pi's adapter refuses an unknown thinking level at open but never sets
+  one. Codex 0.157.0 answers `thread/resume` with the `reasoningEffort` the
+  thread last ran under, and the adapter decodes and drops it.
 - **`oapx` fixes both at open.** `oapx tui` over OAP takes the thinking level
   and the auto-compaction share from `oapx`'s own settings when the session
   opens and refuses a change with `UnavailableOverOap`, because the wire has
@@ -67,8 +68,12 @@ may be supplied:
 - `session_open` — on `session.open.request`.
 - `session_live` — on `session.settings.update.request` (below).
 
-An endpoint that takes a setting only when the session starts, as Hermes and
-the DeepSeek harness do, discloses `session_open` alone. A request that
+**`session_open` is required.** Every pinned harness can take both settings
+when a session starts, so every adapter in this repository advertises both
+features with `session_open`, and an endpoint claiming `+session-settings`
+must too. `session_live` is disclosed where the harness can change a setting
+on a running session, and only there. An endpoint that takes a setting only
+when the session starts discloses `session_open` alone. A request that
 supplies a setting through a mode the feature does not disclose is refused
 with `unsupported_feature`, `details.feature` naming the key and
 `details.field` naming the member.
@@ -76,8 +81,8 @@ with `unsupported_feature`, `details.feature` naming the key and
 ### The values
 
 `reasoning_level` is a `reasoningLevel` from `provider.schema.json`. That
-enum gains `max`, after `xhigh`. Pi 0.87.1 and `oapx` both define a level
-above `xhigh`, and the shared enum has no value for it.
+enum gains `max`, after `xhigh`. Codex, Claude Code, Pi, Hermes and `oapx` all
+define a level above `xhigh`, and the shared enum has no value for it.
 
 `compaction_policy` is an object with one required member, `kind`:
 
@@ -91,12 +96,38 @@ above `xhigh`, and the shared enum has no value for it.
 - `{"kind": "tokens", "tokens": n}` — compact once the history reaches `n`
   tokens.
 
-An endpoint that can only switch its own compaction on and off — Pi's
-`set_auto_compaction` takes a boolean — advertises `session.compaction.policy`
-as `degraded` and refuses `share` and `tokens` with `unsupported_feature` and
-`details.field: "compaction_policy"`. It does not round them to `auto`,
-because a control layer that asked for a limit must learn that it did not get
-one.
+A harness may honour a form in one mode and not the other. Pi takes a token
+threshold at launch but only switches compaction on and off live
+(`set_auto_compaction`). Such an endpoint refuses the form it cannot honour in
+that mode with `unsupported_feature` and `details.field: "compaction_policy"`,
+and says which forms each mode takes in the feature's `reason`. It never
+rounds a `share` or `tokens` request to `auto`, because a control layer that
+asked for a limit must learn that it did not get one.
+
+### Settings a harness reads only at launch
+
+Several harnesses take a setting only from their own configuration when the
+process starts:
+
+- Pi's `settings.json`, in an agent directory `PI_CODING_AGENT_DIR` names;
+- Hermes's `config.yaml`, under `HERMES_HOME`;
+- OpenCode's config, through `OPENCODE_CONFIG_CONTENT`;
+- the DeepSeek harness's cordis patch layer;
+- cagent's agent YAML.
+
+An adapter that starts one harness process per session sets such a setting by
+writing that configuration privately for the process it starts. This counts
+as `session_open`, because the setting is the harness's own and the process
+is the session's.
+
+It never edits the operator's own configuration. The private directory or
+variable is the adapter's own value in the child's environment, never one
+inherited from the operator, which keeps the hub's rule that a child inherits
+no ambient variable. Where one process
+serves several sessions, as the DeepSeek harness's `initialize` does, the
+setting binds the process. The adapter then either starts a process per
+distinct setting or refuses a second, different setting with
+`unsupported_feature`.
 
 ### Where the settings go
 
@@ -166,17 +197,22 @@ differs from the one supplied, in three cases:
 `session.reasoning` and `session.compaction.policy` join the optional core
 feature keys. Their support levels follow `drafts/agent-control-core.md`:
 
-- `native` — the harness takes the setting directly.
+- `native` — the harness takes the setting directly, as Claude Code's
+  `effortLevel` and Hermes's `threshold_tokens` do.
 - `emulated` — the adapter produces the setting from a different native
-  control. Claude Code's `set_max_thinking_tokens` takes a token budget, not a
-  level, so a level maps to a budget the adapter chooses and publishes in the
-  feature's `reason`.
-- `degraded` — the endpoint honours the setting partially, as Pi's on/off
-  compaction does, and refuses the rest rather than approximating it.
+  control. Examples:
+  - Pi's and OpenCode's token thresholds are reserves below the window.
+  - OpenCode's level is a per-prompt `variant` the adapter resends on every
+    prompt.
+  - A harness whose level vocabulary is model-defined is mapped through the
+    catalog.
+- `degraded` — the endpoint honours the setting only partly. Codex's share
+  triggers only at a turn's end. The endpoint refuses what it cannot honour
+  rather than approximating it.
 
-The claim term is `+session-settings`. It requires both features at `native`
-or `emulated`, with `session_live` disclosed for each. A claim with only
-`session_open` is the claim term `+session-settings-open`.
+The claim term `+session-settings` requires both features at `native` or
+`emulated` with `session_open` disclosed. `+session-settings-live`
+additionally requires `session_live` for both.
 
 ### Validator
 
@@ -196,24 +232,52 @@ The diagnostic codes are the graduation PR's to name, with a fixture for each.
 
 ## Evidence
 
-| Implementation | Reasoning level | Compaction policy | Ledger |
-| --- | --- | --- | --- |
-| Pi 0.87.1 | `set_thinking_level`, `off` through `max`; `get_state` reports it, and `thinking_level_changed` publishes a change | `set_auto_compaction`, a boolean | [`research/pi-v0.87.1-mapping.md`](../research/pi-v0.87.1-mapping.md); the adapter's `native` types name both commands |
-| `oapx` | `ThinkingLevel`, `off` through `max` | `/autocompact auto\|percent\|off` | `zig/src/ai_types.zig`, `zig/src/tui/commands.zig` |
-| Codex app-server 0.157.0 | `reasoningEffort` on the `thread/resume` response; the request-side member is not recorded at this pin | not recorded | [`research/codex-app-server-0.157.0-mapping.md`](../research/codex-app-server-0.157.0-mapping.md) |
-| Claude Code 2.1.263–2.1.282 | `set_max_thinking_tokens` (a budget) on the TypeScript control surface; 2.1.282's `system/init` adds `per_turn_effort_active` | not recorded | [`research/claude-code-agent-sdk-2.1.263-mapping.md`](../research/claude-code-agent-sdk-2.1.263-mapping.md), [`research/claude-code-agent-sdk-2.1.282-mapping.md`](../research/claude-code-agent-sdk-2.1.282-mapping.md) |
-| Hermes 2026.8.31 | `reasoning_effort` on `session.create` only | not recorded | [`research/hermes-v2026.8.31-mapping.md`](../research/hermes-v2026.8.31-mapping.md); the current pin's ledger should confirm it before graduation |
-| DeepSeek harness 47f9438 | `reasoningEffort` on `initialize` only | not recorded | [`research/deepseek-harness-47f9438-mapping.md`](../research/deepseek-harness-47f9438-mapping.md) |
-| ACP 1.7.0 | a `thought_level` session config option, where the agent offers one, through `session/set_config_option` | not recorded | [`research/acp-v1.7.0-mapping.md`](../research/acp-v1.7.0-mapping.md) |
-| OpenCode | per-model `reasoning_options` (a toggle, an effort, a budget) in the provider catalog; the session-side request is not recorded | not recorded | [`research/opencode-provider-catalog-mapping.md`](../research/opencode-provider-catalog-mapping.md) |
+Each row is recorded, source-read at the pinned commit, in a section of the
+harness's current ledger titled "Reasoning level and compaction". This
+decision is what those sections were recorded for.
 
-The graduating implementations are **Pi**, the one pinned harness with a live
-setter for both, and **`oapx`'s endpoint**, which needs this decision so
-`oapx tui` over OAP can stop refusing the thinking level and `/autocompact`.
-Pi reaches `native` for `session.reasoning` and `degraded` for
-`session.compaction.policy`, so `oapx` is the implementation that exercises
-`share`. Hermes and the DeepSeek harness are the `session_open`-only case.
-Codex's request side is a ledger task, not a blocker.
+| Harness (pin) | Reasoning level at open | … live | Compaction policy at open | … live |
+| --- | --- | --- | --- | --- |
+| Codex app-server 0.157.0 | `thread/start` `config.model_reasoning_effort` | `turn/start` `effort`, "this turn and subsequent turns" | `config.model_auto_compact_token_limit` (tokens); `config.model_post_turn_compact_threshold_percent` (turn-end share, `0` off) | none |
+| Claude Code 2.1.282 | `effort` option (`low`–`max`); thinking off through `thinking` | `apply_flag_settings {effortLevel}`; `set_max_thinking_tokens` (a budget) | `autoCompactEnabled`, `autoCompactWindow` (tokens) through the flag layer | `apply_flag_settings` with the same keys |
+| Pi 0.87.1 | `--thinking` (`off`–`max`) | `set_thinking_level` | `settings.json` `compaction.enabled`, `reserveTokens` (threshold = window − reserve) | `set_auto_compaction` (on/off only) |
+| Hermes 2026.9.24 | `session.create` `reasoning_effort` | `config.set reasoning` (session scope) | `config.yaml` `compression.enabled`, `threshold` (share), `threshold_tokens` | none |
+| DeepSeek harness dsh-v0.1.7-rc.2 | `initialize` `reasoningEffort` (process-wide, opaque per model) | none | `compaction-basic` `thresholdRatio`, `headroomTokens` (patch layer) | none |
+| OpenCode 1.18.32 | the prompt's `variant` | the prompt's `variant` | `compaction.auto`, `compaction.buffer` (reserve) via `OPENCODE_CONFIG_CONTENT` | none |
+| ACP 1.9.1 with cagent 1.143.0 | cagent `thinking_budget` (effort or tokens) | ACP `thought_level` config option, which cagent does not implement | cagent `session_compaction`, `compaction_threshold` (share) | none |
+| `oapx` | `ThinkingLevel` (`off`–`max`) | the same | `/autocompact auto\|percent\|off` | the same |
+
+What the table settles:
+
+- **Every harness takes both settings at open.** That is why `session_open` is
+  required rather than optional.
+- **Live changes are the exception.** A level changes live on Codex (with the
+  next turn), Claude Code, Pi, Hermes and OpenCode (with the next prompt). A
+  compaction policy changes live only on Claude Code and, as on/off, on Pi.
+- **The policy's forms all occur.**
+  - `tokens` is native on Codex, Claude Code and Hermes, and emulated as
+    `window − tokens` on Pi, OpenCode and the DeepSeek harness.
+  - `share` is native on Hermes, cagent and the DeepSeek harness. Codex's
+    share triggers only at a turn's end, which is `degraded`.
+  - `off` exists everywhere except Codex, where the source read found no
+    switch.
+- **The level vocabularies are wider than OAP's.** Codex adds `ultra` and
+  `persistent`, Hermes adds `ultra`, and the DeepSeek harness and OpenCode use
+  model-defined names. OAP carries the seven shared values. A harness with
+  more maps the extra ones to no OAP value. A harness with model-defined names
+  maps through the model's catalog entry, and refuses a level it cannot map.
+
+The graduating implementations are **Claude Code**, the one harness that
+changes both settings live, and **`oapx`'s endpoint**, which needs this
+decision so that `oapx tui` over OAP can stop refusing the thinking level and
+`/autocompact`. Every other adapter ships `session_open` support with the
+same graduation PR or the one after it, because the requirement above makes
+it a conformance obligation and not an option.
+
+The ledger sections are source-read. Codex's three config keys are also
+confirmed in the installed 0.157.0 binary. A live setting's effect on a
+running session is observed for none of them yet, and a gate that drives
+each harness through an update is part of the graduation evidence.
 
 ## What this decision does not decide
 
