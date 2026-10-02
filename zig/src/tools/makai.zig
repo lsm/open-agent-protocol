@@ -2385,6 +2385,7 @@ fn printUsage(file: std.Io.File) !void {
         \\                   or OpenCode server named by a --config entry;
         \\                   --config reads an oap-serve.json registry entry.
         \\                   --backend memory serves the in-memory reference script.
+        \\                   --backend oapx serves oapx's own loop as the TUI builds it.
         \\  serve provider   Serve model-provider-core over stdio, one envelope per line
         \\                   Use --specimens to print one of every envelope it emits.
         \\                   Use --http for a loopback-only HTTP/SSE endpoint.
