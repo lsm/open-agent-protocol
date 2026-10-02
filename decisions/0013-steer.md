@@ -1,6 +1,15 @@
 # Decision 0013: Steer
 
-Status: proposed
+Status: accepted 2026-10-02 (the submit-envelope prerequisite landed in #798; the
+reference memory adapters execute steer in both trees and advertise
+`session.message.delivery.steer` at `emulated` (#812); the hub withholds a steer's
+target stream behind its response and the Go and TypeScript clients hold a settlement
+that arrives before its admission (#813); and pi executes its native `steer` command in
+both trees — admission with `target_sequence`, a `turn`-boundary settlement, a
+`run_terminated` drop at the terminal and `pending_steers` on state — moving the pin's
+capability revision to `pi-v0.87.1-oap-v2` (#824). The plan's `settled_steers`
+session-state surface is deferred to its own decision, as this record says above;
+nothing else in the record is left pending)
 Date: 2026-09-17
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
