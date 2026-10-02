@@ -1332,6 +1332,7 @@ pub const AppState = struct {
                         if (self.status.last_error.len == 0) {
                             try self.status.setError(self.allocator, "agent ended with error, but no error details were provided");
                             try self.appendTranscript(.@"error", self.status.last_error);
+                            self.transcript.items[self.transcript.items.len - 1].run_failure = true;
                         }
                     },
                 }

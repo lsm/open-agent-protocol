@@ -2538,7 +2538,7 @@ pub const App = struct {
         const wrote_metadata = self.saveConversationEvent(store, event, compaction);
         if (wrote_metadata) self.compaction_offset = offset orelse self.compaction_offset;
         const titled = switch (event) {
-            .message_end => |payload| payload.role == .user and self.titleFromFirstMessage(payload.text.slice()),
+            .message_end => |payload| payload.role == .user and self.titleFromFirstMessage(tui_state.withoutZenNote(std.mem.trim(u8, payload.text.slice(), " \t\r\n"))),
             else => false,
         };
         if (wrote_metadata or titled or event == .agent_end) self.saveSessionIndex(store);
