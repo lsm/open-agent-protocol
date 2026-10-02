@@ -111,8 +111,6 @@ pub const ToolExecuteResult = struct {
     error_message: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
     details_json: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
     artifacts: OwnedSlice(ArtifactReference) = OwnedSlice(ArtifactReference).initBorrowed(&.{}),
-    working_directory: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
-    working_directory_observed: bool = false,
     duration_ms: u32,
 
     pub fn getErrorMessage(self: *const ToolExecuteResult) ?[]const u8 {
@@ -123,11 +121,6 @@ pub const ToolExecuteResult = struct {
     pub fn getDetailsJson(self: *const ToolExecuteResult) ?[]const u8 {
         const details = self.details_json.slice();
         return if (details.len > 0) details else null;
-    }
-
-    pub fn getWorkingDirectory(self: *const ToolExecuteResult) ?[]const u8 {
-        const directory = self.working_directory.slice();
-        return if (directory.len > 0) directory else null;
     }
 };
 
@@ -393,7 +386,6 @@ pub const Payload = union(enum) {
                 res.error_message.deinit(allocator);
                 res.details_json.deinit(allocator);
                 res.artifacts.deinit(allocator);
-                res.working_directory.deinit(allocator);
             },
             .tool_cancel => |*req| req.reason.deinit(allocator),
             .tool_error => |*err| allocator.free(err.message),

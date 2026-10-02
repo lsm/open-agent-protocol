@@ -232,7 +232,6 @@ pub const TuiRuntime = struct {
     tool_protocol: tool_local_runtime.LocalToolProtocol,
     workspace_root: []u8,
     session_cwd: []u8,
-    prompt_refresh_pending: bool = false,
     tool_protocol_override_fn: ?agent_types.ToolProtocolExecuteFn = null,
     tool_protocol_override_ctx: ?*anyopaque = null,
     pending_approval: ApprovalDecisionState = .{},
@@ -804,20 +803,20 @@ pub const TuiRuntime = struct {
         const owned = self.allocator.dupe(u8, reported) catch return;
         self.allocator.free(self.session_cwd);
         self.session_cwd = owned;
-        self.prompt_refresh_pending = true;
-        self.flushPromptRefresh();
     }
 
-    fn flushPromptRefresh(self: *TuiRuntime) void {
-        if (!self.prompt_refresh_pending) return;
-        if (self.local_agent) |*local| {
-            if (!local.isIdle()) return;
-            const system_prompt = self.workspaceSystemPrompt() catch return;
-            defer self.allocator.free(system_prompt);
-            local.setSystemPrompt(system_prompt) catch return;
-        }
-        self.prompt_refresh_pending = false;
+    fn adoptReportedWorkingDirectory(self: *TuiRuntime, details_json: []const u8) void {
+        if (details_json.len == 0) return;
+        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, details_json, .{}) catch return;
+        defer parsed.deinit();
+        if (parsed.value != .object) return;
+        const observed = parsed.value.object.get("working_directory_observed") orelse return;
+        if (observed != .bool or !observed.bool) return;
+        const directory = parsed.value.object.get("working_directory") orelse return;
+        if (directory != .string) return;
+        self.adoptWorkingDirectory(directory.string);
     }
+
 
     fn workingDirectoryInsideRoot(self: *const TuiRuntime, candidate: []const u8) bool {
         if (!std.Io.Dir.path.isAbsolute(candidate)) return false;
@@ -840,6 +839,7 @@ pub const TuiRuntime = struct {
         if (hasAbsolutePathArgument(parsed.value.object)) return null;
         const existing = parsed.value.object.get("workspace_root") orelse return null;
         if (existing != .string) return null;
+        if (!std.mem.eql(u8, existing.string, self.workspace_root)) return null;
         if (std.mem.eql(u8, existing.string, base)) return null;
         const held = parsed.value.object.getPtr("workspace_root").?;
         held.* = .{ .string = base };
@@ -947,7 +947,6 @@ pub const TuiRuntime = struct {
         const local = &(self.local_agent orelse return error.RuntimeNotStarted);
         if (self.currentModel() == null) return error.NoModelConfigured;
         if (self.run_async) local.waitForIdle();
-        self.flushPromptRefresh();
         self.resetEventStreamForTurn();
         self.cancelled.store(false, .release);
         self.completed = false;
@@ -1137,7 +1136,6 @@ pub const TuiRuntime = struct {
         const local = &(self.local_agent orelse return error.RuntimeNotStarted);
         if (self.run_async) local.waitForIdle();
         try local.validateContinueFromContext();
-        self.flushPromptRefresh();
         self.resetEventStreamForTurn();
         self.cancelled.store(false, .release);
         self.completed = false;
@@ -1467,9 +1465,8 @@ pub const TuiRuntime = struct {
         if (self.workspace_root.len == 0) return self.allocator.dupe(u8, "");
         return std.fmt.allocPrint(self.allocator,
             \\Default workspace root: {s}
-            \\Current working directory: {s}
-            \\The working directory is this session's own. A `cd` in a `shell_execute` call changes it and the next call starts there, so do not prefix a command with `cd` to reach a directory you already changed into. Pass the working directory as `workspace_root`: relative paths resolve against it, an absolute path is used as written, and no path may leave the default workspace root.
-        , .{ self.workspace_root, self.session_cwd });
+            \\Pass the default workspace root as `workspace_root` to work in the session's current working directory, or name another directory inside the root to work there instead; an absolute path is used as written. A `cd` in a `shell_execute` call changes the working directory, and its result reports the directory as a `cwd:` line.
+        , .{self.workspace_root});
     }
 
     fn messageRole(message: ai_types.Message) TuiEvent.MessageRole {
@@ -1881,7 +1878,9 @@ fn executeTuiToolProtocol(
         runtime.tool_protocol_override_fn,
         allocator,
     );
-    if (result.observedWorkingDirectory()) |reported| runtime.adoptWorkingDirectory(reported);
+    if (std.mem.eql(u8, tool_name, "shell_execute")) {
+        if (result.getDetailsJson()) |details| runtime.adoptReportedWorkingDirectory(details);
+    }
     return result;
 }
 
@@ -1902,7 +1901,7 @@ fn directoryOpens(path: []const u8) bool {
 }
 
 fn hasAbsolutePathArgument(obj: std.json.ObjectMap) bool {
-    for ([_][]const u8{ "path", "file_path", "target_path" }) |key| {
+    for ([_][]const u8{ "path", "file_path", "target_path", "cwd" }) |key| {
         const value = obj.get(key) orelse continue;
         if (value == .string and std.Io.Dir.path.isAbsolute(value.string)) return true;
     }
@@ -2064,7 +2063,6 @@ const MockProtocolCtx = struct {
     last_thinking_level: ai_types.ThinkingLevel = .off,
     last_message_count: usize = 0,
     saw_workspace_prompt: bool = false,
-    saw_working_directory_prompt: bool = false,
     wait_for_cancel: bool = false,
     flood_count: usize = 0,
     deliver_flood_second: usize = 0,
@@ -2172,7 +2170,6 @@ fn mockStream(
     const system_prompt = context.system_prompt.slice();
     mock.saw_workspace_prompt = std.mem.indexOf(u8, system_prompt, "Default workspace root: /tmp/makai-workspace") != null and
         std.mem.indexOf(u8, system_prompt, "`workspace_root`") != null;
-    mock.saw_working_directory_prompt = std.mem.indexOf(u8, system_prompt, "Current working directory: /tmp/makai-workspace/sub") != null;
 
     const stream = try allocator.create(event_stream.AssistantMessageEventStream);
     stream.* = event_stream.AssistantMessageEventStream.init(allocator);
@@ -2609,12 +2606,15 @@ fn cdReportingTool(
     _ = cancel_token;
     _ = on_update_ctx;
     _ = on_update;
+    const details = try std.json.Stringify.valueAlloc(allocator, .{
+        .working_directory = "/tmp/makai-workspace/sub",
+        .working_directory_observed = true,
+    }, .{});
     const content = try allocator.alloc(ai_types.UserContentPart, 1);
     content[0] = .{ .text = .{ .text = try allocator.dupe(u8, "moved") } };
     return .{
         .content = OwnedSlice(ai_types.UserContentPart).initOwned(content),
-        .working_directory = OwnedSlice(u8).initOwned(try allocator.dupe(u8, "/tmp/makai-workspace/sub")),
-        .working_directory_observed = true,
+        .details_json = OwnedSlice(u8).initOwned(details),
     };
 }
 
@@ -3814,7 +3814,7 @@ test "wrapping a tool preserves the operation kind its definition declares" {
     }
 }
 
-test "the runtime injects the session working directory as the tool workspace root" {
+test "the rewrite replaces the session root with the working directory and leaves other roots alone" {
     const cwd = try std.process.currentPathAlloc(std.testing.io, std.testing.allocator);
     defer std.testing.allocator.free(cwd);
     const sub = try std.fs.path.join(std.testing.allocator, &.{ cwd, "zig" });
@@ -3845,6 +3845,11 @@ test "the runtime injects the session working directory as the tool workspace ro
     const args_sub = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"path\":\"a.txt\"}}", .{sub});
     defer std.testing.allocator.free(args_sub);
     try std.testing.expect(try runtime.rewriteWorkspaceRoot("file_read", args_sub, std.testing.allocator) == null);
+    const other = try std.fs.path.join(std.testing.allocator, &.{ sub, "src" });
+    defer std.testing.allocator.free(other);
+    const args_other = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"path\":\"a.txt\"}}", .{other});
+    defer std.testing.allocator.free(args_other);
+    try std.testing.expect(try runtime.rewriteWorkspaceRoot("file_read", args_other, std.testing.allocator) == null);
 
     const missing = try std.fs.path.join(std.testing.allocator, &.{ cwd, "no-such-working-directory" });
     defer std.testing.allocator.free(missing);
@@ -3878,48 +3883,34 @@ test "moving the workspace root resets the working directory to it" {
     try std.testing.expectEqualStrings("/worktree", runtime.workingDirectory());
 }
 
-test "the system prompt states the working directory and the session root" {
+test "the system prompt is fixed and adoption does not rewrite it" {
     var runtime = try TuiRuntime.init(std.testing.allocator, .{ .workspace_root = "/workspace" });
     defer runtime.deinit();
+
+    const before = try runtime.workspaceSystemPrompt();
+    defer std.testing.allocator.free(before);
+    try std.testing.expect(std.mem.indexOf(u8, before, "Default workspace root: /workspace") != null);
+    try std.testing.expect(std.mem.indexOf(u8, before, "Current working directory:") == null);
+
     runtime.adoptWorkingDirectory("/workspace/sub");
+    try std.testing.expectEqualStrings("/workspace/sub", runtime.workingDirectory());
 
-    const prompt = try runtime.workspaceSystemPrompt();
-    defer std.testing.allocator.free(prompt);
-    try std.testing.expect(std.mem.indexOf(u8, prompt, "Default workspace root: /workspace") != null);
-    try std.testing.expect(std.mem.indexOf(u8, prompt, "Current working directory: /workspace/sub") != null);
+    const after = try runtime.workspaceSystemPrompt();
+    defer std.testing.allocator.free(after);
+    try std.testing.expectEqualStrings(before, after);
 }
 
-test "adopting a working directory refreshes the agent system prompt" {
-    var mock = MockProtocolCtx{};
-    const models = [_]ai_types.Model{test_model_a};
-    var runtime = try TuiRuntime.init(std.testing.allocator, .{
-        .protocol = makeProtocol(&mock),
-        .models = &models,
-        .workspace_root = "/tmp/makai-workspace",
-        .run_async = false,
-    });
-    defer runtime.deinit();
-
-    var tui_session = runtime.createSession();
-    try tui_session.start();
-    runtime.adoptWorkingDirectory("/tmp/makai-workspace/sub");
-    try tui_session.submitTurn("pwd");
-    if (runtime.local_agent) |*local| local.waitForIdle();
-
-    try std.testing.expect(mock.saw_working_directory_prompt);
-}
-
-test "a working directory adopted mid-run waits for idle before the prompt swap" {
+test "a shell result moves the working directory and leaves the prompt alone" {
     const tools = [_]agent.AgentTool{.{
-        .label = "Cd",
-        .name = "cd_report_tool",
+        .label = "Shell",
+        .name = "shell_execute",
         .description = "Reports a new working directory",
         .parameters_schema_json = "{}",
         .execute = demoTool,
         .runtime_execute = cdReportingTool,
     }};
     const models = [_]ai_types.Model{test_model_a};
-    var mock = MockProtocolCtx{ .tool_first = true, .tool_name = "cd_report_tool" };
+    var mock = MockProtocolCtx{ .tool_first = true, .tool_name = "shell_execute" };
     var runtime = try TuiRuntime.init(std.testing.allocator, .{
         .protocol = makeProtocol(&mock),
         .models = &models,
@@ -3928,44 +3919,18 @@ test "a working directory adopted mid-run waits for idle before the prompt swap"
         .run_async = false,
     });
     defer runtime.deinit();
+
+    const prompt_before = try runtime.workspaceSystemPrompt();
+    defer std.testing.allocator.free(prompt_before);
 
     var tui_session = runtime.createSession();
     try tui_session.start();
     try tui_session.submitTurn("move");
     try std.testing.expectEqualStrings("/tmp/makai-workspace/sub", runtime.workingDirectory());
-    try std.testing.expect(runtime.prompt_refresh_pending);
 
-    try tui_session.submitTurn("where am I");
-    try std.testing.expect(mock.saw_working_directory_prompt);
-}
-
-test "a resumed turn flushes a refresh deferred mid-run" {
-    const tools = [_]agent.AgentTool{.{
-        .label = "Cd",
-        .name = "cd_report_tool",
-        .description = "Reports a new working directory",
-        .parameters_schema_json = "{}",
-        .execute = demoTool,
-        .runtime_execute = cdReportingTool,
-    }};
-    const models = [_]ai_types.Model{test_model_a};
-    var mock = MockProtocolCtx{ .tool_first = true, .tool_name = "cd_report_tool" };
-    var runtime = try TuiRuntime.init(std.testing.allocator, .{
-        .protocol = makeProtocol(&mock),
-        .models = &models,
-        .tools = &tools,
-        .workspace_root = "/tmp/makai-workspace",
-        .run_async = false,
-    });
-    defer runtime.deinit();
-
-    var tui_session = runtime.createSession();
-    try tui_session.start();
-    try tui_session.submitTurn("move");
-    try std.testing.expect(runtime.prompt_refresh_pending);
-
-    try tui_session.steer("where am I");
-    try std.testing.expect(mock.saw_working_directory_prompt);
+    const prompt_after = try runtime.workspaceSystemPrompt();
+    defer std.testing.allocator.free(prompt_after);
+    try std.testing.expectEqualStrings(prompt_before, prompt_after);
 }
 
 test "runtime ends a run whose last reply finished without an output-limit warning" {

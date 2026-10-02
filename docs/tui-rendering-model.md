@@ -335,15 +335,21 @@ code paths; add a transcript row instead.
   what retires #587's split.
 
   The session owns a working directory, so a `cd` now persists. `shell_execute` reports the
-  directory it ended in (`AgentToolResult.working_directory`, `working_directory_observed`),
-  carried over the tool-result envelope, and the runtime adopts it only when that path
-  resolves lexically inside the resolved session root, which stays the boundary;
-  The working directory is the base for relative paths only: a call that names an absolute
-  path is left alone, because the tool confines absolute paths to the root it is handed,
-  and rewriting the root would put paths inside the session root out of reach. The runtime
-  falls back to the session root when the working directory no longer opens. Adoption
-  refreshes the prompt only while the agent is idle, and resume and worktree creation
-  reset to the root.
+  directory it ended in through its `details_json` (`working_directory`,
+  `working_directory_observed`), and a result whose command moved ends its text with a
+  `cwd: <dir>` line, so the model is told where it is and a compacted context still carries
+  it. The runtime adopts that directory only when it resolves lexically inside the resolved
+  session root, which stays the boundary, and falls back to the session root when the
+  working directory no longer opens.
+
+  The rewrite is narrow. It replaces `workspace_root` with the working directory only when
+  the model passed the session root — the default it was told — so that the root means
+  "wherever this session is working"; another directory inside the root is passed through
+  unchanged, and so is a call that names an absolute path, because the tool confines
+  absolute paths to the root it is handed and rewriting that root would put paths inside
+  the session root out of reach. The system prompt is written once when the session starts
+  and is never rewritten, so a `cd` cannot invalidate a provider's cached prefix. Resume
+  and worktree creation reset the working directory to the root.
 
 ## Credentials and the model catalog
 
