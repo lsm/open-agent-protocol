@@ -92,6 +92,21 @@
         "reason": { "type": "string" }
       },
       "additionalProperties": false
+    },
+    "compactionPolicy": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["auto", "off", "share", "tokens"] },
+        "share_percent": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "tokens": { "type": "integer", "minimum": 1 }
+      },
+      "allOf": [
+        { "if": { "properties": { "kind": { "const": "share" } } }, "then": { "required": ["share_percent"], "not": { "required": ["tokens"] } } },
+        { "if": { "properties": { "kind": { "const": "tokens" } } }, "then": { "required": ["tokens"], "not": { "required": ["share_percent"] } } },
+        { "if": { "properties": { "kind": { "enum": ["auto", "off"] } } }, "then": { "not": { "anyOf": [{ "required": ["share_percent"] }, { "required": ["tokens"] }] } } }
+      ],
+      "additionalProperties": false
     }
   }
 }

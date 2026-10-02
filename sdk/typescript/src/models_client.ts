@@ -70,6 +70,7 @@ const KNOWN_REASONING_LEVELS: ReadonlySet<string> = new Set([
   "medium",
   "high",
   "xhigh",
+  "max",
 ]);
 
 export interface ModelsApiOptions {

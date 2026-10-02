@@ -526,3 +526,26 @@ A provider extension (`pi.registerProvider()`) is also a way in, and it is
 deliberately not a setting: it is code loaded into the Pi process, so it is
 outside the rule this epic set, which is a harness's own official settings and
 nothing patched into it.
+
+## Reasoning level and compaction at v0.87.1
+
+Recorded for [Decision 0045](../decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md).
+Read from the source at `f07218c4d4bbc12bef056a7058c3dd49dfe41abe`, under
+`packages/coding-agent/src/`.
+
+**Reasoning level.** `--thinking <level>` sets it at launch (`cli/args.ts`), and
+the RPC command `set_thinking_level {level}` (`modes/rpc/rpc-types.ts`) changes
+it on a live session. Levels are `off`, `minimal`, `low`, `medium`, `high`,
+`xhigh` and `max`, OAP's set exactly. `get_state` reports the level, and a
+`thinking_level_changed` event publishes a change.
+
+**Compaction.** `core/compaction/compaction.ts`'s `shouldCompact` compacts when
+the context exceeds `contextWindow - reserveTokens`, and only while
+`compaction.enabled` is true. Both come from `settings.json` in the agent
+directory (`core/settings-manager.ts`; `enabled` defaults to true and
+`reserveTokens` to 16384, with per-model overrides), and `PI_CODING_AGENT_DIR`
+moves that directory (`config.ts`). So a token threshold is set at launch by a
+settings file the adapter writes in a private agent directory, as
+`reserveTokens = contextWindow - threshold`. On a live session
+`set_auto_compaction {enabled}` switches compaction on and off, and nothing
+moves the threshold.

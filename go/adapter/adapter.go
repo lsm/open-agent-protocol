@@ -81,6 +81,10 @@ type OpenRequest struct {
 	Reopen bool
 
 	NativeSessionID string
+
+	ReasoningLevel protocol.ReasoningLevel
+
+	CompactionPolicy *protocol.CompactionPolicy
 }
 
 type NativeSession interface {
@@ -237,6 +241,40 @@ func RefuseUnadvertisedToolSources(request OpenRequest, disclosed ...protocol.Fe
 		}
 	}
 	return &UnsupportedControlError{Feature: protocol.FeatureToolSourcesAttach, Reason: ControlUnadvertised}
+}
+
+func OpenSettingKeys(level protocol.ReasoningLevel, policy *protocol.CompactionPolicy) []string {
+	var keys []string
+	if level != "" {
+		keys = append(keys, protocol.FeatureSessionReasoning)
+	}
+	if policy != nil {
+		keys = append(keys, protocol.FeatureCompactionPolicy)
+	}
+	return keys
+}
+
+func OpenSettingField(key string) string {
+	switch key {
+	case protocol.FeatureSessionReasoning:
+		return "reasoning_level"
+	case protocol.FeatureCompactionPolicy:
+		return "compaction_policy"
+	}
+	return ""
+}
+
+func RefuseUnadvertisedSettings(request OpenRequest, descriptor protocol.CapabilityDescriptor) error {
+	for _, key := range OpenSettingKeys(request.ReasoningLevel, request.CompactionPolicy) {
+		support, advertised := descriptor.EffectiveSupport(key)
+		if !advertised || support.Level == "" || support.Level == protocol.SupportUnavailable || !support.DisclosesMode(protocol.ModeSessionOpen) {
+			return &UnsupportedControlError{Feature: key, Reason: ControlUnadvertised, Field: OpenSettingField(key)}
+		}
+		if support.Level == protocol.SupportDegraded && !slices.Contains(request.AllowDegradedFeatures, key) {
+			return &DegradedControlError{Feature: key}
+		}
+	}
+	return nil
 }
 
 func RefuseUnadvertisedTools(request OpenRequest, disclosed ...protocol.FeatureSupport) error {
