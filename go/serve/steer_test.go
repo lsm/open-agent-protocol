@@ -462,3 +462,48 @@ func TestWhatADrainWithholdsAfterItsGateLiftsStillReachesSubscribers(t *testing.
 		t.Fatalf("delivered %s, want the envelope the drain withheld after the lift", envelope.Type)
 	}
 }
+
+func TestASettlementForTheGateRequestIsHeldWhateverRunItNames(t *testing.T) {
+	stub := &steerStubSession{stream: make(chan base.Result, 4)}
+	entry := newSession("stub", "stub", stub, nil)
+	sub := subscribeToRun(t, entry)
+
+	gate := &steerGate{run: "run-1", request: "req-steer", drainedCh: make(chan struct{})}
+	entry.mu.Lock()
+	entry.gate = gate
+	entry.mu.Unlock()
+
+	settlement := steerStubEnvelope(protocol.TypeRunSteerApplied, 2, "sub-steer", "req-steer")
+	settlement.RunID = "run-2"
+	entry.publish(settlement)
+	expectNoEnvelope(t, sub, "a settlement the gate's run does not match")
+
+	entry.Published("req-steer")
+	if envelope := nextEnvelope(t, sub); envelope.Type != protocol.TypeRunSteerApplied {
+		t.Fatalf("published %s, want the withheld settlement", envelope.Type)
+	}
+}
+
+func TestASteerAdmissionRetargetsTheGateToTheAdmittedRun(t *testing.T) {
+	stub := &steerStubSession{stream: make(chan base.Result, 4), steerRun: "run-2"}
+	entry := newSession("stub", "stub", stub, nil)
+	startStubRun(t, entry)
+	subscribeToRun(t, entry)
+
+	submit := steerSubmit("req-steer")
+	submit.Request.TargetRunID = ""
+	admission, err := entry.Submit(context.Background(), submit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if admission.RunID != "run-2" {
+		t.Fatalf("admission run = %q, want the adapter's answered run", admission.RunID)
+	}
+	entry.mu.Lock()
+	armed := entry.gate
+	entry.mu.Unlock()
+	if armed == nil || armed.run != "run-2" {
+		t.Fatalf("the gate is still armed on %+v, want the admitted run", armed)
+	}
+	entry.Published("req-steer")
+}

@@ -165,6 +165,31 @@ func (g *steerGate) awaitDrain(readers int) {
 
 func (g *steerGate) drainPending() bool { return g.requested.Load() && !g.drained.Load() }
 
+func (g *steerGate) withholds(envelope protocol.Envelope) bool {
+	if g.run != "" && g.run == envelope.RunID {
+		return true
+	}
+	return g.request != "" && settlementRequest(envelope) == g.request
+}
+
+func settlementRequest(envelope protocol.Envelope) protocol.EnvelopeID {
+	switch envelope.Type {
+	case protocol.TypeRunSteerApplied:
+		var payload protocol.RunSteerAppliedPayload
+		if err := envelope.DecodePayload(&payload); err != nil {
+			return ""
+		}
+		return payload.RequestID
+	case protocol.TypeRunSteerDropped:
+		var payload protocol.RunSteerDroppedPayload
+		if err := envelope.DecodePayload(&payload); err != nil {
+			return ""
+		}
+		return payload.RequestID
+	}
+	return ""
+}
+
 func (g *steerGate) finishDrain() {
 	g.doneOnce.Do(func() {
 		g.drained.Store(true)
@@ -395,6 +420,17 @@ func (s *Session) Submit(ctx context.Context, submit base.SubmitRequest) (protoc
 	return admission, nil
 }
 
+func (s *Session) retargetGate(gate *steerGate, run protocol.RunID) {
+	if gate == nil || run == "" {
+		return
+	}
+	s.mu.Lock()
+	if s.gate == gate && gate.run != run {
+		gate.run = run
+	}
+	s.mu.Unlock()
+}
+
 func (s *Session) foreignRun(run protocol.RunID) bool {
 	if s.runs == nil {
 		return false
@@ -420,6 +456,7 @@ func (s *Session) submitSteer(ctx context.Context, submit base.SubmitRequest) (p
 	s.reservations++
 	s.mu.Unlock()
 	admission, stream, err := s.session.Submit(ctx, submit)
+	s.retargetGate(gate, admission.RunID)
 	s.mu.Lock()
 	readers := s.readers
 	s.mu.Unlock()
@@ -427,9 +464,12 @@ func (s *Session) submitSteer(ctx context.Context, submit base.SubmitRequest) (p
 	s.broadcastDrain()
 	gate.awaitDrain(readers)
 	if err != nil {
-		boundary := gate.boundary
 		var refusal *base.InvalidSteerTargetError
-		if errors.As(err, &refusal) && refusal.TargetSequence != nil {
+		if errors.As(err, &refusal) {
+			s.retargetGate(gate, refusal.RunID)
+		}
+		boundary := gate.boundary
+		if refusal != nil && refusal.TargetSequence != nil {
 			boundary = *refusal.TargetSequence
 		}
 		s.releaseToBoundary(gate, boundary)
@@ -835,7 +875,7 @@ func (s *Session) drainGate(gate *steerGate, stream base.EventStream) (base.Resu
 				gate.finishDrain()
 				return result, true, true
 			}
-			if gate.run == result.Envelope.RunID {
+			if gate.withholds(result.Envelope) {
 				s.withhold(gate, result.Envelope)
 			} else {
 				s.publish(result.Envelope)
@@ -1000,7 +1040,7 @@ func (s *Session) exitReader(runID protocol.RunID, end *terminalState) {
 
 func (s *Session) publish(envelope protocol.Envelope) {
 	s.mu.Lock()
-	if s.gate != nil && s.gate.run == envelope.RunID {
+	if s.gate != nil && s.gate.withholds(envelope) {
 		s.gate.withheld = append(s.gate.withheld, envelope)
 		s.mu.Unlock()
 		return
