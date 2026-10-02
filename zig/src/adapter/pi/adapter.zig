@@ -538,20 +538,9 @@ pub const Session = struct {
         return .running;
     }
 
-    fn steerControlKey(request: *const oap_types.MessageSubmitRequest) ?[]const u8 {
-        if (request.instructions != null) return "run.instructions";
-        if (request.model_id != null) return "run.model_selection";
-        if (request.output_schema_json != null) return "run.structured_output";
-        if (request.tool_choice_json != null) return "run.tool_selection";
-        return null;
-    }
-
     fn steer(self: *Session, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
         if (request.session_id.len == 0 or request.messages.len == 0) return error.InvalidSubmission;
-        if (steerControlKey(request)) |key| {
-            refusal.* = .{ .feature = key, .reason = contract.reason_unadvertised };
-            return error.UnsupportedFeature;
-        }
+        try contract.refuseUnadvertisedControls(descriptor, request, refusal);
         if (self.ended or self.unusable) return error.SessionClosed;
         if (!std.mem.eql(u8, request.session_id, self.id)) return error.RunNotFound;
         const named = request.target_run_id orelse "";
@@ -1575,4 +1564,21 @@ test "a steer naming an unknown run on an idle session is refused as unknown_tar
     var request = try steerRequest(probe.arena.allocator(), "run-typo");
     try testing.expectError(error.InvalidSteerTarget, probe.handle.?.submit(probe.arena.allocator(), &request, "steer-request", &refusal));
     try testing.expectEqualStrings("unknown_target", refusal.reason);
+}
+
+test "a steer refuses a run control as unadvertised" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_text_turn ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    const admitted = try probe.submit("hello", &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    _ = try probe.pumpUntil("run.completed", &seen);
+
+    var request = try steerRequest(probe.arena.allocator(), admitted.run_id);
+    request.model_id = "other";
+    try testing.expectError(error.UnsupportedFeature, probe.handle.?.submit(probe.arena.allocator(), &request, "steer-request", &refusal));
+    try testing.expectEqualStrings("run.model_selection", refusal.feature);
+    try testing.expectEqualStrings(contract.reason_unadvertised, refusal.reason);
 }

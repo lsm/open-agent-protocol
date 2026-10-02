@@ -375,8 +375,8 @@ func (s *Session) nativeContent(req protocol.MessageSubmitRequest) (string, []na
 
 func (s *Session) steer(ctx context.Context, submit base.SubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
 	req := submit.Request
-	if refusal := refuseSteerControls(req); refusal != nil {
-		return protocol.MessageSubmitResponse{}, nil, refusal
+	if err := base.RefuseUnadvertisedControls(req, protocol.FeatureDeliverySteer); err != nil {
+		return protocol.MessageSubmitResponse{}, nil, err
 	}
 	text, images, messageIDs, err := s.nativeContent(req)
 	if err != nil {
@@ -466,23 +466,6 @@ func (s *Session) steerTargetLocked(target protocol.RunID) (*runState, string) {
 	default:
 		return run, ""
 	}
-}
-
-func refuseSteerControls(request protocol.MessageSubmitRequest) error {
-	for _, control := range []struct {
-		key     string
-		present bool
-	}{
-		{protocol.FeatureInstructions, request.Instructions != nil},
-		{protocol.FeatureModelSelection, request.ModelID != nil},
-		{protocol.FeatureStructuredOutput, len(request.OutputSchema) > 0},
-		{protocol.FeatureToolSelection, len(request.ToolChoice) > 0},
-	} {
-		if control.present {
-			return &base.UnsupportedControlError{Feature: control.key, Reason: base.ControlUnadvertised}
-		}
-	}
-	return nil
 }
 
 func (s *Session) settleSteers(run *runState, boundary protocol.SteerBoundary) {
