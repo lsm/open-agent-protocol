@@ -39,6 +39,9 @@ var hubParityScenarios = map[string][]string{
 		`{"id":4,"op":"open","adapter":"memory","request":{"id":"x"}}`,
 		`{"id":5,"op":"open","adapter":"memory","request":{` + openEnvelopeFields + `"id":"o5","payload":{"session_id":"s5"}}}`,
 	},
+	"a reopen of a session the hub never closed is unknown to both": {
+		`{"id":1,"op":"open","adapter":"memory","request":{` + openEnvelopeFields + `"id":"o1","payload":{"session_id":"ghost","reopen":true}}}`,
+	},
 	"an attachment that names something to run is refused by both": {
 		`{"id":1,"op":"open","adapter":"memory","request":{` + openEnvelopeFields + `"id":"o1","payload":{"session_id":"s1","tool_sources":[{"id":"l1","kind":"local","command":"/bin/sh"}]}}}`,
 		`{"id":2,"op":"open","adapter":"memory","request":{` + openEnvelopeFields + `"id":"o2","payload":{"session_id":"s2","tool_sources":[{"id":"l2","kind":"local","args":["-c"]}]}}}`,

@@ -6,7 +6,7 @@ const json_encode = @import("json_encode");
 const jsonschema = @import("jsonschema");
 
 pub const endpoint_id = "reference.memory";
-pub const capability_revision = "reference-memory-v12";
+pub const capability_revision = "reference-memory-v13";
 pub const model_primary = "reference-model-a";
 pub const model_secondary = "reference-model-b";
 pub const journal_capacity = 64;
@@ -69,6 +69,7 @@ const features = [_]contract.Feature{
     .{ .key = contract.feature_submit, .level = .native },
     .{ .key = contract.feature_model_switch, .level = .emulated, .reason = "the reference adapter changes the session default within its fixed catalog" },
     .{ .key = "session.open", .level = .native },
+    .{ .key = contract.feature_open_reopen, .level = .emulated, .reason = "a closed session's model is kept in process memory, so a reopen in the same process restores it and one after a restart is refused" },
     .{ .key = contract.feature_open_subscribe, .level = .native, .reason = "the journal exists from the open, so a subscription registered there misses nothing" },
     .{ .key = "session.state", .level = .native },
     .{ .key = "user_input", .level = .emulated, .reason = "the reference adapter exposes an interactive scripted gate" },
@@ -112,9 +113,35 @@ pub const Adapter = struct {
     allocator: std.mem.Allocator,
     ids: u64 = 0,
     now_ms: *const fn () i64 = wallClock,
+    closed: std.StringHashMapUnmanaged([]const u8) = .empty,
 
     pub fn init(allocator: std.mem.Allocator) Adapter {
         return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *Adapter) void {
+        var kept = self.closed.keyIterator();
+        while (kept.next()) |id| self.allocator.free(id.*);
+        self.closed.deinit(self.allocator);
+        self.* = undefined;
+    }
+
+    fn keepClosed(self: *Adapter, id: []const u8, model: []const u8) !void {
+        if (self.closed.getPtr(id)) |held| {
+            held.* = model;
+            return;
+        }
+        const owned = try self.allocator.dupe(u8, id);
+        errdefer self.allocator.free(owned);
+        try self.closed.put(self.allocator, owned, model);
+    }
+
+    fn claim(self: *Adapter, arena: std.mem.Allocator, id: []const u8, reopen: bool, refusal: *contract.Refusal) contract.Failure!?[]const u8 {
+        const removed = self.closed.fetchRemove(id);
+        if (removed) |entry| self.allocator.free(entry.key);
+        if (!reopen) return null;
+        const entry = removed orelse return refusal.fail(error.UnknownSession, try std.fmt.allocPrint(arena, "no session \"{s}\"", .{id}));
+        return entry.value;
     }
 
     pub fn adapter(self: *Adapter) contract.Adapter {
@@ -219,6 +246,7 @@ pub const Session = struct {
     id: []const u8,
     participant: []const u8,
     current_model: []const u8 = "",
+    recovered: bool = false,
     updated_at_ms: i64,
     transcript_cursor: u64 = 0,
     attached: []oap_types.ToolSourceDescriptor = &.{},
@@ -241,6 +269,10 @@ pub const Session = struct {
         self.attached = try admitToolSources(keep, arena, request.tool_sources_json, refusal);
         self.provided = try self.admitProvidedTools(arena, request.tools_json, refusal);
         self.id = if (request.session_id.len > 0) try keep.dupe(u8, request.session_id) else try owner.nextID(keep, "session");
+        if (try owner.claim(arena, self.id, request.reopen, refusal)) |model| {
+            self.current_model = model;
+            self.recovered = true;
+        }
         return self;
     }
 
@@ -329,6 +361,7 @@ pub const Session = struct {
             .transcript_cursor = if (self.transcript_cursor > 0) try std.fmt.allocPrint(arena, "{d}", .{self.transcript_cursor}) else null,
             .updated_at_ms = self.updated_at_ms,
             .sources = try self.sessionSources(arena),
+            .recovered = self.recovered,
             .as_of = if (self.settled.items.len > 0) .{ .settled = self.settled.items } else null,
         };
         if (started) |run| {
@@ -1115,6 +1148,7 @@ pub const Session = struct {
                 if (run.live()) return error.RunActive;
             }
         }
+        if (!force) try self.owner.keepClosed(self.id, self.current_model);
         self.destroy();
     }
 
@@ -1509,6 +1543,7 @@ const Probe = struct {
     fn deinit(self: *Probe) void {
         self.session.teardown();
         self.arena.deinit();
+        self.adapter.deinit();
     }
 
     fn a(self: *Probe) std.mem.Allocator {
@@ -1769,6 +1804,7 @@ test "a model switch changes the session default the next run starts with" {
 
 fn submitAndSettle(allocator: std.mem.Allocator) !void {
     var adapter = Adapter.init(allocator);
+    defer adapter.deinit();
     adapter.now_ms = fixedClock;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -1870,6 +1906,7 @@ test "an open whose tools or sources break a disclosed limit is refused naming t
     };
     for (cases) |case| {
         var adapter = Adapter.init(testing.allocator);
+        defer adapter.deinit();
         var arena = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena.deinit();
         var refusal = contract.Refusal{};
@@ -1881,6 +1918,7 @@ test "an open whose tools or sources break a disclosed limit is refused naming t
 
 fn provideAndSettle(allocator: std.mem.Allocator) !void {
     var adapter = Adapter.init(allocator);
+    defer adapter.deinit();
     adapter.now_ms = fixedClock;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -1927,7 +1965,7 @@ test "an already_resolved refusal names its settlement only when there is one" {
 }
 
 test "the reference descriptor advertises steer advice at the emulated level" {
-    try testing.expectEqualStrings("reference-memory-v12", capability_revision);
+    try testing.expectEqualStrings("reference-memory-v13", capability_revision);
     try testing.expectEqual(oap_types.SupportLevel.emulated, descriptor.level("session.message.delivery.steer"));
 }
 
@@ -2058,4 +2096,25 @@ test "a steer carrying a run control is refused as unsatisfiable" {
     try testing.expectError(error.UnsupportedFeature, probe.session.submit(probe.a(), &modelled, "s7", &refusal));
     try testing.expectEqualStrings("run.model_selection", refusal.feature);
     try testing.expectEqualStrings(contract.reason_unsatisfiable, refusal.reason);
+}
+
+test "a closed session reopens on the model it closed on, and only once" {
+    var adapter = Adapter.init(testing.allocator);
+    defer adapter.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var refusal = contract.Refusal{};
+    const first = try adapter.adapter().open(arena.allocator(), .{ .session_id = "kept", .participant = "user" }, &refusal);
+    _ = try first.vtable.switch_model.?(first.ptr, arena.allocator(), &.{ .session_id = "kept", .model_id = model_secondary }, &refusal);
+    try first.vtable.close(first.ptr, false);
+
+    const reopened = try adapter.adapter().open(arena.allocator(), .{ .session_id = "kept", .participant = "user", .reopen = true }, &refusal);
+    defer reopened.teardown();
+    const state_now = try reopened.state(arena.allocator(), &refusal);
+    try testing.expect(state_now.recovered);
+    try testing.expectEqualStrings(model_secondary, state_now.current_model_id.?);
+
+    try testing.expectError(error.UnknownSession, adapter.adapter().open(arena.allocator(), .{ .session_id = "kept", .participant = "user", .reopen = true }, &refusal));
+    try testing.expectEqualStrings("no session \"kept\"", refusal.message);
+    try testing.expectError(error.UnknownSession, adapter.adapter().open(arena.allocator(), .{ .session_id = "never", .participant = "user", .reopen = true }, &refusal));
 }

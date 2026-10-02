@@ -74,6 +74,9 @@ pub const RemoteExecution = struct {
         cancel: *const fn (ctx: *anyopaque) void,
         switch_model: *const fn (ctx: *anyopaque, model: ai_types.Model) anyerror!void,
         decide_approval: *const fn (ctx: *anyopaque, tool_call_id: []const u8, granted: bool) anyerror!void,
+        follow_up: *const fn (ctx: *anyopaque, text: []const u8) anyerror!void,
+        clear_queued: *const fn (ctx: *anyopaque) void,
+        queued: *const fn (ctx: *anyopaque) usize,
         stop: *const fn (ctx: *anyopaque) void,
     };
 };
@@ -962,7 +965,7 @@ pub const TuiRuntime = struct {
         if (!self.started) try self.start();
         if (self.remote) |remote| {
             if (self.currentModel() == null) return error.NoModelConfigured;
-            if (self.stream_active) return error.AgentAlreadyStreaming;
+            if (self.stream_active) return remote.vtable.follow_up(remote.ctx, text);
             self.resetEventStreamForTurn();
             self.cancelled.store(false, .release);
             self.completed = false;
@@ -999,7 +1002,11 @@ pub const TuiRuntime = struct {
     }
 
     pub fn followUp(self: *TuiRuntime, text: []const u8) !void {
-        if (self.remote != null) return error.UnavailableOverOap;
+        if (self.remote) |remote| {
+            if (!self.started) return error.RuntimeNotStarted;
+            if (!self.stream_active) return self.submitTurn(text);
+            return remote.vtable.follow_up(remote.ctx, text);
+        }
         if (!self.started) return error.RuntimeNotStarted;
         const local = &(self.local_agent orelse return error.RuntimeNotStarted);
         var msg = try self.makeUserMessage(text);
@@ -1018,11 +1025,13 @@ pub const TuiRuntime = struct {
     }
 
     pub fn clearQueuedMessages(self: *TuiRuntime) void {
+        if (self.remote) |remote| return remote.vtable.clear_queued(remote.ctx);
         const local = &(self.local_agent orelse return);
         local.clearAllQueues();
     }
 
     pub fn queuedCounts(self: *TuiRuntime) QueuedCounts {
+        if (self.remote) |remote| return .{ .follow_up = remote.vtable.queued(remote.ctx) };
         const local = &(self.local_agent orelse return .{});
         return local.queuedCounts();
     }

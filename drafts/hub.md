@@ -1252,6 +1252,27 @@ nowhere to put a reason (D12).
   closed when the open probed it), `probe_failed`, `open_failed` (502),
   `request_cancelled`, `internal` — and, when the request set `subscribe`, the
   subscription bound can refuse this op specifically.
+- **reopen:** a request setting `reopen` is gated on `session.open.reopen` as
+  `subscribe` is on its key. One naming a session still open is `session_exists`,
+  checked before the adapter is asked. A hub records, for every session it
+  opens, the adapter and the native id the session reports (Go in its binding
+  store, Zig in memory for the hub's lifetime). A reopen with no record, or a
+  record naming another adapter, is `unknown_session` (404) without asking the
+  adapter; otherwise the adapter is handed the recorded native id, and a record
+  the adapter can no longer load is `unsupported_feature` (400) naming
+  `session.open.reopen`, because the code comes from the record's existence and
+  not from the adapter's reply. A successful reopen's state declares
+  `recovery.recovered`, and a binding store records it as `reopened`. Close is an
+  ordinary close of the adapter's session in both trees, so an adapter that keeps
+  what it closed can be asked to reopen it. Pinned by
+  `TestAReopenIsRecordedAsReopenedAfterTheClose`,
+  `TestAReopenOfALiveSessionIsSessionExistsBeforeTheAdapterIsAsked`,
+  `TestTheElectionGateRefusesAReopenTheAdapterDoesNotAdvertise`,
+  `TestAReopenHandsTheAdapterTheNativeIDItsBindingRecorded`,
+  `TestAReopenAfterARestartTheAdapterCannotLoadIsUnsupportedFeature` and the Zig
+  hub's `a closed session reopens through the hub once`, `a reopen hands the
+  adapter the native id its open recorded` and `a reopen the hub holds a record
+  for but the adapter has lost` tests.
 - **pinned by:** `TestOpenOpOpensASession`, `TestOpenOpRefusals`,
   `TestOpenRefusalsAreBounded`, `TestHubOpenRejections`,
   `TestHubOpenDefaultsParticipant`, `TestHubOpenClosesSessionWhenStateFails`,
@@ -1665,7 +1686,7 @@ here; each was a place a differential test would otherwise not see.
   HTTP: a stale citation is refused `409` with both `expected_revision` and
   `current_revision` in `details`. This entry used to say a `subscribe` open
   citing a stale revision "is refused on the capability rung first, so the
-  comparison is never made". That is not what the code does: `SubscribeGate`
+  comparison is never made". That is not what the code does: `ElectionGate`
   compares the revision *before* it asks whether `session.open.subscribe` is
   advertised, so a stale citation on the subscribe path is refused
   `stale_capabilities` like any other. `TestOpenOpRefusesAStaleRevisionOnTheSubscribePath`
@@ -1856,7 +1877,7 @@ are "stamped with the revision the lister served it under", and both name
 | | |
 | --- | --- |
 | **The draft says** | `open`'s errors include `stale_capabilities` (409, with `expected_revision` and `current_revision` in `details`), and its answer carries `capability_revision` "set to the revision the open was gated under". |
-| **Go does** | The comparison lives in **two** gates, and the draft's own line puts the subscribe one second: `AttachmentGate` runs when the request carries tool sources, `SubscribeGate` when it set `subscribe`, and both return early otherwise. Each probes, compares the request envelope's `capability_revision` against the descriptor's, and returns `StaleRevisionError{Expected: the descriptor's, Current: the request's}`, which the stdio op turns into `stale_capabilities` with both in `details`. `AttachmentGate` runs first, so a request that both attaches and subscribes is gated on the attachment. On success a gate returns the **descriptor's** revision, and that is what stamps the answer. |
+| **Go does** | The comparison lives in **two** gates, and the draft's own line puts the subscribe one second: `AttachmentGate` runs when the request carries tool sources, `ElectionGate` when it set `subscribe` or `reopen`, and both return early otherwise. Each probes, compares the request envelope's `capability_revision` against the descriptor's, and returns `StaleRevisionError{Expected: the descriptor's, Current: the request's}`, which the stdio op turns into `stale_capabilities` with both in `details`. `AttachmentGate` runs first, so a request that both attaches and subscribes is gated on the attachment. On success a gate returns the **descriptor's** revision, and that is what stamps the answer. |
 | **Zig does** | `Failure.StaleCapabilities` was **declared and never returned**. The election order named `subscribe` first where Go's wire names the attachment first, and both trees asked whether an attach member was *present* rather than whether it carried entries. Nothing anywhere compared a revision, and `hub.OpenRequest` had no member to carry one, so the refusal had no arm and the gate had no value. |
 | **Why it matters** | Two consequences, and the second is the one that would have shipped quietly. `stale_capabilities` was unreachable, so a host that gated its open on a revision got a session opened against whatever the adapter happened to be serving — a silent disagreement where the draft specifies a refusal. And the answer's `capability_revision` had no gated revision to report: the only value available was the request's own, which is exactly the value the gate exists to check, so a "success" would have been stamped with the number that was never verified. |
 | **The fix** | `hub.OpenRequest` carries `capability_revision`. An open that **subscribes or attaches tool sources** compares it against the registered adapter's revision and returns `StaleCapabilities` on a disagreement — **after** the adapter's probe and **before** the `session_exists` lookup, so a probe failure answers ahead of it (`probe_failed` in Go, and the same here) and the gate still wins over a name collision and over an unadvertised feature. A request that states no revision is not gated, which is Go's own `revision != ""` guard and not a hole. The two Go gates differ only in which support feature they then check, and that half already exists as the election check, so one comparison covers both. The `expected`/`current` pair is assembled by the frontend, which reads the registered revision from `hub.listing` — the same route the `adapters` op already uses. |
