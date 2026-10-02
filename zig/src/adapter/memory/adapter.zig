@@ -480,12 +480,12 @@ pub const Session = struct {
         errdefer keep.free(kept_submission);
         const kept_request = try keep.dupe(u8, envelope_id);
         errdefer keep.free(kept_request);
+        try run.admitted_steers.append(keep, kept_request);
         try run.steers.append(keep, .{
             .submission_id = kept_submission,
             .request_id = kept_request,
             .message_ids = kept_ids,
         });
-        try run.admitted_steers.append(keep, kept_request);
         self.updated_at_ms = self.owner.now_ms();
         return .{
             .session_id = self.id,
@@ -1779,6 +1779,13 @@ fn submitAndSettle(allocator: std.mem.Allocator) !void {
     const request = oap_types.MessageSubmitRequest{ .session_id = "s1", .messages = messages, .delivery = .auto, .instructions = "Be brief." };
     _ = try session.submit(arena.allocator(), &request, "", &refusal);
     _ = try session.submit(arena.allocator(), &request, "", &refusal);
+    const steering = oap_types.MessageSubmitRequest{
+        .session_id = "s1",
+        .messages = try arena.allocator().dupe(oap_types.Message, &.{.{ .role = .user, .content = .{ .text = "wait" } }}),
+        .delivery = .steer,
+        .target_run_id = "run-1",
+    };
+    _ = try session.submit(arena.allocator(), &steering, "req-steer", &refusal);
     _ = try session.cancel(arena.allocator(), "run-1", &refusal);
     var drained = std.ArrayList(contract.Event).empty;
     try session.drain(arena.allocator(), &drained);
