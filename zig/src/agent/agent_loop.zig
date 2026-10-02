@@ -1759,6 +1759,9 @@ fn runLoop(
                 break :outer;
             }
             if (state.iterations > 0) {
+                if (config.next_model_fn) |next_model| {
+                    if (next_model(config.next_model_ctx)) |model| turn_config.model = model;
+                }
                 if (config.compact_between_turns_fn) |compact| {
                     if (try compact(config.compact_between_turns_ctx, context, event_stream)) {
                         const request = try compactedRequest(context.allocator);
@@ -1818,9 +1821,9 @@ fn runLoop(
                 }};
                 const error_msg = ai_types.AssistantMessage{
                     .content = &error_content,
-                    .api = config.model.api,
-                    .provider = config.model.provider,
-                    .model = config.model.id,
+                    .api = turn_config.model.api,
+                    .provider = turn_config.model.provider,
+                    .model = turn_config.model.id,
                     .usage = .{},
                     .stop_reason = .@"error",
                     .error_message = ai_types.OwnedSlice(u8).initBorrowed(@errorName(err)),
@@ -1848,7 +1851,7 @@ fn runLoop(
             try setFinalMessage(&state, allocator, assistant_message);
             try appendClonedStateMessage(&state.messages, allocator, .{ .assistant = assistant_message });
 
-            const raised = if (config.raise_max_tokens_on_cut_off and assistant_message.stop_reason == .length) raisedOutput(turn_config.max_tokens, config.model) else null;
+            const raised = if (config.raise_max_tokens_on_cut_off and assistant_message.stop_reason == .length) raisedOutput(turn_config.max_tokens, turn_config.model) else null;
             if (raised) |higher| turn_config.max_tokens = higher;
             const outcome = switch (turnOutcome(assistant_message, cut_off_tool_turns)) {
                 .reasoned_only => if (asked_for_answer) TurnOutcome.answered else TurnOutcome.reasoned_only,
@@ -2010,9 +2013,9 @@ fn runLoop(
     } else blk: {
         break :blk .{
             .content = try allocator.alloc(ai_types.AssistantContent, 0),
-            .api = config.model.api,
-            .provider = config.model.provider,
-            .model = config.model.id,
+            .api = turn_config.model.api,
+            .provider = turn_config.model.provider,
+            .model = turn_config.model.id,
             .usage = .{},
             .stop_reason = .stop,
             .timestamp = compat.time.nowMillis(),

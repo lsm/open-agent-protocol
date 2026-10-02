@@ -416,7 +416,8 @@ code paths; add a transcript row instead.
 `Enter` send (steer while streaming), `Tab` while streaming queue the draft as a
 follow-up that is sent when the turn stops (it waits above the composer until then,
 and the inline window reserves its rows so no transcript row hides behind it; a
-draft starting with `/` is never queued),
+draft starting with `/` is never queued, except the commands listed under
+"Commands during a run"),
 `Shift+Enter` newline, `Esc` clear draft →
 abort turn → close modal (aborting holds the steers and follow-ups not yet consumed and
 sends them, joined, as a new turn once the aborted run ends; a second `Esc` before then
@@ -605,6 +606,21 @@ error-ended run does not resume the queue on its own, so the continue would be
 a promise nothing keeps. Replaying a saved session is not a fresh failure: a
 session whose last run ended in an error does not nudge on resume, because the
 failure belongs to the process that hit it.
+
+## Commands during a run
+
+A few commands change what the running turn depends on, so during a run they do not
+apply at once:
+
+- `/model <name>` with `Enter` steers: the run switches to that model before its
+  next turn (the request's key follows the new model's provider), and the TUI
+  selects and saves it when the run ends. With `Tab` it waits for the run to end.
+- `/context <tokens|default>`, `/output <setting>`, `/logout <provider>` and
+  `/provider del <id>`, with `Enter` or `Tab`, wait for the run to end and then run
+  in the order given.
+
+Each says so in the transcript. Everything else (`/think`, `/verbose`, `/status`,
+`/rename`, `/permissions`, `/clear`, …) applies at once, as before.
 
 ## Compaction
 

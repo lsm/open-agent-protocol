@@ -192,6 +192,7 @@ pub const TuiRuntime = struct {
     protocol: ?agent.ProtocolClient,
     models: []ai_types.Model,
     selected_model_index: ?usize,
+    pending_model_index: ?usize = null,
     local_agent: ?agent.Agent = null,
     event_stream: TuiEventStream,
     tool_registry: local_tools.ToolRegistry,
@@ -482,6 +483,8 @@ pub const TuiRuntime = struct {
             }
         }
 
+        self.pending_model_index = null;
+        if (self.local_agent) |*local| local.requestModelSwitch(null);
         deinitModels(self.allocator, self.models);
         self.models = owned_next;
         owned_next = &.{};
@@ -707,6 +710,25 @@ pub const TuiRuntime = struct {
             }
         }
         return error.ModelNotFound;
+    }
+
+    pub fn requestModelSwitch(self: *TuiRuntime, model_id: []const u8) !ai_types.Model {
+        for (self.models, 0..) |model, i| {
+            if (!std.mem.eql(u8, model.id, model_id)) continue;
+            self.pending_model_index = i;
+            if (self.local_agent) |*local| local.requestModelSwitch(self.effectiveModel(self.models[i]));
+            return model;
+        }
+        return error.ModelNotFound;
+    }
+
+    pub fn applyPendingModelSwitch(self: *TuiRuntime) !?ai_types.Model {
+        const index = self.pending_model_index orelse return null;
+        self.pending_model_index = null;
+        if (self.local_agent) |*local| local.requestModelSwitch(null);
+        if (index >= self.models.len) return null;
+        try self.switchModelExact(self.models[index]);
+        return self.models[index];
     }
 
     pub fn switchModelExact(self: *TuiRuntime, selected: ai_types.Model) !void {
