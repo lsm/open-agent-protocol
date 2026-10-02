@@ -55,7 +55,7 @@ func (s *Server) handle(ctx context.Context, streams context.Context, line []byt
 	}
 	answer, after, err := s.serve(ctx, streams, envelope)
 	if err != nil {
-		answer, after = s.errorEnvelope(envelope, err), nil
+		answer = s.errorEnvelope(envelope, err)
 	}
 	if writeErr := s.write(ctx, answer); writeErr != nil {
 		return writeErr
@@ -307,7 +307,7 @@ func (s *Server) submit(ctx context.Context, streams context.Context, e protocol
 	admission, err := entry.Submit(ctx, base.SubmitRequest{Request: request, EnvelopeID: e.ID})
 	if err != nil {
 		subscription.Close()
-		return protocol.Envelope{}, nil, err
+		return protocol.Envelope{}, func() { println("AFTER-ERROR"); s.hub.Published(entry.ID()) }, err
 	}
 	answer, err := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitResponse, s.nextID("response"), admission)
 	if err != nil {

@@ -83,8 +83,9 @@ type Session struct {
 
 	finished map[protocol.RunID]bool
 
-	gateCond *sync.Cond
-	gate     *steerGate
+	drainWake chan struct{}
+	gateCond  *sync.Cond
+	gate      *steerGate
 }
 
 const steerGateDeadline = 30 * time.Second
@@ -97,24 +98,31 @@ type steerGate struct {
 	withheld []protocol.Envelope
 	deadline *time.Timer
 
-	drain     chan struct{}
-	drained   chan struct{}
-	drainOnce sync.Once
+	requested atomic.Bool
+	drained   atomic.Bool
+	drainedCh chan struct{}
 	doneOnce  sync.Once
 }
 
 func (g *steerGate) requestDrain(readers int) {
-	g.drainOnce.Do(func() { close(g.drain) })
+	g.requested.Store(true)
 	if readers == 0 {
 		return
 	}
 	select {
-	case <-g.drained:
+	case <-g.drainedCh:
 	case <-time.After(steerDrainDeadline):
 	}
 }
 
-func (g *steerGate) finishDrain() { g.doneOnce.Do(func() { close(g.drained) }) }
+func (g *steerGate) drainPending() bool { return g.requested.Load() && !g.drained.Load() }
+
+func (g *steerGate) finishDrain() {
+	g.doneOnce.Do(func() {
+		g.drained.Store(true)
+		close(g.drainedCh)
+	})
+}
 
 func (g *steerGate) split(boundary uint64) (prefix, rest []protocol.Envelope) {
 	for _, envelope := range g.withheld {
@@ -243,7 +251,7 @@ func (s *Session) armSteerGate(ctx context.Context, run protocol.RunID) (*steerG
 	if s.closed {
 		return nil, base.ErrSessionClosed
 	}
-	gate := &steerGate{run: run, boundary: s.sequences[run], drain: make(chan struct{}), drained: make(chan struct{})}
+	gate := &steerGate{run: run, boundary: s.sequences[run], drainedCh: make(chan struct{})}
 	s.gate = gate
 	gate.deadline = time.AfterFunc(steerGateDeadline, func() { s.liftSteerGate(gate) })
 	return gate, nil
@@ -353,6 +361,7 @@ func (s *Session) submitSteer(ctx context.Context, submit base.SubmitRequest) (p
 	s.mu.Lock()
 	readers := s.readers
 	s.mu.Unlock()
+	s.broadcastDrain()
 	gate.requestDrain(readers)
 	if err != nil {
 		boundary := gate.boundary
@@ -696,53 +705,62 @@ func (s *Session) gatedGate(run protocol.RunID) *steerGate {
 	return nil
 }
 
-func (s *Session) armedDrain() chan struct{} {
+func (s *Session) drainSignal() chan struct{} {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.gate != nil {
-		return s.gate.drain
+	if s.drainWake == nil {
+		s.drainWake = make(chan struct{})
 	}
-	return nil
+	return s.drainWake
 }
 
-func (s *Session) finishArmedDrain() {
+func (s *Session) broadcastDrain() {
 	s.mu.Lock()
-	if s.gate != nil {
-		s.gate.finishDrain()
+	if s.drainWake != nil {
+		close(s.drainWake)
+		s.drainWake = nil
 	}
 	s.mu.Unlock()
 }
 
+func (s *Session) armedGate() *steerGate {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.gate
+}
+
 func (s *Session) nextResult(run protocol.RunID, stream base.EventStream) (base.Result, bool) {
 	for {
-		drain := s.armedDrain()
-		if drain == nil {
-			result, ok := <-stream
-			return result, ok
+		if gate := s.armedGate(); gate != nil && gate.drainPending() {
+			if ok := s.drainGate(gate, stream); !ok {
+				return base.Result{}, false
+			}
+			continue
 		}
 		select {
 		case result, ok := <-stream:
 			return result, ok
-		case <-drain:
-			gate := s.gatedGate(run)
-			draining := true
-			for draining {
-				select {
-				case result, ok := <-stream:
-					if !ok {
-						s.finishArmedDrain()
-						return base.Result{}, false
-					}
-					if gate != nil && gate.run == result.Envelope.RunID {
-						s.withhold(gate, result.Envelope)
-					} else {
-						s.publish(result.Envelope)
-					}
-				default:
-					s.finishArmedDrain()
-					draining = false
-				}
+		case <-s.drainSignal():
+		}
+	}
+}
+
+func (s *Session) drainGate(gate *steerGate, stream base.EventStream) bool {
+	for {
+		select {
+		case result, ok := <-stream:
+			if !ok {
+				gate.finishDrain()
+				return false
 			}
+			if gate.run == result.Envelope.RunID {
+				s.withhold(gate, result.Envelope)
+			} else {
+				s.publish(result.Envelope)
+			}
+		default:
+			gate.finishDrain()
+			return true
 		}
 	}
 }
