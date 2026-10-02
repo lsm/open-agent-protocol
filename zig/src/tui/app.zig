@@ -945,6 +945,7 @@ pub const App = struct {
     inline_flushed_rows: usize = 0,
     login_status: [provider_catalog.all.len]LoginStatus = [_]LoginStatus{.none} ** provider_catalog.all.len,
     pending_session_reset: bool = false,
+    pending_models: ?[]ai_types.Model = null,
     quarantine_events: bool = false,
     quarantine_generation: u32 = 0,
     quarantine_buffer: std.ArrayList(tui_runtime.TuiEvent) = .empty,
@@ -1023,6 +1024,10 @@ pub const App = struct {
     }
 
     pub fn deinit(self: *App) void {
+        if (self.pending_models) |models| {
+            model_catalog.deinitModels(self.allocator, models);
+            self.pending_models = null;
+        }
         if (self.login) |session| {
             session.deinit();
             self.login = null;
@@ -1900,9 +1905,40 @@ pub const App = struct {
     }
 
     fn refreshModels(self: *App) !bool {
-        const runtime = self.runtime orelse return false;
         const models = try loadRuntimeModelsFresh(self.allocator);
         defer model_catalog.deinitModels(self.allocator, models);
+        return self.applyModels(models);
+    }
+
+    fn runtimeBusy(self: *App) bool {
+        const runtime = self.runtime orelse return false;
+        const local = if (runtime.local_agent) |*agent_ref| agent_ref else return false;
+        return !local.isIdle();
+    }
+
+    fn refreshModelsCommand(self: *App) !void {
+        if (!self.runtimeBusy()) return self.reportModelRefresh(self.refreshModels(), "refreshing models failed");
+        const models = loadRuntimeModelsFresh(self.allocator) catch |err| {
+            const msg = try std.fmt.allocPrint(self.allocator, "refreshing models failed: {s}", .{@errorName(err)});
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.@"error", msg);
+            return;
+        };
+        if (self.pending_models) |old| model_catalog.deinitModels(self.allocator, old);
+        self.pending_models = models;
+        try self.state.appendTranscript(.system, "model catalog fetched; it takes effect when this turn ends");
+    }
+
+    fn applyPendingModels(self: *App) !void {
+        const models = self.pending_models orelse return;
+        if (self.runtimeBusy()) return;
+        self.pending_models = null;
+        defer model_catalog.deinitModels(self.allocator, models);
+        try self.reportModelRefresh(self.applyModels(models), "refreshing models failed");
+    }
+
+    fn applyModels(self: *App, models: []const ai_types.Model) !bool {
+        const runtime = self.runtime orelse return false;
         try runtime.replaceModels(models, runtime.currentModel());
         const model = runtime.currentModel() orelse return false;
         const switched = !std.mem.eql(u8, model.id, self.state.status.model) or
@@ -2623,6 +2659,7 @@ pub const App = struct {
                 self.pending_session_reset = false;
             }
         }
+        try self.applyPendingModels();
         var resumed_run = false;
         if (completed_agent_end and self.state.queue.total() > 0) {
             session.resumeSession() catch |err| {
@@ -3028,7 +3065,7 @@ pub const App = struct {
             .start_login_provider => try self.startLoginProviderName(result.login_provider),
             .compact => try self.startCompaction(command.arg orelse ""),
             .rename_session => try self.renameSession(command.arg orelse ""),
-            .refresh_models => try self.reportModelRefresh(self.refreshModels(), "refreshing models failed"),
+            .refresh_models => try self.refreshModelsCommand(),
             .logout_provider => try self.logoutProvider(command.arg orelse ""),
             .add_provider => try self.addProvider(command.arg orelse ""),
             .none => {},
@@ -4738,6 +4775,41 @@ test "App init seeds registered tools from runtime" {
     try std.testing.expectEqual(app.runtime.?.availableTools().len, app.state.registered_tools.items.len);
     try std.testing.expectEqualStrings("shell_execute", app.state.registered_tools.items[0].name);
     try std.testing.expect(app.runtime.?.permission_engine.?.workspace_root.len > 0);
+}
+
+test "App applies a catalog fetched during a turn once the runtime is idle" {
+    const extra_model = ai_types.Model{
+        .id = "temporary-extra-model",
+        .name = "Temporary Extra",
+        .api = "test-api",
+        .provider = "test",
+        .base_url = "https://example.invalid",
+        .reasoning = false,
+        .input = &.{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1024,
+        .max_tokens = 256,
+    };
+    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    errdefer std.testing.allocator.destroy(runtime);
+    runtime.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{defaultModel()}, .initial_model_id = defaultModel().id });
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.runtime = runtime;
+
+    const staged = try std.testing.allocator.alloc(ai_types.Model, 2);
+    staged[0] = try ai_types.cloneModel(std.testing.allocator, defaultModel());
+    staged[1] = try ai_types.cloneModel(std.testing.allocator, extra_model);
+    app.pending_models = staged;
+    try app.applyPendingModels();
+    try std.testing.expect(app.pending_models == null);
+    try std.testing.expectEqual(@as(usize, 2), runtime.availableModels().len);
+    try std.testing.expectEqualStrings(defaultModel().id, runtime.currentModel().?.id);
+    var noted = false;
+    for (app.state.transcript.items) |entry| {
+        if (std.mem.eql(u8, entry.text.items, "model catalog refreshed")) noted = true;
+    }
+    try std.testing.expect(noted);
 }
 
 test "App refreshes runtime models after login" {
