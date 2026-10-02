@@ -698,6 +698,11 @@ An implementation conforms if it:
   `recovery.recovered: true`, the model and settings the session runs under,
   and no run under way unless the open's own message admitted one.
 
+Both conformance runners check the fail-closed half over a single endpoint: a
+reopen naming a session the endpoint never had must be refused, never answered
+with a fresh session. Reopening a closed session needs a close, which core OAP
+has no verb for, so that half is pinned by each tree's hub tests instead.
+
 ## Extension Packs
 
 The unprefixed namespace is the spec's, in its entirety: a capability key,

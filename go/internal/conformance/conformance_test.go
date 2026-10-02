@@ -650,3 +650,27 @@ func TestUnansweredControlDoesNotCascade(t *testing.T) {
 		t.Fatalf("the checks after an unanswered control must still run: %+v", state)
 	}
 }
+
+func TestRunnerFailsAnEndpointThatAnswersAReopenWithAFreshSession(t *testing.T) {
+	report, err := Run(context.Background(), Options{
+		Command: helperCommand(t, "double-settle"),
+		Stderr:  io.Discard,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const name = "a reopen of a session the endpoint never had is refused, not answered with a fresh session"
+	for _, check := range report.Checks {
+		if check.Name != name {
+			continue
+		}
+		if check.Passed {
+			t.Fatal("an endpoint that answered a reopen with a fresh session passed the reopen check")
+		}
+		if !strings.Contains(check.Detail, string(protocol.TypeSessionOpenResponse)) {
+			t.Fatalf("detail %q does not say the reopen was answered with an open response", check.Detail)
+		}
+		return
+	}
+	t.Fatalf("no %q check ran", name)
+}
