@@ -114,6 +114,13 @@ pub const Zen = struct {
     }
 };
 
+pub fn withoutZenNote(text: []const u8) []const u8 {
+    inline for (.{ zen_enter_note, zen_leave_note }) |note| {
+        if (std.mem.startsWith(u8, text, note ++ "\n\n")) return text[note.len + 2 ..];
+    }
+    return text;
+}
+
 pub const ZenCounts = struct {
     thinking: usize = 0,
     tools: usize = 0,
@@ -140,7 +147,9 @@ pub fn zenCounts(entries: []const TranscriptEntry, start: usize) ZenCounts {
                 counts.messages += 1;
                 counts.final = index;
             },
-            .@"error" => counts.final = index,
+            .@"error" => if (entry.run_failure) {
+                counts.final = index;
+            },
             .user => counts.final = null,
             else => {},
         }
@@ -154,6 +163,7 @@ pub const TranscriptEntry = struct {
     timestamp_ms: i64 = 0,
     tool_summary: bool = false,
     notice: bool = false,
+    run_failure: bool = false,
     tool_call_id: []u8 = &.{},
 
     pub fn init(allocator: std.mem.Allocator, kind: TranscriptKind, text: []const u8) !TranscriptEntry {
@@ -1332,6 +1342,7 @@ pub const AppState = struct {
                 self.stream_aborted = false;
                 try self.status.setError(self.allocator, payload.message.slice());
                 try self.appendTranscript(.@"error", payload.message.slice());
+                self.transcript.items[self.transcript.items.len - 1].run_failure = true;
             },
         }
     }
@@ -4461,5 +4472,17 @@ test "zen counts thinking, tool rows and replies since it began, and finds the f
 
     try state.appendTranscript(.user, "next");
     try std.testing.expect(zenCounts(state.transcript.items, start).final == null);
+    try state.appendTranscript(.@"error", "unknown command");
+    try std.testing.expect(zenCounts(state.transcript.items, start).final == null);
+    try state.appendTranscript(.@"error", "HTTP 500");
+    state.transcript.items[state.transcript.items.len - 1].run_failure = true;
+    try std.testing.expectEqualStrings("HTTP 500", state.transcript.items[zenCounts(state.transcript.items, start).final.?].text.items);
     try std.testing.expectEqual(@as(usize, 0), zenCounts(state.transcript.items, 99).messages);
+}
+
+test "the zen note comes off a user message, and nothing else does" {
+    try std.testing.expectEqualStrings("hi", withoutZenNote(zen_enter_note ++ "\n\nhi"));
+    try std.testing.expectEqualStrings("hi", withoutZenNote(zen_leave_note ++ "\n\nhi"));
+    try std.testing.expectEqualStrings(zen_enter_note, withoutZenNote(zen_enter_note));
+    try std.testing.expectEqualStrings("hi", withoutZenNote("hi"));
 }

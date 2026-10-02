@@ -9,8 +9,8 @@ const disc: f32 = 50;
 const squash: f32 = 0.86;
 const slow: f32 = 0.55;
 const life: f32 = 300;
-const prewarm_steps: usize = 4200;
-const prewarm_dt: f32 = 0.1;
+const prewarm_steps: usize = 840;
+const prewarm_dt: f32 = 0.5;
 const density_gain: f32 = 2.4;
 const default_half_width: f32 = 200;
 

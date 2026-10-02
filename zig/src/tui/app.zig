@@ -3223,7 +3223,7 @@ pub const App = struct {
     }
 
     fn appendRuntimeUserMessage(self: *App, text: []const u8) !void {
-        const trimmed = std.mem.trim(u8, text, " \t\r\n");
+        const trimmed = std.mem.trim(u8, tui_state.withoutZenNote(std.mem.trim(u8, text, " \t\r\n")), " \t\r\n");
         if (trimmed.len == 0) return;
         if (self.runtime_echo_suppressed.len > 0 and std.mem.eql(u8, trimmed, self.runtime_echo_suppressed)) {
             self.allocator.free(self.runtime_echo_suppressed);
@@ -3296,22 +3296,18 @@ pub const App = struct {
     }
 
     fn sendUserTurn(self: *App, trimmed: []const u8) !void {
-        const note = self.state.zen.noteText() orelse {
-            _ = try self.sendUserTurnEchoing(trimmed, trimmed);
-            return;
-        };
-        const noted = try std.fmt.allocPrint(self.allocator, "{s}\n\n{s}", .{ note, trimmed });
-        defer self.allocator.free(noted);
-        if (try self.sendUserTurnEchoing(noted, trimmed)) self.state.zen.note = .none;
+        _ = try self.sendUserTurnEchoing(trimmed, trimmed);
+    }
+
+    fn zenNoted(self: *App, text: []const u8) !?[]u8 {
+        const note = self.state.zen.noteText() orelse return null;
+        return try std.fmt.allocPrint(self.allocator, "{s}\n\n{s}", .{ note, text });
     }
 
     const zen_step_seconds: f32 = 0.05;
 
     fn stepZen(self: *App) void {
-        if (!self.state.zen.on) {
-            self.zen_flow = null;
-            return;
-        }
+        if (!self.state.zen.on) return;
         if (self.zen_flow) |*flow| {
             flow.step(zen_step_seconds);
         } else {
@@ -3366,17 +3362,21 @@ pub const App = struct {
             self.armAutoCompact();
             try self.giveRuntimeSessionId();
         }
+        const noted = try self.zenNoted(trimmed);
+        defer if (noted) |owned| self.allocator.free(owned);
+        const sent = noted orelse trimmed;
         if (self.session) |*session| {
-            session.submitTurn(trimmed) catch |err| {
+            session.submitTurn(sent) catch |err| {
                 if (err == error.QueueFull) return err;
                 try self.state.status.setError(self.allocator, @errorName(err));
                 try self.state.appendTranscript(.@"error", @errorName(err));
                 return false;
             };
+            if (noted != null) self.state.zen.note = .none;
         }
         self.session_turns += 1;
-        if (!std.mem.eql(u8, echo, trimmed)) {
-            const suppressed = try self.allocator.dupe(u8, std.mem.trim(u8, trimmed, " \t\r\n"));
+        if (!std.mem.eql(u8, echo, sent)) {
+            const suppressed = try self.allocator.dupe(u8, std.mem.trim(u8, tui_state.withoutZenNote(std.mem.trim(u8, sent, " \t\r\n")), " \t\r\n"));
             if (self.runtime_echo_suppressed.len > 0) self.allocator.free(self.runtime_echo_suppressed);
             self.runtime_echo_suppressed = suppressed;
         }
@@ -4017,7 +4017,10 @@ pub const App = struct {
         try self.ensureSessionId();
         self.userTookOver();
         if (self.session) |*session| {
-            try session.followUp(trimmed);
+            const noted = try self.zenNoted(trimmed);
+            defer if (noted) |owned| self.allocator.free(owned);
+            try session.followUp(noted orelse trimmed);
+            if (noted != null) self.state.zen.note = .none;
             try self.state.appendQueuedFollowUp(trimmed);
             self.refreshQueuedCounts();
             return true;

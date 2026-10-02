@@ -576,7 +576,9 @@ blocks, tool calls and replies since zen began and one dim line naming the
 current tool. When the run ends, the last reply (or the error that ended it)
 replaces the flow. The composer, the status bar and approval prompts stay as
 they are. While zen is on, nothing is printed into the scrollback; leaving it
-prints what was held back at the current verbosity.
+prints what was held back at the current verbosity, and so does quitting, so a
+session ended in zen still leaves its transcript in the terminal. Only an error
+that ended the run counts as its result; a command's error reply does not.
 
 Zen is the one display setting the model sees. The next prompt after `/zen`
 carries a short note, ahead of the user's text, asking the agent to work
