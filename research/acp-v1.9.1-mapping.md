@@ -236,3 +236,20 @@ Its agent config (`pkg/config/latest/types.go`) carries:
 
 All three are read from the agent YAML at launch, so with cagent both
 settings are fixed when the session opens.
+
+## Session settings in the adapter
+
+Decision 0045's settings move the revision to
+`acp-v1.9.1-schema-v1.23.0-oap-v4`.
+
+- **Reasoning level** (`emulated`, `session_open`): after `session/new`, both
+  trees look in the returned `configOptions` for one whose category is
+  `thought_level`. They pick the value whose `value` or `name` matches the
+  level, case-insensitively, and send `session/set_config_option`. The level
+  counts as set only when the returned option list shows that value as the
+  option's `currentValue`. An agent that offers no such option, or no matching
+  value, refuses the level. cagent at the pinned tag is that case: it answers
+  `session/set_config_option` with method-not-found and lists no options.
+- **Compaction policy** (`unavailable`): ACP has no compaction setting. An
+  agent's own threshold, such as cagent's `compaction_threshold`, is its own
+  configuration, and the adapter does not start the agent with one.

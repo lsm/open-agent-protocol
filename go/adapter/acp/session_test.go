@@ -59,6 +59,9 @@ type fakeClient struct {
 	notifyHook    func()
 	closed        bool
 	sessionNew    native.SessionNewParams
+	options       []native.ConfigOption
+	setOption     native.SetConfigOptionParams
+	confirm       bool
 }
 
 func newFake() *fakeClient {
@@ -70,7 +73,21 @@ func (f *fakeClient) Call(_ context.Context, m string, p, r any) error {
 		f.mu.Lock()
 		f.sessionNew, _ = p.(native.SessionNewParams)
 		f.mu.Unlock()
-		*r.(*native.SessionNewResult) = native.SessionNewResult{SessionID: "native-session"}
+		*r.(*native.SessionNewResult) = native.SessionNewResult{SessionID: "native-session", ConfigOptions: f.options}
+		return nil
+	case native.MethodSessionSetConfigOption:
+		f.mu.Lock()
+		f.setOption, _ = p.(native.SetConfigOptionParams)
+		confirmed := append([]native.ConfigOption(nil), f.options...)
+		if f.confirm {
+			for index := range confirmed {
+				if confirmed[index].ID == f.setOption.ConfigID {
+					confirmed[index].CurrentValue = f.setOption.Value
+				}
+			}
+		}
+		f.mu.Unlock()
+		*r.(*native.SetConfigOptionResult) = native.SetConfigOptionResult{ConfigOptions: confirmed}
 		return nil
 	case native.MethodSessionPrompt:
 		f.promptStarted <- struct{}{}
@@ -1553,5 +1570,51 @@ func TestPendingPermissionsAreSettledInTheOrderTheyStarted(t *testing.T) {
 		if settled[i] != asked[i] {
 			t.Fatalf("settled %v, want the order they were asked in %v", settled, asked)
 		}
+	}
+}
+
+func TestAnOpenSetsTheAgentsThoughtLevelOptionAndRefusesALevelItCannotConfirm(t *testing.T) {
+	thought := native.ConfigOption{ID: "effort", Name: "Effort", Category: native.CategoryThoughtLevel, Type: "select", CurrentValue: "medium", Options: json.RawMessage(`[{"value":"medium","name":"Medium"},{"value":"deep","name":"High"}]`)}
+	open := func(f *fakeClient, level protocol.ReasoningLevel) (base.Session, error) {
+		a, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, rpc.InitializeResponse, error) {
+			return f, rpc.InitializeResponse{ProtocolVersion: 1, AgentCapabilities: rpc.AgentCapabilities{}}, nil
+		}), WorkingDirectory: "/workspace", Clock: &fakeClock{}, IDs: &fakeIDs{}, JournalCapacity: 8})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a.Open(context.Background(), base.OpenRequest{SessionID: "s1", Participant: protocol.Participant{ID: "user"}, ReasoningLevel: level})
+	}
+	f := newFake()
+	f.options, f.confirm = []native.ConfigOption{thought}, true
+	s, err := open(f, protocol.ReasoningHigh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close(context.Background())
+	if f.setOption != (native.SetConfigOptionParams{SessionID: "native-session", ConfigID: "effort", Value: "deep"}) {
+		t.Fatalf("set_config_option sent %+v, want the thought_level option's value named High", f.setOption)
+	}
+	state, err := s.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.ReasoningLevel != protocol.ReasoningHigh {
+		t.Fatalf("state reports %q, want high", state.ReasoningLevel)
+	}
+
+	for name, f := range map[string]*fakeClient{
+		"no option":   newFake(),
+		"unconfirmed": func() *fakeClient { f := newFake(); f.options = []native.ConfigOption{thought}; return f }(),
+	} {
+		_, err := open(f, protocol.ReasoningHigh)
+		var refusal *base.UnsupportedControlError
+		if !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureSessionReasoning {
+			t.Fatalf("%s: open answered %v, want the level refused", name, err)
+		}
+	}
+	unmatched := newFake()
+	unmatched.options, unmatched.confirm = []native.ConfigOption{thought}, true
+	if _, err := open(unmatched, protocol.ReasoningMax); err == nil {
+		t.Fatal("a level the option does not offer was accepted")
 	}
 }

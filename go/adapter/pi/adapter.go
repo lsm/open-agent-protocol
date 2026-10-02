@@ -179,13 +179,15 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		"session.message.delivery.queue": {Level: protocol.SupportUnavailable, Reason: "v0.1 admission cannot expose Pi queued prompt semantics safely"},
 		"session.message.delivery.steer": {Level: protocol.SupportEmulated, Reason: "guidance rides Pi's native steer command and settles at the turn boundary Pi injects it"},
 		"run.streaming":                  {Level: protocol.SupportNative}, "run.status": {Level: protocol.SupportEmulated},
-		"run.cancel":           {Level: protocol.SupportDegraded, Reason: "abort intent is local; agent_settled remains terminal authority"},
-		"run.resume":           {Level: protocol.SupportDegraded, Reason: "bounded process-memory replay"},
-		"run.reconciliation":   {Level: protocol.SupportEmulated, Reason: "get_state reconciles streaming state"},
-		"run.replay":           {Level: protocol.SupportDegraded, Reason: "bounded adapter journal; gaps explicit"},
-		"action.tools":         {Level: protocol.SupportDegraded, Reason: "observed tool lifecycle only; no portable catalog"},
-		"action.tools.execute": {Level: protocol.SupportUnavailable, Reason: "Pi executes tools internally"},
-		"action.permissions":   {Level: protocol.SupportUnavailable, Reason: "extension dialogs are generic user input, not permissions"},
+		"run.cancel":                     {Level: protocol.SupportDegraded, Reason: "abort intent is local; agent_settled remains terminal authority"},
+		"run.resume":                     {Level: protocol.SupportDegraded, Reason: "bounded process-memory replay"},
+		"run.reconciliation":             {Level: protocol.SupportEmulated, Reason: "get_state reconciles streaming state"},
+		"run.replay":                     {Level: protocol.SupportDegraded, Reason: "bounded adapter journal; gaps explicit"},
+		"action.tools":                   {Level: protocol.SupportDegraded, Reason: "observed tool lifecycle only; no portable catalog"},
+		"action.tools.execute":           {Level: protocol.SupportUnavailable, Reason: "Pi executes tools internally"},
+		"action.permissions":             {Level: protocol.SupportUnavailable, Reason: "extension dialogs are generic user input, not permissions"},
+		protocol.FeatureSessionReasoning: {Level: protocol.SupportNative, Modes: []string{protocol.ModeSessionOpen}, Reason: "set_thinking_level after the process is ready, confirmed by get_state; a level Pi does not run the model at is refused"},
+		protocol.FeatureCompactionPolicy: {Level: protocol.SupportNative, Modes: []string{protocol.ModeSessionOpen}, Reason: "set_auto_compaction switches Pi's own threshold on or off; its threshold is a settings-file reserve, so share and tokens are refused"},
 	}
 	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: endpointID, Name: "Pi RPC Adapter", Version: PinnedVersion, Adapter: "pi-rpc-stdio"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportDegraded, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: false, CancellationTarget: "run", CancellationImplementation: "native_abort_with_agent_settled_authority"}, nil
 }
@@ -205,6 +207,16 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 
 	if req.Participant.ID == "" {
 		return nil, base.ErrInvalidParticipant
+	}
+	descriptor, err := a.Probe(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := base.RefuseUnadvertisedSettings(req, descriptor.Capabilities); err != nil {
+		return nil, err
+	}
+	if policy := req.CompactionPolicy; policy != nil && policy.Kind != protocol.CompactionAuto && policy.Kind != protocol.CompactionOff {
+		return nil, &base.UnsupportedControlError{Feature: protocol.FeatureCompactionPolicy, Reason: base.ControlUnsatisfiable, Field: "compaction_policy", Detail: "Pi switches its own compaction on or off; its threshold lives in a settings file"}
 	}
 	client, initial, err := a.config.Factory.Start(ctx)
 	if err != nil {
@@ -228,7 +240,41 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		s.state.Status = protocol.SessionRunning
 	}
 	go s.dispatch()
+	if err := s.applySettings(ctx, req); err != nil {
+		_ = s.Close(context.Background())
+		return nil, err
+	}
 	return s, nil
+}
+
+func (s *Session) applySettings(ctx context.Context, req base.OpenRequest) error {
+	if policy := req.CompactionPolicy; policy != nil {
+		enabled := policy.Kind == protocol.CompactionAuto
+		if err := s.callStrict(ctx, native.Command{Type: native.CommandSetAutoCompaction, Enabled: native.Bool(enabled)}, nil); err != nil {
+			return err
+		}
+		s.mu.Lock()
+		s.state.CompactionPolicy = policy
+		s.mu.Unlock()
+	}
+	if req.ReasoningLevel == "" {
+		return nil
+	}
+	if err := s.callStrict(ctx, native.Command{Type: native.CommandSetThinkingLevel, Level: native.ThinkingLevel(req.ReasoningLevel)}, nil); err != nil {
+		return err
+	}
+	var confirmed native.SessionState
+	if err := s.callStrict(ctx, native.Command{Type: native.CommandGetState}, &confirmed); err != nil {
+		return err
+	}
+	if string(confirmed.ThinkingLevel) != string(req.ReasoningLevel) {
+		return &base.UnsupportedControlError{Feature: protocol.FeatureSessionReasoning, Reason: base.ControlUnsatisfiable, Field: "reasoning_level", Detail: fmt.Sprintf("Pi runs this model at %s, not %s", confirmed.ThinkingLevel, req.ReasoningLevel)}
+	}
+	s.mu.Lock()
+	s.reportsLevel = true
+	s.state.ReasoningLevel = req.ReasoningLevel
+	s.mu.Unlock()
+	return nil
 }
 
 func validateState(s native.SessionState) error {

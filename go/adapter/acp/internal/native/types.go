@@ -4,6 +4,7 @@ import "encoding/json"
 
 const (
 	MethodSessionNew               = "session/new"
+	MethodSessionSetConfigOption   = "session/set_config_option"
 	MethodSessionPrompt            = "session/prompt"
 	MethodSessionCancel            = "session/cancel"
 	MethodSessionUpdate            = "session/update"
@@ -25,7 +26,52 @@ type EnvVariable struct {
 	Value string `json:"value"`
 }
 type SessionNewResult struct {
+	SessionID     string         `json:"sessionId"`
+	ConfigOptions []ConfigOption `json:"configOptions,omitempty"`
+}
+
+const CategoryThoughtLevel = "thought_level"
+
+type ConfigOption struct {
+	ID           string          `json:"id"`
+	Name         string          `json:"name"`
+	Category     string          `json:"category,omitempty"`
+	Type         string          `json:"type,omitempty"`
+	CurrentValue string          `json:"currentValue,omitempty"`
+	Options      json.RawMessage `json:"options,omitempty"`
+}
+
+type ConfigValue struct {
+	Value string `json:"value"`
+	Name  string `json:"name"`
+}
+
+func (o ConfigOption) Values() []ConfigValue {
+	var flat []struct {
+		ConfigValue
+		Options []ConfigValue `json:"options"`
+	}
+	if json.Unmarshal(o.Options, &flat) != nil {
+		return nil
+	}
+	var values []ConfigValue
+	for _, entry := range flat {
+		if entry.Value != "" {
+			values = append(values, entry.ConfigValue)
+		}
+		values = append(values, entry.Options...)
+	}
+	return values
+}
+
+type SetConfigOptionParams struct {
 	SessionID string `json:"sessionId"`
+	ConfigID  string `json:"configId"`
+	Value     string `json:"value"`
+}
+
+type SetConfigOptionResult struct {
+	ConfigOptions []ConfigOption `json:"configOptions"`
 }
 
 type ContentBlock struct {

@@ -1509,6 +1509,65 @@ func TestPendingPromptsAreSettledInTheOrderTheyStarted(t *testing.T) {
 	}
 }
 
+func TestAnOpenSetsPisThinkingLevelAndCompactionAndReportsWhatPiConfirms(t *testing.T) {
+	client := newFakeClient()
+	client.onCall = func(c native.Command) {
+		if c.Type == native.CommandSetThinkingLevel {
+			client.mu.Lock()
+			client.state.ThinkingLevel = c.Level
+			client.mu.Unlock()
+		}
+	}
+	a, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, native.SessionState, error) { return client, client.state, nil }), Clock: &fakeClock{}, IDs: &fakeIDs{}, JournalCapacity: 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := &protocol.CompactionPolicy{Kind: protocol.CompactionOff}
+	s, err := a.Open(context.Background(), base.OpenRequest{SessionID: "s1", Participant: protocol.Participant{ID: "user"}, ReasoningLevel: protocol.ReasoningXHigh, CompactionPolicy: policy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close(context.Background())
+	client.mu.Lock()
+	calls := append([]native.Command(nil), client.calls...)
+	client.mu.Unlock()
+	if len(calls) < 2 || calls[0].Type != native.CommandSetAutoCompaction || calls[0].Enabled == nil || *calls[0].Enabled || calls[1].Type != native.CommandSetThinkingLevel || calls[1].Level != native.ThinkingXHigh {
+		t.Fatalf("open sent %+v, want set_auto_compaction false then set_thinking_level xhigh", calls)
+	}
+	state, err := s.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.ReasoningLevel != protocol.ReasoningXHigh || state.CompactionPolicy == nil || state.CompactionPolicy.Kind != protocol.CompactionOff {
+		t.Fatalf("state reports %q and %+v, want the confirmed settings", state.ReasoningLevel, state.CompactionPolicy)
+	}
+}
+
+func TestALevelPiDoesNotConfirmIsRefusedAndAThresholdBeforeThePiStarts(t *testing.T) {
+	client := newFakeClient()
+	a, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, native.SessionState, error) { return client, client.state, nil }), Clock: &fakeClock{}, IDs: &fakeIDs{}, JournalCapacity: 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = a.Open(context.Background(), base.OpenRequest{SessionID: "s1", Participant: protocol.Participant{ID: "user"}, ReasoningLevel: protocol.ReasoningMax})
+	var refusal *base.UnsupportedControlError
+	if !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureSessionReasoning {
+		t.Fatalf("open answered %v, want a level Pi kept at %s refused", err, client.state.ThinkingLevel)
+	}
+	started := false
+	b, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, native.SessionState, error) {
+		started = true
+		return client, client.state, nil
+	}), Clock: &fakeClock{}, IDs: &fakeIDs{}, JournalCapacity: 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = b.Open(context.Background(), base.OpenRequest{SessionID: "s2", Participant: protocol.Participant{ID: "user"}, CompactionPolicy: &protocol.CompactionPolicy{Kind: protocol.CompactionTokens, Tokens: 1000}})
+	if !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureCompactionPolicy || started {
+		t.Fatalf("open answered %v (started %v), want a token threshold refused before Pi starts", err, started)
+	}
+}
+
 func steerRequest(requestID protocol.EnvelopeID, target protocol.RunID) base.SubmitRequest {
 	return base.SubmitRequest{
 		EnvelopeID: requestID,

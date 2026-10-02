@@ -55,7 +55,8 @@ type fakeClient struct {
 	resumedModel  string
 	resumeErr     error
 
-	turnStart native.TurnStartParams
+	turnStart   native.TurnStartParams
+	threadStart native.ThreadStartParams
 }
 
 func newFakeClient() *fakeClient {
@@ -68,6 +69,11 @@ func (client *fakeClient) Call(ctx context.Context, method string, params, resul
 	client.mu.Unlock()
 	switch method {
 	case native.MethodThreadStart:
+		if sent, ok := params.(native.ThreadStartParams); ok {
+			client.mu.Lock()
+			client.threadStart = sent
+			client.mu.Unlock()
+		}
 		response := result.(*native.ThreadStartResponse)
 		response.Thread.ID = client.threadID
 	case native.MethodThreadResume:
@@ -1153,5 +1159,63 @@ func TestAReopenWhoseResumeNeverReachesCodexSurfacesTheTransportError(t *testing
 	var refusal *adapter.UnsupportedControlError
 	if errors.As(err, &refusal) || !errors.Is(err, context.Canceled) {
 		t.Fatalf("open answered %v, want the cancellation itself rather than unsupported_feature", err)
+	}
+}
+
+func TestAnOpenCarriesItsReasoningLevelAndTokenLimitIntoThreadStartAndReportsThem(t *testing.T) {
+	client := newFakeClient()
+	implementation, err := New(Config{
+		Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }),
+		Clock:   &fakeClock{}, IDs: &fakeIDs{}, Model: "glm-test", JournalCapacity: 32,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := &protocol.CompactionPolicy{Kind: protocol.CompactionTokens, Tokens: 180000}
+	opened, err := implementation.Open(context.Background(), adapter.OpenRequest{SessionID: "session-1", Participant: protocol.Participant{ID: "user"}, ReasoningLevel: protocol.ReasoningOff, CompactionPolicy: policy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer opened.Close(context.Background())
+	client.mu.Lock()
+	sent := client.threadStart.Config
+	client.mu.Unlock()
+	if sent["model_reasoning_effort"] != "none" || sent["model_auto_compact_token_limit"] != int64(180000) {
+		t.Fatalf("thread/start config = %v, want off sent as Codex's none and the token limit", sent)
+	}
+	state, err := opened.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.ReasoningLevel != protocol.ReasoningOff || state.CompactionPolicy == nil || *state.CompactionPolicy != *policy {
+		t.Fatalf("state reports %q and %+v, want the settings the open asked for", state.ReasoningLevel, state.CompactionPolicy)
+	}
+}
+
+func TestAnOpenAsksCodexForACompactionFormItLacksIsRefusedBeforeAThreadStarts(t *testing.T) {
+	for name, policy := range map[string]protocol.CompactionPolicy{
+		"off":   {Kind: protocol.CompactionOff},
+		"share": {Kind: protocol.CompactionShare, SharePercent: 80},
+	} {
+		t.Run(name, func(t *testing.T) {
+			client := newFakeClient()
+			implementation, err := New(Config{
+				Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }),
+				Clock:   &fakeClock{}, IDs: &fakeIDs{}, Model: "glm-test", JournalCapacity: 32,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = implementation.Open(context.Background(), adapter.OpenRequest{SessionID: "session-1", Participant: protocol.Participant{ID: "user"}, CompactionPolicy: &policy})
+			var refusal *adapter.UnsupportedControlError
+			if !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureCompactionPolicy || refusal.Field != "compaction_policy" {
+				t.Fatalf("open answered %v, want unsupported_feature naming the compaction policy", err)
+			}
+			client.mu.Lock()
+			defer client.mu.Unlock()
+			if len(client.calls) != 0 {
+				t.Fatalf("a refused policy reached Codex: %v", client.calls)
+			}
+		})
 	}
 }

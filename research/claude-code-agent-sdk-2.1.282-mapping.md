@@ -142,6 +142,15 @@ revision's. The Zig served backend reads the same revision from the catalog
 and serves the Go adapter's descriptor under it, so there is no second
 revision to move.
 
+Decision 0045's session settings then add `session.reasoning` (`native`) and
+`session.compaction.policy` (`emulated`), each with the `session_open` mode.
+After initialize, both trees send `apply_flag_settings` carrying
+`effortLevel`, `autoCompactEnabled` and `autoCompactWindow`. A level the CLI
+lacks (`off`, `minimal`) and a `share` are refused before the child starts.
+The installed 2.1.283 CLI accepted the request and reported the values back
+through `get_settings` in a run with an isolated `HOME` and no model call.
+The descriptor changed, so the revision moves to `claude-code-2.1.282-oap-v2`.
+
 ## Corpus at 2.1.282
 
 `fixtures/adapters/claude-code-2.1.282` holds the 2.1.280 corpus's thirteen

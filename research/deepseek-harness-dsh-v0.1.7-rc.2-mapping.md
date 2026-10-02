@@ -384,3 +384,24 @@ setting `disabled: true` on the same id switches automatic compaction off. The
 `dsh-sdk-app` patch disables its own entries in that same form. Nothing on the
 SDK wire changes them on a live session. This is source-read; no real-process
 trace at this pin crosses the threshold.
+
+## Session settings in the adapter
+
+Decision 0045's settings move the revision to
+`deepseek-harness-dsh-v0.1.7-rc.2-oap-v2`. Each OAP session has its own
+runtime, so an open that carries settings starts that runtime with its own
+launch.
+
+- **Reasoning level** (`native`, `session_open`): `initialize` carries
+  `reasoningEffort`. The `deepseek-official` route defines `off`, `low`,
+  `high` and `max` (`packages/llm/llm-deepseek/src/model-info.ts`), and any
+  other level is refused before the runtime starts.
+- **Compaction policy** (`emulated`, `session_open`): a `--patch` layer
+  written to a private temporary file sets `compaction-basic`'s
+  `thresholdRatio` for `share`, or `disabled: true` for `off`. The file is
+  removed once `initialize` has answered, by which time the profile has
+  booted. The plugin's `headroomTokens` still caps the threshold, and a token
+  count is refused because the threshold is derived from the window.
+
+A factory the operator supplies starts the runtime itself, so with one the
+adapter refuses either setting rather than ignoring it.

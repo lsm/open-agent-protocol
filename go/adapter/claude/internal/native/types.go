@@ -61,6 +61,7 @@ const (
 
 const (
 	ControlInitialize   = "initialize"
+	ControlApplyFlags   = "apply_flag_settings"
 	ControlInterrupt    = "interrupt"
 	ControlCanUseTool   = "can_use_tool"
 	ControlHookCallback = "hook_callback"
@@ -564,6 +565,11 @@ func DenyTool(reason string) HookDeny {
 type InitializeRequest struct {
 	Subtype string `json:"subtype"`
 	Hooks   any    `json:"hooks"`
+}
+
+type ApplyFlagSettingsRequest struct {
+	Subtype  string         `json:"subtype"`
+	Settings map[string]any `json:"settings"`
 }
 
 type InterruptRequest struct {
