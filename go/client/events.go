@@ -71,6 +71,24 @@ type EventStream struct {
 
 	finished bool
 	err      error
+
+	inflight chan polled
+}
+
+type polled struct {
+	envelope protocol.Envelope
+	err      error
+}
+
+func (es *EventStream) polling() chan polled {
+	if es.inflight == nil {
+		es.inflight = make(chan polled, 1)
+		go func(results chan polled) {
+			envelope, err := es.poll()
+			results <- polled{envelope: envelope, err: err}
+		}(es.inflight)
+	}
+	return es.inflight
 }
 
 func (es *EventStream) Next() (protocol.Envelope, error) {
@@ -89,7 +107,15 @@ func (es *EventStream) Next() (protocol.Envelope, error) {
 				return protocol.Envelope{}, es.stop(err)
 			}
 		}
-		envelope, err := es.poll()
+		var envelope protocol.Envelope
+		var err error
+		select {
+		case polled := <-es.polling():
+			es.inflight = nil
+			envelope, err = polled.envelope, polled.err
+		case <-es.session.releaseWake():
+			continue
+		}
 		if err == nil {
 			if es.session.holdSteer(envelope) {
 				continue

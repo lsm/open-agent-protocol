@@ -20,6 +20,16 @@ type Session struct {
 	outstanding map[protocol.EnvelopeID]bool
 	heldSteers  map[protocol.EnvelopeID][]protocol.Envelope
 	released    []protocol.Envelope
+	wake        chan struct{}
+}
+
+func (s *Session) releaseWake() chan struct{} {
+	s.steerMu.Lock()
+	defer s.steerMu.Unlock()
+	if s.wake == nil {
+		s.wake = make(chan struct{})
+	}
+	return s.wake
 }
 
 func (s *Session) beginSubmit(id protocol.EnvelopeID) {
@@ -42,6 +52,10 @@ func (s *Session) endSubmit(id protocol.EnvelopeID) {
 	if held := s.heldSteers[id]; len(held) > 0 {
 		s.released = append(s.released, held...)
 		delete(s.heldSteers, id)
+		if s.wake != nil {
+			close(s.wake)
+			s.wake = nil
+		}
 	}
 }
 
