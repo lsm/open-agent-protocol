@@ -2784,7 +2784,7 @@ pub const App = struct {
         }
         if (!completed_agent_end or self.state.queue.total() == 0) try self.drainQueuedWorktreeMessageIfIdle();
         if (run_ended) try self.sendHeldAfterAbort();
-        if (run_ended) try self.startCompactionAfterRun();
+        try self.startCompactionAfterRun(run_ended);
     }
 
     fn steerCompaction(self: *App, focus: []const u8) !void {
@@ -2803,16 +2803,19 @@ pub const App = struct {
         try self.state.appendTranscript(.system, "compacting when this run ends");
     }
 
-    fn startCompactionAfterRun(self: *App) !void {
+    fn startCompactionAfterRun(self: *App, run_ended: bool) !void {
         var session = &(self.session orelse return);
-        if (try session.takeCompactionRequest(self.allocator)) |steered| {
-            if (self.pending_compaction) |previous| self.allocator.free(previous);
-            self.pending_compaction = steered;
+        if (run_ended) {
+            if (try session.takeCompactionRequest(self.allocator)) |steered| {
+                if (self.pending_compaction == null) self.pending_compaction = steered else self.allocator.free(steered);
+            }
         }
         const focus = self.pending_compaction orelse return;
-        if (self.state.status.streaming or self.state.status.compacting) return;
+        if (self.state.status.streaming or self.state.status.compacting or self.state.queue.total() > 0) return;
         if (self.runtime) |runtime| {
-            if (runtime.local_agent) |*local| local.waitForIdle();
+            if (runtime.local_agent) |*local| {
+                if (!local.isIdle()) return;
+            }
         }
         self.pending_compaction = null;
         defer self.allocator.free(focus);
@@ -5519,6 +5522,24 @@ test "TuiModel Tab queues a follow-up while a turn streams and shows it until it
     _ = model.update(.{ .tick = .{ .timestamp = 0, .delta = 0 } }, &tctx.ctx);
     try std.testing.expectEqual(@as(usize, 0), model.app.?.state.pending_follow_ups.items.len);
     try std.testing.expect(std.mem.indexOf(u8, model.view(&tctx.ctx), "queued  then open a PR") == null);
+}
+
+test "a held compaction waits while follow-ups are queued instead of blocking on the run they resume" {
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    app.session = mock.session();
+    app.pending_compaction = try std.testing.allocator.dupe(u8, "the parser");
+    app.state.queue.follow_up = 1;
+
+    try app.startCompactionAfterRun(true);
+    try std.testing.expectEqualStrings("the parser", app.pending_compaction.?);
+
+    app.state.queue.follow_up = 0;
+    app.state.status.streaming = true;
+    try app.startCompactionAfterRun(false);
+    try std.testing.expectEqualStrings("the parser", app.pending_compaction.?);
 }
 
 test "TuiModel Tab queues nothing while idle or for a slash draft" {
