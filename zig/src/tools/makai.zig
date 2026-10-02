@@ -2345,6 +2345,7 @@ fn printUsage(file: std.Io.File) !void {
         \\Usage:
         \\  oapx                                              Start the terminal UI
         \\  oapx --tui --context-window <tokens>            Start the terminal UI on a window
+        \\  oapx tui [--context-window <tokens>]          The terminal UI over OAP, through the in-process endpoint (experimental)
         \\                                                   (a whole number, optionally with k or m)
         \\  oapx run [--agent] [--storage] [--model <id>] "<prompt>"
         \\  oapx serve agent [--stdio] [--model <model-ref>]
@@ -2428,6 +2429,19 @@ fn parseTuiArgs(args: []const []const u8) TuiArgError!TuiArgs {
         parsed.context_window = tui_app.parseContextWindow(args[index]) catch return error.ContextWindowNotATokenCount;
     }
     return parsed;
+}
+
+fn runTuiOverOap(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stderr: std.Io.File) !void {
+    const parsed = parseTuiArgs(args) catch |err| {
+        switch (err) {
+            error.MissingContextWindow => try compat.stdio.writeAll(stderr, "--context-window takes a token count\n\n"),
+            error.ContextWindowNotATokenCount => try compat.stdio.writeAll(stderr, "--context-window takes a whole number of tokens, optionally with k or m\n\n"),
+            error.UnknownOption => try compat.stdio.writeAll(stderr, "unknown argument to tui\n\n"),
+        }
+        try printUsage(stderr);
+        return error.InvalidArgument;
+    };
+    try tui_app.runWith(allocator, io, parsed.context_window, true);
 }
 
 fn runTui(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stderr: std.Io.File) !void {
@@ -6511,6 +6525,14 @@ pub fn main(init: std.process.Init) !void {
 
     if (std.mem.eql(u8, args[1], "--version")) {
         try compat.stdio.writeAll(stdout, VERSION ++ "\n");
+        return;
+    }
+
+    if (std.mem.eql(u8, args[1], "tui")) {
+        runTuiOverOap(allocator, init.io, args[2..], stderr) catch |err| switch (err) {
+            error.InvalidArgument => return error.InvalidArgument,
+            else => return err,
+        };
         return;
     }
 

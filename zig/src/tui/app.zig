@@ -10,6 +10,7 @@ const register_builtins = @import("register_builtins");
 const agent = @import("agent");
 const event_stream = @import("event_stream");
 const tui_runtime = @import("tui_runtime");
+const tui_oap_execution = @import("tui/oap_execution");
 const tui_auto_continue = @import("tui_auto_continue");
 const tui_state = @import("tui_state");
 const tui_commands = @import("tui_commands");
@@ -1079,6 +1080,7 @@ pub const App = struct {
         };
         errdefer app.deinit();
         app.session = app.runtime.?.createSession();
+        if (options.remote != null) try app.state.appendTranscript(.system, over_oap_notice);
         app.state.permission_mode = app.runtime.?.permissionMode();
         app.state.thinking_level = app.runtime.?.thinkingLevel();
         try app.state.setRegisteredTools(app.runtime.?.availableTools());
@@ -1473,7 +1475,7 @@ pub const App = struct {
         self.session_id = new_session_id;
         try self.giveRuntimeSessionId();
         if (loaded.metadata.thinking_level) |level| {
-            runtime.setThinkingLevel(level);
+            runtime.setThinkingLevel(level) catch {};
             self.state.thinking_level = runtime.thinkingLevel();
         }
         try self.restoreCompactionTranscripts(store, &loaded);
@@ -1834,7 +1836,14 @@ pub const App = struct {
         const idx = self.pickerSourceIndex(self.state.menu_index) orelse return;
         const mode = permission_modes[idx];
         const runtime = self.runtime orelse return error.NoRuntimeConfigured;
-        try runtime.setPermissionMode(mode);
+        runtime.setPermissionMode(mode) catch |err| switch (err) {
+            error.UnavailableOverOap => {
+                self.state.mode = .normal;
+                try self.state.appendTranscript(.@"error", over_oap_setting_refusal);
+                return;
+            },
+            else => return err,
+        };
         self.state.permission_mode = mode;
         self.state.mode = .normal;
         const msg = try std.fmt.allocPrint(self.allocator, "permission mode set to {s}", .{@tagName(mode)});
@@ -1969,6 +1978,7 @@ pub const App = struct {
 
     fn runtimeBusy(self: *App) bool {
         const runtime = self.runtime orelse return false;
+        if (runtime.remote != null) return !runtime.isIdle();
         const local = if (runtime.local_agent) |*agent_ref| agent_ref else return false;
         return !local.isIdle();
     }
@@ -3038,7 +3048,7 @@ pub const App = struct {
             }
             return true;
         }
-        if (self.mode_settings.auto_worktree and self.working_dir.len > 0 and self.worktree_job == null and self.worktree_management_job == null and !self.worktree_attempted and self.session_turns == 0) {
+        if (self.createsWorktree() and self.working_dir.len > 0 and self.worktree_job == null and self.worktree_management_job == null and !self.worktree_attempted and self.session_turns == 0) {
             const home = compat.getEnvVarOwned(self.allocator, "HOME") catch null;
             defer if (home) |value| self.allocator.free(value);
             if (home) |h| {
@@ -3499,9 +3509,20 @@ pub const App = struct {
         self.state.appendNotice("copied last reply to clipboard") catch {};
     }
 
+    fn createsWorktree(self: *const App) bool {
+        if (!self.mode_settings.auto_worktree) return false;
+        const runtime = self.runtime orelse return true;
+        return runtime.remote == null;
+    }
+
     fn cycleThinkingLevel(self: *App) void {
+        const previous = self.state.thinking_level;
         const level = self.state.cycleThinkingLevel();
-        if (self.runtime) |runtime| runtime.setThinkingLevel(level);
+        if (self.runtime) |runtime| runtime.setThinkingLevel(level) catch {
+            self.state.thinking_level = previous;
+            self.state.appendTranscript(.@"error", over_oap_setting_refusal) catch {};
+            return;
+        };
         self.persistThinkingLevel();
     }
 
@@ -4925,7 +4946,14 @@ fn preferredContextWindow(stored: ?u32, flag: ?u32) ?u32 {
     return flag orelse stored;
 }
 
+pub const over_oap_notice = "oapx tui: this session runs over OAP through the in-process endpoint. Resume, compaction, steering, queued follow-ups and the model's questions to you are not carried over OAP yet, ask mode is unavailable until approvals cross OAP, and the thinking level, context window, output limit and workspace are fixed when the session opens; use oapx --tui for them.";
+pub const over_oap_setting_refusal = tui_commands.over_oap_setting_refusal;
+
 pub fn run(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32) !void {
+    return runWith(allocator, io, context_window, false);
+}
+
+pub fn runWith(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32, over_oap: bool) !void {
     var environ_map = try compat.createEnvMap(allocator);
     defer environ_map.deinit();
 
@@ -4945,6 +4973,14 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32) !void
     if (fixture) |runtime| {
         options.protocol = runtime.provider.protocolClient();
         options.generate_titles = false;
+    }
+    var execution: ?*tui_oap_execution.OapExecution = null;
+    defer if (execution) |owned| owned.destroy();
+    if (over_oap) {
+        execution = try tui_oap_execution.OapExecution.create(allocator, options);
+        options.remote = execution.?.remote();
+        options.generate_titles = false;
+        options.auto_worktree = false;
     }
 
     var program = zz.Program(TuiModel).initWithOptions(allocator, io, &environ_map, tuiProgramOptions());
@@ -6111,6 +6147,20 @@ test "App init takes mode settings from options, not the environment" {
     defer opted_in.deinit();
     try std.testing.expect(opted_in.mode_settings.auto_worktree);
     try std.testing.expect(opted_in.mode_settings.compact_output);
+}
+
+test "an app over OAP never creates an automatic worktree, since its workspace is fixed when the session opens" {
+    const models = [_]ai_types.Model{auto_compact_test_model};
+    const execution = try tui_oap_execution.OapExecution.create(std.testing.allocator, .{ .models = &models });
+    defer execution.destroy();
+    var app = try App.init(std.testing.allocator, .{ .models = &models, .auto_worktree = true, .remote = execution.remote() });
+    defer app.deinit();
+    try std.testing.expect(app.mode_settings.auto_worktree);
+    try std.testing.expect(!app.createsWorktree());
+
+    var local = try App.init(std.testing.allocator, .{ .models = &models, .auto_worktree = true });
+    defer local.deinit();
+    try std.testing.expect(local.createsWorktree());
 }
 
 test "resuming discards a pending worktree sidecar from another session" {
@@ -8562,7 +8612,7 @@ test "resume restores the session's thinking level, and a change after it is sav
     defer app.deinit();
     app.runtime = runtime;
     app.store = try session_store.Store.init(std.testing.allocator, base);
-    runtime.setThinkingLevel(.low);
+    try runtime.setThinkingLevel(.low);
     app.state.thinking_level = .low;
 
     var meta = session_store.SessionMetadata{
