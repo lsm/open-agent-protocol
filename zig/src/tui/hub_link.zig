@@ -69,7 +69,6 @@ pub const HubLink = struct {
                 try self.relay(frame);
             } else {
                 try self.push(frame);
-                self.settled = true;
             }
         }
         if (ended) {
@@ -244,9 +243,8 @@ const RunStream = struct {
     fn open(a: std.mem.Allocator, base: []const u8, target: []const u8) !RunStream {
         if (comptime !pollable) return error.HubStreamNeedsPoll;
         const authority = if (std.mem.indexOf(u8, base, "://")) |at| base[at + 3 ..] else base;
-        const colon = std.mem.lastIndexOfScalar(u8, authority, ':') orelse return error.HubUrlNeedsPort;
-        const port = std.fmt.parseInt(u16, authority[colon + 1 ..], 10) catch return error.HubUrlNeedsPort;
-        var socket = try compat.net.tcpConnectHost(a, authority[0..colon], port);
+        const dialed = try dialTarget(authority);
+        var socket = try compat.net.tcpConnectHost(a, dialed.host, dialed.port);
         errdefer socket.close();
         const request = try std.fmt.allocPrint(a, "GET {s} HTTP/1.1\r\nHost: {s}\r\nAccept: text/event-stream\r\nConnection: close\r\n\r\n", .{ target, authority });
         try socket.writeAll(request);
@@ -311,6 +309,16 @@ const RunStream = struct {
     }
 };
 
+const Dialed = struct { host: []const u8, port: u16 };
+
+fn dialTarget(authority: []const u8) !Dialed {
+    const colon = std.mem.lastIndexOfScalar(u8, authority, ':') orelse return error.HubUrlNeedsPort;
+    const port = std.fmt.parseInt(u16, authority[colon + 1 ..], 10) catch return error.HubUrlNeedsPort;
+    const host = authority[0..colon];
+    if (host.len >= 2 and host[0] == '[' and host[host.len - 1] == ']') return .{ .host = host[1 .. host.len - 1], .port = port };
+    return .{ .host = host, .port = port };
+}
+
 fn textOf(object: std.json.ObjectMap, key: []const u8) ?[]const u8 {
     const value = object.get(key) orelse return null;
     return if (value == .string) value.string else null;
@@ -340,4 +348,43 @@ test "a request the hub has no route for is refused to its own id, not dropped" 
     defer testing.allocator.free(answer);
     try testing.expect(std.mem.indexOf(u8, answer, "\"in_reply_to\":\"m1\"") != null);
     try testing.expect(std.mem.indexOf(u8, answer, "unsupported_feature") != null);
+}
+
+test "a bracketed IPv6 hub address is dialled without its brackets" {
+    const v6 = try dialTarget("[::1]:4180");
+    try testing.expectEqualStrings("::1", v6.host);
+    try testing.expectEqual(@as(u16, 4180), v6.port);
+    const v4 = try dialTarget("127.0.0.1:4180");
+    try testing.expectEqualStrings("127.0.0.1", v4.host);
+    try testing.expectError(error.HubUrlNeedsPort, dialTarget("[::1]"));
+}
+
+
+test "an events stream the hub refuses still ends the turn with a lost stream" {
+    if (comptime !pollable) return error.SkipZigTest;
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var listener = try compat.net.tcpListen(try compat.net.resolveAddress(a, "127.0.0.1", 0), .{ .reuse_address = true });
+    defer compat.net.closeServer(&listener);
+    const base = try std.fmt.allocPrint(a, "http://127.0.0.1:{d}", .{compat.net.listenAddress(&listener).getPort()});
+
+    const link = try HubLink.create(testing.allocator, base, "memory");
+    defer link.destroy();
+    link.stream = try RunStream.open(a, base, "/sessions/gone/events");
+    var served = try compat.net.accept(&listener);
+    try served.stream.writeAll("HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\n\r\n{" ++ envelope_head ++ ",\"type\":\"error.response\",\"id\":\"hub-1\",\"in_reply_to\":\"hub-events\",\"payload\":{\"error\":{\"code\":\"unknown_session\",\"message\":\"gone\"}}}");
+    served.stream.close();
+
+    var rounds: usize = 0;
+    while (link.stream != null and rounds < 400) : (rounds += 1) {
+        _ = try link.pump();
+        compat.time.sleepMs(5);
+    }
+    const refusal = link.popOutbound() orelse return error.TestNoRefusal;
+    defer testing.allocator.free(refusal);
+    try testing.expect(std.mem.indexOf(u8, refusal, "unknown_session") != null);
+    const lost = link.popOutbound() orelse return error.TestTurnLeftOpen;
+    defer testing.allocator.free(lost);
+    try testing.expectEqualStrings(lost_stream, lost);
 }

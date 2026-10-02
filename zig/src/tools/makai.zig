@@ -2456,6 +2456,11 @@ fn runTuiOverOap(allocator: std.mem.Allocator, io: std.Io, args: []const []const
     try tui_app.runWith(allocator, io, parsed.context_window, mode);
 }
 
+fn localTuiRefusal(parsed: TuiArgs) ?[]const u8 {
+    if (parsed.attach != null or parsed.adapter_named) return "--attach and --adapter belong to oapx tui, not oapx --tui\n\n";
+    return null;
+}
+
 fn runTui(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stderr: std.Io.File) !void {
     const parsed = parseTuiArgs(args) catch |err| {
         switch (err) {
@@ -2466,8 +2471,8 @@ fn runTui(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, st
         try printUsage(stderr);
         return error.InvalidArgument;
     };
-    if (parsed.attach != null) {
-        try compat.stdio.writeAll(stderr, "--attach belongs to oapx tui, not oapx --tui\n\n");
+    if (localTuiRefusal(parsed)) |refusal| {
+        try compat.stdio.writeAll(stderr, refusal);
         try printUsage(stderr);
         return error.InvalidArgument;
     }
@@ -2488,6 +2493,12 @@ test "the tui takes a context window and refuses anything else" {
     try std.testing.expectError(error.ContextWindowNotATokenCount, parseTuiArgs(&.{ "--context-window", "loads" }));
     try std.testing.expectError(error.ContextWindowNotATokenCount, parseTuiArgs(&.{ "--context-window", "0" }));
     try std.testing.expectError(error.UnknownOption, parseTuiArgs(&.{ "--model", "gpt-5-codex" }));
+}
+
+test "oapx --tui refuses --adapter as it refuses --attach, rather than dropping it" {
+    try std.testing.expect(localTuiRefusal(try parseTuiArgs(&.{ "--adapter", "memory" })) != null);
+    try std.testing.expect(localTuiRefusal(try parseTuiArgs(&.{ "--attach", "http://127.0.0.1:1" })) != null);
+    try std.testing.expect(localTuiRefusal(try parseTuiArgs(&.{})) == null);
 }
 
 const DEFAULT_PRINT_MODEL_ID = "kimi-k2.7-code";
