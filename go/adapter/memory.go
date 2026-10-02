@@ -400,7 +400,8 @@ type memoryRun struct {
 	subscribers      []chan Result
 }
 
-func (s *memorySession) Submit(ctx context.Context, request protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, EventStream, error) {
+func (s *memorySession) Submit(ctx context.Context, submit SubmitRequest) (protocol.MessageSubmitResponse, EventStream, error) {
+	request := submit.Request
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 	if err := ctx.Err(); err != nil {

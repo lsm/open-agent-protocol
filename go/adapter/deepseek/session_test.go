@@ -185,7 +185,7 @@ func TestSubmitRejectsUnappliedModelID(t *testing.T) {
 	defer cancel()
 	req := request()
 	req.ModelID = protocol.ControlValue("deepseek-other")
-	if _, _, err := s.Submit(ctx, req); !errors.Is(err, base.ErrUnsupportedInput) {
+	if _, _, err := s.Submit(ctx, base.SubmitRequest{Request: req}); !errors.Is(err, base.ErrUnsupportedInput) {
 		t.Fatalf("got %v, want ErrUnsupportedInput", err)
 	}
 }
@@ -201,7 +201,7 @@ func submitAsync(s base.Session) <-chan struct {
 		err error
 	}, 1)
 	go func() {
-		r, st, e := s.Submit(context.Background(), request())
+		r, st, e := s.Submit(context.Background(), base.SubmitRequest{Request: request()})
 		ch <- struct {
 			r   protocol.MessageSubmitResponse
 			st  base.EventStream
@@ -497,7 +497,7 @@ func TestPromptReceiptWithoutMessageIDRetiresSession(t *testing.T) {
 	s, f := openTest(t)
 	settled := make(chan error, 1)
 	go func() {
-		_, _, err := s.Submit(context.Background(), request())
+		_, _, err := s.Submit(context.Background(), base.SubmitRequest{Request: request()})
 		settled <- err
 	}()
 	<-f.started
@@ -510,7 +510,7 @@ func TestPromptReceiptWithoutMessageIDRetiresSession(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("submit did not settle")
 	}
-	if _, _, err := s.Submit(context.Background(), request()); !errors.Is(err, base.ErrSessionClosed) {
+	if _, _, err := s.Submit(context.Background(), base.SubmitRequest{Request: request()}); !errors.Is(err, base.ErrSessionClosed) {
 		t.Fatalf("retry: got %v, want ErrSessionClosed", err)
 	}
 }
@@ -525,7 +525,7 @@ func TestSubmitCancellationAfterReceiptKeepsReservation(t *testing.T) {
 		err error
 	}, 1)
 	go func() {
-		r, st, err := s.Submit(ctx, request())
+		r, st, err := s.Submit(ctx, base.SubmitRequest{Request: request()})
 		ch <- struct {
 			r   protocol.MessageSubmitResponse
 			st  base.EventStream
@@ -546,7 +546,7 @@ func TestSubmitCancellationAfterReceiptKeepsReservation(t *testing.T) {
 		t.Fatal("submit did not settle")
 	}
 
-	if _, _, err := s.Submit(context.Background(), request()); !errors.Is(err, base.ErrRunActive) {
+	if _, _, err := s.Submit(context.Background(), base.SubmitRequest{Request: request()}); !errors.Is(err, base.ErrRunActive) {
 		t.Fatalf("overlapping submit: err=%v, want ErrRunActive", err)
 	}
 

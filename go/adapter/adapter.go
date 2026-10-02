@@ -15,8 +15,13 @@ type Adapter interface {
 	Open(context.Context, OpenRequest) (Session, error)
 }
 
+type SubmitRequest struct {
+	Request    protocol.MessageSubmitRequest
+	EnvelopeID protocol.EnvelopeID
+}
+
 type Session interface {
-	Submit(context.Context, protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, EventStream, error)
+	Submit(context.Context, SubmitRequest) (protocol.MessageSubmitResponse, EventStream, error)
 	State(context.Context) (protocol.SessionState, error)
 	Resolve(context.Context, InteractionResolution) error
 	Cancel(context.Context, protocol.RunID) (protocol.RunCancelResponse, error)

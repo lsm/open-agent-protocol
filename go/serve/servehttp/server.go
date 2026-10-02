@@ -331,7 +331,7 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	admission, err := entry.Submit(r.Context(), request)
+	admission, err := entry.Submit(r.Context(), base.SubmitRequest{Request: request, EnvelopeID: envelope.ID})
 	if err != nil {
 		s.writeSubmitError(w, err, envelope)
 		return

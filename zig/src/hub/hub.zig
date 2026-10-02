@@ -500,11 +500,11 @@ pub const Hub = struct {
         return opened;
     }
 
-    pub fn submit(self: *Hub, arena: std.mem.Allocator, session_id: []const u8, request: *const oap_types.MessageSubmitRequest) Failure!oap_types.MessageSubmitResponse {
+    pub fn submit(self: *Hub, arena: std.mem.Allocator, session_id: []const u8, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8) Failure!oap_types.MessageSubmitResponse {
         const entry = self.findSession(session_id) orelse return error.UnknownSession;
         if (!std.mem.eql(u8, request.session_id, session_id)) return error.ScopeMismatch;
         var refusal = contract.Refusal{};
-        const admission = entry.session.submit(arena, request, &refusal) catch |err| switch (err) {
+        const admission = entry.session.submit(arena, request, envelope_id, &refusal) catch |err| switch (err) {
             error.SessionClosed => {
                 self.releaseSession(entry);
                 return error.UnknownSession;
@@ -1300,7 +1300,7 @@ test "a hub opens many sessions, each with its own journal" {
     try testing.expectEqualStrings("memory", listed[0].adapter);
 
     const request = try submitFor(arena, "alpha");
-    _ = try hub.submit(arena, "alpha", &request);
+    _ = try hub.submit(arena, "alpha", &request, "");
     try hub.pump(testing.allocator, 0);
     const replayed = try hub.subscribe(arena, "alpha", .{ .run_id = "run-1", .after = 1 });
     var drained: usize = 0;
@@ -1342,7 +1342,7 @@ test "a cursor may name an admitted run whose events have not arrived yet" {
 
     const opened = try hub.open(arena, "memory", .{ .session_id = "undrained" });
     const request = try submitFor(arena, "undrained");
-    const admitted = try hub.submit(arena, "undrained", &request);
+    const admitted = try hub.submit(arena, "undrained", &request, "");
     try testing.expectEqual(oap_types.Admission.started, admitted.admission);
 
     const joined = try hub.subscribe(arena, opened.session_id, .{ .run_id = admitted.run_id.?, .after = 0 });
@@ -1389,12 +1389,12 @@ test "the current run follows the events, so an unqualified cursor reaches a pro
 
     const opened = try hub.open(arena, "memory", .{ .session_id = "promoted" });
     const first = try submitFor(arena, "promoted");
-    const started = try hub.submit(arena, "promoted", &first);
+    const started = try hub.submit(arena, "promoted", &first, "");
     try hub.pump(testing.allocator, 0);
 
     var queued = first;
     queued.delivery = .queue;
-    const waiting = try hub.submit(arena, "promoted", &queued);
+    const waiting = try hub.submit(arena, "promoted", &queued, "");
     try testing.expectEqual(oap_types.Admission.queued, waiting.admission);
     try hub.pump(testing.allocator, 0);
 
@@ -1421,7 +1421,7 @@ test "a subscriber that falls behind is ended with a cursor on the run that over
     const opened = try hub.open(arena, "memory", .{ .session_id = "slow" });
     const subscription = try hub.subscribe(arena, opened.session_id, .{});
     const first = try submitFor(arena, "slow");
-    _ = try hub.submit(arena, "slow", &first);
+    _ = try hub.submit(arena, "slow", &first, "");
     try hub.pump(testing.allocator, 0);
     const read = subscription.next().?;
     const last_read = read.sequence;
@@ -1429,7 +1429,7 @@ test "a subscriber that falls behind is ended with a cursor on the run that over
 
     _ = try hub.cancel(arena, "slow", "run-1");
     const second = try submitFor(arena, "slow");
-    const admitted = try hub.submit(arena, "slow", &second);
+    const admitted = try hub.submit(arena, "slow", &second, "");
     try hub.pump(testing.allocator, 0);
     try testing.expectEqual(Ending.overflow, subscription.ending);
     try testing.expectEqualStrings(admitted.run_id.?, subscription.overflow_run);
@@ -1450,13 +1450,13 @@ test "a replay that outgrows the mailbox names the replayed run, not the session
 
     const opened = try hub.open(arena, "memory", .{ .session_id = "replayed" });
     const first = try submitFor(arena, "replayed");
-    const settled = try hub.submit(arena, "replayed", &first);
+    const settled = try hub.submit(arena, "replayed", &first, "");
     try hub.pump(testing.allocator, 0);
     _ = try hub.cancel(arena, "replayed", settled.run_id.?);
     try hub.pump(testing.allocator, 0);
 
     const second = try submitFor(arena, "replayed");
-    const current = try hub.submit(arena, "replayed", &second);
+    const current = try hub.submit(arena, "replayed", &second, "");
     try hub.pump(testing.allocator, 0);
     try testing.expectEqualStrings(current.run_id.?, hub.entries.items[0].run_id);
 
@@ -1484,7 +1484,7 @@ test "the overflow cursor is where the client stopped after draining, not where 
     const opened = try hub.open(arena, "memory", .{ .session_id = "tail" });
     const subscription = try hub.subscribe(arena, opened.session_id, .{});
     const first = try submitFor(arena, "tail");
-    const admitted = try hub.submit(arena, "tail", &first);
+    const admitted = try hub.submit(arena, "tail", &first, "");
     try hub.pump(testing.allocator, 0);
     try testing.expectEqual(Ending.open, subscription.ending);
 
@@ -1554,7 +1554,7 @@ test "a loss on a newer run names the newer run rather than the one being read" 
     const opened = try hub.open(arena, "memory", .{ .session_id = "newer" });
     const subscription = try hub.subscribe(arena, opened.session_id, .{});
     const first = try submitFor(arena, "newer");
-    const first_run = (try hub.submit(arena, "newer", &first)).run_id.?;
+    const first_run = (try hub.submit(arena, "newer", &first, "")).run_id.?;
     try hub.pump(testing.allocator, 0);
     const read = subscription.next().?;
     try testing.expect(read.sequence > 0);
@@ -1562,7 +1562,7 @@ test "a loss on a newer run names the newer run rather than the one being read" 
 
     _ = try hub.cancel(arena, "newer", first_run);
     const second = try submitFor(arena, "newer");
-    const second_run = (try hub.submit(arena, "newer", &second)).run_id.?;
+    const second_run = (try hub.submit(arena, "newer", &second, "")).run_id.?;
     try hub.pump(testing.allocator, 0);
     try testing.expect(runNumber(first_run) < runNumber(second_run));
     try testing.expectEqual(Ending.overflow, subscription.ending);
@@ -1589,7 +1589,7 @@ test "an overflowed hold is adopted so the adopter learns the cursor it lost" {
     const held = try hub.hold(arena, opened.session_id);
     try testing.expect(!held.expired(testClock()));
     const request = try submitFor(arena, "starved");
-    _ = try hub.submit(arena, "starved", &request);
+    _ = try hub.submit(arena, "starved", &request, "");
     try hub.pump(testing.allocator, 0);
 
     const adopted = try hub.subscribe(arena, opened.session_id, .{});
@@ -1630,7 +1630,7 @@ test "a subscription that closes with events queued leaves the hub with nothing 
     const leaving = try hub.subscribe(arena, opened.session_id, .{});
     const staying = try hub.subscribe(arena, opened.session_id, .{});
     const request = try submitFor(arena, "gone");
-    _ = try hub.submit(arena, "gone", &request);
+    _ = try hub.submit(arena, "gone", &request, "");
     try hub.pump(testing.allocator, 0);
     try testing.expect(leaving.queue.items.len > 0);
 
@@ -1651,10 +1651,10 @@ test "a resumed subscription ends at the terminal it replays" {
 
     const opened = try hub.open(arena, "memory", .{ .session_id = "replayed-terminal" });
     const request = try submitFor(arena, "replayed-terminal");
-    _ = try hub.submit(arena, "replayed-terminal", &request);
+    _ = try hub.submit(arena, "replayed-terminal", &request, "");
     var queued = request;
     queued.delivery = .queue;
-    const waiting = try hub.submit(arena, "replayed-terminal", &queued);
+    const waiting = try hub.submit(arena, "replayed-terminal", &queued, "");
     try hub.pump(testing.allocator, 0);
     _ = try hub.cancel(arena, "replayed-terminal", waiting.run_id.?);
     try hub.pump(testing.allocator, 0);
@@ -1729,10 +1729,10 @@ test "a run's terminal envelope never becomes the session's current run" {
 
     _ = try hub.open(arena, "memory", .{ .session_id = "terminal-run" });
     const first = try submitFor(arena, "terminal-run");
-    const started = try hub.submit(arena, "terminal-run", &first);
+    const started = try hub.submit(arena, "terminal-run", &first, "");
     var queued = first;
     queued.delivery = .queue;
-    const waiting = try hub.submit(arena, "terminal-run", &queued);
+    const waiting = try hub.submit(arena, "terminal-run", &queued, "");
     try hub.pump(testing.allocator, 0);
     _ = try hub.cancel(arena, "terminal-run", waiting.run_id.?);
     try hub.pump(testing.allocator, 0);
@@ -1774,7 +1774,7 @@ test "a replay larger than the mailbox seeds a cursor instead of growing without
 
     const opened = try hub.open(arena, "memory", .{ .session_id = "wide-replay" });
     const request = try submitFor(arena, "wide-replay");
-    _ = try hub.submit(arena, "wide-replay", &request);
+    _ = try hub.submit(arena, "wide-replay", &request, "");
     try hub.pump(testing.allocator, 0);
 
     const resumed = try hub.subscribe(arena, opened.session_id, .{ .run_id = "run-1", .after = 0 });
@@ -1824,7 +1824,7 @@ test "a hub built with no journal capacity keeps nothing" {
     const arena = scratch.allocator();
     const opened = try hub.open(arena, "memory", .{ .session_id = "unremembered" });
     const request = try submitFor(arena, "unremembered");
-    _ = try hub.submit(arena, "unremembered", &request);
+    _ = try hub.submit(arena, "unremembered", &request, "");
     try hub.pump(testing.allocator, 0);
     try testing.expectEqual(@as(usize, 0), hub.entries.items[0].journal.items.len);
     const live = try hub.subscribe(arena, opened.session_id, .{});
@@ -1849,10 +1849,10 @@ test "a cursor sitting on a settled run's terminal ends at once and hears nothin
 
     const opened = try hub.open(arena, "memory", .{ .session_id = "at-terminal" });
     const request = try submitFor(arena, "at-terminal");
-    _ = try hub.submit(arena, "at-terminal", &request);
+    _ = try hub.submit(arena, "at-terminal", &request, "");
     var queued = request;
     queued.delivery = .queue;
-    const waiting = try hub.submit(arena, "at-terminal", &queued);
+    const waiting = try hub.submit(arena, "at-terminal", &queued, "");
     try hub.pump(testing.allocator, 0);
     _ = try hub.cancel(arena, "at-terminal", waiting.run_id.?);
     try hub.pump(testing.allocator, 0);
@@ -1862,7 +1862,7 @@ test "a cursor sitting on a settled run's terminal ends at once and hears nothin
     try testing.expect(settled.next() == null);
 
     const later = try submitFor(arena, "at-terminal");
-    _ = try hub.submit(arena, "at-terminal", &later);
+    _ = try hub.submit(arena, "at-terminal", &later, "");
     try hub.pump(testing.allocator, 0);
     try testing.expect(settled.next() == null);
     try testing.expectEqual(Ending.run_terminal, settled.ending);
@@ -1879,10 +1879,10 @@ test "a queued run's id can be named by a cursor before it has emitted" {
 
     const opened = try hub.open(arena, "memory", .{ .session_id = "named-queue" });
     const first = try submitFor(arena, "named-queue");
-    _ = try hub.submit(arena, "named-queue", &first);
+    _ = try hub.submit(arena, "named-queue", &first, "");
     var queued = first;
     queued.delivery = .queue;
-    const waiting = try hub.submit(arena, "named-queue", &queued);
+    const waiting = try hub.submit(arena, "named-queue", &queued, "");
     try hub.pump(testing.allocator, 0);
 
     const joined = try hub.subscribe(arena, opened.session_id, .{ .run_id = waiting.run_id.?, .after = 0 });
@@ -1920,13 +1920,13 @@ test "a queued admission does not become the session's current run" {
 
     const opened = try hub.open(arena, "memory", .{ .session_id = "queued" });
     const request = try submitFor(arena, "queued");
-    const first = try hub.submit(arena, "queued", &request);
+    const first = try hub.submit(arena, "queued", &request, "");
     try testing.expectEqual(oap_types.Admission.started, first.admission);
     try hub.pump(testing.allocator, 0);
 
     var queued = request;
     queued.delivery = .queue;
-    const second = try hub.submit(arena, "queued", &queued);
+    const second = try hub.submit(arena, "queued", &queued, "");
     try testing.expectEqual(oap_types.Admission.queued, second.admission);
     try hub.pump(testing.allocator, 0);
 
@@ -1947,7 +1947,7 @@ test "a subscriber that read nothing is told the run it lost, at that run's firs
     const opened = try hub.open(arena, "memory", .{ .session_id = "silent" });
     const subscription = try hub.subscribe(arena, opened.session_id, .{});
     const request = try submitFor(arena, "silent");
-    _ = try hub.submit(arena, "silent", &request);
+    _ = try hub.submit(arena, "silent", &request, "");
     try hub.pump(testing.allocator, 0);
     try testing.expectEqual(Ending.overflow, subscription.ending);
     try testing.expectEqualStrings("run-1", subscription.overflow_run);
@@ -1966,7 +1966,7 @@ test "a subscriber inside its bound receives every envelope" {
     const opened = try hub.open(arena, "memory", .{ .session_id = "kept" });
     const subscription = try hub.subscribe(arena, opened.session_id, .{});
     const request = try submitFor(arena, "kept");
-    _ = try hub.submit(arena, "kept", &request);
+    _ = try hub.submit(arena, "kept", &request, "");
     try hub.pump(testing.allocator, 0);
     try testing.expectEqual(Ending.open, subscription.ending);
     var drained: usize = 0;
@@ -1986,7 +1986,7 @@ test "a cursor older than the journal is a gap, never fake continuity" {
     const opened = try hub.open(arena, "memory", .{ .session_id = "gap" });
     for (0..4) |_| {
         const request = try submitFor(arena, "gap");
-        const admitted = try hub.submit(arena, "gap", &request);
+        const admitted = try hub.submit(arena, "gap", &request, "");
         try hub.pump(testing.allocator, 0);
         _ = try hub.cancel(arena, "gap", admitted.run_id.?);
         try hub.pump(testing.allocator, 0);
@@ -2009,7 +2009,7 @@ test "a cursor within the journal replays the suffix, and an unrunnable one is r
 
     const opened = try hub.open(arena, "memory", .{ .session_id = "cursor" });
     const request = try submitFor(arena, "cursor");
-    _ = try hub.submit(arena, "cursor", &request);
+    _ = try hub.submit(arena, "cursor", &request, "");
     try hub.pump(testing.allocator, 0);
 
     const replayed = try hub.subscribe(arena, opened.session_id, .{ .run_id = "run-1", .after = 2 });
@@ -2046,7 +2046,7 @@ test "a subscribing open registers before its message runs, so it misses nothing
     const opened = try hub.open(arena, "memory", .{ .session_id = "compound", .subscribe = true });
     const subscription = opened.subscription.?;
     const request = try submitFor(arena, "compound");
-    _ = try hub.submit(arena, "compound", &request);
+    _ = try hub.submit(arena, "compound", &request, "");
     try hub.pump(testing.allocator, 0);
     const first = subscription.next().?;
     try testing.expectEqual(@as(u64, 1), first.sequence);
@@ -2067,7 +2067,7 @@ test "a held subscription is adopted by the request that follows" {
     const held = try hub.hold(arena, opened.session_id);
     try testing.expect(!held.expired(testClock()));
     const request = try submitFor(arena, "held");
-    _ = try hub.submit(arena, "held", &request);
+    _ = try hub.submit(arena, "held", &request, "");
     try hub.pump(testing.allocator, 0);
     const adopted = try hub.subscribe(arena, opened.session_id, .{});
     try testing.expect(!adopted.held);
@@ -2116,7 +2116,7 @@ test "an expired hold with events queued leaves the hub with nothing outstanding
     const opened = try hub.open(arena, "memory", .{ .session_id = "queued" });
     const held = try hub.hold(arena, opened.session_id);
     const request = try submitFor(arena, "queued");
-    _ = try hub.submit(arena, "queued", &request);
+    _ = try hub.submit(arena, "queued", &request, "");
     try hub.pump(testing.allocator, 0);
     try testing.expectEqual(@as(usize, 1), hub.holds.items.len);
     try testing.expectEqual(@as(usize, 1), hub.entries.items[0].subscribers.items.len);
@@ -2142,7 +2142,7 @@ test "a cursor-bearing subscription does not adopt a hold, and releases it" {
     const opened = try hub.open(arena, "memory", .{ .session_id = "cursored" });
     _ = try hub.hold(arena, opened.session_id);
     const request = try submitFor(arena, "cursored");
-    _ = try hub.submit(arena, "cursored", &request);
+    _ = try hub.submit(arena, "cursored", &request, "");
     try hub.pump(testing.allocator, 0);
     const replayed = try hub.subscribe(arena, opened.session_id, .{ .run_id = "run-1", .after = 1 });
     try testing.expectEqual(@as(usize, 0), hub.holds.items.len);
@@ -2169,7 +2169,7 @@ test "closing a session ends every subscription under it, and releases the sessi
     try testing.expectEqual(Ending.session_closed, second.ending);
     try testing.expectError(error.UnknownSession, hub.subscribe(arena, opened.session_id, .{}));
     const request = try submitFor(arena, "closing");
-    try testing.expectError(error.UnknownSession, hub.submit(arena, "closing", &request));
+    try testing.expectError(error.UnknownSession, hub.submit(arena, "closing", &request, ""));
     try testing.expectError(error.UnknownSession, hub.state(arena, "absent"));
 }
 
@@ -2185,7 +2185,7 @@ test "a released session's id is free again, and its memory is gone" {
     const opened = try hub.open(arena, "memory", .{ .session_id = "reused" });
     const subscription = try hub.subscribe(arena, opened.session_id, .{});
     const request = try submitFor(arena, "reused");
-    const started = try hub.submit(arena, "reused", &request);
+    const started = try hub.submit(arena, "reused", &request, "");
     try hub.pump(testing.allocator, 0);
     _ = try hub.cancel(arena, "reused", started.run_id.?);
     try hub.pump(testing.allocator, 0);
@@ -2267,7 +2267,7 @@ test "a close refuses while a run is live, and a released session is unknown" {
 
     const opened = try hub.open(arena, "memory", .{ .session_id = "busy" });
     const request = try submitFor(arena, "busy");
-    const admitted = try hub.submit(arena, "busy", &request);
+    const admitted = try hub.submit(arena, "busy", &request, "");
     try hub.pump(testing.allocator, 0);
     try testing.expectError(error.RunActive, hub.close(arena, opened.session_id));
 
@@ -2290,10 +2290,10 @@ test "a subscription ends after it is handed the run's terminal envelope" {
     const opened = try hub.open(arena, "memory", .{ .session_id = "terminal" });
     const subscription = try hub.subscribe(arena, opened.session_id, .{});
     const request = try submitFor(arena, "terminal");
-    _ = try hub.submit(arena, "terminal", &request);
+    _ = try hub.submit(arena, "terminal", &request, "");
     var queued = request;
     queued.delivery = .queue;
-    const waiting = try hub.submit(arena, "terminal", &queued);
+    const waiting = try hub.submit(arena, "terminal", &queued, "");
     try testing.expectEqual(oap_types.Admission.queued, waiting.admission);
     try hub.pump(testing.allocator, 0);
 
@@ -2315,7 +2315,7 @@ test "a session-scoped request may not address another session" {
     const arena = scratch.allocator();
     const opened = try hub.open(arena, "memory", .{ .session_id = "scoped" });
     const elsewhere = try submitFor(arena, "elsewhere");
-    try testing.expectError(error.ScopeMismatch, hub.submit(arena, opened.session_id, &elsewhere));
+    try testing.expectError(error.ScopeMismatch, hub.submit(arena, opened.session_id, &elsewhere, ""));
     try testing.expectError(error.RunNotFound, hub.cancel(arena, opened.session_id, "run-9"));
 }
 
@@ -2372,7 +2372,7 @@ test "a cursor may name the overflow a hold reported, which the discard just fre
     const opened = try hub.open(arena, "memory", .{ .session_id = "resumer" });
     _ = try hub.hold(arena, opened.session_id);
     const request = try submitFor(arena, "resumer");
-    _ = try hub.submit(arena, "resumer", &request);
+    _ = try hub.submit(arena, "resumer", &request, "");
     try hub.pump(testing.allocator, 0);
 
     try testing.expectEqual(@as(usize, 1), hub.holds.items.len);
@@ -2666,7 +2666,7 @@ test "subscribe, replay and pump hand off their queues under allocation failure"
             const opened = try hub.open(arena, "memory", .{ .session_id = "fanout" });
             _ = try hub.subscribe(arena, opened.session_id, .{});
             const request = try submitFor(arena, "fanout");
-            _ = try hub.submit(arena, "fanout", &request);
+            _ = try hub.submit(arena, "fanout", &request, "");
             try hub.pump(gpa, 0);
         }
     }.attempt, .{});
@@ -2681,7 +2681,7 @@ test "subscribe, replay and pump hand off their queues under allocation failure"
             const arena = scratch.allocator();
             const opened = try hub.open(arena, "memory", .{ .session_id = "replayed" });
             const request = try submitFor(arena, "replayed");
-            _ = try hub.submit(arena, "replayed", &request);
+            _ = try hub.submit(arena, "replayed", &request, "");
             try hub.pump(gpa, 0);
             _ = try hub.subscribe(arena, opened.session_id, .{ .run_id = "run-1", .after = 0 });
         }
@@ -2822,7 +2822,8 @@ fn flakyState(ptr: *anyopaque, arena: std.mem.Allocator, refusal: *contract.Refu
     };
 }
 
-fn flakySubmit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+fn flakySubmit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+    _ = envelope_id;
     const self: *Flaky = @ptrCast(@alignCast(ptr));
     _ = request;
     _ = refusal;
@@ -2937,7 +2938,8 @@ fn stubbornState(ptr: *anyopaque, arena: std.mem.Allocator, refusal: *contract.R
     return .{ .session_id = session_id, .status = .running, .active_run_id = run, .active_runs = runs };
 }
 
-fn stubbornSubmit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+fn stubbornSubmit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+    _ = envelope_id;
     const self: *Stubborn = @ptrCast(@alignCast(ptr));
     _ = request;
     _ = refusal;
@@ -3318,7 +3320,7 @@ test "a subscription that has read its terminal stops occupying a ceiling slot" 
     const opened = try hub.open(arena, "memory", .{ .session_id = "ceiling" });
     const first = try hub.subscribe(arena, opened.session_id, .{});
     const request = try submitFor(arena, "ceiling");
-    const started = try hub.submit(arena, "ceiling", &request);
+    const started = try hub.submit(arena, "ceiling", &request, "");
     try hub.pump(testing.allocator, 0);
     _ = try hub.cancel(arena, "ceiling", started.run_id.?);
     try hub.pump(testing.allocator, 0);
@@ -3345,7 +3347,7 @@ test "an ended subscription keeps its handle until close, and close reclaims it"
     const opened = try hub.open(arena, "memory", .{ .session_id = "handle" });
     const ended = try hub.subscribe(arena, opened.session_id, .{});
     const request = try submitFor(arena, "handle");
-    const started = try hub.submit(arena, "handle", &request);
+    const started = try hub.submit(arena, "handle", &request, "");
     try hub.pump(testing.allocator, 0);
     _ = try hub.cancel(arena, "handle", started.run_id.?);
     try hub.pump(testing.allocator, 0);
@@ -3370,7 +3372,7 @@ test "a replay that already lost events never takes a ceiling slot" {
 
     const opened = try hub.open(arena, "memory", .{ .session_id = "replayed-slot" });
     const request = try submitFor(arena, "replayed-slot");
-    const started = try hub.submit(arena, "replayed-slot", &request);
+    const started = try hub.submit(arena, "replayed-slot", &request, "");
     try hub.pump(testing.allocator, 0);
     _ = try hub.cancel(arena, "replayed-slot", started.run_id.?);
     try hub.pump(testing.allocator, 0);
@@ -3406,7 +3408,7 @@ test "an overflow cursor survives the mailbox being drained across a run boundar
     const opened = try hub.open(arena, "memory", .{ .session_id = "spanning" });
     const subscription = try hub.subscribe(arena, opened.session_id, .{});
     const first = try submitFor(arena, "spanning");
-    _ = try hub.submit(arena, "spanning", &first);
+    _ = try hub.submit(arena, "spanning", &first, "");
     try hub.pump(testing.allocator, 0);
     const read = subscription.next().?;
     const expected_run = try testing.allocator.dupe(u8, read.run_id);
@@ -3415,7 +3417,7 @@ test "an overflow cursor survives the mailbox being drained across a run boundar
 
     _ = try hub.cancel(arena, "spanning", "run-1");
     const second = try submitFor(arena, "spanning");
-    const admitted = try hub.submit(arena, "spanning", &second);
+    const admitted = try hub.submit(arena, "spanning", &second, "");
     try hub.pump(testing.allocator, 0);
     try testing.expectEqual(Ending.overflow, subscription.ending);
     while (subscription.next()) |_| {}
