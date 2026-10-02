@@ -41,7 +41,7 @@ pub const OapExecution = struct {
     queued_runs: std.ArrayList(QueuedRun) = .empty,
     output_tokens: u64 = 0,
     closed_messages: usize = 0,
-    awaiting_promotion: bool = false,
+    awaiting_promotion: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     const QueuedRun = struct {
         text: []u8,
@@ -399,7 +399,7 @@ pub const OapExecution = struct {
 
     fn cancel(ctx: *anyopaque) void {
         const self = cast(ctx);
-        if (self.awaiting_promotion) {
+        if (self.awaiting_promotion.load(.acquire)) {
             self.dropQueued();
             return;
         }
@@ -652,7 +652,7 @@ pub const OapExecution = struct {
             const run_id = stringOf(body, "run_id") orelse "";
             if (self.turn_open.load(.acquire)) {
                 if (self.takePromoted(run_id)) |text| {
-                    self.awaiting_promotion = false;
+                    self.awaiting_promotion.store(false, .release);
                     defer self.allocator.free(text);
                     const kept = try self.allocator.dupe(u8, run_id);
                     self.lockInbound();
@@ -740,8 +740,9 @@ pub const OapExecution = struct {
         if (std.mem.eql(u8, kind, "run.completed") or std.mem.eql(u8, kind, "run.failed") or std.mem.eql(u8, kind, "run.cancelled")) {
             if (!self.turn_open.load(.acquire)) return;
             if (!self.isCurrentRun(body)) {
+                if (std.mem.eql(u8, kind, "run.failed")) self.deliver(.{ .system_warning = .{ .message = try self.ownedText(errorMessage(body)) } });
                 self.settleReserved(stringOf(body, "run_id") orelse "");
-                if (self.awaiting_promotion and !self.waitsOnQueued()) self.endTurn(.completed);
+                if (self.awaiting_promotion.load(.acquire) and !self.waitsOnQueued()) self.endTurn(.completed);
                 return;
             }
             self.output_tokens = if (self.closed_messages == 0) usageTokens(body) else 0;
@@ -766,7 +767,7 @@ pub const OapExecution = struct {
             try self.closeAssistant(stop_reason);
             self.deliver(.{ .turn_end = .{ .stop_reason = stop_reason } });
             if (self.waitsOnQueued()) {
-                self.awaiting_promotion = true;
+                self.awaiting_promotion.store(true, .release);
                 return;
             }
             self.endTurn(.completed);
@@ -803,7 +804,7 @@ pub const OapExecution = struct {
     }
 
     fn endTurn(self: *OapExecution, reason: tui_session.TuiEndReason) void {
-        self.awaiting_promotion = false;
+        self.awaiting_promotion.store(false, .release);
         self.turn_open.store(false, .release);
         self.output_tokens = 0;
         self.closed_messages = 0;
@@ -1536,6 +1537,7 @@ test "a model refresh during a turn over OAP is refused rather than switching th
 const Captured = struct {
     ends: usize = 0,
     user_messages: usize = 0,
+    warnings: usize = 0,
 
     fn sink(self: *Captured) tui_runtime.EventSink {
         return .{ .ctx = self, .push = push };
@@ -1546,6 +1548,7 @@ const Captured = struct {
         var owned = event;
         defer owned.deinit(testing.allocator);
         if (owned == .agent_end) self.ends += 1;
+        if (owned == .system_warning) self.warnings += 1;
         if (owned == .message_end and owned.message_end.role == .user) self.user_messages += 1;
     }
 };
@@ -1577,6 +1580,33 @@ test "a held turn ends when the reservation it waits on settles without ever sta
     try testing.expectEqual(@as(usize, 1), captured.ends);
     try testing.expect(!execution.turn_open.load(.acquire));
     try testing.expectEqual(@as(usize, 0), execution.queued_runs.items.len);
+}
+
+test "a reserved follow-up that fails before it starts says why instead of vanishing" {
+    var script = Script{};
+    const models = [_]ai_types.Model{scripted_model};
+    const execution = try OapExecution.create(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+    });
+    defer execution.destroy();
+    var captured = Captured{};
+    execution.sink = captured.sink();
+    execution.run_id = try testing.allocator.dupe(u8, "run-1");
+    execution.turn_open.store(true, .release);
+    try execution.queued_runs.append(testing.allocator, .{
+        .text = try testing.allocator.dupe(u8, "later"),
+        .submit_id = try testing.allocator.dupe(u8, "queue-1"),
+        .run_id = try testing.allocator.dupe(u8, "run-2"),
+    });
+
+    try execution.translateLine("{\"type\":\"run.completed\",\"payload\":{\"session_id\":\"s\",\"run_id\":\"run-1\",\"stop_reason\":\"end_turn\",\"final_response\":{\"role\":\"assistant\",\"content\":\"done\"}}}");
+    try testing.expectEqual(@as(usize, 0), captured.warnings);
+    try execution.translateLine("{\"type\":\"run.failed\",\"payload\":{\"session_id\":\"s\",\"run_id\":\"run-2\",\"error\":{\"code\":\"backend_failed\",\"message\":\"the follow-up could not start\"}}}");
+    try testing.expectEqual(@as(usize, 1), captured.warnings);
+    try testing.expectEqual(@as(usize, 1), captured.ends);
+    try testing.expect(!execution.turn_open.load(.acquire));
 }
 
 test "a reservation not yet admitted is never taken by the current run's own start" {
