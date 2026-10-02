@@ -791,11 +791,12 @@ pub const Connection = struct {
             .no_content => self.queue(no_content_head),
             .gap => |gap| {
                 self.queue(sse_head);
+                if (self.phase == .done) return;
                 if (self.body_allowed) self.queue(gapSignal(arena, gap) catch "");
             },
             .stream => |subscription| {
                 self.queue(sse_head);
-                if (!self.body_allowed) {
+                if (self.phase == .done or !self.body_allowed) {
                     self.daemon.leave(subscription);
                     return;
                 }
