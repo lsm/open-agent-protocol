@@ -1,0 +1,70 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.request",
+    "id": "capq",
+    "payload": {}
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.response",
+    "id": "capr",
+    "in_reply_to": "capq",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "endpoint": {
+        "id": "fixture.endpoint",
+        "name": "Session settings fixture endpoint"
+      },
+      "features": {
+        "session.message.delivery.auto": {
+          "level": "native"
+        },
+        "session.compaction.policy": {
+          "level": "native",
+          "modes": [
+            "session_live"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.open.request",
+    "id": "op",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "session_id": "s1",
+      "compaction_policy": {
+        "kind": "off"
+      }
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "error.response",
+    "id": "ope",
+    "in_reply_to": "op",
+    "session_id": "s1",
+    "payload": {
+      "error": {
+        "code": "unsupported_feature",
+        "message": "this endpoint takes a compaction policy only on a live session",
+        "details": {
+          "feature": "session.compaction.policy",
+          "reason": "unadvertised",
+          "field": "compaction_policy"
+        }
+      }
+    }
+  }
+]

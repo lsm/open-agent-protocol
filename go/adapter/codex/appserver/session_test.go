@@ -52,8 +52,11 @@ type fakeClient struct {
 	closeOnce     sync.Once
 	err           error
 	turnStartErr  error
+	resumedModel  string
+	resumeErr     error
 
-	turnStart native.TurnStartParams
+	turnStart   native.TurnStartParams
+	threadStart native.ThreadStartParams
 }
 
 func newFakeClient() *fakeClient {
@@ -66,11 +69,23 @@ func (client *fakeClient) Call(ctx context.Context, method string, params, resul
 	client.mu.Unlock()
 	switch method {
 	case native.MethodThreadStart:
+		if sent, ok := params.(native.ThreadStartParams); ok {
+			client.mu.Lock()
+			client.threadStart = sent
+			client.mu.Unlock()
+		}
 		response := result.(*native.ThreadStartResponse)
 		response.Thread.ID = client.threadID
 	case native.MethodThreadResume:
+		if client.resumeErr != nil {
+			return client.resumeErr
+		}
+		if sent, ok := params.(native.ThreadResumeParams); ok && sent.ThreadID != client.threadID {
+			return &rpc.RemoteError{ID: rpc.IntegerID(1), Object: rpc.ErrorObject{Code: -32602, Message: "no rollout found for thread id " + sent.ThreadID}}
+		}
 		response := result.(*native.ThreadResumeResponse)
 		response.Thread.ID = client.threadID
+		response.Model = client.resumedModel
 	case native.MethodTurnStart:
 		if client.turnStartErr != nil {
 			return client.turnStartErr
@@ -1075,4 +1090,132 @@ func envelopeTypes(events []protocol.Envelope) []protocol.EnvelopeType {
 		out = append(out, envelope.Type)
 	}
 	return out
+}
+
+func TestAReopenResumesTheBoundThreadAndReportsTheModelItResumedUnder(t *testing.T) {
+	client := newFakeClient()
+	client.resumedModel = "gpt-resumed"
+	implementation, err := New(Config{
+		Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }),
+		Clock:   &fakeClock{}, IDs: &fakeIDs{}, Model: "glm-test", JournalCapacity: 32,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := implementation.Open(context.Background(), adapter.OpenRequest{SessionID: "session-1", Participant: protocol.Participant{ID: "user"}, Reopen: true, NativeSessionID: client.threadID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.Close(context.Background()) })
+	state, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.CurrentModelID != "gpt-resumed" {
+		t.Fatalf("model = %q, want the model thread/resume answered, not the configured one", state.CurrentModelID)
+	}
+	if state.Recovery == nil || !state.Recovery.Recovered {
+		t.Fatalf("recovery = %+v, want a reopen to declare itself recovered", state.Recovery)
+	}
+	if got := session.(adapter.NativeSession).NativeSessionID(); got != client.threadID {
+		t.Fatalf("native id = %q, want the resumed thread", got)
+	}
+}
+
+func TestAReopenCodexCannotLoadIsUnsupportedFeature(t *testing.T) {
+	for name, request := range map[string]adapter.OpenRequest{
+		"no thread is bound":       {SessionID: "session-1", Participant: protocol.Participant{ID: "user"}, Reopen: true},
+		"the bound thread is gone": {SessionID: "session-1", Participant: protocol.Participant{ID: "user"}, Reopen: true, NativeSessionID: "vanished-thread"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			client := newFakeClient()
+			implementation, err := New(Config{
+				Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }),
+				Clock:   &fakeClock{}, IDs: &fakeIDs{}, Model: "glm-test", JournalCapacity: 32,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = implementation.Open(context.Background(), request)
+			var refusal *adapter.UnsupportedControlError
+			if !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureOpenReopen {
+				t.Fatalf("open answered %v, want an unsupported_feature refusal naming %s", err, protocol.FeatureOpenReopen)
+			}
+		})
+	}
+}
+
+func TestAReopenWhoseResumeNeverReachesCodexSurfacesTheTransportError(t *testing.T) {
+	client := newFakeClient()
+	client.resumeErr = context.Canceled
+	implementation, err := New(Config{
+		Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }),
+		Clock:   &fakeClock{}, IDs: &fakeIDs{}, Model: "glm-test", JournalCapacity: 32,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = implementation.Open(context.Background(), adapter.OpenRequest{SessionID: "session-1", Participant: protocol.Participant{ID: "user"}, Reopen: true, NativeSessionID: "native-thread"})
+	var refusal *adapter.UnsupportedControlError
+	if errors.As(err, &refusal) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("open answered %v, want the cancellation itself rather than unsupported_feature", err)
+	}
+}
+
+func TestAnOpenCarriesItsReasoningLevelAndTokenLimitIntoThreadStartAndReportsThem(t *testing.T) {
+	client := newFakeClient()
+	implementation, err := New(Config{
+		Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }),
+		Clock:   &fakeClock{}, IDs: &fakeIDs{}, Model: "glm-test", JournalCapacity: 32,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := &protocol.CompactionPolicy{Kind: protocol.CompactionTokens, Tokens: 180000}
+	opened, err := implementation.Open(context.Background(), adapter.OpenRequest{SessionID: "session-1", Participant: protocol.Participant{ID: "user"}, ReasoningLevel: protocol.ReasoningOff, CompactionPolicy: policy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer opened.Close(context.Background())
+	client.mu.Lock()
+	sent := client.threadStart.Config
+	client.mu.Unlock()
+	if sent["model_reasoning_effort"] != "none" || sent["model_auto_compact_token_limit"] != int64(180000) {
+		t.Fatalf("thread/start config = %v, want off sent as Codex's none and the token limit", sent)
+	}
+	state, err := opened.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.ReasoningLevel != protocol.ReasoningOff || state.CompactionPolicy == nil || *state.CompactionPolicy != *policy {
+		t.Fatalf("state reports %q and %+v, want the settings the open asked for", state.ReasoningLevel, state.CompactionPolicy)
+	}
+}
+
+func TestAnOpenAsksCodexForACompactionFormItLacksIsRefusedBeforeAThreadStarts(t *testing.T) {
+	for name, policy := range map[string]protocol.CompactionPolicy{
+		"off":   {Kind: protocol.CompactionOff},
+		"share": {Kind: protocol.CompactionShare, SharePercent: 80},
+	} {
+		t.Run(name, func(t *testing.T) {
+			client := newFakeClient()
+			implementation, err := New(Config{
+				Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }),
+				Clock:   &fakeClock{}, IDs: &fakeIDs{}, Model: "glm-test", JournalCapacity: 32,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = implementation.Open(context.Background(), adapter.OpenRequest{SessionID: "session-1", Participant: protocol.Participant{ID: "user"}, CompactionPolicy: &policy})
+			var refusal *adapter.UnsupportedControlError
+			if !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureCompactionPolicy || refusal.Field != "compaction_policy" {
+				t.Fatalf("open answered %v, want unsupported_feature naming the compaction policy", err)
+			}
+			client.mu.Lock()
+			defer client.mu.Unlock()
+			if len(client.calls) != 0 {
+				t.Fatalf("a refused policy reached Codex: %v", client.calls)
+			}
+		})
+	}
 }

@@ -4,6 +4,7 @@ const oap_types = @import("oap_types");
 pub const Failure = error{
     Unavailable,
     SessionClosed,
+    UnknownSession,
     RunActive,
     InvalidSubmission,
     RunNotFound,
@@ -28,6 +29,10 @@ pub const feature_tools_list = "action.tools.list";
 pub const feature_tools_provide = "action.tools.provide";
 pub const feature_tool_sources_attach = "action.tool_sources.attach";
 pub const feature_open_subscribe = "session.open.subscribe";
+pub const feature_open_reopen = "session.open.reopen";
+pub const feature_session_reasoning = "session.reasoning";
+pub const feature_compaction_policy = "session.compaction.policy";
+pub const mode_session_open = "session_open";
 pub const feature_submit = "session.message.submit";
 
 pub const Refusal = struct {
@@ -91,6 +96,16 @@ pub const Descriptor = struct {
         }
         return .unavailable;
     }
+
+    pub fn disclosesMode(self: Descriptor, key: []const u8, mode: []const u8) bool {
+        for (self.features) |feature| {
+            if (!std.mem.eql(u8, feature.key, key)) continue;
+            for (feature.modes) |disclosed| {
+                if (std.mem.eql(u8, disclosed, mode)) return true;
+            }
+        }
+        return false;
+    }
 };
 
 pub const ConfiguredSource = struct {
@@ -111,6 +126,10 @@ pub const OpenRequest = struct {
     allow_degraded_features: []const []const u8 = &.{},
     tools_json: ?[]const u8 = null,
     tool_sources_json: ?[]const u8 = null,
+    reopen: bool = false,
+    native_session_id: []const u8 = "",
+    reasoning_level: ?[]const u8 = null,
+    compaction_policy_json: ?[]const u8 = null,
 };
 
 pub const Catalog = struct {
@@ -172,10 +191,16 @@ pub const Session = struct {
         resolve_call: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request_id: []const u8, request: *const oap_types.CallResolveRequest, refusal: *Refusal) Failure!oap_types.CallResolveResponse = null,
         replay: ?*const fn (ptr: *anyopaque, allocator: std.mem.Allocator, run_id: []const u8, after: u64, refusal: *Refusal) Failure!Replay = null,
         readable: ?*const fn (ptr: *anyopaque) ?std.Io.File.Handle = null,
+        native_id: ?*const fn (ptr: *anyopaque) []const u8 = null,
     };
 
     pub fn id(self: Session) []const u8 {
         return self.vtable.id(self.ptr);
+    }
+
+    pub fn nativeId(self: Session) []const u8 {
+        const read = self.vtable.native_id orelse return "";
+        return read(self.ptr);
     }
 
     pub fn state(self: Session, arena: std.mem.Allocator, refusal: *Refusal) Failure!oap_types.SessionState {
@@ -312,6 +337,7 @@ pub fn refuseUnadvertisedOpenElections(descriptor: Descriptor, request: *const o
     const elections = [_]struct { key: []const u8, present: bool }{
         .{ .key = feature_tool_sources_attach, .present = carriesEntries(request.tool_sources_json) },
         .{ .key = feature_open_subscribe, .present = request.subscribe },
+        .{ .key = feature_open_reopen, .present = request.reopen },
         .{ .key = feature_tools_provide, .present = carriesEntries(request.tools_json) },
     };
     for (elections) |election| {
@@ -321,6 +347,18 @@ pub fn refuseUnadvertisedOpenElections(descriptor: Descriptor, request: *const o
             .degraded => if (!request.allowsDegraded(election.key)) return refusal.degraded(election.key),
             .native, .emulated => {},
         }
+    }
+    const settings = [_]struct { key: []const u8, field: []const u8, present: bool }{
+        .{ .key = feature_session_reasoning, .field = "reasoning_level", .present = request.reasoning_level != null },
+        .{ .key = feature_compaction_policy, .field = "compaction_policy", .present = request.compaction_policy_json != null },
+    };
+    for (settings) |setting| {
+        if (!setting.present) continue;
+        const level = descriptor.level(setting.key);
+        if (level == .unavailable or !descriptor.disclosesMode(setting.key, mode_session_open)) {
+            return refusal.unsupportedField(setting.key, reason_unadvertised, setting.field);
+        }
+        if (level == .degraded and !request.allowsDegraded(setting.key)) return refusal.degraded(setting.key);
     }
 }
 
@@ -597,6 +635,26 @@ test "a degraded subscription at open needs the caller's consent" {
 
     const consented = oap_types.SessionOpenRequest{ .subscribe = true, .allow_degraded_features = &.{feature_open_subscribe} };
     try refuseUnadvertisedOpen(probe_descriptor, &consented, &refusal);
+}
+
+test "a session setting at open needs its feature to take it at open, and a degraded one the caller's consent" {
+    var refusal = Refusal{};
+    const live_only = [_]Feature{.{ .key = feature_session_reasoning, .level = .native, .modes = &.{"session_live"} }};
+    const asks_level = oap_types.SessionOpenRequest{ .reasoning_level = "high" };
+    try testing.expectError(error.UnsupportedFeature, refuseUnadvertisedOpenElections(.{ .endpoint = .{ .id = "e" }, .capability_revision = "r", .features = &live_only }, &asks_level, &refusal));
+    try testing.expectEqualStrings(feature_session_reasoning, refusal.feature);
+    try testing.expectEqualStrings("reasoning_level", refusal.field);
+
+    const at_open = [_]Feature{
+        .{ .key = feature_session_reasoning, .level = .native, .modes = &.{mode_session_open} },
+        .{ .key = feature_compaction_policy, .level = .degraded, .modes = &.{mode_session_open} },
+    };
+    const descriptor = Descriptor{ .endpoint = .{ .id = "e" }, .capability_revision = "r", .features = &at_open };
+    try refuseUnadvertisedOpenElections(descriptor, &asks_level, &refusal);
+    const asks_policy = oap_types.SessionOpenRequest{ .compaction_policy_json = "{\"kind\":\"off\"}" };
+    try testing.expectError(error.CapabilityDegraded, refuseUnadvertisedOpenElections(descriptor, &asks_policy, &refusal));
+    const consents = oap_types.SessionOpenRequest{ .compaction_policy_json = "{\"kind\":\"off\"}", .allow_degraded_features = &.{feature_compaction_policy} };
+    try refuseUnadvertisedOpenElections(descriptor, &consents, &refusal);
 }
 
 test "an unavailable backend refuses both probe and open, naming itself" {

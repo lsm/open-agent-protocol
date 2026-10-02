@@ -23,6 +23,7 @@ const features = table: {
             .level = std.meta.stringToEnum(oap_types.SupportLevel, feature.level).?,
             .reason = if (feature.reason.len > 0) feature.reason else null,
             .scope = if (feature.scope.len > 0) feature.scope else null,
+            .modes = feature.modes,
         };
     }
     const done = built;
@@ -99,6 +100,7 @@ pub const Session = struct {
     retained: usize = 0,
 
     fn open(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
+        if (request.reopen and request.native_session_id.len == 0) return refusal.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
         const self = try construct(owner, arena, request, refusal);
         errdefer self.destroy();
         try self.handshake(arena, refusal);
@@ -106,7 +108,13 @@ pub const Session = struct {
         try self.flush();
         switch (try self.awaitSettled(arena, native.method_thread_start, refusal)) {
             .opened => return self,
-            .refused => |refused| return refusal.fail(error.BackendFailed, try describe(arena, refused)),
+            .refused => |refused| {
+                if (request.reopen) {
+                    refusal.* = .{ .feature = contract.feature_open_reopen, .reason = contract.reason_unsatisfiable, .detail = try describe(arena, refused) };
+                    return error.UnsupportedFeature;
+                }
+                return refusal.fail(error.BackendFailed, try describe(arena, refused));
+            },
             else => return refusal.fail(error.BackendFailed, "the codex app-server answered thread/start with an unrelated settlement"),
         }
     }
@@ -124,6 +132,8 @@ pub const Session = struct {
         errdefer gpa.destroy(reducer_arena);
         reducer_arena.* = std.heap.ArenaAllocator.init(gpa);
         errdefer reducer_arena.deinit();
+        const resume_thread_id: []const u8 = if (request.reopen) try reducer_arena.allocator().dupe(u8, request.native_session_id) else "";
+        const settings = try codexSettings(arena, request, refusal);
         const argv = try std.mem.concat(arena, []const u8, &.{ config.args, &app_server_args });
         const transport = process.Transport.open(gpa, .{
             .executable = config.executable,
@@ -151,12 +161,39 @@ pub const Session = struct {
                 .working_directory = config.working_directory orelse "",
                 .approval_policy = config.approval_policy,
                 .sandbox = config.sandbox,
+                .resume_thread_id = resume_thread_id,
+                .reopen = request.reopen,
+                .settings = settings.native,
+                .compaction_auto = settings.auto,
                 .revision = capability_revision,
                 .counter = &owner.ids,
                 .now_ms = wallClock,
             }),
         };
         return self;
+    }
+
+    const Chosen = struct { native: native.Settings = .{}, auto: bool = false };
+
+    fn codexSettings(arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!Chosen {
+        var chosen = Chosen{};
+        if (request.reasoning_level) |level| {
+            chosen.native.reasoning_effort = effortFor(level) orelse return refusal.unsupportedField(contract.feature_session_reasoning, contract.reason_unsatisfiable, "reasoning_level");
+        }
+        const raw = request.compaction_policy_json orelse return chosen;
+        const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, raw, .{}) catch return refusal.unsupportedField(contract.feature_compaction_policy, contract.reason_unsatisfiable, "compaction_policy");
+        const kind = if (parsed == .object) (if (parsed.object.get("kind")) |value| (if (value == .string) value.string else "") else "") else "";
+        if (std.mem.eql(u8, kind, "auto")) {
+            chosen.auto = true;
+            return chosen;
+        }
+        if (std.mem.eql(u8, kind, "tokens")) {
+            const tokens = parsed.object.get("tokens") orelse return refusal.unsupportedField(contract.feature_compaction_policy, contract.reason_unsatisfiable, "compaction_policy");
+            if (tokens != .integer) return refusal.unsupportedField(contract.feature_compaction_policy, contract.reason_unsatisfiable, "compaction_policy");
+            chosen.native.auto_compact_token_limit = tokens.integer;
+            return chosen;
+        }
+        return refusal.unsupportedField(contract.feature_compaction_policy, contract.reason_unsatisfiable, "compaction_policy");
     }
 
     fn mint(owner: *Adapter, allocator: std.mem.Allocator, kind: []const u8) ![]u8 {
@@ -179,7 +216,12 @@ pub const Session = struct {
         .readable = readable,
         .activity = activity,
         .close = close,
+        .native_id = nativeId,
     };
+
+    fn nativeId(ptr: *anyopaque) []const u8 {
+        return cast(ptr).reducer.thread_id;
+    }
 
     fn cast(ptr: *anyopaque) *Session {
         return @ptrCast(@alignCast(ptr));
@@ -333,6 +375,9 @@ pub const Session = struct {
             .current_model_id = current_model_id,
             .transcript_cursor = transcript_cursor,
             .updated_at_ms = if (current.updated_at_ms > 0) current.updated_at_ms else null,
+            .recovered = current.recovered,
+            .reasoning_level = reportedLevel(self.reducer.options.settings.reasoning_effort),
+            .compaction_policy_json = try reportedPolicy(arena, self.reducer.options),
         };
     }
 
@@ -550,6 +595,36 @@ fn lift(err: anyerror) contract.Failure {
     return error.BackendFailed;
 }
 
+const efforts = [_]struct { level: []const u8, effort: []const u8 }{
+    .{ .level = "off", .effort = "none" },
+    .{ .level = "minimal", .effort = "minimal" },
+    .{ .level = "low", .effort = "low" },
+    .{ .level = "medium", .effort = "medium" },
+    .{ .level = "high", .effort = "high" },
+    .{ .level = "xhigh", .effort = "xhigh" },
+    .{ .level = "max", .effort = "max" },
+};
+
+fn effortFor(level: []const u8) ?[]const u8 {
+    for (efforts) |entry| {
+        if (std.mem.eql(u8, entry.level, level)) return entry.effort;
+    }
+    return null;
+}
+
+fn reportedLevel(effort: []const u8) ?[]const u8 {
+    for (efforts) |entry| {
+        if (std.mem.eql(u8, entry.effort, effort)) return entry.level;
+    }
+    return null;
+}
+
+fn reportedPolicy(arena: std.mem.Allocator, options: session.Options) !?[]const u8 {
+    if (options.settings.auto_compact_token_limit) |limit| return try std.fmt.allocPrint(arena, "{{\"kind\":\"tokens\",\"tokens\":{d}}}", .{limit});
+    if (options.compaction_auto) return "{\"kind\":\"auto\"}";
+    return null;
+}
+
 const testing = std.testing;
 
 pub const FakeCodex = struct {
@@ -662,7 +737,11 @@ const Probe = struct {
     }
 
     fn open(self: *Probe, refusal: *contract.Refusal) !contract.Session {
-        const opened = try self.adapter.adapter().vtable.open(&self.adapter, self.arena.allocator(), .{ .session_id = "s1", .participant = "user" }, refusal);
+        return self.openWith(.{ .session_id = "s1", .participant = "user" }, refusal);
+    }
+
+    fn openWith(self: *Probe, request: contract.OpenRequest, refusal: *contract.Refusal) !contract.Session {
+        const opened = try self.adapter.adapter().vtable.open(&self.adapter, self.arena.allocator(), request, refusal);
         self.handle = opened;
         return opened;
     }
@@ -840,6 +919,71 @@ test "a cancel interrupts the exact turn, answers cancelling, and the run settle
     var seen = std.ArrayList(contract.Event).empty;
     _ = try probe.pumpUntil("run.cancelled", &seen);
     try testing.expectError(error.RunNotFound, probe.handle.?.cancel(probe.arena.allocator(), "run-unknown", &refusal));
+}
+
+const fake_resume_prelude =
+    \\#!/bin/sh
+    \\exec 3>>"$(dirname "$0")/stdin.log"
+    \\take() { IFS= read -r line || exit 0; printf '%s\n' "$line" >&3; }
+    \\take; printf '{"id":0,"result":{"userAgent":"codex-fake","codexHome":"/codex","platformFamily":"unix","platformOs":"linux"}}\n'
+    \\take
+    \\
+;
+
+test "a reopen resumes the bound thread and reports the model it resumed under" {
+    var probe: Probe = undefined;
+    try probe.init(fake_resume_prelude ++
+        \\take; printf '{"id":1,"result":{"thread":{"id":"native-thread"},"model":"gpt-resumed","modelProvider":"openai","cwd":"/work","approvalPolicy":"never","approvalsReviewer":"user","sandbox":{"type":"readOnly"}}}\n'
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const opened = try probe.openWith(.{ .session_id = "s1", .participant = "user", .reopen = true, .native_session_id = "native-thread" }, &refusal);
+    try testing.expectEqualStrings("native-thread", opened.nativeId());
+    _ = try probe.waitWritten("{\"id\":1,\"method\":\"thread/resume\",\"params\":{\"threadId\":\"native-thread\"}}");
+    const reopened = try opened.state(probe.arena.allocator(), &refusal);
+    try testing.expect(reopened.recovered);
+    try testing.expectEqualStrings("gpt-resumed", reopened.current_model_id.?);
+}
+
+test "a reopen Codex cannot load is unsupported_feature" {
+    var probe: Probe = undefined;
+    try probe.init(fake_resume_prelude ++
+        \\take; printf '{"id":1,"error":{"code":-32602,"message":"no rollout found for thread id native-thread"}}\n'
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    try testing.expectError(error.UnsupportedFeature, probe.openWith(.{ .session_id = "s1", .participant = "user", .reopen = true, .native_session_id = "native-thread" }, &refusal));
+    try testing.expect(std.mem.indexOf(u8, refusal.detail, "no rollout found") != null);
+
+    var unbound = contract.Refusal{};
+    try testing.expectError(error.UnsupportedFeature, probe.openWith(.{ .session_id = "s1", .participant = "user", .reopen = true }, &unbound));
+}
+
+test "an open carries its reasoning level and token limit into thread/start and reports them" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const opened = try probe.openWith(.{ .session_id = "s1", .participant = "user", .reasoning_level = "off", .compaction_policy_json = "{\"kind\":\"tokens\",\"tokens\":180000}" }, &refusal);
+    _ = try probe.waitWritten("\"config\":{\"model_reasoning_effort\":\"none\",\"model_auto_compact_token_limit\":180000}");
+    const reported = try opened.state(probe.arena.allocator(), &refusal);
+    try testing.expectEqualStrings("off", reported.reasoning_level.?);
+    try testing.expectEqualStrings("{\"kind\":\"tokens\",\"tokens\":180000}", reported.compaction_policy_json.?);
+}
+
+test "a compaction form Codex lacks is refused before the app-server starts" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_idle);
+    defer probe.deinit();
+    for ([_][]const u8{ "{\"kind\":\"off\"}", "{\"kind\":\"share\",\"share_percent\":80}" }) |policy| {
+        var refusal = contract.Refusal{};
+        try testing.expectError(error.UnsupportedFeature, probe.openWith(.{ .session_id = "s1", .participant = "user", .compaction_policy_json = policy }, &refusal));
+        try testing.expectEqualStrings(contract.feature_compaction_policy, refusal.feature);
+        try testing.expectEqualStrings("compaction_policy", refusal.field);
+    }
+    try testing.expectError(error.FileNotFound, probe.fake.written(probe.arena.allocator()));
 }
 
 test "a child that exits before answering initialize refuses the open, naming why" {

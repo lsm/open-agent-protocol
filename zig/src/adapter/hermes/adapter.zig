@@ -24,11 +24,13 @@ const features = [_]contract.Feature{
     .{ .key = "run.resume", .level = .degraded, .reason = "the native recovery family is not exercised; OAP resume replays the adapter journal" },
     .{ .key = "run.status", .level = .emulated },
     .{ .key = "run.streaming", .level = .native, .reason = "immediate frames on stdio; post-scrubber provenance disclosed" },
+    .{ .key = contract.feature_compaction_policy, .level = .unavailable, .reason = "compression is config.yaml under HERMES_HOME, which also holds the gateway's credentials, and no gateway method sets it" },
     .{ .key = "session.message.delivery.auto", .level = .degraded, .reason = "accepted only for known idle sessions" },
     .{ .key = "session.message.delivery.queue", .level = .unavailable, .reason = "busy statuses are rejected rather than guessed" },
     .{ .key = "session.message.delivery.steer", .level = .unavailable, .reason = "native session.steer not exposed in v1" },
     .{ .key = "session.message.submit", .level = .degraded, .reason = "status-only result; ownership by construction via message.start" },
     .{ .key = "session.open", .level = .native, .reason = "session.create mints the runtime session id" },
+    .{ .key = contract.feature_session_reasoning, .level = .native, .reason = "config.set reasoning, scoped to the session, right after session.create; off is Hermes's none", .modes = &.{contract.mode_session_open} },
     .{ .key = "session.state", .level = .degraded, .reason = "reducer-owned live projection corroborated by session.info" },
     .{ .key = "user_input", .level = .native, .reason = "approval/clarify/sudo/secret server requests, withdrawn by request.cancel" },
 };
@@ -89,6 +91,7 @@ pub const Adapter = struct {
 pub const Session = struct {
     owner: *Adapter,
     gpa: std.mem.Allocator,
+    reported_level: ?[]const u8 = null,
     id: []u8,
     participant: []u8,
     reducer_arena: *std.heap.ArenaAllocator,
@@ -107,6 +110,17 @@ pub const Session = struct {
         const created = try self.call(arena, "session.create", .{ .object = params }, refusal);
         const native_id = member(created, "session_id");
         if (native_id.len == 0 or member(created, "stored_session_id").len == 0) return refusal.fail(error.BackendFailed, "the hermes gateway answered session.create without a session_id and stored_session_id");
+        if (request.reasoning_level) |level| {
+            var set: std.json.ObjectMap = .empty;
+            try set.put(self.owned(), "session_id", .{ .string = native_id });
+            try set.put(self.owned(), "key", .{ .string = "reasoning" });
+            try set.put(self.owned(), "value", .{ .string = if (std.mem.eql(u8, level, "off")) "none" else level });
+            _ = self.call(arena, "config.set", .{ .object = set }, refusal) catch |err| {
+                if (err == error.OutOfMemory) return error.OutOfMemory;
+                return refusal.unsupportedField(contract.feature_session_reasoning, contract.reason_unsatisfiable, "reasoning_level");
+            };
+            self.reported_level = try self.owned().dupe(u8, level);
+        }
         self.reducer = session.Reducer.init(self.reducer_arena, .{
             .session_id = self.id,
             .native_id = native_id,
@@ -385,6 +399,7 @@ pub const Session = struct {
         const model = self.owner.config.model;
         const current_model_id: ?[]const u8 = if (model.len > 0) try arena.dupe(u8, model) else null;
         const transcript_cursor: ?[]const u8 = if (self.reducer) |present| (if (present.cursor > 0) try std.fmt.allocPrint(arena, "{d}", .{present.cursor}) else null) else null;
+        const reasoning_level: ?[]const u8 = if (self.reported_level) |level| try arena.dupe(u8, level) else null;
         return .{
             .session_id = self.id,
             .status = if (reducer == null) .idle else if (self.waiting()) .waiting_for_input else .running,
@@ -392,6 +407,7 @@ pub const Session = struct {
             .current_model_id = current_model_id,
             .transcript_cursor = transcript_cursor,
             .updated_at_ms = wallClock(),
+            .reasoning_level = reasoning_level,
         };
     }
 
@@ -826,6 +842,25 @@ test "the descriptor serves resume and replay from the endpoint journal under th
     try testing.expectEqual(oap_types.SupportLevel.degraded, descriptor.level("run.replay"));
     try testing.expectEqual(oap_types.SupportLevel.degraded, descriptor.level("run.resume"));
     for (features[1..], features[0 .. features.len - 1]) |later, earlier| try testing.expect(std.mem.lessThan(u8, earlier.key, later.key));
+}
+
+test "an open sets the session's reasoning through config.set and reports it" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++
+        \\take; printf '{"id":2,"jsonrpc":"2.0","result":{"key":"reasoning","value":"none"}}\n'
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const opened = try probe.adapter.adapter().open(probe.arena.allocator(), .{ .session_id = "s1", .participant = "user", .reasoning_level = "off" }, &refusal);
+    probe.handle = opened;
+    try testing.expectEqualStrings(
+        \\{"id":1,"jsonrpc":"2.0","method":"session.create","params":{"model":"hermes-test"}}
+        \\{"id":2,"jsonrpc":"2.0","method":"config.set","params":{"session_id":"sess0001","key":"reasoning","value":"none"}}
+        \\
+    , try probe.fake.written(probe.arena.allocator()));
+    const reported = try opened.state(probe.arena.allocator(), &refusal);
+    try testing.expectEqualStrings("off", reported.reasoning_level.?);
 }
 
 test "an open writes session.create, and a turn is admitted on message.start and settles on message.complete" {

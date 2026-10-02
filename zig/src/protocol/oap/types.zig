@@ -717,14 +717,19 @@ pub const CapabilitiesResponse = struct {
 pub const SessionOpenRequest = struct {
     session_id: ?[]const u8 = null,
     subscribe: bool = false,
+    reopen: bool = false,
     message_json: ?[]const u8 = null,
     tools_json: ?[]const u8 = null,
     tool_sources_json: ?[]const u8 = null,
     allow_degraded_features: []const []const u8 = &.{},
+    reasoning_level: ?[]const u8 = null,
+    compaction_policy_json: ?[]const u8 = null,
 
     pub fn deinit(self: *SessionOpenRequest, allocator: std.mem.Allocator) void {
         if (self.session_id) |value| allocator.free(value);
         if (self.message_json) |value| allocator.free(value);
+        if (self.reasoning_level) |value| allocator.free(value);
+        if (self.compaction_policy_json) |value| allocator.free(value);
         if (self.tools_json) |value| allocator.free(value);
         if (self.tool_sources_json) |value| allocator.free(value);
         freeStringList(allocator, self.allow_degraded_features);
@@ -893,10 +898,15 @@ pub const SessionState = struct {
     updated_at_ms: ?i64 = null,
     metadata_json: ?[]const u8 = null,
     sources: []ToolSourceDescriptor = &.{},
+    recovered: bool = false,
     as_of: ?SessionCapture = null,
+    reasoning_level: ?[]const u8 = null,
+    compaction_policy_json: ?[]const u8 = null,
 
     pub fn deinit(self: *SessionState, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
+        if (self.reasoning_level) |value| allocator.free(value);
+        if (self.compaction_policy_json) |value| allocator.free(value);
         if (self.active_run_id) |value| allocator.free(value);
         for (self.active_runs) |*entry| entry.deinit(allocator);
         allocator.free(self.active_runs);

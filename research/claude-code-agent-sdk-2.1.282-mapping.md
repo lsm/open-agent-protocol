@@ -142,6 +142,15 @@ revision's. The Zig served backend reads the same revision from the catalog
 and serves the Go adapter's descriptor under it, so there is no second
 revision to move.
 
+Decision 0045's session settings then add `session.reasoning` (`native`) and
+`session.compaction.policy` (`emulated`), each with the `session_open` mode.
+After initialize, both trees send `apply_flag_settings` carrying
+`effortLevel`, `autoCompactEnabled` and `autoCompactWindow`. A level the CLI
+lacks (`off`, `minimal`) and a `share` are refused before the child starts.
+The installed 2.1.283 CLI accepted the request and reported the values back
+through `get_settings` in a run with an isolated `HOME` and no model call.
+The descriptor changed, so the revision moves to `claude-code-2.1.282-oap-v2`.
+
 ## Corpus at 2.1.282
 
 `fixtures/adapters/claude-code-2.1.282` holds the 2.1.280 corpus's thirteen
@@ -277,3 +286,38 @@ evidence rather than re-run against 2.1.282, and the store's path layout is
 carried from 2.1.263. A resume probe in the corpus, captured with this
 ledger's method, would make every row above a live claim at this pin; until
 then the API surface is verified here and the behaviour is inherited.
+
+## Reasoning level and compaction at 2.1.282
+
+Recorded for [Decision 0045](../decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md).
+The CLI's source is not published, so every line is read from the type
+declarations of the TypeScript SDK pinned with it, `@anthropic-ai/claude-agent-sdk`
+0.3.282 (`sdk.d.ts` in the npm package).
+
+**Reasoning level.**
+
+- `Options.effort` sets the level at start; `EffortLevel` is `low`, `medium`,
+  `high`, `xhigh` or `max`. `max` is "select models only" and runs as `high` on
+  a model without it. There is no `off` or `minimal` level; thinking is turned
+  off through `Options.thinking` (a `ThinkingConfig`), which takes precedence
+  over the deprecated `maxThinkingTokens`.
+- The `apply_flag_settings` control request (`Query.applyFlagSettings`) merges
+  keys into the session's flag-settings layer while the session runs.
+  `effortLevel` is one of them: a level changes the session's effort, and
+  `null` returns it to the model's default. `set_max_thinking_tokens` sets a
+  thinking-token budget instead of a level.
+- The effective level is reported back: `get_settings` returns the level "the
+  session will send on its next request — after env overrides, session state,
+  org caps and model-support downgrades".
+
+**Compaction.** `Settings` carries `autoCompactEnabled` ("automatically compact
+conversation when context fills") and `autoCompactWindow` ("auto-compact window
+size", in tokens). Both are settings keys, so they reach a session through the
+same flag layer: at start through the `settings` option, and live through
+`apply_flag_settings`. `get_context_usage` reports `isAutoCompactEnabled` and
+`autoCompactThreshold`.
+
+**What is not established.** These are declarations, not observations. No
+trace at this pin sends `apply_flag_settings`, so whether a live
+`autoCompactWindow` change takes effect at the next compaction check is not
+observed. Proving it would mean running the CLI with an account.

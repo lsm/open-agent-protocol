@@ -15,11 +15,29 @@ pub const acp_protocol_version: i64 = 1;
 pub const client_name = "open-agent-protocol";
 pub const client_version = "0.1";
 
+fn fieldText(value: std.json.Value, key: []const u8) []const u8 {
+    const found = memberOf(value, key) orelse return "";
+    return if (found == .string) found.string else "";
+}
+
+fn matchingValue(listed: ?std.json.Value, level: []const u8) ?[]const u8 {
+    const values = listed orelse return null;
+    if (values != .array) return null;
+    for (values.array.items) |entry| {
+        const value = fieldText(entry, "value");
+        if (value.len != 0 and (std.ascii.eqlIgnoreCase(value, level) or std.ascii.eqlIgnoreCase(fieldText(entry, "name"), level))) return value;
+        if (matchingValue(memberOf(entry, "options"), level)) |nested| return nested;
+    }
+    return null;
+}
+
 const features = [_]contract.Feature{
     .{ .key = "protocol.initialize", .level = .emulated, .reason = "ACP initialize is normalized into the OAP adapter boundary" },
     .{ .key = "capabilities", .level = .emulated, .reason = "effective support is synthesized conservatively from stable ACP v1 and adapter policy" },
     .{ .key = "session.open", .level = .native },
     .{ .key = "session.state", .level = .emulated, .reason = "adapter-owned projection" },
+    .{ .key = contract.feature_session_reasoning, .level = .emulated, .reason = "session/set_config_option on the agent's thought_level option, matched by value or name and confirmed in the returned option list; an agent that offers none refuses every level", .modes = &.{contract.mode_session_open} },
+    .{ .key = contract.feature_compaction_policy, .level = .unavailable, .reason = "ACP has no compaction setting; an agent's own threshold is its configuration" },
     .{ .key = "session.message.submit", .level = .emulated, .reason = "admission is synthesized after the prompt request is written" },
     .{ .key = "session.message.delivery.auto", .level = .emulated, .reason = "auto is normalized to start" },
     .{ .key = "run.streaming", .level = .native },
@@ -241,6 +259,7 @@ const Answer = struct {
 pub const Session = struct {
     owner: *Adapter,
     gpa: std.mem.Allocator,
+    reported_level: ?[]const u8 = null,
     id: []u8,
     participant: []u8,
     reducer_arena: *std.heap.ArenaAllocator,
@@ -286,7 +305,41 @@ pub const Session = struct {
             .id_style = .decimal,
         });
         self.reducer.open();
+        if (request.reasoning_level) |level| {
+            try self.setThoughtLevel(arena, memberOf(created, "configOptions"), level, refusal);
+            self.reported_level = try self.owned().dupe(u8, level);
+        }
         return self;
+    }
+
+    fn setThoughtLevel(self: *Session, arena: std.mem.Allocator, offered: ?std.json.Value, level: []const u8, refusal: *contract.Refusal) contract.Failure!void {
+        const refuse = struct {
+            fn call(on: *contract.Refusal) contract.Failure {
+                return on.unsupportedField(contract.feature_session_reasoning, contract.reason_unsatisfiable, "reasoning_level");
+            }
+        }.call;
+        const options = offered orelse return refuse(refusal);
+        if (options != .array) return refuse(refusal);
+        for (options.array.items) |option| {
+            if (!std.mem.eql(u8, fieldText(option, "category"), "thought_level")) continue;
+            const config_id = fieldText(option, "id");
+            const value = matchingValue(memberOf(option, "options"), level) orelse return refuse(refusal);
+            var params: std.json.ObjectMap = .empty;
+            try params.put(self.owned(), "sessionId", .{ .string = self.native_id });
+            try params.put(self.owned(), "configId", .{ .string = config_id });
+            try params.put(self.owned(), "value", .{ .string = value });
+            const answered = self.call(arena, "session/set_config_option", .{ .object = params }, refusal) catch |err| {
+                if (err == error.OutOfMemory) return error.OutOfMemory;
+                return refuse(refusal);
+            };
+            const confirmed = memberOf(answered, "configOptions") orelse return refuse(refusal);
+            if (confirmed != .array) return refuse(refusal);
+            for (confirmed.array.items) |entry| {
+                if (std.mem.eql(u8, fieldText(entry, "id"), config_id) and std.mem.eql(u8, fieldText(entry, "currentValue"), value)) return;
+            }
+            return refuse(refusal);
+        }
+        return refuse(refusal);
     }
 
     fn construct(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
@@ -665,6 +718,7 @@ pub const Session = struct {
         const active_run_id: ?[]const u8 = if (live) try arena.dupe(u8, self.reducer.run.?.id) else null;
         const sources = try arena.dupe(oap_types.ToolSourceDescriptor, self.sources);
         const transcript_cursor: ?[]const u8 = if (self.reducer.last_sequence > 0) try std.fmt.allocPrint(arena, "{d}", .{self.reducer.last_sequence}) else null;
+        const reasoning_level: ?[]const u8 = if (self.reported_level) |level| try arena.dupe(u8, level) else null;
         return .{
             .session_id = self.id,
             .status = if (live) .running else .idle,
@@ -672,6 +726,7 @@ pub const Session = struct {
             .updated_at_ms = wallClock(),
             .sources = sources,
             .transcript_cursor = transcript_cursor,
+            .reasoning_level = reasoning_level,
         };
     }
 
@@ -1025,6 +1080,33 @@ const Probe = struct {
         return parsed.object.get("payload").?.object;
     }
 };
+
+test "an open sets the agent's thought_level option and reports the level, refusing one the agent does not offer" {
+    var probe: Probe = undefined;
+    try probe.init(
+        \\#!/bin/sh
+        \\exec 3>>"$(dirname "$0")/stdin.log"
+        \\take() { IFS= read -r line || exit 0; printf '%s\n' "$line" >&3; }
+        \\take; printf '{"id":1,"jsonrpc":"2.0","result":{"agentCapabilities":{},"protocolVersion":1}}\n'
+        \\take; printf '{"id":2,"jsonrpc":"2.0","result":{"sessionId":"native-session","configOptions":[{"id":"effort","name":"Effort","category":"thought_level","type":"select","currentValue":"medium","options":[{"value":"medium","name":"Medium"},{"value":"deep","name":"High"}]}]}}\n'
+        \\take; printf '{"id":3,"jsonrpc":"2.0","result":{"configOptions":[{"id":"effort","name":"Effort","category":"thought_level","type":"select","currentValue":"deep","options":[{"value":"medium","name":"Medium"},{"value":"deep","name":"High"}]}]}}\n'
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const opened = try probe.adapter.adapter().open(probe.arena.allocator(), .{ .session_id = "s1", .participant = "user", .reasoning_level = "high" }, &refusal);
+    probe.handle = opened;
+    const written = try probe.fake.written(probe.arena.allocator());
+    try testing.expect(std.mem.endsWith(u8, written, "{\"id\":3,\"jsonrpc\":\"2.0\",\"method\":\"session/set_config_option\",\"params\":{\"sessionId\":\"native-session\",\"configId\":\"effort\",\"value\":\"deep\"}}\n"));
+    const reported = try opened.state(probe.arena.allocator(), &refusal);
+    try testing.expectEqualStrings("high", reported.reasoning_level.?);
+
+    var bare: Probe = undefined;
+    try bare.init(fake_prelude ++ fake_idle);
+    defer bare.deinit();
+    try testing.expectError(error.UnsupportedFeature, bare.adapter.adapter().open(bare.arena.allocator(), .{ .session_id = "s2", .participant = "user", .reasoning_level = "high" }, &refusal));
+    try testing.expectEqualStrings(contract.feature_session_reasoning, refusal.feature);
+}
 
 test "an open writes initialize and session/new, with the agent's working directory" {
     var probe: Probe = undefined;

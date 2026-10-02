@@ -202,14 +202,14 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusNotFound, "unknown_adapter", fmt.Sprintf("no adapter %q", name), envelope)
 		return
 	}
-	open := base.OpenRequest{SessionID: request.SessionID, Participant: protocol.Participant{ID: serve.DefaultParticipant}, AllowDegradedFeatures: request.AllowDegradedFeatures, Tools: request.Tools}
+	open := base.OpenRequest{SessionID: request.SessionID, Participant: protocol.Participant{ID: serve.DefaultParticipant}, AllowDegradedFeatures: request.AllowDegradedFeatures, Tools: request.Tools, Reopen: request.Reopen, ReasoningLevel: request.ReasoningLevel, CompactionPolicy: request.CompactionPolicy}
 
 	revision, refusal := serve.AttachmentGate(r.Context(), s.hub, name, envelope.CapabilityRevision, request)
 	if refusal == nil {
-		var subscribeRevision string
-		subscribeRevision, refusal = serve.SubscribeGate(r.Context(), s.hub, name, envelope.CapabilityRevision, request)
-		if subscribeRevision != "" {
-			revision = subscribeRevision
+		var electionRevision string
+		electionRevision, refusal = serve.ElectionGate(r.Context(), s.hub, name, envelope.CapabilityRevision, request)
+		if electionRevision != "" {
+			revision = electionRevision
 		}
 	}
 	if refusal != nil {
@@ -275,6 +275,8 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 			status, code = http.StatusNotFound, "unknown_adapter"
 		case errors.Is(err, serve.ErrSessionExists):
 			status, code = http.StatusConflict, "session_exists"
+		case errors.Is(err, serve.ErrUnknownSession):
+			status, code = http.StatusNotFound, "unknown_session"
 		case errors.Is(err, base.ErrSessionClosed):
 			status, code = http.StatusConflict, "session_closed"
 		}

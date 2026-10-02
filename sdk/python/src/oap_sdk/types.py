@@ -81,7 +81,7 @@ __all__ = [
 ]
 
 AuthRetryPolicy = Literal["manual", "auto_once"]
-ReasoningEffort = Literal["off", "minimal", "low", "medium", "high", "xhigh"]
+ReasoningEffort = Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"]
 Role = Literal["system", "developer", "user", "assistant", "tool"]
 
 AuthStatus = Literal[

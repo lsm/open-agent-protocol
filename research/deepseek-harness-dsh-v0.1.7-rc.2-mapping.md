@@ -357,3 +357,51 @@ wire it speaks, so it declines rather than reading the files behind the
 harness's back.** Reaching it would take a new SDK request first and an
 adapter change second, and until the first exists, #448's DeepSeek step has
 nothing to bind to.
+
+## Reasoning level and compaction at dsh-v0.1.7-rc.2
+
+Recorded for [Decision 0045](../decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md).
+Read from the source at `477b4f420553e8a52c2fbccc464d7561b239c443`.
+
+**Reasoning level.** `initialize` takes `reasoningEffort`
+(`packages/sdk/protocol/src/types.ts`), "adapter-owned … for the selected
+provider/model route". It applies to every agent the SDK server creates. The
+value is a branded `ReasoningEffortId`, an opaque id owned by the model
+adapter, not an enum. `SessionPromptParams` carries none, so the level is set
+once per process and never changed on a live session.
+
+**Compaction.** The base bundle (`packages/bundle/base/cordis.patch.yml`) mounts
+`compaction-basic`. Its config (`packages/compaction/compaction-basic`) sets the
+threshold as `floor(min(W × thresholdRatio, W − O − headroomTokens))`, with
+`thresholdRatio` (default 0.8) and `headroomTokens` (default 65536). The
+runtime is launched with `--profile sdk --patch <file>`. The `sdk` profile
+template (`packages/boot/app-boot/src/profile.ts`) stacks the bundles
+`@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-sdk-app`. `dsh-sdk-app`'s patch
+disables `session-title-llm` and `hmr`, but not `compaction-basic`, so the SDK
+runtime mounts it. A further patch layer setting
+`- id: compaction-basic` with a `config` block sets both values, and one
+setting `disabled: true` on the same id switches automatic compaction off. The
+`dsh-sdk-app` patch disables its own entries in that same form. Nothing on the
+SDK wire changes them on a live session. This is source-read; no real-process
+trace at this pin crosses the threshold.
+
+## Session settings in the adapter
+
+Decision 0045's settings move the revision to
+`deepseek-harness-dsh-v0.1.7-rc.2-oap-v2`. Each OAP session has its own
+runtime, so an open that carries settings starts that runtime with its own
+launch.
+
+- **Reasoning level** (`native`, `session_open`): `initialize` carries
+  `reasoningEffort`. The `deepseek-official` route defines `off`, `low`,
+  `high` and `max` (`packages/llm/llm-deepseek/src/model-info.ts`), and any
+  other level is refused before the runtime starts.
+- **Compaction policy** (`emulated`, `session_open`): a `--patch` layer
+  written to a private temporary file sets `compaction-basic`'s
+  `thresholdRatio` for `share`, or `disabled: true` for `off`. The file is
+  removed once `initialize` has answered, by which time the profile has
+  booted. The plugin's `headroomTokens` still caps the threshold, and a token
+  count is refused because the threshold is derived from the window.
+
+A factory the operator supplies starts the runtime itself, so with one the
+adapter refuses either setting rather than ignoring it.

@@ -151,6 +151,9 @@ func (implementation *Adapter) Probe(context.Context) (adapter.Descriptor, error
 		"action.tools.execute":           {Level: protocol.SupportDegraded, Reason: "only pinned command, file-change, and MCP item families are normalized"},
 		"action.permissions":             {Level: protocol.SupportNative, Reason: "command and file-change reverse approvals are correlated and round-trip once"},
 		"user_input":                     {Level: protocol.SupportDegraded, Reason: "Codex option questions normalize to OAP single-choice input"},
+		protocol.FeatureOpenReopen:       {Level: protocol.SupportNative, Reason: "thread/resume reloads the thread the session's binding names and reports the model it resumed under"},
+		protocol.FeatureSessionReasoning: {Level: protocol.SupportNative, Modes: []string{protocol.ModeSessionOpen}, Reason: "thread/start's config sets model_reasoning_effort; off is Codex's none"},
+		protocol.FeatureCompactionPolicy: {Level: protocol.SupportNative, Modes: []string{protocol.ModeSessionOpen}, Reason: "thread/start's config sets model_auto_compact_token_limit for tokens; Codex has no off, and its share applies only at a turn's end, so both are refused"},
 	}
 	endpoint := protocol.EndpointDescriptor{ID: endpointID, Name: "Codex app-server Adapter", Version: CodexCommit, Adapter: "codex-appserver-stdio"}
 	return adapter.Descriptor{
@@ -176,6 +179,17 @@ func (implementation *Adapter) Open(ctx context.Context, request adapter.OpenReq
 	if err := adapter.RefuseUnadvertisedTools(request); err != nil {
 		return nil, err
 	}
+	descriptor, err := implementation.Probe(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := adapter.RefuseUnadvertisedSettings(request, descriptor.Capabilities); err != nil {
+		return nil, err
+	}
+	settings, err := codexSettings(request)
+	if err != nil {
+		return nil, err
+	}
 
 	if request.Participant.ID == "" {
 		return nil, adapter.ErrInvalidParticipant
@@ -185,8 +199,17 @@ func (implementation *Adapter) Open(ctx context.Context, request adapter.OpenReq
 		return nil, err
 	}
 	threadID := implementation.config.ResumeThreadID
+	if request.Reopen {
+		threadID = request.NativeSessionID
+		if threadID == "" {
+			_ = client.Close()
+			return nil, &adapter.UnsupportedControlError{Feature: protocol.FeatureOpenReopen, Reason: adapter.ControlUnsatisfiable, Detail: "no Codex thread is bound to this session"}
+		}
+	}
+	model := implementation.config.Model
+	var recovery *protocol.RecoveryMetadata
 	if threadID == "" {
-		params := native.ThreadStartParams{Model: implementation.config.Model, Cwd: implementation.config.WorkingDirectory, ApprovalPolicy: implementation.config.ApprovalPolicy, Sandbox: implementation.config.Sandbox}
+		params := native.ThreadStartParams{Model: implementation.config.Model, Cwd: implementation.config.WorkingDirectory, ApprovalPolicy: implementation.config.ApprovalPolicy, Sandbox: implementation.config.Sandbox, Config: settings}
 		var response native.ThreadStartResponse
 		if err := client.Call(ctx, native.MethodThreadStart, params, &response); err != nil {
 			_ = client.Close()
@@ -199,13 +222,23 @@ func (implementation *Adapter) Open(ctx context.Context, request adapter.OpenReq
 		}
 	} else {
 		var response native.ThreadResumeResponse
-		if err := client.Call(ctx, native.MethodThreadResume, native.ThreadResumeParams{ThreadID: threadID}, &response); err != nil {
+		if err := client.Call(ctx, native.MethodThreadResume, native.ThreadResumeParams{ThreadID: threadID, Config: settings}, &response); err != nil {
 			_ = client.Close()
+			var remote *rpc.RemoteError
+			if request.Reopen && errors.As(err, &remote) {
+				return nil, &adapter.UnsupportedControlError{Feature: protocol.FeatureOpenReopen, Reason: adapter.ControlUnsatisfiable, Detail: "Codex could not load the bound thread: " + err.Error()}
+			}
 			return nil, fmt.Errorf("resume Codex thread: %w", err)
 		}
 		if response.Thread.ID == "" || response.Thread.ID != threadID {
 			_ = client.Close()
 			return nil, fmt.Errorf("%w: thread/resume returned unexpected thread id %q", ErrNativeProtocol, response.Thread.ID)
+		}
+		if response.Model != "" {
+			model = response.Model
+		}
+		if request.Reopen {
+			recovery = &protocol.RecoveryMetadata{Recovered: true}
 		}
 	}
 	sessionID := request.SessionID
@@ -216,13 +249,37 @@ func (implementation *Adapter) Open(ctx context.Context, request adapter.OpenReq
 	session := &session{
 		client: client, clock: implementation.clock, ids: implementation.ids,
 		capacity: implementation.config.JournalCapacity, participant: request.Participant.ID,
-		threadID: threadID, model: implementation.config.Model,
-		state: protocol.SessionState{SessionID: sessionID, Status: protocol.SessionIdle, CurrentModelID: implementation.config.Model, UpdatedAtMS: now},
+		threadID: threadID, model: model,
+		state: protocol.SessionState{SessionID: sessionID, Status: protocol.SessionIdle, CurrentModelID: model, UpdatedAtMS: now, Recovery: recovery, ReasoningLevel: request.ReasoningLevel, CompactionPolicy: request.CompactionPolicy},
 		runs:  make(map[protocol.RunID]*runState), turns: make(map[string]protocol.RunID),
 		items: make(map[string]itemBinding), interactions: make(map[protocol.InteractionID]*interactionBinding), stop: make(chan struct{}),
 	}
 	go session.dispatch()
 	return session, nil
+}
+
+func codexSettings(request adapter.OpenRequest) (map[string]any, error) {
+	settings := map[string]any{}
+	switch request.ReasoningLevel {
+	case "":
+	case protocol.ReasoningOff:
+		settings["model_reasoning_effort"] = "none"
+	default:
+		settings["model_reasoning_effort"] = string(request.ReasoningLevel)
+	}
+	if policy := request.CompactionPolicy; policy != nil {
+		switch policy.Kind {
+		case protocol.CompactionAuto:
+		case protocol.CompactionTokens:
+			settings["model_auto_compact_token_limit"] = policy.Tokens
+		default:
+			return nil, &adapter.UnsupportedControlError{Feature: protocol.FeatureCompactionPolicy, Reason: adapter.ControlUnsatisfiable, Field: "compaction_policy", Detail: "Codex takes a token limit only; it has no off, and its share applies only at a turn's end"}
+		}
+	}
+	if len(settings) == 0 {
+		return nil, nil
+	}
+	return settings, nil
 }
 
 type systemClock struct{}

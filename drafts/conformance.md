@@ -37,6 +37,7 @@ Conformance units are additive:
 - `+steer`
 - `+btw`
 - `+session-reattach`
+- `+session-settings`
 
 Example claims:
 
@@ -697,6 +698,30 @@ An implementation conforms if it:
 - answers a successful reopen with the session's state document declaring
   `recovery.recovered: true`, the model and settings the session runs under,
   and no run under way unless the open's own message admitted one.
+
+Both conformance runners check the fail-closed half over a single endpoint: a
+reopen naming a session the endpoint never had must be refused, never answered
+with a fresh session. Reopening a closed session needs a close, which core OAP
+has no verb for, so that half is pinned by each tree's hub tests instead.
+
+### `+session-settings`
+
+`+session-settings` is staged under
+[Decision 0045](../decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md).
+An implementation conforms if it:
+
+- advertises `session.reasoning` and `session.compaction.policy` above
+  `unavailable` with the `session_open` mode, and refuses a setting supplied
+  on `session.open.request` against a feature that is unadvertised or does
+  not disclose `session_open` with `unsupported_feature` naming the key, and
+  one against a `degraded` disclosure with `capability_degraded` unless the
+  request consents through `allow_degraded_features`;
+- answers an admitted open with a state document whose `reasoning_level` and
+  `compaction_policy`, when present, are the values the open asked for, never
+  a rounded one.
+
+The `session_live` mode and `session.settings.update.request` are not on the
+wire yet; they follow in a later change.
 
 ## Extension Packs
 

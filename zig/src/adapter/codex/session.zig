@@ -40,6 +40,9 @@ pub const Options = struct {
     approval_policy: []const u8 = "",
     sandbox: []const u8 = "",
     resume_thread_id: []const u8 = "",
+    reopen: bool = false,
+    settings: native.Settings = .{},
+    compaction_auto: bool = false,
     first_request_id: i64 = 1,
     id_width: usize = 0,
     revision: []const u8 = capability_revision,
@@ -90,6 +93,7 @@ pub const State = struct {
     updated_at_ms: i64 = 0,
     transcript_cursor: []const u8 = "",
     current_model_id: []const u8 = "",
+    recovered: bool = false,
 };
 
 pub const Answer = struct {
@@ -313,11 +317,12 @@ pub const Reducer = struct {
                 .cwd = self.options.working_directory,
                 .approval_policy = self.options.approval_policy,
                 .sandbox = self.options.sandbox,
+                .settings = self.options.settings,
             });
             try self.call(.thread_start, native.method_thread_start, params);
             return;
         }
-        const params = try native.threadResumeParams(self.allocator(), self.options.resume_thread_id);
+        const params = try native.threadResumeParams(self.allocator(), self.options.resume_thread_id, self.options.settings);
         try self.call(.thread_resume, native.method_thread_resume, params);
     }
 
@@ -355,6 +360,8 @@ pub const Reducer = struct {
         if (self.active != null or self.envelopes.items.len != 0 or self.writes.items.len != 0) return Error.RunActive;
         const keep = arena.allocator();
         var kept = Reducer.init(arena, self.options);
+        kept.options.model = try keep.dupe(u8, self.options.model);
+        kept.options.resume_thread_id = try keep.dupe(u8, self.options.resume_thread_id);
         kept.ids = self.ids;
         kept.clock = self.clock;
         kept.next_request = self.next_request;
@@ -374,6 +381,7 @@ pub const Reducer = struct {
             .updated_at_ms = self.state.updated_at_ms,
             .transcript_cursor = transcript_cursor,
             .current_model_id = current_model_id,
+            .recovered = self.state.recovered,
         };
         try kept.runs.ensureTotalCapacity(keep, self.runs.items.len);
         for (self.runs.items) |run| {
@@ -532,7 +540,10 @@ pub const Reducer = struct {
                 if (thread.len == 0 or !std.mem.eql(u8, thread, self.options.resume_thread_id)) {
                     return self.callFailed(what, .{ .method = callMethod(what), .message = "thread/resume returned an unexpected thread id" });
                 }
+                const resumed_model = native.text(result, &.{"model"});
+                if (resumed_model.len > 0) self.options.model = try self.allocator().dupe(u8, resumed_model);
                 try self.opens(thread);
+                self.state.recovered = self.options.reopen;
             },
             .turn_start => |index| {
                 if (!native.decodes(result, native.turn_start_response)) return self.callFailed(what, undecodable(what));
@@ -1198,6 +1209,7 @@ const Feature = struct {
     level: []const u8,
     reason: []const u8 = "",
     scope: []const u8 = "",
+    modes: []const []const u8 = &.{},
 };
 
 const tool_families = "only pinned command, file-change, and MCP item families are normalized";
@@ -1218,9 +1230,12 @@ pub const features = [_]Feature{
     .{ .name = "run.streaming", .level = "native" },
     .{ .name = "run.structured_output", .level = "unavailable", .reason = "this pin exposes no per-turn output schema" },
     .{ .name = "run.tool_selection", .level = "unavailable", .reason = "this pin exposes no per-turn tool policy" },
+    .{ .name = "session.compaction.policy", .level = "native", .reason = "thread/start's config sets model_auto_compact_token_limit for tokens; Codex has no off, and its share applies only at a turn's end, so both are refused", .modes = &.{"session_open"} },
     .{ .name = "session.message.delivery.auto", .level = "native" },
     .{ .name = "session.message.submit", .level = "native" },
     .{ .name = "session.open", .level = "native" },
+    .{ .name = "session.open.reopen", .level = "native", .reason = "thread/resume reloads the thread the session's binding names and reports the model it resumed under" },
+    .{ .name = "session.reasoning", .level = "native", .reason = "thread/start's config sets model_reasoning_effort; off is Codex's none", .modes = &.{"session_open"} },
     .{ .name = "session.state", .level = "native" },
     .{ .name = "user_input", .level = "degraded", .reason = "Codex option questions normalize to OAP single-choice input" },
 };
@@ -1241,6 +1256,11 @@ pub fn descriptor(arena: std.mem.Allocator) !std.json.Value {
         try support.put(arena, "level", str(feature.level));
         if (feature.reason.len != 0) try support.put(arena, "reason", str(feature.reason));
         if (feature.scope.len != 0) try support.put(arena, "scope", str(feature.scope));
+        if (feature.modes.len != 0) {
+            var modes = std.json.Array.init(arena);
+            for (feature.modes) |mode| try modes.append(str(mode));
+            try support.put(arena, "modes", .{ .array = modes });
+        }
         try table.put(arena, feature.name, .{ .object = support });
     }
     var capabilities = std.json.ObjectMap.empty;
@@ -1895,6 +1915,24 @@ test "a compacted reducer still ignores a reused item id, fails its completion, 
     try feed(&kept, "{\"method\":\"item/completed\",\"params\":{\"threadId\":\"native-thread\",\"turnId\":\"second-turn\",\"item\":{\"type\":\"commandExecution\",\"id\":\"native-item\",\"status\":\"completed\"}}}");
     try testing.expectEqualStrings("run.failed", lastType(&kept));
     try testing.expectEqualStrings("invalid_native_action", errorCode(&kept));
+}
+
+test "a reopened reducer keeps the model it resumed under after compaction frees the arena it arrived in" {
+    var source = std.heap.ArenaAllocator.init(testing.allocator);
+    var reducer = Reducer.init(&source, .{ .resume_thread_id = "native-thread", .reopen = true });
+    try reducer.open();
+    try answerCall(&reducer, "{\"thread\":{\"id\":\"native-thread\"},\"model\":\"gpt-resumed\"}");
+    reducer.envelopes.clearRetainingCapacity();
+    reducer.writes.clearRetainingCapacity();
+    var target = std.heap.ArenaAllocator.init(testing.allocator);
+    defer target.deinit();
+    var kept = try reducer.compactInto(&target);
+    source.deinit();
+
+    try testing.expectEqualStrings("gpt-resumed", kept.options.model);
+    try testing.expectEqualStrings("native-thread", kept.options.resume_thread_id);
+    try kept.submit(.{ .messages = &.{.{ .text = "again" }} });
+    try testing.expect(std.mem.indexOf(u8, lastWrite(&kept), "\"model\":\"gpt-resumed\"") != null);
 }
 
 fn compactProbe(allocator: std.mem.Allocator) !void {

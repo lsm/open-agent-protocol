@@ -38,7 +38,7 @@ export type Modality = "text" | "image" | "audio" | "video" | "document";
 
 export type ModelSource = "dynamic" | "static_fallback";
 
-export type ReasoningLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+export type ReasoningLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface ModelDescriptor {
   model_ref: string;

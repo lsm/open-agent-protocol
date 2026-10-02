@@ -146,6 +146,38 @@ const FeatureOpenSubscribe = "session.open.subscribe"
 
 const FeatureOpenReopen = "session.open.reopen"
 
+const (
+	FeatureSessionReasoning = "session.reasoning"
+	FeatureCompactionPolicy = "session.compaction.policy"
+)
+
+type ReasoningLevel string
+
+const (
+	ReasoningOff     ReasoningLevel = "off"
+	ReasoningMinimal ReasoningLevel = "minimal"
+	ReasoningLow     ReasoningLevel = "low"
+	ReasoningMedium  ReasoningLevel = "medium"
+	ReasoningHigh    ReasoningLevel = "high"
+	ReasoningXHigh   ReasoningLevel = "xhigh"
+	ReasoningMax     ReasoningLevel = "max"
+)
+
+type CompactionKind string
+
+const (
+	CompactionAuto   CompactionKind = "auto"
+	CompactionOff    CompactionKind = "off"
+	CompactionShare  CompactionKind = "share"
+	CompactionTokens CompactionKind = "tokens"
+)
+
+type CompactionPolicy struct {
+	Kind         CompactionKind `json:"kind"`
+	SharePercent int            `json:"share_percent,omitempty"`
+	Tokens       int64          `json:"tokens,omitempty"`
+}
+
 const FeatureToolsProvide = "action.tools.provide"
 
 const (
@@ -352,6 +384,8 @@ type SessionOpenRequest struct {
 	Tools                 []ToolDefinition           `json:"tools,omitempty"`
 	AllowDegradedFeatures []string                   `json:"allow_degraded_features,omitempty"`
 	Recovery              *RecoveryMetadata          `json:"recovery,omitempty"`
+	ReasoningLevel        ReasoningLevel             `json:"reasoning_level,omitempty"`
+	CompactionPolicy      *CompactionPolicy          `json:"compaction_policy,omitempty"`
 }
 
 type OpenMessage struct {
@@ -455,6 +489,8 @@ type SessionState struct {
 	Sources          []ToolSourceDescriptor     `json:"sources,omitempty"`
 	Recovery         *RecoveryMetadata          `json:"recovery,omitempty"`
 	AsOf             *SessionCapture            `json:"as_of,omitempty"`
+	ReasoningLevel   ReasoningLevel             `json:"reasoning_level,omitempty"`
+	CompactionPolicy *CompactionPolicy          `json:"compaction_policy,omitempty"`
 }
 
 const RelationshipPrimary = "primary"

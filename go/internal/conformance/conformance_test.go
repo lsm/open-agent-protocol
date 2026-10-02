@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -364,18 +365,32 @@ func handleHelperRequest(request protocol.Envelope, revision, mode string, emit 
 			Error: protocol.ProtocolError{Code: "unsupported_feature", Message: "this helper cannot cancel"},
 		}, reply)
 	case protocol.TypeCapabilitiesRequest:
+		features := map[string]protocol.FeatureSupport{
+			"session.open":                  {Level: protocol.SupportNative},
+			"session.message.submit":        {Level: protocol.SupportNative},
+			"session.message.delivery.auto": {Level: protocol.SupportNative},
+			"session.state":                 {Level: protocol.SupportNative},
+		}
+		if mode == "degraded-reopen" {
+			features[protocol.FeatureOpenReopen] = protocol.FeatureSupport{Level: protocol.SupportDegraded, Reason: "a reopen restores the model but not the transcript"}
+		}
 		emit(protocol.TypeCapabilitiesResponse, protocol.CapabilityDescriptor{
 			Endpoint: protocol.EndpointDescriptor{ID: "helper.double-settle", Name: "Double-settling helper endpoint"},
-			Features: map[string]protocol.FeatureSupport{
-				"session.open":                  {Level: protocol.SupportNative},
-				"session.message.submit":        {Level: protocol.SupportNative},
-				"session.message.delivery.auto": {Level: protocol.SupportNative},
-				"session.state":                 {Level: protocol.SupportNative},
-			},
+			Features: features,
 		}, func(e *protocol.Envelope) { reply(e); e.CapabilityRevision = revision })
 	case protocol.TypeSessionOpenRequest:
 		var open protocol.SessionOpenRequest
 		_ = request.DecodePayload(&open)
+		if mode == "degraded-reopen" && open.Reopen {
+			code := "unknown_session"
+			if !slices.Contains(open.AllowDegradedFeatures, protocol.FeatureOpenReopen) {
+				code = "capability_degraded"
+			}
+			emit(protocol.TypeErrorResponse, protocol.ErrorResponse{
+				Error: protocol.ProtocolError{Code: code, Message: "this helper never had that session", Details: map[string]any{"feature": protocol.FeatureOpenReopen}},
+			}, reply)
+			return
+		}
 		emit(protocol.TypeSessionOpenResponse, protocol.SessionState{
 			SessionID: open.SessionID, Status: protocol.SessionIdle, UpdatedAtMS: 1,
 		}, func(e *protocol.Envelope) { reply(e); e.SessionID = open.SessionID })
@@ -649,4 +664,49 @@ func TestUnansweredControlDoesNotCascade(t *testing.T) {
 	if state.Name == "" || !state.Passed {
 		t.Fatalf("the checks after an unanswered control must still run: %+v", state)
 	}
+}
+
+func TestRunnerFailsAnEndpointThatAnswersAReopenWithAFreshSession(t *testing.T) {
+	report, err := Run(context.Background(), Options{
+		Command: helperCommand(t, "double-settle"),
+		Stderr:  io.Discard,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const name = "a reopen of a session the endpoint never had is refused, not answered with a fresh session"
+	for _, check := range report.Checks {
+		if check.Name != name {
+			continue
+		}
+		if check.Passed {
+			t.Fatal("an endpoint that answered a reopen with a fresh session passed the reopen check")
+		}
+		if !strings.Contains(check.Detail, string(protocol.TypeSessionOpenResponse)) {
+			t.Fatalf("detail %q does not say the reopen was answered with an open response", check.Detail)
+		}
+		return
+	}
+	t.Fatalf("no %q check ran", name)
+}
+
+func TestRunnerConsentsToADegradedReopenSoTheEndpointCanSayItNeverHadTheSession(t *testing.T) {
+	report, err := Run(context.Background(), Options{
+		Command: helperCommand(t, "degraded-reopen"),
+		Stderr:  io.Discard,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const name = "a reopen of a session the endpoint never had is refused, not answered with a fresh session"
+	for _, check := range report.Checks {
+		if check.Name != name {
+			continue
+		}
+		if !check.Passed {
+			t.Fatalf("an endpoint advertising a degraded reopen failed the reopen check: %s", check.Detail)
+		}
+		return
+	}
+	t.Fatalf("no %q check ran", name)
 }
