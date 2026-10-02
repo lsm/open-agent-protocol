@@ -1551,7 +1551,10 @@ func TestALevelPiDoesNotConfirmIsRefusedAndAThresholdBeforeThePiStarts(t *testin
 		t.Fatalf("open answered %v, want a level Pi kept at %s refused", err, client.state.ThinkingLevel)
 	}
 	started := false
-	b, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, native.SessionState, error) { started = true; return client, client.state, nil }), Clock: &fakeClock{}, IDs: &fakeIDs{}, JournalCapacity: 16})
+	b, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, native.SessionState, error) {
+		started = true
+		return client, client.state, nil
+	}), Clock: &fakeClock{}, IDs: &fakeIDs{}, JournalCapacity: 16})
 	if err != nil {
 		t.Fatal(err)
 	}
