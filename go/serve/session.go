@@ -82,15 +82,40 @@ type Session struct {
 	sequences    map[protocol.RunID]uint64
 
 	finished map[protocol.RunID]bool
+
+	gateCond *sync.Cond
+	gate     *steerGate
+}
+
+const steerGateDeadline = 30 * time.Second
+
+type steerGate struct {
+	run      protocol.RunID
+	boundary uint64
+	withheld []protocol.Envelope
+	deadline *time.Timer
+}
+
+func (g *steerGate) split(boundary uint64) (prefix, rest []protocol.Envelope) {
+	for _, envelope := range g.withheld {
+		if envelope.Sequence != nil && *envelope.Sequence <= boundary {
+			prefix = append(prefix, envelope)
+			continue
+		}
+		rest = append(rest, envelope)
+	}
+	return prefix, rest
 }
 
 func newSession(id protocol.SessionID, adapterName string, session base.Session, release func(*Session)) *Session {
-	return &Session{
+	entry := &Session{
 		id: id, adapterName: adapterName, session: session, release: release,
 		created: time.Now(), subs: make(map[*subscriber]struct{}), serials: make(map[protocol.RunID]uint64),
 		sequences: make(map[protocol.RunID]uint64),
 		finished:  make(map[protocol.RunID]bool),
 	}
+	entry.gateCond = sync.NewCond(&entry.mu)
+	return entry
 }
 
 func (s *Session) ID() protocol.SessionID { return s.id }
@@ -177,10 +202,89 @@ func (s *Session) SwitchModel(ctx context.Context, request protocol.SessionModel
 	return response, state, nil
 }
 
+func (s *Session) armSteerGate(ctx context.Context, run protocol.RunID) (*steerGate, error) {
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			s.gateCond.Broadcast()
+		case <-done:
+		}
+	}()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for s.gate != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		s.gateCond.Wait()
+	}
+	if s.closed {
+		return nil, base.ErrSessionClosed
+	}
+	gate := &steerGate{run: run, boundary: s.sequences[run]}
+	s.gate = gate
+	gate.deadline = time.AfterFunc(steerGateDeadline, func() { s.liftSteerGate(gate) })
+	return gate, nil
+}
+
+func (s *Session) releaseToBoundary(gate *steerGate, boundary uint64) {
+	s.mu.Lock()
+	if s.gate != gate {
+		s.mu.Unlock()
+		return
+	}
+	prefix, rest := gate.split(boundary)
+	gate.withheld, gate.boundary = rest, boundary
+	s.mu.Unlock()
+	for _, envelope := range prefix {
+		s.publish(envelope)
+	}
+}
+
+func (s *Session) liftSteerGate(gate *steerGate) {
+	s.mu.Lock()
+	if s.gate != gate {
+		s.mu.Unlock()
+		return
+	}
+	s.gate = nil
+	withheld := gate.withheld
+	gate.withheld = nil
+	if gate.deadline != nil {
+		gate.deadline.Stop()
+	}
+	s.gateCond.Broadcast()
+	s.mu.Unlock()
+	for _, envelope := range withheld {
+		s.publish(envelope)
+	}
+}
+
+func (s *Session) Published() { s.liftSteerGate(s.heldGate()) }
+
+func (s *Session) heldGate() *steerGate {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.gate
+}
+
+func (s *Session) waitGateLifted(run protocol.RunID) {
+	s.mu.Lock()
+	for s.gate != nil && s.gate.run == run {
+		s.gateCond.Wait()
+	}
+	s.mu.Unlock()
+}
+
 func (s *Session) Submit(ctx context.Context, submit base.SubmitRequest) (protocol.MessageSubmitResponse, error) {
 	request := submit.Request
 	if request.SessionID != s.id {
 		return protocol.MessageSubmitResponse{}, &ScopeMismatchError{Payload: request.SessionID, Addressed: s.id}
+	}
+	if request.Delivery == protocol.DeliverySteer {
+		return s.submitSteer(ctx, submit)
 	}
 
 	s.mu.Lock()
@@ -200,7 +304,55 @@ func (s *Session) Submit(ctx context.Context, submit base.SubmitRequest) (protoc
 		}
 		return admission, err
 	}
+	if admission.Admission == protocol.AdmissionSteered {
+		s.releaseReservation()
+		return admission, nil
+	}
 	s.adoptRun(admission.RunID, stream, admission.Admission == protocol.AdmissionQueued)
+	return admission, nil
+}
+
+func (s *Session) submitSteer(ctx context.Context, submit base.SubmitRequest) (protocol.MessageSubmitResponse, error) {
+	target := submit.Request.TargetRunID
+	if target == "" {
+		if current, ok := s.currentRun(); ok {
+			target = current
+		}
+	}
+	gate, err := s.armSteerGate(ctx, target)
+	if err != nil {
+		return protocol.MessageSubmitResponse{}, err
+	}
+	s.mu.Lock()
+	s.reservations++
+	s.mu.Unlock()
+	admission, stream, err := s.session.Submit(ctx, submit)
+	if err != nil {
+		boundary := gate.boundary
+		var refusal *base.InvalidSteerTargetError
+		if errors.As(err, &refusal) && refusal.TargetSequence != nil {
+			boundary = *refusal.TargetSequence
+		}
+		s.releaseToBoundary(gate, boundary)
+		if stream != nil {
+			s.adoptOrphan(stream)
+		} else {
+			s.releaseReservation()
+		}
+		if errors.Is(err, base.ErrSessionClosed) {
+			s.markClosed()
+		}
+		return admission, err
+	}
+	if stream != nil {
+		s.adoptOrphan(stream)
+	}
+	boundary := gate.boundary
+	if admission.TargetSequence != nil {
+		boundary = *admission.TargetSequence
+	}
+	s.releaseToBoundary(gate, boundary)
+	s.releaseReservation()
 	return admission, nil
 }
 
@@ -531,6 +683,7 @@ func (s *Session) readRun(runID protocol.RunID, stream base.EventStream, reserve
 		s.promoteCurrent(runID, result.Envelope)
 		s.publish(result.Envelope)
 	}
+	s.waitGateLifted(runID)
 	if reserved > 0 && runID == "" {
 
 		s.mu.Lock()
@@ -645,6 +798,11 @@ func (s *Session) exitReader(runID protocol.RunID, end *terminalState) {
 
 func (s *Session) publish(envelope protocol.Envelope) {
 	s.mu.Lock()
+	if s.gate != nil && s.gate.run == envelope.RunID {
+		s.gate.withheld = append(s.gate.withheld, envelope)
+		s.mu.Unlock()
+		return
+	}
 	if envelope.Sequence != nil && *envelope.Sequence > s.sequences[envelope.RunID] {
 		s.sequences[envelope.RunID] = *envelope.Sequence
 	}
@@ -719,6 +877,16 @@ func (s *Session) markClosed() {
 	s.mu.Lock()
 	releasing := !s.closed && s.release != nil
 	s.closed = true
+	var withheld []protocol.Envelope
+	if s.gate != nil {
+		withheld = s.gate.withheld
+		s.gate.withheld = nil
+		if s.gate.deadline != nil {
+			s.gate.deadline.Stop()
+		}
+		s.gate = nil
+		s.gateCond.Broadcast()
+	}
 	var errored []*subscriber
 	var failed *terminalState
 	switch {
@@ -748,6 +916,9 @@ func (s *Session) markClosed() {
 	default:
 		s.mu.Unlock()
 		s.finishSubs(nil)
+	}
+	for _, envelope := range withheld {
+		s.publish(envelope)
 	}
 	s.deliverDeferredError(errored, failed)
 	if releasing {

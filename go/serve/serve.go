@@ -152,6 +152,12 @@ func (h *Hub) Binding() binding.Store {
 	return h.bindings
 }
 
+func (h *Hub) Published(id protocol.SessionID) {
+	if entry, ok := h.registry.get(id); ok {
+		entry.Published()
+	}
+}
+
 func (h *Hub) Session(id protocol.SessionID) (*Session, error) {
 	entry, ok := h.sessions.get(id)
 	if !ok {
