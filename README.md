@@ -61,6 +61,12 @@ harness-default tool posture, so every gated tool call still reaches the host
 as a `user.input` gate. `--config <path>` takes the entry of that name from a
 registry shaped like [`examples/oap-serve.json`](examples/oap-serve.json):
 unknown members are refused and `environment` is an explicit allowlist.
+`--backend oapx` serves `oapx`'s own agent loop as the terminal UI builds it —
+the same model catalog, workspace tools, permission engine and compaction —
+through the adapter in `zig/src/adapter/oapx/`, so a session gets every
+catalogued provider and the loop's tools, and cancelling a run leaves the
+session open; it passes `goap conformance` against a live model. It is the
+adapter the terminal UI moves onto (#375).
 `--backend memory` serves the in-memory reference script and answers exactly as
 `goap`'s does: CI runs `goap conformance` against it and a parity job that
 feeds both trees the same traffic and requires identical output. What that job
