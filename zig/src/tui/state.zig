@@ -371,6 +371,7 @@ pub const StatusState = struct {
     turn_count: usize = 0,
     streaming: bool = false,
     compacting: bool = false,
+    refreshing_models: bool = false,
     streaming_since_ms: i64 = 0,
     streaming_elapsed_ms: u64 = 0,
     last_error: []u8 = &.{},
