@@ -695,10 +695,13 @@ pub const OapExecution = struct {
             const message = if (payload) |body| errorMessage(body) else "the endpoint refused the request";
             if (std.mem.startsWith(u8, reply_to, "submit-")) {
                 self.deliver(.{ .@"error" = .{ .message = try self.ownedText(message) } });
+                self.closeTurn();
+                self.dropQueued();
                 self.endTurn(.@"error");
             } else if (std.mem.startsWith(u8, reply_to, "queue-")) {
                 self.refuseQueued(reply_to);
                 self.deliver(.{ .system_warning = .{ .message = try self.ownedText(message) } });
+                if (self.awaiting_promotion.load(.acquire) and !self.holdOrClose()) self.endTurn(.completed);
             } else {
                 self.deliver(.{ .system_warning = .{ .message = try self.ownedText(message) } });
             }
@@ -1697,6 +1700,32 @@ test "a follow-up is refused once the turn is cancelling or closed, rather than 
     try testing.expectEqual(@as(usize, 1), captured.ends);
     try testing.expectError(error.AgentAlreadyStreaming, OapExecution.followUp(execution, "after the end"));
     try testing.expectEqual(@as(usize, 0), execution.queued_runs.items.len);
+}
+
+test "a held turn ends when the endpoint refuses the last reservation it waits on" {
+    var script = Script{};
+    const models = [_]ai_types.Model{scripted_model};
+    const execution = try OapExecution.create(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+    });
+    defer execution.destroy();
+    var captured = Captured{};
+    execution.sink = captured.sink();
+    execution.run_id = try testing.allocator.dupe(u8, "run-1");
+    execution.turn_open.store(true, .release);
+    try execution.queued_runs.append(testing.allocator, .{
+        .text = try testing.allocator.dupe(u8, "later"),
+        .submit_id = try testing.allocator.dupe(u8, "queue-1"),
+    });
+
+    try execution.translateLine("{\"type\":\"run.completed\",\"payload\":{\"session_id\":\"s\",\"run_id\":\"run-1\",\"stop_reason\":\"end_turn\",\"final_response\":{\"role\":\"assistant\",\"content\":\"done\"}}}");
+    try testing.expectEqual(@as(usize, 0), captured.ends);
+    try execution.translateLine("{\"type\":\"error.response\",\"in_reply_to\":\"queue-1\",\"payload\":{\"error\":{\"code\":\"queue_full\",\"message\":\"the queue is full\"}}}");
+    try testing.expectEqual(@as(usize, 1), captured.warnings);
+    try testing.expectEqual(@as(usize, 1), captured.ends);
+    try testing.expect(!execution.turn_open.load(.acquire));
 }
 
 test "a reservation not yet admitted is never taken by the current run's own start" {
