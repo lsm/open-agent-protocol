@@ -126,6 +126,15 @@ pub const ToolProtocolServer = struct {
                     mutable.deinit(allocator);
                 }
 
+                const working_directory = if (result.observedWorkingDirectory()) |directory|
+                    OwnedSlice(u8).initOwned(try allocator.dupe(u8, directory))
+                else
+                    OwnedSlice(u8).initBorrowed("");
+                errdefer {
+                    var mutable = working_directory;
+                    mutable.deinit(allocator);
+                }
+
                 return self.nextEnvelope(env.message_id, .{ .tool_result = .{
                     .execution_id = req.execution_id,
                     .tool_call_id = try allocator.dupe(u8, req.tool_call_id),
@@ -133,6 +142,8 @@ pub const ToolProtocolServer = struct {
                     .is_error = result.is_error,
                     .details_json = details_json,
                     .artifacts = artifacts,
+                    .working_directory = working_directory,
+                    .working_directory_observed = result.observedWorkingDirectory() != null,
                     .duration_ms = @intCast(@max(compat.time.nowMillis() - start_ms, 0)),
                 } });
             },
@@ -409,11 +420,21 @@ fn agentToolResultFromProtocol(allocator: std.mem.Allocator, res: tool_types.Too
         var mutable = artifacts;
         mutable.deinit(allocator);
     }
+    const working_directory = if (res.getWorkingDirectory()) |directory|
+        OwnedSlice(u8).initOwned(try allocator.dupe(u8, directory))
+    else
+        OwnedSlice(u8).initBorrowed("");
+    errdefer {
+        var mutable = working_directory;
+        mutable.deinit(allocator);
+    }
     return .{
         .content = OwnedSlice(ai_types.UserContentPart).initOwned(content),
         .details_json = details,
         .artifacts = artifacts,
         .is_error = res.is_error,
+        .working_directory = working_directory,
+        .working_directory_observed = res.working_directory_observed,
     };
 }
 

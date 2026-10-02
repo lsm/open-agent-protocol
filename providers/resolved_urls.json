@@ -22,7 +22,7 @@
       "request_url": "https://api.anthropic.com/v1/messages"
     },
     {
-      "id": "opencode",
+      "id": "opencode-zen",
       "wire": "openai-completions",
       "base_url": "https://opencode.ai/zen/v1",
       "models_url": "https://opencode.ai/zen/v1/models",

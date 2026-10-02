@@ -172,8 +172,9 @@ instructions rather than replacing a history.
 
 **Decision: compaction stays on the direct path for now.** Filed as #613,
 proposing an optional compaction unit covering the verb, its correlated
-response and its events, plus the continue-after-compaction case. #375's
-compaction step waits on that decision.
+response and its events, plus the continue-after-compaction case. [Decision
+0044](../decisions/0044-compaction.md) is that proposal; #375's compaction step
+waits on its graduation.
 
 ### G7 — the blocking idle wait
 

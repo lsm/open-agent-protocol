@@ -262,10 +262,11 @@ pub const Agent = struct {
     }
 
     pub fn setSystemPrompt(self: *Agent, system_prompt: []const u8) !void {
+        const owned = try self._allocator.dupe(u8, system_prompt);
         if (self._state.system_prompt.len > 0) {
             self._allocator.free(self._state.system_prompt);
         }
-        self._state.system_prompt = try self._allocator.dupe(u8, system_prompt);
+        self._state.system_prompt = owned;
     }
 
     pub fn setModel(self: *Agent, model: ai_types.Model) void {

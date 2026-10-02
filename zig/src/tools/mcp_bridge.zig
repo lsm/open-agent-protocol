@@ -8,6 +8,8 @@ const build_options = @import("build_options");
 
 const mcp_client_info_json = std.fmt.comptimePrint("{{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{{}},\"clientInfo\":{{\"name\":\"makai\",\"version\":\"{s}\"}}}}", .{build_options.version});
 
+pub const tool_prefix = "mcp_";
+
 pub const McpServerConfig = struct {
     name: []u8,
     command: []u8,
@@ -455,7 +457,7 @@ fn buildArgv(allocator: std.mem.Allocator, command: []const u8, args: [][]u8) ![
 fn sanitizedToolName(allocator: std.mem.Allocator, server_name: []const u8, tool_name: []const u8) ![]u8 {
     var out = std.ArrayList(u8).empty;
     defer out.deinit(allocator);
-    try out.appendSlice(allocator, "mcp_");
+    try out.appendSlice(allocator, tool_prefix);
     try appendSanitized(&out, allocator, server_name);
     try out.append(allocator, '_');
     try appendSanitized(&out, allocator, tool_name);

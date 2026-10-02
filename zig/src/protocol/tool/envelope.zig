@@ -105,6 +105,8 @@ fn serializePayload(w: *json_writer.JsonWriter, payload: tool_types.Payload, all
                 }
                 try w.endArray();
             }
+            if (res.getWorkingDirectory()) |directory| try w.writeStringField("working_directory", directory);
+            if (res.working_directory_observed) try w.writeBoolField("working_directory_observed", true);
             try w.writeIntField("duration_ms", res.duration_ms);
         },
         .tool_cancel => |req| {
@@ -408,10 +410,13 @@ fn deserializePayload(type_str: []const u8, payload: std.json.ObjectMap, allocat
             result.error_message.deinit(allocator);
             result.details_json.deinit(allocator);
             result.artifacts.deinit(allocator);
+            result.working_directory.deinit(allocator);
         }
         if (try fields.optionalString(payload, "error_message")) |v| result.error_message = OwnedSlice(u8).initOwned(try allocator.dupe(u8, v));
         if (try fields.optionalString(payload, "details_json")) |v| result.details_json = OwnedSlice(u8).initOwned(try allocator.dupe(u8, v));
         if (payload.get("artifacts")) |v| result.artifacts = OwnedSlice(tool_types.ArtifactReference).initOwned(try deserializeArtifactReferences(try fields.asArray(v), allocator));
+        if (try fields.optionalString(payload, "working_directory")) |v| result.working_directory = OwnedSlice(u8).initOwned(try allocator.dupe(u8, v));
+        result.working_directory_observed = try fields.optionalBool(payload, "working_directory_observed", false);
         return .{ .tool_result = result };
     }
     if (std.mem.eql(u8, type_str, "tool_cancel")) {
