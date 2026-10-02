@@ -138,6 +138,8 @@ const steerGateDeadline = 30 * time.Second
 
 const steerDrainDeadline = 5 * time.Second
 
+const steerDrainBatch = 64
+
 type steerGate struct {
 	run      protocol.RunID
 	request  protocol.EnvelopeID
@@ -864,7 +866,7 @@ func (s *Session) nextResult(run protocol.RunID, stream base.EventStream) (base.
 }
 
 func (s *Session) drainGate(gate *steerGate, stream base.EventStream) (base.Result, bool, bool) {
-	for {
+	for drained := 0; drained < steerDrainBatch; drained++ {
 		select {
 		case result, ok := <-stream:
 			if !ok {
@@ -875,27 +877,28 @@ func (s *Session) drainGate(gate *steerGate, stream base.EventStream) (base.Resu
 				gate.finishDrain()
 				return result, true, true
 			}
-			if gate.withholds(result.Envelope) {
-				s.withhold(gate, result.Envelope)
-			} else {
-				s.publish(result.Envelope)
+			if s.drainInto(gate, result.Envelope) {
+				gate.finishDrain()
+				return base.Result{}, false, true
 			}
 		default:
 			gate.finishDrain()
 			return base.Result{}, false, true
 		}
 	}
+	gate.finishDrain()
+	return base.Result{}, false, true
 }
 
-func (s *Session) withhold(gate *steerGate, envelope protocol.Envelope) {
+func (s *Session) drainInto(gate *steerGate, envelope protocol.Envelope) bool {
 	s.mu.Lock()
-	if s.gate != gate {
-		s.deliverLocked(envelope)
-		s.mu.Unlock()
-		return
+	defer s.mu.Unlock()
+	if s.gate != nil && s.gate.withholds(envelope) {
+		s.gate.withheld = append(s.gate.withheld, envelope)
+		return s.gate == gate
 	}
-	gate.withheld = append(gate.withheld, envelope)
-	s.mu.Unlock()
+	s.deliverLocked(envelope)
+	return false
 }
 
 func (s *Session) readRun(runID protocol.RunID, stream base.EventStream, reserved uint64) {

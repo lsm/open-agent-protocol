@@ -457,7 +457,7 @@ func TestWhatADrainWithholdsAfterItsGateLiftsStillReachesSubscribers(t *testing.
 	entry.mu.Unlock()
 	entry.liftSteerGate(gate)
 
-	entry.withhold(gate, steerStubDelta(1))
+	entry.drainInto(gate, steerStubDelta(1))
 	if envelope := nextEnvelope(t, sub); envelope.Type != protocol.TypeContentDelta {
 		t.Fatalf("delivered %s, want the envelope the drain withheld after the lift", envelope.Type)
 	}
@@ -504,6 +504,40 @@ func TestASteerAdmissionRetargetsTheGateToTheAdmittedRun(t *testing.T) {
 	entry.mu.Unlock()
 	if armed == nil || armed.run != "run-2" {
 		t.Fatalf("the gate is still armed on %+v, want the admitted run", armed)
+	}
+	entry.Published("req-steer")
+}
+
+func TestASteerSubmitDoesNotWaitForAnUnrelatedSaturatedStream(t *testing.T) {
+	stub := &steerStubSession{stream: make(chan base.Result, 1), steerRun: "run-9"}
+	entry := newSession("stub", "stub", stub, nil)
+	startStubRun(t, entry)
+	subscribeToRun(t, entry)
+
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			case stub.stream <- base.Result{Envelope: steerStubDelta(1)}:
+			}
+		}
+	}()
+
+	submit := steerSubmit("req-steer")
+	submit.Request.TargetRunID = "run-9"
+	started := time.Now()
+	admission, err := entry.Submit(context.Background(), submit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if admission.Admission != protocol.AdmissionSteered {
+		t.Fatalf("admission = %+v", admission)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("a saturated stream stalled the steer submit for %s", elapsed)
 	}
 	entry.Published("req-steer")
 }

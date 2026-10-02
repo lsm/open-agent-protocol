@@ -130,7 +130,7 @@ func (s *Server) serveRequest(ctx context.Context, run *runState, request reques
 			s.respond(ctx, lines, request, nil, &wireError{Code: "invalid_request", Message: "adapter is required"})
 			return
 		}
-		s.hub.Published(s.serveOpen(ctx, run, request, lines), submittedEnvelopeID(request))
+		s.hub.Published(publishedSession(s.serveOpen(ctx, run, request, lines), request), submittedEnvelopeID(request))
 		return
 	}
 	result, werr := s.dispatch(ctx, request)
@@ -138,6 +138,21 @@ func (s *Server) serveRequest(ctx context.Context, run *runState, request reques
 	if request.Op == opSubmit {
 		s.hub.Published(protocol.SessionID(request.SessionID), submittedEnvelopeID(request))
 	}
+}
+
+func publishedSession(opened protocol.SessionID, request requestLine) protocol.SessionID {
+	if opened != "" {
+		return opened
+	}
+	var envelope protocol.Envelope
+	if err := json.Unmarshal(request.Request, &envelope); err != nil {
+		return ""
+	}
+	var payload protocol.SessionOpenRequest
+	if err := envelope.DecodePayload(&payload); err != nil {
+		return ""
+	}
+	return payload.SessionID
 }
 
 func submittedEnvelopeID(request requestLine) protocol.EnvelopeID {

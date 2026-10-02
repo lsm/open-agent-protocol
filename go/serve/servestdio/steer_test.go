@@ -138,3 +138,18 @@ func TestACompoundOpenSteerIsReleasedByItsOpenResponse(t *testing.T) {
 	}
 	t.Fatal("the settlement a compound open withholds was never released by its open response")
 }
+
+func TestAFailedOpenStillPublishesTheNamedSession(t *testing.T) {
+	request := requestLine{Op: opOpen, Adapter: "settling", Request: requestEnvelope(t, "req-open", protocol.TypeSessionOpenRequest,
+		protocol.SessionOpenRequest{SessionID: "stdio-steer", Subscribe: true}, "", "")}
+	if got := publishedSession("", request); got != "stdio-steer" {
+		t.Fatalf("published session = %q, want the session the open named", got)
+	}
+	if got := publishedSession("adapter-answer", request); got != "adapter-answer" {
+		t.Fatalf("published session = %q, want the opened session", got)
+	}
+	broken := requestLine{Op: opOpen, Adapter: "settling", Request: json.RawMessage(`{"not":"an envelope"}`)}
+	if got := publishedSession("", broken); got != "" {
+		t.Fatalf("published session = %q, want no session for an undecodable open", got)
+	}
+}
