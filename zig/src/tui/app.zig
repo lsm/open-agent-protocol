@@ -654,6 +654,33 @@ test "collapseHome survives an allocation failure at every step" {
     try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, collapseHomeProbe, .{});
 }
 
+test "a transcript verbosity change reprints from the first entry, and a status-only change does not" {
+    var env = try TempHome.init("home-verbosity-redraw");
+    defer env.deinit();
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.inline_history_flushed = 3;
+    app.inline_flushed_rows = 2;
+
+    try app.submit("/verbose status verbose");
+    try std.testing.expect(!app.pending_clear_screen);
+    try std.testing.expectEqual(@as(usize, 3), app.inline_history_flushed);
+
+    try app.submit("/verbose quiet");
+    if (App.terminalKeepsScrollback()) {
+        try std.testing.expect(!app.pending_clear_screen);
+        try std.testing.expectEqualStrings("earlier rows keep their old verbosity; run /redraw to reprint them", app.state.transcript.items[app.state.transcript.items.len - 1].text.items);
+    } else {
+        try std.testing.expect(app.pending_clear_screen);
+        try std.testing.expectEqual(@as(usize, 0), app.inline_history_flushed);
+        try std.testing.expectEqual(@as(usize, 0), app.inline_flushed_rows);
+    }
+
+    app.pending_clear_screen = false;
+    try app.cycleVerbosity();
+    try std.testing.expectEqual(tui_state.Verbosity.all(.normal), app.state.verbosity);
+}
+
 test "Context requestClearScreen discards history queued before the request" {
     var tctx: TestContext = undefined;
     tctx.setup();
@@ -3199,6 +3226,7 @@ pub const App = struct {
             return;
         };
 
+        const verbosity_before = self.state.verbosity;
         var result = tui_commands.dispatch(.{
             .allocator = self.allocator,
             .state = &self.state,
@@ -3243,6 +3271,7 @@ pub const App = struct {
             .refresh_models => try self.refreshModelsInBackground(),
             .logout_provider => try self.logoutProvider(command.arg orelse ""),
             .add_provider => try self.addProvider(command.arg orelse ""),
+            .redraw => self.requestRedraw(),
             .remove_provider => try self.removeProvider(command.arg orelse ""),
             .list_providers => try self.listProviders(),
             .none => {},
@@ -3255,7 +3284,10 @@ pub const App = struct {
         if (command.kind == .context and !result.is_error and command.arg != null) self.persistContextWindow();
         if (command.kind == .output and !result.is_error and command.arg != null) self.persistOutput();
         if (command.kind == .autocompact and !result.is_error and command.arg != null) self.persistAutoCompact();
-        if (command.kind == .verbose and !result.is_error and command.arg != null) self.persistVerbosity();
+        if (command.kind == .verbose and !result.is_error and command.arg != null) {
+            self.persistVerbosity();
+            try self.redrawAfterVerbosity(verbosity_before);
+        }
         if (command.kind == .think and !result.is_error and command.arg != null) self.persistThinkingLevel();
         if (result.output.len > 0) {
             try self.state.appendTranscript(if (result.is_error) .@"error" else .system, result.output);
@@ -3378,6 +3410,40 @@ pub const App = struct {
         if (std.meta.eql(cfg.mode.autocompact, self.state.autocompact)) return;
         cfg.mode.autocompact = self.state.autocompact;
         store.save(cfg) catch |err| self.recordError(@errorName(err)) catch {};
+    }
+
+    fn requestRedraw(self: *App) void {
+        self.inline_history_flushed = 0;
+        self.inline_flushed_rows = 0;
+        self.pending_clear_screen = true;
+    }
+
+    fn redrawAfterVerbosity(self: *App, before: tui_state.Verbosity) !void {
+        if (before.transcriptEquals(self.state.verbosity)) return;
+        if (!self.state.status.streaming and !self.runtimeBusy() and !terminalKeepsScrollback()) {
+            self.requestRedraw();
+            return;
+        }
+        try self.state.appendTranscript(.system, "earlier rows keep their old verbosity; run /redraw to reprint them");
+    }
+
+    fn terminalKeepsScrollback() bool {
+        for ([_][]const u8{ "TMUX", "STY" }) |name| {
+            const value = compat.getEnvVarOwned(std.heap.page_allocator, name) catch continue;
+            defer std.heap.page_allocator.free(value);
+            if (value.len > 0) return true;
+        }
+        return false;
+    }
+
+    pub fn cycleVerbosity(self: *App) !void {
+        const before = self.state.verbosity;
+        self.state.verbosity = before.cycled();
+        self.persistVerbosity();
+        const msg = try std.fmt.allocPrint(self.allocator, "verbosity: {t} (ctrl+o cycles)", .{self.state.verbosity.thinking});
+        defer self.allocator.free(msg);
+        try self.state.appendTranscript(.system, msg);
+        try self.redrawAfterVerbosity(before);
     }
 
     fn persistVerbosity(self: *App) void {
@@ -3746,6 +3812,14 @@ pub const TuiModel = struct {
                         'c' => return self.handleInterrupt(app, ctx),
                         'd' => {
                             if (app.state.composer.buffer.items.len == 0 and app.state.mode == .normal and !app.state.status.streaming) return self.quitCmd(app, ctx);
+                            return .none;
+                        },
+                        'o' => {
+                            app.cycleVerbosity() catch |err| app.recordError(@errorName(err)) catch {};
+                            if (app.pending_clear_screen) {
+                                app.pending_clear_screen = false;
+                                if (self.inlineMode(ctx)) ctx.requestClearScreen();
+                            }
                             return .none;
                         },
                         'y' => {

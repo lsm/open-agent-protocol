@@ -21,6 +21,7 @@ pub const CommandKind = enum {
     output,
     autocompact,
     verbose,
+    redraw,
     settings,
     abort,
     quit,
@@ -47,6 +48,7 @@ pub const CommandAction = enum {
     refresh_models,
     logout_provider,
     add_provider,
+    redraw,
     remove_provider,
     list_providers,
     open_login_picker,
@@ -105,6 +107,7 @@ pub const commands = [_]CommandInfo{
     .{ .name = "output", .kind = .output, .usage = "/output [auto|max|tokens]", .description = "Show or set how much output a reply may ask for", .handler = handleOutput },
     .{ .name = "autocompact", .kind = .autocompact, .usage = "/autocompact [auto|percent|off]", .description = "Show or set when the conversation compacts on its own", .handler = handleAutoCompact },
     .{ .name = "verbose", .kind = .verbose, .usage = "/verbose [quiet|normal|verbose] | /verbose <thinking|tools|output|notices|status> <level>", .description = "Show or set how much the transcript and status bar show", .handler = handleVerbose },
+    .{ .name = "redraw", .kind = .redraw, .usage = "/redraw", .description = "Clear the terminal and reprint the session at the current verbosity", .handler = handleRedraw },
     .{ .name = "settings", .kind = .settings, .usage = "/settings", .description = "Configure TUI settings", .handler = handleSettings },
     .{ .name = "abort", .kind = .abort, .usage = "/abort", .description = "Cancel the active streaming turn", .handler = handleAbort },
     .{ .name = "quit", .kind = .quit, .usage = "/quit", .description = "Exit TUI", .handler = handleQuit },
@@ -498,6 +501,12 @@ fn handleVerbose(ctx: CommandContext, command: Command) !CommandResult {
     if (words.next() != null) return .{ .output = try ctx.allocator.dupe(u8, verbose_usage), .is_error = true };
     ctx.state.verbosity.set(part, level);
     return .{ .output = try verbosityReport(ctx) };
+}
+
+fn handleRedraw(ctx: CommandContext, command: Command) !CommandResult {
+    _ = command;
+    if (runIsActive(ctx)) return .{ .output = try ctx.allocator.dupe(u8, "A turn is running; redraw once it finishes."), .is_error = true };
+    return .{ .action = .redraw };
 }
 
 fn verbosityReport(ctx: CommandContext) ![]u8 {
@@ -917,6 +926,19 @@ test "verbose sets every part at once or one part on its own, and refuses what i
         try std.testing.expectEqualStrings(verbose_usage, bad.output);
     }
     try std.testing.expectEqual(tui_state.VerbosityLevel.verbose, state.verbosity.status);
+}
+
+test "redraw hands its work to the app and waits for a running turn" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    var idle = try dispatch(.{ .allocator = std.testing.allocator, .state = &state }, try parse("/redraw"));
+    defer idle.deinit(std.testing.allocator);
+    try std.testing.expectEqual(CommandAction.redraw, idle.action);
+    state.status.streaming = true;
+    var busy = try dispatch(.{ .allocator = std.testing.allocator, .state = &state }, try parse("/redraw"));
+    defer busy.deinit(std.testing.allocator);
+    try std.testing.expectEqual(CommandAction.none, busy.action);
+    try std.testing.expect(busy.is_error);
 }
 
 test "model refresh and logout hand their work to the app" {
