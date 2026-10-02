@@ -22,7 +22,9 @@ replaces the TUI's estimate only for a run with one assistant message; a run tha
 before a tool call keeps the per-message estimates rather than counting its tokens twice.
 A follow-up queued during a turn is submitted with `delivery: "queue"`, and the turn stays
 open until each reservation has been promoted and run, so it reads as one turn as it does
-locally; clearing the queue or aborting cancels the reservations. Resume, compaction and steering
+locally; clearing the queue or aborting cancels the reservations. A session attached to a
+hub refuses a follow-up locally, because the hub link withdraws any queued admission as
+`session_busy`. Resume, compaction and steering
 refuse with `UnavailableOverOap` until their gaps below close. `oapx tui --attach URL` runs the
 same execution over a running hub's HTTP wire (`zig/src/tui/hub_link.zig`): each envelope
 goes to its route, and each run is followed on its own SSE stream replayed from its first

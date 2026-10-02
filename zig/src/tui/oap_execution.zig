@@ -287,6 +287,7 @@ pub const OapExecution = struct {
 
     fn followUp(ctx: *anyopaque, text: []const u8) anyerror!void {
         const self = cast(ctx);
+        if (self.hub != null) return error.UnavailableOverOap;
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
         const a = scratch.allocator();
@@ -1699,6 +1700,14 @@ test "a follow-up is refused once the turn is cancelling or closed, rather than 
     try execution.translateLine("{\"type\":\"run.completed\",\"payload\":{\"session_id\":\"s\",\"run_id\":\"run-1\",\"stop_reason\":\"end_turn\",\"final_response\":{\"role\":\"assistant\",\"content\":\"done\"}}}");
     try testing.expectEqual(@as(usize, 1), captured.ends);
     try testing.expectError(error.AgentAlreadyStreaming, OapExecution.followUp(execution, "after the end"));
+    try testing.expectEqual(@as(usize, 0), execution.queued_runs.items.len);
+}
+
+test "a follow-up on a hub-attached session is refused locally, so the composer keeps it" {
+    const execution = try OapExecution.attach(testing.allocator, "http://127.0.0.1:1", "memory");
+    defer execution.destroy();
+    execution.turn_open.store(true, .release);
+    try testing.expectError(error.UnavailableOverOap, OapExecution.followUp(execution, "later"));
     try testing.expectEqual(@as(usize, 0), execution.queued_runs.items.len);
 }
 
