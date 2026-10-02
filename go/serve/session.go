@@ -267,7 +267,7 @@ func (s *Session) releaseToBoundary(gate *steerGate, boundary uint64) {
 	gate.withheld, gate.boundary = rest, boundary
 	s.mu.Unlock()
 	for _, envelope := range prefix {
-		s.publish(envelope)
+		s.publishThroughGate(envelope)
 	}
 }
 
@@ -705,9 +705,18 @@ func (s *Session) gatedGate(run protocol.RunID) *steerGate {
 	return nil
 }
 
+var closedSignal = func() chan struct{} {
+	closed := make(chan struct{})
+	close(closed)
+	return closed
+}()
+
 func (s *Session) drainSignal() chan struct{} {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.gate != nil && s.gate.drainPending() {
+		return closedSignal
+	}
 	if s.drainWake == nil {
 		s.drainWake = make(chan struct{})
 	}
@@ -918,6 +927,17 @@ func (s *Session) publish(envelope protocol.Envelope) {
 		s.mu.Unlock()
 		return
 	}
+	s.deliverLocked(envelope)
+	s.mu.Unlock()
+}
+
+func (s *Session) publishThroughGate(envelope protocol.Envelope) {
+	s.mu.Lock()
+	s.deliverLocked(envelope)
+	s.mu.Unlock()
+}
+
+func (s *Session) deliverLocked(envelope protocol.Envelope) {
 	if envelope.Sequence != nil && *envelope.Sequence > s.sequences[envelope.RunID] {
 		s.sequences[envelope.RunID] = *envelope.Sequence
 	}
@@ -934,7 +954,6 @@ func (s *Session) publish(envelope protocol.Envelope) {
 			sub.stop(&terminalState{overflow: true, run: sub.lossRun(envelope.RunID, s.serials[envelope.RunID], s.runID, s.serials[s.runID], s.finished)})
 		}
 	}
-	s.mu.Unlock()
 }
 
 func (sub *subscriber) exposedTo(runID protocol.RunID, serial uint64) bool {
