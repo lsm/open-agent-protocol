@@ -54,6 +54,20 @@ pub const Verbosity = struct {
         };
     }
 
+    pub fn transcriptEquals(self: Verbosity, other: Verbosity) bool {
+        return self.thinking == other.thinking and self.tools == other.tools and self.output == other.output and self.notices == other.notices;
+    }
+
+    pub fn cycled(self: Verbosity) Verbosity {
+        const uniform = self.thinking == self.tools and self.tools == self.output and self.output == self.notices and self.notices == self.status;
+        if (!uniform) return all(.normal);
+        return all(switch (self.thinking) {
+            .quiet => .normal,
+            .normal => .verbose,
+            .verbose => .quiet,
+        });
+    }
+
     pub fn set(self: *Verbosity, part: VerbosityPart, level: VerbosityLevel) void {
         switch (part) {
             inline else => |tag| @field(self, @tagName(tag)) = level,
@@ -353,6 +367,17 @@ test "verbosity survives a save and reload part by part, and an unknown level ke
     const read = verbosityField(parsed.value.object);
     try std.testing.expectEqual(VerbosityLevel.normal, read.tools);
     try std.testing.expectEqual(VerbosityLevel.verbose, read.thinking);
+}
+
+test "the verbosity cycle steps a uniform level and resets a mixed one to normal" {
+    try std.testing.expectEqual(Verbosity.all(.normal), Verbosity.all(.quiet).cycled());
+    try std.testing.expectEqual(Verbosity.all(.verbose), Verbosity.all(.normal).cycled());
+    try std.testing.expectEqual(Verbosity.all(.quiet), Verbosity.all(.verbose).cycled());
+    var mixed = Verbosity.all(.quiet);
+    mixed.status = .verbose;
+    try std.testing.expectEqual(Verbosity.all(.normal), mixed.cycled());
+    try std.testing.expect(mixed.transcriptEquals(Verbosity.all(.quiet)));
+    try std.testing.expect(!mixed.transcriptEquals(Verbosity.all(.normal)));
 }
 
 test "save config reload preserves model provider and api" {
