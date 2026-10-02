@@ -831,6 +831,18 @@ pub const SessionModelSwitchResponse = struct {
     }
 };
 
+pub const PendingSteer = struct {
+    submission_id: []const u8,
+    request_id: []const u8,
+    message_ids: []const []const u8 = &.{},
+
+    pub fn deinit(self: *const PendingSteer, allocator: std.mem.Allocator) void {
+        allocator.free(self.submission_id);
+        allocator.free(self.request_id);
+        freeStringList(allocator, self.message_ids);
+    }
+};
+
 pub const ActiveRun = struct {
     run_id: []const u8,
     status: RunStatus,
@@ -840,6 +852,7 @@ pub const ActiveRun = struct {
     admitted_submit_requests: []const []const u8 = &.{},
     pending_interactions: []const []const u8 = &.{},
     acknowledged_interactions: []const []const u8 = &.{},
+    pending_steers: []const PendingSteer = &.{},
 
     pub fn deinit(self: *ActiveRun, allocator: std.mem.Allocator) void {
         allocator.free(self.run_id);
@@ -847,6 +860,8 @@ pub const ActiveRun = struct {
         freeStringList(allocator, self.admitted_submit_requests);
         freeStringList(allocator, self.pending_interactions);
         freeStringList(allocator, self.acknowledged_interactions);
+        for (self.pending_steers) |*steer| steer.deinit(allocator);
+        allocator.free(self.pending_steers);
     }
 };
 
@@ -902,6 +917,7 @@ pub const MessageSubmitRequest = struct {
     instructions: ?[]const u8 = null,
     tool_choice_json: ?[]const u8 = null,
     output_schema_json: ?[]const u8 = null,
+    target_run_id: ?[]const u8 = null,
     allow_degraded_features: []const []const u8 = &.{},
 
     pub fn deinit(self: *MessageSubmitRequest, allocator: std.mem.Allocator) void {
@@ -909,6 +925,7 @@ pub const MessageSubmitRequest = struct {
         for (self.messages) |*message| message.deinit(allocator);
         allocator.free(self.messages);
         if (self.model_id) |value| allocator.free(value);
+        if (self.target_run_id) |value| allocator.free(value);
         if (self.instructions) |value| allocator.free(value);
         if (self.tool_choice_json) |value| allocator.free(value);
         if (self.output_schema_json) |value| allocator.free(value);
@@ -941,6 +958,7 @@ pub const MessageSubmitResponse = struct {
     status: ?RunStatus = null,
     model_id: ?[]const u8 = null,
     message_ids: []const []const u8 = &.{},
+    target_sequence: ?u64 = null,
 
     pub fn deinit(self: *MessageSubmitResponse, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);

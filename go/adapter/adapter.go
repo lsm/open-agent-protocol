@@ -147,9 +147,31 @@ var (
 	ErrWrongResponder      = errors.New("adapter: interaction resolved by undeclared participant")
 	ErrInvalidResolution   = errors.New("adapter: invalid interaction resolution")
 	ErrEventStreamOverflow = errors.New("adapter: event stream consumer fell behind; resume from the last sequence")
+	ErrInvalidSteerTarget  = errors.New("adapter: steer target cannot take guidance")
 )
 
 var ErrModelNotFound = errors.New("adapter: model is not in the effective catalog")
+
+const (
+	SteerReasonNoActiveRun   = "no_active_run"
+	SteerReasonTerminal      = "terminal"
+	SteerReasonQueued        = "queued"
+	SteerReasonUnknownTarget = "unknown_target"
+	SteerReasonNotSteerable  = "not_steerable"
+	SteerReasonCrossSession  = "cross_session"
+)
+
+type InvalidSteerTargetError struct {
+	RunID  protocol.RunID
+	Reason string
+
+	TargetSequence *uint64
+}
+
+func (e *InvalidSteerTargetError) Error() string {
+	return fmt.Sprintf("%s: run %q is %s", ErrInvalidSteerTarget.Error(), e.RunID, e.Reason)
+}
+func (e *InvalidSteerTargetError) Unwrap() error { return ErrInvalidSteerTarget }
 
 func RefuseUnadvertisedControls(request protocol.MessageSubmitRequest, advertised ...string) error {
 	offers := func(key string) bool { return slices.Contains(advertised, key) }
