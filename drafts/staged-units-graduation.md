@@ -4240,7 +4240,10 @@ is proposed and answers this section's two remaining questions. Its wire is in
 place: `reopen` on `session.open.request`, the `session.open.reopen` key, the
 validator rules in both trees and the `session-reattach` fixtures. The memory
 references in both trees reopen a session they closed within the process,
-through either hub. The conformance check is still to come.** How a host
+through either hub, and both conformance runners check that a reopen of a
+session an endpoint never had is refused — `unknown_session` where the key
+is advertised, `unsupported_feature` naming it where it is not — and never
+answered with a fresh session.** How a host
 records a binding and where: a binding is a record the host supplies through an
 interface, carrying the session id, the harness and its pin, the harness' own
 session id, the home and working directory the open ran in, and the model and
