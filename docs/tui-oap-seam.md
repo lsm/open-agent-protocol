@@ -10,7 +10,11 @@ takes an injected `RemoteExecution` (`zig/src/tui/oap_execution.zig`) that hosts
 envelopes back into `TuiEvent`s. Runs, streaming, tools, cancel and model switch
 cross the boundary as OAP; the settings the protocol has no verb for (thinking
 level, context window, permission mode, workspace root) travel once, in the open
-request's `metadata.oapx`. Resume, compaction, steering and queued follow-ups
+request's `metadata.oapx`. Tool approvals cross too: in ask mode the adapter's
+`action.permission.requested` becomes the TUI's approval prompt, and the answer goes
+back as `action.permission.resolve.request` with `approve` or `deny`, so an "always"
+answer covers that one call. The model's questions (`user.input.*`) stay off: the
+open declines `user_input`, because the TUI has no prompt for them. Resume, compaction, steering and queued follow-ups
 refuse with `UnavailableOverOap` until their gaps below close. The map that
 follows predates this and still describes the server path `oapx serve agent`
 without `--backend` uses.
