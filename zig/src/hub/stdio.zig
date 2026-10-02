@@ -819,6 +819,7 @@ pub const Frontend = struct {
         if (opened.subscription) |subscription| {
             _ = self.hub.holdSubscription(subscription) catch |err| {
                 subscription.close();
+                self.hub.discardSession(opened.session_id);
                 envelope.deinit(arena);
                 return err;
             };

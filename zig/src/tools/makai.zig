@@ -1553,8 +1553,7 @@ fn runHubHttp(
 
     var daemon = try hub_daemon.Daemon.init(allocator, core, allow orelse &.{}, keepGoing);
     defer daemon.deinit();
-    var connections = hub_daemon.Connections{};
-    const failed = hub_daemon.serveListener(&daemon, &listener, &connections, hub_accept_poll_ms);
+    const failed = hub_daemon.serveListener(&daemon, &listener, hub_accept_poll_ms);
     if (failed) |failure| {
         sweepHubSessions(core, stderr);
         try compat.stdio.writeAll(stderr, "oapx: stopped\n");

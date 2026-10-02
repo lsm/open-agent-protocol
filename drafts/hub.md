@@ -422,22 +422,26 @@ over `net.Listen` and `servehttp` does no connection accounting, which the
 bounds section below already records. So this rule is new, it is this port's
 rule, and a reader sent to Go for the numbers will find none.
 
-The Zig daemon serves each connection on its own thread, at most **64** at once
-(`max_connections` in `zig/src/hub/daemon.zig`). The hub core is not shared
-between threads: every operation and every read of a subscription takes one
-lock, and the accept loop pumps the core under the same lock between accepts. At
-the bound the daemon stops accepting rather than answering, so a 65th client
-waits in the kernel's listen backlog until a connection ends — no status is sent
-for having reached the bound, which is what the rule above asks of a port. A
-stream polls its own socket while it has nothing to write, so a client that hangs
-up mid-stream releases its connection and its subscription without an event
-having to fail first. A stop gives every connection 1 s to notice it and end; one still
-running after that — a stream blocked writing to a client that stopped reading
-— has its socket shut down under it, so the blocked write returns and the
-daemon still exits rather than waiting on a reader that will never drain. Zig: `an open event stream does not hold the daemon:
-another connection is answered while it streams`, `a client that hangs up
-mid-stream releases its subscription without an event to write`, and
-`stopping the daemon ends an open stream rather than waiting it out`.
+The Zig daemon serves at most **64** connections at once (`max_connections`
+in `zig/src/hub/daemon.zig`), all on the hub's one thread, as `DESIGN.md` §8.6
+requires: one loop polls the listener, every connection's socket and every
+session's child output together, reads and writes each socket without
+blocking, runs a request against the hub when its body is complete, and pumps
+the hub once per cycle. No lock appears, because no second thread touches the
+hub. At the bound the loop stops polling the listener rather than answering, so
+a 65th client waits in the kernel's listen backlog until a connection ends — no
+status is sent for having reached the bound, which is what the rule above asks
+of a port. A stream's socket stays in the poll while it has nothing to write, so
+a client that hangs up mid-stream releases its connection and its subscription
+without an event having to fail first; a client that stops reading only stops
+its own stream, whose buffer is bounded at 256 KiB before the hub's own mailbox
+takes over and ends it with `oap-overflow`. A stop closes every connection on
+the next cycle. Zig: `an open event stream does not hold the daemon: another
+connection is answered while it streams`, `a client that hangs up mid-stream
+releases its stream without an event to write`, and `stopping the daemon ends
+an open stream rather than waiting it out`. A platform that cannot poll a
+socket — Windows, #460 — serves connections one at a time instead, and a stream
+there writes what is queued and ends.
 
 Every route that reads a body requires `Content-Type: application/json`, and
 the body is read as UTF-8 whatever `charset` the header names. RFC 8259 §11
@@ -559,10 +563,10 @@ concurrency and invents no code for having done so.
 | --- | --- | --- |
 | Request body | 16 MiB | `TestRequestBudgetMatchesHTTP`; Zig: `a body over the cap is refused before it is read` |
 | Per-subscription mailbox | 64 envelopes, as the core defines it | `TestHubSubscriptionQueueOverflow` |
-| Accept poll | 10 ms, so a signal is noticed by an idle daemon; the same loop pumps the core between polls, so an adapter's event reaches a stream within one poll | Zig: `hub_accept_poll_ms` and `the accept poll reports an idle listener as idle and a waiting one as waiting`, which drives a real listener. This is not protocol and is not in Go, whose `Serve` returns a listener a runtime polls for it |
+| Accept poll | 10 ms at most; the loop wakes on any socket or child becoming ready and falls back on this bound for a session that has no handle to poll, so a signal is noticed by an idle daemon | Zig: `hub_accept_poll_ms` and `the accept poll reports an idle listener as idle and a waiting one as waiting`, which drives a real listener. This is not protocol and is not in Go, whose `Serve` returns a listener a runtime polls for it |
 | Accept failure | A failure the peer caused is served past; a failure of the listener stops the daemon | Zig: `an accept a peer aborted before the call is served again, not obeyed` and `a client that resets a connection the listener had not taken yet does not stop the hub`. The rule is not cosmetic: a daemon that stops on any accept error can be stopped by any local process that opens a connection and resets it, which a port scanner or a health check does by accident and an attacker does on purpose — and stopping it sweeps every session |
 | Request headers | 16 KiB | Zig: `headers over the cap are refused rather than buffered`. Go's net/http carries its own default and names no rule, so this is a Zig choice within "a port may choose its own" |
-| Concurrent connections | a port's own number; not on the wire, and no code for reaching it. Zig: 64, and at the bound it stops accepting | Zig: `the connection bound is the number the draft's G13 row records`. Go has no bound at all (`serve.go` runs a plain `http.Server`), and this draft has no code for reaching one. [G13](#known-gaps) names what a port does meanwhile |
+| Concurrent connections | a port's own number; not on the wire, and no code for reaching it. Zig: 64, and at the bound it stops polling the listener | Zig: `the connection bound is the number the draft's G13 row records`. Go has no bound at all (`serve.go` runs a plain `http.Server`), and this draft has no code for reaching one. [G13](#known-gaps) names what a port does meanwhile |
 
 A 30 s header read and a 2 min idle timeout keep a socket from being held open
 forever. Neither is protocol — no client observes them, and a port may choose
@@ -570,7 +574,7 @@ its own — so they are named here only so a port knows they exist. Zig takes bo
 numbers as written, and the one that matters is the header: **a peer that
 connects and then says nothing is given up on rather than waited on**, because
 a stalled read would otherwise hold one of the daemon's bounded connections
-forever and leave a signal unobserved by the thread serving it. Pinned by `a peer that
+forever. Pinned by `a peer that
 connects and never sends a request is given up on, not waited on forever`;
 Go's bound is `ReadHeaderTimeout` on the same server.
 
@@ -984,8 +988,8 @@ daemon polls a connection for at most 50 ms at a time and re-checks whether it
 should stop between polls, so an interrupt during a slow or stalled request ends
 the daemon in well under a second rather than at the end of the request's own
 budget. A read also returns **whatever has arrived** rather than waiting for its
-buffer to fill: a client that promises 4 KiB and sends 5 bytes must not hold its
-connection's thread until it sends the rest. Zig: `a poll waiting
+buffer to fill: a client that promises 4 KiB and sends 5 bytes must not hold
+the daemon until it sends the rest. Zig: `a poll waiting
 on a silent peer is re-checked inside its cycle, not held to its deadline` and
 `a body that arrives in part is taken as it comes, and never waited on for the
 rest`, plus the same two measured against the built binary.
@@ -1694,8 +1698,8 @@ here; each was a place a differential test would otherwise not see.
   truncated-request case: this test pins the code, not the parity.
 
 - **G13 — open for the code only; the Zig bound is chosen.** The Zig daemon
-  serves at most 64 connections at once and, at the bound, stops accepting until
-  one ends, so a client is told nothing and waits in the listen backlog; that is
+  serves at most 64 connections at once and, at the bound, stops polling its
+  listener until one ends, so a client is told nothing and waits in the listen backlog; that is
   the choice this row asks a port to record, and it invents no status. What is
   still open is the code. A port must bound how many connections it serves at once,
   because a stream holds its connection for as long as the client listens and

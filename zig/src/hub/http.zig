@@ -154,8 +154,11 @@ pub fn readHead(allocator: std.mem.Allocator, stream: *compat.net.Stream, header
         if (std.mem.endsWith(u8, head.items, "\r\n\r\n")) break;
     }
     if (!std.mem.endsWith(u8, head.items, "\r\n\r\n")) return error.HeaderTooLarge;
+    return parseHead(allocator, head.items, body_allowed, declared);
+}
 
-    var lines = std.mem.splitSequence(u8, head.items, "\r\n");
+pub fn parseHead(allocator: std.mem.Allocator, head: []const u8, body_allowed: *bool, declared: *usize) Failure!Request {
+    var lines = std.mem.splitSequence(u8, head, "\r\n");
     const request_line = lines.next() orelse return error.Malformed;
     var parts = std.mem.splitScalar(u8, request_line, ' ');
     const verb = parts.next() orelse return error.Malformed;
@@ -580,6 +583,24 @@ fn writeHead(stream: *compat.net.Stream, status: []const u8, content_type: []con
     try stream.writeAll("\r\nConnection: close\r\nContent-Length: ");
     try stream.writeAll(length);
     if (body_allowed) try stream.writeAll(body);
+}
+
+pub fn renderHead(arena: std.mem.Allocator, status: []const u8, content_type: []const u8, body: []const u8, body_allowed: bool) ![]const u8 {
+    return std.fmt.allocPrint(arena, "HTTP/1.1 {s}\r\nContent-Type: {s}\r\nConnection: close\r\nContent-Length: {d}\r\n\r\n{s}", .{ status, content_type, body.len, if (body_allowed) body else "" });
+}
+
+pub fn answerBytes(arena: std.mem.Allocator, next_id: u64, given: Answer, body_allowed: bool) ![]const u8 {
+    return switch (given) {
+        .refusal => |refused| renderHead(arena, refused.status, "application/json", try refusalEnvelope(arena, next_id, refused), body_allowed),
+        .not_found => renderHead(arena, "404 Not Found", "text/plain; charset=utf-8", not_found_body, body_allowed),
+    };
+}
+
+pub fn transportFailureBytes(arena: std.mem.Allocator, next_id: u64, failure: Failure, body_allowed: bool) ![]const u8 {
+    if (transportRefusal(failure)) |refused| {
+        return renderHead(arena, refused.status, "application/json", try refusalEnvelope(arena, next_id, refused), body_allowed);
+    }
+    return renderHead(arena, statusFor(failure), "text/plain; charset=utf-8", "bad request", body_allowed);
 }
 
 const not_found_body = "not found";

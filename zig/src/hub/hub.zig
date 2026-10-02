@@ -502,6 +502,11 @@ pub const Hub = struct {
         return opened;
     }
 
+    pub fn discardSession(self: *Hub, session_id: []const u8) void {
+        const entry = self.findSession(session_id) orelse return;
+        self.releaseSession(entry);
+    }
+
     pub fn knows(self: *Hub, session_id: []const u8) bool {
         return self.findSession(session_id) != null;
     }

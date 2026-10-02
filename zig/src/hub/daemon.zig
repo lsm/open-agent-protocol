@@ -11,10 +11,9 @@ const routes = @import("hub_routes");
 const hub_stdio = @import("hub_stdio");
 
 pub const max_connections: usize = 64;
-pub const stream_cycle_ms: i32 = 10;
 pub const io_cycle_ms: i32 = 50;
-pub const batch_limit: usize = 64;
-pub const stop_grace_ms: i64 = 1000;
+pub const stream_buffer_bytes: usize = 256 * 1024;
+pub const read_chunk_bytes: usize = 16 * 1024;
 
 const text_plain = "text/plain; charset=utf-8";
 const ok_status = "200 OK";
@@ -39,10 +38,6 @@ const Correlation = struct {
     session_id: ?[]const u8 = null,
     run_id: ?[]const u8 = null,
 };
-
-fn io() std.Io {
-    return if (builtin.is_test) std.testing.io else std.Io.Threaded.global_single_threaded.io();
-}
 
 const discard = struct {
     var context: u8 = 0;
@@ -71,8 +66,8 @@ pub const Daemon = struct {
     frontend: hub_stdio.Frontend,
     allow: []const []const u8,
     outer: hub_http.KeepGoing,
-    lock: std.Io.Mutex = .init,
     stopping: std.atomic.Value(bool) = .init(false),
+    streams: std.atomic.Value(usize) = .init(0),
 
     pub fn init(allocator: std.mem.Allocator, core: *hubmod.Hub, allow: []const []const u8, outer: hub_http.KeepGoing) !Daemon {
         const frontend = try hub_stdio.Frontend.init(allocator, core, .{ .context = &discard.context, .write = discard.write }, .{});
@@ -82,14 +77,6 @@ pub const Daemon = struct {
     pub fn deinit(self: *Daemon) void {
         self.frontend.deinit();
         self.* = undefined;
-    }
-
-    fn acquire(self: *Daemon) void {
-        self.lock.lockUncancelable(io());
-    }
-
-    fn release(self: *Daemon) void {
-        self.lock.unlock(io());
     }
 
     pub fn stop(self: *Daemon) void {
@@ -112,14 +99,10 @@ pub const Daemon = struct {
     }
 
     pub fn mint(self: *Daemon) u64 {
-        self.acquire();
-        defer self.release();
         return self.next();
     }
 
     pub fn pump(self: *Daemon) !void {
-        self.acquire();
-        defer self.release();
         try self.frontend.hub.pump(self.allocator, 0);
     }
 
@@ -134,8 +117,6 @@ pub const Daemon = struct {
             .method_not_allowed => |allowed| return .{ .answer = .{ .status = "405 Method Not Allowed", .content_type = text_plain, .body = "method not allowed", .allow = allowed } },
             .route => |value| value,
         };
-        self.acquire();
-        defer self.release();
         return switch (found) {
             .adapters => self.listing(arena, try self.frontend.adapters(arena)),
             .sessions => self.listing(arena, try self.frontend.sessions(arena)),
@@ -357,42 +338,12 @@ pub const Daemon = struct {
     }
 
     pub fn leave(self: *Daemon, subscription: *hubmod.Subscription) void {
-        self.acquire();
-        defer self.release();
+        _ = self;
         subscription.close();
     }
 
-    const Batch = struct {
-        lines: std.ArrayList(Framed) = .empty,
-        ending: hubmod.Ending = .open,
-        overflow_run: []const u8 = "",
-        overflow_sequence: u64 = 0,
-    };
-
-    const Framed = struct {
-        line: []const u8,
-        sequence: u64,
-    };
-
-    fn collect(self: *Daemon, arena: std.mem.Allocator, subscription: *hubmod.Subscription) !Batch {
-        self.acquire();
-        defer self.release();
-        var batch = Batch{};
-        while (batch.lines.items.len < batch_limit) {
-            const delivered = subscription.next() orelse break;
-            try batch.lines.append(arena, .{ .line = try arena.dupe(u8, delivered.line), .sequence = delivered.sequence });
-        }
-        batch.ending = subscription.ending;
-        if (batch.ending == .overflow) {
-            batch.overflow_run = try arena.dupe(u8, subscription.overflow_run);
-            batch.overflow_sequence = subscription.overflow_sequence;
-        }
-        return batch;
-    }
-
-    fn joinedSignal(self: *Daemon, arena: std.mem.Allocator, subscription: *hubmod.Subscription) !?[]const u8 {
-        self.acquire();
-        defer self.release();
+    pub fn joinedSignal(self: *Daemon, arena: std.mem.Allocator, subscription: *hubmod.Subscription) !?[]const u8 {
+        _ = self;
         if (!subscription.joined) return null;
         return try signal(arena, "oap-subscribed", &.{
             .{ .key = "joined_after", .value = .{ .integer = @intCast(subscription.joined_after) } },
@@ -401,54 +352,36 @@ pub const Daemon = struct {
         });
     }
 
-    pub fn streamEvents(self: *Daemon, stream: *compat.net.Stream, subscription: *hubmod.Subscription, keep_going: hub_http.KeepGoing) void {
-        defer self.leave(subscription);
-        var scratch_state = std.heap.ArenaAllocator.init(self.allocator);
-        defer scratch_state.deinit();
-        stream.writeAll(sse_head) catch return;
-        if (self.joinedSignal(scratch_state.allocator(), subscription) catch return) |joined| {
-            stream.writeAll(joined) catch return;
+    pub const Fill = enum { open, ended };
+
+    pub fn fill(self: *Daemon, out: *std.ArrayList(u8), subscription: *hubmod.Subscription, budget: usize) !Fill {
+        while (out.items.len < budget) {
+            const delivered = subscription.next() orelse break;
+            var counted: [32]u8 = undefined;
+            try out.appendSlice(self.allocator, try std.fmt.bufPrint(&counted, "id: {d}\ndata: ", .{delivered.sequence}));
+            try out.appendSlice(self.allocator, delivered.line);
+            try out.appendSlice(self.allocator, "\n\n");
         }
-        while (keep_going.yes()) {
-            _ = scratch_state.reset(.retain_capacity);
-            const arena = scratch_state.allocator();
-            const batch = self.collect(arena, subscription) catch return;
-            for (batch.lines.items) |framed| {
-                const frame = std.fmt.allocPrint(arena, "id: {d}\ndata: {s}\n\n", .{ framed.sequence, framed.line }) catch return;
-                stream.writeAll(frame) catch return;
-            }
-            if (batch.lines.items.len > 0) continue;
-            switch (batch.ending) {
-                .open => {},
-                .overflow => {
-                    const overflow = signal(arena, "oap-overflow", &.{
-                        .{ .key = "last_sequence", .value = .{ .integer = @intCast(batch.overflow_sequence) } },
-                        .{ .key = "message", .value = .{ .string = "event stream consumer fell behind; reconnect with a cursor after this sequence" } },
-                        .{ .key = "run_id", .value = .{ .string = batch.overflow_run } },
-                    }) catch return;
-                    stream.writeAll(overflow) catch {};
-                    return;
-                },
-                else => return,
-            }
-            if (hungUp(stream)) return;
+        if (out.items.len >= budget) return .open;
+        switch (subscription.ending) {
+            .open => return .open,
+            .overflow => {
+                var scratch = std.heap.ArenaAllocator.init(self.allocator);
+                defer scratch.deinit();
+                const overflow = try signal(scratch.allocator(), "oap-overflow", &.{
+                    .{ .key = "last_sequence", .value = .{ .integer = @intCast(subscription.overflow_sequence) } },
+                    .{ .key = "message", .value = .{ .string = "event stream consumer fell behind; reconnect with a cursor after this sequence" } },
+                    .{ .key = "run_id", .value = .{ .string = subscription.overflow_run } },
+                });
+                try out.appendSlice(self.allocator, overflow);
+                return .ended;
+            },
+            else => return .ended,
         }
     }
 };
 
 pub const sse_head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
-
-fn hungUp(stream: *compat.net.Stream) bool {
-    if (comptime !hub_http.pollable) {
-        compat.time.sleepMs(@intCast(stream_cycle_ms));
-        return false;
-    }
-    const ready = compat.net.readableWithin(compat.net.streamHandle(stream), stream_cycle_ms) catch return true;
-    if (!ready) return false;
-    var scratch: [512]u8 = undefined;
-    const n = stream.readSome(&scratch) catch return true;
-    return n == 0;
-}
 
 const Member = struct {
     key: []const u8,
@@ -601,16 +534,360 @@ pub fn queryValue(arena: std.mem.Allocator, query: []const u8, name: []const u8)
     return found[0];
 }
 
-pub fn writeReply(stream: *compat.net.Stream, arena: std.mem.Allocator, answer: Answer, body_allowed: bool) !void {
+pub fn render(arena: std.mem.Allocator, answer: Answer, body_allowed: bool) ![]const u8 {
     const allow = if (answer.allow.len > 0) try std.fmt.allocPrint(arena, "Allow: {s}\r\n", .{answer.allow}) else "";
-    const head = try std.fmt.allocPrint(arena, "HTTP/1.1 {s}\r\nContent-Type: {s}\r\n{s}Connection: close\r\nContent-Length: {d}\r\n\r\n", .{ answer.status, answer.content_type, allow, answer.body.len });
-    try stream.writeAll(head);
-    if (body_allowed) try stream.writeAll(answer.body);
+    return std.fmt.allocPrint(arena, "HTTP/1.1 {s}\r\nContent-Type: {s}\r\n{s}Connection: close\r\nContent-Length: {d}\r\n\r\n{s}", .{
+        answer.status,
+        answer.content_type,
+        allow,
+        answer.body.len,
+        if (body_allowed) answer.body else "",
+    });
 }
 
 pub const no_content_head = "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";
 
-pub fn serveConnection(daemon: *Daemon, stream: *compat.net.Stream) void {
+fn nowMs() u64 {
+    return @intCast(@max(compat.time.monotonicMillis() catch 0, 0));
+}
+
+const Socket = std.Io.net.Socket.Handle;
+
+const Read = union(enum) {
+    bytes: usize,
+    waiting,
+    closed,
+};
+
+fn readSome(handle: Socket, into: []u8) Read {
+    const got = std.posix.system.read(handle, into.ptr, into.len);
+    return switch (std.posix.errno(got)) {
+        .SUCCESS => if (got == 0) .closed else .{ .bytes = @intCast(got) },
+        .AGAIN, .INTR => .waiting,
+        else => .closed,
+    };
+}
+
+const Wrote = union(enum) {
+    bytes: usize,
+    waiting,
+    closed,
+};
+
+const no_signal: u32 = if (@hasDecl(std.posix.MSG, "NOSIGNAL")) std.posix.MSG.NOSIGNAL else 0;
+
+fn writeSome(handle: Socket, from: []const u8) Wrote {
+    const sent = std.posix.system.sendto(handle, from.ptr, from.len, no_signal, null, 0);
+    return switch (std.posix.errno(sent)) {
+        .SUCCESS => .{ .bytes = @intCast(sent) },
+        .AGAIN, .INTR => .waiting,
+        else => .closed,
+    };
+}
+
+fn prepare(handle: Socket) bool {
+    const flags = std.posix.system.fcntl(handle, std.posix.F.GETFL, @as(usize, 0));
+    if (std.posix.errno(flags) != .SUCCESS) return false;
+    const nonblocking: @TypeOf(flags) = 1 << @bitOffsetOf(std.posix.O, "NONBLOCK");
+    if (std.posix.errno(std.posix.system.fcntl(handle, std.posix.F.SETFL, flags | nonblocking)) != .SUCCESS) return false;
+    if (comptime @hasDecl(std.posix.SO, "NOSIGPIPE")) {
+        const on: c_int = 1;
+        std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.NOSIGPIPE, std.mem.asBytes(&on)) catch return false;
+    }
+    return true;
+}
+
+const Phase = enum {
+    head,
+    body,
+    flushing,
+    refusing,
+    streaming,
+    done,
+};
+
+pub const Connection = struct {
+    daemon: *Daemon,
+    stream: compat.net.Stream,
+    scratch: std.heap.ArenaAllocator,
+    inbox: std.ArrayList(u8) = .empty,
+    request: hub_http.Request = .{},
+    body_allowed: bool = true,
+    phase: Phase = .head,
+    out: std.ArrayList(u8) = .empty,
+    sent: usize = 0,
+    started_ms: u64,
+    progress_ms: u64,
+    drain_left: usize = 0,
+    drain_spent: usize = 0,
+    drain_started_ms: u64 = 0,
+    peer_closed: bool = false,
+    subscription: ?*hubmod.Subscription = null,
+    stream_ended: bool = false,
+
+    fn create(daemon: *Daemon, stream: compat.net.Stream) !*Connection {
+        const connection = try daemon.allocator.create(Connection);
+        const now = nowMs();
+        connection.* = .{
+            .daemon = daemon,
+            .stream = stream,
+            .scratch = std.heap.ArenaAllocator.init(daemon.allocator),
+            .started_ms = now,
+            .progress_ms = now,
+        };
+        return connection;
+    }
+
+    fn destroy(self: *Connection) void {
+        const allocator = self.daemon.allocator;
+        if (self.subscription) |subscription| self.daemon.leave(subscription);
+        self.stream.close();
+        self.inbox.deinit(allocator);
+        self.out.deinit(allocator);
+        self.scratch.deinit();
+        allocator.destroy(self);
+    }
+
+    fn handle(self: *const Connection) Socket {
+        return compat.net.streamHandle(&self.stream);
+    }
+
+    fn pending(self: *const Connection) bool {
+        return self.sent < self.out.items.len;
+    }
+
+    fn events(self: *const Connection) i16 {
+        var wanted: i16 = 0;
+        switch (self.phase) {
+            .head, .body, .refusing, .streaming, .flushing => if (!self.peer_closed) {
+                wanted |= std.posix.POLL.IN;
+            },
+            .done => {},
+        }
+        if (self.pending()) wanted |= std.posix.POLL.OUT;
+        return wanted;
+    }
+
+    fn queue(self: *Connection, bytes: []const u8) void {
+        self.out.appendSlice(self.daemon.allocator, bytes) catch {
+            self.phase = .done;
+        };
+    }
+
+    fn refuse(self: *Connection, bytes: []const u8, owed: usize) void {
+        self.queue(bytes);
+        if (self.phase == .done) return;
+        self.phase = .refusing;
+        self.drain_left = @min(owed, hub_http.drain_total_cap_bytes);
+        self.drain_started_ms = nowMs();
+    }
+
+    fn transportFailure(self: *Connection, failure: hub_http.Failure, owed: usize) void {
+        const arena = self.scratch.allocator();
+        const bytes = hub_http.transportFailureBytes(arena, self.daemon.mint(), failure, self.body_allowed) catch {
+            self.phase = .done;
+            return;
+        };
+        self.refuse(bytes, owed);
+    }
+
+    fn readable(self: *Connection) void {
+        var chunk: [read_chunk_bytes]u8 = undefined;
+        switch (self.phase) {
+            .head => {
+                const room = @min(chunk.len, hub_http.max_header_bytes + 1 - @min(self.inbox.items.len, hub_http.max_header_bytes));
+                switch (readSome(self.handle(), chunk[0..room])) {
+                    .waiting => return,
+                    .closed => {
+                        self.peer_closed = true;
+                        self.transportFailure(error.Truncated, 0);
+                    },
+                    .bytes => |count| {
+                        self.inbox.appendSlice(self.daemon.allocator, chunk[0..count]) catch {
+                            self.phase = .done;
+                            return;
+                        };
+                        self.progress_ms = nowMs();
+                        self.takeHead();
+                    },
+                }
+            },
+            .body => switch (readSome(self.handle(), self.request.body[self.request.filled..])) {
+                .waiting => return,
+                .closed => {
+                    self.peer_closed = true;
+                    self.transportFailure(error.BodyTruncated, 0);
+                },
+                .bytes => |count| {
+                    self.request.filled += count;
+                    self.progress_ms = nowMs();
+                    if (self.request.filled == self.request.body.len) self.dispatch();
+                },
+            },
+            .refusing => {
+                const room = @min(chunk.len, self.drain_left);
+                if (room == 0) return;
+                switch (readSome(self.handle(), chunk[0..room])) {
+                    .waiting => return,
+                    .closed => self.peer_closed = true,
+                    .bytes => |count| {
+                        self.drain_left -= count;
+                        self.drain_spent += count;
+                    },
+                }
+            },
+            .streaming, .flushing => switch (readSome(self.handle(), &chunk)) {
+                .waiting, .bytes => return,
+                .closed => {
+                    self.peer_closed = true;
+                    if (self.phase == .streaming) self.phase = .done;
+                },
+            },
+            .done => {},
+        }
+    }
+
+    fn takeHead(self: *Connection) void {
+        const at = std.mem.indexOf(u8, self.inbox.items, "\r\n\r\n") orelse {
+            if (self.inbox.items.len >= hub_http.max_header_bytes) self.transportFailure(error.HeaderTooLarge, 0);
+            return;
+        };
+        const arena = self.scratch.allocator();
+        const head = self.inbox.items[0 .. at + 4];
+        const leftover = self.inbox.items[at + 4 ..];
+        var declared: usize = 0;
+        self.request = hub_http.parseHead(arena, head, &self.body_allowed, &declared) catch |failure| {
+            self.transportFailure(failure, declared -| leftover.len);
+            return;
+        };
+        const gate = hub_http.answer(self.daemon.allow, self.request);
+        if (gate != .not_found) {
+            const bytes = hub_http.answerBytes(arena, self.daemon.mint(), gate, self.body_allowed) catch {
+                self.phase = .done;
+                return;
+            };
+            self.refuse(bytes, self.request.content_length -| leftover.len);
+            return;
+        }
+        if (self.request.content_length == 0) return self.dispatch();
+        self.request.body = arena.alloc(u8, self.request.content_length) catch {
+            self.phase = .done;
+            return;
+        };
+        const taken = @min(leftover.len, self.request.body.len);
+        @memcpy(self.request.body[0..taken], leftover[0..taken]);
+        self.request.filled = taken;
+        if (self.request.filled == self.request.body.len) return self.dispatch();
+        self.phase = .body;
+    }
+
+    fn dispatch(self: *Connection) void {
+        const arena = self.scratch.allocator();
+        self.phase = .flushing;
+        const reply = self.daemon.respond(arena, self.request) catch {
+            self.queue(render(arena, .{ .status = internal_status, .content_type = text_plain, .body = "internal error" }, self.body_allowed) catch "");
+            return;
+        };
+        switch (reply) {
+            .answer => |given| self.queue(render(arena, given, self.body_allowed) catch ""),
+            .no_content => self.queue(no_content_head),
+            .gap => |gap| {
+                self.queue(sse_head);
+                if (self.body_allowed) self.queue(gapSignal(arena, gap) catch "");
+            },
+            .stream => |subscription| {
+                self.queue(sse_head);
+                if (!self.body_allowed) {
+                    self.daemon.leave(subscription);
+                    return;
+                }
+                self.subscription = subscription;
+                self.phase = .streaming;
+                if (self.daemon.joinedSignal(arena, subscription) catch null) |joined| self.queue(joined);
+            },
+        }
+    }
+
+    fn feed(self: *Connection) void {
+        if (self.phase != .streaming or self.stream_ended) return;
+        const subscription = self.subscription orelse return;
+        if (self.out.items.len - self.sent >= stream_buffer_bytes) return;
+        self.compact();
+        const filled = self.daemon.fill(&self.out, subscription, self.sent + stream_buffer_bytes) catch {
+            self.phase = .done;
+            return;
+        };
+        if (filled == .ended) self.stream_ended = true;
+    }
+
+    fn compact(self: *Connection) void {
+        if (self.sent == 0) return;
+        const rest = self.out.items.len - self.sent;
+        std.mem.copyForwards(u8, self.out.items[0..rest], self.out.items[self.sent..]);
+        self.out.shrinkRetainingCapacity(rest);
+        self.sent = 0;
+    }
+
+    fn writable(self: *Connection) void {
+        while (self.pending()) {
+            switch (writeSome(self.handle(), self.out.items[self.sent..])) {
+                .waiting => return,
+                .closed => {
+                    self.phase = .done;
+                    return;
+                },
+                .bytes => |count| {
+                    self.sent += count;
+                    self.progress_ms = nowMs();
+                },
+            }
+        }
+    }
+
+    fn settle(self: *Connection, now: u64) void {
+        switch (self.phase) {
+            .head => if (now -| self.started_ms >= @as(u64, @intCast(hub_http.header_read_ms))) self.transportFailure(error.Timeout, 0),
+            .body => if (now -| self.progress_ms >= @as(u64, @intCast(hub_http.idle_read_ms))) self.transportFailure(error.Timeout, 0),
+            .flushing => {
+                if (!self.pending()) self.phase = .done;
+            },
+            .refusing => {
+                if (self.pending()) return;
+                if (self.drain_left == 0 or self.peer_closed or now -| self.drain_started_ms >= @as(u64, @intCast(hub_http.drain_total_ms))) self.phase = .done;
+            },
+            .streaming => {
+                if (self.stream_ended and !self.pending()) self.phase = .done;
+            },
+            .done => {},
+        }
+        if (self.phase != .done and self.pending() and now -| self.progress_ms >= @as(u64, @intCast(hub_http.idle_read_ms))) self.phase = .done;
+    }
+};
+
+pub fn serveListener(daemon: *Daemon, listener: *compat.net.Server, poll_ms: i32) ?std.Io.net.Server.AcceptError {
+    if (comptime hub_http.pollable) return serveLoop(daemon, listener, poll_ms) else return serveSerially(daemon, listener);
+}
+
+fn serveSerially(daemon: *Daemon, listener: *compat.net.Server) ?std.Io.net.Server.AcceptError {
+    defer daemon.stop();
+    while (daemon.going().yes()) {
+        daemon.pump() catch {};
+        const accepted = compat.net.accept(listener) catch |failure| switch (hub_http.classifyAccept(failure)) {
+            .serve_again => continue,
+            .back_off => {
+                compat.time.sleepMs(hub_http.accept_backoff_ms);
+                continue;
+            },
+            .stop => return failure,
+        };
+        var stream = accepted.stream;
+        defer stream.close();
+        serveBlocking(daemon, &stream);
+    }
+    return null;
+}
+
+fn serveBlocking(daemon: *Daemon, stream: *compat.net.Stream) void {
     const keep_going = daemon.going();
     var scratch_state = std.heap.ArenaAllocator.init(daemon.allocator);
     defer scratch_state.deinit();
@@ -632,143 +909,104 @@ pub fn serveConnection(daemon: *Daemon, stream: *compat.net.Stream) void {
     hub_http.readBody(scratch, stream, &request, hub_http.idle_read_ms, io_cycle_ms, keep_going) catch |failure| {
         if (failure == error.Stopped) return;
         hub_http.writeTransportFailure(stream, scratch, daemon.mint(), failure, body_allowed) catch {};
-        _ = hub_http.drain(stream, request.content_length -| request.filled, keep_going);
         return;
     };
     const reply = daemon.respond(scratch, request) catch {
-        writeReply(stream, scratch, .{ .status = internal_status, .content_type = text_plain, .body = "internal error" }, body_allowed) catch {};
+        stream.writeAll(render(scratch, .{ .status = internal_status, .content_type = text_plain, .body = "internal error" }, body_allowed) catch return) catch {};
         return;
     };
     switch (reply) {
-        .answer => |given| writeReply(stream, scratch, given, body_allowed) catch {},
+        .answer => |given| stream.writeAll(render(scratch, given, body_allowed) catch return) catch {},
         .no_content => stream.writeAll(no_content_head) catch {},
         .gap => |gap| {
             stream.writeAll(sse_head) catch return;
             if (body_allowed) stream.writeAll(gapSignal(scratch, gap) catch return) catch {};
         },
         .stream => |subscription| {
-            if (!body_allowed) {
-                daemon.leave(subscription);
-                stream.writeAll(sse_head) catch {};
-                return;
-            }
-            daemon.streamEvents(stream, subscription, keep_going);
+            defer daemon.leave(subscription);
+            var out = std.ArrayList(u8).empty;
+            defer out.deinit(daemon.allocator);
+            out.appendSlice(daemon.allocator, sse_head) catch return;
+            if (body_allowed) _ = daemon.fill(&out, subscription, stream_buffer_bytes) catch {};
+            stream.writeAll(out.items) catch {};
         },
     }
 }
 
-pub fn serveListener(daemon: *Daemon, listener: *compat.net.Server, connections: *Connections, poll_ms: i32) ?std.Io.net.Server.AcceptError {
+fn serveLoop(daemon: *Daemon, listener: *compat.net.Server, poll_ms: i32) ?std.Io.net.Server.AcceptError {
+    var connections = std.ArrayList(*Connection).empty;
     defer {
         daemon.stop();
-        connections.joinAll();
+        for (connections.items) |connection| connection.destroy();
+        connections.deinit(daemon.allocator);
     }
+    var watched = std.ArrayList(std.posix.pollfd).empty;
+    defer watched.deinit(daemon.allocator);
+    var scratch = std.heap.ArenaAllocator.init(daemon.allocator);
+    defer scratch.deinit();
     while (daemon.going().yes()) {
-        daemon.pump() catch {};
-        connections.reap();
-        if (connections.full()) {
-            compat.time.sleepMs(@intCast(poll_ms));
-            continue;
+        _ = scratch.reset(.retain_capacity);
+        watched.clearRetainingCapacity();
+        const accepting = connections.items.len < max_connections;
+        watched.append(daemon.allocator, .{ .fd = compat.net.serverHandle(listener), .events = if (accepting) std.posix.POLL.IN else 0, .revents = 0 }) catch return null;
+        for (connections.items) |connection| {
+            watched.append(daemon.allocator, .{ .fd = connection.handle(), .events = connection.events(), .revents = 0 }) catch return null;
         }
-        if (!hub_http.connectionPending(listener, poll_ms)) continue;
-        const connection = compat.net.accept(listener) catch |failure| switch (hub_http.classifyAccept(failure)) {
-            .serve_again => continue,
-            .back_off => {
-                compat.time.sleepMs(hub_http.accept_backoff_ms);
+        const children = daemon.frontend.hub.readableHandles(scratch.allocator()) catch &.{};
+        for (children) |child| {
+            watched.append(daemon.allocator, .{ .fd = child, .events = std.posix.POLL.IN, .revents = 0 }) catch return null;
+        }
+        _ = std.posix.poll(watched.items, poll_ms) catch 0;
+        if (!daemon.going().yes()) break;
+
+        for (connections.items, watched.items[1 .. 1 + connections.items.len]) |connection, polled| {
+            if (polled.revents & (std.posix.POLL.IN | std.posix.POLL.HUP | std.posix.POLL.ERR) != 0) connection.readable();
+            if (polled.revents & std.posix.POLL.OUT != 0) connection.writable();
+        }
+        daemon.pump() catch {};
+        const now = nowMs();
+        for (connections.items) |connection| {
+            connection.feed();
+            connection.writable();
+            connection.settle(now);
+        }
+        var index: usize = 0;
+        var streaming: usize = 0;
+        while (index < connections.items.len) {
+            if (connections.items[index].phase != .done) {
+                streaming += @intFromBool(connections.items[index].phase == .streaming);
+                index += 1;
                 continue;
-            },
-            .stop => return failure,
-        };
-        connections.serve(daemon, connection.stream);
+            }
+            connections.orderedRemove(index).destroy();
+        }
+        daemon.streams.store(streaming, .release);
+        if (accepting and watched.items[0].revents & std.posix.POLL.IN != 0) {
+            const accepted = compat.net.accept(listener) catch |failure| switch (hub_http.classifyAccept(failure)) {
+                .serve_again => continue,
+                .back_off => {
+                    compat.time.sleepMs(hub_http.accept_backoff_ms);
+                    continue;
+                },
+                .stop => return failure,
+            };
+            var stream = accepted.stream;
+            if (!prepare(compat.net.streamHandle(&stream))) {
+                stream.close();
+                continue;
+            }
+            const connection = Connection.create(daemon, stream) catch {
+                stream.close();
+                continue;
+            };
+            connections.append(daemon.allocator, connection) catch {
+                connection.destroy();
+                continue;
+            };
+        }
     }
     return null;
 }
-
-pub const Connections = struct {
-    slots: [max_connections]Slot = [_]Slot{.{}} ** max_connections,
-
-    const Slot = struct {
-        thread: ?std.Thread = null,
-        done: std.atomic.Value(bool) = .init(false),
-        stream: compat.net.Stream = undefined,
-        guard: std.Io.Mutex = .init,
-        closed: bool = false,
-
-        fn finish(self: *Slot) void {
-            self.guard.lockUncancelable(io());
-            self.stream.close();
-            self.closed = true;
-            self.guard.unlock(io());
-            self.done.store(true, .release);
-        }
-
-        fn interrupt(self: *Slot) void {
-            self.guard.lockUncancelable(io());
-            defer self.guard.unlock(io());
-            if (!self.closed) self.stream.shutdownHow(.both);
-        }
-    };
-
-    pub fn reap(self: *Connections) void {
-        for (&self.slots) |*slot| {
-            const thread = slot.thread orelse continue;
-            if (!slot.done.load(.acquire)) continue;
-            thread.join();
-            slot.thread = null;
-        }
-    }
-
-    pub fn open(self: *const Connections) usize {
-        var count: usize = 0;
-        for (&self.slots) |*slot| count += @intFromBool(slot.thread != null);
-        return count;
-    }
-
-    pub fn full(self: *const Connections) bool {
-        return self.open() >= max_connections;
-    }
-
-    fn run(daemon: *Daemon, slot: *Slot) void {
-        serveConnection(daemon, &slot.stream);
-        slot.finish();
-    }
-
-    pub fn serve(self: *Connections, daemon: *Daemon, stream: compat.net.Stream) void {
-        for (&self.slots) |*slot| {
-            if (slot.thread != null) continue;
-            slot.stream = stream;
-            slot.closed = false;
-            slot.done.store(false, .release);
-            slot.thread = std.Thread.spawn(.{}, run, .{ daemon, slot }) catch {
-                slot.stream.close();
-                slot.closed = true;
-                return;
-            };
-            return;
-        }
-        var refused = stream;
-        refused.close();
-    }
-
-    fn settled(self: *Connections) bool {
-        for (&self.slots) |*slot| {
-            if (slot.thread != null and !slot.done.load(.acquire)) return false;
-        }
-        return true;
-    }
-
-    pub fn joinAll(self: *Connections) void {
-        const until = compat.time.nowMillis() + stop_grace_ms;
-        while (!self.settled() and compat.time.nowMillis() < until) compat.time.sleepMs(5);
-        for (&self.slots) |*slot| {
-            if (slot.thread != null and !slot.done.load(.acquire)) slot.interrupt();
-        }
-        for (&self.slots) |*slot| {
-            const thread = slot.thread orelse continue;
-            thread.join();
-            slot.thread = null;
-        }
-    }
-};
 
 const testing = std.testing;
 const memory = @import("memory");
@@ -1163,22 +1401,23 @@ test "reading a query survives every allocation failing, and leaks nothing" {
 const Served = struct {
     fixture: Fixture,
     listener: compat.net.Server,
-    connections: Connections,
     thread: std.Thread,
     address: compat.net.Address,
 
-    fn start(self: *Served) !void {
+    fn prepare(self: *Served) !void {
         try self.fixture.init(.{ .journal_capacity = 256 });
         errdefer self.fixture.deinit();
         const local = try compat.net.resolveAddress(testing.allocator, "127.0.0.1", 0);
         self.listener = try compat.net.tcpListen(local, .{ .reuse_address = true });
         self.address = compat.net.listenAddress(&self.listener);
-        self.connections = .{};
+    }
+
+    fn serve(self: *Served) !void {
         self.thread = try std.Thread.spawn(.{}, loop, .{self});
     }
 
     fn loop(self: *Served) void {
-        _ = serveListener(&self.fixture.daemon, &self.listener, &self.connections, 5);
+        _ = serveListener(&self.fixture.daemon, &self.listener, 5);
     }
 
     fn stop(self: *Served) void {
@@ -1192,10 +1431,8 @@ const Served = struct {
         return compat.net.tcpConnect(self.address);
     }
 
-    fn subscribers(self: *Served) usize {
-        self.fixture.daemon.acquire();
-        defer self.fixture.daemon.release();
-        return self.fixture.core.subscriptions.items.len;
+    fn streams(self: *Served) usize {
+        return self.fixture.daemon.streams.load(.acquire);
     }
 };
 
@@ -1213,21 +1450,26 @@ fn readFor(stream: *compat.net.Stream, into: *std.ArrayList(u8), wanted: []const
     return std.mem.indexOf(u8, into.items, wanted) != null;
 }
 
-fn waitUntil(served: *Served, wanted: usize, budget_ms: i64) bool {
+fn waitForStreams(served: *Served, wanted: usize, budget_ms: i64) bool {
     const until = compat.time.nowMillis() + budget_ms;
     while (compat.time.nowMillis() < until) {
-        if (served.subscribers() == wanted) return true;
+        if (served.streams() == wanted) return true;
         compat.time.sleepMs(5);
     }
-    return served.subscribers() == wanted;
+    return served.streams() == wanted;
+}
+
+fn post(path: []const u8, body: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(testing.allocator, "POST {s} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ path, body.len, body });
 }
 
 test "an open event stream does not hold the daemon: another connection is answered while it streams" {
     if (comptime !hub_http.pollable) return error.SkipZigTest;
     var served: Served = undefined;
-    try served.start();
-    defer served.stop();
+    try served.prepare();
     _ = try served.fixture.answer("POST", "/adapters/memory/sessions", open_demo);
+    try served.serve();
+    defer served.stop();
 
     var stream = try served.dial();
     defer stream.close();
@@ -1244,34 +1486,59 @@ test "an open event stream does not hold the daemon: another connection is answe
     try testing.expect(try readFor(&other, &listed, "\"name\":\"memory\"", 2000));
     try testing.expect(std.mem.startsWith(u8, listed.items, "HTTP/1.1 200 OK\r\n"));
 
-    const admitted = try served.fixture.answer("POST", "/sessions/demo/submit", submit_demo);
-    try testing.expectEqualStrings("200 OK", admitted.status);
+    var submitter = try served.dial();
+    defer submitter.close();
+    const submit = try post("/sessions/demo/submit", submit_demo);
+    defer testing.allocator.free(submit);
+    try submitter.writeAll(submit);
+    var admitted = std.ArrayList(u8).empty;
+    defer admitted.deinit(testing.allocator);
+    try testing.expect(try readFor(&submitter, &admitted, "session.message.submit.response", 2000));
     try testing.expect(try readFor(&stream, &streamed, "id: 1\ndata: {", 2000));
     try testing.expect(std.mem.indexOf(u8, streamed.items, "run.started") != null);
 }
 
-test "a client that hangs up mid-stream releases its subscription without an event to write" {
+test "a client that hangs up mid-stream releases its stream without an event to write" {
     if (comptime !hub_http.pollable) return error.SkipZigTest;
     var served: Served = undefined;
-    try served.start();
-    defer served.stop();
+    try served.prepare();
     _ = try served.fixture.answer("POST", "/adapters/memory/sessions", open_demo);
+    try served.serve();
+    defer served.stop();
 
     var stream = try served.dial();
     try stream.writeAll("GET /sessions/demo/events HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
     var streamed = std.ArrayList(u8).empty;
     defer streamed.deinit(testing.allocator);
     try testing.expect(try readFor(&stream, &streamed, "text/event-stream", 2000));
-    try testing.expect(waitUntil(&served, 1, 2000));
+    try testing.expect(waitForStreams(&served, 1, 2000));
     stream.close();
-    try testing.expect(waitUntil(&served, 0, 2000));
+    try testing.expect(waitForStreams(&served, 0, 2000));
+}
+
+test "a body cut short by a half-close is refused request_read by the loop" {
+    if (comptime !hub_http.pollable) return error.SkipZigTest;
+    var served: Served = undefined;
+    try served.prepare();
+    try served.serve();
+    defer served.stop();
+
+    var stream = try served.dial();
+    defer stream.close();
+    try stream.writeAll("POST /adapters/memory/sessions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 64\r\n\r\n{\"a\":");
+    stream.shutdownHow(.send);
+    var answered = std.ArrayList(u8).empty;
+    defer answered.deinit(testing.allocator);
+    try testing.expect(try readFor(&stream, &answered, "request_read", 2000));
+    try testing.expect(std.mem.startsWith(u8, answered.items, "HTTP/1.1 400 Bad Request\r\n"));
 }
 
 test "stopping the daemon ends an open stream rather than waiting it out" {
     if (comptime !hub_http.pollable) return error.SkipZigTest;
     var served: Served = undefined;
-    try served.start();
+    try served.prepare();
     _ = try served.fixture.answer("POST", "/adapters/memory/sessions", open_demo);
+    try served.serve();
 
     var stream = try served.dial();
     defer stream.close();
@@ -1279,7 +1546,7 @@ test "stopping the daemon ends an open stream rather than waiting it out" {
     var streamed = std.ArrayList(u8).empty;
     defer streamed.deinit(testing.allocator);
     try testing.expect(try readFor(&stream, &streamed, "text/event-stream", 2000));
-    try testing.expect(waitUntil(&served, 1, 2000));
+    try testing.expect(waitForStreams(&served, 1, 2000));
 
     const before = compat.time.nowMillis();
     served.stop();
@@ -1289,7 +1556,4 @@ test "stopping the daemon ends an open stream rather than waiting it out" {
 
 test "the connection bound is the number the draft's G13 row records" {
     try testing.expectEqual(@as(usize, 64), max_connections);
-    var connections = Connections{};
-    try testing.expectEqual(@as(usize, 0), connections.open());
-    try testing.expect(!connections.full());
 }
