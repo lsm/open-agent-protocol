@@ -411,3 +411,61 @@ func TestAReopenOfALiveSessionIsSessionExistsBeforeTheAdapterIsAsked(t *testing.
 		t.Fatalf("reopening a live session answered %v, want serve.ErrSessionExists rather than the adapter's unknown_session", err)
 	}
 }
+
+type nativeAdapter struct {
+	base.Adapter
+	asked []base.OpenRequest
+}
+
+type nativeSession struct {
+	base.Session
+}
+
+func (s nativeSession) NativeSessionID() string { return "native-thread-7" }
+
+func (a *nativeAdapter) Open(ctx context.Context, request base.OpenRequest) (base.Session, error) {
+	a.asked = append(a.asked, request)
+	session, err := a.Adapter.Open(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	return nativeSession{Session: session}, nil
+}
+
+func TestAReopenHandsTheAdapterTheNativeIDItsBindingRecorded(t *testing.T) {
+	store, err := binding.File(filepath.Join(t.TempDir(), "bindings.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped := &nativeAdapter{Adapter: base.NewMemory(base.Config{JournalCapacity: 8})}
+	registry := serve.NewRegistry()
+	if err := registry.Register("native", wrapped); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{StreamQueue: 8, Bindings: store})
+	ctx := context.Background()
+	session, _, err := hub.Open(ctx, "native", base.OpenRequest{SessionID: "bound"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest, found, err := store.Latest(ctx, "bound")
+	if err != nil || !found || latest.Record.NativeSessionID != "native-thread-7" {
+		t.Fatalf("binding = %+v found=%v err=%v, want the session's native id recorded at open", latest, found, err)
+	}
+	if err := session.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := hub.Open(ctx, "native", base.OpenRequest{SessionID: "bound", Reopen: true}); err != nil {
+		t.Fatal(err)
+	}
+	if asked := wrapped.asked[len(wrapped.asked)-1]; asked.NativeSessionID != "native-thread-7" {
+		t.Fatalf("the reopen asked the adapter with native id %q, want the bound one", asked.NativeSessionID)
+	}
+	before := len(wrapped.asked)
+	if _, _, err := hub.Open(ctx, "native", base.OpenRequest{SessionID: "unbound", Reopen: true}); !errors.Is(err, serve.ErrUnknownSession) {
+		t.Fatalf("a reopen with no binding answered %v, want serve.ErrUnknownSession", err)
+	}
+	if len(wrapped.asked) != before {
+		t.Fatal("a reopen with no binding reached the adapter; the code must come from the binding")
+	}
+}

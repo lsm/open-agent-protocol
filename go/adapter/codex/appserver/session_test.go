@@ -52,6 +52,8 @@ type fakeClient struct {
 	closeOnce     sync.Once
 	err           error
 	turnStartErr  error
+	resumedModel  string
+	resumeErr     error
 
 	turnStart native.TurnStartParams
 }
@@ -69,8 +71,15 @@ func (client *fakeClient) Call(ctx context.Context, method string, params, resul
 		response := result.(*native.ThreadStartResponse)
 		response.Thread.ID = client.threadID
 	case native.MethodThreadResume:
+		if client.resumeErr != nil {
+			return client.resumeErr
+		}
+		if sent, ok := params.(native.ThreadResumeParams); ok && sent.ThreadID != client.threadID {
+			return fmt.Errorf("no rollout found for thread id %s", sent.ThreadID)
+		}
 		response := result.(*native.ThreadResumeResponse)
 		response.Thread.ID = client.threadID
+		response.Model = client.resumedModel
 	case native.MethodTurnStart:
 		if client.turnStartErr != nil {
 			return client.turnStartErr
@@ -1075,4 +1084,57 @@ func envelopeTypes(events []protocol.Envelope) []protocol.EnvelopeType {
 		out = append(out, envelope.Type)
 	}
 	return out
+}
+
+func TestAReopenResumesTheBoundThreadAndReportsTheModelItResumedUnder(t *testing.T) {
+	client := newFakeClient()
+	client.resumedModel = "gpt-resumed"
+	implementation, err := New(Config{
+		Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }),
+		Clock:   &fakeClock{}, IDs: &fakeIDs{}, Model: "glm-test", JournalCapacity: 32,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := implementation.Open(context.Background(), adapter.OpenRequest{SessionID: "session-1", Participant: protocol.Participant{ID: "user"}, Reopen: true, NativeSessionID: client.threadID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.Close(context.Background()) })
+	state, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.CurrentModelID != "gpt-resumed" {
+		t.Fatalf("model = %q, want the model thread/resume answered, not the configured one", state.CurrentModelID)
+	}
+	if state.Recovery == nil || !state.Recovery.Recovered {
+		t.Fatalf("recovery = %+v, want a reopen to declare itself recovered", state.Recovery)
+	}
+	if got := session.(adapter.NativeSession).NativeSessionID(); got != client.threadID {
+		t.Fatalf("native id = %q, want the resumed thread", got)
+	}
+}
+
+func TestAReopenCodexCannotLoadIsUnsupportedFeature(t *testing.T) {
+	for name, request := range map[string]adapter.OpenRequest{
+		"no thread is bound":       {SessionID: "session-1", Participant: protocol.Participant{ID: "user"}, Reopen: true},
+		"the bound thread is gone": {SessionID: "session-1", Participant: protocol.Participant{ID: "user"}, Reopen: true, NativeSessionID: "vanished-thread"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			client := newFakeClient()
+			implementation, err := New(Config{
+				Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }),
+				Clock:   &fakeClock{}, IDs: &fakeIDs{}, Model: "glm-test", JournalCapacity: 32,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = implementation.Open(context.Background(), request)
+			var refusal *adapter.UnsupportedControlError
+			if !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureOpenReopen {
+				t.Fatalf("open answered %v, want an unsupported_feature refusal naming %s", err, protocol.FeatureOpenReopen)
+			}
+		})
+	}
 }

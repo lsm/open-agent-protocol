@@ -40,6 +40,7 @@ pub const Options = struct {
     approval_policy: []const u8 = "",
     sandbox: []const u8 = "",
     resume_thread_id: []const u8 = "",
+    reopen: bool = false,
     first_request_id: i64 = 1,
     id_width: usize = 0,
     revision: []const u8 = capability_revision,
@@ -90,6 +91,7 @@ pub const State = struct {
     updated_at_ms: i64 = 0,
     transcript_cursor: []const u8 = "",
     current_model_id: []const u8 = "",
+    recovered: bool = false,
 };
 
 pub const Answer = struct {
@@ -374,6 +376,7 @@ pub const Reducer = struct {
             .updated_at_ms = self.state.updated_at_ms,
             .transcript_cursor = transcript_cursor,
             .current_model_id = current_model_id,
+            .recovered = self.state.recovered,
         };
         try kept.runs.ensureTotalCapacity(keep, self.runs.items.len);
         for (self.runs.items) |run| {
@@ -532,7 +535,10 @@ pub const Reducer = struct {
                 if (thread.len == 0 or !std.mem.eql(u8, thread, self.options.resume_thread_id)) {
                     return self.callFailed(what, .{ .method = callMethod(what), .message = "thread/resume returned an unexpected thread id" });
                 }
+                const resumed_model = native.text(result, &.{"model"});
+                if (resumed_model.len > 0) self.options.model = try self.allocator().dupe(u8, resumed_model);
                 try self.opens(thread);
+                self.state.recovered = self.options.reopen;
             },
             .turn_start => |index| {
                 if (!native.decodes(result, native.turn_start_response)) return self.callFailed(what, undecodable(what));
@@ -1221,6 +1227,7 @@ pub const features = [_]Feature{
     .{ .name = "session.message.delivery.auto", .level = "native" },
     .{ .name = "session.message.submit", .level = "native" },
     .{ .name = "session.open", .level = "native" },
+    .{ .name = "session.open.reopen", .level = "native", .reason = "thread/resume reloads the thread the session's binding names and reports the model it resumed under" },
     .{ .name = "session.state", .level = "native" },
     .{ .name = "user_input", .level = "degraded", .reason = "Codex option questions normalize to OAP single-choice input" },
 };

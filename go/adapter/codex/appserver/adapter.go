@@ -151,6 +151,7 @@ func (implementation *Adapter) Probe(context.Context) (adapter.Descriptor, error
 		"action.tools.execute":           {Level: protocol.SupportDegraded, Reason: "only pinned command, file-change, and MCP item families are normalized"},
 		"action.permissions":             {Level: protocol.SupportNative, Reason: "command and file-change reverse approvals are correlated and round-trip once"},
 		"user_input":                     {Level: protocol.SupportDegraded, Reason: "Codex option questions normalize to OAP single-choice input"},
+		protocol.FeatureOpenReopen:       {Level: protocol.SupportNative, Reason: "thread/resume reloads the thread the session's binding names and reports the model it resumed under"},
 	}
 	endpoint := protocol.EndpointDescriptor{ID: endpointID, Name: "Codex app-server Adapter", Version: CodexCommit, Adapter: "codex-appserver-stdio"}
 	return adapter.Descriptor{
@@ -185,6 +186,15 @@ func (implementation *Adapter) Open(ctx context.Context, request adapter.OpenReq
 		return nil, err
 	}
 	threadID := implementation.config.ResumeThreadID
+	if request.Reopen {
+		threadID = request.NativeSessionID
+		if threadID == "" {
+			_ = client.Close()
+			return nil, &adapter.UnsupportedControlError{Feature: protocol.FeatureOpenReopen, Reason: adapter.ControlUnsatisfiable, Detail: "no Codex thread is bound to this session"}
+		}
+	}
+	model := implementation.config.Model
+	var recovery *protocol.RecoveryMetadata
 	if threadID == "" {
 		params := native.ThreadStartParams{Model: implementation.config.Model, Cwd: implementation.config.WorkingDirectory, ApprovalPolicy: implementation.config.ApprovalPolicy, Sandbox: implementation.config.Sandbox}
 		var response native.ThreadStartResponse
@@ -201,11 +211,20 @@ func (implementation *Adapter) Open(ctx context.Context, request adapter.OpenReq
 		var response native.ThreadResumeResponse
 		if err := client.Call(ctx, native.MethodThreadResume, native.ThreadResumeParams{ThreadID: threadID}, &response); err != nil {
 			_ = client.Close()
+			if request.Reopen {
+				return nil, &adapter.UnsupportedControlError{Feature: protocol.FeatureOpenReopen, Reason: adapter.ControlUnsatisfiable, Detail: "Codex could not load the bound thread: " + err.Error()}
+			}
 			return nil, fmt.Errorf("resume Codex thread: %w", err)
 		}
 		if response.Thread.ID == "" || response.Thread.ID != threadID {
 			_ = client.Close()
 			return nil, fmt.Errorf("%w: thread/resume returned unexpected thread id %q", ErrNativeProtocol, response.Thread.ID)
+		}
+		if response.Model != "" {
+			model = response.Model
+		}
+		if request.Reopen {
+			recovery = &protocol.RecoveryMetadata{Recovered: true}
 		}
 	}
 	sessionID := request.SessionID
@@ -216,8 +235,8 @@ func (implementation *Adapter) Open(ctx context.Context, request adapter.OpenReq
 	session := &session{
 		client: client, clock: implementation.clock, ids: implementation.ids,
 		capacity: implementation.config.JournalCapacity, participant: request.Participant.ID,
-		threadID: threadID, model: implementation.config.Model,
-		state: protocol.SessionState{SessionID: sessionID, Status: protocol.SessionIdle, CurrentModelID: implementation.config.Model, UpdatedAtMS: now},
+		threadID: threadID, model: model,
+		state: protocol.SessionState{SessionID: sessionID, Status: protocol.SessionIdle, CurrentModelID: model, UpdatedAtMS: now, Recovery: recovery},
 		runs:  make(map[protocol.RunID]*runState), turns: make(map[string]protocol.RunID),
 		items: make(map[string]itemBinding), interactions: make(map[protocol.InteractionID]*interactionBinding), stop: make(chan struct{}),
 	}

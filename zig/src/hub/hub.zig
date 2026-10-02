@@ -95,7 +95,7 @@ pub const OpenRequest = struct {
         };
     }
 
-    fn contractRequest(self: OpenRequest) contract.OpenRequest {
+    fn contractRequest(self: OpenRequest, native_session_id: []const u8) contract.OpenRequest {
         return .{
             .session_id = self.session_id,
             .participant = self.participant,
@@ -104,7 +104,21 @@ pub const OpenRequest = struct {
             .tools_json = self.tools_json,
             .tool_sources_json = self.tool_sources_json,
             .reopen = self.reopen,
+            .native_session_id = native_session_id,
         };
+    }
+};
+
+const Bound = struct {
+    session_id: []const u8,
+    adapter_name: []const u8,
+    native_id: []const u8,
+
+    fn deinit(self: *Bound, allocator: std.mem.Allocator) void {
+        allocator.free(self.session_id);
+        allocator.free(self.adapter_name);
+        allocator.free(self.native_id);
+        self.* = undefined;
     }
 };
 
@@ -341,6 +355,7 @@ pub const Hub = struct {
     entries: std.ArrayList(Entry) = .empty,
     subscriptions: std.ArrayList(*Subscription) = .empty,
     holds: std.ArrayList(Held) = .empty,
+    bound: std.ArrayList(Bound) = .empty,
 
     pub fn init(allocator: std.mem.Allocator, now: *const fn () u64, options: Options) Hub {
         return .{
@@ -357,6 +372,8 @@ pub const Hub = struct {
 
     pub fn deinit(self: *Hub) void {
         self.holds.deinit(self.allocator);
+        for (self.bound.items) |*record| record.deinit(self.allocator);
+        self.bound.deinit(self.allocator);
         for (self.subscriptions.items) |subscription| {
             subscription.release(self.allocator);
             self.allocator.destroy(subscription);
@@ -488,13 +505,24 @@ pub const Hub = struct {
         }
         if (request.session_id.len > 0 and self.findSession(request.session_id) != null) return error.SessionExists;
         try contract.refuseUnadvertisedOpenElections(descriptor, &request.payload(), &refused.reason);
-        var session = try registered.adapter.open(arena, request.contractRequest(), &refused.reason);
+        var native_session_id: []const u8 = "";
+        if (request.reopen) {
+            const record = self.findBound(request.session_id) orelse return error.UnknownSession;
+            if (!std.mem.eql(u8, record.adapter_name, adapter_name)) return error.UnknownSession;
+            native_session_id = try arena.dupe(u8, record.native_id);
+        }
+        var session = try registered.adapter.open(arena, request.contractRequest(native_session_id), &refused.reason);
         var adopted = false;
         errdefer if (!adopted) session.teardown();
         if (self.findSession(session.id()) != null) return error.SessionExists;
         const opened_state = try session.state(arena, &refused.reason);
+        var record = try self.boundFor(adapter_name, session);
+        var kept = false;
+        errdefer if (!kept) record.deinit(self.allocator);
         const entry = try self.adopt(adapter_name, session, @intCast(self.clock() / std.time.ns_per_ms));
         adopted = true;
+        self.keepBound(record);
+        kept = true;
         var opened = Opened{ .session_id = entry.session_id, .state = opened_state, .revision = registered.revision };
         if (request.subscribe) {
             opened.subscription = self.subscribe(arena, opened.session_id, .{}) catch |err| {
@@ -1151,6 +1179,32 @@ pub const Hub = struct {
         const lost = self.lossRun(entry, subscription, dropped);
         const sequence = if (std.mem.eql(u8, lost, subscription.run_id)) current_sequence else 0;
         return self.seedOverflow(subscription, lost, sequence);
+    }
+
+    fn findBound(self: *Hub, session_id: []const u8) ?*Bound {
+        for (self.bound.items) |*record| {
+            if (std.mem.eql(u8, record.session_id, session_id)) return record;
+        }
+        return null;
+    }
+
+    fn boundFor(self: *Hub, adapter_name: []const u8, session: contract.Session) !Bound {
+        try self.bound.ensureUnusedCapacity(self.allocator, 1);
+        const session_id = try self.allocator.dupe(u8, session.id());
+        errdefer self.allocator.free(session_id);
+        const owned_adapter = try self.allocator.dupe(u8, adapter_name);
+        errdefer self.allocator.free(owned_adapter);
+        const native_id = try self.allocator.dupe(u8, session.nativeId());
+        return .{ .session_id = session_id, .adapter_name = owned_adapter, .native_id = native_id };
+    }
+
+    fn keepBound(self: *Hub, record: Bound) void {
+        if (self.findBound(record.session_id)) |existing| {
+            existing.deinit(self.allocator);
+            existing.* = record;
+            return;
+        }
+        self.bound.appendAssumeCapacity(record);
     }
 
     fn adopt(self: *Hub, adapter_name: []const u8, session: contract.Session, created_at_ms: i64) !*Entry {
@@ -3616,4 +3670,53 @@ test "a closed session reopens through the hub once, and a reopen of a live or u
     try testing.expect(reopened.state.recovered);
     try testing.expectError(error.SessionExists, hub.open(arena, "memory", .{ .session_id = "kept", .reopen = true }));
     try testing.expectError(error.UnknownSession, hub.open(arena, "memory", .{ .session_id = "ghost", .reopen = true }));
+}
+
+const NativeMemory = struct {
+    inner: *memory.Adapter,
+    handed: []const u8 = "",
+    session_vtable: contract.Session.VTable = undefined,
+
+    fn adapter(self: *NativeMemory) contract.Adapter {
+        return .{ .ptr = self, .vtable = &.{ .probe = probe, .open = open } };
+    }
+
+    fn probe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {
+        const self: *NativeMemory = @ptrCast(@alignCast(ptr));
+        return self.inner.adapter().probe(refusal);
+    }
+
+    fn open(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!contract.Session {
+        const self: *NativeMemory = @ptrCast(@alignCast(ptr));
+        self.handed = try arena.dupe(u8, request.native_session_id);
+        const session = try self.inner.adapter().open(arena, request, refusal);
+        self.session_vtable = session.vtable.*;
+        self.session_vtable.native_id = nativeThread;
+        return .{ .ptr = session.ptr, .vtable = &self.session_vtable };
+    }
+
+    fn nativeThread(ptr: *anyopaque) []const u8 {
+        _ = ptr;
+        return "native-thread";
+    }
+};
+
+test "a reopen hands the adapter the native id its open recorded, and only under the adapter that opened it" {
+    var inner = memory.Adapter.init(testing.allocator);
+    defer inner.deinit();
+    var native = NativeMemory{ .inner = &inner };
+    var hub = Hub.init(testing.allocator, testClock, .{});
+    defer hub.deinit();
+    try hub.register("native", native.adapter());
+    try hub.register("memory", inner.adapter());
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    _ = try hub.open(arena, "native", .{ .session_id = "kept" });
+    try testing.expectEqualStrings("", native.handed);
+    try hub.close(arena, "kept");
+    try testing.expectError(error.UnknownSession, hub.open(arena, "memory", .{ .session_id = "kept", .reopen = true }));
+    _ = try hub.open(arena, "native", .{ .session_id = "kept", .reopen = true });
+    try testing.expectEqualStrings("native-thread", native.handed);
 }

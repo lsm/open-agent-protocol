@@ -79,6 +79,12 @@ type OpenRequest struct {
 	AllowDegradedFeatures []string
 
 	Reopen bool
+
+	NativeSessionID string
+}
+
+type NativeSession interface {
+	NativeSessionID() string
 }
 
 func (r OpenRequest) AllowsDegraded(key string) bool {

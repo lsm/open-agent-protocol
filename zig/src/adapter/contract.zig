@@ -114,6 +114,7 @@ pub const OpenRequest = struct {
     tools_json: ?[]const u8 = null,
     tool_sources_json: ?[]const u8 = null,
     reopen: bool = false,
+    native_session_id: []const u8 = "",
 };
 
 pub const Catalog = struct {
@@ -175,10 +176,16 @@ pub const Session = struct {
         resolve_call: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request_id: []const u8, request: *const oap_types.CallResolveRequest, refusal: *Refusal) Failure!oap_types.CallResolveResponse = null,
         replay: ?*const fn (ptr: *anyopaque, allocator: std.mem.Allocator, run_id: []const u8, after: u64, refusal: *Refusal) Failure!Replay = null,
         readable: ?*const fn (ptr: *anyopaque) ?std.Io.File.Handle = null,
+        native_id: ?*const fn (ptr: *anyopaque) []const u8 = null,
     };
 
     pub fn id(self: Session) []const u8 {
         return self.vtable.id(self.ptr);
+    }
+
+    pub fn nativeId(self: Session) []const u8 {
+        const read = self.vtable.native_id orelse return "";
+        return read(self.ptr);
     }
 
     pub fn state(self: Session, arena: std.mem.Allocator, refusal: *Refusal) Failure!oap_types.SessionState {

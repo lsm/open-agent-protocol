@@ -80,6 +80,13 @@ reports, which a revision names, so the revision moves to
 adapter's descriptor under it, and the catalog no longer carries a separate
 `oapx_capability_revision`.
 
+Decision 0040's reopen then adds `session.open.reopen` at `native`: a reopen
+resumes the thread the session's binding names with `thread/resume`, and the
+state reports the model the response says the thread resumed under rather than
+the process's configured one. The descriptor changed, so the revision moves to
+`codex-appserver-0.157.0-oap-v2`. The real-process evidence above was taken under
+`-oap-v1` and runs no reopen.
+
 ## Corpus
 
 `fixtures/adapters/codex-appserver-0.157.0` carries every `native.jsonl`,
