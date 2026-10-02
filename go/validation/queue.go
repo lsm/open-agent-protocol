@@ -177,7 +177,7 @@ func (s *state) deliveryExpectations(i, line int, e protocol.Envelope, p protoco
 		level, judged := s.controlDescriptor(i, line, e, key)
 		switch {
 		case !judged:
-		case p.Delivery == protocol.DeliveryQueue && !affirmative(level):
+		case (p.Delivery == protocol.DeliveryQueue || p.Delivery == protocol.DeliverySteer) && !affirmative(level):
 
 			expectations = append(expectations, &controlExpectation{
 				rung: rungCapability, key: key, pointer: "/payload/delivery",
@@ -776,6 +776,15 @@ func (s *state) judgeAdmissionClaim(claim *deferredStateClaim) {
 	}
 	var admitted *runState
 	for _, candidate := range s.runs {
+		for _, steer := range candidate.steers {
+			if steer.request == claim.request {
+				admitted = candidate
+				break
+			}
+		}
+		if admitted != nil {
+			break
+		}
 		if candidate.submitRequest == claim.request {
 			admitted = candidate
 			break

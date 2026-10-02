@@ -9712,6 +9712,767 @@
       "codes": ["duplicate_provider"],
       "units": ["core", "models"],
       "provenance": ["decisions/0028-live-model-and-provider-control.md"]
+    },
+    {
+      "id": "steer-at-boundary",
+      "path": "valid/steer-at-boundary.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-immediate",
+      "path": "valid/steer-immediate.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-dropped-at-terminal",
+      "path": "valid/steer-dropped-at-terminal.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-target-sequence-ahead",
+      "path": "semantic-invalid/steer-target-sequence-ahead.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition"
+      ],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-status-mismatch",
+      "path": "semantic-invalid/steer-status-mismatch.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition"
+      ],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-auto-resolved-to-steer",
+      "path": "semantic-invalid/steer-auto-resolved-to-steer.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition"
+      ],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-settlement-wrong-request-id",
+      "path": "semantic-invalid/steer-settlement-wrong-request-id.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unmatched_steer"
+      ],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-applied-message-ids-mismatch",
+      "path": "semantic-invalid/steer-applied-message-ids-mismatch.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unmatched_steer"
+      ],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-pending-at-terminal",
+      "path": "semantic-invalid/steer-pending-at-terminal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "pending_steer_at_terminal"
+      ],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.message.delivery.steer",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "steer-unadvertised",
+      "path": "semantic-invalid/steer-unadvertised.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.message.delivery.steer",
+          "aspect": "gate"
+        }
+      ]
+    },
+    {
+      "id": "steer-duplicate-settlement",
+      "path": "semantic-invalid/steer-duplicate-settlement.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "duplicate_steer"
+      ],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-settled-before-response",
+      "path": "semantic-invalid/steer-settled-before-response.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unmatched_steer",
+        "pending_steer_at_terminal"
+      ],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-missing-request-id",
+      "path": "schema-invalid/steer-missing-request-id.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-unknown-target-run",
+      "path": "valid/steer-unknown-target-run.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-unknown-target-run-wrong-refusal",
+      "path": "semantic-invalid/steer-unknown-target-run-wrong-refusal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition"
+      ],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-unknown-target-run-wrong-reason",
+      "path": "semantic-invalid/steer-unknown-target-run-wrong-reason.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition"
+      ],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-no-active-run",
+      "path": "valid/steer-no-active-run.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-no-active-run-wrong-refusal",
+      "path": "semantic-invalid/steer-no-active-run-wrong-refusal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition"
+      ],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-no-active-run-wrong-reason",
+      "path": "semantic-invalid/steer-no-active-run-wrong-reason.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition"
+      ],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-target-terminated-in-flight-rejected",
+      "path": "valid/steer-target-terminated-in-flight-rejected.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-target-terminated-in-flight-wrong-refusal",
+      "path": "semantic-invalid/steer-target-terminated-in-flight-wrong-refusal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition"
+      ],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-named-queued-target-no-started-run",
+      "path": "valid/steer-named-queued-target-no-started-run.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-target-wrong-reason",
+      "path": "semantic-invalid/steer-target-wrong-reason.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition"
+      ],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-target-wrong-refusal",
+      "path": "semantic-invalid/steer-target-wrong-refusal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition"
+      ],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-cross-session-terminal-target",
+      "path": "valid/steer-cross-session-terminal-target.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-target-mismatch",
+      "path": "semantic-invalid/steer-target-mismatch.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition"
+      ],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-content-advances-in-flight",
+      "path": "valid/steer-content-advances-in-flight.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-stale-boundary-nonstatus",
+      "path": "semantic-invalid/steer-stale-boundary-nonstatus.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition"
+      ],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-status-advances-in-flight",
+      "path": "valid/steer-status-advances-in-flight.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-status-stale",
+      "path": "semantic-invalid/steer-status-stale.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition"
+      ],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-state-omits-pending",
+      "path": "semantic-invalid/steer-state-omits-pending.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-state-retains-settled",
+      "path": "semantic-invalid/steer-state-retains-settled.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-state-wrong-request-id",
+      "path": "semantic-invalid/steer-state-wrong-request-id.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-state-pending",
+      "path": "valid/steer-state-pending.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-with-model_id-rejected",
+      "path": "valid/steer-with-model_id-rejected.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-with-model_id-wrong-refusal",
+      "path": "semantic-invalid/steer-with-model_id-wrong-refusal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unsatisfiable_control"
+      ],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-with-instructions-rejected",
+      "path": "valid/steer-with-instructions-rejected.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-with-instructions-wrong-refusal",
+      "path": "semantic-invalid/steer-with-instructions-wrong-refusal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unsatisfiable_control"
+      ],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-explicit-target-mismatch",
+      "path": "semantic-invalid/steer-explicit-target-mismatch.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "scope_mismatch"
+      ],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-duplicate-submission-id",
+      "path": "semantic-invalid/steer-duplicate-submission-id.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "duplicate_steer"
+      ],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-unadvertised-no-active-run",
+      "path": "valid/steer-unadvertised-no-active-run.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-with-controls-admitted",
+      "path": "semantic-invalid/steer-with-controls-admitted.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unsatisfiable_control"
+      ],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-target-cancelling-rejected",
+      "path": "valid/steer-target-cancelling-rejected.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-state-capture-ahead-of-settlement",
+      "path": "valid/steer-state-capture-ahead-of-settlement.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-state-capture-straddles-admission",
+      "path": "valid/steer-state-capture-straddles-admission.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-state-pending-without-position",
+      "path": "semantic-invalid/steer-state-pending-without-position.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-state-omits-admitted-marker",
+      "path": "semantic-invalid/steer-state-omits-admitted-marker.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-state-position-never-reached",
+      "path": "semantic-invalid/steer-state-position-never-reached.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
+    },
+    {
+      "id": "steer-recovered-pending",
+      "path": "valid/steer-recovered-pending.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "steer"
+      ],
+      "provenance": [
+        "decisions/0013-steer.md"
+      ]
     }
   ]
 }

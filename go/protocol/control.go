@@ -352,6 +352,7 @@ type SessionOpenRequest struct {
 }
 
 type OpenMessage struct {
+	TargetRunID           RunID                      `json:"target_run_id,omitempty"`
 	Messages              []Message                  `json:"messages"`
 	Delivery              RequestedDeliveryMode      `json:"delivery"`
 	ModelID               *string                    `json:"model_id,omitempty"`
@@ -365,6 +366,7 @@ type OpenMessage struct {
 func (m OpenMessage) Submit(session SessionID) MessageSubmitRequest {
 	return MessageSubmitRequest{
 		SessionID:             session,
+		TargetRunID:           m.TargetRunID,
 		Messages:              m.Messages,
 		Delivery:              m.Delivery,
 		ModelID:               m.ModelID,
@@ -454,7 +456,13 @@ type SessionState struct {
 
 const RelationshipPrimary = "primary"
 
+type PendingSteer struct {
+	SubmissionID SubmissionID `json:"submission_id"`
+	RequestID    EnvelopeID   `json:"request_id"`
+}
+
 type ActiveRun struct {
+	PendingSteers          []PendingSteer  `json:"pending_steers,omitempty"`
 	RunID                  RunID           `json:"run_id"`
 	Status                 RunStatus       `json:"status"`
 	Relationship           string          `json:"relationship"`
@@ -542,6 +550,7 @@ type ToolChoice struct {
 }
 
 type MessageSubmitRequest struct {
+	TargetRunID           RunID                      `json:"target_run_id,omitempty"`
 	SessionID             SessionID                  `json:"session_id"`
 	Messages              []Message                  `json:"messages"`
 	Delivery              RequestedDeliveryMode      `json:"delivery"`
@@ -668,6 +677,7 @@ const (
 )
 
 type MessageSubmitResponse struct {
+	TargetSequence     *uint64               `json:"target_sequence,omitempty"`
 	SessionID          SessionID             `json:"session_id"`
 	Accepted           bool                  `json:"accepted"`
 	SubmissionID       SubmissionID          `json:"submission_id"`
