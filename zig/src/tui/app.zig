@@ -10,6 +10,7 @@ const register_builtins = @import("register_builtins");
 const agent = @import("agent");
 const event_stream = @import("event_stream");
 const tui_runtime = @import("tui_runtime");
+const tui_oap_execution = @import("tui/oap_execution");
 const tui_auto_continue = @import("tui_auto_continue");
 const tui_state = @import("tui_state");
 const tui_commands = @import("tui_commands");
@@ -654,6 +655,33 @@ test "collapseHome survives an allocation failure at every step" {
     try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, collapseHomeProbe, .{});
 }
 
+test "a transcript verbosity change reprints from the first entry, and a status-only change does not" {
+    var env = try TempHome.init("home-verbosity-redraw");
+    defer env.deinit();
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.inline_history_flushed = 3;
+    app.inline_flushed_rows = 2;
+
+    try app.submit("/verbose status verbose");
+    try std.testing.expect(!app.pending_clear_screen);
+    try std.testing.expectEqual(@as(usize, 3), app.inline_history_flushed);
+
+    try app.submit("/verbose quiet");
+    if (App.terminalKeepsScrollback()) {
+        try std.testing.expect(!app.pending_clear_screen);
+        try std.testing.expectEqualStrings("earlier rows keep their old verbosity; run /redraw to reprint them", app.state.transcript.items[app.state.transcript.items.len - 1].text.items);
+    } else {
+        try std.testing.expect(app.pending_clear_screen);
+        try std.testing.expectEqual(@as(usize, 0), app.inline_history_flushed);
+        try std.testing.expectEqual(@as(usize, 0), app.inline_flushed_rows);
+    }
+
+    app.pending_clear_screen = false;
+    try app.cycleVerbosity();
+    try std.testing.expectEqual(tui_state.Verbosity.all(.normal), app.state.verbosity);
+}
+
 test "Context requestClearScreen discards history queued before the request" {
     var tctx: TestContext = undefined;
     tctx.setup();
@@ -996,6 +1024,7 @@ pub const App = struct {
     inline_flushed_rows: usize = 0,
     login_status: [provider_catalog.all.len]LoginStatus = [_]LoginStatus{.none} ** provider_catalog.all.len,
     pending_session_reset: bool = false,
+    pending_compaction: ?[]u8 = null,
     pending_models: ?[]ai_types.Model = null,
     model_fetch: ?*ModelFetch = null,
     model_refetch: bool = false,
@@ -1052,6 +1081,7 @@ pub const App = struct {
         };
         errdefer app.deinit();
         app.session = app.runtime.?.createSession();
+        if (options.remote != null) try app.state.appendTranscript(.system, over_oap_notice);
         app.state.permission_mode = app.runtime.?.permissionMode();
         app.state.thinking_level = app.runtime.?.thinkingLevel();
         try app.state.setRegisteredTools(app.runtime.?.availableTools());
@@ -1077,6 +1107,8 @@ pub const App = struct {
     }
 
     pub fn deinit(self: *App) void {
+        if (self.pending_compaction) |focus| self.allocator.free(focus);
+        self.pending_compaction = null;
         if (self.model_fetch) |fetch| {
             if (fetch.done.load(.acquire)) {
                 var outcome = fetch.finish();
@@ -1378,6 +1410,7 @@ pub const App = struct {
         self.discardPendingWorktreeSidecar();
         const store = self.store orelse return error.NoStoreConfigured;
         try self.dropPendingAfterCompaction("the session was resumed before the compaction finished");
+        self.dropHeldCompaction();
         self.state.clearHeldAfterAbort();
         if (self.state.session_index >= self.state.sessions.items.len) return;
         const selected = self.state.sessions.items[self.state.session_index];
@@ -1446,7 +1479,7 @@ pub const App = struct {
         self.session_id = new_session_id;
         try self.giveRuntimeSessionId();
         if (loaded.metadata.thinking_level) |level| {
-            runtime.setThinkingLevel(level);
+            runtime.setThinkingLevel(level) catch {};
             self.state.thinking_level = runtime.thinkingLevel();
         }
         try self.restoreCompactionTranscripts(store, &loaded);
@@ -1807,7 +1840,14 @@ pub const App = struct {
         const idx = self.pickerSourceIndex(self.state.menu_index) orelse return;
         const mode = permission_modes[idx];
         const runtime = self.runtime orelse return error.NoRuntimeConfigured;
-        try runtime.setPermissionMode(mode);
+        runtime.setPermissionMode(mode) catch |err| switch (err) {
+            error.UnavailableOverOap => {
+                self.state.mode = .normal;
+                try self.state.appendTranscript(.@"error", over_oap_setting_refusal);
+                return;
+            },
+            else => return err,
+        };
         self.state.permission_mode = mode;
         self.state.mode = .normal;
         const msg = try std.fmt.allocPrint(self.allocator, "permission mode set to {s}", .{@tagName(mode)});
@@ -1942,6 +1982,7 @@ pub const App = struct {
 
     fn runtimeBusy(self: *App) bool {
         const runtime = self.runtime orelse return false;
+        if (runtime.remote != null) return !runtime.isIdle();
         const local = if (runtime.local_agent) |*agent_ref| agent_ref else return false;
         return !local.isIdle();
     }
@@ -2099,6 +2140,76 @@ pub const App = struct {
             try std.fmt.allocPrint(self.allocator, "Declared {s} in {s}. Run /login {s} to add its key.", .{ new.id, path, new.id });
         defer self.allocator.free(next);
         try self.state.appendTranscript(.system, next);
+    }
+
+    fn listProviders(self: *App) !void {
+        var config = custom_providers.loadConfigStrict(self.allocator, custom_providers.max_config_bytes) catch |err| {
+            const msg = try std.fmt.allocPrint(self.allocator, "could not read the provider config: {s}", .{@errorName(err)});
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.@"error", msg);
+            return;
+        };
+        defer config.deinit(self.allocator);
+        const owned_path = custom_providers.configPath(self.allocator) catch null;
+        defer if (owned_path) |path| self.allocator.free(path);
+        const path = owned_path orelse custom_providers.config_file_name;
+        if (config.providers.len == 0 and config.overrides.len == 0) {
+            const msg = try std.fmt.allocPrint(self.allocator, "no providers are declared in {s}; /provider add <id> <base_url> declares one", .{path});
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.system, msg);
+            return;
+        }
+        var out: std.Io.Writer.Allocating = .init(self.allocator);
+        defer out.deinit();
+        const writer = &out.writer;
+        if (config.providers.len > 0) {
+            try writer.print("providers declared in {s}:", .{path});
+        }
+        for (config.providers) |provider| {
+            try writer.print("\n  {s} ({s}), {s}, {s}, ", .{ provider.id, provider.name, provider.api, provider.base_url });
+            if (provider.auth_none) {
+                try writer.writeAll("no credential");
+            } else if (provider.env_key) |key| {
+                try writer.print("key from {s}", .{key});
+            } else {
+                try writer.writeAll("saved key");
+            }
+            if (provider.models.len == 0) {
+                try writer.writeAll(", every discovered model");
+            } else {
+                try writer.print(", {d} declared models", .{provider.models.len});
+            }
+        }
+        if (config.overrides.len > 0) {
+            if (config.providers.len > 0) {
+                try writer.writeAll("\noverrides on catalogued rows:");
+            } else {
+                try writer.print("overrides on catalogued rows in {s}:", .{path});
+            }
+            for (config.overrides) |override| {
+                try writer.print("\n  {s}:", .{override.id});
+                var first = true;
+                if (override.base_url != null) {
+                    try writer.writeAll(" base_url");
+                    first = false;
+                }
+                if (override.carries_version != null) {
+                    if (!first) try writer.writeAll(",");
+                    try writer.writeAll(" carries_version");
+                    first = false;
+                }
+                if (override.headers.len > 0) {
+                    if (!first) try writer.writeAll(",");
+                    try writer.writeAll(" headers");
+                    first = false;
+                }
+                if (override.models.len > 0) {
+                    if (!first) try writer.writeAll(",");
+                    try writer.print(" {d} models", .{override.models.len});
+                }
+            }
+        }
+        try self.state.appendTranscript(.system, out.written());
     }
 
     fn removeProvider(self: *App, arg: []const u8) !void {
@@ -2698,6 +2809,7 @@ pub const App = struct {
         var session = &(self.session orelse return);
         var completed_agent_end = false;
         var run_ended = false;
+        var run_failed = false;
         while (session.popEvent()) |event| {
             var ev = event;
             defer ev.deinit(self.allocator);
@@ -2740,6 +2852,7 @@ pub const App = struct {
             }
             if (try self.noteTerminalEvent(ev)) completed_agent_end = true;
             if (ev == .agent_end) run_ended = true;
+            if (ev == .@"error") run_failed = true;
             self.saveEvent(ev);
             try self.applyRuntimeEvent(ev);
         }
@@ -2753,6 +2866,7 @@ pub const App = struct {
             if (self.runtime) |runtime| {
                 if (runtime.local_agent) |*local| {
                     if (local.isIdle()) {
+                        self.dropHeldCompaction();
                         local.clearAllQueues();
                         local.replaceMessages(&.{}) catch {};
                         self.pending_session_reset = false;
@@ -2781,6 +2895,59 @@ pub const App = struct {
         }
         if (!completed_agent_end or self.state.queue.total() == 0) try self.drainQueuedWorktreeMessageIfIdle();
         if (run_ended) try self.sendHeldAfterAbort();
+        try self.startCompactionAfterRun(run_ended or run_failed);
+    }
+
+    fn dropHeldCompaction(self: *App) void {
+        if (self.pending_compaction) |focus| self.allocator.free(focus);
+        self.pending_compaction = null;
+        if (self.session) |*session| {
+            if (session.takeCompactionRequest(self.allocator) catch null) |steered| self.allocator.free(steered);
+        }
+    }
+
+    fn steerCompaction(self: *App, focus: []const u8) !void {
+        var session = &(self.session orelse return error.NoRuntimeConfigured);
+        if (self.pending_compaction) |queued| self.allocator.free(queued);
+        self.pending_compaction = null;
+        if (try session.requestCompaction(focus)) {
+            try self.state.appendTranscript(.system, "compacting before the next turn of this run, or when the run ends if no turn follows");
+            return;
+        }
+        try self.queueCompaction(focus);
+    }
+
+    pub fn queueCompaction(self: *App, focus: []const u8) !void {
+        const owned = try self.allocator.dupe(u8, focus);
+        if (self.session) |*session| {
+            if (session.takeCompactionRequest(self.allocator) catch null) |steered| self.allocator.free(steered);
+        }
+        if (self.pending_compaction) |previous| self.allocator.free(previous);
+        self.pending_compaction = owned;
+        try self.state.appendTranscript(.system, "compacting when this run ends");
+    }
+
+    fn startCompactionAfterRun(self: *App, run_ended: bool) !void {
+        var session = &(self.session orelse return);
+        if (run_ended) {
+            if (try session.takeCompactionRequest(self.allocator)) |steered| {
+                if (self.pending_compaction == null) self.pending_compaction = steered else self.allocator.free(steered);
+            }
+        }
+        const focus = self.pending_compaction orelse return;
+        if (self.state.status.streaming or self.state.status.compacting or self.state.queue.total() > 0) return;
+        if (self.runtime) |runtime| {
+            if (runtime.local_agent) |*local| {
+                if (!local.isIdle()) return;
+            }
+        }
+        self.pending_compaction = null;
+        defer self.allocator.free(focus);
+        self.startCompaction(focus) catch |err| {
+            const msg = try std.fmt.allocPrint(self.allocator, "the held compaction could not start: {s}", .{@errorName(err)});
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.@"error", msg);
+        };
     }
 
     fn worktreeSetupRunning(self: *const App) bool {
@@ -2890,6 +3057,7 @@ pub const App = struct {
         if (self.runtime) |runtime| {
             if (runtime.local_agent) |*local| {
                 if (!local.isIdle()) return error.PendingSessionReset;
+                self.dropHeldCompaction();
                 local.clearAllQueues();
                 local.replaceMessages(&.{}) catch {};
             }
@@ -2941,7 +3109,7 @@ pub const App = struct {
             }
             return true;
         }
-        if (self.mode_settings.auto_worktree and self.working_dir.len > 0 and self.worktree_job == null and self.worktree_management_job == null and !self.worktree_attempted and self.session_turns == 0) {
+        if (self.createsWorktree() and self.working_dir.len > 0 and self.worktree_job == null and self.worktree_management_job == null and !self.worktree_attempted and self.session_turns == 0) {
             const home = compat.getEnvVarOwned(self.allocator, "HOME") catch null;
             defer if (home) |value| self.allocator.free(value);
             if (home) |h| {
@@ -3129,6 +3297,7 @@ pub const App = struct {
             return;
         };
 
+        const verbosity_before = self.state.verbosity;
         var result = tui_commands.dispatch(.{
             .allocator = self.allocator,
             .state = &self.state,
@@ -3169,11 +3338,14 @@ pub const App = struct {
             .open_settings_picker => self.openPicker(.settings),
             .start_login_provider => try self.startLoginProviderName(result.login_provider),
             .compact => try self.startCompaction(command.arg orelse ""),
+            .compact_during_run => try self.steerCompaction(command.arg orelse ""),
             .rename_session => try self.renameSession(command.arg orelse ""),
             .refresh_models => try self.refreshModelsInBackground(),
             .logout_provider => try self.logoutProvider(command.arg orelse ""),
             .add_provider => try self.addProvider(command.arg orelse ""),
+            .redraw => self.requestRedraw(),
             .remove_provider => try self.removeProvider(command.arg orelse ""),
+            .list_providers => try self.listProviders(),
             .none => {},
         }
         if (command.kind == .model and command.arg != null and result.action != .refresh_models) self.persistCurrentModel();
@@ -3184,7 +3356,10 @@ pub const App = struct {
         if (command.kind == .context and !result.is_error and command.arg != null) self.persistContextWindow();
         if (command.kind == .output and !result.is_error and command.arg != null) self.persistOutput();
         if (command.kind == .autocompact and !result.is_error and command.arg != null) self.persistAutoCompact();
-        if (command.kind == .verbose and !result.is_error and command.arg != null) self.persistVerbosity();
+        if (command.kind == .verbose and !result.is_error and command.arg != null) {
+            self.persistVerbosity();
+            try self.redrawAfterVerbosity(verbosity_before);
+        }
         if (command.kind == .think and !result.is_error and command.arg != null) self.persistThinkingLevel();
         if (result.output.len > 0) {
             try self.state.appendTranscript(if (result.is_error) .@"error" else .system, result.output);
@@ -3309,6 +3484,40 @@ pub const App = struct {
         store.save(cfg) catch |err| self.recordError(@errorName(err)) catch {};
     }
 
+    fn requestRedraw(self: *App) void {
+        self.inline_history_flushed = 0;
+        self.inline_flushed_rows = 0;
+        self.pending_clear_screen = true;
+    }
+
+    fn redrawAfterVerbosity(self: *App, before: tui_state.Verbosity) !void {
+        if (before.transcriptEquals(self.state.verbosity)) return;
+        if (!self.state.status.streaming and !self.runtimeBusy() and !terminalKeepsScrollback()) {
+            self.requestRedraw();
+            return;
+        }
+        try self.state.appendTranscript(.system, "earlier rows keep their old verbosity; run /redraw to reprint them");
+    }
+
+    fn terminalKeepsScrollback() bool {
+        for ([_][]const u8{ "TMUX", "STY" }) |name| {
+            const value = compat.getEnvVarOwned(std.heap.page_allocator, name) catch continue;
+            defer std.heap.page_allocator.free(value);
+            if (value.len > 0) return true;
+        }
+        return false;
+    }
+
+    pub fn cycleVerbosity(self: *App) !void {
+        const before = self.state.verbosity;
+        self.state.verbosity = before.cycled();
+        self.persistVerbosity();
+        const msg = try std.fmt.allocPrint(self.allocator, "verbosity: {t} (ctrl+o cycles)", .{self.state.verbosity.thinking});
+        defer self.allocator.free(msg);
+        try self.state.appendTranscript(.system, msg);
+        try self.redrawAfterVerbosity(before);
+    }
+
     fn persistVerbosity(self: *App) void {
         self.mode_settings.verbosity = self.state.verbosity;
         var store = tui_config.Store.initDefault(self.allocator) catch |err| {
@@ -3362,9 +3571,20 @@ pub const App = struct {
         self.state.appendNotice("copied last reply to clipboard") catch {};
     }
 
+    fn createsWorktree(self: *const App) bool {
+        if (!self.mode_settings.auto_worktree) return false;
+        const runtime = self.runtime orelse return true;
+        return runtime.remote == null;
+    }
+
     fn cycleThinkingLevel(self: *App) void {
+        const previous = self.state.thinking_level;
         const level = self.state.cycleThinkingLevel();
-        if (self.runtime) |runtime| runtime.setThinkingLevel(level);
+        if (self.runtime) |runtime| runtime.setThinkingLevel(level) catch {
+            self.state.thinking_level = previous;
+            self.state.appendTranscript(.@"error", over_oap_setting_refusal) catch {};
+            return;
+        };
         self.persistThinkingLevel();
     }
 
@@ -3677,6 +3897,14 @@ pub const TuiModel = struct {
                             if (app.state.composer.buffer.items.len == 0 and app.state.mode == .normal and !app.state.status.streaming) return self.quitCmd(app, ctx);
                             return .none;
                         },
+                        'o' => {
+                            app.cycleVerbosity() catch |err| app.recordError(@errorName(err)) catch {};
+                            if (app.pending_clear_screen) {
+                                app.pending_clear_screen = false;
+                                if (self.inlineMode(ctx)) ctx.requestClearScreen();
+                            }
+                            return .none;
+                        },
                         'y' => {
                             app.copyLastAssistant();
                             app.flushClipboard(ctx);
@@ -3912,7 +4140,12 @@ pub const TuiModel = struct {
                     .backspace => _ = app.state.composer.deleteBeforeCursor(),
                     .delete => _ = app.state.composer.deleteAtCursor(),
                     .tab => {
-                        if (app.state.mode == .normal and app.state.status.streaming and !isSlashDraft(app.state.composer.text())) {
+                        if (app.state.mode == .normal and app.state.status.streaming and !app.state.status.compacting and compactDraftFocus(app.state.composer.text()) != null) {
+                            const text = app.state.composer.text();
+                            app.queueCompaction(compactDraftFocus(text).?) catch |err| app.recordError(@errorName(err)) catch {};
+                            app.state.recordComposerHistory(text) catch |err| app.recordError(@errorName(err)) catch {};
+                            app.state.composer.clear();
+                        } else if (app.state.mode == .normal and app.state.status.streaming and !isSlashDraft(app.state.composer.text())) {
                             const text = app.state.composer.text();
                             const queued = app.queueFollowUp(text) catch |err| blk: {
                                 if (err != error.PendingSessionReset) app.recordError(@errorName(err)) catch {};
@@ -4488,6 +4721,12 @@ pub const TuiModel = struct {
     }
 };
 
+fn compactDraftFocus(text: []const u8) ?[]const u8 {
+    const command = tui_commands.parse(std.mem.trim(u8, text, " \t\r\n")) catch return null;
+    if (command.kind != .compact) return null;
+    return command.arg orelse "";
+}
+
 fn isSlashDraft(text: []const u8) bool {
     const trimmed = std.mem.trimStart(u8, text, " \t\r\n");
     return trimmed.len > 0 and trimmed[0] == '/';
@@ -4780,7 +5019,14 @@ fn preferredContextWindow(stored: ?u32, flag: ?u32) ?u32 {
     return flag orelse stored;
 }
 
+pub const over_oap_notice = "oapx tui: this session runs over OAP through the in-process endpoint. Resume, compaction, steering, queued follow-ups and the model's questions to you are not carried over OAP yet, ask mode is unavailable until approvals cross OAP, and the thinking level, context window, output limit and workspace are fixed when the session opens; use oapx --tui for them.";
+pub const over_oap_setting_refusal = tui_commands.over_oap_setting_refusal;
+
 pub fn run(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32) !void {
+    return runWith(allocator, io, context_window, false);
+}
+
+pub fn runWith(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32, over_oap: bool) !void {
     var environ_map = try compat.createEnvMap(allocator);
     defer environ_map.deinit();
 
@@ -4800,6 +5046,14 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32) !void
     if (fixture) |runtime| {
         options.protocol = runtime.provider.protocolClient();
         options.generate_titles = false;
+    }
+    var execution: ?*tui_oap_execution.OapExecution = null;
+    defer if (execution) |owned| owned.destroy();
+    if (over_oap) {
+        execution = try tui_oap_execution.OapExecution.create(allocator, options);
+        options.remote = execution.?.remote();
+        options.generate_titles = false;
+        options.auto_worktree = false;
     }
 
     var program = zz.Program(TuiModel).initWithOptions(allocator, io, &environ_map, tuiProgramOptions());
@@ -5144,6 +5398,61 @@ test "App /provider del deletes a declared provider and refuses one that is not 
     try std.testing.expectEqualStrings(tui_commands.provider_usage, app.state.transcript.items[app.state.transcript.items.len - 1].text.items);
 }
 
+test "App /provider list names what is declared and says so when nothing is" {
+    var env = try TempHome.init("home-provider-list");
+    defer env.deinit();
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    try app.submit("/provider list");
+    const empty = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expectEqual(tui_state.TranscriptKind.system, empty.kind);
+    try std.testing.expect(std.mem.startsWith(u8, empty.text.items, "no providers are declared in "));
+    try std.testing.expect(std.mem.endsWith(u8, empty.text.items, "/provider add <id> <base_url> declares one"));
+
+    try app.submit("/provider add gateway https://gw.test/v1 --no-auth");
+    try app.submit("/provider add other https://other.test --env OTHER_KEY");
+    try app.submit("/provider list");
+    const listed = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expectEqual(tui_state.TranscriptKind.system, listed.kind);
+    try std.testing.expect(std.mem.startsWith(u8, listed.text.items, "providers declared in "));
+    try std.testing.expect(std.mem.indexOf(u8, listed.text.items, "gateway (gateway), openai-completions, https://gw.test, no credential, every discovered model") != null);
+    try std.testing.expect(std.mem.indexOf(u8, listed.text.items, "other (other), openai-completions, https://other.test, key from OTHER_KEY, every discovered model") != null);
+
+    try app.submit("/provider list extra");
+    try std.testing.expectEqualStrings(tui_commands.provider_usage, app.state.transcript.items[app.state.transcript.items.len - 1].text.items);
+
+    const config_path = try std.fs.path.join(std.testing.allocator, &.{ env.home, ".oapx", "providers.json" });
+    defer std.testing.allocator.free(config_path);
+    try compat.fs.writeFile(compat.fs.getCwd(), config_path, "{\"overrides\":[{\"id\":\"openai\",\"base_url\":\"https://proxy.test\"}]}");
+
+    try app.submit("/provider list");
+    const only_overrides = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expect(std.mem.startsWith(u8, only_overrides.text.items, "overrides on catalogued rows in "));
+    try std.testing.expect(std.mem.indexOf(u8, only_overrides.text.items, "  openai: base_url") != null);
+}
+
+test "App /provider list reports a config it cannot read instead of calling it empty" {
+    var env = try TempHome.init("home-provider-list-unreadable");
+    defer env.deinit();
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+
+    const config_path = try std.fs.path.join(std.testing.allocator, &.{ env.home, ".oapx", "providers.json" });
+    defer std.testing.allocator.free(config_path);
+    try app.submit("/provider add gateway https://gw.test/v1");
+    const oversized = try std.testing.allocator.alloc(u8, custom_providers.max_config_bytes + 1);
+    defer std.testing.allocator.free(oversized);
+    @memset(oversized, ' ');
+    try compat.fs.writeFile(compat.fs.getCwd(), config_path, oversized);
+
+    try app.submit("/provider list");
+    const said = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expectEqual(tui_state.TranscriptKind.@"error", said.kind);
+    try std.testing.expect(std.mem.startsWith(u8, said.text.items, "could not read the provider config: "));
+}
+
 test "App only offers an api-key login for a declared custom provider" {
     var env = try TempHome.init("home-custom-login");
     defer env.deinit();
@@ -5471,6 +5780,24 @@ test "TuiModel Tab queues a follow-up while a turn streams and shows it until it
     _ = model.update(.{ .tick = .{ .timestamp = 0, .delta = 0 } }, &tctx.ctx);
     try std.testing.expectEqual(@as(usize, 0), model.app.?.state.pending_follow_ups.items.len);
     try std.testing.expect(std.mem.indexOf(u8, model.view(&tctx.ctx), "queued  then open a PR") == null);
+}
+
+test "a held compaction waits while follow-ups are queued instead of blocking on the run they resume" {
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    app.session = mock.session();
+    app.pending_compaction = try std.testing.allocator.dupe(u8, "the parser");
+    app.state.queue.follow_up = 1;
+
+    try app.startCompactionAfterRun(true);
+    try std.testing.expectEqualStrings("the parser", app.pending_compaction.?);
+
+    app.state.queue.follow_up = 0;
+    app.state.status.streaming = true;
+    try app.startCompactionAfterRun(false);
+    try std.testing.expectEqualStrings("the parser", app.pending_compaction.?);
 }
 
 test "TuiModel Tab queues nothing while idle or for a slash draft" {
@@ -5911,6 +6238,20 @@ test "App init takes mode settings from options, not the environment" {
     defer opted_in.deinit();
     try std.testing.expect(opted_in.mode_settings.auto_worktree);
     try std.testing.expect(opted_in.mode_settings.compact_output);
+}
+
+test "an app over OAP never creates an automatic worktree, since its workspace is fixed when the session opens" {
+    const models = [_]ai_types.Model{auto_compact_test_model};
+    const execution = try tui_oap_execution.OapExecution.create(std.testing.allocator, .{ .models = &models });
+    defer execution.destroy();
+    var app = try App.init(std.testing.allocator, .{ .models = &models, .auto_worktree = true, .remote = execution.remote() });
+    defer app.deinit();
+    try std.testing.expect(app.mode_settings.auto_worktree);
+    try std.testing.expect(!app.createsWorktree());
+
+    var local = try App.init(std.testing.allocator, .{ .models = &models, .auto_worktree = true });
+    defer local.deinit();
+    try std.testing.expect(local.createsWorktree());
 }
 
 test "resuming discards a pending worktree sidecar from another session" {
@@ -8362,7 +8703,7 @@ test "resume restores the session's thinking level, and a change after it is sav
     defer app.deinit();
     app.runtime = runtime;
     app.store = try session_store.Store.init(std.testing.allocator, base);
-    runtime.setThinkingLevel(.low);
+    try runtime.setThinkingLevel(.low);
     app.state.thinking_level = .low;
 
     var meta = session_store.SessionMetadata{
