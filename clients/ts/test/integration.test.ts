@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcessByStdio } from 'node:child_process';
 import type { Readable } from 'node:stream';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import { dial, type FetchLike, type FetchResponse, type StreamReader } from '../src/client.js';
 import { finalText, OapSession } from '../src/session.js';
 import {
@@ -38,33 +39,43 @@ function findGo(): GoToolchain | null {
   return null;
 }
 
-const go = process.env.OAP_TS_SKIP_INTEGRATION === '1' ? null : findGo();
-const skip = go === null ? 'go toolchain not available (set OAP_TS_SKIP_INTEGRATION=1 to silence)' : false;
+const hub = process.env.OAP_TS_HUB ?? '';
+const go = process.env.OAP_TS_SKIP_INTEGRATION === '1' || hub !== '' ? null : findGo();
+const skip =
+  process.env.OAP_TS_SKIP_INTEGRATION === '1'
+    ? 'OAP_TS_SKIP_INTEGRATION=1'
+    : hub === '' && go === null
+      ? 'go toolchain not available (set OAP_TS_SKIP_INTEGRATION=1 to silence)'
+      : false;
 
-test(
-  'integration: full lifecycle against goap hub',
-  { skip },
-  async (t) => {
+async function startHub(t: TestContext): Promise<string> {
+  let binary = hub;
+  if (binary === '') {
     assert.ok(go);
     const workdir = mkdtempSync(join(tmpdir(), 'oap-ts-'));
-    const binary = join(workdir, 'goap');
+    binary = join(workdir, 'goap');
     t.after(() => rmSync(workdir, { recursive: true, force: true }));
-
     const build = spawnSync(go.binary, ['build', '-o', binary, './go/cmd/goap'], {
       cwd: repoRoot,
       env: go.env,
       encoding: 'utf8',
     });
     assert.equal(build.status, 0, `go build failed: ${build.stderr}`);
+  }
+  const daemon = spawn(binary, ['hub', '--addr', '127.0.0.1:0'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  t.after(() => {
+    if (!daemon.killed) daemon.kill('SIGTERM');
+  });
+  return waitForListening(daemon);
+}
 
-    const daemon = spawn(binary, ['hub', '--addr', '127.0.0.1:0'], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    t.after(() => {
-      if (!daemon.killed) daemon.kill('SIGTERM');
-    });
-
-    const address = await waitForListening(daemon);
+test(
+  'integration: full lifecycle against the hub',
+  { skip },
+  async (t) => {
+    const address = await startHub(t);
     const client = dial(address);
 
     const adapters = await client.adapters();
@@ -185,25 +196,7 @@ test(
   'integration: a dropped connection resumes from the cursor with no duplicates',
   { skip },
   async (t) => {
-    assert.ok(go);
-    const workdir = mkdtempSync(join(tmpdir(), 'oap-ts-'));
-    const binary = join(workdir, 'goap');
-    t.after(() => rmSync(workdir, { recursive: true, force: true }));
-
-    const build = spawnSync(go.binary, ['build', '-o', binary, './go/cmd/goap'], {
-      cwd: repoRoot,
-      env: go.env,
-      encoding: 'utf8',
-    });
-    assert.equal(build.status, 0, `go build failed: ${build.stderr}`);
-
-    const daemon = spawn(binary, ['hub', '--addr', '127.0.0.1:0'], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    t.after(() => {
-      if (!daemon.killed) daemon.kill('SIGTERM');
-    });
-    const address = await waitForListening(daemon);
+    const address = await startHub(t);
 
     const sabotage = sabotagedEventsFetch();
     const client = dial(address, { fetch: sabotage.fetch });
@@ -224,6 +217,35 @@ test(
     assert.ok(sabotage.connections() >= 2, `expected a reconnect, saw ${sabotage.connections()} connections`);
 
     await session.close();
+  },
+);
+
+test(
+  'integration: a request body cut short by a half-close is refused request_read',
+  { skip },
+  async (t) => {
+    const address = new URL(await startHub(t));
+    const answer = await new Promise<string>((resolve, reject) => {
+      const socket = connect(Number(address.port), address.hostname);
+      let received = '';
+      socket.setEncoding('utf8');
+      socket.on('data', (chunk: string) => {
+        received += chunk;
+      });
+      socket.on('end', () => resolve(received));
+      socket.on('error', reject);
+      socket.on('connect', () => {
+        socket.write(
+          `POST /adapters/memory/sessions HTTP/1.1\r\nHost: ${address.host}\r\nContent-Type: application/json\r\nContent-Length: 4096\r\n\r\n{"truncated":`,
+        );
+        socket.end();
+      });
+    });
+    const [head, body] = answer.split('\r\n\r\n', 2);
+    assert.match(head, /^HTTP\/1\.1 400 /);
+    const envelope = JSON.parse(body) as Envelope;
+    assert.equal(envelope.type, EnvelopeType.ErrorResponse);
+    assert.equal(payload<{ error: { code: string } }>(envelope).error.code, 'request_read');
   },
 );
 
@@ -255,7 +277,7 @@ function waitForListening(daemon: ChildProcessByStdio<null, Readable, Readable>)
     let buffered = '';
     const deadline = setTimeout(() => {
       cleanup();
-      reject(new Error(`goap hub did not start: ${buffered || 'no output'}`));
+      reject(new Error(`the hub did not start: ${buffered || 'no output'}`));
     }, 15000);
     const onData = (chunk: Buffer): void => {
       buffered += chunk.toString('utf8');
@@ -271,7 +293,7 @@ function waitForListening(daemon: ChildProcessByStdio<null, Readable, Readable>)
     };
     const onExit = (code: number | null): void => {
       cleanup();
-      reject(new Error(`goap hub exited early with code ${code}: ${buffered}`));
+      reject(new Error(`the hub exited early with code ${code}: ${buffered}`));
     };
     const cleanup = (): void => {
       clearTimeout(deadline);
