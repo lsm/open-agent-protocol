@@ -521,7 +521,7 @@ pub const Frontend = struct {
             if (name.len == 0) {
                 return .{ .refused = .{ .code = "invalid_request", .message = "adapter is required" } };
             }
-            return self.openSession(arena, name, request);
+            return self.openSession(arena, name, request, false);
         }
         if (std.mem.eql(u8, request.op, op_models)) {
             if (try request.only(arena, session_and_degraded)) |refusal| return .{ .refused = refusal };
@@ -634,13 +634,22 @@ pub const Frontend = struct {
         return .{ .answer_line = try oap_envelope.serializeEnvelope(envelope, arena) };
     }
 
-    const Gate = union(enum) {
+    pub const Gate = union(enum) {
         refused: Refusal,
         envelope: oap_types.Envelope,
     };
 
     fn gateRequest(self: *Frontend, arena: std.mem.Allocator, payload: ?std.json.Value) Error!Gate {
         _ = self;
+        return gateEnvelope(arena, payload, &.{.session_open_request}, "the request envelope is not a session.open.request");
+    }
+
+    pub fn gateEnvelope(
+        arena: std.mem.Allocator,
+        payload: ?std.json.Value,
+        wanted: []const std.meta.Tag(oap_types.Payload),
+        mismatch: []const u8,
+    ) Error!Gate {
         const value = payload orelse return .{ .refused = .{ .code = "invalid_request", .message = "the request is required" } };
         if (value == .null) return .{ .refused = .{ .code = "invalid_request", .message = "the request is required" } };
         const raw = try oap_envelope.ownedRawJson(value, arena);
@@ -667,9 +676,9 @@ pub const Frontend = struct {
         var envelope = oap_envelope.deserializeEnvelope(raw, arena) catch {
             return .{ .refused = .{ .code = "malformed_json", .message = "the request envelope could not be decoded" } };
         };
-        if (std.meta.activeTag(envelope.payload) != .session_open_request) {
+        if (std.mem.indexOfScalar(std.meta.Tag(oap_types.Payload), wanted, std.meta.activeTag(envelope.payload)) == null) {
             envelope.deinit(arena);
-            return .{ .refused = .{ .code = "type_mismatch", .message = "the request envelope is not a session.open.request" } };
+            return .{ .refused = .{ .code = "type_mismatch", .message = mismatch } };
         }
         return .{ .envelope = envelope };
     }
@@ -745,11 +754,12 @@ pub const Frontend = struct {
         return "";
     }
 
-    fn openSession(
+    pub fn openSession(
         self: *Frontend,
         arena: std.mem.Allocator,
         adapter: []const u8,
         request: Request,
+        holding: bool,
     ) Error!Outcome {
         const gated = try self.gateRequest(arena, request.payload);
         var envelope: oap_types.Envelope = switch (gated) {
@@ -784,7 +794,7 @@ pub const Frontend = struct {
                 }
             }
         }
-        if (open.subscribe) {
+        if (open.subscribe and !holding) {
             envelope.deinit(arena);
             return .{ .refused = .{ .code = "unsupported_feature", .message = "a subscribing open is refused until events lands" } };
         }
@@ -807,6 +817,14 @@ pub const Frontend = struct {
             envelope.deinit(arena);
             return .{ .refused = try openRefusal(arena, err, request, &refused) };
         };
+        if (opened.subscription) |subscription| {
+            _ = self.hub.holdSubscription(subscription) catch |err| {
+                subscription.close();
+                self.hub.discardSession(opened.session_id);
+                envelope.deinit(arena);
+                return err;
+            };
+        }
         self.next_envelope += 1;
         const answer_id = try std.fmt.allocPrint(arena, "oap-response-{d}", .{self.next_envelope});
         const opened_envelope = oap_types.Envelope{
@@ -888,7 +906,7 @@ pub const Frontend = struct {
         return .{ .answer_line = try oap_envelope.serializeEnvelope(envelope, arena) };
     }
 
-    fn closeSession(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8) !Outcome {
+    pub fn closeSession(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8) !Outcome {
         self.hub.close(arena, session_id) catch |err| {
             return .{ .refused = try self.refusalFor(arena, err, session_id) };
         };
@@ -1045,7 +1063,7 @@ pub const Frontend = struct {
     }
 };
 
-fn trim(arena: std.mem.Allocator, message: []const u8) Error![]const u8 {
+pub fn trim(arena: std.mem.Allocator, message: []const u8) Error![]const u8 {
     if (std.unicode.utf8CountCodepoints(message) catch 0 <= message_limit) return message;
     var kept: usize = 0;
     var index: usize = 0;
