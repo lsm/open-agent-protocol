@@ -2918,6 +2918,7 @@ pub const App = struct {
         if (!completed_agent_end or self.state.queue.total() == 0) try self.drainQueuedWorktreeMessageIfIdle();
         if (run_ended and self.state.held_after_abort.items.len > 0) try self.applyPendingModelSwitchBeforeRun();
         if (run_ended) try self.sendHeldAfterAbort();
+        if ((run_ended or run_failed) and !self.state.status.streaming) try self.applyPendingModelSwitchBeforeRun();
         try self.startCompactionAfterRun(run_ended or run_failed);
         try self.runDeferredAfterRun();
     }
