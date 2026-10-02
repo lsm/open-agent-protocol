@@ -2337,6 +2337,7 @@ fn printUsage(file: std.Io.File) !void {
         \\  oapx                                              Start the terminal UI
         \\  oapx --tui --context-window <tokens>            Start the terminal UI on a window
         \\  oapx tui [--context-window <tokens>]          The terminal UI over OAP, through the in-process endpoint (experimental)
+        \\  oapx tui --attach <url> [--adapter <name>]    The terminal UI over a running oapx hub's HTTP wire; adapter defaults to oapx
         \\                                                   (a whole number, optionally with k or m)
         \\  oapx run [--agent] [--storage] [--model <id>] "<prompt>"
         \\  oapx serve agent [--stdio] [--model <model-ref>]
@@ -2407,6 +2408,8 @@ const TuiArgError = error{
 
 const TuiArgs = struct {
     context_window: ?u32 = null,
+    attach: ?[]const u8 = null,
+    adapter: []const u8 = "oapx",
 };
 
 fn parseTuiArgs(args: []const []const u8) TuiArgError!TuiArgs {
@@ -2414,6 +2417,12 @@ fn parseTuiArgs(args: []const []const u8) TuiArgError!TuiArgs {
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
         const arg = args[index];
+        if (std.mem.eql(u8, arg, "--attach") or std.mem.eql(u8, arg, "--adapter")) {
+            if (index + 1 >= args.len) return error.UnknownOption;
+            index += 1;
+            if (std.mem.eql(u8, arg, "--attach")) parsed.attach = args[index] else parsed.adapter = args[index];
+            continue;
+        }
         if (!std.mem.eql(u8, arg, "--context-window")) return error.UnknownOption;
         if (index + 1 >= args.len) return error.MissingContextWindow;
         index += 1;
@@ -2432,7 +2441,8 @@ fn runTuiOverOap(allocator: std.mem.Allocator, io: std.Io, args: []const []const
         try printUsage(stderr);
         return error.InvalidArgument;
     };
-    try tui_app.runWith(allocator, io, parsed.context_window, true);
+    const mode: tui_app.Execution = if (parsed.attach) |url| .{ .attach = .{ .url = url, .adapter = parsed.adapter } } else .in_process;
+    try tui_app.runWith(allocator, io, parsed.context_window, mode);
 }
 
 fn runTui(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stderr: std.Io.File) !void {
@@ -2445,6 +2455,11 @@ fn runTui(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, st
         try printUsage(stderr);
         return error.InvalidArgument;
     };
+    if (parsed.attach != null) {
+        try compat.stdio.writeAll(stderr, "--attach belongs to oapx tui, not oapx --tui\n\n");
+        try printUsage(stderr);
+        return error.InvalidArgument;
+    }
     try tui_app.run(allocator, io, parsed.context_window);
 }
 

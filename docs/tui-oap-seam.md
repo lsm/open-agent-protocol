@@ -20,7 +20,11 @@ filled as `extensions.oapx.context_tokens`, which the TUI shows on its context g
 once the run ends rather than per model call. The output count is a run total, so it
 replaces the TUI's estimate only for a run with one assistant message; a run that spoke
 before a tool call keeps the per-message estimates rather than counting its tokens twice. Resume, compaction, steering and queued follow-ups
-refuse with `UnavailableOverOap` until their gaps below close. The map that
+refuse with `UnavailableOverOap` until their gaps below close. The map that `oapx tui --attach URL` runs the
+same execution over a running hub's HTTP wire (`zig/src/tui/hub_link.zig`): each envelope
+goes to its route, and each run is followed on its own SSE stream replayed from its first
+event, read by polling the socket on the execution's pump thread. A model switch, which
+the hub has no route for, is refused to its request.
 follows predates this and still describes the server path `oapx serve agent`
 without `--backend` uses.
 

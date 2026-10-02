@@ -2011,6 +2011,16 @@ pub fn build(b: *std.Build) void {
     oapx_adapter_mod.addImport("endpoint", adapter_endpoint_mod);
     oapx_adapter_mod.addImport("semantic", semantic_mod);
     const oapx_adapter_test = b.addTest(.{ .root_module = oapx_adapter_mod });
+    const tui_hub_link_mod = b.createModule(.{
+        .root_source_file = b.path("src/tui/hub_link.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "compat", .module = compat_mod },
+            .{ .name = "sse", .module = sse_transport_mod },
+        },
+    });
+    const tui_hub_link_test = b.addTest(.{ .root_module = tui_hub_link_mod });
     const tui_oap_execution_mod = b.createModule(.{
         .root_source_file = b.path("src/tui/oap_execution.zig"),
         .target = target,
@@ -2026,6 +2036,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "tui_session", .module = tui_session_mod },
             .{ .name = "adapter_endpoint", .module = adapter_endpoint_mod },
             .{ .name = "oapx_adapter", .module = oapx_adapter_mod },
+            .{ .name = "hub_link", .module = tui_hub_link_mod },
             .{ .name = "owned_slice", .module = owned_slice_mod },
         },
     });
@@ -2918,6 +2929,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&isolatedHomeRun(b, oapx_adapter_test, "test/oapx_adapter_test").step);
     test_unit_adapter_step.dependOn(&isolatedHomeRun(b, oapx_adapter_test, "test-unit-adapter/oapx_adapter_test").step);
     test_step.dependOn(&isolatedHomeRun(b, tui_oap_execution_test, "test/tui_oap_execution_test").step);
+    test_step.dependOn(&isolatedHomeRun(b, tui_hub_link_test, "test/tui_hub_link_test").step);
     test_step.dependOn(&b.addRunArtifact(deepseek_endpoint_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(deepseek_endpoint_test).step);
     test_step.dependOn(&b.addRunArtifact(hermes_adapter_test).step);
@@ -3297,6 +3309,7 @@ pub fn build(b: *std.Build) void {
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_oap_ops_parity_test, "test-unit-tui/tui_oap_ops_parity_test").step);
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_auto_continue_test, "test-unit-tui/tui_auto_continue_test").step);
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_oap_execution_test, "test-unit-tui/tui_oap_execution_test").step);
+    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_hub_link_test, "test-unit-tui/tui_hub_link_test").step);
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_commands_test, "test-unit-tui/tui_commands_test").step);
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_login_test, "test-unit-tui/tui_login_test").step);
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, model_catalog_test, "test-unit-tui/model_catalog_test").step);
