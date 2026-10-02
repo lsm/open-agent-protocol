@@ -180,6 +180,14 @@ pub const Session = struct {
         gpa.destroy(self);
     }
 
+    fn evictOldestHalf(self: *Session) void {
+        const items = self.journal.items;
+        const drop = items.len / 2;
+        for (items[0..drop]) |entry| self.gpa.free(entry.line);
+        std.mem.copyForwards(Journaled, items[0 .. items.len - drop], items[drop..]);
+        self.journal.shrinkRetainingCapacity(items.len - drop);
+    }
+
     fn forgetJournal(self: *Session) void {
         for (self.journal.items) |entry| self.gpa.free(entry.line);
         self.journal.clearRetainingCapacity();
@@ -448,7 +456,7 @@ pub const Session = struct {
         try self.outbox.ensureUnusedCapacity(self.gpa, 1);
         try self.journal.ensureUnusedCapacity(self.gpa, 1);
         self.outbox.appendAssumeCapacity(.{ .line = line, .run_id = run.id, .sequence = sequence });
-        if (self.journal.items.len == journal_capacity) self.gpa.free(self.journal.orderedRemove(0).line);
+        if (self.journal.items.len == journal_capacity) self.evictOldestHalf();
         self.journal.appendAssumeCapacity(.{ .line = kept, .run_id = run.id, .sequence = sequence });
         run.next_sequence += 1;
         self.updated_at_ms = now;
@@ -1023,4 +1031,19 @@ test "a replay from zero re-delivers the latest run's events in order, and a fut
     }
     try testing.expectError(error.ReplayCursorFuture, harness.session.vtable.replay.?(harness.session.ptr, testing.allocator, admitted.run_id.?, events.len + 1, &refusal));
     try testing.expectError(error.RunNotFound, harness.session.vtable.replay.?(harness.session.ptr, testing.allocator, "run-elsewhere", 0, &refusal));
+}
+
+test "a full journal drops its oldest half at once, keeping the newest entries in order" {
+    var script = Script{};
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const session = Session.cast(harness.session.ptr);
+    var sequence: u64 = 1;
+    while (sequence <= 8) : (sequence += 1) {
+        try session.journal.append(testing.allocator, .{ .line = try testing.allocator.dupe(u8, "x"), .run_id = "run", .sequence = sequence });
+    }
+    session.evictOldestHalf();
+    try testing.expectEqual(@as(usize, 4), session.journal.items.len);
+    for (session.journal.items, 5..) |entry, expected| try testing.expectEqual(@as(u64, expected), entry.sequence);
 }
