@@ -212,3 +212,27 @@ and schema at this pin's commit. The v1.9.1 corpus drives `session/new`
 process gate is the one that ran those frames. The gates are read from the
 generated schema and the MUSTs from the prose; whether a given agent honours
 them is a property of that agent and not of this pin.
+
+## Reasoning level and compaction at v1.9.1
+
+Recorded for [Decision 0045](../decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md).
+Read from the protocol at `7e87dc205a7325bd07d0249fd20bb7486ee6ba95` and the
+pinned agent, cagent, at `d27c65ce59e6474fb4a57d0fa879fc53f5bf3f1a`.
+
+**The protocol.** A session config option may carry the category
+`thought_level`, a "thought/reasoning level selector"
+(`schema/v1/schema.json`), and `session/set_config_option` changes one on a
+live session. The category is a UI hint, and the values are the agent's own.
+ACP has no compaction setting.
+
+**cagent.** `SetSessionConfigOption` answers method-not-found
+(`pkg/acp/agent.go`), so a level cannot be changed over ACP with this agent.
+Its agent config (`pkg/config/latest/types.go`) carries:
+
+- `thinking_budget`: a token count or an effort name;
+- `session_compaction`: on/off, default on;
+- `compaction_threshold`: the fraction of the context window that triggers
+  compaction, in (0, 1], default 0.9.
+
+All three are read from the agent YAML at launch, so with cagent both
+settings are fixed when the session opens.

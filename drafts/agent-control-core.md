@@ -680,6 +680,7 @@ Common optional core features:
 - `action.permissions`
 - `user_input`
 - `session.compact` and `run.compaction` (proposed; [Decision 0044](../decisions/0044-compaction.md))
+- `session.reasoning` and `session.compaction.policy` (proposed; [Decision 0045](../decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md))
 
 Support levels are:
 
