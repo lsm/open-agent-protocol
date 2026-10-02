@@ -2,6 +2,7 @@ package serve_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -331,5 +332,168 @@ func TestASessionThatSettlesAtOpenRecordsBothEndsInOneGo(t *testing.T) {
 	}
 	if state, found := binding.State(history); !found || state.Action != binding.ActionClosed {
 		t.Fatalf("the last state is %+v, want the close", state)
+	}
+}
+
+func TestAReopenIsRecordedAsReopenedAfterTheClose(t *testing.T) {
+	store, err := binding.File(filepath.Join(t.TempDir(), "bindings.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub := boundHub(t, serve.Options{Bindings: store})
+	ctx := context.Background()
+	session, _, err := hub.Open(ctx, "memory", base.OpenRequest{SessionID: "session-reopened"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, state, err := hub.Open(ctx, "memory", base.OpenRequest{SessionID: "session-reopened", Reopen: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Recovery == nil || !state.Recovery.Recovered {
+		t.Fatalf("recovery = %+v, want the reopened state to declare itself recovered", state.Recovery)
+	}
+	history, err := store.History(ctx, "session-reopened")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 3 || history[2].Action != binding.ActionReopened {
+		t.Fatalf("history = %+v, want the open, the close and the reopen", history)
+	}
+}
+
+type noReopenAdapter struct {
+	base.Adapter
+}
+
+func (a noReopenAdapter) Probe(ctx context.Context) (base.Descriptor, error) {
+	descriptor, err := a.Adapter.Probe(ctx)
+	if err != nil {
+		return descriptor, err
+	}
+	features := map[string]protocol.FeatureSupport{}
+	for key, support := range descriptor.Capabilities.Features {
+		if key != protocol.FeatureOpenReopen {
+			features[key] = support
+		}
+	}
+	descriptor.Capabilities.Features = features
+	return descriptor, nil
+}
+
+func TestTheElectionGateRefusesAReopenTheAdapterDoesNotAdvertise(t *testing.T) {
+	registry := serve.NewRegistry()
+	if err := registry.Register("plain", noReopenAdapter{Adapter: base.NewMemory(base.Config{JournalCapacity: 8})}); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{StreamQueue: 8})
+	_, err := serve.ElectionGate(context.Background(), hub, "plain", "", protocol.SessionOpenRequest{SessionID: "s1", Reopen: true})
+	var refusal *base.UnsupportedControlError
+	if !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureOpenReopen || refusal.Reason != base.ControlUnadvertised {
+		t.Fatalf("gate answered %v, want an unadvertised refusal naming %s", err, protocol.FeatureOpenReopen)
+	}
+	if _, err := serve.ElectionGate(context.Background(), hub, "plain", "", protocol.SessionOpenRequest{SessionID: "s1"}); err != nil {
+		t.Fatalf("an open electing nothing was refused: %v", err)
+	}
+}
+
+func TestAReopenOfALiveSessionIsSessionExistsBeforeTheAdapterIsAsked(t *testing.T) {
+	hub := boundHub(t, serve.Options{})
+	ctx := context.Background()
+	if _, _, err := hub.Open(ctx, "memory", base.OpenRequest{SessionID: "live"}); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := hub.Open(ctx, "memory", base.OpenRequest{SessionID: "live", Reopen: true})
+	if !errors.Is(err, serve.ErrSessionExists) {
+		t.Fatalf("reopening a live session answered %v, want serve.ErrSessionExists rather than the adapter's unknown_session", err)
+	}
+}
+
+type nativeAdapter struct {
+	base.Adapter
+	asked []base.OpenRequest
+}
+
+type nativeSession struct {
+	base.Session
+}
+
+func (s nativeSession) NativeSessionID() string { return "native-thread-7" }
+
+func (a *nativeAdapter) Open(ctx context.Context, request base.OpenRequest) (base.Session, error) {
+	a.asked = append(a.asked, request)
+	session, err := a.Adapter.Open(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	return nativeSession{Session: session}, nil
+}
+
+func TestAReopenHandsTheAdapterTheNativeIDItsBindingRecorded(t *testing.T) {
+	store, err := binding.File(filepath.Join(t.TempDir(), "bindings.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped := &nativeAdapter{Adapter: base.NewMemory(base.Config{JournalCapacity: 8})}
+	registry := serve.NewRegistry()
+	if err := registry.Register("native", wrapped); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{StreamQueue: 8, Bindings: store})
+	ctx := context.Background()
+	session, _, err := hub.Open(ctx, "native", base.OpenRequest{SessionID: "bound"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest, found, err := store.Latest(ctx, "bound")
+	if err != nil || !found || latest.Record.NativeSessionID != "native-thread-7" {
+		t.Fatalf("binding = %+v found=%v err=%v, want the session's native id recorded at open", latest, found, err)
+	}
+	if err := session.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := hub.Open(ctx, "native", base.OpenRequest{SessionID: "bound", Reopen: true}); err != nil {
+		t.Fatal(err)
+	}
+	if asked := wrapped.asked[len(wrapped.asked)-1]; asked.NativeSessionID != "native-thread-7" {
+		t.Fatalf("the reopen asked the adapter with native id %q, want the bound one", asked.NativeSessionID)
+	}
+	before := len(wrapped.asked)
+	if _, _, err := hub.Open(ctx, "native", base.OpenRequest{SessionID: "unbound", Reopen: true}); !errors.Is(err, serve.ErrUnknownSession) {
+		t.Fatalf("a reopen with no binding answered %v, want serve.ErrUnknownSession", err)
+	}
+	if len(wrapped.asked) != before {
+		t.Fatal("a reopen with no binding reached the adapter; the code must come from the binding")
+	}
+}
+
+func TestAReopenAfterARestartTheAdapterCannotLoadIsUnsupportedFeature(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bindings.jsonl")
+	ctx := context.Background()
+	open := func() *serve.Hub {
+		store, err := binding.File(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		registry := serve.NewRegistry()
+		if err := registry.Register("memory", base.NewMemory(base.Config{JournalCapacity: 8})); err != nil {
+			t.Fatal(err)
+		}
+		return serve.New(registry, serve.Options{StreamQueue: 8, Bindings: store})
+	}
+	session, _, err := open().Open(ctx, "memory", base.OpenRequest{SessionID: "kept"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = open().Open(ctx, "memory", base.OpenRequest{SessionID: "kept", Reopen: true})
+	var refusal *base.UnsupportedControlError
+	if !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureOpenReopen || refusal.Reason != base.ControlUnsatisfiable {
+		t.Fatalf("reopening a bound session the restarted adapter lost answered %v, want unsupported_feature naming %s", err, protocol.FeatureOpenReopen)
 	}
 }

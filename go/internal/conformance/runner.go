@@ -259,6 +259,55 @@ func (r *runner) drive() {
 	r.refuseStaleRevision()
 	r.answerCancel()
 	r.refuseAddressableEnvelope()
+	r.refuseUnknownReopen()
+}
+
+func (r *runner) refuseUnknownReopen() {
+	const name = "a reopen of a session the endpoint never had is refused, not answered with a fresh session"
+	never := r.session + "-never-opened"
+	request := protocol.SessionOpenRequest{SessionID: never, Reopen: true}
+	if support := r.descriptor.Features[protocol.FeatureOpenReopen]; support.Level == protocol.SupportDegraded {
+		request.AllowDegradedFeatures = []string{protocol.FeatureOpenReopen}
+	}
+	envelope, err := protocol.NewEnvelope(protocol.TypeSessionOpenRequest, r.next("request"), request)
+	if err != nil {
+		r.fail(name, err.Error())
+		return
+	}
+	envelope.SessionID = protocol.SessionID(never)
+	envelope.CapabilityRevision = r.revision
+	if err := r.client.Probe(envelope); err != nil {
+		r.fail(name, err.Error())
+		return
+	}
+	answer, err := r.client.Response(envelope.ID)
+	if err != nil {
+		r.fail(name, err.Error())
+		return
+	}
+	if answer.Type != protocol.TypeErrorResponse {
+		r.fail(name, fmt.Sprintf("a reopen naming %q was answered %s", never, answer.Type))
+		return
+	}
+	var failure protocol.ErrorResponse
+	if err := answer.DecodePayload(&failure); err != nil {
+		r.fail(name, err.Error())
+		return
+	}
+	support, advertised := r.descriptor.Features[protocol.FeatureOpenReopen]
+	if advertised && support.Level != "" && support.Level != protocol.SupportUnavailable {
+		if failure.Error.Code != "unknown_session" {
+			r.fail(name, fmt.Sprintf("an endpoint advertising %s refused %q, want %q", protocol.FeatureOpenReopen, failure.Error.Code, "unknown_session"))
+			return
+		}
+		r.pass(name)
+		return
+	}
+	if feature, _ := failure.Error.Details["feature"].(string); failure.Error.Code != "unsupported_feature" || feature != protocol.FeatureOpenReopen {
+		r.fail(name, fmt.Sprintf("an endpoint not advertising %s refused %q naming %q, want unsupported_feature naming the key", protocol.FeatureOpenReopen, failure.Error.Code, feature))
+		return
+	}
+	r.pass(name)
 }
 
 func (r *runner) exerciseModelSwitch(model, previous string) bool {

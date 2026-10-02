@@ -198,7 +198,7 @@ func (s *Server) open(ctx context.Context, e protocol.Envelope) (protocol.Envelo
 	if err := e.DecodePayload(&request); err != nil {
 		return protocol.Envelope{}, &refusal{code: "invalid_payload", message: err.Error()}
 	}
-	if _, err := serve.SubscribeGate(ctx, s.hub, s.adapter, "", request); err != nil {
+	if _, err := serve.ElectionGate(ctx, s.hub, s.adapter, "", request); err != nil {
 		return protocol.Envelope{}, err
 	}
 	if _, err := serve.AttachmentGate(ctx, s.hub, s.adapter, "", request); err != nil {
@@ -219,6 +219,7 @@ func (s *Server) open(ctx context.Context, e protocol.Envelope) (protocol.Envelo
 		AllowDegradedFeatures: request.AllowDegradedFeatures,
 		ToolSources:           attachments,
 		Tools:                 request.Tools,
+		Reopen:                request.Reopen,
 	}
 	entry, state, err := s.hub.Open(ctx, s.adapter, open)
 	if err != nil {

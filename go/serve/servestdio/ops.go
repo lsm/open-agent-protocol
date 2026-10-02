@@ -336,10 +336,10 @@ func (s *Server) openOp(ctx context.Context, request requestLine, stream context
 	}
 	revision, refusal := serve.AttachmentGate(ctx, s.hub, request.Adapter, envelope.CapabilityRevision, payload)
 	if refusal == nil {
-		var subscribeRevision string
-		subscribeRevision, refusal = serve.SubscribeGate(ctx, s.hub, request.Adapter, envelope.CapabilityRevision, payload)
-		if subscribeRevision != "" {
-			revision = subscribeRevision
+		var electionRevision string
+		electionRevision, refusal = serve.ElectionGate(ctx, s.hub, request.Adapter, envelope.CapabilityRevision, payload)
+		if electionRevision != "" {
+			revision = electionRevision
 		}
 	}
 	if refusal != nil {
@@ -369,6 +369,7 @@ func (s *Server) openOp(ctx context.Context, request requestLine, stream context
 		AllowDegradedFeatures: payload.AllowDegradedFeatures,
 		ToolSources:           attachments,
 		Tools:                 payload.Tools,
+		Reopen:                payload.Reopen,
 	}
 	if payload.Metadata != nil {
 		open.Metadata = make(map[string]any, len(payload.Metadata))
@@ -398,6 +399,8 @@ func (s *Server) openOp(ctx context.Context, request requestLine, stream context
 			code = "unknown_adapter"
 		case errors.Is(err, serve.ErrSessionExists):
 			code = "session_exists"
+		case errors.Is(err, serve.ErrUnknownSession):
+			code = "unknown_session"
 		case errors.Is(err, base.ErrSessionClosed):
 			code = "session_closed"
 		}

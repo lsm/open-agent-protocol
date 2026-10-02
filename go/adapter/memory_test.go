@@ -1749,3 +1749,39 @@ func TestResolveRefusesAQueuedRunBeforeItStarts(t *testing.T) {
 		t.Fatalf("resolve before start = %v, want ErrInteractionNotFound", err)
 	}
 }
+
+func TestAClosedSessionReopensOnItsOwnModelAndOnlyOnce(t *testing.T) {
+	ctx := context.Background()
+	memory := adapter.NewMemory(adapter.Config{})
+	participant := protocol.Participant{ID: "user"}
+	session, err := memory.Open(ctx, adapter.OpenRequest{SessionID: "kept", Participant: participant})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := session.(adapter.ModelSwitcher).SwitchModel(ctx, protocol.SessionModelSwitchRequest{SessionID: "kept", ModelID: "reference-model-b"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := memory.Open(ctx, adapter.OpenRequest{SessionID: "kept", Participant: participant, Reopen: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := reopened.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Recovery == nil || !state.Recovery.Recovered {
+		t.Fatalf("recovery = %+v, want a reopen to declare itself recovered", state.Recovery)
+	}
+	if state.CurrentModelID != "reference-model-b" {
+		t.Fatalf("model = %q, want the model the session closed on", state.CurrentModelID)
+	}
+	if _, err := memory.Open(ctx, adapter.OpenRequest{SessionID: "kept", Participant: participant, Reopen: true}); !errors.Is(err, adapter.ErrUnknownSession) {
+		t.Fatalf("a second reopen of a session already reopened got %v, want adapter.ErrUnknownSession", err)
+	}
+	if _, err := memory.Open(ctx, adapter.OpenRequest{SessionID: "never", Participant: participant, Reopen: true}); !errors.Is(err, adapter.ErrUnknownSession) {
+		t.Fatalf("a reopen of a session never closed got %v, want adapter.ErrUnknownSession", err)
+	}
+}

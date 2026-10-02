@@ -4,6 +4,7 @@ const oap_types = @import("oap_types");
 pub const Failure = error{
     Unavailable,
     SessionClosed,
+    UnknownSession,
     RunActive,
     InvalidSubmission,
     RunNotFound,
@@ -28,6 +29,7 @@ pub const feature_tools_list = "action.tools.list";
 pub const feature_tools_provide = "action.tools.provide";
 pub const feature_tool_sources_attach = "action.tool_sources.attach";
 pub const feature_open_subscribe = "session.open.subscribe";
+pub const feature_open_reopen = "session.open.reopen";
 pub const feature_submit = "session.message.submit";
 
 pub const Refusal = struct {
@@ -111,6 +113,8 @@ pub const OpenRequest = struct {
     allow_degraded_features: []const []const u8 = &.{},
     tools_json: ?[]const u8 = null,
     tool_sources_json: ?[]const u8 = null,
+    reopen: bool = false,
+    native_session_id: []const u8 = "",
 };
 
 pub const Catalog = struct {
@@ -172,10 +176,16 @@ pub const Session = struct {
         resolve_call: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request_id: []const u8, request: *const oap_types.CallResolveRequest, refusal: *Refusal) Failure!oap_types.CallResolveResponse = null,
         replay: ?*const fn (ptr: *anyopaque, allocator: std.mem.Allocator, run_id: []const u8, after: u64, refusal: *Refusal) Failure!Replay = null,
         readable: ?*const fn (ptr: *anyopaque) ?std.Io.File.Handle = null,
+        native_id: ?*const fn (ptr: *anyopaque) []const u8 = null,
     };
 
     pub fn id(self: Session) []const u8 {
         return self.vtable.id(self.ptr);
+    }
+
+    pub fn nativeId(self: Session) []const u8 {
+        const read = self.vtable.native_id orelse return "";
+        return read(self.ptr);
     }
 
     pub fn state(self: Session, arena: std.mem.Allocator, refusal: *Refusal) Failure!oap_types.SessionState {
@@ -312,6 +322,7 @@ pub fn refuseUnadvertisedOpenElections(descriptor: Descriptor, request: *const o
     const elections = [_]struct { key: []const u8, present: bool }{
         .{ .key = feature_tool_sources_attach, .present = carriesEntries(request.tool_sources_json) },
         .{ .key = feature_open_subscribe, .present = request.subscribe },
+        .{ .key = feature_open_reopen, .present = request.reopen },
         .{ .key = feature_tools_provide, .present = carriesEntries(request.tools_json) },
     };
     for (elections) |election| {
