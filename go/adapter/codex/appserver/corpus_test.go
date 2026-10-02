@@ -168,7 +168,7 @@ func runCorpusCase(t *testing.T, root string, entry corpusManifestCase) {
 	if definition.ModelID != "" {
 		request.ModelID = protocol.ControlValue(definition.ModelID)
 	}
-	admission, stream, err := session.Submit(context.Background(), request)
+	admission, stream, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: request})
 	if err != nil {
 		t.Fatal(err)
 	}

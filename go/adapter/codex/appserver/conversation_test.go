@@ -145,10 +145,10 @@ func TestCodexProcessWritesTheRecordedConversation(t *testing.T) {
 		t.Fatal(err)
 	}
 	model := "glm-per-turn"
-	admission, stream, err := session.Submit(ctx, protocol.MessageSubmitRequest{
+	admission, stream, err := session.Submit(ctx, adapter.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: "session-1", Delivery: protocol.DeliveryAuto, ModelID: &model,
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent(conversationText)}},
-	})
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}

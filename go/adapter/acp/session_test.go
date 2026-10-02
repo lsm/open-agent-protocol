@@ -167,7 +167,7 @@ func TestOpenRejectsEmptyParticipant(t *testing.T) {
 }
 func submit(t *testing.T, s base.Session) (protocol.MessageSubmitResponse, base.EventStream) {
 	t.Helper()
-	r, stream, err := s.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+	r, stream, err := s.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +292,7 @@ func TestOneActivePromptAndCancellationRaces(t *testing.T) {
 			s, f := openTest(t, 64)
 			admission, stream := submit(t, s)
 			<-f.promptStarted
-			if _, _, err := s.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("second")}}}); !errors.Is(err, base.ErrRunActive) {
+			if _, _, err := s.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("second")}}}}); !errors.Is(err, base.ErrRunActive) {
 				t.Fatalf("second prompt err=%v", err)
 			}
 			ack, err := s.Cancel(context.Background(), admission.RunID)
@@ -506,7 +506,7 @@ func TestNativeMessageIDsArePortableAndSessionScoped(t *testing.T) {
 	_ = events1[1].DecodePayload(&one)
 
 	second, f2 := openTestSession(t, 64, "session-two")
-	r2, stream2, err := second.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session-two", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+	r2, stream2, err := second.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session-two", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}}})
 	if err != nil || !r2.Accepted {
 		t.Fatalf("second submit=%+v err=%v", r2, err)
 	}
@@ -529,7 +529,7 @@ func TestNativeMessageIDsArePortableAndSessionScoped(t *testing.T) {
 
 func TestUnsupportedInputHasNoPromptSideEffect(t *testing.T) {
 	s, f := openTest(t, 64)
-	_, _, err := s.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Messages: []protocol.Message{{Role: protocol.RoleAssistant, Content: protocol.TextContent("bad")}}})
+	_, _, err := s.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Messages: []protocol.Message{{Role: protocol.RoleAssistant, Content: protocol.TextContent("bad")}}}})
 	if !errors.Is(err, ErrUnsupportedInput) {
 		t.Fatalf("err=%v", err)
 	}
@@ -742,7 +742,7 @@ func TestSubmitRefusesEveryUnadvertisedControl(t *testing.T) {
 		protocol.FeatureStructuredOutput: {SessionID: "session", Delivery: protocol.DeliveryAuto, OutputSchema: json.RawMessage(`{"type":"object"}`), Messages: message},
 		protocol.FeatureToolSelection:    {SessionID: "session", Delivery: protocol.DeliveryAuto, ToolChoice: json.RawMessage(`"none"`), Messages: message},
 	} {
-		_, _, err := s.Submit(context.Background(), request)
+		_, _, err := s.Submit(context.Background(), base.SubmitRequest{Request: request})
 		var refusal *base.UnsupportedControlError
 		if !errors.As(err, &refusal) {
 			t.Fatalf("%s: got %v, want an *adapter.UnsupportedControlError", feature, err)
@@ -760,7 +760,7 @@ func TestSubmitRefusesEveryUnadvertisedControl(t *testing.T) {
 		"no session":       {Delivery: protocol.DeliveryAuto, Instructions: protocol.ControlValue("be terse"), Messages: message},
 		"unsupported mode": {SessionID: "session", Delivery: protocol.DeliveryQueue, Instructions: protocol.ControlValue("be terse"), Messages: message},
 	} {
-		_, _, err := s.Submit(context.Background(), request)
+		_, _, err := s.Submit(context.Background(), base.SubmitRequest{Request: request})
 		var refusal *base.UnsupportedControlError
 		if !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureInstructions {
 			t.Fatalf("%s: got %v, want the unadvertised control named ahead of the ordinary refusal", name, err)

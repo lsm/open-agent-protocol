@@ -349,7 +349,8 @@ pub const Session = struct {
         };
     }
 
-    fn submit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+    fn submit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+        _ = envelope_id;
         _ = refusal;
         const self = cast(ptr);
         if (request.messages.len != 1) return error.InvalidSubmission;
@@ -717,7 +718,7 @@ const Probe = struct {
     fn submit(self: *Probe, delivery: oap_types.RequestedDelivery, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
         const messages = try self.arena.allocator().dupe(oap_types.Message, &.{.{ .role = .user, .content = .{ .text = "hello" } }});
         const request = oap_types.MessageSubmitRequest{ .session_id = "s1", .messages = messages, .delivery = delivery };
-        return self.handle.?.submit(self.arena.allocator(), &request, refusal);
+        return self.handle.?.submit(self.arena.allocator(), &request, "", refusal);
     }
 
     fn pumpUntil(self: *Probe, comptime kind: []const u8, seen: *std.ArrayList(contract.Event)) !contract.Event {
@@ -861,6 +862,6 @@ test "a submission carrying a degraded-feature consent list is admitted, as Go's
     _ = try probe.open(&refusal);
     const messages = try probe.arena.allocator().dupe(oap_types.Message, &.{.{ .role = .user, .content = .{ .text = "hello" } }});
     const request = oap_types.MessageSubmitRequest{ .session_id = "s1", .messages = messages, .delivery = .auto, .allow_degraded_features = &.{"run.streaming"} };
-    const admitted = try probe.handle.?.submit(probe.arena.allocator(), &request, &refusal);
+    const admitted = try probe.handle.?.submit(probe.arena.allocator(), &request, "", &refusal);
     try testing.expect(admitted.accepted);
 }

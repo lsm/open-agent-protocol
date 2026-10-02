@@ -92,7 +92,8 @@ type interactionBinding struct {
 	order             uint64
 }
 
-func (session *session) Submit(ctx context.Context, request protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, adapter.EventStream, error) {
+func (session *session) Submit(ctx context.Context, submit adapter.SubmitRequest) (protocol.MessageSubmitResponse, adapter.EventStream, error) {
+	request := submit.Request
 	session.opMu.Lock()
 	defer session.opMu.Unlock()
 	if err := ctx.Err(); err != nil {

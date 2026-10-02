@@ -299,7 +299,7 @@ func runDSHFakeCase(t *testing.T, definition dshCorpusCase, frames []dshFrame, d
 			channel := make(chan submitResult, 1)
 			pending = channel
 			go func() {
-				admission, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+				admission, stream, err := session.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}}})
 				channel <- submitResult{admission, stream, err}
 			}()
 			select {
@@ -330,7 +330,7 @@ func runDSHFakeCase(t *testing.T, definition dshCorpusCase, frames []dshFrame, d
 			client.deliver(t, decoded[i])
 		case "overlap-submit":
 			calls := client.callCount()
-			_, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello again")}}})
+			_, stream, err := session.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello again")}}}})
 			if !errors.Is(err, base.ErrRunActive) {
 				t.Fatalf("frame %d: overlapping submit error = %v, want %v", i+1, err, base.ErrRunActive)
 			}
@@ -491,7 +491,7 @@ func runDSHProcessCase(t *testing.T, dir string, definition dshCorpusCase, frame
 			channel := make(chan submitResult, 1)
 			pending = channel
 			go func() {
-				admission, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+				admission, stream, err := session.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}}})
 				channel <- submitResult{admission, stream, err}
 			}()
 		case "shutdown":

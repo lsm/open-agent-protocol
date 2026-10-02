@@ -170,6 +170,7 @@ const ReplayState = struct {
 
 pub const LoadedSession = struct {
     metadata: SessionMetadata,
+    model_unavailable: bool = false,
     events: std.ArrayList(tui_session.TuiEvent) = .empty,
     messages: std.ArrayList(ai_types.Message) = .empty,
 
@@ -443,11 +444,25 @@ pub const Store = struct {
         var loaded = try self.load(session_id);
         errdefer loaded.deinit(self.allocator);
         try runtime.start();
-        if (loaded.metadata.model.len > 0) try runtime.switchModel(loaded.metadata.model);
+        if (loaded.metadata.model.len > 0) loaded.model_unavailable = !try selectSavedModel(runtime, loaded.metadata.provider, loaded.metadata.model);
         try runtime.replaceMessages(loaded.messages.items);
         return loaded;
     }
 };
+
+fn selectSavedModel(runtime: *tui_runtime.TuiRuntime, provider: []const u8, model_id: []const u8) !bool {
+    for (runtime.availableModels()) |model| {
+        if (std.mem.eql(u8, model.id, model_id) and std.mem.eql(u8, model.provider, provider)) {
+            try runtime.switchModelExact(model);
+            return true;
+        }
+    }
+    runtime.switchModel(model_id) catch |err| switch (err) {
+        error.ModelNotFound => return false,
+        else => return err,
+    };
+    return true;
+}
 
 fn sessionPath(allocator: std.mem.Allocator, base_dir: []const u8, session_id: []const u8) ![]u8 {
     return sessionFilePath(allocator, base_dir, session_id, ".jsonl");

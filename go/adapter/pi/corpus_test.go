@@ -200,7 +200,7 @@ func runPiCorpusCase(t *testing.T, root string, entry piCorpusManifestCase) {
 		client.err = promptErr
 		client.mu.Unlock()
 		var err error
-		admission, stream, err = session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+		admission, stream, err = session.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}}})
 		if !errors.Is(err, promptErr) {
 			t.Fatalf("prompt rejection error = %v, want %v", err, promptErr)
 		}

@@ -1457,6 +1457,7 @@ pub const App = struct {
         } else {
             try self.state.status.setModelWithContext(self.allocator, loaded.metadata.model, loaded.metadata.provider, 0);
         }
+        defer if (loaded.model_unavailable) self.noteUnavailableResumeModel(loaded.metadata.provider, loaded.metadata.model, runtime.currentModel());
         self.replaying_history = true;
         self.state.setFollowingAgentCwd(false);
         defer {
@@ -1481,12 +1482,20 @@ pub const App = struct {
         self.saveSessionIndex(store);
     }
 
+    fn noteUnavailableResumeModel(self: *App, provider: []const u8, model_id: []const u8, current: ?ai_types.Model) void {
+        const msg = if (current) |model|
+            std.fmt.allocPrint(self.allocator, "{s}/{s} is not available, so this session continues on {s}/{s}; pick another with /model", .{ provider, model_id, model.provider, model.id }) catch return
+        else
+            std.fmt.allocPrint(self.allocator, "{s}/{s} is not available; pick a model with /model", .{ provider, model_id }) catch return;
+        defer self.allocator.free(msg);
+        self.state.appendTranscript(.system, msg) catch {};
+    }
+
     fn loginDiscoveryAvailable(id: []const u8) bool {
         return model_catalog.supportsCatalogModelDiscovery(id);
     }
 
-    fn loginProviderGroupLabel(row: provider_catalog.Provider) []const u8 {
-        if (provider_catalog.sharesCredentialEnv(row.id) and row.credential_env.len > 0) return row.credential_env[0];
+    fn loginProviderLabel(row: provider_catalog.Provider) []const u8 {
         return row.display_name orelse row.id;
     }
 
@@ -1497,22 +1506,10 @@ pub const App = struct {
         return false;
     }
 
-    fn hasEarlierSharedCredential(index: usize) bool {
-        const row = provider_catalog.all[index];
-        for (provider_catalog.all[0..index]) |earlier| {
-            for (row.credential_env) |name| {
-                for (earlier.credential_env) |earlier_name| {
-                    if (std.mem.eql(u8, name, earlier_name)) return true;
-                }
-            }
-        }
-        return false;
-    }
-
     fn loginProviderCount() usize {
         var count: usize = 0;
-        for (provider_catalog.all, 0..) |row, index| {
-            if (supportsLogin(row) and !hasEarlierSharedCredential(index)) count += 1;
+        for (provider_catalog.all) |row| {
+            if (supportsLogin(row)) count += 1;
         }
         return count;
     }
@@ -1520,8 +1517,8 @@ pub const App = struct {
     fn loginProviderAt(index: usize) ?provider_catalog.Provider {
         var visible_index: usize = 0;
         for (0..2) |availability_pass| {
-            for (provider_catalog.all, 0..) |row, catalog_index| {
-                if (!supportsLogin(row) or hasEarlierSharedCredential(catalog_index)) continue;
+            for (provider_catalog.all) |row| {
+                if (!supportsLogin(row)) continue;
                 if (loginDiscoveryAvailable(row.id) != (availability_pass == 0)) continue;
                 if (visible_index == index) return row;
                 visible_index += 1;
@@ -1603,14 +1600,6 @@ pub const App = struct {
             if (std.mem.eql(u8, row.id, "openai-codex") and (std.mem.eql(u8, provider_id, "codex") or std.mem.eql(u8, provider_id, "openai"))) return index;
             if (std.mem.eql(u8, row.id, "github-copilot") and std.mem.eql(u8, provider_id, "github")) return index;
             if (std.mem.eql(u8, row.id, "kimi") and std.mem.eql(u8, provider_id, "moonshot")) return index;
-            if (provider_catalog.sharesCredentialEnv(row.id)) {
-                const target = provider_catalog.provider(provider_id) orelse continue;
-                for (row.credential_env) |name| {
-                    for (target.credential_env) |target_name| {
-                        if (std.mem.eql(u8, name, target_name)) return index;
-                    }
-                }
-            }
         }
         return null;
     }
@@ -1664,7 +1653,7 @@ pub const App = struct {
                 break :model_item .{ .label = model.id, .detail = model.provider, .badge = if (is_current) tui_theme.glyph.system ++ " current" else null };
             } else .{ .label = "" },
             .login => if (loginProviderAt(index)) |row| .{
-                .label = loginProviderGroupLabel(row),
+                .label = loginProviderLabel(row),
                 .detail = if (loginDiscoveryAvailable(row.id)) row.id else "models unavailable",
                 .badge = if (loginDiscoveryAvailable(row.id)) loginBadge(self.login_status[loginProviderCatalogIndex(row.id).?]) else "unavailable",
             } else .{ .label = "" },
@@ -1916,28 +1905,6 @@ pub const App = struct {
                 try storage.providers.put(key, .{ .api_key = api_key });
             }
             owned = true;
-            if (provider_catalog.sharesCredentialEnv(provider_id)) {
-                const row = provider_catalog.provider(provider_id) orelse return error.UnknownLoginProvider;
-                for (provider_catalog.all) |sibling| {
-                    if (std.mem.eql(u8, sibling.id, provider_id)) continue;
-                    var shares_env = false;
-                    for (row.credential_env) |name| {
-                        for (sibling.credential_env) |sibling_name| {
-                            if (std.mem.eql(u8, name, sibling_name)) shares_env = true;
-                        }
-                    }
-                    if (!shares_env) continue;
-                    const sibling_key = try self.allocator.dupe(u8, sibling.id);
-                    errdefer self.allocator.free(sibling_key);
-                    const sibling_secret = try self.allocator.dupe(u8, creds.access);
-                    errdefer self.allocator.free(sibling_secret);
-                    if (storage.providers.fetchRemove(sibling.id)) |removed| {
-                        self.allocator.free(removed.key);
-                        removed.value.deinit(self.allocator);
-                    }
-                    try storage.providers.put(sibling_key, .{ .api_key = sibling_secret });
-                }
-            }
             try storage.persist();
             return;
         }
@@ -2144,22 +2111,15 @@ pub const App = struct {
     fn logoutProvider(self: *App, requested: []const u8) !void {
         self.discardModelFetch();
         const provider_id = logoutProviderId(requested);
-        var shared: std.ArrayList([]const u8) = .empty;
-        defer shared.deinit(self.allocator);
-        for (provider_catalog.all) |row| {
-            if (provider_catalog.sharesCredentialEnvWith(provider_id, row.id)) try shared.append(self.allocator, row.id);
-        }
         if (self.login) |pending| {
-            var affected = std.mem.eql(u8, pending.provider_id, provider_id);
-            for (shared.items) |id| affected = affected or std.mem.eql(u8, pending.provider_id, id);
-            if (affected) {
+            if (std.mem.eql(u8, pending.provider_id, provider_id)) {
                 const msg = try std.fmt.allocPrint(self.allocator, "a login to {s} is in progress; cancel it before logging out", .{pending.provider_id});
                 defer self.allocator.free(msg);
                 try self.state.appendTranscript(.@"error", msg);
                 return;
             }
         }
-        const removed = oauth_storage.AuthStorage.removeStored(self.allocator, provider_id, shared.items) catch |err| {
+        const removed = oauth_storage.AuthStorage.removeStored(self.allocator, provider_id) catch |err| {
             const msg = try std.fmt.allocPrint(self.allocator, "logout failed: {s}", .{@errorName(err)});
             defer self.allocator.free(msg);
             try self.state.appendTranscript(.@"error", msg);
@@ -2168,13 +2128,6 @@ pub const App = struct {
         const outcome = try std.fmt.allocPrint(self.allocator, "{s} {s}", .{ if (removed) "logged out of" else "no saved credential for", provider_id });
         defer self.allocator.free(outcome);
         try self.state.appendTranscript(.system, outcome);
-        if (removed and shared.items.len > 0) {
-            const names = try std.mem.join(self.allocator, ", ", shared.items);
-            defer self.allocator.free(names);
-            const msg = try std.fmt.allocPrint(self.allocator, "{s} shares its key with {s}, so their saved copies of it are removed too", .{ provider_id, names });
-            defer self.allocator.free(msg);
-            try self.state.appendTranscript(.system, msg);
-        }
         if (provider_catalog.provider(provider_id)) |row| {
             for (row.credential_env) |name| try self.noteEnvironmentCredential(provider_id, name);
         }
@@ -6643,7 +6596,7 @@ test "App saves Kimi login credentials as api key" {
     }
 }
 
-test "App saves one Xiaomi login for every catalog row sharing its key" {
+test "App saves a login only for the row that was logged in" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const home = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "home" });
@@ -6679,13 +6632,12 @@ test "App saves one Xiaomi login for every catalog row sharing its key" {
 
     var storage = try oauth_storage.AuthStorage.loadFromFile(std.testing.allocator);
     defer storage.deinit();
-    const providers = [_][]const u8{ "xiaomi-token-plan-cn", "xiaomi-token-plan-sgp", "xiaomi-token-plan-ams", "xiaomi" };
-    for (providers) |provider_id| {
-        const auth = storage.providers.get(provider_id) orelse return error.MissingSharedKeyProvider;
-        switch (auth) {
-            .api_key => |key| try std.testing.expectEqualStrings("xiaomi-test-key", key),
-            .oauth => return error.ExpectedApiKeyAuth,
-        }
+    switch (storage.providers.get("xiaomi-token-plan-cn") orelse return error.MissingLoggedInProvider) {
+        .api_key => |key| try std.testing.expectEqualStrings("xiaomi-test-key", key),
+        .oauth => return error.ExpectedApiKeyAuth,
+    }
+    for ([_][]const u8{ "xiaomi-token-plan-sgp", "xiaomi-token-plan-ams", "xiaomi" }) |provider_id| {
+        try std.testing.expect(!storage.providers.contains(provider_id));
     }
 }
 
@@ -6698,12 +6650,14 @@ test "App login discovery availability follows the model catalog loader" {
     try std.testing.expect(!App.loginDiscoveryAvailable("azure"));
 }
 
-test "App login picker follows catalog order and groups shared credentials" {
+test "App login picker follows catalog order and lists each row reading a shared variable" {
     try std.testing.expectEqualStrings("openai", App.loginProviderAt(0).?.id);
     try std.testing.expectEqualStrings("anthropic", App.loginProviderAt(1).?.id);
     try std.testing.expect(App.loginProviderIndex("xiaomi") != null);
     try std.testing.expect(App.loginProviderIndex("xiaomi-token-plan-cn") != null);
-    try std.testing.expectEqual(App.loginProviderIndex("xiaomi").?, App.loginProviderIndex("xiaomi-token-plan-cn").?);
+    try std.testing.expect(App.loginProviderIndex("xiaomi").? != App.loginProviderIndex("xiaomi-token-plan-cn").?);
+    try std.testing.expectEqualStrings("opencode-go", App.loginProviderAt(App.loginProviderIndex("opencode-go").?).?.id);
+    try std.testing.expectEqualStrings("opencode-zen", App.loginProviderAt(App.loginProviderIndex("opencode-zen").?).?.id);
     try std.testing.expect(App.loginProviderAt(App.loginProviderIndex("xiaomi-token-plan-cn").?).?.display_name != null);
     try std.testing.expect(App.loginProviderIndex("google") != null);
     try std.testing.expect(!App.loginDiscoveryAvailable("google"));
@@ -7088,6 +7042,49 @@ test "a resumed session's replayed events leave the rate showing nothing" {
     try std.testing.expect(!app.state.telemetry.rate.previous.hasFigure());
     try std.testing.expect(!app.state.telemetry.rate.average.hasFigure());
     try std.testing.expect(!app.state.telemetry.rate.live.hasFigure());
+}
+
+test "a session whose model is gone resumes on the current model and says so" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+
+    var production = try ProductionRuntime.init(std.testing.allocator, .{});
+    defer production.deinit();
+    production.initBridge();
+    if (production.models.len == 0) return error.TestExpectedTarget;
+
+    var store = try session_store.Store.init(std.testing.allocator, base);
+    defer store.deinit();
+    var meta = session_store.SessionMetadata{
+        .session_id = try std.testing.allocator.dupe(u8, "orphaned"),
+        .model = try std.testing.allocator.dupe(u8, "retired-model"),
+        .provider = try std.testing.allocator.dupe(u8, "retired-provider"),
+        .last_active = 1,
+    };
+    defer meta.deinit(std.testing.allocator);
+    try store.save(meta, .{ .turn_start = .{} });
+    try store.save(meta, .{ .turn_end = .{ .stop_reason = .stop } });
+
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    var app = try App.init(std.testing.allocator, production.options());
+    defer app.deinit();
+    if (app.store) |*owned| owned.deinit();
+    app.store = try session_store.Store.init(std.testing.allocator, base);
+    app.session = mock.session();
+    try app.loadSessions();
+    app.state.session_index = 0;
+    const before = app.runtime.?.currentModel().?;
+
+    try app.resumeSelectedSession();
+
+    try std.testing.expectEqualStrings("orphaned", app.session_id);
+    try std.testing.expectEqualStrings(before.id, app.runtime.?.currentModel().?.id);
+    try std.testing.expectEqualStrings(before.id, app.state.status.model);
+    const said = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expect(std.mem.startsWith(u8, said.text.items, "retired-provider/retired-model is not available, so this session continues on "));
 }
 
 test "a model switch resets the rate average, including between two models that cost the same" {

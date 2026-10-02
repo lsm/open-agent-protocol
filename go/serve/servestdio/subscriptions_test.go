@@ -375,10 +375,10 @@ func runToCompletion(t *testing.T, hub *serve.Hub, entry *serve.Session) (protoc
 		t.Fatal(err)
 	}
 	defer subscription.Close()
-	admission, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
+	admission, err := entry.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: entry.ID(), Delivery: protocol.DeliveryAuto,
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}},
-	})
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -471,7 +471,7 @@ type streamSession struct {
 
 var _ base.Session = (*streamSession)(nil)
 
-func (s *streamSession) Submit(context.Context, protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+func (s *streamSession) Submit(context.Context, base.SubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -565,10 +565,10 @@ func TestAFailedRunStreamEndsTheSubscriptionOutLoud(t *testing.T) {
 	if response := f.expectResponse(1); !response.OK {
 		t.Fatalf("events failed: %+v", response.Error)
 	}
-	if _, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
+	if _, err := entry.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: "failing", Delivery: protocol.DeliveryAuto,
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
-	}); err != nil {
+	}}); err != nil {
 		t.Fatal(err)
 	}
 	session := adapter.active(t)
@@ -670,10 +670,10 @@ func TestAFailedResumeReportsTheRequestedCursor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
+	if _, err := entry.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: "resuming", Delivery: protocol.DeliveryAuto,
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
-	}); err != nil {
+	}}); err != nil {
 		t.Fatal(err)
 	}
 	session := adapter.active(t)
@@ -726,10 +726,10 @@ func TestAnUnencodableEnvelopeEndsTheSubscriptionOutLoud(t *testing.T) {
 	if response := f.expectResponse(1); !response.OK {
 		t.Fatalf("events failed: %+v", response.Error)
 	}
-	if _, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
+	if _, err := entry.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: "unencodable", Delivery: protocol.DeliveryAuto,
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
-	}); err != nil {
+	}}); err != nil {
 		t.Fatal(err)
 	}
 	adapter.active(t).emitBroken(t, 1)
@@ -849,10 +849,10 @@ func TestAnAdapterContextFailureIsStillAnnounced(t *testing.T) {
 	if response := f.expectResponse(1); !response.OK {
 		t.Fatalf("events failed: %+v", response.Error)
 	}
-	if _, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
+	if _, err := entry.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: "borrowed", Delivery: protocol.DeliveryAuto,
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
-	}); err != nil {
+	}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -931,7 +931,7 @@ func (s *unencodableStateSession) isClosed() bool {
 	return s.closed
 }
 
-func (s *unencodableStateSession) Submit(context.Context, protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+func (s *unencodableStateSession) Submit(context.Context, base.SubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
 	return protocol.MessageSubmitResponse{}, nil, base.ErrSessionClosed
 }
 func (s *unencodableStateSession) Resolve(context.Context, base.InteractionResolution) error {

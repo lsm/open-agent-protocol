@@ -61,9 +61,6 @@ pub fn resolveApiKeyOfKind(
     if (rowEnvironmentKey(allocator, provider_id)) |key| return .{ .api_key = key };
 
     if (auth_storage) |storage| {
-        if (storage.resolvedCredential(provider_id) == null) {
-            if (try siblingApiKey(allocator, storage, provider_id)) |key| return .{ .api_key = key };
-        }
         if (storage.resolvedCredential(provider_id)) |auth| {
             switch (auth) {
                 .api_key => |key| {
@@ -82,18 +79,6 @@ pub fn resolveApiKeyOfKind(
 
     if (try customProviderEnvKey(allocator, provider_id)) |key| return .{ .api_key = key };
     return error.AuthRequired;
-}
-
-fn siblingApiKey(allocator: std.mem.Allocator, storage: *AuthStorage, provider_id: []const u8) std.mem.Allocator.Error!?[]u8 {
-    for (provider_catalog.all) |sibling| {
-        if (!provider_catalog.sharesCredentialEnvWith(provider_id, sibling.id)) continue;
-        const stored = storage.resolvedCredential(sibling.id) orelse continue;
-        switch (stored) {
-            .api_key => |key| if (key.len > 0) return try allocator.dupe(u8, key),
-            .oauth => {},
-        }
-    }
-    return null;
 }
 
 fn customProviderEnvKey(allocator: std.mem.Allocator, provider_id: []const u8) std.mem.Allocator.Error!?[]u8 {

@@ -162,8 +162,8 @@ type overflowSession struct {
 	overflow int
 }
 
-func (s *overflowSession) Submit(ctx context.Context, request protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
-	admission, stream, err := s.Session.Submit(ctx, request)
+func (s *overflowSession) Submit(ctx context.Context, submit base.SubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+	admission, stream, err := s.Session.Submit(ctx, submit)
 	if err != nil {
 		return admission, stream, err
 	}

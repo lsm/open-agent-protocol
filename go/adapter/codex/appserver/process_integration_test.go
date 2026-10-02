@@ -72,10 +72,10 @@ stream_max_retries = 0
 		t.Fatal(err)
 	}
 	defer session.Close(context.Background())
-	admission, stream, err := session.Submit(ctx, protocol.MessageSubmitRequest{
+	admission, stream, err := session.Submit(ctx, adapter.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: "codex-process-session", Delivery: protocol.DeliveryAuto,
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("Reply with the fixture response.")}},
-	})
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
