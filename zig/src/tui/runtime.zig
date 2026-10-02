@@ -825,6 +825,7 @@ pub const TuiRuntime = struct {
     }
 
     fn appendWorkingDirectoryLine(self: *TuiRuntime, result: *agent.AgentToolResult) void {
+        if (!result.content.is_owned) return;
         const parts = result.content.slice();
         if (parts.len == 0) return;
         const last = parts[parts.len - 1];
@@ -837,7 +838,7 @@ pub const TuiRuntime = struct {
         @memcpy(next[0 .. parts.len - 1], parts[0 .. parts.len - 1]);
         next[parts.len - 1] = .{ .text = .{ .text = merged, .text_signature = last.text.text_signature } };
         self.allocator.free(last.text.text);
-        if (result.content.is_owned) self.allocator.free(parts);
+        self.allocator.free(parts);
         result.content = OwnedSlice(ai_types.UserContentPart).initOwned(next);
     }
 
