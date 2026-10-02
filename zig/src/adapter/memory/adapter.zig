@@ -187,6 +187,7 @@ const Run = struct {
     structured: bool = false,
     calls_tool: bool = true,
     steers: std.ArrayList(PendingSteer) = .empty,
+    admitted_steers: std.ArrayList([]const u8) = .empty,
 
     fn live(self: *const Run) bool {
         return !self.terminal;
@@ -347,12 +348,16 @@ pub const Session = struct {
         var steer_anchors: []const []const u8 = &.{};
         if (run.steers.items.len > 0) {
             const carried = try arena.alloc(PendingSteer, run.steers.items.len);
-            const anchors = try arena.alloc([]const u8, run.steers.items.len);
-            for (run.steers.items, carried, anchors) |pending_steer, *slot, *anchor| {
+            for (run.steers.items, carried) |pending_steer, *slot| {
                 slot.* = .{ .submission_id = try arena.dupe(u8, pending_steer.submission_id), .request_id = try arena.dupe(u8, pending_steer.request_id) };
-                anchor.* = try arena.dupe(u8, pending_steer.request_id);
             }
             steers = carried;
+        }
+        if (run.admitted_steers.items.len > 0) {
+            const anchors = try arena.alloc([]const u8, run.admitted_steers.items.len);
+            for (run.admitted_steers.items, anchors) |anchor, *slot| {
+                slot.* = try arena.dupe(u8, anchor);
+            }
             steer_anchors = anchors;
         }
         return .{
@@ -480,6 +485,7 @@ pub const Session = struct {
             .request_id = kept_request,
             .message_ids = kept_ids,
         });
+        try run.admitted_steers.append(keep, kept_request);
         self.updated_at_ms = self.owner.now_ms();
         return .{
             .session_id = self.id,
@@ -1965,6 +1971,8 @@ test "a steer is admitted at the permission gate and applied at the input gate" 
     const settled = try probe.session.state(probe.a(), &refusal);
     try testing.expectEqual(@as(usize, 1), settled.active_runs.len);
     try testing.expectEqual(@as(usize, 0), settled.active_runs[0].pending_steers.len);
+    try testing.expectEqual(@as(usize, 1), settled.active_runs[0].admitted_submit_requests.len);
+    try testing.expectEqualStrings("steer-submit", settled.active_runs[0].admitted_submit_requests[0]);
 }
 
 test "a steer pending at a terminal is dropped before the terminal" {

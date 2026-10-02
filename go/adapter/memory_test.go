@@ -1591,6 +1591,46 @@ func TestMemoryStateNeverOmitsASteerItHasSettled(t *testing.T) {
 	}
 }
 
+func TestMemoryKeepsASteerAnchorAfterItSettles(t *testing.T) {
+	session := newTestSession(t, 64)
+	ctx := context.Background()
+	admission, stream := submitAdmission(t, session)
+	initial := drainAvailable(stream)
+	submitSteer(t, session, steerRequest(admission.RunID), "steer-submit")
+
+	requested := envelopeOfType(t, initial, protocol.TypeActionPermissionRequested)
+	var permission protocol.PermissionRequestedPayload
+	if err := requested.DecodePayload(&permission); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Resolve(ctx, adapter.InteractionResolution{
+		RunID: admission.RunID, RespondedBy: permission.RespondedBy,
+		Permission: &protocol.PermissionResolveRequest{
+			InteractionID: permission.InteractionID, SessionID: "session-1", RunID: admission.RunID,
+			RequestedBy: permission.RequestedBy, RespondedBy: permission.RespondedBy,
+			ChoiceID: "approve", Granted: true,
+		}}); err != nil {
+		t.Fatal(err)
+	}
+	rest := drainAvailable(stream)
+	applied := envelopeOfType(t, rest, protocol.TypeRunSteerApplied)
+
+	snapshot, err := session.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := activeRun(t, snapshot, admission.RunID)
+	if len(entry.PendingSteers) != 0 {
+		t.Fatalf("a settled steer stayed pending: %+v", entry.PendingSteers)
+	}
+	if len(entry.AdmittedSubmitRequests) != 1 || entry.AdmittedSubmitRequests[0] != "steer-submit" {
+		t.Fatalf("the admitted anchor vanished with the settlement: %v", entry.AdmittedSubmitRequests)
+	}
+	if entry.AsOfSequence == nil || applied.Sequence == nil || *entry.AsOfSequence < *applied.Sequence {
+		t.Fatalf("as_of_sequence = %v, want at least the settlement's %v", entry.AsOfSequence, applied.Sequence)
+	}
+}
+
 func TestMemoryDropsSteersAtTheTerminal(t *testing.T) {
 	session := newTestSession(t, 64)
 	admission, stream := submitAdmission(t, session)

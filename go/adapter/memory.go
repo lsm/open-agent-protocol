@@ -400,6 +400,7 @@ type memoryRun struct {
 	respondedBy      protocol.ParticipantID
 	subscribers      []chan Result
 	steers           []*pendingSteer
+	admittedSteers   []protocol.EnvelopeID
 }
 
 type pendingSteer struct {
@@ -561,6 +562,7 @@ func (s *memorySession) steer(submit SubmitRequest) (protocol.MessageSubmitRespo
 	submissionID := protocol.SubmissionID(s.ids.NewID("submission"))
 	sequence := target.nextSequence - 1
 	target.steers = append(target.steers, &pendingSteer{submissionID: submissionID, requestID: submit.EnvelopeID, messages: messageIDs})
+	target.admittedSteers = append(target.admittedSteers, submit.EnvelopeID)
 	s.state.UpdatedAtMS = s.clock.Now().UnixMilli()
 	s.refreshStateLocked()
 	return protocol.MessageSubmitResponse{
@@ -718,11 +720,13 @@ func (s *memorySession) entryLocked(run *memoryRun, position int) protocol.Activ
 		AsOfSequence: &sequence, PendingInteractions: pendingInteractions(run),
 		AcknowledgedInteractions: acknowledgedInteractions(run),
 	}
+	if len(run.admittedSteers) > 0 {
+		entry.AdmittedSubmitRequests = append([]protocol.EnvelopeID(nil), run.admittedSteers...)
+	}
 	if len(run.steers) > 0 {
 		entry.PendingSteers = make([]protocol.PendingSteer, len(run.steers))
 		for i, steer := range run.steers {
 			entry.PendingSteers[i] = protocol.PendingSteer{SubmissionID: steer.submissionID, RequestID: steer.requestID}
-			entry.AdmittedSubmitRequests = append(entry.AdmittedSubmitRequests, steer.requestID)
 		}
 	}
 	if position > 0 {
