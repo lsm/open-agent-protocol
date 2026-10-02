@@ -660,6 +660,7 @@ Common optional core features:
 - `models.list` (executable; [Decision 0006](../decisions/0006-models-catalog.md))
 - `session.list`
 - `session.open.subscribe` (executable; [Decision 0009](../decisions/0009-compound-open.md))
+- `session.open.reopen` (staged; [Decision 0040](../decisions/0040-a-session-reopens-through-its-own-binding.md))
 - `transcript.load`
 - `transcript.delta`
 - `session.message.delivery.queue`

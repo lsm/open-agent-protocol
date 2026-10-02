@@ -71,6 +71,26 @@ unused `recovery` object already on the request is **not** reused for the
 intent: `recovery` describes what happened to a session, and a reopen is a
 request about the future, so overloading it would make one member mean both.
 
+### The capability key is `session.open.reopen`, and a reopen is gated like `subscribe`
+
+An endpoint that can reopen advertises `session.open.reopen`, beside
+`session.open.subscribe`, and a reopen is one more election on the open
+request, judged the way [Decision 0009](0009-compound-open.md) judges
+`subscribe`: against a descriptor that does not advertise the key above
+`unavailable` it is refused `unsupported_feature` naming the key with reason
+`unadvertised`, and against a `degraded` disclosure it is refused
+`capability_degraded` unless the request consents through
+`allow_degraded_features`. An advertised reopen may still be refused
+`unsupported_feature` naming the key, because a binding whose store is gone is
+that case, below. `unknown_session` joins the open-level refusals that answer
+every election an open carries at once, as `session_exists` already does.
+
+The schema requires `session_id` on a request that sets `reopen: true`, since
+there is nothing to reopen without one. The validator checks, in both trees,
+that a successful answer to a reopen declares `recovery.recovered: true` and
+lists no run under way unless the open also carried a message that admitted
+one; either failure is `session_state_mismatch`.
+
 ### The reply is the state document, and it declares what the session runs under
 
 A reopen answers `session.open.response`, which is the session's state document,

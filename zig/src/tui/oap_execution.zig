@@ -37,6 +37,26 @@ pub const OapExecution = struct {
     in_assistant: bool = false,
     text: std.ArrayList(u8) = .empty,
     session_models: std.ArrayList([]u8) = .empty,
+    pending_permission: ?PendingPermission = null,
+    output_tokens: u64 = 0,
+    closed_messages: usize = 0,
+
+    const PendingPermission = struct {
+        interaction_id: []u8,
+        tool_call_id: []u8,
+        requested_by: []u8,
+        responded_by: []u8,
+        run_id: []u8,
+
+        fn deinit(self: *PendingPermission, allocator: std.mem.Allocator) void {
+            allocator.free(self.interaction_id);
+            allocator.free(self.tool_call_id);
+            allocator.free(self.requested_by);
+            allocator.free(self.responded_by);
+            allocator.free(self.run_id);
+            self.* = undefined;
+        }
+    };
 
     pub fn create(allocator: std.mem.Allocator, options: tui_runtime.TuiRuntimeOptions) !*OapExecution {
         const adapter = try allocator.create(oapx_adapter.Adapter);
@@ -56,6 +76,7 @@ pub const OapExecution = struct {
         self.text.deinit(allocator);
         self.forgetSessionModels();
         self.session_models.deinit(allocator);
+        self.forgetPermission();
         allocator.free(self.revision);
         allocator.free(self.session_id);
         allocator.free(self.run_id);
@@ -72,6 +93,7 @@ pub const OapExecution = struct {
         .submit = submit,
         .cancel = cancel,
         .switch_model = switchModel,
+        .decide_approval = decideApproval,
         .stop = stop,
     };
 
@@ -259,6 +281,59 @@ pub const OapExecution = struct {
         try self.enqueue(a, "session.model.switch.request", "switch", payload.value(), null);
     }
 
+    fn decideApproval(ctx: *anyopaque, tool_call_id: []const u8, granted: bool) anyerror!void {
+        const self = cast(ctx);
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        self.lockInbound();
+        const held = self.pending_permission orelse {
+            self.inbound_mutex.unlock();
+            return error.ToolApprovalNotPending;
+        };
+        if (!std.mem.eql(u8, held.tool_call_id, tool_call_id)) {
+            self.inbound_mutex.unlock();
+            return error.ToolApprovalNotPending;
+        }
+        var pending = held;
+        self.pending_permission = null;
+        self.inbound_mutex.unlock();
+        defer pending.deinit(self.allocator);
+        var payload = Map.init(a);
+        try payload.put("interaction_id", .{ .string = pending.interaction_id });
+        try payload.put("requested_by", .{ .string = pending.requested_by });
+        try payload.put("responded_by", .{ .string = pending.responded_by });
+        try payload.put("session_id", .{ .string = self.session_id });
+        try payload.put("run_id", .{ .string = pending.run_id });
+        try payload.put("granted", .{ .bool = granted });
+        try payload.put("choice_id", .{ .string = if (granted) "approve" else "deny" });
+        try self.enqueue(a, "action.permission.resolve.request", "resolve", payload.value(), pending.run_id);
+    }
+
+    fn forgetPermission(self: *OapExecution) void {
+        self.lockInbound();
+        defer self.inbound_mutex.unlock();
+        if (self.pending_permission) |*pending| pending.deinit(self.allocator);
+        self.pending_permission = null;
+    }
+
+    fn holdPermission(self: *OapExecution, body: std.json.ObjectMap) !void {
+        const interaction_id = try self.allocator.dupe(u8, stringOf(body, "interaction_id") orelse "");
+        errdefer self.allocator.free(interaction_id);
+        const tool_call_id = try self.allocator.dupe(u8, stringOf(body, "tool_call_id") orelse "");
+        errdefer self.allocator.free(tool_call_id);
+        const requested_by = try self.allocator.dupe(u8, stringOf(body, "requested_by") orelse "");
+        errdefer self.allocator.free(requested_by);
+        const responded_by = try self.allocator.dupe(u8, stringOf(body, "responded_by") orelse "");
+        errdefer self.allocator.free(responded_by);
+        const run_id = try self.allocator.dupe(u8, stringOf(body, "run_id") orelse "");
+        errdefer self.allocator.free(run_id);
+        self.forgetPermission();
+        self.lockInbound();
+        defer self.inbound_mutex.unlock();
+        self.pending_permission = .{ .interaction_id = interaction_id, .tool_call_id = tool_call_id, .requested_by = requested_by, .responded_by = responded_by, .run_id = run_id };
+    }
+
     fn stop(ctx: *anyopaque) void {
         cast(ctx).halt();
     }
@@ -395,6 +470,7 @@ pub const OapExecution = struct {
             self.inbound_mutex.unlock();
             self.text.clearRetainingCapacity();
             self.in_assistant = false;
+            self.closed_messages = 0;
             self.deliver(.{ .agent_start = .{} });
             self.deliver(.{ .turn_start = .{} });
             if (self.cancel_pending.swap(false, .acq_rel)) try self.sendCancel();
@@ -428,6 +504,19 @@ pub const OapExecution = struct {
             self.deliver(.{ .tool_execution_start = .{ .tool_call_id = call_id, .tool_name = name, .args_json = args_json } });
             return;
         }
+        if (std.mem.eql(u8, kind, "action.permission.requested")) {
+            try self.closeAssistant(.tool_use);
+            try self.holdPermission(body);
+            const arguments = try jsonText(self.allocator, body.get("arguments_json"));
+            defer self.allocator.free(arguments);
+            var call_id = try self.ownedText(stringOf(body, "tool_call_id") orelse "");
+            errdefer call_id.deinit(self.allocator);
+            var name = try self.ownedText(stringOf(body, "title") orelse "");
+            errdefer name.deinit(self.allocator);
+            const args_json = try self.ownedText(arguments);
+            self.deliver(.{ .tool_approval_requested = .{ .tool_call_id = call_id, .tool_name = name, .args_json = args_json } });
+            return;
+        }
         if (std.mem.eql(u8, kind, "action.call.completed") or std.mem.eql(u8, kind, "action.call.failed")) {
             const failed = std.mem.eql(u8, kind, "action.call.failed");
             const result = if (failed)
@@ -442,6 +531,11 @@ pub const OapExecution = struct {
             const result_json = try self.ownedText(result);
             self.deliver(.{ .tool_execution_end = .{ .tool_call_id = call_id, .tool_name = name, .result_json = result_json, .is_error = failed } });
             return;
+        }
+        if (std.mem.eql(u8, kind, "run.completed") or std.mem.eql(u8, kind, "run.failed") or std.mem.eql(u8, kind, "run.cancelled")) {
+            if (!self.turn_open.load(.acquire)) return;
+            self.output_tokens = if (self.closed_messages == 0) usageTokens(body) else 0;
+            if (contextTokens(root)) |tokens| self.deliver(.{ .context_usage = .{ .estimated_tokens = tokens } });
         }
         if (std.mem.eql(u8, kind, "run.completed")) {
             if (!self.turn_open.load(.acquire)) return;
@@ -482,6 +576,9 @@ pub const OapExecution = struct {
 
     fn endTurn(self: *OapExecution, reason: tui_session.TuiEndReason) void {
         self.turn_open.store(false, .release);
+        self.output_tokens = 0;
+        self.closed_messages = 0;
+        self.forgetPermission();
         self.deliver(.{ .agent_end = .{ .reason = reason } });
     }
 
@@ -495,7 +592,10 @@ pub const OapExecution = struct {
     fn closeAssistant(self: *OapExecution, stop_reason: ai_types.StopReason) !void {
         if (!self.in_assistant) return;
         self.in_assistant = false;
-        self.deliver(.{ .message_end = .{ .role = .assistant, .text = try self.ownedText(self.text.items), .stop_reason = stop_reason } });
+        const output_tokens = self.output_tokens;
+        self.output_tokens = 0;
+        self.closed_messages += 1;
+        self.deliver(.{ .message_end = .{ .role = .assistant, .text = try self.ownedText(self.text.items), .stop_reason = stop_reason, .output_tokens = output_tokens } });
         self.text.clearRetainingCapacity();
     }
 };
@@ -541,6 +641,22 @@ fn errorMessage(body: std.json.ObjectMap) []const u8 {
     return stringOf(body, "message") orelse "the endpoint refused the request";
 }
 
+fn usageTokens(body: std.json.ObjectMap) u64 {
+    const usage = body.get("usage") orelse return 0;
+    if (usage != .object) return 0;
+    const tokens = usage.object.get("output_tokens") orelse return 0;
+    return if (tokens == .integer and tokens.integer > 0) @intCast(tokens.integer) else 0;
+}
+
+fn contextTokens(root: std.json.ObjectMap) ?u64 {
+    const extensions = root.get("extensions") orelse return null;
+    if (extensions != .object) return null;
+    const ours = extensions.object.get(oapx_adapter.settings_key) orelse return null;
+    if (ours != .object) return null;
+    const tokens = ours.object.get("context_tokens") orelse return null;
+    return if (tokens == .integer and tokens.integer >= 0) @intCast(tokens.integer) else null;
+}
+
 fn jsonText(allocator: std.mem.Allocator, value: ?std.json.Value) ![]u8 {
     const present = value orelse return allocator.dupe(u8, "");
     if (present == .string) return allocator.dupe(u8, present.string);
@@ -577,6 +693,10 @@ const Script = struct {
     reply: []const u8 = "over the wire",
     wait_for_cancel: bool = false,
     stop_reason: ai_types.StopReason = .stop,
+    tool_first: bool = false,
+    calls: usize = 0,
+    output_tokens: u64 = 0,
+    preamble: []const u8 = "",
     last_thinking: ai_types.ThinkingLevel = .off,
 };
 
@@ -587,6 +707,44 @@ fn scriptedMessage(allocator: std.mem.Allocator, text: []const u8, reason: ai_ty
     return .{ .content = blocks, .api = scripted_model.api, .provider = scripted_model.provider, .model = scripted_model.id, .usage = .{}, .stop_reason = reason, .timestamp = 0 };
 }
 
+fn toolCallMessage(allocator: std.mem.Allocator, preamble: []const u8) !ai_types.AssistantMessage {
+    const blocks = try allocator.alloc(ai_types.AssistantContent, if (preamble.len > 0) 2 else 1);
+    errdefer allocator.free(blocks);
+    const said = try allocator.dupe(u8, preamble);
+    errdefer allocator.free(said);
+    const id = try allocator.dupe(u8, "call-1");
+    errdefer allocator.free(id);
+    const name = try allocator.dupe(u8, "echo_tool");
+    errdefer allocator.free(name);
+    const arguments = try allocator.dupe(u8, "{}");
+    blocks[blocks.len - 1] = .{ .tool_call = .{ .id = id, .name = name, .arguments_json = arguments } };
+    if (preamble.len > 0) blocks[0] = .{ .text = .{ .text = said } } else allocator.free(said);
+    return .{ .content = blocks, .api = scripted_model.api, .provider = scripted_model.provider, .model = scripted_model.id, .usage = .{}, .stop_reason = .tool_use, .timestamp = 0 };
+}
+
+var echo_runs = std.atomic.Value(usize).init(0);
+
+fn echoTool(tool_call_id: []const u8, args_json: []const u8, cancel_token: ?ai_types.CancelToken, on_update_ctx: ?*anyopaque, on_update: ?agent.ToolUpdateCallback, allocator: std.mem.Allocator) anyerror!agent.AgentToolResult {
+    _ = tool_call_id;
+    _ = args_json;
+    _ = cancel_token;
+    _ = on_update_ctx;
+    _ = on_update;
+    _ = echo_runs.fetchAdd(1, .acq_rel);
+    const content = try allocator.alloc(ai_types.UserContentPart, 1);
+    errdefer allocator.free(content);
+    content[0] = .{ .text = .{ .text = try allocator.dupe(u8, "echoed") } };
+    return .{ .content = @FieldType(agent.AgentToolResult, "content").initOwned(content) };
+}
+
+const echo_tools = [_]agent.AgentTool{.{
+    .label = "Echo",
+    .name = "echo_tool",
+    .description = "Echo a word back",
+    .parameters_schema_json = "{\"type\":\"object\"}",
+    .execute = echoTool,
+}};
+
 fn bareMessage(reason: ai_types.StopReason) ai_types.AssistantMessage {
     return .{ .content = &.{}, .api = scripted_model.api, .provider = scripted_model.provider, .model = scripted_model.id, .usage = .{}, .stop_reason = reason, .timestamp = 0 };
 }
@@ -596,8 +754,16 @@ fn scriptedStream(ctx: ?*anyopaque, model: ai_types.Model, context: ai_types.Con
     _ = context;
     const script: *Script = @ptrCast(@alignCast(ctx.?));
     script.last_thinking = options.thinking_level;
+    script.calls += 1;
     const stream = try allocator.create(event_stream.AssistantMessageEventStream);
     stream.* = event_stream.AssistantMessageEventStream.init(allocator);
+    if (script.tool_first and script.calls == 1) {
+        try stream.push(.{ .start = .{ .partial = bareMessage(.tool_use) } });
+        if (script.preamble.len > 0) try stream.push(.{ .text_delta = .{ .content_index = 0, .delta = script.preamble, .partial = bareMessage(.tool_use) } });
+        try stream.push(.{ .done = .{ .reason = .tool_use, .message = try toolCallMessage(allocator, script.preamble) } });
+        stream.complete(try toolCallMessage(allocator, script.preamble));
+        return stream;
+    }
     if (script.wait_for_cancel) {
         if (options.cancel_token) |token| {
             var waits: usize = 0;
@@ -612,8 +778,12 @@ fn scriptedStream(ctx: ?*anyopaque, model: ai_types.Model, context: ai_types.Con
     const partial = bareMessage(script.stop_reason);
     try stream.push(.{ .start = .{ .partial = partial } });
     try stream.push(.{ .text_delta = .{ .content_index = 0, .delta = script.reply, .partial = partial } });
-    try stream.push(.{ .done = .{ .reason = script.stop_reason, .message = try scriptedMessage(allocator, script.reply, script.stop_reason) } });
-    stream.complete(try scriptedMessage(allocator, script.reply, script.stop_reason));
+    var done = try scriptedMessage(allocator, script.reply, script.stop_reason);
+    done.usage.output = script.output_tokens;
+    try stream.push(.{ .done = .{ .reason = script.stop_reason, .message = done } });
+    var settled = try scriptedMessage(allocator, script.reply, script.stop_reason);
+    settled.usage.output = script.output_tokens;
+    stream.complete(settled);
     return stream;
 }
 
@@ -624,6 +794,8 @@ const Seen = struct {
     agent_starts: usize = 0,
     warnings: usize = 0,
     output_limit_warned: bool = false,
+    output_tokens: u64 = 0,
+    context_tokens: ?u64 = null,
 
     fn deinit(self: *Seen) void {
         self.text.deinit(testing.allocator);
@@ -644,7 +816,9 @@ fn drainTurn(runtime: *tui_runtime.TuiRuntime, seen: *Seen) !void {
                     if (std.mem.indexOf(u8, payload.message.slice(), "output token limit") != null) seen.output_limit_warned = true;
                 },
                 .text_delta => |payload| try seen.text.appendSlice(testing.allocator, payload.delta.slice()),
+                .context_usage => |payload| seen.context_tokens = payload.estimated_tokens,
                 .message_end => |payload| if (payload.role == .assistant) {
+                    seen.output_tokens = payload.output_tokens;
                     seen.final_text.clearRetainingCapacity();
                     try seen.final_text.appendSlice(testing.allocator, payload.text.slice());
                 },
@@ -694,6 +868,49 @@ test "a turn submitted to a runtime over OAP streams back as the events the term
     try testing.expectEqualStrings("over the wire", seen.final_text.items);
     try testing.expectEqual(ai_types.ThinkingLevel.high, script.last_thinking);
     try testing.expect(runtime.isIdle());
+}
+
+test "a turn over OAP reports its output tokens and the context it filled to the status bar" {
+    var script = Script{ .output_tokens = 42 };
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .off);
+    defer execution.destroy();
+    defer runtime.deinit();
+
+    try runtime.submitTurn("count");
+    var seen = Seen{};
+    defer seen.deinit();
+    try drainTurn(&runtime, &seen);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+    try testing.expectEqual(@as(u64, 42), seen.output_tokens);
+    try testing.expect(seen.context_tokens != null);
+    try testing.expect(seen.context_tokens.? > 0);
+}
+
+test "a run over OAP with an earlier assistant message leaves its output tokens to the estimate rather than counting them twice" {
+    var script = Script{ .output_tokens = 42, .tool_first = true, .preamble = "let me check" };
+    const models = [_]ai_types.Model{scripted_model};
+    const execution = try OapExecution.create(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+        .tools = &echo_tools,
+    });
+    defer execution.destroy();
+    var runtime = try tui_runtime.TuiRuntime.init(testing.allocator, .{
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+        .remote = execution.remote(),
+    });
+    defer runtime.deinit();
+
+    try runtime.submitTurn("use the tool");
+    var seen = Seen{};
+    defer seen.deinit();
+    try drainTurn(&runtime, &seen);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+    try testing.expectEqualStrings("over the wire", seen.final_text.items);
+    try testing.expectEqual(@as(u64, 0), seen.output_tokens);
 }
 
 test "a reply over OAP that stops at its output token limit warns the user as the local runtime does" {
@@ -834,14 +1051,61 @@ test "an open-time model the OAP session does not list leaves the session usable
     try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
 }
 
-test "ask mode is refused over OAP even before the session opens" {
-    var script = Script{};
-    var execution: *OapExecution = undefined;
-    var runtime = try remoteRuntime(&script, &execution, .low);
+fn askedTurn(decision: tui_runtime.ToolApprovalDecision) !struct { end: ?tui_session.TuiEndReason, approvals: usize, ran: usize } {
+    var script = Script{ .tool_first = true };
+    const models = [_]ai_types.Model{scripted_model};
+    const execution = try OapExecution.create(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+        .tools = &echo_tools,
+    });
     defer execution.destroy();
+    var runtime = try tui_runtime.TuiRuntime.init(testing.allocator, .{
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+        .remote = execution.remote(),
+    });
     defer runtime.deinit();
-    try testing.expectError(error.UnavailableOverOap, runtime.setPermissionMode(.ask));
-    try runtime.setPermissionMode(.bypass);
+    try runtime.setPermissionMode(.ask);
+    const before = echo_runs.load(.acquire);
+
+    try runtime.submitTurn("use the tool");
+    var approvals: usize = 0;
+    var waits: usize = 0;
+    while (waits < 5000) : (waits += 1) {
+        while (runtime.streamEvents().poll()) |event| {
+            var owned_event = event;
+            defer owned_event.deinit(testing.allocator);
+            switch (owned_event) {
+                .tool_approval_requested => |payload| {
+                    approvals += 1;
+                    try testing.expectEqualStrings("call-1", payload.tool_call_id.slice());
+                    try testing.expectEqualStrings("echo_tool", payload.tool_name.slice());
+                    try runtime.decideToolApproval(payload.tool_call_id.slice(), decision);
+                    try testing.expectError(error.ToolApprovalNotPending, runtime.decideToolApproval(payload.tool_call_id.slice(), decision));
+                },
+                .agent_end => |payload| return .{ .end = payload.reason, .approvals = approvals, .ran = echo_runs.load(.acquire) - before },
+                else => {},
+            }
+        }
+        std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
+    }
+    return error.TestTurnNeverEnded;
+}
+
+test "in ask mode over OAP the model's tool call waits for the user's approval and then runs" {
+    const outcome = try askedTurn(.approve);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), outcome.end);
+    try testing.expectEqual(@as(usize, 1), outcome.approvals);
+    try testing.expectEqual(@as(usize, 1), outcome.ran);
+}
+
+test "in ask mode over OAP a denied tool call never runs and the turn still ends" {
+    const outcome = try askedTurn(.reject);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), outcome.end);
+    try testing.expectEqual(@as(usize, 1), outcome.approvals);
+    try testing.expectEqual(@as(usize, 0), outcome.ran);
 }
 
 test "a switch to a model the OAP session does not list is refused before the app's selection moves" {

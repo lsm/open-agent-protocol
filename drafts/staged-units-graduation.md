@@ -4236,7 +4236,11 @@ natively today. The intent is a `reopen: true` member on
 settings the session actually runs under (owner, 2026-09-27, #446).
 
 **Status: [Decision 0040](../decisions/0040-a-session-reopens-through-its-own-binding.md)
-is proposed and answers this section's two remaining questions.** How a host
+is proposed and answers this section's two remaining questions. Its wire is in
+place: `reopen` on `session.open.request`, the `session.open.reopen` key, the
+validator rules in both trees and the `session-reattach` fixtures. A reference
+that reopens a session it closed, and the conformance check, are still to
+come.** How a host
 records a binding and where: a binding is a record the host supplies through an
 interface, carrying the session id, the harness and its pin, the harness' own
 session id, the home and working directory the open ran in, and the model and

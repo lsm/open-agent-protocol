@@ -73,6 +73,7 @@ pub const RemoteExecution = struct {
         submit: *const fn (ctx: *anyopaque, text: []const u8) anyerror!void,
         cancel: *const fn (ctx: *anyopaque) void,
         switch_model: *const fn (ctx: *anyopaque, model: ai_types.Model) anyerror!void,
+        decide_approval: *const fn (ctx: *anyopaque, tool_call_id: []const u8, granted: bool) anyerror!void,
         stop: *const fn (ctx: *anyopaque) void,
     };
 };
@@ -759,7 +760,6 @@ pub const TuiRuntime = struct {
 
     pub fn setPermissionMode(self: *TuiRuntime, mode: PermissionMode) !void {
         if (self.settingsFixedOverOap()) return error.UnavailableOverOap;
-        if (self.remote != null and mode == .ask) return error.UnavailableOverOap;
         self.permission_mode = mode;
         if (self.permission_engine) |engine| engine.setBypassAll(mode == .bypass);
         self.rebuildWrappedTools();
@@ -1214,6 +1214,7 @@ pub const TuiRuntime = struct {
     }
 
     pub fn decideToolApproval(self: *TuiRuntime, tool_call_id: []const u8, decision: ToolApprovalDecision) !void {
+        if (self.remote) |remote| return remote.vtable.decide_approval(remote.ctx, tool_call_id, decision == .approve or decision == .approve_always);
         while (!self.approval_mutex.tryLock()) std.atomic.spinLoopHint();
         defer self.approval_mutex.unlock();
         if (self.pending_approval.tool_call_id.len > 0 and !std.mem.eql(u8, self.pending_approval.tool_call_id, tool_call_id)) return error.ToolApprovalNotPending;
