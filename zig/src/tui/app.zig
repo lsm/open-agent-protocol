@@ -1955,7 +1955,7 @@ pub const App = struct {
             return;
         };
         defer self.allocator.free(path);
-        const key_removed = oauth_storage.AuthStorage.removeStored(self.allocator, id, &.{}) catch |err| {
+        const key_removed = oauth_storage.AuthStorage.removeStored(self.allocator, id) catch |err| {
             const msg = try std.fmt.allocPrint(self.allocator, "deleted {s} from {s}, but removing its saved key failed: {s}", .{ id, path, @errorName(err) });
             defer self.allocator.free(msg);
             try self.state.appendTranscript(.@"error", msg);
