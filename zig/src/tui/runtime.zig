@@ -817,6 +817,11 @@ pub const TuiRuntime = struct {
         return self.models[index];
     }
 
+    pub fn dropPendingModelSwitch(self: *TuiRuntime) void {
+        self.pending_model_index = null;
+        if (self.local_agent) |*local| local.requestModelSwitch(null);
+    }
+
     pub fn applyPendingModelSwitch(self: *TuiRuntime) !?ai_types.Model {
         const index = self.pending_model_index orelse return null;
         if (index >= self.models.len) {

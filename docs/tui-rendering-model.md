@@ -624,7 +624,8 @@ apply at once:
 - `/model <name>` with `Enter` steers: the run switches to that model before its
   next turn (the request's key follows the new model's provider, and the output
   request is capped at the new model's maximum), and the TUI selects and saves it
-  when the run ends. A model-list refresh that lands first keeps the pending switch
+  when the run ends. On a remote runtime nothing steers the run, so the switch waits
+  for the run to end. A switch that fails then is dropped and reported once. A model-list refresh that lands first keeps the pending switch
   when the new list still has the model, and otherwise drops it and says so. With `Tab` it waits for the run to end.
 - `/context <tokens|default>`, `/output <setting>`, `/logout <provider>` and
   `/provider del <id>`, with `Enter` or `Tab`, wait for the run to end and then run

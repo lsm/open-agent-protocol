@@ -1733,7 +1733,7 @@ pub const App = struct {
         if (self.state.status.streaming) {
             self.state.mode = .normal;
             const target = try runtime.requestModelSwitchAt(index);
-            const msg = try std.fmt.allocPrint(self.allocator, "switching to {s}/{s} before the next turn of this run, or when it ends", .{ target.provider, target.id });
+            const msg = try std.fmt.allocPrint(self.allocator, "switching to {s}/{s} {s}", .{ target.provider, target.id, switchTiming(runtime) });
             defer self.allocator.free(msg);
             try self.state.appendTranscript(.system, msg);
             return;
@@ -2930,8 +2930,7 @@ pub const App = struct {
             try self.state.appendTranscript(.@"error", msg);
             return;
         };
-        const when: []const u8 = if (runtime.local_agent != null) "before the next turn of this run, or when it ends" else "when this run ends";
-        const msg = try std.fmt.allocPrint(self.allocator, "switching to {s}/{s} {s}", .{ model.provider, model.id, when });
+        const msg = try std.fmt.allocPrint(self.allocator, "switching to {s}/{s} {s}", .{ model.provider, model.id, switchTiming(runtime) });
         defer self.allocator.free(msg);
         try self.state.appendTranscript(.system, msg);
     }
@@ -2981,6 +2980,7 @@ pub const App = struct {
                 try self.state.appendTranscript(.system, msg);
             }
         } else |err| {
+            runtime.dropPendingModelSwitch();
             const msg = try std.fmt.allocPrint(self.allocator, "switching model failed: {s}", .{@errorName(err)});
             defer self.allocator.free(msg);
             try self.state.appendTranscript(.@"error", msg);
@@ -4826,6 +4826,10 @@ pub const TuiModel = struct {
         return @max(app.last_view_height, 8) / 2;
     }
 };
+
+fn switchTiming(runtime: *const tui_runtime.TuiRuntime) []const u8 {
+    return if (runtime.local_agent != null) "before the next turn of this run, or when it ends" else "when this run ends";
+}
 
 fn waitsForRunEnd(command: tui_commands.Command) bool {
     const arg = command.arg orelse return false;
