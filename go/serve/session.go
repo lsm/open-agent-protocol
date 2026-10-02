@@ -696,15 +696,6 @@ func (s *Session) releaseReservation() {
 	}
 }
 
-func (s *Session) gatedGate(run protocol.RunID) *steerGate {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.gate != nil && s.gate.run == run {
-		return s.gate
-	}
-	return nil
-}
-
 var closedSignal = func() chan struct{} {
 	closed := make(chan struct{})
 	close(closed)
