@@ -530,6 +530,16 @@ pub const TuiRuntime = struct {
             }
         }
 
+        if (self.remote) |remote| {
+            if (self.started) {
+                const before = if (self.selected_model_index) |idx| self.models[idx] else null;
+                const after = if (next_selected) |idx| owned_next[idx] else null;
+                if (after) |chosen| {
+                    const unchanged = if (before) |held| std.mem.eql(u8, held.id, chosen.id) and std.mem.eql(u8, held.provider, chosen.provider) and std.mem.eql(u8, held.api, chosen.api) else false;
+                    if (!unchanged) remote.vtable.switch_model(remote.ctx, chosen) catch return error.UnavailableOverOap;
+                }
+            }
+        }
         deinitModels(self.allocator, self.models);
         self.models = owned_next;
         owned_next = &.{};

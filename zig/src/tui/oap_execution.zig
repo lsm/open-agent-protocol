@@ -17,6 +17,7 @@ const profile = "open-agent-protocol.agent-control-core";
 const participant = "oapx.tui";
 const idle_sleep_ns = 2 * std.time.ns_per_ms;
 const startup_attempts = 2000;
+pub const in_process_frame_limit: usize = 64 << 20;
 
 pub const OapExecution = struct {
     allocator: std.mem.Allocator,
@@ -34,13 +35,14 @@ pub const OapExecution = struct {
     turn_open: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     in_assistant: bool = false,
     text: std.ArrayList(u8) = .empty,
+    session_models: std.ArrayList([]u8) = .empty,
 
     pub fn create(allocator: std.mem.Allocator, options: tui_runtime.TuiRuntimeOptions) !*OapExecution {
         const adapter = try allocator.create(oapx_adapter.Adapter);
         errdefer allocator.destroy(adapter);
         adapter.* = oapx_adapter.Adapter.init(allocator, options);
         const self = try allocator.create(OapExecution);
-        self.* = .{ .allocator = allocator, .adapter = adapter, .endpoint = adapter_endpoint.Endpoint.init(allocator, adapter.adapter(), .{}) };
+        self.* = .{ .allocator = allocator, .adapter = adapter, .endpoint = adapter_endpoint.Endpoint.init(allocator, adapter.adapter(), .{ .frame_limit = in_process_frame_limit }) };
         return self;
     }
 
@@ -51,6 +53,8 @@ pub const OapExecution = struct {
         for (self.inbound.items) |line| allocator.free(line);
         self.inbound.deinit(allocator);
         self.text.deinit(allocator);
+        self.forgetSessionModels();
+        self.session_models.deinit(allocator);
         allocator.free(self.revision);
         allocator.free(self.session_id);
         allocator.free(self.run_id);
@@ -113,6 +117,26 @@ pub const OapExecution = struct {
         const kept_session = try self.allocator.dupe(u8, session_id.string);
         self.allocator.free(self.session_id);
         self.session_id = kept_session;
+
+        var listing = Map.init(a);
+        try listing.put("session_id", .{ .string = self.session_id });
+        const listed = try self.exchange(a, "models.request", listing.value(), true);
+        self.forgetSessionModels();
+        if (listed.object.get("payload")) |models_payload| {
+            if (models_payload == .object) {
+                if (models_payload.object.get("models")) |models_value| {
+                    if (models_value == .array) {
+                        for (models_value.array.items) |entry| {
+                            if (entry != .object) continue;
+                            const id = stringOf(entry.object, "id") orelse continue;
+                            const kept = try self.allocator.dupe(u8, id);
+                            errdefer self.allocator.free(kept);
+                            try self.session_models.append(self.allocator, kept);
+                        }
+                    }
+                }
+            }
+        }
 
         if (settings.model) |model| {
             const wanted = try modelRef(a, model);
@@ -198,14 +222,28 @@ pub const OapExecution = struct {
         try self.enqueue(a, "run.cancel.request", "cancel", payload.value(), run_id);
     }
 
+    fn forgetSessionModels(self: *OapExecution) void {
+        for (self.session_models.items) |id| self.allocator.free(id);
+        self.session_models.clearRetainingCapacity();
+    }
+
+    fn sessionLists(self: *OapExecution, ref: []const u8) bool {
+        for (self.session_models.items) |id| {
+            if (std.mem.eql(u8, id, ref)) return true;
+        }
+        return false;
+    }
+
     fn switchModel(ctx: *anyopaque, model: ai_types.Model) anyerror!void {
         const self = cast(ctx);
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
         const a = scratch.allocator();
+        const ref = try modelRef(a, model);
+        if (!self.sessionLists(ref)) return error.ModelNotFound;
         var payload = Map.init(a);
         try payload.put("session_id", .{ .string = self.session_id });
-        try payload.put("model_id", .{ .string = try modelRef(a, model) });
+        try payload.put("model_id", .{ .string = ref });
         try self.enqueue(a, "session.model.switch.request", "switch", payload.value(), null);
     }
 
@@ -311,6 +349,17 @@ pub const OapExecution = struct {
         defer parsed.deinit();
         if (parsed.value != .object) return;
         const root = parsed.value.object;
+        if (stringOf(root, "control")) |control| {
+            if (!std.mem.eql(u8, control, "stream.lost")) return;
+            const message = stringOf(root, "message") orelse "this run's events stopped reaching the terminal UI";
+            self.deliver(.{ .system_warning = .{ .message = try self.ownedText(message) } });
+            if (self.turn_open.load(.acquire)) {
+                self.sendCancel() catch {};
+                try self.closeAssistant(.@"error");
+                self.endTurn(.@"error");
+            }
+            return;
+        }
         const kind = stringOf(root, "type") orelse return;
         const payload = if (root.get("payload")) |value| (if (value == .object) value.object else null) else null;
         if (std.mem.eql(u8, kind, "error.response")) {
@@ -381,13 +430,28 @@ pub const OapExecution = struct {
             return;
         }
         if (std.mem.eql(u8, kind, "run.completed")) {
+            if (!self.turn_open.load(.acquire)) return;
             const stop_reason = stopReason(stringOf(body, "stop_reason") orelse "end_turn");
+            if (!self.in_assistant and self.text.items.len == 0) {
+                if (body.get("final_response")) |final| {
+                    if (final == .object) {
+                        if (stringOf(final.object, "content")) |content| {
+                            if (content.len > 0) {
+                                self.openAssistant();
+                                try self.text.appendSlice(self.allocator, content);
+                                self.deliver(.{ .text_delta = .{ .content_index = 0, .delta = try self.ownedText(content) } });
+                            }
+                        }
+                    }
+                }
+            }
             try self.closeAssistant(stop_reason);
             self.deliver(.{ .turn_end = .{ .stop_reason = stop_reason } });
             self.endTurn(.completed);
             return;
         }
         if (std.mem.eql(u8, kind, "run.failed")) {
+            if (!self.turn_open.load(.acquire)) return;
             try self.closeAssistant(.@"error");
             const message = if (body.get("error")) |value| (if (value == .object) errorMessage(value.object) else "the run failed") else "the run failed";
             self.deliver(.{ .@"error" = .{ .message = try self.ownedText(message) } });
@@ -395,6 +459,7 @@ pub const OapExecution = struct {
             return;
         }
         if (std.mem.eql(u8, kind, "run.cancelled")) {
+            if (!self.turn_open.load(.acquire)) return;
             try self.closeAssistant(.aborted);
             self.endTurn(.cancelled);
             return;
@@ -659,7 +724,7 @@ test "a submit the endpoint cannot frame ends the turn in an error instead of le
     defer execution.destroy();
     defer runtime.deinit();
 
-    const oversized = try testing.allocator.alloc(u8, adapter_endpoint.default_frame_limit + 1);
+    const oversized = try testing.allocator.alloc(u8, in_process_frame_limit + 1);
     defer testing.allocator.free(oversized);
     @memset(oversized, 'x');
     try runtime.submitTurn(oversized);
@@ -734,4 +799,48 @@ test "ask mode is refused over OAP even before the session opens" {
     defer runtime.deinit();
     try testing.expectError(error.UnavailableOverOap, runtime.setPermissionMode(.ask));
     try runtime.setPermissionMode(.bypass);
+}
+
+test "a switch to a model the OAP session does not list is refused before the app's selection moves" {
+    var script = Script{};
+    const models = [_]ai_types.Model{scripted_model};
+    var unlisted = scripted_model;
+    unlisted.id = "unlisted-model";
+    const app_models = [_]ai_types.Model{ scripted_model, unlisted };
+    const execution = try OapExecution.create(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+    });
+    defer execution.destroy();
+    var runtime = try tui_runtime.TuiRuntime.init(testing.allocator, .{
+        .models = &app_models,
+        .initial_model_id = scripted_model.id,
+        .remote = execution.remote(),
+    });
+    defer runtime.deinit();
+    try runtime.start();
+
+    try testing.expectError(error.ModelNotFound, runtime.switchModel("unlisted-model"));
+    try testing.expectEqualStrings(scripted_model.id, runtime.currentModel().?.id);
+    try testing.expectError(error.UnavailableOverOap, runtime.replaceModels(&.{unlisted}, null));
+    try testing.expectEqualStrings(scripted_model.id, runtime.currentModel().?.id);
+}
+
+test "a lost stream warns and ends the turn instead of leaving it to stream forever" {
+    var script = Script{ .wait_for_cancel = true };
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+    try runtime.submitTurn("wait");
+    var waits: usize = 0;
+    while (waits < 2000 and !execution.turn_open.load(.acquire)) : (waits += 1) {
+        std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
+    }
+    try execution.translateLine("{\"control\":\"stream.lost\",\"run_id\":\"r\",\"after\":1,\"code\":\"frame_limit\",\"message\":\"lost\"}");
+    var seen = Seen{};
+    defer seen.deinit();
+    try drainTurn(&runtime, &seen);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .@"error"), seen.end);
 }
