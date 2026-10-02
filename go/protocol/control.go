@@ -133,6 +133,8 @@ const (
 	FeatureDeliveryQueue    = "session.message.delivery.queue"
 	FeatureDeliverySteer    = "session.message.delivery.steer"
 	FeatureDeliveryBTW      = "session.message.delivery.btw"
+	FeatureSessionCompact   = "session.compact"
+	FeatureRunCompaction    = "run.compaction"
 	FeatureToolSelection    = "run.tool_selection"
 	FeatureStructuredOutput = "run.structured_output"
 )
@@ -457,6 +459,8 @@ type SessionState struct {
 	AsOf             *SessionCapture            `json:"as_of,omitempty"`
 }
 
+type CompactionID string
+
 const RelationshipPrimary = "primary"
 
 type PendingSteer struct {
@@ -563,6 +567,27 @@ type MessageSubmitRequest struct {
 	OutputSchema          json.RawMessage            `json:"output_schema,omitempty"`
 	AllowDegradedFeatures []string                   `json:"allow_degraded_features,omitempty"`
 	Metadata              map[string]json.RawMessage `json:"metadata,omitempty"`
+}
+
+type SessionCompactRequest struct {
+	SessionID             SessionID                  `json:"session_id"`
+	Delivery              RequestedDeliveryMode      `json:"delivery,omitempty"`
+	Focus                 *string                    `json:"focus,omitempty"`
+	Continue              bool                       `json:"continue,omitempty"`
+	AllowDegradedFeatures []string                   `json:"allow_degraded_features,omitempty"`
+	Metadata              map[string]json.RawMessage `json:"metadata,omitempty"`
+}
+
+type SessionCompactResponse struct {
+	SessionID          SessionID             `json:"session_id"`
+	Accepted           bool                  `json:"accepted"`
+	SubmissionID       SubmissionID          `json:"submission_id"`
+	RequestedDelivery  RequestedDeliveryMode `json:"requested_delivery"`
+	EffectiveDelivery  EffectiveDeliveryMode `json:"effective_delivery"`
+	DeliveryResolution string                `json:"delivery_resolution,omitempty"`
+	Admission          Admission             `json:"admission"`
+	RunID              RunID                 `json:"run_id,omitempty"`
+	Status             RunStatus             `json:"status,omitempty"`
 }
 
 func Control(control *string) string {

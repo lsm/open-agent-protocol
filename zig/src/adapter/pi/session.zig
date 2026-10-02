@@ -84,6 +84,7 @@ pub const Reducer = struct {
     interactions: std.ArrayList(*Interaction) = .empty,
     pending_ui: std.ArrayList(std.json.Value) = .empty,
     steers: std.ArrayList(PendingSteer) = .empty,
+    admitted_steers: std.ArrayList([]const u8) = .empty,
     emitted: std.ArrayList(std.json.Value) = .empty,
 
     pub fn init(arena: std.mem.Allocator) Reducer {
@@ -92,10 +93,15 @@ pub const Reducer = struct {
 
     pub fn admitSteer(self: *Reducer, submission_id: []const u8, request_id: []const u8, message_ids: []const []const u8) !void {
         try self.steers.append(self.arena, .{ .submission_id = submission_id, .request_id = request_id, .message_ids = message_ids });
+        try self.admitted_steers.append(self.arena, request_id);
     }
 
     pub fn pendingSteers(self: *Reducer) []const PendingSteer {
         return self.steers.items;
+    }
+
+    pub fn admittedSteerRequests(self: *Reducer) []const []const u8 {
+        return self.admitted_steers.items;
     }
 
     fn settleSteers(self: *Reducer) anyerror!void {

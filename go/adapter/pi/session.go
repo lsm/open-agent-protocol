@@ -47,24 +47,25 @@ type Session struct {
 	stopOnce           sync.Once
 }
 type runState struct {
-	id           protocol.RunID
-	status       protocol.RunStatus
-	next         uint64
-	submissionID protocol.SubmissionID
-	started      bool
-	terminal     bool
-	cancelIntent bool
-	candidate    *agentEnd
-	messageID    protocol.MessageID
-	text         strings.Builder
-	reasoning    strings.Builder
-	final        *wireMessage
-	startResult  chan error
-	startOnce    sync.Once
-	pending      []native.Event
-	pendingUI    []native.ExtensionUIRequest
-	subscribers  []chan base.Result
-	steers       []*pendingSteer
+	id             protocol.RunID
+	status         protocol.RunStatus
+	next           uint64
+	submissionID   protocol.SubmissionID
+	started        bool
+	terminal       bool
+	cancelIntent   bool
+	candidate      *agentEnd
+	messageID      protocol.MessageID
+	text           strings.Builder
+	reasoning      strings.Builder
+	final          *wireMessage
+	startResult    chan error
+	startOnce      sync.Once
+	pending        []native.Event
+	pendingUI      []native.ExtensionUIRequest
+	subscribers    []chan base.Result
+	steers         []*pendingSteer
+	admittedSteers []protocol.EnvelopeID
 }
 
 type pendingSteer struct {
@@ -419,6 +420,7 @@ func (s *Session) steer(ctx context.Context, submit base.SubmitRequest) (protoco
 	}
 	sequence := target.next - 1
 	target.steers = append(target.steers, &pendingSteer{submissionID: submissionID, requestID: submit.EnvelopeID, messages: messageIDs})
+	target.admittedSteers = append(target.admittedSteers, submit.EnvelopeID)
 	s.state.UpdatedAtMS = s.clock.Now().UnixMilli()
 	return protocol.MessageSubmitResponse{
 		SessionID: req.SessionID, Accepted: true, SubmissionID: submissionID,
@@ -1438,7 +1440,11 @@ func (s *Session) pendingSteerEntriesLocked() []protocol.ActiveRun {
 	if s.active == nil || len(s.active.steers) == 0 {
 		return nil
 	}
-	entry := protocol.ActiveRun{RunID: s.active.id, Status: s.active.status, Relationship: protocol.RelationshipPrimary}
+	sequence := s.active.next - 1
+	entry := protocol.ActiveRun{RunID: s.active.id, Status: s.active.status, Relationship: protocol.RelationshipPrimary, AsOfSequence: &sequence}
+	if len(s.active.admittedSteers) > 0 {
+		entry.AdmittedSubmitRequests = append([]protocol.EnvelopeID(nil), s.active.admittedSteers...)
+	}
 	entry.PendingSteers = make([]protocol.PendingSteer, len(s.active.steers))
 	for i, steer := range s.active.steers {
 		entry.PendingSteers[i] = protocol.PendingSteer{SubmissionID: steer.submissionID, RequestID: steer.requestID}

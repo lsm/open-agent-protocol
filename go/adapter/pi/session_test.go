@@ -1566,6 +1566,12 @@ func TestSteerAdmitsAgainstTheStartedRunAndSettlesAtTheTurnBoundary(t *testing.T
 	if pending.SubmissionID != steered.SubmissionID || pending.RequestID != "steer-request" {
 		t.Fatalf("pending steer = %+v", pending)
 	}
+	if state.ActiveRuns[0].AsOfSequence == nil || *state.ActiveRuns[0].AsOfSequence != 1 {
+		t.Fatalf("pending steer capture cursor = %+v", state.ActiveRuns[0].AsOfSequence)
+	}
+	if len(state.ActiveRuns[0].AdmittedSubmitRequests) != 1 || state.ActiveRuns[0].AdmittedSubmitRequests[0] != "steer-request" {
+		t.Fatalf("pending steer anchors = %+v", state.ActiveRuns[0].AdmittedSubmitRequests)
+	}
 
 	client.emit(t, map[string]any{"type": "turn_end", "message": assistant("mid", "stop"), "toolResults": []any{}})
 	applied := adaptertest.Next(t, stream, time.Second)

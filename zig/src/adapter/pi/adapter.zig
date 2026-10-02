@@ -44,6 +44,7 @@ const NativeContent = struct {
 };
 
 const steer_reason_no_active_run = "no_active_run";
+const steer_reason_terminal = "terminal";
 const steer_reason_queued = "queued";
 const steer_reason_unknown_target = "unknown_target";
 const steer_reason_not_steerable = "not_steerable";
@@ -510,12 +511,20 @@ pub const Session = struct {
         for (pending, carried) |pending_steer, *slot| {
             slot.* = .{ .submission_id = try arena.dupe(u8, pending_steer.submission_id), .request_id = try arena.dupe(u8, pending_steer.request_id) };
         }
+        const anchors = running.admittedSteerRequests();
+        var carried_anchors: []const []const u8 = &.{};
+        if (anchors.len > 0) {
+            const slot = try arena.alloc([]const u8, anchors.len);
+            for (anchors, slot) |anchor, *at| at.* = try arena.dupe(u8, anchor);
+            carried_anchors = slot;
+        }
         const entry = try arena.alloc(oap_types.ActiveRun, 1);
         entry[0] = .{
             .run_id = try arena.dupe(u8, running.run_id),
             .status = .running,
             .relationship = "primary",
             .as_of_sequence = running.sequence - 1,
+            .admitted_submit_requests = carried_anchors,
             .pending_steers = carried,
         };
         return entry;
@@ -539,11 +548,13 @@ pub const Session = struct {
         if (!std.mem.eql(u8, request.session_id, self.id)) return error.RunNotFound;
         const named = request.target_run_id orelse "";
         const reducer = self.live() orelse {
-            refusal.* = .{ .reason = steer_reason_no_active_run, .message = "adapter: steer target cannot take guidance: the session has no started run" };
+            const reason = if (named.len > 0 and self.statuses.contains(named)) steer_reason_terminal else steer_reason_no_active_run;
+            refusal.* = .{ .reason = reason, .message = "adapter: steer target cannot take guidance: the session has no started run" };
             return error.InvalidSteerTarget;
         };
         if (named.len > 0 and !std.mem.eql(u8, named, reducer.run_id)) {
-            refusal.* = .{ .reason = steer_reason_unknown_target, .message = try std.fmt.allocPrint(arena, "adapter: steer target cannot take guidance: run \"{s}\" is not this session's run", .{named}) };
+            const reason = if (self.statuses.contains(named)) steer_reason_terminal else steer_reason_unknown_target;
+            refusal.* = .{ .reason = reason, .message = try std.fmt.allocPrint(arena, "adapter: steer target cannot take guidance: run \"{s}\" is {s}", .{ named, reason }) };
             return error.InvalidSteerTarget;
         }
         if (!reducer.started) {
@@ -556,6 +567,11 @@ pub const Session = struct {
         }
         const content = try self.nativeContent(arena, request);
         _ = self.command(arena, "steer", content.text, content.images, refusal) catch |err| return err;
+        if (reducer.terminal or reducer.cancel_intent) {
+            const reason = if (reducer.terminal) steer_reason_terminal else steer_reason_not_steerable;
+            refusal.* = .{ .reason = reason, .message = "adapter: steer target cannot take guidance: the run settled while the steer was in flight" };
+            return error.InvalidSteerTarget;
+        }
         const message_ids = try arena.alloc([]const u8, request.messages.len);
         const kept_ids = try self.owned().alloc([]const u8, request.messages.len);
         for (request.messages, message_ids, kept_ids) |message, *slot, *kept| {
@@ -1429,6 +1445,9 @@ test "a steer reaches Pi as its own command, admits against the started run and 
     try testing.expectEqual(@as(usize, 1), state.active_runs[0].pending_steers.len);
     try testing.expectEqualStrings("steer-request", state.active_runs[0].pending_steers[0].request_id);
     try testing.expectEqualStrings(steered.submission_id, state.active_runs[0].pending_steers[0].submission_id);
+    try testing.expectEqual(@as(?u64, 1), state.active_runs[0].as_of_sequence);
+    try testing.expectEqual(@as(usize, 1), state.active_runs[0].admitted_submit_requests.len);
+    try testing.expectEqualStrings("steer-request", state.active_runs[0].admitted_submit_requests[0]);
 
     var seen = std.ArrayList(contract.Event).empty;
     const applied = try probe.pumpUntil("run.steer.applied", &seen);
@@ -1464,4 +1483,39 @@ test "a steer naming another run is refused without reaching Pi" {
     try testing.expectEqualStrings("unknown_target", refusal.reason);
     const written = try probe.fake.written(probe.arena.allocator());
     try testing.expect(std.mem.indexOf(u8, written, "\"type\":\"steer\"") == null);
+}
+
+const fake_settled_before_steer =
+    \\take; printf '{"type":"agent_end","messages":[" ++ assistant_hello ++ "],"willRetry":false}\n'
+    \\printf '{"type":"agent_settled"}\n'
+    \\printf '{"type":"response","id":"req_3","command":"steer","success":true}\n'
+    \\
+;
+
+test "a steer naming a settled run is refused as terminal" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_text_turn ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    const admitted = try probe.submit("hello", &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    _ = try probe.pumpUntil("run.completed", &seen);
+
+    var request = try steerRequest(probe.arena.allocator(), admitted.run_id);
+    try testing.expectError(error.InvalidSteerTarget, probe.handle.?.submit(probe.arena.allocator(), &request, "steer-request", &refusal));
+    try testing.expectEqualStrings("terminal", refusal.reason);
+}
+
+test "a steer whose target settles while the steer is in flight is refused" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_prompt_accepted ++ fake_settled_before_steer ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    const admitted = try probe.submit("hello", &refusal);
+
+    var request = try steerRequest(probe.arena.allocator(), admitted.run_id);
+    try testing.expectError(error.InvalidSteerTarget, probe.handle.?.submit(probe.arena.allocator(), &request, "steer-request", &refusal));
+    try testing.expectEqualStrings("terminal", refusal.reason);
 }
