@@ -11,9 +11,10 @@ const permission = @import("permission");
 const interactions = @import("interactions.zig");
 
 pub const endpoint_id = "oapx.agent";
-pub const capability_revision = "oapx-agent-v2";
+pub const capability_revision = "oapx-agent-v3";
 
 pub const journal_capacity: usize = 1 << 16;
+pub const queue_capacity: usize = 8;
 
 const protocol_name = "open-agent-protocol";
 const protocol_version = "0.1";
@@ -26,12 +27,13 @@ const features = [_]contract.Feature{
     .{ .key = "session.state", .level = .degraded, .reason = "the state is live; no transcript is replayed and a session does not outlive the process" },
     .{ .key = contract.feature_submit, .level = .native },
     .{ .key = "session.message.delivery.auto", .level = .native },
+    .{ .key = "session.message.delivery.queue", .level = .native },
     .{ .key = "action.permissions", .level = .native, .scope = "call", .reason = "ask mode waits for the declared responder; bypass mode skips prompts" },
     .{ .key = "user_input", .level = .native, .reason = "request_user_input asks text or choice questions and validates answers before returning them to the tool" },
     .{ .key = "run.streaming", .level = .native },
     .{ .key = "run.status", .level = .native },
     .{ .key = "run.cancel", .level = .native, .reason = "cancelling a run leaves its session open" },
-    .{ .key = "run.replay", .level = .degraded, .reason = "only the session's latest run is retained, up to 65536 events, in process memory" },
+    .{ .key = "run.replay", .level = .degraded, .reason = "up to 65536 events across the session's runs are retained in process memory" },
     .{ .key = "content.reasoning", .level = .native },
     .{ .key = "action.tools", .level = .native, .reason = "the agent loop runs its own workspace tools" },
     .{ .key = "action.tools.execute", .level = .native, .reason = "the agent loop runs its own workspace tools" },
@@ -44,6 +46,7 @@ pub const descriptor = contract.Descriptor{
     .endpoint = .{ .id = endpoint_id, .name = "oapx agent loop", .version = protocol_version, .adapter = "in-process" },
     .capability_revision = capability_revision,
     .features = &features,
+    .limits = .{ .max_active_runs_per_session = queue_capacity + 1, .max_queued_runs_per_session = queue_capacity },
 };
 
 fn wallClock() i64 {
@@ -91,6 +94,9 @@ pub const Adapter = struct {
 
 const Run = struct {
     id: []const u8,
+    input_text: []const u8 = "",
+    submit_id: []const u8 = "",
+    started: bool = false,
     next_sequence: u64 = 1,
     status: oap_types.RunStatus = .running,
     terminal: bool = false,
@@ -108,6 +114,8 @@ const PendingInteraction = struct {
     arguments: []const u8,
 };
 
+const PreparedEvent = struct { line: []u8, kept: []u8 };
+
 const Journaled = struct {
     line: []u8,
     run_id: []const u8,
@@ -124,6 +132,7 @@ pub const Session = struct {
     engine: ?*permission.PermissionEngine = null,
     updated_at_ms: i64,
     run: ?*Run = null,
+    runs: std.ArrayList(*Run) = .empty,
     gate: interactions.Gate = .{},
     pending: ?PendingInteraction = null,
     outbox: std.ArrayList(Journaled) = .empty,
@@ -199,7 +208,8 @@ pub const Session = struct {
 
     fn destroy(self: *Session) void {
         const gpa = self.gpa;
-        if (self.run) |run| releaseRun(gpa, run);
+        for (self.runs.items) |run| releaseRun(gpa, run);
+        self.runs.deinit(gpa);
         for (self.outbox.items) |entry| gpa.free(entry.line);
         self.outbox.deinit(gpa);
         self.forgetJournal();
@@ -228,8 +238,12 @@ pub const Session = struct {
     }
 
     fn releaseRun(gpa: std.mem.Allocator, run: *Run) void {
+        if (run.input_text.len > 0) gpa.free(run.input_text);
+        run.input_text = "";
         run.text.deinit(gpa);
         run.error_text.deinit(gpa);
+        run.text = .empty;
+        run.error_text = .empty;
     }
 
     fn currentModelRef(self: *Session, allocator: std.mem.Allocator) !?[]const u8 {
@@ -245,18 +259,52 @@ pub const Session = struct {
         return cast(ptr).snapshot(arena);
     }
 
+    fn findRun(self: *Session, id: []const u8) ?*Run {
+        if (self.run) |run| if (std.mem.eql(u8, run.id, id)) return run;
+        for (self.runs.items) |run| if (std.mem.eql(u8, run.id, id)) return run;
+        return null;
+    }
+
+    fn queuedCount(self: *Session) usize {
+        var count: usize = 0;
+        for (self.runs.items) |run| if (!run.started and !run.terminal) {
+            count += 1;
+        };
+        return count;
+    }
+
     fn snapshot(self: *Session, arena: std.mem.Allocator) contract.Failure!oap_types.SessionState {
+        var entries: std.ArrayList(oap_types.ActiveRun) = .empty;
+        var admitted: std.ArrayList([]const u8) = .empty;
+        var settled: std.ArrayList(oap_types.RunPosition) = .empty;
+        var position: u64 = 0;
+        for (self.runs.items) |run| {
+            if (!listsId(admitted.items, run.submit_id)) try admitted.append(arena, run.submit_id);
+            if (run.terminal) {
+                try settled.append(arena, .{ .run_id = run.id, .sequence = run.next_sequence - 1 });
+                continue;
+            }
+            if (!run.started) position += 1;
+            const pending: []const []const u8 = if (run.started and self.pending != null) try arena.dupe([]const u8, &.{self.pending.?.id}) else &.{};
+            try entries.append(arena, .{
+                .run_id = run.id,
+                .status = run.status,
+                .relationship = "primary",
+                .queue_position = if (run.started) null else position,
+                .as_of_sequence = run.next_sequence - 1,
+                .admitted_submit_requests = try arena.dupe([]const u8, &.{run.submit_id}),
+                .pending_interactions = pending,
+            });
+        }
         var result = oap_types.SessionState{
             .session_id = self.id,
-            .status = .idle,
+            .status = if (entries.items.len > 0) .queued else .idle,
+            .active_runs = entries.items,
             .current_model_id = try self.currentModelRef(arena),
             .updated_at_ms = self.updated_at_ms,
+            .as_of = .{ .admitted_submit_requests = admitted.items, .settled = settled.items },
         };
         if (self.live()) |run| {
-            const entries = try arena.alloc(oap_types.ActiveRun, 1);
-            const pending: []const []const u8 = if (self.pending) |ask| try arena.dupe([]const u8, &.{ask.id}) else &.{};
-            entries[0] = .{ .run_id = run.id, .status = run.status, .relationship = "primary", .as_of_sequence = run.next_sequence - 1, .pending_interactions = pending };
-            result.active_runs = entries;
             result.active_run_id = run.id;
             result.status = if (self.pending != null) .waiting_for_input else .running;
         }
@@ -264,63 +312,94 @@ pub const Session = struct {
     }
 
     fn submit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
-        _ = envelope_id;
         const self = cast(ptr);
         try contract.refuseUnadvertisedControls(descriptor, request, refusal);
         if (request.session_id.len == 0 or request.messages.len == 0) return error.InvalidSubmission;
         if (!std.mem.eql(u8, request.session_id, self.id)) return error.RunNotFound;
-        if (self.live() != null) return error.RunActive;
-
+        const busy = self.live() != null or self.queuedCount() > 0;
+        const reservation = busy or request.delivery == .queue;
+        if (reservation and self.queuedCount() >= queue_capacity) return error.RunActive;
         const text = try userText(arena, request.messages);
         if (text.len == 0) return refusal.fail(error.InvalidSubmission, "the submission carries no user text");
-
         const keep = self.keep.allocator();
         const run_id = try self.owner.nextID(keep, "run");
+        const input_text = try self.gpa.dupe(u8, text);
+        errdefer self.gpa.free(input_text);
+        const submit_id = try keep.dupe(u8, envelope_id);
         const model_id = (try self.currentModelRef(keep)) orelse "";
-        self.gate.cancelled.store(false, .release);
-        self.runtime.submitTurn(text) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            error.NoModelConfigured => return refusal.fail(error.BackendFailed, "no model is selected"),
-            else => return refusal.fail(error.BackendFailed, @errorName(err)),
-        };
-
-        if (self.run) |previous| {
-            releaseRun(self.gpa, previous);
-            self.run = null;
-        }
-        self.forgetJournal();
         const run = try keep.create(Run);
-        run.* = .{ .id = run_id, .model_id = model_id };
-        self.run = run;
+        run.* = .{ .id = run_id, .input_text = input_text, .submit_id = submit_id, .model_id = model_id, .status = if (reservation) .queued else .running };
+        try self.runs.ensureUnusedCapacity(self.gpa, 1);
+        const message_ids = try arena.alloc([]const u8, request.messages.len);
+        for (request.messages, message_ids) |message, *slot| slot.* = if (message.id) |carried| carried else try self.owner.nextID(arena, "message");
+        const response = oap_types.MessageSubmitResponse{
+            .session_id = self.id,
+            .accepted = true,
+            .submission_id = try self.owner.nextID(arena, "submission"),
+            .requested_delivery = request.delivery,
+            .effective_delivery = if (reservation) .queue else .start,
+            .delivery_resolution = if (busy) "session_busy" else "session_idle",
+            .admission = if (reservation) .queued else .started,
+            .run_id = run.id,
+            .status = run.status,
+            .model_id = if (model_id.len > 0) model_id else null,
+            .message_ids = message_ids,
+        };
+        if (!reservation) try self.startRun(run, refusal);
+        self.runs.appendAssumeCapacity(run);
         self.updated_at_ms = self.owner.now_ms();
+        return response;
+    }
 
+    fn startRun(self: *Session, run: *Run, refusal: *contract.Refusal) contract.Failure!void {
         var scratch = std.heap.ArenaAllocator.init(self.gpa);
         defer scratch.deinit();
         const a = scratch.allocator();
         var started = Payload.init(a);
         try started.run(self, run);
         try started.put("status", .{ .string = "running" });
-        if (model_id.len > 0) try started.put("model_id", .{ .string = model_id });
+        if (run.model_id.len > 0) try started.put("model_id", .{ .string = run.model_id });
         try started.put("started_at_ms", .{ .integer = self.owner.now_ms() });
-        try self.emit(run, "run.started", started.value(), false);
-
-        const message_ids = try arena.alloc([]const u8, request.messages.len);
-        for (request.messages, message_ids) |message, *slot| {
-            slot.* = if (message.id) |carried| carried else try self.owner.nextID(arena, "message");
+        const prepared = try self.prepareEvent(run, "run.started", started.value());
+        errdefer {
+            self.gpa.free(prepared.line);
+            self.gpa.free(prepared.kept);
         }
-        return .{
-            .session_id = self.id,
-            .accepted = true,
-            .submission_id = try self.owner.nextID(arena, "submission"),
-            .requested_delivery = request.delivery,
-            .effective_delivery = .start,
-            .delivery_resolution = "session_idle",
-            .admission = .started,
-            .run_id = run.id,
-            .status = .running,
-            .model_id = if (model_id.len > 0) model_id else null,
-            .message_ids = message_ids,
+        self.gate.cancelled.store(false, .release);
+        self.runtime.submitTurn(run.input_text) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return refusal.fail(error.BackendFailed, @errorName(err)),
         };
+        self.gpa.free(run.input_text);
+        run.input_text = "";
+        self.run = run;
+        run.started = true;
+        run.status = .running;
+        self.publishEvent(run, prepared, "run.started", false);
+    }
+
+    fn promote(self: *Session) contract.Failure!bool {
+        if (self.live() != null or !self.runtime.isIdle()) return false;
+        for (self.runs.items) |run| {
+            if (run.terminal or run.started) continue;
+            var refusal = contract.Refusal{};
+            self.startRun(run, &refusal) catch |err| {
+                if (err == error.OutOfMemory) return err;
+                var scratch = std.heap.ArenaAllocator.init(self.gpa);
+                defer scratch.deinit();
+                const a = scratch.allocator();
+                var payload = Payload.init(a);
+                try payload.run(self, run);
+                var failure = Payload.init(a);
+                try failure.put("code", .{ .string = "provider_error" });
+                try failure.put("message", .{ .string = if (refusal.detail.len > 0) refusal.detail else @errorName(err) });
+                try failure.put("retriable", .{ .bool = false });
+                try payload.put("error", failure.value());
+                try self.emit(run, "run.failed", payload.value(), true);
+            };
+            return true;
+        }
+        return false;
     }
 
     fn resolve(ptr: *anyopaque, arena: std.mem.Allocator, resolution: contract.Resolution, refusal: *contract.Refusal) contract.Failure!void {
@@ -496,14 +575,22 @@ pub const Session = struct {
     fn cancel(ptr: *anyopaque, arena: std.mem.Allocator, run_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.RunCancelResponse {
         _ = refusal;
         const self = cast(ptr);
-        const run = self.run orelse return error.RunNotFound;
-        if (!std.mem.eql(u8, run.id, run_id)) return error.RunNotFound;
+        const run = self.findRun(run_id) orelse return error.RunNotFound;
         const owned_run_id = try arena.dupe(u8, run.id);
         if (run.terminal) {
             if (run.status == .cancelled) return .{ .session_id = self.id, .run_id = owned_run_id, .accepted = true, .status = .cancelled };
             return error.RunTerminal;
         }
         if (run.status == .cancelling) return .{ .session_id = self.id, .run_id = owned_run_id, .accepted = true, .status = .cancelling };
+        if (!run.started) {
+            var scratch = std.heap.ArenaAllocator.init(self.gpa);
+            defer scratch.deinit();
+            var payload = Payload.init(scratch.allocator());
+            try payload.run(self, run);
+            try payload.put("reason", .{ .string = "cancelled before promotion" });
+            try self.emit(run, "run.cancelled", payload.value(), true);
+            return .{ .session_id = self.id, .run_id = owned_run_id, .accepted = true, .status = .cancelling };
+        }
         run.status = .cancelling;
         self.gate.cancelled.store(true, .release);
         self.runtime.cancel();
@@ -522,8 +609,8 @@ pub const Session = struct {
     fn pump(ptr: *anyopaque, wait_ns: u64) contract.Failure!bool {
         _ = wait_ns;
         const self = cast(ptr);
+        var moved = try self.promote();
         const stream = self.runtime.streamEvents();
-        var moved = false;
         while (stream.poll()) |event| {
             var owned = event;
             defer owned.deinit(self.gpa);
@@ -639,6 +726,10 @@ pub const Session = struct {
 
     fn emit(self: *Session, run: *Run, kind: []const u8, payload: std.json.Value, terminal: bool) contract.Failure!void {
         if (run.terminal) return;
+        self.publishEvent(run, try self.prepareEvent(run, kind, payload), kind, terminal);
+    }
+
+    fn prepareEvent(self: *Session, run: *Run, kind: []const u8, payload: std.json.Value) contract.Failure!PreparedEvent {
         var scratch = std.heap.ArenaAllocator.init(self.gpa);
         defer scratch.deinit();
         const a = scratch.allocator();
@@ -665,16 +756,22 @@ pub const Session = struct {
         errdefer self.gpa.free(kept);
         try self.outbox.ensureUnusedCapacity(self.gpa, 1);
         try self.journal.ensureUnusedCapacity(self.gpa, 1);
-        self.outbox.appendAssumeCapacity(.{ .line = line, .run_id = run.id, .sequence = sequence });
+        return .{ .line = line, .kept = kept };
+    }
+
+    fn publishEvent(self: *Session, run: *Run, event: PreparedEvent, kind: []const u8, terminal: bool) void {
+        const sequence = run.next_sequence;
+        self.outbox.appendAssumeCapacity(.{ .line = event.line, .run_id = run.id, .sequence = sequence });
         if (self.journal.items.len == journal_capacity) self.evictOldestHalf();
-        self.journal.appendAssumeCapacity(.{ .line = kept, .run_id = run.id, .sequence = sequence });
+        self.journal.appendAssumeCapacity(.{ .line = event.kept, .run_id = run.id, .sequence = sequence });
         run.next_sequence += 1;
-        self.updated_at_ms = now;
+        self.updated_at_ms = self.owner.now_ms();
         if (!terminal) return;
         run.terminal = true;
         if (std.mem.eql(u8, kind, "run.completed")) run.status = .completed;
         if (std.mem.eql(u8, kind, "run.failed")) run.status = .failed;
         if (std.mem.eql(u8, kind, "run.cancelled")) run.status = .cancelled;
+        releaseRun(self.gpa, run);
     }
 
     fn drain(ptr: *anyopaque, allocator: std.mem.Allocator, out: *std.ArrayList(contract.Event)) contract.Failure!void {
@@ -693,11 +790,16 @@ pub const Session = struct {
     fn replay(ptr: *anyopaque, allocator: std.mem.Allocator, run_id: []const u8, after: u64, refusal: *contract.Refusal) contract.Failure!contract.Replay {
         _ = refusal;
         const self = cast(ptr);
-        const run = self.run orelse return error.RunNotFound;
-        if (!std.mem.eql(u8, run.id, run_id)) return error.RunNotFound;
+        const run = self.findRun(run_id) orelse return error.RunNotFound;
         const latest = run.next_sequence - 1;
         if (after > latest) return error.ReplayCursorFuture;
-        const oldest: u64 = if (self.journal.items.len > 0) self.journal.items[0].sequence else 0;
+        var oldest: u64 = 0;
+        for (self.journal.items) |event| {
+            if (std.mem.eql(u8, event.run_id, run_id)) {
+                oldest = event.sequence;
+                break;
+            }
+        }
         if (after < latest and (oldest == 0 or after + 1 < oldest)) {
             return .{ .gap = .{ .requested_after = after, .oldest_available = oldest, .latest_available = latest } };
         }
@@ -710,7 +812,7 @@ pub const Session = struct {
             suffix.deinit(allocator);
         }
         for (self.journal.items) |kept| {
-            if (kept.sequence <= after) continue;
+            if (!std.mem.eql(u8, kept.run_id, run_id) or kept.sequence <= after) continue;
             const line = try allocator.dupe(u8, kept.line);
             errdefer allocator.free(line);
             const owned_run_id = try allocator.dupe(u8, kept.run_id);
@@ -722,12 +824,12 @@ pub const Session = struct {
 
     fn activity(ptr: *anyopaque) contract.Activity {
         const self = cast(ptr);
-        return if (self.live() != null) (if (self.pending != null) .waiting else .running) else .idle;
+        return if (self.live() != null) (if (self.pending != null) .waiting else .running) else if (self.queuedCount() > 0) .running else .idle;
     }
 
     fn close(ptr: *anyopaque, force: bool) contract.Failure!void {
         const self = cast(ptr);
-        if (!force and self.live() != null) return error.RunActive;
+        if (!force and (self.live() != null or self.queuedCount() > 0)) return error.RunActive;
         self.gate.cancelled.store(true, .release);
         if (self.live() != null) self.runtime.cancel();
         self.destroy();
@@ -781,7 +883,7 @@ pub const Session = struct {
     fn switchModel(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.SessionModelSwitchRequest, refusal: *contract.Refusal) contract.Failure!contract.Switched {
         const self = cast(ptr);
         if (!std.mem.eql(u8, request.session_id, self.id)) return error.InvalidSubmission;
-        if (self.live() != null) return error.RunActive;
+        if (self.live() != null or self.queuedCount() > 0) return error.RunActive;
         const chosen = findModel(arena, self.runtime.availableModels(), request.model_id) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
         } orelse return refusal.missingModel(request.model_id);
@@ -975,6 +1077,13 @@ const Payload = struct {
         try self.put("run_id", .{ .string = owner.id });
     }
 };
+
+fn listsId(ids: []const []const u8, id: []const u8) bool {
+    for (ids) |listed| {
+        if (std.mem.eql(u8, listed, id)) return true;
+    }
+    return false;
+}
 
 const testing = std.testing;
 const agent = @import("agent");
@@ -1258,15 +1367,22 @@ test "cancelling a run settles it cancelled and leaves the session able to take 
     try testing.expectEqualStrings("run.completed", harness.terminal().?.object.get("type").?.string);
 }
 
-test "a second submit while a run is live is refused as run_active" {
+test "busy auto submissions reserve runs until the disclosed queue bound is reached" {
     var script = Script{ .wait_for_cancel = true };
     var harness: Harness = undefined;
     try harness.init(&script);
     defer harness.deinit();
 
     const admitted = try harness.submit("wait");
+    for (0..queue_capacity) |_| {
+        const queued = try harness.submit("later");
+        try testing.expectEqual(oap_types.Admission.queued, queued.admission);
+        try testing.expectEqualStrings("session_busy", queued.delivery_resolution.?);
+    }
     try testing.expectError(error.RunActive, harness.submit("too soon"));
     var refusal = contract.Refusal{};
+    const captured = try harness.session.state(harness.arena.allocator(), &refusal);
+    try testing.expectEqual(@as(usize, 1), captured.as_of.?.admitted_submit_requests.len);
     _ = try harness.session.cancel(harness.arena.allocator(), admitted.run_id.?, &refusal);
     try harness.untilTerminal();
 }
@@ -1818,6 +1934,246 @@ test "an optional question can remain unanswered while required input reaches th
     try harness.session.resolve(harness.arena.allocator(), .{ .input = &request }, &refusal);
     try harness.untilTerminal();
     try testing.expect(script.received_answers.load(.acquire));
+}
+
+fn wireOpen(wire: *Wire) !void {
+    const a = wire.arena.allocator();
+    try wire.send("protocol.initialize.request", "", try parseValue(a,
+        \\{"participant":{"id":"user","name":"Test"},"protocol_versions":["0.1"],"profiles":["open-agent-protocol.agent-control-core"]}
+    ));
+    try wire.send("capabilities.request", "", try parseValue(a, "{}"));
+    try wire.send("session.open.request", wire_scope, try parseValue(a, "{\"session_id\":\"wire-session\"}"));
+}
+
+const wire_scope = ",\"session_id\":\"wire-session\",\"capability_revision\":\"" ++ capability_revision ++ "\"";
+
+fn wireLast(wire: *Wire, kind: []const u8) std.json.Value {
+    var index = wire.trace.items.len;
+    while (index > 0) {
+        index -= 1;
+        const event = wire.trace.items[index];
+        if (std.mem.eql(u8, event.object.get("type").?.string, kind)) return event;
+    }
+    unreachable;
+}
+
+fn wireSubmit(wire: *Wire, delivery: []const u8) !std.json.Value {
+    const a = wire.arena.allocator();
+    const text = try std.fmt.allocPrint(a, "{{\"session_id\":\"wire-session\",\"delivery\":\"{s}\",\"messages\":[{{\"role\":\"user\",\"content\":\"queued task\"}}]}}", .{delivery});
+    try wire.send("session.message.submit.request", wire_scope, try parseValue(a, text));
+    return wire.trace.items[wire.trace.items.len - 1];
+}
+
+fn wireCancel(wire: *Wire, run_id: []const u8) !void {
+    const a = wire.arena.allocator();
+    const scope = try std.fmt.allocPrint(a, "{s},\"run_id\":\"{s}\"", .{ wire_scope, run_id });
+    const payload = try std.fmt.allocPrint(a, "{{\"session_id\":\"wire-session\",\"run_id\":\"{s}\"}}", .{run_id});
+    try wire.send("run.cancel.request", scope, try parseValue(a, payload));
+}
+
+fn wireState(wire: *Wire, queued: usize, executing: bool) !void {
+    try wire.send("session.state.request", wire_scope, try parseValue(wire.arena.allocator(), "{\"session_id\":\"wire-session\"}"));
+    const state_value = wireLast(wire, "session.state.response").object.get("payload").?.object;
+    const entries: []const std.json.Value = if (state_value.get("active_runs")) |value| value.array.items else &.{};
+    try testing.expectEqual(queued + @as(usize, if (executing) 1 else 0), entries.len);
+    try testing.expectEqual(executing, state_value.get("active_run_id") != null);
+    var position: i64 = 0;
+    for (entries) |entry| {
+        if (std.mem.eql(u8, entry.object.get("status").?.string, "queued")) {
+            position += 1;
+            try testing.expectEqual(position, entry.object.get("queue_position").?.integer);
+        }
+    }
+    try testing.expectEqual(@as(i64, @intCast(queued)), position);
+}
+
+fn wireUntilSettled(wire: *Wire, count: usize) !void {
+    for (0..5000) |_| {
+        _ = try wire.endpoint.pump(0);
+        try wire.collect();
+        var found: usize = 0;
+        for (wire.trace.items) |event| {
+            const kind = event.object.get("type").?.string;
+            if (std.mem.eql(u8, kind, "run.completed") or std.mem.eql(u8, kind, "run.cancelled") or std.mem.eql(u8, kind, "run.failed")) found += 1;
+        }
+        if (found == count) return;
+        std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
+    }
+    return error.QueueNeverSettled;
+}
+
+test "idle explicit queue reserves before promotion, preserves admission order and updates counters after reservation cancellation" {
+    var script = Script{};
+    var wire: Wire = undefined;
+    wire.init(&script);
+    defer wire.deinit();
+    try wireOpen(&wire);
+    _ = try wireSubmit(&wire, "queue");
+    const first = wireLast(&wire, "session.message.submit.response").object.get("payload").?.object;
+    try testing.expectEqualStrings("queue", first.get("effective_delivery").?.string);
+    try testing.expectEqualStrings("queued", first.get("admission").?.string);
+    try testing.expectEqual(@as(usize, 0), script.calls);
+    try wireState(&wire, 1, false);
+    _ = try wireSubmit(&wire, "auto");
+    const middle = wireLast(&wire, "session.message.submit.response").object.get("payload").?.object;
+    try testing.expectEqualStrings("session_busy", middle.get("delivery_resolution").?.string);
+    _ = try wireSubmit(&wire, "queue");
+    const last = wireLast(&wire, "session.message.submit.response").object.get("payload").?.object;
+    try wireState(&wire, 3, false);
+    try wireCancel(&wire, middle.get("run_id").?.string);
+    try wireState(&wire, 2, false);
+    try wireUntilSettled(&wire, 3);
+    try wireState(&wire, 0, false);
+    var started: usize = 0;
+    for (wire.trace.items) |event| {
+        if (!std.mem.eql(u8, event.object.get("type").?.string, "run.started")) continue;
+        try testing.expectEqualStrings(if (started == 0) first.get("run_id").?.string else last.get("run_id").?.string, event.object.get("run_id").?.string);
+        started += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), started);
+    try testing.expectEqual(@as(usize, 2), script.calls);
+    try wire.validate();
+}
+
+test "buffered reservation cancellation frees a full queue slot before the next submit without executing cancelled work" {
+    var script = Script{ .tool_first = true };
+    var wire: Wire = undefined;
+    wire.init(&script);
+    defer wire.deinit();
+    try wireOpen(&wire);
+    const a = wire.arena.allocator();
+    _ = try wireSubmit(&wire, "auto");
+    const prompt = try wire.wait("action.permission.requested");
+    const asked = prompt.object.get("payload").?.object;
+    var reserved: [queue_capacity][]const u8 = undefined;
+    for (&reserved) |*id| {
+        _ = try wireSubmit(&wire, "auto");
+        id.* = wireLast(&wire, "session.message.submit.response").object.get("payload").?.object.get("run_id").?.string;
+    }
+    try wireState(&wire, queue_capacity, true);
+    _ = try wireSubmit(&wire, "auto");
+    try testing.expectEqualStrings("run_active", wireLast(&wire, "error.response").object.get("payload").?.object.get("error").?.object.get("code").?.string);
+    _ = try wireSubmit(&wire, "steer");
+    try testing.expectEqualStrings("unsupported_feature", wireLast(&wire, "error.response").object.get("payload").?.object.get("error").?.object.get("code").?.string);
+    try wireCancel(&wire, reserved[2]);
+    try wireState(&wire, queue_capacity - 1, true);
+    _ = try wireSubmit(&wire, "queue");
+    reserved[2] = wireLast(&wire, "session.message.submit.response").object.get("payload").?.object.get("run_id").?.string;
+    try wireState(&wire, queue_capacity, true);
+    for (reserved) |id| try wireCancel(&wire, id);
+    try wireState(&wire, 0, true);
+    var answer = Payload.init(a);
+    for ([_][]const u8{ "interaction_id", "session_id", "run_id", "requested_by", "responded_by" }) |key| try answer.put(key, asked.get(key).?);
+    try answer.put("granted", .{ .bool = false });
+    try answer.put("choice_id", .{ .string = "deny" });
+    const scope = try std.fmt.allocPrint(a, "{s},\"run_id\":\"{s}\"", .{ wire_scope, asked.get("run_id").?.string });
+    try wire.send("action.permission.resolve.request", scope, answer.value());
+    try wireUntilSettled(&wire, queue_capacity + 2);
+    try testing.expectEqual(@as(usize, 2), script.calls);
+    try wireState(&wire, 0, false);
+    try wire.validate();
+}
+
+test "cancelling the executing run promotes reservations in order and retains each run's replay" {
+    var script = Script{ .tool_first = true };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    try Session.cast(harness.session.ptr).runtime.setPermissionMode(.ask);
+    const first = try harness.submit("first");
+    _ = try waitForPrompt(&harness);
+    const second = try harness.submit("second");
+    const third = try harness.submit("third");
+    var refusal = contract.Refusal{};
+    _ = try harness.session.cancel(harness.arena.allocator(), first.run_id.?, &refusal);
+    for (0..5000) |_| {
+        _ = try harness.session.pump(0);
+        try harness.collect();
+        if (harness.count("run.completed") == 2 and harness.count("run.cancelled") == 1) break;
+        std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
+    }
+    try testing.expectEqual(@as(usize, 2), harness.count("run.completed"));
+    var index: usize = 0;
+    const expected = [_][]const u8{ first.run_id.?, second.run_id.?, third.run_id.? };
+    for (harness.seen.items) |event| {
+        if (!std.mem.eql(u8, event.value.object.get("type").?.string, "run.started")) continue;
+        try testing.expectEqualStrings(expected[index], event.value.object.get("run_id").?.string);
+        index += 1;
+    }
+    try testing.expectEqual(expected.len, index);
+    for (expected) |id| {
+        const replayed = try harness.session.vtable.replay.?(harness.session.ptr, testing.allocator, id, 0, &refusal);
+        try testing.expect(replayed == .events);
+        defer {
+            for (replayed.events) |event| {
+                testing.allocator.free(event.line);
+                testing.allocator.free(event.run_id);
+            }
+            testing.allocator.free(replayed.events);
+        }
+        try testing.expect(replayed.events.len > 1);
+        for (replayed.events, 1..) |event, sequence| {
+            try testing.expectEqualStrings(id, event.run_id);
+            try testing.expectEqual(@as(u64, @intCast(sequence)), event.sequence);
+        }
+    }
+}
+
+test "an allocation failure preparing admission publishes nothing and starts no native work" {
+    for (0..6) |fail_index| {
+        var script = Script{};
+        var harness: Harness = undefined;
+        try harness.init(&script);
+        defer harness.deinit();
+        const session = Session.cast(harness.session.ptr);
+        var failing = testing.FailingAllocator.init(testing.allocator, .{ .fail_index = fail_index });
+        session.gpa = failing.allocator();
+        defer session.gpa = testing.allocator;
+        _ = harness.submit("first") catch |err| {
+            try testing.expectEqual(error.OutOfMemory, err);
+            try testing.expectEqual(@as(usize, 0), script.calls);
+            try testing.expectEqual(@as(usize, 0), session.runs.items.len);
+            try testing.expectEqual(@as(usize, 0), session.outbox.items.len);
+            try testing.expect(session.live() == null);
+            continue;
+        };
+        session.gpa = testing.allocator;
+        try harness.untilTerminal();
+        break;
+    }
+}
+
+test "buffered reservation cancellation makes idle activity, model switch and close available without a pump" {
+    var script = Script{};
+    var wire: Wire = undefined;
+    wire.init(&script);
+    defer wire.deinit();
+    try wireOpen(&wire);
+    var reserved: [queue_capacity][]const u8 = undefined;
+    for (&reserved) |*id| {
+        _ = try wireSubmit(&wire, "queue");
+        id.* = wireLast(&wire, "session.message.submit.response").object.get("payload").?.object.get("run_id").?.string;
+    }
+    for (reserved) |id| try wireCancel(&wire, id);
+    try wireState(&wire, 0, false);
+    try testing.expectEqual(contract.Activity.idle, wire.endpoint.entries.items[0].session.activity());
+    const a = wire.arena.allocator();
+    try wire.send("session.model.switch.request", wire_scope, try parseValue(a,
+        \\{"session_id":"wire-session","model_id":"scripted/openai-completions@other-model"}
+    ));
+    try testing.expectEqualStrings("scripted/openai-completions@other-model", wireLast(&wire, "session.model.switch.response").object.get("payload").?.object.get("model_id").?.string);
+    var owner = Adapter.init(testing.allocator, wire.owner.options);
+    var refusal = contract.Refusal{};
+    const session = try owner.adapter().open(a, .{ .participant = "user" }, &refusal);
+    var closed = false;
+    defer if (!closed) session.teardown();
+    var messages = [_]oap_types.Message{.{ .role = .user, .content = .{ .text = "queued" } }};
+    const admission = try session.submit(a, &.{ .session_id = session.id(), .messages = &messages, .delivery = .queue }, "close-submit", &refusal);
+    _ = try session.cancel(a, admission.run_id.?, &refusal);
+    try session.close();
+    closed = true;
+    try testing.expectEqual(@as(usize, 0), script.calls);
+    try wire.validate();
 }
 
 test "a session whose client declines user_input is not given the input tool" {
