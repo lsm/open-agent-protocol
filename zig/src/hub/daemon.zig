@@ -1558,3 +1558,18 @@ test "stopping the daemon ends an open stream rather than waiting it out" {
 test "the connection bound is the number the draft's G13 row records" {
     try testing.expectEqual(@as(usize, 64), max_connections);
 }
+
+test "a reopen is answered with the revision it was gated under, though it cited none" {
+    var fixture: Fixture = undefined;
+    try fixture.init(.{});
+    defer fixture.deinit();
+    _ = try fixture.answer("POST", "/adapters/memory/sessions", open_demo);
+    const closed = try fixture.ask("POST", "/sessions/demo/close", "");
+    try testing.expect(closed == .no_content);
+    const reopen = "{" ++ envelope_head ++ ",\"type\":\"session.open.request\",\"id\":\"open-2\",\"payload\":{\"session_id\":\"demo\",\"reopen\":true}}";
+    const reopened = try fixture.answer("POST", "/adapters/memory/sessions", reopen);
+    try testing.expectEqualStrings("session.open.response", try fixture.kind(reopened));
+    const root = try fixture.json(reopened);
+    try testing.expectEqualStrings(memory.capability_revision, root.get("capability_revision").?.string);
+    try testing.expect(root.get("payload").?.object.get("recovery").?.object.get("recovered").?.bool);
+}

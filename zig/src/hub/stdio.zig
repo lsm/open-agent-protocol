@@ -831,7 +831,7 @@ pub const Frontend = struct {
             .id = answer_id,
             .in_reply_to = envelope.id,
             .session_id = opened.state.session_id,
-            .capability_revision = if (open.subscribe or contract.carriesEntries(open.tool_sources_json)) opened.revision else envelope.capability_revision,
+            .capability_revision = if (open.subscribe or open.reopen or contract.carriesEntries(open.tool_sources_json)) opened.revision else envelope.capability_revision,
             .payload = .{ .session_open_response = opened.state },
         };
         const line = try oap_envelope.serializeEnvelope(opened_envelope, arena);
