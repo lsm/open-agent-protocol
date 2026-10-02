@@ -217,9 +217,10 @@ feature keys. Their support levels follow `drafts/agent-control-core.md`:
   `effortLevel` and Hermes's `threshold_tokens` do.
 - `emulated` — the adapter produces the setting from a different native
   control. Examples:
-  - Pi's and OpenCode's token thresholds are reserves below the window.
-  - OpenCode's level is a per-prompt `variant` the adapter resends on every
-    prompt.
+  - Claude Code's token window and DeepSeek's share are approximations the
+    harness's own threshold arithmetic still shapes.
+  - An ACP agent's level is whichever value of its `thought_level` option
+    matches by name.
   - A harness whose level vocabulary is model-defined is mapped through the
     catalog.
 - `degraded` — the endpoint honours the setting only partly, and refuses
