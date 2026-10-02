@@ -661,6 +661,7 @@ Common optional core features:
 - `session.list`
 - `session.open.subscribe` (executable; [Decision 0009](../decisions/0009-compound-open.md))
 - `session.open.reopen` (staged; [Decision 0040](../decisions/0040-a-session-reopens-through-its-own-binding.md))
+- `session.reasoning` and `session.compaction.policy` (staged; [Decision 0045](../decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md))
 - `transcript.load`
 - `transcript.delta`
 - `session.message.delivery.queue`
@@ -680,6 +681,7 @@ Common optional core features:
 - `action.permissions`
 - `user_input`
 - `session.compact` and `run.compaction` (proposed; [Decision 0044](../decisions/0044-compaction.md))
+- `session.reasoning` and `session.compaction.policy` (proposed; [Decision 0045](../decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md))
 
 Support levels are:
 

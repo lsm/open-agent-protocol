@@ -163,6 +163,7 @@ var unitCapabilities = map[string][]string{
 	"models":           {protocol.FeatureModelsList},
 	"compound-open":    {protocol.FeatureOpenSubscribe},
 	"session-reattach": {protocol.FeatureOpenReopen},
+	"session-settings": {protocol.FeatureSessionReasoning, protocol.FeatureCompactionPolicy},
 }
 
 var honourDeferred = map[string]string{}

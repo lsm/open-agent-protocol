@@ -220,6 +220,8 @@ func (s *Server) open(ctx context.Context, e protocol.Envelope) (protocol.Envelo
 		ToolSources:           attachments,
 		Tools:                 request.Tools,
 		Reopen:                request.Reopen,
+		ReasoningLevel:        request.ReasoningLevel,
+		CompactionPolicy:      request.CompactionPolicy,
 	}
 	entry, state, err := s.hub.Open(ctx, s.adapter, open)
 	if err != nil {

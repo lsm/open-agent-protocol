@@ -653,6 +653,7 @@ fn parseReasoningLevel(str: []const u8) error{InvalidEnumValue}!model_catalog_ty
     if (std.mem.eql(u8, str, "medium")) return .medium;
     if (std.mem.eql(u8, str, "high")) return .high;
     if (std.mem.eql(u8, str, "xhigh")) return .xhigh;
+    if (std.mem.eql(u8, str, "max")) return .max;
     return error.InvalidEnumValue;
 }
 

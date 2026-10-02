@@ -376,7 +376,17 @@ export interface SessionOpenRequest {
   tools?: ToolDefinition[];
   allow_degraded_features?: string[];
   recovery?: RecoveryMetadata;
+  reasoning_level?: ReasoningLevel;
+  compaction_policy?: CompactionPolicy;
 }
+
+export type ReasoningLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+export type CompactionPolicy =
+  | { kind: 'auto' }
+  | { kind: 'off' }
+  | { kind: 'share'; share_percent: number }
+  | { kind: 'tokens'; tokens: number };
 
 export type SessionOpenResponse = SessionState;
 export type SessionStateResponse = SessionState;
@@ -398,6 +408,8 @@ export interface SessionState {
   sources?: ToolSourceDescriptor[];
   recovery?: RecoveryMetadata;
   as_of?: SessionCapture;
+  reasoning_level?: ReasoningLevel;
+  compaction_policy?: CompactionPolicy;
 }
 
 export type ActiveRunRelationship = 'primary';

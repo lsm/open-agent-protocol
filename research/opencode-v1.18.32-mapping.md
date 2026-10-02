@@ -242,3 +242,24 @@ exists but is not running" is a state this store expresses without a run, and
 a reopen that waited for a status line would hang on it. Nothing above was
 observed on a running server beyond the probes this ledger already records;
 the rest is read from the source at the pin.
+
+## Reasoning level and compaction at v1.18.32
+
+Recorded for [Decision 0045](../decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md).
+Read from the source at `545f51d26cc39a907d2867492d498d9607ea5fa4`.
+
+**Reasoning level.** The prompt input
+(`packages/opencode/src/session/prompt.ts`) takes `variant`, the name of one of
+the model's variants, and the session keeps the last one used. A variant is a
+model-defined reasoning preset (the model's `variants` map), so the accepted
+names are per model, not a fixed enum. The level therefore
+changes per prompt: an adapter holding a session level sends it as `variant`
+on every prompt.
+
+**Compaction.** `ConfigCompaction.Info` (`packages/core/src/config/compaction.ts`)
+is `{auto, prune, keep: {tokens}, buffer}`. `auto` switches automatic
+compaction, and `buffer` is the token reserve kept free below the window.
+`OPENCODE_DISABLE_AUTOCOMPACT` forces `auto: false`, and
+`OPENCODE_CONFIG_CONTENT` supplies a whole config at launch
+(`packages/opencode/src/config/config.ts`). So the policy is set when the
+server starts, and nothing in the session API changes it.

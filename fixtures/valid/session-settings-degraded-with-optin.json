@@ -1,0 +1,71 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.request",
+    "id": "capq",
+    "payload": {}
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.response",
+    "id": "capr",
+    "in_reply_to": "capq",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "endpoint": {
+        "id": "fixture.endpoint",
+        "name": "Session settings fixture endpoint"
+      },
+      "features": {
+        "session.message.delivery.auto": {
+          "level": "native"
+        },
+        "session.compaction.policy": {
+          "level": "degraded",
+          "modes": [
+            "session_open"
+          ],
+          "reason": "on and off only"
+        }
+      }
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.open.request",
+    "id": "op",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "session_id": "s1",
+      "compaction_policy": {
+        "kind": "off"
+      },
+      "allow_degraded_features": [
+        "session.compaction.policy"
+      ]
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.open.response",
+    "id": "opr",
+    "in_reply_to": "op",
+    "session_id": "s1",
+    "payload": {
+      "session_id": "s1",
+      "status": "idle",
+      "compaction_policy": {
+        "kind": "off"
+      }
+    },
+    "capability_revision": "cap-v1"
+  }
+]

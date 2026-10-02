@@ -10774,6 +10774,288 @@
       ]
     },
     {
+      "id": "session-settings-at-open",
+      "path": "valid/session-settings-at-open.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-settings"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ]
+    },
+    {
+      "id": "session-settings-share-at-open",
+      "path": "valid/session-settings-share-at-open.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-settings"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ]
+    },
+    {
+      "id": "session-settings-unadvertised-refused",
+      "path": "valid/session-settings-unadvertised-refused.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-settings"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ]
+    },
+    {
+      "id": "session-settings-live-only-refused-at-open",
+      "path": "valid/session-settings-live-only-refused-at-open.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-settings"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ]
+    },
+    {
+      "id": "session-settings-degraded-with-optin",
+      "path": "valid/session-settings-degraded-with-optin.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-settings"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ]
+    },
+    {
+      "id": "session-settings-degraded-refused-without-optin",
+      "path": "valid/session-settings-degraded-refused-without-optin.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-settings"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ]
+    },
+    {
+      "id": "session-settings-state-omits-unknown",
+      "path": "valid/session-settings-state-omits-unknown.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-settings"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ]
+    },
+    {
+      "id": "session-settings-unadvertised-admitted",
+      "path": "semantic-invalid/session-settings-unadvertised-admitted.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "session-settings"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.reasoning",
+          "aspect": "gate"
+        }
+      ]
+    },
+    {
+      "id": "session-settings-live-only-admitted-at-open",
+      "path": "semantic-invalid/session-settings-live-only-admitted-at-open.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "session-settings"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ]
+    },
+    {
+      "id": "session-settings-unadvertised-wrong-refusal",
+      "path": "semantic-invalid/session-settings-unadvertised-wrong-refusal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "session-settings"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.compaction.policy",
+          "aspect": "gate"
+        }
+      ]
+    },
+    {
+      "id": "session-settings-degraded-admitted-without-optin",
+      "path": "semantic-invalid/session-settings-degraded-admitted-without-optin.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "degraded_without_optin"
+      ],
+      "units": [
+        "session-settings"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ]
+    },
+    {
+      "id": "session-settings-level-rounded",
+      "path": "semantic-invalid/session-settings-level-rounded.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "session-settings"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.reasoning",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "session-settings-policy-rounded",
+      "path": "semantic-invalid/session-settings-policy-rounded.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "session-settings"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.compaction.policy",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "session-settings-share-without-percent",
+      "path": "schema-invalid/session-settings-share-without-percent.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "session-settings"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ]
+    },
+    {
+      "id": "session-settings-auto-with-tokens",
+      "path": "schema-invalid/session-settings-auto-with-tokens.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "session-settings"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ]
+    },
+    {
+      "id": "session-settings-unknown-level",
+      "path": "schema-invalid/session-settings-unknown-level.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "session-settings"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ]
+    },
+    {
+      "id": "session-settings-share-over-hundred",
+      "path": "schema-invalid/session-settings-share-over-hundred.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "session-settings"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ]
+    },
+    {
       "id": "compaction-requested-run",
       "path": "valid/compaction-requested-run.json",
       "kind": "positive",
