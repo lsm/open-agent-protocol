@@ -536,6 +536,7 @@ var (
 	knownReasoningLevels = map[ReasoningLevel]bool{
 		ReasoningOff: true, ReasoningMinimal: true, ReasoningLow: true,
 		ReasoningMedium: true, ReasoningHigh: true, ReasoningXHigh: true,
+		ReasoningMax: true,
 	}
 )
 
