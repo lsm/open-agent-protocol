@@ -859,6 +859,7 @@ Decisions:
 - [0037 — presentation state is versioned, and every intent is idempotent](decisions/0037-presentation-state-is-versioned-and-every-intent-is-idempotent.md) (proposed)
 - [0038 — one released binary, and a library for every language](decisions/0038-one-released-binary-and-a-library-for-every-language.md) (accepted)
 - [0039 — a session is OAP's, and a harness is where it runs](decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md) (accepted)
+- [0045 — reasoning level and compaction policy are session settings](decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md) (proposed)
 
 Decision 0003 defines what `accepted` means and what moves a record from
 proposed to accepted. A record's own `Status:` line is authoritative; this table
