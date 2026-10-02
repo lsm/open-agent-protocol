@@ -153,7 +153,7 @@ func (h *Hub) Binding() binding.Store {
 }
 
 func (h *Hub) Published(id protocol.SessionID) {
-	if entry, ok := h.registry.get(id); ok {
+	if entry, err := h.Session(id); err == nil {
 		entry.Published()
 	}
 }

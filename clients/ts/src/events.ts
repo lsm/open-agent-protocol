@@ -35,6 +35,8 @@ const RUN_EVENT_TYPES: ReadonlySet<string> = new Set([
   EnvelopeType.ActionPermissionResolved,
   EnvelopeType.UserInputRequested,
   EnvelopeType.UserInputResolved,
+  EnvelopeType.RunSteerApplied,
+  EnvelopeType.RunSteerDropped,
 ]);
 
 const INITIAL_RECONNECT_BACKOFF_MS = 100;
@@ -100,6 +102,11 @@ export class EventStream implements AsyncIterable<Envelope> {
     try {
       await this.ready;
       for (;;) {
+        const released = this.session.takeSteer();
+        if (released) {
+          yield released;
+          continue;
+        }
         if (!this.conn) await this.connect();
         let envelope: Envelope;
         try {
@@ -130,6 +137,7 @@ export class EventStream implements AsyncIterable<Envelope> {
           }
           continue;
         }
+        if (this.session.holdSteer(envelope)) continue;
         yield envelope;
       }
     } finally {

@@ -81,6 +81,9 @@ func (es *EventStream) Next() (protocol.Envelope, error) {
 		return protocol.Envelope{}, io.EOF
 	}
 	for {
+		if released, ok := es.session.takeSteer(); ok {
+			return released, nil
+		}
 		if es.response == nil {
 			if err := es.connect(); err != nil {
 				return protocol.Envelope{}, es.stop(err)
@@ -88,6 +91,9 @@ func (es *EventStream) Next() (protocol.Envelope, error) {
 		}
 		envelope, err := es.poll()
 		if err == nil {
+			if es.session.holdSteer(envelope) {
+				continue
+			}
 			return envelope, nil
 		}
 		var drop *connectionDrop

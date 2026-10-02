@@ -14,6 +14,8 @@ import {
   type RunCancelRequest,
   type RunCancelResponse,
   type RunCompletedPayload,
+  type RunSteerAppliedPayload,
+  type RunSteerDroppedPayload,
   type SessionOpenRequest,
   type SessionState,
   type ToolsListResponse,
@@ -42,12 +44,41 @@ export type ToolCatalog = { revision: string; tools: ToolsListResponse };
 export type OpenOptions = { sessionId?: string; participant?: string };
 
 export class OapSession {
+  private outstanding = new Set<string>();
+  private held = new Map<string, Envelope[]>();
+  private released: Envelope[] = [];
+
   constructor(
     private readonly client: OapClient,
     private readonly sessionId: string,
     private readonly adapterName: string,
     private readonly participant: string,
   ) {}
+
+  beginSubmit(id: string): void {
+    this.outstanding.add(id);
+  }
+
+  endSubmit(id: string): void {
+    if (!this.outstanding.delete(id)) return;
+    const carried = this.held.get(id);
+    if (!carried) return;
+    this.held.delete(id);
+    this.released.push(...carried);
+  }
+
+  holdSteer(envelope: Envelope): boolean {
+    const request = steerSettlementRequest(envelope);
+    if (request === '' || !this.outstanding.has(request)) return false;
+    const carried = this.held.get(request);
+    if (carried) carried.push(envelope);
+    else this.held.set(request, [envelope]);
+    return true;
+  }
+
+  takeSteer(): Envelope | null {
+    return this.released.shift() ?? null;
+  }
 
   get id(): string {
     return this.sessionId;
@@ -65,15 +96,20 @@ export class OapSession {
     const scoped = { ...request, session_id: this.scope(request.session_id) };
     const envelope = this.client.envelope(EnvelopeType.SessionMessageSubmitRequest, scoped);
     envelope.session_id = this.sessionId;
-    const response = await this.client.exchange(
-      'POST',
-      this.path('/submit'),
-      envelope,
-      EnvelopeType.SessionMessageSubmitResponse,
-    );
-    const admission = payload<MessageSubmitResponse>(response);
-    crossCheckPayload('submit response', admission, response);
-    return admission;
+    this.beginSubmit(envelope.id);
+    try {
+      const response = await this.client.exchange(
+        'POST',
+        this.path('/submit'),
+        envelope,
+        EnvelopeType.SessionMessageSubmitResponse,
+      );
+      const admission = payload<MessageSubmitResponse>(response);
+      crossCheckPayload('submit response', admission, response);
+      return admission;
+    } finally {
+      this.endSubmit(envelope.id);
+    }
   }
 
   async resolvePermission(request: PermissionResolveInput): Promise<void> {
@@ -247,6 +283,17 @@ function crossCheckPayload(
   }
   if (responsePayload.run_id !== undefined && responsePayload.run_id !== envelope.run_id) {
     throw new Error(`client: ${what} payload names run "${responsePayload.run_id}", envelope "${envelope.run_id ?? ''}"`);
+  }
+}
+
+export function steerSettlementRequest(envelope: Envelope): string {
+  switch (envelope.type) {
+    case EnvelopeType.RunSteerApplied:
+      return payload<RunSteerAppliedPayload>(envelope).request_id;
+    case EnvelopeType.RunSteerDropped:
+      return payload<RunSteerDroppedPayload>(envelope).request_id;
+    default:
+      return '';
   }
 }
 

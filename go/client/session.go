@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sync"
 
 	"github.com/lsm/open-agent-protocol/go/protocol"
 )
@@ -14,6 +15,77 @@ type Session struct {
 	client  *Client
 	id      protocol.SessionID
 	adapter string
+
+	steerMu     sync.Mutex
+	outstanding map[protocol.EnvelopeID]bool
+	heldSteers  map[protocol.EnvelopeID][]protocol.Envelope
+	released    []protocol.Envelope
+}
+
+func (s *Session) beginSubmit(id protocol.EnvelopeID) {
+	s.steerMu.Lock()
+	defer s.steerMu.Unlock()
+	if s.outstanding == nil {
+		s.outstanding = make(map[protocol.EnvelopeID]bool)
+		s.heldSteers = make(map[protocol.EnvelopeID][]protocol.Envelope)
+	}
+	s.outstanding[id] = true
+}
+
+func (s *Session) endSubmit(id protocol.EnvelopeID) {
+	s.steerMu.Lock()
+	defer s.steerMu.Unlock()
+	if !s.outstanding[id] {
+		return
+	}
+	delete(s.outstanding, id)
+	if held := s.heldSteers[id]; len(held) > 0 {
+		s.released = append(s.released, held...)
+		delete(s.heldSteers, id)
+	}
+}
+
+func (s *Session) holdSteer(envelope protocol.Envelope) bool {
+	request := steerSettlementRequest(envelope)
+	if request == "" {
+		return false
+	}
+	s.steerMu.Lock()
+	defer s.steerMu.Unlock()
+	if !s.outstanding[request] {
+		return false
+	}
+	s.heldSteers[request] = append(s.heldSteers[request], envelope)
+	return true
+}
+
+func (s *Session) takeSteer() (protocol.Envelope, bool) {
+	s.steerMu.Lock()
+	defer s.steerMu.Unlock()
+	if len(s.released) == 0 {
+		return protocol.Envelope{}, false
+	}
+	envelope := s.released[0]
+	s.released = s.released[1:]
+	return envelope, true
+}
+
+func steerSettlementRequest(envelope protocol.Envelope) protocol.EnvelopeID {
+	switch envelope.Type {
+	case protocol.TypeRunSteerApplied:
+		var payload protocol.RunSteerAppliedPayload
+		if err := envelope.DecodePayload(&payload); err != nil {
+			return ""
+		}
+		return payload.RequestID
+	case protocol.TypeRunSteerDropped:
+		var payload protocol.RunSteerDroppedPayload
+		if err := envelope.DecodePayload(&payload); err != nil {
+			return ""
+		}
+		return payload.RequestID
+	}
+	return ""
 }
 
 func (s *Session) ID() protocol.SessionID { return s.id }
@@ -41,10 +113,13 @@ func (s *Session) Submit(ctx context.Context, request protocol.MessageSubmitRequ
 		option(&envelope)
 	}
 	envelope.SessionID = s.id
+	s.beginSubmit(envelope.ID)
 	response, err := s.client.exchange(ctx, http.MethodPost, s.path("/submit"), &envelope, protocol.TypeSessionMessageSubmitResponse)
 	if err != nil {
+		s.endSubmit(envelope.ID)
 		return admission, err
 	}
+	defer s.endSubmit(envelope.ID)
 	if err := response.DecodePayload(&admission); err != nil {
 		return admission, err
 	}
