@@ -397,7 +397,7 @@ class VtScreen:
 
 
 class PtySession:
-    def __init__(self, args, fixture_text=None, home=None, use_fixture=True, extra_env=None):
+    def __init__(self, args, fixture_text=None, home=None, use_fixture=True, extra_env=None, argv=None):
         self.binary = args.binary
         self.width = args.width
         self.height = args.height
@@ -429,7 +429,7 @@ class PtySession:
                 env.update(extra_env or {})
                 self.spawned_at = time.monotonic()
                 self.proc = subprocess.Popen(
-                    [self.binary, "--tui"],
+                    [self.binary] + (argv or ["--tui"]),
                     stdin=slave,
                     stdout=slave,
                     stderr=slave,
@@ -815,7 +815,7 @@ def assert_status_bar_whole_segments(run, what):
 
 
 class SweepRun:
-    def __init__(self, args, name, fixture_text, width=None, height=None, home=None, use_fixture=True, extra_env=None):
+    def __init__(self, args, name, fixture_text, width=None, height=None, home=None, use_fixture=True, extra_env=None, argv=None):
         self.args = args
         self.name = name
         self.notes = []
@@ -828,7 +828,7 @@ class SweepRun:
         if height is not None:
             frame_args.height = height
         try:
-            self.session = PtySession(frame_args, fixture_text=fixture_text, home=home, use_fixture=use_fixture, extra_env=extra_env)
+            self.session = PtySession(frame_args, fixture_text=fixture_text, home=home, use_fixture=use_fixture, extra_env=extra_env, argv=argv)
         except OSError as err:
             raise ScenarioError(f"failed to start {args.binary} in a pseudo-terminal: {err}")
 
@@ -1579,6 +1579,55 @@ def scenario_provider_https(args):
     return run_fake_provider_scenario(args, "provider-https", "anthropic-messages", tls=True)
 
 
+def scenario_hub_attach(args):
+    hub_home = tempfile.mkdtemp(prefix="makai-pty-hub-")
+    hub = subprocess.Popen(
+        [args.binary, "hub", "--addr", "127.0.0.1:0"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        env=dict(os.environ, HOME=hub_home),
+        start_new_session=True,
+    )
+    run = None
+    try:
+        line = hub.stdout.readline().decode("utf-8", "replace").strip()
+        if not line.startswith("listening on "):
+            raise ScenarioError(f"hub-attach: oapx hub did not report its address, said {line!r}")
+        url = line[len("listening on "):]
+        run = SweepRun(args, "hub-attach", "", use_fixture=False, argv=["tui", "--attach", url, "--adapter", "memory"])
+        run.session.wait_for(WELCOME_MARKER, args.startup_timeout, "welcome banner")
+        run.settle()
+        turn_from = len(run.session.plain)
+        run.session.type_text("hello over the hub")
+        run.session.send(KEY_ENTER, "Enter (submit)")
+        run.session.wait_for(b"I will use the scripted tool", 10.0, "the hub run's streamed text", since=turn_from)
+        run.session.wait_for(b"Allow scripted tool", 10.0, "the hub run's approval prompt", since=turn_from)
+        run.frame("approval-over-the-hub")
+        approved_from = len(run.session.plain)
+        run.session.send(b"y", "approve once")
+        run.session.wait_for(TOOL_OK_GLYPH, 10.0, "the approved tool's result", since=approved_from)
+        run.frame("approved-over-the-hub")
+        aborted_from = len(run.session.plain)
+        run.session.send(b"\x1b", "Esc (abort)")
+        run.session.wait_for(b"aborted", 10.0, "the abort", since=aborted_from)
+        run.frame("aborted-over-the-hub")
+        run.note("oapx tui --attach drives a memory session on a running oapx hub: the run streams, its approval prompt resolves over the hub's resolve route, and Esc cancels the run")
+    except ScenarioError as err:
+        if run is None:
+            raise
+        run.error = str(err)
+    finally:
+        if run is not None:
+            run.close()
+        hub.terminate()
+        try:
+            hub.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            hub.kill()
+        shutil.rmtree(hub_home, ignore_errors=True)
+    return run
+
+
 SCENARIOS = {
     "core-loop": None,
     "commands": scenario_commands,
@@ -1594,6 +1643,7 @@ SCENARIOS = {
     "provider-responses": scenario_provider_responses,
     "provider-keyed": scenario_provider_keyed,
     "provider-https": scenario_provider_https,
+    "hub-attach": scenario_hub_attach,
 }
 
 

@@ -22,6 +22,7 @@ not a second product.
 | verb | meaning | `oapx` (released) | `goap` (repository tool) |
 |---|---|---|---|
 | `tui [--context-window N]` | the terminal UI as an `agent-control-core` client: its runs go as envelopes through the in-process endpoint to the `oapx` backend, beside `--tui`, which calls the loop directly, until it covers the same ground | experimental | — |
+| `tui --attach URL [--adapter NAME]` | the same client over a running `oapx hub`'s HTTP wire: it opens a session on the named adapter (`oapx` by default), follows each run's SSE stream from its first event, and closes the session on exit. The model is chosen at open through `metadata.oapx.model`, since the hub has no switch route | experimental | — |
 | `serve agent [--backend B] [--config F] [--stdio]` | one agent loop over `agent-control-core`, raw envelopes per [endpoint-stdio](endpoint-stdio.md); no `--backend` means the binary's own loop | native loop; harness backends as they are wired | the Go adapters (today `goap endpoint --adapter`) |
 | `serve provider [--stdio \| --http ADDR] [--specimens]` | `model-provider-core` | yes | answers `unavailable` |
 | `serve agent,provider --stdio` | both profiles on one pipe (Decision 0027) | yes | answers `unavailable` |
