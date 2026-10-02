@@ -1046,6 +1046,7 @@ const Fixture = struct {
         self.scratch.deinit();
         self.daemon.deinit();
         self.core.deinit();
+        self.adapter.deinit();
     }
 
     fn ask(self: *Fixture, method: []const u8, target: []const u8, body: []const u8) !Reply {

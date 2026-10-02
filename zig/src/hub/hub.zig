@@ -2281,6 +2281,7 @@ test "a released session's id is free again, and its memory is gone" {
 
 test "a hold its session closes under is released, so the next pump reclaims it" {
     var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
