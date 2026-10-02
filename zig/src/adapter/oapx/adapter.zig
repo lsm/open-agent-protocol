@@ -7,9 +7,10 @@ const ai_types = @import("ai_types");
 const tui_runtime = @import("tui_runtime");
 const tui_session = @import("tui_session");
 const model_ref = @import("model_ref");
+const interactions = @import("interactions.zig");
 
 pub const endpoint_id = "oapx.agent";
-pub const capability_revision = "oapx-agent-v1";
+pub const capability_revision = "oapx-agent-v2";
 
 pub const journal_capacity: usize = 1 << 16;
 
@@ -24,6 +25,8 @@ const features = [_]contract.Feature{
     .{ .key = "session.state", .level = .degraded, .reason = "the state is live; no transcript is replayed and a session does not outlive the process" },
     .{ .key = contract.feature_submit, .level = .native },
     .{ .key = "session.message.delivery.auto", .level = .native },
+    .{ .key = "action.permissions", .level = .native, .scope = "call", .reason = "ask mode waits for the declared responder; bypass mode skips prompts" },
+    .{ .key = "user_input", .level = .native, .reason = "request_user_input asks text or choice questions and validates answers before returning them to the tool" },
     .{ .key = "run.streaming", .level = .native },
     .{ .key = "run.status", .level = .native },
     .{ .key = "run.cancel", .level = .native, .reason = "cancelling a run leaves its session open" },
@@ -97,6 +100,13 @@ const Run = struct {
     error_text: std.ArrayList(u8) = .empty,
 };
 
+const PendingInteraction = struct {
+    id: []const u8,
+    kind: interactions.Kind,
+    tool_call_id: []const u8,
+    arguments: []const u8,
+};
+
 const Journaled = struct {
     line: []u8,
     run_id: []const u8,
@@ -112,6 +122,8 @@ pub const Session = struct {
     runtime: *tui_runtime.TuiRuntime,
     updated_at_ms: i64,
     run: ?*Run = null,
+    gate: interactions.Gate = .{},
+    pending: ?PendingInteraction = null,
     outbox: std.ArrayList(Journaled) = .empty,
     journal: std.ArrayList(Journaled) = .empty,
 
@@ -121,7 +133,15 @@ pub const Session = struct {
         errdefer gpa.destroy(self);
         const runtime = try gpa.create(tui_runtime.TuiRuntime);
         errdefer gpa.destroy(runtime);
-        runtime.* = tui_runtime.TuiRuntime.init(gpa, owner.options) catch |err| switch (err) {
+        const session_tools = try gpa.alloc(agent.AgentTool, owner.options.tools.len + 1);
+        defer gpa.free(session_tools);
+        @memcpy(session_tools[0..owner.options.tools.len], owner.options.tools);
+        session_tools[owner.options.tools.len] = inputTool(self);
+        var options = owner.options;
+        options.tools = session_tools;
+        options.tool_approval_ctx = self;
+        options.tool_approval_callback = approveTool;
+        runtime.* = tui_runtime.TuiRuntime.init(gpa, options) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return refusal.fail(error.BackendFailed, @errorName(err)),
         };
@@ -220,10 +240,11 @@ pub const Session = struct {
         };
         if (self.live()) |run| {
             const entries = try arena.alloc(oap_types.ActiveRun, 1);
-            entries[0] = .{ .run_id = run.id, .status = run.status, .relationship = "primary", .as_of_sequence = run.next_sequence - 1 };
+            const pending: []const []const u8 = if (self.pending) |ask| try arena.dupe([]const u8, &.{ask.id}) else &.{};
+            entries[0] = .{ .run_id = run.id, .status = run.status, .relationship = "primary", .as_of_sequence = run.next_sequence - 1, .pending_interactions = pending };
             result.active_runs = entries;
             result.active_run_id = run.id;
-            result.status = .running;
+            result.status = if (self.pending != null) .waiting_for_input else .running;
         }
         return result;
     }
@@ -242,6 +263,7 @@ pub const Session = struct {
         const keep = self.keep.allocator();
         const run_id = try self.owner.nextID(keep, "run");
         const model_id = (try self.currentModelRef(keep)) orelse "";
+        self.gate.cancelled.store(false, .release);
         self.runtime.submitTurn(text) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             error.NoModelConfigured => return refusal.fail(error.BackendFailed, "no model is selected"),
@@ -288,11 +310,169 @@ pub const Session = struct {
     }
 
     fn resolve(ptr: *anyopaque, arena: std.mem.Allocator, resolution: contract.Resolution, refusal: *contract.Refusal) contract.Failure!void {
-        _ = ptr;
-        _ = arena;
-        _ = resolution;
-        _ = refusal;
-        return error.InteractionNotFound;
+        const self = cast(ptr);
+        const run = self.live() orelse return error.InteractionNotFound;
+        const pending = self.pending orelse return error.InteractionNotFound;
+        const id, const session_id, const run_id, const requested_by, const responded_by = switch (resolution) {
+            .permission => |answer| .{ answer.interaction_id, answer.session_id, answer.run_id, answer.requested_by, answer.responded_by },
+            .input => |answer| .{ answer.interaction_id, answer.session_id, answer.run_id, answer.requested_by, answer.responded_by },
+        };
+        if (!std.mem.eql(u8, id, pending.id) or !std.mem.eql(u8, session_id, self.id) or !std.mem.eql(u8, run_id, run.id) or
+            !std.mem.eql(u8, requested_by, endpoint_id) or !std.mem.eql(u8, responded_by, self.participant)) return error.InvalidResolution;
+        if (run.status == .cancelling) return error.InteractionNotFound;
+        var resolved = try self.interactionPayload(arena, run, pending);
+        const response: []const u8 = switch (resolution) {
+            .permission => |answer| answer: {
+                if (pending.kind != .permission) return error.InvalidResolution;
+                if (answer.updated_arguments_json != null) return refusal.unsupportedField("action.permissions", contract.reason_unsatisfiable, "updated_arguments_json");
+                const choice = answer.choice_id orelse return error.InvalidResolution;
+                const granted = if (std.mem.eql(u8, choice, "approve")) true else if (std.mem.eql(u8, choice, "deny")) false else return error.InvalidResolution;
+                if (granted != answer.granted) return error.InvalidResolution;
+                try resolved.put("outcome", .{ .string = "resolved" });
+                try resolved.put("choice_id", .{ .string = choice });
+                try resolved.put("granted", .{ .bool = granted });
+                break :answer try self.gpa.dupe(u8, if (granted) "approve" else "deny");
+            },
+            .input => |answer| answer: {
+                if (pending.kind != .input) return error.InvalidResolution;
+                const prompt = try parseValue(arena, pending.arguments);
+                const questions = prompt.object.get("questions").?.array.items;
+                if (answer.answers.len == 0 or answer.answers.len > questions.len) return error.InvalidResolution;
+                for (questions) |question| {
+                    if (question.object.get("required")) |required| {
+                        if (!required.bool) continue;
+                    }
+                    var covered = false;
+                    for (answer.answers) |value| {
+                        if (std.mem.eql(u8, question.object.get("id").?.string, value.question_id)) covered = true;
+                    }
+                    if (!covered) return error.InvalidResolution;
+                }
+                var listed = std.json.Array.init(arena);
+                for (answer.answers, 0..) |value, index| {
+                    for (answer.answers[0..index]) |earlier| {
+                        if (std.mem.eql(u8, earlier.question_id, value.question_id)) return error.InvalidResolution;
+                    }
+                    var found = false;
+                    for (questions) |question| {
+                        if (!std.mem.eql(u8, question.object.get("id").?.string, value.question_id)) continue;
+                        const kind = std.meta.stringToEnum(contract.QuestionKind, question.object.get("kind").?.string) orelse return error.InvalidResolution;
+                        var options: std.ArrayList([]const u8) = .empty;
+                        if (question.object.get("options")) |offered| {
+                            for (offered.array.items) |option| try options.append(arena, option.object.get("id").?.string);
+                        }
+                        if (!contract.validInputAnswer(.{ .id = value.question_id, .kind = kind, .options = options.items }, value)) return error.InvalidResolution;
+                        found = true;
+                    }
+                    if (!found) return error.InvalidResolution;
+                    var entry = Payload.init(arena);
+                    try entry.put("question_id", .{ .string = value.question_id });
+                    if (value.text) |text| try entry.put("text", .{ .string = text });
+                    var selected = std.json.Array.init(arena);
+                    for (value.selected_option_ids) |option| try selected.append(.{ .string = option });
+                    if (value.text == null) try entry.put("selected_option_ids", .{ .array = selected });
+                    try listed.append(entry.value());
+                }
+                try resolved.put("status", .{ .string = "submitted" });
+                try resolved.put("answers", .{ .array = listed });
+                break :answer try json_encode.valueAlloc(self.gpa, .{ .array = listed });
+            },
+        };
+        errdefer self.gpa.free(response);
+        self.gate.lock();
+        defer self.gate.mutex.unlock();
+        const native = self.gate.request orelse return error.InteractionNotFound;
+        if (native.response != null or self.gate.cancelled.load(.acquire)) return error.InteractionNotFound;
+        try self.emit(run, if (pending.kind == .permission) "action.permission.resolved" else "user.input.resolved", resolved.value(), false);
+        native.response = response;
+        self.pending = null;
+        run.status = .running;
+    }
+
+    fn interactionPayload(self: *Session, a: std.mem.Allocator, run: *Run, pending: PendingInteraction) !Payload {
+        var payload = Payload.init(a);
+        try payload.run(self, run);
+        try payload.put("interaction_id", .{ .string = pending.id });
+        try payload.put("requested_by", .{ .string = endpoint_id });
+        try payload.put("responded_by", .{ .string = self.participant });
+        if (pending.kind == .permission) try payload.put("tool_call_id", .{ .string = pending.tool_call_id });
+        return payload;
+    }
+
+    fn pumpInteraction(self: *Session) contract.Failure!bool {
+        const run = self.live() orelse return false;
+        if (run.status == .cancelling) return false;
+        self.gate.lock();
+        defer self.gate.mutex.unlock();
+        const native = self.gate.request orelse return false;
+        if (native.published) return false;
+        var scratch = std.heap.ArenaAllocator.init(self.gpa);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        const keep = self.keep.allocator();
+        const interaction_id = try self.owner.nextID(keep, "interaction");
+        const tool_call_id = try keep.dupe(u8, native.tool_call_id);
+        const arguments = try keep.dupe(u8, native.arguments);
+        const pending = PendingInteraction{
+            .id = interaction_id,
+            .kind = native.kind,
+            .tool_call_id = tool_call_id,
+            .arguments = arguments,
+        };
+        var payload = try self.interactionPayload(a, run, pending);
+        if (native.kind == .permission) {
+            try payload.put("title", .{ .string = native.tool_name });
+            try payload.put("arguments_json", try jsonOrString(a, native.arguments));
+            try payload.put("choices", try parseValue(a, "[{\"id\":\"approve\",\"label\":\"Allow once\"},{\"id\":\"deny\",\"label\":\"Deny\"}]"));
+        } else {
+            const prompt = try parseValue(a, native.arguments);
+            try payload.put("title", prompt.object.get("title") orelse .{ .string = "User input" });
+            try payload.put("questions", prompt.object.get("questions").?);
+            try payload.put("allow_cancel", .{ .bool = false });
+        }
+        try self.emit(run, if (native.kind == .permission) "action.permission.requested" else "user.input.requested", payload.value(), false);
+        native.published = true;
+        self.pending = pending;
+        run.status = .waiting_for_input;
+        return true;
+    }
+
+    fn approveTool(ctx: ?*anyopaque, request: tui_session.ToolApprovalRequest) tui_session.ToolApprovalDecision {
+        const self: *Session = @ptrCast(@alignCast(ctx.?));
+        if (std.mem.eql(u8, request.tool_name, "request_user_input")) return .approve;
+        const answer = self.gate.wait(self.gpa, .permission, request.tool_call_id, request.tool_name, request.args_json, null) catch return .reject;
+        defer self.gpa.free(answer);
+        return if (std.mem.eql(u8, answer, "approve")) .approve else .reject;
+    }
+
+    fn inputTool(self: *Session) agent.AgentTool {
+        return .{
+            .label = "Ask user",
+            .name = "request_user_input",
+            .description = "Ask the user for information needed to continue.",
+            .parameters_schema_json = "{\"type\":\"object\",\"required\":[\"questions\"],\"properties\":{\"title\":{\"type\":\"string\"},\"questions\":{\"type\":\"array\",\"minItems\":1,\"items\":{\"type\":\"object\",\"required\":[\"id\",\"prompt\",\"kind\"],\"properties\":{\"id\":{\"type\":\"string\",\"minLength\":1},\"prompt\":{\"type\":\"string\"},\"kind\":{\"enum\":[\"text\",\"single_choice\",\"multi_choice\"]},\"options\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"required\":[\"id\",\"label\"],\"properties\":{\"id\":{\"type\":\"string\"},\"label\":{\"type\":\"string\"}}}}}}}}}",
+            .execute = unavailableInput,
+            .runtime_ctx = self,
+            .runtime_execute = executeInput,
+        };
+    }
+
+    fn unavailableInput(tool_call_id: []const u8, args: []const u8, token: ?ai_types.CancelToken, update_ctx: ?*anyopaque, update: ?agent.ToolUpdateCallback, allocator: std.mem.Allocator) anyerror!agent.AgentToolResult {
+        return executeInput(null, tool_call_id, args, token, update_ctx, update, allocator);
+    }
+
+    fn executeInput(ctx: ?*anyopaque, tool_call_id: []const u8, args: []const u8, token: ?ai_types.CancelToken, update_ctx: ?*anyopaque, update: ?agent.ToolUpdateCallback, allocator: std.mem.Allocator) anyerror!agent.AgentToolResult {
+        _ = update_ctx;
+        _ = update;
+        const self: *Session = @ptrCast(@alignCast(ctx orelse return error.InputUnavailable));
+        try validatePrompt(allocator, args);
+        const answer = try self.gate.wait(self.gpa, .input, tool_call_id, "request_user_input", args, token);
+        defer self.gpa.free(answer);
+        const text = try allocator.dupe(u8, answer);
+        errdefer allocator.free(text);
+        const content = try allocator.alloc(ai_types.UserContentPart, 1);
+        content[0] = .{ .text = .{ .text = text } };
+        return .{ .content = @FieldType(agent.AgentToolResult, "content").initOwned(content) };
     }
 
     fn cancel(ptr: *anyopaque, arena: std.mem.Allocator, run_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.RunCancelResponse {
@@ -307,6 +487,7 @@ pub const Session = struct {
         }
         if (run.status == .cancelling) return .{ .session_id = self.id, .run_id = owned_run_id, .accepted = true, .status = .cancelling };
         run.status = .cancelling;
+        self.gate.cancelled.store(true, .release);
         self.runtime.cancel();
 
         var scratch = std.heap.ArenaAllocator.init(self.gpa);
@@ -331,7 +512,7 @@ pub const Session = struct {
             try self.translate(owned);
             moved = true;
         }
-        return moved;
+        return try self.pumpInteraction() or moved;
     }
 
     fn translate(self: *Session, event: tui_session.TuiEvent) contract.Failure!void {
@@ -404,6 +585,16 @@ pub const Session = struct {
     }
 
     fn settle(self: *Session, a: std.mem.Allocator, run: *Run, reason: tui_session.TuiEndReason) contract.Failure!void {
+        if (self.pending) |pending| {
+            var resolved = try self.interactionPayload(a, run, pending);
+            if (pending.kind == .permission) {
+                try resolved.put("outcome", .{ .string = "cancelled" });
+            } else {
+                try resolved.put("status", .{ .string = "cancelled" });
+            }
+            try self.emit(run, if (pending.kind == .permission) "action.permission.resolved" else "user.input.resolved", resolved.value(), false);
+            self.pending = null;
+        }
         var payload = Payload.init(a);
         try payload.run(self, run);
         const cancelled = reason == .cancelled or run.status == .cancelling;
@@ -446,7 +637,7 @@ pub const Session = struct {
         try envelope.put("timestamp_ms", .{ .integer = now });
         try envelope.put("session_id", .{ .string = self.id });
         try envelope.put("run_id", .{ .string = run.id });
-        if (std.mem.startsWith(u8, kind, "action.call.")) {
+        if (std.mem.startsWith(u8, kind, "action.call.") or std.mem.startsWith(u8, kind, "action.permission.") or std.mem.startsWith(u8, kind, "user.input.")) {
             if (payload.object.get("tool_call_id")) |tool_call_id| try envelope.put("tool_call_id", tool_call_id);
         }
         try envelope.put("capability_revision", .{ .string = capability_revision });
@@ -513,12 +704,13 @@ pub const Session = struct {
 
     fn activity(ptr: *anyopaque) contract.Activity {
         const self = cast(ptr);
-        return if (self.live() != null) .running else .idle;
+        return if (self.live() != null) (if (self.pending != null) .waiting else .running) else .idle;
     }
 
     fn close(ptr: *anyopaque, force: bool) contract.Failure!void {
         const self = cast(ptr);
         if (!force and self.live() != null) return error.RunActive;
+        self.gate.cancelled.store(true, .release);
         if (self.live() != null) self.runtime.cancel();
         self.destroy();
     }
@@ -717,7 +909,10 @@ const Script = struct {
     calls: usize = 0,
     reply: []const u8 = "hello",
     tool_first: bool = false,
+    tool_name: []const u8 = "echo_tool",
+    tool_arguments: []const u8 = "{\"say\":\"hi\"}",
     wait_for_cancel: bool = false,
+    received_answers: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 };
 
 fn scriptedMessage(allocator: std.mem.Allocator, model: ai_types.Model, content: []const ai_types.AssistantContent, reason: ai_types.StopReason) !ai_types.AssistantMessage {
@@ -749,9 +944,14 @@ fn finish(stream: *event_stream.AssistantMessageEventStream, allocator: std.mem.
 }
 
 fn scriptedStream(ctx: ?*anyopaque, model: ai_types.Model, context: ai_types.Context, options: agent.ProtocolOptions, allocator: std.mem.Allocator) anyerror!*event_stream.AssistantMessageEventStream {
-    _ = context;
     const script: *Script = @ptrCast(@alignCast(ctx.?));
     script.calls += 1;
+    for (context.messages) |message| {
+        if (message != .tool_result) continue;
+        for (message.tool_result.content) |part| {
+            if (part == .text and std.mem.indexOf(u8, part.text.text, "careful") != null and std.mem.indexOf(u8, part.text.text, "safe") != null) script.received_answers.store(true, .release);
+        }
+    }
     const stream = try allocator.create(event_stream.AssistantMessageEventStream);
     stream.* = event_stream.AssistantMessageEventStream.init(allocator);
     if (script.wait_for_cancel) {
@@ -767,7 +967,7 @@ fn scriptedStream(ctx: ?*anyopaque, model: ai_types.Model, context: ai_types.Con
     }
     if (script.tool_first and script.calls == 1) {
         try stream.push(.{ .start = .{ .partial = bareMessage(model, .tool_use) } });
-        const content = [_]ai_types.AssistantContent{.{ .tool_call = .{ .id = "call-1", .name = "echo_tool", .arguments_json = "{\"say\":\"hi\"}" } }};
+        const content = [_]ai_types.AssistantContent{.{ .tool_call = .{ .id = "call-1", .name = script.tool_name, .arguments_json = script.tool_arguments } }};
         try finish(stream, allocator, model, &content, .tool_use);
         return stream;
     }
@@ -842,7 +1042,17 @@ const Harness = struct {
         for (out.items) |event| {
             defer testing.allocator.free(event.line);
             defer testing.allocator.free(event.run_id);
-            try self.seen.append(testing.allocator, try std.json.parseFromSlice(std.json.Value, testing.allocator, event.line, .{}));
+            const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, event.line, .{});
+            errdefer parsed.deinit();
+            var registry = try @import("jsonschema").Registry.initFromBundled(testing.allocator);
+            defer registry.deinit();
+            var validator = @import("jsonschema").Validator.init(testing.allocator, &registry);
+            defer validator.deinit();
+            if (try validator.validate("envelope.schema.json", parsed.value)) |failure| {
+                std.debug.print("{s} fails {s} at {s}\n", .{ event.line, failure.keyword, failure.pointer });
+                return error.SchemaInvalid;
+            }
+            try self.seen.append(testing.allocator, parsed);
         }
     }
 
@@ -1047,4 +1257,329 @@ test "a full journal drops its oldest half at once, keeping the newest entries i
     session.evictOldestHalf();
     try testing.expectEqual(@as(usize, 4), session.journal.items.len);
     for (session.journal.items, 5..) |entry, expected| try testing.expectEqual(@as(u64, expected), entry.sequence);
+}
+
+fn parseValue(arena: std.mem.Allocator, text: []const u8) contract.Failure!std.json.Value {
+    return std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{ .allocate = .alloc_always }) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        return error.InvalidSubmission;
+    };
+}
+
+fn waitForPrompt(harness: *Harness) !PendingInteraction {
+    for (0..5000) |_| {
+        _ = try harness.session.pump(0);
+        try harness.collect();
+        if (Session.cast(harness.session.ptr).pending) |pending| return pending;
+        std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
+    }
+    return error.TestPromptNeverArrived;
+}
+
+fn permissionAnswer(harness: *Harness, pending: PendingInteraction) oap_types.PermissionResolveRequest {
+    return .{ .interaction_id = pending.id, .requested_by = endpoint_id, .responded_by = "user", .session_id = harness.session.id(), .run_id = Session.cast(harness.session.ptr).run.?.id, .granted = true, .choice_id = "approve" };
+}
+
+test "an ask-mode tool blocks for its declared responder, refuses contradictory and repeated answers, and executes after approval" {
+    var script = Script{ .tool_first = true };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    try Session.cast(harness.session.ptr).runtime.setPermissionMode(.ask);
+    _ = try harness.submit("use the tool");
+    const pending = try waitForPrompt(&harness);
+    try testing.expectEqual(interactions.Kind.permission, pending.kind);
+    try testing.expectEqual(contract.Activity.waiting, harness.session.activity());
+    try testing.expectEqual(@as(usize, 0), harness.count("action.call.completed"));
+    var refusal = contract.Refusal{};
+    const state_now = try harness.session.state(harness.arena.allocator(), &refusal);
+    try testing.expectEqual(oap_types.SessionStatus.waiting_for_input, state_now.status);
+    try testing.expectEqualStrings(pending.id, state_now.active_runs[0].pending_interactions[0]);
+    const good = permissionAnswer(&harness, pending);
+    for (0..7) |defect| {
+        var wrong = good;
+        switch (defect) {
+            0 => wrong.responded_by = "stranger",
+            1 => wrong.requested_by = "wrong-endpoint",
+            2 => wrong.run_id = "another-run",
+            3 => wrong.session_id = "another-session",
+            4 => wrong.interaction_id = "another-interaction",
+            5 => wrong.granted = false,
+            6 => wrong.choice_id = "approve_always",
+            else => unreachable,
+        }
+        try testing.expectError(error.InvalidResolution, harness.session.resolve(harness.arena.allocator(), .{ .permission = &wrong }, &refusal));
+        try testing.expectEqual(@as(usize, 0), harness.count("action.call.completed"));
+        try testing.expect(Session.cast(harness.session.ptr).pending != null);
+    }
+    try harness.session.resolve(harness.arena.allocator(), .{ .permission = &good }, &refusal);
+    try testing.expectError(error.InteractionNotFound, harness.session.resolve(harness.arena.allocator(), .{ .permission = &good }, &refusal));
+    try harness.untilTerminal();
+    try testing.expectEqual(@as(usize, 1), harness.count("action.permission.requested"));
+    try testing.expectEqual(@as(usize, 1), harness.count("action.permission.resolved"));
+    try testing.expectEqual(@as(usize, 1), harness.count("action.call.completed"));
+    for (harness.seen.items, 1..) |parsed, sequence| try testing.expectEqual(@as(i64, @intCast(sequence)), parsed.value.object.get("sequence").?.integer);
+}
+
+test "denying a permission leaves the native tool unexecuted and closes the interaction once" {
+    var script = Script{ .tool_first = true };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    try Session.cast(harness.session.ptr).runtime.setPermissionMode(.ask);
+    _ = try harness.submit("use the tool");
+    const pending = try waitForPrompt(&harness);
+    var denied = permissionAnswer(&harness, pending);
+    denied.choice_id = "deny";
+    denied.granted = false;
+    var refusal = contract.Refusal{};
+    try harness.session.resolve(harness.arena.allocator(), .{ .permission = &denied }, &refusal);
+    try harness.untilTerminal();
+    try testing.expectEqual(@as(usize, 0), harness.count("action.call.completed"));
+    try testing.expectEqual(@as(usize, 1), harness.count("action.call.failed"));
+    try testing.expectEqual(@as(usize, 1), harness.count("action.permission.resolved"));
+}
+
+const input_prompt =
+    \\{"title":"Pick a plan","questions":[{"id":"note","kind":"text","prompt":"Why?"},{"id":"pick","prompt":"Which plan?","kind":"single_choice","options":[{"id":"safe","label":"Safe"}]},{"id":"many","prompt":"Which extras?","kind":"multi_choice","options":[{"id":"a","label":"A"},{"id":"b","label":"B"}]}]}
+;
+
+test "user input validates every question before native delivery and returns the answers to the running tool" {
+    var script = Script{ .tool_first = true, .tool_name = "request_user_input", .tool_arguments = input_prompt };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    _ = try harness.submit("ask me");
+    const pending = try waitForPrompt(&harness);
+    try testing.expectEqual(interactions.Kind.input, pending.kind);
+    var answers = [_]oap_types.InputAnswer{
+        .{ .question_id = "note", .text = "careful" },
+        .{ .question_id = "pick", .selected_option_ids = &.{"safe"} },
+        .{ .question_id = "many", .selected_option_ids = &.{ "a", "b" } },
+    };
+    var request = oap_types.UserInputResolveRequest{ .interaction_id = pending.id, .requested_by = endpoint_id, .responded_by = "user", .session_id = harness.session.id(), .run_id = Session.cast(harness.session.ptr).run.?.id, .answers = &answers };
+    var refusal = contract.Refusal{};
+    for (0..8) |defect| {
+        var wrong_answers = answers;
+        var wrong = request;
+        wrong.answers = &wrong_answers;
+        switch (defect) {
+            0 => wrong.responded_by = "stranger",
+            1 => wrong_answers[0].question_id = "unknown",
+            2 => wrong_answers[0].text = "",
+            3 => wrong_answers[1].selected_option_ids = &.{"unknown"},
+            4 => wrong_answers[1].selected_option_ids = &.{ "safe", "safe" },
+            5 => wrong_answers[2].selected_option_ids = &.{ "a", "a" },
+            6 => wrong_answers[2].question_id = "pick",
+            7 => wrong.answers = wrong_answers[0..2],
+            else => unreachable,
+        }
+        try testing.expectError(error.InvalidResolution, harness.session.resolve(harness.arena.allocator(), .{ .input = &wrong }, &refusal));
+        try testing.expect(Session.cast(harness.session.ptr).pending != null);
+        try testing.expectEqual(@as(usize, 0), harness.count("action.call.completed"));
+    }
+    try harness.session.resolve(harness.arena.allocator(), .{ .input = &request }, &refusal);
+    try testing.expectError(error.InteractionNotFound, harness.session.resolve(harness.arena.allocator(), .{ .input = &request }, &refusal));
+    try harness.untilTerminal();
+    try testing.expectEqual(@as(usize, 1), harness.count("user.input.requested"));
+    try testing.expectEqual(@as(usize, 1), harness.count("user.input.resolved"));
+    try testing.expectEqual(@as(usize, 1), harness.count("action.call.completed"));
+    try testing.expect(script.received_answers.load(.acquire));
+}
+
+test "cancelling either prompt releases its native wait, resolves it once, and keeps the session reusable" {
+    for ([_]bool{ false, true }) |input| {
+        var script = Script{ .tool_first = true, .tool_name = if (input) "request_user_input" else "echo_tool", .tool_arguments = if (input) input_prompt else "{}" };
+        var harness: Harness = undefined;
+        try harness.init(&script);
+        defer harness.deinit();
+        try Session.cast(harness.session.ptr).runtime.setPermissionMode(.ask);
+        const admitted = try harness.submit("wait for me");
+        _ = try waitForPrompt(&harness);
+        var refusal = contract.Refusal{};
+        _ = try harness.session.cancel(harness.arena.allocator(), admitted.run_id.?, &refusal);
+        try harness.untilTerminal();
+        try testing.expectEqualStrings("run.cancelled", harness.terminal().?.object.get("type").?.string);
+        try testing.expectEqual(@as(usize, 1), harness.count(if (input) "user.input.resolved" else "action.permission.resolved"));
+        harness.reset();
+        script.tool_first = false;
+        _ = try harness.submit("continue");
+        try harness.untilTerminal();
+        try testing.expectEqualStrings("run.completed", harness.terminal().?.object.get("type").?.string);
+    }
+}
+
+fn validatePrompt(allocator: std.mem.Allocator, text: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const value = try parseValue(arena.allocator(), text);
+    if (value != .object) return error.InvalidSubmission;
+    const questions = value.object.get("questions") orelse return error.InvalidSubmission;
+    if (questions != .array or questions.array.items.len == 0) return error.InvalidSubmission;
+    var registry = try @import("jsonschema").Registry.initFromBundled(allocator);
+    defer registry.deinit();
+    if (value.object.get("title")) |title| {
+        if (title != .string or title.string.len == 0) return error.InvalidSubmission;
+    }
+    for (questions.array.items, 0..) |question, index| {
+        var validator = @import("jsonschema").Validator.init(allocator, &registry);
+        defer validator.deinit();
+        if (try validator.validateSchema(registry.root("interaction.schema.json").?.object.get("$defs").?.object.get("question").?, "interaction.schema.json", question) != null) return error.InvalidSubmission;
+        if (question != .object) return error.InvalidSubmission;
+        const id = question.object.get("id") orelse return error.InvalidSubmission;
+        const kind = question.object.get("kind") orelse return error.InvalidSubmission;
+        if (id != .string or id.string.len == 0 or kind != .string) return error.InvalidSubmission;
+        const parsed_kind = std.meta.stringToEnum(contract.QuestionKind, kind.string) orelse return error.InvalidSubmission;
+        for (questions.array.items[0..index]) |earlier| {
+            if (std.mem.eql(u8, earlier.object.get("id").?.string, id.string)) return error.InvalidSubmission;
+        }
+        const options = question.object.get("options");
+        if (parsed_kind != .text and options == null) return error.InvalidSubmission;
+        if (options) |offered| {
+            if (offered != .array or (parsed_kind != .text and offered.array.items.len == 0)) return error.InvalidSubmission;
+            for (offered.array.items, 0..) |option, option_index| {
+                if (option != .object) return error.InvalidSubmission;
+                const option_id = option.object.get("id") orelse return error.InvalidSubmission;
+                if (option_id != .string or option_id.string.len == 0) return error.InvalidSubmission;
+                for (offered.array.items[0..option_index]) |earlier| {
+                    if (std.mem.eql(u8, earlier.object.get("id").?.string, option_id.string)) return error.InvalidSubmission;
+                }
+            }
+        }
+    }
+}
+
+const Wire = struct {
+    arena: std.heap.ArenaAllocator,
+    owner: Adapter,
+    endpoint: @import("endpoint").Endpoint,
+    trace: std.ArrayList(std.json.Value) = .empty,
+    ids: usize = 0,
+
+    fn init(self: *Wire, script: *Script) void {
+        self.arena = std.heap.ArenaAllocator.init(testing.allocator);
+        self.owner = Adapter.init(testing.allocator, .{
+            .protocol = .{ .stream_fn = scriptedStream, .ctx = script },
+            .models = &scripted_models,
+            .initial_model_id = test_model.id,
+            .tools = &echo_tools,
+            .permission_mode = .ask,
+        });
+        self.endpoint = @import("endpoint").Endpoint.init(testing.allocator, self.owner.adapter(), .{});
+        self.trace = .empty;
+        self.ids = 0;
+    }
+
+    fn deinit(self: *Wire) void {
+        self.endpoint.deinit();
+        self.arena.deinit();
+    }
+
+    fn collect(self: *Wire) !void {
+        while (self.endpoint.popOutbound()) |line| {
+            defer testing.allocator.free(line);
+            const owned = try self.arena.allocator().dupe(u8, line);
+            try self.trace.append(self.arena.allocator(), try parseValue(self.arena.allocator(), owned));
+        }
+    }
+
+    fn send(self: *Wire, kind: []const u8, scope: []const u8, payload: std.json.Value) !void {
+        self.ids += 1;
+        const a = self.arena.allocator();
+        const encoded = try json_encode.valueAlloc(a, payload);
+        const line = try std.fmt.allocPrint(a,
+            \\{{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"{s}","id":"client-{d}"{s},"payload":{s}}}
+        , .{ kind, self.ids, scope, encoded });
+        try self.trace.append(a, try parseValue(a, line));
+        try self.endpoint.handleLine(line);
+        try self.collect();
+    }
+
+    fn wait(self: *Wire, kind: []const u8) !std.json.Value {
+        for (0..5000) |_| {
+            _ = try self.endpoint.pump(0);
+            try self.collect();
+            for (self.trace.items) |event| {
+                if (std.mem.eql(u8, event.object.get("type").?.string, kind)) return event;
+            }
+            std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
+        }
+        return error.EventNeverArrived;
+    }
+
+    fn validate(self: *Wire) !void {
+        var registry = try @import("jsonschema").Registry.initFromBundled(testing.allocator);
+        defer registry.deinit();
+        var machine = @import("semantic").Machine.init(testing.allocator);
+        defer machine.deinit();
+        for (self.trace.items, 0..) |event, index| {
+            var validator = @import("jsonschema").Validator.init(testing.allocator, &registry);
+            defer validator.deinit();
+            if (try validator.validate("envelope.schema.json", event)) |failure| {
+                std.debug.print("wire {d} {s} fails {s} at {s}\n", .{ index, event.object.get("type").?.string, failure.keyword, failure.pointer });
+                return error.SchemaInvalid;
+            }
+            try machine.apply(index, event);
+        }
+        try machine.close();
+        for (machine.diagnostics.items) |diagnostic| std.debug.print("wire {d}: {s}\n", .{ diagnostic.index, diagnostic.code });
+        try testing.expectEqual(@as(usize, 0), machine.diagnostics.items.len);
+    }
+};
+
+test "the served endpoint routes or cancels permission and input prompts with schema and semantic valid conversations" {
+    for (0..4) |variant| {
+        const input = variant % 2 == 1;
+        const cancelled = variant >= 2;
+        var script = Script{ .tool_first = true, .tool_name = if (input) "request_user_input" else "echo_tool", .tool_arguments = if (input) input_prompt else "{}" };
+        var wire: Wire = undefined;
+        wire.init(&script);
+        defer wire.deinit();
+        const a = wire.arena.allocator();
+        try wire.send("protocol.initialize.request", "", try parseValue(a,
+            \\{"participant":{"id":"user","name":"Test"},"protocol_versions":["0.1"],"profiles":["open-agent-protocol.agent-control-core"]}
+        ));
+        try wire.send("capabilities.request", "", try parseValue(a, "{}"));
+        const scope = ",\"session_id\":\"wire-session\",\"capability_revision\":\"" ++ capability_revision ++ "\"";
+        try wire.send("session.open.request", scope, try parseValue(a, "{\"session_id\":\"wire-session\"}"));
+        try wire.send("session.message.submit.request", scope, try parseValue(a,
+            \\{"session_id":"wire-session","delivery":"auto","messages":[{"role":"user","content":"test prompts"}]}
+        ));
+        const prompt = try wire.wait(if (input) "user.input.requested" else "action.permission.requested");
+        const asked = prompt.object.get("payload").?.object;
+        var answer = Payload.init(a);
+        for ([_][]const u8{ "interaction_id", "session_id", "run_id", "requested_by", "responded_by" }) |key| try answer.put(key, asked.get(key).?);
+        if (input) {
+            try answer.put("answers", try parseValue(a,
+                \\[{"question_id":"note","text":"careful"},{"question_id":"pick","selected_option_ids":["safe"]},{"question_id":"many","selected_option_ids":["a"]}]
+            ));
+        } else {
+            try answer.put("granted", .{ .bool = true });
+            try answer.put("choice_id", .{ .string = "approve" });
+        }
+        const run_scope = try std.fmt.allocPrint(a, "{s},\"run_id\":\"{s}\"", .{ scope, asked.get("run_id").?.string });
+        if (cancelled) {
+            var cancellation = Payload.init(a);
+            try cancellation.put("session_id", asked.get("session_id").?);
+            try cancellation.put("run_id", asked.get("run_id").?);
+            try wire.send("run.cancel.request", run_scope, cancellation.value());
+        } else {
+            try wire.send(if (input) "user.input.resolve.request" else "action.permission.resolve.request", run_scope, answer.value());
+        }
+        _ = try wire.wait(if (cancelled) "run.cancelled" else "run.completed");
+        try wire.validate();
+        if (input and !cancelled) try testing.expect(script.received_answers.load(.acquire));
+    }
+}
+
+test "native input rejects malformed questions before publishing a wait" {
+    for ([_][]const u8{
+        "{}",
+        "{\"questions\":[]}",
+        "{\"questions\":[{\"id\":\"q\",\"kind\":\"text\"}]}",
+        "{\"questions\":[{\"id\":\"q\",\"prompt\":\"Q?\",\"kind\":\"text\",\"options\":[]}]}",
+        "{\"questions\":[{\"id\":\"q\",\"prompt\":\"Q?\",\"kind\":\"single_choice\",\"options\":[{\"id\":\"a\",\"label\":\"\"}]}]}",
+        "{\"questions\":[{\"id\":\"q\",\"prompt\":\"Q?\",\"kind\":\"text\"},{\"id\":\"q\",\"prompt\":\"Again?\",\"kind\":\"text\"}]}",
+        "{\"questions\":[{\"id\":\"q\",\"prompt\":\"Q?\",\"kind\":\"multi_choice\",\"options\":[{\"id\":\"a\",\"label\":\"A\"},{\"id\":\"a\",\"label\":\"Again\"}]}]}",
+    }) |invalid| try testing.expectError(error.InvalidSubmission, validatePrompt(testing.allocator, invalid));
 }
