@@ -2702,6 +2702,7 @@ pub const App = struct {
         var session = &(self.session orelse return);
         var completed_agent_end = false;
         var run_ended = false;
+        var run_failed = false;
         while (session.popEvent()) |event| {
             var ev = event;
             defer ev.deinit(self.allocator);
@@ -2744,6 +2745,7 @@ pub const App = struct {
             }
             if (try self.noteTerminalEvent(ev)) completed_agent_end = true;
             if (ev == .agent_end) run_ended = true;
+            if (ev == .@"error") run_failed = true;
             self.saveEvent(ev);
             try self.applyRuntimeEvent(ev);
         }
@@ -2785,7 +2787,7 @@ pub const App = struct {
         }
         if (!completed_agent_end or self.state.queue.total() == 0) try self.drainQueuedWorktreeMessageIfIdle();
         if (run_ended) try self.sendHeldAfterAbort();
-        try self.startCompactionAfterRun(run_ended);
+        try self.startCompactionAfterRun(run_ended or run_failed);
     }
 
     fn dropHeldCompaction(self: *App) void {
