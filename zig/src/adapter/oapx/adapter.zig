@@ -228,7 +228,8 @@ pub const Session = struct {
         return result;
     }
 
-    fn submit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+    fn submit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+        _ = envelope_id;
         const self = cast(ptr);
         try contract.refuseUnadvertisedControls(descriptor, request, refusal);
         if (request.session_id.len == 0 or request.messages.len == 0) return error.InvalidSubmission;
@@ -831,7 +832,7 @@ const Harness = struct {
         var refusal = contract.Refusal{};
         var parts = [_]oap_types.ContentPart{.{ .text = text }};
         var messages = [_]oap_types.Message{.{ .role = .user, .content = .{ .parts = &parts } }};
-        return self.session.submit(self.arena.allocator(), &.{ .session_id = self.session.id(), .messages = &messages, .delivery = .auto }, &refusal);
+        return self.session.submit(self.arena.allocator(), &.{ .session_id = self.session.id(), .messages = &messages, .delivery = .auto }, "submit-envelope", &refusal);
     }
 
     fn collect(self: *Harness) !void {
