@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"github.com/lsm/open-agent-protocol/harnesses"
+	"os"
 	"path/filepath"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -84,6 +86,8 @@ type Adapter struct {
 	config Config
 	clock  base.Clock
 	ids    base.IDGenerator
+
+	process *rpc.ProcessConfig
 }
 
 func New(config Config) (*Adapter, error) {
@@ -130,6 +134,7 @@ func New(config Config) (*Adapter, error) {
 			}
 			return &processClient{Client: p.ClientHandle(), bridge: p}, config.Model, nil
 		})
+		return &Adapter{config: config, clock: config.Clock, ids: config.IDs, process: &pc}, nil
 	}
 	return &Adapter{config: config, clock: config.Clock, ids: config.IDs}, nil
 }
@@ -165,6 +170,8 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		"capabilities":                   {Level: protocol.SupportEmulated, Reason: "conservative descriptor for pinned SDK wire"},
 		"session.open":                   {Level: protocol.SupportEmulated, Reason: "one process and native session per OAP session"},
 		"session.state":                  {Level: protocol.SupportDegraded, Reason: "reducer-owned live projection; no native query"},
+		protocol.FeatureSessionReasoning: {Level: protocol.SupportNative, Modes: []string{protocol.ModeSessionOpen}, Reason: "initialize carries reasoningEffort for the runtime this session starts; the DeepSeek route takes off, low, high and max"},
+		protocol.FeatureCompactionPolicy: {Level: protocol.SupportEmulated, Modes: []string{protocol.ModeSessionOpen}, Reason: "a --patch layer on this session's runtime sets compaction-basic's thresholdRatio for share, or disables it for off; its headroom still caps the threshold, and tokens is refused"},
 		"session.message.submit":         {Level: protocol.SupportDegraded, Reason: "receipt plus entered direct-user message proves start"},
 		"session.message.delivery.auto":  {Level: protocol.SupportDegraded, Reason: "accepted only for known idle sessions and normalized to start"},
 		"session.message.delivery.queue": {Level: protocol.SupportUnavailable, Reason: "overlapping native followups are outside the adapter contract"},
@@ -193,7 +200,14 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	if err := base.RefuseUnadvertisedTools(req); err != nil {
 		return nil, err
 	}
-	client, model, err := a.config.Factory.Start(ctx)
+	descriptor, err := a.Probe(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := base.RefuseUnadvertisedSettings(req, descriptor.Capabilities); err != nil {
+		return nil, err
+	}
+	client, model, err := a.start(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -202,9 +216,65 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		id = protocol.SessionID(a.ids.NewID("session"))
 	}
 	now := a.clock.Now().UnixMilli()
-	s := &Session{client: client, inbound: client.Inbound(), clock: a.clock, ids: a.ids, journal: journal.New(a.config.JournalCapacity), nativeID: string(id), model: model, state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, CurrentModelID: model, UpdatedAtMS: now}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, children: map[string]*childState{}, stop: make(chan struct{})}
+	s := &Session{client: client, inbound: client.Inbound(), clock: a.clock, ids: a.ids, journal: journal.New(a.config.JournalCapacity), nativeID: string(id), model: model, state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, CurrentModelID: model, UpdatedAtMS: now, ReasoningLevel: req.ReasoningLevel, CompactionPolicy: req.CompactionPolicy}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, children: map[string]*childState{}, stop: make(chan struct{})}
 	go s.dispatch()
 	return s, nil
+}
+
+var deepseekEfforts = map[protocol.ReasoningLevel]bool{protocol.ReasoningOff: true, protocol.ReasoningLow: true, protocol.ReasoningHigh: true, protocol.ReasoningMax: true}
+
+func (a *Adapter) start(ctx context.Context, req base.OpenRequest) (Client, string, error) {
+	if req.ReasoningLevel == "" && req.CompactionPolicy == nil {
+		return a.config.Factory.Start(ctx)
+	}
+	if req.ReasoningLevel != "" && !deepseekEfforts[req.ReasoningLevel] {
+		return nil, "", &base.UnsupportedControlError{Feature: protocol.FeatureSessionReasoning, Reason: base.ControlUnsatisfiable, Field: "reasoning_level", Detail: "the DeepSeek route takes off, low, high and max"}
+	}
+	patch, err := compactionPatch(req.CompactionPolicy)
+	if err != nil {
+		return nil, "", err
+	}
+	if a.process == nil {
+		return nil, "", &base.UnsupportedControlError{Feature: protocol.FeatureSessionReasoning, Reason: base.ControlUnsatisfiable, Detail: "a supplied factory starts the runtime, so the adapter cannot configure it"}
+	}
+	pc := *a.process
+	pc.Args = append([]string(nil), pc.Args...)
+	pc.Initialize.ReasoningEffort = string(req.ReasoningLevel)
+	if patch != "" {
+		file, err := os.CreateTemp("", "oap-deepseek-*.patch.yml")
+		if err != nil {
+			return nil, "", err
+		}
+		defer os.Remove(file.Name())
+		if _, err := file.WriteString(patch); err != nil {
+			_ = file.Close()
+			return nil, "", err
+		}
+		if err := file.Close(); err != nil {
+			return nil, "", err
+		}
+		pc.Args = append(pc.Args, "--patch", file.Name())
+	}
+	p, err := a.config.ProcessFactory.Start(ctx, pc)
+	if err != nil {
+		return nil, "", err
+	}
+	return &processClient{Client: p.ClientHandle(), bridge: p}, a.config.Model, nil
+}
+
+func compactionPatch(policy *protocol.CompactionPolicy) (string, error) {
+	if policy == nil {
+		return "", nil
+	}
+	switch policy.Kind {
+	case protocol.CompactionAuto:
+		return "", nil
+	case protocol.CompactionOff:
+		return "- id: compaction-basic\n  disabled: true\n", nil
+	case protocol.CompactionShare:
+		return fmt.Sprintf("- id: compaction-basic\n  config:\n    thresholdRatio: %s\n", strconv.FormatFloat(float64(policy.SharePercent)/100, 'f', -1, 64)), nil
+	}
+	return "", &base.UnsupportedControlError{Feature: protocol.FeatureCompactionPolicy, Reason: base.ControlUnsatisfiable, Field: "compaction_policy", Detail: "compaction-basic sets its threshold from the window, so a token count is refused"}
 }
 
 type systemClock struct{}

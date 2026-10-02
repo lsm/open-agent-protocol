@@ -81,6 +81,8 @@ type InitializeParams struct {
 	Provider  string `json:"provider"`
 	Model     string `json:"model"`
 	MaxTokens *int64 `json:"maxTokens,omitempty"`
+
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 }
 type ServerInfo struct {
 	Name    string `json:"name"`

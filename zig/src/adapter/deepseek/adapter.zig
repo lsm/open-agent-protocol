@@ -26,13 +26,41 @@ const features = [_]contract.Feature{
     .{ .key = "run.resume", .level = .degraded, .reason = "selected SDK wire has no resume request; OAP resume replays the adapter journal" },
     .{ .key = "run.status", .level = .emulated },
     .{ .key = "run.streaming", .level = .native },
+    .{ .key = contract.feature_compaction_policy, .level = .emulated, .reason = "a --patch layer on this session's runtime sets compaction-basic's thresholdRatio for share, or disables it for off; its headroom still caps the threshold, and tokens is refused", .modes = &.{contract.mode_session_open} },
     .{ .key = "session.message.delivery.auto", .level = .degraded, .reason = "accepted only for known idle sessions and normalized to start" },
     .{ .key = "session.message.delivery.queue", .level = .unavailable, .reason = "overlapping native followups are outside the adapter contract" },
     .{ .key = "session.message.delivery.steer", .level = .unavailable, .reason = "selected SDK wire has no steer request" },
     .{ .key = "session.message.submit", .level = .degraded, .reason = "receipt plus entered direct-user message proves start" },
     .{ .key = "session.open", .level = .emulated, .reason = "one process and native session per OAP session" },
+    .{ .key = contract.feature_session_reasoning, .level = .native, .reason = "initialize carries reasoningEffort for the runtime this session starts; the DeepSeek route takes off, low, high and max", .modes = &.{contract.mode_session_open} },
     .{ .key = "session.state", .level = .degraded, .reason = "reducer-owned live projection; no native query" },
 };
+
+const deepseek_efforts = [_][]const u8{ "off", "low", "high", "max" };
+
+fn effortFor(request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure![]const u8 {
+    const level = request.reasoning_level orelse return "";
+    for (deepseek_efforts) |known| {
+        if (std.mem.eql(u8, known, level)) return known;
+    }
+    return refusal.unsupportedField(contract.feature_session_reasoning, contract.reason_unsatisfiable, "reasoning_level");
+}
+
+fn compactionPatch(arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!?[]const u8 {
+    const raw = request.compaction_policy_json orelse return null;
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, raw, .{}) catch return refusal.unsupportedField(contract.feature_compaction_policy, contract.reason_unsatisfiable, "compaction_policy");
+    if (parsed != .object) return refusal.unsupportedField(contract.feature_compaction_policy, contract.reason_unsatisfiable, "compaction_policy");
+    const kind = if (parsed.object.get("kind")) |value| (if (value == .string) value.string else "") else "";
+    if (std.mem.eql(u8, kind, "auto")) return null;
+    if (std.mem.eql(u8, kind, "off")) return "- id: compaction-basic\n  disabled: true\n";
+    if (std.mem.eql(u8, kind, "share")) {
+        const share = parsed.object.get("share_percent") orelse return refusal.unsupportedField(contract.feature_compaction_policy, contract.reason_unsatisfiable, "compaction_policy");
+        if (share != .integer) return refusal.unsupportedField(contract.feature_compaction_policy, contract.reason_unsatisfiable, "compaction_policy");
+        const ratio = @as(f64, @floatFromInt(share.integer)) / 100;
+        return try std.fmt.allocPrint(arena, "- id: compaction-basic\n  config:\n    thresholdRatio: {d}\n", .{ratio});
+    }
+    return refusal.unsupportedField(contract.feature_compaction_policy, contract.reason_unsatisfiable, "compaction_policy");
+}
 
 pub const descriptor = contract.Descriptor{
     .endpoint = .{ .id = endpoint_id, .name = "DeepSeek Harness SDK Adapter", .version = harness_pins.deepseek_harness_endpoint_version, .adapter = "deepseek-harness-jsonrpc" },
@@ -98,6 +126,9 @@ const Reply = struct {
 pub const Session = struct {
     owner: *Adapter,
     gpa: std.mem.Allocator,
+    effort: []const u8 = "",
+    reported_level: ?[]const u8 = null,
+    reported_policy: ?[]const u8 = null,
     id: []u8,
     reducer_arena: *std.heap.ArenaAllocator,
     transport: *process.Transport,
@@ -113,13 +144,29 @@ pub const Session = struct {
         if (config.provider.len == 0 or config.model.len == 0 or !std.fs.path.isAbsolute(config.working_directory)) {
             return refusal.fail(error.BackendFailed, "the deepseek harness needs an absolute working directory, a provider and a model");
         }
-        const self = try construct(owner, arena, request, refusal);
+        const effort = try effortFor(request, refusal);
+        const patch = try compactionPatch(arena, request, refusal);
+        var args: []const []const u8 = config.args;
+        var patch_path: ?[]const u8 = null;
+        defer if (patch_path) |path| compat.fs.removeFile(path);
+        if (patch) |body| {
+            var entropy: [8]u8 = undefined;
+            compat.random.fillSecureBytes(&entropy);
+            const path = try std.fmt.allocPrint(arena, "/tmp/oap-deepseek-{x}.patch.yml", .{entropy});
+            compat.fs.writeFile(compat.fs.getCwd(), path, body) catch return refusal.fail(error.BackendFailed, "the deepseek harness's compaction patch could not be written");
+            patch_path = path;
+            args = try std.mem.concat(arena, []const u8, &.{ config.args, &.{ "--patch", path } });
+        }
+        const self = try construct(owner, arena, request, args, refusal);
         errdefer self.destroy();
+        self.effort = effort;
         try self.handshake(arena, refusal);
+        if (request.reasoning_level) |level| self.reported_level = try self.owned().dupe(u8, level);
+        if (request.compaction_policy_json) |policy| self.reported_policy = try self.owned().dupe(u8, policy);
         return self;
     }
 
-    fn construct(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
+    fn construct(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, args: []const []const u8, refusal: *contract.Refusal) contract.Failure!*Session {
         const gpa = owner.allocator;
         const config = owner.config;
         const self = try gpa.create(Session);
@@ -132,7 +179,7 @@ pub const Session = struct {
         errdefer reducer_arena.deinit();
         const transport = process.Transport.open(gpa, .{
             .executable = config.executable,
-            .args = config.args,
+            .args = args,
             .environment = config.environment,
             .working_directory = config.working_directory,
             .frame_limit = config.frame_limit,
@@ -264,6 +311,7 @@ pub const Session = struct {
         try params.put(self.owned(), "provider", .{ .string = config.provider });
         try params.put(self.owned(), "model", .{ .string = config.model });
         if (config.max_tokens) |limit| try params.put(self.owned(), "maxTokens", .{ .integer = limit });
+        if (self.effort.len != 0) try params.put(self.owned(), "reasoningEffort", .{ .string = self.effort });
         if (!try self.send("initialize", .{ .object = params })) return refusal.fail(error.BackendFailed, "the deepseek harness exited before answering initialize");
         const started = monotonic();
         while (self.reply == null) {
@@ -364,13 +412,18 @@ pub const Session = struct {
         const running = self.live();
         const active_run_id: ?[]const u8 = if (running) try arena.dupe(u8, self.reducer.run_id) else null;
         const current_model_id = try arena.dupe(u8, self.reducer.model);
+        const transcript_cursor: ?[]const u8 = if (self.reducer.cursor > 0) try std.fmt.allocPrint(arena, "{d}", .{self.reducer.cursor}) else null;
+        const reasoning_level: ?[]const u8 = if (self.reported_level) |level| try arena.dupe(u8, level) else null;
+        const compaction_policy_json: ?[]const u8 = if (self.reported_policy) |policy| try arena.dupe(u8, policy) else null;
         return .{
             .session_id = self.id,
             .status = if (running) .running else .idle,
             .active_run_id = active_run_id,
             .current_model_id = current_model_id,
-            .transcript_cursor = if (self.reducer.cursor > 0) try std.fmt.allocPrint(arena, "{d}", .{self.reducer.cursor}) else null,
+            .transcript_cursor = transcript_cursor,
             .updated_at_ms = wallClock(),
+            .reasoning_level = reasoning_level,
+            .compaction_policy_json = compaction_policy_json,
         };
     }
 
@@ -691,6 +744,38 @@ test "the descriptor serves resume and replay from the endpoint journal under th
     try testing.expectEqual(oap_types.SupportLevel.degraded, descriptor.level("run.replay"));
     try testing.expectEqual(oap_types.SupportLevel.degraded, descriptor.level("run.resume"));
     for (features[1..], features[0 .. features.len - 1]) |later, earlier| try testing.expect(std.mem.lessThan(u8, earlier.key, later.key));
+}
+
+test "an open starts its runtime with the effort in initialize and a compaction patch on the command line" {
+    var probe: Probe = undefined;
+    try probe.init(
+        \\#!/bin/sh
+        \\exec 3>>"$(dirname "$0")/stdin.log"
+        \\for arg in "$@"; do [ -f "$arg" ] && cat "$arg" >>"$(dirname "$0")/patch.log"; done
+        \\take() { IFS= read -r line || exit 0; printf '%s\n' "$line" >&3; }
+        \\take; printf '{"id":1,"jsonrpc":"2.0","result":{"serverInfo":{"name":"deepseek-harness-sdk-runtime","version":"0.0.1"}}}\n'
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const opened = try probe.adapter.adapter().open(probe.arena.allocator(), .{ .session_id = "s1", .participant = "user", .reasoning_level = "max", .compaction_policy_json = "{\"kind\":\"share\",\"share_percent\":70}" }, &refusal);
+    probe.handle = opened;
+    const written = try probe.fake.written(probe.arena.allocator());
+    try testing.expect(std.mem.indexOf(u8, written, "\"model\":\"deepseek-chat\",\"reasoningEffort\":\"max\"}") != null);
+    const patch = try probe.fake.tmp.dir.readFileAlloc(testing.io, "patch.log", probe.arena.allocator(), .limited(4096));
+    try testing.expectEqualStrings("- id: compaction-basic\n  config:\n    thresholdRatio: 0.7\n", patch);
+    const reported = try opened.state(probe.arena.allocator(), &refusal);
+    try testing.expectEqualStrings("max", reported.reasoning_level.?);
+}
+
+test "a level or compaction form the DeepSeek route lacks is refused before the runtime starts" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    try testing.expectError(error.UnsupportedFeature, probe.adapter.adapter().open(probe.arena.allocator(), .{ .session_id = "s1", .participant = "user", .reasoning_level = "medium" }, &refusal));
+    try testing.expectError(error.UnsupportedFeature, probe.adapter.adapter().open(probe.arena.allocator(), .{ .session_id = "s1", .participant = "user", .compaction_policy_json = "{\"kind\":\"tokens\",\"tokens\":1000}" }, &refusal));
+    try testing.expectError(error.FileNotFound, probe.fake.written(probe.arena.allocator()));
 }
 
 test "an open writes the pinned initialize, and a prompt is admitted once the harness enters it and settles on turn end" {
