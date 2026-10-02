@@ -65,6 +65,7 @@ const memory_adapter = @import("memory_adapter");
 const oapx_adapter = @import("oapx_adapter");
 const hub = @import("hub");
 const hub_stdio = @import("hub_stdio");
+const hub_daemon = @import("hub_daemon");
 const hub_http = @import("hub_http");
 const bounded_output = @import("bounded_output");
 const endpoint_signals = @import("endpoint_signals");
@@ -1509,8 +1510,7 @@ fn hubBindRefusal(stderr: std.Io.File, message: []const u8) error{InvalidHubOpti
     compat.stdio.writeAll(stderr, "\n") catch {};
     return error.InvalidHubOption;
 }
-const hub_accept_poll_ms: i32 = 50;
-const hub_io_cycle_ms: i32 = 50;
+const hub_accept_poll_ms: i32 = 10;
 
 const keepGoing = hub_http.KeepGoing{ .context = undefined, .check = hubSignalled };
 
@@ -1551,48 +1551,14 @@ fn runHubHttp(
         try compat.stdio.writeAll(stderr, "oapx: this platform cannot wait on a socket, so a stalled client is not given up on and a signal ends the process rather than the hub; the Windows path is #460\n");
     }
 
-    var next_id: u64 = 0;
-    while (!endpoint_signals.received()) {
-        if (!hub_http.connectionPending(&listener, hub_accept_poll_ms)) continue;
-        var connection = compat.net.accept(&listener) catch |failure| switch (hub_http.classifyAccept(failure)) {
-            .serve_again => continue,
-            .back_off => {
-                compat.time.sleepMs(hub_http.accept_backoff_ms);
-                continue;
-            },
-            .stop => {
-                sweepHubSessions(core, stderr);
-                try compat.stdio.writeAll(stderr, "oapx: stopped\n");
-                return failure;
-            },
-        };
-        defer connection.stream.close();
-        next_id += 1;
-        var scratch_state = std.heap.ArenaAllocator.init(allocator);
-        defer scratch_state.deinit();
-        const scratch = scratch_state.allocator();
-        var body_allowed = true;
-        var declared: usize = 0;
-        var request = hub_http.readHead(scratch, &connection.stream, hub_http.header_read_ms, hub_io_cycle_ms, keepGoing, &body_allowed, &declared) catch |failure| {
-            if (failure == error.Stopped) break;
-            hub_http.writeTransportFailure(&connection.stream, scratch, next_id, failure, body_allowed) catch {};
-            _ = hub_http.drain(&connection.stream, declared, keepGoing);
-            continue;
-        };
-        defer request.deinit(scratch);
-        const answered = hub_http.answer(allow orelse &.{}, request);
-        if (answered != .not_found) {
-            hub_http.writeAnswer(&connection.stream, scratch, next_id, answered, body_allowed) catch {};
-            _ = hub_http.drain(&connection.stream, request.content_length, keepGoing);
-            continue;
-        }
-        hub_http.readBody(scratch, &connection.stream, &request, hub_http.idle_read_ms, hub_io_cycle_ms, keepGoing) catch |failure| {
-            if (failure == error.Stopped) break;
-            hub_http.writeTransportFailure(&connection.stream, scratch, next_id, failure, body_allowed) catch {};
-            _ = hub_http.drain(&connection.stream, request.content_length -| request.filled, keepGoing);
-            continue;
-        };
-        hub_http.writeAnswer(&connection.stream, scratch, next_id, answered, body_allowed) catch {};
+    var daemon = try hub_daemon.Daemon.init(allocator, core, allow orelse &.{}, keepGoing);
+    defer daemon.deinit();
+    var connections = hub_daemon.Connections{};
+    const failed = hub_daemon.serveListener(&daemon, &listener, &connections, hub_accept_poll_ms);
+    if (failed) |failure| {
+        sweepHubSessions(core, stderr);
+        try compat.stdio.writeAll(stderr, "oapx: stopped\n");
+        return failure;
     }
     try compat.stdio.writeAll(stderr, "oapx: shutting down\n");
     sweepHubSessions(core, stderr);

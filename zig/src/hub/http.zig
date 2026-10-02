@@ -66,6 +66,7 @@ pub const Request = struct {
     host: ?[]const u8 = null,
     origin: bool = false,
     content_type: ?[]const u8 = null,
+    last_event_id: ?[]const u8 = null,
     content_length: usize = 0,
     filled: usize = 0,
     body: []u8 = &.{},
@@ -77,6 +78,7 @@ pub const Request = struct {
         allocator.free(self.split.query);
         if (self.host) |value| allocator.free(value);
         if (self.content_type) |value| allocator.free(value);
+        if (self.last_event_id) |value| allocator.free(value);
         if (self.body.len > 0) allocator.free(self.body);
         self.* = undefined;
     }
@@ -105,7 +107,7 @@ pub const KeepGoing = struct {
     context: *const anyopaque = undefined,
     check: *const fn (*const anyopaque) bool,
 
-    fn yes(self: KeepGoing) bool {
+    pub fn yes(self: KeepGoing) bool {
         return self.check(self.context);
     }
 };
@@ -193,6 +195,8 @@ pub fn readHead(allocator: std.mem.Allocator, stream: *compat.net.Stream, header
             seen_length = true;
             request.content_length = digits(value) orelse return error.Malformed;
             declared.* = request.content_length;
+        } else if (std.ascii.eqlIgnoreCase(name, "last-event-id")) {
+            if (request.last_event_id == null) request.last_event_id = try allocator.dupe(u8, value);
         } else if (std.ascii.eqlIgnoreCase(name, "transfer-encoding")) {
             return error.UnsupportedTransferEncoding;
         }
@@ -573,7 +577,7 @@ fn writeHead(stream: *compat.net.Stream, status: []const u8, content_type: []con
     try stream.writeAll(status);
     try stream.writeAll("\r\nContent-Type: ");
     try stream.writeAll(content_type);
-    try stream.writeAll("\r\nContent-Length: ");
+    try stream.writeAll("\r\nConnection: close\r\nContent-Length: ");
     try stream.writeAll(length);
     if (body_allowed) try stream.writeAll(body);
 }
@@ -1092,7 +1096,7 @@ test "a HEAD is answered with the length a GET would send and no body at all" {
     try testing.expect(std.mem.startsWith(u8, said, "HTTP/1.1 404 Not Found"));
     try testing.expect(std.mem.indexOf(u8, said, "Content-Length: 9") != null);
     try testing.expect(std.mem.indexOf(u8, said, "not found") == null);
-    try testing.expectEqualStrings("HTTP/1.1 404 Not Found\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 9\r\n\r\n", said);
+    try testing.expectEqualStrings("HTTP/1.1 404 Not Found\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\nContent-Length: 9\r\n\r\n", said);
 }
 
 test "a HEAD whose read fails after its method gets no body either" {

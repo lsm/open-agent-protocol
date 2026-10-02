@@ -43,7 +43,7 @@ pub const Route = union(Verb) {
 
 pub const Match = union(enum) {
     route: Route,
-    method_not_allowed,
+    method_not_allowed: []const u8,
     not_found,
 };
 
@@ -164,14 +164,14 @@ pub fn route(arena: std.mem.Allocator, method: []const u8, path: []const u8) Fai
         error.BadEscape => return error.BadEscape,
         error.NotAbsolute, error.EmptySegment => return .not_found,
     };
-    var path_matched = false;
+    var allowed: ?[]const u8 = null;
     for (table) |entry| {
         const shape = shapeMatches(entry.pattern, path_segments.items) orelse continue;
-        path_matched = true;
+        allowed = entry.method;
         if (!std.mem.eql(u8, entry.method, method)) continue;
         return .{ .route = build(entry.verb, if (shape.parameter) |at| path_segments.items[at] else null) };
     }
-    return if (path_matched) .method_not_allowed else .not_found;
+    return if (allowed) |named| .{ .method_not_allowed = named } else .not_found;
 }
 
 const testing = std.testing;
@@ -237,17 +237,18 @@ test "every route in the table resolves to its own verb and carries the name the
 }
 
 test "a path that is a route asked for with the wrong method is not the same as a path that is not a route" {
-    const cases = [_]struct { method: []const u8, path: []const u8 }{
-        .{ .method = "POST", .path = "/adapters" },
-        .{ .method = "GET", .path = "/sessions/s-1/submit" },
-        .{ .method = "DELETE", .path = "/sessions/s-1/close" },
-        .{ .method = "get", .path = "/adapters" },
+    const cases = [_]struct { method: []const u8, path: []const u8, allowed: []const u8 }{
+        .{ .method = "POST", .path = "/adapters", .allowed = "GET" },
+        .{ .method = "GET", .path = "/sessions/s-1/submit", .allowed = "POST" },
+        .{ .method = "DELETE", .path = "/sessions/s-1/close", .allowed = "POST" },
+        .{ .method = "get", .path = "/adapters", .allowed = "GET" },
     };
     for (cases) |case| {
         var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena_state.deinit();
         const arena = arena_state.allocator();
-        try testing.expectEqual(Match.method_not_allowed, try matched(arena, case.method, case.path));
+        const got = try matched(arena, case.method, case.path);
+        try testing.expectEqualStrings(case.allowed, got.method_not_allowed);
     }
 }
 

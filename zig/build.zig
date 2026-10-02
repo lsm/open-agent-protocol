@@ -1447,6 +1447,24 @@ pub fn build(b: *std.Build) void {
     });
     const hub_stdio_test = b.addTest(.{ .root_module = hub_stdio_mod });
     const hub_test = b.addTest(.{ .root_module = hub_mod });
+    const hub_daemon_mod = b.createModule(.{
+        .root_source_file = b.path("src/hub/daemon.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "oap_types", .module = protocol_oap_types_mod },
+            .{ .name = "oap_envelope", .module = protocol_oap_envelope_mod },
+            .{ .name = "json_encode", .module = json_encode_mod },
+            .{ .name = "contract", .module = adapter_contract_mod },
+            .{ .name = "compat", .module = compat_mod },
+            .{ .name = "hub", .module = hub_mod },
+            .{ .name = "hub_http", .module = hub_http_mod },
+            .{ .name = "hub_routes", .module = hub_routes_mod },
+            .{ .name = "hub_stdio", .module = hub_stdio_mod },
+            .{ .name = "memory", .module = memory_adapter_mod },
+        },
+    });
+    const hub_daemon_test = b.addTest(.{ .root_module = hub_daemon_mod });
 
     const deepseek_adapter_mod = b.createModule(.{
         .root_source_file = b.path("src/adapter/deepseek/adapter.zig"),
@@ -2777,6 +2795,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "hub", .module = hub_mod },
             .{ .name = "hub_http", .module = hub_http_mod },
             .{ .name = "hub_stdio", .module = hub_stdio_mod },
+            .{ .name = "hub_daemon", .module = hub_daemon_mod },
             .{ .name = "bounded_output", .module = bounded_output_mod },
             .{ .name = "endpoint_signals", .module = endpoint_signals_mod },
         },
@@ -2866,14 +2885,17 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(hub_routes_test).step);
     test_step.dependOn(&b.addRunArtifact(hub_http_test).step);
     test_step.dependOn(&b.addRunArtifact(hub_stdio_test).step);
+    test_step.dependOn(&b.addRunArtifact(hub_daemon_test).step);
     compile_hub_step.dependOn(&hub_test.step);
     compile_hub_step.dependOn(&hub_routes_test.step);
     compile_hub_step.dependOn(&hub_http_test.step);
     compile_hub_step.dependOn(&hub_stdio_test.step);
+    compile_hub_step.dependOn(&hub_daemon_test.step);
     test_unit_hub_step.dependOn(&b.addRunArtifact(hub_test).step);
     test_unit_hub_step.dependOn(&b.addRunArtifact(hub_routes_test).step);
     test_unit_hub_step.dependOn(&b.addRunArtifact(hub_http_test).step);
     test_unit_hub_step.dependOn(&b.addRunArtifact(hub_stdio_test).step);
+    test_unit_hub_step.dependOn(&b.addRunArtifact(hub_daemon_test).step);
     test_step.dependOn(&b.addRunArtifact(claude_adapter_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(claude_adapter_test).step);
     test_step.dependOn(&b.addRunArtifact(codex_adapter_test).step);
