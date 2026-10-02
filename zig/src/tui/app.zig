@@ -1024,6 +1024,7 @@ pub const App = struct {
     inline_flushed_rows: usize = 0,
     login_status: [provider_catalog.all.len]LoginStatus = [_]LoginStatus{.none} ** provider_catalog.all.len,
     pending_session_reset: bool = false,
+    pending_compaction: ?[]u8 = null,
     pending_models: ?[]ai_types.Model = null,
     model_fetch: ?*ModelFetch = null,
     model_refetch: bool = false,
@@ -1106,6 +1107,8 @@ pub const App = struct {
     }
 
     pub fn deinit(self: *App) void {
+        if (self.pending_compaction) |focus| self.allocator.free(focus);
+        self.pending_compaction = null;
         if (self.model_fetch) |fetch| {
             if (fetch.done.load(.acquire)) {
                 var outcome = fetch.finish();
@@ -1407,6 +1410,7 @@ pub const App = struct {
         self.discardPendingWorktreeSidecar();
         const store = self.store orelse return error.NoStoreConfigured;
         try self.dropPendingAfterCompaction("the session was resumed before the compaction finished");
+        self.dropHeldCompaction();
         self.state.clearHeldAfterAbort();
         if (self.state.session_index >= self.state.sessions.items.len) return;
         const selected = self.state.sessions.items[self.state.session_index];
@@ -2805,6 +2809,7 @@ pub const App = struct {
         var session = &(self.session orelse return);
         var completed_agent_end = false;
         var run_ended = false;
+        var run_failed = false;
         while (session.popEvent()) |event| {
             var ev = event;
             defer ev.deinit(self.allocator);
@@ -2847,6 +2852,7 @@ pub const App = struct {
             }
             if (try self.noteTerminalEvent(ev)) completed_agent_end = true;
             if (ev == .agent_end) run_ended = true;
+            if (ev == .@"error") run_failed = true;
             self.saveEvent(ev);
             try self.applyRuntimeEvent(ev);
         }
@@ -2860,6 +2866,7 @@ pub const App = struct {
             if (self.runtime) |runtime| {
                 if (runtime.local_agent) |*local| {
                     if (local.isIdle()) {
+                        self.dropHeldCompaction();
                         local.clearAllQueues();
                         local.replaceMessages(&.{}) catch {};
                         self.pending_session_reset = false;
@@ -2888,6 +2895,59 @@ pub const App = struct {
         }
         if (!completed_agent_end or self.state.queue.total() == 0) try self.drainQueuedWorktreeMessageIfIdle();
         if (run_ended) try self.sendHeldAfterAbort();
+        try self.startCompactionAfterRun(run_ended or run_failed);
+    }
+
+    fn dropHeldCompaction(self: *App) void {
+        if (self.pending_compaction) |focus| self.allocator.free(focus);
+        self.pending_compaction = null;
+        if (self.session) |*session| {
+            if (session.takeCompactionRequest(self.allocator) catch null) |steered| self.allocator.free(steered);
+        }
+    }
+
+    fn steerCompaction(self: *App, focus: []const u8) !void {
+        var session = &(self.session orelse return error.NoRuntimeConfigured);
+        if (self.pending_compaction) |queued| self.allocator.free(queued);
+        self.pending_compaction = null;
+        if (try session.requestCompaction(focus)) {
+            try self.state.appendTranscript(.system, "compacting before the next turn of this run, or when the run ends if no turn follows");
+            return;
+        }
+        try self.queueCompaction(focus);
+    }
+
+    pub fn queueCompaction(self: *App, focus: []const u8) !void {
+        const owned = try self.allocator.dupe(u8, focus);
+        if (self.session) |*session| {
+            if (session.takeCompactionRequest(self.allocator) catch null) |steered| self.allocator.free(steered);
+        }
+        if (self.pending_compaction) |previous| self.allocator.free(previous);
+        self.pending_compaction = owned;
+        try self.state.appendTranscript(.system, "compacting when this run ends");
+    }
+
+    fn startCompactionAfterRun(self: *App, run_ended: bool) !void {
+        var session = &(self.session orelse return);
+        if (run_ended) {
+            if (try session.takeCompactionRequest(self.allocator)) |steered| {
+                if (self.pending_compaction == null) self.pending_compaction = steered else self.allocator.free(steered);
+            }
+        }
+        const focus = self.pending_compaction orelse return;
+        if (self.state.status.streaming or self.state.status.compacting or self.state.queue.total() > 0) return;
+        if (self.runtime) |runtime| {
+            if (runtime.local_agent) |*local| {
+                if (!local.isIdle()) return;
+            }
+        }
+        self.pending_compaction = null;
+        defer self.allocator.free(focus);
+        self.startCompaction(focus) catch |err| {
+            const msg = try std.fmt.allocPrint(self.allocator, "the held compaction could not start: {s}", .{@errorName(err)});
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.@"error", msg);
+        };
     }
 
     fn worktreeSetupRunning(self: *const App) bool {
@@ -2997,6 +3057,7 @@ pub const App = struct {
         if (self.runtime) |runtime| {
             if (runtime.local_agent) |*local| {
                 if (!local.isIdle()) return error.PendingSessionReset;
+                self.dropHeldCompaction();
                 local.clearAllQueues();
                 local.replaceMessages(&.{}) catch {};
             }
@@ -3277,6 +3338,7 @@ pub const App = struct {
             .open_settings_picker => self.openPicker(.settings),
             .start_login_provider => try self.startLoginProviderName(result.login_provider),
             .compact => try self.startCompaction(command.arg orelse ""),
+            .compact_during_run => try self.steerCompaction(command.arg orelse ""),
             .rename_session => try self.renameSession(command.arg orelse ""),
             .refresh_models => try self.refreshModelsInBackground(),
             .logout_provider => try self.logoutProvider(command.arg orelse ""),
@@ -4078,7 +4140,12 @@ pub const TuiModel = struct {
                     .backspace => _ = app.state.composer.deleteBeforeCursor(),
                     .delete => _ = app.state.composer.deleteAtCursor(),
                     .tab => {
-                        if (app.state.mode == .normal and app.state.status.streaming and !isSlashDraft(app.state.composer.text())) {
+                        if (app.state.mode == .normal and app.state.status.streaming and !app.state.status.compacting and compactDraftFocus(app.state.composer.text()) != null) {
+                            const text = app.state.composer.text();
+                            app.queueCompaction(compactDraftFocus(text).?) catch |err| app.recordError(@errorName(err)) catch {};
+                            app.state.recordComposerHistory(text) catch |err| app.recordError(@errorName(err)) catch {};
+                            app.state.composer.clear();
+                        } else if (app.state.mode == .normal and app.state.status.streaming and !isSlashDraft(app.state.composer.text())) {
                             const text = app.state.composer.text();
                             const queued = app.queueFollowUp(text) catch |err| blk: {
                                 if (err != error.PendingSessionReset) app.recordError(@errorName(err)) catch {};
@@ -4653,6 +4720,12 @@ pub const TuiModel = struct {
         return @max(app.last_view_height, 8) / 2;
     }
 };
+
+fn compactDraftFocus(text: []const u8) ?[]const u8 {
+    const command = tui_commands.parse(std.mem.trim(u8, text, " \t\r\n")) catch return null;
+    if (command.kind != .compact) return null;
+    return command.arg orelse "";
+}
 
 fn isSlashDraft(text: []const u8) bool {
     const trimmed = std.mem.trimStart(u8, text, " \t\r\n");
@@ -5707,6 +5780,24 @@ test "TuiModel Tab queues a follow-up while a turn streams and shows it until it
     _ = model.update(.{ .tick = .{ .timestamp = 0, .delta = 0 } }, &tctx.ctx);
     try std.testing.expectEqual(@as(usize, 0), model.app.?.state.pending_follow_ups.items.len);
     try std.testing.expect(std.mem.indexOf(u8, model.view(&tctx.ctx), "queued  then open a PR") == null);
+}
+
+test "a held compaction waits while follow-ups are queued instead of blocking on the run they resume" {
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    app.session = mock.session();
+    app.pending_compaction = try std.testing.allocator.dupe(u8, "the parser");
+    app.state.queue.follow_up = 1;
+
+    try app.startCompactionAfterRun(true);
+    try std.testing.expectEqualStrings("the parser", app.pending_compaction.?);
+
+    app.state.queue.follow_up = 0;
+    app.state.status.streaming = true;
+    try app.startCompactionAfterRun(false);
+    try std.testing.expectEqualStrings("the parser", app.pending_compaction.?);
 }
 
 test "TuiModel Tab queues nothing while idle or for a slash draft" {
