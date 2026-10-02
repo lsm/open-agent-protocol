@@ -321,6 +321,7 @@ pub const Agent = struct {
         defer self._mutex.unlock(defaultIo());
         const model = self._next_model;
         self._next_model = null;
+        if (model) |next| self._state.model = next;
         return model;
     }
 
@@ -1294,7 +1295,7 @@ pub const Agent = struct {
                 },
                 .compaction_end => |e| {
                     if (e.outcome == .completed) {
-                        try self.adoptCompactedHistory(e.text.slice(), model);
+                        try self.adoptCompactedHistory(e.text.slice(), self._state.model orelse model);
                         compacted_in_run = true;
                     }
                 },
@@ -2428,6 +2429,7 @@ test "a model switch requested during a run takes effect from the next turn" {
     try std.testing.expectEqual(@as(usize, 2), mock.calls);
     try std.testing.expectEqualStrings(test_model.id, mock.model_ids[0]);
     try std.testing.expectEqualStrings("next-model", mock.model_ids[1]);
+    try std.testing.expectEqualStrings("next-model", agent._state.model.?.id);
     try std.testing.expect(mock.max_tokens[0] > 512);
     try std.testing.expectEqual(@as(u32, 512), mock.max_tokens[1]);
     try std.testing.expect(Agent.nextModel(&agent) == null);
