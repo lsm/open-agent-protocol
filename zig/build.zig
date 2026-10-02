@@ -1985,6 +1985,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "tui_runtime", .module = tui_runtime_mod },
             .{ .name = "tui_session", .module = tui_session_mod },
             .{ .name = "model_ref", .module = protocol_model_ref_mod },
+            .{ .name = "permission", .module = permission_mod },
         },
     });
     oapx_adapter_mod.addImport("jsonschema", jsonschema_mod);
