@@ -87,6 +87,15 @@ the process's configured one. The descriptor changed, so the revision moves to
 `codex-appserver-0.157.0-oap-v2`. The real-process evidence above was taken under
 `-oap-v1` and runs no reopen.
 
+Decision 0045's session settings then add `session.reasoning` and
+`session.compaction.policy` at `native`, each with the `session_open` mode. An
+open's level goes to `thread/start`'s config as `model_reasoning_effort`
+(`off` as `none`). A token limit goes there as
+`model_auto_compact_token_limit`. `off` and `share` are refused, for the
+reasons the section below records. The descriptor changed again, so the
+revision moves to `codex-appserver-0.157.0-oap-v3`. Nothing above was taken
+under it.
+
 ## Corpus
 
 `fixtures/adapters/codex-appserver-0.157.0` carries every `native.jsonl`,

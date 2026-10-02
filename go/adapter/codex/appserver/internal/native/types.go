@@ -65,7 +65,8 @@ type ThreadStartResponse struct {
 }
 
 type ThreadResumeParams struct {
-	ThreadID string `json:"threadId"`
+	ThreadID string         `json:"threadId"`
+	Config   map[string]any `json:"config,omitempty"`
 }
 
 type ThreadResumeResponse struct {
