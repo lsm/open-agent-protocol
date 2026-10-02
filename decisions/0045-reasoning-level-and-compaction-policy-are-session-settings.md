@@ -38,10 +38,12 @@ express either through OAP:
   in. Pi's adapter refuses an unknown thinking level at open but never sets
   one. Codex 0.157.0 answers `thread/resume` with the `reasoningEffort` the
   thread last ran under, and the adapter decodes and drops it.
-- **`oapx` fixes both at open.** `oapx tui` over OAP takes the thinking level
-  and the auto-compaction share from `oapx`'s own settings when the session
-  opens and refuses a change with `UnavailableOverOap`, because the wire has
-  nowhere to put one (`docs/tui-oap-seam.md`).
+- **`oapx` carries one of the two.** `oapx tui` over OAP sends the thinking
+  level in the open request's `metadata.oapx`, fixed for the session, and
+  refuses a later change with `UnavailableOverOap`. The auto-compaction share
+  neither travels nor applies over OAP. `/autocompact` changes the TUI's local
+  state and reports success, but nothing arms it on the endpoint, so the
+  setting silently does nothing (`docs/tui-oap-seam.md` lists neither).
 - **0044 makes a compaction visible but not configurable.** It publishes
   `threshold` compactions and defers "whether a control layer may read or set
   the point at which an endpoint compacts on its own" to a later decision,
@@ -242,7 +244,7 @@ decision is what those sections were recorded for.
 | Claude Code 2.1.282 | `effort` option (`low`–`max`); thinking off through `thinking` | `apply_flag_settings {effortLevel}`; `set_max_thinking_tokens` (a budget) | `autoCompactEnabled`, `autoCompactWindow` (tokens) through the flag layer | `apply_flag_settings` with the same keys |
 | Pi 0.87.1 | `--thinking` (`off`–`max`) | `set_thinking_level` | `settings.json` `compaction.enabled`, `reserveTokens` (threshold = window − reserve) | `set_auto_compaction` (on/off only) |
 | Hermes 2026.9.24 | `session.create` `reasoning_effort` | `config.set reasoning` (session scope) | `config.yaml` `compression.enabled`, `threshold` (share), `threshold_tokens` | none |
-| DeepSeek harness dsh-v0.1.7-rc.2 | `initialize` `reasoningEffort` (process-wide, opaque per model) | none | `compaction-basic` `thresholdRatio`, `headroomTokens` (patch layer) | none |
+| DeepSeek harness dsh-v0.1.7-rc.2 | `initialize` `reasoningEffort` (process-wide, opaque per model) | none | `compaction-basic` (mounted by the `sdk` profile's `dsh-base`) `thresholdRatio`, `headroomTokens` (patch layer) | none |
 | OpenCode 1.18.32 | the prompt's `variant` | the prompt's `variant` | `compaction.auto`, `compaction.buffer` (reserve) via `OPENCODE_CONFIG_CONTENT` | none |
 | ACP 1.9.1 with cagent 1.143.0 | cagent `thinking_budget` (effort or tokens) | ACP `thought_level` config option, which cagent does not implement | cagent `session_compaction`, `compaction_threshold` (share) | none |
 | `oapx` | `ThinkingLevel` (`off`–`max`) | the same | `/autocompact auto\|percent\|off` | the same |
@@ -269,8 +271,8 @@ What the table settles:
 
 The graduating implementations are **Claude Code**, the one harness that
 changes both settings live, and **`oapx`'s endpoint**, which needs this
-decision so that `oapx tui` over OAP can stop refusing the thinking level and
-`/autocompact`. Every other adapter ships `session_open` support with the
+decision so that `oapx tui` over OAP can stop refusing a thinking-level change
+and make `/autocompact` reach the endpoint. Every other adapter ships `session_open` support with the
 same graduation PR or the one after it, because the requirement above makes
 it a conformance obligation and not an option.
 
@@ -305,7 +307,8 @@ A control layer can choose, per session, how hard the model thinks and when
 the history compacts. It can learn whether the endpoint honoured each choice,
 and see both in the session state, including after a reopen. A pool of harness
 entries can carry both settings on the wire rather than through each harness's
-launch flags. `oapx tui` loses two of its `UnavailableOverOap` refusals.
+launch flags. `oapx tui` stops refusing a thinking-level change, and its
+`/autocompact` starts reaching the endpoint instead of silently doing nothing.
 
 The cost is one request pair, two open members, two state members and one enum
 value. The ordering, the degraded gate, the catalog check and the reporting

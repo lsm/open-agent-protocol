@@ -374,8 +374,11 @@ once per process and never changed on a live session.
 `compaction-basic`. Its config (`packages/compaction/compaction-basic`) sets the
 threshold as `floor(min(W × thresholdRatio, W − O − headroomTokens))`, with
 `thresholdRatio` (default 0.8) and `headroomTokens` (default 65536). The
-runtime is launched with `--profile sdk --patch <file>`, so a further patch
-layer can set both. Nothing on the SDK wire changes them on a live session.
-This read did not confirm which bundles the `sdk` profile stacks, so whether
-the SDK runtime mounts `compaction-basic` at all is still to be checked
-against a real process.
+runtime is launched with `--profile sdk --patch <file>`. The `sdk` profile
+template (`packages/boot/app-boot/src/profile.ts`) stacks the bundles
+`@deepseek-ai/dsh-base` and `@deepseek-ai/dsh-sdk-app`. `dsh-sdk-app`'s patch
+disables `session-title-llm` and `hmr`, but not `compaction-basic`, so the SDK
+runtime mounts it. A further patch layer setting
+`- id: compaction-basic` with a `config` block sets both values. Nothing on the
+SDK wire changes them on a live session. This is source-read; no real-process
+trace at this pin crosses the threshold.
