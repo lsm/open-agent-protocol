@@ -22,6 +22,7 @@ var errTerminalWon = errors.New("pi adapter: terminal already selected")
 
 type Session struct {
 	mu                 sync.Mutex
+	reportsLevel       bool
 	reduceMu           sync.Mutex
 	commandMu          sync.Mutex
 	client             Client
@@ -1248,6 +1249,9 @@ func (s *Session) State(ctx context.Context) (protocol.SessionState, error) {
 	}
 
 	s.nativeState = nativeState
+	if s.reportsLevel {
+		s.state.ReasoningLevel = protocol.ReasoningLevel(nativeState.ThinkingLevel)
+	}
 	if s.closed || s.unusable {
 		return s.state, base.ErrSessionClosed
 	}

@@ -472,3 +472,17 @@ Read from the source at `f97608f178d1ffeca59860195ab7da295f7c8e5f`.
 `agent/agent_init.py` reads these when an agent is built, so they take effect
 for a session created after the file is written. `config.set` has no
 compression key, so nothing changes them on a live session.
+
+## Session settings in the adapter
+
+Decision 0045's settings move the revision to `hermes-v2026.9.24-oap-v2`.
+`session.reasoning` is `native` with the `session_open` mode. Right after
+`session.create`, both trees send `config.set` with key `reasoning` on the
+created session, sending `off` as Hermes's `none`. That scope writes the
+session's create-time override and the running agent's `reasoning_config`
+rather than `config.yaml`. The adapter's factory creates the session before
+it sees the open request, so `session.create`'s own `reasoning_effort` is not
+used, and `config.set` validates a level where `session.create` would drop an
+unknown one silently. `session.compaction.policy` is `unavailable`:
+compression lives in `config.yaml` under `HERMES_HOME` beside the gateway's
+credentials, and no gateway method sets it.

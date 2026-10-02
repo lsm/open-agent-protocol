@@ -154,9 +154,11 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		"protocol.initialize": {Level: protocol.SupportEmulated, Reason: "ACP initialize is normalized into the OAP adapter boundary"},
 		"capabilities":        {Level: protocol.SupportEmulated, Reason: "effective support is synthesized conservatively from stable ACP v1 and adapter policy"},
 		"session.open":        {Level: protocol.SupportNative}, "session.state": {Level: protocol.SupportEmulated, Reason: "adapter-owned projection"},
-		"session.message.submit":        {Level: protocol.SupportEmulated, Reason: "admission is synthesized after the prompt request is written"},
-		"session.message.delivery.auto": {Level: protocol.SupportEmulated, Reason: "auto is normalized to start"},
-		"run.streaming":                 {Level: protocol.SupportNative}, "run.status": {Level: protocol.SupportEmulated},
+		protocol.FeatureSessionReasoning: {Level: protocol.SupportEmulated, Modes: []string{protocol.ModeSessionOpen}, Reason: "session/set_config_option on the agent's thought_level option, matched by value or name and confirmed in the returned option list; an agent that offers none refuses every level"},
+		protocol.FeatureCompactionPolicy: {Level: protocol.SupportUnavailable, Reason: "ACP has no compaction setting; an agent's own threshold is its configuration"},
+		"session.message.submit":         {Level: protocol.SupportEmulated, Reason: "admission is synthesized after the prompt request is written"},
+		"session.message.delivery.auto":  {Level: protocol.SupportEmulated, Reason: "auto is normalized to start"},
+		"run.streaming":                  {Level: protocol.SupportNative}, "run.status": {Level: protocol.SupportEmulated},
 		"run.cancel":                      {Level: protocol.SupportDegraded, Reason: "ACP cancellation is an unacknowledged session notification; prompt settlement is authoritative"},
 		"run.resume":                      {Level: protocol.SupportDegraded, Reason: "canonical replay is bounded process memory only"},
 		"run.reconciliation":              {Level: protocol.SupportEmulated, Reason: "state is adapter-owned"},
@@ -182,6 +184,13 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	if err != nil {
 		return nil, err
 	}
+	descriptor, err := a.Probe(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := base.RefuseUnadvertisedSettings(req, descriptor.Capabilities); err != nil {
+		return nil, err
+	}
 	client, initialized, err := a.config.Factory.Start(ctx)
 	if err != nil {
 		return nil, err
@@ -202,14 +211,48 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		_ = client.Close()
 		return nil, fmt.Errorf("%w: session/new returned no session id", ErrNativeProtocol)
 	}
+	if req.ReasoningLevel != "" {
+		if err := setThoughtLevel(ctx, client, opened, req.ReasoningLevel); err != nil {
+			_ = client.Close()
+			return nil, err
+		}
+	}
 	id := req.SessionID
 	if id == "" {
 		id = protocol.SessionID(a.ids.NewID("session"))
 	}
 	now := a.clock.Now().UnixMilli()
-	s := &session{client: client, inbound: client.Inbound(), clock: a.clock, ids: a.ids, capacity: a.config.JournalCapacity, nativeID: opened.SessionID, participant: req.Participant.ID, state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, UpdatedAtMS: now, Sources: a.sessionSources(req.ToolSources)}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, interactions: map[protocol.InteractionID]*permissionState{}, stop: make(chan struct{})}
+	s := &session{client: client, inbound: client.Inbound(), clock: a.clock, ids: a.ids, capacity: a.config.JournalCapacity, nativeID: opened.SessionID, participant: req.Participant.ID, state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, UpdatedAtMS: now, Sources: a.sessionSources(req.ToolSources), ReasoningLevel: req.ReasoningLevel}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, interactions: map[protocol.InteractionID]*permissionState{}, stop: make(chan struct{})}
 	go s.dispatch()
 	return s, nil
+}
+
+func setThoughtLevel(ctx context.Context, client Client, opened native.SessionNewResult, level protocol.ReasoningLevel) error {
+	refuse := func(detail string) error {
+		return &base.UnsupportedControlError{Feature: protocol.FeatureSessionReasoning, Reason: base.ControlUnsatisfiable, Field: "reasoning_level", Detail: detail}
+	}
+	for _, option := range opened.ConfigOptions {
+		if option.Category != native.CategoryThoughtLevel {
+			continue
+		}
+		for _, value := range option.Values() {
+			if !strings.EqualFold(value.Value, string(level)) && !strings.EqualFold(value.Name, string(level)) {
+				continue
+			}
+			var set native.SetConfigOptionResult
+			if err := client.Call(ctx, native.MethodSessionSetConfigOption, native.SetConfigOptionParams{SessionID: opened.SessionID, ConfigID: option.ID, Value: value.Value}, &set); err != nil {
+				return refuse("the agent refused its thought_level option: " + err.Error())
+			}
+			for _, confirmed := range set.ConfigOptions {
+				if confirmed.ID == option.ID && confirmed.CurrentValue == value.Value {
+					return nil
+				}
+			}
+			return refuse("the agent did not confirm its thought_level option")
+		}
+		return refuse("the agent's thought_level option offers no value named " + string(level))
+	}
+	return refuse("the agent offers no thought_level option")
 }
 
 func (a *Adapter) attachToolSources(request base.OpenRequest) ([]native.MCPServer, error) {

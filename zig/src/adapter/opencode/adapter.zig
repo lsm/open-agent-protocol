@@ -26,11 +26,13 @@ const features = [_]contract.Feature{
     .{ .key = "run.resume", .level = .degraded, .reason = "conversation resume exists natively but is not exercised; OAP resume replays the adapter journal" },
     .{ .key = "run.status", .level = .native, .reason = "session.active and durable step events" },
     .{ .key = "run.streaming", .level = .degraded, .reason = "durable stream carries full-value text.ended boundaries, not live deltas" },
+    .{ .key = contract.feature_compaction_policy, .level = .unavailable, .reason = "compaction is the server's config, fixed when its operator starts it; the adapter attaches to a running server" },
     .{ .key = "session.message.delivery.auto", .level = .emulated, .reason = "no native auto; maps to steer which starts immediately when idle" },
     .{ .key = "session.message.delivery.queue", .level = .native, .reason = "SessionInput.Admitted carries delivery=queue with promotedSeq; a reservation is admitted durably and promoted by session.next.prompted" },
     .{ .key = "session.message.delivery.steer", .level = .unavailable, .reason = "an explicit steer request is rejected as outside the v0.1 subset; the server's default delivery is exposed through an auto request" },
     .{ .key = "session.message.submit", .level = .native, .reason = "durable admission receipt with typed conflict rejection" },
     .{ .key = "session.open", .level = .native, .reason = "POST /api/session with server-assigned identity" },
+    .{ .key = contract.feature_session_reasoning, .level = .native, .reason = "the created session's model carries the level as its variant, which the runner sends on every step; it needs a configured model, and a variant the response does not confirm is refused", .modes = &.{contract.mode_session_open} },
     .{ .key = "session.state", .level = .emulated, .reason = "active set and adapter-owned projection" },
 };
 
@@ -113,6 +115,8 @@ pub const Session = struct {
     poll_delay_ns: u64 = 0,
 
     fn open(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
+        if (request.reasoning_level != null) return refusal.unsupportedField(contract.feature_session_reasoning, contract.reason_unsatisfiable, "reasoning_level");
+        if (request.compaction_policy_json != null) return refusal.unsupportedField(contract.feature_compaction_policy, contract.reason_unadvertised, "compaction_policy");
         const gpa = owner.allocator;
         const config = owner.config;
         const self = try gpa.create(Session);

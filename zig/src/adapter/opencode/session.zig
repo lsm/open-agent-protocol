@@ -842,7 +842,7 @@ pub fn admissionValue(arena: std.mem.Allocator, admission: Admission) std.mem.Al
     return .{ .object = payload };
 }
 
-const Feature = struct { key: []const u8, level: []const u8, reason: []const u8 };
+const Feature = struct { key: []const u8, level: []const u8, reason: []const u8, modes: []const []const u8 = &.{} };
 
 const features = [_]Feature{
     .{ .key = "action.permissions", .level = "unavailable", .reason = "durable stream carries no permission events; the polling surface is unexercised" },
@@ -857,11 +857,13 @@ const features = [_]Feature{
     .{ .key = "run.resume", .level = "degraded", .reason = "conversation resume exists natively but is not exercised; OAP resume replays the adapter journal" },
     .{ .key = "run.status", .level = "native", .reason = "session.active and durable step events" },
     .{ .key = "run.streaming", .level = "degraded", .reason = "durable stream carries full-value text.ended boundaries, not live deltas" },
+    .{ .key = "session.compaction.policy", .level = "unavailable", .reason = "compaction is the server's config, fixed when its operator starts it; the adapter attaches to a running server" },
     .{ .key = "session.message.delivery.auto", .level = "emulated", .reason = "no native auto; maps to steer which starts immediately when idle" },
     .{ .key = "session.message.delivery.queue", .level = "native", .reason = "SessionInput.Admitted carries delivery=queue with promotedSeq; a reservation is admitted durably and promoted by session.next.prompted" },
     .{ .key = "session.message.delivery.steer", .level = "unavailable", .reason = "an explicit steer request is rejected as outside the v0.1 subset; the server's default delivery is exposed through an auto request" },
     .{ .key = "session.message.submit", .level = "native", .reason = "durable admission receipt with typed conflict rejection" },
     .{ .key = "session.open", .level = "native", .reason = "POST /api/session with server-assigned identity" },
+    .{ .key = "session.reasoning", .level = "native", .reason = "the created session's model carries the level as its variant, which the runner sends on every step; it needs a configured model, and a variant the response does not confirm is refused", .modes = &.{"session_open"} },
     .{ .key = "session.state", .level = "emulated", .reason = "active set and adapter-owned projection" },
 };
 
@@ -880,6 +882,11 @@ pub fn capabilities(arena: std.mem.Allocator) std.mem.Allocator.Error!std.json.V
         var support: std.json.ObjectMap = .empty;
         try support.put(arena, "level", str(feature.level));
         try support.put(arena, "reason", str(feature.reason));
+        if (feature.modes.len != 0) {
+            var modes = try std.json.Array.initCapacity(arena, feature.modes.len);
+            for (feature.modes) |mode| modes.appendAssumeCapacity(str(mode));
+            try support.put(arena, "modes", .{ .array = modes });
+        }
         try table.put(arena, feature.key, .{ .object = support });
     }
     var limits: std.json.ObjectMap = .empty;

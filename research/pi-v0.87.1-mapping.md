@@ -543,3 +543,14 @@ settings file the adapter writes in a private agent directory, as
 `reserveTokens = contextWindow - threshold`. On a live session
 `set_auto_compaction {enabled}` switches compaction on and off, and nothing
 moves the threshold.
+
+## Session settings in the adapter
+
+Decision 0045's settings add `session.reasoning` and
+`session.compaction.policy` at `native` with the `session_open` mode, so the
+revision moves to `pi-v0.87.1-oap-v2`. After the ready `get_state`, both
+trees send `set_auto_compaction` for `auto` or `off`, then
+`set_thinking_level`. A second `get_state` confirms the level, and a level Pi
+kept elsewhere is refused. `share` and `tokens` are refused before Pi starts,
+because the threshold is a `settings.json` reserve in the agent directory, and
+that directory also holds Pi's credentials, so the adapter does not move it.

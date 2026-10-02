@@ -30,7 +30,18 @@ const features = [_]contract.Feature{
     .{ .key = "session.message.submit", .level = .emulated, .reason = "successful prompt response proves admission only" },
     .{ .key = "session.open", .level = .emulated, .reason = "one ready Pi process is associated with one OAP session" },
     .{ .key = "session.state", .level = .emulated, .reason = "adapter projection reconciled with get_state" },
+    .{ .key = contract.feature_session_reasoning, .level = .native, .reason = "set_thinking_level after the process is ready, confirmed by get_state; a level Pi does not run the model at is refused", .modes = &.{contract.mode_session_open} },
+    .{ .key = contract.feature_compaction_policy, .level = .native, .reason = "set_auto_compaction switches Pi's own threshold on or off; its threshold is a settings-file reserve, so share and tokens are refused", .modes = &.{contract.mode_session_open} },
 };
+
+fn compactionEnabled(arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!?bool {
+    const raw = request.compaction_policy_json orelse return null;
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, raw, .{}) catch return refusal.unsupportedField(contract.feature_compaction_policy, contract.reason_unsatisfiable, "compaction_policy");
+    const kind = textOf(parsed, "kind");
+    if (std.mem.eql(u8, kind, "auto")) return true;
+    if (std.mem.eql(u8, kind, "off")) return false;
+    return refusal.unsupportedField(contract.feature_compaction_policy, contract.reason_unsatisfiable, "compaction_policy");
+}
 
 pub const descriptor = contract.Descriptor{
     .endpoint = .{ .id = endpoint_id, .name = "Pi RPC Adapter", .version = harness_pins.pi_endpoint_version, .adapter = "pi-rpc-stdio" },
@@ -125,8 +136,11 @@ pub const Session = struct {
     unusable: bool = false,
     ended: bool = false,
     reaped: bool = false,
+    reports_level: bool = false,
+    reported_policy: ?[]const u8 = null,
 
     fn open(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
+        const compaction = try compactionEnabled(arena, request, refusal);
         const self = try construct(owner, arena, request, refusal);
         errdefer self.destroy();
         const state_data = try self.command(arena, "get_state", null, &.{}, refusal);
@@ -136,6 +150,17 @@ pub const Session = struct {
         if (streaming == .bool and streaming.bool) return refusal.fail(error.BackendFailed, "the Pi agent was already streaming when the session opened");
         self.current_model = modelOf(self.owned(), memberOf(state_data, "model")) catch |err| return lift(err);
         self.native_session = try self.owned().dupe(u8, native_session.string);
+        if (compaction) |enabled| {
+            _ = try self.commandWith(arena, "set_auto_compaction", null, &.{}, .{ .name = "enabled", .value = .{ .bool = enabled } }, refusal);
+            self.reported_policy = try self.owned().dupe(u8, request.compaction_policy_json.?);
+        }
+        if (request.reasoning_level) |level| {
+            _ = try self.commandWith(arena, "set_thinking_level", null, &.{}, .{ .name = "level", .value = .{ .string = level } }, refusal);
+            const confirmed = try self.command(arena, "get_state", null, &.{}, refusal);
+            const running = textOf(confirmed, "thinkingLevel");
+            if (!std.mem.eql(u8, running, level)) return refusal.unsupportedField(contract.feature_session_reasoning, contract.reason_unsatisfiable, "reasoning_level");
+            self.reports_level = true;
+        }
         return self;
     }
 
@@ -251,12 +276,15 @@ pub const Session = struct {
         return true;
     }
 
-    fn commandFrame(self: *Session, kind: []const u8, message: ?[]const u8, images: []const NativeImage) !struct { id: []const u8, value: std.json.Value } {
+    const Field = struct { name: []const u8, value: std.json.Value };
+
+    fn commandFrame(self: *Session, kind: []const u8, message: ?[]const u8, images: []const NativeImage, field: ?Field) !struct { id: []const u8, value: std.json.Value } {
         self.next_request += 1;
         const id = try std.fmt.allocPrint(self.owned(), "req_{d}", .{self.next_request});
         var frame: std.json.ObjectMap = .empty;
         try frame.put(self.owned(), "id", .{ .string = id });
         try frame.put(self.owned(), "type", .{ .string = kind });
+        if (field) |extra| try frame.put(self.owned(), extra.name, extra.value);
         if (message) |text| {
             try frame.put(self.owned(), "message", .{ .string = text });
             if (images.len > 0) {
@@ -276,7 +304,11 @@ pub const Session = struct {
     }
 
     fn command(self: *Session, arena: std.mem.Allocator, kind: []const u8, message: ?[]const u8, images: []const NativeImage, refusal: *contract.Refusal) contract.Failure!std.json.Value {
-        const built = self.commandFrame(kind, message, images) catch |err| return lift(err);
+        return self.commandWith(arena, kind, message, images, null, refusal);
+    }
+
+    fn commandWith(self: *Session, arena: std.mem.Allocator, kind: []const u8, message: ?[]const u8, images: []const NativeImage, field: ?Field, refusal: *contract.Refusal) contract.Failure!std.json.Value {
+        const built = self.commandFrame(kind, message, images, field) catch |err| return lift(err);
         self.awaited = built.id;
         self.reply = null;
         defer self.awaited = "";
@@ -456,13 +488,18 @@ pub const Session = struct {
         const reducer = self.live();
         const active_run_id: ?[]const u8 = if (reducer) |running| try arena.dupe(u8, running.run_id) else null;
         const current_model_id: ?[]const u8 = if (self.current_model.len > 0) try arena.dupe(u8, self.current_model) else null;
+        const transcript_cursor: ?[]const u8 = if (self.cursor() > 0) try std.fmt.allocPrint(arena, "{d}", .{self.cursor()}) else null;
+        const reasoning_level: ?[]const u8 = if (self.reports_level) try arena.dupe(u8, textOf(state_data, "thinkingLevel")) else null;
+        const compaction_policy_json: ?[]const u8 = if (self.reported_policy) |policy| try arena.dupe(u8, policy) else null;
         return .{
             .session_id = self.id,
             .status = if (reducer == null) .idle else if (self.asks.items.len > 0) .waiting_for_input else .running,
             .active_run_id = active_run_id,
             .current_model_id = current_model_id,
-            .transcript_cursor = if (self.cursor() > 0) try std.fmt.allocPrint(arena, "{d}", .{self.cursor()}) else null,
+            .transcript_cursor = transcript_cursor,
             .updated_at_ms = wallClock(),
+            .reasoning_level = reasoning_level,
+            .compaction_policy_json = compaction_policy_json,
         };
     }
 
@@ -878,6 +915,52 @@ const Probe = struct {
         return parsed.object.get("payload").?.object;
     }
 };
+
+test "an open sets Pi's compaction and thinking level in Go's command form and reports what get_state confirms" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++
+        \\take; printf '{"type":"response","id":"req_2","command":"set_auto_compaction","success":true}\n'
+        \\take; printf '{"type":"response","id":"req_3","command":"set_thinking_level","success":true}\n'
+        \\take; printf '{"type":"response","id":"req_4","command":"get_state","success":true,"data":{"thinkingLevel":"high","steeringMode":"all","followUpMode":"one-at-a-time","messageCount":0,"pendingMessageCount":0,"sessionId":"native-session","isStreaming":false}}\n'
+        \\take; printf '{"type":"response","id":"req_5","command":"get_state","success":true,"data":{"thinkingLevel":"high","steeringMode":"all","followUpMode":"one-at-a-time","messageCount":0,"pendingMessageCount":0,"sessionId":"native-session","isStreaming":false}}\n'
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const opened = try probe.adapter.adapter().open(probe.arena.allocator(), .{ .session_id = "s1", .participant = "user", .reasoning_level = "high", .compaction_policy_json = "{\"kind\":\"off\"}" }, &refusal);
+    probe.handle = opened;
+    const written = try probe.fake.written(probe.arena.allocator());
+    try testing.expectEqualStrings(
+        \\{"id":"req_1","type":"get_state"}
+        \\{"id":"req_2","type":"set_auto_compaction","enabled":false}
+        \\{"id":"req_3","type":"set_thinking_level","level":"high"}
+        \\{"id":"req_4","type":"get_state"}
+        \\
+    , written);
+    const reported = try opened.state(probe.arena.allocator(), &refusal);
+    try testing.expectEqualStrings("high", reported.reasoning_level.?);
+    try testing.expectEqualStrings("{\"kind\":\"off\"}", reported.compaction_policy_json.?);
+}
+
+test "a level Pi does not confirm is refused, and a threshold before Pi starts" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++
+        \\take; printf '{"type":"response","id":"req_2","command":"set_thinking_level","success":true}\n'
+        \\take; printf '{"type":"response","id":"req_3","command":"get_state","success":true,"data":{"thinkingLevel":"high","steeringMode":"all","followUpMode":"one-at-a-time","messageCount":0,"pendingMessageCount":0,"sessionId":"native-session","isStreaming":false}}\n'
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    try testing.expectError(error.UnsupportedFeature, probe.adapter.adapter().open(probe.arena.allocator(), .{ .session_id = "s1", .participant = "user", .reasoning_level = "max" }, &refusal));
+    try testing.expectEqualStrings(contract.feature_session_reasoning, refusal.feature);
+
+    var unstarted: Probe = undefined;
+    try unstarted.init(fake_prelude ++ fake_idle);
+    defer unstarted.deinit();
+    try testing.expectError(error.UnsupportedFeature, unstarted.adapter.adapter().open(unstarted.arena.allocator(), .{ .session_id = "s2", .participant = "user", .compaction_policy_json = "{\"kind\":\"tokens\",\"tokens\":1000}" }, &refusal));
+    try testing.expectEqualStrings(contract.feature_compaction_policy, refusal.feature);
+    try testing.expectError(error.FileNotFound, unstarted.fake.written(unstarted.arena.allocator()));
+}
 
 test "an open asks get_state and takes the model it reports, and the prompt reaches Pi in Go's command form" {
     var probe: Probe = undefined;
