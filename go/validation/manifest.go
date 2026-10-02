@@ -158,8 +158,9 @@ var unitCapabilities = map[string][]string{
 
 	"control-tools": {protocol.FeatureToolsProvide},
 
-	"models":        {protocol.FeatureModelsList},
-	"compound-open": {protocol.FeatureOpenSubscribe},
+	"models":           {protocol.FeatureModelsList},
+	"compound-open":    {protocol.FeatureOpenSubscribe},
+	"session-reattach": {protocol.FeatureOpenReopen},
 }
 
 var honourDeferred = map[string]string{}

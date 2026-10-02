@@ -166,6 +166,7 @@ type state struct {
 	pendingLists      map[protocol.EnvelopeID]*pendingList
 	pendingOpens      map[protocol.EnvelopeID]*pendingOpen
 	pendingSubscribes map[protocol.EnvelopeID]*pendingSubscribe
+	pendingReopens    map[protocol.EnvelopeID]*pendingReopen
 
 	descriptorAttribution map[string]string
 
@@ -186,7 +187,7 @@ type state struct {
 }
 
 func newState(f string) *state {
-	return &state{fixture: f, lateCancels: map[protocol.EnvelopeID]bool{}, ids: map[protocol.EnvelopeID]int{}, requests: map[protocol.EnvelopeID]*requestState{}, participants: map[protocol.ParticipantID]bool{}, sessions: map[protocol.SessionID]*sessionTrack{}, runs: map[protocol.RunID]*runState{}, recoveries: map[protocol.SessionID]*recoveryExpectation{}, features: map[string]protocol.SupportLevel{}, featureSupports: map[string]protocol.FeatureSupport{}, pendingControls: map[protocol.EnvelopeID]*pendingSubmit{}, pendingLists: map[protocol.EnvelopeID]*pendingList{}, pendingOpens: map[protocol.EnvelopeID]*pendingOpen{}, pendingSubscribes: map[protocol.EnvelopeID]*pendingSubscribe{}, pendingResolves: map[protocol.EnvelopeID]*pendingResolve{}, declaredSources: map[string]protocol.ToolSourceDescriptor{}, pendingModels: map[protocol.EnvelopeID]*pendingModelsQuery{}, authFlows: map[protocol.AuthFlowID]*authFlow{}, openSubmits: map[protocol.SessionID][]*pendingSubmit{}}
+	return &state{fixture: f, lateCancels: map[protocol.EnvelopeID]bool{}, ids: map[protocol.EnvelopeID]int{}, requests: map[protocol.EnvelopeID]*requestState{}, participants: map[protocol.ParticipantID]bool{}, sessions: map[protocol.SessionID]*sessionTrack{}, runs: map[protocol.RunID]*runState{}, recoveries: map[protocol.SessionID]*recoveryExpectation{}, features: map[string]protocol.SupportLevel{}, featureSupports: map[string]protocol.FeatureSupport{}, pendingControls: map[protocol.EnvelopeID]*pendingSubmit{}, pendingLists: map[protocol.EnvelopeID]*pendingList{}, pendingOpens: map[protocol.EnvelopeID]*pendingOpen{}, pendingSubscribes: map[protocol.EnvelopeID]*pendingSubscribe{}, pendingReopens: map[protocol.EnvelopeID]*pendingReopen{}, pendingResolves: map[protocol.EnvelopeID]*pendingResolve{}, declaredSources: map[string]protocol.ToolSourceDescriptor{}, pendingModels: map[protocol.EnvelopeID]*pendingModelsQuery{}, authFlows: map[protocol.AuthFlowID]*authFlow{}, openSubmits: map[protocol.SessionID][]*pendingSubmit{}}
 }
 func (s *state) add(code string, i, line int, e protocol.Envelope, ptr, msg string) {
 	s.diagnostics = append(s.diagnostics, baseDiagnostic(s.fixture, PhaseSemantic, code, i, line, e, ptr, msg))
@@ -354,6 +355,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 			s.bootstrapRecoveredRuns(i, line, p, st)
 		}
 		s.compoundOpenResponse(i, line, e, p)
+		s.reopenResponse(i, line, e, p)
 		s.applyStateDocument(i, line, e, p, st)
 		s.checkSessionCapture(i, line, e, p, st)
 
@@ -371,6 +373,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		_ = e.DecodePayload(&p)
 		s.sessionOpenRequest(i, line, e)
 		s.compoundOpenRequest(i, line, e, p)
+		s.reopenGate(i, line, e, p)
 	case protocol.TypeSessionStateResponse, protocol.TypeSessionStateUpdated:
 		var p protocol.SessionState
 		_ = e.DecodePayload(&p)
@@ -479,6 +482,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		s.steerRefusal(i, line, e)
 		s.settleToolSourceRefusal(i, line, e)
 		s.settleModelsRefusal(i, line, e)
+		s.settleReopenRefusal(i, line, e)
 		s.settleSubscribeRefusal(i, line, e)
 		s.settleModelControlRefusal(i, line, e)
 	case protocol.TypeRunCancelResponse:
