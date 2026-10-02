@@ -34,6 +34,9 @@ func (s *state) retainedExpectations(request protocol.EnvelopeID) []*controlExpe
 	if pending := s.pendingSubscribes[request]; pending != nil && pending.expectation != nil {
 		retained = append(retained, pending.expectation)
 	}
+	if pending := s.pendingReopens[request]; pending != nil && pending.expectation != nil {
+		retained = append(retained, pending.expectation)
+	}
 	return retained
 }
 
@@ -62,6 +65,7 @@ var openLevelRefusals = map[string]bool{
 	"unknown_adapter":    true,
 	"session_closed":     true,
 	"stale_capabilities": true,
+	"unknown_session":    true,
 }
 
 func (s *state) isOpenRequest(request protocol.EnvelopeID) bool {

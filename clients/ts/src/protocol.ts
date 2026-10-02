@@ -365,6 +365,7 @@ export type OpenMessage = Omit<MessageSubmitRequest, 'session_id'>;
 export interface SessionOpenRequest {
   session_id?: string;
   subscribe?: boolean;
+  reopen?: boolean;
   message?: OpenMessage;
   metadata?: Record<string, unknown>;
   tool_sources?: ToolSourceAttachment[];

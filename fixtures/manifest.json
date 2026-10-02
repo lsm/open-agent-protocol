@@ -10473,6 +10473,212 @@
       "provenance": [
         "decisions/0013-steer.md"
       ]
+    },
+    {
+      "id": "session-reopen-recovered",
+      "path": "valid/session-reopen-recovered.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-reattach"
+      ],
+      "provenance": [
+        "decisions/0040-a-session-reopens-through-its-own-binding.md"
+      ]
+    },
+    {
+      "id": "session-reopen-unknown-session",
+      "path": "valid/session-reopen-unknown-session.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-reattach"
+      ],
+      "provenance": [
+        "decisions/0040-a-session-reopens-through-its-own-binding.md"
+      ]
+    },
+    {
+      "id": "session-reopen-store-gone",
+      "path": "valid/session-reopen-store-gone.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-reattach"
+      ],
+      "provenance": [
+        "decisions/0040-a-session-reopens-through-its-own-binding.md"
+      ]
+    },
+    {
+      "id": "session-reopen-unadvertised-refused",
+      "path": "valid/session-reopen-unadvertised-refused.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-reattach"
+      ],
+      "provenance": [
+        "decisions/0040-a-session-reopens-through-its-own-binding.md"
+      ]
+    },
+    {
+      "id": "session-reopen-unadvertised",
+      "path": "semantic-invalid/session-reopen-unadvertised.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "session-reattach"
+      ],
+      "provenance": [
+        "decisions/0040-a-session-reopens-through-its-own-binding.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.open.reopen",
+          "aspect": "gate"
+        }
+      ]
+    },
+    {
+      "id": "session-reopen-unadvertised-wrong-refusal",
+      "path": "semantic-invalid/session-reopen-unadvertised-wrong-refusal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "session-reattach"
+      ],
+      "provenance": [
+        "decisions/0040-a-session-reopens-through-its-own-binding.md"
+      ]
+    },
+    {
+      "id": "session-reopen-not-recovered",
+      "path": "semantic-invalid/session-reopen-not-recovered.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "session-reattach"
+      ],
+      "provenance": [
+        "decisions/0040-a-session-reopens-through-its-own-binding.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.open.reopen",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "session-reopen-with-active-run",
+      "path": "semantic-invalid/session-reopen-with-active-run.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "session-reattach"
+      ],
+      "provenance": [
+        "decisions/0040-a-session-reopens-through-its-own-binding.md"
+      ]
+    },
+    {
+      "id": "session-reopen-without-session-id",
+      "path": "schema-invalid/session-reopen-without-session-id.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "session-reattach"
+      ],
+      "provenance": [
+        "decisions/0040-a-session-reopens-through-its-own-binding.md"
+      ]
+    },
+    {
+      "id": "session-reopen-unknown-session-discharges-subscribe",
+      "path": "valid/session-reopen-unknown-session-discharges-subscribe.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-reattach"
+      ],
+      "provenance": [
+        "decisions/0040-a-session-reopens-through-its-own-binding.md"
+      ]
+    },
+    {
+      "id": "session-reopen-degraded-with-optin",
+      "path": "valid/session-reopen-degraded-with-optin.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-reattach"
+      ],
+      "provenance": [
+        "decisions/0040-a-session-reopens-through-its-own-binding.md"
+      ]
+    },
+    {
+      "id": "session-reopen-degraded-refused-without-optin",
+      "path": "valid/session-reopen-degraded-refused-without-optin.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-reattach"
+      ],
+      "provenance": [
+        "decisions/0040-a-session-reopens-through-its-own-binding.md"
+      ]
+    },
+    {
+      "id": "session-reopen-degraded-admitted-without-optin",
+      "path": "semantic-invalid/session-reopen-degraded-admitted-without-optin.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "degraded_without_optin"
+      ],
+      "units": [
+        "session-reattach"
+      ],
+      "provenance": [
+        "decisions/0040-a-session-reopens-through-its-own-binding.md"
+      ]
     }
   ]
 }

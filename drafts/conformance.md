@@ -36,6 +36,7 @@ Conformance units are additive:
 - `+compound-open`
 - `+steer`
 - `+btw`
+- `+session-reattach`
 
 Example claims:
 
@@ -680,6 +681,22 @@ units if it:
 
 `btw` means a lightweight side question that uses the same session environment
 and configuration but does not block the main run.
+
+### `+session-reattach`
+
+`+session-reattach` is staged under
+[Decision 0040](../decisions/0040-a-session-reopens-through-its-own-binding.md).
+An implementation conforms if it:
+
+- advertises `session.open.reopen` above `unavailable`, refuses a reopen against
+  a descriptor that does not with `unsupported_feature` naming the key, and
+  refuses one against a `degraded` disclosure with `capability_degraded` unless
+  the request consents through `allow_degraded_features`;
+- refuses a reopen with no binding `unknown_session`, and one whose harness
+  cannot load the session `unsupported_feature` naming the key;
+- answers a successful reopen with the session's state document declaring
+  `recovery.recovered: true`, the model and settings the session runs under,
+  and no run under way unless the open's own message admitted one.
 
 ## Extension Packs
 

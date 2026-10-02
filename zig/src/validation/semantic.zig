@@ -358,6 +358,8 @@ const Pending = struct {
     control: ?Expectation = null,
     attachment: ?Expectation = null,
     subscribe: ?Expectation = null,
+    reopen: ?Expectation = null,
+    reopening: bool = false,
     fired: bool = false,
     provided: []const []const u8 = &.{},
     tools: ?std.json.Value = null,
@@ -802,6 +804,7 @@ pub const Machine = struct {
         }
         if (std.mem.eql(u8, declared, "session.open.response")) {
             try self.openResponse(index, envelope, payload);
+            try self.reopenResponse(index, envelope, payload);
             try self.closeSubmitWindow(field(envelope, "in_reply_to"));
             return;
         }
@@ -1094,6 +1097,49 @@ pub const Machine = struct {
         }
     }
 
+    fn reopenGate(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value, pending: *Pending) !void {
+        if (!memberBool(payload, "reopen")) return;
+        pending.reopening = true;
+        const key = feature_open_reopen;
+        const level = try self.controlDescriptor(index, envelope, key) orelse return;
+        if (!affirmative(level)) {
+            self.propose(&pending.reopen, .{
+                .rung = rung_capability,
+                .key = key,
+                .pointer = "/payload/reopen",
+                .code = error_unsupported_feature,
+                .reason = reason_unadvertised,
+                .detail_name = "feature",
+                .detail_value = key,
+                .diagnostic = code_unavailable_capability,
+            });
+            return;
+        }
+        if (std.mem.eql(u8, level, "degraded") and !allowsDegraded(payload, key)) {
+            self.propose(&pending.reopen, .{
+                .rung = rung_degradation,
+                .key = key,
+                .pointer = "/payload/reopen",
+                .code = error_capability_degraded,
+                .detail_name = "feature",
+                .detail_value = key,
+                .diagnostic = code_degraded_without_optin,
+            });
+        }
+    }
+
+    fn reopenResponse(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
+        const pending = self.submits.get(field(envelope, "in_reply_to")) orelse return;
+        if (!pending.reopening or pending.reopen != null) return;
+        const recovered = if (member(payload, "recovery")) |recovery| memberBool(recovery, "recovered") else false;
+        if (!recovered) try self.add(code_session_state_mismatch, index);
+        const carried = if (self.requests.get(field(envelope, "in_reply_to"))) |asked| asked.carries_message else false;
+        if (carried) return;
+        const listed = member(payload, "active_runs");
+        const listing = listed != null and listed.? == .array and listed.?.array.items.len > 0;
+        if (memberString(payload, "active_run_id").len != 0 or listing) try self.add(code_session_state_mismatch, index);
+    }
+
     fn disclosesMode(self: *const Machine, key: []const u8, mode: []const u8) bool {
         return self.disclosedMode(key, mode);
     }
@@ -1139,6 +1185,7 @@ pub const Machine = struct {
         defer self.submits.put(self.allocator, field(envelope, "id"), pending) catch {};
 
         try self.subscribeGate(index, envelope, payload, pending);
+        try self.reopenGate(index, envelope, payload, pending);
         if (providing) {
             const names = try self.arena.allocator().alloc([]const u8, tools.?.array.items.len);
             for (tools.?.array.items, 0..) |tool, at| names[at] = memberString(tool, "name");
@@ -1423,6 +1470,7 @@ pub const Machine = struct {
             .open => {
                 if (pending.attachment) |expectation| try self.raise(expectation, index);
                 if (pending.subscribe) |expectation| try self.raise(expectation, index);
+                if (pending.reopen) |expectation| try self.raise(expectation, index);
             },
         }
     }
@@ -2181,9 +2229,9 @@ pub const Machine = struct {
         if (outranks(candidate, held)) slot.* = candidate;
     }
 
-    fn retained(pending: *const Pending, out: *[4]Expectation) []const Expectation {
+    fn retained(pending: *const Pending, out: *[5]Expectation) []const Expectation {
         var at: usize = 0;
-        for ([_]?Expectation{ pending.control, pending.attachment, pending.subscribe, pending.limit_refusal }) |slot| {
+        for ([_]?Expectation{ pending.control, pending.attachment, pending.subscribe, pending.reopen, pending.limit_refusal }) |slot| {
             if (slot) |held| {
                 out[at] = held;
                 at += 1;
@@ -2328,7 +2376,7 @@ pub const Machine = struct {
             if (std.mem.eql(u8, asked.declared, "session.open.request") and
                 openLevelRefusal(memberString(raised, "code"))) return true;
         }
-        var slots: [4]Expectation = undefined;
+        var slots: [5]Expectation = undefined;
         const held = retained(pending, &slots);
         if (held.len != 0) {
             var speaker = held[0];
@@ -3470,6 +3518,7 @@ const mode_session_open = "session_open";
 const mode_session_live = "session_live";
 const feature_tools_provide = "action.tools.provide";
 const feature_open_subscribe = "session.open.subscribe";
+const feature_open_reopen = "session.open.reopen";
 const feature_instructions = "run.instructions";
 const feature_tool_selection = "run.tool_selection";
 const feature_structured_output = "run.structured_output";
@@ -3481,7 +3530,7 @@ const reason_unadvertised = "unadvertised";
 const reason_unsatisfiable = "unsatisfiable";
 
 fn openLevelRefusal(code: []const u8) bool {
-    return listedIn(&.{ "session_exists", "unknown_adapter", "session_closed", "stale_capabilities" }, code);
+    return listedIn(&.{ "session_exists", "unknown_adapter", "session_closed", "stale_capabilities", "unknown_session" }, code);
 }
 
 fn lastWithId(listed: std.json.Value, id: []const u8) ?std.json.Value {

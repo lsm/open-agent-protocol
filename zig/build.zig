@@ -1985,6 +1985,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "json/writer", .module = json_writer_mod },
             .{ .name = "json_writer", .module = json_writer_mod },
             .{ .name = "owned_slice", .module = owned_slice_mod },
+            .{ .name = "json_encode", .module = json_encode_mod },
         },
     });
 
