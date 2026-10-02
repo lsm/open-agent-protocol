@@ -1219,4 +1219,3 @@ func TestAnOpenAsksCodexForACompactionFormItLacksIsRefusedBeforeAThreadStarts(t 
 		})
 	}
 }
-
