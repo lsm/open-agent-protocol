@@ -4,6 +4,17 @@ Part of #365. This is #373's deliverable: what `zig/src/tui/` calls today, what
 `drafts/agent-control-core.md` says about each call, and what the Zig endpoint
 can actually answer. It is a map, not a plan — the step order lives in #375.
 
+**Status, 2026-10-02.** `oapx tui` is the terminal UI over this seam: `TuiRuntime`
+takes an injected `RemoteExecution` (`zig/src/tui/oap_execution.zig`) that hosts
+`zig/src/adapter/endpoint.zig` with the `oapx` adapter in-process and turns its
+envelopes back into `TuiEvent`s. Runs, streaming, tools, cancel and model switch
+cross the boundary as OAP; the settings the protocol has no verb for (thinking
+level, context window, permission mode, workspace root) travel once, in the open
+request's `metadata.oapx`. Resume, compaction, steering and queued follow-ups
+refuse with `UnavailableOverOap` until their gaps below close. The map that
+follows predates this and still describes the server path `oapx serve agent`
+without `--backend` uses.
+
 Every claim here was read off `origin/main` at `cbfa3b96d6`. The endpoint's own
 capability list is the authority on what it can serve, and where that list
 disagrees with the TUI's needs, the disagreement is the finding.

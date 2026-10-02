@@ -157,6 +157,17 @@ fn serializeSessionState(w: *json_writer.JsonWriter, state: oap_types.SessionSta
             if (entry.admitted_submit_requests.len > 0) try serializeStringArray(w, "admitted_submit_requests", entry.admitted_submit_requests);
             if (entry.pending_interactions.len > 0) try serializeStringArray(w, "pending_interactions", entry.pending_interactions);
             if (entry.acknowledged_interactions.len > 0) try serializeStringArray(w, "acknowledged_interactions", entry.acknowledged_interactions);
+            if (entry.pending_steers.len > 0) {
+                try w.writeKey("pending_steers");
+                try w.beginArray();
+                for (entry.pending_steers) |steer| {
+                    try w.beginObject();
+                    try w.writeStringField("submission_id", steer.submission_id);
+                    try w.writeStringField("request_id", steer.request_id);
+                    try w.endObject();
+                }
+                try w.endArray();
+            }
             try w.endObject();
         }
         try w.endArray();
@@ -579,6 +590,7 @@ fn serializePayload(w: *json_writer.JsonWriter, payload: oap_types.Payload) !voi
                 try w.writeKey("output_schema");
                 try writeJsonValueOrString(w, output_schema);
             }
+            if (value.target_run_id) |target| try w.writeStringField("target_run_id", target);
             if (value.allow_degraded_features.len > 0) {
                 try serializeStringArray(w, "allow_degraded_features", value.allow_degraded_features);
             }
@@ -597,6 +609,7 @@ fn serializePayload(w: *json_writer.JsonWriter, payload: oap_types.Payload) !voi
             if (value.status) |status| try w.writeStringField("status", @tagName(status));
             if (value.model_id) |model_id| try w.writeStringField("model_id", model_id);
             if (value.message_ids.len > 0) try serializeStringArray(w, "message_ids", value.message_ids);
+            if (value.target_sequence) |sequence| try w.writeIntField("target_sequence", sequence);
         },
         .run_cancel_request => |value| {
             try w.writeStringField("session_id", value.session_id);
@@ -1356,6 +1369,15 @@ fn deserializeActiveRuns(value: std.json.Value, allocator: std.mem.Allocator) ![
         const pending = try optionalStringArray(item.object, "pending_interactions", allocator);
         errdefer oap_types.freeStringList(allocator, pending);
         const acknowledged = try optionalStringArray(item.object, "acknowledged_interactions", allocator);
+        errdefer oap_types.freeStringList(allocator, acknowledged);
+        const steers = if (item.object.get("pending_steers")) |carried|
+            try deserializePendingSteers(carried, allocator)
+        else
+            &.{};
+        errdefer {
+            for (steers) |*steer| steer.deinit(allocator);
+            allocator.free(steers);
+        }
         runs[filled] = .{
             .run_id = run_id,
             .status = status,
@@ -1365,10 +1387,30 @@ fn deserializeActiveRuns(value: std.json.Value, allocator: std.mem.Allocator) ![
             .admitted_submit_requests = admitted,
             .pending_interactions = pending,
             .acknowledged_interactions = acknowledged,
+            .pending_steers = steers,
         };
         filled += 1;
     }
     return runs;
+}
+
+fn deserializePendingSteers(value: std.json.Value, allocator: std.mem.Allocator) ![]oap_types.PendingSteer {
+    if (value != .array) return DecodeError.InvalidField;
+    const steers = try allocator.alloc(oap_types.PendingSteer, value.array.items.len);
+    var filled: usize = 0;
+    errdefer {
+        for (steers[0..filled]) |*steer| steer.deinit(allocator);
+        allocator.free(steers);
+    }
+    for (value.array.items) |item| {
+        if (item != .object) return DecodeError.InvalidField;
+        const submission_id = try requiredOwnedString(item.object, "submission_id", allocator);
+        errdefer allocator.free(submission_id);
+        const request_id = try requiredOwnedString(item.object, "request_id", allocator);
+        steers[filled] = .{ .submission_id = submission_id, .request_id = request_id };
+        filled += 1;
+    }
+    return steers;
 }
 
 fn deserializeRunPosition(value: std.json.Value, allocator: std.mem.Allocator, genesis_allowed: bool) !oap_types.RunPosition {
@@ -1600,6 +1642,7 @@ fn deserializePayload(
             try deserializeStringArray(obj, "message_ids", allocator)
         else
             &.{};
+        const target_sequence = try optionalUnsigned(obj, "target_sequence");
         return .{ .message_submit_response = .{
             .session_id = session_id,
             .accepted = accepted,
@@ -1612,6 +1655,7 @@ fn deserializePayload(
             .status = status,
             .model_id = model_id,
             .message_ids = message_ids,
+            .target_sequence = target_sequence,
         } };
     }
     if (std.mem.eql(u8, type_str, "run.cancel.request")) {
@@ -2220,6 +2264,12 @@ fn deserializeSubmitRequest(
     const output_schema_json = try optionalRawJson(obj, "output_schema", allocator);
     errdefer if (output_schema_json) |owned| allocator.free(owned);
 
+    const target_run_id = if (obj.get("target_run_id")) |value| blk: {
+        if (value != .string) return DecodeError.InvalidField;
+        break :blk try allocator.dupe(u8, value.string);
+    } else null;
+    errdefer if (target_run_id) |owned| allocator.free(owned);
+
     var allow_degraded: []const []const u8 = &.{};
     if (obj.get("allow_degraded_features") != null) {
         allow_degraded = try deserializeStringArray(obj, "allow_degraded_features", allocator);
@@ -2233,6 +2283,7 @@ fn deserializeSubmitRequest(
         .instructions = instructions,
         .tool_choice_json = tool_choice_json,
         .output_schema_json = output_schema_json,
+        .target_run_id = target_run_id,
         .allow_degraded_features = allow_degraded,
     };
 }

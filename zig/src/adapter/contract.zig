@@ -15,6 +15,7 @@ pub const Failure = error{
     CapabilityDegraded,
     ModelNotFound,
     ToolCatalogUnavailable,
+    InvalidSteerTarget,
     BackendFailed,
 } || std.mem.Allocator.Error;
 

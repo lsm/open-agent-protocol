@@ -396,6 +396,8 @@ pub const TuiSessionOps = struct {
     current_model: *const fn (ctx: ?*anyopaque) ?ai_types.Model = undefined,
     decide_tool_approval: *const fn (ctx: ?*anyopaque, tool_call_id: []const u8, decision: ToolApprovalDecision) anyerror!void = undefined,
     stream_events: *const fn (ctx: ?*anyopaque) *TuiEventStream = undefined,
+    request_compaction: ?*const fn (ctx: ?*anyopaque, focus: []const u8) anyerror!void = null,
+    take_compaction_request: ?*const fn (ctx: ?*anyopaque, allocator: std.mem.Allocator) anyerror!?[]u8 = null,
 };
 
 pub const TuiSession = struct {
@@ -412,6 +414,17 @@ pub const TuiSession = struct {
 
     pub fn compact(self: *TuiSession, options: CompactOptions) !void {
         try self.ops.compact(self.ctx, options);
+    }
+
+    pub fn requestCompaction(self: *TuiSession, focus: []const u8) !bool {
+        const request = self.ops.request_compaction orelse return false;
+        try request(self.ctx, focus);
+        return true;
+    }
+
+    pub fn takeCompactionRequest(self: *TuiSession, allocator: std.mem.Allocator) !?[]u8 {
+        const take = self.ops.take_compaction_request orelse return null;
+        return take(self.ctx, allocator);
     }
 
     pub fn history(self: *TuiSession) []const ai_types.Message {

@@ -4,6 +4,8 @@ const agent = @import("agent");
 const tui_runtime = @import("tui_runtime");
 const tui_state = @import("tui_state");
 
+pub const over_oap_setting_refusal = "oapx tui fixes this setting when the session opens; OAP has no verb to change it mid-session yet. Use oapx --tui to change it.";
+
 pub const CommandKind = enum {
     help,
     model,
@@ -21,6 +23,7 @@ pub const CommandKind = enum {
     output,
     autocompact,
     verbose,
+    redraw,
     settings,
     abort,
     quit,
@@ -47,6 +50,8 @@ pub const CommandAction = enum {
     refresh_models,
     logout_provider,
     add_provider,
+    compact_during_run,
+    redraw,
     remove_provider,
     list_providers,
     open_login_picker,
@@ -105,6 +110,7 @@ pub const commands = [_]CommandInfo{
     .{ .name = "output", .kind = .output, .usage = "/output [auto|max|tokens]", .description = "Show or set how much output a reply may ask for", .handler = handleOutput },
     .{ .name = "autocompact", .kind = .autocompact, .usage = "/autocompact [auto|percent|off]", .description = "Show or set when the conversation compacts on its own", .handler = handleAutoCompact },
     .{ .name = "verbose", .kind = .verbose, .usage = "/verbose [quiet|normal|verbose] | /verbose <thinking|tools|output|notices|status> <level>", .description = "Show or set how much the transcript and status bar show", .handler = handleVerbose },
+    .{ .name = "redraw", .kind = .redraw, .usage = "/redraw", .description = "Clear the terminal and reprint the session at the current verbosity", .handler = handleRedraw },
     .{ .name = "settings", .kind = .settings, .usage = "/settings", .description = "Configure TUI settings", .handler = handleSettings },
     .{ .name = "abort", .kind = .abort, .usage = "/abort", .description = "Cancel the active streaming turn", .handler = handleAbort },
     .{ .name = "quit", .kind = .quit, .usage = "/quit", .description = "Exit TUI", .handler = handleQuit },
@@ -324,7 +330,10 @@ fn handlePermissions(ctx: CommandContext, command: Command) !CommandResult {
             };
         };
         const runtime = ctx.runtime orelse return error.NoRuntimeConfigured;
-        try runtime.setPermissionMode(mode);
+        runtime.setPermissionMode(mode) catch |err| switch (err) {
+            error.UnavailableOverOap => return .{ .output = try ctx.allocator.dupe(u8, over_oap_setting_refusal), .is_error = true },
+            else => return err,
+        };
         ctx.state.permission_mode = mode;
         return .{ .output = try std.fmt.allocPrint(ctx.allocator, "permission mode set to {s}", .{@tagName(mode)}) };
     }
@@ -351,8 +360,10 @@ fn handleThink(ctx: CommandContext, command: Command) !CommandResult {
             .is_error = true,
         };
     };
+    if (ctx.runtime) |runtime| runtime.setThinkingLevel(level) catch {
+        return .{ .output = try ctx.allocator.dupe(u8, over_oap_setting_refusal), .is_error = true };
+    };
     ctx.state.thinking_level = level;
-    if (ctx.runtime) |runtime| runtime.setThinkingLevel(level);
     return .{ .output = try std.fmt.allocPrint(ctx.allocator, "thinking level set to {s}", .{@tagName(level)}) };
 }
 
@@ -380,7 +391,7 @@ fn handleClear(ctx: CommandContext, command: Command) !CommandResult {
 fn handleCompact(ctx: CommandContext, command: Command) !CommandResult {
     _ = command;
     if (ctx.state.status.compacting) return .{ .output = try ctx.allocator.dupe(u8, "Already compacting; esc cancels.") };
-    if (ctx.state.status.streaming) return .{ .output = try ctx.allocator.dupe(u8, "A turn is running; compact once it finishes, or press esc to stop it first.") };
+    if (ctx.state.status.streaming) return .{ .action = .compact_during_run };
     return .{ .action = .compact };
 }
 
@@ -395,6 +406,7 @@ fn handleContext(ctx: CommandContext, command: Command) !CommandResult {
                 .is_error = true,
             },
             error.AboveMaximum => return error.AboveMaximum,
+            error.UnavailableOverOap => return .{ .output = try ctx.allocator.dupe(u8, over_oap_setting_refusal), .is_error = true },
         };
         return .{ .output = try contextWindowReport(ctx.allocator, runtime) };
     }
@@ -413,6 +425,7 @@ fn handleContext(ctx: CommandContext, command: Command) !CommandResult {
             .output = try ctx.allocator.dupe(u8, "A turn is running; set the context window once it finishes."),
             .is_error = true,
         },
+        error.UnavailableOverOap => return .{ .output = try ctx.allocator.dupe(u8, over_oap_setting_refusal), .is_error = true },
     };
     return .{ .output = try contextWindowReport(ctx.allocator, runtime) };
 }
@@ -455,6 +468,7 @@ fn handleOutput(ctx: CommandContext, command: Command) !CommandResult {
             .output = try ctx.allocator.dupe(u8, "A turn is running; set the output limit once it finishes."),
             .is_error = true,
         },
+        error.UnavailableOverOap => return .{ .output = try ctx.allocator.dupe(u8, over_oap_setting_refusal), .is_error = true },
     };
     return .{ .output = try outputReport(ctx.allocator, runtime) };
 }
@@ -498,6 +512,12 @@ fn handleVerbose(ctx: CommandContext, command: Command) !CommandResult {
     if (words.next() != null) return .{ .output = try ctx.allocator.dupe(u8, verbose_usage), .is_error = true };
     ctx.state.verbosity.set(part, level);
     return .{ .output = try verbosityReport(ctx) };
+}
+
+fn handleRedraw(ctx: CommandContext, command: Command) !CommandResult {
+    _ = command;
+    if (runIsActive(ctx)) return .{ .output = try ctx.allocator.dupe(u8, "A turn is running; redraw once it finishes."), .is_error = true };
+    return .{ .action = .redraw };
 }
 
 fn verbosityReport(ctx: CommandContext) ![]u8 {
@@ -919,6 +939,19 @@ test "verbose sets every part at once or one part on its own, and refuses what i
     try std.testing.expectEqual(tui_state.VerbosityLevel.verbose, state.verbosity.status);
 }
 
+test "redraw hands its work to the app and waits for a running turn" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    var idle = try dispatch(.{ .allocator = std.testing.allocator, .state = &state }, try parse("/redraw"));
+    defer idle.deinit(std.testing.allocator);
+    try std.testing.expectEqual(CommandAction.redraw, idle.action);
+    state.status.streaming = true;
+    var busy = try dispatch(.{ .allocator = std.testing.allocator, .state = &state }, try parse("/redraw"));
+    defer busy.deinit(std.testing.allocator);
+    try std.testing.expectEqual(CommandAction.none, busy.action);
+    try std.testing.expect(busy.is_error);
+}
+
 test "model refresh and logout hand their work to the app" {
     var state = tui_state.AppState.init(std.testing.allocator);
     defer state.deinit();
@@ -1042,7 +1075,7 @@ test "runtime dependent commands dispatch to no-runtime errors" {
     try std.testing.expectError(error.NoRuntimeConfigured, dispatch(ctx, .{ .kind = .model, .arg = "model-a" }));
 }
 
-test "compact takes its focus and waits for a running turn" {
+test "compact takes its focus and hands a running turn's request to the app" {
     const command = try parse("/compact  the parser rewrite ");
     try std.testing.expectEqual(CommandKind.compact, command.kind);
     try std.testing.expectEqualStrings("the parser rewrite", command.arg.?);
@@ -1058,8 +1091,7 @@ test "compact takes its focus and waits for a running turn" {
     state.status.streaming = true;
     var busy = try dispatch(ctx, command);
     defer busy.deinit(std.testing.allocator);
-    try std.testing.expectEqual(CommandAction.none, busy.action);
-    try std.testing.expect(std.mem.indexOf(u8, busy.output, "A turn is running") != null);
+    try std.testing.expectEqual(CommandAction.compact_during_run, busy.action);
 
     state.status.compacting = true;
     var again = try dispatch(ctx, command);

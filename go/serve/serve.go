@@ -343,5 +343,9 @@ func ControlRefusal(err error) (code, message string, details map[string]any, ok
 	if errors.As(err, &missing) {
 		return "model_not_found", missing.Error(), map[string]any{"model_id": missing.ModelID}, true
 	}
+	var steer *base.InvalidSteerTargetError
+	if errors.As(err, &steer) {
+		return "invalid_steer_target", steer.Error(), map[string]any{"reason": steer.Reason}, true
+	}
 	return "", "", nil, false
 }
