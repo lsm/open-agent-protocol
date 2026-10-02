@@ -4,6 +4,8 @@ const agent = @import("agent");
 const tui_runtime = @import("tui_runtime");
 const tui_state = @import("tui_state");
 
+pub const over_oap_setting_refusal = "oapx tui fixes this setting when the session opens; OAP has no verb to change it mid-session yet. Use oapx --tui to change it.";
+
 pub const CommandKind = enum {
     help,
     model,
@@ -310,7 +312,10 @@ fn handlePermissions(ctx: CommandContext, command: Command) !CommandResult {
             };
         };
         const runtime = ctx.runtime orelse return error.NoRuntimeConfigured;
-        try runtime.setPermissionMode(mode);
+        runtime.setPermissionMode(mode) catch |err| switch (err) {
+            error.UnavailableOverOap => return .{ .output = try ctx.allocator.dupe(u8, over_oap_setting_refusal), .is_error = true },
+            else => return err,
+        };
         ctx.state.permission_mode = mode;
         return .{ .output = try std.fmt.allocPrint(ctx.allocator, "permission mode set to {s}", .{@tagName(mode)}) };
     }
@@ -337,8 +342,10 @@ fn handleThink(ctx: CommandContext, command: Command) !CommandResult {
             .is_error = true,
         };
     };
+    if (ctx.runtime) |runtime| runtime.setThinkingLevel(level) catch {
+        return .{ .output = try ctx.allocator.dupe(u8, over_oap_setting_refusal), .is_error = true };
+    };
     ctx.state.thinking_level = level;
-    if (ctx.runtime) |runtime| runtime.setThinkingLevel(level);
     return .{ .output = try std.fmt.allocPrint(ctx.allocator, "thinking level set to {s}", .{@tagName(level)}) };
 }
 
@@ -381,6 +388,7 @@ fn handleContext(ctx: CommandContext, command: Command) !CommandResult {
                 .is_error = true,
             },
             error.AboveMaximum => return error.AboveMaximum,
+            error.UnavailableOverOap => return .{ .output = try ctx.allocator.dupe(u8, over_oap_setting_refusal), .is_error = true },
         };
         return .{ .output = try contextWindowReport(ctx.allocator, runtime) };
     }
@@ -399,6 +407,7 @@ fn handleContext(ctx: CommandContext, command: Command) !CommandResult {
             .output = try ctx.allocator.dupe(u8, "A turn is running; set the context window once it finishes."),
             .is_error = true,
         },
+        error.UnavailableOverOap => return .{ .output = try ctx.allocator.dupe(u8, over_oap_setting_refusal), .is_error = true },
     };
     return .{ .output = try contextWindowReport(ctx.allocator, runtime) };
 }
@@ -441,6 +450,7 @@ fn handleOutput(ctx: CommandContext, command: Command) !CommandResult {
             .output = try ctx.allocator.dupe(u8, "A turn is running; set the output limit once it finishes."),
             .is_error = true,
         },
+        error.UnavailableOverOap => return .{ .output = try ctx.allocator.dupe(u8, over_oap_setting_refusal), .is_error = true },
     };
     return .{ .output = try outputReport(ctx.allocator, runtime) };
 }

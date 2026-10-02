@@ -31,6 +31,7 @@ pub const OapExecution = struct {
     inbound_mutex: std.atomic.Mutex = .unlocked,
     thread: ?std.Thread = null,
     stopping: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    turn_open: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     in_assistant: bool = false,
     text: std.ArrayList(u8) = .empty,
 
@@ -154,6 +155,8 @@ pub const OapExecution = struct {
         try payload.put("session_id", .{ .string = self.session_id });
         try payload.put("messages", .{ .array = messages });
         try payload.put("delivery", .{ .string = "auto" });
+        self.turn_open.store(true, .release);
+        errdefer self.turn_open.store(false, .release);
         try self.enqueue(a, "session.message.submit.request", "submit", payload.value(), null);
     }
 
@@ -244,6 +247,7 @@ pub const OapExecution = struct {
         while (!self.stopping.load(.acquire)) {
             const moved = self.cycle() catch |err| moved: {
                 self.deliver(.{ .@"error" = .{ .message = OwnedSlice(u8).initBorrowed(@errorName(err)) } });
+                if (self.turn_open.load(.acquire)) self.endTurn(.@"error");
                 break :moved false;
             };
             if (!moved) compat.time.sleepNs(idle_sleep_ns);
@@ -298,7 +302,7 @@ pub const OapExecution = struct {
             const message = if (payload) |body| errorMessage(body) else "the endpoint refused the request";
             if (std.mem.startsWith(u8, reply_to, "submit-")) {
                 self.deliver(.{ .@"error" = .{ .message = try self.ownedText(message) } });
-                self.deliver(.{ .agent_end = .{ .reason = .@"error" } });
+                self.endTurn(.@"error");
             } else {
                 self.deliver(.{ .system_warning = .{ .message = try self.ownedText(message) } });
             }
@@ -364,21 +368,26 @@ pub const OapExecution = struct {
             const stop_reason = stopReason(stringOf(body, "stop_reason") orelse "end_turn");
             try self.closeAssistant(stop_reason);
             self.deliver(.{ .turn_end = .{ .stop_reason = stop_reason } });
-            self.deliver(.{ .agent_end = .{ .reason = .completed } });
+            self.endTurn(.completed);
             return;
         }
         if (std.mem.eql(u8, kind, "run.failed")) {
             try self.closeAssistant(.@"error");
             const message = if (body.get("error")) |value| (if (value == .object) errorMessage(value.object) else "the run failed") else "the run failed";
             self.deliver(.{ .@"error" = .{ .message = try self.ownedText(message) } });
-            self.deliver(.{ .agent_end = .{ .reason = .@"error" } });
+            self.endTurn(.@"error");
             return;
         }
         if (std.mem.eql(u8, kind, "run.cancelled")) {
             try self.closeAssistant(.aborted);
-            self.deliver(.{ .agent_end = .{ .reason = .cancelled } });
+            self.endTurn(.cancelled);
             return;
         }
+    }
+
+    fn endTurn(self: *OapExecution, reason: tui_session.TuiEndReason) void {
+        self.turn_open.store(false, .release);
+        self.deliver(.{ .agent_end = .{ .reason = reason } });
     }
 
     fn openAssistant(self: *OapExecution) void {
@@ -625,4 +634,52 @@ test "a runtime over OAP refuses what the protocol path cannot carry yet" {
     try testing.expectError(error.UnavailableOverOap, runtime.followUp("x"));
     try testing.expectError(error.UnavailableOverOap, runtime.compact(.{}));
     try testing.expectError(error.UnavailableOverOap, runtime.resumeSession());
+}
+
+test "a submit the endpoint cannot frame ends the turn in an error instead of leaving it streaming" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+
+    const oversized = try testing.allocator.alloc(u8, adapter_endpoint.default_frame_limit + 1);
+    defer testing.allocator.free(oversized);
+    @memset(oversized, 'x');
+    try runtime.submitTurn(oversized);
+    var seen = Seen{};
+    defer seen.deinit();
+    try drainTurn(&runtime, &seen);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .@"error"), seen.end);
+    try testing.expect(runtime.isIdle());
+
+    try runtime.submitTurn("after");
+    var next = Seen{};
+    defer next.deinit();
+    try drainTurn(&runtime, &next);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), next.end);
+}
+
+test "once a session over OAP is open, settings the protocol cannot carry are refused rather than changed locally" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+
+    try runtime.setThinkingLevel(.high);
+    try runtime.start();
+    try testing.expectError(error.UnavailableOverOap, runtime.setThinkingLevel(.max));
+    try testing.expectError(error.UnavailableOverOap, runtime.setPermissionMode(.ask));
+    try testing.expectError(error.UnavailableOverOap, runtime.setContextWindow(4096));
+    try testing.expectError(error.UnavailableOverOap, runtime.setOutput(.max));
+    try testing.expectError(error.UnavailableOverOap, runtime.setWorkspaceRoot("/elsewhere"));
+    try testing.expectEqual(ai_types.ThinkingLevel.high, runtime.thinkingLevel());
+    try testing.expectEqual(tui_runtime.PermissionMode.bypass, runtime.permissionMode());
+
+    try runtime.submitTurn("go");
+    var seen = Seen{};
+    defer seen.deinit();
+    try drainTurn(&runtime, &seen);
+    try testing.expectEqual(ai_types.ThinkingLevel.high, script.last_thinking);
 }

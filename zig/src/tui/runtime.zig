@@ -604,7 +604,12 @@ pub const TuiRuntime = struct {
         return model_catalog.contextWindowIsReported(self.models[index]);
     }
 
-    pub fn setContextWindow(self: *TuiRuntime, window: ?u32) error{ AboveMaximum, AgentAlreadyStreaming }!void {
+    fn settingsFixedOverOap(self: *const TuiRuntime) bool {
+        return self.remote != null and self.started;
+    }
+
+    pub fn setContextWindow(self: *TuiRuntime, window: ?u32) error{ AboveMaximum, AgentAlreadyStreaming, UnavailableOverOap }!void {
+        if (self.settingsFixedOverOap()) return error.UnavailableOverOap;
         if (self.local_agent) |*local| {
             if (!local.isIdle()) return error.AgentAlreadyStreaming;
         }
@@ -684,7 +689,8 @@ pub const TuiRuntime = struct {
         return self.thinking_level;
     }
 
-    pub fn setThinkingLevel(self: *TuiRuntime, level: ai_types.ThinkingLevel) void {
+    pub fn setThinkingLevel(self: *TuiRuntime, level: ai_types.ThinkingLevel) error{UnavailableOverOap}!void {
+        if (self.settingsFixedOverOap()) return error.UnavailableOverOap;
         const normalized = normalizeTuiThinkingLevel(level);
         self.thinking_level = normalized;
         if (self.local_agent) |*local| local.setThinkingLevel(normalized);
@@ -694,7 +700,8 @@ pub const TuiRuntime = struct {
         return self.output;
     }
 
-    pub fn setOutput(self: *TuiRuntime, setting: agent.OutputSetting) error{ AboveMaximum, AgentAlreadyStreaming }!void {
+    pub fn setOutput(self: *TuiRuntime, setting: agent.OutputSetting) error{ AboveMaximum, AgentAlreadyStreaming, UnavailableOverOap }!void {
+        if (self.settingsFixedOverOap()) return error.UnavailableOverOap;
         if (self.local_agent) |*local| {
             if (!local.isIdle()) return error.AgentAlreadyStreaming;
         }
@@ -708,6 +715,7 @@ pub const TuiRuntime = struct {
     }
 
     pub fn setPermissionMode(self: *TuiRuntime, mode: PermissionMode) !void {
+        if (self.settingsFixedOverOap()) return error.UnavailableOverOap;
         self.permission_mode = mode;
         if (self.permission_engine) |engine| engine.setBypassAll(mode == .bypass);
         self.rebuildWrappedTools();
@@ -720,6 +728,7 @@ pub const TuiRuntime = struct {
     }
 
     pub fn setWorkspaceRoot(self: *TuiRuntime, root: []const u8) !void {
+        if (self.settingsFixedOverOap()) return error.UnavailableOverOap;
         if (self.local_agent) |*local| {
             if (!local.isIdle()) return error.AgentAlreadyStreaming;
         }
@@ -3272,7 +3281,7 @@ test "thinking level affects next local turn" {
 
     var tui_session = runtime.createSession();
     try tui_session.start();
-    runtime.setThinkingLevel(.high);
+    try runtime.setThinkingLevel(.high);
     try tui_session.submitTurn("hi");
     if (runtime.local_agent) |*local| local.waitForIdle();
 
@@ -3291,7 +3300,7 @@ test "TUI runtime normalizes hidden minimal thinking level" {
     defer runtime.deinit();
 
     try std.testing.expectEqual(ai_types.ThinkingLevel.low, runtime.thinkingLevel());
-    runtime.setThinkingLevel(.minimal);
+    try runtime.setThinkingLevel(.minimal);
     try std.testing.expectEqual(ai_types.ThinkingLevel.low, runtime.thinkingLevel());
 }
 

@@ -1448,7 +1448,7 @@ pub const App = struct {
         self.session_id = new_session_id;
         try self.giveRuntimeSessionId();
         if (loaded.metadata.thinking_level) |level| {
-            runtime.setThinkingLevel(level);
+            runtime.setThinkingLevel(level) catch {};
             self.state.thinking_level = runtime.thinkingLevel();
         }
         try self.restoreCompactionTranscripts(store, &loaded);
@@ -3311,8 +3311,13 @@ pub const App = struct {
     }
 
     fn cycleThinkingLevel(self: *App) void {
+        const previous = self.state.thinking_level;
         const level = self.state.cycleThinkingLevel();
-        if (self.runtime) |runtime| runtime.setThinkingLevel(level);
+        if (self.runtime) |runtime| runtime.setThinkingLevel(level) catch {
+            self.state.thinking_level = previous;
+            self.state.appendTranscript(.@"error", over_oap_setting_refusal) catch {};
+            return;
+        };
         self.persistThinkingLevel();
     }
 
@@ -4719,7 +4724,8 @@ fn preferredContextWindow(stored: ?u32, flag: ?u32) ?u32 {
     return flag orelse stored;
 }
 
-pub const over_oap_notice = "oapx tui: this session runs over OAP through the in-process endpoint. Resume, compaction, steering and queued follow-ups are not carried over OAP yet; use oapx --tui for them.";
+pub const over_oap_notice = "oapx tui: this session runs over OAP through the in-process endpoint. Resume, compaction, steering and queued follow-ups are not carried over OAP yet, and the permission mode, thinking level, context window, output limit and workspace are fixed when the session opens; use oapx --tui for them.";
+pub const over_oap_setting_refusal = tui_commands.over_oap_setting_refusal;
 
 pub fn run(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32) !void {
     return runWith(allocator, io, context_window, false);
@@ -8290,7 +8296,7 @@ test "resume restores the session's thinking level, and a change after it is sav
     defer app.deinit();
     app.runtime = runtime;
     app.store = try session_store.Store.init(std.testing.allocator, base);
-    runtime.setThinkingLevel(.low);
+    try runtime.setThinkingLevel(.low);
     app.state.thinking_level = .low;
 
     var meta = session_store.SessionMetadata{
