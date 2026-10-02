@@ -1987,6 +1987,9 @@ pub fn build(b: *std.Build) void {
             .{ .name = "model_ref", .module = protocol_model_ref_mod },
         },
     });
+    oapx_adapter_mod.addImport("jsonschema", jsonschema_mod);
+    oapx_adapter_mod.addImport("endpoint", adapter_endpoint_mod);
+    oapx_adapter_mod.addImport("semantic", semantic_mod);
     const oapx_adapter_test = b.addTest(.{ .root_module = oapx_adapter_mod });
 
     const tui_session_store_mod = b.createModule(.{
