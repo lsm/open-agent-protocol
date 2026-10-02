@@ -357,7 +357,25 @@ pub fn estimateTokenBytes(bytes: u64) u64 {
     return (bytes + 3) / 4;
 }
 
+pub const UsageTotals = struct {
+    input: u64 = 0,
+    output: u64 = 0,
+    cache_read: u64 = 0,
+
+    pub fn add(self: *UsageTotals, other: UsageTotals) void {
+        self.input += other.input;
+        self.output += other.output;
+        self.cache_read += other.cache_read;
+    }
+
+    pub fn reported(self: UsageTotals) bool {
+        return self.input + self.output + self.cache_read > 0;
+    }
+};
+
 pub const TelemetryState = struct {
+    last_turn_usage: UsageTotals = .{},
+    session_usage: UsageTotals = .{},
     estimated_tokens: u64 = 0,
     context_window: u64 = 0,
     input_cost_per_million: f64 = 0,
@@ -1087,6 +1105,11 @@ pub const AppState = struct {
             .message_end => |payload| switch (payload.role) {
                 .assistant => {
                     self.telemetry.rate.messageEnded(eventTime(payload.at_ms), payload.output_tokens);
+                    const usage = UsageTotals{ .input = payload.input_tokens, .output = payload.output_tokens, .cache_read = payload.cache_read_tokens };
+                    if (usage.reported()) {
+                        self.telemetry.last_turn_usage = usage;
+                        self.telemetry.session_usage.add(usage);
+                    }
                     self.active_thinking_entry = null;
                     try self.finishTranscriptEntry(.assistant, payload.text.slice(), &self.active_assistant_entry);
                     try self.rememberToolCalls(payload.tool_calls_json.slice());
