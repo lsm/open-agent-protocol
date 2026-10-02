@@ -1618,4 +1618,3 @@ func TestAnOpenSetsTheAgentsThoughtLevelOptionAndRefusesALevelItCannotConfirm(t 
 		t.Fatal("a level the option does not offer was accepted")
 	}
 }
-
