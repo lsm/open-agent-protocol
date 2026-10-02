@@ -200,6 +200,10 @@ func (s *Session) Submit(ctx context.Context, submit base.SubmitRequest) (protoc
 		}
 		return admission, err
 	}
+	if admission.Admission == protocol.AdmissionSteered {
+		s.releaseReservation()
+		return admission, nil
+	}
 	s.adoptRun(admission.RunID, stream, admission.Admission == protocol.AdmissionQueued)
 	return admission, nil
 }

@@ -10,6 +10,7 @@ const register_builtins = @import("register_builtins");
 const agent = @import("agent");
 const event_stream = @import("event_stream");
 const tui_runtime = @import("tui_runtime");
+const tui_oap_execution = @import("tui/oap_execution");
 const tui_auto_continue = @import("tui_auto_continue");
 const tui_state = @import("tui_state");
 const tui_commands = @import("tui_commands");
@@ -654,6 +655,33 @@ test "collapseHome survives an allocation failure at every step" {
     try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, collapseHomeProbe, .{});
 }
 
+test "a transcript verbosity change reprints from the first entry, and a status-only change does not" {
+    var env = try TempHome.init("home-verbosity-redraw");
+    defer env.deinit();
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.inline_history_flushed = 3;
+    app.inline_flushed_rows = 2;
+
+    try app.submit("/verbose status verbose");
+    try std.testing.expect(!app.pending_clear_screen);
+    try std.testing.expectEqual(@as(usize, 3), app.inline_history_flushed);
+
+    try app.submit("/verbose quiet");
+    if (App.terminalKeepsScrollback()) {
+        try std.testing.expect(!app.pending_clear_screen);
+        try std.testing.expectEqualStrings("earlier rows keep their old verbosity; run /redraw to reprint them", app.state.transcript.items[app.state.transcript.items.len - 1].text.items);
+    } else {
+        try std.testing.expect(app.pending_clear_screen);
+        try std.testing.expectEqual(@as(usize, 0), app.inline_history_flushed);
+        try std.testing.expectEqual(@as(usize, 0), app.inline_flushed_rows);
+    }
+
+    app.pending_clear_screen = false;
+    try app.cycleVerbosity();
+    try std.testing.expectEqual(tui_state.Verbosity.all(.normal), app.state.verbosity);
+}
+
 test "Context requestClearScreen discards history queued before the request" {
     var tctx: TestContext = undefined;
     tctx.setup();
@@ -996,6 +1024,8 @@ pub const App = struct {
     inline_flushed_rows: usize = 0,
     login_status: [provider_catalog.all.len]LoginStatus = [_]LoginStatus{.none} ** provider_catalog.all.len,
     pending_session_reset: bool = false,
+    deferred_commands: std.ArrayList([]u8) = .empty,
+    pending_compaction: ?[]u8 = null,
     pending_models: ?[]ai_types.Model = null,
     model_fetch: ?*ModelFetch = null,
     model_refetch: bool = false,
@@ -1052,6 +1082,7 @@ pub const App = struct {
         };
         errdefer app.deinit();
         app.session = app.runtime.?.createSession();
+        if (options.remote != null) try app.state.appendTranscript(.system, over_oap_notice);
         app.state.permission_mode = app.runtime.?.permissionMode();
         app.state.thinking_level = app.runtime.?.thinkingLevel();
         try app.state.setRegisteredTools(app.runtime.?.availableTools());
@@ -1077,6 +1108,10 @@ pub const App = struct {
     }
 
     pub fn deinit(self: *App) void {
+        for (self.deferred_commands.items) |text| self.allocator.free(text);
+        self.deferred_commands.deinit(self.allocator);
+        if (self.pending_compaction) |focus| self.allocator.free(focus);
+        self.pending_compaction = null;
         if (self.model_fetch) |fetch| {
             if (fetch.done.load(.acquire)) {
                 var outcome = fetch.finish();
@@ -1378,6 +1413,7 @@ pub const App = struct {
         self.discardPendingWorktreeSidecar();
         const store = self.store orelse return error.NoStoreConfigured;
         try self.dropPendingAfterCompaction("the session was resumed before the compaction finished");
+        self.dropHeldCompaction();
         self.state.clearHeldAfterAbort();
         if (self.state.session_index >= self.state.sessions.items.len) return;
         const selected = self.state.sessions.items[self.state.session_index];
@@ -1446,7 +1482,7 @@ pub const App = struct {
         self.session_id = new_session_id;
         try self.giveRuntimeSessionId();
         if (loaded.metadata.thinking_level) |level| {
-            runtime.setThinkingLevel(level);
+            runtime.setThinkingLevel(level) catch {};
             self.state.thinking_level = runtime.thinkingLevel();
         }
         try self.restoreCompactionTranscripts(store, &loaded);
@@ -1692,7 +1728,16 @@ pub const App = struct {
             self.state.mode = .normal;
             return;
         }
-        const model = models[self.pickerSourceIndex(self.state.menu_index) orelse return];
+        const index = self.pickerSourceIndex(self.state.menu_index) orelse return;
+        const model = models[index];
+        if (self.state.status.streaming) {
+            self.state.mode = .normal;
+            const target = try runtime.requestModelSwitchAt(index);
+            const msg = try std.fmt.allocPrint(self.allocator, "switching to {s}/{s} {s}", .{ target.provider, target.id, switchTiming(runtime) });
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.system, msg);
+            return;
+        }
         if (self.session) |*session| {
             try session.switchModelExact(model);
         } else {
@@ -1807,7 +1852,14 @@ pub const App = struct {
         const idx = self.pickerSourceIndex(self.state.menu_index) orelse return;
         const mode = permission_modes[idx];
         const runtime = self.runtime orelse return error.NoRuntimeConfigured;
-        try runtime.setPermissionMode(mode);
+        runtime.setPermissionMode(mode) catch |err| switch (err) {
+            error.UnavailableOverOap => {
+                self.state.mode = .normal;
+                try self.state.appendTranscript(.@"error", over_oap_setting_refusal);
+                return;
+            },
+            else => return err,
+        };
         self.state.permission_mode = mode;
         self.state.mode = .normal;
         const msg = try std.fmt.allocPrint(self.allocator, "permission mode set to {s}", .{@tagName(mode)});
@@ -1942,6 +1994,7 @@ pub const App = struct {
 
     fn runtimeBusy(self: *App) bool {
         const runtime = self.runtime orelse return false;
+        if (runtime.remote != null) return !runtime.isIdle();
         const local = if (runtime.local_agent) |*agent_ref| agent_ref else return false;
         return !local.isIdle();
     }
@@ -2020,7 +2073,16 @@ pub const App = struct {
 
     fn applyModels(self: *App, models: []const ai_types.Model) !bool {
         const runtime = self.runtime orelse return false;
+        const pending: ?[]u8 = if (runtime.pending_model_index) |idx| try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ runtime.models[idx].provider, runtime.models[idx].id }) else null;
+        defer if (pending) |name| self.allocator.free(name);
         try runtime.replaceModels(models, runtime.currentModel());
+        if (pending) |name| {
+            if (runtime.pending_model_index == null) {
+                const msg = try std.fmt.allocPrint(self.allocator, "the pending switch to {s} was dropped: the refreshed model list no longer has it", .{name});
+                defer self.allocator.free(msg);
+                try self.state.appendTranscript(.@"error", msg);
+            }
+        }
         const model = runtime.currentModel() orelse return false;
         const switched = !std.mem.eql(u8, model.id, self.state.status.model) or
             !std.mem.eql(u8, model.provider, self.state.status.provider);
@@ -2768,6 +2830,7 @@ pub const App = struct {
         var session = &(self.session orelse return);
         var completed_agent_end = false;
         var run_ended = false;
+        var run_failed = false;
         while (session.popEvent()) |event| {
             var ev = event;
             defer ev.deinit(self.allocator);
@@ -2810,6 +2873,7 @@ pub const App = struct {
             }
             if (try self.noteTerminalEvent(ev)) completed_agent_end = true;
             if (ev == .agent_end) run_ended = true;
+            if (ev == .@"error") run_failed = true;
             self.saveEvent(ev);
             try self.applyRuntimeEvent(ev);
         }
@@ -2823,6 +2887,7 @@ pub const App = struct {
             if (self.runtime) |runtime| {
                 if (runtime.local_agent) |*local| {
                     if (local.isIdle()) {
+                        self.dropHeldCompaction();
                         local.clearAllQueues();
                         local.replaceMessages(&.{}) catch {};
                         self.pending_session_reset = false;
@@ -2837,6 +2902,7 @@ pub const App = struct {
         var resumed_run = false;
         if (completed_agent_end and self.state.queue.total() > 0) {
             try self.applyPendingModelsBeforeResume();
+            try self.applyPendingModelSwitchBeforeRun();
             session.resumeSession() catch |err| {
                 try self.state.status.setError(self.allocator, @errorName(err));
                 try self.state.appendTranscript(.@"error", @errorName(err));
@@ -2850,7 +2916,128 @@ pub const App = struct {
             try self.sendPendingAfterCompaction(completed, resumed_run or self.state.status.streaming);
         }
         if (!completed_agent_end or self.state.queue.total() == 0) try self.drainQueuedWorktreeMessageIfIdle();
+        if (run_ended and self.state.held_after_abort.items.len > 0) try self.applyPendingModelSwitchBeforeRun();
         if (run_ended) try self.sendHeldAfterAbort();
+        if ((run_ended or run_failed) and !self.state.status.streaming) try self.applyPendingModelSwitchBeforeRun();
+        try self.startCompactionAfterRun(run_ended or run_failed);
+        try self.runDeferredAfterRun();
+    }
+
+    fn steerModelSwitch(self: *App, model_id: []const u8) !void {
+        const runtime = self.runtime orelse return error.NoRuntimeConfigured;
+        const model = runtime.requestModelSwitch(model_id) catch {
+            const msg = try std.fmt.allocPrint(self.allocator, "no model named {s}", .{model_id});
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.@"error", msg);
+            return;
+        };
+        const msg = try std.fmt.allocPrint(self.allocator, "switching to {s}/{s} {s}", .{ model.provider, model.id, switchTiming(runtime) });
+        defer self.allocator.free(msg);
+        try self.state.appendTranscript(.system, msg);
+    }
+
+    pub fn deferCommand(self: *App, text: []const u8) !void {
+        const trimmed = std.mem.trim(u8, text, " \t\r\n");
+        const owned = try self.allocator.dupe(u8, trimmed);
+        errdefer self.allocator.free(owned);
+        try self.deferred_commands.append(self.allocator, owned);
+        const msg = try std.fmt.allocPrint(self.allocator, "{s} runs when this run ends", .{trimmed});
+        defer self.allocator.free(msg);
+        try self.state.appendTranscript(.system, msg);
+    }
+
+    fn runDeferredAfterRun(self: *App) !void {
+        const runtime = self.runtime orelse return;
+        if (runtime.pending_model_index == null and self.deferred_commands.items.len == 0) return;
+        if (self.state.status.streaming or self.state.status.compacting or !runtime.isIdle()) return;
+        try self.applyPendingModelSwitchBeforeRun();
+        if (self.state.queue.total() > 0) return;
+        const deferred = try self.deferred_commands.toOwnedSlice(self.allocator);
+        defer {
+            for (deferred) |text| self.allocator.free(text);
+            self.allocator.free(deferred);
+        }
+        for (deferred) |text| {
+            self.submitCommand(text) catch |err| {
+                const msg = try std.fmt.allocPrint(self.allocator, "{s} failed: {s}", .{ text, @errorName(err) });
+                defer self.allocator.free(msg);
+                try self.state.appendTranscript(.@"error", msg);
+            };
+        }
+    }
+
+    fn applyPendingModelSwitchBeforeRun(self: *App) !void {
+        const runtime = self.runtime orelse return;
+        if (runtime.pending_model_index == null) return;
+        if (runtime.local_agent) |*local| local.waitForIdle();
+        if (!runtime.isIdle()) return;
+        if (runtime.applyPendingModelSwitch()) |switched| {
+            if (switched) |model| {
+                try self.state.status.setModel(self.allocator, model.id, model.provider);
+                self.applyContextWindow();
+                self.persistCurrentModel();
+                const msg = try std.fmt.allocPrint(self.allocator, "model switched to {s}/{s}", .{ model.provider, model.id });
+                defer self.allocator.free(msg);
+                try self.state.appendTranscript(.system, msg);
+            }
+        } else |err| {
+            runtime.dropPendingModelSwitch();
+            const msg = try std.fmt.allocPrint(self.allocator, "switching model failed: {s}", .{@errorName(err)});
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.@"error", msg);
+        }
+    }
+
+    fn dropHeldCompaction(self: *App) void {
+        if (self.pending_compaction) |focus| self.allocator.free(focus);
+        self.pending_compaction = null;
+        if (self.session) |*session| {
+            if (session.takeCompactionRequest(self.allocator) catch null) |steered| self.allocator.free(steered);
+        }
+    }
+
+    fn steerCompaction(self: *App, focus: []const u8) !void {
+        var session = &(self.session orelse return error.NoRuntimeConfigured);
+        if (self.pending_compaction) |queued| self.allocator.free(queued);
+        self.pending_compaction = null;
+        if (try session.requestCompaction(focus)) {
+            try self.state.appendTranscript(.system, "compacting before the next turn of this run, or when the run ends if no turn follows");
+            return;
+        }
+        try self.queueCompaction(focus);
+    }
+
+    pub fn queueCompaction(self: *App, focus: []const u8) !void {
+        const owned = try self.allocator.dupe(u8, focus);
+        if (self.session) |*session| {
+            if (session.takeCompactionRequest(self.allocator) catch null) |steered| self.allocator.free(steered);
+        }
+        if (self.pending_compaction) |previous| self.allocator.free(previous);
+        self.pending_compaction = owned;
+        try self.state.appendTranscript(.system, "compacting when this run ends");
+    }
+
+    fn startCompactionAfterRun(self: *App, run_ended: bool) !void {
+        var session = &(self.session orelse return);
+        if (run_ended) {
+            if (try session.takeCompactionRequest(self.allocator)) |steered| {
+                if (self.pending_compaction == null) self.pending_compaction = steered else self.allocator.free(steered);
+            }
+        }
+        const focus = self.pending_compaction orelse return;
+        if (self.state.status.streaming or self.state.status.compacting or self.state.queue.total() > 0) return;
+        if (self.runtime) |runtime| {
+            if (runtime.local_agent) |*local| {
+                if (!local.isIdle()) return;
+            }
+        }
+        self.pending_compaction = null;
+        defer self.allocator.free(focus);
+        self.startCompaction(focus) catch |err| {
+            const msg = try std.fmt.allocPrint(self.allocator, "the held compaction could not start: {s}", .{@errorName(err)});
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.@"error", msg);
+        };
     }
 
     fn worktreeSetupRunning(self: *const App) bool {
@@ -2960,6 +3147,7 @@ pub const App = struct {
         if (self.runtime) |runtime| {
             if (runtime.local_agent) |*local| {
                 if (!local.isIdle()) return error.PendingSessionReset;
+                self.dropHeldCompaction();
                 local.clearAllQueues();
                 local.replaceMessages(&.{}) catch {};
             }
@@ -2993,6 +3181,7 @@ pub const App = struct {
     }
 
     fn sendUserTurnEchoing(self: *App, trimmed: []const u8, echo: []const u8) !bool {
+        if (!self.state.status.streaming and !self.runtimeBusy()) try self.applyPendingModelSwitchBeforeRun();
         self.applyPendingSessionResetSync() catch |err| {
             if (err == error.PendingSessionReset) {
                 try self.state.appendTranscript(.@"error", "Session reset pending; wait for the current run to finish.");
@@ -3011,7 +3200,7 @@ pub const App = struct {
             }
             return true;
         }
-        if (self.mode_settings.auto_worktree and self.working_dir.len > 0 and self.worktree_job == null and self.worktree_management_job == null and !self.worktree_attempted and self.session_turns == 0) {
+        if (self.createsWorktree() and self.working_dir.len > 0 and self.worktree_job == null and self.worktree_management_job == null and !self.worktree_attempted and self.session_turns == 0) {
             const home = compat.getEnvVarOwned(self.allocator, "HOME") catch null;
             defer if (home) |value| self.allocator.free(value);
             if (home) |h| {
@@ -3193,12 +3382,24 @@ pub const App = struct {
             .command => |command| command,
         };
 
+        if (self.state.status.streaming) {
+            if (command.kind == .model and command.arg != null and !std.mem.eql(u8, command.arg.?, "refresh")) {
+                try self.steerModelSwitch(command.arg.?);
+                return;
+            }
+            if (waitsForRunEnd(command)) {
+                try self.deferCommand(text);
+                return;
+            }
+        }
+
         if (command.kind == .@"resume") self.loadSessions() catch |err| {
             try self.state.status.setError(self.allocator, @errorName(err));
             try self.state.appendTranscript(.@"error", @errorName(err));
             return;
         };
 
+        const verbosity_before = self.state.verbosity;
         var result = tui_commands.dispatch(.{
             .allocator = self.allocator,
             .state = &self.state,
@@ -3239,10 +3440,12 @@ pub const App = struct {
             .open_settings_picker => self.openPicker(.settings),
             .start_login_provider => try self.startLoginProviderName(result.login_provider),
             .compact => try self.startCompaction(command.arg orelse ""),
+            .compact_during_run => try self.steerCompaction(command.arg orelse ""),
             .rename_session => try self.renameSession(command.arg orelse ""),
             .refresh_models => try self.refreshModelsInBackground(),
             .logout_provider => try self.logoutProvider(command.arg orelse ""),
             .add_provider => try self.addProvider(command.arg orelse ""),
+            .redraw => self.requestRedraw(),
             .remove_provider => try self.removeProvider(command.arg orelse ""),
             .list_providers => try self.listProviders(),
             .none => {},
@@ -3255,7 +3458,10 @@ pub const App = struct {
         if (command.kind == .context and !result.is_error and command.arg != null) self.persistContextWindow();
         if (command.kind == .output and !result.is_error and command.arg != null) self.persistOutput();
         if (command.kind == .autocompact and !result.is_error and command.arg != null) self.persistAutoCompact();
-        if (command.kind == .verbose and !result.is_error and command.arg != null) self.persistVerbosity();
+        if (command.kind == .verbose and !result.is_error and command.arg != null) {
+            self.persistVerbosity();
+            try self.redrawAfterVerbosity(verbosity_before);
+        }
         if (command.kind == .think and !result.is_error and command.arg != null) self.persistThinkingLevel();
         if (result.output.len > 0) {
             try self.state.appendTranscript(if (result.is_error) .@"error" else .system, result.output);
@@ -3380,6 +3586,40 @@ pub const App = struct {
         store.save(cfg) catch |err| self.recordError(@errorName(err)) catch {};
     }
 
+    fn requestRedraw(self: *App) void {
+        self.inline_history_flushed = 0;
+        self.inline_flushed_rows = 0;
+        self.pending_clear_screen = true;
+    }
+
+    fn redrawAfterVerbosity(self: *App, before: tui_state.Verbosity) !void {
+        if (before.transcriptEquals(self.state.verbosity)) return;
+        if (!self.state.status.streaming and !self.runtimeBusy() and !terminalKeepsScrollback()) {
+            self.requestRedraw();
+            return;
+        }
+        try self.state.appendTranscript(.system, "earlier rows keep their old verbosity; run /redraw to reprint them");
+    }
+
+    fn terminalKeepsScrollback() bool {
+        for ([_][]const u8{ "TMUX", "STY" }) |name| {
+            const value = compat.getEnvVarOwned(std.heap.page_allocator, name) catch continue;
+            defer std.heap.page_allocator.free(value);
+            if (value.len > 0) return true;
+        }
+        return false;
+    }
+
+    pub fn cycleVerbosity(self: *App) !void {
+        const before = self.state.verbosity;
+        self.state.verbosity = before.cycled();
+        self.persistVerbosity();
+        const msg = try std.fmt.allocPrint(self.allocator, "verbosity: {t} (ctrl+o cycles)", .{self.state.verbosity.thinking});
+        defer self.allocator.free(msg);
+        try self.state.appendTranscript(.system, msg);
+        try self.redrawAfterVerbosity(before);
+    }
+
     fn persistVerbosity(self: *App) void {
         self.mode_settings.verbosity = self.state.verbosity;
         var store = tui_config.Store.initDefault(self.allocator) catch |err| {
@@ -3433,9 +3673,20 @@ pub const App = struct {
         self.state.appendNotice("copied last reply to clipboard") catch {};
     }
 
+    fn createsWorktree(self: *const App) bool {
+        if (!self.mode_settings.auto_worktree) return false;
+        const runtime = self.runtime orelse return true;
+        return runtime.remote == null;
+    }
+
     fn cycleThinkingLevel(self: *App) void {
+        const previous = self.state.thinking_level;
         const level = self.state.cycleThinkingLevel();
-        if (self.runtime) |runtime| runtime.setThinkingLevel(level);
+        if (self.runtime) |runtime| runtime.setThinkingLevel(level) catch {
+            self.state.thinking_level = previous;
+            self.state.appendTranscript(.@"error", over_oap_setting_refusal) catch {};
+            return;
+        };
         self.persistThinkingLevel();
     }
 
@@ -3748,6 +3999,14 @@ pub const TuiModel = struct {
                             if (app.state.composer.buffer.items.len == 0 and app.state.mode == .normal and !app.state.status.streaming) return self.quitCmd(app, ctx);
                             return .none;
                         },
+                        'o' => {
+                            app.cycleVerbosity() catch |err| app.recordError(@errorName(err)) catch {};
+                            if (app.pending_clear_screen) {
+                                app.pending_clear_screen = false;
+                                if (self.inlineMode(ctx)) ctx.requestClearScreen();
+                            }
+                            return .none;
+                        },
                         'y' => {
                             app.copyLastAssistant();
                             app.flushClipboard(ctx);
@@ -3983,7 +4242,17 @@ pub const TuiModel = struct {
                     .backspace => _ = app.state.composer.deleteBeforeCursor(),
                     .delete => _ = app.state.composer.deleteAtCursor(),
                     .tab => {
-                        if (app.state.mode == .normal and app.state.status.streaming and !isSlashDraft(app.state.composer.text())) {
+                        if (app.state.mode == .normal and app.state.status.streaming and !app.state.status.compacting and compactDraftFocus(app.state.composer.text()) != null) {
+                            const text = app.state.composer.text();
+                            app.queueCompaction(compactDraftFocus(text).?) catch |err| app.recordError(@errorName(err)) catch {};
+                            app.state.recordComposerHistory(text) catch |err| app.recordError(@errorName(err)) catch {};
+                            app.state.composer.clear();
+                        } else if (app.state.mode == .normal and app.state.status.streaming and queueableCommandDraft(app.state.composer.text())) {
+                            const text = app.state.composer.text();
+                            app.deferCommand(text) catch |err| app.recordError(@errorName(err)) catch {};
+                            app.state.recordComposerHistory(text) catch |err| app.recordError(@errorName(err)) catch {};
+                            app.state.composer.clear();
+                        } else if (app.state.mode == .normal and app.state.status.streaming and !isSlashDraft(app.state.composer.text())) {
                             const text = app.state.composer.text();
                             const queued = app.queueFollowUp(text) catch |err| blk: {
                                 if (err != error.PendingSessionReset) app.recordError(@errorName(err)) catch {};
@@ -4559,6 +4828,34 @@ pub const TuiModel = struct {
     }
 };
 
+fn switchTiming(runtime: *const tui_runtime.TuiRuntime) []const u8 {
+    return if (runtime.local_agent != null) "before the next turn of this run, or when it ends" else "when this run ends";
+}
+
+fn waitsForRunEnd(command: tui_commands.Command) bool {
+    const arg = command.arg orelse return false;
+    return switch (command.kind) {
+        .context, .output, .logout => true,
+        .provider => std.mem.startsWith(u8, arg, "del ") or std.mem.startsWith(u8, arg, "delete ") or std.mem.eql(u8, arg, "del") or std.mem.eql(u8, arg, "delete"),
+        else => false,
+    };
+}
+
+fn queueableCommandDraft(text: []const u8) bool {
+    const command = tui_commands.parse(std.mem.trim(u8, text, " \t\r\n")) catch return false;
+    if (command.kind == .model) {
+        const arg = command.arg orelse return false;
+        return !std.mem.eql(u8, arg, "refresh");
+    }
+    return waitsForRunEnd(command);
+}
+
+fn compactDraftFocus(text: []const u8) ?[]const u8 {
+    const command = tui_commands.parse(std.mem.trim(u8, text, " \t\r\n")) catch return null;
+    if (command.kind != .compact) return null;
+    return command.arg orelse "";
+}
+
 fn isSlashDraft(text: []const u8) bool {
     const trimmed = std.mem.trimStart(u8, text, " \t\r\n");
     return trimmed.len > 0 and trimmed[0] == '/';
@@ -4851,7 +5148,14 @@ fn preferredContextWindow(stored: ?u32, flag: ?u32) ?u32 {
     return flag orelse stored;
 }
 
+pub const over_oap_notice = "oapx tui: this session runs over OAP through the in-process endpoint. Resume, compaction, steering, queued follow-ups and the model's questions to you are not carried over OAP yet, ask mode is unavailable until approvals cross OAP, and the thinking level, context window, output limit and workspace are fixed when the session opens; use oapx --tui for them.";
+pub const over_oap_setting_refusal = tui_commands.over_oap_setting_refusal;
+
 pub fn run(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32) !void {
+    return runWith(allocator, io, context_window, false);
+}
+
+pub fn runWith(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32, over_oap: bool) !void {
     var environ_map = try compat.createEnvMap(allocator);
     defer environ_map.deinit();
 
@@ -4871,6 +5175,14 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32) !void
     if (fixture) |runtime| {
         options.protocol = runtime.provider.protocolClient();
         options.generate_titles = false;
+    }
+    var execution: ?*tui_oap_execution.OapExecution = null;
+    defer if (execution) |owned| owned.destroy();
+    if (over_oap) {
+        execution = try tui_oap_execution.OapExecution.create(allocator, options);
+        options.remote = execution.?.remote();
+        options.generate_titles = false;
+        options.auto_worktree = false;
     }
 
     var program = zz.Program(TuiModel).initWithOptions(allocator, io, &environ_map, tuiProgramOptions());
@@ -5014,6 +5326,85 @@ test "App applies a staged catalog once the runtime is idle" {
         if (std.mem.eql(u8, entry.text.items, "model catalog refreshed")) noted = true;
     }
     try std.testing.expect(noted);
+}
+
+test "App steers a model switch and defers run-end commands while a run streams, then applies them" {
+    var env = try TempHome.init("home-defer-commands");
+    defer env.deinit();
+    var other = defaultModel();
+    other.id = "other-model";
+    other.name = "Other";
+    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    errdefer std.testing.allocator.destroy(runtime);
+    runtime.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ defaultModel(), other }, .initial_model_id = defaultModel().id });
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.runtime = runtime;
+
+    app.state.status.streaming = true;
+    try app.submit("/model other-model");
+    try std.testing.expectEqual(@as(?usize, 1), runtime.pending_model_index);
+    try std.testing.expectEqualStrings(defaultModel().id, runtime.currentModel().?.id);
+    try app.submit("/model missing-model");
+    try std.testing.expectEqualStrings("no model named missing-model", app.state.transcript.items[app.state.transcript.items.len - 1].text.items);
+    try app.submit("/output 4096");
+    try std.testing.expectEqual(@as(usize, 1), app.deferred_commands.items.len);
+    try std.testing.expectEqualStrings("/output 4096 runs when this run ends", app.state.transcript.items[app.state.transcript.items.len - 1].text.items);
+
+    app.state.status.streaming = false;
+    try app.runDeferredAfterRun();
+    try std.testing.expectEqualStrings("other-model", runtime.currentModel().?.id);
+    try std.testing.expectEqualStrings("other-model", app.state.status.model);
+    try std.testing.expect(runtime.pending_model_index == null);
+    try std.testing.expectEqual(@as(usize, 0), app.deferred_commands.items.len);
+    try std.testing.expectEqual(agent.OutputSetting{ .tokens = 4096 }, runtime.outputSetting());
+}
+
+test "a pending model switch applies once idle even with follow-ups queued, while held commands wait" {
+    var env = try TempHome.init("home-switch-with-queue");
+    defer env.deinit();
+    var other = defaultModel();
+    other.id = "other-model";
+    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    errdefer std.testing.allocator.destroy(runtime);
+    runtime.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ defaultModel(), other }, .initial_model_id = defaultModel().id });
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.runtime = runtime;
+
+    app.state.status.streaming = true;
+    try app.submit("/model other-model");
+    try app.submit("/output 4096");
+    app.state.status.streaming = false;
+    app.state.queue.follow_up = 1;
+
+    try app.runDeferredAfterRun();
+    try std.testing.expectEqualStrings("other-model", runtime.currentModel().?.id);
+    try std.testing.expectEqual(@as(usize, 1), app.deferred_commands.items.len);
+}
+
+test "a refreshed model list keeps a pending switch it still lists and reports one it drops" {
+    var other = defaultModel();
+    other.id = "other-model";
+    var third = defaultModel();
+    third.id = "third-model";
+    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    errdefer std.testing.allocator.destroy(runtime);
+    runtime.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ defaultModel(), other }, .initial_model_id = defaultModel().id });
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.runtime = runtime;
+
+    _ = try runtime.requestModelSwitch("other-model");
+    _ = try app.applyModels(&[_]ai_types.Model{ third, other, defaultModel() });
+    try std.testing.expectEqual(@as(?usize, 1), runtime.pending_model_index);
+    try std.testing.expectEqualStrings("other-model", runtime.models[runtime.pending_model_index.?].id);
+
+    _ = try app.applyModels(&[_]ai_types.Model{ defaultModel(), third });
+    try std.testing.expect(runtime.pending_model_index == null);
+    const said = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expectEqual(tui_state.TranscriptKind.@"error", said.kind);
+    try std.testing.expect(std.mem.indexOf(u8, said.text.items, "other-model was dropped") != null);
 }
 
 test "App refreshes runtime models after login" {
@@ -5599,7 +5990,25 @@ test "TuiModel Tab queues a follow-up while a turn streams and shows it until it
     try std.testing.expect(std.mem.indexOf(u8, model.view(&tctx.ctx), "queued  then open a PR") == null);
 }
 
-test "TuiModel Tab queues nothing while idle or for a slash draft" {
+test "a held compaction waits while follow-ups are queued instead of blocking on the run they resume" {
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    app.session = mock.session();
+    app.pending_compaction = try std.testing.allocator.dupe(u8, "the parser");
+    app.state.queue.follow_up = 1;
+
+    try app.startCompactionAfterRun(true);
+    try std.testing.expectEqualStrings("the parser", app.pending_compaction.?);
+
+    app.state.queue.follow_up = 0;
+    app.state.status.streaming = true;
+    try app.startCompactionAfterRun(false);
+    try std.testing.expectEqualStrings("the parser", app.pending_compaction.?);
+}
+
+test "TuiModel Tab queues no follow-up while idle or for a slash draft, and defers a run-end command" {
     var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
     defer model.deinit();
     var mock = MockAppSession{};
@@ -5620,12 +6029,18 @@ test "TuiModel Tab queues nothing while idle or for a slash draft" {
     try std.testing.expectEqual(@as(usize, 0), mock.follow_up_count);
     try std.testing.expectEqualStrings("/abort", model.app.?.state.composer.text());
 
-    for ([_][]const u8{ "/model claude", "/model ", "  /status now" }) |draft| {
+    for ([_][]const u8{ "/model ", "  /status now" }) |draft| {
         try model.app.?.state.replaceComposerBuffer(draft);
         _ = model.update(.{ .key = .{ .key = .tab } }, &tctx.ctx);
         try std.testing.expectEqual(@as(usize, 0), mock.follow_up_count);
         try std.testing.expectEqualStrings(draft, model.app.?.state.composer.text());
     }
+    try model.app.?.state.replaceComposerBuffer("/model claude");
+    _ = model.update(.{ .key = .{ .key = .tab } }, &tctx.ctx);
+    try std.testing.expectEqual(@as(usize, 0), mock.follow_up_count);
+    try std.testing.expectEqualStrings("", model.app.?.state.composer.text());
+    try std.testing.expectEqual(@as(usize, 1), model.app.?.deferred_commands.items.len);
+    try std.testing.expectEqualStrings("/model claude", model.app.?.deferred_commands.items[0]);
     try std.testing.expect(!try model.app.?.queueFollowUp("/model claude"));
     try std.testing.expectEqual(@as(usize, 0), mock.follow_up_count);
     try std.testing.expectEqual(@as(usize, 0), model.app.?.state.pending_follow_ups.items.len);
@@ -6037,6 +6452,20 @@ test "App init takes mode settings from options, not the environment" {
     defer opted_in.deinit();
     try std.testing.expect(opted_in.mode_settings.auto_worktree);
     try std.testing.expect(opted_in.mode_settings.compact_output);
+}
+
+test "an app over OAP never creates an automatic worktree, since its workspace is fixed when the session opens" {
+    const models = [_]ai_types.Model{auto_compact_test_model};
+    const execution = try tui_oap_execution.OapExecution.create(std.testing.allocator, .{ .models = &models });
+    defer execution.destroy();
+    var app = try App.init(std.testing.allocator, .{ .models = &models, .auto_worktree = true, .remote = execution.remote() });
+    defer app.deinit();
+    try std.testing.expect(app.mode_settings.auto_worktree);
+    try std.testing.expect(!app.createsWorktree());
+
+    var local = try App.init(std.testing.allocator, .{ .models = &models, .auto_worktree = true });
+    defer local.deinit();
+    try std.testing.expect(local.createsWorktree());
 }
 
 test "resuming discards a pending worktree sidecar from another session" {
@@ -8488,7 +8917,7 @@ test "resume restores the session's thinking level, and a change after it is sav
     defer app.deinit();
     app.runtime = runtime;
     app.store = try session_store.Store.init(std.testing.allocator, base);
-    runtime.setThinkingLevel(.low);
+    try runtime.setThinkingLevel(.low);
     app.state.thinking_level = .low;
 
     var meta = session_store.SessionMetadata{

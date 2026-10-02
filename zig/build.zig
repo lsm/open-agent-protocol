@@ -1991,6 +1991,25 @@ pub fn build(b: *std.Build) void {
     oapx_adapter_mod.addImport("endpoint", adapter_endpoint_mod);
     oapx_adapter_mod.addImport("semantic", semantic_mod);
     const oapx_adapter_test = b.addTest(.{ .root_module = oapx_adapter_mod });
+    const tui_oap_execution_mod = b.createModule(.{
+        .root_source_file = b.path("src/tui/oap_execution.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "compat", .module = compat_mod },
+            .{ .name = "ai_types", .module = ai_types_mod },
+            .{ .name = "agent", .module = agent_mod },
+            .{ .name = "event_stream", .module = event_stream_mod },
+            .{ .name = "json_encode", .module = json_encode_mod },
+            .{ .name = "model_ref", .module = protocol_model_ref_mod },
+            .{ .name = "tui_runtime", .module = tui_runtime_mod },
+            .{ .name = "tui_session", .module = tui_session_mod },
+            .{ .name = "adapter_endpoint", .module = adapter_endpoint_mod },
+            .{ .name = "oapx_adapter", .module = oapx_adapter_mod },
+            .{ .name = "owned_slice", .module = owned_slice_mod },
+        },
+    });
+    const tui_oap_execution_test = b.addTest(.{ .root_module = tui_oap_execution_mod });
 
     const tui_session_store_mod = b.createModule(.{
         .root_source_file = b.path("src/tui/session_store.zig"),
@@ -2127,6 +2146,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
         .imports = &.{
+            .{ .name = "tui/oap_execution", .module = tui_oap_execution_mod },
             .{ .name = "compat", .module = compat_mod },
             .{ .name = "zigzag", .module = zigzag_mod },
             .{ .name = "provider_catalog", .module = provider_catalog_mod },
@@ -2873,6 +2893,7 @@ pub fn build(b: *std.Build) void {
     test_unit_adapter_step.dependOn(&b.addRunArtifact(memory_adapter_test).step);
     test_step.dependOn(&isolatedHomeRun(b, oapx_adapter_test, "test/oapx_adapter_test").step);
     test_unit_adapter_step.dependOn(&isolatedHomeRun(b, oapx_adapter_test, "test-unit-adapter/oapx_adapter_test").step);
+    test_step.dependOn(&isolatedHomeRun(b, tui_oap_execution_test, "test/tui_oap_execution_test").step);
     test_step.dependOn(&b.addRunArtifact(deepseek_endpoint_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(deepseek_endpoint_test).step);
     test_step.dependOn(&b.addRunArtifact(hermes_adapter_test).step);
@@ -3251,6 +3272,7 @@ pub fn build(b: *std.Build) void {
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_oap_client_test, "test-unit-tui/tui_oap_client_test").step);
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_oap_ops_parity_test, "test-unit-tui/tui_oap_ops_parity_test").step);
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_auto_continue_test, "test-unit-tui/tui_auto_continue_test").step);
+    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_oap_execution_test, "test-unit-tui/tui_oap_execution_test").step);
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_commands_test, "test-unit-tui/tui_commands_test").step);
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_login_test, "test-unit-tui/tui_login_test").step);
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, model_catalog_test, "test-unit-tui/model_catalog_test").step);

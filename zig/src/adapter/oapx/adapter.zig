@@ -142,11 +142,12 @@ pub const Session = struct {
         errdefer gpa.destroy(self);
         const runtime = try gpa.create(tui_runtime.TuiRuntime);
         errdefer gpa.destroy(runtime);
-        const session_tools = try gpa.alloc(agent.AgentTool, owner.options.tools.len + 1);
+        const offers_input = offersUserInput(request.metadata);
+        const session_tools = try gpa.alloc(agent.AgentTool, owner.options.tools.len + @intFromBool(offers_input));
         defer gpa.free(session_tools);
         @memcpy(session_tools[0..owner.options.tools.len], owner.options.tools);
-        session_tools[owner.options.tools.len] = inputTool(self);
-        var options = owner.options;
+        if (offers_input) session_tools[owner.options.tools.len] = inputTool(self);
+        var options = sessionOptions(owner.options, request.metadata);
         options.tools = session_tools;
         options.tool_approval_ctx = self;
         options.tool_approval_callback = approveTool;
@@ -886,6 +887,55 @@ pub const Session = struct {
     }
 };
 
+pub const settings_key = "oapx";
+
+fn offersUserInput(metadata: ?std.json.Value) bool {
+    const document = metadata orelse return true;
+    if (document != .object) return true;
+    const settings = document.object.get(settings_key) orelse return true;
+    if (settings != .object) return true;
+    const offered = settings.object.get("user_input") orelse return true;
+    return !(offered == .bool and !offered.bool);
+}
+
+pub fn sessionOptions(base: tui_runtime.TuiRuntimeOptions, metadata: ?std.json.Value) tui_runtime.TuiRuntimeOptions {
+    var options = base;
+    const document = metadata orelse return options;
+    if (document != .object) return options;
+    const settings = document.object.get(settings_key) orelse return options;
+    if (settings != .object) return options;
+    const fields = settings.object;
+    if (fields.get("thinking_level")) |value| {
+        if (value == .string) {
+            if (std.meta.stringToEnum(ai_types.ThinkingLevel, value.string)) |level| options.thinking_level = level;
+        }
+    }
+    if (fields.get("context_window")) |value| {
+        if (value == .integer and value.integer > 0 and value.integer <= std.math.maxInt(u32)) options.context_window = @intCast(value.integer);
+    }
+    if (fields.get("permission_mode")) |value| {
+        if (value == .string) {
+            if (std.meta.stringToEnum(tui_runtime.PermissionMode, value.string)) |mode| options.permission_mode = mode;
+        }
+    }
+    if (fields.get("output")) |value| {
+        switch (value) {
+            .string => |text| {
+                if (std.mem.eql(u8, text, "auto")) options.output = .auto;
+                if (std.mem.eql(u8, text, "max")) options.output = .max;
+            },
+            .integer => |count| if (count > 0 and count <= std.math.maxInt(u32)) {
+                options.output = .{ .tokens = @intCast(count) };
+            },
+            else => {},
+        }
+    }
+    if (fields.get("workspace_root")) |value| {
+        if (value == .string and value.string.len > 0) options.workspace_root = value.string;
+    }
+    return options;
+}
+
 fn refFor(allocator: std.mem.Allocator, model: ai_types.Model) ![]u8 {
     return model_ref.formatModelRef(allocator, model.provider, model.api, model.id);
 }
@@ -1368,6 +1418,41 @@ test "a full journal drops its oldest half at once, keeping the newest entries i
     session.evictOldestHalf();
     try testing.expectEqual(@as(usize, 4), session.journal.items.len);
     for (session.journal.items, 5..) |entry, expected| try testing.expectEqual(@as(u64, expected), entry.sequence);
+}
+
+test "an open's oapx metadata sets the session's thinking level, window, output limit and workspace, and anything else is ignored" {
+    const base = tui_runtime.TuiRuntimeOptions{ .thinking_level = .low, .permission_mode = .bypass, .workspace_root = "/base" };
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"oapx":{"thinking_level":"high","context_window":1000000,"output":64000,"permission_mode":"bypass","workspace_root":"/work","unknown":1}}
+    , .{});
+    defer parsed.deinit();
+    const applied = sessionOptions(base, parsed.value);
+    try testing.expectEqual(ai_types.ThinkingLevel.high, applied.thinking_level);
+    try testing.expectEqual(@as(?u32, 1_000_000), applied.context_window);
+    try testing.expectEqual(@as(u32, 64_000), applied.output.tokens);
+    try testing.expectEqual(tui_runtime.PermissionMode.bypass, applied.permission_mode);
+    try testing.expectEqualStrings("/work", applied.workspace_root);
+
+    var named = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"oapx\":{\"output\":\"max\"}}", .{});
+    defer named.deinit();
+    try testing.expect(sessionOptions(base, named.value).output == .max);
+
+    var wrong = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"oapx":{"thinking_level":"loud","context_window":-1,"output":-5}}
+    , .{});
+    defer wrong.deinit();
+    const kept = sessionOptions(base, wrong.value);
+    try testing.expectEqual(ai_types.ThinkingLevel.low, kept.thinking_level);
+    try testing.expectEqual(@as(?u32, null), kept.context_window);
+    try testing.expect(kept.output == .auto);
+    try testing.expectEqualStrings("/base", kept.workspace_root);
+}
+
+test "an open's oapx metadata can ask for ask mode, which this adapter now answers with permission interactions" {
+    const base = tui_runtime.TuiRuntimeOptions{ .permission_mode = .bypass };
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"oapx\":{\"permission_mode\":\"ask\"}}", .{});
+    defer parsed.deinit();
+    try testing.expectEqual(tui_runtime.PermissionMode.ask, sessionOptions(base, parsed.value).permission_mode);
 }
 
 fn parseValue(arena: std.mem.Allocator, text: []const u8) contract.Failure!std.json.Value {
@@ -1952,4 +2037,14 @@ test "buffered reservation cancellation makes idle activity, model switch and cl
     closed = true;
     try testing.expectEqual(@as(usize, 0), script.calls);
     try wire.validate();
+}
+
+test "a session whose client declines user_input is not given the input tool" {
+    try testing.expect(offersUserInput(null));
+    var declined = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"oapx\":{\"user_input\":false}}", .{});
+    defer declined.deinit();
+    try testing.expect(!offersUserInput(declined.value));
+    var offered = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"oapx\":{\"user_input\":true}}", .{});
+    defer offered.deinit();
+    try testing.expect(offersUserInput(offered.value));
 }
