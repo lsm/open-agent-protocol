@@ -306,34 +306,42 @@ code paths; add a transcript row instead.
   for both, the branch is dropped and the path takes the full width.
 
   The path is the directory the agent is working in, not the one the TUI started in.
-  `workspace_root` is a required, model-supplied argument on every workspace tool, and
-  the agent loop forwards the model's arguments unchanged, so the last absolute
-  `workspace_root` a tool call names is the directory that call is for. The TUI reads it
-  off `tool_execution_start`, whose `args_json` the runtime already carries. That event is
-  pushed before the permission engine evaluates the call, so the row leads the call
-  rather than following it, and it moves to the directory a refused call named even
-  though the call then never ran there — the row is where the agent is working, which is
-  what the model's next call will build on, not a receipt for what already happened. A
-  call with no `workspace_root`, or a relative one, leaves the last known value alone,
-  and the initial value is the directory the TUI started in. `/clear` and a session
-  resume return the row to the session root; resume suppresses the follow while it
-  replays the session's persisted events, so a directory from before the resume does not
-  come back with them.
+  Since #586 the session owns that directory: the runtime holds it, and every workspace
+  tool call is dispatched with `workspace_root` rewritten to it. The rewrite happens in
+  the agent loop, once, on the arguments the permission engine also sees, so the engine
+  and the tool resolve the same path. The TUI still reads the value off
+  `tool_execution_start`, whose `args_json` now carries the effective directory, so the
+  row tracks a `cd` without the row itself knowing about one. That event is pushed before
+  the permission engine evaluates the call, so the row leads the call rather than
+  following it, and it moves to the directory a refused call named even though the call
+  then never ran there — the row is where the agent is working, which is what the model's
+  next call will build on, not a receipt for what already happened. A call with no
+  `workspace_root`, or a relative one, leaves the last known value alone, and the initial
+  value is the directory the TUI started in. `/clear` and a session resume return the row
+  to the session root; resume suppresses the follow while it replays the session's
+  persisted events, so a directory from before the resume does not come back with them.
+
+  The working directory is adopted from the directory a `shell_execute` call reports
+  ending in (`AgentToolResult.working_directory`, `working_directory_observed`), and only
+  when that directory's path, resolved lexically, is inside the resolved session root.
+  Resolution is `std.Io.Dir.path.resolve`, which normalises `..` and `.` but does not
+  follow symlinks, so the check is on where a path lands as spelled rather than on the
+  inode it ultimately names; the permission engine's root remains the boundary that
+  decides what a call may reach. Resume and worktree creation reset the working directory
+  to the session root, and nothing persists it, so a stored path cannot go stale.
 
   A path outside the session root is shown, not hidden, and rendered bold in the warning
   colour instead of muted — leaving the session's workspace is worth seeing. Both paths
-  are resolved with `std.fs.path.resolve` before that comparison, so a `workspace_root`
-  that climbs out with `..` is judged on where it lands rather than on how it is
-  spelled; the row still shows the path as the tool call wrote it. This is a label and
-  nothing more: it is never read by `PermissionEngine`, whose `workspace_root` is fixed
-  when the app initialises and continues to be what `isInsideWorkspace` checks against,
-  so the row cannot widen what a tool call is allowed to reach. Note the two are
-  genuinely different, since the engine's boundary test covers only `.read` and `.write`
-  and a relative path is joined against the model-supplied root — tracked in #587.
-
-  There is no directory the agent changes itself: each call names its own root, so a `cd`
-  does not persist and nothing needs reporting a resulting directory. #586 carries that
-  and the design question behind it.
+  are resolved with `std.fs.path.resolve` before that comparison, so a path that climbs
+  out with `..` is judged on where it lands rather than on how it is spelled; the row
+  still shows the path as the tool call wrote it. This is a label and nothing more: it is
+  never read by `PermissionEngine`, whose `workspace_root` is fixed when the app
+  initialises and continues to be what `isInsideWorkspace` checks against, so neither the
+  row nor the agent's own working directory can widen what a tool call is allowed to
+  reach. The engine's root and the agent's working directory are deliberately different
+  things — the root is the boundary, the working directory is only the base a relative
+  path is spelled against — and the rewrite is what keeps resolution on both sides using
+  the same base, which is why it lands in one place rather than in each tool.
 
 ## Credentials and the model catalog
 

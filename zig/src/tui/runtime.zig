@@ -201,6 +201,7 @@ pub const TuiRuntime = struct {
     approval_contexts: []ApprovalContext,
     tool_protocol: tool_local_runtime.LocalToolProtocol,
     workspace_root: []u8,
+    session_cwd: []u8,
     tool_protocol_override_fn: ?agent_types.ToolProtocolExecuteFn = null,
     tool_protocol_override_ctx: ?*anyopaque = null,
     pending_approval: ApprovalDecisionState = .{},
@@ -280,6 +281,8 @@ pub const TuiRuntime = struct {
 
         var workspace_root = try allocator.dupe(u8, options.workspace_root);
         errdefer allocator.free(workspace_root);
+        var session_cwd = try allocator.dupe(u8, options.workspace_root);
+        errdefer allocator.free(session_cwd);
 
         var runtime = TuiRuntime{
             .allocator = allocator,
@@ -294,6 +297,7 @@ pub const TuiRuntime = struct {
             .approval_contexts = approval_contexts,
             .tool_protocol = tool_protocol,
             .workspace_root = workspace_root,
+            .session_cwd = session_cwd,
             .tool_approval_ctx = options.tool_approval_ctx,
             .tool_approval_callback = options.tool_approval_callback,
             .permission_engine = options.permission_engine,
@@ -310,6 +314,7 @@ pub const TuiRuntime = struct {
         models = &.{};
         tool_protocol = undefined;
         workspace_root = &.{};
+        session_cwd = &.{};
         tool_registry = local_tools.ToolRegistry.init();
         approval_contexts = &.{};
         errdefer runtime.deinit();
@@ -364,6 +369,7 @@ pub const TuiRuntime = struct {
         self.clearPendingApproval();
         self.tool_protocol.deinit();
         self.allocator.free(self.workspace_root);
+        self.allocator.free(self.session_cwd);
         self.allocator.free(self.compaction_transcript);
         self.allocator.free(self.session_id);
         self.clearRunTranscripts();
@@ -390,6 +396,8 @@ pub const TuiRuntime = struct {
             .permission_engine = self.permission_engine,
             .execute_tool_via_protocol_fn = executeTuiToolProtocol,
             .execute_tool_via_protocol_ctx = self,
+            .rewrite_tool_args_fn = rewriteToolArgs,
+            .rewrite_tool_args_ctx = self,
         });
         self.steering_tagged_count = 0;
         self.local_agent.?.subscribeWithContext(self, onAgentEvent);
@@ -678,14 +686,55 @@ pub const TuiRuntime = struct {
             if (!local.isIdle()) return error.AgentAlreadyStreaming;
         }
         const owned = try self.allocator.dupe(u8, root);
+        const owned_cwd = try self.allocator.dupe(u8, root);
         self.allocator.free(self.workspace_root);
+        self.allocator.free(self.session_cwd);
         self.workspace_root = owned;
+        self.session_cwd = owned_cwd;
         if (self.permission_engine) |engine| try engine.setWorkspaceRoot(root);
         if (self.local_agent) |*local| {
             const system_prompt = try self.workspaceSystemPrompt();
             defer self.allocator.free(system_prompt);
             try local.setSystemPrompt(system_prompt);
         }
+    }
+
+    pub fn workingDirectory(self: *const TuiRuntime) []const u8 {
+        return self.session_cwd;
+    }
+
+    fn adoptWorkingDirectory(self: *TuiRuntime, reported: []const u8) void {
+        if (reported.len == 0) return;
+        if (!self.workingDirectoryInsideRoot(reported)) return;
+        if (std.mem.eql(u8, reported, self.session_cwd)) return;
+        const owned = self.allocator.dupe(u8, reported) catch return;
+        self.allocator.free(self.session_cwd);
+        self.session_cwd = owned;
+    }
+
+    fn workingDirectoryInsideRoot(self: *const TuiRuntime, candidate: []const u8) bool {
+        if (!std.Io.Dir.path.isAbsolute(candidate)) return false;
+        const root = std.Io.Dir.path.resolve(self.allocator, &.{self.workspace_root}) catch return false;
+        defer self.allocator.free(root);
+        const resolved = std.Io.Dir.path.resolve(self.allocator, &.{candidate}) catch return false;
+        defer self.allocator.free(resolved);
+        if (std.mem.eql(u8, resolved, root)) return true;
+        if (!std.mem.startsWith(u8, resolved, root)) return false;
+        return resolved.len > root.len and resolved[root.len] == std.fs.path.sep;
+    }
+
+    fn rewriteWorkspaceRoot(self: *TuiRuntime, tool_name: []const u8, args_json: []const u8, allocator: std.mem.Allocator) !?[]u8 {
+        _ = tool_name;
+        if (self.session_cwd.len == 0) return null;
+        var parsed = std.json.parseFromSlice(std.json.Value, allocator, args_json, .{}) catch return null;
+        defer parsed.deinit();
+        if (parsed.value != .object) return null;
+        const existing = parsed.value.object.get("workspace_root") orelse return null;
+        if (existing != .string) return null;
+        if (std.mem.eql(u8, existing.string, self.session_cwd)) return null;
+        const held = parsed.value.object.getPtr("workspace_root").?;
+        held.* = .{ .string = self.session_cwd };
+        return try std.json.Stringify.valueAlloc(allocator, parsed.value, .{});
     }
 
     pub fn setCompactOutput(self: *TuiRuntime, enabled: bool) void {
@@ -1222,10 +1271,10 @@ pub const TuiRuntime = struct {
     fn workspaceSystemPrompt(self: *TuiRuntime) ![]u8 {
         if (self.workspace_root.len == 0) return self.allocator.dupe(u8, "");
         return std.fmt.allocPrint(self.allocator,
-            \\Current working directory: {s}
             \\Default workspace root: {s}
-            \\Use this absolute path as the `workspace_root` argument for shell, file, search, edit, and workspace tools unless the user explicitly asks for a different path.
-        , .{ self.workspace_root, self.workspace_root });
+            \\Current working directory: {s}
+            \\The working directory is this session's own. A `cd` in a `shell_execute` call changes it, and the next call starts there, so do not prefix a command with `cd` to reach a directory you already changed into. Every tool accepts `workspace_root`, defaults to the working directory, and must stay inside the default workspace root.
+        , .{ self.workspace_root, self.session_cwd });
     }
 
     fn messageRole(message: ai_types.Message) TuiEvent.MessageRole {
@@ -1626,7 +1675,7 @@ fn executeTuiToolProtocol(
     allocator: std.mem.Allocator,
 ) anyerror!agent.AgentToolResult {
     const runtime: *TuiRuntime = @ptrCast(@alignCast(ctx.?));
-    return runtime.tool_protocol.executeWithOverride(
+    var result = try runtime.tool_protocol.executeWithOverride(
         tool_call_id,
         tool_name,
         args_json,
@@ -1637,6 +1686,18 @@ fn executeTuiToolProtocol(
         runtime.tool_protocol_override_fn,
         allocator,
     );
+    if (result.observedWorkingDirectory()) |reported| runtime.adoptWorkingDirectory(reported);
+    return result;
+}
+
+fn rewriteToolArgs(
+    ctx: ?*anyopaque,
+    tool_name: []const u8,
+    args_json: []const u8,
+    allocator: std.mem.Allocator,
+) anyerror!?[]u8 {
+    const runtime: *TuiRuntime = @ptrCast(@alignCast(ctx.?));
+    return runtime.rewriteWorkspaceRoot(tool_name, args_json, allocator);
 }
 
 fn approveTool(ctx: ?*anyopaque, request: agent.ToolApprovalRequest) agent.ToolApprovalDecision {
@@ -3502,6 +3563,66 @@ test "wrapping a tool preserves the operation kind its definition declares" {
         try std.testing.expectEqualStrings(original.name, wrapped.name);
         try std.testing.expectEqual(original.operation, wrapped.operation);
     }
+}
+
+test "the runtime injects the session working directory as the tool workspace root" {
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .workspace_root = "/workspace" });
+    defer runtime.deinit();
+    runtime.adoptWorkingDirectory("/workspace/sub");
+
+    const rewritten = (try runtime.rewriteWorkspaceRoot("file_read", "{\"workspace_root\":\"/workspace\",\"path\":\"a.txt\"}", std.testing.allocator)).?;
+    defer std.testing.allocator.free(rewritten);
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, rewritten, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("/workspace/sub", parsed.value.object.get("workspace_root").?.string);
+    try std.testing.expectEqualStrings("a.txt", parsed.value.object.get("path").?.string);
+}
+
+test "the working directory rewrite leaves calls with no workspace root untouched" {
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .workspace_root = "/workspace" });
+    defer runtime.deinit();
+    runtime.adoptWorkingDirectory("/workspace/sub");
+    try std.testing.expect(try runtime.rewriteWorkspaceRoot("artifact_retrieve", "{\"reference\":\"shell_execute:1\"}", std.testing.allocator) == null);
+    try std.testing.expect(try runtime.rewriteWorkspaceRoot("file_read", "{\"workspace_root\":\"/workspace/sub\",\"path\":\"a.txt\"}", std.testing.allocator) == null);
+}
+
+test "a command's end directory is adopted only while it stays inside the session root" {
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .workspace_root = "/workspace" });
+    defer runtime.deinit();
+    try std.testing.expectEqualStrings("/workspace", runtime.workingDirectory());
+
+    runtime.adoptWorkingDirectory("/workspace/sub");
+    try std.testing.expectEqualStrings("/workspace/sub", runtime.workingDirectory());
+
+    runtime.adoptWorkingDirectory("/workspace-ish");
+    try std.testing.expectEqualStrings("/workspace/sub", runtime.workingDirectory());
+
+    runtime.adoptWorkingDirectory("/elsewhere");
+    try std.testing.expectEqualStrings("/workspace/sub", runtime.workingDirectory());
+
+    runtime.adoptWorkingDirectory("relative/path");
+    try std.testing.expectEqualStrings("/workspace/sub", runtime.workingDirectory());
+}
+
+test "moving the workspace root resets the working directory to it" {
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .workspace_root = "/workspace" });
+    defer runtime.deinit();
+    runtime.adoptWorkingDirectory("/workspace/sub");
+    try std.testing.expectEqualStrings("/workspace/sub", runtime.workingDirectory());
+
+    try runtime.setWorkspaceRoot("/worktree");
+    try std.testing.expectEqualStrings("/worktree", runtime.workingDirectory());
+}
+
+test "the system prompt states the working directory and the session root" {
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .workspace_root = "/workspace" });
+    defer runtime.deinit();
+    runtime.adoptWorkingDirectory("/workspace/sub");
+
+    const prompt = try runtime.workspaceSystemPrompt();
+    defer std.testing.allocator.free(prompt);
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "Default workspace root: /workspace") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "Current working directory: /workspace/sub") != null);
 }
 
 test "runtime ends a run whose last reply finished without an output-limit warning" {

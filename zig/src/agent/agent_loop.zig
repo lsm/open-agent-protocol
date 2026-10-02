@@ -900,6 +900,13 @@ fn executeToolCalls(
                 try finalizeToolExecution(allocator, config, event_stream, &results, tool_call, execution_args, &result, is_error);
                 continue;
             };
+            var rewritten: ?[]u8 = null;
+            defer if (rewritten) |owned| allocator.free(owned);
+            const effective_args = if (config.rewrite_tool_args_fn) |rewrite| blk: {
+                rewritten = try rewrite(config.rewrite_tool_args_ctx, tool_call.name, validated_args, allocator);
+                break :blk rewritten orelse validated_args;
+            } else validated_args;
+            execution_args = effective_args;
             const should_compact = if (config.compact_tool_output) supportsCompactToolOutput(allocator, t) catch |err| {
                 result = try createErrorResult(allocator, err);
                 is_error = true;
@@ -907,7 +914,7 @@ fn executeToolCalls(
                 continue;
             } else false;
             if (should_compact) {
-                const owned_args = withCompactToolOutput(allocator, validated_args) catch |err| {
+                const owned_args = withCompactToolOutput(allocator, effective_args) catch |err| {
                     result = try createErrorResult(allocator, err);
                     is_error = true;
                     try finalizeToolExecution(allocator, config, event_stream, &results, tool_call, execution_args, &result, is_error);
@@ -924,7 +931,7 @@ fn executeToolCalls(
                 .args_json = execution_args,
             };
             if (config.permission_engine) |engine| {
-                const policy_decision = engine.evaluateTool(t.operation, tool_call.name, validated_args);
+                const policy_decision = engine.evaluateTool(t.operation, tool_call.name, effective_args);
                 if (policy_decision == .deny) {
                     result = try rejectedToolResult(allocator);
                     is_error = true;
@@ -940,7 +947,7 @@ fn executeToolCalls(
                         continue;
                     }
                     if (legacy_decision == .approve_always) {
-                        const call = permission.parseToolCallOf(allocator, t.operation, tool_call.name, validated_args) catch null;
+                        const call = permission.parseToolCallOf(allocator, t.operation, tool_call.name, effective_args) catch null;
                         if (call) |parsed_call| {
                             defer permission.deinitParsedToolCall(allocator, parsed_call);
                             if (permission.canPersistDecision(parsed_call)) engine.persistDecision(parsed_call, .allow) catch {};
@@ -948,7 +955,7 @@ fn executeToolCalls(
                     }
 
                     if (policy_decision == .prompt and engine.approval_callback != null and legacy_decision != .approve_always) {
-                        const decision = try engine.approveTool(t.operation, tool_call.name, validated_args);
+                        const decision = try engine.approveTool(t.operation, tool_call.name, effective_args);
                         if (decision == .reject or decision == .reject_always) {
                             result = try rejectedToolResult(allocator);
                             is_error = true;
