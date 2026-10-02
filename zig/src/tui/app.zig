@@ -2116,6 +2116,7 @@ pub const App = struct {
                 return;
             }
         }
+        self.discardModelFetch();
         const path = custom_providers.deleteProvider(self.allocator, id) catch |err| {
             const msg = try std.fmt.allocPrint(self.allocator, "could not delete {s}: {s}", .{ id, @errorName(err) });
             defer self.allocator.free(msg);
@@ -2132,7 +2133,7 @@ pub const App = struct {
             defer self.allocator.free(msg);
             try self.state.appendTranscript(.@"error", msg);
         }
-        if (self.runtime != null) try self.reportModelRefresh(self.refreshModels(), "deleted the provider but refreshing models failed");
+        if (self.runtime != null) try self.refreshModelsInBackground();
     }
 
     fn logoutProviderId(name: []const u8) []const u8 {
