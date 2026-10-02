@@ -144,6 +144,8 @@ const (
 
 const FeatureOpenSubscribe = "session.open.subscribe"
 
+const FeatureOpenReopen = "session.open.reopen"
+
 const FeatureToolsProvide = "action.tools.provide"
 
 const (
@@ -343,6 +345,7 @@ func (a ToolSourceAttachment) Descriptor() ToolSourceDescriptor {
 type SessionOpenRequest struct {
 	SessionID             SessionID                  `json:"session_id,omitempty"`
 	Subscribe             bool                       `json:"subscribe,omitempty"`
+	Reopen                bool                       `json:"reopen,omitempty"`
 	Message               *OpenMessage               `json:"message,omitempty"`
 	Metadata              map[string]json.RawMessage `json:"metadata,omitempty"`
 	ToolSources           []ToolSourceAttachment     `json:"tool_sources,omitempty"`
