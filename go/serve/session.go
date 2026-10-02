@@ -311,7 +311,9 @@ func (s *Session) armSteerGate(ctx context.Context, run protocol.RunID, request 
 	go func() {
 		select {
 		case <-ctx.Done():
+			s.mu.Lock()
 			s.gateCond.Broadcast()
+			s.mu.Unlock()
 		case <-done:
 		}
 	}()

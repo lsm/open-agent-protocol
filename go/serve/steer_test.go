@@ -541,3 +541,31 @@ func TestASteerSubmitDoesNotWaitForAnUnrelatedSaturatedStream(t *testing.T) {
 	}
 	entry.Published("req-steer")
 }
+
+func TestACancelledSteerSubmitDoesNotWaitForTheOtherGate(t *testing.T) {
+	stub := &steerStubSession{stream: make(chan base.Result, 4), steerRun: "run-1"}
+	entry := newSession("stub", "stub", stub, nil)
+	startStubRun(t, entry)
+	if _, err := entry.armSteerGate(context.Background(), "run-1", "req-first"); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancelled := make(chan error, 1)
+	go func() {
+		_, err := entry.armSteerGate(ctx, "run-1", "req-second")
+		cancelled <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-cancelled:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("a cancelled steer armed the gate: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a cancelled steer waited on the gate condition")
+	}
+	entry.Published("req-first")
+}

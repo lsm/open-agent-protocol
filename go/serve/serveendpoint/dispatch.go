@@ -324,6 +324,7 @@ func (s *Server) submit(ctx context.Context, streams context.Context, e protocol
 	}
 
 	start := func() {
+		s.hub.Published(entry.ID(), e.ID)
 		s.pumps.Add(1)
 		go func() {
 			defer s.pumps.Done()

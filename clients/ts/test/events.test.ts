@@ -693,3 +693,29 @@ test('a poll that settles behind a released settlement is not dropped', { timeou
   assert.equal(third.value?.sequence, 3);
   assert.equal((await iterator.next()).done, true);
 });
+
+test('a settlement whose payload is not an object is delivered rather than throwing', { timeout: 10000 }, async () => {
+  const malformed = testEnvelope({
+    type: EnvelopeType.RunSteerApplied,
+    sequence: 1,
+    sessionId: SESSION,
+    runId: RUN,
+    payload: { session_id: SESSION, run_id: RUN },
+  });
+  (malformed as { payload: unknown }).payload = 'not-an-object';
+  const completed = testEnvelope({
+    type: EnvelopeType.RunCompleted,
+    sequence: 2,
+    sessionId: SESSION,
+    runId: RUN,
+    payload: { session_id: SESSION, run_id: RUN, final_response: { role: 'assistant', content: 'done' }, stop_reason: 'end_turn' },
+  });
+  const { session } = sessionWith([{ match: LIVE, chunks: [eventFrame(malformed), eventFrame(completed)] }]);
+  session.beginSubmit('req-steer');
+  const envelopes = await collect(session.events());
+  assert.deepEqual(
+    envelopes.map((envelope) => envelope.type),
+    [EnvelopeType.RunSteerApplied, EnvelopeType.RunCompleted],
+  );
+  session.endSubmit('req-steer');
+});

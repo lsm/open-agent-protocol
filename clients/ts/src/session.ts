@@ -308,9 +308,12 @@ function crossCheckPayload(
 export function steerSettlementRequest(envelope: Envelope): string {
   switch (envelope.type) {
     case EnvelopeType.RunSteerApplied:
-      return payload<RunSteerAppliedPayload>(envelope).request_id;
-    case EnvelopeType.RunSteerDropped:
-      return payload<RunSteerDroppedPayload>(envelope).request_id;
+    case EnvelopeType.RunSteerDropped: {
+      const body: unknown = envelope.payload;
+      if (body === null || typeof body !== 'object' || Array.isArray(body)) return '';
+      const request = (body as Record<string, unknown>).request_id;
+      return typeof request === 'string' ? request : '';
+    }
     default:
       return '';
   }
