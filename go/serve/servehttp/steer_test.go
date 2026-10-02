@@ -2,8 +2,6 @@ package servehttp
 
 import (
 	"context"
-	"errors"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11,8 +9,6 @@ import (
 	"github.com/lsm/open-agent-protocol/go/protocol"
 	"github.com/lsm/open-agent-protocol/go/serve"
 )
-
-var errSettledEarly = errors.New("the hub published the settlement before the submit response")
 
 type settlingSteerAdapter struct{}
 
@@ -92,7 +88,7 @@ func (s *settlingSteerSession) Close(context.Context) error { return nil }
 var _ base.Adapter = (*settlingSteerAdapter)(nil)
 var _ base.Session = (*settlingSteerSession)(nil)
 
-func TestASettlingSteerIsPublishedAfterItsResponse(t *testing.T) {
+func TestASettlingSteerReachesTheSubscriberOnce(t *testing.T) {
 	registry := serve.NewRegistry()
 	if err := registry.Register("settling", &settlingSteerAdapter{}); err != nil {
 		t.Fatal(err)
@@ -101,21 +97,21 @@ func TestASettlingSteerIsPublishedAfterItsResponse(t *testing.T) {
 	openSession(t, server, "settling", "settle")
 
 	stream := connectSSE(t, server, "/sessions/settle/events", "")
-	var responded atomic.Bool
 	settled := make(chan protocol.Envelope, 1)
-	failed := make(chan error, 1)
+	started := make(chan struct{})
 	go func() {
+		seen := 0
 		for {
 			envelope := stream.envelope()
-			if envelope.Type != protocol.TypeRunSteerApplied {
+			if envelope.Type == protocol.TypeRunStarted && seen == 0 {
+				seen = 1
+				close(started)
 				continue
 			}
-			if !responded.Load() {
-				failed <- errSettledEarly
+			if envelope.Type == protocol.TypeRunSteerApplied {
+				settled <- envelope
 				return
 			}
-			settled <- envelope
-			return
 		}
 	}()
 
@@ -126,6 +122,11 @@ func TestASettlingSteerIsPublishedAfterItsResponse(t *testing.T) {
 		}, "settle", "", "")
 	if status, response := postEnvelope(t, server, "/sessions/settle/submit", startRequest); status != 200 {
 		t.Fatalf("start status %d: %+v", status, response)
+	}
+	select {
+	case <-started:
+	case <-time.After(testTimeout):
+		t.Fatal("the target run's stream never reached the subscriber")
 	}
 
 	steerRequest := requestEnvelope(t, protocol.TypeSessionMessageSubmitRequest, "submit-steer",
@@ -144,15 +145,9 @@ func TestASettlingSteerIsPublishedAfterItsResponse(t *testing.T) {
 	if admission.Admission != protocol.AdmissionSteered || admission.SubmissionID != "sub-steer" {
 		t.Fatalf("steer admission = %+v", admission)
 	}
-	responded.Store(true)
 
 	select {
-	case err := <-failed:
-		t.Fatal(err)
 	case envelope := <-settled:
-		if envelope.Type != protocol.TypeRunSteerApplied {
-			t.Fatalf("published %s, want the settlement", envelope.Type)
-		}
 		var applied protocol.RunSteerAppliedPayload
 		if err := envelope.DecodePayload(&applied); err != nil {
 			t.Fatal(err)
@@ -161,6 +156,6 @@ func TestASettlingSteerIsPublishedAfterItsResponse(t *testing.T) {
 			t.Fatalf("settlement = %+v", applied)
 		}
 	case <-time.After(testTimeout):
-		t.Fatal("the settlement was never published")
+		t.Fatal("the settlement never reached the subscriber, so the binding never lifted the gate")
 	}
 }
