@@ -1419,12 +1419,15 @@ const HubRegistry = struct {
     environ: *const std.process.Environ.Map,
     surface: ConfigSurface,
     production: ?*tui_app.ProductionRuntime = null,
+    memories: std.ArrayList(*memory_adapter.Adapter) = .empty,
 
     fn deinit(self: *HubRegistry) void {
         if (self.production) |production| {
             production.deinit();
             self.allocator.destroy(production);
         }
+        for (self.memories.items) |memory| memory.deinit();
+        self.memories.deinit(self.allocator);
         self.* = undefined;
     }
 
@@ -1485,6 +1488,7 @@ const HubRegistry = struct {
         if (std.mem.eql(u8, entry.kind, "memory")) {
             const built = try arena.create(memory_adapter.Adapter);
             built.* = memory_adapter.Adapter.init(self.allocator);
+            try self.memories.append(self.allocator, built);
             return built.adapter();
         }
         if (std.mem.eql(u8, entry.kind, "oapx")) {
@@ -1705,6 +1709,7 @@ fn runHub(
     if (config == null) {
         const memory = try arena.create(memory_adapter.Adapter);
         memory.* = memory_adapter.Adapter.init(allocator);
+        try registry.memories.append(allocator, memory);
         try core.register("memory", memory.adapter());
     } else {
         var load_diagnostic = adapter_config.Diagnostic{};
@@ -9466,6 +9471,7 @@ test "the hub's registry builds every entry a document names, and a child inheri
     try std.testing.expectEqualStrings("memory", file.adapters[1].name);
 
     var registry = HubRegistry{ .allocator = allocator, .environ = &environ, .surface = withSurface(hub_config_surface, arena, complained_on) };
+    defer registry.deinit();
     const claude = try HubRegistry.build(&registry, arena, file.adapter("claude").?);
     const claude_adapter_instance: *claude_adapter.Adapter = @ptrCast(@alignCast(claude.ptr));
     const inherited = claude_adapter_instance.config.backend.environment;

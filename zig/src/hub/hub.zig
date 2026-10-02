@@ -475,7 +475,7 @@ pub const Hub = struct {
         var local: OpenRefusal = .{};
         const refused = reported orelse &local;
         const descriptor = try registered.adapter.probe(&refused.reason);
-        if (request.subscribe or contract.carriesEntries(request.tool_sources_json)) {
+        if (request.subscribe or request.reopen or contract.carriesEntries(request.tool_sources_json)) {
             if (request.capability_revision) |wanted| {
                 if (wanted.len > 0 and !std.mem.eql(u8, wanted, registered.revision)) {
                     refused.expected_revision = registered.revision;
@@ -2489,7 +2489,7 @@ test "a subscribing open is gated on the revision the host asked for" {
     try testing.expectEqualStrings("reference-memory-v13", unstated.revision);
 }
 
-test "the revision gate fires for a subscribing or attaching open, and for no other" {
+test "the revision gate fires for a subscribing, reopening or attaching open, and for no other" {
     var adapter = memory.Adapter.init(testing.allocator);
     defer adapter.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{});
@@ -2509,6 +2509,12 @@ test "the revision gate fires for a subscribing or attaching open, and for no ot
     try testing.expectError(error.StaleCapabilities, hub.open(arena, "memory", .{
         .session_id = "taken",
         .subscribe = true,
+        .capability_revision = "reference-memory-v10",
+    }));
+
+    try testing.expectError(error.StaleCapabilities, hub.open(arena, "memory", .{
+        .session_id = "reopening",
+        .reopen = true,
         .capability_revision = "reference-memory-v10",
     }));
 
