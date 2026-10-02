@@ -7,6 +7,7 @@ const ai_types = @import("ai_types");
 const tui_runtime = @import("tui_runtime");
 const tui_session = @import("tui_session");
 const model_ref = @import("model_ref");
+const permission = @import("permission");
 const interactions = @import("interactions.zig");
 
 pub const endpoint_id = "oapx.agent";
@@ -120,6 +121,7 @@ pub const Session = struct {
     id: []const u8,
     participant: []const u8,
     runtime: *tui_runtime.TuiRuntime,
+    engine: ?*permission.PermissionEngine = null,
     updated_at_ms: i64,
     run: ?*Run = null,
     gate: interactions.Gate = .{},
@@ -139,6 +141,13 @@ pub const Session = struct {
         @memcpy(session_tools[0..owner.options.tools.len], owner.options.tools);
         if (offers_input) session_tools[owner.options.tools.len] = inputTool(self);
         var options = sessionOptions(owner.options, request.metadata);
+        if (try requestedModel(gpa, owner.options.models, request.metadata, refusal)) |chosen| options.initial_model = chosen;
+        const engine = try ownEngine(gpa, owner.options.permission_engine, options.workspace_root);
+        errdefer if (engine) |held| {
+            held.deinit();
+            gpa.destroy(held);
+        };
+        if (engine) |held| options.permission_engine = held;
         options.tools = session_tools;
         options.tool_approval_ctx = self;
         options.tool_approval_callback = approveTool;
@@ -147,7 +156,7 @@ pub const Session = struct {
             else => return refusal.fail(error.BackendFailed, @errorName(err)),
         };
         errdefer runtime.deinit();
-        self.* = .{ .owner = owner, .gpa = gpa, .keep = std.heap.ArenaAllocator.init(gpa), .id = "", .participant = "", .runtime = runtime, .updated_at_ms = owner.now_ms() };
+        self.* = .{ .owner = owner, .gpa = gpa, .keep = std.heap.ArenaAllocator.init(gpa), .id = "", .participant = "", .runtime = runtime, .engine = engine, .updated_at_ms = owner.now_ms() };
         errdefer self.keep.deinit();
         const keep = self.keep.allocator();
         self.participant = try keep.dupe(u8, request.participant);
@@ -197,6 +206,10 @@ pub const Session = struct {
         self.journal.deinit(gpa);
         self.runtime.deinit();
         gpa.destroy(self.runtime);
+        if (self.engine) |engine| {
+            engine.deinit();
+            gpa.destroy(engine);
+        }
         self.keep.deinit();
         gpa.destroy(self);
     }
@@ -834,6 +847,40 @@ pub fn sessionOptions(base: tui_runtime.TuiRuntimeOptions, metadata: ?std.json.V
     return options;
 }
 
+fn ownEngine(gpa: std.mem.Allocator, shared: ?*permission.PermissionEngine, workspace_root: []const u8) contract.Failure!?*permission.PermissionEngine {
+    const template = shared orelse return null;
+    const engine = try gpa.create(permission.PermissionEngine);
+    errdefer gpa.destroy(engine);
+    const settings = permission.PermissionEngineOptions{
+        .workspace_root = if (workspace_root.len > 0) workspace_root else template.workspace_root,
+        .persistence_path = template.persistence_path,
+        .approval_callback = template.approval_callback,
+    };
+    engine.* = permission.PermissionEngine.init(gpa, settings) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => try permission.PermissionEngine.initEmpty(gpa, settings),
+    };
+    return engine;
+}
+
+pub fn requestedModel(
+    allocator: std.mem.Allocator,
+    available: []const ai_types.Model,
+    metadata: ?std.json.Value,
+    refusal: *contract.Refusal,
+) contract.Failure!?tui_runtime.InitialModelRef {
+    const document = metadata orelse return null;
+    if (document != .object) return null;
+    const settings = document.object.get(settings_key) orelse return null;
+    if (settings != .object) return null;
+    const named = settings.object.get("model") orelse return null;
+    if (named != .string or named.string.len == 0) return null;
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+    const chosen = (try findModel(scratch.allocator(), available, named.string)) orelse return refusal.missingModel(named.string);
+    return .{ .id = chosen.id, .provider = chosen.provider, .api = chosen.api };
+}
+
 fn refFor(allocator: std.mem.Allocator, model: ai_types.Model) ![]u8 {
     return model_ref.formatModelRef(allocator, model.provider, model.api, model.id);
 }
@@ -1339,6 +1386,87 @@ test "an open's oapx metadata sets the session's thinking level, window, output 
     try testing.expectEqual(@as(?u32, null), kept.context_window);
     try testing.expect(kept.output == .auto);
     try testing.expectEqualStrings("/base", kept.workspace_root);
+}
+
+test "an open's oapx metadata names the session's model by the reference the catalog prints, and one it lacks refuses the open" {
+    var script = Script{};
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const a = harness.arena.allocator();
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"oapx":{"model":"scripted/openai-completions@other-model"}}
+    , .{});
+    defer parsed.deinit();
+    var refusal = contract.Refusal{};
+    const chosen = try harness.owner.adapter().open(a, .{ .participant = "user", .session_id = "picked", .metadata = parsed.value }, &refusal);
+    defer chosen.teardown();
+    const opened = try chosen.state(a, &refusal);
+    try testing.expectEqualStrings("scripted/openai-completions@other-model", opened.current_model_id.?);
+
+    var missing = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"oapx":{"model":"scripted/openai-completions@missing"}}
+    , .{});
+    defer missing.deinit();
+    try testing.expectError(error.ModelNotFound, harness.owner.adapter().open(a, .{ .participant = "user", .session_id = "lacking", .metadata = missing.value }, &refusal));
+    try testing.expectEqualStrings("scripted/openai-completions@missing", refusal.model_id);
+}
+
+test "each session holds its own permission engine, so one session's bypass never answers another's ask" {
+    var script = Script{};
+    var shared = try permission.PermissionEngine.initEmpty(testing.allocator, .{ .workspace_root = "/shared", .persistence_path = "/nonexistent/oapx-permissions.json" });
+    defer shared.deinit();
+    var owner = Adapter.init(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &scripted_models,
+        .initial_model_id = test_model.id,
+        .tools = &echo_tools,
+        .permission_engine = &shared,
+    });
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var asking = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"oapx":{"permission_mode":"ask"}}
+    , .{});
+    defer asking.deinit();
+    var refusal = contract.Refusal{};
+    const first = try owner.adapter().open(a, .{ .participant = "user", .session_id = "asks", .metadata = asking.value }, &refusal);
+    defer first.teardown();
+    const second = try owner.adapter().open(a, .{ .participant = "user", .session_id = "bypasses" }, &refusal);
+    defer second.teardown();
+    const asks: *Session = @ptrCast(@alignCast(first.ptr));
+    const bypasses: *Session = @ptrCast(@alignCast(second.ptr));
+    try testing.expect(asks.engine.? != &shared);
+    try testing.expect(asks.engine.? != bypasses.engine.?);
+    try testing.expect(!asks.engine.?.bypass_all);
+    try testing.expect(bypasses.engine.?.bypass_all);
+    try testing.expectEqualStrings("/shared", asks.engine.?.workspace_root);
+}
+
+test "a permissions file the engine cannot read leaves a session its own empty engine rather than refusing the open" {
+    var script = Script{};
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "permissions.json", .data = "{not json" });
+    const corrupt = try tmp.dir.realPathFileAlloc(testing.io, "permissions.json", testing.allocator);
+    defer testing.allocator.free(corrupt);
+    var shared = try permission.PermissionEngine.initEmpty(testing.allocator, .{ .workspace_root = "/shared", .persistence_path = corrupt });
+    defer shared.deinit();
+    var owner = Adapter.init(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &scripted_models,
+        .initial_model_id = test_model.id,
+        .tools = &echo_tools,
+        .permission_engine = &shared,
+    });
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    var refusal = contract.Refusal{};
+    const opened = try owner.adapter().open(arena_state.allocator(), .{ .participant = "user", .session_id = "tolerant" }, &refusal);
+    defer opened.teardown();
+    const held: *Session = @ptrCast(@alignCast(opened.ptr));
+    try testing.expectEqual(@as(usize, 0), held.engine.?.persisted.items.len);
 }
 
 test "an open's oapx metadata can ask for ask mode, which this adapter now answers with permission interactions" {
