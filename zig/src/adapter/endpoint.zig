@@ -993,6 +993,7 @@ fn codeFor(failure: contract.Failure) Mapped {
         error.UnsupportedFeature => .{ .code = "unsupported_feature", .fallback = "adapter: unsupported input" },
         error.CapabilityDegraded => .{ .code = "capability_degraded", .fallback = "adapter: unsupported input: the feature is degraded and was not opted into" },
         error.ModelNotFound => .{ .code = "model_not_found", .fallback = "adapter: model is not in the effective catalog" },
+        error.InvalidSteerTarget => .{ .code = "invalid_steer_target", .fallback = "adapter: steer target cannot take guidance" },
         error.SessionClosed => .{ .code = "session_closed", .fallback = "adapter: session closed" },
         error.RunActive => .{ .code = "run_active", .fallback = "adapter: a run is already active" },
         error.InvalidSubmission => .{ .code = "invalid_submission", .fallback = "adapter: invalid submission" },

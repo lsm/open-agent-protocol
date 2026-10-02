@@ -87,7 +87,7 @@ var attachSupport = protocol.FeatureSupport{
 	Reason: "sources are described and published back; the reference adapter runs no client for them",
 }
 
-const CapabilityRevision = "reference-memory-v11"
+const CapabilityRevision = "reference-memory-v12"
 
 var errTerminalWon = fmt.Errorf("adapter: terminal event already emitted")
 
@@ -138,6 +138,7 @@ func (m *Memory) Probe(context.Context) (Descriptor, error) {
 		"session.message.delivery.auto": {Level: protocol.SupportNative},
 
 		protocol.FeatureDeliveryQueue: {Level: protocol.SupportEmulated, Reason: "a busy session reserves one second run and promotes it when the started run settles"},
+		protocol.FeatureDeliverySteer: {Level: protocol.SupportEmulated, Reason: "guidance waits on the target run and is applied at its input gate, the scripted turn boundary"},
 		"run.streaming":               {Level: protocol.SupportNative},
 		"run.status":                  {Level: protocol.SupportNative},
 		"run.cancel":                  {Level: protocol.SupportEmulated, Reason: "run-target API is implemented over a one-active-run session"},
@@ -398,6 +399,13 @@ type memoryRun struct {
 	requestedBy      protocol.ParticipantID
 	respondedBy      protocol.ParticipantID
 	subscribers      []chan Result
+	steers           []*pendingSteer
+}
+
+type pendingSteer struct {
+	submissionID protocol.SubmissionID
+	requestID    protocol.EnvelopeID
+	messages     []protocol.MessageID
 }
 
 func (s *memorySession) Submit(ctx context.Context, submit SubmitRequest) (protocol.MessageSubmitResponse, EventStream, error) {
@@ -406,6 +414,10 @@ func (s *memorySession) Submit(ctx context.Context, submit SubmitRequest) (proto
 	defer s.opMu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return protocol.MessageSubmitResponse{}, nil, err
+	}
+
+	if request.Delivery == protocol.DeliverySteer {
+		return s.steer(submit)
 	}
 
 	controls, err := s.admitControls(request)
@@ -514,6 +526,138 @@ func (s *memorySession) Submit(ctx context.Context, submit SubmitRequest) (proto
 	return admission, stream, nil
 }
 
+func (s *memorySession) steer(submit SubmitRequest) (protocol.MessageSubmitResponse, EventStream, error) {
+	request := submit.Request
+	if request.SessionID == "" || len(request.Messages) == 0 {
+		return protocol.MessageSubmitResponse{}, nil, ErrInvalidSubmission
+	}
+	if refusal := refuseSteerControls(request); refusal != nil {
+		return protocol.MessageSubmitResponse{}, nil, refusal
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return protocol.MessageSubmitResponse{}, nil, ErrSessionClosed
+	}
+	if request.SessionID != s.state.SessionID {
+		return protocol.MessageSubmitResponse{}, nil, ErrRunNotFound
+	}
+	target, reason := s.steerTargetLocked(request.TargetRunID)
+	if reason != "" {
+		return protocol.MessageSubmitResponse{}, nil, &InvalidSteerTargetError{RunID: request.TargetRunID, Reason: reason}
+	}
+	messageIDs := make([]protocol.MessageID, len(request.Messages))
+	for i := range request.Messages {
+		messageIDs[i] = request.Messages[i].ID
+		if messageIDs[i] == "" {
+			messageIDs[i] = protocol.MessageID(s.ids.NewID("message"))
+		}
+	}
+	submissionID := protocol.SubmissionID(s.ids.NewID("submission"))
+	sequence := target.nextSequence - 1
+	target.steers = append(target.steers, &pendingSteer{submissionID: submissionID, requestID: submit.EnvelopeID, messages: messageIDs})
+	s.state.UpdatedAtMS = s.clock.Now().UnixMilli()
+	s.refreshStateLocked()
+	return protocol.MessageSubmitResponse{
+		SessionID: s.state.SessionID, Accepted: true,
+		SubmissionID:      submissionID,
+		RequestedDelivery: protocol.DeliverySteer, EffectiveDelivery: protocol.EffectiveDeliverySteer,
+		Admission: protocol.AdmissionSteered,
+		RunID:     target.id, Status: target.status, TargetSequence: &sequence, MessageIDs: messageIDs,
+	}, nil, nil
+}
+
+func (s *memorySession) steerTargetLocked(target protocol.RunID) (*memoryRun, string) {
+	if target != "" {
+		run := s.runs[target]
+		switch {
+		case run == nil:
+			return nil, SteerReasonUnknownTarget
+		case run.terminal:
+			return run, SteerReasonTerminal
+		case run.status == protocol.RunCancelling:
+			return run, SteerReasonNotSteerable
+		case !run.started:
+			return run, SteerReasonQueued
+		default:
+			return run, ""
+		}
+	}
+	for _, run := range []*memoryRun{s.active, s.reserved} {
+		if run == nil || !run.started || run.terminal {
+			continue
+		}
+		if run.status == protocol.RunCancelling {
+			return run, SteerReasonNotSteerable
+		}
+		return run, ""
+	}
+	return nil, SteerReasonNoActiveRun
+}
+
+func refuseSteerControls(request protocol.MessageSubmitRequest) error {
+	var keys []string
+	if request.Instructions != nil {
+		keys = append(keys, protocol.FeatureInstructions)
+	}
+	if request.ModelID != nil {
+		keys = append(keys, protocol.FeatureModelSelection)
+	}
+	if len(request.OutputSchema) > 0 {
+		keys = append(keys, protocol.FeatureStructuredOutput)
+	}
+	if len(request.ToolChoice) > 0 {
+		keys = append(keys, protocol.FeatureToolSelection)
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	slices.Sort(keys)
+	return &UnsupportedControlError{Feature: keys[0], Reason: ControlUnsatisfiable}
+}
+
+func (s *memorySession) settleSteers(run *memoryRun, boundary protocol.SteerBoundary) error {
+	s.mu.Lock()
+	pending := run.steers
+	run.steers = nil
+	if len(pending) > 0 {
+		s.refreshStateLocked()
+	}
+	s.mu.Unlock()
+	for _, steer := range pending {
+		applied := protocol.RunSteerAppliedPayload{
+			SessionID: s.state.SessionID, RunID: run.id,
+			SubmissionID: steer.submissionID, RequestID: steer.requestID,
+			MessageIDs: steer.messages, Boundary: boundary,
+		}
+		if _, err := s.publish(run, protocol.TypeRunSteerApplied, applied, false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *memorySession) dropSteers(run *memoryRun) error {
+	s.mu.Lock()
+	pending := run.steers
+	run.steers = nil
+	if len(pending) > 0 {
+		s.refreshStateLocked()
+	}
+	s.mu.Unlock()
+	for _, steer := range pending {
+		dropped := protocol.RunSteerDroppedPayload{
+			SessionID: s.state.SessionID, RunID: run.id,
+			SubmissionID: steer.submissionID, RequestID: steer.requestID,
+			Reason: protocol.ProtocolError{Code: "run_terminated", Message: "the run terminated before the guidance was applied"},
+		}
+		if _, err := s.publish(run, protocol.TypeRunSteerDropped, dropped, false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *memorySession) answerRun(run *memoryRun) {
 	s.mu.Lock()
 	run.answered = true
@@ -576,6 +720,12 @@ func (s *memorySession) entryLocked(run *memoryRun, position int) protocol.Activ
 		RunID: run.id, Status: status, Relationship: protocol.RelationshipPrimary,
 		AsOfSequence: &sequence, PendingInteractions: pendingInteractions(run),
 		AcknowledgedInteractions: acknowledgedInteractions(run),
+	}
+	if len(run.steers) > 0 {
+		entry.PendingSteers = make([]protocol.PendingSteer, len(run.steers))
+		for i, steer := range run.steers {
+			entry.PendingSteers[i] = protocol.PendingSteer{SubmissionID: steer.submissionID, RequestID: steer.requestID}
+		}
 	}
 	if position > 0 {
 		entry.QueuePosition = &position
@@ -646,6 +796,9 @@ func (s *memorySession) emitInitial(run *memoryRun) error {
 }
 
 func (s *memorySession) requestInput(run *memoryRun) error {
+	if err := s.settleSteers(run, protocol.SteerTurn); err != nil {
+		return err
+	}
 	input := protocol.UserInputRequestedPayload{InteractionID: run.inputID, SessionID: s.state.SessionID, RunID: run.id, Title: "Golden input", Description: "Choose the deterministic answer.", Questions: goldenInputQuestions(), RequestedBy: run.requestedBy, RespondedBy: run.respondedBy}
 	if run.controls.callsTool {
 		input.ToolCallID = run.toolCallID
@@ -850,6 +1003,9 @@ func (s *memorySession) cloneStateLocked() protocol.SessionState {
 		}
 		if entry.AdmittedSubmitRequests != nil {
 			state.ActiveRuns[i].AdmittedSubmitRequests = append([]protocol.EnvelopeID(nil), entry.AdmittedSubmitRequests...)
+		}
+		if entry.PendingSteers != nil {
+			state.ActiveRuns[i].PendingSteers = append([]protocol.PendingSteer(nil), entry.PendingSteers...)
 		}
 	}
 	if s.state.AsOf != nil {
@@ -1318,6 +1474,11 @@ func (s *memorySession) Close(ctx context.Context) error {
 }
 
 func (s *memorySession) emit(run *memoryRun, typ protocol.EnvelopeType, payload any, terminal bool) error {
+	if terminal {
+		if err := s.dropSteers(run); err != nil {
+			return err
+		}
+	}
 	promoted, err := s.publish(run, typ, payload, terminal)
 	if err != nil {
 		return err
