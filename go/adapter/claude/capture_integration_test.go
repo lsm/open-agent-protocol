@@ -469,7 +469,7 @@ func recordClaudeProbe(t *testing.T, directory string, sink *proxySink, probe ca
 	var envelopes []protocol.Envelope
 	for turn := range probe.turns {
 		transcript.note("submit")
-		admission, stream, err := session.Submit(ctx, protocol.MessageSubmitRequest{SessionID: "capture-session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+		admission, stream, err := session.Submit(ctx, base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "capture-session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}}})
 		if err != nil {
 			t.Fatalf("turn %d submit: %v", turn+1, err)
 		}

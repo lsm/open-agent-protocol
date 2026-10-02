@@ -20,7 +20,15 @@ func (s *Session) ID() protocol.SessionID { return s.id }
 
 func (s *Session) Adapter() string { return s.adapter }
 
-func (s *Session) Submit(ctx context.Context, request protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, error) {
+type SubmitOption func(*protocol.Envelope)
+
+func WithEnvelopeID(id protocol.EnvelopeID) SubmitOption {
+	return func(envelope *protocol.Envelope) {
+		envelope.ID = id
+	}
+}
+
+func (s *Session) Submit(ctx context.Context, request protocol.MessageSubmitRequest, options ...SubmitOption) (protocol.MessageSubmitResponse, error) {
 	var admission protocol.MessageSubmitResponse
 	if err := s.scope(&request.SessionID); err != nil {
 		return admission, err
@@ -28,6 +36,9 @@ func (s *Session) Submit(ctx context.Context, request protocol.MessageSubmitRequ
 	envelope, err := s.client.envelope(protocol.TypeSessionMessageSubmitRequest, request)
 	if err != nil {
 		return admission, err
+	}
+	for _, option := range options {
+		option(&envelope)
 	}
 	envelope.SessionID = s.id
 	response, err := s.client.exchange(ctx, http.MethodPost, s.path("/submit"), &envelope, protocol.TypeSessionMessageSubmitResponse)

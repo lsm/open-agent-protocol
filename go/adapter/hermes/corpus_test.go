@@ -312,7 +312,7 @@ func runHermesFakeCase(t *testing.T, definition hmCorpusCase, frames []hmFrame, 
 			channel := make(chan hmSubmit, 1)
 			pending = channel
 			go func() {
-				admission, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+				admission, stream, err := session.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}}})
 				channel <- hmSubmit{admission, stream, err}
 			}()
 			client.awaitCall(t, native.MethodPromptSubmit)
@@ -384,7 +384,7 @@ func runHermesFakeCase(t *testing.T, definition hmCorpusCase, frames []hmFrame, 
 				execution.assertStates = append(execution.assertStates, control.Status)
 			case "overlap-submit":
 				calls := client.totalCalls()
-				_, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello again")}}})
+				_, stream, err := session.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello again")}}}})
 				if !errors.Is(err, base.ErrRunActive) {
 					t.Fatalf("frame %d: overlapping submit error = %v, want %v", i+1, err, base.ErrRunActive)
 				}
@@ -397,7 +397,7 @@ func runHermesFakeCase(t *testing.T, definition hmCorpusCase, frames []hmFrame, 
 				execution.overlapRejected = true
 			case "submit-closed":
 				calls := client.totalCalls()
-				if _, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello again")}}}); !errors.Is(err, base.ErrSessionClosed) {
+				if _, _, err := session.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello again")}}}}); !errors.Is(err, base.ErrSessionClosed) {
 					t.Fatalf("frame %d: unusable-session submit error = %v, want %v", i+1, err, base.ErrSessionClosed)
 				}
 				if client.totalCalls() != calls {
@@ -543,7 +543,7 @@ func runHermesProcessCase(t *testing.T, dir string, definition hmCorpusCase, fra
 			channel := make(chan hmSubmit, 1)
 			pending = channel
 			go func() {
-				admission, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+				admission, stream, err := session.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}}})
 				channel <- hmSubmit{admission, stream, err}
 			}()
 		case "oap-control":

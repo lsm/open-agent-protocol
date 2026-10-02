@@ -107,10 +107,10 @@ func TestClaudeProcessAgainstMessagesMock(t *testing.T) {
 			_ = session.Close(context.Background())
 		}
 	}()
-	admission, stream, err := session.Submit(ctx, protocol.MessageSubmitRequest{
+	admission, stream, err := session.Submit(ctx, base.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: "claude-process-session", Delivery: protocol.DeliveryAuto,
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("Reply with the fixture response.")}},
-	})
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,10 +228,10 @@ func TestClaudeProcessReadOnlyReviewCompletesWithoutAGate(t *testing.T) {
 			_ = session.Close(context.Background())
 		}
 	}()
-	admission, stream, err := session.Submit(ctx, protocol.MessageSubmitRequest{
+	admission, stream, err := session.Submit(ctx, base.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: "claude-review-session", Delivery: protocol.DeliveryAuto,
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("Review CHANGES.md.")}},
-	})
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,10 +365,10 @@ func TestClaudeProcessMentionReachesTheProviderOnlyWhenPromptsExpand(t *testing.
 				}
 			}()
 			text := "Summarize @" + outside + " for the review."
-			admission, stream, err := session.Submit(ctx, protocol.MessageSubmitRequest{
+			admission, stream, err := session.Submit(ctx, base.SubmitRequest{Request: protocol.MessageSubmitRequest{
 				SessionID: "claude-mention-session", Delivery: protocol.DeliveryAuto,
 				Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent(text)}},
-			})
+			}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -451,7 +451,7 @@ func TestClaudeProcessExcludedToolIsRefusedByPolicy(t *testing.T) {
 				ToolChoice: json.RawMessage(`{"disallowed":["Bash"]}`),
 				Messages:   []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("Write the file.")}},
 			}
-			admission, stream, err := session.Submit(ctx, request)
+			admission, stream, err := session.Submit(ctx, base.SubmitRequest{Request: request})
 			if err != nil {
 				t.Fatal(err)
 			}

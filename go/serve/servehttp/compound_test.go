@@ -91,7 +91,7 @@ func (a refusingSubmitAdapter) Open(ctx context.Context, request base.OpenReques
 
 type refusingSubmitSession struct{ base.Session }
 
-func (s refusingSubmitSession) Submit(context.Context, protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+func (s refusingSubmitSession) Submit(context.Context, base.SubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
 	return protocol.MessageSubmitResponse{}, nil, errors.New("the adapter refuses this submission")
 }
 
@@ -303,7 +303,8 @@ func (a queueingAdapter) Open(ctx context.Context, request base.OpenRequest) (ba
 
 type queueingSession struct{ base.Session }
 
-func (s queueingSession) Submit(_ context.Context, request protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+func (s queueingSession) Submit(_ context.Context, submit base.SubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+	request := submit.Request
 	return protocol.MessageSubmitResponse{
 		SessionID:         request.SessionID,
 		Accepted:          true,

@@ -208,7 +208,7 @@ var fakeSubmit = protocol.MessageSubmitRequest{
 
 func submitFake(t *testing.T, session adapter.Session) (protocol.MessageSubmitResponse, adapter.EventStream) {
 	t.Helper()
-	response, stream, err := session.Submit(context.Background(), fakeSubmit)
+	response, stream, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: fakeSubmit})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,10 +232,10 @@ func TestAmbiguousTurnStartRetiresSession(t *testing.T) {
 	client.turnStartErr = ambiguous
 	client.err = ambiguous
 	client.mu.Unlock()
-	if _, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
+	if _, _, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: "session-1", Delivery: protocol.DeliveryAuto,
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}},
-	}); err == nil {
+	}}); err == nil {
 		t.Fatal("submit unexpectedly succeeded")
 	}
 	if _, err := session.State(context.Background()); !errors.Is(err, adapter.ErrSessionClosed) {
@@ -248,10 +248,10 @@ func TestDefiniteTurnStartRejectionLeavesSessionUsable(t *testing.T) {
 	client.mu.Lock()
 	client.turnStartErr = errors.New("turn/start rejected")
 	client.mu.Unlock()
-	if _, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
+	if _, _, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: "session-1", Delivery: protocol.DeliveryAuto,
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}},
-	}); err == nil {
+	}}); err == nil {
 		t.Fatal("submit unexpectedly succeeded")
 	}
 	if _, err := session.State(context.Background()); err != nil {
@@ -412,7 +412,7 @@ func TestTurnStartResponseIsAdmissionOnly(t *testing.T) {
 		t.Fatalf("event before native turn/started: %+v", event)
 	default:
 	}
-	if _, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("again")}}}); !errors.Is(err, adapter.ErrRunActive) {
+	if _, _, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("again")}}}}); !errors.Is(err, adapter.ErrRunActive) {
 		t.Fatalf("second submit: %v", err)
 	}
 }
@@ -423,10 +423,10 @@ func TestTurnStartWithoutTurnIDRetiresSession(t *testing.T) {
 	request := func() protocol.MessageSubmitRequest {
 		return protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}}
 	}
-	if _, _, err := session.Submit(context.Background(), request()); !errors.Is(err, ErrNativeProtocol) {
+	if _, _, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: request()}); !errors.Is(err, ErrNativeProtocol) {
 		t.Fatalf("got %v, want ErrNativeProtocol", err)
 	}
-	if _, _, err := session.Submit(context.Background(), request()); !errors.Is(err, adapter.ErrSessionClosed) {
+	if _, _, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: request()}); !errors.Is(err, adapter.ErrSessionClosed) {
 		t.Fatalf("retry: got %v, want ErrSessionClosed", err)
 	}
 }
@@ -923,7 +923,7 @@ func TestSubmitAppliesModelPerTurn(t *testing.T) {
 		ModelID:  protocol.ControlValue("glm-per-turn"),
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}},
 	}
-	admission, stream, err := session.Submit(context.Background(), request)
+	admission, stream, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: request})
 	if err != nil {
 		t.Fatalf("admitted model refused: %v", err)
 	}
@@ -972,7 +972,7 @@ func TestSubmitRefusesUnadvertisedControls(t *testing.T) {
 		request := testCase.request
 		request.SessionID, request.Delivery = "session-1", protocol.DeliveryAuto
 		request.Messages = []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}
-		_, _, err := session.Submit(context.Background(), request)
+		_, _, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: request})
 		var refusal *adapter.UnsupportedControlError
 		if !errors.As(err, &refusal) || refusal.Feature != testCase.feature || refusal.Reason != adapter.ControlUnadvertised {
 			t.Fatalf("%s: got %v, want an unadvertised refusal naming %s", name, err, testCase.feature)
@@ -994,11 +994,11 @@ func TestSubmitRefusesUnadvertisedControls(t *testing.T) {
 
 func TestSubmitRefusesEmptyModelID(t *testing.T) {
 	_, session, _ := openFake(t)
-	_, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
+	_, _, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: "session-1", Delivery: protocol.DeliveryAuto,
 		ModelID:  protocol.ControlValue(""),
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}},
-	})
+	}})
 	var missing *adapter.ModelNotFoundError
 	if !errors.As(err, &missing) || missing.ModelID != "" {
 		t.Fatalf("got %v, want model_not_found naming the empty id", err)
@@ -1014,7 +1014,7 @@ func TestControlRefusalOutranksOrdinaryValidation(t *testing.T) {
 		"degraded consent": {SessionID: "session-1", Delivery: protocol.DeliveryAuto, Instructions: protocol.ControlValue("be terse"), AllowDegradedFeatures: []string{protocol.FeatureInstructions}, Messages: message},
 	} {
 		_, session, _ := openFake(t)
-		_, _, err := session.Submit(context.Background(), request)
+		_, _, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: request})
 		var refusal *adapter.UnsupportedControlError
 		if !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureInstructions || refusal.Reason != adapter.ControlUnadvertised {
 			t.Fatalf("%s: got %v, want the unadvertised control named ahead of the ordinary refusal", name, err)
@@ -1022,9 +1022,9 @@ func TestControlRefusalOutranksOrdinaryValidation(t *testing.T) {
 	}
 
 	_, session, _ := openFake(t)
-	_, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
+	_, _, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: "session-1", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue("glm-per-turn"),
-	})
+	}})
 	if !errors.Is(err, adapter.ErrInvalidSubmission) {
 		t.Fatalf("got %v, want the ordinary refusal when no control is at fault", err)
 	}
