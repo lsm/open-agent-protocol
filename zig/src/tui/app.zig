@@ -1390,6 +1390,7 @@ pub const App = struct {
         } else {
             try self.state.status.setModelWithContext(self.allocator, loaded.metadata.model, loaded.metadata.provider, 0);
         }
+        defer if (loaded.model_unavailable) self.noteUnavailableResumeModel(loaded.metadata.provider, loaded.metadata.model, runtime.currentModel());
         self.replaying_history = true;
         self.state.setFollowingAgentCwd(false);
         defer {
@@ -1412,6 +1413,15 @@ pub const App = struct {
         self.session_turns = if (loaded.events.items.len > 0) 1 else 0;
         try self.adoptLoadedSession(loaded.metadata);
         self.saveSessionIndex(store);
+    }
+
+    fn noteUnavailableResumeModel(self: *App, provider: []const u8, model_id: []const u8, current: ?ai_types.Model) void {
+        const msg = if (current) |model|
+            std.fmt.allocPrint(self.allocator, "{s}/{s} is not available, so this session continues on {s}/{s}; pick another with /model", .{ provider, model_id, model.provider, model.id }) catch return
+        else
+            std.fmt.allocPrint(self.allocator, "{s}/{s} is not available; pick a model with /model", .{ provider, model_id }) catch return;
+        defer self.allocator.free(msg);
+        self.state.appendTranscript(.system, msg) catch {};
     }
 
     fn loginDiscoveryAvailable(id: []const u8) bool {
@@ -6843,6 +6853,49 @@ test "a resumed session's replayed events leave the rate showing nothing" {
     try std.testing.expect(!app.state.telemetry.rate.previous.hasFigure());
     try std.testing.expect(!app.state.telemetry.rate.average.hasFigure());
     try std.testing.expect(!app.state.telemetry.rate.live.hasFigure());
+}
+
+test "a session whose model is gone resumes on the current model and says so" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+
+    var production = try ProductionRuntime.init(std.testing.allocator, .{});
+    defer production.deinit();
+    production.initBridge();
+    if (production.models.len == 0) return error.TestExpectedTarget;
+
+    var store = try session_store.Store.init(std.testing.allocator, base);
+    defer store.deinit();
+    var meta = session_store.SessionMetadata{
+        .session_id = try std.testing.allocator.dupe(u8, "orphaned"),
+        .model = try std.testing.allocator.dupe(u8, "retired-model"),
+        .provider = try std.testing.allocator.dupe(u8, "retired-provider"),
+        .last_active = 1,
+    };
+    defer meta.deinit(std.testing.allocator);
+    try store.save(meta, .{ .turn_start = .{} });
+    try store.save(meta, .{ .turn_end = .{ .stop_reason = .stop } });
+
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    var app = try App.init(std.testing.allocator, production.options());
+    defer app.deinit();
+    if (app.store) |*owned| owned.deinit();
+    app.store = try session_store.Store.init(std.testing.allocator, base);
+    app.session = mock.session();
+    try app.loadSessions();
+    app.state.session_index = 0;
+    const before = app.runtime.?.currentModel().?;
+
+    try app.resumeSelectedSession();
+
+    try std.testing.expectEqualStrings("orphaned", app.session_id);
+    try std.testing.expectEqualStrings(before.id, app.runtime.?.currentModel().?.id);
+    try std.testing.expectEqualStrings(before.id, app.state.status.model);
+    const said = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expect(std.mem.startsWith(u8, said.text.items, "retired-provider/retired-model is not available, so this session continues on "));
 }
 
 test "a model switch resets the rate average, including between two models that cost the same" {
