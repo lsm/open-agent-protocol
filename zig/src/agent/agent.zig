@@ -714,8 +714,6 @@ pub const Agent = struct {
     pub fn clearAllQueues(self: *Agent) void {
         self._mutex.lockUncancelable(defaultIo());
         defer self._mutex.unlock(defaultIo());
-        if (self._compaction_request) |focus| self._allocator.free(focus);
-        self._compaction_request = null;
         for (self._steering_queue.items) |*msg| {
             msg.deinit(self._allocator);
         }

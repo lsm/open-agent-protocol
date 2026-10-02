@@ -2856,6 +2856,7 @@ pub const App = struct {
             if (self.runtime) |runtime| {
                 if (runtime.local_agent) |*local| {
                     if (local.isIdle()) {
+                        self.dropHeldCompaction();
                         local.clearAllQueues();
                         local.replaceMessages(&.{}) catch {};
                         self.pending_session_reset = false;
@@ -3046,6 +3047,7 @@ pub const App = struct {
         if (self.runtime) |runtime| {
             if (runtime.local_agent) |*local| {
                 if (!local.isIdle()) return error.PendingSessionReset;
+                self.dropHeldCompaction();
                 local.clearAllQueues();
                 local.replaceMessages(&.{}) catch {};
             }
