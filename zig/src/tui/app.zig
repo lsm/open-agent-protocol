@@ -96,9 +96,30 @@ const ModelFetch = struct {
     done: std.atomic.Value(bool) = .init(false),
     result: anyerror![]ai_types.Model = error.ModelFetchPending,
 
-    fn run(self: *ModelFetch, allocator: std.mem.Allocator) void {
-        self.result = loadRuntimeModelsFresh(allocator);
+    const fetch_allocator = std.heap.smp_allocator;
+
+    fn start() !*ModelFetch {
+        const fetch = try fetch_allocator.create(ModelFetch);
+        errdefer fetch_allocator.destroy(fetch);
+        fetch.* = .{ .thread = undefined };
+        fetch.thread = try std.Thread.spawn(.{}, work, .{fetch});
+        return fetch;
+    }
+
+    fn work(self: *ModelFetch) void {
+        self.result = loadRuntimeModelsFresh(fetch_allocator);
         self.done.store(true, .release);
+    }
+
+    fn finish(self: *ModelFetch) anyerror![]ai_types.Model {
+        self.thread.join();
+        const result = self.result;
+        fetch_allocator.destroy(self);
+        return result;
+    }
+
+    fn release(models: []ai_types.Model) void {
+        model_catalog.deinitModels(fetch_allocator, models);
     }
 };
 
@@ -958,6 +979,7 @@ pub const App = struct {
     pending_session_reset: bool = false,
     pending_models: ?[]ai_types.Model = null,
     model_fetch: ?*ModelFetch = null,
+    model_refetch: bool = false,
     quarantine_events: bool = false,
     quarantine_generation: u32 = 0,
     quarantine_buffer: std.ArrayList(tui_runtime.TuiEvent) = .empty,
@@ -1037,9 +1059,11 @@ pub const App = struct {
 
     pub fn deinit(self: *App) void {
         if (self.model_fetch) |fetch| {
-            fetch.thread.join();
-            if (fetch.result) |models| model_catalog.deinitModels(self.allocator, models) else |_| {}
-            self.allocator.destroy(fetch);
+            if (fetch.done.load(.acquire)) {
+                if (fetch.finish()) |models| ModelFetch.release(models) else |_| {}
+            } else {
+                fetch.thread.detach();
+            }
             self.model_fetch = null;
         }
         if (self.pending_models) |models| {
@@ -1809,11 +1833,10 @@ pub const App = struct {
                 self.finishLogin();
                 if (save_err) |_| {
                     self.refreshLoginStatus();
-                    const switched = self.refreshModels();
                     const msg = try std.fmt.allocPrint(self.allocator, "logged in to {s}", .{provider_id});
                     defer self.allocator.free(msg);
                     try self.state.appendTranscript(.system, msg);
-                    try self.reportModelRefresh(switched, "login succeeded but refreshing models failed");
+                    try self.refreshModelsNowOrLater("login succeeded but refreshing models failed");
                 } else |err| {
                     const msg = try std.fmt.allocPrint(self.allocator, "login succeeded but saving credentials failed: {s}", .{@errorName(err)});
                     defer self.allocator.free(msg);
@@ -1923,6 +1946,7 @@ pub const App = struct {
     }
 
     fn refreshModels(self: *App) !bool {
+        self.discardModelFetch();
         const models = try loadRuntimeModelsFresh(self.allocator);
         defer model_catalog.deinitModels(self.allocator, models);
         return self.applyModels(models);
@@ -1935,33 +1959,57 @@ pub const App = struct {
     }
 
     fn refreshModelsCommand(self: *App) !void {
-        if (!self.runtimeBusy()) return self.reportModelRefresh(self.refreshModels(), "refreshing models failed");
+        try self.refreshModelsNowOrLater("refreshing models failed");
+    }
+
+    fn refreshModelsNowOrLater(self: *App, failure: []const u8) !void {
+        if (!self.runtimeBusy()) return self.reportModelRefresh(self.refreshModels(), failure);
         if (self.model_fetch != null) {
-            try self.state.appendTranscript(.system, "the model catalog is already being fetched");
+            self.model_refetch = true;
+            try self.state.appendTranscript(.system, "the model catalog will be fetched again; it takes effect when this turn ends");
             return;
         }
-        const fetch = try self.allocator.create(ModelFetch);
-        errdefer self.allocator.destroy(fetch);
-        fetch.* = .{ .thread = undefined };
-        fetch.thread = try std.Thread.spawn(.{}, ModelFetch.run, .{ fetch, self.allocator });
-        self.model_fetch = fetch;
+        self.model_fetch = try ModelFetch.start();
         try self.state.appendTranscript(.system, "fetching the model catalog; it takes effect when this turn ends");
+    }
+
+    fn discardModelFetch(self: *App) void {
+        const fetch = self.model_fetch orelse return;
+        self.model_fetch = null;
+        self.model_refetch = false;
+        if (fetch.finish()) |models| ModelFetch.release(models) else |_| {}
     }
 
     fn collectModelFetch(self: *App) !void {
         const fetch = self.model_fetch orelse return;
         if (!fetch.done.load(.acquire)) return;
-        fetch.thread.join();
         self.model_fetch = null;
-        defer self.allocator.destroy(fetch);
-        const models = fetch.result catch |err| {
+        const result = fetch.finish();
+        if (self.model_refetch) {
+            self.model_refetch = false;
+            if (result) |models| ModelFetch.release(models) else |_| {}
+            self.model_fetch = try ModelFetch.start();
+            return;
+        }
+        const fetched = result catch |err| {
             const msg = try std.fmt.allocPrint(self.allocator, "refreshing models failed: {s}", .{@errorName(err)});
             defer self.allocator.free(msg);
             try self.state.appendTranscript(.@"error", msg);
             return;
         };
+        defer ModelFetch.release(fetched);
+        const owned = try self.allocator.alloc(ai_types.Model, fetched.len);
+        var cloned: usize = 0;
+        errdefer {
+            for (owned[0..cloned]) |*model| model.deinit(self.allocator);
+            self.allocator.free(owned);
+        }
+        for (fetched, 0..) |model, index| {
+            owned[index] = try ai_types.cloneModel(self.allocator, model);
+            cloned += 1;
+        }
         if (self.pending_models) |old| model_catalog.deinitModels(self.allocator, old);
-        self.pending_models = models;
+        self.pending_models = owned;
     }
 
     fn applyPendingModelsBeforeResume(self: *App) !void {
@@ -2118,7 +2166,7 @@ pub const App = struct {
         }
         if (!removed) return;
         self.refreshLoginStatus();
-        try self.reportModelRefresh(self.refreshModels(), "logged out but refreshing models failed");
+        try self.refreshModelsNowOrLater("logged out but refreshing models failed");
     }
 
     fn submitLoginInput(self: *App, text: []const u8) void {
