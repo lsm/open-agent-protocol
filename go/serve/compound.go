@@ -46,7 +46,7 @@ func ElectionGate(ctx context.Context, hub *Hub, name string, revision string, r
 	for _, key := range elected {
 		support, advertised := descriptor.Capabilities.EffectiveSupport(key)
 		if !advertised || support.Level == "" || support.Level == protocol.SupportUnavailable {
-			return "", &base.UnsupportedControlError{Feature: key, Reason: base.ControlUnadvertised}
+			return "", &base.UnsupportedControlError{Feature: key, Reason: base.ControlUnadvertised, Field: base.OpenSettingField(key)}
 		}
 		if slices.Contains(settings, key) && !support.DisclosesMode(protocol.ModeSessionOpen) {
 			return "", &base.UnsupportedControlError{Feature: key, Reason: base.ControlUnadvertised, Field: base.OpenSettingField(key)}

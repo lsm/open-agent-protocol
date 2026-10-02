@@ -50,7 +50,7 @@ func TestTheElectionGateRefusesASettingItsFeatureDoesNotTakeAtOpen(t *testing.T)
 		t.Fatalf("gate answered %v, want unsupported_feature naming %s and its field", err, protocol.FeatureSessionReasoning)
 	}
 	_, err = serve.ElectionGate(context.Background(), hub, "settings", "", protocol.SessionOpenRequest{SessionID: "s1", CompactionPolicy: &protocol.CompactionPolicy{Kind: protocol.CompactionOff}})
-	if !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureCompactionPolicy {
+	if !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureCompactionPolicy || refusal.Field != "compaction_policy" {
 		t.Fatalf("gate answered %v, want an unadvertised compaction policy refused", err)
 	}
 }
