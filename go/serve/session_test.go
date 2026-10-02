@@ -403,7 +403,8 @@ type gatedSession struct {
 	stream         chan base.Result
 }
 
-func (g *gatedSession) Submit(_ context.Context, request protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+func (g *gatedSession) Submit(_ context.Context, submit base.SubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+	request := submit.Request
 	g.entered <- struct{}{}
 	<-g.release
 	if g.failWithStream != nil {
@@ -429,10 +430,10 @@ func TestSubmitReservationBridgesAdmission(t *testing.T) {
 
 	admitted := make(chan error, 1)
 	go func() {
-		_, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
+		_, err := entry.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{
 			SessionID: "gated", Delivery: protocol.DeliveryAuto,
 			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("resubmit")}},
-		})
+		}})
 		admitted <- err
 	}()
 
@@ -485,10 +486,10 @@ func TestSubmitReservationReleasesOnFailure(t *testing.T) {
 
 	rejected := make(chan error, 1)
 	go func() {
-		_, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
+		_, err := entry.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{
 			SessionID: "gated", Delivery: protocol.DeliveryAuto,
 			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("resubmit")}},
-		})
+		}})
 		rejected <- err
 	}()
 	<-gated.entered
@@ -522,10 +523,10 @@ func TestDeferredFinishSurvivesLaterReservations(t *testing.T) {
 	rejected := make(chan error, 2)
 	for range 2 {
 		go func() {
-			_, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
+			_, err := entry.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{
 				SessionID: "gated", Delivery: protocol.DeliveryAuto,
 				Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("resubmit")}},
-			})
+			}})
 			rejected <- err
 		}()
 	}
@@ -563,10 +564,10 @@ func TestDeferredFinishSparesLaterSubscribers(t *testing.T) {
 
 	rejected := make(chan error, 1)
 	go func() {
-		_, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
+		_, err := entry.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{
 			SessionID: "gated", Delivery: protocol.DeliveryAuto,
 			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("resubmit")}},
-		})
+		}})
 		rejected <- err
 	}()
 	<-gated.entered
@@ -609,10 +610,10 @@ func TestDeferredFinishSparesLaterSubscribers(t *testing.T) {
 	}
 
 	gated.fail = nil
-	if _, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
+	if _, err := entry.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: "gated", Delivery: protocol.DeliveryAuto,
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("corrected")}},
-	}); err != nil {
+	}}); err != nil {
 		t.Fatal(err)
 	}
 	gated.stream <- base.Result{Envelope: runEnvelope(t, "run-b", 1)}
@@ -711,10 +712,10 @@ func TestRejectedSubmitKeepsSubscriptions(t *testing.T) {
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
 	}
-	if _, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
+	if _, err := entry.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: "gated", Delivery: protocol.DeliveryAuto,
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("rejected")}},
-	}); !errors.Is(err, base.ErrInvalidSubmission) {
+	}}); !errors.Is(err, base.ErrInvalidSubmission) {
 		t.Fatalf("submit error %v, want invalid submission", err)
 	}
 	select {
@@ -724,10 +725,10 @@ func TestRejectedSubmitKeepsSubscriptions(t *testing.T) {
 	}
 
 	gated.fail = nil
-	if _, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
+	if _, err := entry.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: "gated", Delivery: protocol.DeliveryAuto,
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("corrected")}},
-	}); err != nil {
+	}}); err != nil {
 		t.Fatal(err)
 	}
 	gated.stream <- base.Result{Envelope: runEnvelope(t, "run-b", 1)}
@@ -1058,10 +1059,10 @@ func TestSubmitErrorStreamStillDrains(t *testing.T) {
 	cancel()
 	done := make(chan error, 1)
 	go func() {
-		_, err := entry.Submit(ctx, protocol.MessageSubmitRequest{
+		_, err := entry.Submit(ctx, base.SubmitRequest{Request: protocol.MessageSubmitRequest{
 			SessionID: "gated", Delivery: protocol.DeliveryAuto,
 			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("orphan")}},
-		})
+		}})
 		done <- err
 	}()
 	<-gated.entered
@@ -1116,10 +1117,10 @@ func TestOrphanBecomesCurrentOverCompletedRun(t *testing.T) {
 	cancel()
 	done := make(chan error, 1)
 	go func() {
-		_, err := entry.Submit(ctx, protocol.MessageSubmitRequest{
+		_, err := entry.Submit(ctx, base.SubmitRequest{Request: protocol.MessageSubmitRequest{
 			SessionID: "gated", Delivery: protocol.DeliveryAuto,
 			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("orphan")}},
-		})
+		}})
 		done <- err
 	}()
 	<-gated.entered
@@ -1156,10 +1157,10 @@ func TestEmptyErrorStreamKeepsSubscriptionsParked(t *testing.T) {
 	cancel()
 	done := make(chan error, 1)
 	go func() {
-		_, err := entry.Submit(ctx, protocol.MessageSubmitRequest{
+		_, err := entry.Submit(ctx, base.SubmitRequest{Request: protocol.MessageSubmitRequest{
 			SessionID: "gated", Delivery: protocol.DeliveryAuto,
 			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("written-then-failed")}},
-		})
+		}})
 		done <- err
 	}()
 	<-gated.entered
@@ -1194,10 +1195,10 @@ func TestEmptyErrorStreamKeepsSubscriptionsParked(t *testing.T) {
 
 	gated.failWithStream = nil
 	gated.fail = nil
-	if _, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
+	if _, err := entry.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: "gated", Delivery: protocol.DeliveryAuto,
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("corrected")}},
-	}); err != nil {
+	}}); err != nil {
 		t.Fatal(err)
 	}
 	gated.stream <- base.Result{Envelope: runEnvelope(t, "run-b", 1)}
@@ -1287,10 +1288,10 @@ func TestCloseDuringEmptyErrorStreamEndsSubscribers(t *testing.T) {
 	cancel()
 	done := make(chan error, 1)
 	go func() {
-		_, err := entry.Submit(ctx, protocol.MessageSubmitRequest{
+		_, err := entry.Submit(ctx, base.SubmitRequest{Request: protocol.MessageSubmitRequest{
 			SessionID: "gated", Delivery: protocol.DeliveryAuto,
 			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("orphan")}},
-		})
+		}})
 		done <- err
 	}()
 	<-gated.entered
@@ -1363,10 +1364,10 @@ func TestDeferredErrorSurvivesNewAdmission(t *testing.T) {
 
 	admit := make(chan error, 1)
 	go func() {
-		_, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
+		_, err := entry.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{
 			SessionID: "gated", Delivery: protocol.DeliveryAuto,
 			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("next run")}},
-		})
+		}})
 		admit <- err
 	}()
 	<-gated.entered
@@ -1579,10 +1580,10 @@ func TestEmptyOrphanAppliesDeferredRunEnd(t *testing.T) {
 	cancel()
 	done := make(chan error, 1)
 	go func() {
-		_, err := entry.Submit(ctx, protocol.MessageSubmitRequest{
+		_, err := entry.Submit(ctx, base.SubmitRequest{Request: protocol.MessageSubmitRequest{
 			SessionID: "gated", Delivery: protocol.DeliveryAuto,
 			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("orphan")}},
-		})
+		}})
 		done <- err
 	}()
 	<-gated.entered
@@ -1659,10 +1660,10 @@ func TestTerminalSubmitErrorClosesEntry(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
-	if _, err := entry.Submit(ctx, protocol.MessageSubmitRequest{
+	if _, err := entry.Submit(ctx, base.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: "gated", Delivery: protocol.DeliveryAuto,
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("after the transport died")}},
-	}); !errors.Is(err, base.ErrSessionClosed) {
+	}}); !errors.Is(err, base.ErrSessionClosed) {
 		t.Fatalf("submit error %v, want session-closed", err)
 	}
 	if !entry.IsClosed() {
@@ -1694,10 +1695,10 @@ func TestCloseOverReservationErrorSplitsCohorts(t *testing.T) {
 
 	admit := make(chan error, 1)
 	go func() {
-		_, err := entry.Submit(context.Background(), protocol.MessageSubmitRequest{
+		_, err := entry.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{
 			SessionID: "gated", Delivery: protocol.DeliveryAuto,
 			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("next run")}},
-		})
+		}})
 		admit <- err
 	}()
 	<-gated.entered
@@ -1775,7 +1776,7 @@ func TestQueueOverflowIncludesCurrentRun(t *testing.T) {
 
 type idleClosedSession struct{ id protocol.SessionID }
 
-func (s *idleClosedSession) Submit(context.Context, protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+func (s *idleClosedSession) Submit(context.Context, base.SubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
 	return protocol.MessageSubmitResponse{}, nil, base.ErrSessionClosed
 }
 
@@ -1843,7 +1844,7 @@ type stubSession struct {
 	closeErr    error
 }
 
-func (s *stubSession) Submit(context.Context, protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+func (s *stubSession) Submit(context.Context, base.SubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
 	return protocol.MessageSubmitResponse{}, nil, nil
 }
 func (s *stubSession) State(context.Context) (protocol.SessionState, error) {
@@ -1908,7 +1909,7 @@ type queuedStubSession struct {
 	cancelled []protocol.RunID
 }
 
-func (s *queuedStubSession) Submit(context.Context, protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+func (s *queuedStubSession) Submit(context.Context, base.SubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
 	return protocol.MessageSubmitResponse{}, nil, nil
 }
 func (s *queuedStubSession) State(context.Context) (protocol.SessionState, error) {

@@ -94,7 +94,8 @@ func (r *runState) signalStart(err error) {
 	r.startOnce.Do(func() { r.startResult <- err; close(r.startResult) })
 }
 
-func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+func (s *Session) Submit(ctx context.Context, submit base.SubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+	req := submit.Request
 	if err := ctx.Err(); err != nil {
 		return protocol.MessageSubmitResponse{}, nil, err
 	}

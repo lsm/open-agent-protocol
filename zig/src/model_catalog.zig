@@ -100,14 +100,57 @@ pub fn deinitModels(allocator: std.mem.Allocator, models: []ai_types.Model) void
 }
 
 pub fn loadProductionModels(allocator: std.mem.Allocator) ![]ai_types.Model {
-    return loadProductionModelsWithMode(allocator, .allow_cache);
+    return loadProductionModelsWithMode(allocator, .allow_cache, null);
 }
 
 pub fn refreshProductionModels(allocator: std.mem.Allocator) ![]ai_types.Model {
-    return loadProductionModelsWithMode(allocator, .force_fetch);
+    return loadProductionModelsWithMode(allocator, .force_fetch, null);
 }
 
-fn loadProductionModelsWithMode(allocator: std.mem.Allocator, mode: CatalogLoadMode) ![]ai_types.Model {
+pub fn refreshProductionModelsNoting(allocator: std.mem.Allocator, notes: *RefreshNotes) ![]ai_types.Model {
+    return loadProductionModelsWithMode(allocator, .force_fetch, notes);
+}
+
+pub const RefreshNote = struct {
+    source: []u8,
+    reason: []u8,
+};
+
+pub const RefreshNotes = struct {
+    allocator: std.mem.Allocator,
+    items: std.ArrayList(RefreshNote) = .empty,
+
+    pub fn init(allocator: std.mem.Allocator) RefreshNotes {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn add(self: *RefreshNotes, source: []const u8, comptime reason_fmt: []const u8, args: anytype) void {
+        const owned_source = self.allocator.dupe(u8, source) catch return;
+        const reason = std.fmt.allocPrint(self.allocator, reason_fmt, args) catch {
+            self.allocator.free(owned_source);
+            return;
+        };
+        self.items.append(self.allocator, .{ .source = owned_source, .reason = reason }) catch {
+            self.allocator.free(owned_source);
+            self.allocator.free(reason);
+        };
+    }
+
+    pub fn deinit(self: *RefreshNotes) void {
+        for (self.items.items) |item| {
+            self.allocator.free(item.source);
+            self.allocator.free(item.reason);
+        }
+        self.items.deinit(self.allocator);
+        self.* = undefined;
+    }
+};
+
+fn note(notes: ?*RefreshNotes, source: []const u8, comptime reason_fmt: []const u8, args: anytype) void {
+    if (notes) |list| list.add(source, reason_fmt, args);
+}
+
+fn loadProductionModelsWithMode(allocator: std.mem.Allocator, mode: CatalogLoadMode, notes: ?*RefreshNotes) ![]ai_types.Model {
     var loaded_storage: ?oauth_storage.AuthStorage = if (builtin.is_test) null else oauth_storage.AuthStorage.loadDefault(allocator) catch null;
     defer if (loaded_storage) |*storage| storage.deinit();
     const storage: ?*oauth_storage.AuthStorage = if (loaded_storage) |*storage| storage else null;
@@ -116,6 +159,7 @@ fn loadProductionModelsWithMode(allocator: std.mem.Allocator, mode: CatalogLoadM
     var codex_models = loadOpenAICodexModels(allocator, mode, storage) catch |err| blk: {
         if (mode == .allow_cache) return err;
         codex_refresh_error = err;
+        note(notes, "openai-codex", "{t}", .{err});
         break :blk try emptyModels(allocator);
     };
     defer deinitModels(allocator, codex_models);
@@ -126,7 +170,7 @@ fn loadProductionModelsWithMode(allocator: std.mem.Allocator, mode: CatalogLoadM
     var copilot_models = try loadGitHubCopilotModels(allocator, storage);
     defer deinitModels(allocator, copilot_models);
 
-    var custom_models = try loadCustomModels(allocator, storage, mode);
+    var custom_models = try loadCustomModels(allocator, storage, mode, notes);
     defer deinitModels(allocator, custom_models);
 
     var catalog_models = try loadCatalogModels(allocator, storage, mode);
@@ -156,6 +200,7 @@ fn loadProductionModelsWithMode(allocator: std.mem.Allocator, mode: CatalogLoadM
 
 var test_custom_providers_config: ?[]const u8 = null;
 var test_custom_discovery_ids: ?[]const []const u8 = null;
+var test_custom_discovery_failure: ?[]const u8 = null;
 
 var test_force_copilot_models: bool = false;
 
@@ -263,13 +308,16 @@ fn loadGitHubCopilotModels(allocator: std.mem.Allocator, storage: ?*oauth_storag
     return models.toOwnedSlice(allocator);
 }
 
-fn loadCustomModels(allocator: std.mem.Allocator, storage: ?*oauth_storage.AuthStorage, mode: CatalogLoadMode) ![]ai_types.Model {
+fn loadCustomModels(allocator: std.mem.Allocator, storage: ?*oauth_storage.AuthStorage, mode: CatalogLoadMode, notes: ?*RefreshNotes) ![]ai_types.Model {
     const providers = if (builtin.is_test)
         try custom_providers.parse(allocator, test_custom_providers_config orelse return emptyModels(allocator))
     else
         custom_providers.load(allocator, custom_providers.max_config_bytes) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
-            else => return emptyModels(allocator),
+            else => {
+                note(notes, "providers.json", "{t}", .{err});
+                return emptyModels(allocator);
+            },
         };
     defer custom_providers.deinitProviders(allocator, providers);
 
@@ -280,7 +328,7 @@ fn loadCustomModels(allocator: std.mem.Allocator, storage: ?*oauth_storage.AuthS
     }
 
     for (providers) |*provider| {
-        try appendCustomProviderModels(allocator, &models, provider, storage, mode);
+        try appendCustomProviderModels(allocator, &models, provider, storage, mode, notes);
     }
     return models.toOwnedSlice(allocator);
 }
@@ -291,8 +339,9 @@ fn appendCustomProviderModels(
     provider: *const custom_providers.CustomProvider,
     storage: ?*oauth_storage.AuthStorage,
     mode: CatalogLoadMode,
+    notes: ?*RefreshNotes,
 ) !void {
-    const discovered = try discoverCustomModelIds(allocator, provider, storage, mode);
+    const discovered = try discoverCustomModelIds(allocator, provider, storage, mode, notes);
     defer if (discovered) |ids| freeModelIds(allocator, ids);
 
     if (discovered) |ids| {
@@ -1058,8 +1107,10 @@ fn discoverCustomModelIds(
     provider: *const custom_providers.CustomProvider,
     storage: ?*oauth_storage.AuthStorage,
     mode: CatalogLoadMode,
+    notes: ?*RefreshNotes,
 ) !?[][]const u8 {
     if (builtin.is_test) {
+        if (test_custom_discovery_failure) |reason| note(notes, provider.id, "{s}", .{reason});
         const ids = test_custom_discovery_ids orelse return null;
         const out = try allocator.alloc([]const u8, ids.len);
         var filled: usize = 0;
@@ -1085,7 +1136,7 @@ fn discoverCustomModelIds(
     const token = customCredential(allocator, provider, storage);
     defer if (token) |value| secureFree(allocator, value);
 
-    if (fetchCustomModelsCatalog(allocator, provider, token)) |body| {
+    if (fetchCustomModelsCatalog(allocator, provider, token, notes)) |body| {
         defer allocator.free(body);
         if (parseModelIds(allocator, body)) |ids| {
             if (ids.len > 0) {
@@ -1093,7 +1144,8 @@ fn discoverCustomModelIds(
                 return ids;
             }
             freeModelIds(allocator, ids);
-        } else |_| {}
+            note(notes, provider.id, "the model list was empty", .{});
+        } else |err| note(notes, provider.id, "the model list did not parse ({t})", .{err});
     } else |_| {}
 
     return loadCachedModelIds(allocator, name, null);
@@ -1612,6 +1664,7 @@ fn fetchCustomModelsCatalog(
     allocator: std.mem.Allocator,
     provider: *const custom_providers.CustomProvider,
     token: ?[]const u8,
+    notes: ?*RefreshNotes,
 ) ![]u8 {
     const url = try customModelsUrl(allocator, provider);
     defer allocator.free(url);
@@ -1641,11 +1694,17 @@ fn fetchCustomModelsCatalog(
         .accept_encoding = "identity",
         .max_response_bytes = max_catalog_bytes,
         .timeout_ms = catalog_fetch_timeout_ms,
-    }) catch return error.ModelCatalogFetchFailed;
+    }) catch |err| {
+        note(notes, provider.id, "GET {s} failed ({t})", .{ url, err });
+        return error.ModelCatalogFetchFailed;
+    };
     const body = fetched.body;
     errdefer allocator.free(body);
 
-    if (fetched.status != 200) return error.ModelCatalogFetchFailed;
+    if (fetched.status != 200) {
+        note(notes, provider.id, "GET {s} answered HTTP {d}", .{ url, fetched.status });
+        return error.ModelCatalogFetchFailed;
+    }
     return body;
 }
 
@@ -2164,7 +2223,7 @@ test "discovery result is filtered per provider and never falls back to the decl
         test_custom_discovery_ids = null;
     }
 
-    const models = try loadCustomModels(std.testing.allocator, null, .allow_cache);
+    const models = try loadCustomModels(std.testing.allocator, null, .allow_cache, null);
     defer deinitModels(std.testing.allocator, models);
 
     try std.testing.expectEqual(@as(usize, 2), models.len);
@@ -2172,6 +2231,25 @@ test "discovery result is filtered per provider and never falls back to the decl
     try std.testing.expectEqualStrings("aaa", models[0].provider);
     try std.testing.expectEqualStrings("keep-z", models[1].id);
     try std.testing.expectEqualStrings("zzz", models[1].provider);
+}
+
+test "a custom provider whose discovery fails is named in the refresh notes" {
+    test_custom_providers_config = custom_two_provider_config;
+    test_custom_discovery_failure = "GET https://aaa.test/v1/models failed (Timeout)";
+    defer {
+        test_custom_providers_config = null;
+        test_custom_discovery_failure = null;
+    }
+
+    var notes = RefreshNotes.init(std.testing.allocator);
+    defer notes.deinit();
+    const models = try loadCustomModels(std.testing.allocator, null, .force_fetch, &notes);
+    defer deinitModels(std.testing.allocator, models);
+
+    try std.testing.expectEqual(@as(usize, 2), notes.items.items.len);
+    try std.testing.expectEqualStrings("aaa", notes.items.items[0].source);
+    try std.testing.expectEqualStrings("GET https://aaa.test/v1/models failed (Timeout)", notes.items.items[0].reason);
+    try std.testing.expectEqualStrings("zzz", notes.items.items[1].source);
 }
 
 test "auth none reaches the model as allows_anonymous" {
@@ -2183,7 +2261,7 @@ test "auth none reaches the model as allows_anonymous" {
     ;
     defer test_custom_providers_config = null;
 
-    const models = try loadCustomModels(std.testing.allocator, null, .allow_cache);
+    const models = try loadCustomModels(std.testing.allocator, null, .allow_cache, null);
     defer deinitModels(std.testing.allocator, models);
 
     try std.testing.expectEqual(@as(usize, 2), models.len);
@@ -2342,7 +2420,7 @@ test "a provider whose discovery is fully filtered contributes nothing regardles
         test_custom_providers_config = config;
         defer test_custom_providers_config = null;
 
-        const models = try loadCustomModels(std.testing.allocator, null, .allow_cache);
+        const models = try loadCustomModels(std.testing.allocator, null, .allow_cache, null);
         defer deinitModels(std.testing.allocator, models);
 
         try std.testing.expectEqual(@as(usize, 1), models.len);
@@ -2384,7 +2462,7 @@ test "loadProductionModels includes models from a declared custom provider" {
 fn customCatalogProbe(allocator: std.mem.Allocator) !void {
     test_custom_providers_config = custom_gateway_config;
     defer test_custom_providers_config = null;
-    const models = try loadCustomModels(allocator, null, .allow_cache);
+    const models = try loadCustomModels(allocator, null, .allow_cache, null);
     defer deinitModels(allocator, models);
     try std.testing.expectEqual(@as(usize, 2), models.len);
 }

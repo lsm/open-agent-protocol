@@ -426,7 +426,8 @@ pub const Session = struct {
         };
     }
 
-    fn submit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+    fn submit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+        _ = envelope_id;
         const self = cast(ptr);
         const text = try submissionText(arena, request);
         if (self.engine.settled or self.engine.reducer.unusable) return error.SessionClosed;
@@ -771,13 +772,13 @@ const Probe = struct {
     fn submit(self: *Probe, text: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
         const messages = try self.arena.allocator().dupe(oap_types.Message, &.{.{ .role = .user, .content = .{ .text = text } }});
         const request = oap_types.MessageSubmitRequest{ .session_id = "s1", .messages = messages, .delivery = .auto };
-        return self.handle.?.submit(self.arena.allocator(), &request, refusal);
+        return self.handle.?.submit(self.arena.allocator(), &request, "", refusal);
     }
 
     fn submitChoosing(self: *Probe, text: []const u8, choice: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
         const messages = try self.arena.allocator().dupe(oap_types.Message, &.{.{ .role = .user, .content = .{ .text = text } }});
         const request = oap_types.MessageSubmitRequest{ .session_id = "s1", .messages = messages, .delivery = .auto, .tool_choice_json = choice };
-        return self.handle.?.submit(self.arena.allocator(), &request, refusal);
+        return self.handle.?.submit(self.arena.allocator(), &request, "", refusal);
     }
 
     fn events(self: *Probe) ![]contract.Event {
@@ -1080,20 +1081,20 @@ test "a submission the child cannot take as one user turn is refused invalid_sub
 
     var two = [_]oap_types.Message{ .{ .role = .user, .content = .{ .text = "a" } }, .{ .role = .user, .content = .{ .text = "b" } } };
     const doubled = oap_types.MessageSubmitRequest{ .session_id = "s1", .messages = &two, .delivery = .auto };
-    try testing.expectError(error.InvalidSubmission, probe.handle.?.submit(arena, &doubled, &refusal));
+    try testing.expectError(error.InvalidSubmission, probe.handle.?.submit(arena, &doubled, "", &refusal));
 
     var assistant = [_]oap_types.Message{.{ .role = .assistant, .content = .{ .text = "a" } }};
     const spoken = oap_types.MessageSubmitRequest{ .session_id = "s1", .messages = &assistant, .delivery = .auto };
-    try testing.expectError(error.InvalidSubmission, probe.handle.?.submit(arena, &spoken, &refusal));
+    try testing.expectError(error.InvalidSubmission, probe.handle.?.submit(arena, &spoken, "", &refusal));
 
     var reasoning = [_]oap_types.ContentPart{.{ .reasoning = .{ .text = "hm" } }};
     var mixed = [_]oap_types.Message{.{ .role = .user, .content = .{ .parts = &reasoning } }};
     const thought = oap_types.MessageSubmitRequest{ .session_id = "s1", .messages = &mixed, .delivery = .auto };
-    try testing.expectError(error.InvalidSubmission, probe.handle.?.submit(arena, &thought, &refusal));
+    try testing.expectError(error.InvalidSubmission, probe.handle.?.submit(arena, &thought, "", &refusal));
 
     var one = [_]oap_types.Message{.{ .role = .user, .content = .{ .text = "a" } }};
     const queued = oap_types.MessageSubmitRequest{ .session_id = "s1", .messages = &one, .delivery = .queue };
-    try testing.expectError(error.InvalidSubmission, probe.handle.?.submit(arena, &queued, &refusal));
+    try testing.expectError(error.InvalidSubmission, probe.handle.?.submit(arena, &queued, "", &refusal));
 
     const written = try probe.fake.written(arena);
     try testing.expect(std.mem.indexOf(u8, written, "\"type\":\"user\"") == null);
@@ -1109,7 +1110,7 @@ test "text parts are joined with newlines into the one turn the child reads" {
     var parts = [_]oap_types.ContentPart{ .{ .text = "first" }, .{ .text = "second" } };
     var messages = [_]oap_types.Message{.{ .role = .user, .content = .{ .parts = &parts } }};
     const request = oap_types.MessageSubmitRequest{ .session_id = "s1", .messages = &messages, .delivery = .auto };
-    _ = try probe.handle.?.submit(probe.arena.allocator(), &request, &refusal);
+    _ = try probe.handle.?.submit(probe.arena.allocator(), &request, "", &refusal);
     _ = try probe.waitWritten("\"content\":\"first\\nsecond\"");
 }
 

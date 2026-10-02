@@ -433,7 +433,7 @@ pub const Endpoint = struct {
         const entry = try self.entryFor(arena, request);
         try self.requireScope(arena, payload.session_id, entry);
         try contract.refuseUnadvertisedControls(descriptor, payload, refusal);
-        const admission = try entry.session.submit(arena, payload, refusal);
+        const admission = try entry.session.submit(arena, payload, request.id, refusal);
         try self.respond(arena, request, .{
             .id = "",
             .session_id = admission.session_id,
@@ -1133,7 +1133,8 @@ const FakeSession = struct {
         return .{ .session_id = self.id_text, .status = if (self.active) .running else .idle };
     }
 
-    fn submit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+    fn submit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+        _ = envelope_id;
         const self = cast(ptr);
         if (self.fake.submit_failure) |failure| {
             refusal.* = self.fake.submit_refusal;

@@ -51,7 +51,7 @@ var providedCallSubmit = protocol.MessageSubmitRequest{
 
 func submitProvidedCall(t *testing.T, session adapter.Session) (protocol.MessageSubmitResponse, adapter.EventStream, []protocol.Envelope, protocol.ActionCallPayload) {
 	t.Helper()
-	admission, stream, err := session.Submit(context.Background(), providedCallSubmit)
+	admission, stream, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: providedCallSubmit})
 	if err != nil {
 		t.Fatalf("submit: %v", err)
 	}
@@ -422,9 +422,9 @@ func TestUnprovidedSessionIsUnchanged(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = session.Close(context.Background()) }()
-	_, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
+	_, stream, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: "plain", Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
-	})
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -472,11 +472,11 @@ func TestEveryListedToolIsSelectableAndReachable(t *testing.T) {
 	}
 	for _, name := range provided {
 		session := openProviding(t, providedTool(), secondProvidedTool())
-		_, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
+		_, stream, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: protocol.MessageSubmitRequest{
 			SessionID:  "control-tools",
 			Messages:   []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
 			ToolChoice: json.RawMessage(`{"allowed":["` + name + `"]}`),
-		})
+		}})
 		if err != nil {
 			t.Fatalf("tool_choice naming the listed tool %q was refused: %v", name, err)
 		}

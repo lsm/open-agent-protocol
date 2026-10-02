@@ -228,7 +228,8 @@ pub const Session = struct {
         return result;
     }
 
-    fn submit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+    fn submit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+        _ = envelope_id;
         const self = cast(ptr);
         try contract.refuseUnadvertisedControls(descriptor, request, refusal);
         if (request.session_id.len == 0 or request.messages.len == 0) return error.InvalidSubmission;
@@ -859,7 +860,7 @@ const Harness = struct {
         var refusal = contract.Refusal{};
         var parts = [_]oap_types.ContentPart{.{ .text = text }};
         var messages = [_]oap_types.Message{.{ .role = .user, .content = .{ .parts = &parts } }};
-        return self.session.submit(self.arena.allocator(), &.{ .session_id = self.session.id(), .messages = &messages, .delivery = .auto }, &refusal);
+        return self.session.submit(self.arena.allocator(), &.{ .session_id = self.session.id(), .messages = &messages, .delivery = .auto }, "submit-envelope", &refusal);
     }
 
     fn collect(self: *Harness) !void {
@@ -1061,6 +1062,21 @@ test "a replay from zero re-delivers the latest run's events in order, and a fut
     try testing.expectError(error.RunNotFound, harness.session.vtable.replay.?(harness.session.ptr, testing.allocator, "run-elsewhere", 0, &refusal));
 }
 
+test "a full journal drops its oldest half at once, keeping the newest entries in order" {
+    var script = Script{};
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const session = Session.cast(harness.session.ptr);
+    var sequence: u64 = 1;
+    while (sequence <= 8) : (sequence += 1) {
+        try session.journal.append(testing.allocator, .{ .line = try testing.allocator.dupe(u8, "x"), .run_id = "run", .sequence = sequence });
+    }
+    session.evictOldestHalf();
+    try testing.expectEqual(@as(usize, 4), session.journal.items.len);
+    for (session.journal.items, 5..) |entry, expected| try testing.expectEqual(@as(u64, expected), entry.sequence);
+}
+
 test "an open's oapx metadata sets the session's thinking level, window, permission mode and workspace, and anything else is ignored" {
     const base = tui_runtime.TuiRuntimeOptions{ .thinking_level = .low, .permission_mode = .bypass, .workspace_root = "/base" };
     var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator,
@@ -1083,19 +1099,4 @@ test "an open's oapx metadata sets the session's thinking level, window, permiss
     try testing.expectEqual(tui_runtime.PermissionMode.bypass, kept.permission_mode);
     try testing.expectEqualStrings("/base", kept.workspace_root);
     try testing.expectEqual(tui_runtime.PermissionMode.bypass, sessionOptions(base, null).permission_mode);
-}
-
-test "a full journal drops its oldest half at once, keeping the newest entries in order" {
-    var script = Script{};
-    var harness: Harness = undefined;
-    try harness.init(&script);
-    defer harness.deinit();
-    const session = Session.cast(harness.session.ptr);
-    var sequence: u64 = 1;
-    while (sequence <= 8) : (sequence += 1) {
-        try session.journal.append(testing.allocator, .{ .line = try testing.allocator.dupe(u8, "x"), .run_id = "run", .sequence = sequence });
-    }
-    session.evictOldestHalf();
-    try testing.expectEqual(@as(usize, 4), session.journal.items.len);
-    for (session.journal.items, 5..) |entry, expected| try testing.expectEqual(@as(u64, expected), entry.sequence);
 }

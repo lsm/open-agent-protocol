@@ -303,8 +303,15 @@ fn writeState(list: *SegmentList, allocator: std.mem.Allocator, state: *const tu
             try std.fmt.allocPrint(allocator, "{s} {s}", .{ tui_theme.spinnerFrame(state.anim_tick), activity });
         defer allocator.free(value);
         try pushValue(list, allocator, .state, value, tui_theme.runningText());
+    } else if (state.status.refreshing_models) {
+        const value = try std.fmt.allocPrint(allocator, "{s} refreshing models", .{tui_theme.spinnerFrame(state.anim_tick)});
+        defer allocator.free(value);
+        try pushValue(list, allocator, .state, value, tui_theme.runningText());
     } else {
         try pushValue(list, allocator, .state, "idle", tui_theme.muted());
+    }
+    if (state.status.streaming and state.status.refreshing_models) {
+        try pushValue(list, allocator, .state, "refreshing models", tui_theme.muted());
     }
 }
 

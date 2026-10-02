@@ -974,7 +974,7 @@ pub const AuthStorage = struct {
         };
     }
 
-    pub fn removeStored(allocator: std.mem.Allocator, provider_id: []const u8, shared_key_ids: []const []const u8) !bool {
+    pub fn removeStored(allocator: std.mem.Allocator, provider_id: []const u8) !bool {
         var file = try loadFromFileOpening(allocator, null, .only_missing_is_empty);
         defer file.deinit();
         var keychain: ?AuthStorage = null;
@@ -986,21 +986,11 @@ pub const AuthStorage = struct {
                 .unavailable, .needs_interaction, .busy => return error.KeychainUnavailable,
             }
         }
-        const file_removed = file.removeCredentials(provider_id, shared_key_ids);
-        const keychain_removed = if (keychain) |*stored| stored.removeCredentials(provider_id, shared_key_ids) else false;
+        const file_removed = file.removeProvider(provider_id);
+        const keychain_removed = if (keychain) |*stored| stored.removeProvider(provider_id) else false;
         if (file_removed) try file.saveToFile();
         if (keychain_removed) try saveToKeychain(&keychain.?);
         return file_removed or keychain_removed;
-    }
-
-    fn removeCredentials(self: *AuthStorage, provider_id: []const u8, shared_key_ids: []const []const u8) bool {
-        var removed = self.removeProvider(provider_id);
-        for (shared_key_ids) |id| {
-            const held = self.providers.get(id) orelse continue;
-            if (held != .api_key) continue;
-            removed = self.removeProvider(id) or removed;
-        }
-        return removed;
     }
 
     fn removeProvider(self: *AuthStorage, provider_id: []const u8) bool {
@@ -1119,14 +1109,13 @@ test "removing a stored credential drops that provider and keeps the rest" {
     try storage.saveToFile();
     storage.deinit();
 
-    const shared = [_][]const u8{ "opencode-zen", "oauth-sibling" };
-    try std.testing.expect(try AuthStorage.removeStored(std.testing.allocator, "opencode-go", &shared));
-    try std.testing.expect(!try AuthStorage.removeStored(std.testing.allocator, "opencode-go", &shared));
+    try std.testing.expect(try AuthStorage.removeStored(std.testing.allocator, "opencode-go"));
+    try std.testing.expect(!try AuthStorage.removeStored(std.testing.allocator, "opencode-go"));
 
     var reloaded = try AuthStorage.loadFromFile(std.testing.allocator);
     defer reloaded.deinit();
     try std.testing.expect(!reloaded.providers.contains("opencode-go"));
-    try std.testing.expect(!reloaded.providers.contains("opencode-zen"));
+    try std.testing.expectEqualStrings("go-key", reloaded.providers.get("opencode-zen").?.api_key);
     try std.testing.expect(reloaded.providers.contains("oauth-sibling"));
     try std.testing.expectEqualStrings("zai-key", reloaded.providers.get("zai").?.api_key);
 }
@@ -1152,7 +1141,7 @@ test "logout refuses an auth file it cannot open rather than reading it as empty
         return error.SkipZigTest;
     } else |_| {}
 
-    try std.testing.expectError(error.AccessDenied, AuthStorage.removeStored(std.testing.allocator, "opencode-go", &.{}));
+    try std.testing.expectError(error.AccessDenied, AuthStorage.removeStored(std.testing.allocator, "opencode-go"));
 }
 
 test "AuthStorage - save and load" {

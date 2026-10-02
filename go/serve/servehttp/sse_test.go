@@ -289,8 +289,8 @@ type fakeSession struct {
 	replayOverflowAt int
 }
 
-func (f *fakeSession) Submit(ctx context.Context, request protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
-	admission, stream, err := f.Session.Submit(ctx, request)
+func (f *fakeSession) Submit(ctx context.Context, submit base.SubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+	admission, stream, err := f.Session.Submit(ctx, submit)
 	if err != nil {
 		return admission, stream, err
 	}

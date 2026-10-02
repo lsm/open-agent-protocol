@@ -189,7 +189,7 @@ func runOpenCodeCorpusCase(t *testing.T, root string, entry opencodeCorpusCaseEn
 	}
 	adaptertest.AssertDescriptor(t, descriptor)
 	session := adaptertest.AssertInitialState(t, implementation, base.OpenRequest{SessionID: "session", Participant: protocol.Participant{ID: "user"}})
-	response, stream, submitErr := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+	response, stream, submitErr := session.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}}})
 	if submitErr != nil {
 		t.Fatal(submitErr)
 	}

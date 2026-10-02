@@ -271,7 +271,7 @@ func openTest(t *testing.T, client *fakeClient, capacity int) (base.Session, *fa
 
 func submitTest(t *testing.T, session base.Session) (protocol.MessageSubmitResponse, base.EventStream) {
 	t.Helper()
-	response, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+	response, stream, err := session.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +287,7 @@ func TestSubmitRefusesEveryUnadvertisedControl(t *testing.T) {
 		protocol.FeatureStructuredOutput: {SessionID: "session", Delivery: protocol.DeliveryAuto, OutputSchema: json.RawMessage(`{"type":"object"}`), Messages: message},
 		protocol.FeatureToolSelection:    {SessionID: "session", Delivery: protocol.DeliveryAuto, ToolChoice: json.RawMessage(`"none"`), Messages: message},
 	} {
-		_, _, err := session.Submit(context.Background(), request)
+		_, _, err := session.Submit(context.Background(), base.SubmitRequest{Request: request})
 		var refusal *base.UnsupportedControlError
 		if !errors.As(err, &refusal) {
 			t.Fatalf("%s: got %v, want an *adapter.UnsupportedControlError", feature, err)
@@ -300,10 +300,10 @@ func TestSubmitRefusesEveryUnadvertisedControl(t *testing.T) {
 
 func TestSubmitNormalizesOmittedDelivery(t *testing.T) {
 	session, _ := openTest(t, newFakeClient(), 32)
-	response, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
+	response, _, err := session.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: "session",
 		Messages:  []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}},
-	})
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,10 +316,10 @@ func TestSessionRetainsNativeModel(t *testing.T) {
 	client := newFakeClient()
 	client.model = &native.ModelRef{ID: "claude-sonnet", ProviderID: "anthropic"}
 	session, _ := openTest(t, client, 32)
-	response, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
+	response, _, err := session.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: "session", Delivery: protocol.DeliveryAuto,
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}},
-	})
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -577,7 +577,7 @@ func TestForeignSessionEventFailsRun(t *testing.T) {
 	if len(events) != 1 || events[0].Type != protocol.TypeRunFailed {
 		t.Fatalf("events=%v", types(events))
 	}
-	if _, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("again")}}}); !errors.Is(err, base.ErrSessionClosed) {
+	if _, _, err := session.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("again")}}}}); !errors.Is(err, base.ErrSessionClosed) {
 		t.Fatalf("second submit err=%v", err)
 	}
 }
@@ -591,7 +591,7 @@ func TestPreStartFailuresReportReservation(t *testing.T) {
 			client := newFakeClient()
 			setup(client)
 			session, _ := openTest(t, client, 32)
-			response, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+			response, stream, err := session.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}}})
 			if err != nil {
 				t.Fatalf("submit paired an error with a stream: %v", err)
 			}
@@ -606,7 +606,7 @@ func TestPreStartFailuresReportReservation(t *testing.T) {
 			if err := events[0].DecodePayload(&payload); err != nil || payload.Error.Code != "opencode_foreign_admission" {
 				t.Fatalf("payload = %+v err=%v", payload, err)
 			}
-			if _, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("again")}}}); !errors.Is(err, base.ErrSessionClosed) {
+			if _, _, err := session.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("again")}}}}); !errors.Is(err, base.ErrSessionClosed) {
 				t.Fatalf("second submit err=%v", err)
 			}
 		})
@@ -618,7 +618,7 @@ func TestAdmissionFailureRetiresSession(t *testing.T) {
 	client.promptErr = errors.New("HTTP 409")
 	session, _ := openTest(t, client, 32)
 
-	response, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+	response, stream, err := session.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -629,7 +629,7 @@ func TestAdmissionFailureRetiresSession(t *testing.T) {
 	if len(events) != 1 || events[0].Type != protocol.TypeRunFailed {
 		t.Fatalf("events=%v", types(events))
 	}
-	if _, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("again")}}}); !errors.Is(err, base.ErrSessionClosed) {
+	if _, _, err := session.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("again")}}}}); !errors.Is(err, base.ErrSessionClosed) {
 		t.Fatalf("second submit err=%v", err)
 	}
 }
@@ -763,7 +763,7 @@ func TestPromptedEventBeforePromptResponseStartsRun(t *testing.T) {
 		err      error
 	}, 1)
 	go func() {
-		response, stream, err := sess.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+		response, stream, err := sess.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}}})
 		submitted <- struct {
 			response protocol.MessageSubmitResponse
 			stream   base.EventStream
@@ -830,7 +830,7 @@ func TestExplicitQueueReservesAndPromotesAfterSettlement(t *testing.T) {
 	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(first.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
 	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
 
-	queued, queuedStream, err := session.Submit(context.Background(), queueRequest("later"))
+	queued, queuedStream, err := session.Submit(context.Background(), base.SubmitRequest{Request: queueRequest("later")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -855,7 +855,7 @@ func TestExplicitQueueReservesAndPromotesAfterSettlement(t *testing.T) {
 		t.Fatalf("active_run_id = %q", state.ActiveRunID)
 	}
 
-	if _, _, err := session.Submit(context.Background(), autoRequest("too much")); !errors.Is(err, base.ErrRunActive) {
+	if _, _, err := session.Submit(context.Background(), base.SubmitRequest{Request: autoRequest("too much")}); !errors.Is(err, base.ErrRunActive) {
 		t.Fatalf("third submit = %v, want ErrRunActive", err)
 	}
 
@@ -889,7 +889,7 @@ func TestBusyAutoReservesAndCancelsBeforePromotion(t *testing.T) {
 	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(first.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
 	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
 
-	queued, queuedStream, err := session.Submit(context.Background(), autoRequest("later"))
+	queued, queuedStream, err := session.Submit(context.Background(), base.SubmitRequest{Request: autoRequest("later")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -949,7 +949,7 @@ func TestPromotedReservationTakesItsOwnNativeEvents(t *testing.T) {
 	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", TextID: "t1", Text: "first"})
 	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
 
-	queued, queuedStream, err := session.Submit(context.Background(), queueRequest("later"))
+	queued, queuedStream, err := session.Submit(context.Background(), base.SubmitRequest{Request: queueRequest("later")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -994,7 +994,7 @@ func TestExplicitQueueOnIdleSessionStaysQueued(t *testing.T) {
 	session, stream := openTest(t, client, 64)
 	_ = stream
 	descriptor := testAdapterDescriptor(t)
-	admission, events, err := session.Submit(context.Background(), queueRequest("go"))
+	admission, events, err := session.Submit(context.Background(), base.SubmitRequest{Request: queueRequest("go")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1039,7 +1039,7 @@ func TestCloseRefusesWhileAReservationIsLive(t *testing.T) {
 	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(first.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
 	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
 
-	queued, queuedStream, err := session.Submit(context.Background(), queueRequest("later"))
+	queued, queuedStream, err := session.Submit(context.Background(), base.SubmitRequest{Request: queueRequest("later")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1082,7 +1082,7 @@ func TestProvisionalRunIsNotProjectedBeforeItsAdmission(t *testing.T) {
 	admitted := make(chan protocol.MessageSubmitResponse, 1)
 	go func() {
 		defer close(admitted)
-		response, _, err := session.Submit(context.Background(), autoRequest("hello"))
+		response, _, err := session.Submit(context.Background(), base.SubmitRequest{Request: autoRequest("hello")})
 		if err == nil {
 			admitted <- response
 		}
@@ -1127,7 +1127,7 @@ func TestStateDuringARunValidates(t *testing.T) {
 	if started.Type != protocol.TypeRunStarted {
 		t.Fatalf("first envelope = %s", started.Type)
 	}
-	queued, queuedStream, err := session.Submit(context.Background(), queueRequest("later"))
+	queued, queuedStream, err := session.Submit(context.Background(), base.SubmitRequest{Request: queueRequest("later")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1171,7 +1171,7 @@ func TestHandedOutStateDoesNotAliasTheSession(t *testing.T) {
 	if started := adaptertest.Next(t, firstStream, 2*time.Second); started.Type != protocol.TypeRunStarted {
 		t.Fatalf("first envelope = %s", started.Type)
 	}
-	queued, _, err := session.Submit(context.Background(), queueRequest("later"))
+	queued, _, err := session.Submit(context.Background(), base.SubmitRequest{Request: queueRequest("later")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1222,7 +1222,7 @@ func TestIdleExplicitQueueIsProjectedAsAReservation(t *testing.T) {
 	session, _ := openTest(t, client, 64)
 	descriptor := testAdapterDescriptor(t)
 
-	queued, stream, err := session.Submit(context.Background(), queueRequest("later"))
+	queued, stream, err := session.Submit(context.Background(), base.SubmitRequest{Request: queueRequest("later")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1251,7 +1251,7 @@ func TestIdleExplicitQueueIsProjectedAsAReservation(t *testing.T) {
 		t.Fatalf("a reservation holds its place in the queue: %+v", entry)
 	}
 
-	if _, _, err := session.Submit(context.Background(), autoRequest("second")); !errors.Is(err, base.ErrRunActive) {
+	if _, _, err := session.Submit(context.Background(), base.SubmitRequest{Request: autoRequest("second")}); !errors.Is(err, base.ErrRunActive) {
 		t.Fatalf("second submission behind a reservation = %v, want run_active", err)
 	}
 
@@ -1290,7 +1290,7 @@ func TestUnusableSessionSettlesTheReservationToo(t *testing.T) {
 	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: native.MessageID(first.MessageIDs[0]), Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
 	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
 
-	queued, queuedStream, err := session.Submit(context.Background(), queueRequest("later"))
+	queued, queuedStream, err := session.Submit(context.Background(), base.SubmitRequest{Request: queueRequest("later")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1380,7 +1380,7 @@ func TestHeldTerminalIsNotProjectedIntoActiveRuns(t *testing.T) {
 	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
 	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", TextID: "t1", Text: "first"})
 
-	queued, queuedStream, err := session.Submit(context.Background(), queueRequest("later"))
+	queued, queuedStream, err := session.Submit(context.Background(), base.SubmitRequest{Request: queueRequest("later")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1535,7 +1535,7 @@ func TestCancelledReservationsTurnIsQuarantined(t *testing.T) {
 	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
 	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", TextID: "t1", Text: "first"})
 
-	queued, queuedStream, err := session.Submit(context.Background(), queueRequest("later"))
+	queued, queuedStream, err := session.Submit(context.Background(), base.SubmitRequest{Request: queueRequest("later")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1581,7 +1581,7 @@ func TestHeldEnvelopesAreNotReplayableUntilReleased(t *testing.T) {
 	client.emit(t, 3, native.TypeTextEnded, native.TextEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", TextID: "t1", Text: "first"})
 	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "stop"})
 
-	queued, queuedStream, err := session.Submit(context.Background(), queueRequest("later"))
+	queued, queuedStream, err := session.Submit(context.Background(), base.SubmitRequest{Request: queueRequest("later")})
 	if err != nil {
 		t.Fatal(err)
 	}
