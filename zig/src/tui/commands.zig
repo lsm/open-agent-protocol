@@ -47,6 +47,7 @@ pub const CommandAction = enum {
     logout_provider,
     add_provider,
     remove_provider,
+    list_providers,
     open_login_picker,
     open_permission_picker,
     open_settings_picker,
@@ -95,7 +96,7 @@ pub const commands = [_]CommandInfo{
     .{ .name = "rename", .kind = .rename, .usage = "/rename <title>", .description = "Rename this session", .handler = handleRename },
     .{ .name = "permissions", .kind = .permissions, .usage = "/permissions [ask|bypass]", .description = "Pick or set tool permission mode", .handler = handlePermissions },
     .{ .name = "perm", .kind = .permissions, .usage = "/perm [ask|bypass]", .description = "Pick or set tool permission mode", .handler = handlePermissions },
-    .{ .name = "provider", .kind = .provider, .usage = "/provider add <id> <base_url> [--api <api>] [--env <NAME> | --no-auth] | /provider del <id>", .description = "Declare or delete a custom provider in ~/.oapx/providers.json", .handler = handleProvider },
+    .{ .name = "provider", .kind = .provider, .usage = "/provider add <id> <base_url> [--api <api>] [--env <NAME> | --no-auth] | /provider del <id> | /provider list", .description = "Declare, delete, or list the custom providers in ~/.oapx/providers.json", .handler = handleProvider },
     .{ .name = "think", .kind = .think, .usage = "/think [off|low|medium|high|xhigh|max]", .description = "Show or set the thinking level", .handler = handleThink },
     .{ .name = "clear", .kind = .clear, .usage = "/clear", .description = "Clear transcript display", .handler = handleClear },
     .{ .name = "compact", .kind = .compact, .usage = "/compact [focus]", .description = "Summarize the conversation to free context", .handler = handleCompact },
@@ -256,7 +257,7 @@ fn runIsActive(ctx: CommandContext) bool {
     return !runtime.isIdle();
 }
 
-pub const provider_usage = "usage: /provider add <id> <base_url> [--api openai-completions|openai-responses|anthropic-messages] [--env <NAME> | --no-auth], or /provider del <id>";
+pub const provider_usage = "usage: /provider add <id> <base_url> [--api openai-completions|openai-responses|anthropic-messages] [--env <NAME> | --no-auth], /provider del <id>, or /provider list";
 
 fn handleProvider(ctx: CommandContext, command: Command) !CommandResult {
     const arg = command.arg orelse return .{ .output = try ctx.allocator.dupe(u8, provider_usage), .is_error = true };
@@ -267,6 +268,10 @@ fn handleProvider(ctx: CommandContext, command: Command) !CommandResult {
         if (words.peek() != null) return .{ .output = try ctx.allocator.dupe(u8, provider_usage), .is_error = true };
         if (runIsActive(ctx)) return .{ .output = try ctx.allocator.dupe(u8, "A turn is running; delete the provider once it finishes."), .is_error = true };
         return .{ .action = .remove_provider };
+    }
+    if (std.mem.eql(u8, verb, "list")) {
+        if (words.peek() != null) return .{ .output = try ctx.allocator.dupe(u8, provider_usage), .is_error = true };
+        return .{ .action = .list_providers };
     }
     if (!std.mem.eql(u8, verb, "add") or words.peek() == null) return .{ .output = try ctx.allocator.dupe(u8, provider_usage), .is_error = true };
     return .{ .action = .add_provider };

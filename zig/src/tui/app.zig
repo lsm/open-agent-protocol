@@ -2101,6 +2101,76 @@ pub const App = struct {
         try self.state.appendTranscript(.system, next);
     }
 
+    fn listProviders(self: *App) !void {
+        var config = custom_providers.loadConfigStrict(self.allocator, custom_providers.max_config_bytes) catch |err| {
+            const msg = try std.fmt.allocPrint(self.allocator, "could not read the provider config: {s}", .{@errorName(err)});
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.@"error", msg);
+            return;
+        };
+        defer config.deinit(self.allocator);
+        const owned_path = custom_providers.configPath(self.allocator) catch null;
+        defer if (owned_path) |path| self.allocator.free(path);
+        const path = owned_path orelse custom_providers.config_file_name;
+        if (config.providers.len == 0 and config.overrides.len == 0) {
+            const msg = try std.fmt.allocPrint(self.allocator, "no providers are declared in {s}; /provider add <id> <base_url> declares one", .{path});
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.system, msg);
+            return;
+        }
+        var out: std.Io.Writer.Allocating = .init(self.allocator);
+        defer out.deinit();
+        const writer = &out.writer;
+        if (config.providers.len > 0) {
+            try writer.print("providers declared in {s}:", .{path});
+        }
+        for (config.providers) |provider| {
+            try writer.print("\n  {s} ({s}), {s}, {s}, ", .{ provider.id, provider.name, provider.api, provider.base_url });
+            if (provider.auth_none) {
+                try writer.writeAll("no credential");
+            } else if (provider.env_key) |key| {
+                try writer.print("key from {s}", .{key});
+            } else {
+                try writer.writeAll("saved key");
+            }
+            if (provider.models.len == 0) {
+                try writer.writeAll(", every discovered model");
+            } else {
+                try writer.print(", {d} declared models", .{provider.models.len});
+            }
+        }
+        if (config.overrides.len > 0) {
+            if (config.providers.len > 0) {
+                try writer.writeAll("\noverrides on catalogued rows:");
+            } else {
+                try writer.print("overrides on catalogued rows in {s}:", .{path});
+            }
+            for (config.overrides) |override| {
+                try writer.print("\n  {s}:", .{override.id});
+                var first = true;
+                if (override.base_url != null) {
+                    try writer.writeAll(" base_url");
+                    first = false;
+                }
+                if (override.carries_version != null) {
+                    if (!first) try writer.writeAll(",");
+                    try writer.writeAll(" carries_version");
+                    first = false;
+                }
+                if (override.headers.len > 0) {
+                    if (!first) try writer.writeAll(",");
+                    try writer.writeAll(" headers");
+                    first = false;
+                }
+                if (override.models.len > 0) {
+                    if (!first) try writer.writeAll(",");
+                    try writer.print(" {d} models", .{override.models.len});
+                }
+            }
+        }
+        try self.state.appendTranscript(.system, out.written());
+    }
+
     fn removeProvider(self: *App, arg: []const u8) !void {
         var words = std.mem.tokenizeAny(u8, arg, " \t");
         _ = words.next();
@@ -3174,6 +3244,7 @@ pub const App = struct {
             .logout_provider => try self.logoutProvider(command.arg orelse ""),
             .add_provider => try self.addProvider(command.arg orelse ""),
             .remove_provider => try self.removeProvider(command.arg orelse ""),
+            .list_providers => try self.listProviders(),
             .none => {},
         }
         if (command.kind == .model and command.arg != null and result.action != .refresh_models) self.persistCurrentModel();
@@ -5115,6 +5186,61 @@ test "App /provider del deletes a declared provider and refuses one that is not 
 
     try app.submit("/provider del");
     try std.testing.expectEqualStrings(tui_commands.provider_usage, app.state.transcript.items[app.state.transcript.items.len - 1].text.items);
+}
+
+test "App /provider list names what is declared and says so when nothing is" {
+    var env = try TempHome.init("home-provider-list");
+    defer env.deinit();
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    try app.submit("/provider list");
+    const empty = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expectEqual(tui_state.TranscriptKind.system, empty.kind);
+    try std.testing.expect(std.mem.startsWith(u8, empty.text.items, "no providers are declared in "));
+    try std.testing.expect(std.mem.endsWith(u8, empty.text.items, "/provider add <id> <base_url> declares one"));
+
+    try app.submit("/provider add gateway https://gw.test/v1 --no-auth");
+    try app.submit("/provider add other https://other.test --env OTHER_KEY");
+    try app.submit("/provider list");
+    const listed = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expectEqual(tui_state.TranscriptKind.system, listed.kind);
+    try std.testing.expect(std.mem.startsWith(u8, listed.text.items, "providers declared in "));
+    try std.testing.expect(std.mem.indexOf(u8, listed.text.items, "gateway (gateway), openai-completions, https://gw.test, no credential, every discovered model") != null);
+    try std.testing.expect(std.mem.indexOf(u8, listed.text.items, "other (other), openai-completions, https://other.test, key from OTHER_KEY, every discovered model") != null);
+
+    try app.submit("/provider list extra");
+    try std.testing.expectEqualStrings(tui_commands.provider_usage, app.state.transcript.items[app.state.transcript.items.len - 1].text.items);
+
+    const config_path = try std.fs.path.join(std.testing.allocator, &.{ env.home, ".oapx", "providers.json" });
+    defer std.testing.allocator.free(config_path);
+    try compat.fs.writeFile(compat.fs.getCwd(), config_path, "{\"overrides\":[{\"id\":\"openai\",\"base_url\":\"https://proxy.test\"}]}");
+
+    try app.submit("/provider list");
+    const only_overrides = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expect(std.mem.startsWith(u8, only_overrides.text.items, "overrides on catalogued rows in "));
+    try std.testing.expect(std.mem.indexOf(u8, only_overrides.text.items, "  openai: base_url") != null);
+}
+
+test "App /provider list reports a config it cannot read instead of calling it empty" {
+    var env = try TempHome.init("home-provider-list-unreadable");
+    defer env.deinit();
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+
+    const config_path = try std.fs.path.join(std.testing.allocator, &.{ env.home, ".oapx", "providers.json" });
+    defer std.testing.allocator.free(config_path);
+    try app.submit("/provider add gateway https://gw.test/v1");
+    const oversized = try std.testing.allocator.alloc(u8, custom_providers.max_config_bytes + 1);
+    defer std.testing.allocator.free(oversized);
+    @memset(oversized, ' ');
+    try compat.fs.writeFile(compat.fs.getCwd(), config_path, oversized);
+
+    try app.submit("/provider list");
+    const said = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expectEqual(tui_state.TranscriptKind.@"error", said.kind);
+    try std.testing.expect(std.mem.startsWith(u8, said.text.items, "could not read the provider config: "));
 }
 
 test "App only offers an api-key login for a declared custom provider" {
