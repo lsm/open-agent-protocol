@@ -291,6 +291,8 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 			opened.Subscription.Close()
 		}
 		s.writeError(w, http.StatusInternalServerError, "internal", rollbackOpen(s.hub, entry, request.SessionID != ""), envelope)
+		flushResponse(w)
+		s.hub.Published(entry.ID(), envelope.ID)
 		return
 	}
 	if opened.Subscription != nil {
@@ -305,6 +307,8 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 		response.CapabilityRevision = revision
 	}
 	writeEnvelope(w, http.StatusOK, response)
+	flushResponse(w)
+	s.hub.Published(entry.ID(), envelope.ID)
 }
 
 func rollbackOpen(hub *serve.Hub, entry *serve.Session, named bool) string {

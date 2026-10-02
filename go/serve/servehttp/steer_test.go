@@ -159,3 +159,101 @@ func TestASettlingSteerReachesTheSubscriberOnce(t *testing.T) {
 		t.Fatal("the settlement never reached the subscriber, so the binding never lifted the gate")
 	}
 }
+
+type openingSteerAdapter struct{}
+
+func (a *openingSteerAdapter) Probe(ctx context.Context) (base.Descriptor, error) {
+	descriptor, err := (&settlingSteerAdapter{}).Probe(ctx)
+	if err != nil {
+		return base.Descriptor{}, err
+	}
+	features := make(map[string]protocol.FeatureSupport, len(descriptor.Capabilities.Features)+1)
+	for key, support := range descriptor.Capabilities.Features {
+		features[key] = support
+	}
+	features[protocol.FeatureOpenSubscribe] = protocol.FeatureSupport{Level: protocol.SupportNative, Reason: "the compound open subscribes"}
+	descriptor.Capabilities.Features = features
+	return descriptor, nil
+}
+
+func (a *openingSteerAdapter) Open(context.Context, base.OpenRequest) (base.Session, error) {
+	return &openingSteerSession{settlingSteerSession{stream: make(chan base.Result, 8)}}, nil
+}
+
+type openingSteerSession struct {
+	settlingSteerSession
+}
+
+func (s *openingSteerSession) Submit(_ context.Context, submit base.SubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+	if submit.Request.Delivery != protocol.DeliverySteer {
+		return protocol.MessageSubmitResponse{}, nil, base.ErrInvalidSubmission
+	}
+	sequence := uint64(2)
+	envelope, err := protocol.NewEnvelope(protocol.TypeRunSteerApplied, "event-steer", protocol.RunSteerAppliedPayload{
+		SessionID: "settle", RunID: "run-1", SubmissionID: "sub-steer", RequestID: submit.EnvelopeID,
+		MessageIDs: []protocol.MessageID{"m-2"}, Boundary: protocol.SteerTurn,
+	})
+	if err != nil {
+		return protocol.MessageSubmitResponse{}, nil, err
+	}
+	envelope.SessionID, envelope.RunID, envelope.Sequence = "settle", "run-1", &sequence
+	s.stream <- base.Result{Envelope: envelope}
+	boundary := uint64(1)
+	return protocol.MessageSubmitResponse{
+		SessionID: "settle", Accepted: true, SubmissionID: "sub-steer",
+		RequestedDelivery: protocol.DeliverySteer, EffectiveDelivery: protocol.EffectiveDeliverySteer,
+		Admission: protocol.AdmissionSteered, RunID: "run-1", Status: protocol.RunRunning,
+		TargetSequence: &boundary, MessageIDs: []protocol.MessageID{"m-2"},
+	}, s.stream, nil
+}
+
+var _ base.Adapter = (*openingSteerAdapter)(nil)
+
+func TestACompoundOpenSteerIsReleasedByItsOpenResponse(t *testing.T) {
+	registry := serve.NewRegistry()
+	if err := registry.Register("opening", &openingSteerAdapter{}); err != nil {
+		t.Fatal(err)
+	}
+	_, server := newServer(t, registry, Options{})
+
+	open := requestEnvelope(t, protocol.TypeSessionOpenRequest, "open-steer",
+		protocol.SessionOpenRequest{
+			SessionID: "settle",
+			Subscribe: true,
+			Message: &protocol.OpenMessage{
+				Delivery:    protocol.DeliverySteer,
+				TargetRunID: "run-1",
+				Messages:    []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("adjust")}},
+			},
+		}, "settle", "", "")
+	status, response := postEnvelope(t, server, "/adapters/opening/sessions", open)
+	if status != 200 {
+		t.Fatalf("open status %d: %+v", status, response)
+	}
+	requireEnvelopeType(t, response, protocol.TypeSessionOpenResponse)
+
+	stream := connectSSE(t, server, "/sessions/settle/events", "")
+	settled := make(chan protocol.Envelope, 1)
+	go func() {
+		for {
+			envelope := stream.envelope()
+			if envelope.Type == protocol.TypeRunSteerApplied {
+				settled <- envelope
+				return
+			}
+		}
+	}()
+
+	select {
+	case envelope := <-settled:
+		var applied protocol.RunSteerAppliedPayload
+		if err := envelope.DecodePayload(&applied); err != nil {
+			t.Fatal(err)
+		}
+		if applied.RequestID != "open-steer" || applied.SubmissionID != "sub-steer" {
+			t.Fatalf("settlement = %+v, want the compound open's own request", applied)
+		}
+	case <-time.After(testTimeout):
+		t.Fatal("the settlement a compound open withheld was never released by its open response")
+	}
+}
