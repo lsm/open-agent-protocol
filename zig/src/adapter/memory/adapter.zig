@@ -346,7 +346,8 @@ pub const Session = struct {
         return names;
     }
 
-    fn submit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+    fn submit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+        _ = envelope_id;
         const self = cast(ptr);
         var controls = try self.admitControls(arena, request, refusal);
         if (request.session_id.len == 0 or request.messages.len == 0) return error.InvalidSubmission;
@@ -1360,7 +1361,7 @@ const Probe = struct {
         request.delivery = delivery;
         request.messages = try self.a().dupe(oap_types.Message, &.{.{ .role = .user, .content = .{ .text = "run" } }});
         var refusal = contract.Refusal{};
-        return self.session.submit(self.a(), &request, &refusal);
+        return self.session.submit(self.a(), &request, "", &refusal);
     }
 
     fn submit(self: *Probe) !oap_types.MessageSubmitResponse {
@@ -1590,8 +1591,8 @@ fn submitAndSettle(allocator: std.mem.Allocator) !void {
     defer session.teardown();
     const messages = try arena.allocator().dupe(oap_types.Message, &.{.{ .role = .user, .content = .{ .text = "run" } }});
     const request = oap_types.MessageSubmitRequest{ .session_id = "s1", .messages = messages, .delivery = .auto, .instructions = "Be brief." };
-    _ = try session.submit(arena.allocator(), &request, &refusal);
-    _ = try session.submit(arena.allocator(), &request, &refusal);
+    _ = try session.submit(arena.allocator(), &request, "", &refusal);
+    _ = try session.submit(arena.allocator(), &request, "", &refusal);
     _ = try session.cancel(arena.allocator(), "run-1", &refusal);
     var drained = std.ArrayList(contract.Event).empty;
     try session.drain(arena.allocator(), &drained);
@@ -1695,7 +1696,7 @@ fn provideAndSettle(allocator: std.mem.Allocator) !void {
     defer session.teardown();
     const messages = try arena.allocator().dupe(oap_types.Message, &.{.{ .role = .user, .content = .{ .text = "run" } }});
     const request = oap_types.MessageSubmitRequest{ .session_id = "s1", .messages = messages, .delivery = .auto };
-    const admitted = try session.submit(arena.allocator(), &request, &refusal);
+    const admitted = try session.submit(arena.allocator(), &request, "", &refusal);
     var call = oap_types.CallResolveRequest{ .interaction_id = "call-5", .session_id = "s1", .run_id = admitted.run_id.?, .tool_call_id = "tool-call-4", .requested_by = endpoint_id, .responded_by = "user", .result_json = "{}" };
     _ = try session.vtable.resolve_call.?(session.ptr, arena.allocator(), "req-1", &call, &refusal);
     var state_refusal = contract.Refusal{};

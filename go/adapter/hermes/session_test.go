@@ -275,7 +275,7 @@ func TestSubmitRejectsUnappliedModelID(t *testing.T) {
 	defer cancel()
 	req := request()
 	req.ModelID = protocol.ControlValue("hermes-other")
-	if _, _, err := s.Submit(ctx, req); !errors.Is(err, base.ErrUnsupportedInput) {
+	if _, _, err := s.Submit(ctx, base.SubmitRequest{Request: req}); !errors.Is(err, base.ErrUnsupportedInput) {
 		t.Fatalf("got %v, want ErrUnsupportedInput", err)
 	}
 }
@@ -289,7 +289,7 @@ type outcome struct {
 func submitAsync(s base.Session) <-chan outcome {
 	ch := make(chan outcome, 1)
 	go func() {
-		response, stream, err := s.Submit(context.Background(), request())
+		response, stream, err := s.Submit(context.Background(), base.SubmitRequest{Request: request()})
 		ch <- outcome{response, stream, err}
 	}()
 	return ch
@@ -532,7 +532,7 @@ func TestForeignSessionAndSeqGapsFailClosed(t *testing.T) {
 		if len(events) != 2 || events[1].Type != protocol.TypeRunFailed {
 			t.Fatalf("events %v", events)
 		}
-		if _, _, err := s.Submit(context.Background(), request()); !errors.Is(err, base.ErrSessionClosed) {
+		if _, _, err := s.Submit(context.Background(), base.SubmitRequest{Request: request()}); !errors.Is(err, base.ErrSessionClosed) {
 			t.Fatalf("session not unusable: %v", err)
 		}
 	})
@@ -552,7 +552,7 @@ func TestForeignSessionAndSeqGapsFailClosed(t *testing.T) {
 func TestUnsolicitedTurnFailsClosed(t *testing.T) {
 	s, f := openTest(t)
 	f.event(native.EventMessageStart, 1, "")
-	if _, _, err := s.Submit(context.Background(), request()); !errors.Is(err, base.ErrSessionClosed) {
+	if _, _, err := s.Submit(context.Background(), base.SubmitRequest{Request: request()}); !errors.Is(err, base.ErrSessionClosed) {
 		t.Fatalf("session not unusable after unsolicited turn: %v", err)
 	}
 }
@@ -677,7 +677,7 @@ func TestSubmitCancellationAfterAcceptanceKeepsReservation(t *testing.T) {
 	f.queue(native.MethodPromptSubmit, reply{result: native.PromptSubmitResult{Status: native.SubmitStreaming}})
 	ch := make(chan outcome, 1)
 	go func() {
-		response, stream, err := s.Submit(ctx, request())
+		response, stream, err := s.Submit(ctx, base.SubmitRequest{Request: request()})
 		ch <- outcome{response, stream, err}
 	}()
 	f.awaitCall(t, native.MethodPromptSubmit)
@@ -693,7 +693,7 @@ func TestSubmitCancellationAfterAcceptanceKeepsReservation(t *testing.T) {
 		}()
 	}
 
-	if _, _, err := s.Submit(context.Background(), request()); !errors.Is(err, base.ErrRunActive) {
+	if _, _, err := s.Submit(context.Background(), base.SubmitRequest{Request: request()}); !errors.Is(err, base.ErrRunActive) {
 		t.Fatalf("overlapping submit: err=%v, want ErrRunActive", err)
 	}
 
@@ -708,7 +708,7 @@ func TestOverlapRejectedBeforeNativeWrite(t *testing.T) {
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
 	before := f.callCount(native.MethodPromptSubmit)
-	if _, _, err := s.Submit(context.Background(), request()); !errors.Is(err, base.ErrRunActive) {
+	if _, _, err := s.Submit(context.Background(), base.SubmitRequest{Request: request()}); !errors.Is(err, base.ErrRunActive) {
 		t.Fatalf("overlap err = %v", err)
 	}
 	if f.callCount(native.MethodPromptSubmit) != before {
@@ -1129,7 +1129,7 @@ func TestTransportDeathAfterAcceptanceProjectsTheOpenedTurn(t *testing.T) {
 		}
 		validateWithCapabilities(t, got.response, events)
 
-		if _, _, err := s.Submit(context.Background(), request()); !errors.Is(err, base.ErrSessionClosed) {
+		if _, _, err := s.Submit(context.Background(), base.SubmitRequest{Request: request()}); !errors.Is(err, base.ErrSessionClosed) {
 			t.Fatalf("session usable after transport death: %v", err)
 		}
 	}
@@ -1583,7 +1583,7 @@ func TestResumeReplaysARunAfterTheGatewayExits(t *testing.T) {
 	f.event(native.EventMessageDelta, 2, `{"text":"Hi"}`)
 	f.transportClose()
 	events := drain(t, run.stream)
-	if _, _, err := s.Submit(context.Background(), request()); !errors.Is(err, base.ErrSessionClosed) {
+	if _, _, err := s.Submit(context.Background(), base.SubmitRequest{Request: request()}); !errors.Is(err, base.ErrSessionClosed) {
 		t.Fatalf("session usable after the gateway exited: %v", err)
 	}
 	_, replay, err := s.Resume(context.Background(), base.ResumeRequest{RunID: run.response.RunID, AfterSequence: 1})

@@ -705,7 +705,7 @@ type scriptedSession struct {
 	callReason    protocol.ResolveReason
 }
 
-func (s *scriptedSession) Submit(context.Context, protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, adapter.EventStream, error) {
+func (s *scriptedSession) Submit(context.Context, adapter.SubmitRequest) (protocol.MessageSubmitResponse, adapter.EventStream, error) {
 	stream := make(chan adapter.Result, len(s.results)+1)
 	if s.release != nil {
 		stream <- s.results[0]

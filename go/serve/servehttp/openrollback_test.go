@@ -66,7 +66,7 @@ func (s *unencodableSession) State(context.Context) (protocol.SessionState, erro
 	}, nil
 }
 
-func (s *unencodableSession) Submit(context.Context, protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+func (s *unencodableSession) Submit(context.Context, base.SubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
 	return protocol.MessageSubmitResponse{}, nil, base.ErrSessionClosed
 }
 func (s *unencodableSession) Resolve(context.Context, base.InteractionResolution) error { return nil }

@@ -342,7 +342,7 @@ func runClaudeScriptedCase(t *testing.T, definition ccCorpusCase, frames []ccFra
 			channel := make(chan ccSubmit, 1)
 			pending = channel
 			go func() {
-				admission, stream, err := session.Submit(context.Background(), helloSubmit)
+				admission, stream, err := session.Submit(context.Background(), base.SubmitRequest{Request: helloSubmit})
 				channel <- ccSubmit{admission, stream, err}
 			}()
 			written, raw := peer.written()

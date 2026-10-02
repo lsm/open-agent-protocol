@@ -59,7 +59,7 @@ var plainSubmit = protocol.MessageSubmitRequest{SessionID: "session-1", Delivery
 
 func submitAdmission(t *testing.T, session adapter.Session) (protocol.MessageSubmitResponse, adapter.EventStream) {
 	t.Helper()
-	admission, stream, err := session.Submit(context.Background(), plainSubmit)
+	admission, stream, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: plainSubmit})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -513,7 +513,7 @@ func TestSubmitRejectsInvalidRequestBeforeAdmission(t *testing.T) {
 		{SessionID: "session-1", Delivery: protocol.DeliveryAuto},
 		{Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}, Delivery: protocol.DeliveryAuto},
 	} {
-		if _, _, err := session.Submit(context.Background(), request); !errors.Is(err, adapter.ErrInvalidSubmission) {
+		if _, _, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: request}); !errors.Is(err, adapter.ErrInvalidSubmission) {
 			t.Fatalf("got %v, want adapter.ErrInvalidSubmission", err)
 		}
 	}
@@ -531,12 +531,12 @@ func TestSubmitAppliesModelPerRun(t *testing.T) {
 	message := []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}
 	unknown := protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue("another-model"), Messages: message}
 	var notFound *adapter.ModelNotFoundError
-	if _, _, err := session.Submit(context.Background(), unknown); !errors.As(err, &notFound) || !errors.Is(err, adapter.ErrModelNotFound) {
+	if _, _, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: unknown}); !errors.As(err, &notFound) || !errors.Is(err, adapter.ErrModelNotFound) {
 		t.Fatalf("unknown model: got %v, want adapter.ErrModelNotFound", err)
 	}
 
 	empty := protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue(""), Messages: message}
-	if _, _, err := session.Submit(context.Background(), empty); !errors.As(err, &notFound) || notFound.ModelID != "" {
+	if _, _, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: empty}); !errors.As(err, &notFound) || notFound.ModelID != "" {
 		t.Fatalf("empty model: got %v, want model_not_found naming the empty id", err)
 	}
 	state, err := session.State(context.Background())
@@ -544,7 +544,7 @@ func TestSubmitAppliesModelPerRun(t *testing.T) {
 		t.Fatalf("refused model reached state: %+v err=%v", state, err)
 	}
 
-	admission, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue(adapter.ModelSecondary), Messages: message})
+	admission, stream, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue(adapter.ModelSecondary), Messages: message}})
 	if err != nil {
 		t.Fatalf("admitted model refused: %v", err)
 	}
@@ -583,10 +583,10 @@ func TestSwitchModelChangesTheSessionDefaultWithoutRewritingAnAdmittedRun(t *tes
 	if !errors.As(err, &missing) || missing.ModelID != "missing" {
 		t.Fatalf("missing model refusal = %v", err)
 	}
-	admission, _, err := session.Submit(ctx, protocol.MessageSubmitRequest{
+	admission, _, err := session.Submit(ctx, adapter.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: "session-1", Delivery: protocol.DeliveryAuto,
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
-	})
+	}})
 	if err != nil || admission.ModelID != adapter.ModelPrimary {
 		t.Fatalf("admission = %+v err=%v", admission, err)
 	}
@@ -604,10 +604,10 @@ func TestSwitchModelAppliesToAQueuedRunWhenItStarts(t *testing.T) {
 	ctx := context.Background()
 	first, firstStream := submitAdmission(t, session)
 	firstEvents := drainAvailable(firstStream)
-	queued, queuedStream, err := session.Submit(ctx, protocol.MessageSubmitRequest{
+	queued, queuedStream, err := session.Submit(ctx, adapter.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: "session-1", Delivery: protocol.DeliveryQueue,
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("after switch")}},
-	})
+	}})
 	if err != nil || queued.Admission != protocol.AdmissionQueued {
 		t.Fatalf("queued admission = %+v, err=%v", queued, err)
 	}
@@ -668,7 +668,7 @@ func TestSubmitJudgesEveryControl(t *testing.T) {
 		session := newTestSession(t, 64)
 		request := testCase.request
 		request.SessionID, request.Delivery, request.Messages = "session-1", protocol.DeliveryAuto, message
-		_, _, err := session.Submit(context.Background(), request)
+		_, _, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: request})
 		var refusal *adapter.UnsupportedControlError
 		if !errors.As(err, &refusal) || !errors.Is(err, adapter.ErrUnsupportedInput) {
 			t.Fatalf("%s: got %v, want a typed unsupported-control refusal", name, err)
@@ -696,11 +696,11 @@ func TestSubmitExecutesToolChoiceAndOutputSchema(t *testing.T) {
 		"allowlist with tool": {policy: `{"allowed":["scripted_tool"]}`, calls: 1},
 	} {
 		session := newTestSession(t, 64)
-		_, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
+		_, stream, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: protocol.MessageSubmitRequest{
 			SessionID: "session-1", Delivery: protocol.DeliveryAuto,
 			ToolChoice: json.RawMessage(testCase.policy),
 			Messages:   []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
-		})
+		}})
 		if err != nil {
 			t.Fatalf("%s: policy refused: %v", name, err)
 		}
@@ -724,7 +724,7 @@ func TestSubmitExecutesToolChoiceAndOutputSchema(t *testing.T) {
 		Instructions: protocol.ControlValue("Be terse."),
 		Messages:     []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
 	}
-	admission, stream, err := session.Submit(context.Background(), request)
+	admission, stream, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: request})
 	if err != nil {
 		t.Fatalf("structured submission refused: %v", err)
 	}
@@ -896,7 +896,7 @@ func TestRefusalPrecedenceRanksByCapabilityKey(t *testing.T) {
 		request := testCase.request
 		request.SessionID, request.Delivery = "session-1", protocol.DeliveryAuto
 		request.Messages = []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}
-		_, _, err := session.Submit(context.Background(), request)
+		_, _, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: request})
 		switch testCase.feature {
 		case protocol.FeatureModelSelection:
 
@@ -928,7 +928,7 @@ func TestControlRefusalOutranksOrdinaryValidation(t *testing.T) {
 		"unsupported mode": {SessionID: "session-1", Delivery: protocol.DeliveryQueue, ToolChoice: unsatisfiable, Messages: message},
 	} {
 		session := newTestSession(t, 64)
-		_, _, err := session.Submit(context.Background(), request)
+		_, _, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: request})
 		var refusal *adapter.UnsupportedControlError
 		if !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureToolSelection || refusal.Reason != adapter.ControlUnsatisfiable {
 			t.Fatalf("%s: got %v, want the control named ahead of the ordinary refusal", name, err)
@@ -939,9 +939,9 @@ func TestControlRefusalOutranksOrdinaryValidation(t *testing.T) {
 	}
 
 	session := newTestSession(t, 64)
-	if _, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
+	if _, _, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: "session-1", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue(adapter.ModelSecondary),
-	}); !errors.Is(err, adapter.ErrInvalidSubmission) {
+	}}); !errors.Is(err, adapter.ErrInvalidSubmission) {
 		t.Fatalf("got %v, want the ordinary refusal when no control is at fault", err)
 	}
 }
@@ -958,7 +958,7 @@ func TestPublishedCatalogGovernsToolSelection(t *testing.T) {
 			ToolChoice: json.RawMessage(policy),
 			Messages:   []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
 		}
-		admission, stream, err := session.Submit(context.Background(), request)
+		admission, stream, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: request})
 		if err != nil {
 			t.Fatalf("%s: the adapter refused a policy its own catalog satisfies: %v", name, err)
 		}
@@ -976,11 +976,11 @@ func TestPublishedCatalogGovernsToolSelection(t *testing.T) {
 	}
 
 	session := newTestSession(t, 64)
-	if _, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
+	if _, _, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: "session-1", Delivery: protocol.DeliveryAuto,
 		ToolChoice: json.RawMessage(`{"allowed":["absent_tool"]}`),
 		Messages:   []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
-	}); err == nil {
+	}}); err == nil {
 		t.Fatal("a tool outside the published catalog was admitted")
 	}
 
@@ -1229,7 +1229,7 @@ func TestStateOmitsARunUntilItsAdmissionIsHandedBack(t *testing.T) {
 	}
 	done := make(chan answer, 1)
 	go func() {
-		admission, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}})
+		admission, _, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}}})
 		done <- answer{admission, err}
 	}()
 	select {
@@ -1268,7 +1268,7 @@ func TestStateAnchorsARunItSettledBeforeTheTerminalIsDelivered(t *testing.T) {
 	gate := envelopeOfType(t, events, protocol.TypeActionPermissionRequested)
 
 	queuedRequest := protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryQueue, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("after you")}}}
-	reservation, reservedStream, err := session.Submit(context.Background(), queuedRequest)
+	reservation, reservedStream, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: queuedRequest})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1392,7 +1392,7 @@ func TestMemoryRefusesSteerAndBTWUnderTheirOwnKeys(t *testing.T) {
 		{protocol.DeliverySteer, protocol.FeatureDeliverySteer},
 		{protocol.DeliveryBTW, protocol.FeatureDeliveryBTW},
 	} {
-		_, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: mode.delivery, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}})
+		_, stream, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: mode.delivery, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}}})
 		var refused *adapter.UnsupportedControlError
 		if !errors.As(err, &refused) || refused.Feature != mode.key || refused.Reason != adapter.ControlUnadvertised || stream != nil {
 			t.Fatalf("%s: err = %v, stream = %v", mode.delivery, err, stream)
@@ -1404,10 +1404,10 @@ func TestResolveRefusesAQueuedRunBeforeItStarts(t *testing.T) {
 	session := newTestSession(t, 64)
 	ctx := context.Background()
 	submitAdmission(t, session)
-	queued, _, err := session.Submit(ctx, protocol.MessageSubmitRequest{
+	queued, _, err := session.Submit(ctx, adapter.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: "session-1", Delivery: protocol.DeliveryQueue,
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("later")}},
-	})
+	}})
 	if err != nil || queued.Admission != protocol.AdmissionQueued {
 		t.Fatalf("queued admission = %+v, err=%v", queued, err)
 	}

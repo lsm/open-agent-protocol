@@ -1455,7 +1455,8 @@ fn referenceState(ptr: *anyopaque, arena: std.mem.Allocator, refusal: *contract.
     return .{ .session_id = session_id, .status = .running, .active_run_id = run, .active_runs = runs };
 }
 
-fn referenceSubmit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+fn referenceSubmit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+    _ = envelope_id;
     const state: *ReferenceState = @ptrCast(@alignCast(ptr));
     _ = request;
     _ = refusal;
@@ -1711,7 +1712,7 @@ test "a close of a session with a run in flight is run_active" {
     defer harness.deinit();
     _ = try harness.hub.open(arena, "reference", .{ .session_id = "busy" });
     const request = oap_types.MessageSubmitRequest{ .session_id = "busy", .messages = &.{}, .delivery = .auto };
-    _ = try harness.hub.submit(arena, "busy", &request);
+    _ = try harness.hub.submit(arena, "busy", &request, "");
     try harness.send("{\"id\":1,\"op\":\"close\",\"session_id\":\"busy\"}");
     try testing.expectEqualStrings("run_active", try harness.code());
 }

@@ -83,7 +83,7 @@ fn storedCredential(
 ) std.mem.Allocator.Error!?Credential {
     const id = row.id;
     const held = auth_storage orelse return null;
-    const stored = held.resolvedCredential(id) orelse return siblingStoredKey(allocator, held, row);
+    const stored = held.resolvedCredential(id) orelse return null;
     switch (stored) {
         .api_key => |key| {
             if (!accepts(row, .api_key)) return null;
@@ -112,29 +112,6 @@ fn storedCredential(
             };
         },
     }
-}
-
-fn siblingStoredKey(
-    allocator: std.mem.Allocator,
-    held: *AuthStorage,
-    row: provider_catalog.Provider,
-) std.mem.Allocator.Error!?Credential {
-    if (!accepts(row, .api_key)) return null;
-    for (provider_catalog.all) |sibling| {
-        if (!provider_catalog.sharesCredentialEnvWith(row.id, sibling.id)) continue;
-        const stored = held.resolvedCredential(sibling.id) orelse continue;
-        const key = switch (stored) {
-            .api_key => |key| key,
-            .oauth => continue,
-        };
-        if (key.len == 0) continue;
-        return .{
-            .key = try allocator.dupe(u8, key),
-            .source = .stored,
-            .name = sibling.id,
-        };
-    }
-    return null;
 }
 
 fn emptyStorage(allocator: std.mem.Allocator) AuthStorage {
@@ -208,15 +185,14 @@ test "an empty environment variable counts as unset" {
     try testing.expectEqualStrings("second", found.key);
 }
 
-test "a key stored for one row answers a row that reads the same credential variable" {
+test "a key stored for one row does not answer another row reading the same credential variable" {
     var store = emptyStorage(testing.allocator);
     defer store.deinit();
     try store.providers.put(try testing.allocator.dupe(u8, "opencode-zen"), .{ .api_key = try testing.allocator.dupe(u8, "zen-key") });
-    var found = (try lookup(testing.allocator, &.{}, &store, "opencode-go")).?;
+    try testing.expect((try lookup(testing.allocator, &.{}, &store, "opencode-go")) == null);
+    var found = (try lookup(testing.allocator, &.{}, &store, "opencode-zen")).?;
     defer found.deinit(testing.allocator);
-    try testing.expectEqual(Source.stored, found.source);
     try testing.expectEqualStrings("zen-key", found.key);
-    try testing.expect((try lookup(testing.allocator, &.{}, &store, "deepseek")) == null);
 }
 
 test "a stored key answers a row with no environment variable set" {
