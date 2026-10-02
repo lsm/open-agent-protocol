@@ -328,40 +328,6 @@ type RunSteerAppliedPayload struct {
 	Boundary     SteerBoundary `json:"boundary"`
 }
 
-type CompactionReason string
-
-const (
-	CompactionRequested CompactionReason = "requested"
-	CompactionThreshold CompactionReason = "threshold"
-	CompactionOverflow  CompactionReason = "overflow"
-)
-
-type CompactionOutcome string
-
-const (
-	CompactionCompleted CompactionOutcome = "completed"
-	CompactionFailed    CompactionOutcome = "failed"
-	CompactionCancelled CompactionOutcome = "cancelled"
-)
-
-type RunCompactionStartedPayload struct {
-	SessionID     SessionID        `json:"session_id"`
-	RunID         RunID            `json:"run_id"`
-	CompactionID  CompactionID     `json:"compaction_id"`
-	Reason        CompactionReason `json:"reason"`
-	HistoryTokens *uint64          `json:"history_tokens,omitempty"`
-}
-
-type RunCompactionEndedPayload struct {
-	SessionID     SessionID         `json:"session_id"`
-	RunID         RunID             `json:"run_id"`
-	CompactionID  CompactionID      `json:"compaction_id"`
-	Outcome       CompactionOutcome `json:"outcome"`
-	Summary       *Message          `json:"summary,omitempty"`
-	HistoryTokens *uint64           `json:"history_tokens,omitempty"`
-	Error         *ProtocolError    `json:"error,omitempty"`
-}
-
 type RunSteerDroppedPayload struct {
 	SessionID    SessionID     `json:"session_id"`
 	RunID        RunID         `json:"run_id"`
