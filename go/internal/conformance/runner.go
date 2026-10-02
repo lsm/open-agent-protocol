@@ -265,7 +265,11 @@ func (r *runner) drive() {
 func (r *runner) refuseUnknownReopen() {
 	const name = "a reopen of a session the endpoint never had is refused, not answered with a fresh session"
 	never := r.session + "-never-opened"
-	envelope, err := protocol.NewEnvelope(protocol.TypeSessionOpenRequest, r.next("request"), protocol.SessionOpenRequest{SessionID: never, Reopen: true})
+	request := protocol.SessionOpenRequest{SessionID: never, Reopen: true}
+	if support := r.descriptor.Features[protocol.FeatureOpenReopen]; support.Level == protocol.SupportDegraded {
+		request.AllowDegradedFeatures = []string{protocol.FeatureOpenReopen}
+	}
+	envelope, err := protocol.NewEnvelope(protocol.TypeSessionOpenRequest, r.next("request"), request)
 	if err != nil {
 		r.fail(name, err.Error())
 		return

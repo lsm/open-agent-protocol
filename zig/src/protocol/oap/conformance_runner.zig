@@ -250,6 +250,7 @@ const Runner = struct {
     refusal: []const u8 = "",
     cancel_level: []const u8 = "",
     reopen_advertised: bool = false,
+    reopen_degraded: bool = false,
     ids: usize = 0,
 
     fn releaseEnvelopes(self: *Runner) void {
@@ -581,6 +582,7 @@ const Runner = struct {
         }
         if (capabilities.payload.capabilities_response.feature("session.open.reopen")) |declared| {
             self.reopen_advertised = declared.level != .unavailable;
+            self.reopen_degraded = declared.level == .degraded;
         }
         if (capabilities.capability_revision) |revision| {
             self.revision = revision;
@@ -833,7 +835,11 @@ const Runner = struct {
         defer self.allocator.free(id);
         const envelope: oap_types.Envelope = .{
             .id = id,
-            .payload = .{ .session_open_request = .{ .session_id = never, .reopen = true } },
+            .payload = .{ .session_open_request = .{
+                .session_id = never,
+                .reopen = true,
+                .allow_degraded_features = if (self.reopen_degraded) &.{"session.open.reopen"} else &.{},
+            } },
             .session_id = never,
             .capability_revision = if (self.revision.len == 0) null else self.revision,
         };
