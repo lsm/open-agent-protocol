@@ -1200,6 +1200,7 @@ needs a value outside it has a spec question, not a code change.
 | `unsupported_feature` | `feature`, `reason`, and `tool` or `field` or `source` where the refusal names one | `unadvertised`, `unsatisfiable` |
 | `capability_degraded` | `feature` | — |
 | `stale_capabilities` | `expected_revision`, `current_revision` | — |
+| `model_not_found` | `model_id`, the reference the request named | — |
 
 `expected_revision` is **the adapter's** revision and `current_revision` is **the
 one the request cited**, which is the pair that makes the refusal actionable. The
@@ -1216,7 +1217,9 @@ nowhere to put a reason (D12).
   `type_mismatch`, `invalid_payload` (a `metadata` value that is not JSON, or a
   payload that will not decode), `unknown_adapter` (404), `session_exists`
   (409), `stale_capabilities` (409, with `expected_revision` and
-  `current_revision` in `details`), `unsupported_feature` (400, for a tool
+  `current_revision` in `details`), `model_not_found` (400, with `model_id` in
+  `details`, an `oapx` open whose `metadata.oapx.model` its catalog lacks),
+  `unsupported_feature` (400, for a tool
   source it will not attach), `capability_degraded` (400, for a feature the
   request did not opt into), `session_closed` (409, a session that was already
   closed when the open probed it), `probe_failed`, `open_failed` (502),

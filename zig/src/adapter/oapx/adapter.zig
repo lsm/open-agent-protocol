@@ -851,13 +851,14 @@ fn ownEngine(gpa: std.mem.Allocator, shared: ?*permission.PermissionEngine, work
     const template = shared orelse return null;
     const engine = try gpa.create(permission.PermissionEngine);
     errdefer gpa.destroy(engine);
-    engine.* = permission.PermissionEngine.init(gpa, .{
+    const settings = permission.PermissionEngineOptions{
         .workspace_root = if (workspace_root.len > 0) workspace_root else template.workspace_root,
         .persistence_path = template.persistence_path,
         .approval_callback = template.approval_callback,
-    }) catch |err| switch (err) {
+    };
+    engine.* = permission.PermissionEngine.init(gpa, settings) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
-        else => return error.BackendFailed,
+        else => try permission.PermissionEngine.initEmpty(gpa, settings),
     };
     return engine;
 }
@@ -1441,6 +1442,31 @@ test "each session holds its own permission engine, so one session's bypass neve
     try testing.expect(!asks.engine.?.bypass_all);
     try testing.expect(bypasses.engine.?.bypass_all);
     try testing.expectEqualStrings("/shared", asks.engine.?.workspace_root);
+}
+
+test "a permissions file the engine cannot read leaves a session its own empty engine rather than refusing the open" {
+    var script = Script{};
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "permissions.json", .data = "{not json" });
+    const corrupt = try tmp.dir.realPathFileAlloc(testing.io, "permissions.json", testing.allocator);
+    defer testing.allocator.free(corrupt);
+    var shared = try permission.PermissionEngine.initEmpty(testing.allocator, .{ .workspace_root = "/shared", .persistence_path = corrupt });
+    defer shared.deinit();
+    var owner = Adapter.init(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &scripted_models,
+        .initial_model_id = test_model.id,
+        .tools = &echo_tools,
+        .permission_engine = &shared,
+    });
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    var refusal = contract.Refusal{};
+    const opened = try owner.adapter().open(arena_state.allocator(), .{ .participant = "user", .session_id = "tolerant" }, &refusal);
+    defer opened.teardown();
+    const held: *Session = @ptrCast(@alignCast(opened.ptr));
+    try testing.expectEqual(@as(usize, 0), held.engine.?.persisted.items.len);
 }
 
 test "an open's oapx metadata can ask for ask mode, which this adapter now answers with permission interactions" {
