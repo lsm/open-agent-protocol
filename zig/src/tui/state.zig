@@ -6,6 +6,9 @@ const compat = @import("compat");
 const tui_config = @import("tui_config");
 
 pub const AutoCompactSetting = tui_config.AutoCompact;
+pub const Verbosity = tui_config.Verbosity;
+pub const VerbosityLevel = tui_config.VerbosityLevel;
+pub const VerbosityPart = tui_config.VerbosityPart;
 
 pub fn autoCompactAt(setting: AutoCompactSetting, model: ai_types.Model) ?u64 {
     if (model.context_window == 0) return null;
@@ -645,6 +648,7 @@ pub const AppState = struct {
     preview: PreviewState = .{},
     thinking_level: ai_types.ThinkingLevel = .low,
     autocompact: AutoCompactSetting = .auto,
+    verbosity: Verbosity = .{},
     login_input_secret: bool = false,
     anim_tick: u64 = 0,
     transcript_scroll: usize = 0,

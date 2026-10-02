@@ -20,6 +20,7 @@ pub const EntryOptions = struct {
     anim_tick: u64 = 0,
     awaiting_approval: bool = false,
     tool: ?*const tui_state.ToolEntry = null,
+    verbosity: tui_state.Verbosity = .{},
 };
 
 const DisplayEntry = struct {
@@ -34,7 +35,17 @@ const DisplayEntry = struct {
     live: bool = false,
     anim_tick: u64 = 0,
     awaiting_approval: bool = false,
+    verbosity: tui_state.Verbosity = .{},
+    tool_output: []const u8 = "",
 };
+
+fn entryShown(kind: TranscriptKind, tool_summary: bool, verbosity: tui_state.Verbosity) bool {
+    return switch (kind) {
+        .system => verbosity.notices != .quiet,
+        .tool => tool_summary or verbosity.output != .quiet,
+        else => true,
+    };
+}
 
 const gutter_left: usize = 1;
 const body_indent: usize = 3;
@@ -56,6 +67,14 @@ pub fn render(allocator: std.mem.Allocator, state: *const AppState, options: Opt
     var visible_entries = std.ArrayList(DisplayEntry).empty;
     defer visible_entries.deinit(allocator);
     try buildVisibleEntries(allocator, arena, state, &visible_entries);
+    var kept: usize = 0;
+    for (visible_entries.items) |entry| {
+        if (!entryShown(entry.kind, entry.tool_summary, state.verbosity)) continue;
+        visible_entries.items[kept] = entry;
+        visible_entries.items[kept].verbosity = state.verbosity;
+        kept += 1;
+    }
+    visible_entries.shrinkRetainingCapacity(kept);
 
     if (visible_entries.items.len == 0) {
         const ready_line = try tui_theme.muted().render(allocator, "Makai ready. Type message, /quit exits.");
@@ -113,6 +132,8 @@ pub fn renderTranscriptEntry(allocator: std.mem.Allocator, entry: *const Transcr
 
 pub fn renderTranscriptEntryWith(allocator: std.mem.Allocator, entry: *const TranscriptEntry, width: usize, options: EntryOptions) ![]u8 {
     const tool = if (entry.kind == .tool) options.tool else null;
+    const summary = entry.tool_summary or parseToolSummary(entry.text.items) != null;
+    if (!entryShown(entry.kind, summary, options.verbosity)) return allocator.dupe(u8, "");
     var display = DisplayEntry{
         .kind = entry.kind,
         .text = entry.text.items,
@@ -120,10 +141,12 @@ pub fn renderTranscriptEntryWith(allocator: std.mem.Allocator, entry: *const Tra
         .tool_name = if (tool) |found| found.name else if (entry.kind == .tool) inferredToolName(entry.text.items) else "",
         .title = if (tool) |found| found.label else if (entry.kind == .tool) inferredToolTitle(entry.text.items) else "",
         .args_json = if (tool) |found| found.args_json else "",
-        .tool_summary = entry.tool_summary or parseToolSummary(entry.text.items) != null,
+        .tool_summary = summary,
         .live = options.live,
         .anim_tick = options.anim_tick,
         .awaiting_approval = options.awaiting_approval,
+        .verbosity = options.verbosity,
+        .tool_output = if (tool) |found| (if (summary and found.status != .pending and found.status != .running) found.output.items else "") else "",
     };
     return renderEntry(allocator, &display, width);
 }
@@ -260,6 +283,7 @@ fn appendToolSummary(
         .args_json = tool.args_json,
         .tool_summary = true,
         .tool_status = toolRowStatus(tool.status),
+        .tool_output = if (tool.status != .pending and tool.status != .running) tool.output.items else "",
     });
 }
 
@@ -359,9 +383,9 @@ fn renderEntry(allocator: std.mem.Allocator, entry: *const DisplayEntry, width: 
     const rendered: []const u8 = switch (entry.kind) {
         .welcome => try renderWelcome(arena, entry.text, width),
         .tool => if (entry.tool_summary)
-            try renderToolSummaryRow(arena, entry, width)
+            try renderToolSummaryWithOutput(arena, entry, width)
         else
-            try indentBlock(arena, try renderToolResult(arena, entry.text, body_w), indent),
+            try indentBlock(arena, try renderToolResult(arena, entry.text, body_w, resultRows(entry.verbosity.output)), indent),
         .system => if (std.mem.indexOfScalar(u8, entry.text, '\n') == null and tui_text.visibleWidth(entry.text) <= systemLineBudget(width))
             try renderSystemLine(arena, entry.text, width)
         else
@@ -535,7 +559,11 @@ fn spaces(allocator: std.mem.Allocator, count: usize) ![]u8 {
 
 fn renderThinkingBody(allocator: std.mem.Allocator, entry: *const DisplayEntry, width: usize) ![]u8 {
     const plain = try renderAssistantPlain(allocator, entry.text, @max(width, 8));
-    const cap: usize = if (entry.live) max_live_thinking_rows else max_thinking_rows;
+    if (entry.verbosity.thinking == .quiet) {
+        const note = try std.fmt.allocPrint(allocator, "{d} line{s} of thinking hidden", .{ tui_text.lineCount(plain), if (tui_text.lineCount(plain) == 1) "" else "s" });
+        return allocator.dupe(u8, try tui_theme.dim().render(allocator, note));
+    }
+    const cap: usize = if (entry.live) max_live_thinking_rows else if (entry.verbosity.thinking == .verbose) std.math.maxInt(usize) else max_thinking_rows;
     const clipped = if (entry.live) try tailRows(allocator, plain, cap) else try headRows(allocator, plain, cap);
     return styleEachLine(allocator, tui_theme.bodyStyle(.thinking), clipped);
 }
@@ -586,9 +614,30 @@ fn headRows(allocator: std.mem.Allocator, text: []const u8, max_rows: usize) ![]
     return out.toOwnedSlice();
 }
 
-fn renderToolResult(allocator: std.mem.Allocator, text: []const u8, width: usize) ![]u8 {
+fn resultRows(level: tui_state.VerbosityLevel) usize {
+    return if (level == .verbose) std.math.maxInt(usize) else max_result_rows;
+}
+
+fn renderToolSummaryWithOutput(allocator: std.mem.Allocator, entry: *const DisplayEntry, width: usize) ![]u8 {
+    const row = try renderToolSummaryRow(allocator, entry, width);
+    var extra: std.ArrayList(u8) = .empty;
+    if (entry.verbosity.tools == .verbose and entry.args_json.len > 0 and tui_theme.toolKindForName(entry.tool_name) != .shell) {
+        const args = try renderWrappedLines(allocator, tui_theme.faint(), entry.args_json, bodyWidth(width));
+        try extra.appendSlice(allocator, "\n");
+        try extra.appendSlice(allocator, try indentBlock(allocator, args, bodyIndent(width)));
+    }
+    if (entry.verbosity.output == .verbose and entry.tool_output.len > 0) {
+        const output = try renderToolResult(allocator, std.mem.trimEnd(u8, entry.tool_output, "\n"), bodyWidth(width), std.math.maxInt(usize));
+        try extra.appendSlice(allocator, "\n");
+        try extra.appendSlice(allocator, try indentBlock(allocator, output, bodyIndent(width)));
+    }
+    if (extra.items.len == 0) return row;
+    return std.mem.concat(allocator, u8, &.{ row, extra.items });
+}
+
+fn renderToolResult(allocator: std.mem.Allocator, text: []const u8, width: usize, max_rows: usize) ![]u8 {
     const content_width = @max(width -| 2, 8);
-    const capped = try headRows(allocator, text, max_result_rows);
+    const capped = try headRows(allocator, text, max_rows);
     const truncated = try tui_text.truncateLinesToWidth(allocator, capped, content_width, std.math.maxInt(usize));
     var out: std.Io.Writer.Allocating = .init(allocator);
     errdefer out.deinit();
@@ -765,6 +814,11 @@ fn renderToolStatus(allocator: std.mem.Allocator, summary: ToolSummary, anim_tic
 fn renderToolSummaryRow(allocator: std.mem.Allocator, entry: *const DisplayEntry, width: usize) ![]u8 {
     var summary = parseToolSummaryAfterLabel(entry.text, entry.title) orelse ToolSummary{ .label = entry.text, .arg = "", .status = .running, .stats = "" };
     if (entry.tool_status) |status| summary.status = status;
+    if (entry.verbosity.tools == .quiet) {
+        summary.arg = "";
+        const quiet_name = if (entry.tool_name.len > 0) entry.tool_name else summary.label;
+        return (try renderToolTitleRow(allocator, entry, summary, quiet_name, if (entry.title.len > 0) entry.title else summary.label, width)).row;
+    }
     const tool_name = if (entry.tool_name.len > 0) entry.tool_name else summary.label;
     const label_text = if (entry.title.len > 0) entry.title else summary.label;
     const command = try shellCommand(allocator, tool_name, entry.args_json);
@@ -780,7 +834,7 @@ fn renderToolSummaryRow(allocator: std.mem.Allocator, entry: *const DisplayEntry
     }
     const title = try renderToolTitleRow(allocator, entry, summary, tool_name, label_text, width);
     if (command.len == 0) return title.row;
-    const block = try tui_shell_highlight.render(allocator, command, bodyWidth(width), max_command_rows);
+    const block = try tui_shell_highlight.render(allocator, command, bodyWidth(width), if (entry.verbosity.tools == .verbose) std.math.maxInt(usize) else max_command_rows);
     if (block.len == 0) return title.row;
     return std.fmt.allocPrint(allocator, "{s}\n{s}", .{ title.row, try indentBlock(allocator, block, bodyIndent(width)) });
 }
@@ -2031,6 +2085,40 @@ fn colorFg(allocator: std.mem.Allocator, color: zz.Color) ![]u8 {
     errdefer out.deinit();
     try color.writeFg(&out.writer);
     return out.toOwnedSlice();
+}
+
+test "transcript verbosity hides notices, collapses thinking and uncaps it, part by part" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    try state.appendTranscript(.system, "model catalog refreshed");
+    try state.appendTranscript(.thinking, "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\ntwelve");
+    try state.appendTranscript(.assistant, "the answer");
+
+    const normal = try render(std.testing.allocator, &state, .{ .width = 80, .height = 60 });
+    defer std.testing.allocator.free(normal);
+    try std.testing.expect(std.mem.indexOf(u8, normal, "model catalog refreshed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, normal, "two") != null);
+    try std.testing.expect(std.mem.indexOf(u8, normal, "twelve") == null);
+
+    state.verbosity.thinking = .verbose;
+    const full = try render(std.testing.allocator, &state, .{ .width = 80, .height = 60 });
+    defer std.testing.allocator.free(full);
+    try std.testing.expect(std.mem.indexOf(u8, full, "twelve") != null);
+
+    state.verbosity = tui_state.Verbosity.all(.quiet);
+    const quiet = try render(std.testing.allocator, &state, .{ .width = 80, .height = 60 });
+    defer std.testing.allocator.free(quiet);
+    try std.testing.expect(std.mem.indexOf(u8, quiet, "model catalog refreshed") == null);
+    try std.testing.expect(std.mem.indexOf(u8, quiet, "two") == null);
+    try std.testing.expect(std.mem.indexOf(u8, quiet, "12 lines of thinking hidden") != null);
+    try std.testing.expect(std.mem.indexOf(u8, quiet, "the answer") != null);
+
+    var entry = tui_state.TranscriptEntry{ .kind = .system };
+    defer entry.text.deinit(std.testing.allocator);
+    try entry.text.appendSlice(std.testing.allocator, "a notice");
+    const hidden = try renderTranscriptEntryWith(std.testing.allocator, &entry, 80, .{ .verbosity = tui_state.Verbosity.all(.quiet) });
+    defer std.testing.allocator.free(hidden);
+    try std.testing.expectEqualStrings("", hidden);
 }
 
 test "tool summary parser splits label argument status and stats" {
