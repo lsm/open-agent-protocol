@@ -509,7 +509,7 @@ each `quiet`, `normal` (the default) or `verbose`:
 | `thinking` | one line counting the hidden lines | the first ten lines | every line |
 | `tools` | each call's title row only | title row, argument and up to twelve command rows | every command row, and the arguments of a non-shell call |
 | `output` | no result rows | result rows of a running or failed call, up to eight | every row, and a finished call's output under its row |
-| `notices` | system notices hidden; errors still shown | shown | shown, as with `normal` |
+| `notices` | background and progress notices hidden (catalog refreshed, worktree setup, clipboard); replies to commands, failures and errors still shown | shown | shown, as with `normal` |
 | `status` | model, context, queue, state, and permissions when not `ask` | as now | adds the session id |
 
 `/verbose <level>` sets every part, `/verbose <part> <level>` sets one, so

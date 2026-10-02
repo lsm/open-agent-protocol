@@ -1285,7 +1285,7 @@ pub const App = struct {
             errdefer self.allocator.free(pending_id);
             const pending_path = try self.allocator.dupe(u8, info.path);
             errdefer self.allocator.free(pending_path);
-            try self.state.appendTranscript(.system, "Checking and removing the session worktree…");
+            try self.state.appendNotice("Checking and removing the session worktree…");
             self.worktree_management_job = job;
             self.pending_delete_id = pending_id;
             self.pending_delete_path = pending_path;
@@ -1399,7 +1399,7 @@ pub const App = struct {
                 errdefer self.allocator.free(pending_id);
                 const pending_path = try self.allocator.dupe(u8, info.path);
                 errdefer self.allocator.free(pending_path);
-                try self.state.appendTranscript(.system, "Reattaching this session's Git worktree…");
+                try self.state.appendNotice("Reattaching this session's Git worktree…");
                 self.worktree_management_job = job;
                 self.pending_resume_id = pending_id;
                 self.pending_resume_path = pending_path;
@@ -1997,7 +1997,7 @@ pub const App = struct {
             owned[index] = try ai_types.cloneModel(self.allocator, model);
             cloned += 1;
         }
-        if (self.runtimeBusy()) try self.state.appendTranscript(.system, "model catalog fetched; it takes effect when this turn ends");
+        if (self.runtimeBusy()) try self.state.appendNotice("model catalog fetched; it takes effect when this turn ends");
         if (self.pending_models) |old| model_catalog.deinitModels(self.allocator, old);
         self.pending_models = owned;
     }
@@ -2036,7 +2036,7 @@ pub const App = struct {
             try self.state.appendTranscript(.@"error", msg);
             return;
         };
-        try self.state.appendTranscript(.system, "model catalog refreshed");
+        try self.state.appendNotice("model catalog refreshed");
         if (!changed) return;
         const msg = try std.fmt.allocPrint(self.allocator, "model switched to {s}/{s}", .{ self.state.status.provider, self.state.status.model });
         defer self.allocator.free(msg);
@@ -2596,7 +2596,7 @@ pub const App = struct {
                 try replaceOwnedString(self.allocator, &self.working_dir, new_dir);
                 try self.refreshCwdDisplay();
                 try self.recordWorktreeSidecar(&created.info);
-                try self.state.appendTranscript(.system, "Git worktree ready for this session.");
+                try self.state.appendNotice("Git worktree ready for this session.");
                 if (created.uncommitted > 0) try self.state.appendTranscript(.system, "Note: the original repository has uncommitted changes; the worktree starts from the current commit.");
             },
         }
@@ -2934,10 +2934,10 @@ pub const App = struct {
         if (self.worktree_job != null or self.worktree_management_job != null) {
             if (self.held_user_message.len == 0) {
                 self.held_user_message = try self.allocator.dupe(u8, trimmed);
-                try self.state.appendTranscript(.system, "Setting up this session's Git worktree; your message will be sent when ready.");
+                try self.state.appendNotice("Setting up this session's Git worktree; your message will be sent when ready.");
             } else {
                 try self.enqueueWorktreeMessage(trimmed);
-                try self.state.appendTranscript(.system, "Worktree setup is still running; your message is queued and will be sent when ready.");
+                try self.state.appendNotice("Worktree setup is still running; your message is queued and will be sent when ready.");
             }
             return true;
         }
@@ -2949,13 +2949,13 @@ pub const App = struct {
                 defer self.allocator.free(base);
                 if (tui_worktree.isUnderBase(self.working_dir, base)) {
                     self.worktree_attempted = true;
-                    self.state.appendTranscript(.system, "Already in a managed session worktree; continuing here.") catch {};
+                    self.state.appendNotice("Already in a managed session worktree; continuing here.") catch {};
                 } else {
                     const job = try tui_worktree.CreateJob.start(self.allocator, tui_worktree.processRunner(), self.working_dir, base, self.session_id);
                     errdefer job.deinit();
                     const held = try self.allocator.dupe(u8, trimmed);
                     errdefer self.allocator.free(held);
-                    try self.state.appendTranscript(.system, "Setting up an isolated Git worktree for this session…");
+                    try self.state.appendNotice("Setting up an isolated Git worktree for this session…");
                     self.worktree_job = job;
                     self.held_user_message = held;
                     self.worktree_attempted = true;
@@ -3359,7 +3359,7 @@ pub const App = struct {
             return;
         };
         self.stageClipboard(text);
-        self.state.appendTranscript(.system, "copied last reply to clipboard") catch {};
+        self.state.appendNotice("copied last reply to clipboard") catch {};
     }
 
     fn cycleThinkingLevel(self: *App) void {
@@ -4346,7 +4346,7 @@ pub const TuiModel = struct {
         while (overflow > 0 and app.inline_history_flushed < stop) {
             const block = try renderInlineBlock(ctx.allocator, &app.state, app.inline_history_flushed, width, false);
             defer ctx.allocator.free(block);
-            if (block.len == 0) {
+            if (block.len == 0 or countLines(block) <= app.inline_flushed_rows) {
                 app.inline_history_flushed += 1;
                 app.inline_flushed_rows = 0;
                 continue;

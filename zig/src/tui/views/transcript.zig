@@ -37,11 +37,12 @@ const DisplayEntry = struct {
     awaiting_approval: bool = false,
     verbosity: tui_state.Verbosity = .{},
     tool_output: []const u8 = "",
+    notice: bool = false,
 };
 
-fn entryShown(kind: TranscriptKind, tool_summary: bool, verbosity: tui_state.Verbosity) bool {
+fn entryShown(kind: TranscriptKind, tool_summary: bool, notice: bool, verbosity: tui_state.Verbosity) bool {
     return switch (kind) {
-        .system => verbosity.notices != .quiet,
+        .system => !notice or verbosity.notices != .quiet,
         .tool => tool_summary or verbosity.output != .quiet,
         else => true,
     };
@@ -69,7 +70,7 @@ pub fn render(allocator: std.mem.Allocator, state: *const AppState, options: Opt
     try buildVisibleEntries(allocator, arena, state, &visible_entries);
     var kept: usize = 0;
     for (visible_entries.items) |entry| {
-        if (!entryShown(entry.kind, entry.tool_summary, state.verbosity)) continue;
+        if (!entryShown(entry.kind, entry.tool_summary, entry.notice, state.verbosity)) continue;
         visible_entries.items[kept] = entry;
         visible_entries.items[kept].verbosity = state.verbosity;
         kept += 1;
@@ -133,7 +134,7 @@ pub fn renderTranscriptEntry(allocator: std.mem.Allocator, entry: *const Transcr
 pub fn renderTranscriptEntryWith(allocator: std.mem.Allocator, entry: *const TranscriptEntry, width: usize, options: EntryOptions) ![]u8 {
     const tool = if (entry.kind == .tool) options.tool else null;
     const summary = entry.tool_summary or parseToolSummary(entry.text.items) != null;
-    if (!entryShown(entry.kind, summary, options.verbosity)) return allocator.dupe(u8, "");
+    if (!entryShown(entry.kind, summary, entry.notice, options.verbosity)) return allocator.dupe(u8, "");
     var display = DisplayEntry{
         .kind = entry.kind,
         .text = entry.text.items,
@@ -231,6 +232,7 @@ fn appendOriginal(allocator: std.mem.Allocator, entries: *std.ArrayList(DisplayE
         .title = if (entry.kind == .tool) (if (tool) |found| found.label else inferredToolTitle(entry.text.items)) else "",
         .tool_summary = entry.tool_summary or (entry.kind == .tool and parseToolSummary(entry.text.items) != null),
         .tool_status = if (tool) |found| toolRowStatus(found.status) else null,
+        .notice = entry.notice,
     });
 }
 
@@ -2090,7 +2092,8 @@ fn colorFg(allocator: std.mem.Allocator, color: zz.Color) ![]u8 {
 test "transcript verbosity hides notices, collapses thinking and uncaps it, part by part" {
     var state = tui_state.AppState.init(std.testing.allocator);
     defer state.deinit();
-    try state.appendTranscript(.system, "model catalog refreshed");
+    try state.appendNotice("model catalog refreshed");
+    try state.appendTranscript(.system, "Cannot resume a session while a turn is running");
     try state.appendTranscript(.thinking, "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\ntwelve");
     try state.appendTranscript(.assistant, "the answer");
 
@@ -2109,11 +2112,12 @@ test "transcript verbosity hides notices, collapses thinking and uncaps it, part
     const quiet = try render(std.testing.allocator, &state, .{ .width = 80, .height = 60 });
     defer std.testing.allocator.free(quiet);
     try std.testing.expect(std.mem.indexOf(u8, quiet, "model catalog refreshed") == null);
+    try std.testing.expect(std.mem.indexOf(u8, quiet, "Cannot resume a session while a turn is running") != null);
     try std.testing.expect(std.mem.indexOf(u8, quiet, "two") == null);
     try std.testing.expect(std.mem.indexOf(u8, quiet, "12 lines of thinking hidden") != null);
     try std.testing.expect(std.mem.indexOf(u8, quiet, "the answer") != null);
 
-    var entry = tui_state.TranscriptEntry{ .kind = .system };
+    var entry = tui_state.TranscriptEntry{ .kind = .system, .notice = true };
     defer entry.text.deinit(std.testing.allocator);
     try entry.text.appendSlice(std.testing.allocator, "a notice");
     const hidden = try renderTranscriptEntryWith(std.testing.allocator, &entry, 80, .{ .verbosity = tui_state.Verbosity.all(.quiet) });
