@@ -91,6 +91,17 @@ fn loadRuntimeModelsFresh(allocator: std.mem.Allocator) ![]ai_types.Model {
     return loadRuntimeModelsWithCatalog(allocator, model_catalog.refreshProductionModels, false);
 }
 
+const ModelFetch = struct {
+    thread: std.Thread,
+    done: std.atomic.Value(bool) = .init(false),
+    result: anyerror![]ai_types.Model = error.ModelFetchPending,
+
+    fn run(self: *ModelFetch, allocator: std.mem.Allocator) void {
+        self.result = loadRuntimeModelsFresh(allocator);
+        self.done.store(true, .release);
+    }
+};
+
 fn loadRuntimeModelsWithCatalog(
     allocator: std.mem.Allocator,
     comptime loadCatalog: fn (std.mem.Allocator) anyerror![]ai_types.Model,
@@ -946,6 +957,7 @@ pub const App = struct {
     login_status: [provider_catalog.all.len]LoginStatus = [_]LoginStatus{.none} ** provider_catalog.all.len,
     pending_session_reset: bool = false,
     pending_models: ?[]ai_types.Model = null,
+    model_fetch: ?*ModelFetch = null,
     quarantine_events: bool = false,
     quarantine_generation: u32 = 0,
     quarantine_buffer: std.ArrayList(tui_runtime.TuiEvent) = .empty,
@@ -1024,6 +1036,12 @@ pub const App = struct {
     }
 
     pub fn deinit(self: *App) void {
+        if (self.model_fetch) |fetch| {
+            fetch.thread.join();
+            if (fetch.result) |models| model_catalog.deinitModels(self.allocator, models) else |_| {}
+            self.allocator.destroy(fetch);
+            self.model_fetch = null;
+        }
         if (self.pending_models) |models| {
             model_catalog.deinitModels(self.allocator, models);
             self.pending_models = null;
@@ -1918,7 +1936,25 @@ pub const App = struct {
 
     fn refreshModelsCommand(self: *App) !void {
         if (!self.runtimeBusy()) return self.reportModelRefresh(self.refreshModels(), "refreshing models failed");
-        const models = loadRuntimeModelsFresh(self.allocator) catch |err| {
+        if (self.model_fetch != null) {
+            try self.state.appendTranscript(.system, "the model catalog is already being fetched");
+            return;
+        }
+        const fetch = try self.allocator.create(ModelFetch);
+        errdefer self.allocator.destroy(fetch);
+        fetch.* = .{ .thread = undefined };
+        fetch.thread = try std.Thread.spawn(.{}, ModelFetch.run, .{ fetch, self.allocator });
+        self.model_fetch = fetch;
+        try self.state.appendTranscript(.system, "fetching the model catalog; it takes effect when this turn ends");
+    }
+
+    fn collectModelFetch(self: *App) !void {
+        const fetch = self.model_fetch orelse return;
+        if (!fetch.done.load(.acquire)) return;
+        fetch.thread.join();
+        self.model_fetch = null;
+        defer self.allocator.destroy(fetch);
+        const models = fetch.result catch |err| {
             const msg = try std.fmt.allocPrint(self.allocator, "refreshing models failed: {s}", .{@errorName(err)});
             defer self.allocator.free(msg);
             try self.state.appendTranscript(.@"error", msg);
@@ -1926,7 +1962,14 @@ pub const App = struct {
         };
         if (self.pending_models) |old| model_catalog.deinitModels(self.allocator, old);
         self.pending_models = models;
-        try self.state.appendTranscript(.system, "model catalog fetched; it takes effect when this turn ends");
+    }
+
+    fn applyPendingModelsBeforeResume(self: *App) !void {
+        if (self.pending_models == null) return;
+        if (self.runtime) |runtime| {
+            if (runtime.local_agent) |*local| local.waitForIdle();
+        }
+        try self.applyPendingModels();
     }
 
     fn applyPendingModels(self: *App) !void {
@@ -2659,9 +2702,11 @@ pub const App = struct {
                 self.pending_session_reset = false;
             }
         }
+        try self.collectModelFetch();
         try self.applyPendingModels();
         var resumed_run = false;
         if (completed_agent_end and self.state.queue.total() > 0) {
+            try self.applyPendingModelsBeforeResume();
             session.resumeSession() catch |err| {
                 try self.state.status.setError(self.allocator, @errorName(err));
                 try self.state.appendTranscript(.@"error", @errorName(err));
