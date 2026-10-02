@@ -525,6 +525,7 @@ pub const Session = struct {
             .relationship = "primary",
             .as_of_sequence = running.sequence - 1,
             .admitted_submit_requests = carried_anchors,
+            .pending_interactions = try running.pendingInteractionIDs(arena),
             .pending_steers = carried,
         };
         return entry;
@@ -1536,6 +1537,7 @@ test "a steer whose target settles while the steer is in flight is refused" {
 const fake_dialog_open = fake_prompt_accepted ++
     "printf '%s\\n' '{\"type\":\"extension_ui_request\",\"id\":\"ui-1\",\"method\":\"confirm\",\"title\":\"Proceed?\",\"message\":\"Continue\"}'\n" ++
     "take; printf '{\"type\":\"response\",\"id\":\"req_3\",\"command\":\"steer\",\"success\":true}\n'\n" ++
+    "take; printf '{\"type\":\"response\",\"id\":\"req_4\",\"command\":\"get_state\",\"success\":true,\"data\":{\"thinkingLevel\":\"off\",\"steeringMode\":\"all\",\"followUpMode\":\"one-at-a-time\",\"messageCount\":1,\"pendingMessageCount\":1,\"sessionId\":\"native-session\",\"isStreaming\":true,\"model\":{\"id\":\"model\",\"provider\":\"fixture\"}}}\n'\n" ++
     "";
 
 test "a steer during an extension dialog reports the waiting status" {
@@ -1546,11 +1548,18 @@ test "a steer during an extension dialog reports the waiting status" {
     _ = try probe.open(&refusal);
     const admitted = try probe.submit("hello", &refusal);
     var seen = std.ArrayList(contract.Event).empty;
-    _ = try probe.pumpUntil("user.input.requested", &seen);
+    const gate = try probe.pumpUntil("user.input.requested", &seen);
+    const gate_payload = try probe.payloadOf(gate);
+    const interaction_id = gate_payload.get("interaction_id").?.string;
 
     var request = try steerRequest(probe.arena.allocator(), admitted.run_id);
     const steered = try probe.handle.?.submit(probe.arena.allocator(), &request, "steer-request", &refusal);
     try testing.expectEqual(oap_types.RunStatus.waiting_for_input, steered.status.?);
+
+    const state = try probe.handle.?.state(probe.arena.allocator(), &refusal);
+    try testing.expectEqual(@as(usize, 1), state.active_runs.len);
+    try testing.expectEqual(@as(usize, 1), state.active_runs[0].pending_interactions.len);
+    try testing.expectEqualStrings(interaction_id, state.active_runs[0].pending_interactions[0]);
 }
 
 test "a steer naming an unknown run on an idle session is refused as unknown_target" {

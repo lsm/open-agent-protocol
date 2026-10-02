@@ -112,6 +112,15 @@ pub const Reducer = struct {
         return self.admitted_steers.items;
     }
 
+    pub fn pendingInteractionIDs(self: *Reducer, arena: std.mem.Allocator) ![]const []const u8 {
+        var ids = std.ArrayList([]const u8).empty;
+        for (self.interactions.items) |interaction| {
+            if (interaction.resolved) continue;
+            try ids.append(arena, try arena.dupe(u8, interaction.id));
+        }
+        return try ids.toOwnedSlice(arena);
+    }
+
     fn settleSteers(self: *Reducer) anyerror!void {
         if (self.steers.items.len == 0) return;
         const pending = try self.steers.toOwnedSlice(self.arena);

@@ -16,6 +16,7 @@ import (
 	"github.com/lsm/open-agent-protocol/go/adapter/pi/internal/native"
 	"github.com/lsm/open-agent-protocol/go/adapter/pi/internal/rpc"
 	"github.com/lsm/open-agent-protocol/go/protocol"
+	"github.com/lsm/open-agent-protocol/go/validation"
 )
 
 type fakeClock struct {
@@ -1684,4 +1685,188 @@ func TestSteerRefusesRunControlsAsUnadvertised(t *testing.T) {
 	if sentCommand(client, native.CommandSteer) {
 		t.Fatal("a refused steer reached Pi")
 	}
+}
+
+func TestASteerDuringAnExtensionDialogCapturesTheOpenInteraction(t *testing.T) {
+	client := newFakeClient()
+	s := openTest(t, client, 32)
+	admission, stream := submitTest(t, s)
+	started := adaptertest.Next(t, stream, time.Second)
+
+	client.extension(native.ExtensionUIRequest{Type: "extension_ui_request", ID: "ui-1", Method: native.ExtensionInput, Title: "Name"})
+	requested := adaptertest.Next(t, stream, time.Second)
+	status := adaptertest.Next(t, stream, time.Second)
+	var open protocol.UserInputRequestedPayload
+	if err := requested.DecodePayload(&open); err != nil {
+		t.Fatal(err)
+	}
+
+	steer := steerRequest("steer-request", "")
+	steered, _, err := s.Submit(context.Background(), steer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if steered.Status != protocol.RunWaitingForInput {
+		t.Fatalf("steer status = %s, want the waiting status", steered.Status)
+	}
+	state, err := s.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.ActiveRuns) != 1 {
+		t.Fatalf("state = %+v, want one active run", state.ActiveRuns)
+	}
+	entry := state.ActiveRuns[0]
+	if len(entry.PendingInteractions) != 1 || entry.PendingInteractions[0] != open.InteractionID {
+		t.Fatalf("pending interactions = %v, want the open %s", entry.PendingInteractions, open.InteractionID)
+	}
+
+	client.emit(t, map[string]any{"type": "turn_end", "message": assistant("mid", "stop"), "toolResults": []any{}})
+	applied := adaptertest.Next(t, stream, time.Second)
+	if applied.Type != protocol.TypeRunSteerApplied {
+		t.Fatalf("settlement = %s", applied.Type)
+	}
+	client.emit(t, map[string]any{"type": "message_end", "message": assistant("done", "stop")})
+	client.emit(t, map[string]any{"type": "agent_end", "messages": []any{assistant("done", "stop")}, "willRetry": false})
+	client.emit(t, map[string]any{"type": "agent_settled"})
+	tail := append([]protocol.Envelope{applied}, adaptertest.Drain(t, stream, time.Second)...)
+
+	exchange, err := adaptertest.StateExchange(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := []protocol.Envelope{started, requested, status}
+	trace, err := steeredDialogTrace(admission, steer, steered, head, exchange, tail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result := validation.MustNew().ValidateBytes(trace, "pi-steer-dialog"); !result.Valid() {
+		t.Fatalf("the steered capture failed OAP validation: %v\ntrace: %s", result.Diagnostics, trace)
+	}
+
+	blind := state
+	blind.ActiveRuns = append([]protocol.ActiveRun(nil), state.ActiveRuns...)
+	blind.ActiveRuns[0].PendingInteractions = nil
+	blindExchange, err := adaptertest.StateExchange(blind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blindTrace, err := steeredDialogTrace(admission, steer, steered, head, blindExchange, tail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := validation.MustNew().ValidateBytes(blindTrace, "pi-steer-dialog-blind")
+	if result.Valid() {
+		t.Fatal("a capture that omits the open interaction passed OAP validation")
+	}
+	found := false
+	for _, diagnostic := range result.Diagnostics {
+		if diagnostic.Code == validation.CodeSessionStateMismatch {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the blind capture failed without session_state_mismatch: %v", result.Diagnostics)
+	}
+}
+
+func steeredDialogTrace(admission protocol.MessageSubmitResponse, steer base.SubmitRequest, steered protocol.MessageSubmitResponse, head, exchange, tail []protocol.Envelope) ([]byte, error) {
+	descriptor, err := dialogDescriptor()
+	if err != nil {
+		return nil, err
+	}
+	capabilities, err := protocol.NewEnvelope(protocol.TypeCapabilitiesRequest, "capabilities-request", protocol.CapabilitiesRequest{})
+	if err != nil {
+		return nil, err
+	}
+	capabilityResponse, err := protocol.NewEnvelope(protocol.TypeCapabilitiesResponse, "capabilities-response", descriptor.Capabilities)
+	if err != nil {
+		return nil, err
+	}
+	capabilityResponse.InReplyTo, capabilityResponse.CapabilityRevision = capabilities.ID, descriptor.CapabilityRevision
+
+	start, err := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitRequest, "start-request", protocol.MessageSubmitRequest{
+		SessionID: admission.SessionID, Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	start.SessionID, start.CapabilityRevision = admission.SessionID, descriptor.CapabilityRevision
+	startResponse, err := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitResponse, "start-response", admission)
+	if err != nil {
+		return nil, err
+	}
+	startResponse.SessionID, startResponse.InReplyTo, startResponse.RunID = admission.SessionID, start.ID, admission.RunID
+	startResponse.CapabilityRevision = descriptor.CapabilityRevision
+
+	steerRequest, err := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitRequest, steer.EnvelopeID, steer.Request)
+	if err != nil {
+		return nil, err
+	}
+	steerRequest.SessionID, steerRequest.CapabilityRevision = admission.SessionID, descriptor.CapabilityRevision
+	steerResponse, err := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitResponse, "steer-response", steered)
+	if err != nil {
+		return nil, err
+	}
+	steerResponse.SessionID, steerResponse.InReplyTo, steerResponse.RunID = admission.SessionID, steerRequest.ID, steered.RunID
+	steerResponse.CapabilityRevision = descriptor.CapabilityRevision
+
+	trace := append([]protocol.Envelope{capabilities, capabilityResponse, start, startResponse}, head...)
+	trace = append(trace, steerRequest, steerResponse)
+	trace = append(trace, exchange...)
+	trace = append(trace, tail...)
+	return json.Marshal(trace)
+}
+
+func dialogDescriptor() (base.Descriptor, error) {
+	descriptor, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, native.SessionState, error) {
+		return nil, native.SessionState{}, errors.New("probe only")
+	}), Clock: &fakeClock{}, IDs: &fakeIDs{}, JournalCapacity: 64})
+	if err != nil {
+		return base.Descriptor{}, err
+	}
+	probed, err := descriptor.Probe(context.Background())
+	if err != nil {
+		return base.Descriptor{}, err
+	}
+	features := make(map[string]protocol.FeatureSupport, len(probed.Capabilities.Features)+1)
+	for key, support := range probed.Capabilities.Features {
+		features[key] = support
+	}
+	features["user_input"] = protocol.FeatureSupport{Level: protocol.SupportEmulated, Reason: "an extension dialog is projected as generic user input"}
+	probed.Capabilities.Features = features
+	return probed, nil
+}
+
+func TestASteerReadsItsTargetUnderTheReducerLock(t *testing.T) {
+	client := newFakeClient()
+	s := openTest(t, client, 32)
+	admission, stream := submitTest(t, s)
+	adaptertest.Next(t, stream, time.Second)
+
+	s.reduceMu.Lock()
+	submitted := make(chan error, 1)
+	go func() {
+		_, _, err := s.Submit(context.Background(), steerRequest("steer-request", admission.RunID))
+		submitted <- err
+	}()
+	select {
+	case err := <-submitted:
+		t.Fatalf("the steer read the run without the reducer lock: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	s.reduceMu.Unlock()
+	select {
+	case err := <-submitted:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the steer never returned after the reducer lock was released")
+	}
+	client.emit(t, map[string]any{"type": "message_end", "message": assistant("done", "stop")})
+	client.emit(t, map[string]any{"type": "agent_end", "messages": []any{assistant("done", "stop")}, "willRetry": false})
+	client.emit(t, map[string]any{"type": "agent_settled"})
+	adaptertest.Drain(t, stream, time.Second)
 }

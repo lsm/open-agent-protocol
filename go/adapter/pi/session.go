@@ -383,14 +383,17 @@ func (s *Session) steer(ctx context.Context, submit base.SubmitRequest) (protoco
 		return protocol.MessageSubmitResponse{}, nil, err
 	}
 	s.commandMu.Lock()
+	s.reduceMu.Lock()
 	s.mu.Lock()
 	if s.closed || s.unusable {
 		s.mu.Unlock()
+		s.reduceMu.Unlock()
 		s.commandMu.Unlock()
 		return protocol.MessageSubmitResponse{}, nil, base.ErrSessionClosed
 	}
 	if req.SessionID != s.state.SessionID {
 		s.mu.Unlock()
+		s.reduceMu.Unlock()
 		s.commandMu.Unlock()
 		return protocol.MessageSubmitResponse{}, nil, base.ErrRunNotFound
 	}
@@ -402,11 +405,13 @@ func (s *Session) steer(ctx context.Context, submit base.SubmitRequest) (protoco
 			refusal.TargetSequence = &sequence
 		}
 		s.mu.Unlock()
+		s.reduceMu.Unlock()
 		s.commandMu.Unlock()
 		return protocol.MessageSubmitResponse{}, nil, refusal
 	}
 	submissionID := protocol.SubmissionID(s.ids.NewID("submission"))
 	s.mu.Unlock()
+	s.reduceMu.Unlock()
 	err = s.callStrictLocked(ctx, native.Command{Type: native.CommandSteer, Message: &text, Images: images}, nil)
 	s.commandMu.Unlock()
 	if err != nil {
@@ -1436,12 +1441,34 @@ func (s *Session) State(ctx context.Context) (protocol.SessionState, error) {
 	return s.state, nil
 }
 
+func (s *Session) pendingInteractions(run *runState) []protocol.InteractionID {
+	opened := make([]*inputState, 0, len(s.interactions))
+	for _, binding := range s.interactions {
+		if binding.run != run || binding.phase == interactionResolved {
+			continue
+		}
+		opened = append(opened, binding)
+	}
+	if len(opened) == 0 {
+		return nil
+	}
+	sort.Slice(opened, func(i, j int) bool { return opened[i].order < opened[j].order })
+	ids := make([]protocol.InteractionID, len(opened))
+	for i, binding := range opened {
+		ids[i] = binding.id
+	}
+	return ids
+}
+
 func (s *Session) pendingSteerEntriesLocked() []protocol.ActiveRun {
 	if s.active == nil || len(s.active.steers) == 0 {
 		return nil
 	}
 	sequence := s.active.next - 1
-	entry := protocol.ActiveRun{RunID: s.active.id, Status: s.active.status, Relationship: protocol.RelationshipPrimary, AsOfSequence: &sequence}
+	entry := protocol.ActiveRun{
+		RunID: s.active.id, Status: s.active.status, Relationship: protocol.RelationshipPrimary,
+		AsOfSequence: &sequence, PendingInteractions: s.pendingInteractions(s.active),
+	}
 	if len(s.active.admittedSteers) > 0 {
 		entry.AdmittedSubmitRequests = append([]protocol.EnvelopeID(nil), s.active.admittedSteers...)
 	}
