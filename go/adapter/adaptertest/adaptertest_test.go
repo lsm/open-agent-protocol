@@ -13,8 +13,9 @@ func TestProtocolTraceRepeatsRevisionForNonAutoDelivery(t *testing.T) {
 	descriptor := adapter.Descriptor{
 		Capabilities: protocol.CapabilityDescriptor{
 			Endpoint: protocol.EndpointDescriptor{ID: "adaptertest.fixture"},
+			Limits:   &protocol.CapabilityLimits{MaxActiveRunsPerSession: new(2), MaxQueuedRunsPerSession: new(1)},
 			Features: map[string]protocol.FeatureSupport{
-				"delivery.steer": {Level: protocol.SupportNative},
+				protocol.FeatureDeliveryQueue: {Level: protocol.SupportNative},
 			},
 		},
 		CapabilityRevision:      "test-revision",
@@ -24,12 +25,12 @@ func TestProtocolTraceRepeatsRevisionForNonAutoDelivery(t *testing.T) {
 		SessionID:          "session",
 		Accepted:           true,
 		SubmissionID:       "submission",
-		RequestedDelivery:  protocol.DeliverySteer,
-		EffectiveDelivery:  protocol.DeliveryStart,
+		RequestedDelivery:  protocol.DeliveryQueue,
+		EffectiveDelivery:  protocol.EffectiveDeliveryQueue,
 		DeliveryResolution: "session_idle",
-		Admission:          protocol.AdmissionStarted,
+		Admission:          protocol.AdmissionQueued,
 		RunID:              "run",
-		Status:             protocol.RunRunning,
+		Status:             protocol.RunQueued,
 	}
 	started, err := protocol.NewEnvelope(protocol.TypeRunStarted, "started", protocol.RunStartedPayload{SessionID: admission.SessionID, RunID: admission.RunID, Status: protocol.RunRunning, StartedAtMS: 1})
 	if err != nil {
