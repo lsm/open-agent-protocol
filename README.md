@@ -73,7 +73,15 @@ the declared responder. The built-in `request_user_input` tool asks text, single
 choice or multi choice questions through `user.input.requested`; every answer is
 validated before reaching the native tool. Permission approvals apply to one
 call; argument rewrites and persistent approval choices are refused. Cancelling
-a run closes its pending prompts and leaves the session usable. Compaction
+a run closes its pending prompts and leaves the session usable. Queue delivery
+reserves up to eight waiting runs behind one executing run and promotes them in
+admission order. Busy `auto` joins that queue; explicit `queue` reserves even
+when idle. `session.state.active_runs` lists the reservations with their queue
+positions, so clients can count follow-ups and cancel them before execution.
+Cancelling a reservation frees its slot within that request; the acknowledgement
+precedes its terminal event, and a buffered next request sees the released slot.
+The descriptor discloses both bounds. Replay retains up to 65536 events across
+the session's runs and reports gaps after eviction. Compaction
 (Decision 0044) is not carried yet.
 `--backend memory` serves the in-memory reference script and answers exactly as
 `goap`'s does: CI runs `goap conformance` against it and a parity job that

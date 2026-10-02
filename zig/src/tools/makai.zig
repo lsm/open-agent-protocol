@@ -65,6 +65,7 @@ const memory_adapter = @import("memory_adapter");
 const oapx_adapter = @import("oapx_adapter");
 const hub = @import("hub");
 const hub_stdio = @import("hub_stdio");
+const hub_daemon = @import("hub_daemon");
 const hub_http = @import("hub_http");
 const bounded_output = @import("bounded_output");
 const endpoint_signals = @import("endpoint_signals");
@@ -1418,6 +1419,25 @@ const HubRegistry = struct {
     allocator: std.mem.Allocator,
     environ: *const std.process.Environ.Map,
     surface: ConfigSurface,
+    production: ?*tui_app.ProductionRuntime = null,
+
+    fn deinit(self: *HubRegistry) void {
+        if (self.production) |production| {
+            production.deinit();
+            self.allocator.destroy(production);
+        }
+        self.* = undefined;
+    }
+
+    fn runtime(self: *HubRegistry) !*tui_app.ProductionRuntime {
+        if (self.production) |production| return production;
+        const production = try self.allocator.create(tui_app.ProductionRuntime);
+        errdefer self.allocator.destroy(production);
+        production.* = try tui_app.ProductionRuntime.init(self.allocator, .{});
+        production.initBridge();
+        self.production = production;
+        return production;
+    }
 
     fn build(context: *anyopaque, arena: std.mem.Allocator, entry: adapter_config.AdapterEntry) adapter_contract.Failure!adapter_contract.Adapter {
         const self: *HubRegistry = @ptrCast(@alignCast(context));
@@ -1468,6 +1488,12 @@ const HubRegistry = struct {
             built.* = memory_adapter.Adapter.init(self.allocator);
             return built.adapter();
         }
+        if (std.mem.eql(u8, entry.kind, "oapx")) {
+            const production = self.runtime() catch |failure| return self.reported(failure);
+            const built = try arena.create(oapx_adapter.Adapter);
+            built.* = oapx_adapter.Adapter.init(self.allocator, production.options());
+            return built.adapter();
+        }
         return self.refuse(entry);
     }
 
@@ -1478,7 +1504,7 @@ const HubRegistry = struct {
     }
 
     fn refuse(self: *HubRegistry, entry: adapter_config.AdapterEntry) adapter_contract.Failure {
-        self.surface.refuse("{s} \"{s}\" is of type \"{s}\", which oapx does not know; it serves claude, codex, pi, acp, hermes, deepseek, opencode and memory", .{ self.surface.noun, entry.name, entry.kind }) catch {};
+        self.surface.refuse("{s} \"{s}\" is of type \"{s}\", which oapx does not know; it serves claude, codex, pi, acp, hermes, deepseek, opencode, memory and oapx", .{ self.surface.noun, entry.name, entry.kind }) catch {};
         return error.Unavailable;
     }
 };
@@ -1509,8 +1535,7 @@ fn hubBindRefusal(stderr: std.Io.File, message: []const u8) error{InvalidHubOpti
     compat.stdio.writeAll(stderr, "\n") catch {};
     return error.InvalidHubOption;
 }
-const hub_accept_poll_ms: i32 = 50;
-const hub_io_cycle_ms: i32 = 50;
+const hub_accept_poll_ms: i32 = 10;
 
 const keepGoing = hub_http.KeepGoing{ .context = undefined, .check = hubSignalled };
 
@@ -1551,48 +1576,13 @@ fn runHubHttp(
         try compat.stdio.writeAll(stderr, "oapx: this platform cannot wait on a socket, so a stalled client is not given up on and a signal ends the process rather than the hub; the Windows path is #460\n");
     }
 
-    var next_id: u64 = 0;
-    while (!endpoint_signals.received()) {
-        if (!hub_http.connectionPending(&listener, hub_accept_poll_ms)) continue;
-        var connection = compat.net.accept(&listener) catch |failure| switch (hub_http.classifyAccept(failure)) {
-            .serve_again => continue,
-            .back_off => {
-                compat.time.sleepMs(hub_http.accept_backoff_ms);
-                continue;
-            },
-            .stop => {
-                sweepHubSessions(core, stderr);
-                try compat.stdio.writeAll(stderr, "oapx: stopped\n");
-                return failure;
-            },
-        };
-        defer connection.stream.close();
-        next_id += 1;
-        var scratch_state = std.heap.ArenaAllocator.init(allocator);
-        defer scratch_state.deinit();
-        const scratch = scratch_state.allocator();
-        var body_allowed = true;
-        var declared: usize = 0;
-        var request = hub_http.readHead(scratch, &connection.stream, hub_http.header_read_ms, hub_io_cycle_ms, keepGoing, &body_allowed, &declared) catch |failure| {
-            if (failure == error.Stopped) break;
-            hub_http.writeTransportFailure(&connection.stream, scratch, next_id, failure, body_allowed) catch {};
-            _ = hub_http.drain(&connection.stream, declared, keepGoing);
-            continue;
-        };
-        defer request.deinit(scratch);
-        const answered = hub_http.answer(allow orelse &.{}, request);
-        if (answered != .not_found) {
-            hub_http.writeAnswer(&connection.stream, scratch, next_id, answered, body_allowed) catch {};
-            _ = hub_http.drain(&connection.stream, request.content_length, keepGoing);
-            continue;
-        }
-        hub_http.readBody(scratch, &connection.stream, &request, hub_http.idle_read_ms, hub_io_cycle_ms, keepGoing) catch |failure| {
-            if (failure == error.Stopped) break;
-            hub_http.writeTransportFailure(&connection.stream, scratch, next_id, failure, body_allowed) catch {};
-            _ = hub_http.drain(&connection.stream, request.content_length -| request.filled, keepGoing);
-            continue;
-        };
-        hub_http.writeAnswer(&connection.stream, scratch, next_id, answered, body_allowed) catch {};
+    var daemon = try hub_daemon.Daemon.init(allocator, core, allow orelse &.{}, keepGoing);
+    defer daemon.deinit();
+    const failed = hub_daemon.serveListener(&daemon, &listener, hub_accept_poll_ms);
+    if (failed) |failure| {
+        sweepHubSessions(core, stderr);
+        try compat.stdio.writeAll(stderr, "oapx: stopped\n");
+        return failure;
     }
     try compat.stdio.writeAll(stderr, "oapx: shutting down\n");
     sweepHubSessions(core, stderr);
@@ -1674,6 +1664,7 @@ fn runHub(
     }
     const tool_sources = try hubConfiguredSources(arena, file.tool_sources);
     var registry = HubRegistry{ .allocator = allocator, .environ = &environ, .surface = surface };
+    defer registry.deinit();
     var core = hub.Hub.init(allocator, wallClockNanoseconds, .{ .tool_sources = tool_sources });
     defer core.deinit();
     if (config == null) {
@@ -9472,7 +9463,7 @@ test "the hub's registry refuses an entry of a type it does not know, naming the
     complained_on.close(std.testing.io);
     const complained = try tmp.dir.readFileAlloc(std.testing.io, "stderr", allocator, .limited(4096));
     defer allocator.free(complained);
-    try std.testing.expectEqualStrings("oapx hub: adapter \"ghost\" is of type \"ghost\", which oapx does not know; it serves claude, codex, pi, acp, hermes, deepseek, opencode and memory\n", complained);
+    try std.testing.expectEqualStrings("oapx hub: adapter \"ghost\" is of type \"ghost\", which oapx does not know; it serves claude, codex, pi, acp, hermes, deepseek, opencode, memory and oapx\n", complained);
 }
 
 test "the hub's registry reports a known adapter's own requirement once, not as an unknown type" {

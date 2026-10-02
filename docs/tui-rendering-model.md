@@ -306,10 +306,12 @@ code paths; add a transcript row instead.
   for both, the branch is dropped and the path takes the full width.
 
   The path is the directory the agent is working in, not the one the TUI started in.
-  `workspace_root` is a required, model-supplied argument on every workspace tool, and
-  the agent loop forwards the model's arguments unchanged, so the last absolute
-  `workspace_root` a tool call names is the directory that call is for. The TUI reads it
-  off `tool_execution_start`, whose `args_json` the runtime already carries. That event is
+  `workspace_root` stays a required, model-supplied argument on every workspace tool, but
+  the agent loop rewrites it to the session's working directory, so the directory a call
+  runs in is the session's rather than the one the model named. The TUI reads the
+  argument off `tool_execution_start`, whose `args_json` carries the model's own
+  arguments — the event is pushed before the rewrite runs — so the row follows what the
+  model spelled and can diverge from where the call ran. That event is
   pushed before the permission engine evaluates the call, so the row leads the call
   rather than following it, and it moves to the directory a refused call named even
   though the call then never ran there — the row is where the agent is working, which is
@@ -329,11 +331,28 @@ code paths; add a transcript row instead.
   when the app initialises and continues to be what `isInsideWorkspace` checks against,
   so the row cannot widen what a tool call is allowed to reach. Note the two are
   genuinely different, since the engine's boundary test covers only `.read` and `.write`
-  and a relative path is joined against the model-supplied root — tracked in #587.
+  and a relative path is joined against the same base the tool joins against, which is
+  what retires #587's split.
 
-  There is no directory the agent changes itself: each call names its own root, so a `cd`
-  does not persist and nothing needs reporting a resulting directory. #586 carries that
-  and the design question behind it.
+  The session owns a working directory, so a `cd` now persists. `shell_execute` reports the
+  directory it ended in through its `details_json` (`working_directory`,
+  `working_directory_observed`). The runtime adopts that directory only when the command
+  moved — the reported directory differs from the one the call started in — and when it
+  resolves lexically inside the resolved session root, which stays the boundary; a call
+  rooted elsewhere that did not move leaves the session where it was. When the command did
+  move, the runtime ends the result text with a `cwd: <working directory>` line, so the
+  model is told where the session now is even when the move was refused, and a compacted
+  context still carries it. The runtime falls back to the session root when the working
+  directory no longer opens.
+
+  The rewrite is narrow. It replaces `workspace_root` with the working directory only when
+  the model passed the session root — the default it was told — so that the root means
+  "wherever this session is working"; another directory inside the root is passed through
+  unchanged, and so is a call that names an absolute path, because the tool confines
+  absolute paths to the root it is handed and rewriting that root would put paths inside
+  the session root out of reach. The system prompt is written once when the session starts
+  and is never rewritten, so a `cd` cannot invalidate a provider's cached prefix. Resume
+  and worktree creation reset the working directory to the root.
 
 ## Credentials and the model catalog
 
@@ -499,6 +518,26 @@ request to continue from where it stopped. `/output` reports this only when it a
 count set with `/output`, `/output max`, a model that reports no maximum, and a reply cut
 off at the maximum all end the run as before. The setting is kept in `~/.oapx/config.json` under
 `mode.output`, as `"max"` or a count, and absent for the default.
+
+## Status
+
+`/status` writes one report to the transcript, in six groups:
+
+- **Session:** title, id, how long ago it started, working directory, Git branch,
+  compactions so far and turns.
+- **Model:** provider/model, whether it reasons, thinking level, context window
+  (marked when set with `/context`) and output limit.
+- **Usage:** context used of the window and its share, the estimated input cost of
+  the next request when the model reports a price, the last reply's input, output
+  and cache-read tokens, the same summed over this sitting (it starts again on a
+  resume), and the token rate.
+- **Run:** idle, streaming, compacting or refreshing models; queued steers and
+  follow-ups; commands held for the run's end; a pending model switch; a held
+  compaction.
+- **Settings:** permission mode, the autocompact point in tokens, verbosity per part
+  and automatic worktrees.
+- **Auth:** how the current provider is signed in (saved key, environment variable,
+  OAuth, expired, or a custom provider), never the credential itself.
 
 ## Verbosity
 

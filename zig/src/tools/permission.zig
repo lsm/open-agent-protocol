@@ -133,8 +133,11 @@ pub const PermissionEngine = struct {
             .approval_callback = options.approval_callback,
             .bypass_all = options.bypass_all,
         };
-        errdefer engine.deinit();
-        try engine.load();
+        engine.load() catch |err| {
+            for (engine.persisted.items) |*decision| decision.deinit(allocator);
+            engine.persisted.deinit(allocator);
+            return err;
+        };
         return engine;
     }
 
@@ -861,4 +864,17 @@ test "a model-supplied workspace_root cannot widen the root the boundary is meas
     try std.testing.expectEqual(PermissionDecision.allow, engine.evaluate("file:read", "{\"path\":\"src/main.zig\"}"));
     try std.testing.expectEqual(PermissionDecision.allow, engine.evaluate("file:read", "{\"workspace_root\":\"/workspace\",\"path\":\"src/main.zig\"}"));
     try std.testing.expectEqual(PermissionDecision.deny, engine.evaluate("file:read", "{\"path\":\"src/../../etc/passwd\"}"));
+}
+
+test "a permissions file that will not parse is refused, and init frees each thing it built once" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "permissions.json", .data = "{not json" });
+    const corrupt = try tmp.dir.realPathFileAlloc(std.testing.io, "permissions.json", std.testing.allocator);
+    defer std.testing.allocator.free(corrupt);
+    if (PermissionEngine.init(std.testing.allocator, .{ .workspace_root = "/work", .persistence_path = corrupt })) |opened| {
+        var engine = opened;
+        engine.deinit();
+        return error.TestUnexpectedResult;
+    } else |_| {}
 }

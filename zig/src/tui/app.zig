@@ -1795,6 +1795,123 @@ pub const App = struct {
         custom_providers.deinitProviders(self.allocator, providers);
     }
 
+    pub fn statusReport(self: *App, allocator: std.mem.Allocator) ![]u8 {
+        var out: std.Io.Writer.Allocating = .init(allocator);
+        errdefer out.deinit();
+        const w = &out.writer;
+        const status = &self.state.status;
+        const runtime = self.runtime;
+        const model: ?ai_types.Model = if (runtime) |rt| rt.currentModel() else null;
+        const now_ms = compat.time.nowMillis();
+
+        try w.writeAll("Session\n");
+        try statusLine(w, "title", if (self.session_title.len > 0) self.session_title else "(untitled)");
+        try statusLine(w, "id", if (self.session_id.len > 0) self.session_id else "(not saved yet)");
+        if (self.session_created_at > 0) {
+            var ago_buf: [24]u8 = undefined;
+            try statusLinePrint(w, "started", "{s} ago", .{agoText(&ago_buf, now_ms - self.session_created_at)});
+        }
+        const home = compat.getEnvVarOwned(allocator, "HOME") catch null;
+        defer if (home) |value| allocator.free(value);
+        if (self.working_dir.len > 0) {
+            const shown = try collapseHome(allocator, self.working_dir, home);
+            defer allocator.free(shown);
+            try statusLine(w, "directory", shown);
+        }
+        if (self.state.git_branch.len > 0) try statusLine(w, "branch", self.state.git_branch);
+        try statusLinePrint(w, "compactions", "{d}", .{self.compaction_transcripts.items.len});
+        try statusLinePrint(w, "turns", "{d}", .{status.turn_count});
+
+        try w.writeAll("\nModel\n");
+        if (model) |m| {
+            try statusLinePrint(w, "model", "{s}/{s}", .{ m.provider, m.id });
+            try statusLine(w, "reasoning", if (m.reasoning) "yes" else "no");
+        } else {
+            try statusLinePrint(w, "model", "{s}/{s}", .{ if (status.provider.len > 0) status.provider else "none", if (status.model.len > 0) status.model else "none" });
+        }
+        try statusLine(w, "thinking", @tagName(self.state.thinking_level));
+        if (runtime) |rt| {
+            if (rt.contextWindowOverride()) |window| {
+                try statusLinePrint(w, "context window", "{d} (set with /context)", .{window});
+            } else {
+                try statusLinePrint(w, "context window", "{d}", .{rt.contextWindow()});
+            }
+            switch (rt.outputSetting()) {
+                .auto => try statusLine(w, "output limit", "auto"),
+                .max => try statusLine(w, "output limit", "max"),
+                .tokens => |tokens| try statusLinePrint(w, "output limit", "{d}", .{tokens}),
+            }
+        }
+
+        try w.writeAll("\nUsage\n");
+        const used: u64 = if (self.state.telemetry.estimated_tokens > 0) self.state.telemetry.estimated_tokens else status.context_used;
+        if (status.context_limit > 0) {
+            try statusLinePrint(w, "context", "{d} / {d} ({d}%)", .{ used, status.context_limit, used * 100 / status.context_limit });
+        } else {
+            try statusLinePrint(w, "context", "{d}", .{used});
+        }
+        if (self.state.telemetry.input_cost_per_million > 0) {
+            const dollars = (@as(f64, @floatFromInt(used)) / 1_000_000.0) * self.state.telemetry.input_cost_per_million;
+            try statusLinePrint(w, "next request", "~${d:.4} input", .{dollars});
+        }
+        try usageLine(w, "last reply", self.state.telemetry.last_turn_usage);
+        try usageLine(w, "this sitting", self.state.telemetry.session_usage);
+        const rate = &self.state.telemetry.rate;
+        if (rate.turnShown().hasFigure()) try statusLinePrint(w, "rate", "{d} tok/s", .{rate.turnShown().perSecond()});
+        if (rate.average.hasFigure()) try statusLinePrint(w, "average rate", "{d} tok/s", .{rate.average.perSecond()});
+
+        try w.writeAll("\nRun\n");
+        try statusLine(w, "state", if (status.compacting) "compacting" else if (status.streaming) "streaming" else if (status.refreshing_models) "refreshing models" else "idle");
+        try statusLinePrint(w, "queued", "{d} steer, {d} follow-up", .{ self.state.queue.steering, self.state.queue.follow_up });
+        if (self.deferred_commands.items.len == 0) {
+            try statusLine(w, "held commands", "none");
+        } else for (self.deferred_commands.items, 0..) |text, i| {
+            try statusLine(w, if (i == 0) "held commands" else "", text);
+        }
+        if (runtime) |rt| {
+            if (rt.pending_model_index) |index| {
+                if (index < rt.models.len) try statusLinePrint(w, "model switch", "to {s}/{s}", .{ rt.models[index].provider, rt.models[index].id });
+            }
+        }
+        if (self.pending_compaction) |focus| try statusLinePrint(w, "held compaction", "{s}", .{if (focus.len > 0) focus else "(no focus)"});
+
+        try w.writeAll("\nSettings\n");
+        try statusLine(w, "permissions", @tagName(self.state.permission_mode));
+        switch (self.state.autocompact) {
+            .off => try statusLine(w, "autocompact", "off"),
+            .percent => |percent| try statusLinePrint(w, "autocompact", "{d}% of the window", .{percent}),
+            .auto => if (model) |m| {
+                if (tui_state.autoCompactAt(.auto, m)) |at| try statusLinePrint(w, "autocompact", "auto, at {d} tokens", .{at}) else try statusLine(w, "autocompact", "auto");
+            } else try statusLine(w, "autocompact", "auto"),
+        }
+        const v = self.state.verbosity;
+        try statusLinePrint(w, "verbosity", "thinking {t}, tools {t}, output {t}, notices {t}, status {t}", .{ v.thinking, v.tools, v.output, v.notices, v.status });
+        try statusLine(w, "auto worktree", if (self.mode_settings.auto_worktree) "on" else "off");
+
+        try w.writeAll("\nAuth\n");
+        const provider_id = if (model) |m| m.provider else status.provider;
+        try statusLinePrint(w, "signed in", "{s}", .{try self.signInText(provider_id)});
+
+        return out.toOwnedSlice();
+    }
+
+    fn signInText(self: *App, provider_id: []const u8) ![]const u8 {
+        if (provider_id.len == 0) return "no provider";
+        self.refreshLoginStatus();
+        for (provider_catalog.all, 0..) |row, i| {
+            if (!std.mem.eql(u8, row.id, provider_id)) continue;
+            return switch (self.login_status[i]) {
+                .none => "no saved credential",
+                .api_key => "saved API key",
+                .env_key => "API key from the environment",
+                .oauth => "signed in (OAuth)",
+                .expired => "OAuth sign-in expired",
+            };
+        }
+        if (self.isDeclaredCustomProvider(provider_id)) return "custom provider (providers.json)";
+        return "unknown provider";
+    }
+
     fn isDeclaredCustomProvider(self: *App, provider_id: []const u8) bool {
         const providers = custom_providers.load(self.allocator, custom_providers.max_config_bytes) catch return false;
         defer custom_providers.deinitProviders(self.allocator, providers);
@@ -3445,6 +3562,11 @@ pub const App = struct {
             .refresh_models => try self.refreshModelsInBackground(),
             .logout_provider => try self.logoutProvider(command.arg orelse ""),
             .add_provider => try self.addProvider(command.arg orelse ""),
+            .show_status => {
+                const report = try self.statusReport(self.allocator);
+                defer self.allocator.free(report);
+                try self.state.appendTranscript(.system, report);
+            },
             .redraw => self.requestRedraw(),
             .remove_provider => try self.removeProvider(command.arg orelse ""),
             .list_providers => try self.listProviders(),
@@ -4975,6 +5097,29 @@ fn gitDirTarget(pointer: []const u8) ?[]const u8 {
     return target;
 }
 
+fn statusLine(w: *std.Io.Writer, key: []const u8, value: []const u8) !void {
+    try w.print("  {s:<16}{s}\n", .{ key, value });
+}
+
+fn statusLinePrint(w: *std.Io.Writer, key: []const u8, comptime fmt: []const u8, args: anytype) !void {
+    try w.print("  {s:<16}", .{key});
+    try w.print(fmt, args);
+    try w.writeByte('\n');
+}
+
+fn usageLine(w: *std.Io.Writer, key: []const u8, usage: tui_state.UsageTotals) !void {
+    if (!usage.reported()) return statusLine(w, key, "no usage reported");
+    try statusLinePrint(w, key, "{d} in, {d} out, {d} cache read", .{ usage.input, usage.output, usage.cache_read });
+}
+
+fn agoText(buf: []u8, elapsed_ms: i64) []const u8 {
+    const secs: u64 = if (elapsed_ms > 0) @intCast(@divFloor(elapsed_ms, 1000)) else 0;
+    if (secs < 60) return std.fmt.bufPrint(buf, "{d}s", .{secs}) catch "";
+    if (secs < 3600) return std.fmt.bufPrint(buf, "{d}m", .{secs / 60}) catch "";
+    if (secs < 86_400) return std.fmt.bufPrint(buf, "{d}h{d}m", .{ secs / 3600, (secs % 3600) / 60 }) catch "";
+    return std.fmt.bufPrint(buf, "{d}d{d}h", .{ secs / 86_400, (secs % 86_400) / 3600 }) catch "";
+}
+
 fn collapseHome(allocator: std.mem.Allocator, path: []const u8, home: ?[]const u8) ![]u8 {
     const value = home orelse return allocator.dupe(u8, path);
     if (value.len <= 1) return allocator.dupe(u8, path);
@@ -5148,7 +5293,7 @@ fn preferredContextWindow(stored: ?u32, flag: ?u32) ?u32 {
     return flag orelse stored;
 }
 
-pub const over_oap_notice = "oapx tui: this session runs over OAP through the in-process endpoint. Resume, compaction, steering, queued follow-ups and the model's questions to you are not carried over OAP yet, ask mode is unavailable until approvals cross OAP, and the thinking level, context window, output limit and workspace are fixed when the session opens; use oapx --tui for them.";
+pub const over_oap_notice = "oapx tui: this session runs over OAP through the in-process endpoint. Resume, compaction, steering, queued follow-ups and the model's questions to you are not carried over OAP yet, an \"always\" answer to a tool approval applies to that call only, and the thinking level, context window, output limit and workspace are fixed when the session opens; use oapx --tui for them.";
 pub const over_oap_setting_refusal = tui_commands.over_oap_setting_refusal;
 
 pub fn run(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32) !void {
@@ -5405,6 +5550,45 @@ test "a refreshed model list keeps a pending switch it still lists and reports o
     const said = app.state.transcript.items[app.state.transcript.items.len - 1];
     try std.testing.expectEqual(tui_state.TranscriptKind.@"error", said.kind);
     try std.testing.expect(std.mem.indexOf(u8, said.text.items, "other-model was dropped") != null);
+}
+
+test "status reports the session, model, usage, run, settings and auth in one place" {
+    var env = try TempHome.init("home-status-report");
+    defer env.deinit();
+    var other = defaultModel();
+    other.id = "other-model";
+    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    errdefer std.testing.allocator.destroy(runtime);
+    runtime.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ defaultModel(), other }, .initial_model_id = defaultModel().id });
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.runtime = runtime;
+    app.session_title = try std.testing.allocator.dupe(u8, "oap-prs");
+    try app.state.status.setModel(std.testing.allocator, defaultModel().id, defaultModel().provider);
+
+    try app.state.applyEvent(.{ .message_end = .{ .role = .assistant, .output_tokens = 30, .input_tokens = 1_000, .cache_read_tokens = 800 } });
+    try app.state.applyEvent(.{ .message_end = .{ .role = .assistant, .output_tokens = 20, .input_tokens = 500, .cache_read_tokens = 0 } });
+    app.state.status.streaming = true;
+    try app.submit("/model other-model");
+    try app.submit("/output 4096");
+    app.state.verbosity.status = .verbose;
+
+    const report = try app.statusReport(std.testing.allocator);
+    defer std.testing.allocator.free(report);
+    for ([_][]const u8{
+        "Session\n",                                      "title           oap-prs",
+        "\nModel\n",                                     "\nUsage\n",
+        "last reply      500 in, 20 out, 0 cache read",    "this sitting    1500 in, 50 out, 800 cache read",
+        "\nRun\n",                                       "state           streaming",
+        "held commands   /output 4096",                   "model switch    to anthropic/other-model",
+        "\nSettings\n",                                  "status verbose",
+        "\nAuth\n",                                      "signed in       ",
+    }) |needle| {
+        if (std.mem.indexOf(u8, report, needle) == null) {
+            std.debug.print("missing {s} in:\n{s}\n", .{ needle, report });
+            return error.TestExpectedStatusLine;
+        }
+    }
 }
 
 test "App refreshes runtime models after login" {
