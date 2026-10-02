@@ -105,6 +105,8 @@ const Run = struct {
     text: std.ArrayList(u8) = .empty,
     stop_reason: []const u8 = "end_turn",
     error_text: std.ArrayList(u8) = .empty,
+    output_tokens: u64 = 0,
+    context_tokens: u64 = 0,
 };
 
 const PendingInteraction = struct {
@@ -658,6 +660,10 @@ pub const Session = struct {
                 }
             },
             .turn_end => |payload| run.stop_reason = stopReasonText(payload.stop_reason),
+            .message_end => |payload| {
+                if (payload.role == .assistant) run.output_tokens += payload.output_tokens;
+            },
+            .context_usage => |payload| run.context_tokens = payload.estimated_tokens,
             .@"error" => |payload| {
                 run.error_text.clearRetainingCapacity();
                 try run.error_text.appendSlice(self.gpa, payload.message.slice());
@@ -702,6 +708,11 @@ pub const Session = struct {
         }
         var payload = Payload.init(a);
         try payload.run(self, run);
+        if (run.output_tokens > 0) {
+            var usage = Payload.init(a);
+            try usage.put("output_tokens", .{ .integer = @intCast(run.output_tokens) });
+            try payload.put("usage", usage.value());
+        }
         const cancelled = reason == .cancelled or run.status == .cancelling;
         if (cancelled) {
             try payload.put("reason", .{ .string = "cancel confirmed" });
@@ -750,6 +761,13 @@ pub const Session = struct {
             if (payload.object.get("tool_call_id")) |tool_call_id| try envelope.put("tool_call_id", tool_call_id);
         }
         try envelope.put("capability_revision", .{ .string = capability_revision });
+        if (terminal and run.context_tokens > 0) {
+            var context = Payload.init(a);
+            try context.put("context_tokens", .{ .integer = @intCast(run.context_tokens) });
+            var extensions = Payload.init(a);
+            try extensions.put(settings_key, context.value());
+            try envelope.put("extensions", extensions.value());
+        }
         const line = try json_encode.valueAlloc(self.gpa, envelope.value());
         errdefer self.gpa.free(line);
         const kept = try self.gpa.dupe(u8, line);
