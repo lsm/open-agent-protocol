@@ -97,7 +97,8 @@ type fakeClient struct {
 
 	idleGate <-chan struct{}
 
-	model *native.ModelRef
+	model   *native.ModelRef
+	created *native.ModelRef
 }
 
 func newFakeClient() *fakeClient {
@@ -105,7 +106,10 @@ func newFakeClient() *fakeClient {
 	return &fakeClient{session: "ses_fake00000000000000", events: events, subscription: &fakeSubscription{events: events, done: make(chan struct{})}}
 }
 
-func (f *fakeClient) CreateSession(_ context.Context, _ httpapi.CreateSessionRequest) (native.SessionInfo, error) {
+func (f *fakeClient) CreateSession(_ context.Context, request httpapi.CreateSessionRequest) (native.SessionInfo, error) {
+	f.mu.Lock()
+	f.created = request.Model
+	f.mu.Unlock()
 	return native.SessionInfo{ID: f.session, ProjectID: "prj_fake", Model: f.model, Time: struct {
 		Created  int64  `json:"created"`
 		Updated  int64  `json:"updated"`
@@ -1737,5 +1741,56 @@ func TestAFailedTerminalCarriesTheCostTheStepsReported(t *testing.T) {
 	}
 	if reported.TotalCostUSD != 0.25 {
 		t.Fatalf("total_cost_usd = %v, want the step that completed before the failure", reported.TotalCostUSD)
+	}
+}
+
+func TestAnOpenCreatesTheSessionWithTheLevelAsItsModelsVariantAndRefusesOneNotRecorded(t *testing.T) {
+	configured := &native.ModelRef{ID: "model", ProviderID: "fixture"}
+	client := newFakeClient()
+	client.model = &native.ModelRef{ID: "model", ProviderID: "fixture", Variant: "high"}
+	adapter, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }), Model: configured, Clock: &fakeClock{}, IDs: &fakeIDs{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := adapter.Open(context.Background(), base.OpenRequest{SessionID: "s1", Participant: protocol.Participant{ID: "user"}, ReasoningLevel: protocol.ReasoningHigh})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer opened.Close(context.Background())
+	client.mu.Lock()
+	sent := client.created
+	client.mu.Unlock()
+	if sent == nil || sent.Variant != "high" || configured.Variant != "" {
+		t.Fatalf("create session sent %+v, want the configured model with variant high and the configuration untouched", sent)
+	}
+	state, err := opened.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.ReasoningLevel != protocol.ReasoningHigh {
+		t.Fatalf("state reports %q, want high", state.ReasoningLevel)
+	}
+
+	ignoring := newFakeClient()
+	ignoring.model = &native.ModelRef{ID: "model", ProviderID: "fixture"}
+	strict, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return ignoring, nil }), Model: configured, Clock: &fakeClock{}, IDs: &fakeIDs{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = strict.Open(context.Background(), base.OpenRequest{SessionID: "s2", Participant: protocol.Participant{ID: "user"}, ReasoningLevel: protocol.ReasoningMax})
+	var refusal *base.UnsupportedControlError
+	if !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureSessionReasoning {
+		t.Fatalf("open answered %v, want a variant the server did not record refused", err)
+	}
+
+	bare, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return newFakeClient(), nil }), Clock: &fakeClock{}, IDs: &fakeIDs{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bare.Open(context.Background(), base.OpenRequest{SessionID: "s3", Participant: protocol.Participant{ID: "user"}, ReasoningLevel: protocol.ReasoningLow}); !errors.As(err, &refusal) {
+		t.Fatalf("open with no configured model answered %v, want unsupported_feature", err)
+	}
+	if _, err := bare.Open(context.Background(), base.OpenRequest{SessionID: "s4", Participant: protocol.Participant{ID: "user"}, CompactionPolicy: &protocol.CompactionPolicy{Kind: protocol.CompactionOff}}); !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureCompactionPolicy {
+		t.Fatalf("open with a compaction policy answered %v, want it refused as unadvertised", err)
 	}
 }

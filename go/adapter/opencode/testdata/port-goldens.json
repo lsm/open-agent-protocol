@@ -1,5 +1,5 @@
 {
-  "capability_revision": "opencode-v1.18.32-oap-v2",
+  "capability_revision": "opencode-v1.18.32-oap-v3",
   "capabilities": {
     "endpoint": {
       "id": "opencode.server",
@@ -62,6 +62,10 @@
         "level": "degraded",
         "reason": "durable stream carries full-value text.ended boundaries, not live deltas"
       },
+      "session.compaction.policy": {
+        "level": "unavailable",
+        "reason": "compaction is the server's config, fixed when its operator starts it; the adapter attaches to a running server"
+      },
       "session.message.delivery.auto": {
         "level": "emulated",
         "reason": "no native auto; maps to steer which starts immediately when idle"
@@ -81,6 +85,13 @@
       "session.open": {
         "level": "native",
         "reason": "POST /api/session with server-assigned identity"
+      },
+      "session.reasoning": {
+        "level": "native",
+        "reason": "the created session's model carries the level as its variant, which the runner sends on every step; it needs a configured model, and a variant the response does not confirm is refused",
+        "modes": [
+          "session_open"
+        ]
       },
       "session.state": {
         "level": "emulated",
