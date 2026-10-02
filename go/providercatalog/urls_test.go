@@ -102,7 +102,7 @@ func TestAListingAndItsRequestAgreeUnderAnOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	for _, id := range []string{"openrouter", "vercel", "zenmux", "opencode", "deepinfra", "deepseek", "anthropic"} {
+	for _, id := range []string{"openrouter", "vercel", "zenmux", "opencode-zen", "deepinfra", "deepseek", "anthropic"} {
 		provider, known := findProvider(catalog, id)
 		if !known {
 			t.Fatalf("no row %s", id)
