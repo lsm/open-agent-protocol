@@ -439,6 +439,27 @@ over `net.Listen` and `servehttp` does no connection accounting, which the
 bounds section below already records. So this rule is new, it is this port's
 rule, and a reader sent to Go for the numbers will find none.
 
+The Zig daemon serves at most **64** connections at once (`max_connections`
+in `zig/src/hub/daemon.zig`), all on the hub's one thread, as `DESIGN.md` §8.6
+requires: one loop polls the listener, every connection's socket and every
+session's child output together, reads and writes each socket without
+blocking, runs a request against the hub when its body is complete, and pumps
+the hub once per cycle. No lock appears, because no second thread touches the
+hub. At the bound the loop stops polling the listener rather than answering, so
+a 65th client waits in the kernel's listen backlog until a connection ends — no
+status is sent for having reached the bound, which is what the rule above asks
+of a port. A stream's socket stays in the poll while it has nothing to write, so
+a client that hangs up mid-stream releases its connection and its subscription
+without an event having to fail first; a client that stops reading only stops
+its own stream, whose buffer is bounded at 256 KiB before the hub's own mailbox
+takes over and ends it with `oap-overflow`. A stop closes every connection on
+the next cycle. Zig: `an open event stream does not hold the daemon: another
+connection is answered while it streams`, `a client that hangs up mid-stream
+releases its stream without an event to write`, and `stopping the daemon ends
+an open stream rather than waiting it out`. A platform that cannot poll a
+socket — Windows, #460 — serves connections one at a time instead, and a stream
+there writes what is queued and ends.
+
 Every route that reads a body requires `Content-Type: application/json`, and
 the body is read as UTF-8 whatever `charset` the header names. RFC 8259 §11
 records that no `charset` parameter is defined for `application/json` — the
@@ -559,18 +580,18 @@ concurrency and invents no code for having done so.
 | --- | --- | --- |
 | Request body | 16 MiB | `TestRequestBudgetMatchesHTTP`; Zig: `a body over the cap is refused before it is read` |
 | Per-subscription mailbox | 64 envelopes, as the core defines it | `TestHubSubscriptionQueueOverflow` |
-| Accept poll | 50 ms, so a signal is noticed by an idle daemon | Zig: `hub_accept_poll_ms` and `the accept poll reports an idle listener as idle and a waiting one as waiting`, which drives a real listener. This is not protocol and is not in Go, whose `Serve` returns a listener a runtime polls for it |
+| Accept poll | 10 ms at most; the loop wakes on any socket or child becoming ready and falls back on this bound for a session that has no handle to poll, so a signal is noticed by an idle daemon | Zig: `hub_accept_poll_ms` and `the accept poll reports an idle listener as idle and a waiting one as waiting`, which drives a real listener. This is not protocol and is not in Go, whose `Serve` returns a listener a runtime polls for it |
 | Accept failure | A failure the peer caused is served past; a failure of the listener stops the daemon | Zig: `an accept a peer aborted before the call is served again, not obeyed` and `a client that resets a connection the listener had not taken yet does not stop the hub`. The rule is not cosmetic: a daemon that stops on any accept error can be stopped by any local process that opens a connection and resets it, which a port scanner or a health check does by accident and an attacker does on purpose — and stopping it sweeps every session |
 | Request headers | 16 KiB | Zig: `headers over the cap are refused rather than buffered`. Go's net/http carries its own default and names no rule, so this is a Zig choice within "a port may choose its own" |
-| Concurrent connections | a port's own number; not on the wire, and no code for reaching it | none — Go has no bound at all (`serve.go` runs a plain `http.Server`), and this draft has no code for it either. [G13](#known-gaps) names what a port does meanwhile |
+| Concurrent connections | a port's own number; not on the wire, and no code for reaching it. Zig: 64, and at the bound it stops polling the listener | Zig: `the connection bound is the number the draft's G13 row records`. Go has no bound at all (`serve.go` runs a plain `http.Server`), and this draft has no code for reaching one. [G13](#known-gaps) names what a port does meanwhile |
 
 A 30 s header read and a 2 min idle timeout keep a socket from being held open
 forever. Neither is protocol — no client observes them, and a port may choose
 its own — so they are named here only so a port knows they exist. Zig takes both
 numbers as written, and the one that matters is the header: **a peer that
 connects and then says nothing is given up on rather than waited on**, because
-the daemon serves connections one at a time and a stalled read would otherwise
-wedge every other client and leave a signal unobserved. Pinned by `a peer that
+a stalled read would otherwise hold one of the daemon's bounded connections
+forever. Pinned by `a peer that
 connects and never sends a request is given up on, not waited on forever`;
 Go's bound is `ReadHeaderTimeout` on the same server.
 
@@ -592,15 +613,18 @@ whole request's, not a fresh one per byte` pins the first half. The second half
 is a hole the draft names rather than closes, and a port that wants it closed
 needs a whole-body deadline, which is not what either tree has.
 
-**A route that is not written yet answers a plain `404`, not a refusal.** Go's
-mux does the same for a path no pattern matches, and the draft's codes are
+**A path no route names answers a plain `404`, not a refusal.** Go's mux does
+the same for a path no pattern matches, and the draft's codes are
 `invalid_request`, `unknown_adapter` and `unknown_session` — none of which is
-"this URL does not exist". So a port that has written three of the twelve
-routes answers `404` for the other nine rather than inventing a code for them,
-and the answer carries no `error.response` envelope. Pinned in Zig by the
-daemon's own 404 while no route is written; Go pins the same thing by
-`TestTheRouteTableIsComplete`, which fails when a path is added to neither the
-mux nor a list of the routes still to come.
+"this URL does not exist". So the answer carries no `error.response` envelope.
+All twelve routes are written in both trees: Zig dispatches each to the same
+`Frontend` operation the stdio op runs, so an answer's shape is shared rather
+than written twice. A path that is a route asked with another method answers
+`405 Method Not Allowed` with an `Allow` header naming the one it takes, which
+is what Go's method-qualified patterns answer, and a `HEAD` is routed as the
+`GET` it describes. Zig: `a known path asked with the wrong method is 405 naming
+the method it takes, and an unknown path is a plain 404`; Go pins the table by
+`TestTheRouteTableIsComplete`.
 
 Three records that existed only in the historical review of #656 and were **verified against
 current `main` before being recorded here**, rather than carried over on the strength of the old
@@ -622,7 +646,10 @@ was settled by #656 either.
   exist. Which answer an unrouted path should give is **not decided here**. The `415`-on-unrouted
   behaviour is a consequence of the gate's position in `answer()`, not a stated policy, and narrowing
   it would be a policy change this table does not make. Carried forward from #656.
-- **A wrong method on a known path — UNRESOLVED QUESTION, and deliberately not merged with the row
+- **A wrong method on a known path — RESOLVED as `405`, matching Go.** The routes are now wired, and
+  the running hub answers a wrong method on a known path `405` with an `Allow` header, as Go's mux
+  does; the record below is kept because it is what this row said while the question was open.
+  **Previously an unresolved question, and deliberately not merged with the row
   above.** Go registers patterns that include the method (`mux.HandleFunc("GET /adapters", ...)`,
   `servehttp/server.go:69`) and the module targets `go 1.26`, where `http.ServeMux` answers a request
   whose path matches but whose method does not with `405 Method Not Allowed` and an `Allow` header.
@@ -978,8 +1005,8 @@ daemon polls a connection for at most 50 ms at a time and re-checks whether it
 should stop between polls, so an interrupt during a slow or stalled request ends
 the daemon in well under a second rather than at the end of the request's own
 budget. A read also returns **whatever has arrived** rather than waiting for its
-buffer to fill: a client that promises 4 KiB and sends 5 bytes must not hold the
-one connection the daemon serves until it sends the rest. Zig: `a poll waiting
+buffer to fill: a client that promises 4 KiB and sends 5 bytes must not hold
+the daemon until it sends the rest. Zig: `a poll waiting
 on a silent peer is re-checked inside its cycle, not held to its deadline` and
 `a body that arrives in part is taken as it comes, and never waited on for the
 rest`, plus the same two measured against the built binary.
@@ -988,7 +1015,7 @@ rest`, plus the same two measured against the built binary.
 cross-origin or foreign-`Host` request that declares a body and withholds it is
 refused as soon as its head is parsed, which is what Go's middleware does — so it
 neither spends the 16 MiB scratch on a request the posture exists to refuse, nor
-holds the single serve slot for the idle budget. A body is read only by a route
+holds one of the bounded serve slots for the idle budget. A body is read only by a route
 that will consume one. Zig: `the trust model is decided on the head, so a refused
 request never waits on a body it will not read`, and measured: a refused
 cross-origin POST that declares 4 KiB and sends 5 bytes is answered `403` in
@@ -1595,7 +1622,10 @@ here; each was a place a differential test would otherwise not see.
   own (`context.Canceled`), not `io.EOF`, because `io.EOF` is this API's
   "the run reached its terminal" signal and a client that cancelled mid-run
   must be able to tell the two apart. The stdio side still has no way to
-  express a hangup at all.
+  express a hangup at all. The Zig HTTP stream is observable where Go's is not:
+  `a client that hangs up mid-stream releases its subscription without an event
+  to write` closes the client's socket while nothing is being written and waits
+  for the hub's subscription count to reach zero ([#399](https://github.com/lsm/open-agent-protocol/issues/399)).
 - **G3 — #53, decided: stdio has no `unsubscribe`, and the ceiling is not a
   trap.** The pipe carries every subscription at once and has no per-stream
   hangup, and no op detaches a single pump. [Issue
@@ -1697,7 +1727,11 @@ here; each was a place a differential test would otherwise not see.
   `400` and the code. The differential job for #388 should still carry a
   truncated-request case: this test pins the code, not the parity.
 
-- **G13 — open.** A port must bound how many connections it serves at once,
+- **G13 — open for the code only; the Zig bound is chosen.** The Zig daemon
+  serves at most 64 connections at once and, at the bound, stops polling its
+  listener until one ends, so a client is told nothing and waits in the listen backlog; that is
+  the choice this row asks a port to record, and it invents no status. What is
+  still open is the code. A port must bound how many connections it serves at once,
   because a stream holds its connection for as long as the client listens and
   an unbounded daemon is one nobody can bound, but **nothing says what a client
   is told when the bound is reached**. The draft's codes are the ones the core
@@ -1707,10 +1741,10 @@ here; each was a place a differential test would otherwise not see.
   bound at all. What closes this is a code in the core for a daemon at its
   connection bound, and a `Test` that pins it on both trees; until then a port
   refuses the connection the way it refuses anything else and records the
-  choice as a divergence. The Zig daemon's own bound — one connection, polled
-  at 50 ms — is pinned by `the accept poll reports an idle listener as idle and
-  a waiting one as waiting` on the trust-model side of this work, and that test
-  pins the poll, not the bound.
+  choice as a divergence. The Zig daemon's bound is pinned by `the connection
+  bound is the number the draft's G13 row records`, and that it holds a stream
+  without holding the daemon by `an open event stream does not hold the daemon:
+  another connection is answered while it streams`.
 
 One asymmetry is deliberate and is **not** a gap: a cross-origin refusal exists
 on the HTTP transport alone. A stdio peer is a separate process on the far side
@@ -1741,19 +1775,19 @@ draft's "refuse one that disagrees with the descriptor" check possible at all.
 **D21 — a chunked body is refused, where Go de-chunks it.** A request carrying
 any `Transfer-Encoding` is answered a bare `400`; `net/http` decodes chunked
 transparently, so a streaming client works against `goap hub` and not against
-`oapx hub`. This is a gap rather than a decision, and it is closed by the routes
-that read a body — the decoder belongs beside the first `readBody` caller, under
-the same 16 MiB cap, not in a reader with no consumer. Until then the refusal is
+`oapx hub`. This is a gap rather than a decision. The routes that read a body are
+written now, so the decoder has a consumer; it belongs beside `readBody`, under
+the same 16 MiB cap, and is not part of the change that wired the routes. Until then the refusal is
 the safe one: a body whose framing this daemon cannot read is not a body it
 should guess at. Pinned by `a chunked body is refused rather than guessed at`.
 
 **D22 — no `100 Continue` is sent, where Go sends one when the handler reads the
 body.** A client that sends `Expect: 100-continue` waits for the interim answer;
 `curl` waits about a second and sends anyway, a stricter client waits out the
-idle budget. Sending it here would be worse than not sending it, because no route
-in this daemon consumes a body yet — an interim answer would invite a body the
-daemon is about to refuse. The routes that read a body answer `100 Continue`
-first, and a route that refuses the head answers the refusal instead. Noted here
+idle budget. The routes that read a body are written, so the interim answer
+now has somewhere to go: a route that reads a body would answer `100 Continue`
+first, and one that refuses the head would answer the refusal instead. That is
+not done yet, which is the whole of this divergence. Noted here
 so the difference is a recorded one rather than a surprise in a differential run.
 
 **D5 is fixed** ([#516](https://github.com/lsm/open-agent-protocol/pull/516)): a session
@@ -1841,6 +1875,7 @@ are "stamped with the revision the lister served it under", and both name
 | **Why it matters** | The refusal is the honest answer and the alternative is worse — Go's `refuseUnadvertisedOpen` exists and refuses a message on the *endpoint* surface, so "a message is unsatisfiable here" is already a shape this tree knows. What is missing is the machinery, not the will. |
 | **The fix** | `hub.OpenRequest` gains `message_json`, the hub registers the subscription before running the submission, and the answer carries `admitted_submit_requests`. For the subscribing case, the `Frontend` needs a held subscription — the same thing `events` needs — so both unblock together. This is `submit`'s work, not `open`'s: the same PR that serves `submit` on the wire is the one that can admit a message at open time. |
 | **The refusal's precedence** | It is checked **before** the adapter is looked up and before the revision gate runs, so an open naming an unregistered adapter *and* carrying a message answers `unsupported_feature` where Go answers `unknown_adapter`, and a subscribing open citing a stale revision answers `unsupported_feature` where Go answers `stale_capabilities`. Go's `openOp` looks the adapter up first and gates second, so both of those win there. Hoisting the refusal means it lives in the hub rather than the frontend, which is where it stops existing: the moment `submit` admits a message and `events` admits a subscription, neither refusal is there to be out of order. It is recorded rather than fixed because every input that reaches the difference is already divergent under this row. |
+| **Over HTTP** | The subscribing half is served: `POST /adapters/{name}/sessions` holds the subscription the open registered, and the `events` request with no cursor adopts it — Zig: `a subscribing open holds its subscription, and the events request with no cursor adopts it from the first envelope`. The `message` half is still refused on both transports, and the stdio op still refuses `subscribe`, because stdio has no `events` op to drain it. |
 | **Also refused here** | **A subscribing open, for the same reason and a sharper one.** `hub.open` registers a `Subscription` when `subscribe` is set, and the stdio op discarded it — the wire accepted a subscription it cannot deliver, and once `submit` lands its envelopes would queue against a subscription nothing drains. Go holds the subscription in its `Frontend`; there is no equivalent here yet, so the honest answer is to refuse until `events` exists. **This is a second divergence from the same cause** and it is why `open`'s parity cases carry no `subscribe` at all. |
 
 ### D27 — an `oapx` registry entry is served by `oapx hub` and refused by `goap hub`
@@ -1952,8 +1987,8 @@ are "stamped with the revision the lister served it under", and both name
 | **The rule, which is not in doubt** | `drafts/hub.md:461`: a wrong `Content-Type` is refused `415`, and `:462-463` admit any `charset`. That is the whole pin — it does not say *which* requests the gate applies to, and the draft names no predicate for that. |
 | **What the Zig port does** | `zig/src/hub/http.zig:381` gates on `carriesBody(request)` — declared at `:385`, returning `content_length > 0` at `:386` — and it does so in `answer()`, so it is decided on the head for **every** request. The companion `declaresJson` it calls is declared at `:389`. A `POST` with `Content-Length: 0` and `Content-Type: text/plain` passes the gate; a `GET` carrying a body with `text/plain` is refused. |
 | **What Go does** | `servehttp/server.go:747` gates inside `readRequest`, which is called by the four body-reading routes only — `handleOpen` at `:191`, `handleSubmit` at `:321`, `handleResolve` at `:382`, `handleCancel` at `:496` — and the check reads only `r.Header.Get("Content-Type")`, with no reference to length. So a `POST` to `close` (`:643`), which never calls `readRequest`, is not gated at all, and a `POST` with `Content-Length: 0` and `text/plain` **is** refused 415, because length is never consulted. |
-| **The two corners, stated** | **Empty body, wrong type, on a body-reading route.** `POST /adapters/{name}/sessions` — `handleOpen`, one of the four that call `readRequest` — with `Content-Length: 0` and `Content-Type: text/plain`: **Go answers 415**, because its check reads the media type and never the length, and **Zig answers `.not_found`**, because `carriesBody` is false. **Body on a listing.** `GET /adapters` carrying a body with `text/plain`: **Zig answers 415**, decided on the head, and **Go answers the listing**, because no listing route calls `readRequest`. |
-| **A route that reads no body, so it is not a corner** | `POST /sessions/{id}/close` with `Content-Length: 0` and `text/plain`. Go **registers the route** (`mux.HandleFunc("POST /sessions/{id}/close", s.handleClose)`, `server.go:80`) and `handleClose` at `server.go:643` never calls `readRequest`, so it answers the close — `204`, per `server_test.go:591`. **Zig dispatches no routes at all**, so it answers `.not_found` (`404 not found`, `not found`), which I measured against a built `oapx hub` over a socket and then pinned in `a zero-length body with a wrong media type is not gated`. An earlier revision of this row claimed the route "answers the close in **both** trees"; that was false for Zig, and the trees agree on **one** thing only — neither refuses it `415`, Zig because `carriesBody` is false and Go because the gate is never reached. The empty-body corner is only real on a route that reads a body, and the four are `handleOpen` `:191`, `handleSubmit` `:321`, `handleResolve` `:382`, `handleCancel` `:496`. |
+| **The two corners, stated** | **Empty body, wrong type, on a body-reading route.** `POST /adapters/{name}/sessions` — `handleOpen`, one of the four that call `readRequest` — with `Content-Length: 0` and `Content-Type: text/plain`: **Go answers 415**, because its check reads the media type and never the length, and **Zig passes the gate**, because `carriesBody` is false, and the route then refuses the empty body `400 malformed_json`. **Body on a listing.** `GET /adapters` carrying a body with `text/plain`: **Zig answers 415**, decided on the head, and **Go answers the listing**, because no listing route calls `readRequest`. |
+| **A route that reads no body, so it is not a corner** | `POST /sessions/{id}/close` with `Content-Length: 0` and `text/plain`. Go **registers the route** (`mux.HandleFunc("POST /sessions/{id}/close", s.handleClose)`, `server.go:80`) and `handleClose` at `server.go:643` never calls `readRequest`, so it answers the close — `204`, per `server_test.go:591`. **Zig now routes it too**: the gate passes it, because `carriesBody` is false, and the daemon dispatches the close and answers `204` — Zig: `a close answers no content, and the session is unknown to every route after it`. So both trees answer the close, and neither refuses it `415`, Zig because `carriesBody` is false and Go because the gate is never reached. Before the routes were wired, Zig answered this request `404 not found`, which is what an earlier revision of this row recorded. The empty-body corner is only real on a route that reads a body, and the four are `handleOpen` `:191`, `handleSubmit` `:321`, `handleResolve` `:382`, `handleCancel` `:496`. |
 | **Why they are not rows here** | Neither tree is wrong against the draft: `:461` pins the status for a wrong `Content-Type` and is silent on the predicate, so both answers are consistent with the text. Deciding which predicate is correct would be **choosing a precedence the draft does not state**, and this table does not make that choice. A draft row naming the predicate — "a request whose method reads a body" or "a request that carries one" — would settle it, and that is a spec change and unaccepted. |
 | **What is recorded instead** | The divergence itself, in both directions and with both call sites, so a reader comparing the trees sees two answers and knows the cause is an unpinned predicate rather than a bug in either. |
 | **What is now pinned, on the Zig side** | Both corners are executable rather than described. `a zero-length body with a wrong media type is not gated, because the gate reads length` sends a `POST /adapters/a/sessions` with `Content-Type: text/plain` at both `Content-Length: 0` and with the header absent, asserts `carriesBody` is false and that the answer is `.not_found` — **Go answers 415 for both.** `a listing carrying a body with a wrong media type is gated, because the gate reads the head` sends a `GET /adapters` with `Content-Length: 4` and `text/plain`, asserts `carriesBody` is true and that the answer is `unsupported_media_type` — Go serves the listing. Changing `carriesBody` from `content_length > 0` to `content_type != null` makes the first fail, so the tests pin the predicate rather than restate it. **Go still has no test for either corner**, which is the same gap D20 records for `type_mismatch`; these tests fix the Zig half and leave the Go half recorded rather than silently equal. |

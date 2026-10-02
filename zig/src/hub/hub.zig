@@ -184,6 +184,7 @@ pub const Subscription = struct {
     run_id: []u8 = &.{},
     joined_after: u64 = 0,
     joined: bool = false,
+    joined_run: []u8 = &.{},
     gap: ?contract.Gap = null,
     replay: std.ArrayList(Pending) = .empty,
     replay_at: usize = 0,
@@ -273,6 +274,7 @@ pub const Subscription = struct {
         self.queue.deinit(allocator);
         if (self.overflow_run.len > 0) allocator.free(self.overflow_run);
         if (self.run_id.len > 0) allocator.free(self.run_id);
+        if (self.joined_run.len > 0) allocator.free(self.joined_run);
         allocator.free(self.session_id);
         self.* = undefined;
     }
@@ -503,11 +505,24 @@ pub const Hub = struct {
         return opened;
     }
 
+    pub fn discardSession(self: *Hub, session_id: []const u8) void {
+        const entry = self.findSession(session_id) orelse return;
+        self.releaseSession(entry);
+    }
+
+    pub fn knows(self: *Hub, session_id: []const u8) bool {
+        return self.findSession(session_id) != null;
+    }
+
     pub fn submit(self: *Hub, arena: std.mem.Allocator, session_id: []const u8, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8) Failure!oap_types.MessageSubmitResponse {
+        var refusal = contract.Refusal{};
+        return self.submitReporting(arena, session_id, request, envelope_id, &refusal);
+    }
+
+    pub fn submitReporting(self: *Hub, arena: std.mem.Allocator, session_id: []const u8, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8, refusal: *contract.Refusal) Failure!oap_types.MessageSubmitResponse {
         const entry = self.findSession(session_id) orelse return error.UnknownSession;
         if (!std.mem.eql(u8, request.session_id, session_id)) return error.ScopeMismatch;
-        var refusal = contract.Refusal{};
-        const admission = entry.session.submit(arena, request, envelope_id, &refusal) catch |err| switch (err) {
+        const admission = entry.session.submit(arena, request, envelope_id, refusal) catch |err| switch (err) {
             error.SessionClosed => {
                 self.releaseSession(entry);
                 return error.UnknownSession;
@@ -540,11 +555,15 @@ pub const Hub = struct {
     }
 
     pub fn resolveCall(self: *Hub, arena: std.mem.Allocator, session_id: []const u8, request_id: []const u8, request: *const oap_types.CallResolveRequest) Failure!oap_types.CallResolveResponse {
+        var refusal = contract.Refusal{};
+        return self.resolveCallReporting(arena, session_id, request_id, request, &refusal);
+    }
+
+    pub fn resolveCallReporting(self: *Hub, arena: std.mem.Allocator, session_id: []const u8, request_id: []const u8, request: *const oap_types.CallResolveRequest, refusal: *contract.Refusal) Failure!oap_types.CallResolveResponse {
         const entry = self.findSession(session_id) orelse return error.UnknownSession;
         if (!std.mem.eql(u8, request.session_id, session_id)) return error.ScopeMismatch;
-        const resolver = entry.session.vtable.resolve_call orelse return error.UnsupportedFeature;
-        var refusal = contract.Refusal{};
-        return resolver(entry.session.ptr, arena, request_id, request, &refusal) catch |err| switch (err) {
+        const resolver = entry.session.vtable.resolve_call orelse return refusal.unsupported(contract.feature_tools_provide, contract.reason_unadvertised);
+        return resolver(entry.session.ptr, arena, request_id, request, refusal) catch |err| switch (err) {
             error.SessionClosed => {
                 self.releaseSession(entry);
                 return error.UnknownSession;
@@ -708,6 +727,7 @@ pub const Hub = struct {
             const joined = self.journaled(entry, entry.run_id);
             subscription.joined = joined > 0;
             subscription.joined_after = joined;
+            if (joined > 0) subscription.joined_run = try self.allocator.dupe(u8, entry.run_id);
         }
         try self.subscriptions.append(self.allocator, subscription);
         errdefer _ = self.subscriptions.pop();
@@ -721,6 +741,15 @@ pub const Hub = struct {
     pub fn hold(self: *Hub, arena: std.mem.Allocator, session_id: []const u8) Failure!Hold {
         const subscription = try self.subscribe(arena, session_id, .{});
         errdefer self.discard(subscription, .expired);
+        const expires = self.clock() + self.hold_ns;
+        try self.holds.ensureUnusedCapacity(self.allocator, 1);
+        self.holds.appendAssumeCapacity(.{ .subscription = subscription, .expires_ns = expires });
+        subscription.held = true;
+        subscription.expires_ns = expires;
+        return .{ .expires_ns = expires };
+    }
+
+    pub fn holdSubscription(self: *Hub, subscription: *Subscription) std.mem.Allocator.Error!Hold {
         const expires = self.clock() + self.hold_ns;
         try self.holds.ensureUnusedCapacity(self.allocator, 1);
         self.holds.appendAssumeCapacity(.{ .subscription = subscription, .expires_ns = expires });
@@ -1168,7 +1197,7 @@ pub const Hub = struct {
                 continue;
             }
             _ = self.holds.orderedRemove(index);
-            held.subscription.held = false;
+            self.release(held.subscription, .session_closed);
         }
         self.removeSession(entry);
     }
@@ -2246,6 +2275,25 @@ test "a released session's id is free again, and its memory is gone" {
     try testing.expectEqual(@as(usize, 1), hub.sessionCount());
 
     subscription.close();
+    try hub.pump(testing.allocator, 0);
+    try testing.expectEqual(@as(usize, 0), hub.subscriptions.items.len);
+}
+
+test "a hold its session closes under is released, so the next pump reclaims it" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    defer adapter.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256 });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "memory", .{ .session_id = "closing", .subscribe = true });
+    _ = try hub.holdSubscription(opened.subscription.?);
+    try testing.expectEqual(@as(usize, 1), hub.subscriptions.items.len);
+    try hub.close(arena, "closing");
+    try testing.expectEqual(@as(usize, 0), hub.holds.items.len);
     try hub.pump(testing.allocator, 0);
     try testing.expectEqual(@as(usize, 0), hub.subscriptions.items.len);
 }
