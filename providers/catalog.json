@@ -68,7 +68,7 @@
       "docs": "https://docs.anthropic.com"
     },
     {
-      "id": "opencode",
+      "id": "opencode-zen",
       "display_name": "OpenCode Zen",
       "auth": [
         "api_key"

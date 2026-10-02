@@ -1110,7 +1110,7 @@ test "removing a stored credential drops that provider and keeps the rest" {
     var storage = try AuthStorage.loadFromFile(std.testing.allocator);
     try putOwnedAuth(&storage, "opencode-go", .{ .api_key = try std.testing.allocator.dupe(u8, "go-key") });
     try putOwnedAuth(&storage, "zai", .{ .api_key = try std.testing.allocator.dupe(u8, "zai-key") });
-    try putOwnedAuth(&storage, "opencode", .{ .api_key = try std.testing.allocator.dupe(u8, "go-key") });
+    try putOwnedAuth(&storage, "opencode-zen", .{ .api_key = try std.testing.allocator.dupe(u8, "go-key") });
     try putOwnedAuth(&storage, "oauth-sibling", .{ .oauth = .{
         .refresh = try std.testing.allocator.dupe(u8, "refresh"),
         .access = try std.testing.allocator.dupe(u8, "access"),
@@ -1119,14 +1119,14 @@ test "removing a stored credential drops that provider and keeps the rest" {
     try storage.saveToFile();
     storage.deinit();
 
-    const shared = [_][]const u8{ "opencode", "oauth-sibling" };
+    const shared = [_][]const u8{ "opencode-zen", "oauth-sibling" };
     try std.testing.expect(try AuthStorage.removeStored(std.testing.allocator, "opencode-go", &shared));
     try std.testing.expect(!try AuthStorage.removeStored(std.testing.allocator, "opencode-go", &shared));
 
     var reloaded = try AuthStorage.loadFromFile(std.testing.allocator);
     defer reloaded.deinit();
     try std.testing.expect(!reloaded.providers.contains("opencode-go"));
-    try std.testing.expect(!reloaded.providers.contains("opencode"));
+    try std.testing.expect(!reloaded.providers.contains("opencode-zen"));
     try std.testing.expect(reloaded.providers.contains("oauth-sibling"));
     try std.testing.expectEqualStrings("zai-key", reloaded.providers.get("zai").?.api_key);
 }

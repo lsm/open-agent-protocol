@@ -1980,7 +1980,7 @@ test "OpenCode Go gets a conversation id, the session's when there is one, else 
     var model = traceModel("https://opencode.ai/zen/go/v1");
     model.provider = "opencode-go";
     try std.testing.expect(wantsConversationId(model));
-    model.provider = "opencode";
+    model.provider = "opencode-zen";
     try std.testing.expect(!wantsConversationId(model));
 
     const first = [_]ai_types.Message{.{ .user = .{ .content = .{ .text = "plan the work" }, .timestamp = 0 } }};
@@ -3620,7 +3620,7 @@ test "streamSimpleOpenAICompletions exits early when pre-cancelled" {
 }
 
 test "this wire finds each row's own key, which a vendor list would not" {
-    const rows = [_][]const u8{ "openai", "deepseek", "kimi", "openrouter", "opencode", "vercel", "zenmux", "deepinfra" };
+    const rows = [_][]const u8{ "openai", "deepseek", "kimi", "openrouter", "opencode-zen", "vercel", "zenmux", "deepinfra" };
     for (rows) |id| {
         const names = provider_catalog.credentialEnv(id);
         try std.testing.expect(names.len > 0);
