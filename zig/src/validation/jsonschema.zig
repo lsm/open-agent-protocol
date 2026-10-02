@@ -53,6 +53,7 @@ const keywords = [_]Keyword{
     .{ .name = "items", .shape = .schema },
     .{ .name = "maxItems", .shape = .count },
     .{ .name = "maxLength", .shape = .count },
+    .{ .name = "maximum", .shape = .number },
     .{ .name = "minItems", .shape = .count },
     .{ .name = "minLength", .shape = .count },
     .{ .name = "minimum", .shape = .number },
@@ -602,6 +603,11 @@ pub const Validator = struct {
             const bound = try numberOf(limit);
             const actual = try numberOf(instance);
             if (actual < bound) try self.record(pointer, "minimum");
+        }
+        if (object.get("maximum")) |limit| {
+            const bound = try numberOf(limit);
+            const actual = try numberOf(instance);
+            if (actual > bound) try self.record(pointer, "maximum");
         }
     }
 

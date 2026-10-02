@@ -151,7 +151,7 @@ export type ModelCapability =
   | "audio_output";
 
 export type ModelSource = "dynamic" | "static_fallback";
-export type ReasoningLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+export type ReasoningLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type AuthRetryPolicy = "manual" | "auto_once";
 
 // Known values are standardized; the union stays open-ended for forward compatibility.
@@ -241,7 +241,7 @@ export interface ModelDescriptor {
   source?: ModelSource;
   context_window?: number;
   max_output_tokens?: number;
-  reasoning_default?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  reasoning_default?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   cost?: ModelCost;
   input_modalities?: Modality[];
   output_modalities?: Modality[];
@@ -346,7 +346,7 @@ export interface RunOptions {
   temperature?: number;
   max_tokens?: number;
   // If the selected model lacks `reasoning` capability, server may ignore this field.
-  reasoning_effort?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  reasoning_effort?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   // Overrides client-level default when provided.
   // Effective default remains "manual".
   auth_retry_policy?: AuthRetryPolicy;
@@ -747,6 +747,7 @@ pub const ReasoningLevel = enum {
     medium,
     high,
     xhigh,
+    max,
 };
 
 pub const Modality = enum { text, image, audio, video, document };

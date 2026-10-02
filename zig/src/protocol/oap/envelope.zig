@@ -180,6 +180,11 @@ fn serializeSessionState(w: *json_writer.JsonWriter, state: oap_types.SessionSta
         try writeJsonValueOrString(w, metadata);
     }
     if (state.sources.len > 0) try serializeSources(w, state.sources);
+    if (state.reasoning_level) |level| try w.writeStringField("reasoning_level", level);
+    if (state.compaction_policy_json) |policy| {
+        try w.writeKey("compaction_policy");
+        try writeJsonValueOrString(w, policy);
+    }
     if (state.recovered) {
         try w.writeKey("recovery");
         try w.beginObject();
@@ -560,6 +565,11 @@ fn serializePayload(w: *json_writer.JsonWriter, payload: oap_types.Payload) !voi
             }
             if (value.allow_degraded_features.len > 0) {
                 try serializeStringArray(w, "allow_degraded_features", value.allow_degraded_features);
+            }
+            if (value.reasoning_level) |level| try w.writeStringField("reasoning_level", level);
+            if (value.compaction_policy_json) |policy| {
+                try w.writeKey("compaction_policy");
+                try writeJsonValueOrString(w, policy);
             }
         },
         .session_state_request => |value| {
@@ -1340,7 +1350,11 @@ fn deserializeSessionState(obj: std.json.ObjectMap, allocator: std.mem.Allocator
         if (state.metadata_json) |owned| allocator.free(owned);
         for (state.sources) |*entry| entry.deinit(allocator);
         allocator.free(state.sources);
+        if (state.reasoning_level) |owned| allocator.free(owned);
+        if (state.compaction_policy_json) |owned| allocator.free(owned);
     }
+    state.reasoning_level = try optionalOwnedString(obj, "reasoning_level", allocator);
+    state.compaction_policy_json = try optionalObjectJson(obj, "compaction_policy", allocator);
     if (obj.get("active_runs")) |value| state.active_runs = try deserializeActiveRuns(value, allocator);
     state.transcript_cursor = try optionalOwnedString(obj, "transcript_cursor", allocator);
     state.metadata_json = try optionalObjectJson(obj, "metadata", allocator);
@@ -1900,6 +1914,10 @@ fn deserializeSessionOpen(obj: std.json.ObjectMap, allocator: std.mem.Allocator)
     errdefer if (tools_json) |owned| allocator.free(owned);
     const tool_sources_json = try electedArrayJson(obj, "tool_sources", allocator);
     errdefer if (tool_sources_json) |owned| allocator.free(owned);
+    const reasoning_level = try optionalOwnedString(obj, "reasoning_level", allocator);
+    errdefer if (reasoning_level) |owned| allocator.free(owned);
+    const compaction_policy_json = try optionalObjectJson(obj, "compaction_policy", allocator);
+    errdefer if (compaction_policy_json) |owned| allocator.free(owned);
     const allow_degraded: []const []const u8 = if (obj.get("allow_degraded_features") != null)
         try deserializeStringArray(obj, "allow_degraded_features", allocator)
     else
@@ -1908,6 +1926,8 @@ fn deserializeSessionOpen(obj: std.json.ObjectMap, allocator: std.mem.Allocator)
         .session_id = session_id,
         .subscribe = subscribe,
         .reopen = reopen,
+        .reasoning_level = reasoning_level,
+        .compaction_policy_json = compaction_policy_json,
         .message_json = message_json,
         .tools_json = tools_json,
         .tool_sources_json = tool_sources_json,

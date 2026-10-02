@@ -50,7 +50,7 @@ _KNOWN_CAPABILITIES: Set[str] = {
     "audio_output",
 }
 _KNOWN_SOURCES: Set[str] = {"dynamic", "static_fallback"}
-_KNOWN_REASONING_LEVELS: Set[str] = {"off", "minimal", "low", "medium", "high", "xhigh"}
+_KNOWN_REASONING_LEVELS: Set[str] = {"off", "minimal", "low", "medium", "high", "xhigh", "max"}
 
 
 class ModelsApi:

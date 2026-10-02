@@ -360,6 +360,10 @@ const Pending = struct {
     subscribe: ?Expectation = null,
     reopen: ?Expectation = null,
     reopening: bool = false,
+    reasoning: ?Expectation = null,
+    compaction: ?Expectation = null,
+    asked_level: []const u8 = "",
+    asked_policy: ?std.json.Value = null,
     fired: bool = false,
     provided: []const []const u8 = &.{},
     tools: ?std.json.Value = null,
@@ -805,6 +809,7 @@ pub const Machine = struct {
         if (std.mem.eql(u8, declared, "session.open.response")) {
             try self.openResponse(index, envelope, payload);
             try self.reopenResponse(index, envelope, payload);
+            try self.settingsResponse(index, envelope, payload);
             try self.closeSubmitWindow(field(envelope, "in_reply_to"));
             return;
         }
@@ -1140,6 +1145,55 @@ pub const Machine = struct {
         if (memberString(payload, "active_run_id").len != 0 or listing) try self.add(code_session_state_mismatch, index);
     }
 
+    fn settingsGate(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value, pending: *Pending) !void {
+        const settings = [_]struct { key: []const u8, pointer: []const u8, slot: *?Expectation, present: bool }{
+            .{ .key = feature_session_reasoning, .pointer = "/payload/reasoning_level", .slot = &pending.reasoning, .present = member(payload, "reasoning_level") != null },
+            .{ .key = feature_compaction_policy, .pointer = "/payload/compaction_policy", .slot = &pending.compaction, .present = member(payload, "compaction_policy") != null },
+        };
+        pending.asked_level = memberString(payload, "reasoning_level");
+        pending.asked_policy = member(payload, "compaction_policy");
+        for (settings) |setting| {
+            if (!setting.present) continue;
+            const level = try self.controlDescriptor(index, envelope, setting.key) orelse return;
+            if (!affirmative(level) or !self.disclosesMode(setting.key, mode_session_open)) {
+                self.propose(setting.slot, .{
+                    .rung = rung_capability,
+                    .key = setting.key,
+                    .pointer = setting.pointer,
+                    .code = error_unsupported_feature,
+                    .reason = reason_unadvertised,
+                    .detail_name = "feature",
+                    .detail_value = setting.key,
+                    .diagnostic = code_unavailable_capability,
+                });
+                continue;
+            }
+            if (std.mem.eql(u8, level, "degraded") and !allowsDegraded(payload, setting.key)) {
+                self.propose(setting.slot, .{
+                    .rung = rung_degradation,
+                    .key = setting.key,
+                    .pointer = setting.pointer,
+                    .code = error_capability_degraded,
+                    .detail_name = "feature",
+                    .detail_value = setting.key,
+                    .diagnostic = code_degraded_without_optin,
+                });
+            }
+        }
+    }
+
+    fn settingsResponse(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
+        const pending = self.submits.get(field(envelope, "in_reply_to")) orelse return;
+        if (pending.reasoning != null or pending.compaction != null) return;
+        const level = memberString(payload, "reasoning_level");
+        if (pending.asked_level.len != 0 and level.len != 0 and !std.mem.eql(u8, level, pending.asked_level)) {
+            try self.add(code_session_state_mismatch, index);
+        }
+        const asked = pending.asked_policy orelse return;
+        const reported = member(payload, "compaction_policy") orelse return;
+        if (!samePolicy(asked, reported)) try self.add(code_session_state_mismatch, index);
+    }
+
     fn disclosesMode(self: *const Machine, key: []const u8, mode: []const u8) bool {
         return self.disclosedMode(key, mode);
     }
@@ -1186,6 +1240,7 @@ pub const Machine = struct {
 
         try self.subscribeGate(index, envelope, payload, pending);
         try self.reopenGate(index, envelope, payload, pending);
+        try self.settingsGate(index, envelope, payload, pending);
         if (providing) {
             const names = try self.arena.allocator().alloc([]const u8, tools.?.array.items.len);
             for (tools.?.array.items, 0..) |tool, at| names[at] = memberString(tool, "name");
@@ -1471,6 +1526,8 @@ pub const Machine = struct {
                 if (pending.attachment) |expectation| try self.raise(expectation, index);
                 if (pending.subscribe) |expectation| try self.raise(expectation, index);
                 if (pending.reopen) |expectation| try self.raise(expectation, index);
+                if (pending.reasoning) |expectation| try self.raise(expectation, index);
+                if (pending.compaction) |expectation| try self.raise(expectation, index);
             },
         }
     }
@@ -2229,9 +2286,9 @@ pub const Machine = struct {
         if (outranks(candidate, held)) slot.* = candidate;
     }
 
-    fn retained(pending: *const Pending, out: *[5]Expectation) []const Expectation {
+    fn retained(pending: *const Pending, out: *[7]Expectation) []const Expectation {
         var at: usize = 0;
-        for ([_]?Expectation{ pending.control, pending.attachment, pending.subscribe, pending.reopen, pending.limit_refusal }) |slot| {
+        for ([_]?Expectation{ pending.control, pending.attachment, pending.subscribe, pending.reopen, pending.reasoning, pending.compaction, pending.limit_refusal }) |slot| {
             if (slot) |held| {
                 out[at] = held;
                 at += 1;
@@ -2376,7 +2433,7 @@ pub const Machine = struct {
             if (std.mem.eql(u8, asked.declared, "session.open.request") and
                 openLevelRefusal(memberString(raised, "code"))) return true;
         }
-        var slots: [5]Expectation = undefined;
+        var slots: [7]Expectation = undefined;
         const held = retained(pending, &slots);
         if (held.len != 0) {
             var speaker = held[0];
@@ -3519,6 +3576,8 @@ const mode_session_live = "session_live";
 const feature_tools_provide = "action.tools.provide";
 const feature_open_subscribe = "session.open.subscribe";
 const feature_open_reopen = "session.open.reopen";
+const feature_session_reasoning = "session.reasoning";
+const feature_compaction_policy = "session.compaction.policy";
 const feature_instructions = "run.instructions";
 const feature_tool_selection = "run.tool_selection";
 const feature_structured_output = "run.structured_output";
@@ -3876,6 +3935,19 @@ fn controlPointer(key: []const u8) []const u8 {
     if (std.mem.eql(u8, key, feature_tool_selection)) return "/payload/tool_choice";
     if (std.mem.eql(u8, key, feature_structured_output)) return "/payload/output_schema";
     return "/payload";
+}
+
+fn samePolicy(asked: std.json.Value, reported: std.json.Value) bool {
+    if (!std.mem.eql(u8, memberString(asked, "kind"), memberString(reported, "kind"))) return false;
+    for ([_][]const u8{ "share_percent", "tokens" }) |name| {
+        const left = member(asked, name);
+        const right = member(reported, name);
+        if ((left == null) != (right == null)) return false;
+        if (left) |value| {
+            if (value != .integer or right.? != .integer or value.integer != right.?.integer) return false;
+        }
+    }
+    return true;
 }
 
 fn allowsDegraded(payload: std.json.Value, key: []const u8) bool {

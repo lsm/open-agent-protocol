@@ -83,6 +83,8 @@ pub const OpenRequest = struct {
     allow_degraded_features: []const []const u8 = &.{},
     tools_json: ?[]const u8 = null,
     tool_sources_json: ?[]const u8 = null,
+    reasoning_level: ?[]const u8 = null,
+    compaction_policy_json: ?[]const u8 = null,
 
     fn payload(self: OpenRequest) oap_types.SessionOpenRequest {
         return .{
@@ -92,6 +94,8 @@ pub const OpenRequest = struct {
             .tools_json = self.tools_json,
             .tool_sources_json = self.tool_sources_json,
             .allow_degraded_features = self.allow_degraded_features,
+            .reasoning_level = self.reasoning_level,
+            .compaction_policy_json = self.compaction_policy_json,
         };
     }
 
@@ -105,6 +109,8 @@ pub const OpenRequest = struct {
             .tool_sources_json = self.tool_sources_json,
             .reopen = self.reopen,
             .native_session_id = native_session_id,
+            .reasoning_level = self.reasoning_level,
+            .compaction_policy_json = self.compaction_policy_json,
         };
     }
 };
@@ -494,7 +500,7 @@ pub const Hub = struct {
         var local: OpenRefusal = .{};
         const refused = reported orelse &local;
         const descriptor = try registered.adapter.probe(&refused.reason);
-        if (request.subscribe or request.reopen or contract.carriesEntries(request.tool_sources_json)) {
+        if (request.subscribe or request.reopen or request.reasoning_level != null or request.compaction_policy_json != null or contract.carriesEntries(request.tool_sources_json)) {
             if (request.capability_revision) |wanted| {
                 if (wanted.len > 0 and !std.mem.eql(u8, wanted, registered.revision)) {
                     refused.expected_revision = registered.revision;

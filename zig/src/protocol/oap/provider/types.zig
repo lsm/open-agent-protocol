@@ -134,6 +134,7 @@ pub const ReasoningLevel = enum {
     medium,
     high,
     xhigh,
+    max,
 
     pub fn parse(value: []const u8) ?ReasoningLevel {
         return std.meta.stringToEnum(ReasoningLevel, value);
