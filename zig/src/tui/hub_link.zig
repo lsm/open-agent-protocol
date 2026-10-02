@@ -5,6 +5,7 @@ const protocol_name = "open-agent-protocol";
 const protocol_version = "0.1";
 const profile = "open-agent-protocol.agent-control-core";
 const request_timeout_ms: u64 = 30_000;
+const pollable = @import("builtin").os.tag != .windows;
 const max_answer_bytes: usize = 16 << 20;
 const lost_stream = "{\"control\":\"stream.lost\",\"message\":\"the hub stopped this run's stream before its terminal event\"}";
 
@@ -210,6 +211,7 @@ const RunStream = struct {
     frame: std.ArrayList(u8) = .empty,
 
     fn open(a: std.mem.Allocator, base: []const u8, target: []const u8) !RunStream {
+        if (comptime !pollable) return error.HubStreamNeedsPoll;
         const authority = if (std.mem.indexOf(u8, base, "://")) |at| base[at + 3 ..] else base;
         const colon = std.mem.lastIndexOfScalar(u8, authority, ':') orelse return error.HubUrlNeedsPort;
         const port = std.fmt.parseInt(u16, authority[colon + 1 ..], 10) catch return error.HubUrlNeedsPort;
@@ -228,6 +230,7 @@ const RunStream = struct {
     }
 
     fn receive(self: *RunStream, allocator: std.mem.Allocator) !bool {
+        if (comptime !pollable) return true;
         const handle = compat.net.streamHandle(&self.socket);
         var chunk: [16 * 1024]u8 = undefined;
         if (self.consumed > 0) {
