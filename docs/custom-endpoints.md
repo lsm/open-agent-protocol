@@ -52,6 +52,17 @@ providers, and the file is replaced by a rename, never rewritten in place. Field
 command has no flag for — `name`, `headers`, `models`, `capabilities` — are still
 added by editing the file.
 
+`/provider del <id>` removes that entry the same way, keeping every other entry and
+`overrides` as written, deletes the key `/login <id>` saved for it, and refreshes
+the models. It refuses an id the file does not declare (`ProviderNotDeclared`), and
+waits while a turn is running.
+
+`/provider list` prints what the file declares: one line per custom provider with its
+api, base URL, where its key comes from (`no credential`, `key from <NAME>`, or a key
+saved by `/login`), and how many models it declares, followed by any `overrides` and
+which members each one sets. It reads the file without writing it, and with nothing
+declared it says so and names `/provider add` rather than printing an empty list.
+
 ## Fields
 
 | Field | Required | Meaning |
@@ -192,10 +203,11 @@ fails with `DuplicateOverride` rather than depending on which line won.
 - **Keychain**, which is preferred. `/login <id>` prompts for the key and stores
   it under that provider id, the same path Kimi uses. The input is masked.
   `/logout <id>` removes that one provider's credential from the keychain and
-  from `~/.oapx/auth.json`, along with the copies of an API key that login saved
-  for providers reading the same variable (`opencode-zen` and `opencode-go`), since
-  either copy would still sign the provider in. Every other credential is left
-  alone. It fails
+  from `~/.oapx/auth.json`, and leaves every other credential alone. A stored key
+  belongs to the row it was saved for: providers reading the same environment
+  variable (`opencode-zen` and `opencode-go`, the Xiaomi regions) each log in on
+  their own. Earlier builds saved a login's key under every such row; those
+  copies stay until `/logout` names each row. It fails
   rather than touching only the file when the keychain is locked or busy, since
   a later load would read the untouched keychain item first. It cannot
   remove a credential set in the environment (a catalog variable or a custom
@@ -263,7 +275,12 @@ requests `<base_url>/v1/models`, writes the cache, and falls back to the cached
 copy however old when it fails. An endpoint keyed from `auth` rather than the keychain has
 no login step, so it serves its declared `models` list until `/model refresh` or
 some other login triggers one. When the refreshed list no longer holds the active
-model, the TUI moves to the first model it does hold and says so.
+model, the TUI moves to the first model it does hold and says so. The refresh
+runs in the background — the status bar shows `refreshing models` — and the new
+list is swapped in once no turn is running, before any queued message starts the
+next one. A source that failed is named in the transcript, as
+`model refresh: <provider>: <reason>`: the URL and the error or HTTP status for a
+custom provider, or the parse error for `providers.json`.
 
 The declared list is a fallback **only** when discovery produced nothing at all.
 When discovery succeeds, its result is filtered by the list and that is what you

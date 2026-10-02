@@ -395,6 +395,8 @@ pub const GetSteeringMessagesFn = *const fn (
     allocator: std.mem.Allocator,
 ) anyerror!?[]const ai_types.Message;
 
+pub const NextModelFn = *const fn (ctx: ?*anyopaque) ?ai_types.Model;
+
 pub const CompactBetweenTurnsFn = *const fn (
     ctx: ?*anyopaque,
     context: *AgentContext,
@@ -452,6 +454,8 @@ pub const AgentLoopConfig = struct {
     get_follow_up_messages_ctx: ?*anyopaque = null,
     compact_between_turns_fn: ?CompactBetweenTurnsFn = null,
     compact_between_turns_ctx: ?*anyopaque = null,
+    next_model_fn: ?NextModelFn = null,
+    next_model_ctx: ?*anyopaque = null,
     convert_to_llm_fn: ?ConvertToLlmFn = null,
     convert_to_llm_ctx: ?*anyopaque = null,
     get_api_key_fn: ?GetApiKeyFn = null,

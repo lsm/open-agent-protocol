@@ -62,6 +62,7 @@ const deepseek_adapter = @import("deepseek_adapter");
 const opencode_adapter = @import("opencode_adapter");
 const hermes_adapter = @import("hermes_adapter");
 const memory_adapter = @import("memory_adapter");
+const oapx_adapter = @import("oapx_adapter");
 const hub = @import("hub");
 const hub_stdio = @import("hub_stdio");
 const hub_http = @import("hub_http");
@@ -2344,6 +2345,7 @@ fn printUsage(file: std.Io.File) !void {
         \\Usage:
         \\  oapx                                              Start the terminal UI
         \\  oapx --tui --context-window <tokens>            Start the terminal UI on a window
+        \\  oapx tui [--context-window <tokens>]          The terminal UI over OAP, through the in-process endpoint (experimental)
         \\                                                   (a whole number, optionally with k or m)
         \\  oapx run [--agent] [--storage] [--model <id>] "<prompt>"
         \\  oapx serve agent [--stdio] [--model <model-ref>]
@@ -2383,6 +2385,7 @@ fn printUsage(file: std.Io.File) !void {
         \\                   or OpenCode server named by a --config entry;
         \\                   --config reads an oap-serve.json registry entry.
         \\                   --backend memory serves the in-memory reference script.
+        \\                   --backend oapx serves oapx's own loop as the TUI builds it.
         \\  serve provider   Serve model-provider-core over stdio, one envelope per line
         \\                   Use --specimens to print one of every envelope it emits.
         \\                   Use --http for a loopback-only HTTP/SSE endpoint.
@@ -2426,6 +2429,19 @@ fn parseTuiArgs(args: []const []const u8) TuiArgError!TuiArgs {
         parsed.context_window = tui_app.parseContextWindow(args[index]) catch return error.ContextWindowNotATokenCount;
     }
     return parsed;
+}
+
+fn runTuiOverOap(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stderr: std.Io.File) !void {
+    const parsed = parseTuiArgs(args) catch |err| {
+        switch (err) {
+            error.MissingContextWindow => try compat.stdio.writeAll(stderr, "--context-window takes a token count\n\n"),
+            error.ContextWindowNotATokenCount => try compat.stdio.writeAll(stderr, "--context-window takes a whole number of tokens, optionally with k or m\n\n"),
+            error.UnknownOption => try compat.stdio.writeAll(stderr, "unknown argument to tui\n\n"),
+        }
+        try printUsage(stderr);
+        return error.InvalidArgument;
+    };
+    try tui_app.runWith(allocator, io, parsed.context_window, true);
 }
 
 fn runTui(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, stderr: std.Io.File) !void {
@@ -6512,6 +6528,14 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
+    if (std.mem.eql(u8, args[1], "tui")) {
+        runTuiOverOap(allocator, init.io, args[2..], stderr) catch |err| switch (err) {
+            error.InvalidArgument => return error.InvalidArgument,
+            else => return err,
+        };
+        return;
+    }
+
     if (std.mem.eql(u8, args[1], "hub")) {
         runHub(allocator, args[2..], stdin, stdout, stderr) catch |err| {
             if (err == error.InvalidHubOption) {
@@ -9032,6 +9056,9 @@ fn runBackendMode(
     var opencode: opencode_adapter.Adapter = undefined;
     var hermes: hermes_adapter.Adapter = undefined;
     var memory: memory_adapter.Adapter = undefined;
+    var oapx_production: ?tui_app.ProductionRuntime = null;
+    defer if (oapx_production) |*production| production.deinit();
+    var oapx: oapx_adapter.Adapter = undefined;
     const served = if (std.mem.eql(u8, entry.kind, "claude")) claude_served: {
         claude = claude_adapter.Adapter.init(allocator, try claudeBackendConfig(surface, arena, entry, &environ));
         break :claude_served claude.adapter();
@@ -9056,8 +9083,13 @@ fn runBackendMode(
     } else if (std.mem.eql(u8, entry.kind, "memory")) memory_served: {
         memory = memory_adapter.Adapter.init(allocator);
         break :memory_served memory.adapter();
+    } else if (std.mem.eql(u8, entry.kind, "oapx")) oapx_served: {
+        oapx_production = try tui_app.ProductionRuntime.init(allocator, .{});
+        oapx_production.?.initBridge();
+        oapx = oapx_adapter.Adapter.init(allocator, oapx_production.?.options());
+        break :oapx_served oapx.adapter();
     } else {
-        try surface.refuse("{s} \"{s}\" is of type \"{s}\", which oapx does not know; it serves claude, codex, pi, acp, hermes, deepseek, opencode and memory", .{ surface.noun, name, entry.kind });
+        try surface.refuse("{s} \"{s}\" is of type \"{s}\", which oapx does not know; it serves claude, codex, pi, acp, hermes, deepseek, opencode, memory and oapx", .{ surface.noun, name, entry.kind });
         return error.BackendRefused;
     };
 
@@ -9657,7 +9689,7 @@ test "a backend oapx does not know, or a --config entry it cannot serve, is refu
     const allocator = std.testing.allocator;
     const unknown = try refusedBackend(allocator, "nonesuch", null);
     defer allocator.free(unknown);
-    try std.testing.expectEqualStrings("oapx serve agent: backend \"nonesuch\" is of type \"nonesuch\", which oapx does not know; it serves claude, codex, pi, acp, hermes, deepseek, opencode and memory\n", unknown);
+    try std.testing.expectEqualStrings("oapx serve agent: backend \"nonesuch\" is of type \"nonesuch\", which oapx does not know; it serves claude, codex, pi, acp, hermes, deepseek, opencode, memory and oapx\n", unknown);
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

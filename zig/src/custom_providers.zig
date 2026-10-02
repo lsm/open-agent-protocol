@@ -180,17 +180,38 @@ pub fn load(allocator: std.mem.Allocator, max_bytes: usize) ![]CustomProvider {
 }
 
 pub fn loadConfig(allocator: std.mem.Allocator, max_bytes: usize) !Config {
+    return loadConfigMode(allocator, max_bytes, .treat_unreadable_as_empty);
+}
+
+pub fn loadConfigStrict(allocator: std.mem.Allocator, max_bytes: usize) !Config {
+    return loadConfigMode(allocator, max_bytes, .report_unreadable);
+}
+
+const UnreadableConfig = enum { treat_unreadable_as_empty, report_unreadable };
+
+fn loadConfigMode(allocator: std.mem.Allocator, max_bytes: usize, unreadable: UnreadableConfig) !Config {
     const path = configPath(allocator) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
-        else => return .{ .providers = try allocator.alloc(CustomProvider, 0), .overrides = try allocator.alloc(Override, 0) },
+        else => return emptyConfig(allocator),
     };
     defer allocator.free(path);
     const data = compat_mod.fs.readFileAlloc(allocator, compat_mod.fs.getCwd(), path, max_bytes) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
-        else => return .{ .providers = try allocator.alloc(CustomProvider, 0), .overrides = try allocator.alloc(Override, 0) },
+        error.FileNotFound => return emptyConfig(allocator),
+        else => switch (unreadable) {
+            .treat_unreadable_as_empty => return emptyConfig(allocator),
+            .report_unreadable => return err,
+        },
     };
     defer allocator.free(data);
     return parseConfig(allocator, data);
+}
+
+fn emptyConfig(allocator: std.mem.Allocator) !Config {
+    return .{
+        .providers = try allocator.alloc(CustomProvider, 0),
+        .overrides = try allocator.alloc(Override, 0),
+    };
 }
 
 pub const NewProvider = struct {
@@ -250,6 +271,56 @@ pub fn addProvider(allocator: std.mem.Allocator, new: NewProvider) ![]u8 {
     const text = try appendProvider(allocator, existing, new);
     defer allocator.free(text);
     if (std.fs.path.dirname(path)) |dir| try compat_mod.fs.createDir(cwd, dir);
+    const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp", .{path});
+    defer allocator.free(tmp_path);
+    try compat_mod.fs.atomicReplace(cwd, path, tmp_path, text);
+    return path;
+}
+
+pub const DeleteError = error{ProviderNotDeclared};
+
+pub fn dropProvider(allocator: std.mem.Allocator, existing: []const u8, id: []const u8) ![]u8 {
+    var current = try parseConfig(allocator, existing);
+    current.deinit(allocator);
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var root = try std.json.parseFromSliceLeaky(std.json.Value, arena, existing, .{});
+    if (root != .object) return ConfigError.InvalidConfig;
+    const providers = root.object.getPtr("providers") orelse return DeleteError.ProviderNotDeclared;
+    if (providers.* != .array) return ConfigError.InvalidConfig;
+    var kept = std.json.Array.init(arena);
+    var dropped = false;
+    for (providers.array.items) |item| {
+        const named = item == .object and if (item.object.get("id")) |value| value == .string and std.mem.eql(u8, value.string, id) else false;
+        if (named) {
+            dropped = true;
+            continue;
+        }
+        try kept.append(item);
+    }
+    if (!dropped) return DeleteError.ProviderNotDeclared;
+    providers.* = .{ .array = kept };
+
+    const text = try std.json.Stringify.valueAlloc(allocator, root, .{ .whitespace = .indent_2 });
+    errdefer allocator.free(text);
+    var checked = try parseConfig(allocator, text);
+    checked.deinit(allocator);
+    return text;
+}
+
+pub fn deleteProvider(allocator: std.mem.Allocator, id: []const u8) ![]u8 {
+    const path = try configPath(allocator);
+    errdefer allocator.free(path);
+    const cwd = compat_mod.fs.getCwd();
+    const existing = compat_mod.fs.readFileAlloc(allocator, cwd, path, max_config_bytes) catch |err| switch (err) {
+        error.FileNotFound => return DeleteError.ProviderNotDeclared,
+        else => return err,
+    };
+    defer allocator.free(existing);
+    const text = try dropProvider(allocator, existing, id);
+    defer allocator.free(text);
     const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp", .{path});
     defer allocator.free(tmp_path);
     try compat_mod.fs.atomicReplace(cwd, path, tmp_path, text);
@@ -1173,4 +1244,32 @@ fn appendProviderProbe(allocator: std.mem.Allocator) !void {
 
 test "appendProvider frees what it built on every allocation failure" {
     try testing.checkAllAllocationFailures(std.heap.smp_allocator, appendProviderProbe, .{});
+}
+
+test "dropProvider removes only the named provider and keeps the rest as written" {
+    const existing =
+        \\{"providers":[{"id":"first","base_url":"https://one.test/v1","x-note":"kept"},{"id":"second","base_url":"https://two.test"}],
+        \\ "overrides":[{"id":"deepseek","base_url":"https://proxy.test"}]}
+    ;
+    const text = try dropProvider(testing.allocator, existing, "second");
+    defer testing.allocator.free(text);
+    try testing.expect(std.mem.indexOf(u8, text, "\"x-note\": \"kept\"") != null);
+    var config = try parseConfig(testing.allocator, text);
+    defer config.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), config.providers.len);
+    try testing.expectEqualStrings("first", config.providers[0].id);
+    try testing.expectEqual(@as(usize, 1), config.overrides.len);
+
+    try testing.expectError(DeleteError.ProviderNotDeclared, dropProvider(testing.allocator, existing, "third"));
+    try testing.expectError(DeleteError.ProviderNotDeclared, dropProvider(testing.allocator, "{}", "first"));
+    try testing.expectError(ConfigError.InvalidConfig, dropProvider(testing.allocator, "{\"providers\":{}}", "first"));
+}
+
+fn dropProviderProbe(allocator: std.mem.Allocator) !void {
+    const text = try dropProvider(allocator, "{\"providers\":[{\"id\":\"first\",\"base_url\":\"https://one.test\"},{\"id\":\"second\",\"base_url\":\"https://two.test\"}]}", "first");
+    allocator.free(text);
+}
+
+test "dropProvider frees what it built on every allocation failure" {
+    try testing.checkAllAllocationFailures(std.heap.smp_allocator, dropProviderProbe, .{});
 }

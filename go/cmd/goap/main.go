@@ -290,7 +290,7 @@ func goldenDemo(ctx context.Context, stdout io.Writer) error {
 		return err
 	}
 	request := protocol.MessageSubmitRequest{SessionID: "demo-session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("run the deterministic demo")}}}
-	admission, stream, err := session.Submit(ctx, request)
+	admission, stream, err := session.Submit(ctx, adapter.SubmitRequest{Request: request})
 	if err != nil {
 		return err
 	}
@@ -355,7 +355,7 @@ func cancellationDemo(ctx context.Context, stdout io.Writer) error {
 		return err
 	}
 	request := protocol.MessageSubmitRequest{SessionID: "demo-session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("cancel")}}}
-	admission, stream, err := session.Submit(ctx, request)
+	admission, stream, err := session.Submit(ctx, adapter.SubmitRequest{Request: request})
 	if err != nil {
 		return err
 	}

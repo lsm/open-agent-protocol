@@ -131,7 +131,8 @@ type toolState struct {
 	startedEvent   protocol.EnvelopeID
 }
 
-func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+func (s *session) Submit(ctx context.Context, submit base.SubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+	req := submit.Request
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 	if err := ctx.Err(); err != nil {

@@ -177,7 +177,8 @@ func (s *Session) SwitchModel(ctx context.Context, request protocol.SessionModel
 	return response, state, nil
 }
 
-func (s *Session) Submit(ctx context.Context, request protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, error) {
+func (s *Session) Submit(ctx context.Context, submit base.SubmitRequest) (protocol.MessageSubmitResponse, error) {
+	request := submit.Request
 	if request.SessionID != s.id {
 		return protocol.MessageSubmitResponse{}, &ScopeMismatchError{Payload: request.SessionID, Addressed: s.id}
 	}
@@ -185,7 +186,7 @@ func (s *Session) Submit(ctx context.Context, request protocol.MessageSubmitRequ
 	s.mu.Lock()
 	s.reservations++
 	s.mu.Unlock()
-	admission, stream, err := s.session.Submit(ctx, request)
+	admission, stream, err := s.session.Submit(ctx, submit)
 	if err != nil {
 		if stream != nil {
 
@@ -198,6 +199,10 @@ func (s *Session) Submit(ctx context.Context, request protocol.MessageSubmitRequ
 			s.markClosed()
 		}
 		return admission, err
+	}
+	if admission.Admission == protocol.AdmissionSteered {
+		s.releaseReservation()
+		return admission, nil
 	}
 	s.adoptRun(admission.RunID, stream, admission.Admission == protocol.AdmissionQueued)
 	return admission, nil

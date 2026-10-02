@@ -33,7 +33,50 @@ pub const AutoCompact = union(enum) {
     percent: u8,
 };
 
+pub const VerbosityLevel = enum { quiet, normal, verbose };
+
+pub const VerbosityPart = enum { thinking, tools, output, notices, status };
+
+pub const Verbosity = struct {
+    thinking: VerbosityLevel = .normal,
+    tools: VerbosityLevel = .normal,
+    output: VerbosityLevel = .normal,
+    notices: VerbosityLevel = .normal,
+    status: VerbosityLevel = .normal,
+
+    pub fn all(level: VerbosityLevel) Verbosity {
+        return .{ .thinking = level, .tools = level, .output = level, .notices = level, .status = level };
+    }
+
+    pub fn get(self: Verbosity, part: VerbosityPart) VerbosityLevel {
+        return switch (part) {
+            inline else => |tag| @field(self, @tagName(tag)),
+        };
+    }
+
+    pub fn transcriptEquals(self: Verbosity, other: Verbosity) bool {
+        return self.thinking == other.thinking and self.tools == other.tools and self.output == other.output and self.notices == other.notices;
+    }
+
+    pub fn cycled(self: Verbosity) Verbosity {
+        const uniform = self.thinking == self.tools and self.tools == self.output and self.output == self.notices and self.notices == self.status;
+        if (!uniform) return all(.normal);
+        return all(switch (self.thinking) {
+            .quiet => .normal,
+            .normal => .verbose,
+            .verbose => .quiet,
+        });
+    }
+
+    pub fn set(self: *Verbosity, part: VerbosityPart, level: VerbosityLevel) void {
+        switch (part) {
+            inline else => |tag| @field(self, @tagName(tag)) = level,
+        }
+    }
+};
+
 pub const ModeSettings = struct {
+    verbosity: Verbosity = .{},
     compact_output: bool = true,
     context_window: ?u32 = null,
     output: Output = .auto,
@@ -177,6 +220,7 @@ fn parseConfig(allocator: std.mem.Allocator, data: []const u8) !Config {
             cfg.mode.output = outputField(mode_obj);
             cfg.mode.auto_worktree = boolField(mode_obj, "auto_worktree", cfg.mode.auto_worktree);
             cfg.mode.autocompact = autoCompactField(mode_obj);
+            cfg.mode.verbosity = verbosityField(mode_obj);
         },
         else => {},
     };
@@ -219,10 +263,31 @@ fn serializeConfig(allocator: std.mem.Allocator, cfg: Config) ![]u8 {
         .off => try w.writeStringField("autocompact", "off"),
         .percent => |percent| try w.writeIntField("autocompact", percent),
     }
+    try w.writeKey("verbosity");
+    try w.beginObject();
+    inline for (@typeInfo(VerbosityPart).@"enum".fields) |field| {
+        try w.writeStringField(field.name, @tagName(cfg.mode.verbosity.get(@enumFromInt(field.value))));
+    }
+    try w.endObject();
     try w.endObject();
     try w.endObject();
     try buf.append(allocator, '\n');
     return buf.toOwnedSlice(allocator);
+}
+
+fn verbosityField(obj: std.json.ObjectMap) Verbosity {
+    var verbosity: Verbosity = .{};
+    const value = obj.get("verbosity") orelse return verbosity;
+    const parts = switch (value) {
+        .object => |o| o,
+        else => return verbosity,
+    };
+    inline for (@typeInfo(VerbosityPart).@"enum".fields) |field| {
+        if (stringField(parts, field.name)) |text| {
+            if (std.meta.stringToEnum(VerbosityLevel, text)) |level| verbosity.set(@enumFromInt(field.value), level);
+        }
+    }
+    return verbosity;
 }
 
 fn dupStringField(allocator: std.mem.Allocator, obj: std.json.ObjectMap, key: []const u8, default: []const u8) ![]u8 {
@@ -273,6 +338,46 @@ fn parsePermissionMode(value: []const u8) ToolPermission.Mode {
     if (std.mem.eql(u8, value, "allow")) return .allow;
     if (std.mem.eql(u8, value, "deny")) return .deny;
     return .ask;
+}
+
+test "verbosity survives a save and reload part by part, and an unknown level keeps the default" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try tmpBase(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+
+    var store = try Store.init(std.testing.allocator, base);
+    defer store.deinit();
+    var cfg = try Config.defaults(std.testing.allocator);
+    defer cfg.deinit(std.testing.allocator);
+    cfg.mode.verbosity = Verbosity.all(.quiet);
+    cfg.mode.verbosity.status = .verbose;
+    try store.save(cfg);
+
+    var loaded = try store.load();
+    defer loaded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(VerbosityLevel.quiet, loaded.mode.verbosity.thinking);
+    try std.testing.expectEqual(VerbosityLevel.quiet, loaded.mode.verbosity.tools);
+    try std.testing.expectEqual(VerbosityLevel.quiet, loaded.mode.verbosity.output);
+    try std.testing.expectEqual(VerbosityLevel.quiet, loaded.mode.verbosity.notices);
+    try std.testing.expectEqual(VerbosityLevel.verbose, loaded.mode.verbosity.status);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"verbosity\":{\"tools\":\"loud\",\"thinking\":\"verbose\"}}", .{});
+    defer parsed.deinit();
+    const read = verbosityField(parsed.value.object);
+    try std.testing.expectEqual(VerbosityLevel.normal, read.tools);
+    try std.testing.expectEqual(VerbosityLevel.verbose, read.thinking);
+}
+
+test "the verbosity cycle steps a uniform level and resets a mixed one to normal" {
+    try std.testing.expectEqual(Verbosity.all(.normal), Verbosity.all(.quiet).cycled());
+    try std.testing.expectEqual(Verbosity.all(.verbose), Verbosity.all(.normal).cycled());
+    try std.testing.expectEqual(Verbosity.all(.quiet), Verbosity.all(.verbose).cycled());
+    var mixed = Verbosity.all(.quiet);
+    mixed.status = .verbose;
+    try std.testing.expectEqual(Verbosity.all(.normal), mixed.cycled());
+    try std.testing.expect(mixed.transcriptEquals(Verbosity.all(.quiet)));
+    try std.testing.expect(!mixed.transcriptEquals(Verbosity.all(.normal)));
 }
 
 test "save config reload preserves model provider and api" {
@@ -330,7 +435,9 @@ test "an output setting survives a save, and auto is written as nothing" {
 
     const text = try serializeConfig(std.testing.allocator, cfg);
     defer std.testing.allocator.free(text);
-    try std.testing.expect(std.mem.indexOf(u8, text, "\"output\"") == null);
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, text, .{});
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value.object.get("mode").?.object.get("output") == null);
 }
 
 test "a context window survives a save and an absent one stays absent" {

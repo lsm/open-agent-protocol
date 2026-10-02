@@ -566,6 +566,10 @@ func payloadTarget(t protocol.EnvelopeType) any {
 		return &protocol.RunCancelRequest{}
 	case protocol.TypeRunCancelResponse:
 		return &protocol.RunCancelResponse{}
+	case protocol.TypeRunSteerApplied:
+		return &protocol.RunSteerAppliedPayload{}
+	case protocol.TypeRunSteerDropped:
+		return &protocol.RunSteerDroppedPayload{}
 	case protocol.TypeRunStarted:
 		return &protocol.RunStartedPayload{}
 	case protocol.TypeRunStatusUpdated:

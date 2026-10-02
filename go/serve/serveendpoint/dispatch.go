@@ -304,7 +304,7 @@ func (s *Server) submit(ctx context.Context, streams context.Context, e protocol
 	if err != nil {
 		return protocol.Envelope{}, nil, err
 	}
-	admission, err := entry.Submit(ctx, request)
+	admission, err := entry.Submit(ctx, base.SubmitRequest{Request: request, EnvelopeID: e.ID})
 	if err != nil {
 		subscription.Close()
 		return protocol.Envelope{}, nil, err
@@ -318,6 +318,10 @@ func (s *Server) submit(ctx context.Context, streams context.Context, e protocol
 	answer.SessionID = admission.SessionID
 	answer.RunID = admission.RunID
 	answer.CapabilityRevision = e.CapabilityRevision
+	if admission.Admission == protocol.AdmissionSteered {
+		subscription.Close()
+		return answer, nil, nil
+	}
 
 	start := func() {
 		s.pumps.Add(1)

@@ -6,7 +6,7 @@ const json_encode = @import("json_encode");
 const jsonschema = @import("jsonschema");
 
 pub const endpoint_id = "reference.memory";
-pub const capability_revision = "reference-memory-v11";
+pub const capability_revision = "reference-memory-v12";
 pub const model_primary = "reference-model-a";
 pub const model_secondary = "reference-model-b";
 pub const journal_capacity = 64;
@@ -65,6 +65,7 @@ const features = [_]contract.Feature{
     .{ .key = "run.tool_selection", .level = .emulated, .scope = "run", .reason = "the policy filters the scripted tool and is not retained past the run" },
     .{ .key = "session.message.delivery.auto", .level = .native },
     .{ .key = "session.message.delivery.queue", .level = .emulated, .reason = "a busy session reserves one second run and promotes it when the started run settles" },
+    .{ .key = "session.message.delivery.steer", .level = .emulated, .reason = "guidance waits on the target run and is applied at its input gate, the scripted turn boundary" },
     .{ .key = contract.feature_submit, .level = .native },
     .{ .key = contract.feature_model_switch, .level = .emulated, .reason = "the reference adapter changes the session default within its fixed catalog" },
     .{ .key = "session.open", .level = .native },
@@ -151,6 +152,19 @@ const Settled = struct {
     message: []const u8 = "",
 };
 
+const PendingSteer = oap_types.PendingSteer;
+
+const steer_reason_no_active_run = "no_active_run";
+const steer_reason_terminal = "terminal";
+const steer_reason_queued = "queued";
+const steer_reason_unknown_target = "unknown_target";
+const steer_reason_not_steerable = "not_steerable";
+
+const SteerTarget = struct {
+    run: ?*Run = null,
+    reason: []const u8 = "",
+};
+
 const Run = struct {
     id: []const u8,
     permission_id: []const u8,
@@ -172,6 +186,8 @@ const Run = struct {
     instructions: ?[]const u8 = null,
     structured: bool = false,
     calls_tool: bool = true,
+    steers: std.ArrayList(PendingSteer) = .empty,
+    admitted_steers: std.ArrayList([]const u8) = .empty,
 
     fn live(self: *const Run) bool {
         return !self.terminal;
@@ -328,6 +344,22 @@ pub const Session = struct {
         _ = self;
         const pending: []const []const u8 = if (run.pending.len > 0) try arena.dupe([]const u8, &.{run.pending}) else &.{};
         const acknowledged: []const []const u8 = if (run.acknowledged and run.pending.len > 0 and std.mem.eql(u8, run.pending, run.call_id)) try arena.dupe([]const u8, &.{run.call_id}) else &.{};
+        var steers: []const PendingSteer = &.{};
+        var steer_anchors: []const []const u8 = &.{};
+        if (run.steers.items.len > 0) {
+            const carried = try arena.alloc(PendingSteer, run.steers.items.len);
+            for (run.steers.items, carried) |pending_steer, *slot| {
+                slot.* = .{ .submission_id = try arena.dupe(u8, pending_steer.submission_id), .request_id = try arena.dupe(u8, pending_steer.request_id) };
+            }
+            steers = carried;
+        }
+        if (run.admitted_steers.items.len > 0) {
+            const anchors = try arena.alloc([]const u8, run.admitted_steers.items.len);
+            for (run.admitted_steers.items, anchors) |anchor, *slot| {
+                slot.* = try arena.dupe(u8, anchor);
+            }
+            steer_anchors = anchors;
+        }
         return .{
             .run_id = run.id,
             .status = if (run.reservation()) .queued else run.status,
@@ -336,6 +368,8 @@ pub const Session = struct {
             .as_of_sequence = run.next_sequence - 1,
             .pending_interactions = pending,
             .acknowledged_interactions = acknowledged,
+            .pending_steers = steers,
+            .admitted_submit_requests = steer_anchors,
         };
     }
 
@@ -346,8 +380,9 @@ pub const Session = struct {
         return names;
     }
 
-    fn submit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+    fn submit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
         const self = cast(ptr);
+        if (request.delivery == .steer) return self.steer(arena, request, envelope_id, refusal);
         var controls = try self.admitControls(arena, request, refusal);
         if (request.session_id.len == 0 or request.messages.len == 0) return error.InvalidSubmission;
         if (request.delivery != .auto and request.delivery != .queue) return error.InvalidSubmission;
@@ -413,6 +448,130 @@ pub const Session = struct {
         }
         if (!is_busy) try self.emitInitial(run);
         return admission;
+    }
+
+    fn steer(self: *Session, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+        if (request.session_id.len == 0 or request.messages.len == 0) return error.InvalidSubmission;
+        if (steerControlKey(request)) |key| {
+            refusal.* = .{ .feature = key, .reason = contract.reason_unsatisfiable };
+            return error.UnsupportedFeature;
+        }
+        if (!std.mem.eql(u8, request.session_id, self.id)) return error.RunNotFound;
+        const named = request.target_run_id orelse "";
+        const target = self.steerTarget(named);
+        if (target.reason.len > 0) {
+            refusal.* = .{
+                .reason = target.reason,
+                .message = try std.fmt.allocPrint(arena, "adapter: steer target cannot take guidance: run \"{s}\" is {s}", .{ named, target.reason }),
+            };
+            return error.InvalidSteerTarget;
+        }
+        const run = target.run.?;
+        const keep = self.keep.allocator();
+        const message_ids = try arena.alloc([]const u8, request.messages.len);
+        const kept_ids = try keep.alloc([]const u8, request.messages.len);
+        for (request.messages, 0..) |message, index| {
+            const id = if (message.id) |carried| carried else try self.owner.nextID(arena, "message");
+            message_ids[index] = id;
+            kept_ids[index] = try keep.dupe(u8, id);
+        }
+        const submission_id = try self.owner.nextID(arena, "submission");
+        const kept_submission = try keep.dupe(u8, submission_id);
+        errdefer keep.free(kept_submission);
+        const kept_request = try keep.dupe(u8, envelope_id);
+        errdefer keep.free(kept_request);
+        try run.admitted_steers.append(keep, kept_request);
+        try run.steers.append(keep, .{
+            .submission_id = kept_submission,
+            .request_id = kept_request,
+            .message_ids = kept_ids,
+        });
+        self.updated_at_ms = self.owner.now_ms();
+        return .{
+            .session_id = self.id,
+            .accepted = true,
+            .submission_id = submission_id,
+            .requested_delivery = .steer,
+            .effective_delivery = .steer,
+            .admission = .steered,
+            .run_id = run.id,
+            .status = run.status,
+            .message_ids = message_ids,
+            .target_sequence = run.next_sequence - 1,
+        };
+    }
+
+    fn steerTarget(self: *Session, named: []const u8) SteerTarget {
+        if (named.len > 0) {
+            const run = self.findRun(named) orelse return .{ .reason = steer_reason_unknown_target };
+            if (run.terminal) return .{ .run = run, .reason = steer_reason_terminal };
+            if (run.status == .cancelling) return .{ .run = run, .reason = steer_reason_not_steerable };
+            if (!run.started) return .{ .run = run, .reason = steer_reason_queued };
+            return .{ .run = run, .reason = "" };
+        }
+        for ([_]?*Run{ self.active, self.reserved }) |candidate| {
+            const run = candidate orelse continue;
+            if (!run.started or run.terminal) continue;
+            if (run.status == .cancelling) return .{ .run = run, .reason = steer_reason_not_steerable };
+            return .{ .run = run, .reason = "" };
+        }
+        return .{ .reason = steer_reason_no_active_run };
+    }
+
+    fn steerControlKey(request: *const oap_types.MessageSubmitRequest) ?[]const u8 {
+        const controls = [_]struct { key: []const u8, carried: bool }{
+            .{ .key = "run.instructions", .carried = request.instructions != null },
+            .{ .key = "run.model_selection", .carried = request.model_id != null },
+            .{ .key = "run.structured_output", .carried = request.output_schema_json != null },
+            .{ .key = "run.tool_selection", .carried = request.tool_choice_json != null },
+        };
+        for (controls) |control| {
+            if (control.carried) return control.key;
+        }
+        return null;
+    }
+
+    fn takeSteers(self: *Session, run: *Run) contract.Failure![]PendingSteer {
+        const keep = self.keep.allocator();
+        const pending = try keep.dupe(PendingSteer, run.steers.items);
+        run.steers.clearRetainingCapacity();
+        return pending;
+    }
+
+    fn settleSteers(self: *Session, run: *Run) contract.Failure!void {
+        const pending = try self.takeSteers(run);
+        var scratch = std.heap.ArenaAllocator.init(self.gpa);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        for (pending) |pending_steer| {
+            var applied = Payload.init(a);
+            try applied.run(self, run);
+            try applied.put("submission_id", .{ .string = pending_steer.submission_id });
+            try applied.put("request_id", .{ .string = pending_steer.request_id });
+            var ids = std.json.Array.init(a);
+            for (pending_steer.message_ids) |id| try ids.append(.{ .string = id });
+            try applied.put("message_ids", .{ .array = ids });
+            try applied.put("boundary", .{ .string = "turn" });
+            try self.emit(run, "run.steer.applied", applied.value(), false);
+        }
+    }
+
+    fn dropSteers(self: *Session, run: *Run) contract.Failure!void {
+        const pending = try self.takeSteers(run);
+        var scratch = std.heap.ArenaAllocator.init(self.gpa);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        for (pending) |pending_steer| {
+            var dropped = Payload.init(a);
+            try dropped.run(self, run);
+            try dropped.put("submission_id", .{ .string = pending_steer.submission_id });
+            try dropped.put("request_id", .{ .string = pending_steer.request_id });
+            var reason = Payload.init(a);
+            try reason.put("code", .{ .string = "run_terminated" });
+            try reason.put("message", .{ .string = "the run terminated before the guidance was applied" });
+            try dropped.put("reason", reason.value());
+            try self.emit(run, "run.steer.dropped", dropped.value(), false);
+        }
     }
 
     fn admitControls(self: *Session, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, refusal: *contract.Refusal) contract.Failure!Controls {
@@ -544,6 +703,7 @@ pub const Session = struct {
     }
 
     fn requestInput(self: *Session, run: *Run) contract.Failure!void {
+        try self.settleSteers(run);
         var scratch = std.heap.ArenaAllocator.init(self.gpa);
         defer scratch.deinit();
         const a = scratch.allocator();
@@ -844,6 +1004,7 @@ pub const Session = struct {
 
     fn emit(self: *Session, run: *Run, kind: []const u8, payload: std.json.Value, terminal: bool) contract.Failure!void {
         if (run.terminal) return;
+        if (terminal) try self.dropSteers(run);
         var scratch = std.heap.ArenaAllocator.init(self.gpa);
         defer scratch.deinit();
         const a = scratch.allocator();
@@ -1360,11 +1521,37 @@ const Probe = struct {
         request.delivery = delivery;
         request.messages = try self.a().dupe(oap_types.Message, &.{.{ .role = .user, .content = .{ .text = "run" } }});
         var refusal = contract.Refusal{};
-        return self.session.submit(self.a(), &request, &refusal);
+        return self.session.submit(self.a(), &request, "", &refusal);
     }
 
     fn submit(self: *Probe) !oap_types.MessageSubmitResponse {
         return self.submitWith(.auto, .{ .session_id = "", .messages = &.{}, .delivery = .auto });
+    }
+
+    fn submitSteer(self: *Probe, target: ?[]const u8, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+        var request = oap_types.MessageSubmitRequest{
+            .session_id = "s1",
+            .messages = try self.a().dupe(oap_types.Message, &.{.{ .id = "guidance", .role = .user, .content = .{ .text = "wait" } }}),
+            .delivery = .steer,
+            .target_run_id = target,
+        };
+        return self.session.submit(self.a(), &request, envelope_id, refusal);
+    }
+
+    fn eventOfType(self: *Probe, kind: []const u8) !std.json.Value {
+        for (self.seen.items) |event| {
+            const parsed = try std.json.parseFromSliceLeaky(std.json.Value, self.a(), event.line, .{});
+            if (std.mem.eql(u8, parsed.object.get("type").?.string, kind)) return parsed;
+        }
+        return error.MissingEvent;
+    }
+
+    fn indexOfType(self: *Probe, kind: []const u8) ?usize {
+        for (self.seen.items, 0..) |event, index| {
+            const parsed = std.json.parseFromSliceLeaky(std.json.Value, self.a(), event.line, .{}) catch continue;
+            if (std.mem.eql(u8, parsed.object.get("type").?.string, kind)) return index;
+        }
+        return null;
     }
 
     fn types(self: *Probe) ![]const []const u8 {
@@ -1590,8 +1777,15 @@ fn submitAndSettle(allocator: std.mem.Allocator) !void {
     defer session.teardown();
     const messages = try arena.allocator().dupe(oap_types.Message, &.{.{ .role = .user, .content = .{ .text = "run" } }});
     const request = oap_types.MessageSubmitRequest{ .session_id = "s1", .messages = messages, .delivery = .auto, .instructions = "Be brief." };
-    _ = try session.submit(arena.allocator(), &request, &refusal);
-    _ = try session.submit(arena.allocator(), &request, &refusal);
+    _ = try session.submit(arena.allocator(), &request, "", &refusal);
+    _ = try session.submit(arena.allocator(), &request, "", &refusal);
+    const steering = oap_types.MessageSubmitRequest{
+        .session_id = "s1",
+        .messages = try arena.allocator().dupe(oap_types.Message, &.{.{ .role = .user, .content = .{ .text = "wait" } }}),
+        .delivery = .steer,
+        .target_run_id = "run-1",
+    };
+    _ = try session.submit(arena.allocator(), &steering, "req-steer", &refusal);
     _ = try session.cancel(arena.allocator(), "run-1", &refusal);
     var drained = std.ArrayList(contract.Event).empty;
     try session.drain(arena.allocator(), &drained);
@@ -1695,7 +1889,7 @@ fn provideAndSettle(allocator: std.mem.Allocator) !void {
     defer session.teardown();
     const messages = try arena.allocator().dupe(oap_types.Message, &.{.{ .role = .user, .content = .{ .text = "run" } }});
     const request = oap_types.MessageSubmitRequest{ .session_id = "s1", .messages = messages, .delivery = .auto };
-    const admitted = try session.submit(arena.allocator(), &request, &refusal);
+    const admitted = try session.submit(arena.allocator(), &request, "", &refusal);
     var call = oap_types.CallResolveRequest{ .interaction_id = "call-5", .session_id = "s1", .run_id = admitted.run_id.?, .tool_call_id = "tool-call-4", .requested_by = endpoint_id, .responded_by = "user", .result_json = "{}" };
     _ = try session.vtable.resolve_call.?(session.ptr, arena.allocator(), "req-1", &call, &refusal);
     var state_refusal = contract.Refusal{};
@@ -1730,4 +1924,138 @@ test "an already_resolved refusal names its settlement only when there is one" {
     try testing.expect(Session.refused(answer, "already_resolved", "").settlement_id == null);
     try testing.expect(Session.refused(answer, "already_resolved", null).settlement_id == null);
     try testing.expectEqualStrings("event-9", Session.refused(answer, "already_resolved", "event-9").settlement_id.?);
+}
+
+test "the reference descriptor advertises steer advice at the emulated level" {
+    try testing.expectEqualStrings("reference-memory-v12", capability_revision);
+    try testing.expectEqual(oap_types.SupportLevel.emulated, descriptor.level("session.message.delivery.steer"));
+}
+
+test "a steer is admitted at the permission gate and applied at the input gate" {
+    var probe: Probe = undefined;
+    try probe.init();
+    defer probe.deinit();
+    const admitted = try probe.submit();
+    try probe.session.drain(probe.a(), &probe.seen);
+    const before = probe.seen.items.len;
+
+    var refusal = contract.Refusal{};
+    const steered = try probe.submitSteer(admitted.run_id.?, "steer-submit", &refusal);
+    try testing.expectEqual(oap_types.Admission.steered, steered.admission);
+    try testing.expectEqual(oap_types.EffectiveDelivery.steer, steered.effective_delivery);
+    try testing.expectEqual(oap_types.RequestedDelivery.steer, steered.requested_delivery);
+    try testing.expectEqualStrings("run-1", steered.run_id.?);
+    try testing.expectEqual(oap_types.RunStatus.running, steered.status.?);
+    try testing.expectEqual(@as(u64, 4), steered.target_sequence.?);
+    try testing.expectEqual(@as(usize, 1), steered.message_ids.len);
+    try testing.expectEqualStrings("guidance", steered.message_ids[0]);
+
+    const state = try probe.session.state(probe.a(), &refusal);
+    try testing.expectEqual(@as(usize, 1), state.active_runs.len);
+    try testing.expectEqualStrings(steered.submission_id, state.active_runs[0].pending_steers[0].submission_id);
+    try testing.expectEqualStrings("steer-submit", state.active_runs[0].pending_steers[0].request_id);
+    try testing.expectEqual(@as(usize, 1), state.active_runs[0].admitted_submit_requests.len);
+    try testing.expectEqualStrings("steer-submit", state.active_runs[0].admitted_submit_requests[0]);
+    try testing.expectEqual(steered.target_sequence.?, state.active_runs[0].as_of_sequence.?);
+
+    try probe.session.drain(probe.a(), &probe.seen);
+    try testing.expectEqual(before, probe.seen.items.len);
+
+    try probe.approve("run-1", "permission-2", "approve");
+    try probe.session.drain(probe.a(), &probe.seen);
+    const applied_index = probe.indexOfType("run.steer.applied").?;
+    const input_index = probe.indexOfType("user.input.requested").?;
+    try testing.expect(applied_index < input_index);
+    const applied = probe.seen.items[applied_index];
+    try testing.expectEqual(@as(u64, 8), applied.sequence);
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, probe.a(), applied.line, .{});
+    const payload = parsed.object.get("payload").?.object;
+    try testing.expectEqualStrings(steered.submission_id, payload.get("submission_id").?.string);
+    try testing.expectEqualStrings("steer-submit", payload.get("request_id").?.string);
+    try testing.expectEqualStrings("turn", payload.get("boundary").?.string);
+    try testing.expectEqualStrings("guidance", payload.get("message_ids").?.array.items[0].string);
+
+    const settled = try probe.session.state(probe.a(), &refusal);
+    try testing.expectEqual(@as(usize, 1), settled.active_runs.len);
+    try testing.expectEqual(@as(usize, 0), settled.active_runs[0].pending_steers.len);
+    try testing.expectEqual(@as(usize, 1), settled.active_runs[0].admitted_submit_requests.len);
+    try testing.expectEqualStrings("steer-submit", settled.active_runs[0].admitted_submit_requests[0]);
+}
+
+test "a steer pending at a terminal is dropped before the terminal" {
+    var probe: Probe = undefined;
+    try probe.init();
+    defer probe.deinit();
+    const admitted = try probe.submit();
+    try probe.session.drain(probe.a(), &probe.seen);
+    var refusal = contract.Refusal{};
+    const steered = try probe.submitSteer(admitted.run_id.?, "steer-submit", &refusal);
+
+    _ = try probe.session.cancel(probe.a(), "run-1", &refusal);
+    try probe.session.drain(probe.a(), &probe.seen);
+    const dropped_index = probe.indexOfType("run.steer.dropped").?;
+    const cancelled_index = probe.indexOfType("run.cancelled").?;
+    try testing.expect(dropped_index < cancelled_index);
+    const dropped = probe.seen.items[dropped_index];
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, probe.a(), dropped.line, .{});
+    const payload = parsed.object.get("payload").?.object;
+    try testing.expectEqualStrings(steered.submission_id, payload.get("submission_id").?.string);
+    try testing.expectEqualStrings("steer-submit", payload.get("request_id").?.string);
+    try testing.expectEqualStrings("run_terminated", payload.get("reason").?.object.get("code").?.string);
+}
+
+test "a steer target that cannot take guidance is refused with its ranked reason" {
+    var empty: Probe = undefined;
+    try empty.init();
+    defer empty.deinit();
+    var refusal = contract.Refusal{};
+    try testing.expectError(error.InvalidSteerTarget, empty.submitSteer(null, "s1", &refusal));
+    try testing.expectEqualStrings(steer_reason_no_active_run, refusal.reason);
+
+    var probe: Probe = undefined;
+    try probe.init();
+    defer probe.deinit();
+    const admitted = try probe.submit();
+    try testing.expectError(error.InvalidSteerTarget, probe.submitSteer("run-404", "s2", &refusal));
+    try testing.expectEqualStrings(steer_reason_unknown_target, refusal.reason);
+
+    const queued = try probe.submitWith(.queue, .{ .session_id = "", .messages = &.{}, .delivery = .queue });
+    try testing.expectError(error.InvalidSteerTarget, probe.submitSteer(queued.run_id.?, "s3", &refusal));
+    try testing.expectEqualStrings(steer_reason_queued, refusal.reason);
+
+    _ = try probe.session.cancel(probe.a(), queued.run_id.?, &refusal);
+    try testing.expectError(error.InvalidSteerTarget, probe.submitSteer(queued.run_id.?, "s4", &refusal));
+    try testing.expectEqualStrings(steer_reason_terminal, refusal.reason);
+
+    try probe.session.drain(probe.a(), &probe.seen);
+    _ = try probe.session.cancel(probe.a(), admitted.run_id.?, &refusal);
+    try testing.expectError(error.InvalidSteerTarget, probe.submitSteer(admitted.run_id.?, "s5", &refusal));
+    try testing.expectEqualStrings(steer_reason_terminal, refusal.reason);
+}
+
+test "a steer carrying a run control is refused as unsatisfiable" {
+    var probe: Probe = undefined;
+    try probe.init();
+    defer probe.deinit();
+    const admitted = try probe.submit();
+    try probe.session.drain(probe.a(), &probe.seen);
+    var refusal = contract.Refusal{};
+
+    var instructed = oap_types.MessageSubmitRequest{
+        .session_id = "s1",
+        .messages = try probe.a().dupe(oap_types.Message, &.{.{ .role = .user, .content = .{ .text = "wait" } }}),
+        .delivery = .steer,
+        .target_run_id = admitted.run_id.?,
+        .instructions = "be brief",
+    };
+    try testing.expectError(error.UnsupportedFeature, probe.session.submit(probe.a(), &instructed, "s6", &refusal));
+    try testing.expectEqualStrings("run.instructions", refusal.feature);
+    try testing.expectEqualStrings(contract.reason_unsatisfiable, refusal.reason);
+
+    var modelled = instructed;
+    modelled.instructions = null;
+    modelled.model_id = model_secondary;
+    try testing.expectError(error.UnsupportedFeature, probe.session.submit(probe.a(), &modelled, "s7", &refusal));
+    try testing.expectEqualStrings("run.model_selection", refusal.feature);
+    try testing.expectEqualStrings(contract.reason_unsatisfiable, refusal.reason);
 }

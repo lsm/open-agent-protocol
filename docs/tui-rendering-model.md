@@ -426,14 +426,15 @@ code paths; add a transcript row instead.
 `Enter` send (steer while streaming), `Tab` while streaming queue the draft as a
 follow-up that is sent when the turn stops (it waits above the composer until then,
 and the inline window reserves its rows so no transcript row hides behind it; a
-draft starting with `/` is never queued),
+draft starting with `/` is never queued, except `/compact`, which then compacts once
+the run ends, and the commands listed under "Commands during a run"),
 `Shift+Enter` newline, `Esc` clear draft →
 abort turn → close modal (aborting holds the steers and follow-ups not yet consumed and
 sends them, joined, as a new turn once the aborted run ends; a second `Esc` before then
 drops them), `Ctrl+C` abort/clear first and quit on a second press
 within ~1.5 s (immediate quit when idle with an empty composer), `Ctrl+D` quit on an
 empty idle composer, `Tab` complete the slash command the palette selects,
-`Ctrl+Y` copy the last reply, `Shift+Tab` cycle thinking, `Up/Down` move the slash
+`Ctrl+Y` copy the last reply, `Ctrl+O` cycle verbosity, `Shift+Tab` cycle thinking, `Up/Down` move the slash
 palette's selection while it is open; otherwise they move the cursor one visual row
 inside the draft (keeping the goal column across consecutive presses, snapping to the
 start of a wide codepoint) and, at the first/last row, walk history — once a recalled
@@ -508,6 +509,35 @@ request to continue from where it stopped. `/output` reports this only when it a
 count set with `/output`, `/output max`, a model that reports no maximum, and a reply cut
 off at the maximum all end the run as before. The setting is kept in `~/.oapx/config.json` under
 `mode.output`, as `"max"` or a count, and absent for the default.
+
+## Verbosity
+
+`/verbose` sets how much the transcript and the status bar show. It has five parts,
+each `quiet`, `normal` (the default) or `verbose`:
+
+| part | `quiet` | `normal` | `verbose` |
+|---|---|---|---|
+| `thinking` | one line counting the hidden lines | the first ten lines | every line |
+| `tools` | each call's title row only | title row, argument and up to twelve command rows | every command row, and the arguments of a non-shell call |
+| `output` | no result rows | result rows of a running or failed call, up to eight | every row, and a finished call's output under its row |
+| `notices` | background and progress notices hidden (catalog refreshed, worktree setup, clipboard); replies to commands, failures and errors still shown | shown | shown, as with `normal` |
+| `status` | model, context, queue, state, and permissions when not `ask` | as now | adds the session id |
+
+`/verbose <level>` sets every part, `/verbose <part> <level>` sets one, so
+`/verbose quiet` then `/verbose status verbose` keeps the transcript terse and the
+status bar full. `/verbose` alone reports all five. The setting is saved in
+`~/.oapx/config.json` under `mode.verbosity`. It changes only what is drawn: the
+session file and what the model sees are the same at every level. `Ctrl+O` cycles
+every part through `quiet`, `normal` and `verbose` (a mixed setting goes to `normal`).
+
+The TUI prints finished entries into the terminal's own scrollback, which it cannot
+edit afterwards. `/redraw` clears the screen and the scrollback and reprints the
+session at the current level; that also clears what the terminal showed before oapx
+started. A change to `thinking`, `tools`, `output` or `notices` redraws on its own
+when no turn is running and the TUI is not inside tmux or screen (`TMUX`, `STY`),
+which may ignore the scrollback clear and leave both copies; otherwise it says to
+run `/redraw`. A `status` change never redraws, since the status bar is redrawn
+every frame anyway.
 
 ## Automatic compaction
 
@@ -596,6 +626,24 @@ a promise nothing keeps. Replaying a saved session is not a fresh failure: a
 session whose last run ended in an error does not nudge on resume, because the
 failure belongs to the process that hit it.
 
+## Commands during a run
+
+A few commands change what the running turn depends on, so during a run they do not
+apply at once:
+
+- `/model <name>` with `Enter` steers: the run switches to that model before its
+  next turn (the request's key follows the new model's provider, and the output
+  request is capped at the new model's maximum), and the TUI selects and saves it
+  when the run ends. On a remote runtime nothing steers the run, so the switch waits
+  for the run to end. A switch that fails then is dropped and reported once. A model-list refresh that lands first keeps the pending switch
+  when the new list still has the model, and otherwise drops it and says so. With `Tab` it waits for the run to end.
+- `/context <tokens|default>`, `/output <setting>`, `/logout <provider>` and
+  `/provider del <id>`, with `Enter` or `Tab`, wait for the run to end and then run
+  in the order given.
+
+Each says so in the transcript. Everything else (`/think`, `/verbose`, `/status`,
+`/rename`, `/permissions`, `/clear`, …) applies at once, as before.
+
 ## Compaction
 
 `/compact [focus]` replaces the agent's history with a summary the current model
@@ -611,6 +659,13 @@ starts with the summary before it, so the chain reaches the first message. When 
 history does not fit in one request, the oldest turns are left out and the summary
 says so. A provider error that reports an overflow retries with a quarter less
 history, up to three attempts.
+
+During a turn, `/compact [focus]` with `Enter` steers: the run compacts before its
+next turn, the way automatic compaction does, and carries on from the summary; if the
+run ends with no further turn, it compacts right after. With `Tab` it is queued: the
+run finishes, queued follow-ups included, and then it compacts. Only one request is
+held, whichever key made it: a later `/compact` replaces the earlier one, and
+resuming another session drops it.
 
 While compacting, the status bar reads `compacting` and `Enter` and `Tab` queue the
 draft. `Esc` cancels the compaction and leaves the history unchanged, but keeps the

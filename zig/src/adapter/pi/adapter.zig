@@ -466,7 +466,8 @@ pub const Session = struct {
         };
     }
 
-    fn submit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+    fn submit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+        _ = envelope_id;
         const self = cast(ptr);
         if (request.session_id.len == 0 or request.messages.len == 0 or request.delivery != .auto) return error.InvalidSubmission;
         var texts = std.ArrayList([]const u8).empty;
@@ -845,7 +846,7 @@ const Probe = struct {
     fn submit(self: *Probe, text: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
         const messages = try self.arena.allocator().dupe(oap_types.Message, &.{.{ .role = .user, .content = .{ .text = text } }});
         const request = oap_types.MessageSubmitRequest{ .session_id = "s1", .messages = messages, .delivery = .auto };
-        return self.handle.?.submit(self.arena.allocator(), &request, refusal);
+        return self.handle.?.submit(self.arena.allocator(), &request, "", refusal);
     }
 
     fn pumpUntil(self: *Probe, comptime kind: []const u8, seen: *std.ArrayList(contract.Event)) !contract.Event {
@@ -906,7 +907,7 @@ test "a submission carrying an inline image reaches Pi as Go's images command" {
     };
     const messages = try probe.arena.allocator().dupe(oap_types.Message, &.{.{ .role = .user, .content = .{ .parts = &parts } }});
     var request = oap_types.MessageSubmitRequest{ .session_id = "s1", .messages = messages, .delivery = .auto };
-    _ = try probe.handle.?.submit(probe.arena.allocator(), &request, &refusal);
+    _ = try probe.handle.?.submit(probe.arena.allocator(), &request, "", &refusal);
     const written = try probe.fake.written(probe.arena.allocator());
     try testing.expectEqualStrings(
         \\{"id":"req_1","type":"get_state"}

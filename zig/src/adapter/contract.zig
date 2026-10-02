@@ -15,6 +15,7 @@ pub const Failure = error{
     CapabilityDegraded,
     ModelNotFound,
     ToolCatalogUnavailable,
+    InvalidSteerTarget,
     BackendFailed,
 } || std.mem.Allocator.Error;
 
@@ -158,7 +159,7 @@ pub const Session = struct {
     pub const VTable = struct {
         id: *const fn (ptr: *anyopaque) []const u8,
         state: *const fn (ptr: *anyopaque, arena: std.mem.Allocator, refusal: *Refusal) Failure!oap_types.SessionState,
-        submit: *const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, refusal: *Refusal) Failure!oap_types.MessageSubmitResponse,
+        submit: *const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8, refusal: *Refusal) Failure!oap_types.MessageSubmitResponse,
         resolve: *const fn (ptr: *anyopaque, arena: std.mem.Allocator, resolution: Resolution, refusal: *Refusal) Failure!void,
         cancel: *const fn (ptr: *anyopaque, arena: std.mem.Allocator, run_id: []const u8, refusal: *Refusal) Failure!oap_types.RunCancelResponse,
         pump: *const fn (ptr: *anyopaque, wait_ns: u64) Failure!bool,
@@ -181,8 +182,8 @@ pub const Session = struct {
         return self.vtable.state(self.ptr, arena, refusal);
     }
 
-    pub fn submit(self: Session, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, refusal: *Refusal) Failure!oap_types.MessageSubmitResponse {
-        return self.vtable.submit(self.ptr, arena, request, refusal);
+    pub fn submit(self: Session, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8, refusal: *Refusal) Failure!oap_types.MessageSubmitResponse {
+        return self.vtable.submit(self.ptr, arena, request, envelope_id, refusal);
     }
 
     pub fn resolve(self: Session, arena: std.mem.Allocator, resolution: Resolution, refusal: *Refusal) Failure!void {

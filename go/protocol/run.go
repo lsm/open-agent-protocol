@@ -309,3 +309,29 @@ type PermissionResolvedPayload struct {
 	Granted       *bool              `json:"granted,omitempty"`
 	Reason        *ProtocolError     `json:"reason,omitempty"`
 }
+
+type SteerBoundary string
+
+const (
+	SteerImmediate  SteerBoundary = "immediate"
+	SteerTurn       SteerBoundary = "turn"
+	SteerToolResult SteerBoundary = "tool_result"
+	SteerUnknown    SteerBoundary = "unknown"
+)
+
+type RunSteerAppliedPayload struct {
+	SessionID    SessionID     `json:"session_id"`
+	RunID        RunID         `json:"run_id"`
+	SubmissionID SubmissionID  `json:"submission_id"`
+	RequestID    EnvelopeID    `json:"request_id"`
+	MessageIDs   []MessageID   `json:"message_ids"`
+	Boundary     SteerBoundary `json:"boundary"`
+}
+
+type RunSteerDroppedPayload struct {
+	SessionID    SessionID     `json:"session_id"`
+	RunID        RunID         `json:"run_id"`
+	SubmissionID SubmissionID  `json:"submission_id"`
+	RequestID    EnvelopeID    `json:"request_id"`
+	Reason       ProtocolError `json:"reason"`
+}

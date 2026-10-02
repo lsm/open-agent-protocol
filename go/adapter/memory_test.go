@@ -59,7 +59,7 @@ var plainSubmit = protocol.MessageSubmitRequest{SessionID: "session-1", Delivery
 
 func submitAdmission(t *testing.T, session adapter.Session) (protocol.MessageSubmitResponse, adapter.EventStream) {
 	t.Helper()
-	admission, stream, err := session.Submit(context.Background(), plainSubmit)
+	admission, stream, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: plainSubmit})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -513,7 +513,7 @@ func TestSubmitRejectsInvalidRequestBeforeAdmission(t *testing.T) {
 		{SessionID: "session-1", Delivery: protocol.DeliveryAuto},
 		{Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}, Delivery: protocol.DeliveryAuto},
 	} {
-		if _, _, err := session.Submit(context.Background(), request); !errors.Is(err, adapter.ErrInvalidSubmission) {
+		if _, _, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: request}); !errors.Is(err, adapter.ErrInvalidSubmission) {
 			t.Fatalf("got %v, want adapter.ErrInvalidSubmission", err)
 		}
 	}
@@ -531,12 +531,12 @@ func TestSubmitAppliesModelPerRun(t *testing.T) {
 	message := []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}
 	unknown := protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue("another-model"), Messages: message}
 	var notFound *adapter.ModelNotFoundError
-	if _, _, err := session.Submit(context.Background(), unknown); !errors.As(err, &notFound) || !errors.Is(err, adapter.ErrModelNotFound) {
+	if _, _, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: unknown}); !errors.As(err, &notFound) || !errors.Is(err, adapter.ErrModelNotFound) {
 		t.Fatalf("unknown model: got %v, want adapter.ErrModelNotFound", err)
 	}
 
 	empty := protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue(""), Messages: message}
-	if _, _, err := session.Submit(context.Background(), empty); !errors.As(err, &notFound) || notFound.ModelID != "" {
+	if _, _, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: empty}); !errors.As(err, &notFound) || notFound.ModelID != "" {
 		t.Fatalf("empty model: got %v, want model_not_found naming the empty id", err)
 	}
 	state, err := session.State(context.Background())
@@ -544,7 +544,7 @@ func TestSubmitAppliesModelPerRun(t *testing.T) {
 		t.Fatalf("refused model reached state: %+v err=%v", state, err)
 	}
 
-	admission, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue(adapter.ModelSecondary), Messages: message})
+	admission, stream, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue(adapter.ModelSecondary), Messages: message}})
 	if err != nil {
 		t.Fatalf("admitted model refused: %v", err)
 	}
@@ -583,10 +583,10 @@ func TestSwitchModelChangesTheSessionDefaultWithoutRewritingAnAdmittedRun(t *tes
 	if !errors.As(err, &missing) || missing.ModelID != "missing" {
 		t.Fatalf("missing model refusal = %v", err)
 	}
-	admission, _, err := session.Submit(ctx, protocol.MessageSubmitRequest{
+	admission, _, err := session.Submit(ctx, adapter.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: "session-1", Delivery: protocol.DeliveryAuto,
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
-	})
+	}})
 	if err != nil || admission.ModelID != adapter.ModelPrimary {
 		t.Fatalf("admission = %+v err=%v", admission, err)
 	}
@@ -604,10 +604,10 @@ func TestSwitchModelAppliesToAQueuedRunWhenItStarts(t *testing.T) {
 	ctx := context.Background()
 	first, firstStream := submitAdmission(t, session)
 	firstEvents := drainAvailable(firstStream)
-	queued, queuedStream, err := session.Submit(ctx, protocol.MessageSubmitRequest{
+	queued, queuedStream, err := session.Submit(ctx, adapter.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: "session-1", Delivery: protocol.DeliveryQueue,
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("after switch")}},
-	})
+	}})
 	if err != nil || queued.Admission != protocol.AdmissionQueued {
 		t.Fatalf("queued admission = %+v, err=%v", queued, err)
 	}
@@ -668,7 +668,7 @@ func TestSubmitJudgesEveryControl(t *testing.T) {
 		session := newTestSession(t, 64)
 		request := testCase.request
 		request.SessionID, request.Delivery, request.Messages = "session-1", protocol.DeliveryAuto, message
-		_, _, err := session.Submit(context.Background(), request)
+		_, _, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: request})
 		var refusal *adapter.UnsupportedControlError
 		if !errors.As(err, &refusal) || !errors.Is(err, adapter.ErrUnsupportedInput) {
 			t.Fatalf("%s: got %v, want a typed unsupported-control refusal", name, err)
@@ -696,11 +696,11 @@ func TestSubmitExecutesToolChoiceAndOutputSchema(t *testing.T) {
 		"allowlist with tool": {policy: `{"allowed":["scripted_tool"]}`, calls: 1},
 	} {
 		session := newTestSession(t, 64)
-		_, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
+		_, stream, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: protocol.MessageSubmitRequest{
 			SessionID: "session-1", Delivery: protocol.DeliveryAuto,
 			ToolChoice: json.RawMessage(testCase.policy),
 			Messages:   []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
-		})
+		}})
 		if err != nil {
 			t.Fatalf("%s: policy refused: %v", name, err)
 		}
@@ -724,7 +724,7 @@ func TestSubmitExecutesToolChoiceAndOutputSchema(t *testing.T) {
 		Instructions: protocol.ControlValue("Be terse."),
 		Messages:     []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
 	}
-	admission, stream, err := session.Submit(context.Background(), request)
+	admission, stream, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: request})
 	if err != nil {
 		t.Fatalf("structured submission refused: %v", err)
 	}
@@ -896,7 +896,7 @@ func TestRefusalPrecedenceRanksByCapabilityKey(t *testing.T) {
 		request := testCase.request
 		request.SessionID, request.Delivery = "session-1", protocol.DeliveryAuto
 		request.Messages = []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}
-		_, _, err := session.Submit(context.Background(), request)
+		_, _, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: request})
 		switch testCase.feature {
 		case protocol.FeatureModelSelection:
 
@@ -928,7 +928,7 @@ func TestControlRefusalOutranksOrdinaryValidation(t *testing.T) {
 		"unsupported mode": {SessionID: "session-1", Delivery: protocol.DeliveryQueue, ToolChoice: unsatisfiable, Messages: message},
 	} {
 		session := newTestSession(t, 64)
-		_, _, err := session.Submit(context.Background(), request)
+		_, _, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: request})
 		var refusal *adapter.UnsupportedControlError
 		if !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureToolSelection || refusal.Reason != adapter.ControlUnsatisfiable {
 			t.Fatalf("%s: got %v, want the control named ahead of the ordinary refusal", name, err)
@@ -939,9 +939,9 @@ func TestControlRefusalOutranksOrdinaryValidation(t *testing.T) {
 	}
 
 	session := newTestSession(t, 64)
-	if _, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
+	if _, _, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: "session-1", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue(adapter.ModelSecondary),
-	}); !errors.Is(err, adapter.ErrInvalidSubmission) {
+	}}); !errors.Is(err, adapter.ErrInvalidSubmission) {
 		t.Fatalf("got %v, want the ordinary refusal when no control is at fault", err)
 	}
 }
@@ -958,7 +958,7 @@ func TestPublishedCatalogGovernsToolSelection(t *testing.T) {
 			ToolChoice: json.RawMessage(policy),
 			Messages:   []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
 		}
-		admission, stream, err := session.Submit(context.Background(), request)
+		admission, stream, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: request})
 		if err != nil {
 			t.Fatalf("%s: the adapter refused a policy its own catalog satisfies: %v", name, err)
 		}
@@ -976,11 +976,11 @@ func TestPublishedCatalogGovernsToolSelection(t *testing.T) {
 	}
 
 	session := newTestSession(t, 64)
-	if _, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
+	if _, _, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: "session-1", Delivery: protocol.DeliveryAuto,
 		ToolChoice: json.RawMessage(`{"allowed":["absent_tool"]}`),
 		Messages:   []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
-	}); err == nil {
+	}}); err == nil {
 		t.Fatal("a tool outside the published catalog was admitted")
 	}
 
@@ -1229,7 +1229,7 @@ func TestStateOmitsARunUntilItsAdmissionIsHandedBack(t *testing.T) {
 	}
 	done := make(chan answer, 1)
 	go func() {
-		admission, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}})
+		admission, _, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}}})
 		done <- answer{admission, err}
 	}()
 	select {
@@ -1268,7 +1268,7 @@ func TestStateAnchorsARunItSettledBeforeTheTerminalIsDelivered(t *testing.T) {
 	gate := envelopeOfType(t, events, protocol.TypeActionPermissionRequested)
 
 	queuedRequest := protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryQueue, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("after you")}}}
-	reservation, reservedStream, err := session.Submit(context.Background(), queuedRequest)
+	reservation, reservedStream, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: queuedRequest})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1383,20 +1383,353 @@ func envelopeOfType(t *testing.T, envelopes []protocol.Envelope, typ protocol.En
 	return protocol.Envelope{}
 }
 
-func TestMemoryRefusesSteerAndBTWUnderTheirOwnKeys(t *testing.T) {
+func TestMemoryRefusesBTWUnderItsOwnKey(t *testing.T) {
 	session := newTestSession(t, 64)
-	for _, mode := range []struct {
-		delivery protocol.RequestedDeliveryMode
-		key      string
-	}{
-		{protocol.DeliverySteer, protocol.FeatureDeliverySteer},
-		{protocol.DeliveryBTW, protocol.FeatureDeliveryBTW},
-	} {
-		_, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: mode.delivery, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}})
-		var refused *adapter.UnsupportedControlError
-		if !errors.As(err, &refused) || refused.Feature != mode.key || refused.Reason != adapter.ControlUnadvertised || stream != nil {
-			t.Fatalf("%s: err = %v, stream = %v", mode.delivery, err, stream)
+	_, stream, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryBTW, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}}})
+	var refused *adapter.UnsupportedControlError
+	if !errors.As(err, &refused) || refused.Feature != protocol.FeatureDeliveryBTW || refused.Reason != adapter.ControlUnadvertised || stream != nil {
+		t.Fatalf("btw: err = %v, stream = %v", err, stream)
+	}
+}
+
+func TestMemoryAdvertisesSteerDelivery(t *testing.T) {
+	descriptor := testDescriptor(t)
+	if descriptor.CapabilityRevision != adapter.CapabilityRevision {
+		t.Fatalf("revision = %q", descriptor.CapabilityRevision)
+	}
+	support := descriptor.Capabilities.Features[protocol.FeatureDeliverySteer]
+	if support.Level != protocol.SupportEmulated || support.Reason == "" {
+		t.Fatalf("steer support = %+v", support)
+	}
+}
+
+func steerRequest(target protocol.RunID) protocol.MessageSubmitRequest {
+	return protocol.MessageSubmitRequest{
+		SessionID: "session-1", Delivery: protocol.DeliverySteer, TargetRunID: target,
+		Messages: []protocol.Message{{ID: "guidance", Role: protocol.RoleUser, Content: protocol.TextContent("wait")}},
+	}
+}
+
+func submitSteer(t *testing.T, session adapter.Session, request protocol.MessageSubmitRequest, envelope protocol.EnvelopeID) protocol.MessageSubmitResponse {
+	t.Helper()
+	admission, stream, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: request, EnvelopeID: envelope})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stream != nil {
+		t.Fatalf("a steer returned a stream: %v", stream)
+	}
+	return admission
+}
+
+func requireSteerReason(t *testing.T, err error, reason string, target protocol.RunID) {
+	t.Helper()
+	var refusal *adapter.InvalidSteerTargetError
+	if !errors.As(err, &refusal) || refusal.Reason != reason || refusal.RunID != target {
+		t.Fatalf("steer refusal = %v, want reason %q for target %q", err, reason, target)
+	}
+	if !errors.Is(err, adapter.ErrInvalidSteerTarget) {
+		t.Fatalf("refusal does not wrap ErrInvalidSteerTarget: %v", err)
+	}
+}
+
+func requireSteerBoundary(t *testing.T, err error, want uint64) {
+	t.Helper()
+	var refusal *adapter.InvalidSteerTargetError
+	if !errors.As(err, &refusal) || refusal.TargetSequence == nil || *refusal.TargetSequence != want {
+		got := "absent"
+		if errors.As(err, &refusal) && refusal.TargetSequence != nil {
+			got = fmt.Sprint(*refusal.TargetSequence)
 		}
+		t.Fatalf("refusal boundary = %s, want %d", got, want)
+	}
+}
+
+func activeRun(t *testing.T, snapshot protocol.SessionState, run protocol.RunID) protocol.ActiveRun {
+	t.Helper()
+	for _, entry := range snapshot.ActiveRuns {
+		if entry.RunID == run {
+			return entry
+		}
+	}
+	t.Fatalf("run %q is not active in %+v", run, snapshot.ActiveRuns)
+	return protocol.ActiveRun{}
+}
+
+func TestMemorySteersARunAtItsInputGate(t *testing.T) {
+	session := newTestSession(t, 64)
+	ctx := context.Background()
+	admission, stream := submitAdmission(t, session)
+	initial := drainAvailable(stream)
+
+	steer := submitSteer(t, session, steerRequest(admission.RunID), "steer-submit")
+	if steer.Admission != protocol.AdmissionSteered || steer.EffectiveDelivery != protocol.EffectiveDeliverySteer || steer.RequestedDelivery != protocol.DeliverySteer {
+		t.Fatalf("admission = %+v", steer)
+	}
+	if steer.RunID != admission.RunID || steer.Status != protocol.RunRunning {
+		t.Fatalf("steer target = %+v", steer)
+	}
+	if steer.TargetSequence == nil || *steer.TargetSequence == 0 {
+		t.Fatalf("steer boundary = %v", steer.TargetSequence)
+	}
+	if len(steer.MessageIDs) != 1 || steer.MessageIDs[0] != "guidance" {
+		t.Fatalf("steer message ids = %v", steer.MessageIDs)
+	}
+
+	snapshot, err := session.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := activeRun(t, snapshot, admission.RunID)
+	if len(entry.PendingSteers) != 1 || entry.PendingSteers[0].SubmissionID != steer.SubmissionID || entry.PendingSteers[0].RequestID != "steer-submit" {
+		t.Fatalf("pending steers = %+v", entry.PendingSteers)
+	}
+	if len(entry.AdmittedSubmitRequests) != 1 || entry.AdmittedSubmitRequests[0] != "steer-submit" {
+		t.Fatalf("admitted anchors = %v", entry.AdmittedSubmitRequests)
+	}
+	if entry.AsOfSequence == nil || *entry.AsOfSequence != *steer.TargetSequence {
+		t.Fatalf("as_of_sequence = %v, want %v", entry.AsOfSequence, steer.TargetSequence)
+	}
+	if events := drainAvailable(stream); len(events) != 0 {
+		t.Fatalf("a settlement preceded the input gate: %v", events)
+	}
+
+	events := resolveScriptedGates(t, session, admission.RunID, stream, initial)
+	applied := envelopeOfType(t, events, protocol.TypeRunSteerApplied)
+	var payload protocol.RunSteerAppliedPayload
+	if err := applied.DecodePayload(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.SubmissionID != steer.SubmissionID || payload.RequestID != "steer-submit" || payload.Boundary != protocol.SteerTurn {
+		t.Fatalf("applied payload = %+v", payload)
+	}
+	if len(payload.MessageIDs) != 1 || payload.MessageIDs[0] != "guidance" {
+		t.Fatalf("applied message ids = %v", payload.MessageIDs)
+	}
+	input := envelopeOfType(t, events, protocol.TypeUserInputRequested)
+	if applied.Sequence == nil || input.Sequence == nil || *applied.Sequence >= *input.Sequence {
+		t.Fatalf("applied at %v does not precede the input gate at %v", applied.Sequence, input.Sequence)
+	}
+
+	snapshot, err = session.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.ActiveRuns) != 0 {
+		t.Fatalf("a settled steer stayed pending: %+v", snapshot.ActiveRuns)
+	}
+}
+
+func TestMemoryStateNeverOmitsASteerItHasSettled(t *testing.T) {
+	session := newTestSession(t, 64)
+	admission, stream := submitAdmission(t, session)
+	initial := drainAvailable(stream)
+	submitSteer(t, session, steerRequest(admission.RunID), "steer-submit")
+
+	type observed struct {
+		at      *uint64
+		pending bool
+	}
+	var mu sync.Mutex
+	var seen []observed
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			snapshot, err := session.State(context.Background())
+			if err != nil {
+				continue
+			}
+			for _, entry := range snapshot.ActiveRuns {
+				if entry.RunID != admission.RunID {
+					continue
+				}
+				var at *uint64
+				if entry.AsOfSequence != nil {
+					value := *entry.AsOfSequence
+					at = &value
+				}
+				mu.Lock()
+				seen = append(seen, observed{at: at, pending: len(entry.PendingSteers) > 0})
+				mu.Unlock()
+			}
+		}
+	}()
+
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		mu.Lock()
+		count := len(seen)
+		mu.Unlock()
+		if count > 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	events := resolveScriptedGates(t, session, admission.RunID, stream, initial)
+	applied := envelopeOfType(t, events, protocol.TypeRunSteerApplied)
+	if applied.Sequence == nil {
+		t.Fatal("the applied settlement carries no sequence")
+	}
+	time.Sleep(20 * time.Millisecond)
+	close(done)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) == 0 {
+		t.Fatal("no snapshot was taken while the steer was pending")
+	}
+	for _, snapshot := range seen {
+		if snapshot.pending {
+			continue
+		}
+		if snapshot.at == nil || *snapshot.at < *applied.Sequence {
+			t.Fatalf("snapshot at %v omitted a steer that settled at %d", snapshot.at, *applied.Sequence)
+		}
+	}
+}
+
+func TestMemoryKeepsASteerAnchorAfterItSettles(t *testing.T) {
+	session := newTestSession(t, 64)
+	ctx := context.Background()
+	admission, stream := submitAdmission(t, session)
+	initial := drainAvailable(stream)
+	submitSteer(t, session, steerRequest(admission.RunID), "steer-submit")
+
+	requested := envelopeOfType(t, initial, protocol.TypeActionPermissionRequested)
+	var permission protocol.PermissionRequestedPayload
+	if err := requested.DecodePayload(&permission); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Resolve(ctx, adapter.InteractionResolution{
+		RunID: admission.RunID, RespondedBy: permission.RespondedBy,
+		Permission: &protocol.PermissionResolveRequest{
+			InteractionID: permission.InteractionID, SessionID: "session-1", RunID: admission.RunID,
+			RequestedBy: permission.RequestedBy, RespondedBy: permission.RespondedBy,
+			ChoiceID: "approve", Granted: true,
+		}}); err != nil {
+		t.Fatal(err)
+	}
+	rest := drainAvailable(stream)
+	applied := envelopeOfType(t, rest, protocol.TypeRunSteerApplied)
+
+	snapshot, err := session.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := activeRun(t, snapshot, admission.RunID)
+	if len(entry.PendingSteers) != 0 {
+		t.Fatalf("a settled steer stayed pending: %+v", entry.PendingSteers)
+	}
+	if len(entry.AdmittedSubmitRequests) != 1 || entry.AdmittedSubmitRequests[0] != "steer-submit" {
+		t.Fatalf("the admitted anchor vanished with the settlement: %v", entry.AdmittedSubmitRequests)
+	}
+	if entry.AsOfSequence == nil || applied.Sequence == nil || *entry.AsOfSequence < *applied.Sequence {
+		t.Fatalf("as_of_sequence = %v, want at least the settlement's %v", entry.AsOfSequence, applied.Sequence)
+	}
+}
+
+func TestMemoryDropsSteersAtTheTerminal(t *testing.T) {
+	session := newTestSession(t, 64)
+	admission, stream := submitAdmission(t, session)
+	initial := drainAvailable(stream)
+	steer := submitSteer(t, session, steerRequest(admission.RunID), "steer-submit")
+
+	if _, err := session.Cancel(context.Background(), admission.RunID); err != nil {
+		t.Fatal(err)
+	}
+	events := append(initial, drainAvailable(stream)...)
+	dropped := envelopeOfType(t, events, protocol.TypeRunSteerDropped)
+	var payload protocol.RunSteerDroppedPayload
+	if err := dropped.DecodePayload(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.SubmissionID != steer.SubmissionID || payload.RequestID != "steer-submit" {
+		t.Fatalf("dropped payload = %+v", payload)
+	}
+	if payload.Reason.Code != "run_terminated" {
+		t.Fatalf("drop reason = %+v", payload.Reason)
+	}
+	cancelled := envelopeOfType(t, events, protocol.TypeRunCancelled)
+	if dropped.Sequence == nil || cancelled.Sequence == nil || *dropped.Sequence >= *cancelled.Sequence {
+		t.Fatalf("the drop at %v does not precede the terminal at %v", dropped.Sequence, cancelled.Sequence)
+	}
+}
+
+func TestMemorySteerTargetRefusals(t *testing.T) {
+	ctx := context.Background()
+	empty := steerRequest("")
+	_, _, err := newTestSession(t, 64).Submit(ctx, adapter.SubmitRequest{Request: empty})
+	requireSteerReason(t, err, adapter.SteerReasonNoActiveRun, "")
+
+	session := newTestSession(t, 64)
+	first, stream := submitAdmission(t, session)
+	drainAvailable(stream)
+	_, _, err = session.Submit(ctx, adapter.SubmitRequest{Request: steerRequest("run-404")})
+	requireSteerReason(t, err, adapter.SteerReasonUnknownTarget, "run-404")
+
+	reservation, _, err := session.Submit(ctx, adapter.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryQueue, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("later")}}}})
+	if err != nil || reservation.Admission != protocol.AdmissionQueued {
+		t.Fatalf("queue admission = %+v, err = %v", reservation, err)
+	}
+	_, _, err = session.Submit(ctx, adapter.SubmitRequest{Request: steerRequest(reservation.RunID)})
+	requireSteerReason(t, err, adapter.SteerReasonQueued, reservation.RunID)
+	requireSteerBoundary(t, err, 0)
+
+	if _, err := session.Cancel(ctx, reservation.RunID); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = session.Submit(ctx, adapter.SubmitRequest{Request: steerRequest(reservation.RunID)})
+	requireSteerReason(t, err, adapter.SteerReasonTerminal, reservation.RunID)
+	requireSteerBoundary(t, err, 1)
+
+	drainAvailable(stream)
+	if _, err := session.Cancel(ctx, first.RunID); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = session.Submit(ctx, adapter.SubmitRequest{Request: steerRequest(first.RunID)})
+	requireSteerReason(t, err, adapter.SteerReasonTerminal, first.RunID)
+	requireSteerBoundary(t, err, 8)
+
+	idle := steerRequest("")
+	idle.SessionID = "another-session"
+	_, _, err = session.Submit(ctx, adapter.SubmitRequest{Request: idle})
+	if !errors.Is(err, adapter.ErrRunNotFound) {
+		t.Fatalf("a foreign session = %v, want ErrRunNotFound", err)
+	}
+}
+
+func TestMemoryRefusesRunControlsOnASteer(t *testing.T) {
+	session := newTestSession(t, 64)
+	admission, stream := submitAdmission(t, session)
+	drainAvailable(stream)
+
+	cases := []struct {
+		name    string
+		request protocol.MessageSubmitRequest
+		key     string
+	}{
+		{"model", protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliverySteer, TargetRunID: admission.RunID, ModelID: protocol.ControlValue(adapter.ModelSecondary), Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("wait")}}}, protocol.FeatureModelSelection},
+		{"instructions", protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliverySteer, TargetRunID: admission.RunID, Instructions: protocol.ControlValue("be brief"), Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("wait")}}}, protocol.FeatureInstructions},
+		{"choice", protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliverySteer, TargetRunID: admission.RunID, ToolChoice: json.RawMessage(`{"allowed":["scripted_tool"]}`), Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("wait")}}}, protocol.FeatureToolSelection},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			_, steerStream, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: testCase.request})
+			var refused *adapter.UnsupportedControlError
+			if !errors.As(err, &refused) || refused.Feature != testCase.key || refused.Reason != adapter.ControlUnsatisfiable || steerStream != nil {
+				t.Fatalf("refusal = %v, stream = %v", err, steerStream)
+			}
+		})
+	}
+
+	both := protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliverySteer, TargetRunID: admission.RunID, ModelID: protocol.ControlValue(adapter.ModelPrimary), Instructions: protocol.ControlValue("be brief"), Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("wait")}}}
+	_, _, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: both})
+	var refused *adapter.UnsupportedControlError
+	if !errors.As(err, &refused) || refused.Feature != protocol.FeatureInstructions {
+		t.Fatalf("two controls = %v, want the first in wire order", err)
 	}
 }
 
@@ -1404,10 +1737,10 @@ func TestResolveRefusesAQueuedRunBeforeItStarts(t *testing.T) {
 	session := newTestSession(t, 64)
 	ctx := context.Background()
 	submitAdmission(t, session)
-	queued, _, err := session.Submit(ctx, protocol.MessageSubmitRequest{
+	queued, _, err := session.Submit(ctx, adapter.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: "session-1", Delivery: protocol.DeliveryQueue,
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("later")}},
-	})
+	}})
 	if err != nil || queued.Admission != protocol.AdmissionQueued {
 		t.Fatalf("queued admission = %+v, err=%v", queued, err)
 	}

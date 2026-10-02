@@ -64,7 +64,7 @@ func OpenCompound(ctx context.Context, hub *Hub, name string, open base.OpenRequ
 	if compound.Message == nil {
 		return result, nil
 	}
-	admission, err := entry.Submit(ctx, compound.Message.Submit(entry.ID()))
+	admission, err := entry.Submit(ctx, base.SubmitRequest{Request: compound.Message.Submit(entry.ID()), EnvelopeID: compound.RequestID})
 	if err != nil {
 		if result.Subscription != nil {
 			result.Subscription.Close()

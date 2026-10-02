@@ -61,6 +61,20 @@ harness-default tool posture, so every gated tool call still reaches the host
 as a `user.input` gate. `--config <path>` takes the entry of that name from a
 registry shaped like [`examples/oap-serve.json`](examples/oap-serve.json):
 unknown members are refused and `environment` is an explicit allowlist.
+`--backend oapx` serves `oapx`'s own agent loop as the terminal UI builds it —
+the same model catalog, workspace tools and permission engine —
+through the adapter in `zig/src/adapter/oapx/`, so a session gets every
+catalogued provider and the loop's tools, and cancelling a run leaves the
+session open; it passes `goap conformance` against a live model. It is the
+adapter the terminal UI moves onto (#375). The host selects ask or bypass
+mode. In ask mode, tool permissions reach the
+client as `action.permission.requested` and wait for one matching response from
+the declared responder. The built-in `request_user_input` tool asks text, single
+choice or multi choice questions through `user.input.requested`; every answer is
+validated before reaching the native tool. Permission approvals apply to one
+call; argument rewrites and persistent approval choices are refused. Cancelling
+a run closes its pending prompts and leaves the session usable. Compaction
+(Decision 0044) is not carried yet.
 `--backend memory` serves the in-memory reference script and answers exactly as
 `goap`'s does: CI runs `goap conformance` against it and a parity job that
 feeds both trees the same traffic and requires identical output. What that job

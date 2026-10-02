@@ -53,6 +53,8 @@ const (
 	TypeSessionMessageSubmitResponse    EnvelopeType = "session.message.submit.response"
 	TypeRunCancelRequest                EnvelopeType = "run.cancel.request"
 	TypeRunCancelResponse               EnvelopeType = "run.cancel.response"
+	TypeRunSteerApplied                 EnvelopeType = "run.steer.applied"
+	TypeRunSteerDropped                 EnvelopeType = "run.steer.dropped"
 	TypeRunStarted                      EnvelopeType = "run.started"
 	TypeRunStatusUpdated                EnvelopeType = "run.status.updated"
 	TypeContentDelta                    EnvelopeType = "content.delta"

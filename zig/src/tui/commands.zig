@@ -4,6 +4,8 @@ const agent = @import("agent");
 const tui_runtime = @import("tui_runtime");
 const tui_state = @import("tui_state");
 
+pub const over_oap_setting_refusal = "oapx tui fixes this setting when the session opens; OAP has no verb to change it mid-session yet. Use oapx --tui to change it.";
+
 pub const CommandKind = enum {
     help,
     model,
@@ -20,6 +22,8 @@ pub const CommandKind = enum {
     context,
     output,
     autocompact,
+    verbose,
+    redraw,
     settings,
     abort,
     quit,
@@ -46,6 +50,10 @@ pub const CommandAction = enum {
     refresh_models,
     logout_provider,
     add_provider,
+    compact_during_run,
+    redraw,
+    remove_provider,
+    list_providers,
     open_login_picker,
     open_permission_picker,
     open_settings_picker,
@@ -94,13 +102,15 @@ pub const commands = [_]CommandInfo{
     .{ .name = "rename", .kind = .rename, .usage = "/rename <title>", .description = "Rename this session", .handler = handleRename },
     .{ .name = "permissions", .kind = .permissions, .usage = "/permissions [ask|bypass]", .description = "Pick or set tool permission mode", .handler = handlePermissions },
     .{ .name = "perm", .kind = .permissions, .usage = "/perm [ask|bypass]", .description = "Pick or set tool permission mode", .handler = handlePermissions },
-    .{ .name = "provider", .kind = .provider, .usage = "/provider add <id> <base_url> [--api <api>] [--env <NAME> | --no-auth]", .description = "Declare a custom provider in ~/.oapx/providers.json", .handler = handleProvider },
+    .{ .name = "provider", .kind = .provider, .usage = "/provider add <id> <base_url> [--api <api>] [--env <NAME> | --no-auth] | /provider del <id> | /provider list", .description = "Declare, delete, or list the custom providers in ~/.oapx/providers.json", .handler = handleProvider },
     .{ .name = "think", .kind = .think, .usage = "/think [off|low|medium|high|xhigh|max]", .description = "Show or set the thinking level", .handler = handleThink },
     .{ .name = "clear", .kind = .clear, .usage = "/clear", .description = "Clear transcript display", .handler = handleClear },
     .{ .name = "compact", .kind = .compact, .usage = "/compact [focus]", .description = "Summarize the conversation to free context", .handler = handleCompact },
     .{ .name = "context", .kind = .context, .usage = "/context [tokens|default]", .description = "Show or set the context window for this session", .handler = handleContext },
     .{ .name = "output", .kind = .output, .usage = "/output [auto|max|tokens]", .description = "Show or set how much output a reply may ask for", .handler = handleOutput },
     .{ .name = "autocompact", .kind = .autocompact, .usage = "/autocompact [auto|percent|off]", .description = "Show or set when the conversation compacts on its own", .handler = handleAutoCompact },
+    .{ .name = "verbose", .kind = .verbose, .usage = "/verbose [quiet|normal|verbose] | /verbose <thinking|tools|output|notices|status> <level>", .description = "Show or set how much the transcript and status bar show", .handler = handleVerbose },
+    .{ .name = "redraw", .kind = .redraw, .usage = "/redraw", .description = "Clear the terminal and reprint the session at the current verbosity", .handler = handleRedraw },
     .{ .name = "settings", .kind = .settings, .usage = "/settings", .description = "Configure TUI settings", .handler = handleSettings },
     .{ .name = "abort", .kind = .abort, .usage = "/abort", .description = "Cancel the active streaming turn", .handler = handleAbort },
     .{ .name = "quit", .kind = .quit, .usage = "/quit", .description = "Exit TUI", .handler = handleQuit },
@@ -224,10 +234,7 @@ fn handleHelp(ctx: CommandContext, command: Command) !CommandResult {
 
 fn handleModel(ctx: CommandContext, command: Command) !CommandResult {
     if (command.arg) |model_id| {
-        if (std.mem.eql(u8, model_id, "refresh")) {
-            if (runIsActive(ctx)) return .{ .output = try ctx.allocator.dupe(u8, "A turn is running; refresh models once it finishes."), .is_error = true };
-            return .{ .action = .refresh_models };
-        }
+        if (std.mem.eql(u8, model_id, "refresh")) return .{ .action = .refresh_models };
         if (ctx.session) |session| {
             try session.switchModel(model_id);
         } else if (ctx.runtime) |runtime| {
@@ -258,12 +265,22 @@ fn runIsActive(ctx: CommandContext) bool {
     return !runtime.isIdle();
 }
 
-pub const provider_usage = "usage: /provider add <id> <base_url> [--api openai-completions|openai-responses|anthropic-messages] [--env <NAME> | --no-auth]";
+pub const provider_usage = "usage: /provider add <id> <base_url> [--api openai-completions|openai-responses|anthropic-messages] [--env <NAME> | --no-auth], /provider del <id>, or /provider list";
 
 fn handleProvider(ctx: CommandContext, command: Command) !CommandResult {
     const arg = command.arg orelse return .{ .output = try ctx.allocator.dupe(u8, provider_usage), .is_error = true };
     var words = std.mem.tokenizeAny(u8, arg, " \t");
     const verb = words.next() orelse return .{ .output = try ctx.allocator.dupe(u8, provider_usage), .is_error = true };
+    if (std.mem.eql(u8, verb, "del") or std.mem.eql(u8, verb, "delete")) {
+        _ = words.next() orelse return .{ .output = try ctx.allocator.dupe(u8, provider_usage), .is_error = true };
+        if (words.peek() != null) return .{ .output = try ctx.allocator.dupe(u8, provider_usage), .is_error = true };
+        if (runIsActive(ctx)) return .{ .output = try ctx.allocator.dupe(u8, "A turn is running; delete the provider once it finishes."), .is_error = true };
+        return .{ .action = .remove_provider };
+    }
+    if (std.mem.eql(u8, verb, "list")) {
+        if (words.peek() != null) return .{ .output = try ctx.allocator.dupe(u8, provider_usage), .is_error = true };
+        return .{ .action = .list_providers };
+    }
     if (!std.mem.eql(u8, verb, "add") or words.peek() == null) return .{ .output = try ctx.allocator.dupe(u8, provider_usage), .is_error = true };
     return .{ .action = .add_provider };
 }
@@ -313,7 +330,10 @@ fn handlePermissions(ctx: CommandContext, command: Command) !CommandResult {
             };
         };
         const runtime = ctx.runtime orelse return error.NoRuntimeConfigured;
-        try runtime.setPermissionMode(mode);
+        runtime.setPermissionMode(mode) catch |err| switch (err) {
+            error.UnavailableOverOap => return .{ .output = try ctx.allocator.dupe(u8, over_oap_setting_refusal), .is_error = true },
+            else => return err,
+        };
         ctx.state.permission_mode = mode;
         return .{ .output = try std.fmt.allocPrint(ctx.allocator, "permission mode set to {s}", .{@tagName(mode)}) };
     }
@@ -340,8 +360,10 @@ fn handleThink(ctx: CommandContext, command: Command) !CommandResult {
             .is_error = true,
         };
     };
+    if (ctx.runtime) |runtime| runtime.setThinkingLevel(level) catch {
+        return .{ .output = try ctx.allocator.dupe(u8, over_oap_setting_refusal), .is_error = true };
+    };
     ctx.state.thinking_level = level;
-    if (ctx.runtime) |runtime| runtime.setThinkingLevel(level);
     return .{ .output = try std.fmt.allocPrint(ctx.allocator, "thinking level set to {s}", .{@tagName(level)}) };
 }
 
@@ -369,7 +391,7 @@ fn handleClear(ctx: CommandContext, command: Command) !CommandResult {
 fn handleCompact(ctx: CommandContext, command: Command) !CommandResult {
     _ = command;
     if (ctx.state.status.compacting) return .{ .output = try ctx.allocator.dupe(u8, "Already compacting; esc cancels.") };
-    if (ctx.state.status.streaming) return .{ .output = try ctx.allocator.dupe(u8, "A turn is running; compact once it finishes, or press esc to stop it first.") };
+    if (ctx.state.status.streaming) return .{ .action = .compact_during_run };
     return .{ .action = .compact };
 }
 
@@ -384,6 +406,7 @@ fn handleContext(ctx: CommandContext, command: Command) !CommandResult {
                 .is_error = true,
             },
             error.AboveMaximum => return error.AboveMaximum,
+            error.UnavailableOverOap => return .{ .output = try ctx.allocator.dupe(u8, over_oap_setting_refusal), .is_error = true },
         };
         return .{ .output = try contextWindowReport(ctx.allocator, runtime) };
     }
@@ -402,6 +425,7 @@ fn handleContext(ctx: CommandContext, command: Command) !CommandResult {
             .output = try ctx.allocator.dupe(u8, "A turn is running; set the context window once it finishes."),
             .is_error = true,
         },
+        error.UnavailableOverOap => return .{ .output = try ctx.allocator.dupe(u8, over_oap_setting_refusal), .is_error = true },
     };
     return .{ .output = try contextWindowReport(ctx.allocator, runtime) };
 }
@@ -444,6 +468,7 @@ fn handleOutput(ctx: CommandContext, command: Command) !CommandResult {
             .output = try ctx.allocator.dupe(u8, "A turn is running; set the output limit once it finishes."),
             .is_error = true,
         },
+        error.UnavailableOverOap => return .{ .output = try ctx.allocator.dupe(u8, over_oap_setting_refusal), .is_error = true },
     };
     return .{ .output = try outputReport(ctx.allocator, runtime) };
 }
@@ -468,6 +493,36 @@ fn outputReport(allocator: std.mem.Allocator, runtime: *tui_runtime.TuiRuntime) 
     }
     try writer.writeAll(". /output auto restores the default.");
     return out.toOwnedSlice();
+}
+
+pub const verbose_usage = "usage: /verbose [quiet|normal|verbose], or /verbose <thinking|tools|output|notices|status> <quiet|normal|verbose>";
+
+fn handleVerbose(ctx: CommandContext, command: Command) !CommandResult {
+    const arg = command.arg orelse return .{ .output = try verbosityReport(ctx) };
+    var words = std.mem.tokenizeAny(u8, arg, " \t");
+    const first = words.next() orelse return .{ .output = try verbosityReport(ctx) };
+    if (std.meta.stringToEnum(tui_state.VerbosityLevel, first)) |level| {
+        if (words.next() != null) return .{ .output = try ctx.allocator.dupe(u8, verbose_usage), .is_error = true };
+        ctx.state.verbosity = tui_state.Verbosity.all(level);
+        return .{ .output = try verbosityReport(ctx) };
+    }
+    const part = std.meta.stringToEnum(tui_state.VerbosityPart, first) orelse return .{ .output = try ctx.allocator.dupe(u8, verbose_usage), .is_error = true };
+    const level_text = words.next() orelse return .{ .output = try ctx.allocator.dupe(u8, verbose_usage), .is_error = true };
+    const level = std.meta.stringToEnum(tui_state.VerbosityLevel, level_text) orelse return .{ .output = try ctx.allocator.dupe(u8, verbose_usage), .is_error = true };
+    if (words.next() != null) return .{ .output = try ctx.allocator.dupe(u8, verbose_usage), .is_error = true };
+    ctx.state.verbosity.set(part, level);
+    return .{ .output = try verbosityReport(ctx) };
+}
+
+fn handleRedraw(ctx: CommandContext, command: Command) !CommandResult {
+    _ = command;
+    if (runIsActive(ctx)) return .{ .output = try ctx.allocator.dupe(u8, "A turn is running; redraw once it finishes."), .is_error = true };
+    return .{ .action = .redraw };
+}
+
+fn verbosityReport(ctx: CommandContext) ![]u8 {
+    const v = ctx.state.verbosity;
+    return std.fmt.allocPrint(ctx.allocator, "verbosity: thinking {t}, tools {t}, output {t}, notices {t}, status {t}", .{ v.thinking, v.tools, v.output, v.notices, v.status });
 }
 
 fn handleAutoCompact(ctx: CommandContext, command: Command) !CommandResult {
@@ -860,6 +915,43 @@ test "login command can target a provider directly" {
     try std.testing.expectEqualStrings("openai-codex", result.login_provider);
 }
 
+test "verbose sets every part at once or one part on its own, and refuses what it cannot read" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    const ctx = CommandContext{ .allocator = std.testing.allocator, .state = &state };
+
+    var all = try dispatch(ctx, try parse("/verbose quiet"));
+    defer all.deinit(std.testing.allocator);
+    try std.testing.expectEqual(tui_state.Verbosity.all(.quiet), state.verbosity);
+
+    var one = try dispatch(ctx, try parse("/verbose status verbose"));
+    defer one.deinit(std.testing.allocator);
+    try std.testing.expectEqual(tui_state.VerbosityLevel.verbose, state.verbosity.status);
+    try std.testing.expectEqual(tui_state.VerbosityLevel.quiet, state.verbosity.tools);
+    try std.testing.expectEqualStrings("verbosity: thinking quiet, tools quiet, output quiet, notices quiet, status verbose", one.output);
+
+    inline for (.{ "/verbose loud", "/verbose status", "/verbose status loud", "/verbose quiet now", "/verbose tools quiet extra" }) |input| {
+        var bad = try dispatch(ctx, try parse(input));
+        defer bad.deinit(std.testing.allocator);
+        try std.testing.expect(bad.is_error);
+        try std.testing.expectEqualStrings(verbose_usage, bad.output);
+    }
+    try std.testing.expectEqual(tui_state.VerbosityLevel.verbose, state.verbosity.status);
+}
+
+test "redraw hands its work to the app and waits for a running turn" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    var idle = try dispatch(.{ .allocator = std.testing.allocator, .state = &state }, try parse("/redraw"));
+    defer idle.deinit(std.testing.allocator);
+    try std.testing.expectEqual(CommandAction.redraw, idle.action);
+    state.status.streaming = true;
+    var busy = try dispatch(.{ .allocator = std.testing.allocator, .state = &state }, try parse("/redraw"));
+    defer busy.deinit(std.testing.allocator);
+    try std.testing.expectEqual(CommandAction.none, busy.action);
+    try std.testing.expect(busy.is_error);
+}
+
 test "model refresh and logout hand their work to the app" {
     var state = tui_state.AppState.init(std.testing.allocator);
     defer state.deinit();
@@ -867,6 +959,12 @@ test "model refresh and logout hand their work to the app" {
     var refresh = try dispatch(.{ .allocator = std.testing.allocator, .state = &state }, try parse("/model refresh"));
     defer refresh.deinit(std.testing.allocator);
     try std.testing.expectEqual(CommandAction.refresh_models, refresh.action);
+
+    state.status.streaming = true;
+    var running = try dispatch(.{ .allocator = std.testing.allocator, .state = &state }, try parse("/model refresh"));
+    defer running.deinit(std.testing.allocator);
+    try std.testing.expectEqual(CommandAction.refresh_models, running.action);
+    state.status.streaming = false;
 
     const logout = try parse("/logout opencode-go");
     try std.testing.expectEqual(CommandKind.logout, logout.kind);
@@ -885,10 +983,6 @@ test "model refresh and logout hand their work to the app" {
     defer busy.deinit(std.testing.allocator);
     try std.testing.expectEqual(CommandAction.none, busy.action);
     try std.testing.expect(busy.is_error);
-    var busy_refresh = try dispatch(.{ .allocator = std.testing.allocator, .state = &state }, try parse("/model refresh"));
-    defer busy_refresh.deinit(std.testing.allocator);
-    try std.testing.expectEqual(CommandAction.none, busy_refresh.action);
-    try std.testing.expect(busy_refresh.is_error);
 }
 
 test "resume opens the session picker when sessions exist" {
@@ -981,7 +1075,7 @@ test "runtime dependent commands dispatch to no-runtime errors" {
     try std.testing.expectError(error.NoRuntimeConfigured, dispatch(ctx, .{ .kind = .model, .arg = "model-a" }));
 }
 
-test "compact takes its focus and waits for a running turn" {
+test "compact takes its focus and hands a running turn's request to the app" {
     const command = try parse("/compact  the parser rewrite ");
     try std.testing.expectEqual(CommandKind.compact, command.kind);
     try std.testing.expectEqualStrings("the parser rewrite", command.arg.?);
@@ -997,8 +1091,7 @@ test "compact takes its focus and waits for a running turn" {
     state.status.streaming = true;
     var busy = try dispatch(ctx, command);
     defer busy.deinit(std.testing.allocator);
-    try std.testing.expectEqual(CommandAction.none, busy.action);
-    try std.testing.expect(std.mem.indexOf(u8, busy.output, "A turn is running") != null);
+    try std.testing.expectEqual(CommandAction.compact_during_run, busy.action);
 
     state.status.compacting = true;
     var again = try dispatch(ctx, command);
@@ -1108,7 +1201,7 @@ test "abort does not hold a steer the run already consumed" {
     try std.testing.expectEqualStrings("still waiting", state.held_after_abort.items[0]);
 }
 
-test "logout and model refresh wait for a turn the status has not caught up with" {
+test "logout waits for a turn the status has not caught up with" {
     var runtime = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{});
     defer runtime.deinit();
     runtime.stream_active = true;
@@ -1117,12 +1210,14 @@ test "logout and model refresh wait for a turn the status has not caught up with
     defer state.deinit();
     try std.testing.expect(!state.status.streaming);
 
-    inline for (.{ "/logout opencode-go", "/model refresh" }) |input| {
-        var result = try dispatch(.{ .allocator = std.testing.allocator, .state = &state, .runtime = &runtime }, try parse(input));
-        defer result.deinit(std.testing.allocator);
-        try std.testing.expectEqual(CommandAction.none, result.action);
-        try std.testing.expect(result.is_error);
-    }
+    var result = try dispatch(.{ .allocator = std.testing.allocator, .state = &state, .runtime = &runtime }, try parse("/logout opencode-go"));
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqual(CommandAction.none, result.action);
+    try std.testing.expect(result.is_error);
+
+    var refresh = try dispatch(.{ .allocator = std.testing.allocator, .state = &state, .runtime = &runtime }, try parse("/model refresh"));
+    defer refresh.deinit(std.testing.allocator);
+    try std.testing.expectEqual(CommandAction.refresh_models, refresh.action);
 }
 
 test "abort cancels active turn before streaming status is set" {

@@ -4265,13 +4265,17 @@ long list is paged.
 
 ## T4. Steer
 
-**Status: [Decision 0013](../decisions/0013-steer.md) is proposed and adopts
-this section as its shape.** The record names one prerequisite that has not
-landed: `adapter.Session.Submit` still takes a bare
-`protocol.MessageSubmitRequest`, so no adapter can populate `request_id` on a
-steer settlement. This section assigned that change to T2, which graduated
-without it. It is a compile-time break across all nine `adapter.Session`
-implementations and should land on its own.
+**Status: [Decision 0013](../decisions/0013-steer.md) remains proposed.**
+The submit-envelope prerequisite landed in #798 (`f3e137bcbd`). The first
+graduation slice added the steer wire types, validator diagnostics, and positive
+and negative fixtures under the `steer` unit. The second slice is step 1 of
+Decision 0003's gate: the memory reference adapter executes steer — admission
+against a named or implicit started target, the ranked `invalid_steer_target`
+refusals, a settlement at the input gate and a drop at the terminal — and both
+trees advertise `session.message.delivery.steer` at `emulated`, in parity. That
+slice does not make the unit executable: binding and client ordering, and native
+pi execution, remain the gates still ahead, so nothing here advertises a
+capability the surfaces cannot yet exercise end to end.
 
 The record also defers the `settled_steers` session-state surface below to its
 own decision, rather than graduating it inside this unit.

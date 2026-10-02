@@ -12,7 +12,7 @@ pub const Options = struct {
 const gauge_cells: usize = 8;
 const hint_gap: usize = 3;
 
-const SegmentKind = enum { model, context, queue, perm, cost, backpressure, drops, think, turns, state, rate, rate_avg };
+const SegmentKind = enum { model, context, queue, perm, cost, backpressure, drops, think, turns, state, rate, rate_avg, session };
 
 const Segment = struct {
     kind: SegmentKind,
@@ -29,6 +29,7 @@ const DropStep = union(enum) {
 };
 
 const drop_steps = [_]DropStep{
+    .{ .kind = .session },
     .{ .kind = .rate_avg },
     .{ .kind = .rate },
     .{ .kind = .turns },
@@ -60,14 +61,15 @@ pub fn render(allocator: std.mem.Allocator, state: *const tui_state.AppState, op
     if (state.queue.total() > 0) {
         try pushOwnedSegment(&segments, allocator, .queue, "queue", try std.fmt.allocPrint(allocator, "{d}", .{state.queue.total()}));
     }
+    const quiet = state.verbosity.status == .quiet;
     if (state.mode == .approval) {
         try pushValue(&segments, allocator, .perm, "pending", tui_theme.warningText());
     } else if (state.permission_mode == .bypass) {
         try pushValue(&segments, allocator, .perm, "bypass", tui_theme.warningText());
-    } else {
+    } else if (!quiet) {
         try pushValue(&segments, allocator, .perm, @tagName(state.permission_mode), tui_theme.successText());
     }
-    if (contextTokens(state) > 0 and state.telemetry.input_cost_per_million > 0) try pushOwnedValue(&segments, allocator, .cost, try estimatedCost(allocator, state), tui_theme.statusSegment());
+    if (!quiet and contextTokens(state) > 0 and state.telemetry.input_cost_per_million > 0) try pushOwnedValue(&segments, allocator, .cost, try estimatedCost(allocator, state), tui_theme.statusSegment());
     if (state.backpressure_active or state.dropped_event_count > 0) {
         const label: []const u8 = if (state.backpressure_active) "backpressure" else "drops";
         const value = try std.fmt.allocPrint(allocator, "{s}:{d}", .{ label, state.dropped_event_count });
@@ -77,10 +79,15 @@ pub fn render(allocator: std.mem.Allocator, state: *const tui_state.AppState, op
             try pushOwnedValue(&segments, allocator, .drops, value, tui_theme.statusSegment());
         }
     }
-    try pushValue(&segments, allocator, .think, @tagName(state.thinking_level), tui_theme.statusSegment());
-    try pushOwnedSegment(&segments, allocator, .turns, "turns", try std.fmt.allocPrint(allocator, "{d}", .{state.status.turn_count}));
+    if (!quiet) {
+        try pushValue(&segments, allocator, .think, @tagName(state.thinking_level), tui_theme.statusSegment());
+        try pushOwnedSegment(&segments, allocator, .turns, "turns", try std.fmt.allocPrint(allocator, "{d}", .{state.status.turn_count}));
+    }
     try writeState(&segments, allocator, state);
-    try writeRate(&segments, allocator, state);
+    if (!quiet) try writeRate(&segments, allocator, state);
+    if (state.verbosity.status == .verbose and state.status.session_id.len > 0) {
+        try pushOwnedSegment(&segments, allocator, .session, "session", try allocator.dupe(u8, state.status.session_id));
+    }
 
     var dropped = [_]bool{false} ** max_segments;
     const mask = dropped[0..segments.items.len];
@@ -303,8 +310,15 @@ fn writeState(list: *SegmentList, allocator: std.mem.Allocator, state: *const tu
             try std.fmt.allocPrint(allocator, "{s} {s}", .{ tui_theme.spinnerFrame(state.anim_tick), activity });
         defer allocator.free(value);
         try pushValue(list, allocator, .state, value, tui_theme.runningText());
+    } else if (state.status.refreshing_models) {
+        const value = try std.fmt.allocPrint(allocator, "{s} refreshing models", .{tui_theme.spinnerFrame(state.anim_tick)});
+        defer allocator.free(value);
+        try pushValue(list, allocator, .state, value, tui_theme.runningText());
     } else {
         try pushValue(list, allocator, .state, "idle", tui_theme.muted());
+    }
+    if (state.status.streaming and state.status.refreshing_models) {
+        try pushValue(list, allocator, .state, "refreshing models", tui_theme.muted());
     }
 }
 
@@ -389,6 +403,33 @@ test "status bar renders model and clips width" {
 
     try std.testing.expect(tui_text.visibleWidth(text) <= 24);
     try std.testing.expect(std.mem.indexOf(u8, text, "streaming") != null);
+}
+
+test "status verbosity drops the detail when quiet and adds the session when verbose" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    try state.status.setModel(std.testing.allocator, "claude", "anthropic");
+    try state.status.setSessionId(std.testing.allocator, "s-1234");
+    state.status.turn_count = 7;
+    state.permission_mode = .ask;
+
+    const normal = try render(std.testing.allocator, &state, .{ .width = 200 });
+    defer std.testing.allocator.free(normal);
+    try std.testing.expect(std.mem.indexOf(u8, normal, "turns") != null);
+    try std.testing.expect(std.mem.indexOf(u8, normal, "ask") != null);
+    try std.testing.expect(std.mem.indexOf(u8, normal, "s-1234") == null);
+
+    state.verbosity.status = .quiet;
+    const quiet = try render(std.testing.allocator, &state, .{ .width = 200 });
+    defer std.testing.allocator.free(quiet);
+    try std.testing.expect(std.mem.indexOf(u8, quiet, "turns") == null);
+    try std.testing.expect(std.mem.indexOf(u8, quiet, "ask") == null);
+    try std.testing.expect(std.mem.indexOf(u8, quiet, "claude") != null);
+
+    state.verbosity.status = .verbose;
+    const verbose = try render(std.testing.allocator, &state, .{ .width = 200 });
+    defer std.testing.allocator.free(verbose);
+    try std.testing.expect(std.mem.indexOf(u8, verbose, "s-1234") != null);
 }
 
 test "status bar renders queue count when queued" {

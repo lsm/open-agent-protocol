@@ -236,10 +236,10 @@ func TestSubmitRejectsUnappliedModelID(t *testing.T) {
 	_, session, _ := openWire(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_, _, err := session.Submit(ctx, protocol.MessageSubmitRequest{
+	_, _, err := session.Submit(ctx, base.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: "session", Delivery: protocol.DeliveryAuto, ModelID: protocol.ControlValue("claude-other"),
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}},
-	})
+	}})
 	if !errors.Is(err, base.ErrUnsupportedInput) {
 		t.Fatalf("got %v, want ErrUnsupportedInput", err)
 	}
@@ -252,7 +252,7 @@ func submit(session base.Session) chan submitOutcome {
 func submitWith(session base.Session, request protocol.MessageSubmitRequest) chan submitOutcome {
 	channel := make(chan submitOutcome, 1)
 	go func() {
-		admission, stream, err := session.Submit(context.Background(), request)
+		admission, stream, err := session.Submit(context.Background(), base.SubmitRequest{Request: request})
 		channel <- submitOutcome{request, admission, stream, err}
 	}()
 	return channel
@@ -994,7 +994,7 @@ func TestOverlapSubmitRejectedBeforeWrite(t *testing.T) {
 	_, session, peer := openWire(t)
 	uuid, outcome := admit(t, session, peer)
 	peer.send(textDelta(uuid, "streaming"))
-	_, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("again")}}})
+	_, stream, err := session.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("again")}}}})
 	if err == nil {
 		t.Fatal("overlap accepted")
 	}
@@ -1338,7 +1338,7 @@ func TestSubmitRejectsInvalidSurfaces(t *testing.T) {
 		"foreign session": {SessionID: "other", Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("a")}}},
 	}
 	for name, request := range cases {
-		_, stream, err := session.Submit(context.Background(), request)
+		_, stream, err := session.Submit(context.Background(), base.SubmitRequest{Request: request})
 		if err == nil {
 			t.Fatalf("%s: accepted", name)
 		}
@@ -1362,7 +1362,7 @@ func TestAnExplicitDeliveryIsRefusedUnderItsOwnKey(t *testing.T) {
 		{protocol.DeliverySteer, protocol.FeatureDeliverySteer},
 		{protocol.DeliveryBTW, protocol.FeatureDeliveryBTW},
 	} {
-		_, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: mode.delivery, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("a")}}})
+		_, stream, err := session.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Delivery: mode.delivery, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("a")}}}})
 		var refused *base.UnsupportedControlError
 		if !errors.As(err, &refused) || refused.Feature != mode.key || refused.Reason != base.ControlUnadvertised || stream != nil {
 			t.Fatalf("%s: err = %v, stream = %v", mode.delivery, err, stream)
@@ -1478,7 +1478,7 @@ func TestSubmitCancellationAfterWriteRetiresSession(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	channel := make(chan submitOutcome, 1)
 	go func() {
-		admission, stream, err := session.Submit(ctx, helloSubmit)
+		admission, stream, err := session.Submit(ctx, base.SubmitRequest{Request: helloSubmit})
 		channel <- submitOutcome{helloSubmit, admission, stream, err}
 	}()
 	peer.writtenUser()
@@ -1492,7 +1492,7 @@ func TestSubmitCancellationAfterWriteRetiresSession(t *testing.T) {
 		t.Fatal("submit did not return")
 	}
 
-	if _, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("again")}}}); !errors.Is(err, base.ErrSessionClosed) || stream != nil {
+	if _, stream, err := session.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("again")}}}}); !errors.Is(err, base.ErrSessionClosed) || stream != nil {
 		t.Fatalf("post-cancellation submit err = %v", err)
 	}
 	if err := session.Close(context.Background()); err != nil {
