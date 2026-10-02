@@ -10,9 +10,10 @@ This cut is the Zig side of the handoff the Go record
 (`docs/go-deepseek-request-compatibility.md`, section **Zig handoff**) prescribes,
 integrated by section rather than by parallel edits. Each section it names:
 
-- **Effort mapping** — the table in this record matches that record's `minimal/low →
-  low`, `medium/high/xhigh → high`, `max/ultra → max`; the Go table is its [Effort
-  mapping] section.
+- **Effort mapping** — the Go record's table is `minimal/low → low`,
+  `medium/high/xhigh → high`, `max/ultra → max`. Zig now sends `xhigh` as `max`
+  (see [The mapping](#the-mapping)), so the two tables differ on that one row
+  until the Go side follows.
 - **Identity** — `usesDeepSeekWire` combines the same two signals the Go
   `IsDeepSeekModel` does, additively, and the Go record's [Identity] section states
   the same rule.
@@ -54,14 +55,37 @@ the lane's own and was not made while other lanes were mid-change.
 | internal level | sent as |
 |---|---|
 | `minimal`, `low` | `low` |
-| `medium`, `high`, `xhigh` | `high` |
-| `max`, `ultra` | `max` |
+| `medium`, `high` | `high` |
+| `xhigh`, `max`, `ultra` | `max` |
 | anything else | `high` (unchanged fallback; not decided here) |
 
-`xhigh` was previously sent as `max`. It is sent as `high`: the published
-table puts `xhigh` with `medium` and `high`, and reserves `max` for
-`max` and `ultra`. `ultra` was previously unhandled and fell into a
-catch-all; it is now `max` rather than a guess.
+`xhigh` is sent as `max`. The provider wire's `reasoningLevel` stops at
+`xhigh` (`schema/v0.1/provider.schema.json`), so the TUI's `/think max`
+reaches the provider as `xhigh` (`reasoningEffortName` in
+`oap_provider_bridge.zig`). Mapping `xhigh` to `high`, as an earlier cut of
+this record did, left no level that asks DeepSeek for `max`.
+`ultra` was previously unhandled and fell into a catch-all; it is now `max`
+rather than a guess.
+
+## OpenCode
+
+`opencode` and `opencode-go` serve many vendors' models through one
+completions endpoint and pass `reasoning_effort` through to the backend.
+Without it, a backend chooses: on `opencode-go`, DeepSeek V4.1 Flash served
+by DeepSeek's own API reasoned on most replies, and served by a vLLM host
+reasoned on none. `openCodeEffort` (`provider_caps.zig`) follows OpenCode's
+own `variants` table (`packages/opencode/src/provider/transform.ts`, the
+`@ai-sdk/openai-compatible` arm):
+
+| model id contains | sent |
+|---|---|
+| `deepseek-v4` | the DeepSeek table above |
+| `glm-5.2` | `high`, or `max` for `xhigh`/`max`/`ultra` |
+| `deepseek-chat`, `-reasoner`, `-r1`, `-v3`, `minimax`, other `glm`, `kimi`, `k2p`, `qwen`, `big-pickle` | nothing; OpenCode offers no level |
+| anything else | `low`, `medium` or `high` |
+
+`off` sends nothing. OpenCode Go accepted `reasoning_effort` of `low`,
+`high`, `xhigh`, `max` and `none` on `deepseek-v4.1-flash`.
 
 An unrecognised string keeps the **pre-existing** fallback, `high`. This
 cut does not decide that case. An earlier draft of this record claimed

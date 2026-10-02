@@ -130,9 +130,33 @@ pub fn usesDeepSeekWire(vendor_id: []const u8, base_url: ?[]const u8) bool {
 
 pub fn deepSeekEffort(effort: []const u8) []const u8 {
     if (std.mem.eql(u8, effort, "minimal") or std.mem.eql(u8, effort, "low")) return "low";
-    if (std.mem.eql(u8, effort, "max") or std.mem.eql(u8, effort, "ultra")) return "max";
-    if (std.mem.eql(u8, effort, "medium") or std.mem.eql(u8, effort, "high") or std.mem.eql(u8, effort, "xhigh")) return "high";
+    if (std.mem.eql(u8, effort, "xhigh") or std.mem.eql(u8, effort, "max") or std.mem.eql(u8, effort, "ultra")) return "max";
     return "high";
+}
+
+pub fn isOpenCodeGateway(vendor_id: []const u8) bool {
+    return std.mem.eql(u8, vendor_id, "opencode") or std.mem.eql(u8, vendor_id, "opencode-go");
+}
+
+pub fn openCodeEffort(model_id: []const u8, effort: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, effort, "off") or std.mem.eql(u8, effort, "none")) return null;
+    if (containsAny(model_id, &.{ "glm-5.2", "glm-5-2", "glm-5p2" })) return if (isTopEffort(effort)) "max" else "high";
+    if (containsAny(model_id, &.{ "deepseek-chat", "deepseek-reasoner", "deepseek-r1", "deepseek-v3", "minimax", "glm", "kimi", "k2p", "qwen", "big-pickle" })) return null;
+    if (containsAny(model_id, &.{"deepseek-v4"})) return deepSeekEffort(effort);
+    if (std.mem.eql(u8, effort, "minimal") or std.mem.eql(u8, effort, "low")) return "low";
+    if (std.mem.eql(u8, effort, "medium")) return "medium";
+    return "high";
+}
+
+fn isTopEffort(effort: []const u8) bool {
+    return std.mem.eql(u8, effort, "xhigh") or std.mem.eql(u8, effort, "max") or std.mem.eql(u8, effort, "ultra");
+}
+
+fn containsAny(haystack: []const u8, needles: []const []const u8) bool {
+    for (needles) |needle| {
+        if (std.ascii.indexOfIgnoreCase(haystack, needle) != null) return true;
+    }
+    return false;
 }
 
 fn hostIsOrSubdomainOf(host: []const u8, domain: []const u8) bool {
@@ -940,9 +964,29 @@ test "the deepseek level table follows the published mapping" {
     try std.testing.expectEqualStrings("low", deepSeekEffort("low"));
     try std.testing.expectEqualStrings("high", deepSeekEffort("medium"));
     try std.testing.expectEqualStrings("high", deepSeekEffort("high"));
-    try std.testing.expectEqualStrings("high", deepSeekEffort("xhigh"));
+    try std.testing.expectEqualStrings("max", deepSeekEffort("xhigh"));
     try std.testing.expectEqualStrings("max", deepSeekEffort("max"));
     try std.testing.expectEqualStrings("max", deepSeekEffort("ultra"));
+}
+
+test "opencode sends each model family the efforts opencode itself offers it" {
+    try std.testing.expect(isOpenCodeGateway("opencode"));
+    try std.testing.expect(isOpenCodeGateway("opencode-go"));
+    try std.testing.expect(!isOpenCodeGateway("deepseek"));
+    try std.testing.expectEqualStrings("low", openCodeEffort("deepseek-v4.1-flash", "minimal").?);
+    try std.testing.expectEqualStrings("high", openCodeEffort("deepseek-v4.1-flash", "medium").?);
+    try std.testing.expectEqualStrings("max", openCodeEffort("deepseek-v4-pro", "xhigh").?);
+    try std.testing.expectEqualStrings("high", openCodeEffort("glm-5.2", "medium").?);
+    try std.testing.expectEqualStrings("max", openCodeEffort("glm-5.2", "xhigh").?);
+    try std.testing.expectEqualStrings("medium", openCodeEffort("grok-4.7", "medium").?);
+    try std.testing.expectEqualStrings("high", openCodeEffort("gpt-6-luna", "xhigh").?);
+    try std.testing.expectEqualStrings("low", openCodeEffort("mimo-v2.6-pro", "minimal").?);
+    try std.testing.expect(openCodeEffort("deepseek-v4.1-flash", "off") == null);
+    try std.testing.expect(openCodeEffort("glm-5.3", "high") == null);
+    try std.testing.expect(openCodeEffort("kimi-k3", "high") == null);
+    try std.testing.expect(openCodeEffort("qwen3.8-flash", "high") == null);
+    try std.testing.expect(openCodeEffort("minimax-m3", "high") == null);
+    try std.testing.expect(openCodeEffort("deepseek-v3.2", "high") == null);
 }
 
 test "an unrecognised effort keeps the pre-existing fallback rather than becoming an empty value" {
