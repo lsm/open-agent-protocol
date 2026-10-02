@@ -3968,7 +3968,7 @@ pub const TuiModel = struct {
                     .backspace => _ = app.state.composer.deleteBeforeCursor(),
                     .delete => _ = app.state.composer.deleteAtCursor(),
                     .tab => {
-                        if (app.state.mode == .normal and app.state.status.streaming and compactDraftFocus(app.state.composer.text()) != null) {
+                        if (app.state.mode == .normal and app.state.status.streaming and !app.state.status.compacting and compactDraftFocus(app.state.composer.text()) != null) {
                             const text = app.state.composer.text();
                             app.queueCompaction(compactDraftFocus(text).?) catch |err| app.recordError(@errorName(err)) catch {};
                             app.state.recordComposerHistory(text) catch |err| app.recordError(@errorName(err)) catch {};
