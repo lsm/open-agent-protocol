@@ -485,6 +485,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		s.settleReopenRefusal(i, line, e)
 		s.settleSubscribeRefusal(i, line, e)
 		s.settleModelControlRefusal(i, line, e)
+		delete(s.pendingReopens, e.InReplyTo)
 	case protocol.TypeRunCancelResponse:
 		var p protocol.RunCancelResponse
 		_ = e.DecodePayload(&p)

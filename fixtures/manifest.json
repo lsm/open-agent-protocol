@@ -10635,6 +10635,50 @@
       "provenance": [
         "decisions/0040-a-session-reopens-through-its-own-binding.md"
       ]
+    },
+    {
+      "id": "session-reopen-degraded-with-optin",
+      "path": "valid/session-reopen-degraded-with-optin.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-reattach"
+      ],
+      "provenance": [
+        "decisions/0040-a-session-reopens-through-its-own-binding.md"
+      ]
+    },
+    {
+      "id": "session-reopen-degraded-refused-without-optin",
+      "path": "valid/session-reopen-degraded-refused-without-optin.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-reattach"
+      ],
+      "provenance": [
+        "decisions/0040-a-session-reopens-through-its-own-binding.md"
+      ]
+    },
+    {
+      "id": "session-reopen-degraded-admitted-without-optin",
+      "path": "semantic-invalid/session-reopen-degraded-admitted-without-optin.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "degraded_without_optin"
+      ],
+      "units": [
+        "session-reattach"
+      ],
+      "provenance": [
+        "decisions/0040-a-session-reopens-through-its-own-binding.md"
+      ]
     }
   ]
 }

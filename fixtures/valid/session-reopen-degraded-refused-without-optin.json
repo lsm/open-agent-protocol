@@ -1,0 +1,64 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.request",
+    "id": "capq",
+    "payload": {}
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.response",
+    "id": "capr",
+    "in_reply_to": "capq",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "endpoint": {
+        "id": "fixture.endpoint",
+        "name": "Reopen fixture endpoint"
+      },
+      "features": {
+        "session.message.delivery.auto": {
+          "level": "native"
+        },
+        "session.open.reopen": {
+          "level": "degraded",
+          "reason": "the conversation comes back without its tool results"
+        }
+      }
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.open.request",
+    "id": "ro",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "session_id": "s1",
+      "reopen": true
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "error.response",
+    "id": "roe",
+    "in_reply_to": "ro",
+    "session_id": "s1",
+    "payload": {
+      "error": {
+        "code": "capability_degraded",
+        "message": "reopening is degraded on this endpoint",
+        "details": {
+          "feature": "session.open.reopen"
+        }
+      }
+    }
+  }
+]
