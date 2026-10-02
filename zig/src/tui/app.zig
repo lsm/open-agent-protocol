@@ -2930,7 +2930,8 @@ pub const App = struct {
             try self.state.appendTranscript(.@"error", msg);
             return;
         };
-        const msg = try std.fmt.allocPrint(self.allocator, "switching to {s}/{s} before the next turn of this run, or when it ends", .{ model.provider, model.id });
+        const when: []const u8 = if (runtime.local_agent != null) "before the next turn of this run, or when it ends" else "when this run ends";
+        const msg = try std.fmt.allocPrint(self.allocator, "switching to {s}/{s} {s}", .{ model.provider, model.id, when });
         defer self.allocator.free(msg);
         try self.state.appendTranscript(.system, msg);
     }
@@ -2948,10 +2949,7 @@ pub const App = struct {
     fn runDeferredAfterRun(self: *App) !void {
         const runtime = self.runtime orelse return;
         if (runtime.pending_model_index == null and self.deferred_commands.items.len == 0) return;
-        if (self.state.status.streaming or self.state.status.compacting) return;
-        if (runtime.local_agent) |*local| {
-            if (!local.isIdle()) return;
-        }
+        if (self.state.status.streaming or self.state.status.compacting or !runtime.isIdle()) return;
         try self.applyPendingModelSwitchBeforeRun();
         if (self.state.queue.total() > 0) return;
         const deferred = try self.deferred_commands.toOwnedSlice(self.allocator);
@@ -2972,6 +2970,7 @@ pub const App = struct {
         const runtime = self.runtime orelse return;
         if (runtime.pending_model_index == null) return;
         if (runtime.local_agent) |*local| local.waitForIdle();
+        if (!runtime.isIdle()) return;
         if (runtime.applyPendingModelSwitch()) |switched| {
             if (switched) |model| {
                 try self.state.status.setModel(self.allocator, model.id, model.provider);

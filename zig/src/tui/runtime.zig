@@ -819,10 +819,13 @@ pub const TuiRuntime = struct {
 
     pub fn applyPendingModelSwitch(self: *TuiRuntime) !?ai_types.Model {
         const index = self.pending_model_index orelse return null;
+        if (index >= self.models.len) {
+            self.pending_model_index = null;
+            return null;
+        }
+        try self.switchModelExact(self.models[index]);
         self.pending_model_index = null;
         if (self.local_agent) |*local| local.requestModelSwitch(null);
-        if (index >= self.models.len) return null;
-        try self.switchModelExact(self.models[index]);
         return self.models[index];
     }
 
