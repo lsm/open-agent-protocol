@@ -1958,6 +1958,14 @@ pub const App = struct {
             try self.state.appendTranscript(.@"error", tui_commands.provider_usage);
             return;
         };
+        if (self.login) |pending| {
+            if (std.mem.eql(u8, pending.provider_id, id)) {
+                const msg = try std.fmt.allocPrint(self.allocator, "a login to {s} is in progress; cancel it before deleting the provider", .{id});
+                defer self.allocator.free(msg);
+                try self.state.appendTranscript(.@"error", msg);
+                return;
+            }
+        }
         const path = custom_providers.deleteProvider(self.allocator, id) catch |err| {
             const msg = try std.fmt.allocPrint(self.allocator, "could not delete {s}: {s}", .{ id, @errorName(err) });
             defer self.allocator.free(msg);
@@ -1965,15 +1973,15 @@ pub const App = struct {
             return;
         };
         defer self.allocator.free(path);
-        const key_removed = oauth_storage.AuthStorage.removeStored(self.allocator, id) catch |err| {
+        if (oauth_storage.AuthStorage.removeStored(self.allocator, id)) |key_removed| {
+            const msg = try std.fmt.allocPrint(self.allocator, "deleted {s} from {s}{s}", .{ id, path, if (key_removed) ", and its saved key" else "" });
+            defer self.allocator.free(msg);
+            try self.state.appendTranscript(.system, msg);
+        } else |err| {
             const msg = try std.fmt.allocPrint(self.allocator, "deleted {s} from {s}, but removing its saved key failed: {s}", .{ id, path, @errorName(err) });
             defer self.allocator.free(msg);
             try self.state.appendTranscript(.@"error", msg);
-            return;
-        };
-        const msg = try std.fmt.allocPrint(self.allocator, "deleted {s} from {s}{s}", .{ id, path, if (key_removed) ", and its saved key" else "" });
-        defer self.allocator.free(msg);
-        try self.state.appendTranscript(.system, msg);
+        }
         if (self.runtime != null) try self.reportModelRefresh(self.refreshModels(), "deleted the provider but refreshing models failed");
     }
 
