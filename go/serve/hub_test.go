@@ -60,7 +60,7 @@ type manualSession struct {
 
 var _ base.Session = (*manualSession)(nil)
 
-func (s *manualSession) Submit(_ context.Context, _ protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+func (s *manualSession) Submit(_ context.Context, _ base.SubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -260,11 +260,11 @@ func submitGolden(t *testing.T, session *serve.Session, prompt string) protocol.
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
-	admission, err := session.Submit(ctx, protocol.MessageSubmitRequest{
+	admission, err := session.Submit(ctx, base.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: session.ID(),
 		Messages:  []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent(prompt)}},
 		Delivery:  protocol.DeliveryAuto,
-	})
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,11 +312,11 @@ func TestHubOpenRejections(t *testing.T) {
 		t.Fatalf("tracked session id %q", session.ID())
 	}
 
-	_, err := session.Submit(ctx, protocol.MessageSubmitRequest{
+	_, err := session.Submit(ctx, base.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: "other",
 		Messages:  []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("x")}},
 		Delivery:  protocol.DeliveryAuto,
-	})
+	}})
 	if !errors.Is(err, serve.ErrScopeMismatch) {
 		t.Fatalf("scope mismatch error %v", err)
 	}
@@ -436,7 +436,7 @@ type closedStateSession struct {
 	id protocol.SessionID
 }
 
-func (s *closedStateSession) Submit(context.Context, protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+func (s *closedStateSession) Submit(context.Context, base.SubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
 	return protocol.MessageSubmitResponse{}, nil, base.ErrSessionClosed
 }
 
@@ -1074,11 +1074,11 @@ func TestHubSessionCloseSemantics(t *testing.T) {
 	if _, err := hub.Session("close"); !errors.Is(err, serve.ErrUnknownSession) {
 		t.Fatalf("the hub answered %v for a released session, want the unknown-session refusal", err)
 	}
-	_, err = session.Submit(ctx, protocol.MessageSubmitRequest{
+	_, err = session.Submit(ctx, base.SubmitRequest{Request: protocol.MessageSubmitRequest{
 		SessionID: "close",
 		Messages:  []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("x")}},
 		Delivery:  protocol.DeliveryAuto,
-	})
+	}})
 	if !errors.Is(err, base.ErrSessionClosed) {
 		t.Fatalf("submit on closed session error %v", err)
 	}
@@ -1218,7 +1218,7 @@ func TestSubscribingBetweenRunsReportsNoJoinPoint(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := session.Submit(ctx, protocol.MessageSubmitRequest{SessionID: "between", Delivery: protocol.DeliveryAuto}); err != nil {
+	if _, err := session.Submit(ctx, base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "between", Delivery: protocol.DeliveryAuto}}); err != nil {
 		t.Fatal(err)
 	}
 	watcher, err := hub.Subscribe(ctx, "between")
@@ -1246,7 +1246,7 @@ func TestSubscribingBetweenRunsReportsNoJoinPoint(t *testing.T) {
 	watcher.Close()
 	native.endRun()
 
-	second, err := session.Submit(ctx, protocol.MessageSubmitRequest{SessionID: "between", Delivery: protocol.DeliveryAuto})
+	second, err := session.Submit(ctx, base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "between", Delivery: protocol.DeliveryAuto}})
 	if err != nil {
 		t.Fatal(err)
 	}

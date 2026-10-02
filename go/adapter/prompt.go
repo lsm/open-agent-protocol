@@ -293,7 +293,7 @@ func RunToTerminal(ctx context.Context, session Session, request protocol.Messag
 	}
 
 	submitCtx, cancelSubmit := context.WithTimeout(ctx, stall)
-	admission, events, err := session.Submit(submitCtx, request)
+	admission, events, err := session.Submit(submitCtx, SubmitRequest{Request: request})
 	submitStalled := ctx.Err() == nil && errors.Is(submitCtx.Err(), context.DeadlineExceeded)
 	cancelSubmit()
 	if err != nil {

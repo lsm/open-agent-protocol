@@ -1004,11 +1004,11 @@ func (a noControlsAdapter) Open(ctx context.Context, request base.OpenRequest) (
 
 type noControlsSession struct{ base.Session }
 
-func (s noControlsSession) Submit(ctx context.Context, request protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
-	if err := base.RefuseUnadvertisedControls(request); err != nil {
+func (s noControlsSession) Submit(ctx context.Context, submit base.SubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+	if err := base.RefuseUnadvertisedControls(submit.Request); err != nil {
 		return protocol.MessageSubmitResponse{}, nil, err
 	}
-	return s.Session.Submit(ctx, request)
+	return s.Session.Submit(ctx, submit)
 }
 
 func TestSchemaValidityPrecedesTheControlGate(t *testing.T) {

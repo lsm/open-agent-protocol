@@ -475,7 +475,7 @@ func (s *Server) submitOp(ctx context.Context, request requestLine) (json.RawMes
 	if werr != nil {
 		return nil, werr
 	}
-	admission, err := entry.Submit(ctx, payload)
+	admission, err := entry.Submit(ctx, base.SubmitRequest{Request: payload, EnvelopeID: envelope.ID})
 	if err != nil {
 		return nil, submitError(err)
 	}

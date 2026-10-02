@@ -67,7 +67,7 @@ func runPortScenario(t *testing.T, scenario portScenario) portScenario {
 		switch op.Op {
 		case "submit":
 			delivery := protocol.RequestedDeliveryMode(op.Delivery)
-			admission, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: delivery, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent(op.Text)}}})
+			admission, stream, err := session.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Delivery: delivery, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent(op.Text)}}}})
 			if err != nil {
 				t.Fatalf("%s op %d: %v", scenario.Name, index, err)
 			}

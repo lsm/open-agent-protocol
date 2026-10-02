@@ -152,7 +152,7 @@ func submitTest(t *testing.T, s *Session) (protocol.MessageSubmitResponse, base.
 		}
 		s.client.(*fakeClient).mu.Unlock()
 	}
-	response, stream, err := s.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+	response, stream, err := s.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +195,7 @@ func TestSubmitRefusesEveryUnadvertisedControl(t *testing.T) {
 		protocol.FeatureStructuredOutput: {SessionID: "session", Delivery: protocol.DeliveryAuto, OutputSchema: json.RawMessage(`{"type":"object"}`), Messages: message},
 		protocol.FeatureToolSelection:    {SessionID: "session", Delivery: protocol.DeliveryAuto, ToolChoice: json.RawMessage(`"none"`), Messages: message},
 	} {
-		_, _, err := s.Submit(ctx, request)
+		_, _, err := s.Submit(ctx, base.SubmitRequest{Request: request})
 		var refusal *base.UnsupportedControlError
 		if !errors.As(err, &refusal) {
 			t.Fatalf("%s: got %v, want an *adapter.UnsupportedControlError", feature, err)
@@ -343,7 +343,7 @@ func TestPromptAdmissionDoesNotSynthesizeStartAndPreservesEarlyEvents(t *testing
 func TestSlashCommandRejectedWithoutNativeSideEffect(t *testing.T) {
 	client := newFakeClient()
 	s := openTest(t, client, 32)
-	_, stream, err := s.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("/extension-command argument")}}})
+	_, stream, err := s.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("/extension-command argument")}}}})
 	if !errors.Is(err, ErrUnsupportedInput) || stream != nil {
 		t.Fatalf("stream=%v err=%v", stream, err)
 	}
@@ -365,7 +365,7 @@ func TestSubmitWaitsForDelayedAgentStart(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		r, stream, err := s.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+		r, stream, err := s.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}}})
 		done <- result{r, stream, err}
 	}()
 	select {
@@ -402,7 +402,7 @@ func TestCancelBeforeAgentStartPreservesCanonicalOrdering(t *testing.T) {
 	}
 	done := make(chan submitResult, 1)
 	go func() {
-		response, stream, err := s.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+		response, stream, err := s.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}}})
 		done <- submitResult{response: response, stream: stream, err: err}
 	}()
 	<-prompted
@@ -440,7 +440,7 @@ func TestSubmitContextBeforeStartDoesNotMisreportAdmission(t *testing.T) {
 	s := openTest(t, client, 32)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	response, stream, err := s.Submit(ctx, protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+	response, stream, err := s.Submit(ctx, base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}}})
 	if !errors.Is(err, context.DeadlineExceeded) || response.Accepted {
 		t.Fatalf("response=%+v err=%v", response, err)
 	}
@@ -462,7 +462,7 @@ func TestSubmitTerminalBeforeStartReturnsErrorWithoutRunEvents(t *testing.T) {
 		}
 	}
 	s := openTest(t, client, 32)
-	response, stream, err := s.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+	response, stream, err := s.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}}})
 	if err == nil || response.Accepted {
 		t.Fatalf("response=%+v err=%v", response, err)
 	}
@@ -482,7 +482,7 @@ func TestSubmitTransportFailureBeforeStartReturnsError(t *testing.T) {
 		}
 	}
 	s := openTest(t, client, 32)
-	response, stream, err := s.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+	response, stream, err := s.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}}})
 	if err == nil || response.Accepted {
 		t.Fatalf("response=%+v err=%v", response, err)
 	}
@@ -1045,7 +1045,7 @@ func TestRepeatedIdleSnapshotsRemainProvisionalUntilSettled(t *testing.T) {
 func TestStateStrictReconciliationAndDeliveryRejection(t *testing.T) {
 	client := newFakeClient()
 	s := openTest(t, client, 32)
-	if _, _, err := s.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryQueue, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("x")}}}); !isUnadvertised(err, protocol.FeatureDeliveryQueue) {
+	if _, _, err := s.Submit(context.Background(), base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryQueue, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("x")}}}}); !isUnadvertised(err, protocol.FeatureDeliveryQueue) {
 		t.Fatalf("queue err=%v", err)
 	}
 	state, err := s.State(context.Background())
@@ -1316,7 +1316,7 @@ func TestSettlementBeforeAnyStartAbortsTheAdmission(t *testing.T) {
 	client.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_, _, err := s.Submit(ctx, protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+	_, _, err := s.Submit(ctx, base.SubmitRequest{Request: protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}}})
 	if errors.Is(err, context.DeadlineExceeded) {
 		t.Fatal("Submit hung: a settlement before any start was neither admitted nor refused")
 	}
