@@ -1285,7 +1285,7 @@ pub const App = struct {
             errdefer self.allocator.free(pending_id);
             const pending_path = try self.allocator.dupe(u8, info.path);
             errdefer self.allocator.free(pending_path);
-            try self.state.appendTranscript(.system, "Checking and removing the session worktree…");
+            try self.state.appendNotice("Checking and removing the session worktree…");
             self.worktree_management_job = job;
             self.pending_delete_id = pending_id;
             self.pending_delete_path = pending_path;
@@ -1399,7 +1399,7 @@ pub const App = struct {
                 errdefer self.allocator.free(pending_id);
                 const pending_path = try self.allocator.dupe(u8, info.path);
                 errdefer self.allocator.free(pending_path);
-                try self.state.appendTranscript(.system, "Reattaching this session's Git worktree…");
+                try self.state.appendNotice("Reattaching this session's Git worktree…");
                 self.worktree_management_job = job;
                 self.pending_resume_id = pending_id;
                 self.pending_resume_path = pending_path;
@@ -1997,7 +1997,7 @@ pub const App = struct {
             owned[index] = try ai_types.cloneModel(self.allocator, model);
             cloned += 1;
         }
-        if (self.runtimeBusy()) try self.state.appendTranscript(.system, "model catalog fetched; it takes effect when this turn ends");
+        if (self.runtimeBusy()) try self.state.appendNotice("model catalog fetched; it takes effect when this turn ends");
         if (self.pending_models) |old| model_catalog.deinitModels(self.allocator, old);
         self.pending_models = owned;
     }
@@ -2036,7 +2036,7 @@ pub const App = struct {
             try self.state.appendTranscript(.@"error", msg);
             return;
         };
-        try self.state.appendTranscript(.system, "model catalog refreshed");
+        try self.state.appendNotice("model catalog refreshed");
         if (!changed) return;
         const msg = try std.fmt.allocPrint(self.allocator, "model switched to {s}/{s}", .{ self.state.status.provider, self.state.status.model });
         defer self.allocator.free(msg);
@@ -2596,7 +2596,7 @@ pub const App = struct {
                 try replaceOwnedString(self.allocator, &self.working_dir, new_dir);
                 try self.refreshCwdDisplay();
                 try self.recordWorktreeSidecar(&created.info);
-                try self.state.appendTranscript(.system, "Git worktree ready for this session.");
+                try self.state.appendNotice("Git worktree ready for this session.");
                 if (created.uncommitted > 0) try self.state.appendTranscript(.system, "Note: the original repository has uncommitted changes; the worktree starts from the current commit.");
             },
         }
@@ -2934,10 +2934,10 @@ pub const App = struct {
         if (self.worktree_job != null or self.worktree_management_job != null) {
             if (self.held_user_message.len == 0) {
                 self.held_user_message = try self.allocator.dupe(u8, trimmed);
-                try self.state.appendTranscript(.system, "Setting up this session's Git worktree; your message will be sent when ready.");
+                try self.state.appendNotice("Setting up this session's Git worktree; your message will be sent when ready.");
             } else {
                 try self.enqueueWorktreeMessage(trimmed);
-                try self.state.appendTranscript(.system, "Worktree setup is still running; your message is queued and will be sent when ready.");
+                try self.state.appendNotice("Worktree setup is still running; your message is queued and will be sent when ready.");
             }
             return true;
         }
@@ -2949,13 +2949,13 @@ pub const App = struct {
                 defer self.allocator.free(base);
                 if (tui_worktree.isUnderBase(self.working_dir, base)) {
                     self.worktree_attempted = true;
-                    self.state.appendTranscript(.system, "Already in a managed session worktree; continuing here.") catch {};
+                    self.state.appendNotice("Already in a managed session worktree; continuing here.") catch {};
                 } else {
                     const job = try tui_worktree.CreateJob.start(self.allocator, tui_worktree.processRunner(), self.working_dir, base, self.session_id);
                     errdefer job.deinit();
                     const held = try self.allocator.dupe(u8, trimmed);
                     errdefer self.allocator.free(held);
-                    try self.state.appendTranscript(.system, "Setting up an isolated Git worktree for this session…");
+                    try self.state.appendNotice("Setting up an isolated Git worktree for this session…");
                     self.worktree_job = job;
                     self.held_user_message = held;
                     self.worktree_attempted = true;
@@ -3184,6 +3184,7 @@ pub const App = struct {
         if (command.kind == .context and !result.is_error and command.arg != null) self.persistContextWindow();
         if (command.kind == .output and !result.is_error and command.arg != null) self.persistOutput();
         if (command.kind == .autocompact and !result.is_error and command.arg != null) self.persistAutoCompact();
+        if (command.kind == .verbose and !result.is_error and command.arg != null) self.persistVerbosity();
         if (command.kind == .think and !result.is_error and command.arg != null) self.persistThinkingLevel();
         if (result.output.len > 0) {
             try self.state.appendTranscript(if (result.is_error) .@"error" else .system, result.output);
@@ -3308,6 +3309,23 @@ pub const App = struct {
         store.save(cfg) catch |err| self.recordError(@errorName(err)) catch {};
     }
 
+    fn persistVerbosity(self: *App) void {
+        self.mode_settings.verbosity = self.state.verbosity;
+        var store = tui_config.Store.initDefault(self.allocator) catch |err| {
+            self.recordError(@errorName(err)) catch {};
+            return;
+        };
+        defer store.deinit();
+        var cfg = store.load() catch |err| {
+            self.recordError(@errorName(err)) catch {};
+            return;
+        };
+        defer cfg.deinit(self.allocator);
+        if (std.meta.eql(cfg.mode.verbosity, self.state.verbosity)) return;
+        cfg.mode.verbosity = self.state.verbosity;
+        store.save(cfg) catch |err| self.recordError(@errorName(err)) catch {};
+    }
+
     fn replaceOwnedString(allocator: std.mem.Allocator, field: *[]u8, value: []const u8) !void {
         const next = try allocator.dupe(u8, value);
         allocator.free(field.*);
@@ -3341,7 +3359,7 @@ pub const App = struct {
             return;
         };
         self.stageClipboard(text);
-        self.state.appendTranscript(.system, "copied last reply to clipboard") catch {};
+        self.state.appendNotice("copied last reply to clipboard") catch {};
     }
 
     fn cycleThinkingLevel(self: *App) void {
@@ -3608,6 +3626,7 @@ pub const TuiModel = struct {
     app: ?App = null,
     options: tui_runtime.TuiRuntimeOptions = .{},
     autocompact: tui_config.AutoCompact = .auto,
+    verbosity: tui_config.Verbosity = .{},
     render_mode: RenderMode = .auto,
 
     pub const Msg = union(enum) {
@@ -3629,6 +3648,8 @@ pub const TuiModel = struct {
         if (self.app) |*app| {
             app.state.autocompact = self.autocompact;
             app.mode_settings.autocompact = self.autocompact;
+            app.state.verbosity = self.verbosity;
+            app.mode_settings.verbosity = self.verbosity;
             app.start() catch |err| {
                 app.state.status.setError(app.allocator, @errorName(err)) catch {};
                 app.state.appendTranscript(.@"error", @errorName(err)) catch {};
@@ -4230,9 +4251,9 @@ pub const TuiModel = struct {
         const detached = index == 0 or !transcript_view.entriesAttached(&entries[index - 1], entry);
         const awaiting = live and state.mode == .approval and entry.kind == .tool and entry.tool_call_id.len > 0 and std.mem.eql(u8, entry.tool_call_id, state.approval.tool_call_id);
         const tool = if (entry.kind == .tool and entry.tool_call_id.len > 0) state.toolById(entry.tool_call_id) else null;
-        const rendered = try transcript_view.renderTranscriptEntryWith(allocator, entry, width, .{ .live = live and isLiveEntry(state, index), .anim_tick = state.anim_tick, .awaiting_approval = awaiting, .tool = tool });
+        const rendered = try transcript_view.renderTranscriptEntryWith(allocator, entry, width, .{ .live = live and isLiveEntry(state, index), .anim_tick = state.anim_tick, .awaiting_approval = awaiting, .tool = tool, .verbosity = state.verbosity });
         defer allocator.free(rendered);
-        if (!detached) return allocator.dupe(u8, rendered);
+        if (rendered.len == 0 or !detached) return allocator.dupe(u8, rendered);
         return std.mem.concat(allocator, u8, &.{ "\n", rendered });
     }
 
@@ -4244,10 +4265,11 @@ pub const TuiModel = struct {
         var first = true;
         var i = @min(from, entries.len);
         while (i < entries.len) : (i += 1) {
-            if (!first) try writer.writeAll("\n");
-            first = false;
             const block = try renderInlineBlock(allocator, state, i, width, live);
             defer allocator.free(block);
+            if (block.len == 0) continue;
+            if (!first) try writer.writeAll("\n");
+            first = false;
             try writer.writeAll(block);
         }
         if (live and state.status.streaming and state.active_assistant_entry == null and state.active_tool_summary_entry == null and state.mode != .approval) {
@@ -4324,6 +4346,11 @@ pub const TuiModel = struct {
         while (overflow > 0 and app.inline_history_flushed < stop) {
             const block = try renderInlineBlock(ctx.allocator, &app.state, app.inline_history_flushed, width, false);
             defer ctx.allocator.free(block);
+            if (block.len == 0 or countLines(block) <= app.inline_flushed_rows) {
+                app.inline_history_flushed += 1;
+                app.inline_flushed_rows = 0;
+                continue;
+            }
             const block_rows = countLines(block);
             const offset = app.inline_flushed_rows;
             const take = @min(block_rows -| offset, overflow);
@@ -4367,7 +4394,7 @@ pub const TuiModel = struct {
             start -= 1;
             const block = try renderInlineBlock(ctx.allocator, &app.state, start, width, false);
             defer ctx.allocator.free(block);
-            rows += countLines(block);
+            if (block.len > 0) rows += countLines(block);
         }
         app.inline_history_flushed = start;
         app.inline_flushed_rows = rows -| budget;
@@ -4776,7 +4803,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32) !void
     }
 
     var program = zz.Program(TuiModel).initWithOptions(allocator, io, &environ_map, tuiProgramOptions());
-    program.model = .{ .options = options, .autocompact = production.mode_settings.autocompact };
+    program.model = .{ .options = options, .autocompact = production.mode_settings.autocompact, .verbosity = production.mode_settings.verbosity };
     defer program.deinit();
     try program.run();
 }

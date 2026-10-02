@@ -6,6 +6,9 @@ const compat = @import("compat");
 const tui_config = @import("tui_config");
 
 pub const AutoCompactSetting = tui_config.AutoCompact;
+pub const Verbosity = tui_config.Verbosity;
+pub const VerbosityLevel = tui_config.VerbosityLevel;
+pub const VerbosityPart = tui_config.VerbosityPart;
 
 pub fn autoCompactAt(setting: AutoCompactSetting, model: ai_types.Model) ?u64 {
     if (model.context_window == 0) return null;
@@ -83,6 +86,7 @@ pub const TranscriptEntry = struct {
     text: std.ArrayList(u8) = .empty,
     timestamp_ms: i64 = 0,
     tool_summary: bool = false,
+    notice: bool = false,
     tool_call_id: []u8 = &.{},
 
     pub fn init(allocator: std.mem.Allocator, kind: TranscriptKind, text: []const u8) !TranscriptEntry {
@@ -645,6 +649,7 @@ pub const AppState = struct {
     preview: PreviewState = .{},
     thinking_level: ai_types.ThinkingLevel = .low,
     autocompact: AutoCompactSetting = .auto,
+    verbosity: Verbosity = .{},
     login_input_secret: bool = false,
     anim_tick: u64 = 0,
     transcript_scroll: usize = 0,
@@ -782,6 +787,13 @@ pub const AppState = struct {
 
     pub fn appendTranscript(self: *AppState, kind: TranscriptKind, text: []const u8) !void {
         try self.transcript.append(self.allocator, try TranscriptEntry.init(self.allocator, kind, text));
+    }
+
+    pub fn appendNotice(self: *AppState, text: []const u8) !void {
+        var entry = try TranscriptEntry.init(self.allocator, .system, text);
+        errdefer entry.deinit(self.allocator);
+        entry.notice = true;
+        try self.transcript.append(self.allocator, entry);
     }
 
     pub fn appendToolSummaryTranscript(self: *AppState, text: []const u8, tool_call_id: []const u8) !void {

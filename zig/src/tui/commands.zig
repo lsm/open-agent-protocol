@@ -20,6 +20,7 @@ pub const CommandKind = enum {
     context,
     output,
     autocompact,
+    verbose,
     settings,
     abort,
     quit,
@@ -102,6 +103,7 @@ pub const commands = [_]CommandInfo{
     .{ .name = "context", .kind = .context, .usage = "/context [tokens|default]", .description = "Show or set the context window for this session", .handler = handleContext },
     .{ .name = "output", .kind = .output, .usage = "/output [auto|max|tokens]", .description = "Show or set how much output a reply may ask for", .handler = handleOutput },
     .{ .name = "autocompact", .kind = .autocompact, .usage = "/autocompact [auto|percent|off]", .description = "Show or set when the conversation compacts on its own", .handler = handleAutoCompact },
+    .{ .name = "verbose", .kind = .verbose, .usage = "/verbose [quiet|normal|verbose] | /verbose <thinking|tools|output|notices|status> <level>", .description = "Show or set how much the transcript and status bar show", .handler = handleVerbose },
     .{ .name = "settings", .kind = .settings, .usage = "/settings", .description = "Configure TUI settings", .handler = handleSettings },
     .{ .name = "abort", .kind = .abort, .usage = "/abort", .description = "Cancel the active streaming turn", .handler = handleAbort },
     .{ .name = "quit", .kind = .quit, .usage = "/quit", .description = "Exit TUI", .handler = handleQuit },
@@ -472,6 +474,30 @@ fn outputReport(allocator: std.mem.Allocator, runtime: *tui_runtime.TuiRuntime) 
     }
     try writer.writeAll(". /output auto restores the default.");
     return out.toOwnedSlice();
+}
+
+pub const verbose_usage = "usage: /verbose [quiet|normal|verbose], or /verbose <thinking|tools|output|notices|status> <quiet|normal|verbose>";
+
+fn handleVerbose(ctx: CommandContext, command: Command) !CommandResult {
+    const arg = command.arg orelse return .{ .output = try verbosityReport(ctx) };
+    var words = std.mem.tokenizeAny(u8, arg, " \t");
+    const first = words.next() orelse return .{ .output = try verbosityReport(ctx) };
+    if (std.meta.stringToEnum(tui_state.VerbosityLevel, first)) |level| {
+        if (words.next() != null) return .{ .output = try ctx.allocator.dupe(u8, verbose_usage), .is_error = true };
+        ctx.state.verbosity = tui_state.Verbosity.all(level);
+        return .{ .output = try verbosityReport(ctx) };
+    }
+    const part = std.meta.stringToEnum(tui_state.VerbosityPart, first) orelse return .{ .output = try ctx.allocator.dupe(u8, verbose_usage), .is_error = true };
+    const level_text = words.next() orelse return .{ .output = try ctx.allocator.dupe(u8, verbose_usage), .is_error = true };
+    const level = std.meta.stringToEnum(tui_state.VerbosityLevel, level_text) orelse return .{ .output = try ctx.allocator.dupe(u8, verbose_usage), .is_error = true };
+    if (words.next() != null) return .{ .output = try ctx.allocator.dupe(u8, verbose_usage), .is_error = true };
+    ctx.state.verbosity.set(part, level);
+    return .{ .output = try verbosityReport(ctx) };
+}
+
+fn verbosityReport(ctx: CommandContext) ![]u8 {
+    const v = ctx.state.verbosity;
+    return std.fmt.allocPrint(ctx.allocator, "verbosity: thinking {t}, tools {t}, output {t}, notices {t}, status {t}", .{ v.thinking, v.tools, v.output, v.notices, v.status });
 }
 
 fn handleAutoCompact(ctx: CommandContext, command: Command) !CommandResult {
@@ -862,6 +888,30 @@ test "login command can target a provider directly" {
 
     try std.testing.expectEqual(CommandAction.start_login_provider, result.action);
     try std.testing.expectEqualStrings("openai-codex", result.login_provider);
+}
+
+test "verbose sets every part at once or one part on its own, and refuses what it cannot read" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    const ctx = CommandContext{ .allocator = std.testing.allocator, .state = &state };
+
+    var all = try dispatch(ctx, try parse("/verbose quiet"));
+    defer all.deinit(std.testing.allocator);
+    try std.testing.expectEqual(tui_state.Verbosity.all(.quiet), state.verbosity);
+
+    var one = try dispatch(ctx, try parse("/verbose status verbose"));
+    defer one.deinit(std.testing.allocator);
+    try std.testing.expectEqual(tui_state.VerbosityLevel.verbose, state.verbosity.status);
+    try std.testing.expectEqual(tui_state.VerbosityLevel.quiet, state.verbosity.tools);
+    try std.testing.expectEqualStrings("verbosity: thinking quiet, tools quiet, output quiet, notices quiet, status verbose", one.output);
+
+    inline for (.{ "/verbose loud", "/verbose status", "/verbose status loud", "/verbose quiet now", "/verbose tools quiet extra" }) |input| {
+        var bad = try dispatch(ctx, try parse(input));
+        defer bad.deinit(std.testing.allocator);
+        try std.testing.expect(bad.is_error);
+        try std.testing.expectEqualStrings(verbose_usage, bad.output);
+    }
+    try std.testing.expectEqual(tui_state.VerbosityLevel.verbose, state.verbosity.status);
 }
 
 test "model refresh and logout hand their work to the app" {
