@@ -557,7 +557,7 @@ fn subscribeRefusal(arena: std.mem.Allocator, err: hubmod.Failure, id: []const u
     };
 }
 
-fn decodeComponent(arena: std.mem.Allocator, raw: []const u8) ![]const u8 {
+fn decodeComponent(arena: std.mem.Allocator, raw: []const u8) !?[]const u8 {
     var out = std.ArrayList(u8).empty;
     var index: usize = 0;
     while (index < raw.len) {
@@ -567,14 +567,13 @@ fn decodeComponent(arena: std.mem.Allocator, raw: []const u8) ![]const u8 {
             index += 1;
             continue;
         }
-        if (byte == '%' and index + 2 < raw.len) {
-            const high = std.fmt.charToDigit(raw[index + 1], 16) catch null;
-            const low = std.fmt.charToDigit(raw[index + 2], 16) catch null;
-            if (high != null and low != null) {
-                try out.append(arena, high.? * 16 + low.?);
-                index += 3;
-                continue;
-            }
+        if (byte == '%') {
+            if (index + 2 >= raw.len) return null;
+            const high = std.fmt.charToDigit(raw[index + 1], 16) catch return null;
+            const low = std.fmt.charToDigit(raw[index + 2], 16) catch return null;
+            try out.append(arena, high * 16 + low);
+            index += 3;
+            continue;
         }
         try out.append(arena, byte);
         index += 1;
@@ -584,13 +583,14 @@ fn decodeComponent(arena: std.mem.Allocator, raw: []const u8) ![]const u8 {
 
 pub fn queryValues(arena: std.mem.Allocator, query: []const u8, name: []const u8) ![]const []const u8 {
     var found = std.ArrayList([]const u8).empty;
-    var pairs = std.mem.splitAny(u8, query, "&;");
+    var pairs = std.mem.splitScalar(u8, query, '&');
     while (pairs.next()) |pair| {
         if (pair.len == 0) continue;
         const at = std.mem.indexOfScalar(u8, pair, '=');
-        const key = try decodeComponent(arena, if (at) |cut| pair[0..cut] else pair);
+        const key = (try decodeComponent(arena, if (at) |cut| pair[0..cut] else pair)) orelse continue;
         if (!std.mem.eql(u8, key, name)) continue;
-        try found.append(arena, try decodeComponent(arena, if (at) |cut| pair[cut + 1 ..] else ""));
+        const value = (try decodeComponent(arena, if (at) |cut| pair[cut + 1 ..] else "")) orelse continue;
+        try found.append(arena, value);
     }
     return found.items;
 }
@@ -739,7 +739,8 @@ pub const Connections = struct {
             slot.closed = false;
             slot.done.store(false, .release);
             slot.thread = std.Thread.spawn(.{}, run, .{ daemon, slot }) catch {
-                run(daemon, slot);
+                slot.stream.close();
+                slot.closed = true;
                 return;
             };
             return;
@@ -1133,7 +1134,7 @@ test "a subscribing open holds its subscription, and the events request with no 
     fixture.daemon.leave(reply.stream);
 }
 
-test "the degraded opt-in is read from every repetition of the query parameter, decoded" {
+test "a query is split on ampersands alone, every repetition is read decoded, and a pair with a bad escape is dropped, as Go reads it" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -1142,6 +1143,10 @@ test "the degraded opt-in is read from every repetition of the query parameter, 
     try testing.expectEqualStrings("models.list", found[0]);
     try testing.expectEqualStrings("a/b c", found[1]);
     try testing.expectEqual(@as(?[]const u8, null), try queryValue(arena, "", "after"));
+    try testing.expectEqualStrings("1;run_id=x", (try queryValue(arena, "after=1;run_id=x", "after")).?);
+    try testing.expectEqual(@as(?[]const u8, null), try queryValue(arena, "after=1;run_id=x", "run_id"));
+    try testing.expectEqual(@as(?[]const u8, null), try queryValue(arena, "after=%zz", "after"));
+    try testing.expectEqualStrings("2", (try queryValue(arena, "after=%zz&after=2", "after")).?);
     try testing.expectEqualStrings("", (try queryValue(arena, "after", "after")).?);
 }
 
