@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -979,6 +980,42 @@ func TestCapabilitiesRequiresDescriptorRevision(t *testing.T) {
 	}
 }
 
+type submittingAdapter struct {
+	inner base.Adapter
+	mu    sync.Mutex
+	ids   []protocol.EnvelopeID
+}
+
+func (a *submittingAdapter) Probe(ctx context.Context) (base.Descriptor, error) {
+	return a.inner.Probe(ctx)
+}
+
+func (a *submittingAdapter) Open(ctx context.Context, request base.OpenRequest) (base.Session, error) {
+	session, err := a.inner.Open(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	return &submittingSession{Session: session, adapter: a}, nil
+}
+
+func (a *submittingAdapter) submittedIDs() []protocol.EnvelopeID {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]protocol.EnvelopeID(nil), a.ids...)
+}
+
+type submittingSession struct {
+	base.Session
+	adapter *submittingAdapter
+}
+
+func (s *submittingSession) Submit(ctx context.Context, submit base.SubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
+	s.adapter.mu.Lock()
+	s.adapter.ids = append(s.adapter.ids, submit.EnvelopeID)
+	s.adapter.mu.Unlock()
+	return s.Session.Submit(ctx, submit)
+}
+
 type bareAdapter struct{}
 
 func (bareAdapter) Probe(context.Context) (base.Descriptor, error) {
@@ -1009,6 +1046,22 @@ func (s noControlsSession) Submit(ctx context.Context, submit base.SubmitRequest
 		return protocol.MessageSubmitResponse{}, nil, err
 	}
 	return s.Session.Submit(ctx, submit)
+}
+
+func TestSubmitTellsTheAdapterTheRequestEnvelopeID(t *testing.T) {
+	adapter := &submittingAdapter{inner: base.NewMemory(base.Config{JournalCapacity: 4})}
+	registry := serve.NewRegistry()
+	if err := registry.Register("memory", adapter); err != nil {
+		t.Fatal(err)
+	}
+	_, server := newServer(t, registry, Options{})
+	openSession(t, server, "memory", "attributed")
+
+	submitRun(t, server, "attributed", "submit-attributed")
+
+	if ids := adapter.submittedIDs(); len(ids) != 1 || ids[0] != protocol.EnvelopeID("submit-attributed") {
+		t.Fatalf("adapter was told the submit envelope ids %v, want [submit-attributed]", ids)
+	}
 }
 
 func TestSchemaValidityPrecedesTheControlGate(t *testing.T) {
