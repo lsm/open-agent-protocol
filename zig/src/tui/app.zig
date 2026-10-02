@@ -10,6 +10,7 @@ const register_builtins = @import("register_builtins");
 const agent = @import("agent");
 const event_stream = @import("event_stream");
 const tui_runtime = @import("tui_runtime");
+const tui_oap_execution = @import("tui/oap_execution");
 const tui_auto_continue = @import("tui_auto_continue");
 const tui_state = @import("tui_state");
 const tui_commands = @import("tui_commands");
@@ -998,6 +999,7 @@ pub const App = struct {
         };
         errdefer app.deinit();
         app.session = app.runtime.?.createSession();
+        if (options.remote != null) try app.state.appendTranscript(.system, over_oap_notice);
         app.state.permission_mode = app.runtime.?.permissionMode();
         app.state.thinking_level = app.runtime.?.thinkingLevel();
         try app.state.setRegisteredTools(app.runtime.?.availableTools());
@@ -4610,7 +4612,13 @@ fn preferredContextWindow(stored: ?u32, flag: ?u32) ?u32 {
     return flag orelse stored;
 }
 
+pub const over_oap_notice = "oapx tui: this session runs over OAP through the in-process endpoint. Resume, compaction, steering and queued follow-ups are not carried over OAP yet; use oapx --tui for them.";
+
 pub fn run(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32) !void {
+    return runWith(allocator, io, context_window, false);
+}
+
+pub fn runWith(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32, over_oap: bool) !void {
     var environ_map = try compat.createEnvMap(allocator);
     defer environ_map.deinit();
 
@@ -4629,6 +4637,13 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32) !void
     options.context_window = preferredContextWindow(options.context_window, context_window);
     if (fixture) |runtime| {
         options.protocol = runtime.provider.protocolClient();
+        options.generate_titles = false;
+    }
+    var execution: ?*tui_oap_execution.OapExecution = null;
+    defer if (execution) |owned| owned.destroy();
+    if (over_oap) {
+        execution = try tui_oap_execution.OapExecution.create(allocator, options);
+        options.remote = execution.?.remote();
         options.generate_titles = false;
     }
 

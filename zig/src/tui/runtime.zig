@@ -49,6 +49,32 @@ pub const PermissionMode = enum {
     bypass,
 };
 
+pub const EventSink = struct {
+    ctx: *anyopaque,
+    push: *const fn (ctx: *anyopaque, event: TuiEvent) void,
+};
+
+pub const RemoteSettings = struct {
+    model: ?ai_types.Model,
+    thinking_level: ai_types.ThinkingLevel,
+    context_window: ?u32,
+    permission_mode: PermissionMode,
+    workspace_root: []const u8,
+};
+
+pub const RemoteExecution = struct {
+    ctx: *anyopaque,
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        start: *const fn (ctx: *anyopaque, sink: EventSink, settings: RemoteSettings) anyerror!void,
+        submit: *const fn (ctx: *anyopaque, text: []const u8) anyerror!void,
+        cancel: *const fn (ctx: *anyopaque) void,
+        switch_model: *const fn (ctx: *anyopaque, model: ai_types.Model) anyerror!void,
+        stop: *const fn (ctx: *anyopaque) void,
+    };
+};
+
 pub const TuiRuntimeOptions = struct {
     protocol: ?agent.ProtocolClient = null,
     models: []const ai_types.Model = &.{},
@@ -68,6 +94,7 @@ pub const TuiRuntimeOptions = struct {
     generate_titles: bool = false,
     context_window: ?u32 = null,
     output: agent.OutputSetting = .auto,
+    remote: ?RemoteExecution = null,
 };
 
 pub const ContextWindowError = error{
@@ -239,6 +266,7 @@ pub const TuiRuntime = struct {
     title_cancel: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     title_mutex: std.atomic.Mutex = .unlocked,
     title_result: ?[]u8 = null,
+    remote: ?RemoteExecution = null,
 
     pub fn init(allocator: std.mem.Allocator, options: TuiRuntimeOptions) !TuiRuntime {
         var models = try cloneModels(allocator, options.models);
@@ -304,6 +332,7 @@ pub const TuiRuntime = struct {
             .compact_output = options.compact_output,
             .run_async = options.run_async,
             .generate_titles = options.generate_titles,
+            .remote = options.remote,
         };
         original_tools = &.{};
         wrapped_tools = &.{};
@@ -382,6 +411,17 @@ pub const TuiRuntime = struct {
 
     pub fn start(self: *TuiRuntime) !void {
         if (self.started) return;
+        if (self.remote) |remote| {
+            try remote.vtable.start(remote.ctx, .{ .ctx = self, .push = pushRemote }, .{
+                .model = self.currentModel(),
+                .thinking_level = self.thinking_level,
+                .context_window = self.context_window,
+                .permission_mode = self.permission_mode,
+                .workspace_root = self.workspace_root,
+            });
+            self.started = true;
+            return;
+        }
         const protocol = self.protocol orelse return error.NoProtocolConfigured;
         self.rebuildWrappedTools();
         self.local_agent = agent.Agent.init(self.allocator, .{
@@ -408,6 +448,11 @@ pub const TuiRuntime = struct {
     }
 
     pub fn stop(self: *TuiRuntime) void {
+        if (self.remote) |remote| {
+            if (self.started) remote.vtable.stop(remote.ctx);
+            self.started = false;
+            return;
+        }
         if (self.local_agent) |*local| {
             if (!local.isIdle()) {
                 local.abort();
@@ -422,6 +467,7 @@ pub const TuiRuntime = struct {
 
     pub fn isIdle(self: *TuiRuntime) bool {
         if (self.stream_active) return false;
+        if (self.remote != null) return true;
         if (self.local_agent) |*local| return local.isIdle();
         return true;
     }
@@ -700,6 +746,10 @@ pub const TuiRuntime = struct {
 
         for (self.models, 0..) |model, i| {
             if (std.mem.eql(u8, model.id, model_id)) {
+                if (self.remote) |remote| {
+                    if (self.stream_active) return error.AgentAlreadyStreaming;
+                    if (self.started) try remote.vtable.switch_model(remote.ctx, self.models[i]);
+                }
                 self.selected_model_index = i;
                 self.reconcileContextWindowAfterModelSwitch();
                 if (self.local_agent) |*local| local.setModel(self.effectiveModel(self.models[i]));
@@ -719,6 +769,10 @@ pub const TuiRuntime = struct {
                 std.mem.eql(u8, model.provider, selected.provider) and
                 std.mem.eql(u8, model.api, selected.api))
             {
+                if (self.remote) |remote| {
+                    if (self.stream_active) return error.AgentAlreadyStreaming;
+                    if (self.started) try remote.vtable.switch_model(remote.ctx, self.models[i]);
+                }
                 self.selected_model_index = i;
                 self.reconcileContextWindowAfterModelSwitch();
                 if (self.local_agent) |*local| local.setModel(self.effectiveModel(self.models[i]));
@@ -738,6 +792,15 @@ pub const TuiRuntime = struct {
 
     pub fn submitTurn(self: *TuiRuntime, text: []const u8) !void {
         if (!self.started) try self.start();
+        if (self.remote) |remote| {
+            if (self.currentModel() == null) return error.NoModelConfigured;
+            if (self.stream_active) return error.AgentAlreadyStreaming;
+            self.resetEventStreamForTurn();
+            self.cancelled.store(false, .release);
+            self.completed = false;
+            self.last_turn_stop_reason = null;
+            return remote.vtable.submit(remote.ctx, text);
+        }
         const local = &(self.local_agent orelse return error.RuntimeNotStarted);
         if (self.currentModel() == null) return error.NoModelConfigured;
         if (self.run_async) local.waitForIdle();
@@ -756,6 +819,7 @@ pub const TuiRuntime = struct {
     }
 
     pub fn steer(self: *TuiRuntime, text: []const u8) !void {
+        if (self.remote != null) return error.UnavailableOverOap;
         if (!self.started) return error.RuntimeNotStarted;
         const local = &(self.local_agent orelse return error.RuntimeNotStarted);
         var msg = try self.makeUserMessage(text);
@@ -767,6 +831,7 @@ pub const TuiRuntime = struct {
     }
 
     pub fn followUp(self: *TuiRuntime, text: []const u8) !void {
+        if (self.remote != null) return error.UnavailableOverOap;
         if (!self.started) return error.RuntimeNotStarted;
         const local = &(self.local_agent orelse return error.RuntimeNotStarted);
         var msg = try self.makeUserMessage(text);
@@ -800,6 +865,10 @@ pub const TuiRuntime = struct {
     }
 
     pub fn replaceMessages(self: *TuiRuntime, messages: []const ai_types.Message) !void {
+        if (self.remote != null) {
+            if (messages.len > 0) return error.UnavailableOverOap;
+            return;
+        }
         if (!self.started) try self.start();
         const local = &(self.local_agent orelse return error.RuntimeNotStarted);
         if (self.run_async) local.waitForIdle();
@@ -816,6 +885,7 @@ pub const TuiRuntime = struct {
     }
 
     pub fn compact(self: *TuiRuntime, options: CompactOptions) !void {
+        if (self.remote != null) return error.UnavailableOverOap;
         if (!self.started) try self.start();
         const local = &(self.local_agent orelse return error.RuntimeNotStarted);
         if (self.currentModel() == null) return error.NoModelConfigured;
@@ -918,6 +988,7 @@ pub const TuiRuntime = struct {
     }
 
     pub fn resumeSession(self: *TuiRuntime) !void {
+        if (self.remote != null) return error.UnavailableOverOap;
         if (!self.started) try self.start();
         const local = &(self.local_agent orelse return error.RuntimeNotStarted);
         if (self.run_async) local.waitForIdle();
@@ -935,6 +1006,10 @@ pub const TuiRuntime = struct {
 
     pub fn cancel(self: *TuiRuntime) void {
         self.cancelled.store(true, .release);
+        if (self.remote) |remote| {
+            if (self.stream_active) remote.vtable.cancel(remote.ctx);
+            return;
+        }
         if (self.local_agent) |*local| local.abort();
         while (!self.approval_mutex.tryLock()) std.atomic.spinLoopHint();
         self.pending_approval.cancelled = true;
@@ -1212,6 +1287,18 @@ pub const TuiRuntime = struct {
         const reason: TuiEndReason = if (cancelled) .cancelled else if (self.last_turn_stop_reason == .@"error") .@"error" else .completed;
         return self.endRun(reason);
     }
+    fn pushRemote(ctx: *anyopaque, event: TuiEvent) void {
+        const self: *TuiRuntime = @ptrCast(@alignCast(ctx));
+        switch (event) {
+            .agent_end => |payload| self.endRun(payload.reason) catch {},
+            .turn_end => |payload| {
+                self.last_turn_stop_reason = payload.stop_reason;
+                self.pushTerminal(event);
+            },
+            else => self.push(event),
+        }
+    }
+
     fn endRun(self: *TuiRuntime, reason: TuiEndReason) anyerror!void {
         self.completed = true;
         self.pushTerminal(.{ .agent_end = .{ .reason = reason } });

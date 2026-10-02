@@ -182,6 +182,13 @@ pub const Endpoint = struct {
         return error.Denied;
     }
 
+    fn openMetadata(root: std.json.ObjectMap) ?std.json.Value {
+        const payload = root.get("payload") orelse return null;
+        if (payload != .object) return null;
+        const metadata = payload.object.get("metadata") orelse return null;
+        return if (metadata == .object) metadata else null;
+    }
+
     fn serve(self: *Endpoint, arena: std.mem.Allocator, root: std.json.ObjectMap, line: []const u8) Served!void {
         var refusal = contract.Refusal{};
         self.dispatch(arena, root, line, &refusal) catch |err| switch (err) {
@@ -246,7 +253,7 @@ pub const Endpoint = struct {
         switch (request.payload) {
             .initialize_request => |*payload| try self.initialize(arena, &request, payload, descriptor),
             .capabilities_request => try self.capabilities(arena, &request, descriptor),
-            .session_open_request => |*payload| try self.open(arena, &request, payload, descriptor, refusal),
+            .session_open_request => |*payload| try self.open(arena, &request, payload, openMetadata(root), descriptor, refusal),
             .session_state_request => try self.state(arena, &request, refusal),
             .session_model_switch_request => |*payload| try self.switchModel(arena, &request, payload, refusal),
             .message_submit_request => |*payload| try self.submit(arena, &request, payload, descriptor, refusal),
@@ -342,7 +349,7 @@ pub const Endpoint = struct {
         });
     }
 
-    fn open(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, payload: *const oap_types.SessionOpenRequest, descriptor: contract.Descriptor, refusal: *contract.Refusal) Served!void {
+    fn open(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, payload: *const oap_types.SessionOpenRequest, metadata: ?std.json.Value, descriptor: contract.Descriptor, refusal: *contract.Refusal) Served!void {
         if (payload.tools_json) |text| {
             if (try toolsDecodeDefect(arena, text)) |defect| {
                 const message = try std.fmt.allocPrint(arena, "decode session.open.request payload: json: {s}", .{defect});
@@ -361,6 +368,7 @@ pub const Endpoint = struct {
         const session = try self.adapter.open(arena, .{
             .session_id = payload.session_id orelse "",
             .participant = self.controlParticipant(),
+            .metadata = metadata,
             .allow_degraded_features = payload.allow_degraded_features,
             .tools_json = payload.tools_json,
             .tool_sources_json = tool_sources_json,

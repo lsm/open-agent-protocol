@@ -121,7 +121,7 @@ pub const Session = struct {
         errdefer gpa.destroy(self);
         const runtime = try gpa.create(tui_runtime.TuiRuntime);
         errdefer gpa.destroy(runtime);
-        runtime.* = tui_runtime.TuiRuntime.init(gpa, owner.options) catch |err| switch (err) {
+        runtime.* = tui_runtime.TuiRuntime.init(gpa, sessionOptions(owner.options, request.metadata)) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return refusal.fail(error.BackendFailed, @errorName(err)),
         };
@@ -579,6 +579,34 @@ pub const Session = struct {
     }
 };
 
+pub const settings_key = "oapx";
+
+pub fn sessionOptions(base: tui_runtime.TuiRuntimeOptions, metadata: ?std.json.Value) tui_runtime.TuiRuntimeOptions {
+    var options = base;
+    const document = metadata orelse return options;
+    if (document != .object) return options;
+    const settings = document.object.get(settings_key) orelse return options;
+    if (settings != .object) return options;
+    const fields = settings.object;
+    if (fields.get("thinking_level")) |value| {
+        if (value == .string) {
+            if (std.meta.stringToEnum(ai_types.ThinkingLevel, value.string)) |level| options.thinking_level = level;
+        }
+    }
+    if (fields.get("context_window")) |value| {
+        if (value == .integer and value.integer > 0 and value.integer <= std.math.maxInt(u32)) options.context_window = @intCast(value.integer);
+    }
+    if (fields.get("permission_mode")) |value| {
+        if (value == .string) {
+            if (std.meta.stringToEnum(tui_runtime.PermissionMode, value.string)) |mode| options.permission_mode = mode;
+        }
+    }
+    if (fields.get("workspace_root")) |value| {
+        if (value == .string and value.string.len > 0) options.workspace_root = value.string;
+    }
+    return options;
+}
+
 fn refFor(allocator: std.mem.Allocator, model: ai_types.Model) ![]u8 {
     return model_ref.formatModelRef(allocator, model.provider, model.api, model.id);
 }
@@ -1023,4 +1051,28 @@ test "a replay from zero re-delivers the latest run's events in order, and a fut
     }
     try testing.expectError(error.ReplayCursorFuture, harness.session.vtable.replay.?(harness.session.ptr, testing.allocator, admitted.run_id.?, events.len + 1, &refusal));
     try testing.expectError(error.RunNotFound, harness.session.vtable.replay.?(harness.session.ptr, testing.allocator, "run-elsewhere", 0, &refusal));
+}
+
+test "an open's oapx metadata sets the session's thinking level, window, permission mode and workspace, and anything else is ignored" {
+    const base = tui_runtime.TuiRuntimeOptions{ .thinking_level = .low, .permission_mode = .bypass, .workspace_root = "/base" };
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"oapx":{"thinking_level":"high","context_window":1000000,"permission_mode":"ask","workspace_root":"/work","unknown":1}}
+    , .{});
+    defer parsed.deinit();
+    const applied = sessionOptions(base, parsed.value);
+    try testing.expectEqual(ai_types.ThinkingLevel.high, applied.thinking_level);
+    try testing.expectEqual(@as(?u32, 1_000_000), applied.context_window);
+    try testing.expectEqual(tui_runtime.PermissionMode.ask, applied.permission_mode);
+    try testing.expectEqualStrings("/work", applied.workspace_root);
+
+    var wrong = try std.json.parseFromSlice(std.json.Value, testing.allocator,
+        \\{"oapx":{"thinking_level":"loud","context_window":-1,"permission_mode":7}}
+    , .{});
+    defer wrong.deinit();
+    const kept = sessionOptions(base, wrong.value);
+    try testing.expectEqual(ai_types.ThinkingLevel.low, kept.thinking_level);
+    try testing.expectEqual(@as(?u32, null), kept.context_window);
+    try testing.expectEqual(tui_runtime.PermissionMode.bypass, kept.permission_mode);
+    try testing.expectEqualStrings("/base", kept.workspace_root);
+    try testing.expectEqual(tui_runtime.PermissionMode.bypass, sessionOptions(base, null).permission_mode);
 }
