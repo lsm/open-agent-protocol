@@ -39,6 +39,7 @@ pub const OapExecution = struct {
     session_models: std.ArrayList([]u8) = .empty,
     pending_permission: ?PendingPermission = null,
     output_tokens: u64 = 0,
+    closed_messages: usize = 0,
 
     const PendingPermission = struct {
         interaction_id: []u8,
@@ -469,6 +470,7 @@ pub const OapExecution = struct {
             self.inbound_mutex.unlock();
             self.text.clearRetainingCapacity();
             self.in_assistant = false;
+            self.closed_messages = 0;
             self.deliver(.{ .agent_start = .{} });
             self.deliver(.{ .turn_start = .{} });
             if (self.cancel_pending.swap(false, .acq_rel)) try self.sendCancel();
@@ -532,7 +534,7 @@ pub const OapExecution = struct {
         }
         if (std.mem.eql(u8, kind, "run.completed") or std.mem.eql(u8, kind, "run.failed") or std.mem.eql(u8, kind, "run.cancelled")) {
             if (!self.turn_open.load(.acquire)) return;
-            self.output_tokens = usageTokens(body);
+            self.output_tokens = if (self.closed_messages == 0) usageTokens(body) else 0;
             if (contextTokens(root)) |tokens| self.deliver(.{ .context_usage = .{ .estimated_tokens = tokens } });
         }
         if (std.mem.eql(u8, kind, "run.completed")) {
@@ -575,6 +577,7 @@ pub const OapExecution = struct {
     fn endTurn(self: *OapExecution, reason: tui_session.TuiEndReason) void {
         self.turn_open.store(false, .release);
         self.output_tokens = 0;
+        self.closed_messages = 0;
         self.forgetPermission();
         self.deliver(.{ .agent_end = .{ .reason = reason } });
     }
@@ -591,6 +594,7 @@ pub const OapExecution = struct {
         self.in_assistant = false;
         const output_tokens = self.output_tokens;
         self.output_tokens = 0;
+        self.closed_messages += 1;
         self.deliver(.{ .message_end = .{ .role = .assistant, .text = try self.ownedText(self.text.items), .stop_reason = stop_reason, .output_tokens = output_tokens } });
         self.text.clearRetainingCapacity();
     }
@@ -692,6 +696,7 @@ const Script = struct {
     tool_first: bool = false,
     calls: usize = 0,
     output_tokens: u64 = 0,
+    preamble: []const u8 = "",
     last_thinking: ai_types.ThinkingLevel = .off,
 };
 
@@ -702,15 +707,18 @@ fn scriptedMessage(allocator: std.mem.Allocator, text: []const u8, reason: ai_ty
     return .{ .content = blocks, .api = scripted_model.api, .provider = scripted_model.provider, .model = scripted_model.id, .usage = .{}, .stop_reason = reason, .timestamp = 0 };
 }
 
-fn toolCallMessage(allocator: std.mem.Allocator) !ai_types.AssistantMessage {
-    const blocks = try allocator.alloc(ai_types.AssistantContent, 1);
+fn toolCallMessage(allocator: std.mem.Allocator, preamble: []const u8) !ai_types.AssistantMessage {
+    const blocks = try allocator.alloc(ai_types.AssistantContent, if (preamble.len > 0) 2 else 1);
     errdefer allocator.free(blocks);
+    const said = try allocator.dupe(u8, preamble);
+    errdefer allocator.free(said);
     const id = try allocator.dupe(u8, "call-1");
     errdefer allocator.free(id);
     const name = try allocator.dupe(u8, "echo_tool");
     errdefer allocator.free(name);
     const arguments = try allocator.dupe(u8, "{}");
-    blocks[0] = .{ .tool_call = .{ .id = id, .name = name, .arguments_json = arguments } };
+    blocks[blocks.len - 1] = .{ .tool_call = .{ .id = id, .name = name, .arguments_json = arguments } };
+    if (preamble.len > 0) blocks[0] = .{ .text = .{ .text = said } } else allocator.free(said);
     return .{ .content = blocks, .api = scripted_model.api, .provider = scripted_model.provider, .model = scripted_model.id, .usage = .{}, .stop_reason = .tool_use, .timestamp = 0 };
 }
 
@@ -751,8 +759,9 @@ fn scriptedStream(ctx: ?*anyopaque, model: ai_types.Model, context: ai_types.Con
     stream.* = event_stream.AssistantMessageEventStream.init(allocator);
     if (script.tool_first and script.calls == 1) {
         try stream.push(.{ .start = .{ .partial = bareMessage(.tool_use) } });
-        try stream.push(.{ .done = .{ .reason = .tool_use, .message = try toolCallMessage(allocator) } });
-        stream.complete(try toolCallMessage(allocator));
+        if (script.preamble.len > 0) try stream.push(.{ .text_delta = .{ .content_index = 0, .delta = script.preamble, .partial = bareMessage(.tool_use) } });
+        try stream.push(.{ .done = .{ .reason = .tool_use, .message = try toolCallMessage(allocator, script.preamble) } });
+        stream.complete(try toolCallMessage(allocator, script.preamble));
         return stream;
     }
     if (script.wait_for_cancel) {
@@ -876,6 +885,32 @@ test "a turn over OAP reports its output tokens and the context it filled to the
     try testing.expectEqual(@as(u64, 42), seen.output_tokens);
     try testing.expect(seen.context_tokens != null);
     try testing.expect(seen.context_tokens.? > 0);
+}
+
+test "a run over OAP with an earlier assistant message leaves its output tokens to the estimate rather than counting them twice" {
+    var script = Script{ .output_tokens = 42, .tool_first = true, .preamble = "let me check" };
+    const models = [_]ai_types.Model{scripted_model};
+    const execution = try OapExecution.create(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+        .tools = &echo_tools,
+    });
+    defer execution.destroy();
+    var runtime = try tui_runtime.TuiRuntime.init(testing.allocator, .{
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+        .remote = execution.remote(),
+    });
+    defer runtime.deinit();
+
+    try runtime.submitTurn("use the tool");
+    var seen = Seen{};
+    defer seen.deinit();
+    try drainTurn(&runtime, &seen);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+    try testing.expectEqualStrings("over the wire", seen.final_text.items);
+    try testing.expectEqual(@as(u64, 0), seen.output_tokens);
 }
 
 test "a reply over OAP that stops at its output token limit warns the user as the local runtime does" {

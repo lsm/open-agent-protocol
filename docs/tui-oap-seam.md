@@ -17,7 +17,9 @@ answer covers that one call. The model's questions (`user.input.*`) stay off: th
 open declines `user_input`, because the TUI has no prompt for them. A run's terminal
 event carries `usage.output_tokens`, and the oapx adapter adds the context the run
 filled as `extensions.oapx.context_tokens`, which the TUI shows on its context gauge
-once the run ends rather than per model call. Resume, compaction, steering and queued follow-ups
+once the run ends rather than per model call. The output count is a run total, so it
+replaces the TUI's estimate only for a run with one assistant message; a run that spoke
+before a tool call keeps the per-message estimates rather than counting its tokens twice. Resume, compaction, steering and queued follow-ups
 refuse with `UnavailableOverOap` until their gaps below close. The map that
 follows predates this and still describes the server path `oapx serve agent`
 without `--backend` uses.
