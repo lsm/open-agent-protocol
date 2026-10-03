@@ -1,0 +1,84 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.request",
+    "id": "capq",
+    "payload": {}
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.response",
+    "id": "capr",
+    "in_reply_to": "capq",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "endpoint": {
+        "id": "agent"
+      },
+      "features": {
+        "session.compact": {
+          "level": "native"
+        },
+        "run.compaction": {
+          "level": "native"
+        }
+      }
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.compact.request",
+    "id": "compreq",
+    "session_id": "s1",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "session_id": "s1",
+      "delivery": "auto"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.compact.response",
+    "id": "compadm",
+    "in_reply_to": "compreq",
+    "session_id": "s1",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "session_id": "s1",
+      "accepted": true,
+      "submission_id": "sub-compadm",
+      "requested_delivery": "auto",
+      "effective_delivery": "queue",
+      "admission": "queued",
+      "run_id": "r1",
+      "status": "queued"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.failed",
+    "id": "ev1",
+    "session_id": "s1",
+    "run_id": "r1",
+    "sequence": 1,
+    "capability_revision": "cap-v1",
+    "payload": {
+      "session_id": "s1",
+      "run_id": "r1",
+      "error": {
+        "code": "run_failed",
+        "message": "the compaction failed"
+      }
+    }
+  }
+]

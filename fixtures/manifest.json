@@ -9580,8 +9580,14 @@
       "valid": true,
       "phase": "",
       "codes": [],
-      "units": ["core", "auth"],
-      "provenance": ["decisions/0029-authentication-over-agent-control.md", "decisions/0043-auth-providers-carry-how-they-accept-a-credential.md"]
+      "units": [
+        "core",
+        "auth"
+      ],
+      "provenance": [
+        "decisions/0029-authentication-over-agent-control.md",
+        "decisions/0043-auth-providers-carry-how-they-accept-a-credential.md"
+      ]
     },
     {
       "id": "auth-login-cancelled",
@@ -9590,8 +9596,14 @@
       "valid": true,
       "phase": "",
       "codes": [],
-      "units": ["core", "auth"],
-      "provenance": ["decisions/0029-authentication-over-agent-control.md", "decisions/0043-auth-providers-carry-how-they-accept-a-credential.md"]
+      "units": [
+        "core",
+        "auth"
+      ],
+      "provenance": [
+        "decisions/0029-authentication-over-agent-control.md",
+        "decisions/0043-auth-providers-carry-how-they-accept-a-credential.md"
+      ]
     },
     {
       "id": "auth-answer-on-wire",
@@ -9599,9 +9611,17 @@
       "kind": "schema-invalid",
       "valid": false,
       "phase": "schema",
-      "codes": ["schema_invalid"],
-      "units": ["core", "auth"],
-      "provenance": ["decisions/0029-authentication-over-agent-control.md", "decisions/0043-auth-providers-carry-how-they-accept-a-credential.md"]
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "core",
+        "auth"
+      ],
+      "provenance": [
+        "decisions/0029-authentication-over-agent-control.md",
+        "decisions/0043-auth-providers-carry-how-they-accept-a-credential.md"
+      ]
     },
     {
       "id": "auth-provider-without-kinds",
@@ -9609,9 +9629,16 @@
       "kind": "schema-invalid",
       "valid": false,
       "phase": "schema",
-      "codes": ["schema_invalid"],
-      "units": ["core", "auth"],
-      "provenance": ["decisions/0043-auth-providers-carry-how-they-accept-a-credential.md"]
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "core",
+        "auth"
+      ],
+      "provenance": [
+        "decisions/0043-auth-providers-carry-how-they-accept-a-credential.md"
+      ]
     },
     {
       "id": "auth-event-before-start",
@@ -9619,9 +9646,17 @@
       "kind": "semantic-invalid",
       "valid": false,
       "phase": "semantic",
-      "codes": ["auth_flow_order"],
-      "units": ["core", "auth"],
-      "provenance": ["decisions/0029-authentication-over-agent-control.md", "decisions/0043-auth-providers-carry-how-they-accept-a-credential.md"]
+      "codes": [
+        "auth_flow_order"
+      ],
+      "units": [
+        "core",
+        "auth"
+      ],
+      "provenance": [
+        "decisions/0029-authentication-over-agent-control.md",
+        "decisions/0043-auth-providers-carry-how-they-accept-a-credential.md"
+      ]
     },
     {
       "id": "auth-missing-terminal",
@@ -9629,9 +9664,17 @@
       "kind": "semantic-invalid",
       "valid": false,
       "phase": "semantic",
-      "codes": ["missing_auth_terminal"],
-      "units": ["core", "auth"],
-      "provenance": ["decisions/0029-authentication-over-agent-control.md", "decisions/0043-auth-providers-carry-how-they-accept-a-credential.md"]
+      "codes": [
+        "missing_auth_terminal"
+      ],
+      "units": [
+        "core",
+        "auth"
+      ],
+      "provenance": [
+        "decisions/0029-authentication-over-agent-control.md",
+        "decisions/0043-auth-providers-carry-how-they-accept-a-credential.md"
+      ]
     },
     {
       "id": "auth-revision-not-repeated",
@@ -9639,9 +9682,18 @@
       "kind": "semantic-invalid",
       "valid": false,
       "phase": "semantic",
-      "codes": ["stale_capability_revision"],
-      "units": ["core", "auth"],
-      "provenance": ["drafts/conformance.md", "decisions/0029-authentication-over-agent-control.md", "decisions/0043-auth-providers-carry-how-they-accept-a-credential.md"]
+      "codes": [
+        "stale_capability_revision"
+      ],
+      "units": [
+        "core",
+        "auth"
+      ],
+      "provenance": [
+        "drafts/conformance.md",
+        "decisions/0029-authentication-over-agent-control.md",
+        "decisions/0043-auth-providers-carry-how-they-accept-a-credential.md"
+      ]
     },
     {
       "id": "model-switch-live",
@@ -9650,8 +9702,13 @@
       "valid": true,
       "phase": "",
       "codes": [],
-      "units": ["core", "models"],
-      "provenance": ["decisions/0028-live-model-and-provider-control.md"]
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "decisions/0028-live-model-and-provider-control.md"
+      ]
     },
     {
       "id": "model-switch-core-no-capabilities",
@@ -9660,8 +9717,13 @@
       "valid": true,
       "phase": "",
       "codes": [],
-      "units": ["core", "models"],
-      "provenance": ["decisions/0028-live-model-and-provider-control.md"]
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "decisions/0028-live-model-and-provider-control.md"
+      ]
     },
     {
       "id": "model-switch-degraded-no-optin",
@@ -9669,9 +9731,16 @@
       "kind": "semantic-invalid",
       "valid": false,
       "phase": "semantic",
-      "codes": ["degraded_without_optin"],
-      "units": ["core", "models"],
-      "provenance": ["decisions/0028-live-model-and-provider-control.md"]
+      "codes": [
+        "degraded_without_optin"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "decisions/0028-live-model-and-provider-control.md"
+      ]
     },
     {
       "id": "model-switch-unrelated-refusal",
@@ -9680,8 +9749,13 @@
       "valid": true,
       "phase": "",
       "codes": [],
-      "units": ["core", "models"],
-      "provenance": ["decisions/0028-live-model-and-provider-control.md"]
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "decisions/0028-live-model-and-provider-control.md"
+      ]
     },
     {
       "id": "model-switch-unlisted",
@@ -9689,9 +9763,16 @@
       "kind": "semantic-invalid",
       "valid": false,
       "phase": "semantic",
-      "codes": ["model_not_in_catalog"],
-      "units": ["core", "models"],
-      "provenance": ["decisions/0028-live-model-and-provider-control.md"]
+      "codes": [
+        "model_not_in_catalog"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "decisions/0028-live-model-and-provider-control.md"
+      ]
     },
     {
       "id": "provider-attach-live",
@@ -9700,8 +9781,13 @@
       "valid": true,
       "phase": "",
       "codes": [],
-      "units": ["core", "models"],
-      "provenance": ["decisions/0028-live-model-and-provider-control.md"]
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "decisions/0028-live-model-and-provider-control.md"
+      ]
     },
     {
       "id": "provider-attach-conflicting-alias",
@@ -9709,9 +9795,16 @@
       "kind": "semantic-invalid",
       "valid": false,
       "phase": "semantic",
-      "codes": ["duplicate_provider"],
-      "units": ["core", "models"],
-      "provenance": ["decisions/0028-live-model-and-provider-control.md"]
+      "codes": [
+        "duplicate_provider"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "decisions/0028-live-model-and-provider-control.md"
+      ]
     },
     {
       "id": "steer-at-boundary",
@@ -10960,6 +11053,490 @@
       ],
       "provenance": [
         "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ]
+    },
+    {
+      "id": "compaction-requested-run",
+      "path": "valid/compaction-requested-run.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ]
+    },
+    {
+      "id": "compaction-threshold-inside-run",
+      "path": "valid/compaction-threshold-inside-run.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ]
+    },
+    {
+      "id": "compaction-unknown-reason",
+      "path": "schema-invalid/compaction-unknown-reason.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ]
+    },
+    {
+      "id": "compaction-ended-without-start",
+      "path": "semantic-invalid/compaction-ended-without-start.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "compaction_ended_without_start"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "covers": [
+        {
+          "capability": "run.compaction",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "compaction-open-at-terminal",
+      "path": "semantic-invalid/compaction-open-at-terminal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "compaction_open_at_terminal"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "covers": [
+        {
+          "capability": "run.compaction",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "compaction-request-unadvertised",
+      "path": "semantic-invalid/compaction-request-unadvertised.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.compact",
+          "aspect": "gate"
+        }
+      ]
+    },
+    {
+      "id": "compaction-admission-steered",
+      "path": "semantic-invalid/compaction-admission-steered.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.compact",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "compaction-event-unadvertised",
+      "path": "semantic-invalid/compaction-event-unadvertised.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability",
+        "unavailable_capability"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "covers": [
+        {
+          "capability": "run.compaction",
+          "aspect": "gate"
+        }
+      ]
+    },
+    {
+      "id": "compaction-unpaired",
+      "path": "semantic-invalid/compaction-unpaired.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "compaction_unpaired"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "covers": [
+        {
+          "capability": "run.compaction",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "compaction-threshold-in-a-requested-run",
+      "path": "semantic-invalid/compaction-threshold-in-a-requested-run.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "compaction_run_mismatch"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.compact",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "compaction-run-not-compacted",
+      "path": "semantic-invalid/compaction-run-not-compacted.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "compaction_stop_reason_mismatch"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.compact",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "compaction-failed-without-error",
+      "path": "semantic-invalid/compaction-failed-without-error.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "compaction_failed_without_error"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "covers": [
+        {
+          "capability": "run.compaction",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "compaction-focus-degraded-without-optin",
+      "path": "semantic-invalid/compaction-focus-degraded-without-optin.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "degraded_without_optin"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.compact",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "compaction-queued-not-offered",
+      "path": "semantic-invalid/compaction-queued-not-offered.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.compact",
+          "aspect": "gate"
+        }
+      ]
+    },
+    {
+      "id": "compaction-explicit-queue-started",
+      "path": "semantic-invalid/compaction-explicit-queue-started.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.compact",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "compaction-response-scope-mismatch",
+      "path": "semantic-invalid/compaction-response-scope-mismatch.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "scope_mismatch"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.compact",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "compaction-busy-auto-queued",
+      "path": "valid/compaction-busy-auto-queued.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ]
+    },
+    {
+      "id": "compaction-busy-refused-run-active",
+      "path": "valid/compaction-busy-refused-run-active.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ]
+    },
+    {
+      "id": "compaction-steer-refused",
+      "path": "valid/compaction-steer-refused.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ]
+    },
+    {
+      "id": "compaction-busy-auto-queued-without-resolution",
+      "path": "semantic-invalid/compaction-busy-auto-queued-without-resolution.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.compact",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "compaction-busy-refused-other-code",
+      "path": "semantic-invalid/compaction-busy-refused-other-code.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.compact",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "compaction-steer-wrong-refusal",
+      "path": "semantic-invalid/compaction-steer-wrong-refusal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.compact",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "compaction-steer-accepted",
+      "path": "semantic-invalid/compaction-steer-accepted.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.compact",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "compaction-status-before-start",
+      "path": "semantic-invalid/compaction-status-before-start.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition",
+        "missing_run_started"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.compact",
+          "aspect": "honour"
+        }
       ]
     }
   ]

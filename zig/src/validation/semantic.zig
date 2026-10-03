@@ -3,6 +3,12 @@ const jsonschema = @import("jsonschema");
 
 pub const code_unmatched_steer = "unmatched_steer";
 pub const code_duplicate_steer = "duplicate_steer";
+pub const code_compaction_unpaired = "compaction_unpaired";
+pub const code_compaction_ended_without_start = "compaction_ended_without_start";
+pub const code_compaction_open_at_terminal = "compaction_open_at_terminal";
+pub const code_compaction_run_mismatch = "compaction_run_mismatch";
+pub const code_compaction_stop_reason_mismatch = "compaction_stop_reason_mismatch";
+pub const code_compaction_failed_without_error = "compaction_failed_without_error";
 pub const code_pending_steer_at_terminal = "pending_steer_at_terminal";
 
 pub const code_duplicate_envelope_id = "duplicate_envelope_id";
@@ -54,6 +60,8 @@ const attachment_only_members = [_][]const u8{ "command", "args", "environment" 
 
 pub const implemented = [_][]const u8{
     code_unmatched_steer,             code_duplicate_steer,             code_pending_steer_at_terminal,
+    code_compaction_unpaired,         code_compaction_ended_without_start, code_compaction_open_at_terminal,
+    code_compaction_run_mismatch,     code_compaction_stop_reason_mismatch, code_compaction_failed_without_error,
     code_duplicate_envelope_id,       code_illegal_run_transition,      code_missing_run_started,
     code_missing_run_terminal,        code_duplicate_run_terminal,      code_event_after_terminal,
     code_sequence_gap,                code_sequence_regression,         code_cancel_not_settled,
@@ -83,6 +91,7 @@ pub const Diagnostic = struct {
 };
 
 const run_event_types = [_][]const u8{
+    "run.compaction.started",      "run.compaction.ended",
     "run.steer.applied",           "run.steer.dropped",
     "run.started",                 "run.status.updated",
     "content.delta",               "run.completed",
@@ -188,7 +197,19 @@ const Steer = struct {
     unwitnessed: bool = false,
 };
 
+const Compaction = struct {
+    reason: []const u8,
+    outcome: []const u8 = "",
+    started_at: usize,
+    ended_at: ?usize = null,
+};
+
 const Run = struct {
+    compactions: std.StringArrayHashMapUnmanaged(Compaction) = .empty,
+    open_compaction: []const u8 = "",
+    compaction_run: bool = false,
+    compaction_continue: bool = false,
+    compaction_opened: bool = false,
     steers: std.StringArrayHashMapUnmanaged(Steer) = .empty,
     id: []const u8,
     session: []const u8,
@@ -362,6 +383,7 @@ const Pending = struct {
     reopening: bool = false,
     reasoning: ?Expectation = null,
     compaction: ?Expectation = null,
+    compact_focus: ?Expectation = null,
     asked_level: []const u8 = "",
     asked_policy: ?std.json.Value = null,
     fired: bool = false,
@@ -803,6 +825,15 @@ pub const Machine = struct {
         }
         if (std.mem.eql(u8, declared, "session.message.submit.response")) {
             try self.admit(index, envelope, payload);
+            try self.closeSubmitWindow(field(envelope, "in_reply_to"));
+            return;
+        }
+        if (std.mem.eql(u8, declared, "session.compact.request")) {
+            try self.compactRequest(index, envelope, payload);
+            return;
+        }
+        if (std.mem.eql(u8, declared, "session.compact.response")) {
+            try self.compactResponse(index, envelope, payload);
             try self.closeSubmitWindow(field(envelope, "in_reply_to"));
             return;
         }
@@ -2286,9 +2317,9 @@ pub const Machine = struct {
         if (outranks(candidate, held)) slot.* = candidate;
     }
 
-    fn retained(pending: *const Pending, out: *[7]Expectation) []const Expectation {
+    fn retained(pending: *const Pending, out: *[8]Expectation) []const Expectation {
         var at: usize = 0;
-        for ([_]?Expectation{ pending.control, pending.attachment, pending.subscribe, pending.reopen, pending.reasoning, pending.compaction, pending.limit_refusal }) |slot| {
+        for ([_]?Expectation{ pending.control, pending.attachment, pending.subscribe, pending.reopen, pending.reasoning, pending.compaction, pending.compact_focus, pending.limit_refusal }) |slot| {
             if (slot) |held| {
                 out[at] = held;
                 at += 1;
@@ -2336,6 +2367,13 @@ pub const Machine = struct {
     fn settleSubmitAdmission(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !Controls {
         const pending = self.submits.get(field(envelope, "in_reply_to")) orelse return .{};
         if (pending.control) |expectation| {
+            if (!pending.fired) {
+                pending.fired = true;
+                try self.raise(expectation, index);
+            }
+            return .{};
+        }
+        if (pending.compact_focus) |expectation| {
             if (!pending.fired) {
                 pending.fired = true;
                 try self.raise(expectation, index);
@@ -2433,7 +2471,7 @@ pub const Machine = struct {
             if (std.mem.eql(u8, asked.declared, "session.open.request") and
                 openLevelRefusal(memberString(raised, "code"))) return true;
         }
-        var slots: [7]Expectation = undefined;
+        var slots: [8]Expectation = undefined;
         const held = retained(pending, &slots);
         if (held.len != 0) {
             var speaker = held[0];
@@ -2444,7 +2482,7 @@ pub const Machine = struct {
             try self.raise(speaker, index);
         }
         if (pending.honour.len != 0) try self.add(pending.honour, index);
-        if (pending.control != null) return true;
+        if (pending.control != null or pending.compact_focus != null) return true;
         if (pending.model_query) return true;
         if (pending.model_listed and
             std.mem.eql(u8, memberString(raised, "code"), error_model_not_found))
@@ -2821,6 +2859,174 @@ pub const Machine = struct {
         }
     }
 
+    fn compactRequest(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
+        if (self.capabilities_stale) try self.add(code_stale_capability_revision, index);
+        try self.featureKeys(index, envelope, &.{"session.compact"});
+        const session_id = memberString(payload, "session_id");
+        if (field(envelope, "session_id").len != 0 and !std.mem.eql(u8, field(envelope, "session_id"), session_id)) {
+            try self.add(code_scope_mismatch, index);
+        }
+        try self.openSubmitWindow(index, envelope, payload, "", false);
+        const pending = try self.arena.allocator().create(Pending);
+        pending.* = .{ .session = session_id };
+        const delivery = memberString(payload, "delivery");
+        if (delivery.len == 0 or std.mem.eql(u8, delivery, "auto")) {} else if (std.mem.eql(u8, delivery, "queue")) {
+            if (self.advertisedLevel(feature_delivery_queue)) |level| {
+                if (!affirmative(level)) self.propose(&pending.control, .{
+                    .rung = rung_capability,
+                    .key = feature_delivery_queue,
+                    .pointer = "/payload/delivery",
+                    .code = error_unsupported_feature,
+                    .reason = reason_unadvertised,
+                    .detail_name = "feature",
+                    .detail_value = feature_delivery_queue,
+                    .diagnostic = code_unavailable_capability,
+                });
+            }
+        } else {
+            const key = try std.fmt.allocPrint(self.arena.allocator(), "session.message.delivery.{s}", .{delivery});
+            self.propose(&pending.control, .{
+                .rung = rung_capability,
+                .key = key,
+                .pointer = "/payload/delivery",
+                .code = error_unsupported_feature,
+                .detail_name = "feature",
+                .detail_value = key,
+                .diagnostic = code_illegal_run_transition,
+            });
+        }
+        if (member(payload, "focus") != null) {
+            if (self.advertisedLevel("session.compact")) |level| {
+                if (std.mem.eql(u8, level, "degraded") and !allowsDegraded(payload, "session.compact")) {
+                    pending.compact_focus = .{
+                        .rung = rung_degradation,
+                        .key = "session.compact",
+                        .pointer = "/payload/focus",
+                        .code = error_capability_degraded,
+                        .detail_name = "feature",
+                        .detail_value = "session.compact",
+                        .diagnostic = code_degraded_without_optin,
+                    };
+                }
+            }
+        }
+        try self.submits.put(self.allocator, field(envelope, "id"), pending);
+    }
+
+    fn compactResponse(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
+        const request = self.requests.get(field(envelope, "in_reply_to")) orelse return;
+        if (!std.mem.eql(u8, request.declared, "session.compact.request")) return;
+        const session_id = memberString(payload, "session_id");
+        if (!std.mem.eql(u8, session_id, memberString(request.payload, "session_id"))) {
+            try self.add(code_scope_mismatch, index);
+        }
+        if (field(envelope, "session_id").len != 0 and !std.mem.eql(u8, field(envelope, "session_id"), session_id)) {
+            try self.add(code_scope_mismatch, index);
+        }
+        const payload_run = memberString(payload, "run_id");
+        if (field(envelope, "run_id").len != 0 and !std.mem.eql(u8, field(envelope, "run_id"), payload_run)) {
+            try self.add(code_scope_mismatch, index);
+        }
+        const asked = memberString(request.payload, "delivery");
+        const requested = if (asked.len == 0) "auto" else asked;
+        if (!std.mem.eql(u8, memberString(payload, "requested_delivery"), requested)) {
+            try self.add(code_scope_mismatch, index);
+        }
+        if (!std.mem.eql(u8, requested, "auto") and !std.mem.eql(u8, requested, "queue")) {
+            try self.add(code_illegal_run_transition, index);
+            return;
+        }
+        if (!memberBool(payload, "accepted")) {
+            try self.add(code_illegal_run_transition, index);
+            return;
+        }
+        const run_id = memberString(payload, "run_id");
+        if (run_id.len == 0) {
+            try self.add(code_illegal_run_transition, index);
+            return;
+        }
+        const admission = memberString(payload, "admission");
+        const queued = std.mem.eql(u8, admission, "queued");
+        if (!std.mem.eql(u8, admission, "started") and !queued) {
+            try self.add(code_illegal_run_transition, index);
+            return;
+        }
+        if (!admissionShape(admission, memberString(payload, "effective_delivery"), memberString(payload, "status"))) {
+            try self.add(code_illegal_run_transition, index);
+            return;
+        }
+        if (self.runs.get(run_id) != null) {
+            try self.add(code_illegal_run_transition, index);
+            return;
+        }
+        const holder = try self.sessionFor(session_id);
+        const overlap = try self.queueOverlap(index, payload);
+        if (!overlap) try self.queueAdmission(index, envelope, payload);
+        _ = try self.settleSubmitAdmission(index, envelope, payload);
+        const run = try self.arena.allocator().create(Run);
+        run.* = .{
+            .id = run_id,
+            .session = session_id,
+            .admitted = true,
+            .last_index = index,
+            .admitted_queued = queued,
+            .order = holder.order.items.len,
+            .status = "queued",
+            .compaction_run = true,
+            .compaction_continue = memberBool(request.payload, "continue"),
+        };
+        try self.runs.put(self.allocator, run_id, run);
+        try holder.order.append(self.allocator, run_id);
+        try self.refreshQueueWindows(session_id);
+        if (!queued) {
+            if (holder.active.len == 0) {
+                holder.active = run_id;
+            } else if (self.runs.get(holder.active)) |previous| {
+                if (previous.terminal) holder.active = run_id;
+            } else {
+                holder.active = run_id;
+            }
+        }
+    }
+
+    fn compactionOpening(self: *Machine, index: usize, declared: []const u8, run: *Run) !void {
+        if (!run.compaction_run or !run.started or run.compaction_opened) return;
+        if (std.mem.eql(u8, declared, "run.started") or std.mem.eql(u8, declared, "run.compaction.started")) return;
+        if (isTerminal(declared)) return;
+        try self.add(code_compaction_run_mismatch, index);
+    }
+
+    fn compactionEvent(self: *Machine, index: usize, declared: []const u8, payload: std.json.Value, run: *Run) !void {
+        const id = memberString(payload, "compaction_id");
+        if (std.mem.eql(u8, declared, "run.compaction.started")) {
+            if (run.compaction_run != std.mem.eql(u8, memberString(payload, "reason"), "requested")) {
+                try self.add(code_compaction_run_mismatch, index);
+            }
+            if (run.open_compaction.len != 0 or run.compactions.get(id) != null) {
+                try self.add(code_compaction_unpaired, index);
+                return;
+            }
+            run.open_compaction = id;
+            run.compaction_opened = true;
+            try run.compactions.put(self.arena.allocator(), id, .{
+                .reason = memberString(payload, "reason"),
+                .started_at = index,
+            });
+            return;
+        }
+        if (std.mem.eql(u8, memberString(payload, "outcome"), "failed") and member(payload, "error") == null) {
+            try self.add(code_compaction_failed_without_error, index);
+        }
+        const track = run.compactions.getPtr(id);
+        if (track == null or !std.mem.eql(u8, run.open_compaction, id)) {
+            try self.add(code_compaction_ended_without_start, index);
+            return;
+        }
+        track.?.ended_at = index;
+        track.?.outcome = memberString(payload, "outcome");
+        run.open_compaction = "";
+    }
+
     fn openResponse(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
         const session_id = memberString(payload, "session_id");
         try self.gatedResponse(index, envelope, .open);
@@ -3119,6 +3325,10 @@ pub const Machine = struct {
             return;
         }
         if (std.mem.eql(u8, declared, "run.steer.applied") or std.mem.eql(u8, declared, "run.steer.dropped")) try self.steerSettlement(index, envelope, member(envelope, "payload") orelse std.json.Value{ .null = {} }, state);
+        if (std.mem.eql(u8, declared, "run.compaction.started") or std.mem.eql(u8, declared, "run.compaction.ended")) {
+            try self.compactionEvent(index, declared, member(envelope, "payload") orelse std.json.Value{ .null = {} }, state);
+        }
+        try self.compactionOpening(index, declared, state);
         try self.checkQueueOrder(index, envelope, state, declared);
 
         if (std.mem.eql(u8, declared, "run.started")) {
@@ -3195,6 +3405,22 @@ pub const Machine = struct {
                 if (track.settled_at == null) {
                     try self.add(code_pending_steer_at_terminal, index);
                     break;
+                }
+            }
+            if (state.open_compaction.len != 0) try self.add(code_compaction_open_at_terminal, index);
+            if (state.compaction_run and state.started) {
+                if (state.compactions.count() != 1) {
+                    try self.add(code_compaction_run_mismatch, index);
+                } else if (!state.compaction_continue and std.mem.eql(u8, declared, "run.completed")) {
+                    var settled = false;
+                    var completed = true;
+                    for (state.compactions.values()) |track| {
+                        settled = true;
+                        if (!std.mem.eql(u8, track.outcome, "completed")) completed = false;
+                    }
+                    if (settled and completed and !std.mem.eql(u8, memberString(body, "stop_reason"), "compacted")) {
+                        try self.add(code_compaction_stop_reason_mismatch, index);
+                    }
                 }
             }
             try self.checkPendingAtTerminal(index, state);
@@ -3783,6 +4009,7 @@ fn outputSchemaDefect(allocator: std.mem.Allocator, raw: std.json.Value) !bool {
 }
 
 fn runEventFeature(declared: []const u8) ?[]const u8 {
+    if (std.mem.startsWith(u8, declared, "run.compaction.")) return "run.compaction";
     if (std.mem.startsWith(u8, declared, "action.call.")) return "tools";
     if (std.mem.startsWith(u8, declared, "action.permission.")) return "permissions";
     if (std.mem.startsWith(u8, declared, "user.input.")) return "user_input";

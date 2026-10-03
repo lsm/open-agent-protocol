@@ -35,6 +35,8 @@ const RUN_EVENT_TYPES: ReadonlySet<string> = new Set([
   EnvelopeType.ActionPermissionResolved,
   EnvelopeType.UserInputRequested,
   EnvelopeType.UserInputResolved,
+  EnvelopeType.RunCompactionStarted,
+  EnvelopeType.RunCompactionEnded,
   EnvelopeType.RunSteerApplied,
   EnvelopeType.RunSteerDropped,
 ]);
