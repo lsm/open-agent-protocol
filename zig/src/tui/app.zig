@@ -4100,6 +4100,7 @@ pub const TuiModel = struct {
         mouse: zz.MouseEvent,
         tick: struct { timestamp: u64, delta: u64 },
         window_size: struct { width: u16, height: u16 },
+        resumed: void,
         quit: void,
     };
 
@@ -4132,6 +4133,7 @@ pub const TuiModel = struct {
     }
 
     pub fn update(self: *TuiModel, msg: Msg, ctx: *zz.Context) zz.Cmd(Msg) {
+        if (msg == .resumed) self.wheel_captured = false;
         const cmd = self.step(msg, ctx);
         const zen_on = if (self.app) |*app| app.state.zen.on else false;
         if (zen_on == self.wheel_captured) return cmd;
@@ -4466,6 +4468,7 @@ pub const TuiModel = struct {
                     app.refreshBranchOnSlowTick() catch |err| app.recordError(@errorName(err)) catch {};
                 }
             },
+            .resumed => {},
             .quit => return self.quitCmd(app, ctx),
         }
         if (app.pending_clear_screen) {
@@ -8603,9 +8606,13 @@ test "zen captures the wheel while it is on and scrolls the reply with it" {
     try std.testing.expect(std.mem.indexOf(u8, bottom, "reply line 59") != null);
     try std.testing.expect(std.mem.indexOf(u8, bottom, "reply line 0\n") == null);
 
+    try std.testing.expect(model.update(.resumed, &tctx.ctx).batch[0] == .enable_mouse);
+    try std.testing.expect(model.update(tick, &tctx.ctx) != .batch);
+
     try app.submit("/zen");
     const left = model.update(tick, &tctx.ctx);
     try std.testing.expect(left.batch[0] == .disable_mouse);
+    try std.testing.expect(model.update(.resumed, &tctx.ctx) != .batch);
 }
 
 test "App submit quit command requests quit" {
