@@ -8178,6 +8178,8 @@ const MockAppSession = struct {
     compact_focus: []u8 = &.{},
     compact_transcripts: std.ArrayList([]u8) = .empty,
     submitted: std.ArrayList([]u8) = .empty,
+    steered: std.ArrayList([]u8) = .empty,
+    followed: std.ArrayList([]u8) = .empty,
     submit_error: ?anyerror = null,
 
     fn session(self: *MockAppSession) tui_runtime.TuiSession {
@@ -8256,15 +8258,19 @@ const MockAppSession = struct {
     }
 
     fn steer(ctx: ?*anyopaque, text: []const u8) anyerror!void {
-        _ = text;
         const self = ptr(ctx);
+        const owned = try std.testing.allocator.dupe(u8, text);
+        errdefer std.testing.allocator.free(owned);
+        try self.steered.append(std.testing.allocator, owned);
         self.steer_count += 1;
         if (self.queued_counts.total() == 0) self.queued_counts.steering += 1;
     }
 
     fn followUp(ctx: ?*anyopaque, text: []const u8) anyerror!void {
-        _ = text;
         const self = ptr(ctx);
+        const owned = try std.testing.allocator.dupe(u8, text);
+        errdefer std.testing.allocator.free(owned);
+        try self.followed.append(std.testing.allocator, owned);
         self.follow_up_count += 1;
         self.queued_counts.follow_up += 1;
     }
@@ -8324,11 +8330,181 @@ const MockAppSession = struct {
         if (self.events_initialized) self.events.deinit();
         for (self.submitted.items) |text| std.testing.allocator.free(text);
         self.submitted.deinit(std.testing.allocator);
+        for (self.steered.items) |text| std.testing.allocator.free(text);
+        self.steered.deinit(std.testing.allocator);
+        for (self.followed.items) |text| std.testing.allocator.free(text);
+        self.followed.deinit(std.testing.allocator);
         std.testing.allocator.free(self.compact_focus);
         for (self.compact_transcripts.items) |path| std.testing.allocator.free(path);
         self.compact_transcripts.deinit(std.testing.allocator);
     }
 };
+
+const zen_enter = tui_state.zen_enter_note ++ "\n\n";
+const zen_leave = tui_state.zen_leave_note ++ "\n\n";
+
+fn lastUserText(app: *const App) []const u8 {
+    var index = app.state.transcript.items.len;
+    while (index > 0) {
+        index -= 1;
+        const entry = &app.state.transcript.items[index];
+        if (entry.kind == .user) return entry.text.items;
+    }
+    return "";
+}
+
+test "zen notes the next prompt once, echoes only the user's text, and lifts the note on leaving" {
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    app.session = mock.session();
+
+    try app.submit("/zen");
+    try app.submit("hello");
+    try std.testing.expectEqualStrings(zen_enter ++ "hello", mock.submitted.items[0]);
+    try std.testing.expectEqualStrings("hello", lastUserText(&app));
+    const users = countKind(&app, .user);
+    try app.appendRuntimeUserMessage(mock.submitted.items[0]);
+    try std.testing.expectEqual(users, countKind(&app, .user));
+
+    try app.submit("again");
+    try std.testing.expectEqualStrings("again", mock.submitted.items[1]);
+
+    try app.submit("/zen");
+    try app.submit("bye");
+    try std.testing.expectEqualStrings(zen_leave ++ "bye", mock.submitted.items[2]);
+    try app.submit("after");
+    try std.testing.expectEqualStrings("after", mock.submitted.items[3]);
+}
+
+fn countKind(app: *const App, kind: tui_state.TranscriptKind) usize {
+    var count: usize = 0;
+    for (app.state.transcript.items) |entry| {
+        if (entry.kind == kind) count += 1;
+    }
+    return count;
+}
+
+test "zen sends no note when it is switched on and back off before anything is sent" {
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    app.session = mock.session();
+
+    try app.submit("/zen");
+    try app.submit("/zen");
+    try app.submit("plain");
+    try std.testing.expectEqualStrings("plain", mock.submitted.items[0]);
+}
+
+test "zen notes a steer and a follow-up, and shows each without the note" {
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    app.session = mock.session();
+
+    try app.submit("/zen");
+    app.state.status.streaming = true;
+    try app.steer("fix the test");
+    try std.testing.expectEqualStrings(zen_enter ++ "fix the test", mock.steered.items[0]);
+    try std.testing.expectEqualStrings("fix the test", app.state.pending_steers.items[0]);
+    try app.steer("and the docs");
+    try std.testing.expectEqualStrings("and the docs", mock.steered.items[1]);
+
+    var follow = App.initWithoutRuntime(std.testing.allocator);
+    defer follow.deinit();
+    var follow_mock = MockAppSession{};
+    defer follow_mock.deinit();
+    follow.session = follow_mock.session();
+    try follow.submit("/zen");
+    follow.state.status.streaming = true;
+    try std.testing.expectEqual(true, try follow.queueFollowUp("then open a PR"));
+    try std.testing.expectEqualStrings(zen_enter ++ "then open a PR", follow_mock.followed.items[0]);
+    try std.testing.expectEqualStrings("then open a PR", follow.state.pending_follow_ups.items[0]);
+    try std.testing.expectEqual(true, try follow.queueFollowUp("and merge"));
+    try std.testing.expectEqualStrings("and merge", follow_mock.followed.items[1]);
+}
+
+test "zen notes a follow-up queued after leaving zen with the lifting note" {
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    app.session = mock.session();
+    try app.submit("/zen");
+    try app.submit("first");
+    try app.submit("/zen");
+    app.state.status.streaming = true;
+    try std.testing.expectEqual(true, try app.queueFollowUp("then open a PR"));
+    try std.testing.expectEqualStrings(zen_leave ++ "then open a PR", mock.followed.items[0]);
+}
+
+test "zen notes messages held after an abort when they are sent" {
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    app.session = mock.session();
+
+    try app.submit("/zen");
+    try app.state.held_after_abort.append(std.testing.allocator, try std.testing.allocator.dupe(u8, "held one"));
+    try app.submit("typed");
+    try std.testing.expectEqualStrings(zen_enter ++ "held one\n\ntyped", mock.submitted.items[0]);
+    try std.testing.expect(std.mem.indexOf(u8, lastUserText(&app), tui_state.zen_enter_note) == null);
+}
+
+test "zen notes the message an automatic compaction held, whether the run is idle or busy" {
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    app.session = mock.session();
+
+    try app.submit("/zen");
+    app.pending_after_compaction = try std.testing.allocator.dupe(u8, "after compaction");
+    try app.sendPendingAfterCompaction(true, false);
+    try std.testing.expectEqualStrings(zen_enter ++ "after compaction", mock.submitted.items[0]);
+
+    var busy = App.initWithoutRuntime(std.testing.allocator);
+    defer busy.deinit();
+    var busy_mock = MockAppSession{};
+    defer busy_mock.deinit();
+    busy.session = busy_mock.session();
+    try busy.submit("/zen");
+    busy.pending_after_compaction = try std.testing.allocator.dupe(u8, "while busy");
+    busy.pending_after_compaction_echo = try std.testing.allocator.dupe(u8, "shown");
+    try busy.sendPendingAfterCompaction(true, true);
+    try std.testing.expectEqualStrings(zen_enter ++ "while busy", busy_mock.steered.items[0]);
+    try std.testing.expectEqualStrings("while busy", busy.state.pending_steers.items[0]);
+}
+
+test "zen fades out once on the frame the run ends, then shows the reply" {
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    tctx.ctx.width = 80;
+    tctx.ctx.height = 30;
+    const app = &model.app.?;
+    try app.submit("/zen");
+    app.state.status.streaming = true;
+    try app.state.appendTranscript(.assistant, "the final reply");
+    try std.testing.expect(std.mem.indexOf(u8, model.view(&tctx.ctx), "the final reply") == null);
+
+    app.state.status.streaming = false;
+    try std.testing.expect(std.mem.indexOf(u8, model.view(&tctx.ctx), "the final reply") == null);
+    var tick: usize = 0;
+    while (tick < 23) : (tick += 1) {
+        _ = model.update(.{ .tick = .{ .timestamp = 0, .delta = 0 } }, &tctx.ctx);
+        try std.testing.expect(std.mem.indexOf(u8, model.view(&tctx.ctx), "the final reply") == null);
+    }
+    _ = model.update(.{ .tick = .{ .timestamp = 0, .delta = 0 } }, &tctx.ctx);
+    try std.testing.expect(std.mem.indexOf(u8, model.view(&tctx.ctx), "the final reply") != null);
+}
 
 test "App submit quit command requests quit" {
     var app = App.initWithoutRuntime(std.testing.allocator);
@@ -8349,6 +8525,7 @@ test "App steer handles fallback empty and session paths" {
 
     app.state.clearTranscript();
     var mock = MockAppSession{ .queued_counts = .{ .steering = 1 } };
+    defer mock.deinit();
     app.session = mock.session();
 
     try app.steer(" steer me ");
