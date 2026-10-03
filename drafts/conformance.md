@@ -38,6 +38,7 @@ Conformance units are additive:
 - `+btw`
 - `+session-reattach`
 - `+session-settings`
+- `+compaction`
 
 Example claims:
 
@@ -722,6 +723,38 @@ An implementation conforms if it:
 
 The `session_live` mode and `session.settings.update.request` are not on the
 wire yet; they follow in a later change.
+
+### `+compaction`
+
+`+compaction` is staged under [Decision 0044](../decisions/0044-compaction.md).
+An implementation conforms if it:
+
+- advertises `session.compact` above `unavailable` for
+  `session.compact.request`, and `run.compaction` for the
+  `run.compaction.started` and `run.compaction.ended` events it publishes;
+- admits a compaction as a run under submit's rules: `auto` (the default)
+  starts on an idle session, and on a busy one becomes a reservation with
+  `delivery_resolution: "session_busy"` where `session.message.delivery.queue`
+  is advertised and is otherwise refused with `run_active`; `queue` is only a
+  reservation, and is refused with `unsupported_feature` naming
+  `session.message.delivery.queue` where queueing is not advertised;
+- refuses `steer` and `btw` delivery with `unsupported_feature` naming the
+  delivery's key, `session.message.delivery.steer` or
+  `session.message.delivery.btw`;
+- refuses a `focus` against a `degraded` `session.compact` with
+  `capability_degraded` unless the request consents through
+  `allow_degraded_features`;
+- opens a run a compaction request admitted with that run's one compaction, of
+  reason `requested`, pairs every `run.compaction.started` with one
+  `run.compaction.ended` before the run settles, carries an `error` on a
+  `failed` outcome, and settles a completed compaction run that does not
+  `continue` with `stop_reason: "compacted"`;
+- publishes a `threshold` or `overflow` compaction only inside a run that is
+  already admitted, never as a run of its own.
+
+Whether a threshold compaction happens at all is the session's
+`compaction_policy` under `+session-settings`; this unit judges only the shape
+of the compactions that do.
 
 ## Extension Packs
 

@@ -11,6 +11,11 @@ import (
 )
 
 type runState struct {
+	compactions                 map[protocol.CompactionID]*compactionTrack
+	openCompaction              protocol.CompactionID
+	compactionRun               bool
+	compactionContinue          bool
+	compactionOpened            bool
 	steers                      map[protocol.SubmissionID]*steerTrack
 	id                          protocol.RunID
 	session                     protocol.SessionID
@@ -431,6 +436,10 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 
 			s.feature(i, line, e, "delivery."+string(p.Delivery))
 		}
+	case protocol.TypeSessionCompactRequest:
+		s.compactRequest(i, line, e)
+	case protocol.TypeSessionCompactResponse:
+		s.compactResponse(i, line, e)
 	case protocol.TypeSessionMessageSubmitResponse:
 		s.submitResponse(i, line, e)
 	case protocol.TypeRunCancelRequest:
@@ -527,7 +536,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		}
 	}
 
-	if e.Type == protocol.TypeSessionMessageSubmitResponse || e.Type == protocol.TypeErrorResponse || e.Type == protocol.TypeSessionOpenResponse {
+	if e.Type == protocol.TypeSessionMessageSubmitResponse || e.Type == protocol.TypeSessionCompactResponse || e.Type == protocol.TypeErrorResponse || e.Type == protocol.TypeSessionOpenResponse {
 		s.closeSubmitWindow(e.InReplyTo)
 	}
 
@@ -671,6 +680,10 @@ func requestScope(e protocol.Envelope) (protocol.SessionID, protocol.RunID) {
 		var p protocol.MessageSubmitRequest
 		_ = e.DecodePayload(&p)
 		return p.SessionID, ""
+	case protocol.TypeSessionCompactRequest:
+		var p protocol.SessionCompactRequest
+		_ = e.DecodePayload(&p)
+		return p.SessionID, ""
 	case protocol.TypeSessionStateRequest:
 		var p protocol.SessionStateRequest
 		_ = e.DecodePayload(&p)
@@ -727,6 +740,10 @@ func responseScope(e protocol.Envelope) (protocol.SessionID, protocol.RunID) {
 	switch e.Type {
 	case protocol.TypeSessionMessageSubmitResponse:
 		var p protocol.MessageSubmitResponse
+		_ = e.DecodePayload(&p)
+		return p.SessionID, p.RunID
+	case protocol.TypeSessionCompactResponse:
+		var p protocol.SessionCompactResponse
 		_ = e.DecodePayload(&p)
 		return p.SessionID, p.RunID
 	case protocol.TypeSessionStateResponse, protocol.TypeSessionStateUpdated:
@@ -949,8 +966,13 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 	if e.Type == protocol.TypeRunSteerApplied || e.Type == protocol.TypeRunSteerDropped {
 		s.steerSettlement(i, line, e, r)
 	}
+	if e.Type == protocol.TypeRunCompactionStarted || e.Type == protocol.TypeRunCompactionEnded {
+		s.compactionEvent(i, line, e, r)
+	}
+	s.compactionOpening(i, line, e, r)
 	if isTerminal(e.Type) {
 		s.steerTerminal(i, line, e, r)
+		s.compactionTerminal(i, line, e, r)
 	}
 	s.checkQueueOrder(i, line, e, r)
 	if e.Type == protocol.TypeRunStarted {
@@ -1546,7 +1568,7 @@ func preStartSettlement(t protocol.EnvelopeType) bool {
 }
 func isRunEvent(t protocol.EnvelopeType) bool {
 	switch t {
-	case protocol.TypeRunSteerApplied, protocol.TypeRunSteerDropped, protocol.TypeRunStarted, protocol.TypeRunStatusUpdated, protocol.TypeContentDelta, protocol.TypeRunCompleted, protocol.TypeRunFailed, protocol.TypeRunCancelled, protocol.TypeActionCallRequested, protocol.TypeActionCallStarted, protocol.TypeActionCallProgress, protocol.TypeActionCallCompleted, protocol.TypeActionCallFailed, protocol.TypeActionCallCancelled, protocol.TypeActionPermissionRequested, protocol.TypeActionPermissionResolved, protocol.TypeUserInputRequested, protocol.TypeUserInputResolved:
+	case protocol.TypeRunCompactionStarted, protocol.TypeRunCompactionEnded, protocol.TypeRunSteerApplied, protocol.TypeRunSteerDropped, protocol.TypeRunStarted, protocol.TypeRunStatusUpdated, protocol.TypeContentDelta, protocol.TypeRunCompleted, protocol.TypeRunFailed, protocol.TypeRunCancelled, protocol.TypeActionCallRequested, protocol.TypeActionCallStarted, protocol.TypeActionCallProgress, protocol.TypeActionCallCompleted, protocol.TypeActionCallFailed, protocol.TypeActionCallCancelled, protocol.TypeActionPermissionRequested, protocol.TypeActionPermissionResolved, protocol.TypeUserInputRequested, protocol.TypeUserInputResolved:
 		return true
 	}
 	return false

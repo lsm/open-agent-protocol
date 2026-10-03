@@ -77,8 +77,11 @@ always passes `rpc`; the `AgentSessionEvent` union is identical. `get_state`,
 `get_tree`, tool execution, streaming `message_update` and retry frames have
 the same shapes at both tags.
 
-The advertised surface is unchanged. The revision moves to
-`pi-v0.87.1-oap-v1` with the pin, and the Zig port serves that same revision.
+The advertised surface is unchanged by the pin move. The revision moves to
+`pi-v0.87.1-oap-v1` with the pin, and the Zig port serves that same revision;
+Decision 0045's session settings moved it to `pi-v0.87.1-oap-v2`, which
+`v0.1.0-alpha.7` released, and T4 steer moved the surface again, so both ports
+now serve `pi-v0.87.1-oap-v3`.
 
 Normative inspected sources:
 
@@ -350,9 +353,25 @@ store and should not be read as one.
 7. **Abort acknowledgement is post-idle natively**, but the adapter still uses
    `agent_settled` as terminal authority and handles completion/cancellation
    races through one arbiter.
-8. **Steering/follow-up queues are first-class natively but unavailable in the
-   current OAP surface:** the codec corpus records them; it does not imply an
-   advertised delivery claim. `auto` alone is exposed for submission.
+8. **Steering is first-class natively and now advertised:** the adapter sends
+   pi's `steer` command and settles the guidance at the turn boundary pi injects
+   it, so `session.message.delivery.steer` is `emulated` and the settlement's
+   `boundary` is `turn`. Follow-up queues stay codec evidence: `queue` remains
+   `unavailable`, and `auto` alone is exposed for submission.
+   Two windows around the native call, recorded rather than compensated. A
+   `turn_end` that pi emits after answering the `steer` command but that the
+   reducer reaches before the adapter records the steer is still that steer's
+   boundary: the Go adapter notes how many turns had ended when the response's
+   barrier was reduced and settles the steer at once if more have ended since.
+   The other window has no remedy on this wire: pi accepts the guidance
+   (`success: true`, even after `agent_settled`, as the Zig fixture
+   `fake_settled_before_steer` pins) before the adapter can re-check the run, so
+   a run that settles during the call yields an `invalid_steer_target` refusal
+   for guidance pi did take. No pending steer is recorded for it, so no
+   `run.steer.applied` or `run.steer.dropped` ever covers it, and if pi retains it
+   the guidance can reach a later run unannounced. pi offers no way to withdraw a
+   steer, so the refusal is the honest answer to the request it judged, and the
+   unaccounted guidance is this ledger's mismatch.
 9. **Parallel tool completion order differs from result emission order** —
    action state is keyed strictly on `toolCallId`, not ordering.
 10. **No sequence numbers:** OAP sequence is adapter-owned and replay is only
@@ -373,7 +392,8 @@ store and should not be read as one.
 - one foreground run per OAP session: enforced locally
 - text streaming: `native` (`message_update` provider stream events)
 - tool lifecycle/progress: `degraded` observed lifecycle; Pi owns execution
-- delivery `auto`: `emulated`; `queue` and `steer`: `unavailable`
+- delivery `auto`: `emulated`; `steer`: `emulated` over the native `steer`
+  command, settled at the turn boundary pi injects it; `queue`: `unavailable`
 - cancellation: `degraded`; native abort with `agent_settled` authority
 - interactions and permissions: `unavailable`; production extensions disabled
   and `InteractiveGates=false`
@@ -397,8 +417,9 @@ updates require `OAP_UPDATE_PI_CORPUS=1`.
 
 The eleven cases cover each of the 25 ledger fixture labels exactly once. `message-rejected` is now a distinct executable case driven
 through `Session.Submit`; native-control outcome labels require matching decoded
-responses or queue observations, while unsupported controls remain explicitly
-command/codec evidence rather than advertised OAP execution support:
+responses or queue observations, while controls outside the advertised surface
+remain explicitly command/codec evidence rather than advertised OAP execution
+support:
 `initialize-minimal`, `message-admitted`, `message-rejected`,
 `completed-text`, `streaming-deltas`, `multi-turn-tools`, `tool-completed`,
 `tool-failed`, `tool-progress`, `tool-parallel-order`, `steer-queued`,
@@ -464,8 +485,8 @@ available; v0.85.1 was gated on `pi-linux-x64`). The v0.85.1
 - Re-run against the new binary after the port gained Go's `get_state`
   reconciliation and run model naming: the served backend answers
   `session.state.request` from a fresh `get_state`, names
-  `oap-loopback/fixture-model` on `run.started`, and serves the Go revision
-  `pi-v0.87.1-oap-v1`.
+  `oap-loopback/fixture-model` on `run.started`, and serves the Go revision,
+  `pi-v0.87.1-oap-v2` at the time.
 
 ## Served by `oapx serve agent --backend pi`
 

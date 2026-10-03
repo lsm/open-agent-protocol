@@ -71,6 +71,26 @@ type EventStream struct {
 
 	finished bool
 	err      error
+
+	inflight chan polled
+
+	released []protocol.Envelope
+	wake     chan struct{}
+	held     bool
+}
+
+type polled struct {
+	envelope protocol.Envelope
+	err      error
+}
+
+func (es *EventStream) polling() {
+	results := make(chan polled, 1)
+	es.inflight = results
+	go func() {
+		envelope, err := es.poll()
+		results <- polled{envelope: envelope, err: err}
+	}()
 }
 
 func (es *EventStream) Next() (protocol.Envelope, error) {
@@ -81,13 +101,41 @@ func (es *EventStream) Next() (protocol.Envelope, error) {
 		return protocol.Envelope{}, io.EOF
 	}
 	for {
-		if es.response == nil {
-			if err := es.connect(); err != nil {
-				return protocol.Envelope{}, es.stop(err)
+		released, wake, ok := es.takeSteer()
+		if ok {
+			es.held = false
+			return released, nil
+		}
+		if es.held {
+			select {
+			case <-wake:
+				continue
+			case <-es.ctx.Done():
+				return protocol.Envelope{}, es.stop(es.ctx.Err())
 			}
 		}
-		envelope, err := es.poll()
+		if es.inflight == nil {
+			if es.response == nil {
+				if err := es.connect(); err != nil {
+					return protocol.Envelope{}, es.stop(err)
+				}
+			}
+			es.polling()
+		}
+		var envelope protocol.Envelope
+		var err error
+		select {
+		case polled := <-es.inflight:
+			es.inflight = nil
+			envelope, err = polled.envelope, polled.err
+		case <-wake:
+			continue
+		}
 		if err == nil {
+			if es.session.holdSteer(es, envelope) {
+				es.held = true
+				continue
+			}
 			return envelope, nil
 		}
 		var drop *connectionDrop

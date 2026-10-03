@@ -16,10 +16,54 @@ import (
 type sessionRegistry struct {
 	mu       sync.RWMutex
 	sessions map[protocol.SessionID]*Session
+	runs     *runIndex
 }
 
 func newSessionRegistry() *sessionRegistry {
-	return &sessionRegistry{sessions: make(map[protocol.SessionID]*Session)}
+	return &sessionRegistry{sessions: make(map[protocol.SessionID]*Session), runs: &runIndex{}}
+}
+
+type runIndex struct {
+	mu     sync.RWMutex
+	owners map[protocol.RunID]map[protocol.SessionID]bool
+}
+
+func (r *runIndex) claim(session protocol.SessionID, run protocol.RunID) {
+	if run == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.owners == nil {
+		r.owners = make(map[protocol.RunID]map[protocol.SessionID]bool)
+	}
+	holders := r.owners[run]
+	if holders == nil {
+		holders = make(map[protocol.SessionID]bool)
+		r.owners[run] = holders
+	}
+	holders[session] = true
+}
+
+func (r *runIndex) foreign(run protocol.RunID, self protocol.SessionID) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	holders := r.owners[run]
+	if len(holders) == 0 || holders[self] {
+		return false
+	}
+	return true
+}
+
+func (r *runIndex) release(session protocol.SessionID) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for run, holders := range r.owners {
+		delete(holders, session)
+		if len(holders) == 0 {
+			delete(r.owners, run)
+		}
+	}
 }
 
 func (r *sessionRegistry) get(id protocol.SessionID) (*Session, bool) {
@@ -82,15 +126,148 @@ type Session struct {
 	sequences    map[protocol.RunID]uint64
 
 	finished map[protocol.RunID]bool
+
+	runs *runIndex
+
+	drainWake chan struct{}
+	gateCond  *sync.Cond
+	gate      *steerGate
+}
+
+const steerGateDeadline = 30 * time.Second
+
+const steerDrainDeadline = 5 * time.Second
+
+const steerDrainBatch = 64
+
+type steerGate struct {
+	runs     []protocol.RunID
+	unnamed  bool
+	request  protocol.EnvelopeID
+	boundary uint64
+	withheld []protocol.Envelope
+	deadline *time.Timer
+
+	requested atomic.Bool
+	drained   atomic.Bool
+	drainedCh chan struct{}
+	doneOnce  sync.Once
+}
+
+func (g *steerGate) cover(run protocol.RunID) {
+	if run == "" {
+		g.unnamed = true
+		return
+	}
+	for _, covered := range g.runs {
+		if covered == run {
+			return
+		}
+	}
+	g.runs = append(g.runs, run)
+}
+
+func (g *steerGate) covers(run protocol.RunID) bool {
+	if g.unnamed {
+		return true
+	}
+	if run == "" {
+		return false
+	}
+	for _, covered := range g.runs {
+		if covered == run {
+			return true
+		}
+	}
+	return false
+}
+
+func (g *steerGate) markDrainRequested() { g.requested.Store(true) }
+
+func (s *Session) awaitDrain(gate *steerGate, readers int) {
+	if readers == 0 {
+		return
+	}
+	s.mu.Lock()
+	served := s.gate == gate && s.gateServedLocked(gate)
+	s.mu.Unlock()
+	if !served {
+		return
+	}
+	select {
+	case <-gate.drainedCh:
+	case <-time.After(steerDrainDeadline):
+	}
+}
+
+func (s *Session) gateServedLocked(gate *steerGate) bool {
+	if gate.unnamed {
+		return s.readers > 0
+	}
+	for _, run := range gate.runs {
+		if s.serials[run] != 0 && !s.finished[run] {
+			return true
+		}
+	}
+	return false
+}
+
+func (g *steerGate) drainPending() bool { return g.requested.Load() && !g.drained.Load() }
+
+func (g *steerGate) withholds(envelope protocol.Envelope) bool {
+	for _, covered := range g.runs {
+		if covered == envelope.RunID {
+			return true
+		}
+	}
+	return g.request != "" && settlementRequest(envelope) == g.request
+}
+
+func settlementRequest(envelope protocol.Envelope) protocol.EnvelopeID {
+	switch envelope.Type {
+	case protocol.TypeRunSteerApplied:
+		var payload protocol.RunSteerAppliedPayload
+		if err := envelope.DecodePayload(&payload); err != nil {
+			return ""
+		}
+		return payload.RequestID
+	case protocol.TypeRunSteerDropped:
+		var payload protocol.RunSteerDroppedPayload
+		if err := envelope.DecodePayload(&payload); err != nil {
+			return ""
+		}
+		return payload.RequestID
+	}
+	return ""
+}
+
+func (g *steerGate) finishDrain() {
+	g.doneOnce.Do(func() {
+		g.drained.Store(true)
+		close(g.drainedCh)
+	})
+}
+
+func (g *steerGate) split(boundary uint64) (prefix, rest []protocol.Envelope) {
+	for _, envelope := range g.withheld {
+		if envelope.Sequence != nil && *envelope.Sequence <= boundary {
+			prefix = append(prefix, envelope)
+			continue
+		}
+		rest = append(rest, envelope)
+	}
+	return prefix, rest
 }
 
 func newSession(id protocol.SessionID, adapterName string, session base.Session, release func(*Session)) *Session {
-	return &Session{
+	entry := &Session{
 		id: id, adapterName: adapterName, session: session, release: release,
 		created: time.Now(), subs: make(map[*subscriber]struct{}), serials: make(map[protocol.RunID]uint64),
 		sequences: make(map[protocol.RunID]uint64),
 		finished:  make(map[protocol.RunID]bool),
 	}
+	entry.gateCond = sync.NewCond(&entry.mu)
+	return entry
 }
 
 func (s *Session) ID() protocol.SessionID { return s.id }
@@ -177,10 +354,100 @@ func (s *Session) SwitchModel(ctx context.Context, request protocol.SessionModel
 	return response, state, nil
 }
 
+func (s *Session) armSteerGate(ctx context.Context, run protocol.RunID, request protocol.EnvelopeID) (*steerGate, error) {
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			s.mu.Lock()
+			s.gateCond.Broadcast()
+			s.mu.Unlock()
+		case <-done:
+		}
+	}()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for s.gate != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		s.gateCond.Wait()
+	}
+	if s.closed {
+		return nil, base.ErrSessionClosed
+	}
+	gate := &steerGate{request: request, boundary: s.sequences[run], drainedCh: make(chan struct{})}
+	gate.cover(run)
+	s.gate = gate
+	gate.deadline = time.AfterFunc(steerGateDeadline, func() { s.liftSteerGate(gate) })
+	return gate, nil
+}
+
+func (s *Session) releaseToBoundary(gate *steerGate, boundary uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.gate != gate {
+		return
+	}
+	prefix, rest := gate.split(boundary)
+	gate.withheld, gate.boundary = rest, boundary
+	for _, envelope := range prefix {
+		s.deliverLocked(envelope)
+	}
+}
+
+func (s *Session) liftSteerGate(gate *steerGate) {
+	if gate == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.gate != gate {
+		s.mu.Unlock()
+		return
+	}
+	s.gate = nil
+	gate.finishDrain()
+	withheld := gate.withheld
+	gate.withheld = nil
+	if gate.deadline != nil {
+		gate.deadline.Stop()
+	}
+	s.gateCond.Broadcast()
+	for _, envelope := range withheld {
+		s.deliverLocked(envelope)
+	}
+	s.mu.Unlock()
+}
+
+func (s *Session) Published(request protocol.EnvelopeID) {
+	s.mu.Lock()
+	gate := s.gate
+	s.mu.Unlock()
+	if gate == nil || gate.request != request {
+		return
+	}
+	s.liftSteerGate(gate)
+}
+
+func (s *Session) waitGateLifted(run protocol.RunID) {
+	s.mu.Lock()
+	for s.gate != nil && s.gate.covers(run) {
+		if s.gate.drainPending() {
+			s.gate.finishDrain()
+		}
+		s.gateCond.Wait()
+	}
+	s.mu.Unlock()
+}
+
 func (s *Session) Submit(ctx context.Context, submit base.SubmitRequest) (protocol.MessageSubmitResponse, error) {
 	request := submit.Request
 	if request.SessionID != s.id {
 		return protocol.MessageSubmitResponse{}, &ScopeMismatchError{Payload: request.SessionID, Addressed: s.id}
+	}
+	if request.Delivery == protocol.DeliverySteer {
+		return s.submitSteer(ctx, submit)
 	}
 
 	s.mu.Lock()
@@ -205,6 +472,82 @@ func (s *Session) Submit(ctx context.Context, submit base.SubmitRequest) (protoc
 		return admission, nil
 	}
 	s.adoptRun(admission.RunID, stream, admission.Admission == protocol.AdmissionQueued)
+	return admission, nil
+}
+
+func (s *Session) retargetGate(gate *steerGate, run protocol.RunID) {
+	if gate == nil || run == "" {
+		return
+	}
+	s.mu.Lock()
+	if s.gate == gate {
+		gate.cover(run)
+	}
+	s.mu.Unlock()
+}
+
+func (s *Session) foreignRun(run protocol.RunID) bool {
+	if s.runs == nil {
+		return false
+	}
+	return s.runs.foreign(run, s.id)
+}
+
+func (s *Session) submitSteer(ctx context.Context, submit base.SubmitRequest) (protocol.MessageSubmitResponse, error) {
+	target := submit.Request.TargetRunID
+	if target == "" {
+		if current, ok := s.currentRun(); ok {
+			target = current
+		}
+	}
+	if s.foreignRun(target) {
+		return protocol.MessageSubmitResponse{}, &base.InvalidSteerTargetError{RunID: target, Reason: base.SteerReasonCrossSession}
+	}
+	gate, err := s.armSteerGate(ctx, target, submit.EnvelopeID)
+	if err != nil {
+		return protocol.MessageSubmitResponse{}, err
+	}
+	s.mu.Lock()
+	s.reservations++
+	s.mu.Unlock()
+	admission, stream, err := s.session.Submit(ctx, submit)
+	s.retargetGate(gate, admission.RunID)
+	s.mu.Lock()
+	readers := s.readers
+	s.mu.Unlock()
+	gate.markDrainRequested()
+	s.broadcastDrain()
+	s.awaitDrain(gate, readers)
+	if err != nil {
+		var refusal *base.InvalidSteerTargetError
+		if errors.As(err, &refusal) {
+			s.retargetGate(gate, refusal.RunID)
+		}
+		boundary := gate.boundary
+		if refusal != nil && refusal.TargetSequence != nil {
+			boundary = *refusal.TargetSequence
+		}
+		s.releaseToBoundary(gate, boundary)
+		if stream != nil {
+			s.adoptOrphan(stream)
+		} else {
+			s.releaseReservation()
+		}
+		if errors.Is(err, base.ErrSessionClosed) {
+			s.markClosed()
+		}
+		return admission, err
+	}
+	boundary := gate.boundary
+	if admission.TargetSequence != nil {
+		boundary = *admission.TargetSequence
+	}
+	s.releaseToBoundary(gate, boundary)
+	if stream != nil {
+		s.adoptOrphan(stream)
+	} else {
+		s.releaseReservation()
+	}
 	return admission, nil
 }
 
@@ -419,12 +762,21 @@ func (s *Session) bindRun(runID protocol.RunID, reserved uint64) protocol.RunID 
 	return runID
 }
 
+func (s *Session) claimRun(runID protocol.RunID) {
+	if s.runs == nil {
+		return
+	}
+	s.runs.claim(s.id, runID)
+}
+
 func (s *Session) startRun(runID protocol.RunID, stream base.EventStream) {
+	s.claimRun(runID)
 	s.mu.Lock()
 	s.readers++
 	s.runID = runID
 	s.nextSerial++
 	s.serials[runID] = s.nextSerial
+	delete(s.finished, runID)
 	errored, failed := s.supersedeLocked()
 	s.mu.Unlock()
 	s.deliverDeferredError(errored, failed)
@@ -432,11 +784,13 @@ func (s *Session) startRun(runID protocol.RunID, stream base.EventStream) {
 }
 
 func (s *Session) adoptRun(runID protocol.RunID, stream base.EventStream, queued bool) {
+	s.claimRun(runID)
 	s.mu.Lock()
 	s.reservations--
 	s.readers++
 	s.nextSerial++
 	s.serials[runID] = s.nextSerial
+	delete(s.finished, runID)
 	var errored []*subscriber
 	var failed *terminalState
 	if !queued {
@@ -512,9 +866,99 @@ func (s *Session) releaseReservation() {
 	}
 }
 
+var closedSignal = func() chan struct{} {
+	closed := make(chan struct{})
+	close(closed)
+	return closed
+}()
+
+func (s *Session) drainSignal(run protocol.RunID) chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.gate != nil && s.gate.drainPending() && s.gate.covers(run) {
+		return closedSignal
+	}
+	if s.drainWake == nil {
+		s.drainWake = make(chan struct{})
+	}
+	return s.drainWake
+}
+
+func (s *Session) broadcastDrain() {
+	s.mu.Lock()
+	if s.drainWake != nil {
+		close(s.drainWake)
+		s.drainWake = nil
+	}
+	s.gateCond.Broadcast()
+	s.mu.Unlock()
+}
+
+func (s *Session) nextResult(run protocol.RunID, stream base.EventStream) (base.Result, bool) {
+	for {
+		if gate := s.drainingGate(run); gate != nil {
+			result, ready, ok := s.drainGate(gate, stream)
+			gate.finishDrain()
+			if !ok {
+				return base.Result{}, false
+			}
+			if ready {
+				return result, true
+			}
+			continue
+		}
+		select {
+		case result, ok := <-stream:
+			return result, ok
+		case <-s.drainSignal(run):
+		}
+	}
+}
+
+func (s *Session) drainingGate(run protocol.RunID) *steerGate {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.gate == nil || !s.gate.drainPending() || !s.gate.covers(run) {
+		return nil
+	}
+	return s.gate
+}
+
+func (s *Session) drainGate(gate *steerGate, stream base.EventStream) (base.Result, bool, bool) {
+	for drained := 0; drained < steerDrainBatch; drained++ {
+		select {
+		case result, ok := <-stream:
+			if !ok {
+				return base.Result{}, false, false
+			}
+			if result.Error != nil {
+				return result, true, true
+			}
+			s.drainInto(result.Envelope)
+		default:
+			return base.Result{}, false, true
+		}
+	}
+	return base.Result{}, false, true
+}
+
+func (s *Session) drainInto(envelope protocol.Envelope) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.gate != nil && s.gate.withholds(envelope) {
+		s.gate.withheld = append(s.gate.withheld, envelope)
+		return
+	}
+	s.deliverLocked(envelope)
+}
+
 func (s *Session) readRun(runID protocol.RunID, stream base.EventStream, reserved uint64) {
 	var end *terminalState
-	for result := range stream {
+	for {
+		result, ok := s.nextResult(runID, stream)
+		if !ok {
+			break
+		}
 
 		if runID == "" && result.Envelope.RunID != "" {
 			runID = s.bindRun(result.Envelope.RunID, reserved)
@@ -535,6 +979,7 @@ func (s *Session) readRun(runID protocol.RunID, stream base.EventStream, reserve
 		s.promoteCurrent(runID, result.Envelope)
 		s.publish(result.Envelope)
 	}
+	s.waitGateLifted(runID)
 	if reserved > 0 && runID == "" {
 
 		s.mu.Lock()
@@ -649,6 +1094,16 @@ func (s *Session) exitReader(runID protocol.RunID, end *terminalState) {
 
 func (s *Session) publish(envelope protocol.Envelope) {
 	s.mu.Lock()
+	if s.gate != nil && s.gate.withholds(envelope) {
+		s.gate.withheld = append(s.gate.withheld, envelope)
+		s.mu.Unlock()
+		return
+	}
+	s.deliverLocked(envelope)
+	s.mu.Unlock()
+}
+
+func (s *Session) deliverLocked(envelope protocol.Envelope) {
 	if envelope.Sequence != nil && *envelope.Sequence > s.sequences[envelope.RunID] {
 		s.sequences[envelope.RunID] = *envelope.Sequence
 	}
@@ -665,7 +1120,6 @@ func (s *Session) publish(envelope protocol.Envelope) {
 			sub.stop(&terminalState{overflow: true, run: sub.lossRun(envelope.RunID, s.serials[envelope.RunID], s.runID, s.serials[s.runID], s.finished)})
 		}
 	}
-	s.mu.Unlock()
 }
 
 func (sub *subscriber) exposedTo(runID protocol.RunID, serial uint64) bool {
@@ -723,6 +1177,23 @@ func (s *Session) markClosed() {
 	s.mu.Lock()
 	releasing := !s.closed && s.release != nil
 	s.closed = true
+	if s.runs != nil {
+		s.runs.release(s.id)
+	}
+	var withheld []protocol.Envelope
+	if s.gate != nil {
+		withheld = s.gate.withheld
+		s.gate.withheld = nil
+		if s.gate.deadline != nil {
+			s.gate.deadline.Stop()
+		}
+		s.gate.finishDrain()
+		s.gate = nil
+		s.gateCond.Broadcast()
+	}
+	for _, envelope := range withheld {
+		s.deliverLocked(envelope)
+	}
 	var errored []*subscriber
 	var failed *terminalState
 	switch {

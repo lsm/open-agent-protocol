@@ -133,6 +133,8 @@ const (
 	FeatureDeliveryQueue    = "session.message.delivery.queue"
 	FeatureDeliverySteer    = "session.message.delivery.steer"
 	FeatureDeliveryBTW      = "session.message.delivery.btw"
+	FeatureSessionCompact   = "session.compact"
+	FeatureRunCompaction    = "run.compaction"
 	FeatureToolSelection    = "run.tool_selection"
 	FeatureStructuredOutput = "run.structured_output"
 )
@@ -493,6 +495,8 @@ type SessionState struct {
 	CompactionPolicy *CompactionPolicy          `json:"compaction_policy,omitempty"`
 }
 
+type CompactionID string
+
 const RelationshipPrimary = "primary"
 
 type PendingSteer struct {
@@ -601,6 +605,27 @@ type MessageSubmitRequest struct {
 	Metadata              map[string]json.RawMessage `json:"metadata,omitempty"`
 }
 
+type SessionCompactRequest struct {
+	SessionID             SessionID                  `json:"session_id"`
+	Delivery              RequestedDeliveryMode      `json:"delivery,omitempty"`
+	Focus                 *string                    `json:"focus,omitempty"`
+	Continue              bool                       `json:"continue,omitempty"`
+	AllowDegradedFeatures []string                   `json:"allow_degraded_features,omitempty"`
+	Metadata              map[string]json.RawMessage `json:"metadata,omitempty"`
+}
+
+type SessionCompactResponse struct {
+	SessionID          SessionID             `json:"session_id"`
+	Accepted           bool                  `json:"accepted"`
+	SubmissionID       SubmissionID          `json:"submission_id"`
+	RequestedDelivery  RequestedDeliveryMode `json:"requested_delivery"`
+	EffectiveDelivery  EffectiveDeliveryMode `json:"effective_delivery"`
+	DeliveryResolution string                `json:"delivery_resolution,omitempty"`
+	Admission          Admission             `json:"admission"`
+	RunID              RunID                 `json:"run_id,omitempty"`
+	Status             RunStatus             `json:"status,omitempty"`
+}
+
 func Control(control *string) string {
 	if control == nil {
 		return ""
@@ -611,6 +636,15 @@ func Control(control *string) string {
 func ControlValue(value string) *string { return &value }
 
 func (r MessageSubmitRequest) AllowsDegraded(key string) bool {
+	for _, allowed := range r.AllowDegradedFeatures {
+		if allowed == key {
+			return true
+		}
+	}
+	return false
+}
+
+func (r SessionCompactRequest) AllowsDegraded(key string) bool {
 	for _, allowed := range r.AllowDegradedFeatures {
 		if allowed == key {
 			return true

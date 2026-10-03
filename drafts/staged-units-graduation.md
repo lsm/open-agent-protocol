@@ -4284,6 +4284,39 @@ slice does not make the unit executable: binding and client ordering, and native
 pi execution, remain the gates still ahead, so nothing here advertises a
 capability the surfaces cannot yet exercise end to end.
 
+The third slice is the publication ordering this section specifies. A steered
+admission adopts no run, so the target's drainer keeps publishing on its own
+serial; before the adapter is called the hub arms a gate on the target run's
+drainer that reads and withholds, after the call it drains what the adapter
+made readable and publishes only the prefix at or below the boundary the
+response states, and it releases the remainder when the binding that made the
+response observable calls `Hub.Published`. The three bindings call it after
+they write the response, an in-process embedder calls it when it has handed the
+response to its own caller, and a deadline releases the stream in order if a
+host forgets. The hub also classifies an explicit `target_run_id` that belongs
+to another of its sessions as `cross_session` before delegating. Both clients
+hold a settlement whose admitting request is still outstanding, keyed by
+`request_id`, and deliver it once the response arrives or the request fails,
+waking a reader that was already blocked in a read.
+
+What that slice still defers, and names here rather than leaving implied: the
+hub-minted `session.state.updated` fallback for a context that ends before
+`Published`, and the `after_interleaved` cursor member it needs. Both are
+recovery surfaces for a caller that never learned its `submission_id`, they
+depend on the session-scoped sequence domain the fallback would open, and they
+settle with the `settled_steers` decision the record already defers.
+
+The fourth slice is step 3 of the same gate: pi executes steer natively. The
+adapter sends pi's `steer` command, admits against the started target with its
+last emitted sequence, settles the guidance at the turn boundary pi injects it,
+drops a pending steer before the run's terminal, and reports `pending_steers` on
+the target's `active_runs` entry. Both trees advertise
+`session.message.delivery.steer` at `emulated`, which moves the pin's capability
+revision to `pi-v0.87.1-oap-v3` in both ports (`v2` is the session-settings
+descriptor `v0.1.0-alpha.7` released), and the corpus case
+`native-controls` reclassifies its `steer` round trip from `required-unmapped` to
+mapped.
+
 The record also defers the `settled_steers` session-state surface below to its
 own decision, rather than graduating it inside this unit.
 

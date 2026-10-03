@@ -130,11 +130,39 @@ func (s *Server) serveRequest(ctx context.Context, run *runState, request reques
 			s.respond(ctx, lines, request, nil, &wireError{Code: "invalid_request", Message: "adapter is required"})
 			return
 		}
-		s.serveOpen(ctx, run, request, lines)
+		s.hub.Published(publishedSession(s.serveOpen(ctx, run, request, lines), request), submittedEnvelopeID(request))
 		return
 	}
 	result, werr := s.dispatch(ctx, request)
 	s.respond(ctx, lines, request, result, werr)
+	if request.Op == opSubmit {
+		s.hub.Published(protocol.SessionID(request.SessionID), submittedEnvelopeID(request))
+	}
+}
+
+func publishedSession(opened protocol.SessionID, request requestLine) protocol.SessionID {
+	if opened != "" {
+		return opened
+	}
+	var envelope protocol.Envelope
+	if err := json.Unmarshal(request.Request, &envelope); err != nil {
+		return ""
+	}
+	var payload protocol.SessionOpenRequest
+	if err := envelope.DecodePayload(&payload); err != nil {
+		return ""
+	}
+	return payload.SessionID
+}
+
+func submittedEnvelopeID(request requestLine) protocol.EnvelopeID {
+	var envelope struct {
+		ID protocol.EnvelopeID `json:"id"`
+	}
+	if err := json.Unmarshal(request.Request, &envelope); err != nil {
+		return ""
+	}
+	return envelope.ID
 }
 
 func (s *Server) respond(ctx context.Context, lines chan<- outLine, request requestLine, result json.RawMessage, werr *wireError) bool {
@@ -1142,45 +1170,47 @@ func trimMessage(message string) string {
 	return string(runes[:limit]) + "…"
 }
 
-func (s *Server) serveOpen(ctx context.Context, run *runState, request requestLine, lines chan<- outLine) {
+func (s *Server) serveOpen(ctx context.Context, run *runState, request requestLine, lines chan<- outLine) protocol.SessionID {
 	if !subscribesAtOpen(request) {
 		result, subscription, werr := s.openOp(ctx, request, nil)
 		if subscription != nil {
 			subscription.Close()
 		}
 		s.respond(ctx, lines, request, result, werr)
-		return
+		return protocol.SessionID(openedSession(result))
 	}
 	pumps, outcome, why := run.attach()
 	switch outcome {
 	case closedToWork:
 		s.respond(ctx, lines, request, nil, &wireError{Code: "request_cancelled", Message: "shutdown began before the subscription started"})
-		return
+		return ""
 	case refused:
 		s.respond(ctx, lines, request, nil, &wireError{Code: "busy", Message: why + "; a subscription ends at its run's terminal, at an overflow or stream failure, or when its session closes — send this request again once one has"})
-		return
+		return ""
 	}
 	result, subscription, werr := s.openOp(ctx, request, pumps)
+	opened := protocol.SessionID(openedSession(result))
 	if subscription == nil {
 		run.detach()
 		s.respond(ctx, lines, request, result, werr)
-		return
+		return opened
 	}
 	if !s.respond(ctx, lines, request, result, werr) {
 		run.detach()
 		subscription.Close()
-		return
+		return opened
 	}
-	entry, lookupErr := s.hub.Session(protocol.SessionID(openedSession(result)))
+	entry, lookupErr := s.hub.Session(opened)
 	if lookupErr != nil {
 		run.detach()
 		subscription.Close()
-		return
+		return opened
 	}
 	go func() {
 		defer run.detach()
 		s.pump(pumps, entry, subscription, *request.ID, 0, lines)
 	}()
+	return opened
 }
 
 func subscribesAtOpen(request requestLine) bool {

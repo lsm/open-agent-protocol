@@ -566,6 +566,14 @@ func payloadTarget(t protocol.EnvelopeType) any {
 		return &protocol.RunCancelRequest{}
 	case protocol.TypeRunCancelResponse:
 		return &protocol.RunCancelResponse{}
+	case protocol.TypeSessionCompactRequest:
+		return &protocol.SessionCompactRequest{}
+	case protocol.TypeSessionCompactResponse:
+		return &protocol.SessionCompactResponse{}
+	case protocol.TypeRunCompactionStarted:
+		return &protocol.RunCompactionStartedPayload{}
+	case protocol.TypeRunCompactionEnded:
+		return &protocol.RunCompactionEndedPayload{}
 	case protocol.TypeRunSteerApplied:
 		return &protocol.RunSteerAppliedPayload{}
 	case protocol.TypeRunSteerDropped:

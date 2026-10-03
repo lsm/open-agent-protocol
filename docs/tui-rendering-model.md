@@ -547,7 +547,7 @@ each `quiet`, `normal` (the default) or `verbose`:
 | part | `quiet` | `normal` | `verbose` |
 |---|---|---|---|
 | `thinking` | one line counting the hidden lines | the first ten lines | every line |
-| `tools` | each call's title row only | title row, argument and up to twelve command rows | every command row, and the arguments of a non-shell call |
+| `tools` | each call's title row, with its description, command or path on that row | title row, argument and up to twelve command rows | every command row, and the arguments of a non-shell call |
 | `output` | no result rows | result rows of a running or failed call, up to eight | every row, and a finished call's output under its row |
 | `notices` | background and progress notices hidden (catalog refreshed, worktree setup, clipboard); replies to commands, failures and errors still shown | shown | shown, as with `normal` |
 | `status` | model, context, queue, state, and permissions when not `ask` | as now | adds the session id |
@@ -567,6 +567,28 @@ when no turn is running and the TUI is not inside tmux or screen (`TMUX`, `STY`)
 which may ignore the scrollback clear and leave both copies; otherwise it says to
 run `/redraw`. A `status` change never redraws, since the status bar is redrawn
 every frame anyway.
+
+## Zen
+
+`/zen` (or `/zen on`, `/zen off`) replaces the whole screen with one centred
+column in grey: a trail that grows one dot for each thinking block, tool call
+and reply since zen began (with a count in front once it outgrows the column),
+one line naming the current tool, and, floating a little above the bottom of
+the screen, a minimal input bar in place of the composer and the status bar.
+The trail breathes slowly while the agent thinks, faster while a tool runs,
+and holds still while an approval waits; with no steps yet it is a single dot.
+When the run ends it brightens once and fades, and then the last reply (or the
+error that ended it), still drawn with its markdown colours, takes its place. Approval prompts and the command palette appear above the input
+bar. While zen is on, nothing is printed into the scrollback; leaving it
+prints what was held back at the current verbosity, and so does quitting, so a
+session ended in zen still leaves its transcript in the terminal. Only an error
+that ended the run counts as its result; a command's error reply does not.
+
+Zen is the one display setting the model sees. The next prompt after `/zen`
+carries a short note, ahead of the user's text, asking the agent to work
+without narrating and to finish with one concise reply; the prompt after
+leaving zen carries a note lifting that. Only the user's own text is echoed in
+the transcript. Switching on and back off before sending anything sends no note.
 
 ## Automatic compaction
 
