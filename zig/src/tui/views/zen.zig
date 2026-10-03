@@ -60,6 +60,7 @@ pub const Frame = struct {
     activity: []const u8 = "",
     incoming: []const u8 = "",
     rise: f32 = 0,
+    light: f32 = 0,
     tool_ms: u64 = 0,
     final_block: []const u8 = "",
     failed: bool = false,
@@ -217,10 +218,10 @@ pub fn render(allocator: std.mem.Allocator, frame: Frame) ![]u8 {
     return out.toOwnedSlice();
 }
 
-pub const change_ticks: u64 = 80;
+pub const change_ticks: u64 = 60;
+pub const light_ticks: u64 = 80;
 pub const slot_rows: usize = 3;
 const slot_centre: usize = 1;
-const fade_share: f32 = 0.75;
 const glow_gain: f32 = 0.8;
 const lit_peak: f32 = 230;
 const timed_after_ms: u64 = 10_000;
@@ -256,7 +257,7 @@ fn glow(progress: f32, col: usize, text_width: usize) f32 {
 
 fn activityRow(allocator: std.mem.Allocator, frame: Frame, width: usize) ![]const u8 {
     const changing = frame.incoming.len > 0;
-    const fade = @min(frame.rise / fade_share, 1);
+    const fade = @min(frame.rise, 1);
     const arrived = !changing or fade >= 0.5;
     const text = if (!changing) try activityLine(allocator, frame.activity, frame.tool_ms, width) else try tui_text.truncateLineToWidth(allocator, if (arrived) frame.incoming else frame.activity, width);
     const strength: f32 = if (!changing) 1 else if (arrived) smoothstep(fade * 2 - 1) else 1 - smoothstep(fade * 2);
@@ -268,7 +269,7 @@ fn activityRow(allocator: std.mem.Allocator, frame: Frame, width: usize) ![]cons
     var col: usize = 0;
     var view = std.unicode.Utf8View.initUnchecked(text).iterator();
     while (view.nextCodepointSlice()) |cell| {
-        const lit = if (changing) strength * (1 + glow_gain * glow(frame.rise, col, text_width)) else strength;
+        const lit = strength * (1 + glow_gain * glow(frame.light, col, text_width));
         const level = litLevel(lit);
         if (last != level) try zz.Color.fromRgb(level, level, level).writeFg(&out.writer);
         last = level;
@@ -545,45 +546,27 @@ fn levelsOf(allocator: std.mem.Allocator, row: []const u8) ![]u32 {
     return levels.toOwnedSlice(allocator);
 }
 
-test "a new line crossfades in place while a light opens from its centre to both ends" {
+test "a new line fades in where the old one faded out" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     var frame: Frame = .{ .width = 80, .height = 24, .running = true, .activity = "thinking", .incoming = "Shell Execute  ls" };
 
-    frame.rise = 0.2;
+    frame.rise = 0.3;
     const leaving = try activitySlot(a, frame, 60);
-    try std.testing.expect(std.mem.indexOf(u8, leaving[1], "Shell") == null);
     try std.testing.expectEqualStrings("", leaving[0]);
     try std.testing.expectEqualStrings("", leaving[2]);
-    try std.testing.expect(std.mem.indexOf(u8, (try plainRows(a, leaving[1])), "thinking") != null);
+    const left = try plainRows(a, leaving[1]);
+    try std.testing.expect(std.mem.indexOf(u8, left, "thinking") != null);
+    try std.testing.expect(std.mem.indexOf(u8, left, "Shell") == null);
 
-    frame.rise = 0.45;
+    frame.rise = 0.6;
     const arriving = try plainRows(a, (try activitySlot(a, frame, 60))[1]);
     try std.testing.expect(std.mem.indexOf(u8, arriving, "Shell Execute  ls") != null);
     try std.testing.expect(std.mem.indexOf(u8, arriving, "thinking") == null);
-
-    frame.rise = 0.22;
-    const early = try levelsOf(a, (try activitySlot(a, frame, 60))[1]);
-    frame.rise = 0.8;
-    const late = try levelsOf(a, (try activitySlot(a, frame, 60))[1]);
-    const soft: u32 = soft_level;
-    try std.testing.expect(early[early.len / 2] > early[0]);
-    try std.testing.expect(late[0] > late[late.len / 2]);
-    try std.testing.expect(late[0] > soft);
-    try std.testing.expectEqual(soft, late[late.len / 2]);
-
-    const rest = try levelsOf(a, (try activitySlot(a, .{ .width = 80, .height = 24, .running = true, .activity = "Shell Execute  ls" }, 60))[1]);
-    try std.testing.expectEqual(@as(usize, 1), rest.len);
-    try std.testing.expectEqual(soft, rest[0]);
-
-    frame.rise = 0;
-    for (try levelsOf(a, (try activitySlot(a, frame, 60))[1])) |level| try std.testing.expectEqual(soft, level);
-    frame.rise = 0.999;
-    for (try levelsOf(a, (try activitySlot(a, frame, 60))[1])) |level| try std.testing.expect(level <= soft + 2);
 }
 
-test "a crossfade passes through every grey down to the background without a step" {
+test "a fade passes through every grey down to the background without a step" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -592,7 +575,7 @@ test "a crossfade passes through every grey down to the background without a ste
     var previous: u32 = soft_level;
     var darkest: u32 = soft_level;
     var tick: u64 = 0;
-    while (@as(f32, @floatFromInt(tick)) < fade_share * @as(f32, @floatFromInt(change_ticks))) : (tick += 1) {
+    while (tick < change_ticks) : (tick += 1) {
         frame.rise = @as(f32, @floatFromInt(tick)) / @as(f32, @floatFromInt(change_ticks));
         const levels = try levelsOf(a, (try activitySlot(a, frame, 60))[1]);
         const edge = if (levels.len == 0) background else levels[0];
@@ -602,6 +585,31 @@ test "a crossfade passes through every grey down to the background without a ste
     }
     try std.testing.expect(previous >= soft_level - 2);
     try std.testing.expect(darkest <= background + 2);
+}
+
+test "the light keeps opening from the centre to both ends while a line rests" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const soft: u32 = soft_level;
+    var frame: Frame = .{ .width = 80, .height = 24, .running = true, .activity = "Shell Execute  ls" };
+
+    for ([_]f32{ 0, 0.999 }) |at| {
+        frame.light = at;
+        for (try levelsOf(a, (try activitySlot(a, frame, 60))[1])) |level| try std.testing.expect(level <= soft + 2);
+    }
+    frame.light = 0.22;
+    const early = try levelsOf(a, (try activitySlot(a, frame, 60))[1]);
+    try std.testing.expect(early[early.len / 2] > early[0]);
+    frame.light = 0.8;
+    const late = try levelsOf(a, (try activitySlot(a, frame, 60))[1]);
+    try std.testing.expect(late[0] > soft);
+    try std.testing.expect(late[0] > late[late.len / 2]);
+
+    frame.incoming = "Read  a.zig";
+    frame.rise = 0.1;
+    const fading = try levelsOf(a, (try activitySlot(a, frame, 60))[1]);
+    try std.testing.expect(fading[0] > fading[fading.len / 2]);
 }
 
 fn levelOf(row: []const u8) u32 {

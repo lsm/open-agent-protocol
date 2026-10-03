@@ -4665,6 +4665,7 @@ pub const TuiModel = struct {
             .activity = app.state.zen.activity(),
             .incoming = app.state.zen.incomingActivity(),
             .rise = app.state.zen.rise(app.state.anim_tick, zen_view.change_ticks),
+            .light = @as(f32, @floatFromInt(app.state.anim_tick % zen_view.light_ticks)) / @as(f32, @floatFromInt(zen_view.light_ticks)),
             .tool_ms = if (app.state.zen.settled()) tool_ms else 0,
             .final_block = final_block,
             .failed = failed,
@@ -8665,12 +8666,24 @@ test "zen names the model it is waiting on before the run's first step" {
     try app.state.status.setModel(app.allocator, "space-bunny-free", "opencode-go");
     app.state.status.streaming = true;
     const settle = struct {
+        var plain: [1 << 16]u8 = undefined;
         fn frames(m: *TuiModel, ctx: *zz.Context) []const u8 {
             for (0..2 * zen_view.change_ticks + 2) |_| {
                 _ = m.view(ctx);
                 m.app.?.state.anim_tick +%= 1;
             }
-            return m.view(ctx);
+            const view = m.view(ctx);
+            var len: usize = 0;
+            var i: usize = 0;
+            while (i < view.len) : (i += 1) {
+                if (view[i] == 0x1b) {
+                    while (i < view.len and view[i] != 'm') i += 1;
+                    continue;
+                }
+                plain[len] = view[i];
+                len += 1;
+            }
+            return plain[0..len];
         }
     };
     try std.testing.expect(std.mem.indexOf(u8, settle.frames(&model, &tctx.ctx), "waiting for space-bunny-free") != null);
