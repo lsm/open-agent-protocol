@@ -81,12 +81,102 @@ pub const ApprovalStatus = enum {
     rejected,
 };
 
+pub const ZenNote = enum { none, enter, leave };
+
+pub const zen_enter_note = "The user switched to zen mode and will only see your final message. Work without narrating: no progress updates or explanations between tool calls. When you finish, reply once, concisely: what changed or what you found, and anything that needs the user.";
+
+pub const zen_leave_note = "The user left zen mode; respond normally.";
+
+pub const Zen = struct {
+    on: bool = false,
+    start_index: usize = 0,
+    note: ZenNote = .none,
+    phase: f32 = 0,
+    was_running: bool = false,
+    ended_tick: ?u64 = null,
+
+    pub fn enter(self: *Zen, transcript_len: usize) void {
+        if (self.on) return;
+        self.on = true;
+        self.start_index = transcript_len;
+        self.was_running = false;
+        self.ended_tick = null;
+        self.note = if (self.note == .leave) .none else .enter;
+    }
+
+    pub fn leave(self: *Zen) void {
+        if (!self.on) return;
+        self.on = false;
+        self.note = if (self.note == .enter) .none else .leave;
+    }
+
+    pub fn noteText(self: *const Zen) ?[]const u8 {
+        return switch (self.note) {
+            .none => null,
+            .enter => zen_enter_note,
+            .leave => zen_leave_note,
+        };
+    }
+};
+
+pub fn withoutZenNote(text: []const u8) []const u8 {
+    inline for (.{ zen_enter_note, zen_leave_note }) |note| {
+        if (std.mem.startsWith(u8, text, note ++ "\n\n")) return text[note.len + 2 ..];
+    }
+    return text;
+}
+
+pub fn zenStart(state: *const AppState) usize {
+    var start = state.transcript.items.len;
+    for ([_]?usize{ state.active_assistant_entry, state.active_thinking_entry, state.active_tool_summary_entry, state.active_tool_result_entry }) |active| {
+        if (active) |index| start = @min(start, index);
+    }
+    return start;
+}
+
+pub const ZenCounts = struct {
+    thinking: usize = 0,
+    tools: usize = 0,
+    messages: usize = 0,
+    last_activity: ?usize = null,
+    final: ?usize = null,
+};
+
+pub fn zenCounts(entries: []const TranscriptEntry, start: usize) ZenCounts {
+    var counts: ZenCounts = .{};
+    var index = @min(start, entries.len);
+    while (index < entries.len) : (index += 1) {
+        const entry = &entries[index];
+        switch (entry.kind) {
+            .thinking => {
+                counts.thinking += 1;
+                counts.last_activity = index;
+            },
+            .tool => if (entry.tool_summary) {
+                counts.tools += 1;
+                counts.last_activity = index;
+            },
+            .assistant => {
+                counts.messages += 1;
+                counts.final = index;
+            },
+            .@"error" => if (entry.run_failure) {
+                counts.final = index;
+            },
+            .user => counts.final = null,
+            else => {},
+        }
+    }
+    return counts;
+}
+
 pub const TranscriptEntry = struct {
     kind: TranscriptKind,
     text: std.ArrayList(u8) = .empty,
     timestamp_ms: i64 = 0,
     tool_summary: bool = false,
     notice: bool = false,
+    run_failure: bool = false,
     tool_call_id: []u8 = &.{},
 
     pub fn init(allocator: std.mem.Allocator, kind: TranscriptKind, text: []const u8) !TranscriptEntry {
@@ -668,6 +758,7 @@ pub const AppState = struct {
     thinking_level: ai_types.ThinkingLevel = .low,
     autocompact: AutoCompactSetting = .auto,
     verbosity: Verbosity = .{},
+    zen: Zen = .{},
     login_input_secret: bool = false,
     anim_tick: u64 = 0,
     transcript_scroll: usize = 0,
@@ -840,6 +931,7 @@ pub const AppState = struct {
         for (self.transcript.items) |*entry| entry.deinit(self.allocator);
         self.transcript.clearRetainingCapacity();
         self.transcript_scroll = 0;
+        self.zen.start_index = 0;
         self.clearActiveTranscriptEntries();
         self.clearPendingSteers();
     }
@@ -1254,6 +1346,7 @@ pub const AppState = struct {
                         if (self.status.last_error.len == 0) {
                             try self.status.setError(self.allocator, "agent ended with error, but no error details were provided");
                             try self.appendTranscript(.@"error", self.status.last_error);
+                            self.transcript.items[self.transcript.items.len - 1].run_failure = true;
                         }
                     },
                 }
@@ -1264,6 +1357,7 @@ pub const AppState = struct {
                 self.stream_aborted = false;
                 try self.status.setError(self.allocator, payload.message.slice());
                 try self.appendTranscript(.@"error", payload.message.slice());
+                self.transcript.items[self.transcript.items.len - 1].run_failure = true;
             },
         }
     }
@@ -1513,6 +1607,7 @@ pub const AppState = struct {
         row.tool_call_id = try self.allocator.dupe(u8, tool_call_id);
         try self.transcript.insert(self.allocator, index, row);
         if (index < self.summary_scan_floor) self.summary_scan_floor = index;
+        if (index < self.zen.start_index) self.zen.start_index += 1;
         self.adjustActiveTranscriptEntryAfterInsert(&self.active_user_entry, index);
         self.adjustActiveTranscriptEntryAfterInsert(&self.active_assistant_entry, index);
         self.adjustActiveTranscriptEntryAfterInsert(&self.active_tool_result_entry, index);
@@ -1553,6 +1648,7 @@ pub const AppState = struct {
 
     fn removeTranscriptEntry(self: *AppState, index: usize) void {
         if (index < self.summary_scan_floor) self.summary_scan_floor -= 1;
+        if (index < self.zen.start_index) self.zen.start_index -= 1;
         var entry = self.transcript.orderedRemove(index);
         entry.deinit(self.allocator);
         self.adjustActiveTranscriptEntryAfterRemove(&self.active_user_entry, index);
@@ -4356,4 +4452,88 @@ test "a steer sent with a narrower echo is tracked whole but shown only as its e
     try std.testing.expectEqualStrings("shown before\n\nnew part", state.pending_steers.items[0]);
     try std.testing.expectEqual(@as(usize, 1), state.transcript.items.len);
     try std.testing.expectEqualStrings("new part", state.transcript.items[0].text.items);
+}
+
+test "zen notes the agent once per switch and cancels a switch it never sent" {
+    var zen: Zen = .{};
+    zen.enter(4);
+    try std.testing.expectEqualStrings(zen_enter_note, zen.noteText().?);
+    zen.leave();
+    try std.testing.expect(zen.noteText() == null);
+    zen.enter(4);
+    zen.note = .none;
+    zen.leave();
+    try std.testing.expectEqualStrings(zen_leave_note, zen.noteText().?);
+    zen.enter(9);
+    try std.testing.expect(zen.noteText() == null);
+    try std.testing.expectEqual(@as(usize, 9), zen.start_index);
+}
+
+test "zen counts thinking, tool rows and replies since it began, and finds the final reply" {
+    var state = AppState.init(std.testing.allocator);
+    defer state.deinit();
+    try state.appendTranscript(.assistant, "before zen");
+    const start = state.transcript.items.len;
+    try state.appendTranscript(.user, "go");
+    try state.appendTranscript(.thinking, "hmm");
+    try state.appendToolSummaryTranscript("\u{25c8} Shell Execute \"ls\" ok", "call-1");
+    try state.appendTranscript(.assistant, "first");
+    try state.appendTranscript(.thinking, "again");
+    try state.appendTranscript(.assistant, "last");
+    const counts = zenCounts(state.transcript.items, start);
+    try std.testing.expectEqual(@as(usize, 2), counts.thinking);
+    try std.testing.expectEqual(@as(usize, 1), counts.tools);
+    try std.testing.expectEqual(@as(usize, 2), counts.messages);
+    try std.testing.expectEqualStrings("last", state.transcript.items[counts.final.?].text.items);
+    try std.testing.expectEqual(@as(usize, start + 4), counts.last_activity.?);
+
+    try state.appendTranscript(.user, "next");
+    try std.testing.expect(zenCounts(state.transcript.items, start).final == null);
+    try state.appendTranscript(.@"error", "unknown command");
+    try std.testing.expect(zenCounts(state.transcript.items, start).final == null);
+    try state.appendTranscript(.@"error", "HTTP 500");
+    state.transcript.items[state.transcript.items.len - 1].run_failure = true;
+    try std.testing.expectEqualStrings("HTTP 500", state.transcript.items[zenCounts(state.transcript.items, start).final.?].text.items);
+    try std.testing.expectEqual(@as(usize, 0), zenCounts(state.transcript.items, 99).messages);
+
+    state.zen.enter(state.transcript.items.len);
+    state.clearTranscript();
+    try std.testing.expectEqual(@as(usize, 0), state.zen.start_index);
+    try state.appendTranscript(.assistant, "after clear");
+    try std.testing.expectEqual(@as(usize, 1), zenCounts(state.transcript.items, state.zen.start_index).messages);
+}
+
+test "the zen note comes off a user message, and nothing else does" {
+    try std.testing.expectEqualStrings("hi", withoutZenNote(zen_enter_note ++ "\n\nhi"));
+    try std.testing.expectEqualStrings("hi", withoutZenNote(zen_leave_note ++ "\n\nhi"));
+    try std.testing.expectEqualStrings(zen_enter_note, withoutZenNote(zen_enter_note));
+    try std.testing.expectEqualStrings("hi", withoutZenNote("hi"));
+}
+
+test "zen's starting point follows rows inserted or removed above it" {
+    var state = AppState.init(std.testing.allocator);
+    defer state.deinit();
+    try state.appendTranscript(.user, "a");
+    try state.appendTranscript(.thinking, "b");
+    state.zen.enter(state.transcript.items.len);
+    try state.insertToolSummaryRowAt(0, "\u{25c8} Shell Execute \"ls\"", "call-1");
+    try std.testing.expectEqual(@as(usize, 3), state.zen.start_index);
+    state.removeTranscriptEntry(1);
+    try std.testing.expectEqual(@as(usize, 2), state.zen.start_index);
+    state.removeTranscriptEntry(1);
+    try std.testing.expectEqual(@as(usize, 1), state.zen.start_index);
+}
+
+test "zen entered mid-reply counts the reply already streaming" {
+    var state = AppState.init(std.testing.allocator);
+    defer state.deinit();
+    try state.appendTranscript(.user, "go");
+    try state.appendTranscript(.assistant, "half a rep");
+    state.active_assistant_entry = 1;
+    try state.appendNotice("zen on");
+    state.zen.enter(zenStart(&state));
+    try std.testing.expectEqual(@as(usize, 1), state.zen.start_index);
+    try std.testing.expectEqual(@as(usize, 1), zenCounts(state.transcript.items, state.zen.start_index).final.?);
+    state.active_assistant_entry = null;
+    try std.testing.expectEqual(state.transcript.items.len, zenStart(&state));
 }
