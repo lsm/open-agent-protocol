@@ -20,7 +20,7 @@
     "type": "compaction_start",
     "direction": "pi-to-host",
     "classification": "mapped",
-    "fidelity": "native",
+    "fidelity": "normalized",
     "oap": "run.compaction.started"
   },
   {
@@ -77,7 +77,7 @@
     "type": "compaction_end",
     "direction": "pi-to-host",
     "classification": "mapped",
-    "fidelity": "native",
+    "fidelity": "normalized",
     "oap": "run.compaction.ended"
   },
   {

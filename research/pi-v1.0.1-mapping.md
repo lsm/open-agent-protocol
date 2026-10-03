@@ -564,8 +564,8 @@ moves the threshold.
 
 Decision 0045's settings add `session.reasoning` and
 `session.compaction.policy` at `native` with the `session_open` mode, so the
-revision moved to `pi-v0.87.1-oap-v2` at that pin (and is `pi-v1.0.1-oap-v1` at this
-one). After the ready `get_state`, both
+revision moved to `pi-v0.87.1-oap-v2` at that pin (and was `pi-v1.0.1-oap-v1` at this
+one until *Compaction inside a run* moved it to `pi-v1.0.1-oap-v2`). After the ready `get_state`, both
 trees send `set_auto_compaction` for `auto` or `off`, then
 `set_thinking_level`. A second `get_state` confirms the level, and a level Pi
 kept elsewhere is refused. `share` and `tokens` are refused before Pi starts,
