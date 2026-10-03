@@ -51,7 +51,7 @@ agent tools and agent sampling options are not yet
 represented by this `oapx` OAP endpoint, so SDKs refuse them explicitly on
 the default path; the old Makai wire is available only by explicit opt-in.
 
-`oapx serve agent --backend claude` serves a Claude Code child (pinned 2.1.282),
+`oapx serve agent --backend claude` serves a Claude Code child (pinned 2.1.288),
 `--backend codex` a Codex app-server child (pinned `rust-v0.160.0`), `--backend pi` a
 Pi RPC child (pinned `v1.0.1`), an `acp`
 entry an ACP v1 agent (pinned `v1.9.1`), a `hermes` entry a Hermes gateway (pinned `v2026.9.24`), a `deepseek` entry a DeepSeek harness (pinned `dsh-v0.1.7-rc.2`), and an `opencode` entry an OpenCode server (pinned `v1.18.32`), behind the same stdio door instead of the built-in loop, following
@@ -88,7 +88,7 @@ the session's runs and reports gaps after eviction. Compaction
 feeds both trees the same traffic and requires identical output. What that job
 is the last check on, and what the corpora cover instead, is written down in
 [docs/parity-job.md](docs/parity-job.md). What each cannot do through this path
-is recorded in its ledger: [claude](research/claude-code-agent-sdk-2.1.282-mapping.md),
+is recorded in its ledger: [claude](research/claude-code-agent-sdk-2.1.288-mapping.md),
 [codex](research/codex-app-server-0.160.0-mapping.md),
 [acp](research/acp-v1.9.1-mapping.md). Without `--config`, codex runs `codex`
 from `PATH` with only `HOME` and `PATH`; an ACP agent has no default and needs
@@ -795,7 +795,7 @@ Research:
 - [Pinned Pi coding-agent mapping](research/pi-v1.0.1-mapping.md), over the [v0.87.1](research/pi-v0.87.1-mapping.md) and [v0.85.1 base](research/pi-v0.85.1-mapping.md) mappings
 - [Pinned DeepSeek Harness mapping](research/deepseek-harness-dsh-v0.1.7-rc.2-mapping.md), over the [47f9438 base mapping](research/deepseek-harness-47f9438-mapping.md)
 - [Pinned Hermes agent mapping](research/hermes-v2026.9.24-mapping.md), over the [v2026.8.31 base mapping](research/hermes-v2026.8.31-mapping.md)
-- [Pinned Claude Code CLI and Agent SDK mapping](research/claude-code-agent-sdk-2.1.282-mapping.md), over the [2.1.280 mapping](research/claude-code-agent-sdk-2.1.280-mapping.md) and the [2.1.263 base mapping](research/claude-code-agent-sdk-2.1.263-mapping.md)
+- [Pinned Claude Code CLI and Agent SDK mapping](research/claude-code-agent-sdk-2.1.288-mapping.md), over the [2.1.282](research/claude-code-agent-sdk-2.1.282-mapping.md) and [2.1.280](research/claude-code-agent-sdk-2.1.280-mapping.md) mappings and the [2.1.263 base mapping](research/claude-code-agent-sdk-2.1.263-mapping.md)
 - [Z.ai China Coding Plan evidence matrix](research/zai-china-coding-plan-evidence.md)
 - [OpenCode provider breadth and its model catalog](research/opencode-provider-catalog-mapping.md), with [Decision 0035](decisions/0035-a-model-entry-publishes-its-facts-and-absence-means-unknown.md) proposed on it
 - [Protocol feedback from eight adapter tranches](research/protocol-feedback-2026-09.md)
@@ -929,7 +929,7 @@ stdin EOF, matching the pinned gateway, which has no shutdown RPC. Set
 artifact provenance is required.
 
 Claude Code real-process checks follow the same opt-in gate. Provide an
-absolute path to the pinned claude 2.1.282 binary in `OAP_CLAUDE_BIN`, then
+absolute path to the pinned claude 2.1.288 binary in `OAP_CLAUDE_BIN`, then
 set `OAP_CLAUDE_SMOKE=1` for the credential-free spawn/initialize/EOF-teardown
 check or `OAP_CLAUDE_INTEGRATION=1` for the loopback-provider paths (streaming
 Anthropic Messages against an in-process mock, test-owned key only;
@@ -945,7 +945,7 @@ initialize control exchange, and teardown evidence is stdin EOF. Set
 artifact provenance is required. `OAP_CLAUDE_CAPTURE_DIR`, an absolute
 directory outside the repository, records the corpus probes' raw stream-json
 in both directions into that directory; it is how
-`fixtures/adapters/claude-code-2.1.282` was recorded.
+`fixtures/adapters/claude-code-2.1.288` was recorded.
 
 ACP real-process checks follow the same opt-in gate, driven against an
 independent open-source ACP agent rather than a Devin product. Provide an
