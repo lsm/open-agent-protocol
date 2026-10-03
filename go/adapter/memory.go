@@ -87,7 +87,7 @@ var attachSupport = protocol.FeatureSupport{
 	Reason: "sources are described and published back; the reference adapter runs no client for them",
 }
 
-const CapabilityRevision = "reference-memory-v14"
+const CapabilityRevision = "reference-memory-v15"
 
 var errTerminalWon = fmt.Errorf("adapter: terminal event already emitted")
 
@@ -141,18 +141,19 @@ func (m *Memory) Probe(context.Context) (Descriptor, error) {
 		"session.message.submit":        {Level: protocol.SupportNative},
 		"session.message.delivery.auto": {Level: protocol.SupportNative},
 
-		protocol.FeatureDeliveryQueue:  {Level: protocol.SupportEmulated, Reason: "a busy session reserves one second run and promotes it when the started run settles"},
-		protocol.FeatureDeliverySteer:  {Level: protocol.SupportEmulated, Reason: "guidance waits on the target run and is applied at its input gate, the scripted turn boundary"},
-		protocol.FeatureSessionCompact: {Level: protocol.SupportEmulated, Reason: "a compaction run replaces the scripted history with a fixed summary that names the focus, and has no model to write it"},
-		protocol.FeatureRunCompaction:  {Level: protocol.SupportEmulated, Reason: "the reference adapter publishes the compactions it is asked for; it keeps no history long enough to compact on its own"},
-		"run.streaming":                {Level: protocol.SupportNative},
-		"run.status":                   {Level: protocol.SupportNative},
-		"run.cancel":                   {Level: protocol.SupportEmulated, Reason: "run-target API is implemented over a one-active-run session"},
-		"run.resume":                   {Level: protocol.SupportDegraded, Reason: "reattachment and replay use a bounded process-memory journal"},
-		"run.reconciliation":           {Level: protocol.SupportNative},
-		"run.replay":                   {Level: protocol.SupportDegraded, Reason: "older cursors can expire and no cross-process replay is claimed"},
-		"action.tools":                 {Level: protocol.SupportEmulated, Reason: "the reference adapter projects the scripted tool lifecycle"},
-		"action.tools.execute":         {Level: protocol.SupportEmulated, Reason: "the reference adapter executes a fixed deterministic script"},
+		protocol.FeatureDeliveryQueue:    {Level: protocol.SupportEmulated, Reason: "a busy session reserves one second run and promotes it when the started run settles"},
+		protocol.FeatureDeliverySteer:    {Level: protocol.SupportEmulated, Reason: "guidance waits on the target run and is applied at its input gate, the scripted turn boundary"},
+		protocol.FeatureSessionCompact:   {Level: protocol.SupportEmulated, Reason: "a compaction run replaces the scripted history with a fixed summary that names the focus, and has no model to write it"},
+		protocol.FeatureRunCompaction:    {Level: protocol.SupportEmulated, Reason: "the reference adapter publishes the compactions it is asked for, and compacts on its own at the start of a run once its estimate of the history, a token per four bytes of text, reaches the session's threshold"},
+		protocol.FeatureCompactionPolicy: {Level: protocol.SupportEmulated, Modes: []string{protocol.ModeSessionOpen}, Reason: "auto compacts at 80% of the reference model's window, share and tokens set the threshold, and off is refused because the reference adapter always compacts"},
+		"run.streaming":                  {Level: protocol.SupportNative},
+		"run.status":                     {Level: protocol.SupportNative},
+		"run.cancel":                     {Level: protocol.SupportEmulated, Reason: "run-target API is implemented over a one-active-run session"},
+		"run.resume":                     {Level: protocol.SupportDegraded, Reason: "reattachment and replay use a bounded process-memory journal"},
+		"run.reconciliation":             {Level: protocol.SupportNative},
+		"run.replay":                     {Level: protocol.SupportDegraded, Reason: "older cursors can expire and no cross-process replay is claimed"},
+		"action.tools":                   {Level: protocol.SupportEmulated, Reason: "the reference adapter projects the scripted tool lifecycle"},
+		"action.tools.execute":           {Level: protocol.SupportEmulated, Reason: "the reference adapter executes a fixed deterministic script"},
 
 		protocol.FeatureToolsList:         {Level: protocol.SupportEmulated, Reason: "the reference catalog is the scripted tool plus the session's attached sources"},
 		protocol.FeatureToolSourcesAttach: attachSupport,
@@ -223,6 +224,10 @@ func (m *Memory) Open(ctx context.Context, request OpenRequest) (Session, error)
 	if id == "" {
 		id = protocol.SessionID(m.ids.NewID("session"))
 	}
+	threshold, err := compactionThreshold(request.CompactionPolicy)
+	if err != nil {
+		return nil, err
+	}
 	model, recovery, err := m.claim(id, request.Reopen)
 	if err != nil {
 		return nil, err
@@ -231,11 +236,46 @@ func (m *Memory) Open(ctx context.Context, request OpenRequest) (Session, error)
 	return &memorySession{
 		owner: m, clock: m.clock, ids: m.ids, capacity: m.capacity,
 		participant: request.Participant.ID,
+		threshold:   threshold,
 		state:       protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, UpdatedAtMS: now, Sources: sessionSources(attached), CurrentModelID: model, Recovery: recovery},
 		attached:    attached,
 		provided:    provided,
 		runs:        make(map[protocol.RunID]*memoryRun),
 	}, nil
+}
+
+const referenceWindow = 8192
+
+func compactionThreshold(policy *protocol.CompactionPolicy) (uint64, error) {
+	if policy == nil {
+		return referenceWindow * 80 / 100, nil
+	}
+	switch policy.Kind {
+	case protocol.CompactionAuto:
+		return referenceWindow * 80 / 100, nil
+	case protocol.CompactionShare:
+		return uint64(referenceWindow * policy.SharePercent / 100), nil
+	case protocol.CompactionTokens:
+		return uint64(policy.Tokens), nil
+	}
+	return 0, &UnsupportedControlError{Feature: protocol.FeatureCompactionPolicy, Reason: ControlUnsatisfiable, Field: "compaction_policy", Detail: "the reference adapter always compacts on its own, so off is refused"}
+}
+
+func historyTokens(messages []protocol.Message) uint64 {
+	var bytes uint64
+	for _, message := range messages {
+		if text, ok := message.Content.Text(); ok {
+			bytes += uint64(len(text))
+			continue
+		}
+		parts, _ := message.Content.Parts()
+		for _, part := range parts {
+			if part.Type == protocol.ContentText {
+				bytes += uint64(len(part.Text))
+			}
+		}
+	}
+	return (bytes + 3) / 4
 }
 
 func (m *Memory) claim(id protocol.SessionID, reopen bool) (string, *protocol.RecoveryMetadata, error) {
@@ -388,6 +428,9 @@ type memorySession struct {
 	journal  []protocol.Envelope
 
 	settled []protocol.SettledRun
+
+	threshold uint64
+	history   uint64
 }
 
 type scriptStage uint8
@@ -436,6 +479,7 @@ type memoryRun struct {
 	compaction      bool
 	compactContinue bool
 	compactFocus    string
+	input           uint64
 }
 
 type pendingSteer struct {
@@ -495,6 +539,7 @@ func (s *memorySession) Submit(ctx context.Context, submit SubmitRequest) (proto
 		inputID:      protocol.InteractionID(s.ids.NewID("input")),
 		toolCallID:   protocol.ToolCallID(s.ids.NewID("tool-call")),
 		requestedBy:  endpointID, respondedBy: s.participant,
+		input: historyTokens(request.Messages),
 	}
 	if !controls.callsTool {
 
@@ -648,9 +693,12 @@ func (s *memorySession) Compact(ctx context.Context, compact CompactRequest) (pr
 	return admission, stream, nil
 }
 
-func (s *memorySession) emitCompaction(run *memoryRun) (bool, error) {
+func (s *memorySession) emitCompaction(run *memoryRun, reason protocol.CompactionReason) (bool, error) {
 	compaction := protocol.CompactionID(s.ids.NewID("compaction"))
-	started := protocol.RunCompactionStartedPayload{SessionID: s.state.SessionID, RunID: run.id, CompactionID: compaction, Reason: protocol.CompactionRequested}
+	s.mu.Lock()
+	before := s.history
+	s.mu.Unlock()
+	started := protocol.RunCompactionStartedPayload{SessionID: s.state.SessionID, RunID: run.id, CompactionID: compaction, Reason: reason, HistoryTokens: &before}
 	if err := s.emit(run, protocol.TypeRunCompactionStarted, started, false); err != nil {
 		return true, err
 	}
@@ -659,11 +707,15 @@ func (s *memorySession) emitCompaction(run *memoryRun) (bool, error) {
 		text = "The session so far, compacted with attention to: " + run.compactFocus
 	}
 	summary := protocol.Message{ID: protocol.MessageID(s.ids.NewID("message")), Role: protocol.RoleAssistant, Content: protocol.TextContent(text)}
-	ended := protocol.RunCompactionEndedPayload{SessionID: s.state.SessionID, RunID: run.id, CompactionID: compaction, Outcome: protocol.CompactionCompleted, Summary: &summary}
+	after := historyTokens([]protocol.Message{summary})
+	ended := protocol.RunCompactionEndedPayload{SessionID: s.state.SessionID, RunID: run.id, CompactionID: compaction, Outcome: protocol.CompactionCompleted, Summary: &summary, HistoryTokens: &after}
 	if err := s.emit(run, protocol.TypeRunCompactionEnded, ended, false); err != nil {
 		return true, err
 	}
-	if run.compactContinue {
+	s.mu.Lock()
+	s.history = after
+	s.mu.Unlock()
+	if reason != protocol.CompactionRequested || run.compactContinue {
 		return false, nil
 	}
 	completed := protocol.RunCompletedPayload{SessionID: s.state.SessionID, RunID: run.id, FinalResponse: summary, StopReason: "compacted", ModelID: run.controls.model}
@@ -911,8 +963,18 @@ func (s *memorySession) emitInitial(run *memoryRun) error {
 		return err
 	}
 	if run.compaction {
-		if settled, err := s.emitCompaction(run); settled || err != nil {
+		if settled, err := s.emitCompaction(run, protocol.CompactionRequested); settled || err != nil {
 			return err
+		}
+	} else {
+		s.mu.Lock()
+		s.history += run.input
+		due := s.history >= s.threshold
+		s.mu.Unlock()
+		if due {
+			if _, err := s.emitCompaction(run, protocol.CompactionThreshold); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -1333,9 +1395,15 @@ func (s *memorySession) resolveInput(run *memoryRun, request protocol.UserInputR
 
 		completed.Result = json.RawMessage(fixedResult)
 	}
-	if err := s.emit(run, protocol.TypeRunCompleted, completed, true); err != nil && err != errTerminalWon {
+	if err := s.emit(run, protocol.TypeRunCompleted, completed, true); err != nil {
+		if err == errTerminalWon {
+			return nil
+		}
 		return err
 	}
+	s.mu.Lock()
+	s.history += historyTokens([]protocol.Message{completed.FinalResponse})
+	s.mu.Unlock()
 	return nil
 }
 

@@ -259,3 +259,173 @@ func TestMemoryRefusesASteerOrBTWCompactionNamingTheDelivery(t *testing.T) {
 func isTerminalType(typ protocol.EnvelopeType) bool {
 	return typ == protocol.TypeRunCompleted || typ == protocol.TypeRunFailed || typ == protocol.TypeRunCancelled
 }
+
+func openWithPolicy(t *testing.T, policy *protocol.CompactionPolicy) (adapter.Session, error) {
+	t.Helper()
+	memory := adapter.NewMemory(adapter.Config{Clock: &fixedClock{}, IDs: &fixedIDs{}, JournalCapacity: 64})
+	return memory.Open(context.Background(), adapter.OpenRequest{SessionID: "session-1", Participant: protocol.Participant{ID: "user"}, CompactionPolicy: policy})
+}
+
+func submitText(t *testing.T, session adapter.Session, text string) []protocol.Envelope {
+	t.Helper()
+	request := protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent(text)}}}
+	admission, stream, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: request, EnvelopeID: "submit-request"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if admission.Admission != protocol.AdmissionStarted {
+		t.Fatalf("admission = %+v", admission)
+	}
+	return drainAvailable(stream)
+}
+
+func compactions(t *testing.T, events []protocol.Envelope) []protocol.RunCompactionStartedPayload {
+	t.Helper()
+	var started []protocol.RunCompactionStartedPayload
+	for _, envelope := range events {
+		if envelope.Type != protocol.TypeRunCompactionStarted {
+			continue
+		}
+		var payload protocol.RunCompactionStartedPayload
+		if err := envelope.DecodePayload(&payload); err != nil {
+			t.Fatal(err)
+		}
+		started = append(started, payload)
+	}
+	return started
+}
+
+func TestMemoryCompactsARunWhoseHistoryReachesTheThresholdAndCarriesOnWithTheTurn(t *testing.T) {
+	session, err := openWithPolicy(t, &protocol.CompactionPolicy{Kind: protocol.CompactionTokens, Tokens: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := submitText(t, session, "go")
+	got := types(events)
+	want := []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeRunCompactionStarted, protocol.TypeRunCompactionEnded, protocol.TypeContentDelta}
+	if len(got) < len(want) {
+		t.Fatalf("events = %v, want them to open with %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("events = %v, want them to open with %v", got, want)
+		}
+	}
+	for _, envelope := range events {
+		if isTerminalType(envelope.Type) {
+			t.Fatalf("the run settled at its compaction instead of taking its turn: %v", got)
+		}
+	}
+	started := compactions(t, events)[0]
+	if started.Reason != protocol.CompactionThreshold || started.HistoryTokens == nil || *started.HistoryTokens != 1 {
+		t.Fatalf("compaction started = %+v, want a threshold compaction of one token", started)
+	}
+	var ended protocol.RunCompactionEndedPayload
+	if err := events[2].DecodePayload(&ended); err != nil {
+		t.Fatal(err)
+	}
+	if ended.Outcome != protocol.CompactionCompleted || ended.Summary == nil || ended.HistoryTokens == nil || *ended.HistoryTokens != 8 {
+		t.Fatalf("compaction ended = %+v, want completed with the eight-token summary", ended)
+	}
+}
+
+func TestMemoryLeavesARunBelowItsThresholdUncompacted(t *testing.T) {
+	session, err := openWithPolicy(t, &protocol.CompactionPolicy{Kind: protocol.CompactionTokens, Tokens: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started := compactions(t, submitText(t, session, "go")); len(started) != 0 {
+		t.Fatalf("a one-token history compacted against a two-token threshold: %+v", started)
+	}
+}
+
+func TestMemoryTakesAThresholdAsAShareOfTheReferenceWindow(t *testing.T) {
+	long := strings.Repeat("abcd", 100)
+	narrow, err := openWithPolicy(t, &protocol.CompactionPolicy{Kind: protocol.CompactionShare, SharePercent: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started := compactions(t, submitText(t, narrow, long)); len(started) != 1 || started[0].Reason != protocol.CompactionThreshold {
+		t.Fatalf("a hundred tokens against 1%% of the window = %+v, want one threshold compaction", started)
+	}
+	wide, err := openWithPolicy(t, &protocol.CompactionPolicy{Kind: protocol.CompactionShare, SharePercent: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started := compactions(t, submitText(t, wide, long)); len(started) != 0 {
+		t.Fatalf("a hundred tokens against half the window compacted: %+v", started)
+	}
+	auto, err := openWithPolicy(t, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started := compactions(t, submitText(t, auto, long)); len(started) != 0 {
+		t.Fatalf("a hundred tokens against the default threshold compacted: %+v", started)
+	}
+}
+
+func TestMemoryRefusesAPolicyThatNeverCompacts(t *testing.T) {
+	_, err := openWithPolicy(t, &protocol.CompactionPolicy{Kind: protocol.CompactionOff})
+	var refusal *adapter.UnsupportedControlError
+	if !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureCompactionPolicy || refusal.Field != "compaction_policy" || refusal.Reason != adapter.ControlUnsatisfiable {
+		t.Fatalf("open with an off policy answered %v, want an unsatisfiable compaction policy", err)
+	}
+	descriptor := testDescriptor(t)
+	if support := descriptor.Capabilities.Features[protocol.FeatureCompactionPolicy]; support.Level != protocol.SupportEmulated || !support.DisclosesMode(protocol.ModeSessionOpen) {
+		t.Fatalf("%s = %+v, want emulated at session open", protocol.FeatureCompactionPolicy, support)
+	}
+}
+
+func driveToCompletion(t *testing.T, session adapter.Session, id string, text string) []protocol.Envelope {
+	t.Helper()
+	request := protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent(text)}}}
+	admission, stream, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: request, EnvelopeID: protocol.EnvelopeID(id)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	asked := submitExchange(t, testDescriptor(t), id, request, admission)
+	trace := []protocol.Envelope{asked.request, asked.response}
+	trace = append(trace, drainAvailable(stream)...)
+	permission := trace[len(trace)-1]
+	var requested protocol.PermissionRequestedPayload
+	if err := permission.DecodePayload(&requested); err != nil || permission.Type != protocol.TypeActionPermissionRequested {
+		t.Fatalf("run %s stopped at %s, want a permission request", id, permission.Type)
+	}
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: admission.RunID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: requested.InteractionID, SessionID: "session-1", RunID: admission.RunID, RequestedBy: requested.RequestedBy, RespondedBy: "user", ChoiceID: "approve", Granted: true}}); err != nil {
+		t.Fatal(err)
+	}
+	trace = append(trace, drainAvailable(stream)...)
+	for i := len(trace) - 1; i >= 0; i-- {
+		if trace[i].Type == protocol.TypeUserInputRequested {
+			answerInput(t, session, trace[i])
+			break
+		}
+	}
+	return append(trace, drainAvailable(stream)...)
+}
+
+func TestMemoryDefersAThresholdCrossedAtSettlementToTheNextRunAndBothRunsValidate(t *testing.T) {
+	session, err := openWithPolicy(t, &protocol.CompactionPolicy{Kind: protocol.CompactionTokens, Tokens: 9})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := driveToCompletion(t, session, "submit-first", "go")
+	if started := compactions(t, first); len(started) != 0 {
+		t.Fatalf("the first run compacted below its threshold: %+v", started)
+	}
+	if last := first[len(first)-1]; last.Type != protocol.TypeRunCompleted {
+		t.Fatalf("the first run ended with %s", last.Type)
+	}
+	second := driveToCompletion(t, session, "submit-second", "go")
+	started := compactions(t, second)
+	if len(started) != 1 || started[0].Reason != protocol.CompactionThreshold || *started[0].HistoryTokens != 9 {
+		t.Fatalf("the second run's compactions = %+v, want one threshold compaction of nine tokens", started)
+	}
+	if second[3].Type != protocol.TypeRunCompactionStarted {
+		t.Fatalf("the second run did not compact before its turn: %v", types(second))
+	}
+	if last := second[len(second)-1]; last.Type != protocol.TypeRunCompleted {
+		t.Fatalf("the second run ended with %s", last.Type)
+	}
+	requireValidTrace(t, testDescriptor(t), first, second)
+}
