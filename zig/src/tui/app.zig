@@ -2558,6 +2558,7 @@ pub const App = struct {
         };
         self.session_title = title;
         self.first_user_text = first;
+        self.publishTitle();
         return true;
     }
 
@@ -2571,12 +2572,17 @@ pub const App = struct {
         if (self.session_title.len > 0) self.allocator.free(self.session_title);
         self.session_title = title;
         self.session_title_renamed = true;
+        self.publishTitle();
         if (self.session_written) {
             if (self.store) |store| self.saveSessionIndex(store);
         }
         const message = try std.fmt.allocPrint(self.allocator, "Session renamed to \"{s}\"", .{title});
         defer self.allocator.free(message);
         try self.state.appendTranscript(.system, message);
+    }
+
+    fn publishTitle(self: *App) void {
+        self.state.setSessionTitle(self.allocator, self.session_title) catch {};
     }
 
     fn requestSessionTitle(self: *App) void {
@@ -2609,6 +2615,7 @@ pub const App = struct {
         if (self.session_title.len > 0) self.allocator.free(self.session_title);
         self.session_title = title;
         self.session_title_generated = true;
+        self.publishTitle();
         if (self.store) |store| self.saveSessionIndex(store);
     }
 
@@ -2694,6 +2701,7 @@ pub const App = struct {
         self.session_title = title;
         self.session_title_generated = metadata.title_generated;
         self.session_title_renamed = metadata.title_renamed;
+        self.publishTitle();
         if (self.first_user_text.len > 0) self.allocator.free(self.first_user_text);
         self.first_user_text = &.{};
     }
@@ -4094,7 +4102,9 @@ pub const TuiModel = struct {
     verbosity: tui_config.Verbosity = .{},
     render_mode: RenderMode = .auto,
     wheel_captured: bool = false,
-    wheel_cmds: [2]zz.Cmd(Msg) = .{ .none, .none },
+    cmds: [3]zz.Cmd(Msg) = .{ .none, .none, .none },
+    tab_title: [tab_title_bytes]u8 = undefined,
+    tab_title_len: usize = 0,
 
     pub const Msg = union(enum) {
         key: zz.KeyEvent,
@@ -4133,14 +4143,49 @@ pub const TuiModel = struct {
         self.app = null;
     }
 
+    const tab_title_bytes: usize = 128;
+
     pub fn update(self: *TuiModel, msg: Msg, ctx: *zz.Context) zz.Cmd(Msg) {
-        if (msg == .resumed) self.wheel_captured = false;
+        if (msg == .resumed) {
+            self.wheel_captured = false;
+            self.tab_title_len = 0;
+        }
         const cmd = self.step(msg, ctx);
+        var count: usize = 0;
         const zen_on = if (self.app) |*app| app.state.zen.on else false;
-        if (zen_on == self.wheel_captured) return cmd;
-        self.wheel_captured = zen_on;
-        self.wheel_cmds = .{ if (zen_on) .enable_mouse else .disable_mouse, cmd };
-        return .{ .batch = &self.wheel_cmds };
+        if (zen_on != self.wheel_captured) {
+            self.wheel_captured = zen_on;
+            self.cmds[count] = if (zen_on) .enable_mouse else .disable_mouse;
+            count += 1;
+        }
+        const quitting = std.meta.activeTag(cmd) == .quit;
+        const title = if (quitting) "" else if (self.app) |*app| app.state.session_title else "";
+        if (self.retitle(title)) |set| {
+            self.cmds[count] = .{ .set_title = set };
+            count += 1;
+        }
+        if (count == 0) return cmd;
+        self.cmds[count] = cmd;
+        return .{ .batch = self.cmds[0 .. count + 1] };
+    }
+
+    fn retitle(self: *TuiModel, title: []const u8) ?[]const u8 {
+        var buffer: [tab_title_bytes]u8 = undefined;
+        const wanted = tabTitle(&buffer, title);
+        if (std.mem.eql(u8, wanted, self.tab_title[0..self.tab_title_len])) return null;
+        @memcpy(self.tab_title[0..wanted.len], wanted);
+        self.tab_title_len = wanted.len;
+        return self.tab_title[0..self.tab_title_len];
+    }
+
+    fn tabTitle(buffer: []u8, title: []const u8) []const u8 {
+        if (title.len == 0) return "";
+        const prefix = "oapx \u{b7} ";
+        @memcpy(buffer[0..prefix.len], prefix);
+        var end = @min(title.len, buffer.len - prefix.len);
+        while (end < title.len and end > 0 and (title[end] & 0xC0) == 0x80) end -= 1;
+        @memcpy(buffer[prefix.len .. prefix.len + end], title[0..end]);
+        return buffer[0 .. prefix.len + end];
     }
 
     fn step(self: *TuiModel, msg: Msg, ctx: *zz.Context) zz.Cmd(Msg) {
@@ -4670,6 +4715,7 @@ pub const TuiModel = struct {
             .tool_ms = if (app.state.zen.settled()) tool_ms else 0,
             .final_block = final_block,
             .failed = failed,
+            .title = app.state.session_title,
         };
         if (zen_view.showsReply(frame)) app.state.transcript_scroll = @min(app.state.transcript_scroll, try zen_view.maxScroll(allocator, frame));
         frame.scroll = app.state.transcript_scroll;
@@ -6014,6 +6060,26 @@ test "TUI program preserves native text selection" {
 test "TUI program routes Ctrl+C to the model and hides the terminal cursor" {
     try std.testing.expect(!tuiProgramOptions().ctrl_c_quits);
     try std.testing.expect(!tuiProgramOptions().cursor);
+}
+
+test "the terminal tab title follows the session title and is cleared on quit" {
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+
+    const untitled = model.update(.{ .window_size = .{ .width = 80, .height = 24 } }, &tctx.ctx);
+    try std.testing.expect(std.meta.activeTag(untitled) != .batch);
+
+    try model.app.?.renameSession("Freeze hunt");
+    const titled = model.update(.{ .window_size = .{ .width = 80, .height = 24 } }, &tctx.ctx);
+    try std.testing.expectEqualStrings("oapx \u{b7} Freeze hunt", titled.batch[0].set_title);
+
+    const unchanged = model.update(.{ .window_size = .{ .width = 80, .height = 24 } }, &tctx.ctx);
+    try std.testing.expect(std.meta.activeTag(unchanged) != .batch);
+
+    try std.testing.expectEqualStrings("", model.retitle("").?);
 }
 
 test "TuiModel Ctrl+C clears a draft first and quits on the second press" {

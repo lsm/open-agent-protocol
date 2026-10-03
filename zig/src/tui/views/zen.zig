@@ -73,6 +73,7 @@ pub const Frame = struct {
     placeholder: []const u8 = placeholder,
     extra: []const u8 = "",
     scroll: usize = 0,
+    title: []const u8 = "",
 };
 
 const max_column: usize = 76;
@@ -90,6 +91,9 @@ pub fn readingWidth(width: usize) usize {
 }
 
 const min_gap: usize = 2;
+const title_rows: usize = 2;
+const min_titled_height: usize = 12;
+const title_level: u8 = 95;
 
 fn bottomMargin(height: usize) usize {
     return std.math.clamp(height / 6, 1, 6);
@@ -100,6 +104,8 @@ const Layout = struct {
     lower: []const []const u8,
     lower_top: usize,
     area: usize,
+    top: usize,
+    title: []const u8,
     final: bool,
     column: usize,
     left: usize,
@@ -148,11 +154,15 @@ fn layout(arena: std.mem.Allocator, frame: Frame) !Layout {
 
     const lower_shown = if (lower.items.len > frame.height) lower.items[lower.items.len - frame.height ..] else lower.items;
     const lower_top = frame.height -| (bottomMargin(frame.height) + lower_shown.len);
+    const titled = frame.title.len > 0 and frame.height >= min_titled_height;
+    const top: usize = if (titled) title_rows else 0;
     return .{
         .content = content.items,
         .lower = lower_shown,
         .lower_top = lower_top,
-        .area = lower_top -| min_gap,
+        .area = lower_top -| min_gap -| top,
+        .top = top,
+        .title = if (titled) try centered(arena, try gray(arena, title_level, try tui_text.truncateToWidth(arena, frame.title, column)), column) else "",
         .final = final,
         .column = column,
         .left = (width -| column) / 2,
@@ -207,8 +217,10 @@ pub fn render(allocator: std.mem.Allocator, frame: Frame) ![]u8 {
         const in_lower = index >= laid.lower_top;
         const row: []const u8 = if (in_lower)
             (if (index - laid.lower_top < laid.lower.len) laid.lower[index - laid.lower_top] else "")
-        else if (index >= content_top and index - content_top < shown.len)
-            shown[index - content_top]
+        else if (index == 0 and laid.top > 0)
+            laid.title
+        else if (index >= laid.top + content_top and index - laid.top - content_top < shown.len)
+            shown[index - laid.top - content_top]
         else
             "";
         if (row.len == 0) continue;
@@ -654,4 +666,21 @@ test "the activity line shows only the title until a tool call passes ten second
     try std.testing.expectEqualStrings("Read  a.zig", try activityLine(a, "Read  a.zig", 9_999, 60));
     try std.testing.expectEqualStrings("0:12 \u{b7} Read  a.zig", try activityLine(a, "Read  a.zig", 12_000, 60));
     try std.testing.expectEqualStrings("1:05 \u{b7} Read  a.zig", try activityLine(a, "Read  a.zig", 65_000, 60));
+}
+
+test "zen shows the session title faintly on its top row and keeps it off a short screen" {
+    const titled = try render(std.testing.allocator, .{ .width = 80, .height = 24, .title = "Fix the freeze" });
+    defer std.testing.allocator.free(titled);
+    var rows = std.mem.splitScalar(u8, titled, '\n');
+    const first = rows.next().?;
+    try std.testing.expect(std.mem.indexOf(u8, first, "Fix the freeze") != null);
+    try std.testing.expect(std.mem.indexOf(u8, first, "\x1b[38;2;95;95;95m") != null);
+
+    const untitled = try render(std.testing.allocator, .{ .width = 80, .height = 24 });
+    defer std.testing.allocator.free(untitled);
+    try std.testing.expectEqualStrings("", std.mem.sliceTo(untitled, '\n'));
+
+    const short = try render(std.testing.allocator, .{ .width = 80, .height = 8, .title = "Fix the freeze" });
+    defer std.testing.allocator.free(short);
+    try std.testing.expect(std.mem.indexOf(u8, short, "Fix the freeze") == null);
 }

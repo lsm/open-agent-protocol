@@ -137,16 +137,36 @@ pub fn renderCwdRow(allocator: std.mem.Allocator, state: *const tui_state.AppSta
     };
 }
 
+const title_separator = " \u{b7} ";
+const min_title_width: usize = 8;
+
 fn renderCwdRowImpl(allocator: std.mem.Allocator, state: *const tui_state.AppState, width: usize) ![]u8 {
     const display = state.cwdRowPath();
     const branch = state.git_branch;
     const path_width = tui_text.visibleWidth(display);
     const branch_width = tui_text.visibleWidth(branch);
-    const show_branch = branch_width > 0 and path_width +| hint_gap +| branch_width <= width;
-    const clipped = try tui_text.takeTrailingWidth(allocator, display, width);
+    const title_width = tui_text.visibleWidth(state.session_title);
+    const separator_width = tui_text.visibleWidth(title_separator);
+    const branch_room = if (branch_width > 0) hint_gap +| branch_width else 0;
+    const title_room = width -| path_width -| branch_room -| separator_width;
+    const title = if (title_width > 0 and (title_room >= title_width or title_room >= min_title_width))
+        try tui_text.truncateToWidth(allocator, state.session_title, @min(title_room, title_width))
+    else
+        try allocator.dupe(u8, "");
+    defer allocator.free(title);
+    const lead = if (title.len > 0) tui_text.visibleWidth(title) + separator_width else 0;
+    const show_branch = branch_width > 0 and lead +| path_width +| hint_gap +| branch_width <= width;
+    const clipped = try tui_text.takeTrailingWidth(allocator, display, width -| lead);
     defer allocator.free(clipped);
     var out: std.Io.Writer.Allocating = .init(allocator);
     errdefer out.deinit();
+    if (title.len > 0) {
+        try tui_theme.palette.muted.writeFg(&out.writer);
+        try zz.ansi.sgr(&out.writer, "2");
+        try out.writer.writeAll(title);
+        try out.writer.writeAll(title_separator);
+        try out.writer.writeAll(zz.ansi.reset);
+    }
     if (state.agentCwdIsOutsideSession()) {
         try tui_theme.palette.warning.writeFg(&out.writer);
         try zz.ansi.sgr(&out.writer, "1");
@@ -155,7 +175,7 @@ fn renderCwdRowImpl(allocator: std.mem.Allocator, state: *const tui_state.AppSta
         try zz.ansi.sgr(&out.writer, "2");
     }
     try out.writer.writeAll(clipped);
-    const left = tui_text.visibleWidth(clipped);
+    const left = lead + tui_text.visibleWidth(clipped);
     if (show_branch) {
         const gap = width - left -| branch_width;
         for (0..gap) |_| try out.writer.writeByte(' ');
@@ -1172,4 +1192,47 @@ fn renderProbe(allocator: std.mem.Allocator) !void {
 
 test "status bar render survives an allocation failure at every step" {
     try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, renderProbe, .{});
+}
+
+test "cwd row leads with the session title, muted, before the path" {
+    var state = try cwdRowState(std.testing.allocator, "~/focus/open-agent-protocol", "main");
+    defer state.deinit();
+    try state.setSessionTitle(std.testing.allocator, "Fix the freeze");
+
+    const row = try renderCwdRow(std.testing.allocator, &state, 70);
+    defer std.testing.allocator.free(row);
+
+    try std.testing.expectEqual(@as(usize, 70), tui_text.visibleWidth(row));
+    const title_at = std.mem.indexOf(u8, row, "Fix the freeze \u{b7} ").?;
+    const path_at = std.mem.indexOf(u8, row, "~/focus/open-agent-protocol").?;
+    try std.testing.expect(tui_text.visibleWidth(row[0..title_at]) == 0);
+    try std.testing.expect(path_at > title_at);
+    try std.testing.expect(std.mem.endsWith(u8, row, "main" ++ zz.ansi.reset));
+}
+
+test "cwd row shortens the title before anything else, then drops it" {
+    var state = try cwdRowState(std.testing.allocator, "~/work", "main");
+    defer state.deinit();
+    try state.setSessionTitle(std.testing.allocator, "A rather long session title");
+
+    const shortened = try renderCwdRow(std.testing.allocator, &state, 32);
+    defer std.testing.allocator.free(shortened);
+    try std.testing.expectEqual(@as(usize, 32), tui_text.visibleWidth(shortened));
+    try std.testing.expect(std.mem.indexOf(u8, shortened, "A rather") != null);
+    try std.testing.expect(std.mem.indexOf(u8, shortened, "\u{2026}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, shortened, "~/work") != null);
+    try std.testing.expect(std.mem.endsWith(u8, shortened, "main" ++ zz.ansi.reset));
+
+    const dropped = try renderCwdRow(std.testing.allocator, &state, 20);
+    defer std.testing.allocator.free(dropped);
+    try std.testing.expectEqual(@as(usize, 20), tui_text.visibleWidth(dropped));
+    try std.testing.expect(std.mem.indexOf(u8, dropped, "A rather") == null);
+    try std.testing.expect(std.mem.endsWith(u8, dropped, "main" ++ zz.ansi.reset));
+}
+
+test "a session title cannot smuggle a terminal control into the row" {
+    var state = try cwdRowState(std.testing.allocator, "~/work", "");
+    defer state.deinit();
+    try state.setSessionTitle(std.testing.allocator, "evil\x1b]0;pwned\x07 title\n");
+    try std.testing.expectEqualStrings("evil]0;pwned title", state.session_title);
 }
