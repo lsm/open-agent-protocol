@@ -110,7 +110,7 @@ pub const commands = [_]CommandInfo{
     .{ .name = "compact", .kind = .compact, .usage = "/compact [focus]", .description = "Summarize the conversation to free context", .handler = handleCompact },
     .{ .name = "context", .kind = .context, .usage = "/context [tokens|default]", .description = "Show or set the context window for this session", .handler = handleContext },
     .{ .name = "output", .kind = .output, .usage = "/output [auto|max|tokens]", .description = "Show or set how much output a reply may ask for", .handler = handleOutput },
-    .{ .name = "autocompact", .kind = .autocompact, .usage = "/autocompact [auto|percent|off]", .description = "Show or set when the conversation compacts on its own", .handler = handleAutoCompact },
+    .{ .name = "autocompact", .kind = .autocompact, .usage = "/autocompact [auto|percent|tokens|off]", .description = "Show or set when the conversation compacts on its own", .handler = handleAutoCompact },
     .{ .name = "verbose", .kind = .verbose, .usage = "/verbose [quiet|normal|verbose] | /verbose <thinking|tools|output|notices|status> <level>", .description = "Show or set how much the transcript and status bar show", .handler = handleVerbose },
     .{ .name = "zen", .kind = .zen, .usage = "/zen [on|off]", .description = "Hide the transcript behind a flow and show only the final reply; tells the agent to work quietly", .handler = handleZen },
     .{ .name = "redraw", .kind = .redraw, .usage = "/redraw", .description = "Clear the terminal and reprint the session at the current verbosity", .handler = handleRedraw },
@@ -530,10 +530,12 @@ fn handleAutoCompact(ctx: CommandContext, command: Command) !CommandResult {
         ctx.state.autocompact = .off;
     } else if (std.ascii.eqlIgnoreCase(arg, "auto")) {
         ctx.state.autocompact = .auto;
+    } else if (parseAutoCompactTokens(arg)) |count| {
+        ctx.state.autocompact = .{ .tokens = count };
     } else {
         const percent = parseAutoCompactShare(arg) orelse {
             return .{
-                .output = try std.fmt.allocPrint(ctx.allocator, "not a share of the context window: {s}. Give a whole number from 1 to 100, optionally with a % sign, or auto, or off", .{arg}),
+                .output = try std.fmt.allocPrint(ctx.allocator, "not a share or a token count: {s}. Give a share of the context window from 1 to 100, optionally with a % sign; a token count with k, m or tokens, such as 120k; or auto, or off", .{arg}),
                 .is_error = true,
             };
         };
@@ -547,6 +549,7 @@ fn autoCompactReport(ctx: CommandContext) ![]u8 {
     switch (ctx.state.autocompact) {
         .off => return allocator.dupe(u8, "autocompact: off. The conversation is compacted only when you run /compact"),
         .percent => |percent| return std.fmt.allocPrint(allocator, "autocompact: {d}% of the context window.", .{percent}),
+        .tokens => |count| return std.fmt.allocPrint(allocator, "autocompact: at {d} tokens.", .{count}),
         .auto => {
             const runtime = ctx.runtime orelse return allocator.dupe(u8, "autocompact: auto, at a point set by the model's context window and output limit.");
             const model = runtime.currentModel() orelse return allocator.dupe(u8, "autocompact: auto, at a point set by the model's context window and output limit.");
@@ -554,6 +557,15 @@ fn autoCompactReport(ctx: CommandContext) ![]u8 {
             return std.fmt.allocPrint(allocator, "autocompact: auto, at {d} of the {d}-token context window, keeping room for a summary and a reply.", .{ at, model.context_window });
         },
     }
+}
+
+fn parseAutoCompactTokens(value: []const u8) ?u32 {
+    const trimmed = std.mem.trim(u8, value, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    if (std.ascii.endsWithIgnoreCase(trimmed, "tokens")) return tui_runtime.parseContextWindow(trimmed[0 .. trimmed.len - "tokens".len]) catch null;
+    const last = trimmed[trimmed.len - 1];
+    if (last != 'k' and last != 'K' and last != 'm' and last != 'M') return null;
+    return tui_runtime.parseContextWindow(trimmed) catch null;
 }
 
 fn parseAutoCompactShare(value: []const u8) ?u8 {
@@ -862,6 +874,38 @@ test "autocompact sets, reports and turns off the share for the session" {
     var auto = try dispatch(ctx, .{ .kind = .autocompact, .arg = "auto" });
     defer auto.deinit(std.testing.allocator);
     try std.testing.expect(state.autocompact == .auto);
+}
+
+test "autocompact takes a token count with k, m or tokens, and keeps a bare number a share" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    const ctx = CommandContext{ .allocator = std.testing.allocator, .state = &state };
+
+    for ([_]struct { arg: []const u8, tokens: u32 }{
+        .{ .arg = "120k", .tokens = 120_000 },
+        .{ .arg = "1M", .tokens = 1_000_000 },
+        .{ .arg = "90000 tokens", .tokens = 90_000 },
+        .{ .arg = "90000tokens", .tokens = 90_000 },
+    }) |case| {
+        var result = try dispatch(ctx, .{ .kind = .autocompact, .arg = case.arg });
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(!result.is_error);
+        try std.testing.expectEqualDeep(tui_state.AutoCompactSetting{ .tokens = case.tokens }, state.autocompact);
+    }
+    var shown = try dispatch(ctx, .{ .kind = .autocompact });
+    defer shown.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("autocompact: at 90000 tokens.", shown.output);
+
+    var bare = try dispatch(ctx, .{ .kind = .autocompact, .arg = "60" });
+    defer bare.deinit(std.testing.allocator);
+    try std.testing.expectEqualDeep(tui_state.AutoCompactSetting{ .percent = 60 }, state.autocompact);
+
+    for ([_][]const u8{ "0k", "k", "tokens", "0 tokens", "12q", "lots of tokens" }) |bad| {
+        var result = try dispatch(ctx, .{ .kind = .autocompact, .arg = bad });
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expect(result.is_error);
+        try std.testing.expectEqualDeep(tui_state.AutoCompactSetting{ .percent = 60 }, state.autocompact);
+    }
 }
 
 test "autocompact refuses a share that is not a percentage of the window" {

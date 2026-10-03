@@ -1882,6 +1882,7 @@ pub const App = struct {
         switch (self.state.autocompact) {
             .off => try statusLine(w, "autocompact", "off"),
             .percent => |percent| try statusLinePrint(w, "autocompact", "{d}% of the window", .{percent}),
+            .tokens => |count| try statusLinePrint(w, "autocompact", "at {d} tokens", .{count}),
             .auto => if (model) |m| {
                 if (tui_state.autoCompactAt(.auto, m)) |at| try statusLinePrint(w, "autocompact", "auto, at {d} tokens", .{at}) else try statusLine(w, "autocompact", "auto");
             } else try statusLine(w, "autocompact", "auto"),

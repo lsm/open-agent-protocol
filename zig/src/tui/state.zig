@@ -15,6 +15,7 @@ pub fn autoCompactAt(setting: AutoCompactSetting, model: ai_types.Model) ?u64 {
     return switch (setting) {
         .off => null,
         .percent => |percent| agent.compaction.shareAt(model.context_window, percent),
+        .tokens => |count| count,
         .auto => agent.compaction.autoCompactAt(model.context_window, model.max_tokens),
     };
 }

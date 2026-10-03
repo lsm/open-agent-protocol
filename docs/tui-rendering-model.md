@@ -601,13 +601,15 @@ with 8k, 56%; on 32k, 50%. The window and the output limit are the model's own, 
 provider's model list, and the catalog's conservative defaults (a 128k window, 8,192 output
 tokens) stand in when the list does not say.
 
-`/autocompact <percent>` sets a share of the window instead, `/autocompact off` turns it
-off, `/autocompact auto` returns to the default, and `/autocompact` with no argument reports
+`/autocompact <percent>` sets a share of the window instead, `/autocompact <tokens>` a
+token count (`120k`, `1m` or `90000 tokens`), `/autocompact off` turns it off,
+`/autocompact auto` returns to the default, and `/autocompact` with no argument reports
 the setting and, for `auto`, the token count it compacts at. The setting is saved in
-`config.json` under `mode.autocompact` as `"auto"`, `"off"` or a whole number, and a value
-that is none of those reads as `auto`. A percent sign is optional (`80` and `80%` are the
-same request) and the share must be between 1 and 100: `0`, `101`, a sign, a decimal and
-anything that is not digits are refused. `/status` carries the setting on its own line, so
+`config.json` under `mode.autocompact` as `"auto"`, `"off"`, a whole number for a share,
+or `"<n> tokens"`, and a value that is none of those reads as `auto`. A bare number is
+always a share: a percent sign is optional (`80` and `80%` are the same request) and the
+share must be between 1 and 100, so `0`, `101`, a sign, a decimal and anything that is not
+digits are refused; a token count needs its `k`, `m` or `tokens`. `/status` carries the setting on its own line, so
 the value is visible without a second command.
 
 The point is measured against the larger of two counts: the prompt estimate the context gauge
