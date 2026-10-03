@@ -495,6 +495,21 @@ a per-submit `model_id` remains a run override under `run.model_selection`.
 The complete race, queue-promotion, and catalog rules are in
 [Decision 0028](../decisions/0028-live-model-and-provider-control.md).
 
+An endpoint advertising `session.reasoning` or `session.compaction.policy` in
+`session_live` mode may accept `session.settings.update.request`, which names
+the session and at least one of `reasoning_level` and `compaction_policy`. The
+update is all-or-nothing: a member whose feature does not disclose
+`session_live` is refused with `unsupported_feature` naming the key, a
+`degraded` one with `capability_degraded` unless `allow_degraded_features`
+consents, and either refusal leaves both settings unchanged. An accepted
+update answers with `session.settings.update.response`, repeating the value now
+in force for every member the request named (never a rounded one), and
+optionally `previous_reasoning_level` and `previous_compaction_policy`.
+`session.state.updated` reports the new settings before any run that starts
+after the response. The update follows the model switch's ordering: it does
+not retarget a running run. The staging is
+[Decision 0045](../decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md).
+
 An endpoint advertising optional `action.providers.attach` in `session_live`
 mode may accept `session.provider.attach.request` while a session exists. Its
 `provider` object names an OAP `model-provider-core` service and provider,

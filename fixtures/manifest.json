@@ -11056,6 +11056,214 @@
       ]
     },
     {
+      "id": "session-settings-live-update",
+      "path": "valid/session-settings-live-update.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-settings-live"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ]
+    },
+    {
+      "id": "session-settings-live-update-level-only",
+      "path": "valid/session-settings-live-update-level-only.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-settings-live"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ]
+    },
+    {
+      "id": "session-settings-live-unadvertised-refused",
+      "path": "valid/session-settings-live-unadvertised-refused.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-settings-live"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ]
+    },
+    {
+      "id": "session-settings-live-degraded-with-optin",
+      "path": "valid/session-settings-live-degraded-with-optin.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "session-settings-live"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ]
+    },
+    {
+      "id": "session-settings-live-unadvertised-admitted",
+      "path": "semantic-invalid/session-settings-live-unadvertised-admitted.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "session-settings-live"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.reasoning",
+          "aspect": "gate"
+        }
+      ]
+    },
+    {
+      "id": "session-settings-live-policy-unadvertised-admitted",
+      "path": "semantic-invalid/session-settings-live-policy-unadvertised-admitted.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unavailable_capability"
+      ],
+      "units": [
+        "session-settings-live"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.compaction.policy",
+          "aspect": "gate"
+        }
+      ]
+    },
+    {
+      "id": "session-settings-live-degraded-admitted-without-optin",
+      "path": "semantic-invalid/session-settings-live-degraded-admitted-without-optin.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "degraded_without_optin"
+      ],
+      "units": [
+        "session-settings-live"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ]
+    },
+    {
+      "id": "session-settings-live-level-rounded",
+      "path": "semantic-invalid/session-settings-live-level-rounded.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unapplied_control"
+      ],
+      "units": [
+        "session-settings-live"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.reasoning",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "session-settings-live-policy-rounded",
+      "path": "semantic-invalid/session-settings-live-policy-rounded.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unapplied_control"
+      ],
+      "units": [
+        "session-settings-live"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.compaction.policy",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "session-settings-live-run-before-state",
+      "path": "semantic-invalid/session-settings-live-run-before-state.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "session-settings-live"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ]
+    },
+    {
+      "id": "session-settings-live-never-reflected",
+      "path": "semantic-invalid/session-settings-live-never-reflected.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "session_state_mismatch"
+      ],
+      "units": [
+        "session-settings-live"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ]
+    },
+    {
+      "id": "session-settings-live-update-empty",
+      "path": "schema-invalid/session-settings-live-update-empty.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "session-settings-live"
+      ],
+      "provenance": [
+        "decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md"
+      ]
+    },
+    {
       "id": "compaction-requested-run",
       "path": "valid/compaction-requested-run.json",
       "kind": "positive",
