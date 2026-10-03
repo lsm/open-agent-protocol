@@ -133,6 +133,80 @@ func TestPiProcessAgainstResponsesMock(t *testing.T) {
 	closed = true
 }
 
+func TestPiProcessCompactsPastItsThresholdInsideTheRun(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping opt-in Pi process integration in short mode")
+	}
+	if os.Getenv("OAP_PI_INTEGRATION") != "1" {
+		t.Skipf("set OAP_PI_INTEGRATION=1 and absolute OAP_PI_BIN pointing to Pi %s to run; optionally set OAP_PI_SHA256 for exact-artifact evidence", PinnedVersion)
+	}
+	binary := verifiedPiBinary(t)
+	mock := providertest.New(t, providertest.Config{OpenAIKey: piMockSecret})
+	mock.Enqueue(providertest.OpenAIResponses, providertest.Success)
+	mock.Enqueue(providertest.OpenAIResponses, providertest.Success)
+	root := t.TempDir()
+	agentDir := filepath.Join(root, "agent")
+	if err := os.MkdirAll(agentDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]any{
+		"models.json": map[string]any{"providers": map[string]any{"oap-loopback": map[string]any{
+			"baseUrl": mock.OpenAIBaseURL(), "api": "openai-responses", "apiKey": "$OAP_PI_MOCK_KEY",
+			"models": []map[string]any{{"id": "fixture-model", "name": "OAP loopback fixture", "contextWindow": 4000, "maxTokens": 100}},
+		}}},
+		"settings.json": map[string]any{"compaction": map[string]any{"reserveTokens": 3990, "keepRecentTokens": 1}},
+	}
+	for name, content := range files {
+		data, err := json.Marshal(content)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(agentDir, name), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	implementation := newPinnedPi(t, binary, root, piEnvironment(t, root, piMockSecret), []string{"--provider", "oap-loopback", "--model", "fixture-model"})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	session, err := implementation.Open(ctx, base.OpenRequest{SessionID: "pi-threshold-session", Participant: protocol.Participant{ID: "integration-user"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close(context.Background())
+	admission, stream, err := session.Submit(ctx, base.SubmitRequest{Request: protocol.MessageSubmitRequest{
+		SessionID: "pi-threshold-session", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("Reply with the fixture response.")}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := adaptertest.Drain(t, stream, 30*time.Second)
+	adaptertest.AssertRunEvents(t, admission, CapabilityRevision, events)
+	var started protocol.RunCompactionStartedPayload
+	var ended protocol.RunCompactionEndedPayload
+	for _, event := range events {
+		switch event.Type {
+		case protocol.TypeRunCompactionStarted:
+			if err := event.DecodePayload(&started); err != nil {
+				t.Fatal(err)
+			}
+		case protocol.TypeRunCompactionEnded:
+			if err := event.DecodePayload(&ended); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if started.Reason != protocol.CompactionThreshold || ended.CompactionID != started.CompactionID || ended.Outcome != protocol.CompactionCompleted || ended.Summary == nil {
+		t.Fatalf("compaction started=%+v ended=%+v, want one completed threshold compaction with a summary", started, ended)
+	}
+	if events[len(events)-1].Type != protocol.TypeRunCompleted {
+		t.Fatalf("terminal=%s", events[len(events)-1].Type)
+	}
+	if requests := mock.RequestsFor(providertest.OpenAIResponses); len(requests) != 2 {
+		t.Fatalf("Responses requests=%d, want the turn and its summary", len(requests))
+	}
+}
+
 func verifiedPiBinary(t *testing.T) string {
 	t.Helper()
 	binary := adaptertest.VerifiedBinary(t, "OAP_PI_BIN", "OAP_PI_SHA256", "a Pi "+PinnedVersion+" executable")

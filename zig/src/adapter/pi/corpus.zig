@@ -145,6 +145,8 @@ test "every pi corpus case replays to the recorded envelopes" {
         .{ .id = "retry-compaction", .path = "retry-compaction" },
         .{ .id = "streaming-deltas", .path = "streaming-deltas" },
         .{ .id = "system-message", .path = "system-message" },
+        .{ .id = "threshold-compaction", .path = "threshold-compaction" },
+        .{ .id = "threshold-compaction-failed", .path = "threshold-compaction-failed" },
         .{ .id = "tool-lifecycle", .path = "tool-lifecycle" },
     });
 }

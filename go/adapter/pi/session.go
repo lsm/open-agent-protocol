@@ -69,6 +69,7 @@ type runState struct {
 	subscribers    []chan base.Result
 	steers         []*pendingSteer
 	admittedSteers []protocol.EnvelopeID
+	compaction     protocol.CompactionID
 }
 
 type pendingSteer struct {
@@ -193,6 +194,29 @@ type agentEnd struct {
 	Messages  []json.RawMessage `json:"messages"`
 	WillRetry bool              `json:"willRetry"`
 }
+type compactionStart struct {
+	Type   native.EventType `json:"type"`
+	Reason string           `json:"reason"`
+}
+type compactionEnd struct {
+	Type         native.EventType `json:"type"`
+	Reason       string           `json:"reason"`
+	Result       json.RawMessage  `json:"result"`
+	Aborted      bool             `json:"aborted"`
+	WillRetry    bool             `json:"willRetry"`
+	ErrorMessage string           `json:"errorMessage"`
+}
+type compactionResult struct {
+	Summary              string  `json:"summary"`
+	EstimatedTokensAfter *uint64 `json:"estimatedTokensAfter"`
+}
+
+var compactionReasons = map[string]protocol.CompactionReason{
+	"manual":    protocol.CompactionRequested,
+	"threshold": protocol.CompactionThreshold,
+	"overflow":  protocol.CompactionOverflow,
+}
+
 type turnEnd struct {
 	Type        native.EventType `json:"type"`
 	Message     json.RawMessage  `json:"message"`
@@ -766,7 +790,19 @@ func (s *Session) applyEvent(event native.Event) {
 		}
 		s.turnEnds++
 		s.settleSteers(run, protocol.SteerTurn)
-	case native.EventAutoRetryStart, native.EventAutoRetryEnd, native.EventTurnStart, native.EventMessageStart, native.EventQueueUpdate, native.EventCompactionStart, native.EventCompactionEnd, native.EventEntryAppended, native.EventSessionInfoChanged, native.EventThinkingLevelChanged, native.EventSummarizationRetryScheduled, native.EventSummarizationRetryAttemptStart, native.EventSummarizationRetryFinished, native.EventBashExecutionUpdate, native.EventExtensionError:
+	case native.EventCompactionStart:
+		var value compactionStart
+		if !s.decodeEvent(event, &value) {
+			return
+		}
+		s.startCompaction(run, value)
+	case native.EventCompactionEnd:
+		var value compactionEnd
+		if !s.decodeEvent(event, &value) {
+			return
+		}
+		s.endCompaction(run, value)
+	case native.EventAutoRetryStart, native.EventAutoRetryEnd, native.EventTurnStart, native.EventMessageStart, native.EventQueueUpdate, native.EventEntryAppended, native.EventSessionInfoChanged, native.EventThinkingLevelChanged, native.EventSummarizationRetryScheduled, native.EventSummarizationRetryAttemptStart, native.EventSummarizationRetryFinished, native.EventBashExecutionUpdate, native.EventExtensionError:
 		return
 	default:
 		s.failRun(run, "pi_unknown_event", fmt.Sprintf("unknown event %q", event.Type))
@@ -883,6 +919,58 @@ func (s *Session) decodeEvent(event native.Event, dst any) bool {
 		return false
 	}
 	return true
+}
+
+func (s *Session) startCompaction(run *runState, v compactionStart) {
+	reason, ok := compactionReasons[v.Reason]
+	if !ok {
+		s.failRun(run, "pi_invalid_compaction", fmt.Sprintf("unknown compaction reason %q", v.Reason))
+		return
+	}
+	s.mu.Lock()
+	open := run.compaction
+	id := protocol.CompactionID(s.ids.NewID("compaction"))
+	if open == "" {
+		run.compaction = id
+	}
+	s.mu.Unlock()
+	if open != "" {
+		s.failRun(run, "pi_invalid_compaction", "compaction_start while a compaction is open")
+		return
+	}
+	_ = s.emit(run, protocol.TypeRunCompactionStarted, protocol.RunCompactionStartedPayload{SessionID: s.state.SessionID, RunID: run.id, CompactionID: id, Reason: reason}, false)
+}
+
+func (s *Session) endCompaction(run *runState, v compactionEnd) {
+	s.mu.Lock()
+	id := run.compaction
+	run.compaction = ""
+	s.mu.Unlock()
+	if id == "" {
+		s.failRun(run, "pi_invalid_compaction", "compaction_end without compaction_start")
+		return
+	}
+	ended := protocol.RunCompactionEndedPayload{SessionID: s.state.SessionID, RunID: run.id, CompactionID: id}
+	var result compactionResult
+	completed := !v.Aborted && v.ErrorMessage == "" && len(v.Result) > 0 && json.Unmarshal(v.Result, &result) == nil
+	switch {
+	case v.Aborted:
+		ended.Outcome = protocol.CompactionCancelled
+	case completed:
+		ended.Outcome = protocol.CompactionCompleted
+		if result.Summary != "" {
+			ended.Summary = &protocol.Message{ID: protocol.MessageID(s.ids.NewID("message")), Role: protocol.RoleAssistant, Content: protocol.TextContent(result.Summary)}
+		}
+		ended.HistoryTokens = result.EstimatedTokensAfter
+	default:
+		message := v.ErrorMessage
+		if message == "" {
+			message = "Pi ended its compaction without a result"
+		}
+		ended.Outcome = protocol.CompactionFailed
+		ended.Error = &protocol.ProtocolError{Code: "pi_compaction_failed", Message: message}
+	}
+	_ = s.emit(run, protocol.TypeRunCompactionEnded, ended, false)
 }
 
 func (s *Session) startTool(run *runState, v toolStart) {
@@ -1739,6 +1827,17 @@ func (s *Session) emitEnvelope(run *runState, t protocol.EnvelopeType, p any, te
 			}
 		}
 		run.steers = kept
+	}
+	if terminal && run.compaction != "" {
+		ended := protocol.RunCompactionEndedPayload{SessionID: s.state.SessionID, RunID: run.id, CompactionID: run.compaction, Outcome: protocol.CompactionCancelled}
+		if t != protocol.TypeRunCancelled {
+			ended.Outcome = protocol.CompactionFailed
+			ended.Error = &protocol.ProtocolError{Code: "pi_compaction_unfinished", Message: "the run settled before Pi ended its compaction"}
+		}
+		if _, err := s.emitLocked(run, protocol.TypeRunCompactionEnded, ended, false, ""); err != nil {
+			return protocol.Envelope{}, err
+		}
+		run.compaction = ""
 	}
 	return s.emitLocked(run, t, p, terminal, reply)
 }

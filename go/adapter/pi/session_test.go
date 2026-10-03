@@ -2051,3 +2051,84 @@ func TestWireMessagesAdmitPiOneMembers(t *testing.T) {
 		t.Fatalf("tool result with nestedCalls: %v", err)
 	}
 }
+
+func TestUnknownCompactionReasonIsRefusedByName(t *testing.T) {
+	events := failingRun(t, func(client *fakeClient) {
+		client.emit(t, map[string]any{"type": "compaction_start", "reason": "invented"})
+	})
+	assertRunFailedWith(t, events, "pi_invalid_compaction", `unknown compaction reason "invented"`)
+}
+
+func TestCompactionEndWithoutItsStartIsRefused(t *testing.T) {
+	events := failingRun(t, func(client *fakeClient) {
+		client.emit(t, map[string]any{"type": "compaction_end", "reason": "threshold", "aborted": false, "willRetry": false})
+	})
+	assertRunFailedWith(t, events, "pi_invalid_compaction", "compaction_end without compaction_start")
+}
+
+func TestSecondCompactionStartIsRefusedAndTheOpenOneEndsFailed(t *testing.T) {
+	events := failingRun(t, func(client *fakeClient) {
+		client.emit(t, map[string]any{"type": "compaction_start", "reason": "threshold"})
+		client.emit(t, map[string]any{"type": "compaction_start", "reason": "overflow"})
+	})
+	assertRunFailedWith(t, events, "pi_invalid_compaction", "compaction_start while a compaction is open")
+	ended := compactionEnded(t, events)
+	if len(ended) != 1 || ended[0].Outcome != protocol.CompactionFailed || ended[0].Error == nil || ended[0].Error.Code != "pi_compaction_unfinished" {
+		t.Fatalf("compaction ends = %+v, want the open one failed as unfinished", ended)
+	}
+}
+
+func compactionEnded(t *testing.T, events []protocol.Envelope) []protocol.RunCompactionEndedPayload {
+	t.Helper()
+	var ended []protocol.RunCompactionEndedPayload
+	for _, e := range events {
+		if e.Type != protocol.TypeRunCompactionEnded {
+			continue
+		}
+		var p protocol.RunCompactionEndedPayload
+		if err := e.DecodePayload(&p); err != nil {
+			t.Fatal(err)
+		}
+		ended = append(ended, p)
+	}
+	return ended
+}
+
+func TestAnAbortedCompactionEndsCancelledAndTheRunCarriesOn(t *testing.T) {
+	client := newFakeClient()
+	s := openTest(t, client, 32)
+	admission, stream := submitTest(t, s)
+	client.emit(t, map[string]any{"type": "compaction_start", "reason": "overflow"})
+	client.emit(t, map[string]any{"type": "compaction_end", "reason": "overflow", "aborted": true, "willRetry": false})
+	client.emit(t, map[string]any{"type": "message_end", "message": assistant("done", "stop")})
+	client.emit(t, map[string]any{"type": "agent_end", "messages": []any{assistant("done", "stop")}, "willRetry": false})
+	client.emit(t, map[string]any{"type": "agent_settled"})
+	events := adaptertest.Drain(t, stream, time.Second)
+	ended := compactionEnded(t, events)
+	if len(ended) != 1 || ended[0].Outcome != protocol.CompactionCancelled || ended[0].Error != nil {
+		t.Fatalf("compaction ends = %+v, want one cancelled", ended)
+	}
+	if last := events[len(events)-1]; last.Type != protocol.TypeRunCompleted {
+		t.Fatalf("events=%v", eventTypes(events))
+	}
+	assertValidTrace(t, admission, events)
+}
+
+func TestARunSettlingWithAnOpenCompactionEndsItFailedFirst(t *testing.T) {
+	client := newFakeClient()
+	s := openTest(t, client, 32)
+	admission, stream := submitTest(t, s)
+	client.emit(t, map[string]any{"type": "compaction_start", "reason": "threshold"})
+	client.emit(t, map[string]any{"type": "message_end", "message": assistant("done", "stop")})
+	client.emit(t, map[string]any{"type": "agent_end", "messages": []any{assistant("done", "stop")}, "willRetry": false})
+	client.emit(t, map[string]any{"type": "agent_settled"})
+	events := adaptertest.Drain(t, stream, time.Second)
+	types := eventTypes(events)
+	if len(types) < 2 || types[len(types)-2] != protocol.TypeRunCompactionEnded || types[len(types)-1] != protocol.TypeRunCompleted {
+		t.Fatalf("events=%v, want the compaction ended just before the terminal", types)
+	}
+	if ended := compactionEnded(t, events); ended[0].Outcome != protocol.CompactionFailed || ended[0].Error.Code != "pi_compaction_unfinished" {
+		t.Fatalf("compaction end = %+v", ended[0])
+	}
+	assertValidTrace(t, admission, events)
+}

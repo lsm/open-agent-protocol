@@ -1,0 +1,37 @@
+[
+  {
+    "index": 4,
+    "type": "summarization_retry_scheduled",
+    "reason": "Summarization retries are observed only; the compaction's own end carries the outcome"
+  },
+  {
+    "index": 5,
+    "type": "summarization_retry_attempt_start",
+    "reason": "Summarization retries are observed only; the compaction's own end carries the outcome"
+  },
+  {
+    "index": 6,
+    "type": "summarization_retry_scheduled",
+    "reason": "Summarization retries are observed only; the compaction's own end carries the outcome"
+  },
+  {
+    "index": 7,
+    "type": "summarization_retry_attempt_start",
+    "reason": "Summarization retries are observed only; the compaction's own end carries the outcome"
+  },
+  {
+    "index": 8,
+    "type": "summarization_retry_scheduled",
+    "reason": "Summarization retries are observed only; the compaction's own end carries the outcome"
+  },
+  {
+    "index": 9,
+    "type": "summarization_retry_attempt_start",
+    "reason": "Summarization retries are observed only; the compaction's own end carries the outcome"
+  },
+  {
+    "index": 10,
+    "type": "summarization_retry_finished",
+    "reason": "Summarization retries are observed only; the compaction's own end carries the outcome"
+  }
+]

@@ -19,6 +19,7 @@ const features = [_]contract.Feature{
     .{ .key = "capabilities", .level = .emulated, .reason = "conservative descriptor synthesized for the pinned RPC vocabulary" },
     .{ .key = "protocol.initialize", .level = .emulated, .reason = "Pi has no negotiation; readiness is a get_state handshake" },
     .{ .key = "run.cancel", .level = .degraded, .reason = "abort intent is local; agent_settled remains terminal authority" },
+    .{ .key = "run.compaction", .level = .native, .reason = "Pi's compaction_start and compaction_end inside a prompt run, threshold and overflow alike, become the run's compaction events; it compacts before agent_settled, so the run is still open" },
     .{ .key = "run.reconciliation", .level = .emulated, .reason = "get_state reconciles streaming state" },
     .{ .key = "run.replay", .level = .degraded, .reason = "bounded adapter journal; gaps explicit" },
     .{ .key = "run.resume", .level = .degraded, .reason = "bounded process-memory replay" },
