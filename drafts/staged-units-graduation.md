@@ -102,12 +102,12 @@ Decision 0003's four steps translate into these exit criteria for every unit:
 | 8 | T6 transcript load | pi `get_entries` with `since`; ACP `session/load` replaying the conversation through `session/update` | pi (degraded) | ACP |
 | 9 | T8 session list | a host's binding records; ACP's optional native list | staged | — |
 
-Ledgers: [Codex](../research/codex-app-server-0.157.0-mapping.md) ·
+Ledgers: [Codex](../research/codex-app-server-0.160.0-mapping.md) ·
 [Claude Code](../research/claude-code-agent-sdk-2.1.288-mapping.md) ·
 [OpenCode](../research/opencode-v1.18.32-mapping.md) ·
 [pi](../research/pi-v1.0.1-mapping.md) ·
 [Hermes](../research/hermes-v2026.9.24-mapping.md) ·
-[ACP](../research/acp-v1.9.1-mapping.md) ·
+[ACP](../research/acp-v1.10.2-mapping.md) ·
 [Makai](../research/makai-agent-67ad514-mapping.md) ·
 [DeepSeek](../research/deepseek-harness-dsh-v0.1.7-rc.2-mapping.md). DeepSeek
 contributes no native evidence to any unit at its pin and advertises each
