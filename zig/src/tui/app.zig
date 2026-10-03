@@ -1366,6 +1366,20 @@ pub const App = struct {
         self.worktree_management_job = job;
     }
 
+    fn raiseForceDeletePrompt(self: *App, question: []const u8) !void {
+        const line = try std.fmt.allocPrint(self.allocator, "{s} Press y to force, n or Esc to keep the worktree.", .{question});
+        defer self.allocator.free(line);
+        try self.state.appendTranscript(.system, line);
+        if (self.state.mode != .session_picker) {
+            try self.state.appendTranscript(.system, "Open the session picker to force remove it.");
+            self.clearPendingDelete();
+            try self.deliverHeldWorktreeMessages();
+            return;
+        }
+        self.state.confirm_session_force_delete = true;
+        try self.deliverHeldWorktreeMessages();
+    }
+
     fn clearPendingDelete(self: *App) void {
         if (self.pending_delete_id.len > 0) self.allocator.free(self.pending_delete_id);
         if (self.pending_delete_path.len > 0) self.allocator.free(self.pending_delete_path);
@@ -2920,17 +2934,18 @@ pub const App = struct {
             const id = self.pending_delete_id;
             const path = self.pending_delete_path;
             switch (outcome) {
-                .dirty => {
-                    try self.state.appendTranscript(.system, "This session's worktree has uncommitted changes or Git could not verify it safely.");
-                    try self.state.appendTranscript(.system, "Force remove anyway and discard them? Press y to force, n or Esc to keep the worktree.");
-                    if (self.state.mode != .session_picker) {
-                        try self.state.appendTranscript(.system, "Open the session picker to force remove it.");
-                        self.clearPendingDelete();
-                        try self.deliverHeldWorktreeMessages();
-                        return;
-                    }
-                    self.state.confirm_session_force_delete = true;
-                    try self.deliverHeldWorktreeMessages();
+                .dirty => |report| {
+                    const detail = try std.fmt.allocPrint(self.allocator, "This session's worktree has uncommitted changes:\n{s}", .{report.summary});
+                    defer self.allocator.free(detail);
+                    try self.state.appendTranscript(.system, detail);
+                    try self.raiseForceDeletePrompt("Force remove anyway and discard them?");
+                    return;
+                },
+                .unverified => |message| {
+                    const detail = try std.fmt.allocPrint(self.allocator, "Git could not verify this session's worktree ({s}).", .{message});
+                    defer self.allocator.free(detail);
+                    try self.state.appendTranscript(.system, detail);
+                    try self.raiseForceDeletePrompt("Force remove anyway, unverified?");
                     return;
                 },
                 else => {
