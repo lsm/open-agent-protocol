@@ -2040,3 +2040,14 @@ func TestASteerReadsItsTargetUnderTheReducerLock(t *testing.T) {
 	client.emit(t, map[string]any{"type": "agent_settled"})
 	adaptertest.Drain(t, stream, time.Second)
 }
+
+func TestWireMessagesAdmitPiOneMembers(t *testing.T) {
+	assistant := `{"role":"assistant","content":"hi","api":"a","provider":"p","model":"m","usage":{},"stopReason":"stop","timestamp":1,"thinkingLevel":"off"}`
+	if _, err := decodeWireMessage(json.RawMessage(assistant)); err != nil {
+		t.Fatalf("assistant with thinkingLevel: %v", err)
+	}
+	result := `{"role":"toolResult","toolCallId":"t1","toolName":"grep","content":"ok","isError":false,"timestamp":1,"nestedCalls":{"calls":[],"complete":true}}`
+	if _, err := decodeWireMessage(json.RawMessage(result)); err != nil {
+		t.Fatalf("tool result with nestedCalls: %v", err)
+	}
+}

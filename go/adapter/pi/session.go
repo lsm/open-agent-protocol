@@ -166,24 +166,27 @@ type providerErrorEvent struct {
 	Error  json.RawMessage `json:"error"`
 }
 type toolStart struct {
-	Type       native.EventType `json:"type"`
-	ToolCallID string           `json:"toolCallId"`
-	ToolName   string           `json:"toolName"`
-	Args       json.RawMessage  `json:"args"`
+	Type             native.EventType `json:"type"`
+	ToolCallID       string           `json:"toolCallId"`
+	ToolName         string           `json:"toolName"`
+	Args             json.RawMessage  `json:"args"`
+	ParentToolCallID string           `json:"parentToolCallId,omitempty"`
 }
 type toolUpdate struct {
-	Type          native.EventType `json:"type"`
-	ToolCallID    string           `json:"toolCallId"`
-	ToolName      string           `json:"toolName"`
-	Args          json.RawMessage  `json:"args"`
-	PartialResult json.RawMessage  `json:"partialResult"`
+	Type             native.EventType `json:"type"`
+	ToolCallID       string           `json:"toolCallId"`
+	ToolName         string           `json:"toolName"`
+	Args             json.RawMessage  `json:"args"`
+	PartialResult    json.RawMessage  `json:"partialResult"`
+	ParentToolCallID string           `json:"parentToolCallId,omitempty"`
 }
 type toolEnd struct {
-	Type       native.EventType `json:"type"`
-	ToolCallID string           `json:"toolCallId"`
-	ToolName   string           `json:"toolName"`
-	Result     json.RawMessage  `json:"result"`
-	IsError    bool             `json:"isError"`
+	Type             native.EventType `json:"type"`
+	ToolCallID       string           `json:"toolCallId"`
+	ToolName         string           `json:"toolName"`
+	Result           json.RawMessage  `json:"result"`
+	IsError          bool             `json:"isError"`
+	ParentToolCallID string           `json:"parentToolCallId,omitempty"`
 }
 type agentEnd struct {
 	Type      native.EventType  `json:"type"`
@@ -204,6 +207,7 @@ type wireMessage struct {
 	ResponseModel         string            `json:"responseModel,omitempty"`
 	ResponseID            string            `json:"responseId,omitempty"`
 	ProviderThinkingLevel string            `json:"providerThinkingLevel,omitempty"`
+	ThinkingLevel         string            `json:"thinkingLevel,omitempty"`
 	Diagnostics           []json.RawMessage `json:"diagnostics,omitempty"`
 	Usage                 json.RawMessage   `json:"usage"`
 	StopReason            string            `json:"stopReason"`
@@ -234,6 +238,7 @@ type wireToolResultMessage struct {
 	Details        json.RawMessage `json:"details,omitempty"`
 	Usage          json.RawMessage `json:"usage,omitempty"`
 	AddedToolNames []string        `json:"addedToolNames,omitempty"`
+	NestedCalls    json.RawMessage `json:"nestedCalls,omitempty"`
 	IsError        bool            `json:"isError"`
 	Timestamp      int64           `json:"timestamp"`
 }

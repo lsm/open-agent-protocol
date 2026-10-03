@@ -339,10 +339,13 @@ func ValidateEvent(data []byte, eventType EventType) error {
 		require("usage", "assistantMessageEvent")
 	case EventToolExecutionStart:
 		require("toolCallId", "toolName", "args")
+		add("parentToolCallId")
 	case EventToolExecutionUpdate:
 		require("toolCallId", "toolName", "args", "partialResult")
+		add("parentToolCallId")
 	case EventToolExecutionEnd:
 		require("toolCallId", "toolName", "result", "isError")
+		add("parentToolCallId")
 	case EventQueueUpdate:
 		require("steering", "followUp")
 	case EventCompactionStart:

@@ -206,9 +206,9 @@ const user_members = [_][]const u8{ "role", "content", "timestamp" };
 const system_members = [_][]const u8{ "role", "content", "sections", "toolsAdded", "toolsRemoved", "timestamp" };
 
 const tool_result_members = [_][]const u8{
-    "role",      "toolCallId", "toolName", "content",
-    "usage",     "details",    "isError",  "addedToolNames",
-    "timestamp",
+    "role",      "toolCallId",  "toolName", "content",
+    "usage",     "details",     "isError",  "addedToolNames",
+    "timestamp", "nestedCalls",
 };
 
 const assistant_members = [_][]const u8{
@@ -216,6 +216,7 @@ const assistant_members = [_][]const u8{
     "model",         "usage",        "stopReason",            "timestamp",
     "responseModel", "responseId",   "providerThinkingLevel", "diagnostics",
     "deferred",      "errorMessage", "rawStopReason",         "endTurn",
+    "thinkingLevel",
 };
 
 const assistant_required = [_][]const u8{ "content", "api", "provider", "model", "usage", "stopReason", "timestamp" };
@@ -234,9 +235,9 @@ const event_shapes = [_]EventShape{
     .{ .name = "message_update", .members = &.{ kind_member, .{ .name = "usage" }, .{ .name = "assistantMessageEvent" } } },
     .{ .name = "message_end", .members = &.{ kind_member, .{ .name = "message" } } },
     .{ .name = "agent_end", .members = &.{ kind_member, .{ .name = "messages", .need = .array }, .{ .name = "willRetry", .need = .boolean } } },
-    .{ .name = "tool_execution_start", .members = &.{ kind_member, .{ .name = "toolCallId", .need = .text }, .{ .name = "toolName", .need = .text }, .{ .name = "args" } } },
-    .{ .name = "tool_execution_update", .members = &.{ kind_member, .{ .name = "toolCallId", .need = .text }, .{ .name = "toolName", .need = .text }, .{ .name = "args" }, .{ .name = "partialResult" } } },
-    .{ .name = "tool_execution_end", .members = &.{ kind_member, .{ .name = "toolCallId", .need = .text }, .{ .name = "toolName", .need = .text }, .{ .name = "result" }, .{ .name = "isError", .need = .boolean } } },
+    .{ .name = "tool_execution_start", .members = &.{ kind_member, .{ .name = "toolCallId", .need = .text }, .{ .name = "toolName", .need = .text }, .{ .name = "args" }, .{ .name = "parentToolCallId", .need = .text } } },
+    .{ .name = "tool_execution_update", .members = &.{ kind_member, .{ .name = "toolCallId", .need = .text }, .{ .name = "toolName", .need = .text }, .{ .name = "args" }, .{ .name = "partialResult" }, .{ .name = "parentToolCallId", .need = .text } } },
+    .{ .name = "tool_execution_end", .members = &.{ kind_member, .{ .name = "toolCallId", .need = .text }, .{ .name = "toolName", .need = .text }, .{ .name = "result" }, .{ .name = "isError", .need = .boolean }, .{ .name = "parentToolCallId", .need = .text } } },
     .{ .name = "turn_start", .members = &.{kind_member} },
     .{ .name = "turn_end", .members = &.{ kind_member, .{ .name = "message", .required = true }, .{ .name = "toolResults", .required = true } } },
     .{ .name = "message_start", .members = &.{ kind_member, .{ .name = "message", .required = true } } },
@@ -437,7 +438,7 @@ pub fn decodeWireMessage(raw: std.json.Value) !?WireMessage {
         for (&assistant_required) |name| {
             if (raw.object.get(name) == null) return Error.InvalidFrame;
         }
-        try typedStrings(raw, &.{ "api", "provider", "model", "stopReason", "responseModel", "responseId", "providerThinkingLevel", "errorMessage", "rawStopReason" });
+        try typedStrings(raw, &.{ "api", "provider", "model", "stopReason", "responseModel", "responseId", "providerThinkingLevel", "thinkingLevel", "errorMessage", "rawStopReason" });
         try typedInteger(raw, "timestamp");
         try typedArray(raw, "diagnostics");
         try typedBool(raw, "endTurn");
@@ -2479,4 +2480,20 @@ test "a pending steer drops before the run's terminal" {
     const reason = memberOf(payload, "reason") orelse return error.MissingPayload;
     try std.testing.expectEqualStrings("run_terminated", textOf(reason, "code"));
     try std.testing.expectEqual(@as(usize, 0), reducer.pendingSteers().len);
+}
+
+test "pi 1.0.1's added members are admitted, typed where they are typed" {
+    try expectShapeAccepts(&.{
+        "{\"type\":\"tool_execution_start\",\"toolCallId\":\"c\",\"toolName\":\"n\",\"args\":{},\"parentToolCallId\":\"p\"}",
+        "{\"type\":\"tool_execution_update\",\"toolCallId\":\"c\",\"toolName\":\"n\",\"args\":{},\"partialResult\":{},\"parentToolCallId\":\"p\"}",
+        "{\"type\":\"tool_execution_end\",\"toolCallId\":\"c\",\"toolName\":\"n\",\"result\":{},\"isError\":false,\"parentToolCallId\":\"p\"}",
+    });
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const head = "{\"role\":\"assistant\",\"content\":\"hi\",\"api\":\"a\",\"provider\":\"p\",\"model\":\"m\",\"usage\":{},\"stopReason\":\"end_turn\",\"timestamp\":1";
+    _ = try decodeWireMessage(try parse(a, head ++ ",\"thinkingLevel\":\"off\"}"));
+    try std.testing.expectError(Error.InvalidFrame, decodeWireMessage(try parse(a, head ++ ",\"thinkingLevel\":7}")));
+    const result_head = "{\"role\":\"toolResult\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"content\":\"ok\",\"isError\":false,\"timestamp\":1";
+    try std.testing.expect(try decodeWireMessage(try parse(a, result_head ++ ",\"nestedCalls\":{\"calls\":[],\"complete\":true}}")) == null);
 }
