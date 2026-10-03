@@ -1,6 +1,8 @@
 package validation
 
 import (
+	"sort"
+
 	"github.com/lsm/open-agent-protocol/go/protocol"
 )
 
@@ -19,30 +21,51 @@ func (s *state) compactRequest(i, line int, e protocol.Envelope) {
 		s.add(CodeStaleCapabilityRevision, i, line, e, "/capability_revision", "compaction request occurred before refreshed capabilities")
 	}
 	s.featureKeys(i, line, e, []string{protocol.FeatureSessionCompact})
+	pending := &pendingSubmit{satisfiable: map[string]bool{}, index: i, line: line, session: p.SessionID, revision: s.currentCapability}
+	pending.queue = s.openQueueWindow(e, p.SessionID, p.Delivery, false)
+	var expectations []*controlExpectation
 	switch p.Delivery {
-	case "", protocol.DeliveryAuto, protocol.DeliveryQueue:
+	case "", protocol.DeliveryAuto:
+	case protocol.DeliveryQueue:
+		key := protocol.DeliveryKey(p.Delivery)
+		if level, known := s.advertisedLevel(key); known && !affirmative(level) {
+			expectations = append(expectations, &controlExpectation{
+				rung: rungCapability, key: key, pointer: "/payload/delivery",
+				code: errorUnsupportedFeature, reason: reasonUnadvertised,
+				detailName: "feature", detailValue: key,
+				diagnostic: CodeUnavailableCapability,
+				message:    "a compaction elects a delivery the endpoint has not affirmatively advertised",
+			})
+		}
 	default:
-		s.add(CodeIllegalRunTransition, i, line, e, "/payload/delivery", "a compaction accepts auto or queue delivery only")
+		key := protocol.DeliveryKey(p.Delivery)
+		expectations = append(expectations, &controlExpectation{
+			rung: rungCapability, key: key, pointer: "/payload/delivery",
+			code: errorUnsupportedFeature, detailName: "feature", detailValue: key,
+			diagnostic: CodeIllegalRunTransition,
+			message:    "a compaction takes auto or queue delivery, so steer and btw are refused with unsupported_feature naming the delivery",
+		})
 	}
-	if p.Focus == nil {
-		return
+	if p.Focus != nil {
+		if level, known := s.advertisedLevel(protocol.FeatureSessionCompact); known && level == protocol.SupportDegraded && !p.AllowsDegraded(protocol.FeatureSessionCompact) {
+			expectations = append(expectations, &controlExpectation{
+				rung: rungDegradation, key: protocol.FeatureSessionCompact, pointer: "/payload/focus",
+				code: errorCapabilityDegraded, detailName: "feature", detailValue: protocol.FeatureSessionCompact,
+				diagnostic: CodeDegradedWithoutOptin,
+				message:    "a compaction focus was admitted without the caller's opt-in",
+			})
+		}
 	}
-	level, known := s.advertisedLevel(protocol.FeatureSessionCompact)
-	if !known || level != protocol.SupportDegraded || p.AllowsDegraded(protocol.FeatureSessionCompact) {
-		return
+	sort.SliceStable(expectations, func(a, b int) bool { return expectations[a].less(expectations[b]) })
+	if len(expectations) > 0 {
+		pending.expectation = expectations[0]
 	}
 	if s.pendingControls == nil {
 		s.pendingControls = map[protocol.EnvelopeID]*pendingSubmit{}
 	}
-	s.pendingControls[e.ID] = &pendingSubmit{
-		satisfiable: map[string]bool{}, index: i, line: line, session: p.SessionID, revision: s.currentCapability,
-		expectation: &controlExpectation{
-			rung: rungDegradation, key: protocol.FeatureSessionCompact, pointer: "/payload/focus",
-			code: errorCapabilityDegraded, detailName: "feature", detailValue: protocol.FeatureSessionCompact,
-			diagnostic: CodeDegradedWithoutOptin,
-			message:    "a compaction focus was admitted without the caller's opt-in",
-		},
-	}
+	s.pendingControls[e.ID] = pending
+	s.openSubmits[p.SessionID] = append(s.openSubmits[p.SessionID], pending)
+	s.refreshQueueWindows(p.SessionID)
 }
 
 func (s *state) compactResponse(i, line int, e protocol.Envelope) {
@@ -50,7 +73,6 @@ func (s *state) compactResponse(i, line int, e protocol.Envelope) {
 	_ = e.DecodePayload(&p)
 	req := s.requests[e.InReplyTo]
 	if req == nil || req.typ != protocol.TypeSessionCompactRequest {
-		s.add(CodeUnmatchedResponse, i, line, e, "/in_reply_to", "compaction response answers no compaction request")
 		return
 	}
 	s.checkScope(i, line, e, p.SessionID, p.RunID)
@@ -65,6 +87,12 @@ func (s *state) compactResponse(i, line int, e protocol.Envelope) {
 	}
 	if p.RequestedDelivery != requested {
 		s.addExpected(CodeScopeMismatch, i, line, e, "/payload/requested_delivery", "compaction response must repeat the requested delivery", string(requested), string(p.RequestedDelivery), string(e.InReplyTo))
+	}
+	switch requested {
+	case protocol.DeliveryAuto, protocol.DeliveryQueue:
+	default:
+		s.addExpected(CodeIllegalRunTransition, i, line, e, "/payload/accepted", "a compaction takes auto or queue delivery, so a steer or btw compaction is refused", string(protocol.TypeErrorResponse), string(e.Type), string(e.InReplyTo))
+		return
 	}
 	if !p.Accepted {
 		s.addExpected(CodeIllegalRunTransition, i, line, e, "/payload/accepted", "a refused compaction is a correlated error.response, not a compaction response", string(protocol.TypeErrorResponse), string(e.Type), string(e.InReplyTo))
@@ -106,12 +134,8 @@ func (s *state) compactResponse(i, line int, e protocol.Envelope) {
 		s.queueAdmission(i, line, e, submitted, st)
 	}
 	s.settleSubmitAdmission(i, line, e, submitted)
-	status := protocol.RunRunning
-	if queued {
-		status = protocol.RunQueued
-	}
 	run := &runState{
-		id: p.RunID, session: p.SessionID, admitted: true, next: 1, lastIndex: i, lastLine: line, status: status,
+		id: p.RunID, session: p.SessionID, admitted: true, next: 1, lastIndex: i, lastLine: line, status: protocol.RunQueued,
 		tools: map[protocol.ToolCallID]toolTrack{}, interactions: map[protocol.InteractionID]*interactionState{},
 		compactions:   map[protocol.CompactionID]*compactionTrack{},
 		compactionRun: true, compactionContinue: request.Continue,

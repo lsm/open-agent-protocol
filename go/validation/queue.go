@@ -154,20 +154,24 @@ func (s *state) closeSubmitWindow(request protocol.EnvelopeID) {
 	s.refreshQueueWindows(session)
 }
 
-func (s *state) deliveryExpectations(i, line int, e protocol.Envelope, p protocol.MessageSubmitRequest, pending *pendingSubmit) []*controlExpectation {
-	active, queued, started := s.queueCounts(p.SessionID)
+func (s *state) openQueueWindow(e protocol.Envelope, session protocol.SessionID, delivery protocol.RequestedDeliveryMode, mutation bool) *queueWindow {
+	active, queued, started := s.queueCounts(session)
 	window := &queueWindow{
-		request: e.ID, session: p.SessionID, delivery: p.Delivery,
+		request: e.ID, session: session, delivery: delivery,
 		busyAtRequest: active > 0, busyEver: active > 0, startedEver: started > 0,
-		mutation: p.ModelID != nil && s.featureDetail(protocol.FeatureModelSelection).Scope == protocol.ScopeSession,
+		mutation: mutation,
 	}
 	if s.limits != nil {
 		window.maxActive, window.maxQueued = s.limits.MaxActiveRunsPerSession, s.limits.MaxQueuedRunsPerSession
 	}
 	window.offered = s.queueOffered()
 	window.reachedStrict = window.exceeds(active, queued, 0)
-	window.reachedLoose = window.exceeds(active, queued, len(s.openSubmits[p.SessionID]))
-	pending.queue = window
+	window.reachedLoose = window.exceeds(active, queued, len(s.openSubmits[session]))
+	return window
+}
+
+func (s *state) deliveryExpectations(i, line int, e protocol.Envelope, p protocol.MessageSubmitRequest, pending *pendingSubmit) []*controlExpectation {
+	pending.queue = s.openQueueWindow(e, p.SessionID, p.Delivery, p.ModelID != nil && s.featureDetail(protocol.FeatureModelSelection).Scope == protocol.ScopeSession)
 
 	var expectations []*controlExpectation
 
@@ -250,7 +254,7 @@ func (s *state) queueOverlap(i, line int, e protocol.Envelope, p protocol.Messag
 func (s *state) queueAdmission(i, line int, e protocol.Envelope, p protocol.MessageSubmitResponse, st *sessionTrack) {
 	pending := s.pendingControls[e.InReplyTo]
 	requested := p.RequestedDelivery
-	if pending != nil && pending.queue != nil {
+	if pending != nil && pending.queue != nil && pending.queue.delivery != "" {
 		requested = pending.queue.delivery
 	}
 	queued := p.Admission == protocol.AdmissionQueued

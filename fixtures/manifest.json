@@ -11385,6 +11385,159 @@
           "aspect": "honour"
         }
       ]
+    },
+    {
+      "id": "compaction-busy-auto-queued",
+      "path": "valid/compaction-busy-auto-queued.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ]
+    },
+    {
+      "id": "compaction-busy-refused-run-active",
+      "path": "valid/compaction-busy-refused-run-active.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ]
+    },
+    {
+      "id": "compaction-steer-refused",
+      "path": "valid/compaction-steer-refused.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ]
+    },
+    {
+      "id": "compaction-busy-auto-queued-without-resolution",
+      "path": "semantic-invalid/compaction-busy-auto-queued-without-resolution.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.compact",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "compaction-busy-refused-other-code",
+      "path": "semantic-invalid/compaction-busy-refused-other-code.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.compact",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "compaction-steer-wrong-refusal",
+      "path": "semantic-invalid/compaction-steer-wrong-refusal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.compact",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "compaction-steer-accepted",
+      "path": "semantic-invalid/compaction-steer-accepted.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.compact",
+          "aspect": "honour"
+        }
+      ]
+    },
+    {
+      "id": "compaction-status-before-start",
+      "path": "semantic-invalid/compaction-status-before-start.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition",
+        "missing_run_started"
+      ],
+      "units": [
+        "compaction"
+      ],
+      "provenance": [
+        "decisions/0044-compaction.md"
+      ],
+      "covers": [
+        {
+          "capability": "session.compact",
+          "aspect": "honour"
+        }
+      ]
     }
   ]
 }

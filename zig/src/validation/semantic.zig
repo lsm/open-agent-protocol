@@ -834,6 +834,7 @@ pub const Machine = struct {
         }
         if (std.mem.eql(u8, declared, "session.compact.response")) {
             try self.compactResponse(index, envelope, payload);
+            try self.closeSubmitWindow(field(envelope, "in_reply_to"));
             return;
         }
         if (std.mem.eql(u8, declared, "session.open.response")) {
@@ -2481,7 +2482,7 @@ pub const Machine = struct {
             try self.raise(speaker, index);
         }
         if (pending.honour.len != 0) try self.add(pending.honour, index);
-        if (pending.control != null) return true;
+        if (pending.control != null or pending.compact_focus != null) return true;
         if (pending.model_query) return true;
         if (pending.model_listed and
             std.mem.eql(u8, memberString(raised, "code"), error_model_not_found))
@@ -2861,24 +2862,42 @@ pub const Machine = struct {
     fn compactRequest(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
         if (self.capabilities_stale) try self.add(code_stale_capability_revision, index);
         try self.featureKeys(index, envelope, &.{"session.compact"});
-        const delivery = memberString(payload, "delivery");
-        if (delivery.len != 0 and !std.mem.eql(u8, delivery, "auto") and !std.mem.eql(u8, delivery, "queue")) {
-            try self.add(code_illegal_run_transition, index);
-        }
         const session_id = memberString(payload, "session_id");
         if (field(envelope, "session_id").len != 0 and !std.mem.eql(u8, field(envelope, "session_id"), session_id)) {
             try self.add(code_scope_mismatch, index);
         }
-        if (member(payload, "focus") == null) return;
-        const level = self.advertisedLevel("session.compact") orelse return;
-        if (!std.mem.eql(u8, level, "degraded") or allowsDegraded(payload, "session.compact")) return;
+        try self.openSubmitWindow(index, envelope, payload, "", false);
         const pending = try self.arena.allocator().create(Pending);
         pending.* = .{ .session = session_id };
-        pending.compact_focus = .{
-            .rung = rung_degradation, .key = "session.compact", .pointer = "/payload/focus",
-            .code = error_capability_degraded, .detail_name = "feature", .detail_value = "session.compact",
-            .diagnostic = code_degraded_without_optin,
-        };
+        const delivery = memberString(payload, "delivery");
+        if (delivery.len == 0 or std.mem.eql(u8, delivery, "auto")) {} else if (std.mem.eql(u8, delivery, "queue")) {
+            if (self.advertisedLevel(feature_delivery_queue)) |level| {
+                if (!affirmative(level)) self.propose(&pending.control, .{
+                    .rung = rung_capability, .key = feature_delivery_queue, .pointer = "/payload/delivery",
+                    .code = error_unsupported_feature, .reason = reason_unadvertised,
+                    .detail_name = "feature", .detail_value = feature_delivery_queue,
+                    .diagnostic = code_unavailable_capability,
+                });
+            }
+        } else {
+            const key = try std.fmt.allocPrint(self.arena.allocator(), "session.message.delivery.{s}", .{delivery});
+            self.propose(&pending.control, .{
+                .rung = rung_capability, .key = key, .pointer = "/payload/delivery",
+                .code = error_unsupported_feature, .detail_name = "feature", .detail_value = key,
+                .diagnostic = code_illegal_run_transition,
+            });
+        }
+        if (member(payload, "focus") != null) {
+            if (self.advertisedLevel("session.compact")) |level| {
+                if (std.mem.eql(u8, level, "degraded") and !allowsDegraded(payload, "session.compact")) {
+                    pending.compact_focus = .{
+                        .rung = rung_degradation, .key = "session.compact", .pointer = "/payload/focus",
+                        .code = error_capability_degraded, .detail_name = "feature", .detail_value = "session.compact",
+                        .diagnostic = code_degraded_without_optin,
+                    };
+                }
+            }
+        }
         try self.submits.put(self.allocator, field(envelope, "id"), pending);
     }
 
@@ -2900,6 +2919,10 @@ pub const Machine = struct {
         const requested = if (asked.len == 0) "auto" else asked;
         if (!std.mem.eql(u8, memberString(payload, "requested_delivery"), requested)) {
             try self.add(code_scope_mismatch, index);
+        }
+        if (!std.mem.eql(u8, requested, "auto") and !std.mem.eql(u8, requested, "queue")) {
+            try self.add(code_illegal_run_transition, index);
+            return;
         }
         if (!memberBool(payload, "accepted")) {
             try self.add(code_illegal_run_transition, index);
