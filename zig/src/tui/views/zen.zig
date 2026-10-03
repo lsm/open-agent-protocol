@@ -255,26 +255,77 @@ fn glow(progress: f32, col: usize, text_width: usize) f32 {
     return @max(0, 1 - @abs(progress - peak) / glow_band);
 }
 
+const cell_share: f32 = 0.35;
+const covered: []const u8 = "";
+
+fn layCells(allocator: std.mem.Allocator, text: []const u8, width: usize) ![]?[]const u8 {
+    const cells = try allocator.alloc(?[]const u8, width);
+    @memset(cells, null);
+    var col = (width -| tui_text.visibleWidth(text)) / 2;
+    var view = std.unicode.Utf8View.initUnchecked(text).iterator();
+    while (view.nextCodepointSlice()) |glyph| {
+        const cell_width = tui_text.visibleWidth(glyph);
+        if (col + cell_width > width) break;
+        if (cell_width > 0) cells[col] = glyph;
+        for (1..cell_width) |extra| cells[col + extra] = covered;
+        col += cell_width;
+    }
+    return cells;
+}
+
+const CellFade = struct {
+    arrived: bool,
+    strength: f32,
+};
+
+fn cellFade(rise: f32, col: usize, lo: usize, hi: usize) CellFade {
+    const mid = @as(f32, @floatFromInt(lo + hi -| 1)) / 2;
+    const half = @max(@as(f32, @floatFromInt(hi -| lo)) / 2, 1);
+    const delay = @abs(@as(f32, @floatFromInt(col)) - mid) / half * (1 - cell_share);
+    const t = std.math.clamp((rise - delay) / cell_share, 0, 1);
+    if (t < 0.5) return .{ .arrived = false, .strength = 1 - smoothstep(t * 2) };
+    return .{ .arrived = true, .strength = smoothstep(t * 2 - 1) };
+}
+
 fn activityRow(allocator: std.mem.Allocator, frame: Frame, width: usize) ![]const u8 {
     const changing = frame.incoming.len > 0;
-    const fade = @min(frame.rise, 1);
-    const arrived = !changing or fade >= 0.5;
-    const text = if (!changing) try activityLine(allocator, frame.activity, frame.tool_ms, width) else try tui_text.truncateLineToWidth(allocator, if (arrived) frame.incoming else frame.activity, width);
-    const strength: f32 = if (!changing) 1 else if (arrived) smoothstep(fade * 2 - 1) else 1 - smoothstep(fade * 2);
-    if (text.len == 0 or litLevel(strength) <= @as(u8, @intFromFloat(faded_level))) return "";
-    const text_width = tui_text.visibleWidth(text);
+    const shown = if (changing) try tui_text.truncateLineToWidth(allocator, frame.incoming, width) else try activityLine(allocator, frame.activity, frame.tool_ms, width);
+    const fresh = try layCells(allocator, shown, width);
+    const old = try layCells(allocator, if (changing) try tui_text.truncateLineToWidth(allocator, frame.activity, width) else "", width);
+    var lo: usize = width;
+    var hi: usize = 0;
+    for (0..width) |col| if (fresh[col] != null or old[col] != null) {
+        lo = @min(lo, col);
+        hi = col + 1;
+    };
+    if (hi <= lo) return "";
+    const floor: u8 = @intFromFloat(faded_level);
     var out: std.Io.Writer.Allocating = .init(allocator);
-    for (0..(width -| text_width) / 2) |_| try out.writer.writeByte(' ');
     var last: ?u8 = null;
-    var col: usize = 0;
-    var view = std.unicode.Utf8View.initUnchecked(text).iterator();
-    while (view.nextCodepointSlice()) |cell| {
-        const lit = strength * (1 + glow_gain * glow(frame.light, col, text_width));
-        const level = litLevel(lit);
+    var pending: usize = lo;
+    var drawn = false;
+    for (lo..hi) |col| {
+        const fade: CellFade = if (changing) cellFade(frame.rise, col, lo, hi) else .{ .arrived = true, .strength = 1 };
+        const glyph = (if (fade.arrived) fresh[col] else old[col]) orelse {
+            pending += 1;
+            continue;
+        };
+        if (glyph.len == 0) continue;
+        const level = litLevel(fade.strength * (1 + glow_gain * glow(frame.light, col - lo, hi - lo)));
+        if (level <= floor) {
+            pending += tui_text.visibleWidth(glyph);
+            continue;
+        }
+        for (0..pending) |_| try out.writer.writeByte(' ');
+        pending = 0;
         if (last != level) try zz.Color.fromRgb(level, level, level).writeFg(&out.writer);
         last = level;
-        try out.writer.writeAll(cell);
-        col += tui_text.visibleWidth(cell);
+        try out.writer.writeAll(glyph);
+        drawn = true;
+    }
+    if (!drawn) {
+        out.deinit();
+        return "";
     }
     try out.writer.writeAll("\x1b[0m");
     return out.toOwnedSlice();
@@ -546,45 +597,52 @@ fn levelsOf(allocator: std.mem.Allocator, row: []const u8) ![]u32 {
     return levels.toOwnedSlice(allocator);
 }
 
-test "a new line fades in where the old one faded out" {
+test "a new line opens out of the old one from the centre, letter by letter" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var frame: Frame = .{ .width = 80, .height = 24, .running = true, .activity = "thinking", .incoming = "Shell Execute  ls" };
+    var frame: Frame = .{ .width = 80, .height = 24, .running = true, .activity = "aaaaaaaaaaaaaaa", .incoming = "bbbbbbbbbbbbbbb" };
 
-    frame.rise = 0.3;
-    const leaving = try activitySlot(a, frame, 60);
-    try std.testing.expectEqualStrings("", leaving[0]);
-    try std.testing.expectEqualStrings("", leaving[2]);
-    const left = try plainRows(a, leaving[1]);
-    try std.testing.expect(std.mem.indexOf(u8, left, "thinking") != null);
-    try std.testing.expect(std.mem.indexOf(u8, left, "Shell") == null);
+    const start = try plainRows(a, (try activitySlot(a, frame, 60))[1]);
+    try std.testing.expectEqualStrings("aaaaaaaaaaaaaaa", std.mem.trim(u8, start, " "));
 
-    frame.rise = 0.6;
-    const arriving = try plainRows(a, (try activitySlot(a, frame, 60))[1]);
-    try std.testing.expect(std.mem.indexOf(u8, arriving, "Shell Execute  ls") != null);
-    try std.testing.expect(std.mem.indexOf(u8, arriving, "thinking") == null);
+    frame.rise = 0.5;
+    const slot = try activitySlot(a, frame, 60);
+    try std.testing.expectEqualStrings("", slot[0]);
+    try std.testing.expectEqualStrings("", slot[2]);
+    const middle = std.mem.trim(u8, try plainRows(a, slot[1]), " ");
+    try std.testing.expectEqual(@as(u8, 'a'), middle[0]);
+    try std.testing.expectEqual(@as(u8, 'a'), middle[middle.len - 1]);
+    try std.testing.expect(std.mem.indexOfScalar(u8, middle, 'b') != null);
+    try std.testing.expectEqual(@as(u8, 'b'), middle[middle.len / 2]);
+
+    frame.rise = 1;
+    const landed = try plainRows(a, (try activitySlot(a, frame, 60))[1]);
+    try std.testing.expectEqualStrings("bbbbbbbbbbbbbbb", std.mem.trim(u8, landed, " "));
 }
 
-test "a fade passes through every grey down to the background without a step" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    var frame: Frame = .{ .width = 80, .height = 24, .running = true, .activity = "thinking", .incoming = "Read  a.zig" };
-    const background: u32 = @intFromFloat(faded_level);
-    var previous: u32 = soft_level;
-    var darkest: u32 = soft_level;
-    var tick: u64 = 0;
-    while (tick < change_ticks) : (tick += 1) {
-        frame.rise = @as(f32, @floatFromInt(tick)) / @as(f32, @floatFromInt(change_ticks));
-        const levels = try levelsOf(a, (try activitySlot(a, frame, 60))[1]);
-        const edge = if (levels.len == 0) background else levels[0];
-        try std.testing.expect(@max(edge, previous) - @min(edge, previous) <= 10);
-        darkest = @min(darkest, edge);
-        previous = edge;
+test "every letter fades out to the background and its successor fades in, without a step" {
+    for ([_]usize{ 10, 17, 24 }) |col| {
+        var previous: f32 = 1;
+        var darkest: f32 = 1;
+        var arrived = false;
+        var tick: u64 = 0;
+        while (tick <= change_ticks) : (tick += 1) {
+            const fade = cellFade(@as(f32, @floatFromInt(tick)) / @as(f32, @floatFromInt(change_ticks)), col, 10, 25);
+            const signed: f32 = if (fade.arrived) fade.strength else -fade.strength;
+            const was: f32 = if (arrived) previous else -previous;
+            try std.testing.expect(@abs(signed - was) <= 0.25);
+            if (fade.arrived and !arrived) try std.testing.expect(previous < 0.08 and fade.strength < 0.08);
+            darkest = @min(darkest, fade.strength);
+            previous = fade.strength;
+            arrived = fade.arrived;
+        }
+        try std.testing.expect(arrived);
+        try std.testing.expectEqual(@as(f32, 1), previous);
+        try std.testing.expect(darkest < 0.08);
     }
-    try std.testing.expect(previous >= soft_level - 2);
-    try std.testing.expect(darkest <= background + 2);
+    try std.testing.expect(cellFade(0.3, 17, 10, 25).arrived);
+    try std.testing.expect(!cellFade(0.3, 10, 10, 25).arrived);
 }
 
 test "the light keeps opening from the centre to both ends while a line rests" {
