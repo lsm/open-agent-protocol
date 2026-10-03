@@ -357,6 +357,20 @@ store and should not be read as one.
    it, so `session.message.delivery.steer` is `emulated` and the settlement's
    `boundary` is `turn`. Follow-up queues stay codec evidence: `queue` remains
    `unavailable`, and `auto` alone is exposed for submission.
+   Two windows around the native call, recorded rather than compensated. A
+   `turn_end` that pi emits after answering the `steer` command but that the
+   reducer reaches before the adapter records the steer is still that steer's
+   boundary: the Go adapter notes how many turns had ended when the response's
+   barrier was reduced and settles the steer at once if more have ended since.
+   The other window has no remedy on this wire: pi accepts the guidance
+   (`success: true`, even after `agent_settled`, as the Zig fixture
+   `fake_settled_before_steer` pins) before the adapter can re-check the run, so
+   a run that settles during the call yields an `invalid_steer_target` refusal
+   for guidance pi did take. No pending steer is recorded for it, so no
+   `run.steer.applied` or `run.steer.dropped` ever covers it, and if pi retains it
+   the guidance can reach a later run unannounced. pi offers no way to withdraw a
+   steer, so the refusal is the honest answer to the request it judged, and the
+   unaccounted guidance is this ledger's mismatch.
 9. **Parallel tool completion order differs from result emission order** —
    action state is keyed strictly on `toolCallId`, not ordering.
 10. **No sequence numbers:** OAP sequence is adapter-owned and replay is only

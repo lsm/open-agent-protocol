@@ -26,6 +26,8 @@ type Session struct {
 	reportsLevel       bool
 	reduceMu           sync.Mutex
 	commandMu          sync.Mutex
+	turnEnds           uint64
+	steerBarrier       *uint64
 	client             Client
 	inbound            <-chan rpc.Inbound
 	clock              base.Clock
@@ -411,33 +413,41 @@ func (s *Session) steer(ctx context.Context, submit base.SubmitRequest) (protoco
 		return protocol.MessageSubmitResponse{}, nil, refusal
 	}
 	submissionID := protocol.SubmissionID(s.ids.NewID("submission"))
+	answered := s.turnEnds
+	s.steerBarrier = &answered
 	s.mu.Unlock()
 	s.reduceMu.Unlock()
 	err = s.callStrictLocked(ctx, native.Command{Type: native.CommandSteer, Message: &text, Images: images}, nil)
 	s.commandMu.Unlock()
+	s.reduceMu.Lock()
+	defer s.reduceMu.Unlock()
+	s.steerBarrier = nil
 	if err != nil {
 		return protocol.MessageSubmitResponse{}, nil, err
 	}
-	s.reduceMu.Lock()
-	defer s.reduceMu.Unlock()
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if target.terminal || target.status == protocol.RunCancelling {
 		reason := base.SteerReasonTerminal
 		if !target.terminal {
 			reason = base.SteerReasonNotSteerable
 		}
 		sequence := target.next - 1
+		s.mu.Unlock()
 		return protocol.MessageSubmitResponse{}, nil, &base.InvalidSteerTargetError{RunID: target.id, Reason: reason, TargetSequence: &sequence}
 	}
 	sequence := target.next - 1
 	target.steers = append(target.steers, &pendingSteer{submissionID: submissionID, requestID: submit.EnvelopeID, messages: messageIDs})
 	target.admittedSteers = append(target.admittedSteers, submit.EnvelopeID)
 	s.state.UpdatedAtMS = s.clock.Now().UnixMilli()
+	status := target.status
+	s.mu.Unlock()
+	if s.turnEnds > answered {
+		s.settleSteers(target, protocol.SteerTurn)
+	}
 	return protocol.MessageSubmitResponse{
 		SessionID: req.SessionID, Accepted: true, SubmissionID: submissionID,
 		RequestedDelivery: protocol.DeliverySteer, EffectiveDelivery: protocol.EffectiveDeliverySteer,
-		Admission: protocol.AdmissionSteered, RunID: target.id, Status: target.status,
+		Admission: protocol.AdmissionSteered, RunID: target.id, Status: status,
 		TargetSequence: &sequence, MessageIDs: messageIDs,
 	}, nil, nil
 }
@@ -583,6 +593,10 @@ func (s *Session) dispatch() {
 }
 func (s *Session) reduce(in rpc.Inbound) {
 	if in.Barrier != nil {
+		if s.steerBarrier != nil {
+			*s.steerBarrier = s.turnEnds
+			s.steerBarrier = nil
+		}
 		close(in.Barrier)
 		return
 	}
@@ -743,6 +757,7 @@ func (s *Session) applyEvent(event native.Event) {
 		if !s.decodeEvent(event, &turnEnd{}) {
 			return
 		}
+		s.turnEnds++
 		s.settleSteers(run, protocol.SteerTurn)
 	case native.EventAutoRetryStart, native.EventAutoRetryEnd, native.EventTurnStart, native.EventMessageStart, native.EventQueueUpdate, native.EventCompactionStart, native.EventCompactionEnd, native.EventEntryAppended, native.EventSessionInfoChanged, native.EventThinkingLevelChanged, native.EventSummarizationRetryScheduled, native.EventSummarizationRetryAttemptStart, native.EventSummarizationRetryFinished, native.EventBashExecutionUpdate, native.EventExtensionError:
 		return

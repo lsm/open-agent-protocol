@@ -1664,6 +1664,89 @@ func TestSteerAdmitsAgainstTheStartedRunAndSettlesAtTheTurnBoundary(t *testing.T
 	}
 }
 
+func TestASteerSettlesAtATurnEndReducedBeforeItIsRecorded(t *testing.T) {
+	client := newFakeClient()
+	s := openTest(t, client, 32)
+	admission, stream := submitTest(t, s)
+	adaptertest.Next(t, stream, time.Second)
+
+	early := make(chan struct{})
+	client.inbound <- rpc.Inbound{Barrier: early}
+	<-early
+	client.emit(t, map[string]any{"type": "turn_end", "message": assistant("before", "stop"), "toolResults": []any{}})
+	client.mu.Lock()
+	client.onCall = func(c native.Command) {
+		if c.Type != native.CommandSteer {
+			return
+		}
+		answered := make(chan struct{})
+		client.inbound <- rpc.Inbound{Barrier: answered}
+		raw, _ := json.Marshal(map[string]any{"type": "turn_end", "message": assistant("mid", "stop"), "toolResults": []any{}})
+		client.inbound <- rpc.Inbound{Event: &native.Event{Type: native.EventTurnEnd, Raw: raw}}
+		reduced := make(chan struct{})
+		client.inbound <- rpc.Inbound{Barrier: reduced}
+		<-answered
+		<-reduced
+	}
+	client.mu.Unlock()
+
+	steered, _, err := s.Submit(context.Background(), steerRequest("steer-request", admission.RunID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	applied := adaptertest.Next(t, stream, time.Second)
+	if applied.Type != protocol.TypeRunSteerApplied {
+		t.Fatalf("settlement type = %s, want the steer applied at the turn end that followed its response", applied.Type)
+	}
+	var payload protocol.RunSteerAppliedPayload
+	if err := applied.DecodePayload(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.SubmissionID != steered.SubmissionID || payload.Boundary != protocol.SteerTurn {
+		t.Fatalf("settlement = %+v", payload)
+	}
+	state, err := s.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.ActiveRuns) != 0 {
+		t.Fatalf("state = %+v, want the steer settled", state.ActiveRuns)
+	}
+}
+
+func TestASteerAnsweredAfterATurnEndWaitsForTheNextOne(t *testing.T) {
+	client := newFakeClient()
+	s := openTest(t, client, 32)
+	admission, stream := submitTest(t, s)
+	adaptertest.Next(t, stream, time.Second)
+
+	client.mu.Lock()
+	client.onCall = func(c native.Command) {
+		if c.Type != native.CommandSteer {
+			return
+		}
+		raw, _ := json.Marshal(map[string]any{"type": "turn_end", "message": assistant("before", "stop"), "toolResults": []any{}})
+		client.inbound <- rpc.Inbound{Event: &native.Event{Type: native.EventTurnEnd, Raw: raw}}
+		answered := make(chan struct{})
+		client.inbound <- rpc.Inbound{Barrier: answered}
+		<-answered
+	}
+	client.mu.Unlock()
+
+	if _, _, err := s.Submit(context.Background(), steerRequest("steer-request", admission.RunID)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case early := <-stream:
+		t.Fatalf("a turn end before the steer's response settled it: %s", early.Envelope.Type)
+	case <-time.After(100 * time.Millisecond):
+	}
+	client.emit(t, map[string]any{"type": "turn_end", "message": assistant("mid", "stop"), "toolResults": []any{}})
+	if applied := adaptertest.Next(t, stream, time.Second); applied.Type != protocol.TypeRunSteerApplied {
+		t.Fatalf("settlement type = %s", applied.Type)
+	}
+}
+
 func TestSteerDropsAtTheTerminalBeforeTheRunSettles(t *testing.T) {
 	client := newFakeClient()
 	s := openTest(t, client, 32)
