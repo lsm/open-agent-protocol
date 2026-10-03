@@ -870,6 +870,7 @@ pub const AppState = struct {
     picker_kind: PickerKind = .model,
     cwd_display: []u8 = &.{},
     git_branch: []u8 = &.{},
+    session_title: []u8 = &.{},
     agent_cwd_display: []u8 = &.{},
     agent_cwd_raw: []u8 = &.{},
     session_root_raw: []u8 = &.{},
@@ -927,6 +928,7 @@ pub const AppState = struct {
         if (self.last_tool_calls_json.len > 0) self.allocator.free(self.last_tool_calls_json);
         if (self.cwd_display.len > 0) self.allocator.free(self.cwd_display);
         if (self.git_branch.len > 0) self.allocator.free(self.git_branch);
+        if (self.session_title.len > 0) self.allocator.free(self.session_title);
         if (self.agent_cwd_display.len > 0) self.allocator.free(self.agent_cwd_display);
         if (self.agent_cwd_raw.len > 0) self.allocator.free(self.agent_cwd_raw);
         if (self.session_root_raw.len > 0) self.allocator.free(self.session_root_raw);
@@ -949,6 +951,14 @@ pub const AppState = struct {
         const owned = try allocator.dupe(u8, branch);
         if (self.git_branch.len > 0) self.allocator.free(self.git_branch);
         self.git_branch = owned;
+    }
+
+    pub fn setSessionTitle(self: *AppState, allocator: std.mem.Allocator, raw: []const u8) !void {
+        const cleaned = try sanitizeTerminalText(allocator, raw);
+        defer allocator.free(cleaned);
+        const owned = try allocator.dupe(u8, std.mem.trim(u8, cleaned, " "));
+        if (self.session_title.len > 0) self.allocator.free(self.session_title);
+        self.session_title = owned;
     }
 
     pub fn setAgentCwd(self: *AppState, allocator: std.mem.Allocator, raw: []const u8, display: []const u8) !void {
