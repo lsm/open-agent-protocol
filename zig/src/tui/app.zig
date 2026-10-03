@@ -4587,10 +4587,15 @@ pub const TuiModel = struct {
         app.state.zen.phase = @mod(app.state.zen.phase + zen_view.breathStep(zenMood(app, running)), 1);
     }
 
+    const zen_reply_top: usize = std.math.maxInt(usize) / 2;
+
     fn noteZenRun(app: *App) bool {
         const zen = &app.state.zen;
         const running = streamActive(app);
-        if (zen.was_running and !running) zen.ended_tick = app.state.anim_tick;
+        if (zen.was_running and !running) {
+            zen.ended_tick = app.state.anim_tick;
+            app.state.transcript_scroll = zen_reply_top;
+        }
         if (!zen.was_running and running) zen.beginRun(app.state.anim_tick, compat.time.nowMillis());
         if (running) zen.ended_tick = null;
         zen.was_running = running;
@@ -4624,7 +4629,7 @@ pub const TuiModel = struct {
                 final_block = try transcript_view.renderTranscriptEntryWith(allocator, entry, column, .{});
             }
         }
-        return zen_view.render(allocator, .{
+        var frame: zen_view.Frame = .{
             .mood = zenMood(app, running),
             .phase = app.state.zen.phase,
             .farewell = if (app.state.zen.ended_tick) |ended| zen_view.farewellLevel(app.state.anim_tick -% ended) else null,
@@ -4643,7 +4648,10 @@ pub const TuiModel = struct {
             .stuck_ms = app.state.zen.stuckMs(now_ms),
             .final_block = final_block,
             .failed = failed,
-        });
+        };
+        app.state.transcript_scroll = @min(app.state.transcript_scroll, try zen_view.maxScroll(allocator, frame));
+        frame.scroll = app.state.transcript_scroll;
+        return zen_view.render(allocator, frame);
     }
 
     const Chrome = struct {
@@ -8509,6 +8517,41 @@ test "zen fades out once on the frame the run ends, then shows the reply" {
     }
     _ = model.update(.{ .tick = .{ .timestamp = 0, .delta = 0 } }, &tctx.ctx);
     try std.testing.expect(std.mem.indexOf(u8, model.view(&tctx.ctx), "the final reply") != null);
+}
+
+test "zen opens a reply taller than the screen at its top and pages through it" {
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    tctx.ctx.width = 80;
+    tctx.ctx.height = 20;
+    const app = &model.app.?;
+    try app.submit("/zen");
+    app.state.status.streaming = true;
+    var reply: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer reply.deinit();
+    for (0..60) |i| try reply.writer.print("reply line {d}\n\n", .{i});
+    try app.state.appendTranscript(.assistant, reply.written());
+    _ = model.view(&tctx.ctx);
+    app.state.status.streaming = false;
+    for (0..30) |_| _ = model.update(.{ .tick = .{ .timestamp = 0, .delta = 0 } }, &tctx.ctx);
+
+    const top = model.view(&tctx.ctx);
+    try std.testing.expect(std.mem.indexOf(u8, top, "done") != null);
+    try std.testing.expect(std.mem.indexOf(u8, top, "reply line 0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, top, "reply line 59") == null);
+    try std.testing.expect(std.mem.indexOf(u8, top, "PgDn") != null);
+    try std.testing.expect(std.mem.indexOf(u8, top, "PgUp") == null);
+
+    while (app.state.transcript_scroll > 0) _ = model.update(.{ .key = .{ .key = .page_down } }, &tctx.ctx);
+    const bottom = model.view(&tctx.ctx);
+    try std.testing.expect(std.mem.indexOf(u8, bottom, "reply line 59") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bottom, "reply line 0\n") == null);
+    try std.testing.expect(std.mem.indexOf(u8, bottom, "PgUp") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bottom, "PgDn") == null);
+    try std.testing.expectEqual(@as(usize, 20), std.mem.count(u8, bottom, "\n") + 1);
 }
 
 test "App submit quit command requests quit" {

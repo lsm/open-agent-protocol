@@ -578,7 +578,7 @@ the screen, a minimal input bar in place of the composer and the status bar.
 The trail breathes slowly while the agent thinks, faster while a tool runs,
 and holds still while an approval waits; with no steps yet it is a single dot.
 When the run ends it brightens once and fades, and then the last reply (or the
-error that ended it), still drawn with its markdown colours, takes its place. Approval prompts and the command palette appear above the input
+error that ended it), still drawn with its markdown colours, takes its place. A reply taller than the screen opens at its first line, with a marker for how much is below; PgUp, PgDn and the mouse wheel page through it. Approval prompts and the command palette appear above the input
 bar. While zen is on, nothing is printed into the scrollback; leaving it
 prints what was held back at the current verbosity, and so does quitting, so a
 session ended in zen still leaves its transcript in the terminal. Only an error

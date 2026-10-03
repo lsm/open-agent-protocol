@@ -71,6 +71,7 @@ pub const Frame = struct {
     secret: bool = false,
     placeholder: []const u8 = placeholder,
     extra: []const u8 = "",
+    scroll: usize = 0,
 };
 
 const max_column: usize = 76;
@@ -88,15 +89,23 @@ fn bottomMargin(height: usize) usize {
     return std.math.clamp(height / 6, 1, 6);
 }
 
-pub fn render(allocator: std.mem.Allocator, frame: Frame) ![]u8 {
-    var arena_state = std.heap.ArenaAllocator.init(allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
+const Layout = struct {
+    content: []const []const u8,
+    lower: []const []const u8,
+    lower_top: usize,
+    area: usize,
+    final: bool,
+    column: usize,
+    left: usize,
+};
+
+fn layout(arena: std.mem.Allocator, frame: Frame) !Layout {
     const width = @max(frame.width, 20);
     const column = columnWidth(width);
+    const final = !frame.running and frame.final_block.len > 0 and frame.farewell == null;
 
     var content: std.ArrayList([]const u8) = .empty;
-    if (!frame.running and frame.final_block.len > 0 and frame.farewell == null) {
+    if (final) {
         try content.append(arena, try centered(arena, if (frame.failed) "\u{2718} stopped" else "\u{2713} done", column));
         try content.append(arena, "");
         var lines = std.mem.splitScalar(u8, frame.final_block, '\n');
@@ -127,24 +136,69 @@ pub fn render(allocator: std.mem.Allocator, frame: Frame) ![]u8 {
 
     const lower_shown = if (lower.items.len > frame.height) lower.items[lower.items.len - frame.height ..] else lower.items;
     const lower_top = frame.height -| (bottomMargin(frame.height) + lower_shown.len);
-    const area = lower_top -| min_gap;
-    const shown = if (content.items.len > area) content.items[content.items.len - area ..] else content.items;
-    const content_top = (area -| shown.len) / 2;
-    const left = (width -| column) / 2;
+    return .{
+        .content = content.items,
+        .lower = lower_shown,
+        .lower_top = lower_top,
+        .area = lower_top -| min_gap,
+        .final = final,
+        .column = column,
+        .left = (width -| column) / 2,
+    };
+}
+
+const scroll_markers: usize = 2;
+
+fn readingRoom(area: usize) usize {
+    return @max(area -| scroll_markers, 1);
+}
+
+pub fn maxScroll(allocator: std.mem.Allocator, frame: Frame) !usize {
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const laid = try layout(arena_state.allocator(), frame);
+    if (!laid.final or laid.content.len <= laid.area) return 0;
+    return laid.content.len - readingRoom(laid.area);
+}
+
+fn scrolledWindow(arena: std.mem.Allocator, laid: Layout, scroll: usize) ![]const []const u8 {
+    const room = readingRoom(laid.area);
+    const offset = @min(scroll, laid.content.len - room);
+    const end = laid.content.len - offset;
+    const start = end - room;
+    var rows: std.ArrayList([]const u8) = .empty;
+    try rows.append(arena, if (start > 0) try centered(arena, try gray(arena, soft_level, try std.fmt.allocPrint(arena, "\u{2191} {d} more \u{b7} PgUp", .{start})), laid.column) else "");
+    try rows.appendSlice(arena, laid.content[start..end]);
+    try rows.append(arena, if (offset > 0) try centered(arena, try gray(arena, soft_level, try std.fmt.allocPrint(arena, "\u{2193} {d} more \u{b7} PgDn", .{offset})), laid.column) else "");
+    return rows.items;
+}
+
+pub fn render(allocator: std.mem.Allocator, frame: Frame) ![]u8 {
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const laid = try layout(arena, frame);
+    const shown = if (laid.content.len <= laid.area)
+        laid.content
+    else if (laid.final)
+        try scrolledWindow(arena, laid, frame.scroll)
+    else
+        laid.content[laid.content.len - laid.area ..];
+    const content_top = (laid.area -| shown.len) / 2;
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     errdefer out.deinit();
     const writer = &out.writer;
     for (0..frame.height) |index| {
         if (index > 0) try writer.writeByte('\n');
-        const row: []const u8 = if (index >= lower_top)
-            (if (index - lower_top < lower_shown.len) lower_shown[index - lower_top] else "")
+        const row: []const u8 = if (index >= laid.lower_top)
+            (if (index - laid.lower_top < laid.lower.len) laid.lower[index - laid.lower_top] else "")
         else if (index >= content_top and index - content_top < shown.len)
             shown[index - content_top]
         else
             "";
         if (row.len == 0) continue;
-        for (0..left) |_| try writer.writeByte(' ');
+        for (0..laid.left) |_| try writer.writeByte(' ');
         try writer.writeAll(row);
     }
     return out.toOwnedSlice();
@@ -362,6 +416,40 @@ test "a long final reply keeps the input bar on screen" {
     defer std.testing.allocator.free(text);
     try std.testing.expectEqual(@as(usize, 12), std.mem.count(u8, text, "\n") + 1);
     try std.testing.expect(std.mem.indexOf(u8, text, prompt ++ "next") != null);
+}
+
+test "a final reply taller than its room scrolls with markers for what is hidden" {
+    var reply: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer reply.deinit();
+    for (0..40) |i| try reply.writer.print("row {d}\n", .{i});
+    const base: Frame = .{ .width = 60, .height = 20, .final_block = reply.written(), .input = "next", .cursor = 4 };
+    const most = try maxScroll(std.testing.allocator, base);
+    try std.testing.expect(most > 0);
+
+    var frame = base;
+    frame.scroll = most;
+    const top = try render(std.testing.allocator, frame);
+    defer std.testing.allocator.free(top);
+    try std.testing.expect(std.mem.indexOf(u8, top, "done") != null);
+    try std.testing.expect(std.mem.indexOf(u8, top, "row 0\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, top, "PgDn") != null);
+    try std.testing.expect(std.mem.indexOf(u8, top, "PgUp") == null);
+
+    frame.scroll = 0;
+    const bottom = try render(std.testing.allocator, frame);
+    defer std.testing.allocator.free(bottom);
+    try std.testing.expect(std.mem.indexOf(u8, bottom, "row 39") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bottom, "PgUp") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bottom, "PgDn") == null);
+
+    frame.scroll = most / 2;
+    const middle = try render(std.testing.allocator, frame);
+    defer std.testing.allocator.free(middle);
+    try std.testing.expect(std.mem.indexOf(u8, middle, "PgUp") != null and std.mem.indexOf(u8, middle, "PgDn") != null);
+    try std.testing.expectEqual(@as(usize, 20), std.mem.count(u8, middle, "\n") + 1);
+    try std.testing.expect(std.mem.indexOf(u8, middle, prompt ++ "next") != null);
+
+    try std.testing.expectEqual(@as(usize, 0), try maxScroll(std.testing.allocator, .{ .width = 60, .height = 20, .final_block = "short" }));
 }
 
 test "the input bar keeps the cursor in view and shows a placeholder when empty" {
