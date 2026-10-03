@@ -99,8 +99,8 @@ pub const Zen = struct {
     previous: [zen_activity_bytes]u8 = undefined,
     previous_len: usize = 0,
     changed_tick: u64 = 0,
-    tool_entry: ?usize = null,
-    tool_started_ms: i64 = 0,
+    step: ?usize = null,
+    step_started_ms: i64 = 0,
 
     pub fn activity(self: *const Zen) []const u8 {
         return self.shown[0..self.shown_len];
@@ -114,20 +114,20 @@ pub const Zen = struct {
         self.shown_len = 0;
         self.previous_len = 0;
         self.changed_tick = tick;
-        self.tool_entry = null;
+        self.step = null;
     }
 
-    pub fn toolMs(self: *Zen, running_tool: ?usize, now_ms: i64) u64 {
-        const entry = running_tool orelse {
-            self.tool_entry = null;
+    pub fn stepMs(self: *Zen, timed: ?usize, now_ms: i64) u64 {
+        const key = timed orelse {
+            self.step = null;
             return 0;
         };
-        if (self.tool_entry != entry) {
-            self.tool_entry = entry;
-            self.tool_started_ms = now_ms;
+        if (self.step != key) {
+            self.step = key;
+            self.step_started_ms = now_ms;
         }
-        if (now_ms <= self.tool_started_ms) return 0;
-        return @intCast(now_ms - self.tool_started_ms);
+        if (now_ms <= self.step_started_ms) return 0;
+        return @intCast(now_ms - self.step_started_ms);
     }
 
     pub fn noteActivity(self: *Zen, text: []const u8, tick: u64) void {
@@ -4609,18 +4609,18 @@ test "zen remembers the activity it replaces and when, and ignores a repeat" {
     try std.testing.expect(std.unicode.utf8ValidateSlice(zen.activity()));
 }
 
-test "the tool clock times only a running tool call, from its own start" {
+test "the step clock times only a timed step, from its own start" {
     var zen: Zen = .{};
-    try std.testing.expectEqual(@as(u64, 0), zen.toolMs(null, 1_790_000_000_000));
-    try std.testing.expectEqual(@as(u64, 0), zen.toolMs(4, 100_000));
-    try std.testing.expectEqual(@as(u64, 12_000), zen.toolMs(4, 112_000));
-    try std.testing.expectEqual(@as(u64, 0), zen.toolMs(7, 113_000));
-    try std.testing.expectEqual(@as(u64, 3_000), zen.toolMs(7, 116_000));
-    try std.testing.expectEqual(@as(u64, 0), zen.toolMs(null, 130_000));
-    try std.testing.expectEqual(@as(u64, 0), zen.toolMs(7, 131_000));
+    try std.testing.expectEqual(@as(u64, 0), zen.stepMs(null, 1_790_000_000_000));
+    try std.testing.expectEqual(@as(u64, 0), zen.stepMs(4, 100_000));
+    try std.testing.expectEqual(@as(u64, 12_000), zen.stepMs(4, 112_000));
+    try std.testing.expectEqual(@as(u64, 0), zen.stepMs(7, 113_000));
+    try std.testing.expectEqual(@as(u64, 3_000), zen.stepMs(7, 116_000));
+    try std.testing.expectEqual(@as(u64, 0), zen.stepMs(null, 130_000));
+    try std.testing.expectEqual(@as(u64, 0), zen.stepMs(7, 131_000));
     zen.noteActivity("thinking", 3);
     zen.beginRun(40);
     try std.testing.expectEqualStrings("", zen.activity());
     try std.testing.expectEqualStrings("", zen.previousActivity());
-    try std.testing.expectEqual(@as(u64, 0), zen.toolMs(7, 140_000));
+    try std.testing.expectEqual(@as(u64, 0), zen.stepMs(7, 140_000));
 }

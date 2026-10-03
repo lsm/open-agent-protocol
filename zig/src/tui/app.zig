@@ -4632,8 +4632,11 @@ pub const TuiModel = struct {
                 activity = if (title.arg.len > 0) try std.fmt.allocPrint(allocator, "{s}  {s}", .{ title.label, title.arg }) else title.label;
             }
         }
+        const waiting = running and app.state.active_assistant_entry == null and app.state.active_thinking_entry == null and app.state.active_tool_summary_entry == null and app.state.mode != .approval;
+        if (waiting) activity = try std.fmt.allocPrint(allocator, "waiting for {s}", .{if (app.state.status.model.len > 0) app.state.status.model else "the model"});
         if (running) app.state.zen.noteActivity(activity, app.state.anim_tick);
-        const tool_ms = app.state.zen.toolMs(if (running) app.state.active_tool_summary_entry else null, compat.time.nowMillis());
+        const timed: ?usize = if (!running) null else if (waiting) std.math.maxInt(usize) - entries.len else app.state.active_tool_summary_entry;
+        const tool_ms = app.state.zen.stepMs(timed, compat.time.nowMillis());
         var final_block: []const u8 = "";
         var failed = false;
         if (!running) {
@@ -8644,6 +8647,35 @@ test "leaving zen mid-run after a run that ended with no reply returns the trans
     try app.steer("/zen");
     try std.testing.expectEqual(@as(usize, 0), app.state.transcript_scroll);
     try std.testing.expect(std.mem.indexOf(u8, model.view(&tctx.ctx), "SCROLL") == null);
+}
+
+test "zen names the model it is waiting on before the run's first step" {
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    tctx.ctx.width = 80;
+    tctx.ctx.height = 20;
+    const app = &model.app.?;
+    try app.submit("/zen");
+    try app.state.status.setModel(app.allocator, "space-bunny-free", "opencode-go");
+    app.state.status.streaming = true;
+    const settle = struct {
+        fn frames(m: *TuiModel, ctx: *zz.Context) []const u8 {
+            for (0..zen_view.slide_ticks) |_| {
+                _ = m.view(ctx);
+                m.app.?.state.anim_tick +%= 1;
+            }
+            return m.view(ctx);
+        }
+    };
+    try std.testing.expect(std.mem.indexOf(u8, settle.frames(&model, &tctx.ctx), "waiting for space-bunny-free") != null);
+    try app.state.appendTranscript(.thinking, "hmm");
+    app.state.active_thinking_entry = app.state.transcript.items.len - 1;
+    const thinking = settle.frames(&model, &tctx.ctx);
+    try std.testing.expect(std.mem.indexOf(u8, thinking, "thinking") != null);
+    try std.testing.expect(std.mem.indexOf(u8, thinking, "waiting for") == null);
 }
 
 test "App submit quit command requests quit" {
