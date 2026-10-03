@@ -123,10 +123,10 @@ fn layout(arena: std.mem.Allocator, frame: Frame) !Layout {
         var lines = std.mem.splitScalar(u8, frame.final_block, '\n');
         while (lines.next()) |line| try content.append(arena, line);
         try content.append(arena, "");
-        try content.append(arena, try centered(arena, try gray(arena, soft_level, try trail(arena, frame.counts, column)), column));
+        try content.append(arena, try centered(arena, try gray(arena, soft_level, try trail(arena, frame.counts)), column));
     } else {
         const level = frame.farewell orelse pulseLevel(frame.mood, frame.phase);
-        const marks = try trail(arena, frame.counts, column);
+        const marks = try trail(arena, frame.counts);
         try content.append(arena, try centered(arena, try gray(arena, level, if (marks.len == 0) dot else marks), column));
         if (frame.running) {
             const slot = try activitySlot(arena, frame, column);
@@ -339,15 +339,13 @@ test "a final reply reads wider than the input bar when the screen allows" {
 
 const dot = "\u{b7}";
 
-fn trail(allocator: std.mem.Allocator, counts: Counts, column: usize) ![]const u8 {
+fn trail(allocator: std.mem.Allocator, counts: Counts) ![]const u8 {
     const steps = counts.thinking + counts.tools + counts.messages;
-    if (steps == 0) return "";
-    const room = @max(column / 2, 8) - 4;
-    const shown = @min(steps, room);
     var out: std.Io.Writer.Allocating = .init(allocator);
-    if (steps > shown) try out.writer.print("{d} ", .{steps - shown});
-    for (0..shown) |i| {
-        if (i > 0) try out.writer.writeByte(' ');
+    const tens = steps / 10 * 10;
+    if (tens > 0) try out.writer.print("{d}", .{tens});
+    for (0..steps % 10) |i| {
+        if (tens > 0 or i > 0) try out.writer.writeByte(' ');
         try out.writer.writeAll(dot);
     }
     return out.toOwnedSlice();
@@ -422,15 +420,19 @@ test "the pulse breathes slowly while thinking, faster on a tool, and holds whil
     try std.testing.expectEqual(idle_level, pulseLevel(.idle, 0.5));
 }
 
-test "the trail grows a dot per step and counts what it cannot fit" {
+test "the trail grows a dot per step and turns every tenth into its number" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    try std.testing.expectEqualStrings("", try trail(arena.allocator(), .{}, 40));
-    try std.testing.expectEqualStrings(dot ++ " " ++ dot ++ " " ++ dot, try trail(arena.allocator(), .{ .thinking = 1, .tools = 1, .messages = 1 }, 40));
-    const long = try trail(arena.allocator(), .{ .tools = 100 }, 40);
-    try std.testing.expect(std.mem.startsWith(u8, long, "84 "));
-    try std.testing.expectEqual(@as(usize, 16), std.mem.count(u8, long, dot));
-    try std.testing.expect(tui_text.visibleWidth(long) <= 40);
+    const a = arena.allocator();
+    try std.testing.expectEqualStrings("", try trail(a, .{}));
+    try std.testing.expectEqualStrings(dot ++ " " ++ dot ++ " " ++ dot, try trail(a, .{ .thinking = 1, .tools = 1, .messages = 1 }));
+    try std.testing.expectEqualStrings(("· " ** 8) ++ dot, try trail(a, .{ .tools = 9 }));
+    try std.testing.expectEqualStrings("10", try trail(a, .{ .tools = 10 }));
+    try std.testing.expectEqualStrings("10 " ++ dot ++ " " ++ dot, try trail(a, .{ .tools = 10, .thinking = 2 }));
+    try std.testing.expectEqualStrings("20", try trail(a, .{ .tools = 20 }));
+    const many = try trail(a, .{ .tools = 139 });
+    try std.testing.expect(std.mem.startsWith(u8, many, "130 "));
+    try std.testing.expectEqual(@as(usize, 9), std.mem.count(u8, many, dot));
 }
 
 test "a secret never reaches the input bar in the clear" {
