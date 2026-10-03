@@ -5,16 +5,47 @@ const tui_text = @import("tui_text");
 
 pub const glyph = "\u{7985}";
 
-const breath_ticks: u64 = 80;
+pub const Mood = enum { idle, thinking, tool, waiting };
+
+const thinking_breath_ticks: f32 = 80;
+const tool_breath_ticks: f32 = 32;
 const dimmest: f32 = 70;
 const brightest: f32 = 235;
 const idle_level: u8 = 150;
+const waiting_level: u8 = 210;
+const farewell_rise_ticks: u64 = 6;
+pub const farewell_ticks: u64 = 24;
+const farewell_peak: f32 = 255;
+const farewell_floor: f32 = 40;
 
-pub fn glyphLevel(running: bool, tick: u64) u8 {
-    if (!running) return idle_level;
-    const phase = @as(f32, @floatFromInt(tick % breath_ticks)) / @as(f32, @floatFromInt(breath_ticks));
-    const wave = (1 - @cos(phase * std.math.tau)) / 2;
-    return @intFromFloat(@round(dimmest + (brightest - dimmest) * wave));
+pub fn breathStep(mood: Mood) f32 {
+    return switch (mood) {
+        .thinking => 1 / thinking_breath_ticks,
+        .tool => 1 / tool_breath_ticks,
+        .idle, .waiting => 0,
+    };
+}
+
+pub fn glyphLevel(mood: Mood, phase: f32) u8 {
+    return switch (mood) {
+        .idle => idle_level,
+        .waiting => waiting_level,
+        .thinking, .tool => blk: {
+            const wave = (1 - @cos(phase * std.math.tau)) / 2;
+            break :blk @intFromFloat(@round(dimmest + (brightest - dimmest) * wave));
+        },
+    };
+}
+
+pub fn farewellLevel(since_end: u64) ?u8 {
+    if (since_end >= farewell_ticks) return null;
+    const start: f32 = @floatFromInt(idle_level);
+    if (since_end < farewell_rise_ticks) {
+        const t = @as(f32, @floatFromInt(since_end)) / @as(f32, @floatFromInt(farewell_rise_ticks));
+        return @intFromFloat(@round(start + (farewell_peak - start) * t));
+    }
+    const t = @as(f32, @floatFromInt(since_end - farewell_rise_ticks)) / @as(f32, @floatFromInt(farewell_ticks - farewell_rise_ticks));
+    return @intFromFloat(@round(farewell_peak + (farewell_floor - farewell_peak) * t));
 }
 
 pub const Counts = struct {
@@ -32,7 +63,9 @@ pub const Frame = struct {
     activity: []const u8 = "",
     final_block: []const u8 = "",
     failed: bool = false,
-    tick: u64 = 0,
+    mood: Mood = .idle,
+    phase: f32 = 0,
+    farewell: ?u8 = null,
     input: []const u8 = "",
     cursor: usize = 0,
     extra: []const u8 = "",
@@ -55,19 +88,19 @@ pub fn render(allocator: std.mem.Allocator, frame: Frame) ![]u8 {
     const column = columnWidth(width);
 
     var rows: std.ArrayList([]const u8) = .empty;
-    if (!frame.running and frame.final_block.len > 0) {
+    if (!frame.running and frame.final_block.len > 0 and frame.farewell == null) {
         try rows.append(arena, try centered(arena, if (frame.failed) "\u{2718} stopped" else "\u{2713} done", column));
         try rows.append(arena, "");
         var lines = std.mem.splitScalar(u8, frame.final_block, '\n');
         while (lines.next()) |line| try rows.append(arena, line);
         try rows.append(arena, "");
-        try rows.append(arena, try centered(arena, try countsText(arena, frame.counts), column));
+        try rows.append(arena, try centered(arena, try trail(arena, frame.counts, column), column));
     } else {
-        const level = glyphLevel(frame.running, frame.tick);
+        const level = frame.farewell orelse glyphLevel(frame.mood, frame.phase);
         try rows.append(arena, try centered(arena, try gray(arena, level, glyph), column));
         try rows.append(arena, "");
-        try rows.append(arena, try centered(arena, try countsText(arena, frame.counts), column));
-        const line = if (frame.running) try activityLine(arena, frame, column) else "zen \u{b7} only the final reply is shown";
+        try rows.append(arena, try centered(arena, try trail(arena, frame.counts, column), column));
+        const line = if (frame.running) try activityLine(arena, frame, column) else if (frame.farewell != null) "" else "zen \u{b7} only the final reply is shown";
         try rows.append(arena, try centered(arena, try gray(arena, soft_level, line), column));
     }
     try rows.append(arena, "");
@@ -102,14 +135,20 @@ fn activityLine(allocator: std.mem.Allocator, frame: Frame, width: usize) ![]con
     return std.fmt.allocPrint(allocator, "{s} \u{b7} {s}", .{ clock, fitted });
 }
 
-fn countsText(allocator: std.mem.Allocator, counts: Counts) ![]const u8 {
-    return std.fmt.allocPrint(allocator, "{d} thinking \u{b7} {d} tool{s} \u{b7} {d} message{s}", .{
-        counts.thinking,
-        counts.tools,
-        if (counts.tools == 1) "" else "s",
-        counts.messages,
-        if (counts.messages == 1) "" else "s",
-    });
+const dot = "\u{b7}";
+
+fn trail(allocator: std.mem.Allocator, counts: Counts, column: usize) ![]const u8 {
+    const steps = counts.thinking + counts.tools + counts.messages;
+    if (steps == 0) return "";
+    const room = @max(column / 2, 8) - 4;
+    const shown = @min(steps, room);
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    if (steps > shown) try out.writer.print("{d} ", .{steps - shown});
+    for (0..shown) |i| {
+        if (i > 0) try out.writer.writeByte(' ');
+        try out.writer.writeAll(dot);
+    }
+    return out.toOwnedSlice();
 }
 
 fn inputBar(allocator: std.mem.Allocator, input: []const u8, cursor: usize, column: usize) ![]const u8 {
@@ -163,11 +202,41 @@ fn monochrome(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
     return out.toOwnedSlice(allocator);
 }
 
-test "the glyph breathes while running and rests when idle" {
-    try std.testing.expectEqual(@as(u8, 70), glyphLevel(true, 0));
-    try std.testing.expectEqual(@as(u8, 235), glyphLevel(true, 40));
-    try std.testing.expectEqual(glyphLevel(true, 10), glyphLevel(true, 90));
-    try std.testing.expectEqual(idle_level, glyphLevel(false, 40));
+test "the glyph breathes slowly while thinking, faster on a tool, and holds while waiting or idle" {
+    try std.testing.expectEqual(@as(u8, 70), glyphLevel(.thinking, 0));
+    try std.testing.expectEqual(@as(u8, 235), glyphLevel(.thinking, 0.5));
+    try std.testing.expectEqual(glyphLevel(.tool, 0.25), glyphLevel(.thinking, 0.25));
+    try std.testing.expect(breathStep(.tool) > breathStep(.thinking) * 2);
+    try std.testing.expectEqual(@as(f32, 0), breathStep(.waiting));
+    try std.testing.expectEqual(@as(f32, 0), breathStep(.idle));
+    try std.testing.expectEqual(waiting_level, glyphLevel(.waiting, 0.5));
+    try std.testing.expectEqual(idle_level, glyphLevel(.idle, 0.5));
+}
+
+test "the trail grows a dot per step and counts what it cannot fit" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectEqualStrings("", try trail(arena.allocator(), .{}, 40));
+    try std.testing.expectEqualStrings(dot ++ " " ++ dot ++ " " ++ dot, try trail(arena.allocator(), .{ .thinking = 1, .tools = 1, .messages = 1 }, 40));
+    const long = try trail(arena.allocator(), .{ .tools = 100 }, 40);
+    try std.testing.expect(std.mem.startsWith(u8, long, "84 "));
+    try std.testing.expectEqual(@as(usize, 16), std.mem.count(u8, long, dot));
+    try std.testing.expect(tui_text.visibleWidth(long) <= 40);
+}
+
+test "the farewell rises to full brightness, fades out, then ends" {
+    try std.testing.expectEqual(idle_level, farewellLevel(0).?);
+    try std.testing.expectEqual(@as(u8, 255), farewellLevel(farewell_rise_ticks).?);
+    try std.testing.expect(farewellLevel(farewell_ticks - 1).? < 60);
+    try std.testing.expect(farewellLevel(farewell_ticks) == null);
+}
+
+test "a frame in its farewell shows the glyph, not yet the reply" {
+    const text = try render(std.testing.allocator, .{ .width = 60, .height = 20, .final_block = "the final reply", .farewell = 255 });
+    defer std.testing.allocator.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, glyph) != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "\x1b[38;2;255;255;255m" ++ glyph) != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "the final reply") == null);
 }
 
 fn plainRows(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
@@ -175,7 +244,7 @@ fn plainRows(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
 }
 
 test "a running frame fills the screen, centres its column and ends in the input bar" {
-    const text = try render(std.testing.allocator, .{ .width = 100, .height = 30, .running = true, .elapsed_ms = 75_000, .counts = .{ .thinking = 3, .tools = 1 }, .activity = "Shell Execute  go test ./...", .tick = 40, .input = "hello", .cursor = 5 });
+    const text = try render(std.testing.allocator, .{ .width = 100, .height = 30, .running = true, .elapsed_ms = 75_000, .counts = .{ .thinking = 3, .tools = 1 }, .activity = "Shell Execute  go test ./...", .mood = .tool, .phase = 0.5, .input = "hello", .cursor = 5 });
     defer std.testing.allocator.free(text);
     const plain = try plainRows(std.testing.allocator, text);
     defer std.testing.allocator.free(plain);
@@ -194,12 +263,13 @@ test "a running frame fills the screen, centres its column and ends in the input
     try std.testing.expectEqual(@as(usize, 30), count);
     try std.testing.expectEqual(@as(usize, 12), glyph_row.?);
     try std.testing.expectEqual(@as(usize, 17), input_row.?);
-    try std.testing.expect(std.mem.indexOf(u8, plain, "3 thinking \u{b7} 1 tool \u{b7} 0 messages") != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain, " " ++ dot ++ " " ++ dot ++ " " ++ dot ++ " " ++ dot ++ "\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain, dot ++ " " ++ dot ++ " " ++ dot ++ " " ++ dot ++ " " ++ dot) == null);
     try std.testing.expect(std.mem.indexOf(u8, plain, "1:15 \u{b7} Shell Execute  go test") != null);
 }
 
 test "zen's own rows draw no colour but grey" {
-    const text = try render(std.testing.allocator, .{ .width = 80, .height = 24, .running = true, .tick = 7, .counts = .{ .tools = 2 }, .activity = "Read  a.zig" });
+    const text = try render(std.testing.allocator, .{ .width = 80, .height = 24, .running = true, .mood = .thinking, .phase = 0.3, .counts = .{ .tools = 2 }, .activity = "Read  a.zig" });
     defer std.testing.allocator.free(text);
     var i: usize = 0;
     while (std.mem.indexOfPos(u8, text, i, "\x1b[38;2;")) |at| {

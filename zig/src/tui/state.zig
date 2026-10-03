@@ -91,11 +91,16 @@ pub const Zen = struct {
     on: bool = false,
     start_index: usize = 0,
     note: ZenNote = .none,
+    phase: f32 = 0,
+    was_running: bool = false,
+    ended_tick: ?u64 = null,
 
     pub fn enter(self: *Zen, transcript_len: usize) void {
         if (self.on) return;
         self.on = true;
         self.start_index = transcript_len;
+        self.was_running = false;
+        self.ended_tick = null;
         self.note = if (self.note == .leave) .none else .enter;
     }
 

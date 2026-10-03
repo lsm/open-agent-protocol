@@ -571,12 +571,14 @@ every frame anyway.
 ## Zen
 
 `/zen` (or `/zen on`, `/zen off`) replaces the whole screen with one centred
-column in grey: a single 禅, which slowly brightens and dims while a run is
-going, counts of the thinking blocks, tool calls and replies since zen began,
-one line naming the current tool, and a minimal input bar at the bottom of the
-column in place of the composer and the status bar. When the run ends, the
-last reply (or the error that ended it), still drawn with its markdown colours,
-replaces the 禅. Approval prompts and the command palette appear above the input
+column in grey: a single 禅, a trail that grows one dot for each thinking block,
+tool call and reply since zen began (with a count in front once it outgrows the
+column), one line naming the current tool, and a minimal input bar at the bottom
+of the column in place of the composer and the status bar. 禅 breathes slowly
+while the agent thinks, faster while a tool runs, and holds still while an
+approval waits. When the run ends it brightens once and fades, and then the last
+reply (or the error that ended it), still drawn with its markdown colours, takes
+its place. Approval prompts and the command palette appear above the input
 bar. While zen is on, nothing is printed into the scrollback; leaving it
 prints what was held back at the current verbosity, and so does quitting, so a
 session ended in zen still leaves its transcript in the terminal. Only an error

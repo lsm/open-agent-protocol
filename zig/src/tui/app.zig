@@ -4433,6 +4433,7 @@ pub const TuiModel = struct {
             .window_size => self.refillInlineWindowAfterResize(app, ctx) catch |err| app.recordError(@errorName(err)) catch {},
             .tick => {
                 app.state.anim_tick +%= 1;
+                advanceZen(app);
                 app.drainEvents() catch {};
                 app.pumpAutoContinue(compat.time.nowMillis());
                 app.pollLogin() catch {};
@@ -4567,6 +4568,23 @@ pub const TuiModel = struct {
         return tui_render.joinVertical(ctx.allocator, &.{ transcript, chrome.extra, chrome.composer, chrome.status }) catch "";
     }
 
+    fn zenMood(app: *const App, running: bool) zen_view.Mood {
+        if (app.state.mode == .approval) return .waiting;
+        if (!running) return .idle;
+        if (app.state.active_tool_summary_entry != null) return .tool;
+        return .thinking;
+    }
+
+    fn advanceZen(app: *App) void {
+        const zen = &app.state.zen;
+        if (!zen.on) return;
+        const running = streamActive(app);
+        zen.phase = @mod(zen.phase + zen_view.breathStep(zenMood(app, running)), 1);
+        if (zen.was_running and !running) zen.ended_tick = app.state.anim_tick;
+        if (running) zen.ended_tick = null;
+        zen.was_running = running;
+    }
+
     fn renderZen(self: *TuiModel, app: *App, ctx: *const zz.Context, width: usize, height: usize) ![]const u8 {
         const allocator = ctx.allocator;
         const column = zen_view.columnWidth(width);
@@ -4593,7 +4611,9 @@ pub const TuiModel = struct {
             }
         }
         return zen_view.render(allocator, .{
-            .tick = app.state.anim_tick,
+            .mood = zenMood(app, running),
+            .phase = app.state.zen.phase,
+            .farewell = if (app.state.zen.ended_tick) |ended| zen_view.farewellLevel(app.state.anim_tick -% ended) else null,
             .width = width,
             .height = height,
             .input = app.state.composer.buffer.items,
