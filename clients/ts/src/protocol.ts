@@ -26,6 +26,8 @@ export const EnvelopeType = {
   SessionStateUpdated: 'session.state.updated',
   SessionModelSwitchRequest: 'session.model.switch.request',
   SessionModelSwitchResponse: 'session.model.switch.response',
+  SessionSettingsUpdateRequest: 'session.settings.update.request',
+  SessionSettingsUpdateResponse: 'session.settings.update.response',
   SessionProviderAttachRequest: 'session.provider.attach.request',
   SessionProviderAttachResponse: 'session.provider.attach.response',
   SessionMessageSubmitRequest: 'session.message.submit.request',
@@ -395,6 +397,21 @@ export type SessionStateUpdated = SessionState;
 export interface SessionStateRequest {
   session_id: string;
 }
+
+export type SessionSettingsUpdateRequest = {
+  session_id: string;
+  allow_degraded_features?: string[];
+} & SessionSettings;
+
+export type SessionSettingsUpdateResponse = {
+  session_id: string;
+  previous_reasoning_level?: ReasoningLevel;
+  previous_compaction_policy?: CompactionPolicy;
+} & SessionSettings;
+
+export type SessionSettings =
+  | { reasoning_level: ReasoningLevel; compaction_policy?: CompactionPolicy }
+  | { reasoning_level?: ReasoningLevel; compaction_policy: CompactionPolicy };
 
 export interface SessionState {
   session_id: string;

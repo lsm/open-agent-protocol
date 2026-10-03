@@ -554,6 +554,10 @@ func payloadTarget(t protocol.EnvelopeType) any {
 		return &protocol.SessionModelSwitchRequest{}
 	case protocol.TypeSessionModelSwitchResponse:
 		return &protocol.SessionModelSwitchResponse{}
+	case protocol.TypeSessionSettingsUpdateRequest:
+		return &protocol.SessionSettingsUpdateRequest{}
+	case protocol.TypeSessionSettingsUpdateResponse:
+		return &protocol.SessionSettingsUpdateResponse{}
 	case protocol.TypeSessionProviderAttachRequest:
 		return &protocol.SessionProviderAttachRequest{}
 	case protocol.TypeSessionProviderAttachResponse:

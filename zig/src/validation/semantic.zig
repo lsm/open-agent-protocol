@@ -305,6 +305,14 @@ const SwitchObservation = struct {
     response_index: usize = 0,
 };
 
+const SettingsUpdate = struct {
+    level: []const u8,
+    policy: ?std.json.Value,
+    accepted: bool = false,
+    seen: bool = false,
+    response_index: usize = 0,
+};
+
 const ModelAnchor = struct {
     request: []const u8,
     model: []const u8,
@@ -317,6 +325,7 @@ const Session = struct {
     attached: std.StringArrayHashMapUnmanaged(void) = .empty,
     attached_providers: std.StringArrayHashMapUnmanaged(ProviderBinding) = .empty,
     switches: std.StringArrayHashMapUnmanaged(SwitchObservation) = .empty,
+    settings_updates: std.StringArrayHashMapUnmanaged(SettingsUpdate) = .empty,
     model_anchors: std.ArrayList(ModelAnchor) = .empty,
     unjudged: std.ArrayList(Unjudged) = .empty,
     order: std.ArrayList([]const u8) = .empty,
@@ -548,6 +557,7 @@ pub const Machine = struct {
             holder.attached.deinit(self.allocator);
             holder.attached_providers.deinit(self.allocator);
             holder.switches.deinit(self.allocator);
+            holder.settings_updates.deinit(self.allocator);
             holder.model_anchors.deinit(self.allocator);
             holder.unjudged.deinit(self.allocator);
         }
@@ -766,6 +776,14 @@ pub const Machine = struct {
         }
         if (std.mem.eql(u8, declared, "session.model.switch.response")) {
             try self.modelSwitchResponse(index, envelope, payload);
+            return;
+        }
+        if (std.mem.eql(u8, declared, "session.settings.update.request")) {
+            try self.settingsUpdateRequest(index, envelope, payload);
+            return;
+        }
+        if (std.mem.eql(u8, declared, "session.settings.update.response")) {
+            try self.settingsUpdateResponse(index, envelope, payload);
             return;
         }
         if (std.mem.eql(u8, declared, "session.provider.attach.request")) {
@@ -1176,7 +1194,7 @@ pub const Machine = struct {
         if (memberString(payload, "active_run_id").len != 0 or listing) try self.add(code_session_state_mismatch, index);
     }
 
-    fn settingsGate(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value, pending: *Pending) !void {
+    fn settingsGate(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value, pending: *Pending, mode: []const u8) !void {
         const settings = [_]struct { key: []const u8, pointer: []const u8, slot: *?Expectation, present: bool }{
             .{ .key = feature_session_reasoning, .pointer = "/payload/reasoning_level", .slot = &pending.reasoning, .present = member(payload, "reasoning_level") != null },
             .{ .key = feature_compaction_policy, .pointer = "/payload/compaction_policy", .slot = &pending.compaction, .present = member(payload, "compaction_policy") != null },
@@ -1186,7 +1204,7 @@ pub const Machine = struct {
         for (settings) |setting| {
             if (!setting.present) continue;
             const level = try self.controlDescriptor(index, envelope, setting.key) orelse return;
-            if (!affirmative(level) or !self.disclosesMode(setting.key, mode_session_open)) {
+            if (!affirmative(level) or !self.disclosesMode(setting.key, mode)) {
                 self.propose(setting.slot, .{
                     .rung = rung_capability,
                     .key = setting.key,
@@ -1223,6 +1241,60 @@ pub const Machine = struct {
         const asked = pending.asked_policy orelse return;
         const reported = member(payload, "compaction_policy") orelse return;
         if (!samePolicy(asked, reported)) try self.add(code_session_state_mismatch, index);
+    }
+
+    fn settingsUpdateRequest(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
+        const pending = try self.arena.allocator().create(Pending);
+        pending.* = .{ .session = memberString(payload, "session_id") };
+        try self.submits.put(self.allocator, field(envelope, "id"), pending);
+        try self.settingsGate(index, envelope, payload, pending, mode_session_live);
+        const holder = try self.sessionFor(pending.session);
+        try holder.settings_updates.put(self.allocator, field(envelope, "id"), .{
+            .level = memberString(payload, "reasoning_level"),
+            .policy = member(payload, "compaction_policy"),
+        });
+    }
+
+    fn settingsUpdateResponse(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
+        const request = self.requests.get(field(envelope, "in_reply_to")) orelse return;
+        if (!std.mem.eql(u8, request.declared, "session.settings.update.request")) return;
+        const session_id = memberString(payload, "session_id");
+        if (!std.mem.eql(u8, session_id, memberString(request.payload, "session_id")) or
+            (field(envelope, "session_id").len != 0 and !std.mem.eql(u8, field(envelope, "session_id"), session_id)))
+        {
+            try self.add(code_scope_mismatch, index);
+            return;
+        }
+        if (self.submits.get(field(envelope, "in_reply_to"))) |pending| {
+            if (pending.reasoning != null or pending.compaction != null) {
+                if (pending.reasoning) |expectation| try self.raise(expectation, index);
+                if (pending.compaction) |expectation| try self.raise(expectation, index);
+                return;
+            }
+        }
+        const asked_level = memberString(request.payload, "reasoning_level");
+        if (asked_level.len != 0 and !std.mem.eql(u8, asked_level, memberString(payload, "reasoning_level"))) {
+            try self.add(code_unapplied_control, index);
+        }
+        if (member(request.payload, "compaction_policy")) |asked| {
+            const reported = member(payload, "compaction_policy");
+            if (reported == null or !samePolicy(asked, reported.?)) try self.add(code_unapplied_control, index);
+        }
+        const holder = try self.sessionFor(session_id);
+        if (holder.settings_updates.getPtr(field(envelope, "in_reply_to"))) |update| {
+            update.accepted = true;
+            update.response_index = index;
+        }
+    }
+
+    fn settingsBeforeRun(self: *Machine, index: usize, session: []const u8) !void {
+        const holder = self.sessions.get(session) orelse return;
+        for (holder.settings_updates.values()) |*update| {
+            if (update.accepted and !update.seen) {
+                try self.add(code_session_state_mismatch, index);
+                update.seen = true;
+            }
+        }
     }
 
     fn disclosesMode(self: *const Machine, key: []const u8, mode: []const u8) bool {
@@ -1271,7 +1343,7 @@ pub const Machine = struct {
 
         try self.subscribeGate(index, envelope, payload, pending);
         try self.reopenGate(index, envelope, payload, pending);
-        try self.settingsGate(index, envelope, payload, pending);
+        try self.settingsGate(index, envelope, payload, pending, mode_session_open);
         if (providing) {
             const names = try self.arena.allocator().alloc([]const u8, tools.?.array.items.len);
             for (tools.?.array.items, 0..) |tool, at| names[at] = memberString(tool, "name");
@@ -3240,6 +3312,13 @@ pub const Machine = struct {
                 for (holder.switches.values()) |*observed| {
                     if (std.mem.eql(u8, observed.model, reported)) observed.seen = true;
                 }
+                const level = memberString(payload, "reasoning_level");
+                const policy = member(payload, "compaction_policy");
+                for (holder.settings_updates.values()) |*update| {
+                    const level_held = update.level.len == 0 or level.len == 0 or std.mem.eql(u8, level, update.level);
+                    const policy_held = update.policy == null or policy == null or samePolicy(update.policy.?, policy.?);
+                    if (level_held and policy_held) update.seen = true;
+                }
             }
             holder.current_model = reported;
             holder.current_known = true;
@@ -3337,6 +3416,7 @@ pub const Machine = struct {
             } else {
                 state.started = true;
                 state.status = "running";
+                try self.settingsBeforeRun(index, state.session);
                 if (state.admitted_model.len != 0) {
                     const reported = memberString(member(envelope, "payload") orelse std.json.Value{ .null = {} }, "model_id");
                     if (reported.len == 0 and state.controls.model_present) {
@@ -3772,6 +3852,11 @@ pub const Machine = struct {
             for (holder.switches.values()) |observed| {
                 if (observed.accepted and !observed.seen) {
                     try self.add(code_session_state_mismatch, observed.response_index);
+                }
+            }
+            for (holder.settings_updates.values()) |update| {
+                if (update.accepted and !update.seen) {
+                    try self.add(code_session_state_mismatch, update.response_index);
                 }
             }
         }

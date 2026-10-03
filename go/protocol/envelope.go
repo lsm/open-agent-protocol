@@ -47,6 +47,8 @@ const (
 	TypeSessionStateUpdated             EnvelopeType = "session.state.updated"
 	TypeSessionModelSwitchRequest       EnvelopeType = "session.model.switch.request"
 	TypeSessionModelSwitchResponse      EnvelopeType = "session.model.switch.response"
+	TypeSessionSettingsUpdateRequest    EnvelopeType = "session.settings.update.request"
+	TypeSessionSettingsUpdateResponse   EnvelopeType = "session.settings.update.response"
 	TypeSessionProviderAttachRequest    EnvelopeType = "session.provider.attach.request"
 	TypeSessionProviderAttachResponse   EnvelopeType = "session.provider.attach.response"
 	TypeSessionMessageSubmitRequest     EnvelopeType = "session.message.submit.request"

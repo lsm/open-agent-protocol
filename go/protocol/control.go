@@ -453,6 +453,30 @@ type SessionModelSwitchResponse struct {
 	PreviousModelID string    `json:"previous_model_id,omitempty"`
 }
 
+type SessionSettingsUpdateRequest struct {
+	SessionID             SessionID         `json:"session_id"`
+	ReasoningLevel        ReasoningLevel    `json:"reasoning_level,omitempty"`
+	CompactionPolicy      *CompactionPolicy `json:"compaction_policy,omitempty"`
+	AllowDegradedFeatures []string          `json:"allow_degraded_features,omitempty"`
+}
+
+func (r SessionSettingsUpdateRequest) AllowsDegraded(key string) bool {
+	for _, allowed := range r.AllowDegradedFeatures {
+		if allowed == key {
+			return true
+		}
+	}
+	return false
+}
+
+type SessionSettingsUpdateResponse struct {
+	SessionID                SessionID         `json:"session_id"`
+	ReasoningLevel           ReasoningLevel    `json:"reasoning_level,omitempty"`
+	CompactionPolicy         *CompactionPolicy `json:"compaction_policy,omitempty"`
+	PreviousReasoningLevel   ReasoningLevel    `json:"previous_reasoning_level,omitempty"`
+	PreviousCompactionPolicy *CompactionPolicy `json:"previous_compaction_policy,omitempty"`
+}
+
 type ProviderAttachment struct {
 	ID         string `json:"id"`
 	ProviderID string `json:"provider_id"`
