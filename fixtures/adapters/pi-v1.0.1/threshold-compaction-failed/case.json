@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "id": "retry-compaction",
+  "id": "threshold-compaction-failed",
   "native": "native.jsonl",
   "expected_oap": "expected-oap.json",
   "mapping": "mapping.json",

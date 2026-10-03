@@ -57,6 +57,20 @@
       ]
     },
     {
+      "id": "threshold-compaction",
+      "path": "threshold-compaction",
+      "ledger_fixtures": [
+        "threshold-compaction"
+      ]
+    },
+    {
+      "id": "threshold-compaction-failed",
+      "path": "threshold-compaction-failed",
+      "ledger_fixtures": [
+        "threshold-compaction-failed"
+      ]
+    },
+    {
       "id": "extension-dialog",
       "path": "extension-dialog",
       "ledger_fixtures": [

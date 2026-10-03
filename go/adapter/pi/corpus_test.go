@@ -40,7 +40,7 @@ var piLedgerFixtures = map[string]bool{
 	"tool-completed": true, "tool-failed": true, "tool-progress": true,
 	"tool-parallel-order": true, "steer-queued": true, "steer-injected": true,
 	"follow-up-run": true, "cancel-settled": true, "error-retry": true,
-	"compaction": true, "extension-dialog": true, "reconcile-state": true,
+	"compaction": true, "threshold-compaction": true, "threshold-compaction-failed": true, "extension-dialog": true, "reconcile-state": true,
 	"entries-since": true, "switch-session": true, "process-exit": true,
 	"malformed-command": true, "fork-tree": true, "no-implied-replay": true,
 	"system-message": true,

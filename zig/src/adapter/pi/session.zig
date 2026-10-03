@@ -86,6 +86,7 @@ pub const Reducer = struct {
     steers: std.ArrayList(PendingSteer) = .empty,
     admitted_steers: std.ArrayList([]const u8) = .empty,
     emitted: std.ArrayList(std.json.Value) = .empty,
+    compaction: []const u8 = "",
 
     pub fn init(arena: std.mem.Allocator) Reducer {
         return .{ .arena = arena };
@@ -155,6 +156,25 @@ pub const Reducer = struct {
         }
     }
 
+    fn endOpenCompaction(self: *Reducer, terminal_kind: []const u8) anyerror!void {
+        if (self.compaction.len == 0) return;
+        const payload = try self.object();
+        try payload.put(self.arena, "session_id", Reducer.str(self.session_id));
+        try payload.put(self.arena, "run_id", Reducer.str(self.run_id));
+        try payload.put(self.arena, "compaction_id", Reducer.str(self.compaction));
+        if (std.mem.eql(u8, terminal_kind, "run.cancelled")) {
+            try payload.put(self.arena, "outcome", Reducer.str("cancelled"));
+        } else {
+            try payload.put(self.arena, "outcome", Reducer.str("failed"));
+            const err = try self.object();
+            try err.put(self.arena, "code", Reducer.str("pi_compaction_unfinished"));
+            try err.put(self.arena, "message", Reducer.str("the run settled before Pi ended its compaction"));
+            try payload.put(self.arena, "error", .{ .object = err.* });
+        }
+        self.compaction = "";
+        try self.emit("run.compaction.ended", .{ .object = payload.* }, false);
+    }
+
     pub fn envelopes(self: *Reducer) []std.json.Value {
         return self.emitted.items;
     }
@@ -175,7 +195,10 @@ pub const Reducer = struct {
 
     fn emitReplying(self: *Reducer, kind: []const u8, payload: std.json.Value, terminal: bool, reply: []const u8) ![]const u8 {
         if (self.terminal) return "";
-        if (terminal) try self.dropSteers();
+        if (terminal) {
+            try self.dropSteers();
+            try self.endOpenCompaction(kind);
+        }
         const id = try self.counters.nextID(self.arena, "event");
         const now = self.counters.nextTick();
         const map = try self.object();
@@ -572,8 +595,7 @@ fn closedMembers(part: std.json.Value, allowed: []const []const u8) !void {
 const ignored_events = [_][]const u8{
     "auto_retry_start",              "auto_retry_end",
     "turn_start",                    "message_start",
-    "queue_update",                  "compaction_start",
-    "compaction_end",                "entry_appended",
+    "queue_update",                  "entry_appended",
     "session_info_changed",          "thinking_level_changed",
     "summarization_retry_scheduled", "summarization_retry_attempt_start",
     "summarization_retry_finished",  "bash_execution_update",
@@ -678,8 +700,101 @@ pub fn apply(reducer: *Reducer, event: std.json.Value) !void {
         try reducer.settleSteers();
         return;
     }
+    if (std.mem.eql(u8, kind, "compaction_start")) {
+        try startCompaction(reducer, event);
+        return;
+    }
+    if (std.mem.eql(u8, kind, "compaction_end")) {
+        try endCompaction(reducer, event);
+        return;
+    }
     if (listed(&ignored_events, kind)) return;
     try failRun(reducer, "pi_unknown_event", "unknown event");
+}
+
+const compaction_reasons = [_]struct { native: []const u8, oap: []const u8 }{
+    .{ .native = "manual", .oap = "requested" },
+    .{ .native = "threshold", .oap = "threshold" },
+    .{ .native = "overflow", .oap = "overflow" },
+};
+
+fn startCompaction(reducer: *Reducer, event: std.json.Value) !void {
+    const native_reason = textOf(event, "reason");
+    var reason: ?[]const u8 = null;
+    for (compaction_reasons) |entry| {
+        if (std.mem.eql(u8, entry.native, native_reason)) reason = entry.oap;
+    }
+    if (reason == null) {
+        const message = try std.fmt.allocPrint(reducer.arena, "unknown compaction reason \"{s}\"", .{native_reason});
+        try failRun(reducer, "pi_invalid_compaction", message);
+        return;
+    }
+    const open_id = reducer.compaction;
+    const id = try reducer.counters.nextID(reducer.arena, "compaction");
+    if (open_id.len != 0) {
+        try failRun(reducer, "pi_invalid_compaction", "compaction_start while a compaction is open");
+        return;
+    }
+    reducer.compaction = id;
+    const payload = try reducer.object();
+    try payload.put(reducer.arena, "session_id", Reducer.str(reducer.session_id));
+    try payload.put(reducer.arena, "run_id", Reducer.str(reducer.run_id));
+    try payload.put(reducer.arena, "compaction_id", Reducer.str(id));
+    try payload.put(reducer.arena, "reason", Reducer.str(reason.?));
+    try reducer.emit("run.compaction.started", .{ .object = payload.* }, false);
+}
+
+fn compactionResultDecodes(result: std.json.Value) bool {
+    if (result == .null) return true;
+    if (result != .object) return false;
+    if (result.object.get("summary")) |summary| {
+        if (summary != .string and summary != .null) return false;
+    }
+    if (result.object.get("estimatedTokensAfter")) |tokens| {
+        if (tokens == .null) return true;
+        if (tokens != .integer or tokens.integer < 0) return false;
+    }
+    return true;
+}
+
+fn endCompaction(reducer: *Reducer, event: std.json.Value) !void {
+    const id = reducer.compaction;
+    reducer.compaction = "";
+    if (id.len == 0) {
+        try failRun(reducer, "pi_invalid_compaction", "compaction_end without compaction_start");
+        return;
+    }
+    const aborted = if (memberOf(event, "aborted")) |value| value == .bool and value.bool else false;
+    const error_message = textOf(event, "errorMessage");
+    const result = memberOf(event, "result");
+    const completed = !aborted and error_message.len == 0 and result != null and compactionResultDecodes(result.?);
+    const payload = try reducer.object();
+    try payload.put(reducer.arena, "session_id", Reducer.str(reducer.session_id));
+    try payload.put(reducer.arena, "run_id", Reducer.str(reducer.run_id));
+    try payload.put(reducer.arena, "compaction_id", Reducer.str(id));
+    if (aborted) {
+        try payload.put(reducer.arena, "outcome", Reducer.str("cancelled"));
+    } else if (completed) {
+        try payload.put(reducer.arena, "outcome", Reducer.str("completed"));
+        const summary = textOf(result.?, "summary");
+        if (summary.len != 0) {
+            const message = try reducer.object();
+            try message.put(reducer.arena, "id", Reducer.str(try reducer.counters.nextID(reducer.arena, "message")));
+            try message.put(reducer.arena, "role", Reducer.str("assistant"));
+            try message.put(reducer.arena, "content", Reducer.str(summary));
+            try payload.put(reducer.arena, "summary", .{ .object = message.* });
+        }
+        if (memberOf(result.?, "estimatedTokensAfter")) |tokens| {
+            if (tokens == .integer) try payload.put(reducer.arena, "history_tokens", tokens);
+        }
+    } else {
+        try payload.put(reducer.arena, "outcome", Reducer.str("failed"));
+        const err = try reducer.object();
+        try err.put(reducer.arena, "code", Reducer.str("pi_compaction_failed"));
+        try err.put(reducer.arena, "message", Reducer.str(if (error_message.len != 0) error_message else "Pi ended its compaction without a result"));
+        try payload.put(reducer.arena, "error", .{ .object = err.* });
+    }
+    try reducer.emit("run.compaction.ended", .{ .object = payload.* }, false);
 }
 
 fn settleRun(reducer: *Reducer) !void {
@@ -1238,8 +1353,6 @@ test "each kind the port ignores is still held to the members the oracle require
         "{\"type\":\"message_start\",\"message\":{}}",
         "{\"type\":\"queue_update\",\"steering\":[],\"followUp\":[]}",
         "{\"type\":\"compaction_start\",\"reason\":\"threshold\"}",
-        "{\"type\":\"compaction_end\",\"reason\":\"threshold\",\"aborted\":false,\"willRetry\":false}",
-        "{\"type\":\"compaction_end\",\"reason\":\"threshold\",\"aborted\":false,\"willRetry\":false,\"result\":{},\"errorMessage\":\"e\"}",
         "{\"type\":\"entry_appended\",\"entry\":{}}",
         "{\"type\":\"session_info_changed\"}",
         "{\"type\":\"session_info_changed\",\"name\":\"n\"}",
@@ -2496,4 +2609,56 @@ test "pi 1.0.1's added members are admitted, typed where they are typed" {
     try std.testing.expectError(Error.InvalidFrame, decodeWireMessage(try parse(a, head ++ ",\"thinkingLevel\":7}")));
     const result_head = "{\"role\":\"toolResult\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"content\":\"ok\",\"isError\":false,\"timestamp\":1";
     try std.testing.expect(try decodeWireMessage(try parse(a, result_head ++ ",\"nestedCalls\":{\"calls\":[],\"complete\":true}}")) == null);
+}
+
+fn compactionEnds(reducer: *Reducer) ![]std.json.Value {
+    var ends = std.ArrayList(std.json.Value).empty;
+    for (reducer.emitted.items) |envelope| {
+        if (std.mem.eql(u8, textOf(envelope, "type"), "run.compaction.ended")) try ends.append(reducer.arena, memberOf(envelope, "payload").?);
+    }
+    return ends.items;
+}
+
+test "a compaction inside a run is published as the run's compaction, whatever shape its end takes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const ends = [_]struct { line: []const u8, outcome: []const u8 }{
+        .{ .line = "{\"type\":\"compaction_end\",\"reason\":\"threshold\",\"aborted\":false,\"willRetry\":false,\"result\":{\"summary\":\"s\",\"estimatedTokensAfter\":7}}", .outcome = "completed" },
+        .{ .line = "{\"type\":\"compaction_end\",\"reason\":\"threshold\",\"aborted\":false,\"willRetry\":false,\"result\":{}}", .outcome = "completed" },
+        .{ .line = "{\"type\":\"compaction_end\",\"reason\":\"threshold\",\"aborted\":false,\"willRetry\":false}", .outcome = "failed" },
+        .{ .line = "{\"type\":\"compaction_end\",\"reason\":\"threshold\",\"aborted\":false,\"willRetry\":false,\"result\":{},\"errorMessage\":\"e\"}", .outcome = "failed" },
+        .{ .line = "{\"type\":\"compaction_end\",\"reason\":\"overflow\",\"aborted\":true,\"willRetry\":false}", .outcome = "cancelled" },
+    };
+    for (ends) |case| {
+        var reducer = try started(a);
+        try apply(&reducer, try parse(a, "{\"type\":\"compaction_start\",\"reason\":\"threshold\"}"));
+        try apply(&reducer, try parse(a, case.line));
+        try std.testing.expect(lastFailure(&reducer) == null);
+        const ended = try compactionEnds(&reducer);
+        try std.testing.expectEqual(@as(usize, 1), ended.len);
+        try std.testing.expectEqualStrings(case.outcome, textOf(ended[0], "outcome"));
+    }
+}
+
+test "a compaction the port cannot place is refused under its own code" {
+    try expectRefusal(&.{"{\"type\":\"compaction_start\",\"reason\":\"invented\"}"}, "pi_invalid_compaction");
+    try expectRefusal(&.{"{\"type\":\"compaction_end\",\"reason\":\"threshold\",\"aborted\":false,\"willRetry\":false}"}, "pi_invalid_compaction");
+    try expectRefusal(&.{ "{\"type\":\"compaction_start\",\"reason\":\"threshold\"}", "{\"type\":\"compaction_start\",\"reason\":\"overflow\"}" }, "pi_invalid_compaction");
+}
+
+test "a run settling with a compaction open ends it failed just before the terminal" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try started(a);
+    try apply(&reducer, try parse(a, "{\"type\":\"compaction_start\",\"reason\":\"threshold\"}"));
+    try apply(&reducer, try parse(a, "{\"type\":\"agent_end\",\"messages\":[{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"done\"}],\"api\":\"a\",\"provider\":\"p\",\"model\":\"m\",\"usage\":{\"input\":1,\"output\":1,\"cacheRead\":0,\"cacheWrite\":0,\"totalTokens\":2,\"cost\":{\"input\":0,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0,\"total\":0}},\"stopReason\":\"stop\",\"timestamp\":1}],\"willRetry\":false}"));
+    try apply(&reducer, try parse(a, "{\"type\":\"agent_settled\"}"));
+    const emitted = reducer.emitted.items;
+    try std.testing.expectEqualStrings("run.compaction.ended", textOf(emitted[emitted.len - 2], "type"));
+    try std.testing.expectEqualStrings("run.completed", textOf(emitted[emitted.len - 1], "type"));
+    const ended = try compactionEnds(&reducer);
+    try std.testing.expectEqualStrings("failed", textOf(ended[0], "outcome"));
+    try std.testing.expectEqualStrings("pi_compaction_unfinished", textOf(memberOf(ended[0], "error").?, "code"));
 }
