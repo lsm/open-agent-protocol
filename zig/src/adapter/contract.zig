@@ -25,6 +25,7 @@ pub const reason_unsatisfiable = "unsatisfiable";
 
 pub const feature_models_list = "models.list";
 pub const feature_model_switch = "session.model.switch";
+pub const feature_session_compact = "session.compact";
 pub const feature_tools_list = "action.tools.list";
 pub const feature_tools_provide = "action.tools.provide";
 pub const feature_tool_sources_attach = "action.tool_sources.attach";
@@ -188,6 +189,7 @@ pub const Session = struct {
         tools: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ToolsListRequest, refusal: *Refusal) Failure!ToolSet = null,
         models: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ModelsRequest, refusal: *Refusal) Failure!Catalog = null,
         switch_model: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.SessionModelSwitchRequest, refusal: *Refusal) Failure!Switched = null,
+        compact: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.SessionCompactRequest, envelope_id: []const u8, refusal: *Refusal) Failure!oap_types.MessageSubmitResponse = null,
         resolve_call: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request_id: []const u8, request: *const oap_types.CallResolveRequest, refusal: *Refusal) Failure!oap_types.CallResolveResponse = null,
         replay: ?*const fn (ptr: *anyopaque, allocator: std.mem.Allocator, run_id: []const u8, after: u64, refusal: *Refusal) Failure!Replay = null,
         readable: ?*const fn (ptr: *anyopaque) ?std.Io.File.Handle = null,

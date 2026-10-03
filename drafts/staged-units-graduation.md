@@ -5111,6 +5111,32 @@ the settlement event in the target run's sequence.
    run. This is answered by the ledger pin that first covers `turn/steer`,
    not by the current one.
 
+## T9. Compaction
+
+Unit name: `compaction`. Staged by [Decision 0044](../decisions/0044-compaction.md).
+
+The first slice put the wire on the shared validator in both trees: the
+`session.compact` request pair and the `run.compaction` events, with submit's
+admission and refusal rules applied to a compaction request (#829). The second
+slice is step 1 of the gate: both memory reference adapters execute it. Each
+advertises `session.compact` and `run.compaction` at `emulated` and admits a
+compaction as a run under submit's rules — started on an idle session, queued
+with `session_busy` behind a busy one, `run_active` when the queue is full, and
+`steer` or `btw` refused with `unsupported_feature` naming the delivery. The run
+opens with one `requested` compaction whose summary names any `focus`, and
+settles `compacted` unless the request asked to `continue`, in which case it
+takes the scripted turn. Both move to `reference-memory-v14`, and the memory
+parity scenario pins the two trees to the same trace. `goap serve agent` and
+`oapx serve agent` route the request; the hub gains `Session.Compact` in Go.
+
+Still open, each for a later slice:
+
+- the hub's HTTP and stdio transports carry no compaction operation yet, so a
+  hub client cannot ask for one;
+- neither reference adapter compacts on its own, so `threshold` and `overflow`
+  are exercised by fixtures only;
+- step 3, native evidence, is pi's, as the decision names.
+
 ## T5b. Auth state
 
 Unit name: `auth`. Not scheduled. `auth.providers.request`/`.response` as a
