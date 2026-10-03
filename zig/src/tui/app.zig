@@ -8615,6 +8615,37 @@ test "zen captures the wheel while it is on and scrolls the reply with it" {
     try std.testing.expect(model.update(.resumed, &tctx.ctx) != .batch);
 }
 
+test "leaving zen mid-run after a run that ended with no reply returns the transcript to its tail" {
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    tctx.ctx.width = 80;
+    tctx.ctx.height = 20;
+    const app = &model.app.?;
+    const tick: TuiModel.Msg = .{ .tick = .{ .timestamp = 0, .delta = 0 } };
+    for (0..40) |i| {
+        const line = try std.fmt.allocPrint(std.testing.allocator, "history {d}", .{i});
+        defer std.testing.allocator.free(line);
+        try app.state.appendTranscript(.system, line);
+    }
+    try app.submit("/zen");
+    app.state.status.streaming = true;
+    _ = model.update(tick, &tctx.ctx);
+    _ = model.view(&tctx.ctx);
+    app.state.status.streaming = false;
+    try app.state.appendTranscript(.system, "cancelled");
+    _ = model.update(tick, &tctx.ctx);
+    _ = model.view(&tctx.ctx);
+    try std.testing.expect(app.state.transcript_scroll > 0);
+    try app.steer("/zen on");
+    try std.testing.expect(app.state.transcript_scroll > 0);
+    try app.steer("/zen");
+    try std.testing.expectEqual(@as(usize, 0), app.state.transcript_scroll);
+    try std.testing.expect(std.mem.indexOf(u8, model.view(&tctx.ctx), "SCROLL") == null);
+}
+
 test "App submit quit command requests quit" {
     var app = App.initWithoutRuntime(std.testing.allocator);
     defer app.deinit();
