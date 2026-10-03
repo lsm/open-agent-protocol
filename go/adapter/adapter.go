@@ -39,6 +39,15 @@ type ModelLister interface {
 	Models(context.Context, protocol.ModelsRequest) (Catalog, error)
 }
 
+type CompactRequest struct {
+	Request    protocol.SessionCompactRequest
+	EnvelopeID protocol.EnvelopeID
+}
+
+type Compactor interface {
+	Compact(context.Context, CompactRequest) (protocol.SessionCompactResponse, EventStream, error)
+}
+
 type ModelSwitcher interface {
 	SwitchModel(context.Context, protocol.SessionModelSwitchRequest) (protocol.SessionModelSwitchResponse, protocol.SessionState, error)
 }

@@ -257,6 +257,7 @@ pub const Endpoint = struct {
             .session_state_request => try self.state(arena, &request, refusal),
             .session_model_switch_request => |*payload| try self.switchModel(arena, &request, payload, refusal),
             .message_submit_request => |*payload| try self.submit(arena, &request, payload, descriptor, refusal),
+            .session_compact_request => |*payload| try self.compact(arena, &request, payload, refusal),
             .run_cancel_request => |*payload| try self.cancel(arena, &request, payload, refusal),
             .user_input_resolve_request => |*payload| try self.resolveInput(arena, &request, payload, refusal),
             .permission_resolve_request => |*payload| try self.resolvePermission(arena, &request, payload, refusal),
@@ -451,6 +452,21 @@ pub const Endpoint = struct {
             .run_id = admission.run_id,
             .capability_revision = request.capability_revision,
             .payload = .{ .message_submit_response = admission },
+        });
+    }
+
+    fn compact(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, payload: *const oap_types.SessionCompactRequest, refusal: *contract.Refusal) Served!void {
+        const entry = try self.entryFor(arena, request);
+        try self.requireScope(arena, payload.session_id, entry);
+        const compactor = entry.session.vtable.compact orelse
+            return refusal.unsupported(contract.feature_session_compact, contract.reason_unadvertised);
+        const admission = try compactor(entry.session.ptr, arena, payload, request.id, refusal);
+        try self.respond(arena, request, .{
+            .id = "",
+            .session_id = admission.session_id,
+            .run_id = admission.run_id,
+            .capability_revision = request.capability_revision,
+            .payload = .{ .session_compact_response = admission },
         });
     }
 

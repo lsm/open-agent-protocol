@@ -6,7 +6,7 @@ const json_encode = @import("json_encode");
 const jsonschema = @import("jsonschema");
 
 pub const endpoint_id = "reference.memory";
-pub const capability_revision = "reference-memory-v13";
+pub const capability_revision = "reference-memory-v14";
 pub const model_primary = "reference-model-a";
 pub const model_secondary = "reference-model-b";
 pub const journal_capacity = 64;
@@ -49,6 +49,7 @@ const features = [_]contract.Feature{
     .{ .key = contract.feature_models_list, .level = .native, .reason = "the reference adapter serves its fixed catalog, which is exactly the set its model gate admits" },
     .{ .key = "protocol.initialize", .level = .native },
     .{ .key = "run.cancel", .level = .emulated, .reason = "run-target API is implemented over a one-active-run session" },
+    .{ .key = "run.compaction", .level = .emulated, .reason = "the reference adapter publishes the compactions it is asked for; it keeps no history long enough to compact on its own" },
     .{ .key = "run.instructions", .level = .emulated, .reason = "instructions are prepended to the scripted text so their effect is observable" },
     .{ .key = "run.model_selection", .level = .emulated, .scope = "run", .reason = "the reference adapter runs no model; it echoes a selection from a fixed catalog for one run" },
     .{ .key = "run.reconciliation", .level = .native },
@@ -63,6 +64,7 @@ const features = [_]contract.Feature{
         .constraints_json = "{\"fixed_result\":{\"ok\":true}}",
     },
     .{ .key = "run.tool_selection", .level = .emulated, .scope = "run", .reason = "the policy filters the scripted tool and is not retained past the run" },
+    .{ .key = contract.feature_session_compact, .level = .emulated, .reason = "a compaction run replaces the scripted history with a fixed summary that names the focus, and has no model to write it" },
     .{ .key = "session.message.delivery.auto", .level = .native },
     .{ .key = "session.message.delivery.queue", .level = .emulated, .reason = "a busy session reserves one second run and promotes it when the started run settles" },
     .{ .key = "session.message.delivery.steer", .level = .emulated, .reason = "guidance waits on the target run and is applied at its input gate, the scripted turn boundary" },
@@ -215,6 +217,9 @@ const Run = struct {
     calls_tool: bool = true,
     steers: std.ArrayList(PendingSteer) = .empty,
     admitted_steers: std.ArrayList([]const u8) = .empty,
+    compaction: bool = false,
+    compact_continue: bool = false,
+    compact_focus: []const u8 = "",
 
     fn live(self: *const Run) bool {
         return !self.terminal;
@@ -293,6 +298,7 @@ pub const Session = struct {
         .tools = tools,
         .models = models,
         .switch_model = switchModel,
+        .compact = compact,
         .resolve_call = resolveCall,
         .replay = replay,
     };
@@ -483,6 +489,108 @@ pub const Session = struct {
         return admission;
     }
 
+    fn compact(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.SessionCompactRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+        _ = envelope_id;
+        const self = cast(ptr);
+        switch (request.delivery) {
+            .auto, .queue => {},
+            .steer, .btw => {
+                refusal.* = .{
+                    .feature = if (request.delivery == .steer) "session.message.delivery.steer" else "session.message.delivery.btw",
+                    .reason = contract.reason_unadvertised,
+                    .detail = "a compaction takes auto or queue delivery",
+                };
+                return error.UnsupportedFeature;
+            },
+        }
+        if (request.session_id.len == 0) return error.InvalidSubmission;
+        if (!std.mem.eql(u8, request.session_id, self.id)) return error.RunNotFound;
+        const is_busy = self.busy();
+        if (is_busy) {
+            if (self.reserved) |run| {
+                if (run.live()) return error.RunActive;
+            }
+        }
+
+        const keep = self.keep.allocator();
+        const reservation = is_busy or request.delivery == .queue;
+        try self.runs.ensureUnusedCapacity(keep, 1);
+        const run_id = try self.owner.nextID(keep, "run");
+        const input_id = try self.owner.nextID(keep, "input");
+        const focus = if (request.focus) |text| try keep.dupe(u8, text) else "";
+        const run = try keep.create(Run);
+        run.* = .{
+            .id = run_id,
+            .permission_id = "",
+            .input_id = input_id,
+            .tool_call_id = "",
+            .model = if (!is_busy and request.delivery != .queue) self.current_model else "",
+            .calls_tool = false,
+            .stage = .input,
+            .queued_admission = reservation,
+            .status = if (reservation) .queued else .running,
+            .compaction = true,
+            .compact_continue = request.continue_run,
+            .compact_focus = focus,
+        };
+        self.runs.appendAssumeCapacity(run);
+        if (is_busy) self.reserved = run else self.active = run;
+        self.updated_at_ms = self.owner.now_ms();
+
+        var admission = oap_types.MessageSubmitResponse{
+            .session_id = self.id,
+            .accepted = true,
+            .submission_id = try self.owner.nextID(arena, "submission"),
+            .requested_delivery = request.delivery,
+            .effective_delivery = .start,
+            .delivery_resolution = "session_idle",
+            .admission = .started,
+            .run_id = run.id,
+            .status = .running,
+        };
+        if (reservation) {
+            admission.effective_delivery = .queue;
+            admission.admission = .queued;
+            admission.status = .queued;
+            if (is_busy) admission.delivery_resolution = "session_busy";
+        }
+        if (!is_busy) try self.emitInitial(run);
+        return admission;
+    }
+
+    fn emitCompaction(self: *Session, a: std.mem.Allocator, run: *Run) contract.Failure!bool {
+        const compaction_id = try self.owner.nextID(a, "compaction");
+        var started = Payload.init(a);
+        try started.run(self, run);
+        try started.put("compaction_id", .{ .string = compaction_id });
+        try started.put("reason", .{ .string = "requested" });
+        try self.emit(run, "run.compaction.started", started.value(), false);
+
+        const text = if (run.compact_focus.len > 0)
+            try std.fmt.allocPrint(a, "The session so far, compacted with attention to: {s}", .{run.compact_focus})
+        else
+            "The session so far, compacted.";
+        var summary = Payload.init(a);
+        try summary.put("id", .{ .string = try self.owner.nextID(a, "message") });
+        try summary.put("role", .{ .string = "assistant" });
+        try summary.put("content", .{ .string = text });
+        var ended = Payload.init(a);
+        try ended.run(self, run);
+        try ended.put("compaction_id", .{ .string = compaction_id });
+        try ended.put("outcome", .{ .string = "completed" });
+        try ended.put("summary", summary.value());
+        try self.emit(run, "run.compaction.ended", ended.value(), false);
+        if (run.compact_continue) return false;
+
+        var completed = Payload.init(a);
+        try completed.run(self, run);
+        try completed.put("final_response", summary.value());
+        try completed.put("stop_reason", .{ .string = "compacted" });
+        if (run.model.len > 0) try completed.put("model_id", .{ .string = run.model });
+        try self.emit(run, "run.completed", completed.value(), true);
+        return true;
+    }
+
     fn steer(self: *Session, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
         if (request.session_id.len == 0 or request.messages.len == 0) return error.InvalidSubmission;
         if (steerControlKey(request)) |key| {
@@ -669,6 +777,7 @@ pub const Session = struct {
         if (run.model.len > 0) try started.put("model_id", .{ .string = run.model });
         try started.put("started_at_ms", .{ .integer = self.owner.now_ms() });
         try self.emit(run, "run.started", started.value(), false);
+        if (run.compaction and try self.emitCompaction(a, run)) return;
 
         const lead = if (run.calls_tool) "I will use the scripted tool." else "I will answer without the scripted tool.";
         const text = if (run.instructions) |instructions| if (instructions.len == 0) lead else try std.fmt.allocPrint(a, "{s} {s}", .{ instructions, lead }) else lead;
@@ -1563,6 +1672,12 @@ const Probe = struct {
         return self.submitWith(.auto, .{ .session_id = "", .messages = &.{}, .delivery = .auto });
     }
 
+    fn compact(self: *Probe, request: oap_types.SessionCompactRequest, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+        var asked = request;
+        asked.session_id = "s1";
+        return self.session.vtable.compact.?(self.session.ptr, self.a(), &asked, "compact-1", refusal);
+    }
+
     fn submitSteer(self: *Probe, target: ?[]const u8, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
         var request = oap_types.MessageSubmitRequest{
             .session_id = "s1",
@@ -1965,7 +2080,7 @@ test "an already_resolved refusal names its settlement only when there is one" {
 }
 
 test "the reference descriptor advertises steer advice at the emulated level" {
-    try testing.expectEqualStrings("reference-memory-v13", capability_revision);
+    try testing.expectEqualStrings("reference-memory-v14", capability_revision);
     try testing.expectEqual(oap_types.SupportLevel.emulated, descriptor.level("session.message.delivery.steer"));
 }
 
@@ -2096,6 +2211,100 @@ test "a steer carrying a run control is refused as unsatisfiable" {
     try testing.expectError(error.UnsupportedFeature, probe.session.submit(probe.a(), &modelled, "s7", &refusal));
     try testing.expectEqualStrings("run.model_selection", refusal.feature);
     try testing.expectEqualStrings(contract.reason_unsatisfiable, refusal.reason);
+}
+
+test "the reference descriptor advertises compaction at the emulated level" {
+    for ([_][]const u8{ "session.compact", "run.compaction" }) |key| {
+        try testing.expectEqual(oap_types.SupportLevel.emulated, descriptor.level(key));
+        for (features) |feature| {
+            if (std.mem.eql(u8, feature.key, key)) try testing.expect(feature.reason.?.len > 0);
+        }
+    }
+}
+
+test "a compaction on an idle session is a run of its own that settles compacted and names its focus" {
+    var probe: Probe = undefined;
+    try probe.init();
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const admitted = try probe.compact(.{ .session_id = "", .focus = "the parser" }, &refusal);
+    try testing.expectEqual(oap_types.Admission.started, admitted.admission);
+    try testing.expectEqual(oap_types.RequestedDelivery.auto, admitted.requested_delivery);
+    try expectTypes(&.{ "run.started", "run.compaction.started", "run.compaction.ended", "run.completed" }, try probe.types());
+    const ended = try probe.eventOfType("run.compaction.ended");
+    const summary = ended.object.get("payload").?.object.get("summary").?.object.get("content").?.string;
+    try testing.expect(std.mem.indexOf(u8, summary, "the parser") != null);
+    const completed = try probe.eventOfType("run.completed");
+    try testing.expectEqualStrings("compacted", completed.object.get("payload").?.object.get("stop_reason").?.string);
+    const started = try probe.eventOfType("run.compaction.started");
+    try testing.expectEqualStrings("requested", started.object.get("payload").?.object.get("reason").?.string);
+    try testing.expectEqual(contract.Activity.idle, probe.session.activity());
+}
+
+test "a compaction that continues takes the scripted turn and settles as an ordinary run" {
+    var probe: Probe = undefined;
+    try probe.init();
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const admitted = try probe.compact(.{ .session_id = "", .continue_run = true }, &refusal);
+    try expectTypes(&.{ "run.started", "run.compaction.started", "run.compaction.ended", "content.delta", "user.input.requested", "run.status.updated" }, try probe.types());
+    try probe.answer(admitted.run_id.?, "input-2");
+    _ = try probe.types();
+    const completed = try probe.eventOfType("run.completed");
+    try testing.expectEqualStrings("end_turn", completed.object.get("payload").?.object.get("stop_reason").?.string);
+}
+
+test "a busy session queues a compaction and promotes it when the started run settles" {
+    var probe: Probe = undefined;
+    try probe.init();
+    defer probe.deinit();
+    _ = try probe.submit();
+    var refusal = contract.Refusal{};
+    const queued = try probe.compact(.{ .session_id = "" }, &refusal);
+    try testing.expectEqual(oap_types.Admission.queued, queued.admission);
+    try testing.expectEqual(oap_types.EffectiveDelivery.queue, queued.effective_delivery);
+    try testing.expectEqualStrings("session_busy", queued.delivery_resolution.?);
+    try testing.expectError(error.RunActive, probe.compact(.{ .session_id = "" }, &refusal));
+    try probe.approve("run-1", "permission-2", "deny");
+    try probe.session.drain(probe.a(), &probe.seen);
+    const last = probe.seen.items[probe.seen.items.len - 1];
+    try testing.expectEqualStrings(queued.run_id.?, last.run_id);
+    try testing.expect(std.mem.indexOf(u8, last.line, "\"compacted\"") != null);
+}
+
+test "a steer or btw compaction is refused naming the delivery" {
+    var probe: Probe = undefined;
+    try probe.init();
+    defer probe.deinit();
+    for ([_]oap_types.RequestedDelivery{ .steer, .btw }, [_][]const u8{ "session.message.delivery.steer", "session.message.delivery.btw" }) |delivery, key| {
+        var refusal = contract.Refusal{};
+        try testing.expectError(error.UnsupportedFeature, probe.compact(.{ .session_id = "", .delivery = delivery }, &refusal));
+        try testing.expectEqualStrings(key, refusal.feature);
+        try testing.expectEqualStrings(contract.reason_unadvertised, refusal.reason);
+    }
+}
+
+fn compactAndSettle(allocator: std.mem.Allocator) !void {
+    var adapter = Adapter.init(allocator);
+    defer adapter.deinit();
+    adapter.now_ms = fixedClock;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var refusal = contract.Refusal{};
+    const session = try adapter.adapter().open(arena.allocator(), .{ .session_id = "s1", .participant = "user" }, &refusal);
+    defer session.teardown();
+    const messages = try arena.allocator().dupe(oap_types.Message, &.{.{ .role = .user, .content = .{ .text = "run" } }});
+    const request = oap_types.MessageSubmitRequest{ .session_id = "s1", .messages = messages, .delivery = .auto };
+    _ = try session.submit(arena.allocator(), &request, "", &refusal);
+    const compaction = oap_types.SessionCompactRequest{ .session_id = "s1", .focus = "the parser" };
+    _ = try session.vtable.compact.?(session.ptr, arena.allocator(), &compaction, "compact-1", &refusal);
+    _ = try session.cancel(arena.allocator(), "run-1", &refusal);
+    var drained = std.ArrayList(contract.Event).empty;
+    try session.drain(arena.allocator(), &drained);
+}
+
+test "a compaction queued behind a run and promoted by its cancel frees everything it built when an allocation fails" {
+    try testing.checkAllAllocationFailures(testing.allocator, compactAndSettle, .{});
 }
 
 test "a closed session reopens on the model it closed on, and only once" {

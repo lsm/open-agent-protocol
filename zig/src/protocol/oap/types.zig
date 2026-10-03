@@ -956,6 +956,24 @@ pub const MessageSubmitRequest = struct {
     }
 };
 
+pub const SessionCompactRequest = struct {
+    session_id: []const u8,
+    delivery: RequestedDelivery = .auto,
+    focus: ?[]const u8 = null,
+    continue_run: bool = false,
+    allow_degraded_features: []const []const u8 = &.{},
+
+    pub fn deinit(self: *SessionCompactRequest, allocator: std.mem.Allocator) void {
+        allocator.free(self.session_id);
+        if (self.focus) |value| allocator.free(value);
+        freeStringList(allocator, self.allow_degraded_features);
+    }
+
+    pub fn allowsDegraded(self: *const SessionCompactRequest, key: []const u8) bool {
+        return containsKey(self.allow_degraded_features, key);
+    }
+};
+
 pub const MessageSubmitResponse = struct {
     session_id: []const u8,
     accepted: bool,
@@ -1105,6 +1123,8 @@ pub const Payload = union(enum) {
     session_model_switch_response: SessionModelSwitchResponse,
     message_submit_request: MessageSubmitRequest,
     message_submit_response: MessageSubmitResponse,
+    session_compact_request: SessionCompactRequest,
+    session_compact_response: MessageSubmitResponse,
     run_cancel_request: RunCancelRequest,
     run_cancel_response: RunCancelResponse,
     run_started: RunStarted,
@@ -1151,6 +1171,8 @@ pub const Payload = union(enum) {
             .session_model_switch_response => |*value| value.deinit(allocator),
             .message_submit_request => |*value| value.deinit(allocator),
             .message_submit_response => |*value| value.deinit(allocator),
+            .session_compact_request => |*value| value.deinit(allocator),
+            .session_compact_response => |*value| value.deinit(allocator),
             .run_cancel_request => |*value| value.deinit(allocator),
             .run_cancel_response => |*value| value.deinit(allocator),
             .run_started => |*value| value.deinit(allocator),
@@ -1199,6 +1221,8 @@ pub const Payload = union(enum) {
             .session_model_switch_response => "session.model.switch.response",
             .message_submit_request => "session.message.submit.request",
             .message_submit_response => "session.message.submit.response",
+            .session_compact_request => "session.compact.request",
+            .session_compact_response => "session.compact.response",
             .run_cancel_request => "run.cancel.request",
             .run_cancel_response => "run.cancel.response",
             .run_started => "run.started",

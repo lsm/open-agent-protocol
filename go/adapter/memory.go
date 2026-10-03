@@ -87,7 +87,7 @@ var attachSupport = protocol.FeatureSupport{
 	Reason: "sources are described and published back; the reference adapter runs no client for them",
 }
 
-const CapabilityRevision = "reference-memory-v13"
+const CapabilityRevision = "reference-memory-v14"
 
 var errTerminalWon = fmt.Errorf("adapter: terminal event already emitted")
 
@@ -141,16 +141,18 @@ func (m *Memory) Probe(context.Context) (Descriptor, error) {
 		"session.message.submit":        {Level: protocol.SupportNative},
 		"session.message.delivery.auto": {Level: protocol.SupportNative},
 
-		protocol.FeatureDeliveryQueue: {Level: protocol.SupportEmulated, Reason: "a busy session reserves one second run and promotes it when the started run settles"},
-		protocol.FeatureDeliverySteer: {Level: protocol.SupportEmulated, Reason: "guidance waits on the target run and is applied at its input gate, the scripted turn boundary"},
-		"run.streaming":               {Level: protocol.SupportNative},
-		"run.status":                  {Level: protocol.SupportNative},
-		"run.cancel":                  {Level: protocol.SupportEmulated, Reason: "run-target API is implemented over a one-active-run session"},
-		"run.resume":                  {Level: protocol.SupportDegraded, Reason: "reattachment and replay use a bounded process-memory journal"},
-		"run.reconciliation":          {Level: protocol.SupportNative},
-		"run.replay":                  {Level: protocol.SupportDegraded, Reason: "older cursors can expire and no cross-process replay is claimed"},
-		"action.tools":                {Level: protocol.SupportEmulated, Reason: "the reference adapter projects the scripted tool lifecycle"},
-		"action.tools.execute":        {Level: protocol.SupportEmulated, Reason: "the reference adapter executes a fixed deterministic script"},
+		protocol.FeatureDeliveryQueue:  {Level: protocol.SupportEmulated, Reason: "a busy session reserves one second run and promotes it when the started run settles"},
+		protocol.FeatureDeliverySteer:  {Level: protocol.SupportEmulated, Reason: "guidance waits on the target run and is applied at its input gate, the scripted turn boundary"},
+		protocol.FeatureSessionCompact: {Level: protocol.SupportEmulated, Reason: "a compaction run replaces the scripted history with a fixed summary that names the focus, and has no model to write it"},
+		protocol.FeatureRunCompaction:  {Level: protocol.SupportEmulated, Reason: "the reference adapter publishes the compactions it is asked for; it keeps no history long enough to compact on its own"},
+		"run.streaming":                {Level: protocol.SupportNative},
+		"run.status":                   {Level: protocol.SupportNative},
+		"run.cancel":                   {Level: protocol.SupportEmulated, Reason: "run-target API is implemented over a one-active-run session"},
+		"run.resume":                   {Level: protocol.SupportDegraded, Reason: "reattachment and replay use a bounded process-memory journal"},
+		"run.reconciliation":           {Level: protocol.SupportNative},
+		"run.replay":                   {Level: protocol.SupportDegraded, Reason: "older cursors can expire and no cross-process replay is claimed"},
+		"action.tools":                 {Level: protocol.SupportEmulated, Reason: "the reference adapter projects the scripted tool lifecycle"},
+		"action.tools.execute":         {Level: protocol.SupportEmulated, Reason: "the reference adapter executes a fixed deterministic script"},
 
 		protocol.FeatureToolsList:         {Level: protocol.SupportEmulated, Reason: "the reference catalog is the scripted tool plus the session's attached sources"},
 		protocol.FeatureToolSourcesAttach: attachSupport,
@@ -430,6 +432,10 @@ type memoryRun struct {
 	subscribers      []chan Result
 	steers           []*pendingSteer
 	admittedSteers   []protocol.EnvelopeID
+
+	compaction      bool
+	compactContinue bool
+	compactFocus    string
 }
 
 type pendingSteer struct {
@@ -554,6 +560,117 @@ func (s *memorySession) Submit(ctx context.Context, submit SubmitRequest) (proto
 		return protocol.MessageSubmitResponse{}, stream, err
 	}
 	return admission, stream, nil
+}
+
+func (s *memorySession) Compact(ctx context.Context, compact CompactRequest) (protocol.SessionCompactResponse, EventStream, error) {
+	request := compact.Request
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return protocol.SessionCompactResponse{}, nil, err
+	}
+	switch request.Delivery {
+	case "", protocol.DeliveryAuto, protocol.DeliveryQueue:
+	default:
+		return protocol.SessionCompactResponse{}, nil, &UnsupportedControlError{Feature: protocol.DeliveryKey(request.Delivery), Reason: ControlUnadvertised, Detail: "a compaction takes auto or queue delivery"}
+	}
+	if request.SessionID == "" {
+		return protocol.SessionCompactResponse{}, nil, ErrInvalidSubmission
+	}
+
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return protocol.SessionCompactResponse{}, nil, ErrSessionClosed
+	}
+	if request.SessionID != s.state.SessionID {
+		s.mu.Unlock()
+		return protocol.SessionCompactResponse{}, nil, ErrRunNotFound
+	}
+	busy := s.active != nil && !s.active.terminal
+	if busy && s.reserved != nil && !s.reserved.terminal {
+		s.mu.Unlock()
+		return protocol.SessionCompactResponse{}, nil, ErrRunActive
+	}
+	run := &memoryRun{
+		id: protocol.RunID(s.ids.NewID("run")), status: protocol.RunRunning,
+		nextSequence: 1, stage: stageInput,
+		inputID:     protocol.InteractionID(s.ids.NewID("input")),
+		requestedBy: endpointID, respondedBy: s.participant,
+		compaction: true, compactContinue: request.Continue, compactFocus: protocol.Control(request.Focus),
+	}
+	if !busy && request.Delivery != protocol.DeliveryQueue {
+		run.controls.model = s.state.CurrentModelID
+	}
+	stream := make(chan Result, 32)
+	run.subscribers = append(run.subscribers, stream)
+	s.runs[run.id] = run
+	reservation := busy || request.Delivery == protocol.DeliveryQueue
+	run.queuedAdmission = reservation
+	if reservation {
+		run.status = protocol.RunQueued
+	}
+	if busy {
+		s.reserved = run
+	} else {
+		s.active = run
+	}
+	s.refreshStateLocked()
+	s.state.UpdatedAtMS = s.clock.Now().UnixMilli()
+	s.mu.Unlock()
+
+	requested := request.Delivery
+	if requested == "" {
+		requested = protocol.DeliveryAuto
+	}
+	admission := protocol.SessionCompactResponse{
+		SessionID: s.state.SessionID, Accepted: true,
+		SubmissionID:      protocol.SubmissionID(s.ids.NewID("submission")),
+		RequestedDelivery: requested, EffectiveDelivery: protocol.DeliveryStart,
+		DeliveryResolution: "session_idle", Admission: protocol.AdmissionStarted,
+		RunID: run.id, Status: protocol.RunRunning,
+	}
+	if reservation {
+		admission.EffectiveDelivery = protocol.EffectiveDeliveryQueue
+		admission.Admission = protocol.AdmissionQueued
+		admission.Status = protocol.RunQueued
+		if busy {
+			admission.DeliveryResolution = "session_busy"
+		}
+	}
+	defer s.answerRun(run)
+	if busy {
+		return admission, stream, nil
+	}
+	if err := s.emitInitial(run); err != nil {
+		return protocol.SessionCompactResponse{}, stream, err
+	}
+	return admission, stream, nil
+}
+
+func (s *memorySession) emitCompaction(run *memoryRun) (bool, error) {
+	compaction := protocol.CompactionID(s.ids.NewID("compaction"))
+	started := protocol.RunCompactionStartedPayload{SessionID: s.state.SessionID, RunID: run.id, CompactionID: compaction, Reason: protocol.CompactionRequested}
+	if err := s.emit(run, protocol.TypeRunCompactionStarted, started, false); err != nil {
+		return true, err
+	}
+	text := "The session so far, compacted."
+	if run.compactFocus != "" {
+		text = "The session so far, compacted with attention to: " + run.compactFocus
+	}
+	summary := protocol.Message{ID: protocol.MessageID(s.ids.NewID("message")), Role: protocol.RoleAssistant, Content: protocol.TextContent(text)}
+	ended := protocol.RunCompactionEndedPayload{SessionID: s.state.SessionID, RunID: run.id, CompactionID: compaction, Outcome: protocol.CompactionCompleted, Summary: &summary}
+	if err := s.emit(run, protocol.TypeRunCompactionEnded, ended, false); err != nil {
+		return true, err
+	}
+	if run.compactContinue {
+		return false, nil
+	}
+	completed := protocol.RunCompletedPayload{SessionID: s.state.SessionID, RunID: run.id, FinalResponse: summary, StopReason: "compacted", ModelID: run.controls.model}
+	if err := s.emit(run, protocol.TypeRunCompleted, completed, true); err != nil && err != errTerminalWon {
+		return true, err
+	}
+	return true, nil
 }
 
 func (s *memorySession) steer(submit SubmitRequest) (protocol.MessageSubmitResponse, EventStream, error) {
@@ -792,6 +909,11 @@ func (s *memorySession) emitInitial(run *memoryRun) error {
 	started := protocol.RunStartedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, ModelID: model, StartedAtMS: s.clock.Now().UnixMilli()}
 	if err := s.emit(run, protocol.TypeRunStarted, started, false); err != nil {
 		return err
+	}
+	if run.compaction {
+		if settled, err := s.emitCompaction(run); settled || err != nil {
+			return err
+		}
 	}
 
 	text := "I will use the scripted tool."
@@ -1662,3 +1784,5 @@ var _ ToolLister = (*memorySession)(nil)
 var _ ModelLister = (*memorySession)(nil)
 
 var _ CallResolver = (*memorySession)(nil)
+
+var _ Compactor = (*memorySession)(nil)

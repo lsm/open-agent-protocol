@@ -104,6 +104,8 @@ func (s *Server) serve(ctx context.Context, streams context.Context, e protocol.
 		return s.switchModel(ctx, streams, e)
 	case protocol.TypeSessionMessageSubmitRequest:
 		return s.submit(ctx, streams, e)
+	case protocol.TypeSessionCompactRequest:
+		return s.compact(ctx, streams, e)
 	case protocol.TypeRunCancelRequest:
 		return plain(s.cancel(ctx, e))
 	case protocol.TypeActionPermissionResolveRequest, protocol.TypeUserInputResolveRequest, protocol.TypeActionCallResolveRequest:
@@ -326,6 +328,44 @@ func (s *Server) submit(ctx context.Context, streams context.Context, e protocol
 		return answer, func() { s.hub.Published(entry.ID(), e.ID) }, nil
 	}
 
+	start := func() {
+		s.hub.Published(entry.ID(), e.ID)
+		s.pumps.Add(1)
+		go func() {
+			defer s.pumps.Done()
+			s.pump(streams, subscription, admission.RunID)
+		}()
+	}
+	return answer, start, nil
+}
+
+func (s *Server) compact(ctx context.Context, streams context.Context, e protocol.Envelope) (protocol.Envelope, func(), error) {
+	entry, err := s.session(e)
+	if err != nil {
+		return protocol.Envelope{}, nil, err
+	}
+	var request protocol.SessionCompactRequest
+	if err := e.DecodePayload(&request); err != nil {
+		return protocol.Envelope{}, nil, &refusal{code: "invalid_payload", message: err.Error()}
+	}
+	subscription, err := s.hub.Subscribe(streams, entry.ID())
+	if err != nil {
+		return protocol.Envelope{}, nil, err
+	}
+	admission, err := entry.Compact(ctx, base.CompactRequest{Request: request, EnvelopeID: e.ID})
+	if err != nil {
+		subscription.Close()
+		return protocol.Envelope{}, func() { s.hub.Published(entry.ID(), e.ID) }, err
+	}
+	answer, err := protocol.NewEnvelope(protocol.TypeSessionCompactResponse, s.nextID("response"), admission)
+	if err != nil {
+		subscription.Close()
+		return protocol.Envelope{}, nil, err
+	}
+	answer.InReplyTo = e.ID
+	answer.SessionID = admission.SessionID
+	answer.RunID = admission.RunID
+	answer.CapabilityRevision = e.CapabilityRevision
 	start := func() {
 		s.hub.Published(entry.ID(), e.ID)
 		s.pumps.Add(1)

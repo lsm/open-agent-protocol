@@ -475,6 +475,34 @@ func (s *Session) Submit(ctx context.Context, submit base.SubmitRequest) (protoc
 	return admission, nil
 }
 
+func (s *Session) Compact(ctx context.Context, compact base.CompactRequest) (protocol.SessionCompactResponse, error) {
+	request := compact.Request
+	if request.SessionID != s.id {
+		return protocol.SessionCompactResponse{}, &ScopeMismatchError{Payload: request.SessionID, Addressed: s.id}
+	}
+	compactor, ok := s.session.(base.Compactor)
+	if !ok {
+		return protocol.SessionCompactResponse{}, &base.UnsupportedControlError{Feature: protocol.FeatureSessionCompact, Reason: base.ControlUnadvertised}
+	}
+	s.mu.Lock()
+	s.reservations++
+	s.mu.Unlock()
+	admission, stream, err := compactor.Compact(ctx, compact)
+	if err != nil {
+		if stream != nil {
+			s.adoptOrphan(stream)
+		} else {
+			s.releaseReservation()
+		}
+		if errors.Is(err, base.ErrSessionClosed) {
+			s.markClosed()
+		}
+		return admission, err
+	}
+	s.adoptRun(admission.RunID, stream, admission.Admission == protocol.AdmissionQueued)
+	return admission, nil
+}
+
 func (s *Session) retargetGate(gate *steerGate, run protocol.RunID) {
 	if gate == nil || run == "" {
 		return

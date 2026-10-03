@@ -612,7 +612,16 @@ fn serializePayload(w: *json_writer.JsonWriter, payload: oap_types.Payload) !voi
                 try serializeStringArray(w, "allow_degraded_features", value.allow_degraded_features);
             }
         },
-        .message_submit_response => |value| {
+        .session_compact_request => |value| {
+            try w.writeStringField("session_id", value.session_id);
+            try w.writeStringField("delivery", @tagName(value.delivery));
+            if (value.focus) |focus| try w.writeStringField("focus", focus);
+            if (value.continue_run) try w.writeBoolField("continue", true);
+            if (value.allow_degraded_features.len > 0) {
+                try serializeStringArray(w, "allow_degraded_features", value.allow_degraded_features);
+            }
+        },
+        .message_submit_response, .session_compact_response => |value| {
             try w.writeStringField("session_id", value.session_id);
             try w.writeBoolField("accepted", value.accepted);
             try w.writeStringField("submission_id", value.submission_id);
@@ -1647,6 +1656,32 @@ fn deserializePayload(
     if (std.mem.eql(u8, type_str, "session.message.submit.request")) {
         return .{ .message_submit_request = try deserializeSubmitRequest(obj, allocator) };
     }
+    if (std.mem.eql(u8, type_str, "session.compact.request")) {
+        const session_id = try requiredOwnedString(obj, "session_id", allocator);
+        errdefer allocator.free(session_id);
+        const delivery = (try optionalEnum(oap_types.RequestedDelivery, obj, "delivery")) orelse .auto;
+        const focus = try optionalOwnedString(obj, "focus", allocator);
+        errdefer if (focus) |owned| allocator.free(owned);
+        const continue_run = if (obj.get("continue")) |value| switch (value) {
+            .bool => |flag| flag,
+            else => return DecodeError.InvalidField,
+        } else false;
+        const allow_degraded = if (obj.get("allow_degraded_features") != null)
+            try deserializeStringArray(obj, "allow_degraded_features", allocator)
+        else
+            &.{};
+        return .{ .session_compact_request = .{
+            .session_id = session_id,
+            .delivery = delivery,
+            .focus = focus,
+            .continue_run = continue_run,
+            .allow_degraded_features = allow_degraded,
+        } };
+    }
+    if (std.mem.eql(u8, type_str, "session.compact.response")) {
+        const decoded = try deserializePayload("session.message.submit.response", obj, allocator);
+        return .{ .session_compact_response = decoded.message_submit_response };
+    }
     if (std.mem.eql(u8, type_str, "session.message.submit.response")) {
         const session_id = try requiredOwnedString(obj, "session_id", allocator);
         errdefer allocator.free(session_id);
@@ -2488,6 +2523,59 @@ test "round trips a message submit request" {
     try std.testing.expectEqual(oap_types.Role.user, submit.messages[0].role);
     try std.testing.expectEqualStrings("hello", submit.messages[0].content.parts[0].text);
     try std.testing.expectEqualStrings("anthropic/anthropic-messages@claude", submit.model_id.?);
+}
+
+test "round trips a compaction request and its admission" {
+    const allocator = std.testing.allocator;
+    const request = oap_types.Envelope{
+        .id = "compact-1",
+        .session_id = "sess-1",
+        .payload = .{ .session_compact_request = .{
+            .session_id = "sess-1",
+            .delivery = .queue,
+            .focus = "the parser",
+            .continue_run = true,
+        } },
+    };
+    const line = try serializeEnvelope(request, allocator);
+    defer allocator.free(line);
+    try std.testing.expect(std.mem.indexOf(u8, line, "\"type\":\"session.compact.request\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, line, "\"continue\":true") != null);
+    var decoded = try deserializeEnvelope(line, allocator);
+    defer decoded.deinit(allocator);
+    const compaction = decoded.payload.session_compact_request;
+    try std.testing.expectEqual(oap_types.RequestedDelivery.queue, compaction.delivery);
+    try std.testing.expectEqualStrings("the parser", compaction.focus.?);
+    try std.testing.expect(compaction.continue_run);
+
+    var bare = try deserializeEnvelope("{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.compact.request\",\"id\":\"c\",\"payload\":{\"session_id\":\"s\"}}", allocator);
+    defer bare.deinit(allocator);
+    try std.testing.expectEqual(oap_types.RequestedDelivery.auto, bare.payload.session_compact_request.delivery);
+    try std.testing.expect(!bare.payload.session_compact_request.continue_run);
+
+    const admission = oap_types.Envelope{
+        .id = "compact-1-response",
+        .in_reply_to = "compact-1",
+        .session_id = "sess-1",
+        .payload = .{ .session_compact_response = .{
+            .session_id = "sess-1",
+            .accepted = true,
+            .submission_id = "sub-1",
+            .requested_delivery = .auto,
+            .effective_delivery = .queue,
+            .delivery_resolution = "session_busy",
+            .admission = .queued,
+            .run_id = "run-2",
+            .status = .queued,
+        } },
+    };
+    const answered = try serializeEnvelope(admission, allocator);
+    defer allocator.free(answered);
+    try std.testing.expect(std.mem.indexOf(u8, answered, "\"type\":\"session.compact.response\"") != null);
+    var reread = try deserializeEnvelope(answered, allocator);
+    defer reread.deinit(allocator);
+    try std.testing.expectEqualStrings("run-2", reread.payload.session_compact_response.run_id.?);
+    try std.testing.expectEqualStrings("session_busy", reread.payload.session_compact_response.delivery_resolution.?);
 }
 
 test "round trips a run completed terminal with usage" {
