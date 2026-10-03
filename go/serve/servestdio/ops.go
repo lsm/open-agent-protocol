@@ -496,23 +496,23 @@ func (s *Server) refuseOversizedOpen(ctx context.Context, request requestLine, e
 }
 
 func (s *Server) submitOp(ctx context.Context, request requestLine) (json.RawMessage, *wireError) {
-	envelope, werr := s.gateRequest(request.Request, protocol.TypeSessionMessageSubmitRequest)
+	envelope, werr := s.gateRequest(request.Request, protocol.TypeSessionMessageSubmitRequest, protocol.TypeSessionCompactRequest)
 	if werr != nil {
 		return nil, werr
 	}
-	var payload protocol.MessageSubmitRequest
-	if err := envelope.DecodePayload(&payload); err != nil {
+	admit, err := serve.Admission(envelope)
+	if err != nil {
 		return nil, &wireError{Code: "invalid_payload", Message: trimMessage(err.Error())}
 	}
 	entry, werr := s.lookupSession(request.SessionID)
 	if werr != nil {
 		return nil, werr
 	}
-	admission, err := entry.Submit(ctx, base.SubmitRequest{Request: payload, EnvelopeID: envelope.ID})
+	admission, err := admit(ctx, entry)
 	if err != nil {
 		return nil, submitError(err)
 	}
-	response, err := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitResponse, protocol.EnvelopeID(s.nextID("response")), admission)
+	response, err := protocol.NewEnvelope(admission.Type, protocol.EnvelopeID(s.nextID("response")), admission.Payload)
 	if err != nil {
 		return nil, internalError(err)
 	}

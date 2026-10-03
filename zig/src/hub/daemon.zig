@@ -194,14 +194,17 @@ pub const Daemon = struct {
     fn submit(self: *Daemon, arena: std.mem.Allocator, id: []const u8, body: []const u8) !Reply {
         const value = parseBody(arena, body) orelse return self.refusal(arena, malformed, .{});
         const correlation = correlationOf(value);
-        const gated = try hub_stdio.Frontend.gateEnvelope(arena, value, &.{.message_submit_request}, "the request envelope is not a session.message.submit.request");
-        const envelope = switch (gated) {
+        const gated = try hub_stdio.Frontend.gateEnvelope(arena, value, &.{ .message_submit_request, .session_compact_request }, "the request envelope is not a session.message.submit.request or a session.compact.request");
+        var envelope = switch (gated) {
             .refused => |refused| return self.refusal(arena, refused, correlation),
             .envelope => |envelope| envelope,
         };
-        const request = &envelope.payload.message_submit_request;
         var reported = contract.Refusal{};
-        const admission = self.frontend.hub.submitReporting(arena, id, request, envelope.id, &reported) catch |err| {
+        const compacting = envelope.payload == .session_compact_request;
+        const admission = switch (envelope.payload) {
+            .session_compact_request => |*request| self.frontend.hub.compactReporting(arena, id, request, envelope.id, &reported),
+            else => self.frontend.hub.submitReporting(arena, id, &envelope.payload.message_submit_request, envelope.id, &reported),
+        } catch |err| {
             return self.refusal(arena, try controlRefusal(arena, err, &reported, id), correlation);
         };
         return self.answered(arena, .{
@@ -210,7 +213,7 @@ pub const Daemon = struct {
             .session_id = admission.session_id,
             .run_id = admission.run_id,
             .capability_revision = envelope.capability_revision,
-            .payload = .{ .message_submit_response = admission },
+            .payload = if (compacting) .{ .session_compact_response = admission } else .{ .message_submit_response = admission },
         });
     }
 
@@ -1028,6 +1031,9 @@ const submit_missing_model = "{" ++ envelope_head ++ ",\"type\":\"session.messag
 const resolve_permission = "{" ++ envelope_head ++ ",\"type\":\"action.permission.resolve.request\",\"id\":\"resolve-permission-1\",\"session_id\":\"demo\",\"run_id\":\"run-1\",\"payload\":{\"interaction_id\":\"permission-2\",\"session_id\":\"demo\",\"run_id\":\"run-1\",\"requested_by\":\"reference.memory\",\"responded_by\":\"user\",\"choice_id\":\"approve\",\"granted\":true}}";
 const resolve_input = "{" ++ envelope_head ++ ",\"type\":\"user.input.resolve.request\",\"id\":\"resolve-input-1\",\"session_id\":\"demo\",\"run_id\":\"run-1\",\"payload\":{\"interaction_id\":\"input-3\",\"session_id\":\"demo\",\"run_id\":\"run-1\",\"requested_by\":\"reference.memory\",\"responded_by\":\"user\",\"answers\":[{\"question_id\":\"choice\",\"selected_option_ids\":[\"yes\"]}]}}";
 const cancel_demo = "{" ++ envelope_head ++ ",\"type\":\"run.cancel.request\",\"id\":\"cancel-1\",\"session_id\":\"demo\",\"run_id\":\"run-1\",\"payload\":{\"session_id\":\"demo\",\"run_id\":\"run-1\"}}";
+const compact_demo = "{" ++ envelope_head ++ ",\"type\":\"session.compact.request\",\"id\":\"compact-1\",\"session_id\":\"demo\",\"payload\":{\"session_id\":\"demo\",\"focus\":\"the release plan\"}}";
+const compact_steer = "{" ++ envelope_head ++ ",\"type\":\"session.compact.request\",\"id\":\"compact-2\",\"session_id\":\"demo\",\"payload\":{\"session_id\":\"demo\",\"delivery\":\"steer\"}}";
+const compact_elsewhere = "{" ++ envelope_head ++ ",\"type\":\"session.compact.request\",\"id\":\"compact-3\",\"session_id\":\"demo\",\"payload\":{\"session_id\":\"other\"}}";
 const cancel_elsewhere = "{" ++ envelope_head ++ ",\"type\":\"run.cancel.request\",\"id\":\"cancel-2\",\"session_id\":\"other\",\"run_id\":\"run-1\",\"payload\":{\"session_id\":\"other\",\"run_id\":\"run-1\"}}";
 
 const Fixture = struct {
@@ -1178,6 +1184,38 @@ test "a submit admits a run, and a model the catalog lacks is refused naming tha
     const unknown = try fixture.answer("POST", "/sessions/absent/submit", submit_demo);
     try testing.expectEqualStrings("404 Not Found", unknown.status);
     try testing.expectEqualStrings("unknown_session", try fixture.code(unknown));
+}
+
+test "a compaction is admitted on the submit route and answered as a session.compact.response" {
+    var fixture: Fixture = undefined;
+    try fixture.init(.{});
+    defer fixture.deinit();
+    _ = try fixture.answer("POST", "/adapters/memory/sessions", open_demo);
+
+    const admitted = try fixture.answer("POST", "/sessions/demo/submit", compact_demo);
+    try testing.expectEqualStrings("200 OK", admitted.status);
+    try testing.expectEqualStrings("session.compact.response", try fixture.kind(admitted));
+    const root = try fixture.json(admitted);
+    try testing.expectEqualStrings("compact-1", root.get("in_reply_to").?.string);
+    try testing.expectEqualStrings("run-1", root.get("run_id").?.string);
+    try testing.expectEqualStrings("started", root.get("payload").?.object.get("admission").?.string);
+
+    const elsewhere = try fixture.answer("POST", "/sessions/demo/submit", compact_elsewhere);
+    try testing.expectEqualStrings("400 Bad Request", elsewhere.status);
+    try testing.expectEqualStrings("scope_mismatch", try fixture.code(elsewhere));
+}
+
+test "a compaction the adapter refuses answers with the submit route's refusal" {
+    var fixture: Fixture = undefined;
+    try fixture.init(.{});
+    defer fixture.deinit();
+    _ = try fixture.answer("POST", "/adapters/memory/sessions", open_demo);
+    _ = try fixture.answer("POST", "/sessions/demo/submit", submit_demo);
+
+    const steered = try fixture.answer("POST", "/sessions/demo/submit", compact_steer);
+    try testing.expectEqualStrings("400 Bad Request", steered.status);
+    try testing.expectEqualStrings("unsupported_feature", try fixture.code(steered));
+    try testing.expectEqualStrings("compact-2", (try fixture.json(steered)).get("in_reply_to").?.string);
 }
 
 test "a resolve answers the response its request's type selects, and a second answer to one gate is rejected" {

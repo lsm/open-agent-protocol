@@ -5130,11 +5130,13 @@ settles `compacted` unless the request asked to `continue`, in which case it
 takes the scripted turn. Both move to `reference-memory-v14`, and the memory
 parity scenario pins the two trees to the same trace. `goap serve agent` and
 `oapx serve agent` route the request; the hub gains `Session.Compact` in Go.
+The third slice carries it over the hub: `submit` accepts a
+`session.compact.request` beside a `session.message.submit.request` and answers
+`session.compact.response`, on both Go transports and on Zig's HTTP hub, whose
+stdio side serves no `submit` yet.
 
 Still open, each for a later slice:
 
-- the hub's HTTP and stdio transports carry no compaction operation yet, so a
-  hub client cannot ask for one;
 - neither reference adapter compacts on its own, so `threshold` and `overflow`
   are exercised by fixtures only;
 - step 3, native evidence, is pi's, as the decision names.
