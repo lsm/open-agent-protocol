@@ -431,8 +431,9 @@ The admission pair is one the core admits, and there are two of them.
 either `admission: "started"` with `effective_delivery: "start"`, or
 `admission: "queued"` with `effective_delivery: "queue"` and a reserved `run_id`.
 `queue` resolves to the queued shape. `steer` is not one of the two:
-[Decision 0013](../decisions/0013-steer.md) is proposed, and the core refuses
-`steered` in this subset, so this profile cannot offer it either.
+[Decision 0013](../decisions/0013-steer.md) is accepted, but `steered` admits
+guidance into a run rather than starting or reserving one, and this subset
+admits only those two, so this profile does not offer it.
 
 ### Accepting A Degraded Feature
 

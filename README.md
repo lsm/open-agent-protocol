@@ -843,7 +843,7 @@ Decisions:
 - [0010 — terminal provenance](decisions/0010-terminal-provenance.md) (accepted)
 - [0011 — control-layer-provided tools](decisions/0011-control-layer-provided-tools.md) (accepted)
 - [0012 — retire `+persistence`, stage transcript load](decisions/0012-persistence-is-not-in-v0.1-core.md) (proposed)
-- [0013 — steer](decisions/0013-steer.md) (proposed)
+- [0013 — steer](decisions/0013-steer.md) (accepted)
 - [0014 — provider descriptors](decisions/0014-provider-descriptors.md) (proposed)
 - [0015 — evidence from implementations we do not control](decisions/0015-evidence-from-implementations-we-do-not-control.md) (proposed)
 - [0016 — the model provider profile](decisions/0016-model-provider-profile.md) (proposed)

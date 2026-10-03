@@ -1,6 +1,15 @@
 # Decision 0013: Steer
 
-Status: proposed
+Status: accepted 2026-10-03 (the submit-envelope prerequisite landed in #798; the
+reference memory adapters execute steer in both trees and advertise
+`session.message.delivery.steer` at `emulated` (#812); the hub withholds a steer's
+target stream behind its response and the Go and TypeScript clients hold a settlement
+that arrives before its admission (#813); and pi executes its native `steer` command in
+both trees — admission with `target_sequence`, a `turn`-boundary settlement, a
+`run_terminated` drop at the terminal and `pending_steers` on state — moving the pin's
+capability revision to `pi-v0.87.1-oap-v3` (#824). The plan's `settled_steers`
+session-state surface is deferred to its own decision, as this record says below;
+nothing else in the record is left pending)
 Date: 2026-09-17
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
@@ -88,8 +97,8 @@ without the caller ever having seen the admission response. This is the
 recovery case the plan spends most of its length on, and it is real: a caller
 that lost its response has minted a request id and knows nothing else.
 
-**This has a prerequisite that has not landed, and this decision is blocked on
-it.** See Evidence.
+**This had a prerequisite that had not landed when the record was written, and
+the decision waited on it until #798 landed it.** See Evidence.
 
 ### What this decision does not take from the plan
 
@@ -144,19 +153,20 @@ application semantics is more native evidence than `+models`, `+queue` or
 `+tool-sources` had when they graduated. What this unit has lacked is not
 evidence but a decision.
 
-**The blocker.** `adapter.Session.Submit` still takes a bare
-`protocol.MessageSubmitRequest` (`adapter/adapter.go:23`). The plan assigned
-the change to `adapter.SubmitRequest { Request, EnvelopeID }` to **T2**, which
-needed it for queue capture markers; T2 graduated as Decision 0007 without it.
-So no adapter can populate `request_id` on a steer settlement today, because
-no adapter is told the envelope id of the submit it is answering.
+**The blocker, since removed.** When this record was written,
+`adapter.Session.Submit` took a bare `protocol.MessageSubmitRequest`. The plan
+assigned the change to `adapter.SubmitRequest { Request, EnvelopeID }` to
+**T2**, which needed it for queue capture markers; T2 graduated as Decision 0007
+without it, so no adapter could populate `request_id` on a steer settlement,
+because none was told the envelope id of the submit it was answering. #798
+made that change, and it is the prerequisite the status line cites.
 
 That change is a compile-time break across all nine implementations of
 `adapter.Session`, and it is meant to be: an adapter that ignores the new
 member keeps compiling only because it does not emit correlated events. It is
-a prerequisite of this unit and not part of it, and it should land on its own
-so the break is reviewable separately from the semantics. **This decision
-cannot be accepted until it has.**
+a prerequisite of this unit and not part of it, and it landed on its own in
+#798 so the break was reviewable separately from the semantics. The decision
+was held until it had.
 
 ## Consequences
 
