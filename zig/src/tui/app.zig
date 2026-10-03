@@ -4634,7 +4634,7 @@ pub const TuiModel = struct {
         }
         const waiting = running and app.state.active_assistant_entry == null and app.state.active_thinking_entry == null and app.state.active_tool_summary_entry == null and app.state.mode != .approval;
         if (waiting) activity = try std.fmt.allocPrint(allocator, "waiting for {s}", .{if (app.state.status.model.len > 0) app.state.status.model else "the model"});
-        if (running) app.state.zen.noteActivity(activity, app.state.anim_tick);
+        if (running) app.state.zen.noteActivity(activity, app.state.anim_tick, zen_view.dwell_ticks);
         const timed: ?usize = if (!running) null else if (waiting) std.math.maxInt(usize) - entries.len else app.state.active_tool_summary_entry;
         const tool_ms = app.state.zen.stepMs(timed, compat.time.nowMillis());
         var final_block: []const u8 = "";
@@ -8663,7 +8663,7 @@ test "zen names the model it is waiting on before the run's first step" {
     app.state.status.streaming = true;
     const settle = struct {
         fn frames(m: *TuiModel, ctx: *zz.Context) []const u8 {
-            for (0..zen_view.slide_ticks) |_| {
+            for (0..zen_view.dwell_ticks) |_| {
                 _ = m.view(ctx);
                 m.app.?.state.anim_tick +%= 1;
             }

@@ -217,7 +217,8 @@ pub fn render(allocator: std.mem.Allocator, frame: Frame) ![]u8 {
     return out.toOwnedSlice();
 }
 
-pub const slide_ticks: u64 = 12;
+pub const slide_ticks: u64 = 30;
+pub const dwell_ticks: u64 = slide_ticks + 10;
 const timed_after_ms: u64 = 10_000;
 const faded_level: f32 = 40;
 
@@ -239,13 +240,14 @@ fn fadedRow(allocator: std.mem.Allocator, text: []const u8, strength: f32, width
 fn activitySlot(allocator: std.mem.Allocator, frame: Frame, width: usize) ![3][]const u8 {
     const current = try activityLine(allocator, frame.activity, frame.tool_ms, width);
     if (frame.since_change >= slide_ticks) return .{ "", try fadedRow(allocator, current, 1, width), "" };
-    const half = slide_ticks / 2;
-    if (frame.since_change < half) {
-        const p = @as(f32, @floatFromInt(frame.since_change)) / @as(f32, @floatFromInt(half));
-        const previous = try tui_text.truncateLineToWidth(allocator, frame.previous, width);
-        return .{ try fadedRow(allocator, previous, 1 - p, width), "", try fadedRow(allocator, current, p, width) };
-    }
-    return .{ "", try fadedRow(allocator, current, 1, width), "" };
+    const p = @as(f32, @floatFromInt(frame.since_change)) / @as(f32, @floatFromInt(slide_ticks));
+    const previous = try tui_text.truncateLineToWidth(allocator, frame.previous, width);
+    const old = try fadedRow(allocator, previous, 1 - p / 0.8, width);
+    const new = try fadedRow(allocator, current, p / 0.8, width);
+    if (p < 0.4) return .{ "", old, new };
+    if (p < 0.5) return .{ old, "", new };
+    if (p < 0.8) return .{ old, new, "" };
+    return .{ "", new, "" };
 }
 
 test "a final reply reads wider than the input bar when the screen allows" {
@@ -504,18 +506,27 @@ test "a changed activity slides up: the old line rises and fades as the new one 
     const base: Frame = .{ .width = 80, .height = 24, .running = true, .activity = "Shell Execute  ls", .previous = "thinking" };
 
     var frame = base;
-    frame.since_change = 2;
+    frame.since_change = 3;
+    const starting = try activitySlot(a, frame, 60);
+    try std.testing.expectEqualStrings("", starting[0]);
+    try std.testing.expect(std.mem.indexOf(u8, starting[1], "thinking") != null);
+    try std.testing.expect(std.mem.indexOf(u8, starting[2], "Shell Execute") != null);
+
+    frame.since_change = 13;
     const rising = try activitySlot(a, frame, 60);
     try std.testing.expect(std.mem.indexOf(u8, rising[0], "thinking") != null);
     try std.testing.expectEqualStrings("", rising[1]);
     try std.testing.expect(std.mem.indexOf(u8, rising[2], "Shell Execute") != null);
+    try std.testing.expect(levelOf(rising[0]) < levelOf(starting[1]));
+    try std.testing.expect(levelOf(rising[2]) > levelOf(starting[2]));
 
-    frame.since_change = 5;
-    const later = try activitySlot(a, frame, 60);
-    try std.testing.expect(levelOf(later[0]) < levelOf(rising[0]));
-    try std.testing.expect(levelOf(later[2]) > levelOf(rising[2]));
+    frame.since_change = 20;
+    const passing = try activitySlot(a, frame, 60);
+    try std.testing.expect(std.mem.indexOf(u8, passing[0], "thinking") != null);
+    try std.testing.expect(std.mem.indexOf(u8, passing[1], "Shell Execute") != null);
+    try std.testing.expectEqualStrings("", passing[2]);
 
-    frame.since_change = slide_ticks / 2;
+    frame.since_change = 24;
     const landed = try activitySlot(a, frame, 60);
     try std.testing.expectEqualStrings("", landed[0]);
     try std.testing.expect(std.mem.indexOf(u8, landed[1], "Shell Execute") != null);

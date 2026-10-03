@@ -130,9 +130,10 @@ pub const Zen = struct {
         return @intCast(now_ms - self.step_started_ms);
     }
 
-    pub fn noteActivity(self: *Zen, text: []const u8, tick: u64) void {
+    pub fn noteActivity(self: *Zen, text: []const u8, tick: u64, dwell: u64) void {
         const kept = utf8Prefix(text, zen_activity_bytes);
         if (std.mem.eql(u8, kept, self.activity())) return;
+        if (self.shown_len > 0 and tick -% self.changed_tick < dwell) return;
         @memcpy(self.previous[0..self.shown_len], self.shown[0..self.shown_len]);
         self.previous_len = self.shown_len;
         @memcpy(self.shown[0..kept.len], kept);
@@ -4592,19 +4593,21 @@ test "zen entered mid-reply counts the reply already streaming" {
     try std.testing.expectEqual(state.transcript.items.len, zenStart(&state));
 }
 
-test "zen remembers the activity it replaces and when, and ignores a repeat" {
+test "zen remembers the activity it replaces and when, ignores a repeat, and holds each line for its dwell" {
     var zen: Zen = .{};
-    zen.noteActivity("thinking", 3);
+    zen.noteActivity("thinking", 3, 10);
     try std.testing.expectEqualStrings("thinking", zen.activity());
     try std.testing.expectEqualStrings("", zen.previousActivity());
-    zen.noteActivity("thinking", 9);
+    zen.noteActivity("thinking", 9, 10);
     try std.testing.expectEqual(@as(u64, 3), zen.changed_tick);
-    zen.noteActivity("Shell Execute  ls", 12);
+    zen.noteActivity("Read  a.zig", 12, 10);
+    try std.testing.expectEqualStrings("thinking", zen.activity());
+    zen.noteActivity("Shell Execute  ls", 13, 10);
     try std.testing.expectEqualStrings("Shell Execute  ls", zen.activity());
     try std.testing.expectEqualStrings("thinking", zen.previousActivity());
-    try std.testing.expectEqual(@as(u64, 12), zen.changed_tick);
+    try std.testing.expectEqual(@as(u64, 13), zen.changed_tick);
     const long = "\u{2026}" ** 100;
-    zen.noteActivity(long, 13);
+    zen.noteActivity(long, 23, 10);
     try std.testing.expect(zen.activity().len <= zen_activity_bytes);
     try std.testing.expect(std.unicode.utf8ValidateSlice(zen.activity()));
 }
@@ -4618,7 +4621,7 @@ test "the step clock times only a timed step, from its own start" {
     try std.testing.expectEqual(@as(u64, 3_000), zen.stepMs(7, 116_000));
     try std.testing.expectEqual(@as(u64, 0), zen.stepMs(null, 130_000));
     try std.testing.expectEqual(@as(u64, 0), zen.stepMs(7, 131_000));
-    zen.noteActivity("thinking", 3);
+    zen.noteActivity("thinking", 3, 10);
     zen.beginRun(40);
     try std.testing.expectEqualStrings("", zen.activity());
     try std.testing.expectEqualStrings("", zen.previousActivity());
