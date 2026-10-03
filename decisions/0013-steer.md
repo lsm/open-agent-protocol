@@ -97,8 +97,8 @@ without the caller ever having seen the admission response. This is the
 recovery case the plan spends most of its length on, and it is real: a caller
 that lost its response has minted a request id and knows nothing else.
 
-**This has a prerequisite that has not landed, and this decision is blocked on
-it.** See Evidence.
+**This had a prerequisite that had not landed when the record was written, and
+the decision waited on it until #798 landed it.** See Evidence.
 
 ### What this decision does not take from the plan
 
@@ -164,9 +164,9 @@ made that change, and it is the prerequisite the status line cites.
 That change is a compile-time break across all nine implementations of
 `adapter.Session`, and it is meant to be: an adapter that ignores the new
 member keeps compiling only because it does not emit correlated events. It is
-a prerequisite of this unit and not part of it, and it should land on its own
-so the break is reviewable separately from the semantics. **This decision
-cannot be accepted until it has.**
+a prerequisite of this unit and not part of it, and it landed on its own in
+#798 so the break was reviewable separately from the semantics. The decision
+was held until it had.
 
 ## Consequences
 
