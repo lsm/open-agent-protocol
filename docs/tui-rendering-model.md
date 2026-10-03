@@ -572,13 +572,14 @@ every frame anyway.
 
 `/zen` (or `/zen on`, `/zen off`) replaces the whole screen with one centred
 column in grey: a trail that grows one dot for each thinking block, tool call
-and reply since zen began (with a count in front once it outgrows the column),
-one line naming what the agent is doing, which slides up and fades as the next takes its place and shows how long it has been on that step once that passes ten seconds, and, floating a little above the bottom of
+and reply since zen began, showing the last ten steps with each tenth drawn as
+its number (`· · · · · · 10 · · ·`), so only one number ever shows,
+one line naming what the agent is doing, which changes in place, letter by letter from the centre outward: each letter swaps straight to its successor at full grey, the swap travelling to both ends over one second, so the new line opens out of the old one, while a soft light keeps opening from the line's centre out to both ends, one sweep every four seconds for as long as a line is shown; lines that arrive faster than a change wait in a short queue (the newest eight kept) and each gets its full fade, and is only the step's title until a tool call has been running for ten seconds, when that call's own clock appears beside it; while no step is under way it reads `waiting for <model>`, timed by the same rule, and, floating a little above the bottom of
 the screen, a minimal input bar in place of the composer and the status bar.
 The trail breathes slowly while the agent thinks, faster while a tool runs,
 and holds still while an approval waits; with no steps yet it is a single dot.
 When the run ends it brightens once and fades, and then the last reply (or the
-error that ended it), still drawn with its markdown colours, takes its place. Approval prompts and the command palette appear above the input
+error that ended it), still drawn with its markdown colours, takes its place. The reply reads in a wider column than the input bar, up to 120 cells. A reply taller than the screen opens at its first line, with a marker for how much is below; PgUp, PgDn and the mouse wheel page through it, because zen turns on mouse reporting while it is on (and off again when it ends), so the wheel scrolls the reply instead of the terminal's scrollback. Approval prompts and the command palette appear above the input
 bar. While zen is on, nothing is printed into the scrollback; leaving it
 prints what was held back at the current verbosity, and so does quitting, so a
 session ended in zen still leaves its transcript in the terminal. Only an error

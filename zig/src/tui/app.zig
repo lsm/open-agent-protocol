@@ -4092,12 +4092,15 @@ pub const TuiModel = struct {
     autocompact: tui_config.AutoCompact = .auto,
     verbosity: tui_config.Verbosity = .{},
     render_mode: RenderMode = .auto,
+    wheel_captured: bool = false,
+    wheel_cmds: [2]zz.Cmd(Msg) = .{ .none, .none },
 
     pub const Msg = union(enum) {
         key: zz.KeyEvent,
         mouse: zz.MouseEvent,
         tick: struct { timestamp: u64, delta: u64 },
         window_size: struct { width: u16, height: u16 },
+        resumed: void,
         quit: void,
     };
 
@@ -4130,6 +4133,16 @@ pub const TuiModel = struct {
     }
 
     pub fn update(self: *TuiModel, msg: Msg, ctx: *zz.Context) zz.Cmd(Msg) {
+        if (msg == .resumed) self.wheel_captured = false;
+        const cmd = self.step(msg, ctx);
+        const zen_on = if (self.app) |*app| app.state.zen.on else false;
+        if (zen_on == self.wheel_captured) return cmd;
+        self.wheel_captured = zen_on;
+        self.wheel_cmds = .{ if (zen_on) .enable_mouse else .disable_mouse, cmd };
+        return .{ .batch = &self.wheel_cmds };
+    }
+
+    fn step(self: *TuiModel, msg: Msg, ctx: *zz.Context) zz.Cmd(Msg) {
         const app = &(self.app orelse return .none);
         switch (msg) {
             .key => |key| {
@@ -4455,6 +4468,7 @@ pub const TuiModel = struct {
                     app.refreshBranchOnSlowTick() catch |err| app.recordError(@errorName(err)) catch {};
                 }
             },
+            .resumed => {},
             .quit => return self.quitCmd(app, ctx),
         }
         if (app.pending_clear_screen) {
@@ -4587,11 +4601,16 @@ pub const TuiModel = struct {
         app.state.zen.phase = @mod(app.state.zen.phase + zen_view.breathStep(zenMood(app, running)), 1);
     }
 
+    const zen_reply_top: usize = std.math.maxInt(usize) / 2;
+
     fn noteZenRun(app: *App) bool {
         const zen = &app.state.zen;
         const running = streamActive(app);
-        if (zen.was_running and !running) zen.ended_tick = app.state.anim_tick;
-        if (!zen.was_running and running) zen.beginRun(app.state.anim_tick, compat.time.nowMillis());
+        if (zen.was_running and !running) {
+            zen.ended_tick = app.state.anim_tick;
+            app.state.transcript_scroll = zen_reply_top;
+        }
+        if (!zen.was_running and running) zen.beginRun(app.state.anim_tick);
         if (running) zen.ended_tick = null;
         zen.was_running = running;
         return running;
@@ -4613,18 +4632,24 @@ pub const TuiModel = struct {
                 activity = if (title.arg.len > 0) try std.fmt.allocPrint(allocator, "{s}  {s}", .{ title.label, title.arg }) else title.label;
             }
         }
-        const now_ms = compat.time.nowMillis();
-        if (running) app.state.zen.noteActivity(activity, app.state.anim_tick, now_ms);
+        const waiting = running and app.state.active_assistant_entry == null and app.state.active_thinking_entry == null and app.state.active_tool_summary_entry == null and app.state.mode != .approval;
+        if (waiting) activity = try std.fmt.allocPrint(allocator, "waiting for {s}", .{if (app.state.status.model.len > 0) app.state.status.model else "the model"});
+        if (running) {
+            app.state.zen.noteActivity(activity);
+            app.state.zen.advance(app.state.anim_tick, zen_view.change_ticks);
+        }
+        const timed: ?usize = if (!running) null else if (waiting) std.math.maxInt(usize) - entries.len else app.state.active_tool_summary_entry;
+        const tool_ms = app.state.zen.stepMs(timed, compat.time.nowMillis());
         var final_block: []const u8 = "";
         var failed = false;
         if (!running) {
             if (counts.final) |index| {
                 const entry = &entries[index];
                 failed = entry.kind == .@"error";
-                final_block = try transcript_view.renderTranscriptEntryWith(allocator, entry, column, .{});
+                final_block = try transcript_view.renderTranscriptEntryWith(allocator, entry, zen_view.readingWidth(width), .{});
             }
         }
-        return zen_view.render(allocator, .{
+        var frame: zen_view.Frame = .{
             .mood = zenMood(app, running),
             .phase = app.state.zen.phase,
             .farewell = if (app.state.zen.ended_tick) |ended| zen_view.farewellLevel(app.state.anim_tick -% ended) else null,
@@ -4638,12 +4663,16 @@ pub const TuiModel = struct {
             .counts = .{ .thinking = counts.thinking, .tools = counts.tools, .messages = counts.messages },
             .running = running,
             .activity = app.state.zen.activity(),
-            .previous = app.state.zen.previousActivity(),
-            .since_change = app.state.anim_tick -% app.state.zen.changed_tick,
-            .stuck_ms = app.state.zen.stuckMs(now_ms),
+            .incoming = app.state.zen.incomingActivity(),
+            .rise = app.state.zen.rise(app.state.anim_tick, zen_view.change_ticks),
+            .light = @as(f32, @floatFromInt(app.state.anim_tick % zen_view.light_ticks)) / @as(f32, @floatFromInt(zen_view.light_ticks)),
+            .tool_ms = if (app.state.zen.settled()) tool_ms else 0,
             .final_block = final_block,
             .failed = failed,
-        });
+        };
+        if (zen_view.showsReply(frame)) app.state.transcript_scroll = @min(app.state.transcript_scroll, try zen_view.maxScroll(allocator, frame));
+        frame.scroll = app.state.transcript_scroll;
+        return zen_view.render(allocator, frame);
     }
 
     const Chrome = struct {
@@ -4936,7 +4965,7 @@ pub const TuiModel = struct {
     }
 
     fn refillInlineWindowAfterResize(self: *TuiModel, app: *App, ctx: *zz.Context) !void {
-        app.state.transcript_scroll = 0;
+        if (!app.state.zen.on) app.state.transcript_scroll = 0;
         if (!self.inlineMode(ctx)) return;
         const width: usize = @max(ctx.width, 20);
         const budget = self.flushBudget(app, ctx);
@@ -8509,6 +8538,161 @@ test "zen fades out once on the frame the run ends, then shows the reply" {
     }
     _ = model.update(.{ .tick = .{ .timestamp = 0, .delta = 0 } }, &tctx.ctx);
     try std.testing.expect(std.mem.indexOf(u8, model.view(&tctx.ctx), "the final reply") != null);
+}
+
+test "zen opens a reply taller than the screen at its top and pages through it" {
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    tctx.ctx.width = 80;
+    tctx.ctx.height = 20;
+    const app = &model.app.?;
+    try app.submit("/zen");
+    app.state.status.streaming = true;
+    var reply: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer reply.deinit();
+    for (0..60) |i| try reply.writer.print("reply line {d}\n\n", .{i});
+    try app.state.appendTranscript(.assistant, reply.written());
+    _ = model.view(&tctx.ctx);
+    app.state.status.streaming = false;
+    for (0..30) |_| {
+        _ = model.update(.{ .tick = .{ .timestamp = 0, .delta = 0 } }, &tctx.ctx);
+        _ = model.view(&tctx.ctx);
+    }
+    _ = model.update(.{ .window_size = .{ .width = 80, .height = 20 } }, &tctx.ctx);
+
+    const top = model.view(&tctx.ctx);
+    try std.testing.expect(std.mem.indexOf(u8, top, "done") != null);
+    try std.testing.expect(std.mem.indexOf(u8, top, "reply line 0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, top, "reply line 59") == null);
+    try std.testing.expect(std.mem.indexOf(u8, top, "PgDn") != null);
+    try std.testing.expect(std.mem.indexOf(u8, top, "PgUp") == null);
+
+    while (app.state.transcript_scroll > 0) _ = model.update(.{ .key = .{ .key = .page_down } }, &tctx.ctx);
+    const bottom = model.view(&tctx.ctx);
+    try std.testing.expect(std.mem.indexOf(u8, bottom, "reply line 59") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bottom, "reply line 0\n") == null);
+    try std.testing.expect(std.mem.indexOf(u8, bottom, "PgUp") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bottom, "PgDn") == null);
+    try std.testing.expectEqual(@as(usize, 20), std.mem.count(u8, bottom, "\n") + 1);
+}
+
+test "zen captures the wheel while it is on and scrolls the reply with it" {
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    tctx.ctx.width = 80;
+    tctx.ctx.height = 20;
+    const app = &model.app.?;
+    const tick: TuiModel.Msg = .{ .tick = .{ .timestamp = 0, .delta = 0 } };
+    try std.testing.expect(model.update(tick, &tctx.ctx) != .batch);
+    try app.submit("/zen");
+    const entered = model.update(tick, &tctx.ctx);
+    try std.testing.expect(entered.batch[0] == .enable_mouse);
+    try std.testing.expect(model.update(tick, &tctx.ctx) != .batch);
+
+    app.state.status.streaming = true;
+    var reply: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer reply.deinit();
+    for (0..60) |i| try reply.writer.print("reply line {d}\n\n", .{i});
+    try app.state.appendTranscript(.assistant, reply.written());
+    _ = model.view(&tctx.ctx);
+    app.state.status.streaming = false;
+    for (0..30) |_| {
+        _ = model.update(tick, &tctx.ctx);
+        _ = model.view(&tctx.ctx);
+    }
+    try std.testing.expect(std.mem.indexOf(u8, model.view(&tctx.ctx), "reply line 0") != null);
+    const wheel_down: TuiModel.Msg = .{ .mouse = .{ .x = 0, .y = 0, .button = .wheel_down, .event_type = .press } };
+    while (app.state.transcript_scroll > 0) _ = model.update(wheel_down, &tctx.ctx);
+    const bottom = model.view(&tctx.ctx);
+    try std.testing.expect(std.mem.indexOf(u8, bottom, "reply line 59") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bottom, "reply line 0\n") == null);
+
+    try std.testing.expect(model.update(.resumed, &tctx.ctx).batch[0] == .enable_mouse);
+    try std.testing.expect(model.update(tick, &tctx.ctx) != .batch);
+
+    try app.submit("/zen");
+    const left = model.update(tick, &tctx.ctx);
+    try std.testing.expect(left.batch[0] == .disable_mouse);
+    try std.testing.expect(model.update(.resumed, &tctx.ctx) != .batch);
+}
+
+test "leaving zen mid-run after a run that ended with no reply returns the transcript to its tail" {
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    tctx.ctx.width = 80;
+    tctx.ctx.height = 20;
+    const app = &model.app.?;
+    const tick: TuiModel.Msg = .{ .tick = .{ .timestamp = 0, .delta = 0 } };
+    for (0..40) |i| {
+        const line = try std.fmt.allocPrint(std.testing.allocator, "history {d}", .{i});
+        defer std.testing.allocator.free(line);
+        try app.state.appendTranscript(.system, line);
+    }
+    try app.submit("/zen");
+    app.state.status.streaming = true;
+    _ = model.update(tick, &tctx.ctx);
+    _ = model.view(&tctx.ctx);
+    app.state.status.streaming = false;
+    try app.state.appendTranscript(.system, "cancelled");
+    _ = model.update(tick, &tctx.ctx);
+    _ = model.view(&tctx.ctx);
+    try std.testing.expect(app.state.transcript_scroll > 0);
+    try app.steer("/zen on");
+    try std.testing.expect(app.state.transcript_scroll > 0);
+    try app.steer("/zen");
+    try std.testing.expectEqual(@as(usize, 0), app.state.transcript_scroll);
+    try std.testing.expect(std.mem.indexOf(u8, model.view(&tctx.ctx), "SCROLL") == null);
+}
+
+test "zen names the model it is waiting on before the run's first step" {
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    tctx.ctx.width = 80;
+    tctx.ctx.height = 20;
+    const app = &model.app.?;
+    try app.submit("/zen");
+    try app.state.status.setModel(app.allocator, "space-bunny-free", "opencode-go");
+    app.state.status.streaming = true;
+    const settle = struct {
+        var plain: [1 << 16]u8 = undefined;
+        fn frames(m: *TuiModel, ctx: *zz.Context) []const u8 {
+            for (0..2 * zen_view.change_ticks + 2) |_| {
+                _ = m.view(ctx);
+                m.app.?.state.anim_tick +%= 1;
+            }
+            const view = m.view(ctx);
+            var len: usize = 0;
+            var i: usize = 0;
+            while (i < view.len) : (i += 1) {
+                if (view[i] == 0x1b) {
+                    while (i < view.len and view[i] != 'm') i += 1;
+                    continue;
+                }
+                plain[len] = view[i];
+                len += 1;
+            }
+            return plain[0..len];
+        }
+    };
+    try std.testing.expect(std.mem.indexOf(u8, settle.frames(&model, &tctx.ctx), "waiting for space-bunny-free") != null);
+    try app.state.appendTranscript(.thinking, "hmm");
+    app.state.active_thinking_entry = app.state.transcript.items.len - 1;
+    const thinking = settle.frames(&model, &tctx.ctx);
+    try std.testing.expect(std.mem.indexOf(u8, thinking, "thinking") != null);
+    try std.testing.expect(std.mem.indexOf(u8, thinking, "waiting for") == null);
+    try std.testing.expect(app.state.zen.settled());
 }
 
 test "App submit quit command requests quit" {
