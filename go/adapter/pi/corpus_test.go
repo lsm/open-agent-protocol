@@ -25,13 +25,13 @@ import (
 var piCommitTree = pin.Source("pi").Tree
 
 const (
-	piRPCTypesBlob     = "1cbd49a898382f0fbb409a7d241ad694b2f59e0d"
-	piRPCModeBlob      = "f4857ffb2e0b3adaa56021e3a4a4e174d14eaefc"
-	piAgentSessionBlob = "338d0e0d01cde75f2a3a2e56f88b747072de748a"
-	piSessionMgrBlob   = "fd87a2d886bd8a0b5c6afd2f6d97d20654eb52e3"
-	piAgentTypesBlob   = "8da843f5619ce6bd0251375e9e21c18fa799f2e3"
+	piRPCTypesBlob     = "7fc71516aebb8b68ea019f1df4eef966eeaa17c7"
+	piRPCModeBlob      = "1c0995d36ec752155f1d13b019728f9343bb263c"
+	piAgentSessionBlob = "f641d6ec9e2e7c1e5d61b1ff5aadb3e7c1447d15"
+	piSessionMgrBlob   = "df5281a0a4258462b14faa7d055efa09783ea6aa"
+	piAgentTypesBlob   = "6e17c3c8c91eeceb6c01e453eec7dc06b9c82443"
 	piRPCEntryBlob     = "11059a8d47f6d4f22469802f8dca0a6af6c8db88"
-	piCLIArgsBlob      = "a358798078d74a6de2bbf272f3c1a5041f479c03"
+	piCLIArgsBlob      = "9461c3e21f89e0cda0fc8480421d0e92e88d6fe6"
 )
 
 var piLedgerFixtures = map[string]bool{
