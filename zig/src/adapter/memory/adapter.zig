@@ -1046,8 +1046,8 @@ pub const Session = struct {
         if (run.model.len > 0) try completed.put("model_id", .{ .string = run.model });
         if (run.structured) try completed.put("result", try parseValue(a, fixed_result));
         if (run.terminal) return;
-        try self.emit(run, "run.completed", completed.value(), true);
         self.history += textTokens(final_text.len);
+        try self.emit(run, "run.completed", completed.value(), true);
     }
 
     fn resolveCall(ptr: *anyopaque, arena: std.mem.Allocator, request_id: []const u8, request: *const oap_types.CallResolveRequest, refusal: *contract.Refusal) contract.Failure!oap_types.CallResolveResponse {
@@ -2477,4 +2477,18 @@ test "a share or token count out of range is refused at open" {
         try testing.expectEqualStrings(contract.feature_compaction_policy, refusal.feature);
         try testing.expectEqualStrings("compaction_policy", refusal.field);
     }
+}
+
+test "a queued run promoted by the settlement that crossed the threshold compacts first" {
+    var probe: Probe = undefined;
+    try probe.initPolicy("{\"kind\":\"tokens\",\"tokens\":9}");
+    defer probe.deinit();
+    _ = try probe.submitText("go");
+    const queued = try probe.submitWith(.queue, .{ .session_id = "", .messages = &.{}, .delivery = .queue });
+    try probe.approve("run-1", "permission-2", "approve");
+    try probe.answer("run-1", "input-3");
+    try testing.expectEqual(@as(usize, 1), try probe.compactionsSeen());
+    const started = try probe.eventOfType("run.compaction.started");
+    try testing.expectEqualStrings(queued.run_id.?, started.object.get("run_id").?.string);
+    try testing.expectEqual(@as(i64, 9), started.object.get("payload").?.object.get("history_tokens").?.integer);
 }

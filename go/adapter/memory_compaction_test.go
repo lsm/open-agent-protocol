@@ -447,3 +447,37 @@ func TestMemoryRefusesAShareOrTokenCountOutOfRange(t *testing.T) {
 		}
 	}
 }
+
+func TestMemoryCompactsAQueuedRunPromotedByTheSettlementThatCrossedTheThreshold(t *testing.T) {
+	session, err := openWithPolicy(t, &protocol.CompactionPolicy{Kind: protocol.CompactionTokens, Tokens: 9})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}}
+	running, stream, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: first, EnvelopeID: "submit-first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	queued := first
+	queued.Delivery = protocol.DeliveryQueue
+	waiting, queuedStream, err := session.Submit(context.Background(), adapter.SubmitRequest{Request: queued, EnvelopeID: "submit-queued"})
+	if err != nil || waiting.Admission != protocol.AdmissionQueued {
+		t.Fatalf("queued admission = %+v, %v", waiting, err)
+	}
+	events := drainAvailable(stream)
+	var requested protocol.PermissionRequestedPayload
+	if err := events[len(events)-1].DecodePayload(&requested); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Resolve(context.Background(), adapter.InteractionResolution{RunID: running.RunID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: requested.InteractionID, SessionID: "session-1", RunID: running.RunID, RequestedBy: requested.RequestedBy, RespondedBy: "user", ChoiceID: "approve", Granted: true}}); err != nil {
+		t.Fatal(err)
+	}
+	events = drainAvailable(stream)
+	answerInput(t, session, events[len(events)-2])
+	drainAvailable(stream)
+	promoted := drainAvailable(queuedStream)
+	started := compactions(t, promoted)
+	if len(started) != 1 || started[0].RunID != waiting.RunID || *started[0].HistoryTokens != 9 {
+		t.Fatalf("the promoted run's compactions = %+v, want one of nine tokens on %s", started, waiting.RunID)
+	}
+}

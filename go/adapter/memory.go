@@ -1403,15 +1403,19 @@ func (s *memorySession) resolveInput(run *memoryRun, request protocol.UserInputR
 
 		completed.Result = json.RawMessage(fixedResult)
 	}
+	reply := historyTokens([]protocol.Message{completed.FinalResponse})
+	s.mu.Lock()
+	s.history += reply
+	s.mu.Unlock()
 	if err := s.emit(run, protocol.TypeRunCompleted, completed, true); err != nil {
 		if err == errTerminalWon {
+			s.mu.Lock()
+			s.history -= reply
+			s.mu.Unlock()
 			return nil
 		}
 		return err
 	}
-	s.mu.Lock()
-	s.history += historyTokens([]protocol.Message{completed.FinalResponse})
-	s.mu.Unlock()
 	return nil
 }
 
