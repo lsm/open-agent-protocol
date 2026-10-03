@@ -1,16 +1,18 @@
 [
    {
-      "classification" : "required-unmapped",
+      "classification" : "mapped",
       "direction" : "host-to-pi",
-      "fidelity" : "unsupported",
+      "fidelity" : "normalized",
       "index" : 1,
+      "oap" : "session.message.submit.request (delivery: steer)",
       "type" : "steer"
    },
    {
-      "classification" : "observed-only",
+      "classification" : "mapped",
       "direction" : "pi-to-host",
-      "fidelity" : "native",
+      "fidelity" : "normalized",
       "index" : 2,
+      "oap" : "session.message.submit.response (admission: steered)",
       "type" : "response:steer"
    },
    {
