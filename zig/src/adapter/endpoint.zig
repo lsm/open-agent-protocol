@@ -256,6 +256,7 @@ pub const Endpoint = struct {
             .session_open_request => |*payload| try self.open(arena, &request, payload, openMetadata(root), descriptor, refusal),
             .session_state_request => try self.state(arena, &request, refusal),
             .session_model_switch_request => |*payload| try self.switchModel(arena, &request, payload, refusal),
+            .session_settings_update_request => |*payload| try self.updateSettings(arena, &request, payload, descriptor, refusal),
             .message_submit_request => |*payload| try self.submit(arena, &request, payload, descriptor, refusal),
             .session_compact_request => |*payload| try self.compact(arena, &request, payload, refusal),
             .run_cancel_request => |*payload| try self.cancel(arena, &request, payload, refusal),
@@ -437,6 +438,35 @@ pub const Endpoint = struct {
             .payload = .{ .session_state_updated = switched.state },
         };
         const line = try oap_envelope.serializeEnvelope(updated, self.allocator);
+        errdefer self.allocator.free(line);
+        try self.outbound.append(self.allocator, line);
+    }
+
+    fn updateSettings(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, payload: *const oap_types.SessionSettingsUpdateRequest, descriptor: contract.Descriptor, refusal: *contract.Refusal) Served!void {
+        const entry = try self.entryFor(arena, request);
+        try self.requireScope(arena, payload.session_id, entry);
+        if (payload.reasoning_level == null and payload.compaction_policy_json == null) return error.InvalidSubmission;
+        try contract.refuseUnadvertisedLiveSettings(descriptor, payload, refusal);
+        const updater = entry.session.vtable.update_settings orelse {
+            if (payload.reasoning_level != null) return refusal.unsupportedField(contract.feature_session_reasoning, contract.reason_unadvertised, "reasoning_level");
+            return refusal.unsupportedField(contract.feature_compaction_policy, contract.reason_unadvertised, "compaction_policy");
+        };
+        const updated = try updater(entry.session.ptr, arena, payload, refusal);
+        try self.respond(arena, request, .{
+            .id = "",
+            .session_id = entry.session.id(),
+            .capability_revision = request.capability_revision,
+            .payload = .{ .session_settings_update_response = updated.response },
+        });
+        entry.state_sequence += 1;
+        const published = oap_types.Envelope{
+            .id = try self.nextId(arena, "event"),
+            .sequence = entry.state_sequence,
+            .session_id = entry.session.id(),
+            .capability_revision = request.capability_revision,
+            .payload = .{ .session_state_updated = updated.state },
+        };
+        const line = try oap_envelope.serializeEnvelope(published, self.allocator);
         errdefer self.allocator.free(line);
         try self.outbound.append(self.allocator, line);
     }
@@ -1731,6 +1761,23 @@ test "models, model switch, tools and call resolution are refused when the backe
 
     const call = try harness.send(framed("action.call.resolve.request", "call-1", ",\"session_id\":\"s1\"", "{\"interaction_id\":\"i\",\"session_id\":\"s1\",\"run_id\":\"r\",\"tool_call_id\":\"t\",\"requested_by\":\"e\",\"responded_by\":\"u\",\"started\":{}}"));
     try testing.expectEqualStrings("action.tools.provide", field(call[0], &.{ "payload", "error", "details", "feature" }));
+}
+
+test "a settings update the descriptor does not take live is refused naming the key and field before the backend sees it" {
+    var harness: Harness = undefined;
+    harness.init(testing.allocator, .{});
+    defer harness.deinit();
+    _ = try harness.send(open_line);
+    harness.offerEverything();
+
+    const level = try harness.send(framed("session.settings.update.request", "update-1", ",\"session_id\":\"s1\"", "{\"session_id\":\"s1\",\"reasoning_level\":\"high\"}"));
+    try testing.expectEqual(@as(usize, 1), level.len);
+    try testing.expectEqualStrings("unsupported_feature", field(level[0], &.{ "payload", "error", "code" }));
+    try testing.expectEqualStrings("session.reasoning", field(level[0], &.{ "payload", "error", "details", "feature" }));
+    try testing.expectEqualStrings("reasoning_level", field(level[0], &.{ "payload", "error", "details", "field" }));
+
+    const empty = try harness.send(framed("session.settings.update.request", "update-2", ",\"session_id\":\"s1\"", "{\"session_id\":\"s1\"}"));
+    try testing.expectEqualStrings("invalid_submission", field(empty[0], &.{ "payload", "error", "code" }));
 }
 
 test "a backend that offers models, switching and tools is answered through them" {

@@ -102,6 +102,8 @@ func (s *Server) serve(ctx context.Context, streams context.Context, e protocol.
 		return plain(s.state(ctx, e))
 	case protocol.TypeSessionModelSwitchRequest:
 		return s.switchModel(ctx, streams, e)
+	case protocol.TypeSessionSettingsUpdateRequest:
+		return s.updateSettings(ctx, streams, e)
 	case protocol.TypeSessionMessageSubmitRequest:
 		return s.submit(ctx, streams, e)
 	case protocol.TypeSessionCompactRequest:
@@ -292,6 +294,41 @@ func (s *Server) switchModel(ctx context.Context, streams context.Context, e pro
 	return answer, func() {
 		if err := s.write(streams, updated); err != nil {
 			s.logger.Printf("serveendpoint: publishing model switch state: %v", err)
+		}
+	}, nil
+}
+
+func (s *Server) updateSettings(ctx context.Context, streams context.Context, e protocol.Envelope) (protocol.Envelope, func(), error) {
+	entry, err := s.session(e)
+	if err != nil {
+		return protocol.Envelope{}, nil, err
+	}
+	var request protocol.SessionSettingsUpdateRequest
+	if err := e.DecodePayload(&request); err != nil {
+		return protocol.Envelope{}, nil, &refusal{code: "invalid_payload", message: err.Error()}
+	}
+	response, state, err := entry.UpdateSettings(ctx, request)
+	if err != nil {
+		return protocol.Envelope{}, nil, err
+	}
+	answer, err := protocol.NewEnvelope(protocol.TypeSessionSettingsUpdateResponse, s.nextID("response"), response)
+	if err != nil {
+		return protocol.Envelope{}, nil, err
+	}
+	answer.InReplyTo = e.ID
+	answer.SessionID = entry.ID()
+	answer.CapabilityRevision = e.CapabilityRevision
+	updated, err := protocol.NewEnvelope(protocol.TypeSessionStateUpdated, s.nextID("event"), state)
+	if err != nil {
+		return protocol.Envelope{}, nil, err
+	}
+	updated.SessionID = entry.ID()
+	updated.CapabilityRevision = e.CapabilityRevision
+	sequence := s.nextStateSequence(entry.ID())
+	updated.Sequence = &sequence
+	return answer, func() {
+		if err := s.write(streams, updated); err != nil {
+			s.logger.Printf("serveendpoint: publishing settings update state: %v", err)
 		}
 	}, nil
 }

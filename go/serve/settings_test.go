@@ -88,3 +88,46 @@ func TestAnAdapterRefusesASettingItsDescriptorDoesNotTakeAtOpen(t *testing.T) {
 		t.Fatalf("refusal = %v, want unsupported_feature naming the reasoning key and field", err)
 	}
 }
+
+func TestTheHubHoldsASettingsUpdateToItsSessionAndToANamedSetting(t *testing.T) {
+	hub := settingsHub(t, nil)
+	entry, _, err := hub.Open(context.Background(), "settings", base.OpenRequest{SessionID: "s1", Participant: protocol.Participant{ID: "user"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := &protocol.CompactionPolicy{Kind: protocol.CompactionOff}
+	var scope *serve.ScopeMismatchError
+	if _, _, err := entry.UpdateSettings(context.Background(), protocol.SessionSettingsUpdateRequest{SessionID: "elsewhere", CompactionPolicy: policy}); !errors.As(err, &scope) {
+		t.Fatalf("an update naming another session answered %v, want a scope mismatch", err)
+	}
+	if _, _, err := entry.UpdateSettings(context.Background(), protocol.SessionSettingsUpdateRequest{SessionID: "s1"}); !errors.Is(err, base.ErrInvalidSubmission) {
+		t.Fatalf("an update naming no setting answered %v, want an invalid submission", err)
+	}
+	response, state, err := entry.UpdateSettings(context.Background(), protocol.SessionSettingsUpdateRequest{SessionID: "s1", CompactionPolicy: policy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.CompactionPolicy == nil || *response.CompactionPolicy != *policy || state.CompactionPolicy == nil || *state.CompactionPolicy != *policy {
+		t.Fatalf("update = %+v, state = %+v, want both to report off", response, state)
+	}
+}
+
+func TestAnAdapterRefusesASettingItsDescriptorDoesNotTakeLive(t *testing.T) {
+	descriptor := protocol.CapabilityDescriptor{Features: map[string]protocol.FeatureSupport{
+		protocol.FeatureSessionReasoning: {Level: protocol.SupportNative, Modes: []string{protocol.ModeSessionOpen}},
+		protocol.FeatureCompactionPolicy: {Level: protocol.SupportDegraded, Modes: []string{protocol.ModeSessionOpen, protocol.ModeSessionLive}},
+	}}
+	err := base.RefuseUnadvertisedLiveSettings(protocol.SessionSettingsUpdateRequest{ReasoningLevel: protocol.ReasoningLow}, descriptor)
+	var refusal *base.UnsupportedControlError
+	if !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureSessionReasoning || refusal.Field != "reasoning_level" {
+		t.Fatalf("refusal = %v, want unsupported_feature naming the reasoning key and field", err)
+	}
+	policy := &protocol.CompactionPolicy{Kind: protocol.CompactionOff}
+	var degraded *base.DegradedControlError
+	if err := base.RefuseUnadvertisedLiveSettings(protocol.SessionSettingsUpdateRequest{CompactionPolicy: policy}, descriptor); !errors.As(err, &degraded) || degraded.Feature != protocol.FeatureCompactionPolicy {
+		t.Fatalf("refusal = %v, want capability_degraded for an unconsented degraded policy", err)
+	}
+	if err := base.RefuseUnadvertisedLiveSettings(protocol.SessionSettingsUpdateRequest{CompactionPolicy: policy, AllowDegradedFeatures: []string{protocol.FeatureCompactionPolicy}}, descriptor); err != nil {
+		t.Fatalf("a consented degraded policy was refused: %v", err)
+	}
+}

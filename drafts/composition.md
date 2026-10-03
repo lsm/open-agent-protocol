@@ -69,6 +69,7 @@ For **providers**, the current design is:
 | Make an OAP provider service available to a session | `session.provider.attach` with `provider_id` and optional operator service id | 0028, optional |
 | What the agent session can use | `models.request`/`models.response`, with provider descriptors | 0006, 0014 |
 | Change the session default now | `session.model.switch` | 0028, core |
+| Change the reasoning level or compaction policy now | `session.settings.update` | 0045, optional |
 | Override one run | `session.message.submit.request.model_id` | 0005 |
 
 An attached provider becomes available but is not implicitly selected. The

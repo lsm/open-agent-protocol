@@ -354,6 +354,33 @@ func (s *Session) SwitchModel(ctx context.Context, request protocol.SessionModel
 	return response, state, nil
 }
 
+func (s *Session) UpdateSettings(ctx context.Context, request protocol.SessionSettingsUpdateRequest) (protocol.SessionSettingsUpdateResponse, protocol.SessionState, error) {
+	if request.SessionID != s.id {
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, &ScopeMismatchError{Payload: request.SessionID, Addressed: s.id}
+	}
+	keys := base.OpenSettingKeys(request.ReasoningLevel, request.CompactionPolicy)
+	if len(keys) == 0 {
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, fmt.Errorf("%w: a settings update names no setting", base.ErrInvalidSubmission)
+	}
+	updater, ok := s.session.(base.SettingsUpdater)
+	if !ok {
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, &base.UnsupportedControlError{
+			Feature: keys[0], Reason: base.ControlUnadvertised, Field: base.OpenSettingField(keys[0]),
+		}
+	}
+	response, state, err := updater.UpdateSettings(ctx, request)
+	if errors.Is(err, base.ErrSessionClosed) {
+		s.markClosed()
+	}
+	if err != nil {
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, err
+	}
+	if response.SessionID != s.id || state.SessionID != s.id {
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, fmt.Errorf("serve: adapter reported a settings update outside session %q", s.id)
+	}
+	return response, state, nil
+}
+
 func (s *Session) armSteerGate(ctx context.Context, run protocol.RunID, request protocol.EnvelopeID) (*steerGate, error) {
 	done := make(chan struct{})
 	defer close(done)

@@ -836,6 +836,40 @@ pub const SessionModelSwitchResponse = struct {
     }
 };
 
+pub const SessionSettingsUpdateRequest = struct {
+    session_id: []const u8,
+    reasoning_level: ?[]const u8 = null,
+    compaction_policy_json: ?[]const u8 = null,
+    allow_degraded_features: []const []const u8 = &.{},
+
+    pub fn deinit(self: *SessionSettingsUpdateRequest, allocator: std.mem.Allocator) void {
+        allocator.free(self.session_id);
+        if (self.reasoning_level) |value| allocator.free(value);
+        if (self.compaction_policy_json) |value| allocator.free(value);
+        freeStringList(allocator, self.allow_degraded_features);
+    }
+
+    pub fn allowsDegraded(self: *const SessionSettingsUpdateRequest, key: []const u8) bool {
+        return containsKey(self.allow_degraded_features, key);
+    }
+};
+
+pub const SessionSettingsUpdateResponse = struct {
+    session_id: []const u8,
+    reasoning_level: ?[]const u8 = null,
+    compaction_policy_json: ?[]const u8 = null,
+    previous_reasoning_level: ?[]const u8 = null,
+    previous_compaction_policy_json: ?[]const u8 = null,
+
+    pub fn deinit(self: *SessionSettingsUpdateResponse, allocator: std.mem.Allocator) void {
+        allocator.free(self.session_id);
+        if (self.reasoning_level) |value| allocator.free(value);
+        if (self.compaction_policy_json) |value| allocator.free(value);
+        if (self.previous_reasoning_level) |value| allocator.free(value);
+        if (self.previous_compaction_policy_json) |value| allocator.free(value);
+    }
+};
+
 pub const PendingSteer = struct {
     submission_id: []const u8,
     request_id: []const u8,
@@ -1121,6 +1155,8 @@ pub const Payload = union(enum) {
     session_state_updated: SessionState,
     session_model_switch_request: SessionModelSwitchRequest,
     session_model_switch_response: SessionModelSwitchResponse,
+    session_settings_update_request: SessionSettingsUpdateRequest,
+    session_settings_update_response: SessionSettingsUpdateResponse,
     message_submit_request: MessageSubmitRequest,
     message_submit_response: MessageSubmitResponse,
     session_compact_request: SessionCompactRequest,
@@ -1169,6 +1205,8 @@ pub const Payload = union(enum) {
             .session_state_updated => |*value| value.deinit(allocator),
             .session_model_switch_request => |*value| value.deinit(allocator),
             .session_model_switch_response => |*value| value.deinit(allocator),
+            .session_settings_update_request => |*value| value.deinit(allocator),
+            .session_settings_update_response => |*value| value.deinit(allocator),
             .message_submit_request => |*value| value.deinit(allocator),
             .message_submit_response => |*value| value.deinit(allocator),
             .session_compact_request => |*value| value.deinit(allocator),
@@ -1219,6 +1257,8 @@ pub const Payload = union(enum) {
             .session_state_updated => "session.state.updated",
             .session_model_switch_request => "session.model.switch.request",
             .session_model_switch_response => "session.model.switch.response",
+            .session_settings_update_request => "session.settings.update.request",
+            .session_settings_update_response => "session.settings.update.response",
             .message_submit_request => "session.message.submit.request",
             .message_submit_response => "session.message.submit.response",
             .session_compact_request => "session.compact.request",

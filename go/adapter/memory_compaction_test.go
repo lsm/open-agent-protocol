@@ -540,3 +540,58 @@ func TestMemoryReopenKeepsTheCompactionPolicyUnlessItNamesANewOne(t *testing.T) 
 		t.Fatalf("reopened with a new policy = %+v, want %+v", got, share)
 	}
 }
+
+func updater(t *testing.T, session adapter.Session) adapter.SettingsUpdater {
+	t.Helper()
+	updating, ok := session.(adapter.SettingsUpdater)
+	if !ok {
+		t.Fatal("the memory session does not take a settings update")
+	}
+	return updating
+}
+
+func TestMemoryUpdateMovesTheThresholdTheNextRunCompactsAgainst(t *testing.T) {
+	session, err := openWithPolicy(t, &protocol.CompactionPolicy{Kind: protocol.CompactionOff})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokens := protocol.CompactionPolicy{Kind: protocol.CompactionTokens, Tokens: 1}
+	response, state, err := updater(t, session).UpdateSettings(context.Background(), protocol.SessionSettingsUpdateRequest{SessionID: "session-1", CompactionPolicy: &tokens})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.CompactionPolicy == nil || *response.CompactionPolicy != tokens || response.PreviousCompactionPolicy == nil || response.PreviousCompactionPolicy.Kind != protocol.CompactionOff {
+		t.Fatalf("response = %+v, want tokens 1 replacing off", response)
+	}
+	if state.CompactionPolicy == nil || *state.CompactionPolicy != tokens {
+		t.Fatalf("state = %+v, want tokens 1", state.CompactionPolicy)
+	}
+	if started := compactions(t, submitText(t, session, "go")); len(started) != 1 || started[0].Reason != protocol.CompactionThreshold {
+		t.Fatalf("the run after the update compacted %+v, want one threshold compaction", started)
+	}
+}
+
+func TestMemoryRefusesALiveUpdateWholeAndKeepsItsPolicy(t *testing.T) {
+	kept := protocol.CompactionPolicy{Kind: protocol.CompactionShare, SharePercent: 50}
+	session, err := openWithPolicy(t, &kept)
+	if err != nil {
+		t.Fatal(err)
+	}
+	off := &protocol.CompactionPolicy{Kind: protocol.CompactionOff}
+	_, _, err = updater(t, session).UpdateSettings(context.Background(), protocol.SessionSettingsUpdateRequest{SessionID: "session-1", ReasoningLevel: protocol.ReasoningHigh, CompactionPolicy: off})
+	var refusal *adapter.UnsupportedControlError
+	if !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureSessionReasoning || refusal.Field != "reasoning_level" {
+		t.Fatalf("an update with a reasoning level answered %v, want unsupported_feature naming it", err)
+	}
+	_, _, err = updater(t, session).UpdateSettings(context.Background(), protocol.SessionSettingsUpdateRequest{SessionID: "session-1", CompactionPolicy: &protocol.CompactionPolicy{Kind: protocol.CompactionTokens}})
+	if !errors.As(err, &refusal) || refusal.Reason != adapter.ControlUnsatisfiable {
+		t.Fatalf("a zero token count answered %v, want an unsatisfiable refusal", err)
+	}
+	state, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.CompactionPolicy == nil || *state.CompactionPolicy != kept {
+		t.Fatalf("policy after two refusals = %+v, want %+v", state.CompactionPolicy, kept)
+	}
+}
