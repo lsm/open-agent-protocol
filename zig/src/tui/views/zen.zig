@@ -545,7 +545,7 @@ test "a new line glides up through the rows beneath the old one, which rises and
     try std.testing.expect(std.mem.indexOf(u8, early[1], "thinking") != null);
     try std.testing.expect(std.mem.indexOf(u8, early[2], "thinking") != null);
     try std.testing.expect(levelOf(early[2]) > levelOf(early[1]));
-    try std.testing.expect(std.mem.indexOf(u8, early[3], "Shell Execute") != null);
+    try std.testing.expectEqualStrings("", early[0]);
 
     frame.rise = 0.5;
     const middle = try activitySlot(a, frame, 60);
