@@ -1322,6 +1322,7 @@ pub const App = struct {
             const pending_path = try self.allocator.dupe(u8, info.path);
             errdefer self.allocator.free(pending_path);
             try self.state.appendNotice("Checking and removing the session worktree…");
+            self.clearPendingDelete();
             self.worktree_management_job = job;
             self.pending_delete_id = pending_id;
             self.pending_delete_path = pending_path;
@@ -1331,14 +1332,22 @@ pub const App = struct {
     }
 
     fn forceDeletePendingSession(self: *App) !void {
+        if (self.worktree_management_job != null or self.worktree_job != null) {
+            try self.state.appendTranscript(.system, "Wait for worktree setup to finish before force removing a session.");
+            self.clearPendingDelete();
+            return;
+        }
+        if (self.pending_delete_id.len == 0) return;
         const id = self.pending_delete_id;
         self.pending_delete_id = &.{};
         const path = self.pending_delete_path;
         self.pending_delete_path = &.{};
         defer if (path.len > 0) self.allocator.free(path);
-        if (id.len == 0 or self.worktree_management_job != null) return;
+        var id_owned = true;
+        defer if (id_owned) self.allocator.free(id);
         const store = self.store orelse return error.NoStoreConfigured;
         const info_value = (try tui_worktree.readSidecar(self.allocator, store.base_dir, id)) orelse {
+            id_owned = false;
             defer self.allocator.free(id);
             return self.finishDeleteSession(id);
         };
@@ -1347,18 +1356,48 @@ pub const App = struct {
         const job = try tui_worktree.ManagementJob.start(self.allocator, tui_worktree.processRunner(), &info, .remove_force);
         errdefer job.deinit();
         const pending_id = try self.allocator.dupe(u8, id);
-        self.allocator.free(id);
+        errdefer self.allocator.free(pending_id);
+        const pending_path = try self.allocator.dupe(u8, info.path);
+        errdefer self.allocator.free(pending_path);
         try self.state.appendNotice("Force removing the session worktree…");
-        self.worktree_management_job = job;
+        id_owned = false;
+        self.allocator.free(id);
         self.pending_delete_id = pending_id;
+        self.pending_delete_path = pending_path;
+        self.worktree_management_job = job;
     }
 
-    fn cancelForceDeletePrompt(self: *App) void {
-        self.state.confirm_session_force_delete = false;
+    fn pinSessionPickerToPendingDelete(self: *App) void {
+        const id = self.pending_delete_id;
+        for (self.state.sessions.items, 0..) |entry, index| {
+            if (!std.mem.eql(u8, entry.id, id)) continue;
+            self.state.session_index = index;
+            TuiModel.ensureSessionSelectionVisible(self);
+            return;
+        }
+    }
+
+    fn pendingDeleteLabel(self: *App) []const u8 {
+        const id = self.pending_delete_id;
+        for (self.state.sessions.items) |entry| {
+            if (std.mem.eql(u8, entry.id, id)) return entry.label;
+        }
+        return id;
+    }
+
+    fn clearPendingDelete(self: *App) void {
         if (self.pending_delete_id.len > 0) self.allocator.free(self.pending_delete_id);
         if (self.pending_delete_path.len > 0) self.allocator.free(self.pending_delete_path);
         self.pending_delete_id = &.{};
         self.pending_delete_path = &.{};
+    }
+
+    fn cancelForceDeletePrompt(self: *App) !void {
+        if (self.state.confirm_session_force_delete) {
+            self.state.confirm_session_force_delete = false;
+            self.clearPendingDelete();
+        }
+        try self.deliverHeldWorktreeMessages();
     }
 
     fn recordWorktreeSidecar(self: *App, info: *const tui_worktree.WorktreeInfo) !void {
@@ -1545,7 +1584,10 @@ pub const App = struct {
         self.state.status.streaming = false;
         self.state.status.compacting = false;
         self.state.confirm_session_delete = false;
-        self.state.confirm_session_force_delete = false;
+        if (self.state.confirm_session_force_delete) {
+            self.state.confirm_session_force_delete = false;
+            self.clearPendingDelete();
+        }
         self.state.mode = .normal;
         self.session_turns = if (loaded.events.items.len > 0) 1 else 0;
         try self.adoptLoadedSession(loaded.metadata);
@@ -2898,11 +2940,21 @@ pub const App = struct {
             const path = self.pending_delete_path;
             switch (outcome) {
                 .dirty => {
-                    try self.state.appendTranscript(.system, "This session's worktree has uncommitted changes or Git could not verify it safely.");
-                    try self.state.appendTranscript(.system, "Force remove anyway and discard them? Press y to force, n or Esc to keep the worktree.");
-                    self.pending_delete_id = &.{};
-                    self.pending_delete_path = &.{};
+                    const detail = try std.fmt.allocPrint(self.allocator, "Cannot delete {s}: its worktree has uncommitted changes or Git could not verify it safely.", .{self.pendingDeleteLabel()});
+                    defer self.allocator.free(detail);
+                    try self.state.appendTranscript(.system, detail);
+                    const question = try std.fmt.allocPrint(self.allocator, "Force remove anyway and discard them for {s}? Press y to force, n or Esc to keep the worktree.", .{self.pendingDeleteLabel()});
+                    defer self.allocator.free(question);
+                    try self.state.appendTranscript(.system, question);
+                    if (self.state.mode != .session_picker) {
+                        try self.state.appendTranscript(.system, "Delete it again from the session picker to force remove its worktree.");
+                        self.clearPendingDelete();
+                        try self.deliverHeldWorktreeMessages();
+                        return;
+                    }
+                    self.pinSessionPickerToPendingDelete();
                     self.state.confirm_session_force_delete = true;
+                    try self.deliverHeldWorktreeMessages();
                     return;
                 },
                 else => {
@@ -3610,7 +3662,10 @@ pub const App = struct {
                 self.state.session_index = 0;
                 self.state.session_scroll = 0;
                 self.state.confirm_session_delete = false;
-                self.state.confirm_session_force_delete = false;
+                if (self.state.confirm_session_force_delete) {
+                    self.state.confirm_session_force_delete = false;
+                    self.clearPendingDelete();
+                }
                 self.state.mode = .session_picker;
             },
             .open_model_picker => self.openPicker(.model),
@@ -4335,7 +4390,7 @@ pub const TuiModel = struct {
                                     app.state.confirm_session_force_delete = false;
                                     app.forceDeletePendingSession() catch |err| app.recordError(@errorName(err)) catch {};
                                 } else if (c == 'n' or c == 'N') {
-                                    app.cancelForceDeletePrompt();
+                                    app.cancelForceDeletePrompt() catch |err| app.recordError(@errorName(err)) catch {};
                                     app.state.appendTranscript(.system, "Kept the session worktree; the session was not deleted.") catch |err| app.recordError(@errorName(err)) catch {};
                                 }
                             },
@@ -4344,7 +4399,7 @@ pub const TuiModel = struct {
                                 app.forceDeletePendingSession() catch |err| app.recordError(@errorName(err)) catch {};
                             },
                             .escape => {
-                                app.cancelForceDeletePrompt();
+                                app.cancelForceDeletePrompt() catch |err| app.recordError(@errorName(err)) catch {};
                                 app.state.appendTranscript(.system, "Kept the session worktree; the session was not deleted.") catch |err| app.recordError(@errorName(err)) catch {};
                             },
                             else => {},
@@ -4593,6 +4648,10 @@ pub const TuiModel = struct {
     }
 
     fn closeModal(app: *App) void {
+        if (app.state.confirm_session_force_delete) {
+            app.state.confirm_session_force_delete = false;
+            app.clearPendingDelete();
+        }
         app.state.mode = .normal;
         app.userTookOver();
     }
