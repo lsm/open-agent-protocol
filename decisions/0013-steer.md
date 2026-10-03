@@ -8,7 +8,7 @@ that arrives before its admission (#813); and pi executes its native `steer` com
 both trees — admission with `target_sequence`, a `turn`-boundary settlement, a
 `run_terminated` drop at the terminal and `pending_steers` on state — moving the pin's
 capability revision to `pi-v0.87.1-oap-v3` (#824). The plan's `settled_steers`
-session-state surface is deferred to its own decision, as this record says above;
+session-state surface is deferred to its own decision, as this record says below;
 nothing else in the record is left pending)
 Date: 2026-09-17
 Protocol: `open-agent-protocol` version `0.1`
