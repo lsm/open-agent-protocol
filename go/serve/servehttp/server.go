@@ -324,12 +324,12 @@ func rollbackOpen(hub *serve.Hub, entry *serve.Session, named bool) string {
 }
 
 func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
-	envelope, ok := s.readRequest(w, r, protocol.TypeSessionMessageSubmitRequest)
+	envelope, ok := s.readRequest(w, r, protocol.TypeSessionMessageSubmitRequest, protocol.TypeSessionCompactRequest)
 	if !ok {
 		return
 	}
-	var request protocol.MessageSubmitRequest
-	if err := envelope.DecodePayload(&request); err != nil {
+	admit, err := serve.Admission(envelope)
+	if err != nil {
 		s.writeError(w, http.StatusBadRequest, "invalid_payload", err.Error(), envelope)
 		return
 	}
@@ -337,14 +337,14 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	admission, err := entry.Submit(r.Context(), base.SubmitRequest{Request: request, EnvelopeID: envelope.ID})
+	admitted, err := admit(r.Context(), entry)
 	if err != nil {
 		s.writeSubmitError(w, err, envelope)
 		flushResponse(w)
 		s.hub.Published(entry.ID(), envelope.ID)
 		return
 	}
-	response, err := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitResponse, s.nextID("response"), admission)
+	response, err := protocol.NewEnvelope(admitted.Type, s.nextID("response"), admitted.Payload)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "internal", err.Error(), envelope)
 		flushResponse(w)
@@ -352,8 +352,8 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.InReplyTo = envelope.ID
-	response.SessionID = admission.SessionID
-	response.RunID = admission.RunID
+	response.SessionID = admitted.SessionID
+	response.RunID = admitted.RunID
 	response.CapabilityRevision = envelope.CapabilityRevision
 	writeEnvelope(w, http.StatusOK, response)
 	flushResponse(w)
