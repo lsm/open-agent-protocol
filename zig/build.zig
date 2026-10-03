@@ -2134,6 +2134,7 @@ pub fn build(b: *std.Build) void {
     const tui_view_approval_mod = b.createModule(.{ .root_source_file = b.path("src/tui/views/approval.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "zigzag", .module = zigzag_mod }, .{ .name = "tui_state", .module = tui_state_mod }, .{ .name = "tui_theme", .module = tui_theme_mod }, .{ .name = "tui_text", .module = tui_text_mod }, .{ .name = "tui_render", .module = tui_render_mod }, .{ .name = "json_encode", .module = json_encode_mod } } });
     const tui_view_session_picker_mod = b.createModule(.{ .root_source_file = b.path("src/tui/views/session_picker.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "zigzag", .module = zigzag_mod }, .{ .name = "tui_state", .module = tui_state_mod }, .{ .name = "tui_theme", .module = tui_theme_mod }, .{ .name = "tui_text", .module = tui_text_mod }, .{ .name = "tui_render", .module = tui_render_mod } } });
     const tui_view_menu_picker_mod = b.createModule(.{ .root_source_file = b.path("src/tui/views/menu_picker.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "tui_theme", .module = tui_theme_mod }, .{ .name = "tui_text", .module = tui_text_mod }, .{ .name = "tui_render", .module = tui_render_mod } } });
+    const tui_view_zen_mod = b.createModule(.{ .root_source_file = b.path("src/tui/views/zen.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "zigzag", .module = zigzag_mod }, .{ .name = "tui_theme", .module = tui_theme_mod }, .{ .name = "tui_text", .module = tui_text_mod } } });
 
     const tui_worktree_mod = b.createModule(.{
         .root_source_file = b.path("src/tui/worktree.zig"),
@@ -2206,6 +2207,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "tui_view_approval", .module = tui_view_approval_mod },
             .{ .name = "tui_view_session_picker", .module = tui_view_session_picker_mod },
             .{ .name = "tui_view_menu_picker", .module = tui_view_menu_picker_mod },
+            .{ .name = "tui_view_zen", .module = tui_view_zen_mod },
             .{ .name = "permission", .module = permission_mod },
             .{ .name = "owned_slice", .module = owned_slice_mod },
             .{ .name = "tools/common", .module = tools_common_mod },
@@ -2663,6 +2665,7 @@ pub fn build(b: *std.Build) void {
     const tui_view_approval_test = b.addTest(.{ .root_module = tui_view_approval_mod });
     const tui_view_session_picker_test = b.addTest(.{ .root_module = tui_view_session_picker_mod });
     const tui_view_menu_picker_test = b.addTest(.{ .root_module = tui_view_menu_picker_mod });
+    const tui_view_zen_test = b.addTest(.{ .root_module = tui_view_zen_mod });
     const tui_fixture_test = b.addTest(.{ .root_module = tui_fixture_mod });
     const tui_worktree_test = b.addTest(.{ .root_module = tui_worktree_mod });
     const tui_tests_scenarios_test = b.addTest(.{ .root_module = tui_tests_scenarios_mod });
@@ -3053,6 +3056,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&isolatedHomeRun(b, tui_view_approval_test, "test/tui_view_approval_test").step);
     test_step.dependOn(&isolatedHomeRun(b, tui_view_session_picker_test, "test/tui_view_session_picker_test").step);
     test_step.dependOn(&isolatedHomeRun(b, tui_view_menu_picker_test, "test/tui_view_menu_picker_test").step);
+    test_step.dependOn(&isolatedHomeRun(b, tui_view_zen_test, "test/tui_view_zen_test").step);
     test_step.dependOn(&isolatedHomeRun(b, tui_fixture_test, "test/tui_fixture_test").step);
     test_step.dependOn(&isolatedHomeRun(b, tui_worktree_test, "test/tui_worktree_test").step);
     test_step.dependOn(&isolatedHomeRun(b, tui_tests_scenarios_test, "test/tui_tests_scenarios_test").step);
@@ -3324,6 +3328,7 @@ pub fn build(b: *std.Build) void {
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_view_approval_test, "test-unit-tui/tui_view_approval_test").step);
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_view_session_picker_test, "test-unit-tui/tui_view_session_picker_test").step);
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_view_menu_picker_test, "test-unit-tui/tui_view_menu_picker_test").step);
+    test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_view_zen_test, "test-unit-tui/tui_view_zen_test").step);
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_fixture_test, "test-unit-tui/tui_fixture_test").step);
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_worktree_test, "test-unit-tui/tui_worktree_test").step);
     test_unit_tui_step.dependOn(&isolatedHomeRun(b, tui_tests_scenarios_test, "test-unit-tui/tui_tests_scenarios_test").step);

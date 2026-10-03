@@ -107,6 +107,7 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 		h.sessions.remove(released.id, released)
 		h.recordBinding(context.Background(), released.binding, binding.ActionClosed, h.now())
 	})
+	entry.runs = h.sessions.runs
 	opened := h.openRecord(ctx, adapterName, implementation, state, request)
 	if native, ok := session.(base.NativeSession); ok {
 		opened.NativeSessionID = native.NativeSessionID()
@@ -174,6 +175,12 @@ func (h *Hub) recordBinding(ctx context.Context, record binding.Record, action b
 
 func (h *Hub) Binding() binding.Store {
 	return h.bindings
+}
+
+func (h *Hub) Published(id protocol.SessionID, request protocol.EnvelopeID) {
+	if entry, err := h.Session(id); err == nil {
+		entry.Published(request)
+	}
 }
 
 func (h *Hub) Session(id protocol.SessionID) (*Session, error) {

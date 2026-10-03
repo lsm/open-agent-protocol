@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.1.0-alpha.7] - 2026-10-03
+
+### Breaking changes
+
+- **adapter: reopen a closed session in the memory references and both hubs** ([#820](https://github.com/lsm/open-agent-protocol/pull/820))
+
+- `go/serve`: `SubscribeGate` is renamed `ElectionGate` and now also judges `reopen`. `UnknownSessionError` is an alias of `adapter.UnknownSessionError`, and `ErrUnknownSession` is `adapter.ErrUnknownSession`.
+- `go/adapter`: `Memory` keeps its closed sessions in a map behind a mutex, so it is no longer comparable or safely copyable; use it through its pointer, as `NewMemory` returns it.
+
+- **adapter: execute steer in the memory reference adapters** ([#812](https://github.com/lsm/open-agent-protocol/pull/812))
+
+`go/adapter`: additive only — `ErrInvalidSteerTarget`, the `SteerReason*` constants and `InvalidSteerTargetError` are new, and `CapabilityRevision` moves to `reference-memory-v12`. No existing declaration changes shape; a host that pins the memory revision must re-read it.
+
+- **validation: add the steer schema and conformance rules** ([#804](https://github.com/lsm/open-agent-protocol/pull/804))
+
+`go/protocol`: adds fields to public request, response and active-run structs (unkeyed literals must be updated).
+
+- **adapter: tell every adapter the envelope id of the submit it answers** ([#798](https://github.com/lsm/open-agent-protocol/pull/798))
+
+- `go/adapter` — `Session.Submit` takes `SubmitRequest { Request, EnvelopeID }`.
+- `go/serve` — `Session.Submit` takes `adapter.SubmitRequest`.
+- `go/client` — `Session.Submit` gains a variadic `SubmitOption`, so `WithEnvelopeID` can name the submit envelope.
+- `go/adapter/claude`, `go/adapter/deepseek`, `go/adapter/hermes`, `go/adapter/pi` — their exported `Session.Submit` follows `adapter.Session`.
+
+### Merged pull requests
+
+- **tui: keep tool titles in quiet mode, and add /zen** ([#832](https://github.com/lsm/open-agent-protocol/pull/832)): Quiet mode now keeps each tool row's title (description, command or path) on the row and still drops the command block.
+- **adapters: take the reasoning level and compaction policy at open (0045)** ([#831](https://github.com/lsm/open-agent-protocol/pull/831)): Every pinned adapter now applies Decision 0045's settings when a session opens, in both trees, and reports them in the session state.
+- **validation: put the session settings on the wire at open (0045)** ([#830](https://github.com/lsm/open-agent-protocol/pull/830)): Wire slice for Decision 0045 (#828), covering open time only.
+- **decisions: propose reasoning level and compaction policy as session settings (0045)** ([#828](https://github.com/lsm/open-agent-protocol/pull/828)): Proposes Decision 0045.
+- **codex: reopen a closed session by resuming its bound thread** ([#827](https://github.com/lsm/open-agent-protocol/pull/827)): Implements Decision 0040's reopen for Codex (#448) and reports the model the session resumed under (#458).
+- **conformance: check that a reopen of an unknown session fails closed** ([#826](https://github.com/lsm/open-agent-protocol/pull/826)): Step 5 of #446 (Decision 0040): both conformance runners now send a reopen naming a session the endpoint never had.
+- **tui: attach oapx tui to a running oapx hub over HTTP and SSE** ([#825](https://github.com/lsm/open-agent-protocol/pull/825)): `oapx tui --attach URL [--adapter NAME]` runs the terminal UI against a running `oapx hub` instead of an in-process endpoint.
+- **tui: queue follow-ups over oapx tui on the OAP queue** ([#823](https://github.com/lsm/open-agent-protocol/pull/823)): `oapx tui` stops refusing a follow-up typed during a turn.
+- **hub: run the clients/ts suite against oapx hub as well as goap hub** ([#822](https://github.com/lsm/open-agent-protocol/pull/822)): This closes #388's acceptance condition: the clients/ts integration suite now runs against `oapx hub`, with its assertions unchanged.
+- **oapx: pass whether an event is terminal into prepareEvent** ([#821](https://github.com/lsm/open-agent-protocol/pull/821)): main does not compile at 99fdd6019f: #811 split `emit` into `prepareEvent` and `publishEvent`, and #817 added a `terminal`-gated `context_tokens` extension inside the envelope build.
+- **adapter: reopen a closed session in the memory references and both hubs** ([#820](https://github.com/lsm/open-agent-protocol/pull/820)): Step 4 of #446 (Decision 0040): the reference backends in both trees reopen a session they closed.
+- **validation: add the session-reopen wire and judge it in both trees** ([#819](https://github.com/lsm/open-agent-protocol/pull/819)): Step 3 of #446 (Decision 0040, `session-reattach`): the wire and its rules, with the reference and the conformance check still to come.
+- **tui: answer tool approvals and report usage over oapx tui** ([#817](https://github.com/lsm/open-agent-protocol/pull/817)): In ask mode, `oapx tui` now shows the adapter's `action.permission.requested` as the usual approval prompt and answers with `action.permission.resolve.request`.
+- **hub: serve oapx's own agent loop as a registry adapter** ([#816](https://github.com/lsm/open-agent-protocol/pull/816)): Adds an `oapx` registry type to `oapx hub`, built exactly as `oapx serve agent --backend oapx` builds it.
+- **hub: serve the twelve routes and their event streams over HTTP** ([#815](https://github.com/lsm/open-agent-protocol/pull/815)): `oapx hub --addr` now answers every route in `drafts/hub.md` instead of 404, and serves many connections at once, so an open SSE stream no longer blocks other clients.
+- **tui: /status reports session, model, usage, run, settings and auth** ([#814](https://github.com/lsm/open-agent-protocol/pull/814)): `/status` now writes one grouped report:
+- **adapter: execute steer in the memory reference adapters** ([#812](https://github.com/lsm/open-agent-protocol/pull/812)): Step 1 of Decision 0003's gate for [Decision 0013](decisions/0013-steer.md): the memory reference adapter executes steer deterministically, in both trees, at parity.
+- **adapter: Queue oapx runs in admission order** ([#811](https://github.com/lsm/open-agent-protocol/pull/811)): Advertise eight queue reservations beside one executing run at `oapx-agent-v3`.
+- **tui: steer /model and hold run-dependent commands until the run ends** ([#810](https://github.com/lsm/open-agent-protocol/pull/810)): A pending switch is dropped if the model list is replaced, so the agent never holds a model from a freed list.
+- **tui: steer or queue /compact during a run** ([#809](https://github.com/lsm/open-agent-protocol/pull/809)): `/compact [focus]` no longer refuses during a turn.
+- **tui: reprint the scrollback after a verbosity change, with /redraw and ctrl+o** ([#808](https://github.com/lsm/open-agent-protocol/pull/808)): The clear also drops what the terminal showed before oapx started; `docs/tui-rendering-model.md` says so.
+- **tui: list the declared providers with /provider list** ([#807](https://github.com/lsm/open-agent-protocol/pull/807)): `/provider add` and `/provider del` write `~/.oapx/providers.json`, but nothing reads it back to the user, so the only way to see what is declared is to open the file.
+- **tui: control how much the transcript and status bar show with /verbose** ([#806](https://github.com/lsm/open-agent-protocol/pull/806)): `/verbose [quiet|normal|verbose]` sets five parts at once; `/verbose <thinking|tools|output|notices|status> <level>` sets one (e.g.
+- **adapter: Route oapx permission and user-input prompts** ([#805](https://github.com/lsm/open-agent-protocol/pull/805)): Route ask-mode permissions and `request_user_input` through the oapx adapter.
+- **validation: add the steer schema and conformance rules** ([#804](https://github.com/lsm/open-agent-protocol/pull/804)): First 0013 slice: steer wire types in schema, Go and TS; matching Go/Zig admission, target/refusal, settlement, terminal and recovery/capture diagnostics; 49 positive/negative fixtures.
+- **tui: run the terminal UI over OAP as oapx tui** ([#803](https://github.com/lsm/open-agent-protocol/pull/803)): Step 1b of #375: `oapx tui` is the terminal UI as an agent-control-core client, beside `oapx --tui`.
+- **tui: resume a session on the current model when its own is gone** ([#802](https://github.com/lsm/open-agent-protocol/pull/802)): Resuming a session whose saved provider/model isn't in the current list (provider renamed, signed out, model retired) no longer fails with `ModelNotFound`.
+- **tui: delete a custom provider with /provider del** ([#801](https://github.com/lsm/open-agent-protocol/pull/801)): `/provider del <id>` removes the entry from `~/.oapx/providers.json` (other entries and `overrides` kept as written, replaced by rename), deletes the key `/login <id>` saved for it, and refreshes models.
+- **zig: keep a stored key with the row it was saved for** ([#800](https://github.com/lsm/open-agent-protocol/pull/800)): Drops stored-key sharing between catalog rows that read the same environment variable (`opencode-zen`/`opencode-go`, the four Xiaomi regions).
+- **adapter: serve oapx's own agent loop as an adapter (--backend oapx)** ([#799](https://github.com/lsm/open-agent-protocol/pull/799)): Step 1a of #375.
+- **adapter: tell every adapter the envelope id of the submit it answers** ([#798](https://github.com/lsm/open-agent-protocol/pull/798)): Lands the prerequisite named in `decisions/0013-steer.md` ("**The blocker.**") and nothing else: adapters are now told the envelope id of the submit they answer.
+- **tui: refresh models in the background, during a turn or not** ([#797](https://github.com/lsm/open-agent-protocol/pull/797)): `/model refresh` (and the refresh after `/login`/`/logout`) now always runs on its own thread; the status bar shows `refreshing models`, and the new list is swapped in once no turn is running, before a queued message starts the next one.
+- **tui: give the session a working directory a cd changes** ([#796](https://github.com/lsm/open-agent-protocol/pull/796)): Closes #586.
+- **zig: name the OpenCode Zen provider opencode-zen** ([#795](https://github.com/lsm/open-agent-protocol/pull/795)): Renames the provider id `opencode` to `opencode-zen`, so it reads as the Zen subscription next to `opencode-go` rather than the parent of both.
+- **zig: send the thinking level to opencode, and /think max to deepseek as max** ([#794](https://github.com/lsm/open-agent-protocol/pull/794))
+- **decisions: propose compaction as an optional unit (0044)** ([#793](https://github.com/lsm/open-agent-protocol/pull/793)): Proposes `+compaction` (#613, seam gap G6), so #375 can move the TUI's compaction onto the endpoint.
+
 ## [0.1.0-alpha.6] - 2026-10-01
 
 ### Merged pull requests

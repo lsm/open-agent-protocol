@@ -29,6 +29,7 @@ const status_bar_view = @import("tui_view_status_bar");
 const approval_view = @import("tui_view_approval");
 const session_picker_view = @import("tui_view_session_picker");
 const menu_picker_view = @import("tui_view_menu_picker");
+const zen_view = @import("tui_view_zen");
 const tui_render = @import("tui_render");
 const permission = @import("permission");
 const fixture_provider = @import("tui_fixture");
@@ -1505,6 +1506,7 @@ pub const App = struct {
         }
         self.state.telemetry.rate = .{};
         self.discardReplayedError();
+        self.state.zen.start_index = self.state.transcript.items.len;
         try self.state.finalizeInterruptedTools();
         self.state.retireToolOccurrences();
         if (self.session) |*session| session.clearQueuedMessages();
@@ -2536,7 +2538,7 @@ pub const App = struct {
         const wrote_metadata = self.saveConversationEvent(store, event, compaction);
         if (wrote_metadata) self.compaction_offset = offset orelse self.compaction_offset;
         const titled = switch (event) {
-            .message_end => |payload| payload.role == .user and self.titleFromFirstMessage(payload.text.slice()),
+            .message_end => |payload| payload.role == .user and self.titleFromFirstMessage(tui_state.withoutZenNote(std.mem.trim(u8, payload.text.slice(), " \t\r\n"))),
             else => false,
         };
         if (wrote_metadata or titled or event == .agent_end) self.saveSessionIndex(store);
@@ -3221,7 +3223,7 @@ pub const App = struct {
     }
 
     fn appendRuntimeUserMessage(self: *App, text: []const u8) !void {
-        const trimmed = std.mem.trim(u8, text, " \t\r\n");
+        const trimmed = std.mem.trim(u8, tui_state.withoutZenNote(std.mem.trim(u8, text, " \t\r\n")), " \t\r\n");
         if (trimmed.len == 0) return;
         if (self.runtime_echo_suppressed.len > 0 and std.mem.eql(u8, trimmed, self.runtime_echo_suppressed)) {
             self.allocator.free(self.runtime_echo_suppressed);
@@ -3297,6 +3299,11 @@ pub const App = struct {
         _ = try self.sendUserTurnEchoing(trimmed, trimmed);
     }
 
+    fn zenNoted(self: *App, text: []const u8) !?[]u8 {
+        const note = self.state.zen.noteText() orelse return null;
+        return try std.fmt.allocPrint(self.allocator, "{s}\n\n{s}", .{ note, text });
+    }
+
     fn sendUserTurnEchoing(self: *App, trimmed: []const u8, echo: []const u8) !bool {
         if (!self.state.status.streaming and !self.runtimeBusy()) try self.applyPendingModelSwitchBeforeRun();
         self.applyPendingSessionResetSync() catch |err| {
@@ -3344,17 +3351,21 @@ pub const App = struct {
             self.armAutoCompact();
             try self.giveRuntimeSessionId();
         }
+        const noted = try self.zenNoted(trimmed);
+        defer if (noted) |owned| self.allocator.free(owned);
+        const sent = noted orelse trimmed;
         if (self.session) |*session| {
-            session.submitTurn(trimmed) catch |err| {
+            session.submitTurn(sent) catch |err| {
                 if (err == error.QueueFull) return err;
                 try self.state.status.setError(self.allocator, @errorName(err));
                 try self.state.appendTranscript(.@"error", @errorName(err));
                 return false;
             };
+            if (noted != null) self.state.zen.note = .none;
         }
         self.session_turns += 1;
-        if (!std.mem.eql(u8, echo, trimmed)) {
-            const suppressed = try self.allocator.dupe(u8, std.mem.trim(u8, trimmed, " \t\r\n"));
+        if (!std.mem.eql(u8, echo, sent)) {
+            const suppressed = try self.allocator.dupe(u8, std.mem.trim(u8, tui_state.withoutZenNote(std.mem.trim(u8, sent, " \t\r\n")), " \t\r\n"));
             if (self.runtime_echo_suppressed.len > 0) self.allocator.free(self.runtime_echo_suppressed);
             self.runtime_echo_suppressed = suppressed;
         }
@@ -3440,7 +3451,10 @@ pub const App = struct {
             const shown = echo orelse pending;
             if (std.mem.eql(u8, shown, pending)) return try self.steer(pending);
             if (self.session) |*session| {
-                try session.steer(pending);
+                const noted = try self.zenNoted(pending);
+                defer if (noted) |owned| self.allocator.free(owned);
+                try session.steer(noted orelse pending);
+                if (noted != null) self.state.zen.note = .none;
                 try self.state.appendSteeredMessageEchoing(pending, shown);
                 self.refreshQueuedCounts();
             }
@@ -3474,7 +3488,10 @@ pub const App = struct {
         };
         try self.ensureSessionId();
         if (self.session) |*session| {
-            try session.steer(trimmed);
+            const noted = try self.zenNoted(trimmed);
+            defer if (noted) |owned| self.allocator.free(owned);
+            try session.steer(noted orelse trimmed);
+            if (noted != null) self.state.zen.note = .none;
             try self.state.appendSteeredMessage(trimmed);
             self.refreshQueuedCounts();
             return;
@@ -3995,7 +4012,10 @@ pub const App = struct {
         try self.ensureSessionId();
         self.userTookOver();
         if (self.session) |*session| {
-            try session.followUp(trimmed);
+            const noted = try self.zenNoted(trimmed);
+            defer if (noted) |owned| self.allocator.free(owned);
+            try session.followUp(noted orelse trimmed);
+            if (noted != null) self.state.zen.note = .none;
             try self.state.appendQueuedFollowUp(trimmed);
             self.refreshQueuedCounts();
             return true;
@@ -4419,6 +4439,7 @@ pub const TuiModel = struct {
             .window_size => self.refillInlineWindowAfterResize(app, ctx) catch |err| app.recordError(@errorName(err)) catch {},
             .tick => {
                 app.state.anim_tick +%= 1;
+                advanceZen(app);
                 app.drainEvents() catch {};
                 app.pumpAutoContinue(compat.time.nowMillis());
                 app.pollLogin() catch {};
@@ -4521,6 +4542,7 @@ pub const TuiModel = struct {
         const width: usize = @max(ctx.width, 20);
         const height: usize = @max(ctx.height, 8);
         app.last_view_height = height;
+        if (app.state.zen.on) return self.renderZen(app, ctx, width, height) catch "";
         const chrome = self.renderChrome(app, ctx, width, height);
         if (self.inlineMode(ctx)) {
             const fixed = countLines(chrome.status) + countLines(chrome.composer) + countLines(chrome.extra) + 1;
@@ -4550,6 +4572,73 @@ pub const TuiModel = struct {
         const transcript_height = if (height > fixed) height - fixed else 3;
         const transcript = transcript_view.render(ctx.allocator, &app.state, .{ .width = width, .height = transcript_height, .anim_tick = app.state.anim_tick }) catch "";
         return tui_render.joinVertical(ctx.allocator, &.{ transcript, chrome.extra, chrome.composer, chrome.status }) catch "";
+    }
+
+    fn zenMood(app: *const App, running: bool) zen_view.Mood {
+        if (app.state.mode == .approval) return .waiting;
+        if (!running) return .idle;
+        if (app.state.active_tool_summary_entry != null) return .tool;
+        return .thinking;
+    }
+
+    fn advanceZen(app: *App) void {
+        if (!app.state.zen.on) return;
+        const running = noteZenRun(app);
+        app.state.zen.phase = @mod(app.state.zen.phase + zen_view.breathStep(zenMood(app, running)), 1);
+    }
+
+    fn noteZenRun(app: *App) bool {
+        const zen = &app.state.zen;
+        const running = streamActive(app);
+        if (zen.was_running and !running) zen.ended_tick = app.state.anim_tick;
+        if (running) zen.ended_tick = null;
+        zen.was_running = running;
+        return running;
+    }
+
+    fn renderZen(self: *TuiModel, app: *App, ctx: *const zz.Context, width: usize, height: usize) ![]const u8 {
+        const allocator = ctx.allocator;
+        const column = zen_view.columnWidth(width);
+        const extra = if (app.state.mode == .normal) renderCommandPalette(allocator, app, column) catch "" else self.renderChrome(app, ctx, column, height).extra;
+        const entries = app.state.transcript.items;
+        const counts = tui_state.zenCounts(entries, app.state.zen.start_index);
+        const running = noteZenRun(app);
+        var activity: []const u8 = "";
+        if (counts.last_activity) |index| {
+            const entry = &entries[index];
+            if (entry.kind == .thinking) {
+                activity = "thinking";
+            } else if (transcript_view.toolTitle(entry.text.items)) |title| {
+                activity = if (title.arg.len > 0) try std.fmt.allocPrint(allocator, "{s}  {s}", .{ title.label, title.arg }) else title.label;
+            }
+        }
+        var final_block: []const u8 = "";
+        var failed = false;
+        if (!running) {
+            if (counts.final) |index| {
+                const entry = &entries[index];
+                failed = entry.kind == .@"error";
+                final_block = try transcript_view.renderTranscriptEntryWith(allocator, entry, column, .{});
+            }
+        }
+        return zen_view.render(allocator, .{
+            .mood = zenMood(app, running),
+            .phase = app.state.zen.phase,
+            .farewell = if (app.state.zen.ended_tick) |ended| zen_view.farewellLevel(app.state.anim_tick -% ended) else null,
+            .width = width,
+            .height = height,
+            .input = app.state.composer.buffer.items,
+            .cursor = app.state.composer.cursor,
+            .secret = app.state.mode == .login_input and app.state.login_input_secret,
+            .placeholder = if (app.state.mode == .login_input) (if (app.state.login_input_secret) "paste the secret and press Enter" else "type your answer and press Enter") else "type a prompt",
+            .extra = extra,
+            .counts = .{ .thinking = counts.thinking, .tools = counts.tools, .messages = counts.messages },
+            .running = running,
+            .elapsed_ms = app.state.status.streaming_elapsed_ms,
+            .activity = activity,
+            .final_block = final_block,
+            .failed = failed,
+        });
     }
 
     const Chrome = struct {
@@ -4793,6 +4882,7 @@ pub const TuiModel = struct {
 
     fn flushInlineHistory(self: *TuiModel, app: *App, ctx: *zz.Context, include_active: bool) !void {
         if (!self.inlineMode(ctx)) return;
+        if (app.state.zen.on and !include_active) return;
         const entries = app.state.transcript.items;
         if (app.inline_history_flushed >= entries.len) return;
         app.state.advanceSummaryScanFloor();

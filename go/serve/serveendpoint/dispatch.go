@@ -55,7 +55,7 @@ func (s *Server) handle(ctx context.Context, streams context.Context, line []byt
 	}
 	answer, after, err := s.serve(ctx, streams, envelope)
 	if err != nil {
-		answer, after = s.errorEnvelope(envelope, err), nil
+		answer = s.errorEnvelope(envelope, err)
 	}
 	if writeErr := s.write(ctx, answer); writeErr != nil {
 		return writeErr
@@ -310,7 +310,7 @@ func (s *Server) submit(ctx context.Context, streams context.Context, e protocol
 	admission, err := entry.Submit(ctx, base.SubmitRequest{Request: request, EnvelopeID: e.ID})
 	if err != nil {
 		subscription.Close()
-		return protocol.Envelope{}, nil, err
+		return protocol.Envelope{}, func() { s.hub.Published(entry.ID(), e.ID) }, err
 	}
 	answer, err := protocol.NewEnvelope(protocol.TypeSessionMessageSubmitResponse, s.nextID("response"), admission)
 	if err != nil {
@@ -323,10 +323,11 @@ func (s *Server) submit(ctx context.Context, streams context.Context, e protocol
 	answer.CapabilityRevision = e.CapabilityRevision
 	if admission.Admission == protocol.AdmissionSteered {
 		subscription.Close()
-		return answer, nil, nil
+		return answer, func() { s.hub.Published(entry.ID(), e.ID) }, nil
 	}
 
 	start := func() {
+		s.hub.Published(entry.ID(), e.ID)
 		s.pumps.Add(1)
 		go func() {
 			defer s.pumps.Done()
