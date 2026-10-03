@@ -60,7 +60,7 @@ pub const Frame = struct {
     activity: []const u8 = "",
     previous: []const u8 = "",
     since_change: u64 = slide_ticks,
-    stuck_ms: u64 = 0,
+    tool_ms: u64 = 0,
     final_block: []const u8 = "",
     failed: bool = false,
     mood: Mood = .idle,
@@ -75,12 +75,17 @@ pub const Frame = struct {
 };
 
 const max_column: usize = 76;
+const max_reading: usize = 120;
 const soft_level: u8 = 128;
 const prompt = "\u{276f} ";
 const placeholder = "type a prompt";
 
 pub fn columnWidth(width: usize) usize {
     return std.math.clamp(width -| 4, 16, max_column);
+}
+
+pub fn readingWidth(width: usize) usize {
+    return std.math.clamp(width -| 8, 16, max_reading);
 }
 
 const min_gap: usize = 2;
@@ -97,6 +102,7 @@ const Layout = struct {
     final: bool,
     column: usize,
     left: usize,
+    lower_left: usize,
 };
 
 pub fn showsReply(frame: Frame) bool {
@@ -105,8 +111,9 @@ pub fn showsReply(frame: Frame) bool {
 
 fn layout(arena: std.mem.Allocator, frame: Frame) !Layout {
     const width = @max(frame.width, 20);
-    const column = columnWidth(width);
+    const bar = columnWidth(width);
     const final = showsReply(frame);
+    const column = if (final) readingWidth(width) else bar;
 
     var content: std.ArrayList([]const u8) = .empty;
     if (final) {
@@ -136,7 +143,7 @@ fn layout(arena: std.mem.Allocator, frame: Frame) !Layout {
         while (lines.next()) |line| try lower.append(arena, line);
         try lower.append(arena, "");
     }
-    try lower.append(arena, if (frame.secret) try secretBar(arena, frame.input, frame.placeholder, column) else try inputBar(arena, frame.input, frame.cursor, column, frame.placeholder));
+    try lower.append(arena, if (frame.secret) try secretBar(arena, frame.input, frame.placeholder, bar) else try inputBar(arena, frame.input, frame.cursor, bar, frame.placeholder));
 
     const lower_shown = if (lower.items.len > frame.height) lower.items[lower.items.len - frame.height ..] else lower.items;
     const lower_top = frame.height -| (bottomMargin(frame.height) + lower_shown.len);
@@ -148,6 +155,7 @@ fn layout(arena: std.mem.Allocator, frame: Frame) !Layout {
         .final = final,
         .column = column,
         .left = (width -| column) / 2,
+        .lower_left = (width -| bar) / 2,
     };
 }
 
@@ -195,26 +203,27 @@ pub fn render(allocator: std.mem.Allocator, frame: Frame) ![]u8 {
     const writer = &out.writer;
     for (0..frame.height) |index| {
         if (index > 0) try writer.writeByte('\n');
-        const row: []const u8 = if (index >= laid.lower_top)
+        const in_lower = index >= laid.lower_top;
+        const row: []const u8 = if (in_lower)
             (if (index - laid.lower_top < laid.lower.len) laid.lower[index - laid.lower_top] else "")
         else if (index >= content_top and index - content_top < shown.len)
             shown[index - content_top]
         else
             "";
         if (row.len == 0) continue;
-        for (0..laid.left) |_| try writer.writeByte(' ');
+        for (0..if (in_lower) laid.lower_left else laid.left) |_| try writer.writeByte(' ');
         try writer.writeAll(row);
     }
     return out.toOwnedSlice();
 }
 
 pub const slide_ticks: u64 = 12;
-const stuck_after_ms: u64 = 10_000;
+const timed_after_ms: u64 = 10_000;
 const faded_level: f32 = 40;
 
-fn activityLine(allocator: std.mem.Allocator, text: []const u8, stuck_ms: u64, width: usize) ![]const u8 {
-    if (stuck_ms < stuck_after_ms) return tui_text.truncateLineToWidth(allocator, text, width);
-    const seconds = stuck_ms / 1000;
+fn activityLine(allocator: std.mem.Allocator, text: []const u8, tool_ms: u64, width: usize) ![]const u8 {
+    if (tool_ms < timed_after_ms) return tui_text.truncateLineToWidth(allocator, text, width);
+    const seconds = tool_ms / 1000;
     const clock = try std.fmt.allocPrint(allocator, "{d}:{d:0>2}", .{ seconds / 60, seconds % 60 });
     if (text.len == 0) return clock;
     const fitted = try tui_text.truncateLineToWidth(allocator, text, width -| (clock.len + 3));
@@ -228,7 +237,7 @@ fn fadedRow(allocator: std.mem.Allocator, text: []const u8, strength: f32, width
 }
 
 fn activitySlot(allocator: std.mem.Allocator, frame: Frame, width: usize) ![3][]const u8 {
-    const current = try activityLine(allocator, frame.activity, frame.stuck_ms, width);
+    const current = try activityLine(allocator, frame.activity, frame.tool_ms, width);
     if (frame.since_change >= slide_ticks) return .{ "", try fadedRow(allocator, current, 1, width), "" };
     const half = slide_ticks / 2;
     if (frame.since_change < half) {
@@ -237,6 +246,26 @@ fn activitySlot(allocator: std.mem.Allocator, frame: Frame, width: usize) ![3][]
         return .{ try fadedRow(allocator, previous, 1 - p, width), "", try fadedRow(allocator, current, p, width) };
     }
     return .{ "", try fadedRow(allocator, current, 1, width), "" };
+}
+
+test "a final reply reads wider than the input bar when the screen allows" {
+    try std.testing.expectEqual(@as(usize, 76), columnWidth(200));
+    try std.testing.expectEqual(@as(usize, 120), readingWidth(200));
+    try std.testing.expectEqual(@as(usize, 92), readingWidth(100));
+    const wide = "w" ** 110;
+    const text = try render(std.testing.allocator, .{ .width = 200, .height = 20, .final_block = wide, .input = "next", .cursor = 4 });
+    defer std.testing.allocator.free(text);
+    const plain = try plainRows(std.testing.allocator, text);
+    defer std.testing.allocator.free(plain);
+    var lines = std.mem.splitScalar(u8, plain, '\n');
+    var reply_left: ?usize = null;
+    var bar_left: ?usize = null;
+    while (lines.next()) |line| {
+        if (std.mem.indexOf(u8, line, wide)) |at| reply_left = at;
+        if (std.mem.indexOf(u8, line, prompt ++ "next")) |at| bar_left = at;
+    }
+    try std.testing.expectEqual(@as(usize, 40), reply_left.?);
+    try std.testing.expectEqual(@as(usize, 62), bar_left.?);
 }
 
 const dot = "\u{b7}";
@@ -505,7 +534,7 @@ fn levelOf(row: []const u8) u32 {
     return std.fmt.parseInt(u32, rest[0..end], 10) catch 0;
 }
 
-test "the activity line shows how long it has been stuck only after ten seconds" {
+test "the activity line shows only the title until a tool call passes ten seconds, then both" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();

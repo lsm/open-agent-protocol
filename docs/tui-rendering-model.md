@@ -573,12 +573,12 @@ every frame anyway.
 `/zen` (or `/zen on`, `/zen off`) replaces the whole screen with one centred
 column in grey: a trail that grows one dot for each thinking block, tool call
 and reply since zen began (with a count in front once it outgrows the column),
-one line naming what the agent is doing, which slides up and fades as the next takes its place and shows how long it has been on that step once that passes ten seconds, and, floating a little above the bottom of
+one line naming what the agent is doing, which slides up and fades as the next takes its place and is only the step's title until a tool call has been running for ten seconds, when that call's own clock appears beside it, and, floating a little above the bottom of
 the screen, a minimal input bar in place of the composer and the status bar.
 The trail breathes slowly while the agent thinks, faster while a tool runs,
 and holds still while an approval waits; with no steps yet it is a single dot.
 When the run ends it brightens once and fades, and then the last reply (or the
-error that ended it), still drawn with its markdown colours, takes its place. A reply taller than the screen opens at its first line, with a marker for how much is below; PgUp, PgDn and the mouse wheel page through it. Approval prompts and the command palette appear above the input
+error that ended it), still drawn with its markdown colours, takes its place. The reply reads in a wider column than the input bar, up to 120 cells. A reply taller than the screen opens at its first line, with a marker for how much is below; PgUp, PgDn and the mouse wheel page through it, because zen turns on mouse reporting while it is on (and off again when it ends), so the wheel scrolls the reply instead of the terminal's scrollback. Approval prompts and the command palette appear above the input
 bar. While zen is on, nothing is printed into the scrollback; leaving it
 prints what was held back at the current verbosity, and so does quitting, so a
 session ended in zen still leaves its transcript in the terminal. Only an error

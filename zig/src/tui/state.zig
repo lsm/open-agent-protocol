@@ -99,7 +99,8 @@ pub const Zen = struct {
     previous: [zen_activity_bytes]u8 = undefined,
     previous_len: usize = 0,
     changed_tick: u64 = 0,
-    changed_ms: i64 = 0,
+    tool_entry: ?usize = null,
+    tool_started_ms: i64 = 0,
 
     pub fn activity(self: *const Zen) []const u8 {
         return self.shown[0..self.shown_len];
@@ -109,19 +110,27 @@ pub const Zen = struct {
         return self.previous[0..self.previous_len];
     }
 
-    pub fn beginRun(self: *Zen, tick: u64, now_ms: i64) void {
+    pub fn beginRun(self: *Zen, tick: u64) void {
         self.shown_len = 0;
         self.previous_len = 0;
         self.changed_tick = tick;
-        self.changed_ms = now_ms;
+        self.tool_entry = null;
     }
 
-    pub fn stuckMs(self: *const Zen, now_ms: i64) u64 {
-        if (self.changed_ms == 0 or now_ms <= self.changed_ms) return 0;
-        return @intCast(now_ms - self.changed_ms);
+    pub fn toolMs(self: *Zen, running_tool: ?usize, now_ms: i64) u64 {
+        const entry = running_tool orelse {
+            self.tool_entry = null;
+            return 0;
+        };
+        if (self.tool_entry != entry) {
+            self.tool_entry = entry;
+            self.tool_started_ms = now_ms;
+        }
+        if (now_ms <= self.tool_started_ms) return 0;
+        return @intCast(now_ms - self.tool_started_ms);
     }
 
-    pub fn noteActivity(self: *Zen, text: []const u8, tick: u64, now_ms: i64) void {
+    pub fn noteActivity(self: *Zen, text: []const u8, tick: u64) void {
         const kept = utf8Prefix(text, zen_activity_bytes);
         if (std.mem.eql(u8, kept, self.activity())) return;
         @memcpy(self.previous[0..self.shown_len], self.shown[0..self.shown_len]);
@@ -129,7 +138,6 @@ pub const Zen = struct {
         @memcpy(self.shown[0..kept.len], kept);
         self.shown_len = kept.len;
         self.changed_tick = tick;
-        self.changed_ms = now_ms;
     }
 
     pub fn enter(self: *Zen, transcript_len: usize) void {
@@ -4586,30 +4594,33 @@ test "zen entered mid-reply counts the reply already streaming" {
 
 test "zen remembers the activity it replaces and when, and ignores a repeat" {
     var zen: Zen = .{};
-    zen.noteActivity("thinking", 3, 1000);
+    zen.noteActivity("thinking", 3);
     try std.testing.expectEqualStrings("thinking", zen.activity());
     try std.testing.expectEqualStrings("", zen.previousActivity());
-    zen.noteActivity("thinking", 9, 5000);
+    zen.noteActivity("thinking", 9);
     try std.testing.expectEqual(@as(u64, 3), zen.changed_tick);
-    zen.noteActivity("Shell Execute  ls", 12, 7000);
+    zen.noteActivity("Shell Execute  ls", 12);
     try std.testing.expectEqualStrings("Shell Execute  ls", zen.activity());
     try std.testing.expectEqualStrings("thinking", zen.previousActivity());
     try std.testing.expectEqual(@as(u64, 12), zen.changed_tick);
-    try std.testing.expectEqual(@as(i64, 7000), zen.changed_ms);
     const long = "\u{2026}" ** 100;
-    zen.noteActivity(long, 13, 7100);
+    zen.noteActivity(long, 13);
     try std.testing.expect(zen.activity().len <= zen_activity_bytes);
     try std.testing.expect(std.unicode.utf8ValidateSlice(zen.activity()));
 }
 
-test "a new run starts the stuck clock afresh, and an unset clock reads zero" {
+test "the tool clock times only a running tool call, from its own start" {
     var zen: Zen = .{};
-    try std.testing.expectEqual(@as(u64, 0), zen.stuckMs(1_790_000_000_000));
-    zen.noteActivity("thinking", 3, 1_000);
-    zen.beginRun(40, 200_000);
+    try std.testing.expectEqual(@as(u64, 0), zen.toolMs(null, 1_790_000_000_000));
+    try std.testing.expectEqual(@as(u64, 0), zen.toolMs(4, 100_000));
+    try std.testing.expectEqual(@as(u64, 12_000), zen.toolMs(4, 112_000));
+    try std.testing.expectEqual(@as(u64, 0), zen.toolMs(7, 113_000));
+    try std.testing.expectEqual(@as(u64, 3_000), zen.toolMs(7, 116_000));
+    try std.testing.expectEqual(@as(u64, 0), zen.toolMs(null, 130_000));
+    try std.testing.expectEqual(@as(u64, 0), zen.toolMs(7, 131_000));
+    zen.noteActivity("thinking", 3);
+    zen.beginRun(40);
     try std.testing.expectEqualStrings("", zen.activity());
     try std.testing.expectEqualStrings("", zen.previousActivity());
-    try std.testing.expectEqual(@as(u64, 2_000), zen.stuckMs(202_000));
-    zen.noteActivity("thinking", 41, 203_000);
-    try std.testing.expectEqual(@as(u64, 1_000), zen.stuckMs(204_000));
+    try std.testing.expectEqual(@as(u64, 0), zen.toolMs(7, 140_000));
 }
