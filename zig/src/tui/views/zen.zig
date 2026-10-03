@@ -217,10 +217,12 @@ pub fn render(allocator: std.mem.Allocator, frame: Frame) ![]u8 {
     return out.toOwnedSlice();
 }
 
-pub const slide_ticks: u64 = 40;
-pub const slot_rows: usize = 5;
-const slot_centre: usize = 2;
-const line_gap: f32 = 2;
+pub const change_ticks: u64 = 80;
+pub const slot_rows: usize = 3;
+const slot_centre: usize = 1;
+const fade_share: f32 = 0.75;
+const glow_gain: f32 = 0.8;
+const lit_peak: f32 = 230;
 const timed_after_ms: u64 = 10_000;
 const faded_level: f32 = 40;
 
@@ -233,51 +235,51 @@ fn activityLine(allocator: std.mem.Allocator, text: []const u8, tool_ms: u64, wi
     return std.fmt.allocPrint(allocator, "{s} \u{b7} {s}", .{ clock, fitted });
 }
 
-fn fadedRow(allocator: std.mem.Allocator, text: []const u8, strength: f32, width: usize) ![]const u8 {
-    if (text.len == 0 or strength < 0.04) return "";
-    const level: u8 = @intFromFloat(@round(faded_level + (@as(f32, @floatFromInt(soft_level)) - faded_level) * @min(strength, 1)));
-    return centered(allocator, try gray(allocator, level, text), width);
-}
-
 fn smoothstep(x: f32) f32 {
     const t = std.math.clamp(x, 0, 1);
     return t * t * (3 - 2 * t);
 }
 
-fn presence(distance: f32) f32 {
-    return 1 - smoothstep(@abs(distance) / line_gap);
+fn litLevel(strength: f32) u8 {
+    const soft: f32 = @floatFromInt(soft_level);
+    const level = if (strength <= 1) faded_level + (soft - faded_level) * @max(strength, 0) else soft + (lit_peak - soft) * @min(strength - 1, 1);
+    return @intFromFloat(@round(level));
 }
 
-const Placed = struct {
-    text: []const u8 = "",
-    strength: f32 = 0,
-};
+fn glow(progress: f32, col: usize, text_width: usize) f32 {
+    const mid = @as(f32, @floatFromInt(text_width -| 1)) / 2;
+    const reach = @abs(@as(f32, @floatFromInt(col)) - mid) / @max(mid, 1) * 0.85;
+    return @max(0, 1 - @abs(progress - reach - 0.075) / 0.15);
+}
 
-fn place(rows: *[slot_rows]Placed, text: []const u8, y: f32) void {
-    if (text.len == 0) return;
-    const base = @floor(y);
-    const frac = y - base;
-    const centre: f32 = @floatFromInt(slot_centre);
-    for ([_]f32{ 0, 1 }) |k| {
-        const row = base + k;
-        if (row < 0 or row >= @as(f32, @floatFromInt(slot_rows))) continue;
-        const weight = if (k == 0) 1 - frac else frac;
-        const strength = weight * presence(y - centre);
-        const index: usize = @intFromFloat(row);
-        if (strength > rows[index].strength) rows[index] = .{ .text = text, .strength = strength };
+fn activityRow(allocator: std.mem.Allocator, frame: Frame, width: usize) ![]const u8 {
+    const changing = frame.incoming.len > 0;
+    const fade = @min(frame.rise / fade_share, 1);
+    const arrived = !changing or fade >= 0.5;
+    const text = if (!changing) try activityLine(allocator, frame.activity, frame.tool_ms, width) else try tui_text.truncateLineToWidth(allocator, if (arrived) frame.incoming else frame.activity, width);
+    const strength: f32 = if (!changing) 1 else if (arrived) smoothstep(fade * 2 - 1) else 1 - smoothstep(fade * 2);
+    if (text.len == 0 or strength < 0.04) return "";
+    const text_width = tui_text.visibleWidth(text);
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    for (0..(width -| text_width) / 2) |_| try out.writer.writeByte(' ');
+    var last: ?u8 = null;
+    var col: usize = 0;
+    var view = std.unicode.Utf8View.initUnchecked(text).iterator();
+    while (view.nextCodepointSlice()) |cell| {
+        const lit = if (changing) strength * (1 + glow_gain * glow(frame.rise, col, text_width)) else strength;
+        const level = litLevel(lit);
+        if (last != level) try zz.Color.fromRgb(level, level, level).writeFg(&out.writer);
+        last = level;
+        try out.writer.writeAll(cell);
+        col += tui_text.visibleWidth(cell);
     }
+    try out.writer.writeAll("\x1b[0m");
+    return out.toOwnedSlice();
 }
 
 fn activitySlot(allocator: std.mem.Allocator, frame: Frame, width: usize) ![slot_rows][]const u8 {
-    const moving = frame.incoming.len > 0;
-    const current = if (moving) try tui_text.truncateLineToWidth(allocator, frame.activity, width) else try activityLine(allocator, frame.activity, frame.tool_ms, width);
-    const lift = if (moving) line_gap * smoothstep(frame.rise) else 0;
-    const centre: f32 = @floatFromInt(slot_centre);
-    var placed: [slot_rows]Placed = .{Placed{}} ** slot_rows;
-    place(&placed, current, centre - lift);
-    if (moving) place(&placed, try tui_text.truncateLineToWidth(allocator, frame.incoming, width), centre + line_gap - lift);
-    var rows: [slot_rows][]const u8 = undefined;
-    for (placed, 0..) |cell, i| rows[i] = try fadedRow(allocator, cell.text, cell.strength, width);
+    var rows: [slot_rows][]const u8 = .{""} ** slot_rows;
+    rows[slot_centre] = try activityRow(allocator, frame, width);
     return rows;
 }
 
@@ -444,7 +446,7 @@ test "a running frame floats its input bar above the bottom, apart from the trai
     }
     try std.testing.expectEqual(@as(usize, 30), count);
     try std.testing.expectEqual(@as(usize, 24), input_row.?);
-    try std.testing.expectEqual(@as(usize, 8), trail_row.?);
+    try std.testing.expectEqual(@as(usize, 9), trail_row.?);
     try std.testing.expect(std.mem.indexOf(u8, plain, dot ++ " " ++ dot ++ " " ++ dot ++ " " ++ dot ++ "\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, plain, "Shell Execute  go test") != null);
     try std.testing.expect(std.mem.indexOf(u8, plain, "1:15") == null);
@@ -530,49 +532,48 @@ test "the input bar keeps the cursor in view and shows a placeholder when empty"
     try std.testing.expect(std.mem.endsWith(u8, std.mem.trimEnd(u8, plain, " "), "mnop"));
 }
 
-test "a new line glides up through the rows beneath the old one, which rises and fades out" {
+fn levelsOf(allocator: std.mem.Allocator, row: []const u8) ![]u32 {
+    var levels: std.ArrayList(u32) = .empty;
+    var rest = row;
+    while (std.mem.indexOf(u8, rest, "\x1b[38;2;")) |at| {
+        rest = rest[at + 7 ..];
+        const end = std.mem.indexOfScalar(u8, rest, ';') orelse break;
+        try levels.append(allocator, try std.fmt.parseInt(u32, rest[0..end], 10));
+    }
+    return levels.toOwnedSlice(allocator);
+}
+
+test "a new line crossfades in place while a light opens from its centre to both ends" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     var frame: Frame = .{ .width = 80, .height = 24, .running = true, .activity = "thinking", .incoming = "Shell Execute  ls" };
 
-    const start = try activitySlot(a, frame, 60);
-    try std.testing.expect(std.mem.indexOf(u8, start[2], "thinking") != null);
-    for ([_]usize{ 0, 1, 3, 4 }) |i| try std.testing.expectEqualStrings("", start[i]);
+    frame.rise = 0.2;
+    const leaving = try activitySlot(a, frame, 60);
+    try std.testing.expect(std.mem.indexOf(u8, leaving[1], "Shell") == null);
+    try std.testing.expectEqualStrings("", leaving[0]);
+    try std.testing.expectEqualStrings("", leaving[2]);
+    try std.testing.expect(std.mem.indexOf(u8, (try plainRows(a, leaving[1])), "thinking") != null);
 
-    frame.rise = 0.25;
-    const early = try activitySlot(a, frame, 60);
-    try std.testing.expect(std.mem.indexOf(u8, early[1], "thinking") != null);
-    try std.testing.expect(std.mem.indexOf(u8, early[2], "thinking") != null);
-    try std.testing.expect(levelOf(early[2]) > levelOf(early[1]));
-    try std.testing.expectEqualStrings("", early[0]);
+    frame.rise = 0.45;
+    const arriving = try plainRows(a, (try activitySlot(a, frame, 60))[1]);
+    try std.testing.expect(std.mem.indexOf(u8, arriving, "Shell Execute  ls") != null);
+    try std.testing.expect(std.mem.indexOf(u8, arriving, "thinking") == null);
 
-    frame.rise = 0.5;
-    const middle = try activitySlot(a, frame, 60);
-    try std.testing.expect(std.mem.indexOf(u8, middle[1], "thinking") != null);
-    try std.testing.expectEqualStrings("", middle[2]);
-    try std.testing.expect(std.mem.indexOf(u8, middle[3], "Shell Execute") != null);
-    try std.testing.expectEqual(levelOf(middle[1]), levelOf(middle[3]));
+    frame.rise = 0.1;
+    const early = try levelsOf(a, (try activitySlot(a, frame, 60))[1]);
+    frame.rise = 0.8;
+    const late = try levelsOf(a, (try activitySlot(a, frame, 60))[1]);
+    const soft: u32 = soft_level;
+    try std.testing.expect(early[early.len / 2] > early[0]);
+    try std.testing.expect(late[0] > late[late.len / 2]);
+    try std.testing.expect(late[0] > soft);
+    try std.testing.expectEqual(soft, late[late.len / 2]);
 
-    frame.rise = 1;
-    const landed = try activitySlot(a, frame, 60);
-    try std.testing.expect(std.mem.indexOf(u8, landed[2], "Shell Execute") != null);
-    for ([_]usize{ 0, 1, 3, 4 }) |i| try std.testing.expectEqualStrings("", landed[i]);
-    const rest = try activitySlot(a, .{ .width = 80, .height = 24, .running = true, .activity = "Shell Execute  ls" }, 60);
-    try std.testing.expectEqual(levelOf(rest[2]), levelOf(landed[2]));
-
-    var last: u32 = 0;
-    var step: f32 = 0;
-    while (step <= 1) : (step += 0.05) {
-        frame.rise = step;
-        const rows = try activitySlot(a, frame, 60);
-        var total: u32 = 0;
-        for (rows) |row| if (std.mem.indexOf(u8, row, "Shell Execute") != null) {
-            total += levelOf(row) - @as(u32, @intFromFloat(faded_level));
-        };
-        try std.testing.expect(total + 1 >= last);
-        last = total;
-    }
+    const rest = try levelsOf(a, (try activitySlot(a, .{ .width = 80, .height = 24, .running = true, .activity = "Shell Execute  ls" }, 60))[1]);
+    try std.testing.expectEqual(@as(usize, 1), rest.len);
+    try std.testing.expectEqual(soft, rest[0]);
 }
 
 fn levelOf(row: []const u8) u32 {
