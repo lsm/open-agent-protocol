@@ -94,6 +94,31 @@ pub const Zen = struct {
     phase: f32 = 0,
     was_running: bool = false,
     ended_tick: ?u64 = null,
+    shown: [zen_activity_bytes]u8 = undefined,
+    shown_len: usize = 0,
+    previous: [zen_activity_bytes]u8 = undefined,
+    previous_len: usize = 0,
+    changed_tick: u64 = 0,
+    changed_ms: i64 = 0,
+
+    pub fn activity(self: *const Zen) []const u8 {
+        return self.shown[0..self.shown_len];
+    }
+
+    pub fn previousActivity(self: *const Zen) []const u8 {
+        return self.previous[0..self.previous_len];
+    }
+
+    pub fn noteActivity(self: *Zen, text: []const u8, tick: u64, now_ms: i64) void {
+        const kept = utf8Prefix(text, zen_activity_bytes);
+        if (std.mem.eql(u8, kept, self.activity())) return;
+        @memcpy(self.previous[0..self.shown_len], self.shown[0..self.shown_len]);
+        self.previous_len = self.shown_len;
+        @memcpy(self.shown[0..kept.len], kept);
+        self.shown_len = kept.len;
+        self.changed_tick = tick;
+        self.changed_ms = now_ms;
+    }
 
     pub fn enter(self: *Zen, transcript_len: usize) void {
         if (self.on) return;
@@ -118,6 +143,15 @@ pub const Zen = struct {
         };
     }
 };
+
+pub const zen_activity_bytes: usize = 256;
+
+fn utf8Prefix(text: []const u8, limit: usize) []const u8 {
+    if (text.len <= limit) return text;
+    var end = limit;
+    while (end > 0 and (text[end] & 0xc0) == 0x80) end -= 1;
+    return text[0..end];
+}
 
 pub fn withoutZenNote(text: []const u8) []const u8 {
     inline for (.{ zen_enter_note, zen_leave_note }) |note| {
@@ -4536,4 +4570,22 @@ test "zen entered mid-reply counts the reply already streaming" {
     try std.testing.expectEqual(@as(usize, 1), zenCounts(state.transcript.items, state.zen.start_index).final.?);
     state.active_assistant_entry = null;
     try std.testing.expectEqual(state.transcript.items.len, zenStart(&state));
+}
+
+test "zen remembers the activity it replaces and when, and ignores a repeat" {
+    var zen: Zen = .{};
+    zen.noteActivity("thinking", 3, 1000);
+    try std.testing.expectEqualStrings("thinking", zen.activity());
+    try std.testing.expectEqualStrings("", zen.previousActivity());
+    zen.noteActivity("thinking", 9, 5000);
+    try std.testing.expectEqual(@as(u64, 3), zen.changed_tick);
+    zen.noteActivity("Shell Execute  ls", 12, 7000);
+    try std.testing.expectEqualStrings("Shell Execute  ls", zen.activity());
+    try std.testing.expectEqualStrings("thinking", zen.previousActivity());
+    try std.testing.expectEqual(@as(u64, 12), zen.changed_tick);
+    try std.testing.expectEqual(@as(i64, 7000), zen.changed_ms);
+    const long = "\u{2026}" ** 100;
+    zen.noteActivity(long, 13, 7100);
+    try std.testing.expect(zen.activity().len <= zen_activity_bytes);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(zen.activity()));
 }

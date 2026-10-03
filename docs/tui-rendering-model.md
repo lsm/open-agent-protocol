@@ -573,7 +573,7 @@ every frame anyway.
 `/zen` (or `/zen on`, `/zen off`) replaces the whole screen with one centred
 column in grey: a trail that grows one dot for each thinking block, tool call
 and reply since zen began (with a count in front once it outgrows the column),
-one line naming the current tool, and, floating a little above the bottom of
+one line naming what the agent is doing, which slides up and fades as the next takes its place and shows how long it has been on that step once that passes ten seconds, and, floating a little above the bottom of
 the screen, a minimal input bar in place of the composer and the status bar.
 The trail breathes slowly while the agent thinks, faster while a tool runs,
 and holds still while an approval waits; with no steps yet it is a single dot.
