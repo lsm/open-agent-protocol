@@ -109,6 +109,18 @@ pub const Zen = struct {
         return self.previous[0..self.previous_len];
     }
 
+    pub fn beginRun(self: *Zen, tick: u64, now_ms: i64) void {
+        self.shown_len = 0;
+        self.previous_len = 0;
+        self.changed_tick = tick;
+        self.changed_ms = now_ms;
+    }
+
+    pub fn stuckMs(self: *const Zen, now_ms: i64) u64 {
+        if (self.changed_ms == 0 or now_ms <= self.changed_ms) return 0;
+        return @intCast(now_ms - self.changed_ms);
+    }
+
     pub fn noteActivity(self: *Zen, text: []const u8, tick: u64, now_ms: i64) void {
         const kept = utf8Prefix(text, zen_activity_bytes);
         if (std.mem.eql(u8, kept, self.activity())) return;
@@ -4588,4 +4600,16 @@ test "zen remembers the activity it replaces and when, and ignores a repeat" {
     zen.noteActivity(long, 13, 7100);
     try std.testing.expect(zen.activity().len <= zen_activity_bytes);
     try std.testing.expect(std.unicode.utf8ValidateSlice(zen.activity()));
+}
+
+test "a new run starts the stuck clock afresh, and an unset clock reads zero" {
+    var zen: Zen = .{};
+    try std.testing.expectEqual(@as(u64, 0), zen.stuckMs(1_790_000_000_000));
+    zen.noteActivity("thinking", 3, 1_000);
+    zen.beginRun(40, 200_000);
+    try std.testing.expectEqualStrings("", zen.activity());
+    try std.testing.expectEqualStrings("", zen.previousActivity());
+    try std.testing.expectEqual(@as(u64, 2_000), zen.stuckMs(202_000));
+    zen.noteActivity("thinking", 41, 203_000);
+    try std.testing.expectEqual(@as(u64, 1_000), zen.stuckMs(204_000));
 }

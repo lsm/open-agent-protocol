@@ -4591,6 +4591,7 @@ pub const TuiModel = struct {
         const zen = &app.state.zen;
         const running = streamActive(app);
         if (zen.was_running and !running) zen.ended_tick = app.state.anim_tick;
+        if (!zen.was_running and running) zen.beginRun(app.state.anim_tick, compat.time.nowMillis());
         if (running) zen.ended_tick = null;
         zen.was_running = running;
         return running;
@@ -4639,7 +4640,7 @@ pub const TuiModel = struct {
             .activity = app.state.zen.activity(),
             .previous = app.state.zen.previousActivity(),
             .since_change = app.state.anim_tick -% app.state.zen.changed_tick,
-            .stuck_ms = @intCast(@max(0, now_ms - app.state.zen.changed_ms)),
+            .stuck_ms = app.state.zen.stuckMs(now_ms),
             .final_block = final_block,
             .failed = failed,
         });
