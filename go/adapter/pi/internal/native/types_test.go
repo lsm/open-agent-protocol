@@ -95,3 +95,15 @@ func TestDecodeStrictRejectsUnknownAndDuplicate(t *testing.T) {
 		t.Fatal("accepted unknown")
 	}
 }
+
+func TestToolEventsAdmitTheParentCallOfANestedCall(t *testing.T) {
+	for eventType, frame := range map[EventType]string{
+		EventToolExecutionStart:  `{"type":"tool_execution_start","toolCallId":"c","toolName":"n","args":{},"parentToolCallId":"p"}`,
+		EventToolExecutionUpdate: `{"type":"tool_execution_update","toolCallId":"c","toolName":"n","args":{},"partialResult":{},"parentToolCallId":"p"}`,
+		EventToolExecutionEnd:    `{"type":"tool_execution_end","toolCallId":"c","toolName":"n","result":{},"isError":false,"parentToolCallId":"p"}`,
+	} {
+		if err := ValidateEvent([]byte(frame), eventType); err != nil {
+			t.Fatalf("%s with parentToolCallId: %v", eventType, err)
+		}
+	}
+}
