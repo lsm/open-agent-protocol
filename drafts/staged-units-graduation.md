@@ -4312,7 +4312,8 @@ last emitted sequence, settles the guidance at the turn boundary pi injects it,
 drops a pending steer before the run's terminal, and reports `pending_steers` on
 the target's `active_runs` entry. Both trees advertise
 `session.message.delivery.steer` at `emulated`, which moves the pin's capability
-revision to `pi-v0.87.1-oap-v2` in both ports, and the corpus case
+revision to `pi-v0.87.1-oap-v3` in both ports (`v2` is the session-settings
+descriptor `v0.1.0-alpha.7` released), and the corpus case
 `native-controls` reclassifies its `steer` round trip from `required-unmapped` to
 mapped.
 

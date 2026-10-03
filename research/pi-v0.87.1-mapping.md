@@ -79,8 +79,9 @@ the same shapes at both tags.
 
 The advertised surface is unchanged by the pin move. The revision moves to
 `pi-v0.87.1-oap-v1` with the pin, and the Zig port serves that same revision;
-T4 steer moved the surface afterwards, so both ports now serve
-`pi-v0.87.1-oap-v2`.
+Decision 0045's session settings moved it to `pi-v0.87.1-oap-v2`, which
+`v0.1.0-alpha.7` released, and T4 steer moved the surface again, so both ports
+now serve `pi-v0.87.1-oap-v3`.
 
 Normative inspected sources:
 
@@ -484,8 +485,8 @@ available; v0.85.1 was gated on `pi-linux-x64`). The v0.85.1
 - Re-run against the new binary after the port gained Go's `get_state`
   reconciliation and run model naming: the served backend answers
   `session.state.request` from a fresh `get_state`, names
-  `oap-loopback/fixture-model` on `run.started`, and serves the Go revision
-  `pi-v0.87.1-oap-v2`.
+  `oap-loopback/fixture-model` on `run.started`, and serves the Go revision,
+  `pi-v0.87.1-oap-v2` at the time.
 
 ## Served by `oapx serve agent --backend pi`
 
