@@ -1506,6 +1506,7 @@ pub const App = struct {
         }
         self.state.telemetry.rate = .{};
         self.discardReplayedError();
+        self.state.zen.start_index = self.state.transcript.items.len;
         try self.state.finalizeInterruptedTools();
         self.state.retireToolOccurrences();
         if (self.session) |*session| session.clearQueuedMessages();

@@ -918,6 +918,7 @@ pub const AppState = struct {
         for (self.transcript.items) |*entry| entry.deinit(self.allocator);
         self.transcript.clearRetainingCapacity();
         self.transcript_scroll = 0;
+        self.zen.start_index = 0;
         self.clearActiveTranscriptEntries();
         self.clearPendingSteers();
     }
@@ -4479,6 +4480,12 @@ test "zen counts thinking, tool rows and replies since it began, and finds the f
     state.transcript.items[state.transcript.items.len - 1].run_failure = true;
     try std.testing.expectEqualStrings("HTTP 500", state.transcript.items[zenCounts(state.transcript.items, start).final.?].text.items);
     try std.testing.expectEqual(@as(usize, 0), zenCounts(state.transcript.items, 99).messages);
+
+    state.zen.enter(state.transcript.items.len);
+    state.clearTranscript();
+    try std.testing.expectEqual(@as(usize, 0), state.zen.start_index);
+    try state.appendTranscript(.assistant, "after clear");
+    try std.testing.expectEqual(@as(usize, 1), zenCounts(state.transcript.items, state.zen.start_index).messages);
 }
 
 test "the zen note comes off a user message, and nothing else does" {
