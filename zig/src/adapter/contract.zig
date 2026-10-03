@@ -34,6 +34,7 @@ pub const feature_open_reopen = "session.open.reopen";
 pub const feature_session_reasoning = "session.reasoning";
 pub const feature_compaction_policy = "session.compaction.policy";
 pub const mode_session_open = "session_open";
+pub const mode_session_live = "session_live";
 pub const feature_submit = "session.message.submit";
 
 pub const Refusal = struct {
@@ -172,6 +173,11 @@ pub const Switched = struct {
     state: oap_types.SessionState,
 };
 
+pub const Updated = struct {
+    response: oap_types.SessionSettingsUpdateResponse,
+    state: oap_types.SessionState,
+};
+
 pub const Session = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
@@ -189,6 +195,7 @@ pub const Session = struct {
         tools: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ToolsListRequest, refusal: *Refusal) Failure!ToolSet = null,
         models: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ModelsRequest, refusal: *Refusal) Failure!Catalog = null,
         switch_model: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.SessionModelSwitchRequest, refusal: *Refusal) Failure!Switched = null,
+        update_settings: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.SessionSettingsUpdateRequest, refusal: *Refusal) Failure!Updated = null,
         compact: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.SessionCompactRequest, envelope_id: []const u8, refusal: *Refusal) Failure!oap_types.MessageSubmitResponse = null,
         resolve_call: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request_id: []const u8, request: *const oap_types.CallResolveRequest, refusal: *Refusal) Failure!oap_types.CallResolveResponse = null,
         replay: ?*const fn (ptr: *anyopaque, allocator: std.mem.Allocator, run_id: []const u8, after: u64, refusal: *Refusal) Failure!Replay = null,
@@ -358,6 +365,21 @@ pub fn refuseUnadvertisedOpenElections(descriptor: Descriptor, request: *const o
         if (!setting.present) continue;
         const level = descriptor.level(setting.key);
         if (level == .unavailable or !descriptor.disclosesMode(setting.key, mode_session_open)) {
+            return refusal.unsupportedField(setting.key, reason_unadvertised, setting.field);
+        }
+        if (level == .degraded and !request.allowsDegraded(setting.key)) return refusal.degraded(setting.key);
+    }
+}
+
+pub fn refuseUnadvertisedLiveSettings(descriptor: Descriptor, request: *const oap_types.SessionSettingsUpdateRequest, refusal: *Refusal) Failure!void {
+    const settings = [_]struct { key: []const u8, field: []const u8, present: bool }{
+        .{ .key = feature_session_reasoning, .field = "reasoning_level", .present = request.reasoning_level != null },
+        .{ .key = feature_compaction_policy, .field = "compaction_policy", .present = request.compaction_policy_json != null },
+    };
+    for (settings) |setting| {
+        if (!setting.present) continue;
+        const level = descriptor.level(setting.key);
+        if (level == .unavailable or !descriptor.disclosesMode(setting.key, mode_session_live)) {
             return refusal.unsupportedField(setting.key, reason_unadvertised, setting.field);
         }
         if (level == .degraded and !request.allowsDegraded(setting.key)) return refusal.degraded(setting.key);
