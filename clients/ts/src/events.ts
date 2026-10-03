@@ -37,6 +37,8 @@ const RUN_EVENT_TYPES: ReadonlySet<string> = new Set([
   EnvelopeType.UserInputResolved,
   EnvelopeType.RunCompactionStarted,
   EnvelopeType.RunCompactionEnded,
+  EnvelopeType.RunSteerApplied,
+  EnvelopeType.RunSteerDropped,
 ]);
 
 const INITIAL_RECONNECT_BACKOFF_MS = 100;
@@ -73,7 +75,12 @@ export class EventStream implements AsyncIterable<Envelope> {
   private emptyCycles = 0;
   private backoffMs = 0;
   private buffered: SSEFrame[] = [];
+  private inflight: Promise<Envelope> | null = null;
   private iterator: AsyncIterator<Envelope> | null = null;
+  private released: Envelope[] = [];
+  private heldSettlement = false;
+  private wakeFire: (() => void) | null = null;
+  private wakePromise: Promise<void> | null = null;
 
   constructor(
     session: OapSession,
@@ -102,11 +109,29 @@ export class EventStream implements AsyncIterable<Envelope> {
     try {
       await this.ready;
       for (;;) {
+        const wake = this.releaseWake();
+        const released = this.takeSteer();
+        if (released) {
+          this.heldSettlement = false;
+          yield released;
+          continue;
+        }
+        if (this.heldSettlement) {
+          await wake;
+          continue;
+        }
         if (!this.conn) await this.connect();
         let envelope: Envelope;
         try {
-          envelope = await this.poll();
+          const raced = await Promise.race([
+            this.pollOnce().then((value) => ({ value })),
+            wake.then(() => null),
+          ]);
+          if (raced === null) continue;
+          envelope = raced.value;
+          this.inflight = null;
         } catch (err) {
+          this.inflight = null;
           if (!(err instanceof ConnectionDrop)) {
             throw err;
           }
@@ -132,11 +157,49 @@ export class EventStream implements AsyncIterable<Envelope> {
           }
           continue;
         }
+        if (this.holdSteer(envelope)) {
+          this.heldSettlement = true;
+          continue;
+        }
         yield envelope;
       }
     } finally {
       this.closeConn();
     }
+  }
+
+  private pollOnce(): Promise<Envelope> {
+    if (!this.inflight) {
+      const started = this.poll();
+      this.inflight = started;
+      started.catch(() => {});
+    }
+    return this.inflight;
+  }
+
+  private holdSteer(envelope: Envelope): boolean {
+    return this.session.holdSteer(this, envelope);
+  }
+
+  releaseSteer(envelopes: Envelope[]): void {
+    this.released.push(...envelopes);
+    const fire = this.wakeFire;
+    this.wakeFire = null;
+    this.wakePromise = null;
+    if (fire) fire();
+  }
+
+  private takeSteer(): Envelope | null {
+    return this.released.shift() ?? null;
+  }
+
+  private releaseWake(): Promise<void> {
+    if (!this.wakeFire) {
+      this.wakePromise = new Promise<void>((resolve) => {
+        this.wakeFire = resolve;
+      });
+    }
+    return this.wakePromise as Promise<void>;
   }
 
   private async connect(): Promise<void> {

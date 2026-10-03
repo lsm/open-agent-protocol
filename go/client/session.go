@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sync"
 
 	"github.com/lsm/open-agent-protocol/go/protocol"
 )
@@ -14,6 +15,96 @@ type Session struct {
 	client  *Client
 	id      protocol.SessionID
 	adapter string
+
+	steerMu     sync.Mutex
+	outstanding map[protocol.EnvelopeID]bool
+	heldSteers  map[protocol.EnvelopeID]map[*EventStream][]protocol.Envelope
+}
+
+func (s *Session) beginSubmit(id protocol.EnvelopeID) {
+	s.steerMu.Lock()
+	defer s.steerMu.Unlock()
+	if s.outstanding == nil {
+		s.outstanding = make(map[protocol.EnvelopeID]bool)
+		s.heldSteers = make(map[protocol.EnvelopeID]map[*EventStream][]protocol.Envelope)
+	}
+	s.outstanding[id] = true
+}
+
+func (s *Session) endSubmit(id protocol.EnvelopeID) {
+	s.steerMu.Lock()
+	defer s.steerMu.Unlock()
+	if !s.outstanding[id] {
+		return
+	}
+	delete(s.outstanding, id)
+	for stream, held := range s.heldSteers[id] {
+		if len(held) == 0 {
+			continue
+		}
+		stream.releaseSteer(held)
+	}
+	delete(s.heldSteers, id)
+}
+
+func (s *Session) holdSteer(stream *EventStream, envelope protocol.Envelope) bool {
+	request := steerSettlementRequest(envelope)
+	if request == "" {
+		return false
+	}
+	s.steerMu.Lock()
+	defer s.steerMu.Unlock()
+	if !s.outstanding[request] {
+		return false
+	}
+	held := s.heldSteers[request]
+	if held == nil {
+		held = make(map[*EventStream][]protocol.Envelope)
+		s.heldSteers[request] = held
+	}
+	held[stream] = append(held[stream], envelope)
+	return true
+}
+
+func (es *EventStream) releaseSteer(held []protocol.Envelope) {
+	es.released = append(es.released, held...)
+	if es.wake != nil {
+		close(es.wake)
+		es.wake = nil
+	}
+}
+
+func (es *EventStream) takeSteer() (protocol.Envelope, chan struct{}, bool) {
+	s := es.session
+	s.steerMu.Lock()
+	defer s.steerMu.Unlock()
+	if es.wake == nil {
+		es.wake = make(chan struct{})
+	}
+	if len(es.released) == 0 {
+		return protocol.Envelope{}, es.wake, false
+	}
+	envelope := es.released[0]
+	es.released = es.released[1:]
+	return envelope, es.wake, true
+}
+
+func steerSettlementRequest(envelope protocol.Envelope) protocol.EnvelopeID {
+	switch envelope.Type {
+	case protocol.TypeRunSteerApplied:
+		var payload protocol.RunSteerAppliedPayload
+		if err := envelope.DecodePayload(&payload); err != nil {
+			return ""
+		}
+		return payload.RequestID
+	case protocol.TypeRunSteerDropped:
+		var payload protocol.RunSteerDroppedPayload
+		if err := envelope.DecodePayload(&payload); err != nil {
+			return ""
+		}
+		return payload.RequestID
+	}
+	return ""
 }
 
 func (s *Session) ID() protocol.SessionID { return s.id }
@@ -41,10 +132,13 @@ func (s *Session) Submit(ctx context.Context, request protocol.MessageSubmitRequ
 		option(&envelope)
 	}
 	envelope.SessionID = s.id
+	s.beginSubmit(envelope.ID)
 	response, err := s.client.exchange(ctx, http.MethodPost, s.path("/submit"), &envelope, protocol.TypeSessionMessageSubmitResponse)
 	if err != nil {
+		s.endSubmit(envelope.ID)
 		return admission, err
 	}
+	defer s.endSubmit(envelope.ID)
 	if err := response.DecodePayload(&admission); err != nil {
 		return admission, err
 	}

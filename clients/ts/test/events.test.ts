@@ -530,3 +530,249 @@ test('ready resolves once the subscription is live', { timeout: 10000 }, async (
   assert.equal(transport.callsFor('/events').length, 1);
   await collect(stream);
 });
+
+test('a settlement whose admission is still outstanding is held until the response arrives', { timeout: 10000 }, async () => {
+  const settlement = testEnvelope({
+    type: EnvelopeType.RunSteerApplied,
+    sequence: 1,
+    sessionId: SESSION,
+    runId: RUN,
+    payload: {
+      session_id: SESSION,
+      run_id: RUN,
+      submission_id: 'sub-steer',
+      request_id: 'req-steer',
+      message_ids: ['m-2'],
+      boundary: 'turn',
+    },
+  });
+  const delta = testEnvelope({
+    type: EnvelopeType.ContentDelta,
+    sequence: 2,
+    sessionId: SESSION,
+    runId: RUN,
+    payload: { session_id: SESSION, run_id: RUN, part: { type: 'text', text: 'applied' } },
+  });
+  const completed = testEnvelope({
+    type: EnvelopeType.RunCompleted,
+    sequence: 3,
+    sessionId: SESSION,
+    runId: RUN,
+    payload: { session_id: SESSION, run_id: RUN, final_response: { role: 'assistant', content: 'done' }, stop_reason: 'end_turn' },
+  });
+  const { session } = sessionWith([
+    { match: LIVE, chunks: [eventFrame(settlement), eventFrame(delta), eventFrame(completed)] },
+  ]);
+
+  session.beginSubmit('req-steer');
+  const iterator = session.events()[Symbol.asyncIterator]();
+  const first = iterator.next();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  session.endSubmit('req-steer');
+
+  const released = await first;
+  assert.equal(released.value?.type, EnvelopeType.RunSteerApplied);
+  assert.equal(released.value?.payload['request_id'], 'req-steer');
+
+  const second = await iterator.next();
+  assert.equal(second.value?.sequence, 2);
+  const last = await iterator.next();
+  assert.equal(last.value?.type, EnvelopeType.RunCompleted);
+  assert.equal((await iterator.next()).done, true);
+});
+
+test('a settlement for a request that is not outstanding is delivered in order', { timeout: 10000 }, async () => {
+  const settlement = testEnvelope({
+    type: EnvelopeType.RunSteerDropped,
+    sequence: 1,
+    sessionId: SESSION,
+    runId: RUN,
+    payload: {
+      session_id: SESSION,
+      run_id: RUN,
+      submission_id: 'sub-steer',
+      request_id: 'req-other',
+      reason: { code: 'run_terminated', message: 'the run ended' },
+    },
+  });
+  const completed = testEnvelope({
+    type: EnvelopeType.RunCompleted,
+    sequence: 2,
+    sessionId: SESSION,
+    runId: RUN,
+    payload: { session_id: SESSION, run_id: RUN, final_response: { role: 'assistant', content: 'done' }, stop_reason: 'end_turn' },
+  });
+  const { session } = sessionWith([{ match: LIVE, chunks: [eventFrame(settlement), eventFrame(completed)] }]);
+  session.beginSubmit('req-steer');
+  const envelopes = await collect(session.events());
+  assert.deepEqual(
+    envelopes.map((envelope) => envelope.type),
+    [EnvelopeType.RunSteerDropped, EnvelopeType.RunCompleted],
+  );
+  session.endSubmit('req-steer');
+});
+
+test('a held settlement is released across a dropped connection', { timeout: 10000 }, async () => {
+  const settlement = testEnvelope({
+    type: EnvelopeType.RunSteerApplied,
+    sequence: 1,
+    sessionId: SESSION,
+    runId: RUN,
+    payload: {
+      session_id: SESSION,
+      run_id: RUN,
+      submission_id: 'sub-steer',
+      request_id: 'req-steer',
+      message_ids: ['m-2'],
+      boundary: 'turn',
+    },
+  });
+  const delta = testEnvelope({
+    type: EnvelopeType.ContentDelta,
+    sequence: 2,
+    sessionId: SESSION,
+    runId: RUN,
+    payload: { session_id: SESSION, run_id: RUN, part: { type: 'text', text: 'applied' } },
+  });
+  const { session, transport } = sessionWith([
+    { match: LIVE, chunks: [eventFrame(settlement)] },
+    { match: /after=1$/, delayMs: 100, chunks: [eventFrame(delta)] },
+  ]);
+  session.beginSubmit('req-steer');
+  const iterator = session.events()[Symbol.asyncIterator]();
+  const first = iterator.next();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  session.endSubmit('req-steer');
+  const released = await Promise.race([
+    first,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('the release did not wake the reader holding the settlement')), 1500),
+    ),
+  ]);
+  assert.equal(released.value?.type, EnvelopeType.RunSteerApplied);
+  assert.equal(released.value?.payload['request_id'], 'req-steer');
+
+  const resumed = await iterator.next();
+  assert.equal(resumed.value?.sequence, 2);
+  assert.equal(transport.callsFor('/events').length, 2);
+  await iterator.return?.();
+});
+
+test('a poll that settles behind a released settlement is not dropped', { timeout: 10000 }, async () => {
+  const settlement = testEnvelope({
+    type: EnvelopeType.RunSteerApplied,
+    sequence: 1,
+    sessionId: SESSION,
+    runId: RUN,
+    payload: {
+      session_id: SESSION,
+      run_id: RUN,
+      submission_id: 'sub-steer',
+      request_id: 'req-steer',
+      message_ids: ['m-2'],
+      boundary: 'turn',
+    },
+  });
+  const delta = testEnvelope({
+    type: EnvelopeType.ContentDelta,
+    sequence: 2,
+    sessionId: SESSION,
+    runId: RUN,
+    payload: { session_id: SESSION, run_id: RUN, part: { type: 'text', text: 'applied' } },
+  });
+  const completed = testEnvelope({
+    type: EnvelopeType.RunCompleted,
+    sequence: 3,
+    sessionId: SESSION,
+    runId: RUN,
+    payload: { session_id: SESSION, run_id: RUN, final_response: { role: 'assistant', content: 'done' }, stop_reason: 'end_turn' },
+  });
+  const { session } = sessionWith([
+    { match: LIVE, chunkDelayMs: 300, chunks: [eventFrame(settlement), eventFrame(delta), eventFrame(completed)] },
+  ]);
+  const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+  session.beginSubmit('req-steer');
+  const iterator = session.events()[Symbol.asyncIterator]();
+  const held = iterator.next();
+  await sleep(350);
+  session.endSubmit('req-steer');
+  const first = await held;
+  assert.equal(first.value?.type, EnvelopeType.RunSteerApplied);
+  await sleep(300);
+  const second = await iterator.next();
+  assert.equal(second.value?.sequence, 2);
+  const third = await iterator.next();
+  assert.equal(third.value?.sequence, 3);
+  assert.equal((await iterator.next()).done, true);
+});
+
+test('a held settlement is released only to the stream that held it', { timeout: 10000 }, async () => {
+  const settlement = testEnvelope({
+    type: EnvelopeType.RunSteerApplied,
+    sequence: 1,
+    sessionId: SESSION,
+    runId: RUN,
+    payload: {
+      session_id: SESSION,
+      run_id: RUN,
+      submission_id: 'sub-steer',
+      request_id: 'req-steer',
+      message_ids: ['m-2'],
+      boundary: 'turn',
+    },
+  });
+  const completed = testEnvelope({
+    type: EnvelopeType.RunCompleted,
+    sequence: 1,
+    sessionId: SESSION,
+    runId: RUN,
+    payload: { session_id: SESSION, run_id: RUN, final_response: { role: 'assistant', content: 'done' }, stop_reason: 'end_turn' },
+  });
+  const { session } = sessionWith([
+    { match: LIVE, chunkDelayMs: 200, chunks: [eventFrame(completed)] },
+    { match: LIVE, chunkDelayMs: 200, chunks: [eventFrame(completed)] },
+  ]);
+  session.beginSubmit('req-steer');
+  const holder = session.events();
+  const other = session.events();
+  assert.equal(session.holdSteer(holder, settlement), true);
+
+  const watched = other[Symbol.asyncIterator]();
+  const waiting = watched.next();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  session.endSubmit('req-steer');
+
+  const answer = await Promise.race([
+    waiting,
+    new Promise<{ value: Envelope }>((resolve) => setTimeout(() => resolve({ value: settlement }), 400)),
+  ]);
+  assert.equal(answer.value.type, EnvelopeType.RunCompleted);
+  await watched.return?.();
+});
+
+test('a settlement whose payload is not an object is delivered rather than throwing', { timeout: 10000 }, async () => {
+  const malformed = testEnvelope({
+    type: EnvelopeType.RunSteerApplied,
+    sequence: 1,
+    sessionId: SESSION,
+    runId: RUN,
+    payload: { session_id: SESSION, run_id: RUN },
+  });
+  (malformed as { payload: unknown }).payload = 'not-an-object';
+  const completed = testEnvelope({
+    type: EnvelopeType.RunCompleted,
+    sequence: 2,
+    sessionId: SESSION,
+    runId: RUN,
+    payload: { session_id: SESSION, run_id: RUN, final_response: { role: 'assistant', content: 'done' }, stop_reason: 'end_turn' },
+  });
+  const { session } = sessionWith([{ match: LIVE, chunks: [eventFrame(malformed), eventFrame(completed)] }]);
+  session.beginSubmit('req-steer');
+  const envelopes = await collect(session.events());
+  assert.deepEqual(
+    envelopes.map((envelope) => envelope.type),
+    [EnvelopeType.RunSteerApplied, EnvelopeType.RunCompleted],
+  );
+  session.endSubmit('req-steer');
+});

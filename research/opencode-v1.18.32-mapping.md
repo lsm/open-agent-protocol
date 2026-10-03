@@ -252,9 +252,11 @@ Read from the source at `545f51d26cc39a907d2867492d498d9607ea5fa4`.
 (`packages/opencode/src/session/prompt.ts`) takes `variant`, the name of one of
 the model's variants, and the session keeps the last one used. A variant is a
 model-defined reasoning preset (the model's `variants` map), so the accepted
-names are per model, not a fixed enum. The level therefore
-changes per prompt: an adapter holding a session level sends it as `variant`
-on every prompt.
+names are per model, not a fixed enum. On the V2 route the adapter speaks,
+`POST /api/session` records `model.variant` on the session it creates
+(`packages/core/src/session.ts`). The runner then sends that variant on every
+step (`packages/core/src/session/runner/llm.ts`), so the level is set once, at
+open.
 
 **Compaction.** `ConfigCompaction.Info` (`packages/core/src/config/compaction.ts`)
 is `{auto, prune, keep: {tokens}, buffer}`. `auto` switches automatic
@@ -263,3 +265,16 @@ compaction, and `buffer` is the token reserve kept free below the window.
 `OPENCODE_CONFIG_CONTENT` supplies a whole config at launch
 (`packages/opencode/src/config/config.ts`). So the policy is set when the
 server starts, and nothing in the session API changes it.
+
+## Session settings in the adapter
+
+Decision 0045's settings move the revision to `opencode-v1.18.32-oap-v3`.
+`session.reasoning` is `native` with the `session_open` mode. An open's level
+becomes the variant on the configured model that `POST /api/session` creates
+the session with, and the V2 runner sends `session.model.variant` on every
+step. A response that does not record the variant is refused, and so is a
+level when no model is configured, which is always the case for the Zig port
+because its config carries no model. `session.compaction.policy` is
+`unavailable`: compaction is the server's own config, fixed when its operator
+starts it, and the adapter attaches to a running server rather than starting
+one.

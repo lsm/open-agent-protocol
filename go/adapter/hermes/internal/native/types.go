@@ -12,6 +12,7 @@ const (
 	NotifyEvent = "event"
 
 	MethodSessionCreate     = "session.create"
+	MethodConfigSet         = "config.set"
 	MethodSessionClose      = "session.close"
 	MethodSessionSteer      = "session.steer"
 	MethodSessionInterrupt  = "session.interrupt"
@@ -259,6 +260,17 @@ type SessionCreateParams struct {
 	Title string `json:"title,omitempty"`
 	Cwd   string `json:"cwd,omitempty"`
 	Model string `json:"model,omitempty"`
+}
+
+type ConfigSetParams struct {
+	SessionID string `json:"session_id"`
+	Key       string `json:"key"`
+	Value     string `json:"value"`
+}
+
+type ConfigSetResult struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
 }
 
 type SessionCreateResult struct {

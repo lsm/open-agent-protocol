@@ -668,6 +668,16 @@ const ToolSummary = struct {
     stats: []const u8,
 };
 
+pub const ToolTitle = struct {
+    label: []const u8,
+    arg: []const u8,
+};
+
+pub fn toolTitle(text: []const u8) ?ToolTitle {
+    const summary = parseToolSummary(text) orelse return null;
+    return .{ .label = summary.label, .arg = summary.arg };
+}
+
 fn parseToolSummary(text: []const u8) ?ToolSummary {
     return parseToolSummaryAfterLabel(text, "");
 }
@@ -817,7 +827,6 @@ fn renderToolSummaryRow(allocator: std.mem.Allocator, entry: *const DisplayEntry
     var summary = parseToolSummaryAfterLabel(entry.text, entry.title) orelse ToolSummary{ .label = entry.text, .arg = "", .status = .running, .stats = "" };
     if (entry.tool_status) |status| summary.status = status;
     if (entry.verbosity.tools == .quiet) {
-        summary.arg = "";
         const quiet_name = if (entry.tool_name.len > 0) entry.tool_name else summary.label;
         return (try renderToolTitleRow(allocator, entry, summary, quiet_name, if (entry.title.len > 0) entry.title else summary.label, width)).row;
     }
@@ -2594,6 +2603,31 @@ test "a shell row spends a wide terminal on its description and shows the comman
     defer std.testing.allocator.free(narrow);
     var narrow_rows = std.mem.splitScalar(u8, narrow, '\n');
     while (narrow_rows.next()) |row| try std.testing.expect(tui_text.visibleWidth(row) <= 60);
+}
+
+test "a quiet shell row keeps its description on the title row and drops the command block" {
+    var state = AppState.init(std.testing.allocator);
+    defer state.deinit();
+    const description = "Run the DeepSeek adapter tests";
+    const args = "{\"description\":\"" ++ description ++ "\",\"command\":\"go test ./go/adapter/deepseek/...\\ngo vet ./...\"}";
+    const tool = (try state.resolveToolOccurrenceForTest("call-quiet", "shell_execute", args, .live_intent, .running)).tool;
+    std.testing.allocator.free(tool.label);
+    tool.label = try std.testing.allocator.dupe(u8, "Shell Execute");
+    try state.appendToolSummaryTranscript("\u{25c8} Shell Execute \"" ++ description ++ "\"", tool.id);
+    const entry = &state.transcript.items[0];
+
+    const rendered = try renderTranscriptEntryWith(std.testing.allocator, entry, 120, .{ .tool = tool, .verbosity = tui_state.Verbosity.all(.quiet) });
+    defer std.testing.allocator.free(rendered);
+    const plain = try stripEscapesForTest(std.testing.allocator, rendered);
+    defer std.testing.allocator.free(plain);
+    try std.testing.expect(std.mem.indexOfScalar(u8, plain, '\n') == null);
+    try std.testing.expect(std.mem.indexOf(u8, plain, "Shell Execute  " ++ description) != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain, "go test") == null);
+
+    const narrow = try renderTranscriptEntryWith(std.testing.allocator, entry, 40, .{ .tool = tool, .verbosity = tui_state.Verbosity.all(.quiet) });
+    defer std.testing.allocator.free(narrow);
+    try std.testing.expect(tui_text.visibleWidth(narrow) <= 40);
+    try std.testing.expect(std.mem.indexOf(u8, narrow, "\u{2026}") != null);
 }
 
 test "a one-line shell command the title shows whole gets no block until the title cannot hold it" {
