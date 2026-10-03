@@ -5134,7 +5134,7 @@ parity scenario pins the two trees to the same trace. `goap serve agent` and
 Another slice has both reference adapters compact on their own. Each takes
 `session.compaction.policy` at `emulated` at open — `auto` is 80% of the
 reference model's 8192-token window, `share` a percentage of it, `tokens` a
-count — and refuses `off`, because the reference adapter always compacts. It
+count — and `off`, under which it never compacts on its own. It
 estimates the history at a token per four bytes of text, counting each
 admitted message and each final response, and when the estimate reaches the
 threshold the next run opens with a `threshold` compaction after `run.started`

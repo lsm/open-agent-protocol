@@ -364,11 +364,13 @@ func TestMemoryTakesAThresholdAsAShareOfTheReferenceWindow(t *testing.T) {
 	}
 }
 
-func TestMemoryRefusesAPolicyThatNeverCompacts(t *testing.T) {
-	_, err := openWithPolicy(t, &protocol.CompactionPolicy{Kind: protocol.CompactionOff})
-	var refusal *adapter.UnsupportedControlError
-	if !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureCompactionPolicy || refusal.Field != "compaction_policy" || refusal.Reason != adapter.ControlUnsatisfiable {
-		t.Fatalf("open with an off policy answered %v, want an unsatisfiable compaction policy", err)
+func TestMemoryOpensAnOffPolicyAndNeverCompactsOnItsOwn(t *testing.T) {
+	session, err := openWithPolicy(t, &protocol.CompactionPolicy{Kind: protocol.CompactionOff})
+	if err != nil {
+		t.Fatalf("open with an off policy answered %v", err)
+	}
+	if started := compactions(t, submitText(t, session, strings.Repeat("abcd", 100))); len(started) != 0 {
+		t.Fatalf("an off policy compacted: %+v", started)
 	}
 	descriptor := testDescriptor(t)
 	if support := descriptor.Capabilities.Features[protocol.FeatureCompactionPolicy]; support.Level != protocol.SupportEmulated || !support.DisclosesMode(protocol.ModeSessionOpen) {

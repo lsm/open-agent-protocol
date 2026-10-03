@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"regexp"
 	"slices"
 	"strconv"
@@ -145,7 +146,7 @@ func (m *Memory) Probe(context.Context) (Descriptor, error) {
 		protocol.FeatureDeliverySteer:    {Level: protocol.SupportEmulated, Reason: "guidance waits on the target run and is applied at its input gate, the scripted turn boundary"},
 		protocol.FeatureSessionCompact:   {Level: protocol.SupportEmulated, Reason: "a compaction run replaces the scripted history with a fixed summary that names the focus, and has no model to write it"},
 		protocol.FeatureRunCompaction:    {Level: protocol.SupportEmulated, Reason: "the reference adapter publishes the compactions it is asked for, and compacts on its own at the start of a run once its estimate of the history, a token per four bytes of text, reaches the session's threshold"},
-		protocol.FeatureCompactionPolicy: {Level: protocol.SupportEmulated, Modes: []string{protocol.ModeSessionOpen}, Reason: "auto compacts at 80% of the reference model's window, share and tokens set the threshold, and off is refused because the reference adapter always compacts"},
+		protocol.FeatureCompactionPolicy: {Level: protocol.SupportEmulated, Modes: []string{protocol.ModeSessionOpen}, Reason: "auto compacts at 80% of the reference model's window, share and tokens set the threshold, and off never compacts on its own"},
 		"run.streaming":                  {Level: protocol.SupportNative},
 		"run.status":                     {Level: protocol.SupportNative},
 		"run.cancel":                     {Level: protocol.SupportEmulated, Reason: "run-target API is implemented over a one-active-run session"},
@@ -247,6 +248,9 @@ func (m *Memory) Open(ctx context.Context, request OpenRequest) (Session, error)
 const referenceWindow = 8192
 
 func compactionThreshold(policy *protocol.CompactionPolicy) (uint64, error) {
+	if policy != nil && policy.Kind == protocol.CompactionOff {
+		return math.MaxUint64, nil
+	}
 	if policy == nil {
 		return referenceWindow * 80 / 100, nil
 	}
@@ -258,7 +262,7 @@ func compactionThreshold(policy *protocol.CompactionPolicy) (uint64, error) {
 	case protocol.CompactionTokens:
 		return uint64(policy.Tokens), nil
 	}
-	return 0, &UnsupportedControlError{Feature: protocol.FeatureCompactionPolicy, Reason: ControlUnsatisfiable, Field: "compaction_policy", Detail: "the reference adapter always compacts on its own, so off is refused"}
+	return 0, &UnsupportedControlError{Feature: protocol.FeatureCompactionPolicy, Reason: ControlUnsatisfiable, Field: "compaction_policy", Detail: "the policy names no kind the reference adapter knows"}
 }
 
 func historyTokens(messages []protocol.Message) uint64 {

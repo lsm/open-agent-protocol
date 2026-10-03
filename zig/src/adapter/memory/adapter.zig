@@ -65,7 +65,7 @@ const features = [_]contract.Feature{
     },
     .{ .key = "run.tool_selection", .level = .emulated, .scope = "run", .reason = "the policy filters the scripted tool and is not retained past the run" },
     .{ .key = contract.feature_session_compact, .level = .emulated, .reason = "a compaction run replaces the scripted history with a fixed summary that names the focus, and has no model to write it" },
-    .{ .key = contract.feature_compaction_policy, .level = .emulated, .reason = "auto compacts at 80% of the reference model's window, share and tokens set the threshold, and off is refused because the reference adapter always compacts", .modes = &.{contract.mode_session_open} },
+    .{ .key = contract.feature_compaction_policy, .level = .emulated, .reason = "auto compacts at 80% of the reference model's window, share and tokens set the threshold, and off never compacts on its own", .modes = &.{contract.mode_session_open} },
     .{ .key = "session.message.delivery.auto", .level = .native },
     .{ .key = "session.message.delivery.queue", .level = .emulated, .reason = "a busy session reserves one second run and promotes it when the started run settles" },
     .{ .key = "session.message.delivery.steer", .level = .emulated, .reason = "guidance waits on the target run and is applied at its input gate, the scripted turn boundary" },
@@ -190,27 +190,28 @@ fn historyTokens(messages: []const oap_types.Message) u64 {
 
 fn compactionThreshold(arena: std.mem.Allocator, raw: ?[]const u8, refusal: *contract.Refusal) contract.Failure!u64 {
     const text = raw orelse return reference_window * 80 / 100;
-    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{}) catch return refuseNeverCompacting(refusal);
-    if (parsed != .object) return refuseNeverCompacting(refusal);
-    const kind = parsed.object.get("kind") orelse return refuseNeverCompacting(refusal);
-    if (kind != .string) return refuseNeverCompacting(refusal);
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{}) catch return refuseUnknownPolicy(refusal);
+    if (parsed != .object) return refuseUnknownPolicy(refusal);
+    const kind = parsed.object.get("kind") orelse return refuseUnknownPolicy(refusal);
+    if (kind != .string) return refuseUnknownPolicy(refusal);
     if (std.mem.eql(u8, kind.string, "auto")) return reference_window * 80 / 100;
     if (std.mem.eql(u8, kind.string, "share")) {
-        const share = parsed.object.get("share_percent") orelse return refuseNeverCompacting(refusal);
-        if (share != .integer or share.integer < 1 or share.integer > 100) return refuseNeverCompacting(refusal);
+        const share = parsed.object.get("share_percent") orelse return refuseUnknownPolicy(refusal);
+        if (share != .integer or share.integer < 1 or share.integer > 100) return refuseUnknownPolicy(refusal);
         return reference_window * @as(u64, @intCast(share.integer)) / 100;
     }
     if (std.mem.eql(u8, kind.string, "tokens")) {
-        const tokens = parsed.object.get("tokens") orelse return refuseNeverCompacting(refusal);
-        if (tokens != .integer or tokens.integer < 1) return refuseNeverCompacting(refusal);
+        const tokens = parsed.object.get("tokens") orelse return refuseUnknownPolicy(refusal);
+        if (tokens != .integer or tokens.integer < 1) return refuseUnknownPolicy(refusal);
         return @intCast(tokens.integer);
     }
-    return refuseNeverCompacting(refusal);
+    if (std.mem.eql(u8, kind.string, "off")) return std.math.maxInt(u64);
+    return refuseUnknownPolicy(refusal);
 }
 
-fn refuseNeverCompacting(refusal: *contract.Refusal) contract.Failure {
+fn refuseUnknownPolicy(refusal: *contract.Refusal) contract.Failure {
     const failure = refusal.unsupportedField(contract.feature_compaction_policy, contract.reason_unsatisfiable, "compaction_policy");
-    refusal.detail = "the reference adapter always compacts on its own, so off is refused";
+    refusal.detail = "the policy names no kind the reference adapter knows";
     return failure;
 }
 
@@ -2451,14 +2452,10 @@ test "a share policy sets the threshold as a share of the reference window" {
     }
 }
 
-test "a policy that never compacts is refused at open" {
-    var adapter = Adapter.init(testing.allocator);
-    defer adapter.deinit();
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var refusal = contract.Refusal{};
-    try testing.expectError(error.UnsupportedFeature, adapter.adapter().open(arena.allocator(), .{ .session_id = "s1", .participant = "user", .compaction_policy_json = "{\"kind\":\"off\"}" }, &refusal));
-    try testing.expectEqualStrings(contract.feature_compaction_policy, refusal.feature);
-    try testing.expectEqualStrings("compaction_policy", refusal.field);
-    try testing.expectEqualStrings(contract.reason_unsatisfiable, refusal.reason);
+test "an off policy opens and never compacts on its own" {
+    var probe: Probe = undefined;
+    try probe.initPolicy("{\"kind\":\"off\"}");
+    defer probe.deinit();
+    _ = try probe.submitText("abcd" ** 100);
+    try testing.expectEqual(@as(usize, 0), try probe.compactionsSeen());
 }
