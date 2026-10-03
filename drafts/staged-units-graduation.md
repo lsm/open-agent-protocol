@@ -4321,10 +4321,12 @@ The record also defers the `settled_steers` session-state surface below to its
 own decision, rather than graduating it inside this unit.
 
 
-Unit name: `steer`. Planned decision: 0009. This section is a pre-design for
-that decision, not a settled shape: it is the one unit that adds a new
-pending lifecycle inside a run, and its decision must be written from a pi
-corpus case first.
+Unit name: `steer`. Decision: [0013](../decisions/0013-steer.md), which the
+plan first numbered 0009 before that number went to compound open. The rest
+of this section was its pre-design, written before the decision, and is kept
+as the record of how the shape was reached: it is the one unit that adds a new
+pending lifecycle inside a run, and the decision was written from a pi corpus
+case first.
 
 ### The question
 

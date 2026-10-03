@@ -153,12 +153,13 @@ application semantics is more native evidence than `+models`, `+queue` or
 `+tool-sources` had when they graduated. What this unit has lacked is not
 evidence but a decision.
 
-**The blocker.** `adapter.Session.Submit` still takes a bare
-`protocol.MessageSubmitRequest` (`adapter/adapter.go:23`). The plan assigned
-the change to `adapter.SubmitRequest { Request, EnvelopeID }` to **T2**, which
-needed it for queue capture markers; T2 graduated as Decision 0007 without it.
-So no adapter can populate `request_id` on a steer settlement today, because
-no adapter is told the envelope id of the submit it is answering.
+**The blocker, since removed.** When this record was written,
+`adapter.Session.Submit` took a bare `protocol.MessageSubmitRequest`. The plan
+assigned the change to `adapter.SubmitRequest { Request, EnvelopeID }` to
+**T2**, which needed it for queue capture markers; T2 graduated as Decision 0007
+without it, so no adapter could populate `request_id` on a steer settlement,
+because none was told the envelope id of the submit it was answering. #798
+made that change, and it is the prerequisite the status line cites.
 
 That change is a compile-time break across all nine implementations of
 `adapter.Session`, and it is meant to be: an adapter that ignores the new
