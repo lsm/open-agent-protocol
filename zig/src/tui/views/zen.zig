@@ -76,7 +76,6 @@ pub fn render(allocator: std.mem.Allocator, frame: Frame) ![]u8 {
         while (lines.next()) |line| try rows.append(arena, line);
     }
     try rows.append(arena, try inputBar(arena, frame.input, frame.cursor, column));
-    try rows.append(arena, try gray(arena, soft_level, try repeat(arena, "\u{2500}", column)));
 
     const shown = if (rows.items.len > frame.height) rows.items[rows.items.len - frame.height ..] else rows.items;
     const top = (frame.height -| shown.len) / 2;
@@ -147,12 +146,6 @@ fn gray(allocator: std.mem.Allocator, level: u8, text: []const u8) ![]const u8 {
     return out.toOwnedSlice();
 }
 
-fn repeat(allocator: std.mem.Allocator, unit: []const u8, count: usize) ![]const u8 {
-    const out = try allocator.alloc(u8, unit.len * count);
-    for (0..count) |i| @memcpy(out[i * unit.len ..][0..unit.len], unit);
-    return out;
-}
-
 fn monochrome(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
@@ -199,8 +192,8 @@ test "a running frame fills the screen, centres its column and ends in the input
         }
     }
     try std.testing.expectEqual(@as(usize, 30), count);
-    try std.testing.expectEqual(@as(usize, 11), glyph_row.?);
-    try std.testing.expectEqual(@as(usize, 16), input_row.?);
+    try std.testing.expectEqual(@as(usize, 12), glyph_row.?);
+    try std.testing.expectEqual(@as(usize, 17), input_row.?);
     try std.testing.expect(std.mem.indexOf(u8, plain, "3 thinking \u{b7} 1 tool \u{b7} 0 messages") != null);
     try std.testing.expect(std.mem.indexOf(u8, plain, "1:15 \u{b7} Shell Execute  go test") != null);
 }
