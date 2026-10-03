@@ -57,8 +57,10 @@ pub const Frame = struct {
     height: usize,
     counts: Counts = .{},
     running: bool = false,
-    elapsed_ms: u64 = 0,
     activity: []const u8 = "",
+    previous: []const u8 = "",
+    since_change: u64 = slide_ticks,
+    stuck_ms: u64 = 0,
     final_block: []const u8 = "",
     failed: bool = false,
     mood: Mood = .idle,
@@ -105,8 +107,14 @@ pub fn render(allocator: std.mem.Allocator, frame: Frame) ![]u8 {
         const level = frame.farewell orelse pulseLevel(frame.mood, frame.phase);
         const marks = try trail(arena, frame.counts, column);
         try content.append(arena, try centered(arena, try gray(arena, level, if (marks.len == 0) dot else marks), column));
-        const line = if (frame.running) try activityLine(arena, frame, column) else if (frame.farewell != null) "" else "zen \u{b7} only the final reply is shown";
-        try content.append(arena, try centered(arena, try gray(arena, soft_level, line), column));
+        if (frame.running) {
+            const slot = try activitySlot(arena, frame, column);
+            for (slot) |row| try content.append(arena, row);
+        } else {
+            try content.append(arena, "");
+            try content.append(arena, try centered(arena, try gray(arena, soft_level, if (frame.farewell != null) "" else "zen \u{b7} only the final reply is shown"), column));
+            try content.append(arena, "");
+        }
     }
 
     var lower: std.ArrayList([]const u8) = .empty;
@@ -142,12 +150,35 @@ pub fn render(allocator: std.mem.Allocator, frame: Frame) ![]u8 {
     return out.toOwnedSlice();
 }
 
-fn activityLine(allocator: std.mem.Allocator, frame: Frame, width: usize) ![]const u8 {
-    const seconds = frame.elapsed_ms / 1000;
+pub const slide_ticks: u64 = 12;
+const stuck_after_ms: u64 = 10_000;
+const faded_level: f32 = 40;
+
+fn activityLine(allocator: std.mem.Allocator, text: []const u8, stuck_ms: u64, width: usize) ![]const u8 {
+    if (stuck_ms < stuck_after_ms) return tui_text.truncateLineToWidth(allocator, text, width);
+    const seconds = stuck_ms / 1000;
     const clock = try std.fmt.allocPrint(allocator, "{d}:{d:0>2}", .{ seconds / 60, seconds % 60 });
-    if (frame.activity.len == 0) return clock;
-    const fitted = try tui_text.truncateLineToWidth(allocator, frame.activity, width -| (clock.len + 3));
+    if (text.len == 0) return clock;
+    const fitted = try tui_text.truncateLineToWidth(allocator, text, width -| (clock.len + 3));
     return std.fmt.allocPrint(allocator, "{s} \u{b7} {s}", .{ clock, fitted });
+}
+
+fn fadedRow(allocator: std.mem.Allocator, text: []const u8, strength: f32, width: usize) ![]const u8 {
+    if (text.len == 0 or strength <= 0) return "";
+    const level: u8 = @intFromFloat(@round(faded_level + (@as(f32, @floatFromInt(soft_level)) - faded_level) * @min(strength, 1)));
+    return centered(allocator, try gray(allocator, level, text), width);
+}
+
+fn activitySlot(allocator: std.mem.Allocator, frame: Frame, width: usize) ![3][]const u8 {
+    const current = try activityLine(allocator, frame.activity, frame.stuck_ms, width);
+    if (frame.since_change >= slide_ticks) return .{ "", try fadedRow(allocator, current, 1, width), "" };
+    const half = slide_ticks / 2;
+    if (frame.since_change < half) {
+        const p = @as(f32, @floatFromInt(frame.since_change)) / @as(f32, @floatFromInt(half));
+        const previous = try tui_text.truncateLineToWidth(allocator, frame.previous, width);
+        return .{ try fadedRow(allocator, previous, 1 - p, width), "", try fadedRow(allocator, current, p, width) };
+    }
+    return .{ "", try fadedRow(allocator, current, 1, width), "" };
 }
 
 const dot = "\u{b7}";
@@ -275,7 +306,7 @@ fn plainRows(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
 }
 
 test "a running frame floats its input bar above the bottom, apart from the trail" {
-    const text = try render(std.testing.allocator, .{ .width = 100, .height = 30, .running = true, .elapsed_ms = 75_000, .counts = .{ .thinking = 3, .tools = 1 }, .activity = "Shell Execute  go test ./...", .mood = .tool, .phase = 0.5, .input = "hello", .cursor = 5 });
+    const text = try render(std.testing.allocator, .{ .width = 100, .height = 30, .running = true, .counts = .{ .thinking = 3, .tools = 1 }, .activity = "Shell Execute  go test ./...", .mood = .tool, .phase = 0.5, .input = "hello", .cursor = 5 });
     defer std.testing.allocator.free(text);
     const plain = try plainRows(std.testing.allocator, text);
     defer std.testing.allocator.free(plain);
@@ -293,9 +324,10 @@ test "a running frame floats its input bar above the bottom, apart from the trai
     }
     try std.testing.expectEqual(@as(usize, 30), count);
     try std.testing.expectEqual(@as(usize, 24), input_row.?);
-    try std.testing.expectEqual(@as(usize, 10), trail_row.?);
+    try std.testing.expectEqual(@as(usize, 9), trail_row.?);
     try std.testing.expect(std.mem.indexOf(u8, plain, dot ++ " " ++ dot ++ " " ++ dot ++ " " ++ dot ++ "\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, plain, "1:15 \u{b7} Shell Execute  go test") != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain, "Shell Execute  go test") != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain, "1:15") == null);
 }
 
 test "zen's own rows draw no colour but grey" {
@@ -342,4 +374,50 @@ test "the input bar keeps the cursor in view and shows a placeholder when empty"
     const plain = try monochrome(arena.allocator(), bar);
     try std.testing.expect(tui_text.visibleWidth(plain) <= 20);
     try std.testing.expect(std.mem.endsWith(u8, std.mem.trimEnd(u8, plain, " "), "mnop"));
+}
+
+test "a changed activity slides up: the old line rises and fades as the new one rises into its place" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const base: Frame = .{ .width = 80, .height = 24, .running = true, .activity = "Shell Execute  ls", .previous = "thinking" };
+
+    var frame = base;
+    frame.since_change = 2;
+    const rising = try activitySlot(a, frame, 60);
+    try std.testing.expect(std.mem.indexOf(u8, rising[0], "thinking") != null);
+    try std.testing.expectEqualStrings("", rising[1]);
+    try std.testing.expect(std.mem.indexOf(u8, rising[2], "Shell Execute") != null);
+
+    frame.since_change = 5;
+    const later = try activitySlot(a, frame, 60);
+    try std.testing.expect(levelOf(later[0]) < levelOf(rising[0]));
+    try std.testing.expect(levelOf(later[2]) > levelOf(rising[2]));
+
+    frame.since_change = slide_ticks / 2;
+    const landed = try activitySlot(a, frame, 60);
+    try std.testing.expectEqualStrings("", landed[0]);
+    try std.testing.expect(std.mem.indexOf(u8, landed[1], "Shell Execute") != null);
+    try std.testing.expectEqualStrings("", landed[2]);
+
+    frame.since_change = slide_ticks;
+    const settled = try activitySlot(a, frame, 60);
+    try std.testing.expect(std.mem.indexOf(u8, settled[1], "thinking") == null);
+    try std.testing.expectEqual(levelOf(landed[1]), levelOf(settled[1]));
+}
+
+fn levelOf(row: []const u8) u32 {
+    const at = std.mem.indexOf(u8, row, "\x1b[38;2;") orelse return 0;
+    const rest = row[at + 7 ..];
+    const end = std.mem.indexOfScalar(u8, rest, ';') orelse return 0;
+    return std.fmt.parseInt(u32, rest[0..end], 10) catch 0;
+}
+
+test "the activity line shows how long it has been stuck only after ten seconds" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expectEqualStrings("Read  a.zig", try activityLine(a, "Read  a.zig", 9_999, 60));
+    try std.testing.expectEqualStrings("0:12 \u{b7} Read  a.zig", try activityLine(a, "Read  a.zig", 12_000, 60));
+    try std.testing.expectEqualStrings("1:05 \u{b7} Read  a.zig", try activityLine(a, "Read  a.zig", 65_000, 60));
 }
