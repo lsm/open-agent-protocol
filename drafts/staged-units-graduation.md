@@ -104,7 +104,7 @@ Decision 0003's four steps translate into these exit criteria for every unit:
 
 Ledgers: [Codex](../research/codex-app-server-0.160.0-mapping.md) ·
 [Claude Code](../research/claude-code-agent-sdk-2.1.288-mapping.md) ·
-[OpenCode](../research/opencode-v1.18.32-mapping.md) ·
+[OpenCode](../research/opencode-v1.18.34-mapping.md) ·
 [pi](../research/pi-v1.0.1-mapping.md) ·
 [Hermes](../research/hermes-v2026.9.24-mapping.md) ·
 [ACP](../research/acp-v1.10.2-mapping.md) ·
