@@ -570,12 +570,14 @@ every frame anyway.
 
 ## Zen
 
-`/zen` (or `/zen on`, `/zen off`) hides the transcript. In its place is a single
-禅, which slowly brightens and dims while a run is going, with counts of the
-thinking blocks, tool calls and replies since zen began and one dim line naming
-the current tool. When the run ends, the last reply (or the error that ended
-it) replaces it. The composer, the status bar and approval prompts stay as
-they are. While zen is on, nothing is printed into the scrollback; leaving it
+`/zen` (or `/zen on`, `/zen off`) replaces the whole screen with one centred
+column in grey: a single 禅, which slowly brightens and dims while a run is
+going, counts of the thinking blocks, tool calls and replies since zen began,
+one line naming the current tool, and a minimal input bar at the bottom of the
+column in place of the composer and the status bar. When the run ends, the
+last reply (or the error that ended it), still drawn with its markdown colours,
+replaces the 禅. Approval prompts and the command palette appear above the input
+bar. While zen is on, nothing is printed into the scrollback; leaving it
 prints what was held back at the current verbosity, and so does quitting, so a
 session ended in zen still leaves its transcript in the terminal. Only an error
 that ended the run counts as its result; a command's error reply does not.

@@ -4534,11 +4534,12 @@ pub const TuiModel = struct {
         const width: usize = @max(ctx.width, 20);
         const height: usize = @max(ctx.height, 8);
         app.last_view_height = height;
+        if (app.state.zen.on) return self.renderZen(app, ctx, width, height) catch "";
         const chrome = self.renderChrome(app, ctx, width, height);
         if (self.inlineMode(ctx)) {
             const fixed = countLines(chrome.status) + countLines(chrome.composer) + countLines(chrome.extra) + 1;
             const body_budget = height -| fixed;
-            const body = if (app.state.zen.on) renderZenBody(app, ctx.allocator, width, body_budget) catch "" else renderInlineBody(app, ctx, width, body_budget) catch "";
+            const body = renderInlineBody(app, ctx, width, body_budget) catch "";
             var parts: [5][]const u8 = undefined;
             var len: usize = 0;
             if (body.len > 0) {
@@ -4561,11 +4562,14 @@ pub const TuiModel = struct {
 
         const fixed = countLines(chrome.status) + countLines(chrome.composer) + @max(countLines(chrome.extra), 1);
         const transcript_height = if (height > fixed) height - fixed else 3;
-        const transcript = if (app.state.zen.on) renderZenBody(app, ctx.allocator, width, transcript_height) catch "" else transcript_view.render(ctx.allocator, &app.state, .{ .width = width, .height = transcript_height, .anim_tick = app.state.anim_tick }) catch "";
+        const transcript = transcript_view.render(ctx.allocator, &app.state, .{ .width = width, .height = transcript_height, .anim_tick = app.state.anim_tick }) catch "";
         return tui_render.joinVertical(ctx.allocator, &.{ transcript, chrome.extra, chrome.composer, chrome.status }) catch "";
     }
 
-    fn renderZenBody(app: *App, allocator: std.mem.Allocator, width: usize, budget: usize) ![]const u8 {
+    fn renderZen(self: *TuiModel, app: *App, ctx: *const zz.Context, width: usize, height: usize) ![]const u8 {
+        const allocator = ctx.allocator;
+        const column = zen_view.columnWidth(width);
+        const extra = if (app.state.mode == .normal) renderCommandPalette(allocator, app, column) catch "" else self.renderChrome(app, ctx, column, height).extra;
         const entries = app.state.transcript.items;
         const counts = tui_state.zenCounts(entries, app.state.zen.start_index);
         const running = streamActive(app);
@@ -4584,13 +4588,16 @@ pub const TuiModel = struct {
             if (counts.final) |index| {
                 const entry = &entries[index];
                 failed = entry.kind == .@"error";
-                final_block = try transcript_view.renderTranscriptEntryWith(allocator, entry, width, .{});
+                final_block = try transcript_view.renderTranscriptEntryWith(allocator, entry, column, .{});
             }
         }
-        const body = try zen_view.render(allocator, .{
+        return zen_view.render(allocator, .{
             .tick = app.state.anim_tick,
             .width = width,
-            .height = budget,
+            .height = height,
+            .input = app.state.composer.buffer.items,
+            .cursor = app.state.composer.cursor,
+            .extra = extra,
             .counts = .{ .thinking = counts.thinking, .tools = counts.tools, .messages = counts.messages },
             .running = running,
             .elapsed_ms = app.state.status.streaming_elapsed_ms,
@@ -4598,7 +4605,6 @@ pub const TuiModel = struct {
             .final_block = final_block,
             .failed = failed,
         });
-        return tailLines(allocator, body, budget);
     }
 
     const Chrome = struct {
