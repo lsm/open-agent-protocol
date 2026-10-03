@@ -77,7 +77,7 @@ const max_column: usize = 76;
 const max_art_rows: usize = 38;
 const min_art_rows: usize = 6;
 const enso_full_ms: f32 = 600_000;
-const enso_rest: f32 = 0.93;
+const enso_rest: f32 = 0.95;
 const enso_first: f32 = 0.03;
 const ink_floor: f32 = 0.1;
 
@@ -108,19 +108,38 @@ fn brushTexel(x: i32, y: i32) f32 {
     return @as(f32, @floatFromInt(value)) / 15;
 }
 
+const enso_start = std.math.pi * 0.12;
+const enso_radius: f32 = 0.395;
+const bristles: f32 = 22;
+
+fn grain(a: u32, b: u32) f32 {
+    var z: u32 = a *% 0x9e3779b1 ^ b *% 0x85ebca77;
+    z ^= z >> 15;
+    z *%= 0x2c1b3c6d;
+    z ^= z >> 12;
+    return @as(f32, @floatFromInt(z & 0xffff)) / 65535;
+}
+
 fn ensoAt(x: f32, y: f32, sweep: f32) f32 {
     const dx = x - 0.5;
     const dy = y - 0.5;
-    const start = std.math.pi * 0.62;
-    var u = std.math.atan2(dy, dx) - start;
-    u = @mod(u, std.math.tau);
+    const u = @mod(std.math.atan2(dy, dx) - enso_start, std.math.tau);
     const along = u / std.math.tau;
     if (along > sweep) return 0;
-    const radius = 0.455 * (1 + 0.018 * @sin(3 * u + 1));
-    const half = 0.032 * (1.25 - 0.6 * along) * (1 + 0.12 * @sin(7 * u));
-    const off = @abs(@sqrt(dx * dx + dy * dy) - radius);
-    const cap = std.math.clamp((sweep - along) * std.math.tau * radius / half, 0, 1);
-    return std.math.clamp((half - off) / 0.012 + 0.5, 0, 1) * @max(cap, 0.35);
+    const wobble = 0.012 * @sin(2 * u + 0.7) + 0.006 * @sin(5 * u + 2.1);
+    const radius = enso_radius * (1 + wobble);
+    const swell = 1 + 0.25 * @sin(std.math.pi * @min(1, along / 0.55));
+    const half = 0.058 * (1.15 - 0.75 * along) * swell;
+    const ragged = half * (1 + 0.16 * (grain(@as(u32, @intFromFloat(u * 40)), 7) - 0.5));
+    const across = (@sqrt(dx * dx + dy * dy) - radius) / ragged;
+    if (@abs(across) >= 1) return 0;
+    const edge = std.math.clamp((1 - @abs(across)) * ragged / 0.01, 0, 1);
+    const bristle: u32 = @intFromFloat((across + 1) * bristles);
+    const dryness = std.math.clamp((along - 0.35) / 0.6, 0, 1) * 0.85 + 0.18 * @abs(across);
+    const streak = grain(bristle, 1) * 0.7 + grain(bristle, @as(u32, @intFromFloat(along * 90)) + 3) * 0.3;
+    const ink: f32 = if (streak > dryness) 1 else std.math.clamp(0.35 - dryness + streak, 0, 1);
+    const tip = std.math.clamp((sweep - along) * std.math.tau * radius / (half * 1.5), 0, 1);
+    return edge * ink * @max(tip, 0.4);
 }
 
 const samples = 3;
@@ -138,7 +157,7 @@ fn inkOver(x: f32, y: f32, pixel: f32, sweep: f32) f32 {
 }
 
 fn inkAt(x: f32, y: f32, sweep: f32) f32 {
-    const glyph_scale: f32 = 0.72;
+    const glyph_scale: f32 = 0.56;
     const gx = (x - 0.5) / glyph_scale + 0.5;
     const gy = (y - 0.5) / glyph_scale + 0.5;
     return @max(brushAt(gx, gy), ensoAt(x, y, sweep));
@@ -497,9 +516,9 @@ test "the brush art is square, keeps its glyph's ink, and its ensō grows with t
     try std.testing.expect(ink > 80);
     try std.testing.expect(brushAt(0.5, 0.5) >= 0 and brushAt(-0.1, 0.5) == 0);
 
-    try std.testing.expect(ensoAt(0.5 + 0.455 * @cos(std.math.pi * 0.62 + 0.1), 0.5 + 0.455 * @sin(std.math.pi * 0.62 + 0.1), enso_rest) > 0.5);
-    try std.testing.expectEqual(@as(f32, 0), ensoAt(0.5 + 0.455 * @cos(std.math.pi * 0.62 - 0.1), 0.5 + 0.455 * @sin(std.math.pi * 0.62 - 0.1), enso_rest));
-    try std.testing.expectEqual(@as(f32, 0), ensoAt(0.5 + 0.455 * @cos(std.math.pi * 0.62 + 3), 0.5 + 0.455 * @sin(std.math.pi * 0.62 + 3), 0.1));
+    try std.testing.expect(ensoAt(0.5 + enso_radius * @cos(enso_start + 0.1), 0.5 + enso_radius * @sin(enso_start + 0.1), enso_rest) > 0.5);
+    try std.testing.expectEqual(@as(f32, 0), ensoAt(0.5 + enso_radius * @cos(enso_start - 0.1), 0.5 + enso_radius * @sin(enso_start - 0.1), enso_rest));
+    try std.testing.expectEqual(@as(f32, 0), ensoAt(0.5 + enso_radius * @cos(enso_start + 3), 0.5 + enso_radius * @sin(enso_start + 3), 0.1));
     try std.testing.expect(ensoSweep(.{ .width = 80, .height = 40, .running = true }) < ensoSweep(.{ .width = 80, .height = 40, .running = true, .elapsed_ms = 300_000 }));
     try std.testing.expectEqual(enso_rest, ensoSweep(.{ .width = 80, .height = 40, .running = true, .elapsed_ms = 900_000 }));
     try std.testing.expectEqual(enso_rest, ensoSweep(.{ .width = 80, .height = 40 }));

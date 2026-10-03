@@ -571,7 +571,7 @@ every frame anyway.
 ## Zen
 
 `/zen` (or `/zen on`, `/zen off`) replaces the whole screen with one centred
-column in grey: a large brush-drawn 禅 inside an ensō, a trail that grows one dot for each thinking block,
+column in grey: a large brush-drawn 禅 inside a dry-brush ensō (heavy where it starts, breaking into bristle streaks as it dries), a trail that grows one dot for each thinking block,
 tool call and reply since zen began (with a count in front once it outgrows the
 column), one line naming the current tool, and a minimal input bar at the bottom
 of the column in place of the composer and the status bar. 禅 breathes slowly
