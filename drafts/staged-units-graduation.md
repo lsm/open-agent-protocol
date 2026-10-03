@@ -5150,7 +5150,12 @@ Still open, each for a later slice:
 
 - `overflow` is exercised by fixtures only: the reference adapters have no
   provider to refuse a history as too long;
-- step 3, native evidence, is pi's, as the decision names.
+- step 3, native evidence, is pi's, as the decision names. Its first half is
+  in: both pi adapters publish the compactions Pi starts on its own as the
+  run's `run.compaction` events at `native`, from frames recorded against the
+  v1.0.1 binary, under `pi-v1.0.1-oap-v2`. Pi compacts between `agent_end`
+  and `agent_settled`, so each one is inside the run. Serving
+  `session.compact` through Pi's `compact` command is the other half.
 
 ## T5b. Auth state
 

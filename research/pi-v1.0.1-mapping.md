@@ -212,7 +212,7 @@ snapshot as provisional: native events or process failure may follow.
 | `agent_end` (`willRetry`) | terminal candidate unless retry pending | normalized | retry-aware arbitration | `error-retry` |
 | `auto_retry_start` / `auto_retry_end` | retry lifecycle; terminal deferred | observed-only | degraded | `error-retry` |
 | `agent_settled` | authoritative run settlement boundary | normalized | native | `completed-text` |
-| `compaction_start` / `compaction_end` | context maintenance, not run lifecycle | observed-only | no core claim | `compaction` |
+| `compaction_start` / `compaction_end` | the run's compaction: `run.compaction.started` / `.ended` | normalized | native (`run.compaction`) | `compaction`, `threshold-compaction`, `threshold-compaction-failed` |
 | `entry_appended` | persistence observation | observed-only | no core claim | — |
 | `extension_ui_request`/`response` | interaction requested/resolved | normalized | degraded pending fixture | `extension-dialog` |
 | `get_state` | adapter-assisted reconciliation | normalized | emulated | `reconcile-state` |
@@ -402,12 +402,13 @@ store and should not be read as one.
 - run resume/replay: `degraded`, bounded process-memory OAP journal only
 - transcript reconstruction, fork/tree navigation, and session switching:
   `unavailable` at the OAP boundary despite native codec evidence
-- compaction, retry, queue controls, and bash passthrough: observed-only, no
-  core claim
+- compaction inside a run: `run.compaction` at `native` (see *Compaction
+  inside a run*); a requested compaction is not served yet
+- retry, queue controls, and bash passthrough: observed-only, no core claim
 
 ## Executable evidence corpus
 
-`fixtures/adapters/pi-v1.0.1/` contains eleven compact cases, each with exactly
+`fixtures/adapters/pi-v1.0.1/` contains thirteen compact cases, each with exactly
 `case.json`, `native.jsonl`, `mapping.json`, `omissions.json`, and
 `expected-oap.json`. The manifest and every case pin the tag, commit, tree, and
 seven inspected source blobs. Strict inventory checks reject unlisted files;
@@ -416,7 +417,7 @@ through the production decoder/reducer and validate exact OAP traces, while
 codec-only or injected-extension mismatches are named explicitly. Golden trace
 updates require `OAP_UPDATE_PI_CORPUS=1`.
 
-The eleven cases cover each of the 25 ledger fixture labels exactly once. `message-rejected` is now a distinct executable case driven
+The thirteen cases cover each of the 27 ledger fixture labels exactly once. `message-rejected` is now a distinct executable case driven
 through `Session.Submit`; native-control outcome labels require matching decoded
 responses or queue observations, while controls outside the advertised surface
 remain explicitly command/codec evidence rather than advertised OAP execution
@@ -425,7 +426,8 @@ support:
 `completed-text`, `streaming-deltas`, `multi-turn-tools`, `tool-completed`,
 `tool-failed`, `tool-progress`, `tool-parallel-order`, `steer-queued`,
 `steer-injected`, `follow-up-run`, `cancel-settled`, `error-retry`,
-`compaction`, `extension-dialog`, `reconcile-state`, `entries-since`,
+`compaction`, `threshold-compaction`, `threshold-compaction-failed`,
+`extension-dialog`, `reconcile-state`, `entries-since`,
 `switch-session`, `process-exit`, `malformed-command`, `fork-tree`, and
 `no-implied-replay`, and `system-message`.
 
@@ -569,3 +571,73 @@ trees send `set_auto_compaction` for `auto` or `off`, then
 kept elsewhere is refused. `share` and `tokens` are refused before Pi starts,
 because the threshold is a `settings.json` reserve in the agent directory, and
 that directory also holds Pi's credentials, so the adapter does not move it.
+
+## Compaction inside a run
+
+Recorded for [Decision 0044](../decisions/0044-compaction.md), whose step 3 is
+pi's native evidence. This section covers the compactions Pi starts on its
+own; a `session.compact` request driving Pi's `compact` command is the next
+slice and is not advertised yet.
+
+**Where Pi compacts.** `core/agent-session.ts` runs an automatic compaction
+through `_runAutoCompaction(reason)` from three places: before a prompt is
+sent, at a turn's end (`_dispatchTurnEndBoundary`), and before the next
+assistant request (`_compactBeforeNextAssistantResponse`). Each brackets the
+work with `compaction_start {reason}` and `compaction_end {reason, result?,
+aborted, willRetry, errorMessage?}`, where `reason` is `threshold` or
+`overflow` (`manual` is the `compact` command's). A summary that cannot be
+written is retried with `summarization_retry_*` events before the end reports
+the failure.
+
+**Live order.** The v1.0.1 `pi-darwin-arm64` binary (archive
+`de35e0025b136eb37693054ca658c010b6327a12aaff438ae87c4d1c94f99e6c`, the catalog's digest; binary `177717b5c28d7b0b62584982f4489c5e3ccd31d9731e1d8196bcfc44f85e86eb`), run in RPC mode behind the
+loopback Responses mock with a 4000-token window and `reserveTokens: 3990`,
+emits after the turn:
+
+```
+agent_end
+compaction_start {"reason":"threshold"}
+compaction_end {"reason":"threshold","result":{"summary":…,"estimatedTokensAfter":1547,…},"aborted":false,"willRetry":false}
+agent_settled
+```
+
+With no summary response queued, the same run retries the summary three
+times and ends `compaction_end {"errorMessage":"Auto-compaction failed: …"}`,
+still before `agent_settled`. A `compact` command aborted mid-summary ends
+`compaction_end {"aborted":true}` and answers `success: false, error:
+"Compaction cancelled"`. Because both adapters settle a run at
+`agent_settled`, never at `agent_end`, every automatic compaction falls inside
+the run that triggered it, as Decision 0044 requires of a `threshold` or
+`overflow` compaction.
+
+**Mapping**, in both trees:
+
+| Pi | OAP |
+|---|---|
+| `compaction_start` `threshold` / `overflow` / `manual` | `run.compaction.started`, reason `threshold` / `overflow` / `requested`, a fresh `compaction_id` |
+| `compaction_end` `aborted: true` | `run.compaction.ended` `cancelled` |
+| `compaction_end` with a `result`, no `errorMessage` | `completed`; `result.summary` becomes `summary` (an assistant message), `result.estimatedTokensAfter` becomes `history_tokens` |
+| any other `compaction_end` | `failed`, error `pi_compaction_failed` carrying `errorMessage` |
+| a terminal reached with a compaction open | the compaction ends first: `cancelled` before `run.cancelled`, otherwise `failed` with `pi_compaction_unfinished` |
+| an unknown reason, a second `compaction_start`, or an end without a start | `run.failed` `pi_invalid_compaction` |
+| `summarization_retry_*` | observed-only |
+
+`history_tokens` is omitted on the start: Pi reports `tokensBefore` only in
+the end's result.
+
+**Corpus.** `threshold-compaction` and `threshold-compaction-failed` carry the
+recorded `compaction_*` and `summarization_retry_*` frames verbatim, between
+the `completed-text` case's `message_end`/`agent_end` and `agent_settled`.
+`retry-compaction`'s synthetic compaction pair is now mapped. Both trees
+replay all three to the same envelopes.
+
+**Gates.** `TestPiProcessCompactsPastItsThresholdInsideTheRun`
+(`OAP_PI_INTEGRATION=1`) drives the binary above through the Go adapter and
+asserts one completed `threshold` compaction with a summary inside a completed
+run, against two Responses requests (the turn and its summary); it passed 3x.
+`oapx serve agent --backend pi`, with `pi` on `PATH` a wrapper carrying the
+same agent directory, published the same `run.compaction.started` /
+`.ended` pair inside the run under `pi-v1.0.1-oap-v2`.
+
+The advertised surface gains `run.compaction` at `native`, so the revision
+moves to `pi-v1.0.1-oap-v2`.
