@@ -3,20 +3,31 @@
   "name": "OpenCode",
   "versions": [
     {
-      "label": "v1.18.32",
+      "label": "v1.18.34",
       "status": "current",
-      "endpoint_version": "v1.18.32",
-      "capability_revision": "opencode-v1.18.32-oap-v3",
-      "ledgers": ["research/opencode-v1.18.32-mapping.md", "research/opencode-v1.18.29-mapping.md"],
-      "corpus": "fixtures/adapters/opencode-v1.18.32",
+      "endpoint_version": "v1.18.34",
+      "capability_revision": "opencode-v1.18.34-oap-v3",
+      "ledgers": ["research/opencode-v1.18.34-mapping.md", "research/opencode-v1.18.32-mapping.md", "research/opencode-v1.18.29-mapping.md"],
+      "corpus": "fixtures/adapters/opencode-v1.18.34",
       "components": [
-        { "name": "opencode", "version": "v1.18.32", "repository": "https://github.com/anomalyco/opencode" }
+        { "name": "opencode", "version": "v1.18.34", "repository": "https://github.com/anomalyco/opencode" }
       ],
       "artifacts": [
-        { "component": "opencode", "platform": "linux-x64", "kind": "archive", "name": "opencode-linux-x64.tar.gz", "sha256": "3046e0404fdc60fb80307e7a47824ba07477364178a4d09baa8548496dd6d43b", "bytes": 60608353 },
-        { "component": "opencode", "platform": "linux-x64", "kind": "binary", "name": "opencode", "sha256": "513f500a1a5ea1dc7d865547ac87b32a8936334e8d5abd5b3ff585c45a170080", "bytes": 185165952 },
-        { "component": "opencode", "platform": "darwin-arm64", "kind": "archive", "name": "opencode-darwin-arm64.zip", "sha256": "fa643f93401c13508d8d513780e54ce9cc01203d501114be9b88d62408b8101f", "bytes": 46299070 },
-        { "component": "opencode", "platform": "darwin-arm64", "kind": "binary", "name": "opencode", "sha256": "a3c45d4e1d6620b436851f1ef6b25c71befcf06a382e279a1eb1c2196424395e", "bytes": 144602594 }
+        { "component": "opencode", "platform": "linux-x64", "kind": "archive", "name": "opencode-linux-x64.tar.gz", "sha256": "0f22479647226d1d2dd99595d20082ee7bda3870b62dc6a90b41efc1a71d7e9a", "bytes": 60665582 },
+        { "component": "opencode", "platform": "linux-x64", "kind": "binary", "name": "opencode", "sha256": "9ca0b9953d49997601655e54f846a3efa464f237e47c6f1b04716d0f2e64c4c2", "bytes": 185632896 },
+        { "component": "opencode", "platform": "darwin-arm64", "kind": "archive", "name": "opencode-darwin-arm64.zip", "sha256": "8522b70f545184b3a8d97c5ca4f814093b2476d72aebfda8c48bcd072ec31d1b", "bytes": 45538151 },
+        { "component": "opencode", "platform": "darwin-arm64", "kind": "binary", "name": "opencode", "sha256": "7b63b34fafabded7d9231f6a9032755d0cdeaf8b9d2b70df8e25535471469eea", "bytes": 144257280 }
+      ],
+      "sources": [
+        { "component": "opencode", "tag": "v1.18.34", "commit": "aec0b9a6d8898f68f923aaf08b7306d931fd9d76", "tree": "b70e30aeb84feb7a3affb06c94d23709675016f8" }
+      ]
+    },
+    {
+      "label": "v1.18.32",
+      "status": "retired",
+      "ledgers": ["research/opencode-v1.18.32-mapping.md"],
+      "components": [
+        { "name": "opencode", "version": "v1.18.32", "repository": "https://github.com/anomalyco/opencode" }
       ],
       "sources": [
         { "component": "opencode", "tag": "v1.18.32", "commit": "545f51d26cc39a907d2867492d498d9607ea5fa4", "tree": "b443aa2f11f402603d7911040fc9067ad65cf475" }
