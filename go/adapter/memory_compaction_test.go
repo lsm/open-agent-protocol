@@ -505,3 +505,38 @@ func TestMemoryStateReportsThePolicyTheSessionRunsUnder(t *testing.T) {
 		}
 	}
 }
+
+func TestMemoryReopenKeepsTheCompactionPolicyUnlessItNamesANewOne(t *testing.T) {
+	memory := adapter.NewMemory(adapter.Config{Clock: &fixedClock{}, IDs: &fixedIDs{}, JournalCapacity: 64})
+	open := func(reopen bool, policy *protocol.CompactionPolicy) adapter.Session {
+		t.Helper()
+		session, err := memory.Open(context.Background(), adapter.OpenRequest{SessionID: "kept", Participant: protocol.Participant{ID: "user"}, Reopen: reopen, CompactionPolicy: policy})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return session
+	}
+	reported := func(session adapter.Session) protocol.CompactionPolicy {
+		t.Helper()
+		state, err := session.State(context.Background())
+		if err != nil || state.CompactionPolicy == nil {
+			t.Fatalf("state = %+v, %v", state, err)
+		}
+		return *state.CompactionPolicy
+	}
+	tokens := protocol.CompactionPolicy{Kind: protocol.CompactionTokens, Tokens: 9}
+	if err := open(false, &tokens).Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	reopened := open(true, nil)
+	if got := reported(reopened); got != tokens {
+		t.Fatalf("reopened policy = %+v, want %+v", got, tokens)
+	}
+	if err := reopened.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	share := protocol.CompactionPolicy{Kind: protocol.CompactionShare, SharePercent: 50}
+	if got := reported(open(true, &share)); got != share {
+		t.Fatalf("reopened with a new policy = %+v, want %+v", got, share)
+	}
+}

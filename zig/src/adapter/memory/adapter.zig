@@ -72,7 +72,7 @@ const features = [_]contract.Feature{
     .{ .key = contract.feature_submit, .level = .native },
     .{ .key = contract.feature_model_switch, .level = .emulated, .reason = "the reference adapter changes the session default within its fixed catalog" },
     .{ .key = "session.open", .level = .native },
-    .{ .key = contract.feature_open_reopen, .level = .emulated, .reason = "a closed session's model is kept in process memory, so a reopen in the same process restores it and one after a restart is refused" },
+    .{ .key = contract.feature_open_reopen, .level = .emulated, .reason = "a closed session's model and compaction policy are kept in process memory, so a reopen in the same process restores them and one after a restart is refused" },
     .{ .key = contract.feature_open_subscribe, .level = .native, .reason = "the journal exists from the open, so a subscription registered there misses nothing" },
     .{ .key = "session.state", .level = .native },
     .{ .key = "user_input", .level = .emulated, .reason = "the reference adapter exposes an interactive scripted gate" },
@@ -116,35 +116,50 @@ pub const Adapter = struct {
     allocator: std.mem.Allocator,
     ids: u64 = 0,
     now_ms: *const fn () i64 = wallClock,
-    closed: std.StringHashMapUnmanaged([]const u8) = .empty,
+    closed: std.StringHashMapUnmanaged(Kept) = .empty,
+
+    const Kept = struct {
+        model: []const u8,
+        policy: []u8,
+    };
 
     pub fn init(allocator: std.mem.Allocator) Adapter {
         return .{ .allocator = allocator };
     }
 
     pub fn deinit(self: *Adapter) void {
-        var kept = self.closed.keyIterator();
-        while (kept.next()) |id| self.allocator.free(id.*);
+        var kept = self.closed.iterator();
+        while (kept.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            self.allocator.free(entry.value_ptr.policy);
+        }
         self.closed.deinit(self.allocator);
         self.* = undefined;
     }
 
-    fn keepClosed(self: *Adapter, id: []const u8, model: []const u8) !void {
+    fn keepClosed(self: *Adapter, id: []const u8, model: []const u8, policy: []const u8) !void {
+        const owned_policy = try self.allocator.dupe(u8, policy);
+        errdefer self.allocator.free(owned_policy);
         if (self.closed.getPtr(id)) |held| {
-            held.* = model;
+            self.allocator.free(held.policy);
+            held.* = .{ .model = model, .policy = owned_policy };
             return;
         }
         const owned = try self.allocator.dupe(u8, id);
         errdefer self.allocator.free(owned);
-        try self.closed.put(self.allocator, owned, model);
+        try self.closed.put(self.allocator, owned, .{ .model = model, .policy = owned_policy });
     }
 
-    fn claim(self: *Adapter, arena: std.mem.Allocator, id: []const u8, reopen: bool, refusal: *contract.Refusal) contract.Failure!?[]const u8 {
+    fn claim(self: *Adapter, arena: std.mem.Allocator, keep: std.mem.Allocator, id: []const u8, reopen: bool, refusal: *contract.Refusal) contract.Failure!?Kept {
         const removed = self.closed.fetchRemove(id);
-        if (removed) |entry| self.allocator.free(entry.key);
+        var restored: ?Kept = null;
+        if (removed) |entry| {
+            self.allocator.free(entry.key);
+            defer self.allocator.free(entry.value.policy);
+            if (reopen) restored = .{ .model = entry.value.model, .policy = try keep.dupe(u8, entry.value.policy) };
+        }
         if (!reopen) return null;
-        const entry = removed orelse return refusal.fail(error.UnknownSession, try std.fmt.allocPrint(arena, "no session \"{s}\"", .{id}));
-        return entry.value;
+        return restored orelse refusal.fail(error.UnknownSession, try std.fmt.allocPrint(arena, "no session \"{s}\"", .{id}));
     }
 
     pub fn adapter(self: *Adapter) contract.Adapter {
@@ -338,9 +353,13 @@ pub const Session = struct {
         self.threshold = try compactionThreshold(arena, request.compaction_policy_json, refusal);
         self.policy_json = try effectivePolicy(keep, arena, request.compaction_policy_json);
         self.id = if (request.session_id.len > 0) try keep.dupe(u8, request.session_id) else try owner.nextID(keep, "session");
-        if (try owner.claim(arena, self.id, request.reopen, refusal)) |model| {
-            self.current_model = model;
+        if (try owner.claim(arena, keep, self.id, request.reopen, refusal)) |kept| {
+            self.current_model = kept.model;
             self.recovered = true;
+            if (request.compaction_policy_json == null) {
+                self.threshold = try compactionThreshold(arena, kept.policy, refusal);
+                self.policy_json = kept.policy;
+            }
         }
         return self;
     }
@@ -1334,7 +1353,7 @@ pub const Session = struct {
                 if (run.live()) return error.RunActive;
             }
         }
-        if (!force) try self.owner.keepClosed(self.id, self.current_model);
+        if (!force) try self.owner.keepClosed(self.id, self.current_model, self.policy_json);
         self.destroy();
     }
 
@@ -2522,4 +2541,22 @@ test "the state reports the policy the session runs under" {
         const reported = try probe.session.state(probe.a(), &refusal);
         try testing.expectEqualStrings(case.reported, reported.compaction_policy_json.?);
     }
+}
+
+test "a reopen keeps the compaction policy the session closed under unless it names a new one" {
+    var adapter = Adapter.init(testing.allocator);
+    defer adapter.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var refusal = contract.Refusal{};
+    const first = try adapter.adapter().open(arena.allocator(), .{ .session_id = "kept", .participant = "user", .compaction_policy_json = "{\"kind\":\"tokens\",\"tokens\":9}" }, &refusal);
+    try first.close();
+
+    const reopened = try adapter.adapter().open(arena.allocator(), .{ .session_id = "kept", .participant = "user", .reopen = true }, &refusal);
+    try testing.expectEqualStrings("{\"kind\":\"tokens\",\"tokens\":9}", (try reopened.state(arena.allocator(), &refusal)).compaction_policy_json.?);
+    try reopened.close();
+
+    const renamed = try adapter.adapter().open(arena.allocator(), .{ .session_id = "kept", .participant = "user", .reopen = true, .compaction_policy_json = "{\"kind\":\"share\",\"share_percent\":50}" }, &refusal);
+    defer renamed.teardown();
+    try testing.expectEqualStrings("{\"kind\":\"share\",\"share_percent\":50}", (try renamed.state(arena.allocator(), &refusal)).compaction_policy_json.?);
 }

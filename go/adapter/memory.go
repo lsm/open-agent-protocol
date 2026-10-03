@@ -112,7 +112,7 @@ type Memory struct {
 	capacity int
 
 	closedMu sync.Mutex
-	closed   map[protocol.SessionID]string
+	closed   map[protocol.SessionID]keptSession
 }
 
 func NewMemory(config Config) *Memory {
@@ -128,7 +128,7 @@ func NewMemory(config Config) *Memory {
 	if capacity <= 0 {
 		capacity = defaultJournalCapacity
 	}
-	return &Memory{clock: clock, ids: ids, capacity: capacity, closed: map[protocol.SessionID]string{}}
+	return &Memory{clock: clock, ids: ids, capacity: capacity, closed: map[protocol.SessionID]keptSession{}}
 }
 
 func (m *Memory) Probe(context.Context) (Descriptor, error) {
@@ -137,7 +137,7 @@ func (m *Memory) Probe(context.Context) (Descriptor, error) {
 		"capabilities":                  {Level: protocol.SupportNative},
 		"session.open":                  {Level: protocol.SupportNative},
 		protocol.FeatureOpenSubscribe:   {Level: protocol.SupportNative, Reason: "the journal exists from the open, so a subscription registered there misses nothing"},
-		protocol.FeatureOpenReopen:      {Level: protocol.SupportEmulated, Reason: "a closed session's model is kept in process memory, so a reopen in the same process restores it and one after a restart is refused"},
+		protocol.FeatureOpenReopen:      {Level: protocol.SupportEmulated, Reason: "a closed session's model and compaction policy are kept in process memory, so a reopen in the same process restores them and one after a restart is refused"},
 		"session.state":                 {Level: protocol.SupportNative},
 		"session.message.submit":        {Level: protocol.SupportNative},
 		"session.message.delivery.auto": {Level: protocol.SupportNative},
@@ -225,20 +225,28 @@ func (m *Memory) Open(ctx context.Context, request OpenRequest) (Session, error)
 	if id == "" {
 		id = protocol.SessionID(m.ids.NewID("session"))
 	}
-	threshold, err := compactionThreshold(request.CompactionPolicy)
+	policy := request.CompactionPolicy
+	threshold, err := compactionThreshold(policy)
 	if err != nil {
 		return nil, err
 	}
-	model, recovery, err := m.claim(id, request.Reopen)
+	kept, recovery, err := m.claim(id, request.Reopen)
 	if err != nil {
 		return nil, err
+	}
+	model := kept.model
+	if policy == nil && kept.policy != nil {
+		policy = kept.policy
+		if threshold, err = compactionThreshold(policy); err != nil {
+			return nil, err
+		}
 	}
 	now := m.clock.Now().UnixMilli()
 	return &memorySession{
 		owner: m, clock: m.clock, ids: m.ids, capacity: m.capacity,
 		participant: request.Participant.ID,
 		threshold:   threshold,
-		state:       protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, UpdatedAtMS: now, Sources: sessionSources(attached), CurrentModelID: model, Recovery: recovery, CompactionPolicy: effectivePolicy(request.CompactionPolicy)},
+		state:       protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, UpdatedAtMS: now, Sources: sessionSources(attached), CurrentModelID: model, Recovery: recovery, CompactionPolicy: effectivePolicy(policy)},
 		attached:    attached,
 		provided:    provided,
 		runs:        make(map[protocol.RunID]*memoryRun),
@@ -299,24 +307,29 @@ func historyTokens(messages []protocol.Message) uint64 {
 	return (bytes + 3) / 4
 }
 
-func (m *Memory) claim(id protocol.SessionID, reopen bool) (string, *protocol.RecoveryMetadata, error) {
-	m.closedMu.Lock()
-	defer m.closedMu.Unlock()
-	model, kept := m.closed[id]
-	delete(m.closed, id)
-	if !reopen {
-		return "", nil, nil
-	}
-	if !kept {
-		return "", nil, &UnknownSessionError{ID: id}
-	}
-	return model, &protocol.RecoveryMetadata{Recovered: true}, nil
+type keptSession struct {
+	model  string
+	policy *protocol.CompactionPolicy
 }
 
-func (m *Memory) keep(id protocol.SessionID, model string) {
+func (m *Memory) claim(id protocol.SessionID, reopen bool) (keptSession, *protocol.RecoveryMetadata, error) {
 	m.closedMu.Lock()
 	defer m.closedMu.Unlock()
-	m.closed[id] = model
+	session, kept := m.closed[id]
+	delete(m.closed, id)
+	if !reopen {
+		return keptSession{}, nil, nil
+	}
+	if !kept {
+		return keptSession{}, nil, &UnknownSessionError{ID: id}
+	}
+	return session, &protocol.RecoveryMetadata{Recovered: true}, nil
+}
+
+func (m *Memory) keep(id protocol.SessionID, model string, policy *protocol.CompactionPolicy) {
+	m.closedMu.Lock()
+	defer m.closedMu.Unlock()
+	m.closed[id] = keptSession{model: model, policy: policy}
 }
 
 func admitToolSources(request OpenRequest) ([]protocol.ToolSourceAttachment, error) {
@@ -1708,7 +1721,7 @@ func (s *memorySession) Close(ctx context.Context) error {
 	s.state.ActiveRunID = ""
 	s.state.UpdatedAtMS = s.clock.Now().UnixMilli()
 	if s.owner != nil {
-		s.owner.keep(s.state.SessionID, s.state.CurrentModelID)
+		s.owner.keep(s.state.SessionID, s.state.CurrentModelID, s.state.CompactionPolicy)
 	}
 	var subscribers []chan Result
 	for _, run := range s.runs {
