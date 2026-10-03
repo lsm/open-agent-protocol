@@ -5146,6 +5146,16 @@ and then takes its turn, so the user types nothing to resume it. A compaction
 resets the estimate to its summary. Both move to `reference-memory-v15`, and
 the memory parity scenario gains the case.
 
+The fifth slice lets the policy change on a live session. Both endpoints serve
+`session.settings.update.request` (Decision 0045): each member is refused
+before the backend sees it unless its feature discloses `session_live`, an
+accepted update answers with the value now in force and the one it replaced,
+and a `session.state.updated` follows the answer. Both reference adapters add
+`session_live` to `session.compaction.policy` and take a new policy at the
+next run's start; neither takes a reasoning level. Both move to
+`reference-memory-v16`, and the memory parity scenarios gain the update and
+its refusals.
+
 Still open, each for a later slice:
 
 - `overflow` is exercised by fixtures only: the reference adapters have no

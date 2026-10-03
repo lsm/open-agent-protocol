@@ -590,6 +590,30 @@ fn serializePayload(w: *json_writer.JsonWriter, payload: oap_types.Payload) !voi
             try w.writeStringField("model_id", value.model_id);
             if (value.previous_model_id) |previous| try w.writeStringField("previous_model_id", previous);
         },
+        .session_settings_update_request => |value| {
+            try w.writeStringField("session_id", value.session_id);
+            if (value.reasoning_level) |level| try w.writeStringField("reasoning_level", level);
+            if (value.compaction_policy_json) |policy| {
+                try w.writeKey("compaction_policy");
+                try writeJsonValueOrString(w, policy);
+            }
+            if (value.allow_degraded_features.len > 0) {
+                try serializeStringArray(w, "allow_degraded_features", value.allow_degraded_features);
+            }
+        },
+        .session_settings_update_response => |value| {
+            try w.writeStringField("session_id", value.session_id);
+            if (value.reasoning_level) |level| try w.writeStringField("reasoning_level", level);
+            if (value.compaction_policy_json) |policy| {
+                try w.writeKey("compaction_policy");
+                try writeJsonValueOrString(w, policy);
+            }
+            if (value.previous_reasoning_level) |level| try w.writeStringField("previous_reasoning_level", level);
+            if (value.previous_compaction_policy_json) |policy| {
+                try w.writeKey("previous_compaction_policy");
+                try writeJsonValueOrString(w, policy);
+            }
+        },
         .message_submit_request => |value| {
             try w.writeStringField("session_id", value.session_id);
             try w.writeKey("messages");
@@ -1651,6 +1675,42 @@ fn deserializePayload(
             .session_id = session_id,
             .model_id = model_id,
             .previous_model_id = try optionalOwnedString(obj, "previous_model_id", allocator),
+        } };
+    }
+    if (std.mem.eql(u8, type_str, "session.settings.update.request")) {
+        const session_id = try requiredOwnedString(obj, "session_id", allocator);
+        errdefer allocator.free(session_id);
+        const reasoning_level = try optionalOwnedString(obj, "reasoning_level", allocator);
+        errdefer if (reasoning_level) |owned| allocator.free(owned);
+        const compaction_policy_json = try optionalObjectJson(obj, "compaction_policy", allocator);
+        errdefer if (compaction_policy_json) |owned| allocator.free(owned);
+        const allow_degraded: []const []const u8 = if (obj.get("allow_degraded_features") != null)
+            try deserializeStringArray(obj, "allow_degraded_features", allocator)
+        else
+            &.{};
+        return .{ .session_settings_update_request = .{
+            .session_id = session_id,
+            .reasoning_level = reasoning_level,
+            .compaction_policy_json = compaction_policy_json,
+            .allow_degraded_features = allow_degraded,
+        } };
+    }
+    if (std.mem.eql(u8, type_str, "session.settings.update.response")) {
+        const session_id = try requiredOwnedString(obj, "session_id", allocator);
+        errdefer allocator.free(session_id);
+        const reasoning_level = try optionalOwnedString(obj, "reasoning_level", allocator);
+        errdefer if (reasoning_level) |owned| allocator.free(owned);
+        const compaction_policy_json = try optionalObjectJson(obj, "compaction_policy", allocator);
+        errdefer if (compaction_policy_json) |owned| allocator.free(owned);
+        const previous_reasoning_level = try optionalOwnedString(obj, "previous_reasoning_level", allocator);
+        errdefer if (previous_reasoning_level) |owned| allocator.free(owned);
+        const previous_compaction_policy_json = try optionalObjectJson(obj, "previous_compaction_policy", allocator);
+        return .{ .session_settings_update_response = .{
+            .session_id = session_id,
+            .reasoning_level = reasoning_level,
+            .compaction_policy_json = compaction_policy_json,
+            .previous_reasoning_level = previous_reasoning_level,
+            .previous_compaction_policy_json = previous_compaction_policy_json,
         } };
     }
     if (std.mem.eql(u8, type_str, "session.message.submit.request")) {

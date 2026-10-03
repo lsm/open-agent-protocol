@@ -52,6 +52,10 @@ type ModelSwitcher interface {
 	SwitchModel(context.Context, protocol.SessionModelSwitchRequest) (protocol.SessionModelSwitchResponse, protocol.SessionState, error)
 }
 
+type SettingsUpdater interface {
+	UpdateSettings(context.Context, protocol.SessionSettingsUpdateRequest) (protocol.SessionSettingsUpdateResponse, protocol.SessionState, error)
+}
+
 type EventStream <-chan Result
 
 type Result struct {
@@ -280,6 +284,19 @@ func RefuseUnadvertisedSettings(request OpenRequest, descriptor protocol.Capabil
 			return &UnsupportedControlError{Feature: key, Reason: ControlUnadvertised, Field: OpenSettingField(key)}
 		}
 		if support.Level == protocol.SupportDegraded && !slices.Contains(request.AllowDegradedFeatures, key) {
+			return &DegradedControlError{Feature: key}
+		}
+	}
+	return nil
+}
+
+func RefuseUnadvertisedLiveSettings(request protocol.SessionSettingsUpdateRequest, descriptor protocol.CapabilityDescriptor) error {
+	for _, key := range OpenSettingKeys(request.ReasoningLevel, request.CompactionPolicy) {
+		support, advertised := descriptor.EffectiveSupport(key)
+		if !advertised || support.Level == "" || support.Level == protocol.SupportUnavailable || !support.DisclosesMode(protocol.ModeSessionLive) {
+			return &UnsupportedControlError{Feature: key, Reason: ControlUnadvertised, Field: OpenSettingField(key)}
+		}
+		if support.Level == protocol.SupportDegraded && !request.AllowsDegraded(key) {
 			return &DegradedControlError{Feature: key}
 		}
 	}

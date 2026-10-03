@@ -6,7 +6,7 @@ const json_encode = @import("json_encode");
 const jsonschema = @import("jsonschema");
 
 pub const endpoint_id = "reference.memory";
-pub const capability_revision = "reference-memory-v15";
+pub const capability_revision = "reference-memory-v16";
 pub const model_primary = "reference-model-a";
 pub const model_secondary = "reference-model-b";
 pub const journal_capacity = 64;
@@ -65,7 +65,7 @@ const features = [_]contract.Feature{
     },
     .{ .key = "run.tool_selection", .level = .emulated, .scope = "run", .reason = "the policy filters the scripted tool and is not retained past the run" },
     .{ .key = contract.feature_session_compact, .level = .emulated, .reason = "a compaction run replaces the scripted history with a fixed summary that names the focus, and has no model to write it" },
-    .{ .key = contract.feature_compaction_policy, .level = .emulated, .reason = "auto compacts at 80% of the reference model's window, share and tokens set the threshold, and off never compacts on its own", .modes = &.{contract.mode_session_open} },
+    .{ .key = contract.feature_compaction_policy, .level = .emulated, .reason = "auto compacts at 80% of the reference model's window, share and tokens set the threshold, off never compacts on its own, and an update takes effect at the next run's start", .modes = &.{ contract.mode_session_open, contract.mode_session_live } },
     .{ .key = "session.message.delivery.auto", .level = .native },
     .{ .key = "session.message.delivery.queue", .level = .emulated, .reason = "a busy session reserves one second run and promotes it when the started run settles" },
     .{ .key = "session.message.delivery.steer", .level = .emulated, .reason = "guidance waits on the target run and is applied at its input gate, the scripted turn boundary" },
@@ -381,6 +381,7 @@ pub const Session = struct {
         .tools = tools,
         .models = models,
         .switch_model = switchModel,
+        .update_settings = updateSettings,
         .compact = compact,
         .resolve_call = resolveCall,
         .replay = replay,
@@ -1405,6 +1406,23 @@ pub const Session = struct {
         };
     }
 
+    fn updateSettings(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.SessionSettingsUpdateRequest, refusal: *contract.Refusal) contract.Failure!contract.Updated {
+        const self = cast(ptr);
+        if (!std.mem.eql(u8, request.session_id, self.id)) return error.InvalidSubmission;
+        if (request.reasoning_level != null) return refusal.unsupportedField(contract.feature_session_reasoning, contract.reason_unadvertised, "reasoning_level");
+        const asked = request.compaction_policy_json orelse return error.InvalidSubmission;
+        const threshold = try compactionThreshold(arena, asked, refusal);
+        const policy = try effectivePolicy(self.keep.allocator(), arena, asked);
+        const previous = self.policy_json;
+        self.threshold = threshold;
+        self.policy_json = policy;
+        self.updated_at_ms = self.owner.now_ms();
+        return .{
+            .response = .{ .session_id = self.id, .compaction_policy_json = policy, .previous_compaction_policy_json = previous },
+            .state = try self.snapshot(arena),
+        };
+    }
+
     fn replay(ptr: *anyopaque, allocator: std.mem.Allocator, run_id: []const u8, after: u64, refusal: *contract.Refusal) contract.Failure!contract.Replay {
         _ = refusal;
         const self = cast(ptr);
@@ -2199,7 +2217,7 @@ test "an already_resolved refusal names its settlement only when there is one" {
 }
 
 test "the reference descriptor advertises steer advice at the emulated level" {
-    try testing.expectEqualStrings("reference-memory-v15", capability_revision);
+    try testing.expectEqualStrings("reference-memory-v16", capability_revision);
     try testing.expectEqual(oap_types.SupportLevel.emulated, descriptor.level("session.message.delivery.steer"));
 }
 
@@ -2511,6 +2529,34 @@ test "a share or token count out of range is refused at open" {
         try testing.expectEqualStrings(contract.feature_compaction_policy, refusal.feature);
         try testing.expectEqualStrings("compaction_policy", refusal.field);
     }
+}
+
+test "a live update moves the threshold the next run compacts against" {
+    var probe: Probe = undefined;
+    try probe.initPolicy("{\"kind\":\"off\"}");
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const updated = try probe.session.vtable.update_settings.?(probe.session.ptr, probe.a(), &.{ .session_id = "s1", .compaction_policy_json = "{\"kind\":\"tokens\",\"tokens\":1}" }, &refusal);
+    try testing.expectEqualStrings("{\"kind\":\"tokens\",\"tokens\":1}", updated.response.compaction_policy_json.?);
+    try testing.expectEqualStrings("{\"kind\":\"off\"}", updated.response.previous_compaction_policy_json.?);
+    try testing.expectEqualStrings("{\"kind\":\"tokens\",\"tokens\":1}", updated.state.compaction_policy_json.?);
+    _ = try probe.submitText("go");
+    try testing.expectEqual(@as(usize, 1), try probe.compactionsSeen());
+}
+
+test "a live update is refused whole and the session keeps its policy" {
+    var probe: Probe = undefined;
+    try probe.initPolicy("{\"kind\":\"share\",\"share_percent\":50}");
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    try testing.expectError(error.UnsupportedFeature, probe.session.vtable.update_settings.?(probe.session.ptr, probe.a(), &.{ .session_id = "s1", .reasoning_level = "high", .compaction_policy_json = "{\"kind\":\"off\"}" }, &refusal));
+    try testing.expectEqualStrings(contract.feature_session_reasoning, refusal.feature);
+    try testing.expectEqualStrings("reasoning_level", refusal.field);
+    refusal = .{};
+    try testing.expectError(error.UnsupportedFeature, probe.session.vtable.update_settings.?(probe.session.ptr, probe.a(), &.{ .session_id = "s1", .compaction_policy_json = "{\"kind\":\"tokens\",\"tokens\":0}" }, &refusal));
+    try testing.expectEqualStrings(contract.reason_unsatisfiable, refusal.reason);
+    const state_now = try probe.session.state(probe.a(), &refusal);
+    try testing.expectEqualStrings("{\"kind\":\"share\",\"share_percent\":50}", state_now.compaction_policy_json.?);
 }
 
 test "a queued run promoted by the settlement that crossed the threshold compacts first" {

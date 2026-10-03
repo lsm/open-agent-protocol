@@ -88,7 +88,7 @@ var attachSupport = protocol.FeatureSupport{
 	Reason: "sources are described and published back; the reference adapter runs no client for them",
 }
 
-const CapabilityRevision = "reference-memory-v15"
+const CapabilityRevision = "reference-memory-v16"
 
 var errTerminalWon = fmt.Errorf("adapter: terminal event already emitted")
 
@@ -146,7 +146,7 @@ func (m *Memory) Probe(context.Context) (Descriptor, error) {
 		protocol.FeatureDeliverySteer:    {Level: protocol.SupportEmulated, Reason: "guidance waits on the target run and is applied at its input gate, the scripted turn boundary"},
 		protocol.FeatureSessionCompact:   {Level: protocol.SupportEmulated, Reason: "a compaction run replaces the scripted history with a fixed summary that names the focus, and has no model to write it"},
 		protocol.FeatureRunCompaction:    {Level: protocol.SupportEmulated, Reason: "the reference adapter publishes the compactions it is asked for, and compacts on its own at the start of a run once its estimate of the history, a token per four bytes of text, reaches the session's threshold"},
-		protocol.FeatureCompactionPolicy: {Level: protocol.SupportEmulated, Modes: []string{protocol.ModeSessionOpen}, Reason: "auto compacts at 80% of the reference model's window, share and tokens set the threshold, and off never compacts on its own"},
+		protocol.FeatureCompactionPolicy: {Level: protocol.SupportEmulated, Modes: []string{protocol.ModeSessionOpen, protocol.ModeSessionLive}, Reason: "auto compacts at 80% of the reference model's window, share and tokens set the threshold, off never compacts on its own, and an update takes effect at the next run's start"},
 		"run.streaming":                  {Level: protocol.SupportNative},
 		"run.status":                     {Level: protocol.SupportNative},
 		"run.cancel":                     {Level: protocol.SupportEmulated, Reason: "run-target API is implemented over a one-active-run session"},
@@ -1138,6 +1138,38 @@ func (s *memorySession) SwitchModel(ctx context.Context, request protocol.Sessio
 	s.state.UpdatedAtMS = s.clock.Now().UnixMilli()
 	return protocol.SessionModelSwitchResponse{
 		SessionID: s.state.SessionID, ModelID: request.ModelID, PreviousModelID: previous,
+	}, s.cloneStateLocked(), nil
+}
+
+func (s *memorySession) UpdateSettings(ctx context.Context, request protocol.SessionSettingsUpdateRequest) (protocol.SessionSettingsUpdateResponse, protocol.SessionState, error) {
+	if err := ctx.Err(); err != nil {
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, err
+	}
+	descriptor, err := s.owner.Probe(ctx)
+	if err != nil {
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, err
+	}
+	if err := RefuseUnadvertisedLiveSettings(request, descriptor.Capabilities); err != nil {
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, err
+	}
+	threshold, err := compactionThreshold(request.CompactionPolicy)
+	if err != nil {
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, ErrSessionClosed
+	}
+	if request.SessionID != s.state.SessionID {
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, fmt.Errorf("%w: settings update names session %q", ErrInvalidSubmission, request.SessionID)
+	}
+	previous := s.state.CompactionPolicy
+	s.threshold = threshold
+	s.state.CompactionPolicy = effectivePolicy(request.CompactionPolicy)
+	s.state.UpdatedAtMS = s.clock.Now().UnixMilli()
+	return protocol.SessionSettingsUpdateResponse{
+		SessionID: s.state.SessionID, CompactionPolicy: s.state.CompactionPolicy, PreviousCompactionPolicy: previous,
 	}, s.cloneStateLocked(), nil
 }
 
