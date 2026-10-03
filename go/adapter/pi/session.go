@@ -1567,6 +1567,7 @@ func (s *Session) Resume(ctx context.Context, r base.ResumeRequest) (base.Recove
 			suffix = append(suffix, e)
 		}
 	}
+	s.state.ActiveRuns = s.pendingSteerEntriesLocked()
 	recovery := base.Recovery{State: s.state, RunID: run.id, RequestedAfter: r.AfterSequence, ReplayedFrom: r.AfterSequence, ReplayedThrough: r.AfterSequence}
 	stream := make(chan base.Result, len(suffix)+streamCapacity+1)
 	if r.AfterSequence < latest && (oldest == 0 || r.AfterSequence+1 < oldest) {

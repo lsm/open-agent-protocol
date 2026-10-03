@@ -1747,6 +1747,34 @@ func TestASteerAnsweredAfterATurnEndWaitsForTheNextOne(t *testing.T) {
 	}
 }
 
+func TestResumeAfterASteerSettlesReportsNoPendingSteer(t *testing.T) {
+	client := newFakeClient()
+	s := openTest(t, client, 32)
+	admission, stream := submitTest(t, s)
+	adaptertest.Next(t, stream, time.Second)
+	if _, _, err := s.Submit(context.Background(), steerRequest("steer-request", admission.RunID)); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := s.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending.ActiveRuns) != 1 || len(pending.ActiveRuns[0].PendingSteers) != 1 {
+		t.Fatalf("state = %+v, want the steer pending", pending.ActiveRuns)
+	}
+	client.emit(t, map[string]any{"type": "turn_end", "message": assistant("mid", "stop"), "toolResults": []any{}})
+	if applied := adaptertest.Next(t, stream, time.Second); applied.Type != protocol.TypeRunSteerApplied {
+		t.Fatalf("settlement type = %s", applied.Type)
+	}
+	recovery, _, err := s.Resume(context.Background(), base.ResumeRequest{RunID: admission.RunID, AfterSequence: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recovery.State.ActiveRuns) != 0 {
+		t.Fatalf("recovery state = %+v, want the settled steer gone", recovery.State.ActiveRuns)
+	}
+}
+
 func TestSteerDropsAtTheTerminalBeforeTheRunSettles(t *testing.T) {
 	client := newFakeClient()
 	s := openTest(t, client, 32)
