@@ -224,7 +224,8 @@ const fade_share: f32 = 0.75;
 const glow_gain: f32 = 0.8;
 const lit_peak: f32 = 230;
 const timed_after_ms: u64 = 10_000;
-const faded_level: f32 = 40;
+const faded_level: f32 = 27;
+const glow_band: f32 = 0.15;
 
 fn activityLine(allocator: std.mem.Allocator, text: []const u8, tool_ms: u64, width: usize) ![]const u8 {
     if (tool_ms < timed_after_ms) return tui_text.truncateLineToWidth(allocator, text, width);
@@ -248,8 +249,9 @@ fn litLevel(strength: f32) u8 {
 
 fn glow(progress: f32, col: usize, text_width: usize) f32 {
     const mid = @as(f32, @floatFromInt(text_width -| 1)) / 2;
-    const reach = @abs(@as(f32, @floatFromInt(col)) - mid) / @max(mid, 1) * 0.85;
-    return @max(0, 1 - @abs(progress - reach - 0.075) / 0.15);
+    const reach = @abs(@as(f32, @floatFromInt(col)) - mid) / @max(mid, 1);
+    const peak = glow_band + reach * (1 - 2 * glow_band);
+    return @max(0, 1 - @abs(progress - peak) / glow_band);
 }
 
 fn activityRow(allocator: std.mem.Allocator, frame: Frame, width: usize) ![]const u8 {
@@ -258,7 +260,7 @@ fn activityRow(allocator: std.mem.Allocator, frame: Frame, width: usize) ![]cons
     const arrived = !changing or fade >= 0.5;
     const text = if (!changing) try activityLine(allocator, frame.activity, frame.tool_ms, width) else try tui_text.truncateLineToWidth(allocator, if (arrived) frame.incoming else frame.activity, width);
     const strength: f32 = if (!changing) 1 else if (arrived) smoothstep(fade * 2 - 1) else 1 - smoothstep(fade * 2);
-    if (text.len == 0 or strength < 0.04) return "";
+    if (text.len == 0 or litLevel(strength) <= @as(u8, @intFromFloat(faded_level))) return "";
     const text_width = tui_text.visibleWidth(text);
     var out: std.Io.Writer.Allocating = .init(allocator);
     for (0..(width -| text_width) / 2) |_| try out.writer.writeByte(' ');
@@ -561,7 +563,7 @@ test "a new line crossfades in place while a light opens from its centre to both
     try std.testing.expect(std.mem.indexOf(u8, arriving, "Shell Execute  ls") != null);
     try std.testing.expect(std.mem.indexOf(u8, arriving, "thinking") == null);
 
-    frame.rise = 0.1;
+    frame.rise = 0.22;
     const early = try levelsOf(a, (try activitySlot(a, frame, 60))[1]);
     frame.rise = 0.8;
     const late = try levelsOf(a, (try activitySlot(a, frame, 60))[1]);
@@ -574,6 +576,32 @@ test "a new line crossfades in place while a light opens from its centre to both
     const rest = try levelsOf(a, (try activitySlot(a, .{ .width = 80, .height = 24, .running = true, .activity = "Shell Execute  ls" }, 60))[1]);
     try std.testing.expectEqual(@as(usize, 1), rest.len);
     try std.testing.expectEqual(soft, rest[0]);
+
+    frame.rise = 0;
+    for (try levelsOf(a, (try activitySlot(a, frame, 60))[1])) |level| try std.testing.expectEqual(soft, level);
+    frame.rise = 0.999;
+    for (try levelsOf(a, (try activitySlot(a, frame, 60))[1])) |level| try std.testing.expect(level <= soft + 2);
+}
+
+test "a crossfade passes through every grey down to the background without a step" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var frame: Frame = .{ .width = 80, .height = 24, .running = true, .activity = "thinking", .incoming = "Read  a.zig" };
+    const background: u32 = @intFromFloat(faded_level);
+    var previous: u32 = soft_level;
+    var darkest: u32 = soft_level;
+    var tick: u64 = 0;
+    while (@as(f32, @floatFromInt(tick)) < fade_share * @as(f32, @floatFromInt(change_ticks))) : (tick += 1) {
+        frame.rise = @as(f32, @floatFromInt(tick)) / @as(f32, @floatFromInt(change_ticks));
+        const levels = try levelsOf(a, (try activitySlot(a, frame, 60))[1]);
+        const edge = if (levels.len == 0) background else levels[0];
+        try std.testing.expect(@max(edge, previous) - @min(edge, previous) <= 10);
+        darkest = @min(darkest, edge);
+        previous = edge;
+    }
+    try std.testing.expect(previous >= soft_level - 2);
+    try std.testing.expect(darkest <= background + 2);
 }
 
 fn levelOf(row: []const u8) u32 {
