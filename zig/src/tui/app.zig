@@ -4618,6 +4618,8 @@ pub const TuiModel = struct {
             .height = height,
             .input = app.state.composer.buffer.items,
             .cursor = app.state.composer.cursor,
+            .secret = app.state.mode == .login_input and app.state.login_input_secret,
+            .placeholder = if (app.state.mode == .login_input) (if (app.state.login_input_secret) "paste the secret and press Enter" else "type your answer and press Enter") else "type a prompt",
             .extra = extra,
             .counts = .{ .thinking = counts.thinking, .tools = counts.tools, .messages = counts.messages },
             .running = running,

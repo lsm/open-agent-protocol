@@ -1599,6 +1599,7 @@ pub const AppState = struct {
         row.tool_call_id = try self.allocator.dupe(u8, tool_call_id);
         try self.transcript.insert(self.allocator, index, row);
         if (index < self.summary_scan_floor) self.summary_scan_floor = index;
+        if (index < self.zen.start_index) self.zen.start_index += 1;
         self.adjustActiveTranscriptEntryAfterInsert(&self.active_user_entry, index);
         self.adjustActiveTranscriptEntryAfterInsert(&self.active_assistant_entry, index);
         self.adjustActiveTranscriptEntryAfterInsert(&self.active_tool_result_entry, index);
@@ -1639,6 +1640,7 @@ pub const AppState = struct {
 
     fn removeTranscriptEntry(self: *AppState, index: usize) void {
         if (index < self.summary_scan_floor) self.summary_scan_floor -= 1;
+        if (index < self.zen.start_index) self.zen.start_index -= 1;
         var entry = self.transcript.orderedRemove(index);
         entry.deinit(self.allocator);
         self.adjustActiveTranscriptEntryAfterRemove(&self.active_user_entry, index);
@@ -4498,4 +4500,18 @@ test "the zen note comes off a user message, and nothing else does" {
     try std.testing.expectEqualStrings("hi", withoutZenNote(zen_leave_note ++ "\n\nhi"));
     try std.testing.expectEqualStrings(zen_enter_note, withoutZenNote(zen_enter_note));
     try std.testing.expectEqualStrings("hi", withoutZenNote("hi"));
+}
+
+test "zen's starting point follows rows inserted or removed above it" {
+    var state = AppState.init(std.testing.allocator);
+    defer state.deinit();
+    try state.appendTranscript(.user, "a");
+    try state.appendTranscript(.thinking, "b");
+    state.zen.enter(state.transcript.items.len);
+    try state.insertToolSummaryRowAt(0, "\u{25c8} Shell Execute \"ls\"", "call-1");
+    try std.testing.expectEqual(@as(usize, 3), state.zen.start_index);
+    state.removeTranscriptEntry(1);
+    try std.testing.expectEqual(@as(usize, 2), state.zen.start_index);
+    state.removeTranscriptEntry(1);
+    try std.testing.expectEqual(@as(usize, 1), state.zen.start_index);
 }

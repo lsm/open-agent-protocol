@@ -68,6 +68,8 @@ pub const Frame = struct {
     farewell: ?u8 = null,
     input: []const u8 = "",
     cursor: usize = 0,
+    secret: bool = false,
+    placeholder: []const u8 = placeholder,
     extra: []const u8 = "",
 };
 
@@ -227,7 +229,7 @@ pub fn render(allocator: std.mem.Allocator, frame: Frame) ![]u8 {
         var lines = std.mem.splitScalar(u8, frame.extra, '\n');
         while (lines.next()) |line| try rows.append(arena, line);
     }
-    try rows.append(arena, try inputBar(arena, frame.input, frame.cursor, column));
+    try rows.append(arena, if (frame.secret) try secretBar(arena, frame.input, frame.placeholder, column) else try inputBar(arena, frame.input, frame.cursor, column, frame.placeholder));
 
     const shown = if (rows.items.len > frame.height) rows.items[rows.items.len - frame.height ..] else rows.items;
     const top = (frame.height -| shown.len) / 2;
@@ -270,7 +272,14 @@ fn trail(allocator: std.mem.Allocator, counts: Counts, column: usize) ![]const u
     return out.toOwnedSlice();
 }
 
-fn inputBar(allocator: std.mem.Allocator, input: []const u8, cursor: usize, column: usize) ![]const u8 {
+fn secretBar(allocator: std.mem.Allocator, input: []const u8, hint: []const u8, column: usize) ![]const u8 {
+    if (input.len == 0) return std.fmt.allocPrint(allocator, "{s}\x1b[7m \x1b[0m\x1b[2m{s}\x1b[0m", .{ prompt, hint });
+    const stars = try allocator.alloc(u8, @min(input.len, column -| (tui_text.visibleWidth(prompt) + 1)));
+    @memset(stars, '*');
+    return std.fmt.allocPrint(allocator, "{s}{s}\x1b[7m \x1b[0m", .{ prompt, stars });
+}
+
+fn inputBar(allocator: std.mem.Allocator, input: []const u8, cursor: usize, column: usize, hint: []const u8) ![]const u8 {
     const flat = try allocator.dupe(u8, input);
     for (flat) |*byte| {
         if (byte.* == '\n' or byte.* == '\r' or byte.* == '\t') byte.* = ' ';
@@ -278,7 +287,7 @@ fn inputBar(allocator: std.mem.Allocator, input: []const u8, cursor: usize, colu
     const at = @min(cursor, flat.len);
     const budget = column -| (tui_text.visibleWidth(prompt) + 1);
     if (flat.len == 0) {
-        return std.fmt.allocPrint(allocator, "{s}\x1b[7m \x1b[0m\x1b[2m{s}\x1b[0m", .{ prompt, placeholder });
+        return std.fmt.allocPrint(allocator, "{s}\x1b[7m \x1b[0m\x1b[2m{s}\x1b[0m", .{ prompt, hint });
     }
     const before = try tui_text.takeTrailingWidth(allocator, flat[0..at], budget);
     const char_len = if (at < flat.len) std.unicode.utf8ByteSequenceLength(flat[at]) catch 1 else 0;
@@ -496,6 +505,16 @@ test "the brush art is square, keeps its glyph's ink, and its ensō grows with t
     try std.testing.expectEqual(enso_rest, ensoSweep(.{ .width = 80, .height = 40 }));
 }
 
+test "a secret never reaches the input bar in the clear" {
+    const text = try render(std.testing.allocator, .{ .width = 80, .height = 24, .input = "sk-live-123", .cursor = 11, .secret = true });
+    defer std.testing.allocator.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "sk-live") == null);
+    try std.testing.expect(std.mem.indexOf(u8, text, prompt ++ "***********") != null);
+    const empty = try render(std.testing.allocator, .{ .width = 80, .height = 24, .secret = true, .placeholder = "paste the secret" });
+    defer std.testing.allocator.free(empty);
+    try std.testing.expect(std.mem.indexOf(u8, empty, "paste the secret") != null);
+}
+
 test "the farewell rises to full brightness, fades out, then ends" {
     try std.testing.expectEqual(idle_level, farewellLevel(0).?);
     try std.testing.expectEqual(@as(u8, 255), farewellLevel(farewell_rise_ticks).?);
@@ -577,10 +596,10 @@ test "a long final reply keeps the input bar on screen" {
 test "the input bar keeps the cursor in view and shows a placeholder when empty" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const empty = try inputBar(arena.allocator(), "", 0, 40);
+    const empty = try inputBar(arena.allocator(), "", 0, 40, placeholder);
     try std.testing.expect(std.mem.indexOf(u8, empty, placeholder) != null);
     const long = "abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnop";
-    const bar = try inputBar(arena.allocator(), long, long.len, 20);
+    const bar = try inputBar(arena.allocator(), long, long.len, 20, placeholder);
     const plain = try monochrome(arena.allocator(), bar);
     try std.testing.expect(tui_text.visibleWidth(plain) <= 20);
     try std.testing.expect(std.mem.endsWith(u8, std.mem.trimEnd(u8, plain, " "), "mnop"));
