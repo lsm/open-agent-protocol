@@ -176,13 +176,24 @@ pub fn remove(allocator: std.mem.Allocator, runner: Runner, info: *const Worktre
     return null;
 }
 
-fn removeOrphaned(allocator: std.mem.Allocator, runner: Runner, info: *const WorktreeInfo) !?[]u8 {
+pub fn removeForce(allocator: std.mem.Allocator, runner: Runner, info: *const WorktreeInfo) !?[]u8 {
+    var rm = try runner.run(allocator, &.{ "git", "-C", info.repo_root, "worktree", "remove", "--force", info.path }, info.repo_root);
+    defer rm.deinit(allocator);
+    if (!rm.ok) return try failureMessage(allocator, "git worktree remove --force", &rm);
+    var branch = try runner.run(allocator, &.{ "git", "-C", info.repo_root, "branch", "-D", info.branch }, info.repo_root);
+    defer branch.deinit(allocator);
+    if (!branch.ok) return try failureMessage(allocator, "git branch -D", &branch);
+    return null;
+}
+
+fn removeOrphaned(allocator: std.mem.Allocator, runner: Runner, info: *const WorktreeInfo, force: bool) !?[]u8 {
     var prune = try runner.run(allocator, &.{ "git", "-C", info.repo_root, "worktree", "prune" }, info.repo_root);
     defer prune.deinit(allocator);
     if (!prune.ok) return try failureMessage(allocator, "git worktree prune", &prune);
-    var branch = try runner.run(allocator, &.{ "git", "-C", info.repo_root, "branch", "-d", info.branch }, info.repo_root);
+    const flag = if (force) "-D" else "-d";
+    var branch = try runner.run(allocator, &.{ "git", "-C", info.repo_root, "branch", flag, info.branch }, info.repo_root);
     defer branch.deinit(allocator);
-    if (!branch.ok) return try failureMessage(allocator, "git branch -d", &branch);
+    if (!branch.ok) return try failureMessage(allocator, if (force) "git branch -D" else "git branch -d", &branch);
     return null;
 }
 
@@ -223,7 +234,7 @@ pub fn readSidecar(allocator: std.mem.Allocator, sessions_base: []const u8, sess
     return try parseSidecar(allocator, data);
 }
 
-pub const ManagementKind = enum { reattach, remove };
+pub const ManagementKind = enum { reattach, remove, remove_force };
 
 pub const ManagementOutcome = union(enum) {
     reattached: ?[]u8,
@@ -312,7 +323,8 @@ fn managementOperation(allocator: std.mem.Allocator, runner: Runner, info: *cons
         return .{ .reattached = try reattach(allocator, runner, info) };
     }
     if (!pathExists(info.repo_root)) return .{ .removed = null };
-    if (!pathExists(info.path)) return .{ .removed = try removeOrphaned(allocator, runner, info) };
+    if (!pathExists(info.path)) return .{ .removed = try removeOrphaned(allocator, runner, info, kind == .remove_force) };
+    if (kind == .remove_force) return .{ .removed = try removeForce(allocator, runner, info) };
     const dirty = hasUncommitted(allocator, runner, info.path) catch return .{ .dirty = {} };
     if (dirty) return .{ .dirty = {} };
     return .{ .removed = try remove(allocator, runner, info) };
@@ -681,6 +693,50 @@ test "management job refuses to delete a dirty worktree" {
     var outcome = maybe.?;
     defer outcome.deinit(std.testing.allocator);
     try std.testing.expect(outcome == .dirty);
+}
+
+test "management job force removes a dirty worktree" {
+    var git: FakeGit = .{ .uncommitted_lines = 1 };
+    defer git.deinit(std.testing.allocator);
+    const info = WorktreeInfo{ .path = @constCast("/tmp"), .branch = @constCast("tui/test"), .repo_root = @constCast("/tmp"), .prefix = "" };
+    const job = try ManagementJob.start(std.testing.allocator, git.runner(), &info, .remove_force);
+    defer job.deinit();
+    var maybe: ?ManagementOutcome = null;
+    while (maybe == null) {
+        maybe = job.poll();
+        if (maybe == null) std.atomic.spinLoopHint();
+    }
+    var outcome = maybe.?;
+    defer outcome.deinit(std.testing.allocator);
+    try std.testing.expect(outcome == .removed);
+    var saw_force = false;
+    for (git.calls.items) |call| {
+        if (std.mem.indexOf(u8, call, "worktree remove --force") != null) saw_force = true;
+        if (std.mem.indexOf(u8, call, "status") != null) return error.ForceRemoveCheckedStatus;
+    }
+    try std.testing.expect(saw_force);
+}
+
+test "force removing an orphaned worktree deletes the branch with -D" {
+    var git: FakeGit = .{};
+    defer git.deinit(std.testing.allocator);
+    const info = WorktreeInfo{ .path = @constCast("/nonexistent/worktree/xyz"), .branch = @constCast("tui/test"), .repo_root = @constCast("/tmp"), .prefix = "" };
+    const job = try ManagementJob.start(std.testing.allocator, git.runner(), &info, .remove_force);
+    defer job.deinit();
+    var maybe: ?ManagementOutcome = null;
+    while (maybe == null) {
+        maybe = job.poll();
+        if (maybe == null) std.atomic.spinLoopHint();
+    }
+    var outcome = maybe.?;
+    defer outcome.deinit(std.testing.allocator);
+    try std.testing.expect(outcome == .removed);
+    var saw_force_branch = false;
+    for (git.calls.items) |call| {
+        if (std.mem.indexOf(u8, call, "branch -D") != null) saw_force_branch = true;
+        if (std.mem.indexOf(u8, call, "branch -d") != null) return error.OrphanedRemoveUsedSafeDelete;
+    }
+    try std.testing.expect(saw_force_branch);
 }
 
 test "management job prunes an orphaned worktree whose directory is gone" {
