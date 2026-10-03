@@ -209,6 +209,18 @@ fn compactionThreshold(arena: std.mem.Allocator, raw: ?[]const u8, refusal: *con
     return refuseUnknownPolicy(refusal);
 }
 
+fn effectivePolicy(keep: std.mem.Allocator, arena: std.mem.Allocator, raw: ?[]const u8) contract.Failure![]const u8 {
+    const text = raw orelse return "{\"kind\":\"auto\"}";
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.InvalidSubmission,
+    };
+    const kind = parsed.object.get("kind").?.string;
+    if (std.mem.eql(u8, kind, "share")) return std.fmt.allocPrint(keep, "{{\"kind\":\"share\",\"share_percent\":{d}}}", .{parsed.object.get("share_percent").?.integer});
+    if (std.mem.eql(u8, kind, "tokens")) return std.fmt.allocPrint(keep, "{{\"kind\":\"tokens\",\"tokens\":{d}}}", .{parsed.object.get("tokens").?.integer});
+    return std.fmt.allocPrint(keep, "{{\"kind\":\"{s}\"}}", .{kind});
+}
+
 fn refuseUnknownPolicy(refusal: *contract.Refusal) contract.Failure {
     const failure = refusal.unsupportedField(contract.feature_compaction_policy, contract.reason_unsatisfiable, "compaction_policy");
     refusal.detail = "the reference adapter takes auto, off, a share from 1 to 100 or a positive token count";
@@ -311,6 +323,7 @@ pub const Session = struct {
     outbox: std.ArrayList(Journaled) = .empty,
     threshold: u64 = 0,
     history: u64 = 0,
+    policy_json: []const u8 = "",
 
     fn create(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
         const gpa = owner.allocator;
@@ -323,6 +336,7 @@ pub const Session = struct {
         self.attached = try admitToolSources(keep, arena, request.tool_sources_json, refusal);
         self.provided = try self.admitProvidedTools(arena, request.tools_json, refusal);
         self.threshold = try compactionThreshold(arena, request.compaction_policy_json, refusal);
+        self.policy_json = try effectivePolicy(keep, arena, request.compaction_policy_json);
         self.id = if (request.session_id.len > 0) try keep.dupe(u8, request.session_id) else try owner.nextID(keep, "session");
         if (try owner.claim(arena, self.id, request.reopen, refusal)) |model| {
             self.current_model = model;
@@ -414,6 +428,7 @@ pub const Session = struct {
             .status = .idle,
             .active_runs = entries.items,
             .current_model_id = if (self.current_model.len > 0) self.current_model else null,
+            .compaction_policy_json = self.policy_json,
             .transcript_cursor = if (self.transcript_cursor > 0) try std.fmt.allocPrint(arena, "{d}", .{self.transcript_cursor}) else null,
             .updated_at_ms = self.updated_at_ms,
             .sources = try self.sessionSources(arena),
@@ -2491,4 +2506,20 @@ test "a queued run promoted by the settlement that crossed the threshold compact
     const started = try probe.eventOfType("run.compaction.started");
     try testing.expectEqualStrings(queued.run_id.?, started.object.get("run_id").?.string);
     try testing.expectEqual(@as(i64, 9), started.object.get("payload").?.object.get("history_tokens").?.integer);
+}
+
+test "the state reports the policy the session runs under" {
+    for ([_]struct { asked: ?[]const u8, reported: []const u8 }{
+        .{ .asked = null, .reported = "{\"kind\":\"auto\"}" },
+        .{ .asked = "{\"kind\":\"off\"}", .reported = "{\"kind\":\"off\"}" },
+        .{ .asked = "{ \"share_percent\": 50, \"kind\": \"share\" }", .reported = "{\"kind\":\"share\",\"share_percent\":50}" },
+        .{ .asked = "{\"kind\":\"tokens\",\"tokens\":9}", .reported = "{\"kind\":\"tokens\",\"tokens\":9}" },
+    }) |case| {
+        var probe: Probe = undefined;
+        try probe.initPolicy(case.asked);
+        defer probe.deinit();
+        var refusal = contract.Refusal{};
+        const reported = try probe.session.state(probe.a(), &refusal);
+        try testing.expectEqualStrings(case.reported, reported.compaction_policy_json.?);
+    }
 }

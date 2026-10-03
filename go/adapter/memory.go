@@ -238,7 +238,7 @@ func (m *Memory) Open(ctx context.Context, request OpenRequest) (Session, error)
 		owner: m, clock: m.clock, ids: m.ids, capacity: m.capacity,
 		participant: request.Participant.ID,
 		threshold:   threshold,
-		state:       protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, UpdatedAtMS: now, Sources: sessionSources(attached), CurrentModelID: model, Recovery: recovery},
+		state:       protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, UpdatedAtMS: now, Sources: sessionSources(attached), CurrentModelID: model, Recovery: recovery, CompactionPolicy: effectivePolicy(request.CompactionPolicy)},
 		attached:    attached,
 		provided:    provided,
 		runs:        make(map[protocol.RunID]*memoryRun),
@@ -267,6 +267,19 @@ func compactionThreshold(policy *protocol.CompactionPolicy) (uint64, error) {
 		}
 	}
 	return 0, &UnsupportedControlError{Feature: protocol.FeatureCompactionPolicy, Reason: ControlUnsatisfiable, Field: "compaction_policy", Detail: "the reference adapter takes auto, off, a share from 1 to 100 or a positive token count"}
+}
+
+func effectivePolicy(policy *protocol.CompactionPolicy) *protocol.CompactionPolicy {
+	if policy == nil {
+		return &protocol.CompactionPolicy{Kind: protocol.CompactionAuto}
+	}
+	switch policy.Kind {
+	case protocol.CompactionShare:
+		return &protocol.CompactionPolicy{Kind: policy.Kind, SharePercent: policy.SharePercent}
+	case protocol.CompactionTokens:
+		return &protocol.CompactionPolicy{Kind: policy.Kind, Tokens: policy.Tokens}
+	}
+	return &protocol.CompactionPolicy{Kind: policy.Kind}
 }
 
 func historyTokens(messages []protocol.Message) uint64 {

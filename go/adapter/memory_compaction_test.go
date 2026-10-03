@@ -481,3 +481,27 @@ func TestMemoryCompactsAQueuedRunPromotedByTheSettlementThatCrossedTheThreshold(
 		t.Fatalf("the promoted run's compactions = %+v, want one of nine tokens on %s", started, waiting.RunID)
 	}
 }
+
+func TestMemoryStateReportsThePolicyTheSessionRunsUnder(t *testing.T) {
+	for _, tc := range []struct {
+		asked *protocol.CompactionPolicy
+		want  protocol.CompactionPolicy
+	}{
+		{nil, protocol.CompactionPolicy{Kind: protocol.CompactionAuto}},
+		{&protocol.CompactionPolicy{Kind: protocol.CompactionOff}, protocol.CompactionPolicy{Kind: protocol.CompactionOff}},
+		{&protocol.CompactionPolicy{Kind: protocol.CompactionShare, SharePercent: 50}, protocol.CompactionPolicy{Kind: protocol.CompactionShare, SharePercent: 50}},
+		{&protocol.CompactionPolicy{Kind: protocol.CompactionTokens, Tokens: 9}, protocol.CompactionPolicy{Kind: protocol.CompactionTokens, Tokens: 9}},
+	} {
+		session, err := openWithPolicy(t, tc.asked)
+		if err != nil {
+			t.Fatal(err)
+		}
+		state, err := session.State(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state.CompactionPolicy == nil || *state.CompactionPolicy != tc.want {
+			t.Fatalf("state for %+v reports %+v, want %+v", tc.asked, state.CompactionPolicy, tc.want)
+		}
+	}
+}
