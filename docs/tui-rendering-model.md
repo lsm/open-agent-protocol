@@ -571,17 +571,14 @@ every frame anyway.
 ## Zen
 
 `/zen` (or `/zen on`, `/zen off`) replaces the whole screen with one centred
-column in grey: a large brush-drawn 禅 inside a dry-brush ensō (heavy where it starts, breaking into bristle streaks as it dries), a trail that grows one dot for each thinking block,
-tool call and reply since zen began (with a count in front once it outgrows the
-column), one line naming the current tool, and a minimal input bar at the bottom
-of the column in place of the composer and the status bar. 禅 breathes slowly
-while the agent thinks, faster while a tool runs, and holds still while an
-approval waits. The ensō is drawn as the run goes, closing over about ten
-minutes, and rests with its usual gap between runs. On a terminal too short for
-the drawing, 禅 is a single character. The brush form is rasterised from the
-running-script face Xingkai SC. When the run ends it brightens once and fades, and then the last
-reply (or the error that ended it), still drawn with its markdown colours, takes
-its place. Approval prompts and the command palette appear above the input
+column in grey: a trail that grows one dot for each thinking block, tool call
+and reply since zen began (with a count in front once it outgrows the column),
+one line naming the current tool, and, floating a little above the bottom of
+the screen, a minimal input bar in place of the composer and the status bar.
+The trail breathes slowly while the agent thinks, faster while a tool runs,
+and holds still while an approval waits; with no steps yet it is a single dot.
+When the run ends it brightens once and fades, and then the last reply (or the
+error that ended it), still drawn with its markdown colours, takes its place. Approval prompts and the command palette appear above the input
 bar. While zen is on, nothing is printed into the scrollback; leaving it
 prints what was held back at the current verbosity, and so does quitting, so a
 session ended in zen still leaves its transcript in the terminal. Only an error
