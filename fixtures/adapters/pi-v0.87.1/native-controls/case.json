@@ -29,5 +29,5 @@
     "native.command.id": "private_request_correlation",
     "native.toolCallId": "oap.tool_call_id"
   },
-  "noncanonical_mismatch": "Pinned native controls exceed the advertised OAP v0.1 surface; codec evidence does not imply delivery, tree, transcript replay, or session-switch support."
+  "noncanonical_mismatch": "Pinned native controls beyond steer (follow-up queues, transcript entries, tree and session switching) exceed the advertised OAP v0.1 surface; codec evidence does not imply delivery, tree, transcript replay, or session-switch support."
 }
