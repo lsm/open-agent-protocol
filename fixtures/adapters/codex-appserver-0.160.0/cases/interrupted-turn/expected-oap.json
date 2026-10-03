@@ -16,26 +16,41 @@
     "timestamp_ms": 5,
     "session_id": "session-1",
     "run_id": "run-02",
-    "capability_revision": "codex-appserver-0.157.0-oap-v3"
+    "capability_revision": "codex-appserver-0.160.0-oap-v1"
   },
   {
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
-    "type": "run.failed",
+    "type": "run.status.updated",
     "id": "event-06",
     "payload": {
       "session_id": "session-1",
       "run_id": "run-02",
-      "error": {
-        "code": "native_turn_failed",
-        "message": "fixture failure"
-      }
+      "status": "cancelling",
+      "updated_at_ms": 6
     },
     "sequence": 2,
-    "timestamp_ms": 6,
+    "timestamp_ms": 7,
     "session_id": "session-1",
     "run_id": "run-02",
-    "capability_revision": "codex-appserver-0.157.0-oap-v3"
+    "capability_revision": "codex-appserver-0.160.0-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.cancelled",
+    "id": "event-07",
+    "payload": {
+      "session_id": "session-1",
+      "run_id": "run-02",
+      "reason": "native turn interrupted"
+    },
+    "sequence": 3,
+    "timestamp_ms": 8,
+    "session_id": "session-1",
+    "run_id": "run-02",
+    "capability_revision": "codex-appserver-0.160.0-oap-v1"
   }
 ]
