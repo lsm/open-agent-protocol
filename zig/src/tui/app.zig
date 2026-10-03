@@ -4576,13 +4576,18 @@ pub const TuiModel = struct {
     }
 
     fn advanceZen(app: *App) void {
+        if (!app.state.zen.on) return;
+        const running = noteZenRun(app);
+        app.state.zen.phase = @mod(app.state.zen.phase + zen_view.breathStep(zenMood(app, running)), 1);
+    }
+
+    fn noteZenRun(app: *App) bool {
         const zen = &app.state.zen;
-        if (!zen.on) return;
         const running = streamActive(app);
-        zen.phase = @mod(zen.phase + zen_view.breathStep(zenMood(app, running)), 1);
         if (zen.was_running and !running) zen.ended_tick = app.state.anim_tick;
         if (running) zen.ended_tick = null;
         zen.was_running = running;
+        return running;
     }
 
     fn renderZen(self: *TuiModel, app: *App, ctx: *const zz.Context, width: usize, height: usize) ![]const u8 {
@@ -4591,7 +4596,7 @@ pub const TuiModel = struct {
         const extra = if (app.state.mode == .normal) renderCommandPalette(allocator, app, column) catch "" else self.renderChrome(app, ctx, column, height).extra;
         const entries = app.state.transcript.items;
         const counts = tui_state.zenCounts(entries, app.state.zen.start_index);
-        const running = streamActive(app);
+        const running = noteZenRun(app);
         var activity: []const u8 = "";
         if (counts.last_activity) |index| {
             const entry = &entries[index];
