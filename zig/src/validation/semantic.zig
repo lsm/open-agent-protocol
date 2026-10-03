@@ -2873,17 +2873,25 @@ pub const Machine = struct {
         if (delivery.len == 0 or std.mem.eql(u8, delivery, "auto")) {} else if (std.mem.eql(u8, delivery, "queue")) {
             if (self.advertisedLevel(feature_delivery_queue)) |level| {
                 if (!affirmative(level)) self.propose(&pending.control, .{
-                    .rung = rung_capability, .key = feature_delivery_queue, .pointer = "/payload/delivery",
-                    .code = error_unsupported_feature, .reason = reason_unadvertised,
-                    .detail_name = "feature", .detail_value = feature_delivery_queue,
+                    .rung = rung_capability,
+                    .key = feature_delivery_queue,
+                    .pointer = "/payload/delivery",
+                    .code = error_unsupported_feature,
+                    .reason = reason_unadvertised,
+                    .detail_name = "feature",
+                    .detail_value = feature_delivery_queue,
                     .diagnostic = code_unavailable_capability,
                 });
             }
         } else {
             const key = try std.fmt.allocPrint(self.arena.allocator(), "session.message.delivery.{s}", .{delivery});
             self.propose(&pending.control, .{
-                .rung = rung_capability, .key = key, .pointer = "/payload/delivery",
-                .code = error_unsupported_feature, .detail_name = "feature", .detail_value = key,
+                .rung = rung_capability,
+                .key = key,
+                .pointer = "/payload/delivery",
+                .code = error_unsupported_feature,
+                .detail_name = "feature",
+                .detail_value = key,
                 .diagnostic = code_illegal_run_transition,
             });
         }
@@ -2891,8 +2899,12 @@ pub const Machine = struct {
             if (self.advertisedLevel("session.compact")) |level| {
                 if (std.mem.eql(u8, level, "degraded") and !allowsDegraded(payload, "session.compact")) {
                     pending.compact_focus = .{
-                        .rung = rung_degradation, .key = "session.compact", .pointer = "/payload/focus",
-                        .code = error_capability_degraded, .detail_name = "feature", .detail_value = "session.compact",
+                        .rung = rung_degradation,
+                        .key = "session.compact",
+                        .pointer = "/payload/focus",
+                        .code = error_capability_degraded,
+                        .detail_name = "feature",
+                        .detail_value = "session.compact",
                         .diagnostic = code_degraded_without_optin,
                     };
                 }
