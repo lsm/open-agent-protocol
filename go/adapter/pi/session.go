@@ -421,7 +421,9 @@ func (s *Session) steer(ctx context.Context, submit base.SubmitRequest) (protoco
 	s.commandMu.Unlock()
 	s.reduceMu.Lock()
 	defer s.reduceMu.Unlock()
-	s.steerBarrier = nil
+	if s.steerBarrier == &answered {
+		s.steerBarrier = nil
+	}
 	if err != nil {
 		return protocol.MessageSubmitResponse{}, nil, err
 	}
