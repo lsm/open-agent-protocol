@@ -3451,7 +3451,10 @@ pub const App = struct {
             const shown = echo orelse pending;
             if (std.mem.eql(u8, shown, pending)) return try self.steer(pending);
             if (self.session) |*session| {
-                try session.steer(pending);
+                const noted = try self.zenNoted(pending);
+                defer if (noted) |owned| self.allocator.free(owned);
+                try session.steer(noted orelse pending);
+                if (noted != null) self.state.zen.note = .none;
                 try self.state.appendSteeredMessageEchoing(pending, shown);
                 self.refreshQueuedCounts();
             }
@@ -3485,7 +3488,10 @@ pub const App = struct {
         };
         try self.ensureSessionId();
         if (self.session) |*session| {
-            try session.steer(trimmed);
+            const noted = try self.zenNoted(trimmed);
+            defer if (noted) |owned| self.allocator.free(owned);
+            try session.steer(noted orelse trimmed);
+            if (noted != null) self.state.zen.note = .none;
             try self.state.appendSteeredMessage(trimmed);
             self.refreshQueuedCounts();
             return;

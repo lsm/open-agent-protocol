@@ -126,6 +126,14 @@ pub fn withoutZenNote(text: []const u8) []const u8 {
     return text;
 }
 
+pub fn zenStart(state: *const AppState) usize {
+    var start = state.transcript.items.len;
+    for ([_]?usize{ state.active_assistant_entry, state.active_thinking_entry, state.active_tool_summary_entry, state.active_tool_result_entry }) |active| {
+        if (active) |index| start = @min(start, index);
+    }
+    return start;
+}
+
 pub const ZenCounts = struct {
     thinking: usize = 0,
     tools: usize = 0,
@@ -4514,4 +4522,18 @@ test "zen's starting point follows rows inserted or removed above it" {
     try std.testing.expectEqual(@as(usize, 2), state.zen.start_index);
     state.removeTranscriptEntry(1);
     try std.testing.expectEqual(@as(usize, 1), state.zen.start_index);
+}
+
+test "zen entered mid-reply counts the reply already streaming" {
+    var state = AppState.init(std.testing.allocator);
+    defer state.deinit();
+    try state.appendTranscript(.user, "go");
+    try state.appendTranscript(.assistant, "half a rep");
+    state.active_assistant_entry = 1;
+    try state.appendNotice("zen on");
+    state.zen.enter(zenStart(&state));
+    try std.testing.expectEqual(@as(usize, 1), state.zen.start_index);
+    try std.testing.expectEqual(@as(usize, 1), zenCounts(state.transcript.items, state.zen.start_index).final.?);
+    state.active_assistant_entry = null;
+    try std.testing.expectEqual(state.transcript.items.len, zenStart(&state));
 }

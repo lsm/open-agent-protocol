@@ -509,7 +509,7 @@ fn handleZen(ctx: CommandContext, command: Command) !CommandResult {
         if (std.ascii.eqlIgnoreCase(arg, "off")) break :blk false;
         return .{ .output = try ctx.allocator.dupe(u8, zen_usage), .is_error = true };
     } else !ctx.state.zen.on;
-    if (on) ctx.state.zen.enter(ctx.state.transcript.items.len) else ctx.state.zen.leave();
+    if (on) ctx.state.zen.enter(tui_state.zenStart(ctx.state)) else ctx.state.zen.leave();
     return .{ .output = try ctx.allocator.dupe(u8, if (on) "zen on: the agent is asked to work quietly; /zen again to return" else "zen off") };
 }
 
