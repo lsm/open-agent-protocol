@@ -99,10 +99,14 @@ const Layout = struct {
     left: usize,
 };
 
+pub fn showsReply(frame: Frame) bool {
+    return !frame.running and frame.final_block.len > 0 and frame.farewell == null;
+}
+
 fn layout(arena: std.mem.Allocator, frame: Frame) !Layout {
     const width = @max(frame.width, 20);
     const column = columnWidth(width);
-    const final = !frame.running and frame.final_block.len > 0 and frame.farewell == null;
+    const final = showsReply(frame);
 
     var content: std.ArrayList([]const u8) = .empty;
     if (final) {

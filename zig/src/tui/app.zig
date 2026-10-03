@@ -4649,7 +4649,7 @@ pub const TuiModel = struct {
             .final_block = final_block,
             .failed = failed,
         };
-        app.state.transcript_scroll = @min(app.state.transcript_scroll, try zen_view.maxScroll(allocator, frame));
+        if (zen_view.showsReply(frame)) app.state.transcript_scroll = @min(app.state.transcript_scroll, try zen_view.maxScroll(allocator, frame));
         frame.scroll = app.state.transcript_scroll;
         return zen_view.render(allocator, frame);
     }
@@ -4944,7 +4944,7 @@ pub const TuiModel = struct {
     }
 
     fn refillInlineWindowAfterResize(self: *TuiModel, app: *App, ctx: *zz.Context) !void {
-        app.state.transcript_scroll = 0;
+        if (!app.state.zen.on) app.state.transcript_scroll = 0;
         if (!self.inlineMode(ctx)) return;
         const width: usize = @max(ctx.width, 20);
         const budget = self.flushBudget(app, ctx);
@@ -8536,7 +8536,11 @@ test "zen opens a reply taller than the screen at its top and pages through it" 
     try app.state.appendTranscript(.assistant, reply.written());
     _ = model.view(&tctx.ctx);
     app.state.status.streaming = false;
-    for (0..30) |_| _ = model.update(.{ .tick = .{ .timestamp = 0, .delta = 0 } }, &tctx.ctx);
+    for (0..30) |_| {
+        _ = model.update(.{ .tick = .{ .timestamp = 0, .delta = 0 } }, &tctx.ctx);
+        _ = model.view(&tctx.ctx);
+    }
+    _ = model.update(.{ .window_size = .{ .width = 80, .height = 20 } }, &tctx.ctx);
 
     const top = model.view(&tctx.ctx);
     try std.testing.expect(std.mem.indexOf(u8, top, "done") != null);
