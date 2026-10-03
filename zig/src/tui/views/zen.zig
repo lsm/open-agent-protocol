@@ -58,9 +58,10 @@ pub const Frame = struct {
     counts: Counts = .{},
     running: bool = false,
     activity: []const u8 = "",
-    previous: []const u8 = "",
-    since_change: u64 = slide_ticks,
-    stuck_ms: u64 = 0,
+    incoming: []const u8 = "",
+    rise: f32 = 0,
+    light: f32 = 0,
+    tool_ms: u64 = 0,
     final_block: []const u8 = "",
     failed: bool = false,
     mood: Mood = .idle,
@@ -71,9 +72,11 @@ pub const Frame = struct {
     secret: bool = false,
     placeholder: []const u8 = placeholder,
     extra: []const u8 = "",
+    scroll: usize = 0,
 };
 
 const max_column: usize = 76;
+const max_reading: usize = 120;
 const soft_level: u8 = 128;
 const prompt = "\u{276f} ";
 const placeholder = "type a prompt";
@@ -82,38 +85,56 @@ pub fn columnWidth(width: usize) usize {
     return std.math.clamp(width -| 4, 16, max_column);
 }
 
+pub fn readingWidth(width: usize) usize {
+    return std.math.clamp(width -| 8, 16, max_reading);
+}
+
 const min_gap: usize = 2;
 
 fn bottomMargin(height: usize) usize {
     return std.math.clamp(height / 6, 1, 6);
 }
 
-pub fn render(allocator: std.mem.Allocator, frame: Frame) ![]u8 {
-    var arena_state = std.heap.ArenaAllocator.init(allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
+const Layout = struct {
+    content: []const []const u8,
+    lower: []const []const u8,
+    lower_top: usize,
+    area: usize,
+    final: bool,
+    column: usize,
+    left: usize,
+    lower_left: usize,
+};
+
+pub fn showsReply(frame: Frame) bool {
+    return !frame.running and frame.final_block.len > 0 and frame.farewell == null;
+}
+
+fn layout(arena: std.mem.Allocator, frame: Frame) !Layout {
     const width = @max(frame.width, 20);
-    const column = columnWidth(width);
+    const bar = columnWidth(width);
+    const final = showsReply(frame);
+    const column = if (final) readingWidth(width) else bar;
 
     var content: std.ArrayList([]const u8) = .empty;
-    if (!frame.running and frame.final_block.len > 0 and frame.farewell == null) {
+    if (final) {
         try content.append(arena, try centered(arena, if (frame.failed) "\u{2718} stopped" else "\u{2713} done", column));
         try content.append(arena, "");
         var lines = std.mem.splitScalar(u8, frame.final_block, '\n');
         while (lines.next()) |line| try content.append(arena, line);
         try content.append(arena, "");
-        try content.append(arena, try centered(arena, try gray(arena, soft_level, try trail(arena, frame.counts, column)), column));
+        try content.append(arena, try centered(arena, try gray(arena, soft_level, try trail(arena, frame.counts)), column));
     } else {
         const level = frame.farewell orelse pulseLevel(frame.mood, frame.phase);
-        const marks = try trail(arena, frame.counts, column);
+        const marks = try trail(arena, frame.counts);
         try content.append(arena, try centered(arena, try gray(arena, level, if (marks.len == 0) dot else marks), column));
         if (frame.running) {
             const slot = try activitySlot(arena, frame, column);
             for (slot) |row| try content.append(arena, row);
         } else {
-            try content.append(arena, "");
-            try content.append(arena, try centered(arena, try gray(arena, soft_level, if (frame.farewell != null) "" else "zen \u{b7} only the final reply is shown"), column));
-            try content.append(arena, "");
+            var rest: [slot_rows][]const u8 = .{""} ** slot_rows;
+            if (frame.farewell == null) rest[slot_centre] = try centered(arena, try gray(arena, soft_level, "zen \u{b7} only the final reply is shown"), column);
+            for (rest) |row| try content.append(arena, row);
         }
     }
 
@@ -123,76 +144,209 @@ pub fn render(allocator: std.mem.Allocator, frame: Frame) ![]u8 {
         while (lines.next()) |line| try lower.append(arena, line);
         try lower.append(arena, "");
     }
-    try lower.append(arena, if (frame.secret) try secretBar(arena, frame.input, frame.placeholder, column) else try inputBar(arena, frame.input, frame.cursor, column, frame.placeholder));
+    try lower.append(arena, if (frame.secret) try secretBar(arena, frame.input, frame.placeholder, bar) else try inputBar(arena, frame.input, frame.cursor, bar, frame.placeholder));
 
     const lower_shown = if (lower.items.len > frame.height) lower.items[lower.items.len - frame.height ..] else lower.items;
     const lower_top = frame.height -| (bottomMargin(frame.height) + lower_shown.len);
-    const area = lower_top -| min_gap;
-    const shown = if (content.items.len > area) content.items[content.items.len - area ..] else content.items;
-    const content_top = (area -| shown.len) / 2;
-    const left = (width -| column) / 2;
+    return .{
+        .content = content.items,
+        .lower = lower_shown,
+        .lower_top = lower_top,
+        .area = lower_top -| min_gap,
+        .final = final,
+        .column = column,
+        .left = (width -| column) / 2,
+        .lower_left = (width -| bar) / 2,
+    };
+}
+
+const scroll_markers: usize = 2;
+
+fn readingRoom(area: usize) usize {
+    return @max(area -| scroll_markers, 1);
+}
+
+pub fn maxScroll(allocator: std.mem.Allocator, frame: Frame) !usize {
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const laid = try layout(arena_state.allocator(), frame);
+    if (!laid.final or laid.content.len <= laid.area) return 0;
+    return laid.content.len - readingRoom(laid.area);
+}
+
+fn scrolledWindow(arena: std.mem.Allocator, laid: Layout, scroll: usize) ![]const []const u8 {
+    const room = readingRoom(laid.area);
+    const offset = @min(scroll, laid.content.len - room);
+    const end = laid.content.len - offset;
+    const start = end - room;
+    var rows: std.ArrayList([]const u8) = .empty;
+    try rows.append(arena, if (start > 0) try centered(arena, try gray(arena, soft_level, try std.fmt.allocPrint(arena, "\u{2191} {d} more \u{b7} PgUp", .{start})), laid.column) else "");
+    try rows.appendSlice(arena, laid.content[start..end]);
+    try rows.append(arena, if (offset > 0) try centered(arena, try gray(arena, soft_level, try std.fmt.allocPrint(arena, "\u{2193} {d} more \u{b7} PgDn", .{offset})), laid.column) else "");
+    return rows.items;
+}
+
+pub fn render(allocator: std.mem.Allocator, frame: Frame) ![]u8 {
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const laid = try layout(arena, frame);
+    const shown = if (laid.content.len <= laid.area)
+        laid.content
+    else if (laid.final)
+        try scrolledWindow(arena, laid, frame.scroll)
+    else
+        laid.content[laid.content.len - laid.area ..];
+    const content_top = (laid.area -| shown.len) / 2;
 
     var out: std.Io.Writer.Allocating = .init(allocator);
     errdefer out.deinit();
     const writer = &out.writer;
     for (0..frame.height) |index| {
         if (index > 0) try writer.writeByte('\n');
-        const row: []const u8 = if (index >= lower_top)
-            (if (index - lower_top < lower_shown.len) lower_shown[index - lower_top] else "")
+        const in_lower = index >= laid.lower_top;
+        const row: []const u8 = if (in_lower)
+            (if (index - laid.lower_top < laid.lower.len) laid.lower[index - laid.lower_top] else "")
         else if (index >= content_top and index - content_top < shown.len)
             shown[index - content_top]
         else
             "";
         if (row.len == 0) continue;
-        for (0..left) |_| try writer.writeByte(' ');
+        for (0..if (in_lower) laid.lower_left else laid.left) |_| try writer.writeByte(' ');
         try writer.writeAll(row);
     }
     return out.toOwnedSlice();
 }
 
-pub const slide_ticks: u64 = 12;
-const stuck_after_ms: u64 = 10_000;
-const faded_level: f32 = 40;
+pub const change_ticks: u64 = 20;
+pub const light_ticks: u64 = 80;
+pub const slot_rows: usize = 3;
+const slot_centre: usize = 1;
+const glow_gain: f32 = 0.8;
+const lit_peak: f32 = 230;
+const timed_after_ms: u64 = 10_000;
+const glow_band: f32 = 0.15;
 
-fn activityLine(allocator: std.mem.Allocator, text: []const u8, stuck_ms: u64, width: usize) ![]const u8 {
-    if (stuck_ms < stuck_after_ms) return tui_text.truncateLineToWidth(allocator, text, width);
-    const seconds = stuck_ms / 1000;
+fn activityLine(allocator: std.mem.Allocator, text: []const u8, tool_ms: u64, width: usize) ![]const u8 {
+    if (tool_ms < timed_after_ms) return tui_text.truncateLineToWidth(allocator, text, width);
+    const seconds = tool_ms / 1000;
     const clock = try std.fmt.allocPrint(allocator, "{d}:{d:0>2}", .{ seconds / 60, seconds % 60 });
     if (text.len == 0) return clock;
     const fitted = try tui_text.truncateLineToWidth(allocator, text, width -| (clock.len + 3));
     return std.fmt.allocPrint(allocator, "{s} \u{b7} {s}", .{ clock, fitted });
 }
 
-fn fadedRow(allocator: std.mem.Allocator, text: []const u8, strength: f32, width: usize) ![]const u8 {
-    if (text.len == 0 or strength <= 0) return "";
-    const level: u8 = @intFromFloat(@round(faded_level + (@as(f32, @floatFromInt(soft_level)) - faded_level) * @min(strength, 1)));
-    return centered(allocator, try gray(allocator, level, text), width);
+fn litLevel(glow_amount: f32) u8 {
+    const soft: f32 = @floatFromInt(soft_level);
+    return @intFromFloat(@round(soft + (lit_peak - soft) * std.math.clamp(glow_amount * glow_gain, 0, 1)));
 }
 
-fn activitySlot(allocator: std.mem.Allocator, frame: Frame, width: usize) ![3][]const u8 {
-    const current = try activityLine(allocator, frame.activity, frame.stuck_ms, width);
-    if (frame.since_change >= slide_ticks) return .{ "", try fadedRow(allocator, current, 1, width), "" };
-    const half = slide_ticks / 2;
-    if (frame.since_change < half) {
-        const p = @as(f32, @floatFromInt(frame.since_change)) / @as(f32, @floatFromInt(half));
-        const previous = try tui_text.truncateLineToWidth(allocator, frame.previous, width);
-        return .{ try fadedRow(allocator, previous, 1 - p, width), "", try fadedRow(allocator, current, p, width) };
+fn glow(progress: f32, col: usize, text_width: usize) f32 {
+    const mid = @as(f32, @floatFromInt(text_width -| 1)) / 2;
+    const reach = @abs(@as(f32, @floatFromInt(col)) - mid) / @max(mid, 1);
+    const peak = glow_band + reach * (1 - 2 * glow_band);
+    return @max(0, 1 - @abs(progress - peak) / glow_band);
+}
+
+const swap_span: f32 = 0.95;
+const covered: []const u8 = "";
+
+fn layCells(allocator: std.mem.Allocator, text: []const u8, width: usize) ![]?[]const u8 {
+    const cells = try allocator.alloc(?[]const u8, width);
+    @memset(cells, null);
+    var col = (width -| tui_text.visibleWidth(text)) / 2;
+    var view = std.unicode.Utf8View.initUnchecked(text).iterator();
+    while (view.nextCodepointSlice()) |glyph| {
+        const cell_width = tui_text.visibleWidth(glyph);
+        if (col + cell_width > width) break;
+        if (cell_width > 0) cells[col] = glyph;
+        for (1..cell_width) |extra| cells[col + extra] = covered;
+        col += cell_width;
     }
-    return .{ "", try fadedRow(allocator, current, 1, width), "" };
+    return cells;
+}
+
+fn switched(rise: f32, col: usize, lo: usize, hi: usize) bool {
+    const mid = @as(f32, @floatFromInt(lo + hi -| 1)) / 2;
+    const half = @max(@as(f32, @floatFromInt(hi -| lo)) / 2, 1);
+    return rise > @abs(@as(f32, @floatFromInt(col)) - mid) / half * swap_span;
+}
+
+fn activityRow(allocator: std.mem.Allocator, frame: Frame, width: usize) ![]const u8 {
+    const changing = frame.incoming.len > 0;
+    const shown = if (changing) try tui_text.truncateLineToWidth(allocator, frame.incoming, width) else try activityLine(allocator, frame.activity, frame.tool_ms, width);
+    const fresh = try layCells(allocator, shown, width);
+    const old = try layCells(allocator, if (changing) try tui_text.truncateLineToWidth(allocator, frame.activity, width) else "", width);
+    var lo: usize = width;
+    var hi: usize = 0;
+    for (0..width) |col| if (fresh[col] != null or old[col] != null) {
+        lo = @min(lo, col);
+        hi = col + 1;
+    };
+    if (hi <= lo) return "";
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    var last: ?u8 = null;
+    var pending: usize = lo;
+    var drawn = false;
+    for (lo..hi) |col| {
+        const arrived = !changing or switched(frame.rise, col, lo, hi);
+        const glyph = (if (arrived) fresh[col] else old[col]) orelse {
+            pending += 1;
+            continue;
+        };
+        if (glyph.len == 0) continue;
+        const level = litLevel(glow(frame.light, col - lo, hi - lo));
+        for (0..pending) |_| try out.writer.writeByte(' ');
+        pending = 0;
+        if (last != level) try zz.Color.fromRgb(level, level, level).writeFg(&out.writer);
+        last = level;
+        try out.writer.writeAll(glyph);
+        drawn = true;
+    }
+    if (!drawn) {
+        out.deinit();
+        return "";
+    }
+    try out.writer.writeAll("\x1b[0m");
+    return out.toOwnedSlice();
+}
+
+fn activitySlot(allocator: std.mem.Allocator, frame: Frame, width: usize) ![slot_rows][]const u8 {
+    var rows: [slot_rows][]const u8 = .{""} ** slot_rows;
+    rows[slot_centre] = try activityRow(allocator, frame, width);
+    return rows;
+}
+
+test "a final reply reads wider than the input bar when the screen allows" {
+    try std.testing.expectEqual(@as(usize, 76), columnWidth(200));
+    try std.testing.expectEqual(@as(usize, 120), readingWidth(200));
+    try std.testing.expectEqual(@as(usize, 92), readingWidth(100));
+    const wide = "w" ** 110;
+    const text = try render(std.testing.allocator, .{ .width = 200, .height = 20, .final_block = wide, .input = "next", .cursor = 4 });
+    defer std.testing.allocator.free(text);
+    const plain = try plainRows(std.testing.allocator, text);
+    defer std.testing.allocator.free(plain);
+    var lines = std.mem.splitScalar(u8, plain, '\n');
+    var reply_left: ?usize = null;
+    var bar_left: ?usize = null;
+    while (lines.next()) |line| {
+        if (std.mem.indexOf(u8, line, wide)) |at| reply_left = at;
+        if (std.mem.indexOf(u8, line, prompt ++ "next")) |at| bar_left = at;
+    }
+    try std.testing.expectEqual(@as(usize, 40), reply_left.?);
+    try std.testing.expectEqual(@as(usize, 62), bar_left.?);
 }
 
 const dot = "\u{b7}";
 
-fn trail(allocator: std.mem.Allocator, counts: Counts, column: usize) ![]const u8 {
+fn trail(allocator: std.mem.Allocator, counts: Counts) ![]const u8 {
     const steps = counts.thinking + counts.tools + counts.messages;
-    if (steps == 0) return "";
-    const room = @max(column / 2, 8) - 4;
-    const shown = @min(steps, room);
     var out: std.Io.Writer.Allocating = .init(allocator);
-    if (steps > shown) try out.writer.print("{d} ", .{steps - shown});
-    for (0..shown) |i| {
-        if (i > 0) try out.writer.writeByte(' ');
-        try out.writer.writeAll(dot);
+    const first = @max(steps -| 9, 1);
+    var step = first;
+    while (step <= steps) : (step += 1) {
+        if (step > first) try out.writer.writeByte(' ');
+        if (step % 10 == 0) try out.writer.print("{d}", .{step}) else try out.writer.writeAll(dot);
     }
     return out.toOwnedSlice();
 }
@@ -266,15 +420,19 @@ test "the pulse breathes slowly while thinking, faster on a tool, and holds whil
     try std.testing.expectEqual(idle_level, pulseLevel(.idle, 0.5));
 }
 
-test "the trail grows a dot per step and counts what it cannot fit" {
+test "the trail shows the last ten steps, the tenth as its number" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    try std.testing.expectEqualStrings("", try trail(arena.allocator(), .{}, 40));
-    try std.testing.expectEqualStrings(dot ++ " " ++ dot ++ " " ++ dot, try trail(arena.allocator(), .{ .thinking = 1, .tools = 1, .messages = 1 }, 40));
-    const long = try trail(arena.allocator(), .{ .tools = 100 }, 40);
-    try std.testing.expect(std.mem.startsWith(u8, long, "84 "));
-    try std.testing.expectEqual(@as(usize, 16), std.mem.count(u8, long, dot));
-    try std.testing.expect(tui_text.visibleWidth(long) <= 40);
+    const a = arena.allocator();
+    const d = dot ++ " ";
+    try std.testing.expectEqualStrings("", try trail(a, .{}));
+    try std.testing.expectEqualStrings(d ++ d ++ dot, try trail(a, .{ .thinking = 1, .tools = 1, .messages = 1 }));
+    try std.testing.expectEqualStrings(d ** 8 ++ dot, try trail(a, .{ .tools = 9 }));
+    try std.testing.expectEqualStrings(d ** 9 ++ "10", try trail(a, .{ .tools = 10 }));
+    try std.testing.expectEqualStrings(d ** 6 ++ "10 " ++ d ++ d ++ dot, try trail(a, .{ .tools = 10, .thinking = 3 }));
+    try std.testing.expectEqualStrings(d ** 9 ++ "20", try trail(a, .{ .tools = 20 }));
+    try std.testing.expectEqualStrings("130 " ++ d ** 8 ++ dot, try trail(a, .{ .tools = 139 }));
+    try std.testing.expectEqualStrings(d ** 8 ++ "140 " ++ dot, try trail(a, .{ .tools = 141 }));
 }
 
 test "a secret never reaches the input bar in the clear" {
@@ -364,6 +522,40 @@ test "a long final reply keeps the input bar on screen" {
     try std.testing.expect(std.mem.indexOf(u8, text, prompt ++ "next") != null);
 }
 
+test "a final reply taller than its room scrolls with markers for what is hidden" {
+    var reply: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer reply.deinit();
+    for (0..40) |i| try reply.writer.print("row {d}\n", .{i});
+    const base: Frame = .{ .width = 60, .height = 20, .final_block = reply.written(), .input = "next", .cursor = 4 };
+    const most = try maxScroll(std.testing.allocator, base);
+    try std.testing.expect(most > 0);
+
+    var frame = base;
+    frame.scroll = most;
+    const top = try render(std.testing.allocator, frame);
+    defer std.testing.allocator.free(top);
+    try std.testing.expect(std.mem.indexOf(u8, top, "done") != null);
+    try std.testing.expect(std.mem.indexOf(u8, top, "row 0\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, top, "PgDn") != null);
+    try std.testing.expect(std.mem.indexOf(u8, top, "PgUp") == null);
+
+    frame.scroll = 0;
+    const bottom = try render(std.testing.allocator, frame);
+    defer std.testing.allocator.free(bottom);
+    try std.testing.expect(std.mem.indexOf(u8, bottom, "row 39") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bottom, "PgUp") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bottom, "PgDn") == null);
+
+    frame.scroll = most / 2;
+    const middle = try render(std.testing.allocator, frame);
+    defer std.testing.allocator.free(middle);
+    try std.testing.expect(std.mem.indexOf(u8, middle, "PgUp") != null and std.mem.indexOf(u8, middle, "PgDn") != null);
+    try std.testing.expectEqual(@as(usize, 20), std.mem.count(u8, middle, "\n") + 1);
+    try std.testing.expect(std.mem.indexOf(u8, middle, prompt ++ "next") != null);
+
+    try std.testing.expectEqual(@as(usize, 0), try maxScroll(std.testing.allocator, .{ .width = 60, .height = 20, .final_block = "short" }));
+}
+
 test "the input bar keeps the cursor in view and shows a placeholder when empty" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -376,44 +568,86 @@ test "the input bar keeps the cursor in view and shows a placeholder when empty"
     try std.testing.expect(std.mem.endsWith(u8, std.mem.trimEnd(u8, plain, " "), "mnop"));
 }
 
-test "a changed activity slides up: the old line rises and fades as the new one rises into its place" {
+fn levelsOf(allocator: std.mem.Allocator, row: []const u8) ![]u32 {
+    var levels: std.ArrayList(u32) = .empty;
+    var rest = row;
+    while (std.mem.indexOf(u8, rest, "\x1b[38;2;")) |at| {
+        rest = rest[at + 7 ..];
+        const end = std.mem.indexOfScalar(u8, rest, ';') orelse break;
+        try levels.append(allocator, try std.fmt.parseInt(u32, rest[0..end], 10));
+    }
+    return levels.toOwnedSlice(allocator);
+}
+
+test "a new line opens out of the old one from the centre, letter by letter" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const base: Frame = .{ .width = 80, .height = 24, .running = true, .activity = "Shell Execute  ls", .previous = "thinking" };
+    var frame: Frame = .{ .width = 80, .height = 24, .running = true, .activity = "aaaaaaaaaaaaaaa", .incoming = "bbbbbbbbbbbbbbb" };
 
-    var frame = base;
-    frame.since_change = 2;
-    const rising = try activitySlot(a, frame, 60);
-    try std.testing.expect(std.mem.indexOf(u8, rising[0], "thinking") != null);
-    try std.testing.expectEqualStrings("", rising[1]);
-    try std.testing.expect(std.mem.indexOf(u8, rising[2], "Shell Execute") != null);
+    const start = try plainRows(a, (try activitySlot(a, frame, 60))[1]);
+    try std.testing.expectEqualStrings("aaaaaaaaaaaaaaa", std.mem.trim(u8, start, " "));
 
-    frame.since_change = 5;
-    const later = try activitySlot(a, frame, 60);
-    try std.testing.expect(levelOf(later[0]) < levelOf(rising[0]));
-    try std.testing.expect(levelOf(later[2]) > levelOf(rising[2]));
+    frame.rise = 0.5;
+    const slot = try activitySlot(a, frame, 60);
+    try std.testing.expectEqualStrings("", slot[0]);
+    try std.testing.expectEqualStrings("", slot[2]);
+    const middle = std.mem.trim(u8, try plainRows(a, slot[1]), " ");
+    try std.testing.expectEqual(@as(u8, 'a'), middle[0]);
+    try std.testing.expectEqual(@as(u8, 'a'), middle[middle.len - 1]);
+    try std.testing.expect(std.mem.indexOfScalar(u8, middle, 'b') != null);
+    try std.testing.expectEqual(@as(u8, 'b'), middle[middle.len / 2]);
 
-    frame.since_change = slide_ticks / 2;
-    const landed = try activitySlot(a, frame, 60);
-    try std.testing.expectEqualStrings("", landed[0]);
-    try std.testing.expect(std.mem.indexOf(u8, landed[1], "Shell Execute") != null);
-    try std.testing.expectEqualStrings("", landed[2]);
-
-    frame.since_change = slide_ticks;
-    const settled = try activitySlot(a, frame, 60);
-    try std.testing.expect(std.mem.indexOf(u8, settled[1], "thinking") == null);
-    try std.testing.expectEqual(levelOf(landed[1]), levelOf(settled[1]));
+    frame.rise = 1;
+    const landed = try plainRows(a, (try activitySlot(a, frame, 60))[1]);
+    try std.testing.expectEqualStrings("bbbbbbbbbbbbbbb", std.mem.trim(u8, landed, " "));
 }
 
-fn levelOf(row: []const u8) u32 {
-    const at = std.mem.indexOf(u8, row, "\x1b[38;2;") orelse return 0;
-    const rest = row[at + 7 ..];
-    const end = std.mem.indexOfScalar(u8, rest, ';') orelse return 0;
-    return std.fmt.parseInt(u32, rest[0..end], 10) catch 0;
+test "every letter swaps once at full grey, the swap travelling from the centre outward" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var last_swap: ?u64 = null;
+    for ([_]usize{ 17, 14, 11, 10 }) |col| {
+        var tick: u64 = 0;
+        while (!switched(@as(f32, @floatFromInt(tick)) / @as(f32, @floatFromInt(change_ticks)), col, 10, 25)) tick += 1;
+        if (last_swap) |earlier| try std.testing.expect(tick > earlier);
+        try std.testing.expect(tick < change_ticks);
+        last_swap = tick;
+    }
+    var frame: Frame = .{ .width = 80, .height = 24, .running = true, .activity = "aaaaaaaaaaaaaaa", .incoming = "bbbbbbbbbbbbbbb" };
+    for ([_]f32{ 0, 0.3, 0.6, 0.9 }) |at| {
+        frame.rise = at;
+        for (try levelsOf(a, (try activitySlot(a, frame, 60))[1])) |level| try std.testing.expectEqual(@as(u32, soft_level), level);
+    }
 }
 
-test "the activity line shows how long it has been stuck only after ten seconds" {
+test "the light keeps opening from the centre to both ends while a line rests" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const soft: u32 = soft_level;
+    var frame: Frame = .{ .width = 80, .height = 24, .running = true, .activity = "Shell Execute  ls" };
+
+    for ([_]f32{ 0, 0.999 }) |at| {
+        frame.light = at;
+        for (try levelsOf(a, (try activitySlot(a, frame, 60))[1])) |level| try std.testing.expect(level <= soft + 2);
+    }
+    frame.light = 0.22;
+    const early = try levelsOf(a, (try activitySlot(a, frame, 60))[1]);
+    try std.testing.expect(early[early.len / 2] > early[0]);
+    frame.light = 0.8;
+    const late = try levelsOf(a, (try activitySlot(a, frame, 60))[1]);
+    try std.testing.expect(late[0] > soft);
+    try std.testing.expect(late[0] > late[late.len / 2]);
+
+    frame.incoming = "Read  a.zig";
+    frame.rise = 0.1;
+    const fading = try levelsOf(a, (try activitySlot(a, frame, 60))[1]);
+    try std.testing.expect(fading[0] > fading[fading.len / 2]);
+}
+
+test "the activity line shows only the title until a tool call passes ten seconds, then both" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();

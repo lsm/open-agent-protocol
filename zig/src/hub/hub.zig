@@ -566,6 +566,24 @@ pub const Hub = struct {
             },
             else => |failure| return failure,
         };
+        return self.admitted(entry, admission);
+    }
+
+    pub fn compactReporting(self: *Hub, arena: std.mem.Allocator, session_id: []const u8, request: *const oap_types.SessionCompactRequest, envelope_id: []const u8, refusal: *contract.Refusal) Failure!oap_types.MessageSubmitResponse {
+        const entry = self.findSession(session_id) orelse return error.UnknownSession;
+        if (!std.mem.eql(u8, request.session_id, session_id)) return error.ScopeMismatch;
+        const compactor = entry.session.vtable.compact orelse return refusal.unsupported(contract.feature_session_compact, contract.reason_unadvertised);
+        const admission = compactor(entry.session.ptr, arena, request, envelope_id, refusal) catch |err| switch (err) {
+            error.SessionClosed => {
+                self.releaseSession(entry);
+                return error.UnknownSession;
+            },
+            else => |failure| return failure,
+        };
+        return self.admitted(entry, admission);
+    }
+
+    fn admitted(self: *Hub, entry: *Entry, admission: oap_types.MessageSubmitResponse) Failure!oap_types.MessageSubmitResponse {
         if (admission.run_id) |run_id| {
             self.noteRun(entry, run_id, admission.admission == .started) catch |err| {
                 self.endSubscriptions(entry, .stream_failed);

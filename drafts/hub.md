@@ -408,7 +408,7 @@ error. That is stated because the four reasons are the whole set.
 | `GET /sessions/{id}/state` | `state` | `session.state.response` | `unknown_session` 404, `state_failed` 500, `internal` 500 |
 | `GET /sessions/{id}/tools` | `tools` | `action.tools.list.response` | see [tools](#tools) |
 | `GET /sessions/{id}/models` | `models` | `models.response` | see [models](#models) |
-| `POST /sessions/{id}/submit` | `submit` | `session.message.submit.response` | see [submit](#submit) |
+| `POST /sessions/{id}/submit` | `submit` | `session.message.submit.response`, or `session.compact.response` for a compaction | see [submit](#submit) |
 | `POST /sessions/{id}/resolve` | `resolve` | the matching resolve response | see [resolve](#resolve) |
 | `POST /sessions/{id}/cancel` | `cancel` | `run.cancel.response` | see [cancel](#cancel) |
 | `POST /sessions/{id}/close` | `close` | `204 No Content`, no body | `unknown_session` 404, `run_active` 409, `session_closed` 409, `request_cancelled` 400, `internal` 500 |
@@ -1352,8 +1352,16 @@ nowhere to put a reason (D12).
 ### `submit`
 
 - **params:** `session_id` and `request`, and nothing else.
-- **answer:** a `session.message.submit.response` envelope carrying the
-  admission, with `in_reply_to` set to the request envelope's `id`.
+- **answer:** the response matching the request's type, carrying the
+  admission, with `in_reply_to` set to the request envelope's `id` — a
+  `session.message.submit.response` for a `session.message.submit.request`, and
+  a `session.compact.response` for a `session.compact.request`
+  ([Decision 0044](../decisions/0044-compaction.md)). Both are accepted on the
+  same op, and the request's type selects the path, as on `resolve`: a
+  compaction is admitted as a run under submit's rules, so it shares submit's
+  errors, its ordering behind the response, and its rollback when the
+  acknowledgement cannot be framed. A session whose adapter cannot compact
+  answers `unsupported_feature` naming `session.compact`.
 - **errors:** `unknown_session` (404), `invalid_request`, `malformed_json`,
   `schema_invalid`, `type_mismatch`, `invalid_payload`, `scope_mismatch` (400,
   a payload naming another session), `run_active` (409), `invalid_submission`
@@ -1364,7 +1372,13 @@ nowhere to put a reason (D12).
   `TestQueuedSubmissionRoundTrips`, `TestQueuedSubmissionOverStdio`,
   `TestSubmitRollsBackUnframableAcknowledgement`,
   `TestSubmitRollbackWaitsForSettlement`, `TestSubmitErrorStreamStillDrains`,
-  `TestRejectedSubmitKeepsSubscriptions`, `TestRequestBudgetMatchesHTTP`.
+  `TestRejectedSubmitKeepsSubscriptions`, `TestRequestBudgetMatchesHTTP`; the
+  compaction path by `TestCompactionIsAdmittedOnTheSubmitRouteAndItsRunReachesSubscribers`,
+  `TestACompactionTheAdapterRefusesAnswersWithTheSubmitRoutesRefusal`,
+  `TestASessionThatCannotCompactRefusesTheRequestNamingTheFeature`,
+  `TestCompactionIsAdmittedOnTheSubmitOpAndItsRunReachesSubscribers` and
+  `TestACompactionTheAdapterRefusesAnswersWithTheSubmitOpsRefusal`, and in
+  Zig's HTTP hub by the daemon's two compaction tests.
 
 ### `resolve`
 

@@ -5130,8 +5130,12 @@ settles `compacted` unless the request asked to `continue`, in which case it
 takes the scripted turn. Both move to `reference-memory-v14`, and the memory
 parity scenario pins the two trees to the same trace. `goap serve agent` and
 `oapx serve agent` route the request; the hub gains `Session.Compact` in Go.
+The third slice carries it over the hub: `submit` accepts a
+`session.compact.request` beside a `session.message.submit.request` and answers
+`session.compact.response`, on both Go transports and on Zig's HTTP hub, whose
+stdio side serves no `submit` yet.
 
-Another slice has both reference adapters compact on their own. Each takes
+The fourth slice has both reference adapters compact on their own. Each takes
 `session.compaction.policy` at `emulated` at open — `auto` is 80% of the
 reference model's 8192-token window, `share` a percentage of it, `tokens` a
 count — and `off`, under which it never compacts on its own. It
@@ -5144,8 +5148,6 @@ the memory parity scenario gains the case.
 
 Still open, each for a later slice:
 
-- the hub's HTTP and stdio transports carry no compaction operation yet, so a
-  hub client cannot ask for one;
 - `overflow` is exercised by fixtures only: the reference adapters have no
   provider to refuse a history as too long;
 - step 3, native evidence, is pi's, as the decision names.

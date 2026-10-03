@@ -258,11 +258,15 @@ func compactionThreshold(policy *protocol.CompactionPolicy) (uint64, error) {
 	case protocol.CompactionAuto:
 		return referenceWindow * 80 / 100, nil
 	case protocol.CompactionShare:
-		return uint64(referenceWindow * policy.SharePercent / 100), nil
+		if policy.SharePercent >= 1 && policy.SharePercent <= 100 {
+			return uint64(referenceWindow * policy.SharePercent / 100), nil
+		}
 	case protocol.CompactionTokens:
-		return uint64(policy.Tokens), nil
+		if policy.Tokens >= 1 {
+			return uint64(policy.Tokens), nil
+		}
 	}
-	return 0, &UnsupportedControlError{Feature: protocol.FeatureCompactionPolicy, Reason: ControlUnsatisfiable, Field: "compaction_policy", Detail: "the policy names no kind the reference adapter knows"}
+	return 0, &UnsupportedControlError{Feature: protocol.FeatureCompactionPolicy, Reason: ControlUnsatisfiable, Field: "compaction_policy", Detail: "the reference adapter takes auto, off, a share from 1 to 100 or a positive token count"}
 }
 
 func historyTokens(messages []protocol.Message) uint64 {

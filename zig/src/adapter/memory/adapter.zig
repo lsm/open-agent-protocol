@@ -211,7 +211,7 @@ fn compactionThreshold(arena: std.mem.Allocator, raw: ?[]const u8, refusal: *con
 
 fn refuseUnknownPolicy(refusal: *contract.Refusal) contract.Failure {
     const failure = refusal.unsupportedField(contract.feature_compaction_policy, contract.reason_unsatisfiable, "compaction_policy");
-    refusal.detail = "the policy names no kind the reference adapter knows";
+    refusal.detail = "the reference adapter takes auto, off, a share from 1 to 100 or a positive token count";
     return failure;
 }
 
@@ -2458,4 +2458,23 @@ test "an off policy opens and never compacts on its own" {
     defer probe.deinit();
     _ = try probe.submitText("abcd" ** 100);
     try testing.expectEqual(@as(usize, 0), try probe.compactionsSeen());
+}
+
+test "a share or token count out of range is refused at open" {
+    for ([_][]const u8{
+        "{\"kind\":\"share\",\"share_percent\":0}",
+        "{\"kind\":\"share\",\"share_percent\":101}",
+        "{\"kind\":\"tokens\",\"tokens\":0}",
+        "{\"kind\":\"tokens\",\"tokens\":-5}",
+        "{\"kind\":\"sometimes\"}",
+    }) |policy| {
+        var adapter = Adapter.init(testing.allocator);
+        defer adapter.deinit();
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        var refusal = contract.Refusal{};
+        try testing.expectError(error.UnsupportedFeature, adapter.adapter().open(arena.allocator(), .{ .session_id = "s1", .participant = "user", .compaction_policy_json = policy }, &refusal));
+        try testing.expectEqualStrings(contract.feature_compaction_policy, refusal.feature);
+        try testing.expectEqualStrings("compaction_policy", refusal.field);
+    }
 }

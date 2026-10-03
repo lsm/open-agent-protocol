@@ -431,3 +431,19 @@ func TestMemoryDefersAThresholdCrossedAtSettlementToTheNextRunAndBothRunsValidat
 	}
 	requireValidTrace(t, testDescriptor(t), first, second)
 }
+
+func TestMemoryRefusesAShareOrTokenCountOutOfRange(t *testing.T) {
+	for _, policy := range []protocol.CompactionPolicy{
+		{Kind: protocol.CompactionShare, SharePercent: 0},
+		{Kind: protocol.CompactionShare, SharePercent: 101},
+		{Kind: protocol.CompactionTokens, Tokens: 0},
+		{Kind: protocol.CompactionTokens, Tokens: -5},
+		{Kind: "sometimes"},
+	} {
+		_, err := openWithPolicy(t, &policy)
+		var refusal *adapter.UnsupportedControlError
+		if !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureCompactionPolicy || refusal.Field != "compaction_policy" || refusal.Reason != adapter.ControlUnsatisfiable {
+			t.Fatalf("open with %+v answered %v, want an unsatisfiable compaction policy", policy, err)
+		}
+	}
+}
