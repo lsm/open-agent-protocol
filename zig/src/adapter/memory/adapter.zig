@@ -6,7 +6,7 @@ const json_encode = @import("json_encode");
 const jsonschema = @import("jsonschema");
 
 pub const endpoint_id = "reference.memory";
-pub const capability_revision = "reference-memory-v14";
+pub const capability_revision = "reference-memory-v15";
 pub const model_primary = "reference-model-a";
 pub const model_secondary = "reference-model-b";
 pub const journal_capacity = 64;
@@ -49,7 +49,7 @@ const features = [_]contract.Feature{
     .{ .key = contract.feature_models_list, .level = .native, .reason = "the reference adapter serves its fixed catalog, which is exactly the set its model gate admits" },
     .{ .key = "protocol.initialize", .level = .native },
     .{ .key = "run.cancel", .level = .emulated, .reason = "run-target API is implemented over a one-active-run session" },
-    .{ .key = "run.compaction", .level = .emulated, .reason = "the reference adapter publishes the compactions it is asked for; it keeps no history long enough to compact on its own" },
+    .{ .key = "run.compaction", .level = .emulated, .reason = "the reference adapter publishes the compactions it is asked for, and compacts on its own at the start of a run once its estimate of the history, a token per four bytes of text, reaches the session's threshold" },
     .{ .key = "run.instructions", .level = .emulated, .reason = "instructions are prepended to the scripted text so their effect is observable" },
     .{ .key = "run.model_selection", .level = .emulated, .scope = "run", .reason = "the reference adapter runs no model; it echoes a selection from a fixed catalog for one run" },
     .{ .key = "run.reconciliation", .level = .native },
@@ -65,13 +65,14 @@ const features = [_]contract.Feature{
     },
     .{ .key = "run.tool_selection", .level = .emulated, .scope = "run", .reason = "the policy filters the scripted tool and is not retained past the run" },
     .{ .key = contract.feature_session_compact, .level = .emulated, .reason = "a compaction run replaces the scripted history with a fixed summary that names the focus, and has no model to write it" },
+    .{ .key = contract.feature_compaction_policy, .level = .emulated, .reason = "auto compacts at 80% of the reference model's window, share and tokens set the threshold, and off never compacts on its own", .modes = &.{contract.mode_session_open} },
     .{ .key = "session.message.delivery.auto", .level = .native },
     .{ .key = "session.message.delivery.queue", .level = .emulated, .reason = "a busy session reserves one second run and promotes it when the started run settles" },
     .{ .key = "session.message.delivery.steer", .level = .emulated, .reason = "guidance waits on the target run and is applied at its input gate, the scripted turn boundary" },
     .{ .key = contract.feature_submit, .level = .native },
     .{ .key = contract.feature_model_switch, .level = .emulated, .reason = "the reference adapter changes the session default within its fixed catalog" },
     .{ .key = "session.open", .level = .native },
-    .{ .key = contract.feature_open_reopen, .level = .emulated, .reason = "a closed session's model is kept in process memory, so a reopen in the same process restores it and one after a restart is refused" },
+    .{ .key = contract.feature_open_reopen, .level = .emulated, .reason = "a closed session's model and compaction policy are kept in process memory, so a reopen in the same process restores them and one after a restart is refused" },
     .{ .key = contract.feature_open_subscribe, .level = .native, .reason = "the journal exists from the open, so a subscription registered there misses nothing" },
     .{ .key = "session.state", .level = .native },
     .{ .key = "user_input", .level = .emulated, .reason = "the reference adapter exposes an interactive scripted gate" },
@@ -115,35 +116,50 @@ pub const Adapter = struct {
     allocator: std.mem.Allocator,
     ids: u64 = 0,
     now_ms: *const fn () i64 = wallClock,
-    closed: std.StringHashMapUnmanaged([]const u8) = .empty,
+    closed: std.StringHashMapUnmanaged(Kept) = .empty,
+
+    const Kept = struct {
+        model: []const u8,
+        policy: []u8,
+    };
 
     pub fn init(allocator: std.mem.Allocator) Adapter {
         return .{ .allocator = allocator };
     }
 
     pub fn deinit(self: *Adapter) void {
-        var kept = self.closed.keyIterator();
-        while (kept.next()) |id| self.allocator.free(id.*);
+        var kept = self.closed.iterator();
+        while (kept.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            self.allocator.free(entry.value_ptr.policy);
+        }
         self.closed.deinit(self.allocator);
         self.* = undefined;
     }
 
-    fn keepClosed(self: *Adapter, id: []const u8, model: []const u8) !void {
+    fn keepClosed(self: *Adapter, id: []const u8, model: []const u8, policy: []const u8) !void {
+        const owned_policy = try self.allocator.dupe(u8, policy);
+        errdefer self.allocator.free(owned_policy);
         if (self.closed.getPtr(id)) |held| {
-            held.* = model;
+            self.allocator.free(held.policy);
+            held.* = .{ .model = model, .policy = owned_policy };
             return;
         }
         const owned = try self.allocator.dupe(u8, id);
         errdefer self.allocator.free(owned);
-        try self.closed.put(self.allocator, owned, model);
+        try self.closed.put(self.allocator, owned, .{ .model = model, .policy = owned_policy });
     }
 
-    fn claim(self: *Adapter, arena: std.mem.Allocator, id: []const u8, reopen: bool, refusal: *contract.Refusal) contract.Failure!?[]const u8 {
+    fn claim(self: *Adapter, arena: std.mem.Allocator, keep: std.mem.Allocator, id: []const u8, reopen: bool, refusal: *contract.Refusal) contract.Failure!?Kept {
         const removed = self.closed.fetchRemove(id);
-        if (removed) |entry| self.allocator.free(entry.key);
+        var restored: ?Kept = null;
+        if (removed) |entry| {
+            self.allocator.free(entry.key);
+            defer self.allocator.free(entry.value.policy);
+            if (reopen) restored = .{ .model = entry.value.model, .policy = try keep.dupe(u8, entry.value.policy) };
+        }
         if (!reopen) return null;
-        const entry = removed orelse return refusal.fail(error.UnknownSession, try std.fmt.allocPrint(arena, "no session \"{s}\"", .{id}));
-        return entry.value;
+        return restored orelse refusal.fail(error.UnknownSession, try std.fmt.allocPrint(arena, "no session \"{s}\"", .{id}));
     }
 
     pub fn adapter(self: *Adapter) contract.Adapter {
@@ -168,6 +184,63 @@ pub const Adapter = struct {
         return std.fmt.allocPrint(allocator, "{s}-{d}", .{ kind, self.ids });
     }
 };
+
+const reference_window: u64 = 8192;
+
+fn textTokens(bytes: usize) u64 {
+    return (@as(u64, bytes) + 3) / 4;
+}
+
+fn historyTokens(messages: []const oap_types.Message) u64 {
+    var bytes: usize = 0;
+    for (messages) |message| switch (message.content) {
+        .text => |text| bytes += text.len,
+        .parts => |parts| for (parts) |part| switch (part) {
+            .text => |text| bytes += text.len,
+            else => {},
+        },
+    };
+    return textTokens(bytes);
+}
+
+fn compactionThreshold(arena: std.mem.Allocator, raw: ?[]const u8, refusal: *contract.Refusal) contract.Failure!u64 {
+    const text = raw orelse return reference_window * 80 / 100;
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{}) catch return refuseUnknownPolicy(refusal);
+    if (parsed != .object) return refuseUnknownPolicy(refusal);
+    const kind = parsed.object.get("kind") orelse return refuseUnknownPolicy(refusal);
+    if (kind != .string) return refuseUnknownPolicy(refusal);
+    if (std.mem.eql(u8, kind.string, "auto")) return reference_window * 80 / 100;
+    if (std.mem.eql(u8, kind.string, "share")) {
+        const share = parsed.object.get("share_percent") orelse return refuseUnknownPolicy(refusal);
+        if (share != .integer or share.integer < 1 or share.integer > 100) return refuseUnknownPolicy(refusal);
+        return reference_window * @as(u64, @intCast(share.integer)) / 100;
+    }
+    if (std.mem.eql(u8, kind.string, "tokens")) {
+        const tokens = parsed.object.get("tokens") orelse return refuseUnknownPolicy(refusal);
+        if (tokens != .integer or tokens.integer < 1) return refuseUnknownPolicy(refusal);
+        return @intCast(tokens.integer);
+    }
+    if (std.mem.eql(u8, kind.string, "off")) return std.math.maxInt(u64);
+    return refuseUnknownPolicy(refusal);
+}
+
+fn effectivePolicy(keep: std.mem.Allocator, arena: std.mem.Allocator, raw: ?[]const u8) contract.Failure![]const u8 {
+    const text = raw orelse return "{\"kind\":\"auto\"}";
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.InvalidSubmission,
+    };
+    const kind = parsed.object.get("kind").?.string;
+    if (std.mem.eql(u8, kind, "share")) return std.fmt.allocPrint(keep, "{{\"kind\":\"share\",\"share_percent\":{d}}}", .{parsed.object.get("share_percent").?.integer});
+    if (std.mem.eql(u8, kind, "tokens")) return std.fmt.allocPrint(keep, "{{\"kind\":\"tokens\",\"tokens\":{d}}}", .{parsed.object.get("tokens").?.integer});
+    return std.fmt.allocPrint(keep, "{{\"kind\":\"{s}\"}}", .{kind});
+}
+
+fn refuseUnknownPolicy(refusal: *contract.Refusal) contract.Failure {
+    const failure = refusal.unsupportedField(contract.feature_compaction_policy, contract.reason_unsatisfiable, "compaction_policy");
+    refusal.detail = "the reference adapter takes auto, off, a share from 1 to 100 or a positive token count";
+    return failure;
+}
 
 const Stage = enum { permission, call, input, terminal };
 
@@ -220,6 +293,7 @@ const Run = struct {
     compaction: bool = false,
     compact_continue: bool = false,
     compact_focus: []const u8 = "",
+    input: u64 = 0,
 
     fn live(self: *const Run) bool {
         return !self.terminal;
@@ -262,6 +336,9 @@ pub const Session = struct {
     settled: std.ArrayList(oap_types.RunPosition) = .empty,
     journal: std.ArrayList(Journaled) = .empty,
     outbox: std.ArrayList(Journaled) = .empty,
+    threshold: u64 = 0,
+    history: u64 = 0,
+    policy_json: []const u8 = "",
 
     fn create(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
         const gpa = owner.allocator;
@@ -273,10 +350,16 @@ pub const Session = struct {
         self.participant = try keep.dupe(u8, request.participant);
         self.attached = try admitToolSources(keep, arena, request.tool_sources_json, refusal);
         self.provided = try self.admitProvidedTools(arena, request.tools_json, refusal);
+        self.threshold = try compactionThreshold(arena, request.compaction_policy_json, refusal);
+        self.policy_json = try effectivePolicy(keep, arena, request.compaction_policy_json);
         self.id = if (request.session_id.len > 0) try keep.dupe(u8, request.session_id) else try owner.nextID(keep, "session");
-        if (try owner.claim(arena, self.id, request.reopen, refusal)) |model| {
-            self.current_model = model;
+        if (try owner.claim(arena, keep, self.id, request.reopen, refusal)) |kept| {
+            self.current_model = kept.model;
             self.recovered = true;
+            if (request.compaction_policy_json == null) {
+                self.threshold = try compactionThreshold(arena, kept.policy, refusal);
+                self.policy_json = kept.policy;
+            }
         }
         return self;
     }
@@ -364,6 +447,7 @@ pub const Session = struct {
             .status = .idle,
             .active_runs = entries.items,
             .current_model_id = if (self.current_model.len > 0) self.current_model else null,
+            .compaction_policy_json = self.policy_json,
             .transcript_cursor = if (self.transcript_cursor > 0) try std.fmt.allocPrint(arena, "{d}", .{self.transcript_cursor}) else null,
             .updated_at_ms = self.updated_at_ms,
             .sources = try self.sessionSources(arena),
@@ -449,6 +533,7 @@ pub const Session = struct {
             .calls_tool = controls.calls_tool,
             .queued_admission = reservation,
             .status = if (reservation) .queued else .running,
+            .input = historyTokens(request.messages),
         };
         if (!controls.calls_tool) {
             run.stage = .input;
@@ -558,12 +643,13 @@ pub const Session = struct {
         return admission;
     }
 
-    fn emitCompaction(self: *Session, a: std.mem.Allocator, run: *Run) contract.Failure!bool {
+    fn emitCompaction(self: *Session, a: std.mem.Allocator, run: *Run, reason: []const u8) contract.Failure!bool {
         const compaction_id = try self.owner.nextID(a, "compaction");
         var started = Payload.init(a);
         try started.run(self, run);
         try started.put("compaction_id", .{ .string = compaction_id });
-        try started.put("reason", .{ .string = "requested" });
+        try started.put("reason", .{ .string = reason });
+        try started.put("history_tokens", .{ .integer = @intCast(self.history) });
         try self.emit(run, "run.compaction.started", started.value(), false);
 
         const text = if (run.compact_focus.len > 0)
@@ -579,8 +665,11 @@ pub const Session = struct {
         try ended.put("compaction_id", .{ .string = compaction_id });
         try ended.put("outcome", .{ .string = "completed" });
         try ended.put("summary", summary.value());
+        const after = textTokens(text.len);
+        try ended.put("history_tokens", .{ .integer = @intCast(after) });
         try self.emit(run, "run.compaction.ended", ended.value(), false);
-        if (run.compact_continue) return false;
+        self.history = after;
+        if (!std.mem.eql(u8, reason, "requested") or run.compact_continue) return false;
 
         var completed = Payload.init(a);
         try completed.run(self, run);
@@ -777,7 +866,12 @@ pub const Session = struct {
         if (run.model.len > 0) try started.put("model_id", .{ .string = run.model });
         try started.put("started_at_ms", .{ .integer = self.owner.now_ms() });
         try self.emit(run, "run.started", started.value(), false);
-        if (run.compaction and try self.emitCompaction(a, run)) return;
+        if (run.compaction) {
+            if (try self.emitCompaction(a, run, "requested")) return;
+        } else {
+            self.history += run.input;
+            if (self.history >= self.threshold) _ = try self.emitCompaction(a, run, "threshold");
+        }
 
         const lead = if (run.calls_tool) "I will use the scripted tool." else "I will answer without the scripted tool.";
         const text = if (run.instructions) |instructions| if (instructions.len == 0) lead else try std.fmt.allocPrint(a, "{s} {s}", .{ instructions, lead }) else lead;
@@ -985,6 +1079,8 @@ pub const Session = struct {
         try completed.put("stop_reason", .{ .string = "end_turn" });
         if (run.model.len > 0) try completed.put("model_id", .{ .string = run.model });
         if (run.structured) try completed.put("result", try parseValue(a, fixed_result));
+        if (run.terminal) return;
+        self.history += textTokens(final_text.len);
         try self.emit(run, "run.completed", completed.value(), true);
     }
 
@@ -1257,7 +1353,7 @@ pub const Session = struct {
                 if (run.live()) return error.RunActive;
             }
         }
-        if (!force) try self.owner.keepClosed(self.id, self.current_model);
+        if (!force) try self.owner.keepClosed(self.id, self.current_model, self.policy_json);
         self.destroy();
     }
 
@@ -1629,12 +1725,20 @@ const Probe = struct {
     }
 
     fn initWith(self: *Probe, tools_json: ?[]const u8, sources_json: ?[]const u8) !void {
+        return self.initOpening(.{ .session_id = "s1", .participant = "user", .tools_json = tools_json, .tool_sources_json = sources_json });
+    }
+
+    fn initPolicy(self: *Probe, policy_json: ?[]const u8) !void {
+        return self.initOpening(.{ .session_id = "s1", .participant = "user", .compaction_policy_json = policy_json });
+    }
+
+    fn initOpening(self: *Probe, request: contract.OpenRequest) !void {
         self.adapter = Adapter.init(testing.allocator);
         self.adapter.now_ms = fixedClock;
         self.arena = std.heap.ArenaAllocator.init(testing.allocator);
         self.seen = .empty;
         var refusal = contract.Refusal{};
-        self.session = self.adapter.adapter().open(self.arena.allocator(), .{ .session_id = "s1", .participant = "user", .tools_json = tools_json, .tool_sources_json = sources_json }, &refusal) catch |err| {
+        self.session = self.adapter.adapter().open(self.arena.allocator(), request, &refusal) catch |err| {
             self.arena.deinit();
             return err;
         };
@@ -1670,6 +1774,21 @@ const Probe = struct {
 
     fn submit(self: *Probe) !oap_types.MessageSubmitResponse {
         return self.submitWith(.auto, .{ .session_id = "", .messages = &.{}, .delivery = .auto });
+    }
+
+    fn submitText(self: *Probe, text: []const u8) contract.Failure!oap_types.MessageSubmitResponse {
+        var request = oap_types.MessageSubmitRequest{ .session_id = "s1", .delivery = .auto, .messages = &.{} };
+        request.messages = try self.a().dupe(oap_types.Message, &.{.{ .role = .user, .content = .{ .text = text } }});
+        var refusal = contract.Refusal{};
+        return self.session.submit(self.a(), &request, "", &refusal);
+    }
+
+    fn compactionsSeen(self: *Probe) !usize {
+        var count: usize = 0;
+        for (try self.types()) |kind| {
+            if (std.mem.eql(u8, kind, "run.compaction.started")) count += 1;
+        }
+        return count;
     }
 
     fn compact(self: *Probe, request: oap_types.SessionCompactRequest, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
@@ -2080,7 +2199,7 @@ test "an already_resolved refusal names its settlement only when there is one" {
 }
 
 test "the reference descriptor advertises steer advice at the emulated level" {
-    try testing.expectEqualStrings("reference-memory-v14", capability_revision);
+    try testing.expectEqualStrings("reference-memory-v15", capability_revision);
     try testing.expectEqual(oap_types.SupportLevel.emulated, descriptor.level("session.message.delivery.steer"));
 }
 
@@ -2326,4 +2445,118 @@ test "a closed session reopens on the model it closed on, and only once" {
     try testing.expectError(error.UnknownSession, adapter.adapter().open(arena.allocator(), .{ .session_id = "kept", .participant = "user", .reopen = true }, &refusal));
     try testing.expectEqualStrings("no session \"kept\"", refusal.message);
     try testing.expectError(error.UnknownSession, adapter.adapter().open(arena.allocator(), .{ .session_id = "never", .participant = "user", .reopen = true }, &refusal));
+}
+
+test "a run whose history reaches the threshold compacts first and carries on with its turn" {
+    var probe: Probe = undefined;
+    try probe.initPolicy("{\"kind\":\"tokens\",\"tokens\":1}");
+    defer probe.deinit();
+    _ = try probe.submitText("go");
+    const kinds = try probe.types();
+    try expectTypes(&.{ "run.started", "run.compaction.started", "run.compaction.ended", "content.delta" }, kinds[0..4]);
+    for (kinds) |kind| try testing.expect(!std.mem.eql(u8, kind, "run.completed"));
+    const started = (try probe.eventOfType("run.compaction.started")).object.get("payload").?.object;
+    try testing.expectEqualStrings("threshold", started.get("reason").?.string);
+    try testing.expectEqual(@as(i64, 1), started.get("history_tokens").?.integer);
+    const ended = (try probe.eventOfType("run.compaction.ended")).object.get("payload").?.object;
+    try testing.expectEqualStrings("completed", ended.get("outcome").?.string);
+    try testing.expectEqual(@as(i64, 8), ended.get("history_tokens").?.integer);
+}
+
+test "a run below its threshold is not compacted" {
+    var probe: Probe = undefined;
+    try probe.initPolicy("{\"kind\":\"tokens\",\"tokens\":2}");
+    defer probe.deinit();
+    _ = try probe.submitText("go");
+    try testing.expectEqual(@as(usize, 0), try probe.compactionsSeen());
+}
+
+test "a share policy sets the threshold as a share of the reference window" {
+    const long = "abcd" ** 100;
+    for ([_]struct { policy: ?[]const u8, compactions: usize }{
+        .{ .policy = "{\"kind\":\"share\",\"share_percent\":1}", .compactions = 1 },
+        .{ .policy = "{\"kind\":\"share\",\"share_percent\":50}", .compactions = 0 },
+        .{ .policy = null, .compactions = 0 },
+    }) |case| {
+        var probe: Probe = undefined;
+        try probe.initPolicy(case.policy);
+        defer probe.deinit();
+        _ = try probe.submitText(long);
+        try testing.expectEqual(case.compactions, try probe.compactionsSeen());
+    }
+}
+
+test "an off policy opens and never compacts on its own" {
+    var probe: Probe = undefined;
+    try probe.initPolicy("{\"kind\":\"off\"}");
+    defer probe.deinit();
+    _ = try probe.submitText("abcd" ** 100);
+    try testing.expectEqual(@as(usize, 0), try probe.compactionsSeen());
+}
+
+test "a share or token count out of range is refused at open" {
+    for ([_][]const u8{
+        "{\"kind\":\"share\",\"share_percent\":0}",
+        "{\"kind\":\"share\",\"share_percent\":101}",
+        "{\"kind\":\"tokens\",\"tokens\":0}",
+        "{\"kind\":\"tokens\",\"tokens\":-5}",
+        "{\"kind\":\"sometimes\"}",
+    }) |policy| {
+        var adapter = Adapter.init(testing.allocator);
+        defer adapter.deinit();
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        var refusal = contract.Refusal{};
+        try testing.expectError(error.UnsupportedFeature, adapter.adapter().open(arena.allocator(), .{ .session_id = "s1", .participant = "user", .compaction_policy_json = policy }, &refusal));
+        try testing.expectEqualStrings(contract.feature_compaction_policy, refusal.feature);
+        try testing.expectEqualStrings("compaction_policy", refusal.field);
+    }
+}
+
+test "a queued run promoted by the settlement that crossed the threshold compacts first" {
+    var probe: Probe = undefined;
+    try probe.initPolicy("{\"kind\":\"tokens\",\"tokens\":9}");
+    defer probe.deinit();
+    _ = try probe.submitText("go");
+    const queued = try probe.submitWith(.queue, .{ .session_id = "", .messages = &.{}, .delivery = .queue });
+    try probe.approve("run-1", "permission-2", "approve");
+    try probe.answer("run-1", "input-3");
+    try testing.expectEqual(@as(usize, 1), try probe.compactionsSeen());
+    const started = try probe.eventOfType("run.compaction.started");
+    try testing.expectEqualStrings(queued.run_id.?, started.object.get("run_id").?.string);
+    try testing.expectEqual(@as(i64, 9), started.object.get("payload").?.object.get("history_tokens").?.integer);
+}
+
+test "the state reports the policy the session runs under" {
+    for ([_]struct { asked: ?[]const u8, reported: []const u8 }{
+        .{ .asked = null, .reported = "{\"kind\":\"auto\"}" },
+        .{ .asked = "{\"kind\":\"off\"}", .reported = "{\"kind\":\"off\"}" },
+        .{ .asked = "{ \"share_percent\": 50, \"kind\": \"share\" }", .reported = "{\"kind\":\"share\",\"share_percent\":50}" },
+        .{ .asked = "{\"kind\":\"tokens\",\"tokens\":9}", .reported = "{\"kind\":\"tokens\",\"tokens\":9}" },
+    }) |case| {
+        var probe: Probe = undefined;
+        try probe.initPolicy(case.asked);
+        defer probe.deinit();
+        var refusal = contract.Refusal{};
+        const reported = try probe.session.state(probe.a(), &refusal);
+        try testing.expectEqualStrings(case.reported, reported.compaction_policy_json.?);
+    }
+}
+
+test "a reopen keeps the compaction policy the session closed under unless it names a new one" {
+    var adapter = Adapter.init(testing.allocator);
+    defer adapter.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var refusal = contract.Refusal{};
+    const first = try adapter.adapter().open(arena.allocator(), .{ .session_id = "kept", .participant = "user", .compaction_policy_json = "{\"kind\":\"tokens\",\"tokens\":9}" }, &refusal);
+    try first.close();
+
+    const reopened = try adapter.adapter().open(arena.allocator(), .{ .session_id = "kept", .participant = "user", .reopen = true }, &refusal);
+    try testing.expectEqualStrings("{\"kind\":\"tokens\",\"tokens\":9}", (try reopened.state(arena.allocator(), &refusal)).compaction_policy_json.?);
+    try reopened.close();
+
+    const renamed = try adapter.adapter().open(arena.allocator(), .{ .session_id = "kept", .participant = "user", .reopen = true, .compaction_policy_json = "{\"kind\":\"share\",\"share_percent\":50}" }, &refusal);
+    defer renamed.teardown();
+    try testing.expectEqualStrings("{\"kind\":\"share\",\"share_percent\":50}", (try renamed.state(arena.allocator(), &refusal)).compaction_policy_json.?);
 }

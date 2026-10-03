@@ -43,6 +43,7 @@ func settingsHub(t *testing.T, features map[string]protocol.FeatureSupport) *ser
 func TestTheElectionGateRefusesASettingItsFeatureDoesNotTakeAtOpen(t *testing.T) {
 	hub := settingsHub(t, map[string]protocol.FeatureSupport{
 		protocol.FeatureSessionReasoning: {Level: protocol.SupportNative, Modes: []string{"session_live"}},
+		protocol.FeatureCompactionPolicy: {Level: protocol.SupportUnavailable},
 	})
 	_, err := serve.ElectionGate(context.Background(), hub, "settings", "", protocol.SessionOpenRequest{SessionID: "s1", ReasoningLevel: protocol.ReasoningHigh})
 	var refusal *base.UnsupportedControlError
