@@ -160,10 +160,11 @@ var unitCapabilities = map[string][]string{
 
 	"control-tools": {protocol.FeatureToolsProvide},
 
-	"models":           {protocol.FeatureModelsList},
-	"compound-open":    {protocol.FeatureOpenSubscribe},
-	"session-reattach": {protocol.FeatureOpenReopen},
-	"session-settings": {protocol.FeatureSessionReasoning, protocol.FeatureCompactionPolicy},
+	"models":                {protocol.FeatureModelsList},
+	"compound-open":         {protocol.FeatureOpenSubscribe},
+	"session-reattach":      {protocol.FeatureOpenReopen},
+	"session-settings":      {protocol.FeatureSessionReasoning, protocol.FeatureCompactionPolicy},
+	"session-settings-live": {protocol.FeatureSessionReasoning, protocol.FeatureCompactionPolicy},
 }
 
 var honourDeferred = map[string]string{}

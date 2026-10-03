@@ -1,0 +1,201 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.request",
+    "id": "capq",
+    "payload": {}
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "capabilities.response",
+    "id": "capr",
+    "in_reply_to": "capq",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "endpoint": {
+        "id": "fixture.endpoint",
+        "name": "Live settings fixture endpoint"
+      },
+      "features": {
+        "session.message.delivery.auto": {
+          "level": "native"
+        },
+        "session.reasoning": {
+          "level": "native",
+          "modes": [
+            "session_open",
+            "session_live"
+          ]
+        },
+        "session.compaction.policy": {
+          "level": "native",
+          "modes": [
+            "session_open",
+            "session_live"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.open.request",
+    "id": "op",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "session_id": "s1",
+      "reasoning_level": "low"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.open.response",
+    "id": "opr",
+    "in_reply_to": "op",
+    "session_id": "s1",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "session_id": "s1",
+      "status": "idle",
+      "reasoning_level": "low"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.settings.update.request",
+    "id": "up",
+    "session_id": "s1",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "session_id": "s1",
+      "reasoning_level": "high",
+      "compaction_policy": {
+        "kind": "share",
+        "share_percent": 80
+      }
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.settings.update.response",
+    "id": "upr",
+    "in_reply_to": "up",
+    "session_id": "s1",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "session_id": "s1",
+      "reasoning_level": "high",
+      "previous_reasoning_level": "low",
+      "compaction_policy": {
+        "kind": "share",
+        "share_percent": 80
+      }
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.message.submit.request",
+    "id": "sub",
+    "session_id": "s1",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "session_id": "s1",
+      "delivery": "auto",
+      "messages": [
+        {
+          "role": "user",
+          "content": "go"
+        }
+      ]
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.message.submit.response",
+    "id": "subr",
+    "in_reply_to": "sub",
+    "session_id": "s1",
+    "capability_revision": "cap-v1",
+    "payload": {
+      "accepted": true,
+      "admission": "started",
+      "effective_delivery": "start",
+      "requested_delivery": "auto",
+      "run_id": "r1",
+      "session_id": "s1",
+      "status": "running",
+      "submission_id": "sub1"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.started",
+    "id": "ev1",
+    "session_id": "s1",
+    "run_id": "r1",
+    "sequence": 1,
+    "capability_revision": "cap-v1",
+    "payload": {
+      "run_id": "r1",
+      "session_id": "s1",
+      "status": "running"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.completed",
+    "id": "ev2",
+    "session_id": "s1",
+    "run_id": "r1",
+    "sequence": 2,
+    "capability_revision": "cap-v1",
+    "payload": {
+      "final_response": {
+        "role": "assistant",
+        "content": "ok"
+      },
+      "run_id": "r1",
+      "session_id": "s1",
+      "stop_reason": "end_turn"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "session.state.updated",
+    "id": "st3",
+    "session_id": "s1",
+    "sequence": 3,
+    "capability_revision": "cap-v1",
+    "payload": {
+      "session_id": "s1",
+      "status": "idle",
+      "reasoning_level": "high",
+      "compaction_policy": {
+        "kind": "share",
+        "share_percent": 80
+      }
+    }
+  }
+]

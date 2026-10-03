@@ -118,6 +118,7 @@ type sessionTrack struct {
 	attachedOrder      []string
 	attachedProviders  map[string]protocol.ProviderAttachment
 	switchObservations map[protocol.EnvelopeID]*switchObservation
+	settingsUpdates    map[protocol.EnvelopeID]*settingsUpdate
 
 	toolCatalog *sessionCatalog
 
@@ -331,6 +332,10 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		s.modelSwitchRequest(i, line, e)
 	case protocol.TypeSessionModelSwitchResponse:
 		s.modelSwitchResponse(i, line, e)
+	case protocol.TypeSessionSettingsUpdateRequest:
+		s.settingsUpdateRequest(i, line, e)
+	case protocol.TypeSessionSettingsUpdateResponse:
+		s.settingsUpdateResponse(i, line, e)
 	case protocol.TypeSessionProviderAttachRequest:
 		s.providerAttachRequest(i, line, e)
 	case protocol.TypeSessionProviderAttachResponse:
@@ -410,6 +415,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		s.applyStateDocument(i, line, e, p, st)
 		if e.Type == protocol.TypeSessionStateUpdated {
 			s.observeSwitchState(st, p.CurrentModelID)
+			s.observeSettingsState(st, p)
 		}
 
 		if st.guardDefault && p.CurrentModelID != st.expectedDefault {
@@ -692,6 +698,10 @@ func requestScope(e protocol.Envelope) (protocol.SessionID, protocol.RunID) {
 		var p protocol.SessionModelSwitchRequest
 		_ = e.DecodePayload(&p)
 		return p.SessionID, ""
+	case protocol.TypeSessionSettingsUpdateRequest:
+		var p protocol.SessionSettingsUpdateRequest
+		_ = e.DecodePayload(&p)
+		return p.SessionID, ""
 	case protocol.TypeSessionProviderAttachRequest:
 		var p protocol.SessionProviderAttachRequest
 		_ = e.DecodePayload(&p)
@@ -752,6 +762,10 @@ func responseScope(e protocol.Envelope) (protocol.SessionID, protocol.RunID) {
 		return p.SessionID, ""
 	case protocol.TypeSessionModelSwitchResponse:
 		var p protocol.SessionModelSwitchResponse
+		_ = e.DecodePayload(&p)
+		return p.SessionID, ""
+	case protocol.TypeSessionSettingsUpdateResponse:
+		var p protocol.SessionSettingsUpdateResponse
 		_ = e.DecodePayload(&p)
 		return p.SessionID, ""
 	case protocol.TypeSessionProviderAttachResponse:
@@ -981,6 +995,7 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 		} else {
 			r.started = true
 			r.startedAt = i
+			s.settingsBeforeRun(i, line, e, r.session)
 			r.status = protocol.RunRunning
 			s.promote(i, e, r)
 		}
@@ -1520,6 +1535,7 @@ func (s *state) close(index int) {
 	s.closeSteerSnapshots()
 	s.closeQueue()
 	s.closeSwitchObservations()
+	s.closeSettingsUpdates()
 	s.closeAuthFlows()
 	for _, rec := range s.recoveries {
 		if rec.gap && !rec.stateSeen {

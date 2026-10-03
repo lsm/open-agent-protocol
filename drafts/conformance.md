@@ -38,6 +38,7 @@ Conformance units are additive:
 - `+btw`
 - `+session-reattach`
 - `+session-settings`
+- `+session-settings-live`
 - `+compaction`
 
 Example claims:
@@ -721,8 +722,21 @@ An implementation conforms if it:
   `compaction_policy`, when present, are the values the open asked for, never
   a rounded one.
 
-The `session_live` mode and `session.settings.update.request` are not on the
-wire yet; they follow in a later change.
+### `+session-settings-live`
+
+`+session-settings-live` is staged under the same decision and adds the live
+half. An implementation conforms if it:
+
+- advertises both features with the `session_live` mode, and refuses a
+  `session.settings.update.request` member against a feature that is
+  unadvertised or does not disclose `session_live` with `unsupported_feature`
+  naming the key, and one against a `degraded` disclosure with
+  `capability_degraded` unless the request consents through
+  `allow_degraded_features`;
+- answers an accepted update with a `session.settings.update.response` that
+  repeats every member the request named at the value asked for;
+- emits a `session.state.updated` reporting the update before any run starts
+  after it.
 
 ### `+compaction`
 
