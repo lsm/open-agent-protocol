@@ -218,7 +218,7 @@ pub fn render(allocator: std.mem.Allocator, frame: Frame) ![]u8 {
     return out.toOwnedSlice();
 }
 
-pub const change_ticks: u64 = 40;
+pub const change_ticks: u64 = 20;
 pub const light_ticks: u64 = 80;
 pub const slot_rows: usize = 3;
 const slot_centre: usize = 1;
