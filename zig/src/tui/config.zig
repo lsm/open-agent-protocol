@@ -31,6 +31,7 @@ pub const AutoCompact = union(enum) {
     auto,
     off,
     percent: u8,
+    tokens: u32,
 };
 
 pub const VerbosityLevel = enum { quiet, normal, verbose };
@@ -262,6 +263,10 @@ fn serializeConfig(allocator: std.mem.Allocator, cfg: Config) ![]u8 {
         .auto => try w.writeStringField("autocompact", "auto"),
         .off => try w.writeStringField("autocompact", "off"),
         .percent => |percent| try w.writeIntField("autocompact", percent),
+        .tokens => |count| {
+            var buffer: [32]u8 = undefined;
+            try w.writeStringField("autocompact", try std.fmt.bufPrint(&buffer, "{d} tokens", .{count}));
+        },
     }
     try w.writeKey("verbosity");
     try w.beginObject();
@@ -320,7 +325,7 @@ fn outputField(obj: std.json.ObjectMap) Output {
 fn autoCompactField(obj: std.json.ObjectMap) AutoCompact {
     const value = obj.get("autocompact") orelse return .auto;
     return switch (value) {
-        .string => |text| if (std.mem.eql(u8, text, "off")) .off else .auto,
+        .string => |text| if (std.mem.eql(u8, text, "off")) .off else if (std.mem.endsWith(u8, text, " tokens")) (if (std.fmt.parseInt(u32, text[0 .. text.len - " tokens".len], 10)) |count| (if (count > 0) .{ .tokens = count } else .auto) else |_| .auto) else .auto,
         .integer => |n| if (n >= 1 and n <= 100) .{ .percent = @intCast(n) } else .auto,
         else => .auto,
     };
@@ -496,7 +501,7 @@ test "a context window that is not a positive whole number is not read as one" {
     }
 }
 
-test "autocompact is automatic by default and a set share or off survives a save" {
+test "autocompact is automatic by default and a set share, token count or off survives a save" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const base = try tmpBase(std.testing.allocator, &tmp);
@@ -511,7 +516,7 @@ test "autocompact is automatic by default and a set share or off survives a save
     defer unset.deinit(std.testing.allocator);
     try std.testing.expect(unset.mode.autocompact == .auto);
 
-    const settings = [_]AutoCompact{ .{ .percent = 65 }, .off, .auto };
+    const settings = [_]AutoCompact{ .{ .percent = 65 }, .off, .{ .tokens = 120_000 }, .auto };
     for (settings) |setting| {
         cfg.mode.autocompact = setting;
         try store.save(cfg);
@@ -521,7 +526,7 @@ test "autocompact is automatic by default and a set share or off survives a save
     }
 }
 
-test "an autocompact value that is neither off nor a share from 1 to 100 reads as automatic" {
+test "an autocompact value that is neither off, a share from 1 to 100, nor a positive token count reads as automatic" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const base = try tmpBase(std.testing.allocator, &tmp);
@@ -534,6 +539,8 @@ test "an autocompact value that is neither off nor a share from 1 to 100 reads a
         "{\"model\":\"m\",\"provider\":\"p\",\"api\":\"a\",\"workspace\":\".\",\"mode\":{\"autocompact\":101}}",
         "{\"model\":\"m\",\"provider\":\"p\",\"api\":\"a\",\"workspace\":\".\",\"mode\":{\"autocompact\":\"sometimes\"}}",
         "{\"model\":\"m\",\"provider\":\"p\",\"api\":\"a\",\"workspace\":\".\",\"mode\":{\"autocompact\":true}}",
+        "{\"model\":\"m\",\"provider\":\"p\",\"api\":\"a\",\"workspace\":\".\",\"mode\":{\"autocompact\":\"0 tokens\"}}",
+        "{\"model\":\"m\",\"provider\":\"p\",\"api\":\"a\",\"workspace\":\".\",\"mode\":{\"autocompact\":\"many tokens\"}}",
     };
     for (malformed) |text| {
         const path = try std.fs.path.join(std.testing.allocator, &.{ base, "config.json" });
