@@ -4634,7 +4634,10 @@ pub const TuiModel = struct {
         }
         const waiting = running and app.state.active_assistant_entry == null and app.state.active_thinking_entry == null and app.state.active_tool_summary_entry == null and app.state.mode != .approval;
         if (waiting) activity = try std.fmt.allocPrint(allocator, "waiting for {s}", .{if (app.state.status.model.len > 0) app.state.status.model else "the model"});
-        if (running) app.state.zen.noteActivity(activity, app.state.anim_tick, zen_view.dwell_ticks);
+        if (running) {
+            app.state.zen.noteActivity(activity);
+            app.state.zen.advance(app.state.anim_tick, zen_view.slide_ticks);
+        }
         const timed: ?usize = if (!running) null else if (waiting) std.math.maxInt(usize) - entries.len else app.state.active_tool_summary_entry;
         const tool_ms = app.state.zen.stepMs(timed, compat.time.nowMillis());
         var final_block: []const u8 = "";
@@ -4660,9 +4663,9 @@ pub const TuiModel = struct {
             .counts = .{ .thinking = counts.thinking, .tools = counts.tools, .messages = counts.messages },
             .running = running,
             .activity = app.state.zen.activity(),
-            .previous = app.state.zen.previousActivity(),
-            .since_change = app.state.anim_tick -% app.state.zen.changed_tick,
-            .tool_ms = tool_ms,
+            .incoming = app.state.zen.incomingActivity(),
+            .rise = app.state.zen.rise(app.state.anim_tick, zen_view.slide_ticks),
+            .tool_ms = if (app.state.zen.settled()) tool_ms else 0,
             .final_block = final_block,
             .failed = failed,
         };
@@ -8663,7 +8666,7 @@ test "zen names the model it is waiting on before the run's first step" {
     app.state.status.streaming = true;
     const settle = struct {
         fn frames(m: *TuiModel, ctx: *zz.Context) []const u8 {
-            for (0..zen_view.dwell_ticks) |_| {
+            for (0..2 * zen_view.slide_ticks + 2) |_| {
                 _ = m.view(ctx);
                 m.app.?.state.anim_tick +%= 1;
             }
@@ -8676,6 +8679,7 @@ test "zen names the model it is waiting on before the run's first step" {
     const thinking = settle.frames(&model, &tctx.ctx);
     try std.testing.expect(std.mem.indexOf(u8, thinking, "thinking") != null);
     try std.testing.expect(std.mem.indexOf(u8, thinking, "waiting for") == null);
+    try std.testing.expect(app.state.zen.settled());
 }
 
 test "App submit quit command requests quit" {

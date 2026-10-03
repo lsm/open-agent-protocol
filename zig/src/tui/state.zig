@@ -94,27 +94,52 @@ pub const Zen = struct {
     phase: f32 = 0,
     was_running: bool = false,
     ended_tick: ?u64 = null,
-    shown: [zen_activity_bytes]u8 = undefined,
-    shown_len: usize = 0,
-    previous: [zen_activity_bytes]u8 = undefined,
-    previous_len: usize = 0,
-    changed_tick: u64 = 0,
+    shown: ZenLine = .{},
+    incoming: ?ZenLine = null,
+    queue: [zen_queue_lines]ZenLine = undefined,
+    queue_len: usize = 0,
+    move_tick: u64 = 0,
     step: ?usize = null,
     step_started_ms: i64 = 0,
 
     pub fn activity(self: *const Zen) []const u8 {
-        return self.shown[0..self.shown_len];
+        return self.shown.text();
     }
 
-    pub fn previousActivity(self: *const Zen) []const u8 {
-        return self.previous[0..self.previous_len];
+    pub fn incomingActivity(self: *const Zen) []const u8 {
+        return if (self.incoming) |*line| line.text() else "";
+    }
+
+    pub fn settled(self: *const Zen) bool {
+        return self.incoming == null and self.queue_len == 0;
+    }
+
+    pub fn rise(self: *const Zen, tick: u64, slide: u64) f32 {
+        if (self.incoming == null or slide == 0) return 0;
+        const since = tick -% self.move_tick;
+        return @min(@as(f32, @floatFromInt(since)) / @as(f32, @floatFromInt(slide)), 1);
     }
 
     pub fn beginRun(self: *Zen, tick: u64) void {
-        self.shown_len = 0;
-        self.previous_len = 0;
-        self.changed_tick = tick;
+        self.shown = .{};
+        self.incoming = null;
+        self.queue_len = 0;
+        self.move_tick = tick;
         self.step = null;
+    }
+
+    pub fn advance(self: *Zen, tick: u64, slide: u64) void {
+        if (self.incoming) |line| {
+            if (tick -% self.move_tick < slide) return;
+            self.shown = line;
+            self.incoming = null;
+            self.move_tick +%= slide;
+        }
+        if (self.queue_len == 0) return;
+        self.incoming = self.queue[0];
+        std.mem.copyForwards(ZenLine, self.queue[0 .. self.queue_len - 1], self.queue[1..self.queue_len]);
+        self.queue_len -= 1;
+        if (tick -% self.move_tick >= slide) self.move_tick = tick;
     }
 
     pub fn stepMs(self: *Zen, timed: ?usize, now_ms: i64) u64 {
@@ -130,15 +155,16 @@ pub const Zen = struct {
         return @intCast(now_ms - self.step_started_ms);
     }
 
-    pub fn noteActivity(self: *Zen, text: []const u8, tick: u64, dwell: u64) void {
+    pub fn noteActivity(self: *Zen, text: []const u8) void {
+        const latest = if (self.queue_len > 0) self.queue[self.queue_len - 1].text() else if (self.incoming) |*line| line.text() else self.activity();
         const kept = utf8Prefix(text, zen_activity_bytes);
-        if (std.mem.eql(u8, kept, self.activity())) return;
-        if (self.shown_len > 0 and tick -% self.changed_tick < dwell) return;
-        @memcpy(self.previous[0..self.shown_len], self.shown[0..self.shown_len]);
-        self.previous_len = self.shown_len;
-        @memcpy(self.shown[0..kept.len], kept);
-        self.shown_len = kept.len;
-        self.changed_tick = tick;
+        if (std.mem.eql(u8, kept, latest)) return;
+        if (self.queue_len == zen_queue_lines) {
+            std.mem.copyForwards(ZenLine, self.queue[0 .. zen_queue_lines - 1], self.queue[1..zen_queue_lines]);
+            self.queue_len -= 1;
+        }
+        self.queue[self.queue_len] = ZenLine.of(kept);
+        self.queue_len += 1;
     }
 
     pub fn enter(self: *Zen, transcript_len: usize) void {
@@ -166,6 +192,24 @@ pub const Zen = struct {
 };
 
 pub const zen_activity_bytes: usize = 256;
+pub const zen_queue_lines: usize = 8;
+
+pub const ZenLine = struct {
+    bytes: [zen_activity_bytes]u8 = undefined,
+    len: usize = 0,
+
+    pub fn of(source: []const u8) ZenLine {
+        var line: ZenLine = .{};
+        const kept = utf8Prefix(source, zen_activity_bytes);
+        @memcpy(line.bytes[0..kept.len], kept);
+        line.len = kept.len;
+        return line;
+    }
+
+    pub fn text(self: *const ZenLine) []const u8 {
+        return self.bytes[0..self.len];
+    }
+};
 
 fn utf8Prefix(text: []const u8, limit: usize) []const u8 {
     if (text.len <= limit) return text;
@@ -4593,23 +4637,51 @@ test "zen entered mid-reply counts the reply already streaming" {
     try std.testing.expectEqual(state.transcript.items.len, zenStart(&state));
 }
 
-test "zen remembers the activity it replaces and when, ignores a repeat, and holds each line for its dwell" {
+test "zen queues each new line and lets every slide run its full length" {
     var zen: Zen = .{};
-    zen.noteActivity("thinking", 3, 10);
+    zen.beginRun(0);
+    zen.noteActivity("thinking");
+    zen.noteActivity("thinking");
+    zen.noteActivity("Read  a.zig");
+    zen.noteActivity("Shell Execute  ls");
+    try std.testing.expectEqual(@as(usize, 3), zen.queue_len);
+    zen.advance(0, 40);
+    try std.testing.expectEqualStrings("", zen.activity());
+    try std.testing.expectEqualStrings("thinking", zen.incomingActivity());
+    try std.testing.expectEqual(@as(f32, 0.5), zen.rise(20, 40));
+    zen.advance(39, 40);
+    try std.testing.expectEqualStrings("thinking", zen.incomingActivity());
+    zen.advance(40, 40);
     try std.testing.expectEqualStrings("thinking", zen.activity());
-    try std.testing.expectEqualStrings("", zen.previousActivity());
-    zen.noteActivity("thinking", 9, 10);
-    try std.testing.expectEqual(@as(u64, 3), zen.changed_tick);
-    zen.noteActivity("Read  a.zig", 12, 10);
-    try std.testing.expectEqualStrings("thinking", zen.activity());
-    zen.noteActivity("Shell Execute  ls", 13, 10);
+    try std.testing.expectEqualStrings("Read  a.zig", zen.incomingActivity());
+    try std.testing.expectEqual(@as(f32, 0), zen.rise(40, 40));
+    zen.advance(85, 40);
+    try std.testing.expectEqualStrings("Read  a.zig", zen.activity());
+    try std.testing.expectEqualStrings("Shell Execute  ls", zen.incomingActivity());
+    try std.testing.expectEqual(@as(f32, 0.125), zen.rise(85, 40));
+    try std.testing.expect(!zen.settled());
+    zen.advance(120, 40);
     try std.testing.expectEqualStrings("Shell Execute  ls", zen.activity());
-    try std.testing.expectEqualStrings("thinking", zen.previousActivity());
-    try std.testing.expectEqual(@as(u64, 13), zen.changed_tick);
+    try std.testing.expect(zen.settled());
+    zen.advance(500, 40);
+    zen.noteActivity("thinking");
+    zen.advance(501, 40);
+    try std.testing.expectEqual(@as(f32, 0), zen.rise(501, 40));
+    try std.testing.expectEqual(@as(f32, 0.5), zen.rise(521, 40));
+}
+
+test "zen's queue keeps the newest lines when it overflows, and clips each line on a character" {
+    var zen: Zen = .{};
+    for (0..zen_queue_lines + 3) |i| {
+        var buf: [16]u8 = undefined;
+        zen.noteActivity(try std.fmt.bufPrint(&buf, "step {d}", .{i}));
+    }
+    try std.testing.expectEqual(zen_queue_lines, zen.queue_len);
+    try std.testing.expectEqualStrings("step 3", zen.queue[0].text());
     const long = "\u{2026}" ** 100;
-    zen.noteActivity(long, 23, 10);
-    try std.testing.expect(zen.activity().len <= zen_activity_bytes);
-    try std.testing.expect(std.unicode.utf8ValidateSlice(zen.activity()));
+    const line = ZenLine.of(long);
+    try std.testing.expect(line.text().len <= zen_activity_bytes);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(line.text()));
 }
 
 test "the step clock times only a timed step, from its own start" {
@@ -4621,9 +4693,9 @@ test "the step clock times only a timed step, from its own start" {
     try std.testing.expectEqual(@as(u64, 3_000), zen.stepMs(7, 116_000));
     try std.testing.expectEqual(@as(u64, 0), zen.stepMs(null, 130_000));
     try std.testing.expectEqual(@as(u64, 0), zen.stepMs(7, 131_000));
-    zen.noteActivity("thinking", 3, 10);
+    zen.noteActivity("thinking");
     zen.beginRun(40);
     try std.testing.expectEqualStrings("", zen.activity());
-    try std.testing.expectEqualStrings("", zen.previousActivity());
+    try std.testing.expect(zen.settled());
     try std.testing.expectEqual(@as(u64, 0), zen.stepMs(7, 140_000));
 }
