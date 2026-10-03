@@ -70,8 +70,7 @@ OAP_OPENCODE_TAG=v1.18.34 go test -run TestOpenCodeServerIntegration
 `opencode-v1.18.32/`; none was re-recorded. Every `native.jsonl`,
 `mapping.json`, `omissions.json` and `catalog.json` is byte-identical.
 `manifest.json` and each `case.json` name the new tag, commit and tree, and
-each `expected-oap.json` differs only in `endpoint.version` and
-`capability_revision`.
+each `expected-oap.json` differs only in `capability_revision`.
 
 ## Capability revision
 
