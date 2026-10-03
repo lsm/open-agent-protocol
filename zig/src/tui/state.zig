@@ -865,6 +865,7 @@ pub const AppState = struct {
     session_index: usize = 0,
     session_scroll: usize = 0,
     confirm_session_delete: bool = false,
+    confirm_session_force_delete: bool = false,
     menu_index: usize = 0,
     menu_scroll: usize = 0,
     picker_kind: PickerKind = .model,
