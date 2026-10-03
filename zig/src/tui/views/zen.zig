@@ -342,11 +342,11 @@ const dot = "\u{b7}";
 fn trail(allocator: std.mem.Allocator, counts: Counts) ![]const u8 {
     const steps = counts.thinking + counts.tools + counts.messages;
     var out: std.Io.Writer.Allocating = .init(allocator);
-    const tens = steps / 10 * 10;
-    if (tens > 0) try out.writer.print("{d}", .{tens});
-    for (0..steps % 10) |i| {
-        if (tens > 0 or i > 0) try out.writer.writeByte(' ');
-        try out.writer.writeAll(dot);
+    const first = @max(steps -| 9, 1);
+    var step = first;
+    while (step <= steps) : (step += 1) {
+        if (step > first) try out.writer.writeByte(' ');
+        if (step % 10 == 0) try out.writer.print("{d}", .{step}) else try out.writer.writeAll(dot);
     }
     return out.toOwnedSlice();
 }
@@ -420,19 +420,19 @@ test "the pulse breathes slowly while thinking, faster on a tool, and holds whil
     try std.testing.expectEqual(idle_level, pulseLevel(.idle, 0.5));
 }
 
-test "the trail grows a dot per step and turns every tenth into its number" {
+test "the trail shows the last ten steps, the tenth as its number" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
+    const d = dot ++ " ";
     try std.testing.expectEqualStrings("", try trail(a, .{}));
-    try std.testing.expectEqualStrings(dot ++ " " ++ dot ++ " " ++ dot, try trail(a, .{ .thinking = 1, .tools = 1, .messages = 1 }));
-    try std.testing.expectEqualStrings(("· " ** 8) ++ dot, try trail(a, .{ .tools = 9 }));
-    try std.testing.expectEqualStrings("10", try trail(a, .{ .tools = 10 }));
-    try std.testing.expectEqualStrings("10 " ++ dot ++ " " ++ dot, try trail(a, .{ .tools = 10, .thinking = 2 }));
-    try std.testing.expectEqualStrings("20", try trail(a, .{ .tools = 20 }));
-    const many = try trail(a, .{ .tools = 139 });
-    try std.testing.expect(std.mem.startsWith(u8, many, "130 "));
-    try std.testing.expectEqual(@as(usize, 9), std.mem.count(u8, many, dot));
+    try std.testing.expectEqualStrings(d ++ d ++ dot, try trail(a, .{ .thinking = 1, .tools = 1, .messages = 1 }));
+    try std.testing.expectEqualStrings(d ** 8 ++ dot, try trail(a, .{ .tools = 9 }));
+    try std.testing.expectEqualStrings(d ** 9 ++ "10", try trail(a, .{ .tools = 10 }));
+    try std.testing.expectEqualStrings(d ** 6 ++ "10 " ++ d ++ d ++ dot, try trail(a, .{ .tools = 10, .thinking = 3 }));
+    try std.testing.expectEqualStrings(d ** 9 ++ "20", try trail(a, .{ .tools = 20 }));
+    try std.testing.expectEqualStrings("130 " ++ d ** 8 ++ dot, try trail(a, .{ .tools = 139 }));
+    try std.testing.expectEqualStrings(d ** 8 ++ "140 " ++ dot, try trail(a, .{ .tools = 141 }));
 }
 
 test "a secret never reaches the input bar in the clear" {

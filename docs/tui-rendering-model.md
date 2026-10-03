@@ -572,8 +572,8 @@ every frame anyway.
 
 `/zen` (or `/zen on`, `/zen off`) replaces the whole screen with one centred
 column in grey: a trail that grows one dot for each thinking block, tool call
-and reply since zen began, every tenth step turning the dots into its number
-(`10`, `20`, …) with up to nine dots after it, so only one number ever shows,
+and reply since zen began, showing the last ten steps with each tenth drawn as
+its number (`· · · · · · 10 · · ·`), so only one number ever shows,
 one line naming what the agent is doing, which changes in place, letter by letter from the centre outward: each letter swaps straight to its successor at full grey, the swap travelling to both ends over one second, so the new line opens out of the old one, while a soft light keeps opening from the line's centre out to both ends, one sweep every four seconds for as long as a line is shown; lines that arrive faster than a change wait in a short queue (the newest eight kept) and each gets its full fade, and is only the step's title until a tool call has been running for ten seconds, when that call's own clock appears beside it; while no step is under way it reads `waiting for <model>`, timed by the same rule, and, floating a little above the bottom of
 the screen, a minimal input bar in place of the composer and the status bar.
 The trail breathes slowly while the agent thinks, faster while a tool runs,
