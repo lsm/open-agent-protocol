@@ -670,13 +670,6 @@ test "the light keeps opening from the centre to both ends while a line rests" {
     try std.testing.expect(fading[0] > fading[fading.len / 2]);
 }
 
-fn levelOf(row: []const u8) u32 {
-    const at = std.mem.indexOf(u8, row, "\x1b[38;2;") orelse return 0;
-    const rest = row[at + 7 ..];
-    const end = std.mem.indexOfScalar(u8, rest, ';') orelse return 0;
-    return std.fmt.parseInt(u32, rest[0..end], 10) catch 0;
-}
-
 test "the activity line shows only the title until a tool call passes ten seconds, then both" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
