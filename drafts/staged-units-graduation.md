@@ -4272,7 +4272,7 @@ long list is paged.
 
 ## T4. Steer
 
-**Status: [Decision 0013](../decisions/0013-steer.md) is accepted (2026-10-02).**
+**Status: [Decision 0013](../decisions/0013-steer.md) is accepted (2026-10-03).**
 The submit-envelope prerequisite landed in #798 (`f3e137bcbd`). The first
 graduation slice added the steer wire types, validator diagnostics, and positive
 and negative fixtures under the `steer` unit. The second slice is step 1 of
