@@ -740,7 +740,7 @@ half. An implementation conforms if it:
 
 ### `+compaction`
 
-`+compaction` is staged under [Decision 0044](../decisions/0044-compaction.md).
+`+compaction` is executable under [Decision 0044](../decisions/0044-compaction.md).
 An implementation conforms if it:
 
 - advertises `session.compact` above `unavailable` for
