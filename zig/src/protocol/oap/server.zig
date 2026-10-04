@@ -576,6 +576,20 @@ pub const Server = struct {
     }
 
     fn handleSessionOpen(self: *Self, env: oap_types.Envelope, payload: oap_types.SessionOpenRequest) !void {
+        if (payload.reopen) {
+            try self.pushError(
+                env.id,
+                env.session_id,
+                null,
+                oap_types.EmittedErrorCode.unsupported_feature.text(),
+                "this endpoint keeps sessions in process memory and cannot reopen one",
+                &.{
+                    .{ .key = "feature", .value = "session.open.reopen" },
+                    .{ .key = "reason", .value = "unadvertised" },
+                },
+            );
+            return;
+        }
         if (payload.session_id) |requested| {
             if (env.session_id) |scoped| {
                 if (!std.mem.eql(u8, requested, scoped)) {
@@ -2300,6 +2314,25 @@ test "session open allocates an idle session and reopening it is idempotent" {
     var second = try nextEnvelope(&server, allocator);
     defer second.deinit(allocator);
     try std.testing.expectEqualStrings(state.session_id, second.payload.session_open_response.session_id);
+    try std.testing.expectEqual(@as(u32, 1), server.sessions.count());
+}
+
+test "a reopen is refused as the unadvertised feature, whether or not the session exists" {
+    const allocator = std.testing.allocator;
+    var server = try Server.init(allocator, .{});
+    defer server.deinit();
+
+    try server.handleEnvelope(.{ .id = "open-1", .payload = .{ .session_open_request = .{ .session_id = "kept" } } });
+    var opened = try nextEnvelope(&server, allocator);
+    opened.deinit(allocator);
+
+    for ([_][]const u8{ "never-opened", "kept" }) |named| {
+        try server.handleEnvelope(.{ .id = "reopen", .session_id = named, .payload = .{ .session_open_request = .{ .session_id = named, .reopen = true } } });
+        var reply = try nextEnvelope(&server, allocator);
+        defer reply.deinit(allocator);
+        try std.testing.expectEqualStrings("unsupported_feature", reply.payload.error_response.code);
+        try std.testing.expectEqualStrings("session.open.reopen", reply.payload.error_response.detail("feature").?);
+    }
     try std.testing.expectEqual(@as(u32, 1), server.sessions.count());
 }
 
