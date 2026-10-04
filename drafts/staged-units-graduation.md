@@ -5173,9 +5173,9 @@ recovery rather than choice. Below the window the session's threshold decides
 as before. Both move to `reference-memory-v17`, and the memory parity scenarios
 gain an overflow under `off`.
 
-Still open, each for a later slice:
+Step 3, native evidence:
 
-- step 3, native evidence, is pi's, as the decision names. Its first half is
+- step 3 is pi's, as the decision names. Its first half is
   in: both pi adapters publish the compactions Pi starts on its own as the
   run's `run.compaction` events at `native`, from frames recorded against the
   v1.0.1 binary, under `pi-v1.0.1-oap-v2`. Pi compacts between `agent_end`
