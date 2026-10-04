@@ -39,6 +39,7 @@ pub const OapExecution = struct {
     in_assistant: bool = false,
     text: std.ArrayList(u8) = .empty,
     session_models: std.ArrayList([]u8) = .empty,
+    live_reasoning: bool = false,
     pending_permission: ?PendingPermission = null,
     queued_runs: std.ArrayList(QueuedRun) = .empty,
     output_tokens: u64 = 0,
@@ -141,6 +142,7 @@ pub const OapExecution = struct {
         .submit = submit,
         .cancel = cancel,
         .switch_model = switchModel,
+        .set_reasoning = setReasoning,
         .decide_approval = decideApproval,
         .follow_up = followUp,
         .clear_queued = clearQueued,
@@ -172,6 +174,11 @@ pub const OapExecution = struct {
         const kept_revision = try self.allocator.dupe(u8, revision.string);
         self.allocator.free(self.revision);
         self.revision = kept_revision;
+        const described = if (self.hub != null)
+            initialized
+        else
+            try self.exchange(a, "capabilities.request", empty.value(), false);
+        self.live_reasoning = self.hub == null and advertisesLive(described, "session.reasoning");
 
         var settings_map = Map.init(a);
         try settings_map.put("thinking_level", .{ .string = @tagName(settings.thinking_level) });
@@ -514,6 +521,19 @@ pub const OapExecution = struct {
         try payload.put("session_id", .{ .string = self.session_id });
         try payload.put("model_id", .{ .string = ref });
         _ = try self.enqueue(a, "session.model.switch.request", "switch", payload.value(), null);
+    }
+
+    fn setReasoning(ctx: *anyopaque, level: ai_types.ThinkingLevel) anyerror!void {
+        const self = cast(ctx);
+        if (!self.live_reasoning) return error.UnavailableOverOap;
+        if (self.turn_open.load(.acquire) or queuedCount(ctx) > 0) return error.RunInProgress;
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        var payload = Map.init(a);
+        try payload.put("session_id", .{ .string = self.session_id });
+        try payload.put("reasoning_level", .{ .string = @tagName(level) });
+        _ = try self.enqueue(a, "session.settings.update.request", "settings", payload.value(), null);
     }
 
     fn decideApproval(ctx: *anyopaque, tool_call_id: []const u8, granted: bool) anyerror!void {
@@ -924,6 +944,24 @@ fn strings(a: std.mem.Allocator, items: []const []const u8) !std.json.Value {
 
 fn modelRef(a: std.mem.Allocator, model: ai_types.Model) ![]u8 {
     return model_ref.formatModelRef(a, model.provider, model.api, model.id);
+}
+
+fn advertisesLive(described: std.json.Value, key: []const u8) bool {
+    if (described != .object) return false;
+    const payload = described.object.get("payload") orelse return false;
+    if (payload != .object) return false;
+    const features = payload.object.get("features") orelse return false;
+    if (features != .object) return false;
+    const feature = features.object.get(key) orelse return false;
+    if (feature != .object) return false;
+    const level = stringOf(feature.object, "level") orelse return false;
+    if (std.mem.eql(u8, level, "unavailable")) return false;
+    const modes = feature.object.get("modes") orelse return false;
+    if (modes != .array) return false;
+    for (modes.array.items) |mode| {
+        if (mode == .string and std.mem.eql(u8, mode.string, "session_live")) return true;
+    }
+    return false;
 }
 
 fn stringOf(object: std.json.ObjectMap, key: []const u8) ?[]const u8 {
@@ -1417,12 +1455,10 @@ test "once a session over OAP is open, settings the protocol cannot carry are re
 
     try runtime.setThinkingLevel(.high);
     try runtime.start();
-    try testing.expectError(error.UnavailableOverOap, runtime.setThinkingLevel(.max));
     try testing.expectError(error.UnavailableOverOap, runtime.setPermissionMode(.ask));
     try testing.expectError(error.UnavailableOverOap, runtime.setContextWindow(4096));
     try testing.expectError(error.UnavailableOverOap, runtime.setOutput(.max));
     try testing.expectError(error.UnavailableOverOap, runtime.setWorkspaceRoot("/elsewhere"));
-    try testing.expectEqual(ai_types.ThinkingLevel.high, runtime.thinkingLevel());
     try testing.expectEqual(tui_runtime.PermissionMode.bypass, runtime.permissionMode());
 
     try runtime.submitTurn("go");
@@ -1430,6 +1466,41 @@ test "once a session over OAP is open, settings the protocol cannot carry are re
     defer seen.deinit();
     try drainTurn(&runtime, &seen);
     try testing.expectEqual(ai_types.ThinkingLevel.high, script.last_thinking);
+}
+
+test "a thinking level changed on an open OAP session reaches the next run through a live settings update" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+
+    try runtime.start();
+    try testing.expect(execution.live_reasoning);
+    try runtime.setThinkingLevel(.max);
+    try testing.expectEqual(ai_types.ThinkingLevel.max, runtime.thinkingLevel());
+
+    try runtime.submitTurn("go");
+    var seen = Seen{};
+    defer seen.deinit();
+    try drainTurn(&runtime, &seen);
+    try testing.expectEqual(ai_types.ThinkingLevel.max, script.last_thinking);
+}
+
+test "a thinking level change is refused over OAP when the session advertises reasoning only at open" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+
+    try runtime.start();
+    const described = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"payload\":{\"features\":{\"session.reasoning\":{\"level\":\"native\",\"modes\":[\"session_open\"]}}}}", .{});
+    defer described.deinit();
+    execution.live_reasoning = advertisesLive(described.value, "session.reasoning");
+    try testing.expect(!execution.live_reasoning);
+    try testing.expectError(error.UnavailableOverOap, runtime.setThinkingLevel(.max));
+    try testing.expectEqual(ai_types.ThinkingLevel.low, runtime.thinkingLevel());
 }
 
 test "an open-time model the OAP session does not list leaves the session usable on its own default" {
@@ -1757,4 +1828,20 @@ test "a reservation not yet admitted is never taken by the current run's own sta
     try execution.translateLine("{\"type\":\"run.started\",\"payload\":{\"session_id\":\"s\",\"run_id\":\"run-1\",\"status\":\"running\"}}");
     try testing.expectEqual(@as(usize, 0), captured.user_messages);
     try testing.expectEqual(@as(usize, 1), execution.queued_runs.items.len);
+}
+
+test "a thinking level change over OAP waits for the open turn to end instead of committing early" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+
+    try runtime.start();
+    execution.turn_open.store(true, .release);
+    try testing.expectError(error.RunInProgress, runtime.setThinkingLevel(.max));
+    try testing.expectEqual(ai_types.ThinkingLevel.low, runtime.thinkingLevel());
+    execution.turn_open.store(false, .release);
+    try runtime.setThinkingLevel(.max);
+    try testing.expectEqual(ai_types.ThinkingLevel.max, runtime.thinkingLevel());
 }
