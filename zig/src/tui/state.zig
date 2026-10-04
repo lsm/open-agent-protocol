@@ -1358,7 +1358,7 @@ pub const AppState = struct {
             .tool_approval_requested => |payload| {
                 const label = self.toolLabel(payload.tool_name.slice());
                 try self.approval.setPending(self.allocator, payload.tool_call_id.slice(), payload.tool_name.slice(), label, payload.args_json.slice());
-                if (std.mem.eql(u8, payload.tool_name.slice(), "hashline_edit")) try self.setHashlinePreview(payload.args_json.slice());
+                if (std.mem.eql(u8, payload.tool_name.slice(), "Edit")) try self.setHashlinePreview(payload.args_json.slice());
                 self.mode = .approval;
                 _ = try self.resolveToolOccurrence(payload.tool_call_id.slice(), payload.tool_name.slice(), payload.args_json.slice(), .live_intent, .pending);
             },
@@ -1490,38 +1490,52 @@ pub const AppState = struct {
         defer parsed.deinit();
         if (parsed.value != .object) return;
         const obj = parsed.value.object;
-        const operation = jsonString(obj, "operation") orelse "hashline_edit";
+        const operation = jsonString(obj, "operation") orelse "edit";
         const start_line = jsonUsize(obj, "start_line") orelse 0;
         const end_line = jsonUsize(obj, "end_line") orelse start_line;
-        const start_hash = jsonString(obj, "start_hash") orelse "";
+        const start_hash = jsonString(obj, "start_hash") orelse jsonString(obj, "line_hash") orelse "";
         const end_hash = jsonString(obj, "end_hash") orelse start_hash;
-        const replacement = jsonString(obj, "replacement") orelse "";
 
         var out = std.ArrayList(u8).empty;
         defer out.deinit(self.allocator);
-        const header = try std.fmt.allocPrint(self.allocator, "hashline edit preview\noperation: {s}\nrange: {d}:{s}..{d}:{s}\n", .{ operation, start_line, start_hash, end_line, end_hash });
-        defer self.allocator.free(header);
-        try appendHashlinePreview(&out, self.allocator, header);
-        if (std.mem.eql(u8, operation, "delete_range")) {
-            const row = try std.fmt.allocPrint(self.allocator, "- lines {d}..{d}\n", .{ start_line, end_line });
-            defer self.allocator.free(row);
-            try appendHashlinePreview(&out, self.allocator, row);
+        if (std.mem.eql(u8, operation, "find_replace")) {
+            const header = try std.fmt.allocPrint(self.allocator, "edit preview\noperation: {s}\n", .{operation});
+            defer self.allocator.free(header);
+            try appendHashlinePreview(&out, self.allocator, header);
+            try self.appendPreviewLines(&out, "- ", 0, jsonString(obj, "find") orelse "");
+            try self.appendPreviewLines(&out, "+ ", 0, jsonString(obj, "replace") orelse "");
         } else {
-            var line_no: usize = if (std.mem.eql(u8, operation, "insert_after")) end_line + 1 else start_line;
-            var lines = std.mem.splitScalar(u8, replacement, '\n');
-            while (lines.next()) |line| {
-                if (line.len == 0 and line.ptr == replacement.ptr + replacement.len) break;
-                const row = try std.fmt.allocPrint(self.allocator, "+ {d}|{s}\n", .{ line_no, line });
+            const header = try std.fmt.allocPrint(self.allocator, "edit preview\noperation: {s}\nrange: {d}:{s}..{d}:{s}\n", .{ operation, start_line, start_hash, end_line, end_hash });
+            defer self.allocator.free(header);
+            try appendHashlinePreview(&out, self.allocator, header);
+            if (std.mem.eql(u8, operation, "delete")) {
+                const row = try std.fmt.allocPrint(self.allocator, "- lines {d}..{d}\n", .{ start_line, end_line });
                 defer self.allocator.free(row);
                 try appendHashlinePreview(&out, self.allocator, row);
-                line_no += 1;
-                if (out.items.len >= max_hashline_preview_bytes) {
-                    try markHashlinePreviewTruncated(&out);
-                    break;
-                }
+            } else {
+                try self.appendPreviewLines(&out, "+ ", start_line, jsonString(obj, "content") orelse "");
             }
         }
         try self.preview.set(self.allocator, out.items);
+    }
+
+    fn appendPreviewLines(self: *AppState, out: *std.ArrayList(u8), marker: []const u8, first_line: usize, text: []const u8) !void {
+        var line_no = first_line;
+        var lines = std.mem.splitScalar(u8, text, '\n');
+        while (lines.next()) |line| {
+            if (line.len == 0 and line.ptr == text.ptr + text.len) break;
+            const row = if (line_no > 0)
+                try std.fmt.allocPrint(self.allocator, "{s}{d}|{s}\n", .{ marker, line_no, line })
+            else
+                try std.fmt.allocPrint(self.allocator, "{s}{s}\n", .{ marker, line });
+            defer self.allocator.free(row);
+            try appendHashlinePreview(out, self.allocator, row);
+            if (line_no > 0) line_no += 1;
+            if (out.items.len >= max_hashline_preview_bytes) {
+                try markHashlinePreviewTruncated(out);
+                return;
+            }
+        }
     }
 
     fn compactionNotice(allocator: std.mem.Allocator, payload: @TypeOf(@as(tui_runtime.TuiEvent, undefined).compaction_end)) ![]u8 {
@@ -3280,18 +3294,18 @@ test "AppState approval flow transitions pending to approved and rejected" {
 
     var hashline_event = tui_runtime.TuiEvent{ .tool_approval_requested = .{
         .tool_call_id = try ownedText("call-hash"),
-        .tool_name = try ownedText("hashline_edit"),
-        .args_json = try ownedText("{\"path\":\"src/main.zig\",\"operation\":\"replace_range\",\"start_line\":2,\"start_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"replacement\":\"new line\"}"),
+        .tool_name = try ownedText("Edit"),
+        .args_json = try ownedText("{\"path\":\"src/main.zig\",\"operation\":\"hash_range_replace\",\"start_line\":2,\"start_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"content\":\"new line\"}"),
     } };
     defer hashline_event.deinit(std.testing.allocator);
     try state.applyEvent(hashline_event);
-    try std.testing.expect(std.mem.indexOf(u8, state.preview.content, "hashline edit preview") != null);
+    try std.testing.expect(std.mem.indexOf(u8, state.preview.content, "edit preview") != null);
     try std.testing.expect(std.mem.indexOf(u8, state.preview.content, "+ 2|new line") != null);
 
     var insert_after_event = tui_runtime.TuiEvent{ .tool_approval_requested = .{
         .tool_call_id = try ownedText("call-hash-insert-after"),
-        .tool_name = try ownedText("hashline_edit"),
-        .args_json = try ownedText("{\"path\":\"src/main.zig\",\"operation\":\"insert_after\",\"start_line\":10,\"start_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"replacement\":\"inserted\"}"),
+        .tool_name = try ownedText("Edit"),
+        .args_json = try ownedText("{\"path\":\"src/main.zig\",\"operation\":\"insert\",\"start_line\":11,\"start_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"content\":\"inserted\"}"),
     } };
     defer insert_after_event.deinit(std.testing.allocator);
     try state.applyEvent(insert_after_event);
@@ -3300,8 +3314,8 @@ test "AppState approval flow transitions pending to approved and rejected" {
 
     var blank_line_event = tui_runtime.TuiEvent{ .tool_approval_requested = .{
         .tool_call_id = try ownedText("call-hash-blank"),
-        .tool_name = try ownedText("hashline_edit"),
-        .args_json = try ownedText("{\"path\":\"src/main.zig\",\"operation\":\"replace_range\",\"start_line\":2,\"start_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"replacement\":\"line1\\n\\nline3\"}"),
+        .tool_name = try ownedText("Edit"),
+        .args_json = try ownedText("{\"path\":\"src/main.zig\",\"operation\":\"hash_range_replace\",\"start_line\":2,\"start_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"content\":\"line1\\n\\nline3\"}"),
     } };
     defer blank_line_event.deinit(std.testing.allocator);
     try state.applyEvent(blank_line_event);
@@ -3313,11 +3327,11 @@ test "AppState approval flow transitions pending to approved and rejected" {
     while (large_replacement.items.len < max_hashline_preview_bytes + 4096) {
         try large_replacement.appendSlice(std.testing.allocator, "large replacement line\n");
     }
-    const large_args = try std.fmt.allocPrint(std.testing.allocator, "{{\"path\":\"src/main.zig\",\"operation\":\"replace_range\",\"start_line\":2,\"start_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"replacement\":{f}}}", .{std.json.fmt(large_replacement.items, .{})});
+    const large_args = try std.fmt.allocPrint(std.testing.allocator, "{{\"path\":\"src/main.zig\",\"operation\":\"hash_range_replace\",\"start_line\":2,\"start_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"content\":{f}}}", .{std.json.fmt(large_replacement.items, .{})});
     defer std.testing.allocator.free(large_args);
     var large_event = tui_runtime.TuiEvent{ .tool_approval_requested = .{
         .tool_call_id = try ownedText("call-hash-large"),
-        .tool_name = try ownedText("hashline_edit"),
+        .tool_name = try ownedText("Edit"),
         .args_json = try ownedText(large_args),
     } };
     defer large_event.deinit(std.testing.allocator);
@@ -3327,7 +3341,7 @@ test "AppState approval flow transitions pending to approved and rejected" {
 
     try std.testing.expectEqual(AppMode.approval, state.mode);
     try std.testing.expectEqual(ApprovalStatus.pending, state.approval.status);
-    try std.testing.expectEqualStrings("hashline_edit", state.approval.tool_name);
+    try std.testing.expectEqualStrings("Edit", state.approval.tool_name);
     try std.testing.expectEqualStrings("call-hash-large", state.approval.tool_call_id);
 
     state.setApprovalDecision(true, true);

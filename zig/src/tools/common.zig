@@ -15,7 +15,6 @@ pub const default_shell_limit: usize = tool_output_threshold;
 pub const default_file_limit: usize = tool_output_threshold;
 pub const default_search_limit: usize = tool_output_threshold;
 pub const default_fallback_limit: usize = tool_output_threshold;
-pub const default_hashline_limit: usize = 20 * 1024;
 pub const snippet_bytes: usize = 512;
 
 pub const ToolOutputLimits = struct {
@@ -68,8 +67,8 @@ fn classifyTool(tool_name: []const u8) ToolKind {
 }
 
 fn matchesToolName(tool_name: []const u8, token: []const u8) bool {
-    if (std.mem.eql(u8, tool_name, token)) return true;
-    if (!std.mem.startsWith(u8, tool_name, token)) return false;
+    if (std.ascii.eqlIgnoreCase(tool_name, token)) return true;
+    if (!std.ascii.startsWithIgnoreCase(tool_name, token)) return false;
     if (tool_name.len <= token.len) return false;
     const separator = tool_name[token.len];
     return separator == '_' or separator == '-';
@@ -459,13 +458,13 @@ fn summarizeArtifactBackedOutput(allocator: std.mem.Allocator, combined: []const
         const stderr_tail = stderr[stderr_tail_start..];
         return std.fmt.allocPrint(
             allocator,
-            "output stored as artifact\nbytes: {d}\nlines: {d}\nartifact_reference: {s}\nmodel_safe_retrieval: use artifact_retrieve mode \"preview\" (default), \"range\", or \"grep\" with this reference. Use \"full_for_context\" only when the complete output is required by the model.\ndisplay: the full output stays on disk at the artifact path; the transcript shows a capped preview only.\nhead:\n{s}\ntail:\n{s}\nstderr head:\n{s}\nstderr tail:\n{s}",
+            "output stored as artifact\nbytes: {d}\nlines: {d}\nartifact_reference: {s}\nmodel_safe_retrieval: use Output mode \"preview\" (default), \"range\", or \"grep\" with this reference. Use \"full_for_context\" only when the complete output is required by the model.\ndisplay: the full output stays on disk at the artifact path; the transcript shows a capped preview only.\nhead:\n{s}\ntail:\n{s}\nstderr head:\n{s}\nstderr tail:\n{s}",
             .{ combined.len, countLines(combined), artifact_path, head, tail, stderr_head, stderr_tail },
         );
     }
     return std.fmt.allocPrint(
         allocator,
-        "output stored as artifact\nbytes: {d}\nlines: {d}\nartifact_reference: {s}\nmodel_safe_retrieval: use artifact_retrieve mode \"preview\" (default), \"range\", or \"grep\" with this reference. Use \"full_for_context\" only when the complete output is required by the model.\ndisplay: the full output stays on disk at the artifact path; the transcript shows a capped preview only.\nhead:\n{s}\ntail:\n{s}",
+        "output stored as artifact\nbytes: {d}\nlines: {d}\nartifact_reference: {s}\nmodel_safe_retrieval: use Output mode \"preview\" (default), \"range\", or \"grep\" with this reference. Use \"full_for_context\" only when the complete output is required by the model.\ndisplay: the full output stays on disk at the artifact path; the transcript shows a capped preview only.\nhead:\n{s}\ntail:\n{s}",
         .{ combined.len, countLines(combined), artifact_path, head, tail },
     );
 }
@@ -800,4 +799,13 @@ test "artifact retrieval rejects symlink targets" {
     defer root.deleteFile(defaultIo(), ".oapx/artifact-outside.txt") catch {};
     try root.symLink(defaultIo(), "../artifact-outside.txt", ".oapx/tool-artifacts/link.txt", .{ .is_directory = false });
     try std.testing.expectError(error.InvalidArtifactReference, retrieveArtifact(std.testing.allocator, ".oapx/tool-artifacts/link.txt", 1024));
+}
+
+test "output limits classify the built-in names whatever their case" {
+    const limits = ToolOutputLimits{ .shell = 8, .file = 16, .search = 24, .fallback = 4 };
+    try std.testing.expectEqual(@as(usize, 8), limits.forTool("Shell"));
+    try std.testing.expectEqual(@as(usize, 16), limits.forTool("Read"));
+    try std.testing.expectEqual(@as(usize, 16), limits.forTool("Edit"));
+    try std.testing.expectEqual(@as(usize, 16), limits.forTool("Write"));
+    try std.testing.expectEqual(@as(usize, 4), limits.forTool("Output"));
 }

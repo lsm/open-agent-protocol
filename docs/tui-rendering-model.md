@@ -334,7 +334,7 @@ code paths; add a transcript row instead.
   and a relative path is joined against the same base the tool joins against, which is
   what retires #587's split.
 
-  The session owns a working directory, so a `cd` now persists. `shell_execute` reports the
+  The session owns a working directory, so a `cd` now persists. `Shell` reports the
   directory it ended in through its `details_json` (`working_directory`,
   `working_directory_observed`). The runtime adopts that directory only when the command
   moved — the reported directory differs from the one the call started in — and when it

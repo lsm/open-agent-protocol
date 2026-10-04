@@ -108,8 +108,8 @@ fn reportDirectory(term: std.process.Child.Term, parsed: ?[]const u8, start: []c
 }
 
 pub const execute_tool = agent.AgentTool{
-    .label = "Shell Execute",
-    .name = "shell_execute",
+    .label = "Shell",
+    .name = "Shell",
     .description = "Run a shell command in the workspace and return stdout, stderr, exit status, duration, and byte counts. Large output is stored as a retrievable artifact.",
     .short_description = "Run shell command; large output becomes artifact.",
     .parameters_schema_json = schema_execute,
@@ -223,7 +223,7 @@ pub fn execute(
         \\{s}
     , .{ result.stdout, result.stderr });
     defer allocator.free(text);
-    var made = try common.makeTextResultWithArtifact(allocator, .{ .tool_name = "shell_execute", .call_id = tool_call_id, .text = text, .details_json = details });
+    var made = try common.makeTextResultWithArtifact(allocator, .{ .tool_name = "Shell", .call_id = tool_call_id, .text = text, .details_json = details });
     defer if (made.artifact_path) |path| allocator.free(path);
     made.result.working_directory = ai_types.OwnedSlice(u8).initOwned(owned_directory);
     made.result.working_directory_observed = report.observed;

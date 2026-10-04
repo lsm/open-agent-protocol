@@ -7,7 +7,7 @@ pub const schema_apply =
     \\{"type":"object","properties":{"description":{"type":"string","description":"Why this tool call is needed and what information or change it is intended to produce."},"workspace_root":{"type":"string"},"path":{"type":"string"},"operation":{"type":"string","enum":["find_replace","line_replace","insert","delete","hash_replace","hash_range_replace"]},"find":{"type":"string"},"replace":{"type":"string"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1},"line_hash":{"type":"string"},"start_hash":{"type":"string"},"end_hash":{"type":"string"},"content":{"type":"string"}},"required":["description","workspace_root","path","operation"],"additionalProperties":false}
 ;
 
-pub const apply_tool = agent.AgentTool{ .label = "Structured Edit", .name = "edit_apply", .description = "Apply structured edits: find/replace, line range replace, insert, delete, hash_replace, or hash_range_replace. Hash operations reject stale reads before mutation.", .short_description = "Edit file; supports hash-anchored replacements.", .parameters_schema_json = schema_apply, .execute = applyExecute, .operation = .write };
+pub const apply_tool = agent.AgentTool{ .label = "Edit", .name = "Edit", .description = "Apply structured edits: find/replace, line range replace, insert, delete, hash_replace, or hash_range_replace. Hash operations reject stale reads before mutation; insert takes an optional line_hash of the line it goes before, and delete optional start_hash and end_hash.", .short_description = "Edit file; supports hash-anchored replacements.", .parameters_schema_json = schema_apply, .execute = applyExecute, .operation = .write };
 
 pub fn applyExecute(tool_call_id: []const u8, args_json: []const u8, cancel_token: ?ai_types.CancelToken, on_update_ctx: ?*anyopaque, on_update: ?agent.ToolUpdateCallback, allocator: std.mem.Allocator) anyerror!agent.AgentToolResult {
     _ = tool_call_id;
@@ -38,10 +38,13 @@ pub fn applyExecute(tool_call_id: []const u8, args_json: []const u8, cancel_toke
     } else if (std.mem.eql(u8, operation, "insert")) blk: {
         const start_line = common.optionalUsize(obj, "start_line", 0);
         const content = try common.requiredString(obj, "content");
+        if (common.optionalString(obj, "line_hash")) |expected| try checkLineHash(original, start_line, expected);
         break :blk try applyLineRange(allocator, original, start_line, start_line -| 1, content, &replacement_count);
     } else if (std.mem.eql(u8, operation, "delete")) blk: {
         const start_line = common.optionalUsize(obj, "start_line", 0);
         const end_line = common.optionalUsize(obj, "end_line", start_line);
+        if (common.optionalString(obj, "start_hash")) |expected| try checkLineHash(original, start_line, expected);
+        if (common.optionalString(obj, "end_hash")) |expected| try checkLineHash(original, end_line, expected);
         break :blk try applyLineRange(allocator, original, start_line, end_line, "", &replacement_count);
     } else if (std.mem.eql(u8, operation, "hash_replace")) blk: {
         const start_line = common.optionalUsize(obj, "start_line", 0);
@@ -124,6 +127,12 @@ fn applyLineRange(allocator: std.mem.Allocator, input: []const u8, start_line: u
     if (content.len > 0 and (content[content.len - 1] != '\n') and end < input.len) try out.append(allocator, '\n');
     try out.appendSlice(allocator, input[end..]);
     return out.toOwnedSlice(allocator);
+}
+
+fn checkLineHash(input: []const u8, line: usize, expected_hash: []const u8) !void {
+    const current = getLine(input, line) orelse return error.LineOutOfBounds;
+    const actual = common.lineHash(current);
+    if (!std.mem.eql(u8, expected_hash, &actual)) return error.StaleHash;
 }
 
 fn applyHashReplace(allocator: std.mem.Allocator, input: []const u8, line: usize, expected_hash: []const u8, content: []const u8, count: *usize) ![]u8 {
@@ -256,4 +265,28 @@ test "edit rejects invalid inputs" {
     const binary_args = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"path\":\"bin.dat\",\"operation\":\"find_replace\",\"find\":\"a\",\"replace\":\"b\"}}", .{root});
     defer std.testing.allocator.free(binary_args);
     try std.testing.expectError(error.BinaryFileRejected, applyExecute("call", binary_args, null, null, null, std.testing.allocator));
+}
+
+test "edit insert and delete reject a stale anchor when given one" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cwd = try std.process.currentPathAlloc(common.defaultIo(), std.testing.allocator);
+    defer std.testing.allocator.free(cwd);
+    const root = try std.Io.Dir.path.join(std.testing.allocator, &.{ cwd, ".zig-cache", "tmp", tmp.sub_path[0..] });
+    defer std.testing.allocator.free(root);
+    try tmp.dir.writeFile(common.defaultIo(), .{ .sub_path = "a.txt", .data = "one\ntwo\nthree\n" });
+    const stale_insert = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"path\":\"a.txt\",\"operation\":\"insert\",\"start_line\":2,\"line_hash\":\"00\",\"content\":\"inserted\"}}", .{root});
+    defer std.testing.allocator.free(stale_insert);
+    try std.testing.expectError(error.StaleHash, applyExecute("call", stale_insert, null, null, null, std.testing.allocator));
+    const stale_delete = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"path\":\"a.txt\",\"operation\":\"delete\",\"start_line\":1,\"end_line\":2,\"start_hash\":\"00\"}}", .{root});
+    defer std.testing.allocator.free(stale_delete);
+    try std.testing.expectError(error.StaleHash, applyExecute("call", stale_delete, null, null, null, std.testing.allocator));
+    const two = common.lineHash("two");
+    const fresh_insert = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"path\":\"a.txt\",\"operation\":\"insert\",\"start_line\":2,\"line_hash\":\"{s}\",\"content\":\"inserted\"}}", .{ root, &two });
+    defer std.testing.allocator.free(fresh_insert);
+    var inserted = try applyExecute("call", fresh_insert, null, null, null, std.testing.allocator);
+    defer inserted.deinit(std.testing.allocator);
+    const data = try tmp.dir.readFileAlloc(common.defaultIo(), "a.txt", std.testing.allocator, .limited(1024));
+    defer std.testing.allocator.free(data);
+    try std.testing.expectEqualStrings("one\ninserted\ntwo\nthree\n", data);
 }

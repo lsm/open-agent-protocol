@@ -167,8 +167,8 @@ Two boundaries are worth stating because they are not the helper's to decide:
   packs both streams into `text` before calling, so for shell the limit already covers
   both; the other callers pass no stderr at all. Changing that split is a caller decision.
 - **How the stored bytes are read back.** A file-backed artifact is referenced by its
-  `.oapx/tool-artifacts/…` path, which is what `artifact_retrieve` takes, so the summary's
-  `artifact_retrieve` advice holds for those. A store-backed artifact is referenced by a
+  `.oapx/tool-artifacts/…` path, which is what `Output` takes, so the summary's
+  `Output` advice holds for those. A store-backed artifact is referenced by a
   `makai-artifact://` URI that the tool's path-based reader refuses, and is read through
   the artifact store instead. Both routes exist; the tool covers only the first.
 
@@ -380,12 +380,3 @@ cursor has passed would be invisible (PR #288 c1 P1). The contract:
   end-of-session release — the early rows land in scrollback instead of being clipped
   out of the held window.
 
-## Hashline read and edit budgets
-
-`hashline_read` and `hashline_edit` do not share the text-tool output limits. A read
-returns at most 20 KiB of anchored lines (`common.default_hashline_limit`); a caller's
-explicit `byte_limit` replaces that default and is still capped by `max_file_bytes`; and
-an edit preview caps its rendered replacement at the same 20 KiB. The budget is a hashline
-budget, not the file tool's inline limit: it is declared on its own, so moving a text
-tool's inline limit does not move it. Neither hashline tool stores an artifact — both
-return capped text plus their own byte telemetry (`returned_bytes`, `returned_text_bytes`).

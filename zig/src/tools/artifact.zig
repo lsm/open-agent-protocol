@@ -20,8 +20,8 @@ const RetrieveMode = enum {
 };
 
 pub const retrieve_tool = agent.AgentTool{
-    .label = "Artifact Retrieve",
-    .name = "artifact_retrieve",
+    .label = "Output",
+    .name = "Output",
     .description = "Inspect output previously stored as a local artifact. Defaults to a capped preview so large outputs are not inserted into model context. Use explicit modes for line ranges, literal grep, or full context retrieval.",
     .short_description = "Preview, filter, or explicitly retrieve stored tool output.",
     .parameters_schema_json =
@@ -126,7 +126,7 @@ fn previewContent(allocator: std.mem.Allocator, reference: []const u8, data: []c
         try writer.writeAll("\n...\ntail:\n");
         try writeLastLines(allocator, writer, data, tail_lines);
     }
-    try writer.writeAll("\n\nFor more, call artifact_retrieve with mode \"range\" or \"grep\". Use \"full_for_context\" only when the complete output is actually needed by the model.");
+    try writer.writeAll("\n\nFor more, call Output with mode \"range\" or \"grep\". Use \"full_for_context\" only when the complete output is actually needed by the model.");
     const raw = try out.toOwnedSlice();
     return truncateWithNotice(allocator, raw, max_bytes);
 }

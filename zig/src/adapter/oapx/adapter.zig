@@ -11,7 +11,7 @@ const permission = @import("permission");
 const interactions = @import("interactions.zig");
 
 pub const endpoint_id = "oapx.agent";
-pub const capability_revision = "oapx-agent-v5";
+pub const capability_revision = "oapx-agent-v6";
 
 pub const journal_capacity: usize = 1 << 16;
 pub const queue_capacity: usize = 8;
