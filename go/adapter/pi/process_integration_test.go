@@ -207,6 +207,95 @@ func TestPiProcessCompactsPastItsThresholdInsideTheRun(t *testing.T) {
 	}
 }
 
+func TestPiProcessCompactsOnRequestAndOnCancel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping opt-in Pi process integration in short mode")
+	}
+	if os.Getenv("OAP_PI_INTEGRATION") != "1" {
+		t.Skipf("set OAP_PI_INTEGRATION=1 and absolute OAP_PI_BIN pointing to Pi %s to run; optionally set OAP_PI_SHA256 for exact-artifact evidence", PinnedVersion)
+	}
+	binary := verifiedPiBinary(t)
+	for _, tc := range []struct {
+		name    string
+		summary providertest.Case
+		cancel  bool
+		want    protocol.EnvelopeType
+		outcome protocol.CompactionOutcome
+	}{
+		{name: "requested", summary: providertest.Success, want: protocol.TypeRunCompleted, outcome: protocol.CompactionCompleted},
+		{name: "cancelled", summary: providertest.Slow, cancel: true, want: protocol.TypeRunCancelled, outcome: protocol.CompactionCancelled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := providertest.New(t, providertest.Config{OpenAIKey: piMockSecret})
+			mock.Enqueue(providertest.OpenAIResponses, providertest.Success)
+			mock.Enqueue(providertest.OpenAIResponses, tc.summary)
+			root := t.TempDir()
+			agentDir := filepath.Join(root, "agent")
+			if err := os.MkdirAll(agentDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			files := map[string]any{
+				"models.json": map[string]any{"providers": map[string]any{"oap-loopback": map[string]any{
+					"baseUrl": mock.OpenAIBaseURL(), "api": "openai-responses", "apiKey": "$OAP_PI_MOCK_KEY",
+					"models": []map[string]any{{"id": "fixture-model", "name": "OAP loopback fixture"}},
+				}}},
+				"settings.json": map[string]any{"compaction": map[string]any{"keepRecentTokens": 1}},
+			}
+			for name, content := range files {
+				data, err := json.Marshal(content)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(agentDir, name), data, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			implementation := newPinnedPi(t, binary, root, piEnvironment(t, root, piMockSecret), []string{"--provider", "oap-loopback", "--model", "fixture-model"})
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			session, err := implementation.Open(ctx, base.OpenRequest{SessionID: "pi-compact-session", Participant: protocol.Participant{ID: "integration-user"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer session.Close(context.Background())
+			_, turn, err := session.Submit(ctx, base.SubmitRequest{Request: protocol.MessageSubmitRequest{
+				SessionID: "pi-compact-session", Delivery: protocol.DeliveryAuto,
+				Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("Reply with the fixture response.")}},
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			adaptertest.Drain(t, turn, 30*time.Second)
+			focus := "keep the fixture"
+			admission, stream, err := session.(base.Compactor).Compact(ctx, base.CompactRequest{Request: protocol.SessionCompactRequest{SessionID: "pi-compact-session", Focus: &focus}, EnvelopeID: "compact"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.cancel {
+				time.Sleep(300 * time.Millisecond)
+				if _, err := session.Cancel(ctx, admission.RunID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			events := adaptertest.Drain(t, stream, 30*time.Second)
+			var ended protocol.RunCompactionEndedPayload
+			for _, event := range events {
+				if event.Type == protocol.TypeRunCompactionEnded {
+					if err := event.DecodePayload(&ended); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if events[len(events)-1].Type != tc.want || ended.Outcome != tc.outcome {
+				t.Fatalf("events=%v outcome=%s, want %s ending %s", eventTypes(events), ended.Outcome, tc.outcome, tc.want)
+			}
+			if requests := mock.RequestsFor(providertest.OpenAIResponses); len(requests) != 2 {
+				t.Fatalf("Responses requests=%d, want the turn and the summary", len(requests))
+			}
+		})
+	}
+}
+
 func verifiedPiBinary(t *testing.T) string {
 	t.Helper()
 	binary := adaptertest.VerifiedBinary(t, "OAP_PI_BIN", "OAP_PI_SHA256", "a Pi "+PinnedVersion+" executable")

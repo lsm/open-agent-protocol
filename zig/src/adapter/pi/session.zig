@@ -87,6 +87,9 @@ pub const Reducer = struct {
     admitted_steers: std.ArrayList([]const u8) = .empty,
     emitted: std.ArrayList(std.json.Value) = .empty,
     compaction: []const u8 = "",
+    compacting: bool = false,
+    adopted: bool = false,
+    summary: ?std.json.Value = null,
 
     pub fn init(arena: std.mem.Allocator) Reducer {
         return .{ .arena = arena };
@@ -729,6 +732,10 @@ fn startCompaction(reducer: *Reducer, event: std.json.Value) !void {
         try failRun(reducer, "pi_invalid_compaction", message);
         return;
     }
+    if (reducer.compacting and !reducer.adopted and reducer.compaction.len != 0 and std.mem.eql(u8, reason.?, "requested")) {
+        reducer.adopted = true;
+        return;
+    }
     const open_id = reducer.compaction;
     const id = try reducer.counters.nextID(reducer.arena, "compaction");
     if (open_id.len != 0) {
@@ -783,6 +790,7 @@ fn endCompaction(reducer: *Reducer, event: std.json.Value) !void {
             try message.put(reducer.arena, "role", Reducer.str("assistant"));
             try message.put(reducer.arena, "content", Reducer.str(summary));
             try payload.put(reducer.arena, "summary", .{ .object = message.* });
+            if (reducer.compacting) reducer.summary = .{ .object = message.* };
         }
         if (memberOf(result.?, "estimatedTokensAfter")) |tokens| {
             if (tokens == .integer) try payload.put(reducer.arena, "history_tokens", tokens);
@@ -1111,6 +1119,58 @@ fn statusUpdate(reducer: *Reducer, status: []const u8, pending_input: []const u8
     if (pending_input.len != 0) try payload.put(reducer.arena, "pending_user_input_id", Reducer.str(pending_input));
     try payload.put(reducer.arena, "updated_at_ms", .{ .integer = updated_at });
     try reducer.emit("run.status.updated", .{ .object = payload.* }, false);
+}
+
+pub fn openCompaction(reducer: *Reducer) !void {
+    reducer.started = true;
+    reducer.compacting = true;
+    const started_at = reducer.counters.nextTick();
+    const payload = try reducer.object();
+    try payload.put(reducer.arena, "session_id", Reducer.str(reducer.session_id));
+    try payload.put(reducer.arena, "run_id", Reducer.str(reducer.run_id));
+    try payload.put(reducer.arena, "status", Reducer.str("running"));
+    if (reducer.model_id.len > 0) try payload.put(reducer.arena, "model_id", Reducer.str(reducer.model_id));
+    try payload.put(reducer.arena, "started_at_ms", .{ .integer = started_at });
+    try reducer.emit("run.started", .{ .object = payload.* }, false);
+    const id = try reducer.counters.nextID(reducer.arena, "compaction");
+    reducer.compaction = id;
+    const opened = try reducer.object();
+    try opened.put(reducer.arena, "session_id", Reducer.str(reducer.session_id));
+    try opened.put(reducer.arena, "run_id", Reducer.str(reducer.run_id));
+    try opened.put(reducer.arena, "compaction_id", Reducer.str(id));
+    try opened.put(reducer.arena, "reason", Reducer.str("requested"));
+    try reducer.emit("run.compaction.started", .{ .object = opened.* }, false);
+}
+
+pub fn settleCompaction(reducer: *Reducer, success: bool, data: ?std.json.Value, message: []const u8) !void {
+    if (reducer.terminal) return;
+    const payload = try reducer.object();
+    try payload.put(reducer.arena, "session_id", Reducer.str(reducer.session_id));
+    try payload.put(reducer.arena, "run_id", Reducer.str(reducer.run_id));
+    if (success) {
+        const summary = reducer.summary orelse fresh: {
+            const text = if (data) |value| textOf(value, "summary") else "";
+            if (text.len == 0) {
+                try failRun(reducer, "pi_invalid_compaction", "Pi's compact response carried no summary");
+                return;
+            }
+            const built = try reducer.object();
+            try built.put(reducer.arena, "id", Reducer.str(try reducer.counters.nextID(reducer.arena, "message")));
+            try built.put(reducer.arena, "role", Reducer.str("assistant"));
+            try built.put(reducer.arena, "content", Reducer.str(text));
+            break :fresh std.json.Value{ .object = built.* };
+        };
+        try payload.put(reducer.arena, "final_response", summary);
+        try payload.put(reducer.arena, "stop_reason", Reducer.str("compacted"));
+        try reducer.emit("run.completed", .{ .object = payload.* }, true);
+        return;
+    }
+    if (reducer.cancel_intent) {
+        try payload.put(reducer.arena, "reason", Reducer.str("Pi cancelled the compaction after abort intent"));
+        try reducer.emit("run.cancelled", .{ .object = payload.* }, true);
+        return;
+    }
+    try failWith(reducer, "pi_compaction_failed", message);
 }
 
 pub fn cancel(reducer: *Reducer) !void {
