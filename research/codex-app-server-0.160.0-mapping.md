@@ -61,7 +61,7 @@ ignored:
 The adapter code does not change, and `internal/native` in Go and its Zig
 counterpart are unchanged. The capability descriptor is unchanged except for
 the endpoint version it reports, which a revision names, so the revision moves
-to `codex-appserver-0.160.0-oap-v1`, served by both trees.
+to `codex-appserver-0.160.0-oap-v1`, served by both trees, until the live settings below moved it to `v2`.
 
 ## Corpus
 
@@ -94,3 +94,37 @@ Responses mock.
 Not re-run: approval, file-change, MCP and user-input turns against the real
 process, which need a mock that scripts tool calls. The schema shows those
 payloads unchanged.
+
+## Live session settings
+
+Decision 0045's `session.settings.update.request` is served for
+`reasoning_level` only, by both trees:
+
+- `TurnStartParams.effort` is documented as overriding the effort "for this
+  turn and subsequent turns". The adapter keeps an accepted level and sends it
+  as the next `turn/start`'s `effort` (`off` as `none`, as at open), then stops
+  sending it once a turn is admitted. A `turn/start` Codex refuses keeps it for
+  the next one.
+- `compaction_policy` is refused `unsupported_feature` (unadvertised): the
+  limit is `model_auto_compact_token_limit` in `thread/start`'s config, and no
+  turn-level parameter or thread request at this pin changes it.
+  `config/value/write` writes the user's `config.toml`, which is not a session
+  setting.
+- Refused: a busy session (`run_active`) and another session's id
+  (`run_not_found`).
+
+Codex validates nothing about the value: against the Responses mock, with the
+model's metadata unknown, `high`, `xhigh`, `max` and an invented `bogus` all
+reached the request's `reasoning.effort` verbatim, and a turn that omitted
+`effort` after one that sent `high` still asked for `high`. The adapter takes
+the same levels it takes at open.
+
+`TestPinnedCodexProcessTakesALiveReasoningLevel` (`OAP_CODEX_INTEGRATION=1`,
+with the binary digest above) updates the level to `high` and runs two turns;
+both Responses requests ask for effort `high`. It passed 3x.
+`oapx serve agent --backend codex` served the same update, refused a live
+policy, and ran both turns at `high`; the trace validates.
+
+`session.reasoning` adds `session_live`, so the revision moves to
+`codex-appserver-0.160.0-oap-v2`. The writes conversation was re-recorded with
+`OAP_UPDATE_CODEX_CONVERSATION=1`; only its descriptor and revision changed.

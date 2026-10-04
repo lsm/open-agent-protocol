@@ -129,7 +129,20 @@ func (client *processClient) Close() error {
 }
 
 func (implementation *Adapter) Probe(context.Context) (adapter.Descriptor, error) {
-	features := map[string]protocol.FeatureSupport{
+	endpoint := protocol.EndpointDescriptor{ID: endpointID, Name: "Codex app-server Adapter", Version: CodexCommit, Adapter: "codex-appserver-stdio"}
+	return adapter.Descriptor{
+		Capabilities:               protocol.CapabilityDescriptor{Endpoint: endpoint, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: advertisedFeatures()},
+		CapabilityRevision:         CapabilityRevision,
+		Journal:                    adapter.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportDegraded, Capacity: implementation.config.JournalCapacity},
+		MaxActiveRunsPerSession:    1,
+		InteractiveGates:           true,
+		CancellationTarget:         "run",
+		CancellationImplementation: "native_turn_interrupt",
+	}, nil
+}
+
+func advertisedFeatures() map[string]protocol.FeatureSupport {
+	return map[string]protocol.FeatureSupport{
 		"protocol.initialize":           {Level: protocol.SupportNative},
 		"capabilities":                  {Level: protocol.SupportNative},
 		"session.open":                  {Level: protocol.SupportNative},
@@ -152,19 +165,9 @@ func (implementation *Adapter) Probe(context.Context) (adapter.Descriptor, error
 		"action.permissions":             {Level: protocol.SupportNative, Reason: "command and file-change reverse approvals are correlated and round-trip once"},
 		"user_input":                     {Level: protocol.SupportDegraded, Reason: "Codex option questions normalize to OAP single-choice input"},
 		protocol.FeatureOpenReopen:       {Level: protocol.SupportNative, Reason: "thread/resume reloads the thread the session's binding names and reports the model it resumed under"},
-		protocol.FeatureSessionReasoning: {Level: protocol.SupportNative, Modes: []string{protocol.ModeSessionOpen}, Reason: "thread/start's config sets model_reasoning_effort; off is Codex's none"},
+		protocol.FeatureSessionReasoning: {Level: protocol.SupportNative, Modes: []string{protocol.ModeSessionOpen, protocol.ModeSessionLive}, Reason: "thread/start's config sets model_reasoning_effort, and a live change rides the next turn/start's effort, which Codex keeps for the turns after it; off is Codex's none"},
 		protocol.FeatureCompactionPolicy: {Level: protocol.SupportNative, Modes: []string{protocol.ModeSessionOpen}, Reason: "thread/start's config sets model_auto_compact_token_limit for tokens; Codex has no off, and its share applies only at a turn's end, so both are refused"},
 	}
-	endpoint := protocol.EndpointDescriptor{ID: endpointID, Name: "Codex app-server Adapter", Version: CodexCommit, Adapter: "codex-appserver-stdio"}
-	return adapter.Descriptor{
-		Capabilities:               protocol.CapabilityDescriptor{Endpoint: endpoint, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features},
-		CapabilityRevision:         CapabilityRevision,
-		Journal:                    adapter.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportDegraded, Capacity: implementation.config.JournalCapacity},
-		MaxActiveRunsPerSession:    1,
-		InteractiveGates:           true,
-		CancellationTarget:         "run",
-		CancellationImplementation: "native_turn_interrupt",
-	}, nil
 }
 
 func (implementation *Adapter) Open(ctx context.Context, request adapter.OpenRequest) (adapter.Session, error) {
@@ -260,12 +263,8 @@ func (implementation *Adapter) Open(ctx context.Context, request adapter.OpenReq
 
 func codexSettings(request adapter.OpenRequest) (map[string]any, error) {
 	settings := map[string]any{}
-	switch request.ReasoningLevel {
-	case "":
-	case protocol.ReasoningOff:
-		settings["model_reasoning_effort"] = "none"
-	default:
-		settings["model_reasoning_effort"] = string(request.ReasoningLevel)
+	if request.ReasoningLevel != "" {
+		settings["model_reasoning_effort"] = codexEffort(request.ReasoningLevel)
 	}
 	if policy := request.CompactionPolicy; policy != nil {
 		switch policy.Kind {
@@ -280,6 +279,13 @@ func codexSettings(request adapter.OpenRequest) (map[string]any, error) {
 		return nil, nil
 	}
 	return settings, nil
+}
+
+func codexEffort(level protocol.ReasoningLevel) string {
+	if level == protocol.ReasoningOff {
+		return "none"
+	}
+	return string(level)
 }
 
 type systemClock struct{}

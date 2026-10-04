@@ -101,6 +101,7 @@ type TurnStartParams struct {
 	Model                 string      `json:"model,omitempty"`
 	ApprovalPolicy        string      `json:"approvalPolicy,omitempty"`
 	DeveloperInstructions string      `json:"developerInstructions,omitempty"`
+	Effort                string      `json:"effort,omitempty"`
 }
 
 type TurnStartResponse struct {

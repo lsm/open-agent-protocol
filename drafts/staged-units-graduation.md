@@ -5173,6 +5173,13 @@ recovery rather than choice. Below the window the session's threshold decides
 as before. Both move to `reference-memory-v17`, and the memory parity scenarios
 gain an overflow under `off`.
 
+Codex takes the reasoning level live, and only that. Both Codex adapters send
+the new level as the next `turn/start`'s `effort`, which Codex keeps for the
+turns after it, at `session_live` under `codex-appserver-0.160.0-oap-v2`. Its
+compaction limit is a `thread/start` config value with no per-turn
+counterpart, so `session.compaction.policy` stays `session_open` and a live
+policy is refused unadvertised.
+
 Step 3, native evidence:
 
 - step 3 is pi's, as the decision names. Its first half is
