@@ -5173,6 +5173,12 @@ recovery rather than choice. Below the window the session's threshold decides
 as before. Both move to `reference-memory-v17`, and the memory parity scenarios
 gain an overflow under `off`.
 
+Hermes takes the reasoning level live. Both Hermes adapters send the
+`config.set` with key `reasoning` they send at open again between runs, at
+`session_live` under `hermes-v2026.9.24-oap-v3`; the gateway swaps the agent's
+reasoning config, so the next run asks for the new effort. A level Hermes
+refuses is refused unsatisfiable. Compression stays `unavailable`.
+
 Step 3, native evidence:
 
 - step 3 is pi's, as the decision names. Its first half is
