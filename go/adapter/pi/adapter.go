@@ -169,7 +169,11 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 	if err := ctx.Err(); err != nil {
 		return base.Descriptor{}, err
 	}
-	features := map[string]protocol.FeatureSupport{
+	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: endpointID, Name: "Pi RPC Adapter", Version: PinnedVersion, Adapter: "pi-rpc-stdio"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: advertisedFeatures()}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportDegraded, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: false, CancellationTarget: "run", CancellationImplementation: "native_abort_with_agent_settled_authority"}, nil
+}
+
+func advertisedFeatures() map[string]protocol.FeatureSupport {
+	return map[string]protocol.FeatureSupport{
 		"protocol.initialize":            {Level: protocol.SupportEmulated, Reason: "Pi has no negotiation; readiness is a get_state handshake"},
 		"capabilities":                   {Level: protocol.SupportEmulated, Reason: "conservative descriptor synthesized for the pinned RPC vocabulary"},
 		"session.open":                   {Level: protocol.SupportEmulated, Reason: "one ready Pi process is associated with one OAP session"},
@@ -186,12 +190,11 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		"action.tools":                   {Level: protocol.SupportDegraded, Reason: "observed tool lifecycle only; no portable catalog"},
 		"action.tools.execute":           {Level: protocol.SupportUnavailable, Reason: "Pi executes tools internally"},
 		"action.permissions":             {Level: protocol.SupportUnavailable, Reason: "extension dialogs are generic user input, not permissions"},
-		protocol.FeatureSessionReasoning: {Level: protocol.SupportNative, Modes: []string{protocol.ModeSessionOpen}, Reason: "set_thinking_level after the process is ready, confirmed by get_state; a level Pi does not run the model at is refused"},
+		protocol.FeatureSessionReasoning: {Level: protocol.SupportNative, Modes: []string{protocol.ModeSessionOpen, protocol.ModeSessionLive}, Reason: "set_thinking_level once the process is ready and again between runs, confirmed by get_state; a level Pi does not run the model at is refused, and a live change restores the level it replaced"},
 		protocol.FeatureSessionCompact:   {Level: protocol.SupportNative, Reason: "a compaction request on an idle session runs Pi's compact command, with focus as its custom instructions; Pi never continues the turn, so continue is refused"},
 		protocol.FeatureRunCompaction:    {Level: protocol.SupportNative, Reason: "Pi's compaction_start and compaction_end inside a prompt run, threshold and overflow alike, become the run's compaction events; it compacts before agent_settled, so the run is still open"},
-		protocol.FeatureCompactionPolicy: {Level: protocol.SupportNative, Modes: []string{protocol.ModeSessionOpen}, Reason: "set_auto_compaction switches Pi's own threshold on or off; its threshold is a settings-file reserve, so share and tokens are refused"},
+		protocol.FeatureCompactionPolicy: {Level: protocol.SupportNative, Modes: []string{protocol.ModeSessionOpen, protocol.ModeSessionLive}, Reason: "set_auto_compaction switches Pi's own threshold on or off, at open and between runs; its threshold is a settings-file reserve, so share and tokens are refused"},
 	}
-	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: endpointID, Name: "Pi RPC Adapter", Version: PinnedVersion, Adapter: "pi-rpc-stdio"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportDegraded, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: false, CancellationTarget: "run", CancellationImplementation: "native_abort_with_agent_settled_authority"}, nil
 }
 
 func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session, error) {
@@ -217,8 +220,8 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	if err := base.RefuseUnadvertisedSettings(req, descriptor.Capabilities); err != nil {
 		return nil, err
 	}
-	if policy := req.CompactionPolicy; policy != nil && policy.Kind != protocol.CompactionAuto && policy.Kind != protocol.CompactionOff {
-		return nil, &base.UnsupportedControlError{Feature: protocol.FeatureCompactionPolicy, Reason: base.ControlUnsatisfiable, Field: "compaction_policy", Detail: "Pi switches its own compaction on or off; its threshold lives in a settings file"}
+	if err := refuseUnsatisfiablePolicy(req.CompactionPolicy); err != nil {
+		return nil, err
 	}
 	client, initial, err := a.config.Factory.Start(ctx)
 	if err != nil {
@@ -276,6 +279,13 @@ func (s *Session) applySettings(ctx context.Context, req base.OpenRequest) error
 	s.reportsLevel = true
 	s.state.ReasoningLevel = req.ReasoningLevel
 	s.mu.Unlock()
+	return nil
+}
+
+func refuseUnsatisfiablePolicy(policy *protocol.CompactionPolicy) error {
+	if policy != nil && policy.Kind != protocol.CompactionAuto && policy.Kind != protocol.CompactionOff {
+		return &base.UnsupportedControlError{Feature: protocol.FeatureCompactionPolicy, Reason: base.ControlUnsatisfiable, Field: "compaction_policy", Detail: "Pi switches its own compaction on or off; its threshold lives in a settings file"}
+	}
 	return nil
 }
 
