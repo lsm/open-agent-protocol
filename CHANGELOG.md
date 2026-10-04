@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.1.0-alpha.8] - 2026-10-04
+
+### Breaking changes
+
+- **opencode: change the reasoning level on a live session (0045)** ([#860](https://github.com/lsm/open-agent-protocol/pull/860))
+
+- `go/adapter/opencode`: the `Client` interface gains `Session` and `SwitchModel`, so a custom `Client` must implement both.
+
+- **adapter: compact the memory references for overflow past the reference window (0044)** ([#855](https://github.com/lsm/open-agent-protocol/pull/855))
+
+- `go/adapter`: `CapabilityRevision` (the memory reference) is now `reference-memory-v17`.
+
+- **serve: route the live settings update through both endpoints and the memory references (0045)** ([#850](https://github.com/lsm/open-agent-protocol/pull/850))
+
+- `go/adapter`: `CapabilityRevision` (the memory reference) is now `reference-memory-v16`.
+
+- **adapter: compact the memory reference adapters on their own past a threshold (0044, 0045)** ([#840](https://github.com/lsm/open-agent-protocol/pull/840))
+
+- `go/adapter`: the memory adapter's `CapabilityRevision` constant moves from `reference-memory-v14` to `reference-memory-v15`, since its descriptor now advertises `session.compaction.policy` and a changed `run.compaction`.
+
+- **adapter: execute compaction in the memory reference adapters** ([#837](https://github.com/lsm/open-agent-protocol/pull/837))
+
+- `go/adapter`: `CapabilityRevision` is now `reference-memory-v14`, since the memory descriptor gains `session.compact` and `run.compaction`. A caller that pins the old value must move with it.
+
+- **serve: order a steer's publication behind its response** ([#813](https://github.com/lsm/open-agent-protocol/pull/813))
+
+`go/serve`: `Hub.Published(protocol.SessionID)` is new, and a `steered` admission adopts no run. `go/client` and `clients/ts` are additive.
+
+### Merged pull requests
+
+- **decisions: accept 0045 session settings on their graduated evidence** ([#872](https://github.com/lsm/open-agent-protocol/pull/872)): Flips Decision 0045 (reasoning level and compaction policy as session settings) from proposed to accepted.
+- **codex: report the reasoning level a reopened thread resumed under (0045)** ([#871](https://github.com/lsm/open-agent-protocol/pull/871)): Decision 0045 says a reopened session reports the settings it resumed under, naming Codex's `thread/resume` `reasoningEffort` as the case.
+- **tools: cut the built-ins to Shell, Read, Edit and Write** ([#870](https://github.com/lsm/open-agent-protocol/pull/870)): The TUI's 12 built-in tools become 4, picked from usage across 42 recorded sessions (5,654 calls; `shell_execute` was 90%).
+- **tui: carry /compact and /autocompact over OAP (0044, 0045)** ([#869](https://github.com/lsm/open-agent-protocol/pull/869)): Closes #866, by a different route than the issue proposed: no native-wire spec change was needed.
+- **decisions: record that the hub-served oapx adapter compacts in 0044's status** ([#868](https://github.com/lsm/open-agent-protocol/pull/868)): #865 merged after #867 accepted 0044, so its status line was stale.
+- **decisions: accept 0044 compaction on its graduated evidence** ([#867](https://github.com/lsm/open-agent-protocol/pull/867)): Flips Decision 0044 (compaction) from proposed to accepted.
+- **oapx: compact on request and at the session's threshold in the hub-served adapter (0044)** ([#865](https://github.com/lsm/open-agent-protocol/pull/865)): The `--backend oapx` adapter now serves 0044 under `oapx-agent-v5`, using compaction the in-process runtime already has:
+- **tui: change the thinking level on an open OAP session (0045)** ([#864](https://github.com/lsm/open-agent-protocol/pull/864)): The TUI over OAP refused every thinking-level change once the session opened.
+- **opencode: open without waiting for event-stream headers in the Zig port** ([#863](https://github.com/lsm/open-agent-protocol/pull/863)): OpenCode 1.18.34 holds the `/event` stream's headers until the first event, so `oapx serve agent --backend opencode` never answered `session.open` against a real server.
+- **oapx: refuse a reopen on the default agent endpoint** ([#862](https://github.com/lsm/open-agent-protocol/pull/862)): `oapx serve agent` doesn't advertise `session.open.reopen` but answered a reopen of a never-opened session with a fresh session, failing `goap conformance`.
+- **sdk: have the fake host wait for each tool_result before ending the run** ([#861](https://github.com/lsm/open-agent-protocol/pull/861)): Fixes a flake in `TestAgentRunReportsUnknownTools` (and the other tool-call tests): the fake host ended the run 20ms after `tool_execute` without reading stdin, so `Agent.Run` could return before the `tool_result` was logged (CI run…
+- **opencode: change the reasoning level on a live session (0045)** ([#860](https://github.com/lsm/open-agent-protocol/pull/860)): Both OpenCode adapters serve `session.settings.update.request` for the reasoning level: `POST /api/session/:id/model` with the session's recorded model and the new variant, then `GET /api/session/:id` to confirm.
+- **hermes: change the reasoning level on a live session (0045)** ([#859](https://github.com/lsm/open-agent-protocol/pull/859)): Both Hermes adapters serve `session.settings.update.request` for the reasoning level by re-sending the open's `config.set reasoning` between runs.
+- **codex: change the reasoning level on a live session (0045)** ([#858](https://github.com/lsm/open-agent-protocol/pull/858)): Both Codex adapters serve `session.settings.update.request` for the reasoning level: it rides the next `turn/start`'s `effort`, which Codex keeps for later turns.
+- **pi: change the reasoning level and compaction policy on a live session (0045)** ([#857](https://github.com/lsm/open-agent-protocol/pull/857)): Both pi adapters serve `session.settings.update.request` with the commands they already send at open, so `session.reasoning` and `session.compaction.policy` gain `session_live` under `pi-v1.0.1-oap-v4`.
+- **oapx: take the reasoning level at open and on a live session (0045)** ([#856](https://github.com/lsm/open-agent-protocol/pull/856)): Decision 0045 names `oapx`'s endpoint as one of its two graduating implementations (Claude Code is the other).
+- **adapter: compact the memory references for overflow past the reference window (0044)** ([#855](https://github.com/lsm/open-agent-protocol/pull/855)): Makes the `overflow` compaction reason executable (it was fixtures-only).
+- **claude: change the reasoning level and compaction policy on a live session (0045)** ([#854](https://github.com/lsm/open-agent-protocol/pull/854)): First real harness for the live settings update (after #849/#850).
+- **pi: serve a compaction request through Pi's compact command (0044)** ([#853](https://github.com/lsm/open-agent-protocol/pull/853)): Completes Decision 0044's step 3 (pi native evidence).
+- **tui: show the session title in the terminal tab, the cwd row and zen** ([#852](https://github.com/lsm/open-agent-protocol/pull/852)): The session title was only visible in `/status` and the resume picker.
+- **pi: publish Pi's own compactions as the run's compaction events (0044)** ([#851](https://github.com/lsm/open-agent-protocol/pull/851)): First half of Decision 0044's step 3 (pi native evidence).
+- **serve: route the live settings update through both endpoints and the memory references (0045)** ([#850](https://github.com/lsm/open-agent-protocol/pull/850)): Second half of the live settings update (#849 put it on the wire).
+- **validation: put the live session settings update on the wire (0045)** ([#849](https://github.com/lsm/open-agent-protocol/pull/849)): Adds `session.settings.update.request`/`.response` from Decision 0045: change a live session's reasoning level or compaction policy.
+- **acp: move the pin to v1.10.2 and cagent v1.145.0** ([#848](https://github.com/lsm/open-agent-protocol/pull/848)): Moves ACP to v1.10.2 (schema-v1.24.1) and the gate agent to cagent v1.145.0, all latest stable.
+- **opencode: move the pin to v1.18.34** ([#847](https://github.com/lsm/open-agent-protocol/pull/847)): Moves OpenCode to v1.18.34, the latest stable.
+- **claude: pin 2.1.288** ([#846](https://github.com/lsm/open-agent-protocol/pull/846)): Moves the Claude Code pin from 2.1.282 to 2.1.288, with the TypeScript Agent SDK at 0.3.288 and the Python SDK at 0.2.163 (the newest; it bundles 2.1.286).
+- **tui: tell a dirty worktree apart from an unverified one** ([#845](https://github.com/lsm/open-agent-protocol/pull/845)): Follow-up to #842, covering the two issues left out of that PR.
+- **codex: pin rust-v0.160.0** ([#844](https://github.com/lsm/open-agent-protocol/pull/844)): Moves the Codex app-server pin from `rust-v0.157.0` to `rust-v0.160.0` (`a956835d`).
+- **pi: pin v1.0.1 and admit its new message and event members** ([#843](https://github.com/lsm/open-agent-protocol/pull/843)): Moves the Pi pin from v0.87.1 to v1.0.1.
+- **tui: offer a force remove when a session worktree is dirty** ([#842](https://github.com/lsm/open-agent-protocol/pull/842)): Deleting a session whose worktree has uncommitted changes was refused outright with a single line: *"Cannot delete this session: its worktree is dirty or Git could not verify it safely."* The guard is correct, but the dead end was not —…
+- **tui: let /autocompact take a token count beside a share, auto and off** ([#841](https://github.com/lsm/open-agent-protocol/pull/841)): `/autocompact` can now also compact after a fixed number of tokens, alongside `auto`, a share of the window, and `off`.
+- **adapter: compact the memory reference adapters on their own past a threshold (0044, 0045)** ([#840](https://github.com/lsm/open-agent-protocol/pull/840)): Before this, the memory reference adapters only compacted when asked, so threshold compaction (0044) was covered by validator fixtures alone.
+- **serve: admit a compaction on the hub's submit op (0044)** ([#839](https://github.com/lsm/open-agent-protocol/pull/839)): A hub client couldn't ask for a compaction.
+- **tui: zen long-reply scrolling, centre-out activity swap with a looping light, and a numbered trail** ([#838](https://github.com/lsm/open-agent-protocol/pull/838)): Zen polish, driven by real use.
+- **adapter: execute compaction in the memory reference adapters** ([#837](https://github.com/lsm/open-agent-protocol/pull/837)): Step 1 of Decision 0003's gate for compaction (Decision 0044): both memory reference adapters now execute it, in Go and Zig. #829 landed the wire and validator without this step.
+- **tui: slide zen's activity line up as it changes, and time only a stuck step** ([#836](https://github.com/lsm/open-agent-protocol/pull/836)): In zen, the line naming what the agent is doing no longer swaps in place.
+- **decisions: accept 0013 steer on its graduated evidence** ([#835](https://github.com/lsm/open-agent-protocol/pull/835)): Flips Decision 0013 (steer) from proposed to accepted.
+- **tui: test the zen note on every send path, and the end-of-run fade** ([#834](https://github.com/lsm/open-agent-protocol/pull/834)): Tests only.
+- **release: write the 0.1.0-alpha.7 changelog section** ([#833](https://github.com/lsm/open-agent-protocol/pull/833)): Cuts `v0.1.0-alpha.7`; per `docs/releasing.md` the section lands on `main` before the tag is pushed.
+- **validation: graduate the compaction wire surface in Go and Zig** ([#829](https://github.com/lsm/open-agent-protocol/pull/829)): Graduates the `+compaction` wire surface Decision 0044 proposes, tracking #613: the two envelope pairs in `schema/v0.1/` and the envelope `oneOf`, the Go protocol types in `go/protocol/`, the Go validator (`go/validation/compaction.go` and…
+- **adapter: execute steer in the pi adapters** ([#824](https://github.com/lsm/open-agent-protocol/pull/824)): The third T4 slice: pi executes `delivery: steer` in both trees.
+- **serve: order a steer's publication behind its response** ([#813](https://github.com/lsm/open-agent-protocol/pull/813)): Step 2 of Decision 0003's gate for [Decision 0013](decisions/0013-steer.md): publication ordering and buffering, so the admission response is observable before the settlement everywhere the unit is served.
+
 ## [0.1.0-alpha.7] - 2026-10-03
 
 ### Breaking changes
