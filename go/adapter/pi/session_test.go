@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -53,6 +54,8 @@ type fakeClient struct {
 	state     native.SessionState
 	err       error
 	closed    bool
+	replies   map[native.CommandType]json.RawMessage
+	refusals  map[native.CommandType]error
 }
 
 func newFakeClient() *fakeClient {
@@ -71,14 +74,29 @@ func (f *fakeClient) Call(_ context.Context, c native.Command, result any) error
 	if err != nil {
 		return err
 	}
+	f.mu.Lock()
+	refusal, reply := f.refusals[c.Type], f.replies[c.Type]
+	f.mu.Unlock()
+	if refusal != nil {
+		return refusal
+	}
 	if result != nil {
 		raw, ok := result.(*json.RawMessage)
 		if !ok {
 			return errors.New("expected raw result")
 		}
-		*raw, _ = json.Marshal(state)
+		if reply != nil {
+			*raw = reply
+		} else {
+			*raw, _ = json.Marshal(state)
+		}
 	}
 	return nil
+}
+func (f *fakeClient) reduced() {
+	ack := make(chan struct{})
+	f.inbound <- rpc.Inbound{Barrier: ack}
+	<-ack
 }
 func (f *fakeClient) Respond(_ context.Context, r native.ExtensionUIResponse) error {
 	f.mu.Lock()
@@ -2131,4 +2149,167 @@ func TestARunSettlingWithAnOpenCompactionEndsItFailedFirst(t *testing.T) {
 		t.Fatalf("compaction end = %+v", ended[0])
 	}
 	assertValidTrace(t, admission, events)
+}
+
+func compactTrace(t *testing.T, request protocol.SessionCompactRequest, admission protocol.SessionCompactResponse, events []protocol.Envelope, cancelled bool) {
+	t.Helper()
+	descriptor := testDescriptor(t)
+	envelope := func(typ protocol.EnvelopeType, id string, payload any, reply protocol.EnvelopeID) protocol.Envelope {
+		e, err := protocol.NewEnvelope(typ, protocol.EnvelopeID(id), payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.InReplyTo, e.SessionID = reply, "session"
+		if typ != protocol.TypeCapabilitiesRequest {
+			e.CapabilityRevision = descriptor.CapabilityRevision
+		}
+		return e
+	}
+	trace := []protocol.Envelope{
+		envelope(protocol.TypeCapabilitiesRequest, "caps", protocol.CapabilitiesRequest{}, ""),
+		envelope(protocol.TypeCapabilitiesResponse, "caps-r", descriptor.Capabilities, "caps"),
+		envelope(protocol.TypeSessionCompactRequest, "compact", request, ""),
+		envelope(protocol.TypeSessionCompactResponse, "compact-r", admission, "compact"),
+	}
+	trace[0].SessionID, trace[1].SessionID = "", ""
+	if cancelled {
+		trace = append(trace,
+			envelope(protocol.TypeRunCancelRequest, "cancel", protocol.RunCancelRequest{SessionID: "session", RunID: admission.RunID}, ""),
+			envelope(protocol.TypeRunCancelResponse, "cancel-r", protocol.RunCancelResponse{SessionID: "session", RunID: admission.RunID, Accepted: true, Status: protocol.RunCancelling}, "cancel"))
+	}
+	for i := range trace {
+		if trace[i].Type == protocol.TypeRunCancelRequest || trace[i].Type == protocol.TypeRunCancelResponse {
+			trace[i].RunID = admission.RunID
+		}
+	}
+	encoded, err := json.Marshal(append(trace, events...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result := validation.MustNew().ValidateBytes(encoded, "pi-compaction"); !result.Valid() {
+		t.Fatalf("compaction trace failed OAP validation: %v\n%s", result.Diagnostics, encoded)
+	}
+}
+
+func compactSummary() json.RawMessage {
+	return json.RawMessage(`{"summary":"the summary","firstKeptEntryId":"e1","tokensBefore":20,"estimatedTokensAfter":5,"usage":{},"details":{}}`)
+}
+
+func TestACompactionRequestRunsPiCompactAsARunOfItsOwn(t *testing.T) {
+	client := newFakeClient()
+	s := openTest(t, client, 32)
+	client.replies = map[native.CommandType]json.RawMessage{native.CommandCompact: compactSummary()}
+	client.onCall = func(c native.Command) {
+		if c.Type != native.CommandCompact {
+			return
+		}
+		client.emit(t, map[string]any{"type": "compaction_start", "reason": "manual"})
+		client.emit(t, map[string]any{"type": "compaction_end", "reason": "manual", "aborted": false, "willRetry": false, "result": compactSummary()})
+		client.reduced()
+	}
+	focus := "keep the plan"
+	request := protocol.SessionCompactRequest{SessionID: "session", Focus: &focus}
+	admission, stream, err := s.Compact(context.Background(), base.CompactRequest{Request: request, EnvelopeID: "compact"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := adaptertest.Drain(t, stream, time.Second)
+	want := []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeRunCompactionStarted, protocol.TypeRunCompactionEnded, protocol.TypeRunCompleted}
+	if got := eventTypes(events); !slices.Equal(got, want) {
+		t.Fatalf("events=%v want %v", got, want)
+	}
+	var started protocol.RunCompactionStartedPayload
+	if err := events[1].DecodePayload(&started); err != nil || started.Reason != protocol.CompactionRequested {
+		t.Fatalf("started=%+v err=%v", started, err)
+	}
+	ended := compactionEnded(t, events)[0]
+	var completed protocol.RunCompletedPayload
+	if err := events[3].DecodePayload(&completed); err != nil {
+		t.Fatal(err)
+	}
+	if completed.StopReason != "compacted" || ended.Summary == nil || completed.FinalResponse.ID != ended.Summary.ID {
+		t.Fatalf("completed=%+v ended=%+v, want the summary as the final response", completed, ended)
+	}
+	if !sentCommand(client, native.CommandCompact) || client.calls[len(client.calls)-1].CustomInstructions == nil || *client.calls[len(client.calls)-1].CustomInstructions != focus {
+		t.Fatalf("compact command = %+v, want the focus as custom instructions", client.calls[len(client.calls)-1])
+	}
+	compactTrace(t, request, admission, events, false)
+}
+
+func TestACompactionPiRefusesFailsTheRunWithPisReason(t *testing.T) {
+	client := newFakeClient()
+	s := openTest(t, client, 32)
+	client.refusals = map[native.CommandType]error{native.CommandCompact: &rpc.RemoteError{ID: "c", Command: native.CommandCompact, Message: "Nothing to compact (session too small)"}}
+	client.onCall = func(c native.Command) {
+		if c.Type != native.CommandCompact {
+			return
+		}
+		client.emit(t, map[string]any{"type": "compaction_start", "reason": "manual"})
+		client.emit(t, map[string]any{"type": "compaction_end", "reason": "manual", "aborted": false, "willRetry": false, "errorMessage": "Compaction failed: Nothing to compact (session too small)"})
+		client.reduced()
+	}
+	request := protocol.SessionCompactRequest{SessionID: "session"}
+	admission, stream, err := s.Compact(context.Background(), base.CompactRequest{Request: request})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := adaptertest.Drain(t, stream, time.Second)
+	assertRunFailedWith(t, events, "pi_compaction_failed", "Nothing to compact")
+	if ended := compactionEnded(t, events); len(ended) != 1 || ended[0].Outcome != protocol.CompactionFailed {
+		t.Fatalf("compaction ends=%+v", ended)
+	}
+	compactTrace(t, request, admission, events, false)
+}
+
+func TestACancelledCompactionSettlesCancelled(t *testing.T) {
+	client := newFakeClient()
+	s := openTest(t, client, 32)
+	aborted := make(chan struct{})
+	client.refusals = map[native.CommandType]error{native.CommandCompact: &rpc.RemoteError{ID: "c", Command: native.CommandCompact, Message: "Compaction cancelled"}}
+	client.onCall = func(c native.Command) {
+		switch c.Type {
+		case native.CommandAbort:
+			close(aborted)
+		case native.CommandCompact:
+			client.emit(t, map[string]any{"type": "compaction_start", "reason": "manual"})
+			<-aborted
+			client.emit(t, map[string]any{"type": "compaction_end", "reason": "manual", "aborted": true, "willRetry": false})
+			client.reduced()
+		}
+	}
+	request := protocol.SessionCompactRequest{SessionID: "session"}
+	admission, stream, err := s.Compact(context.Background(), base.CompactRequest{Request: request})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Cancel(context.Background(), admission.RunID); err != nil {
+		t.Fatal(err)
+	}
+	events := adaptertest.Drain(t, stream, time.Second)
+	if last := events[len(events)-1]; last.Type != protocol.TypeRunCancelled {
+		t.Fatalf("events=%v", eventTypes(events))
+	}
+	if ended := compactionEnded(t, events); len(ended) != 1 || ended[0].Outcome != protocol.CompactionCancelled {
+		t.Fatalf("compaction ends=%+v", ended)
+	}
+	compactTrace(t, request, admission, events, true)
+}
+
+func TestACompactionRequestIsRefusedWhatPiCannotDo(t *testing.T) {
+	client := newFakeClient()
+	s := openTest(t, client, 32)
+	var refusal *base.UnsupportedControlError
+	if _, _, err := s.Compact(context.Background(), base.CompactRequest{Request: protocol.SessionCompactRequest{SessionID: "session", Continue: true}}); !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureSessionCompact || refusal.Field != "continue" {
+		t.Fatalf("continue answered %v, want unsupported_feature naming continue", err)
+	}
+	if _, _, err := s.Compact(context.Background(), base.CompactRequest{Request: protocol.SessionCompactRequest{SessionID: "session", Delivery: protocol.DeliveryQueue}}); !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureDeliveryQueue {
+		t.Fatalf("queue answered %v, want unsupported_feature naming the queue key", err)
+	}
+	if _, _, err := s.Compact(context.Background(), base.CompactRequest{Request: protocol.SessionCompactRequest{SessionID: "session", Delivery: protocol.DeliverySteer}}); !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureDeliverySteer {
+		t.Fatalf("steer answered %v, want unsupported_feature naming the steer key", err)
+	}
+	submitTest(t, s)
+	if _, _, err := s.Compact(context.Background(), base.CompactRequest{Request: protocol.SessionCompactRequest{SessionID: "session"}}); !errors.Is(err, base.ErrRunActive) {
+		t.Fatalf("a busy session answered %v, want run_active", err)
+	}
 }

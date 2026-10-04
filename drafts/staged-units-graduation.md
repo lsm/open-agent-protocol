@@ -5157,6 +5157,13 @@ next run's start; neither takes a reasoning level. Both move to
 its refusals.
 
 
+The first harness follows. Both Claude Code adapters serve the update through
+`apply_flag_settings`, the request the CLI already takes at open, at
+`session_live` for both settings under `claude-code-2.1.288-oap-v2`; a live
+probe of the 2.1.288 binary shows the flags merge, a `null` clears one, and the
+effort the CLI sends follows. An update is refused `run_active` while a run is
+open, because the CLI would apply it to the running run's next request.
+
 The sixth slice makes `overflow` executable. Neither reference adapter has a
 provider to refuse a history, so each stands in for one: at a run's start, a
 history estimate past the reference model's 8192-token window compacts with
@@ -5172,8 +5179,10 @@ Still open, each for a later slice:
   in: both pi adapters publish the compactions Pi starts on its own as the
   run's `run.compaction` events at `native`, from frames recorded against the
   v1.0.1 binary, under `pi-v1.0.1-oap-v2`. Pi compacts between `agent_end`
-  and `agent_settled`, so each one is inside the run. Serving
-  `session.compact` through Pi's `compact` command is the other half.
+  and `agent_settled`, so each one is inside the run. Both pi adapters also serve
+  `session.compact` through Pi's `compact` command, as a run of its own that
+  opens with its `requested` compaction, at `native` under
+  `pi-v1.0.1-oap-v3`, so step 3 is complete.
 
 ## T5b. Auth state
 

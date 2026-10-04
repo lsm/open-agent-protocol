@@ -402,8 +402,8 @@ store and should not be read as one.
 - run resume/replay: `degraded`, bounded process-memory OAP journal only
 - transcript reconstruction, fork/tree navigation, and session switching:
   `unavailable` at the OAP boundary despite native codec evidence
-- compaction inside a run: `run.compaction` at `native` (see *Compaction
-  inside a run*); a requested compaction is not served yet
+- compaction: `run.compaction` and `session.compact` at `native` (see
+  *Compaction inside a run* and *Compaction on request*)
 - retry, queue controls, and bash passthrough: observed-only, no core claim
 
 ## Executable evidence corpus
@@ -576,8 +576,7 @@ that directory also holds Pi's credentials, so the adapter does not move it.
 
 Recorded for [Decision 0044](../decisions/0044-compaction.md), whose step 3 is
 pi's native evidence. This section covers the compactions Pi starts on its
-own; a `session.compact` request driving Pi's `compact` command is the next
-slice and is not advertised yet.
+own; *Compaction on request* below covers `session.compact`.
 
 **Where Pi compacts.** `core/agent-session.ts` runs an automatic compaction
 through `_runAutoCompaction(reason)` from three places: before a prompt is
@@ -641,3 +640,52 @@ same agent directory, published the same `run.compaction.started` /
 
 The advertised surface gains `run.compaction` at `native`, so the revision
 moves to `pi-v1.0.1-oap-v2`.
+
+## Compaction on request
+
+`compact {customInstructions?}` (`modes/rpc/rpc-mode.ts`) calls
+`AgentSession.compact`, which aborts any agent operation, emits
+`compaction_start {"reason":"manual"}`, writes the summary, emits
+`compaction_end`, and only then answers. The answer is `success: true` with
+the `CompactionResult`, or `success: false` with the error: `"Compaction
+cancelled"` after an abort, `"Already compacted"` or `"Nothing to compact
+(session too small)"` when there is nothing to do. Pi emits no `agent_start`
+or `agent_settled` around it, and never continues the turn.
+
+Both trees serve `session.compact.request` from it:
+
+- On an idle session the request is admitted `started` as a run of its own.
+  The adapter emits `run.started` and the run's `requested`
+  `run.compaction.started` at admission, sends `compact` with the `focus` as
+  `customInstructions`, and adopts Pi's `compaction_start {manual}` as that
+  same compaction rather than opening a second one. Opening at admission keeps
+  the compaction first in the run even when a cancel lands before Pi's start
+  does, which Decision 0044's validator requires.
+- `compaction_end` closes it as in *Compaction inside a run*. `compact`'s
+  answer settles the run: success completes it with `stop_reason:
+  "compacted"` and the summary message as `final_response` (the same message
+  the compaction's end carried); a refusal fails it `pi_compaction_failed`
+  with Pi's error, unless a cancel was accepted, in which case it is
+  `run.cancelled`.
+- `run.cancel` sends `abort`, as for a prompt run. An abort Pi takes before
+  the compaction has begun aborts nothing, the compaction completes, and the
+  run settles `completed`: the cancel was intent.
+- Refused: `continue` (`unsupported_feature`, unsatisfiable, field
+  `continue`), `queue`, `steer` and `btw` delivery (`unsupported_feature`
+  naming the delivery key; Pi's queue is unavailable here), and a busy
+  session (`run_active`). A compaction run cannot be steered.
+
+The Go adapter answers the request before Pi does and settles the run from
+`compact`'s answer, which the RPC client delivers only after every earlier
+event has been reduced. The Zig port writes the command without waiting and
+settles the run when its step loop reads the answer.
+
+`TestPiProcessCompactsOnRequestAndOnCancel` (`OAP_PI_INTEGRATION=1`) drives
+the v1.0.1 binary after one turn: a requested compaction completes with the
+summary, and one cancelled while the summary request is held completes
+`cancelled`, each against two Responses requests; it passed 3x.
+`oapx serve agent --backend pi` served the same requested compaction under
+`pi-v1.0.1-oap-v3`. No corpus case drives the request: the corpus harnesses
+replay a prompt's frames only.
+
+`session.compact` goes `native`, so the revision moves to `pi-v1.0.1-oap-v3`.
