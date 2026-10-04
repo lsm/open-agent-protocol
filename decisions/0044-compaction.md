@@ -9,10 +9,10 @@ reference window whatever the policy (#855); and pi, the graduating adapter,
 publishes its own compactions as the run's `run.compaction` events (#851) and
 serves `session.compact` through its `compact` command, both at `native`, with
 the `cancelled` outcome exercised against the v1.0.1 binary (#853). The
-threshold policy this record defers is taken by Decision 0045; `oapx`'s
-default endpoint, which reaches its loop over the native agent wire, is handed
-to #866, while the hub-served `oapx` adapter compacts from the in-process
-runtime)
+threshold policy this record defers is taken by Decision 0045. `oapx` does
+not compact over OAP yet: its default endpoint, which reaches its loop over the
+native agent wire, is handed to #866, and the hub-served `oapx` adapter, which
+can compact from the in-process runtime, is #865)
 Date: 2026-10-01
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
