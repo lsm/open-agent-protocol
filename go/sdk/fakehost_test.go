@@ -146,8 +146,44 @@ func fakeAsync(request *frame, frameType string, sequence int64, payload any) *f
 	return async
 }
 
+type hostReader struct {
+	reader *frameReader
+	held   []*frame
+}
+
+func (h *hostReader) next() (*frame, error) {
+	if len(h.held) > 0 {
+		f := h.held[0]
+		h.held = h.held[1:]
+		return f, nil
+	}
+	return h.reader.next()
+}
+
+func (h *hostReader) awaitToolResult(toolCallID string) {
+	var deferred []*frame
+	defer func() { h.held = append(h.held, deferred...) }()
+	for {
+		f, err := h.reader.next()
+		if errors.Is(err, errMalformedFrame) {
+			continue
+		}
+		if err != nil {
+			return
+		}
+		if f.Type != "tool_result" || f.payload().str("tool_call_id") != toolCallID {
+			deferred = append(deferred, f)
+			continue
+		}
+		appendLog(envRequestLog, string(f.raw))
+		fakeEmit(fakeReply(f, "ack", 1, map[string]any{"acknowledged_id": f.MessageID}))
+		appendLog(envToolResultLog, string(f.Payload))
+		return
+	}
+}
+
 func runProtocolHost(exitAfterFirstAck bool) {
-	reader := newFrameReader(os.Stdin)
+	reader := &hostReader{reader: newFrameReader(os.Stdin)}
 	sessions := map[string]int64{}
 	trackSessions := os.Getenv(envTrackSessions) != ""
 	slow := envDuration(envSlowResponse)
@@ -207,7 +243,7 @@ func runProtocolHost(exitAfterFirstAck bool) {
 		case "agent_start":
 			handleFakeAgentStart(f, sessions, trackSessions)
 		case "agent_message":
-			handleFakeAgentMessage(f, sessions, trackSessions)
+			handleFakeAgentMessage(reader, f, sessions, trackSessions)
 		case "agent_stop":
 			handleFakeAgentStop(f, sessions, trackSessions)
 		case "tool_result":
@@ -229,7 +265,7 @@ func handleFakeAgentStart(f *frame, sessions map[string]int64, track bool) {
 	fakeEmit(fakeReply(f, "agent_started", 2, map[string]any{"session_id": f.SessionID}))
 }
 
-func handleFakeAgentMessage(f *frame, sessions map[string]int64, track bool) {
+func handleFakeAgentMessage(reader *hostReader, f *frame, sessions map[string]int64, track bool) {
 	if track {
 		expected, known := sessions[f.SessionID]
 		if !known {
@@ -251,8 +287,8 @@ func handleFakeAgentMessage(f *frame, sessions map[string]int64, track bool) {
 	for _, call := range jsonArrayKnob(envToolCalls, nil) {
 		fakeEmit(fakeAsync(f, "tool_execute", sequence, call))
 		sequence++
-
-		time.Sleep(20 * time.Millisecond)
+		id, _ := call["tool_call_id"].(string)
+		reader.awaitToolResult(id)
 	}
 
 	if raw := os.Getenv(envAgentResult); raw != "" {
