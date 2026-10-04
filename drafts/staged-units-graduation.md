@@ -5164,6 +5164,16 @@ probe of the 2.1.288 binary shows the flags merge, a `null` clears one, and the
 effort the CLI sends follows. An update is refused `run_active` while a run is
 open, because the CLI would apply it to the running run's next request.
 
+`oapx`'s own endpoint follows, which Decision 0045 names beside Claude Code.
+`oapx serve agent` advertises `session.reasoning` at `native` with both modes
+under `oapx-oap-core-v3`: an open or an update sets the session's level, the
+state reports it, and each run's native message carries the level it was
+submitted under, so an update reaches only the runs after it and is never
+refused for a run in progress. `minimal`, which the loop would run as `low`, is
+refused, and a compaction policy is refused unadvertised until the endpoint
+compacts. The hub-served `--backend oapx` adapter takes the same level at
+`oapx-agent-v4`, refusing an update while a run is open.
+
 Pi follows. Both pi adapters serve the update with the commands they already
 send at open, `set_thinking_level` and `set_auto_compaction`, at
 `session_live` for both settings under `pi-v1.0.1-oap-v4`. A level is
@@ -5186,6 +5196,13 @@ Hermes takes the reasoning level live. Both Hermes adapters send the
 `session_live` under `hermes-v2026.9.24-oap-v3`; the gateway swaps the agent's
 reasoning config, so the next run asks for the new effort. A level Hermes
 refuses is refused unsatisfiable. Compression stays `unavailable`.
+
+Codex takes the reasoning level live, and only that. Both Codex adapters send
+the new level as the next `turn/start`'s `effort`, which Codex keeps for the
+turns after it, at `session_live` under `codex-appserver-0.160.0-oap-v2`. Its
+compaction limit is a `thread/start` config value with no per-turn
+counterpart, so `session.compaction.policy` stays `session_open` and a live
+policy is refused unadvertised.
 
 Step 3, native evidence:
 

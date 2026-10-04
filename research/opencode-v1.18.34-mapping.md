@@ -86,3 +86,21 @@ with `OAP_UPDATE_OPENCODE_PORT_GOLDENS=1` and differ only in the version and
 revision strings.
 
 v1.18.32 is retired: its corpus directory is removed and its ledger remains.
+
+## Event stream establishment
+
+`GET /api/session/:sessionID/event` on the v1.18.34 darwin-arm64 binary (sha256
+`7b63b34fafabded7d9231f6a9032755d0cdeaf8b9d2b70df8e25535471469eea`) sends no
+status line or headers until the session's first event: `curl -i` against a
+fresh idle session read nothing in 40 seconds. (`after=-1` is refused 400,
+"Expected a value greater than or equal to 0", which is why both trees omit a
+negative cursor.) The Go client already tolerates this: `Subscribe` waits
+`subscribeEstablishGrace` (250 ms) for the response, then returns and lets it
+arrive later, failing the subscription if it is not a 200. The Zig port waited
+for the headers before answering `session.open`, so `oapx serve agent
+--backend opencode` never opened against a real server. It now waits the same
+250 ms, then opens, and ends the session if the status that eventually arrives
+is not 200. Against the binary, the port opens, and a submitted prompt streams
+its events once the held headers arrive and settles `run.completed`; the trace
+validates. That run used the server's own default model, since the driver
+configured none.

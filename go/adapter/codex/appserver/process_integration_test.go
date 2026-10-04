@@ -2,6 +2,7 @@ package appserver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -28,6 +29,37 @@ func TestPinnedCodexProcessAgainstResponsesMock(t *testing.T) {
 
 	mock := providertest.New(t, providertest.Config{OpenAIKey: "fixture-codex-key"})
 	mock.Enqueue(providertest.OpenAIResponses, providertest.Success)
+	implementation := pinnedCodexAgainst(t, binary, mock)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	session, err := implementation.Open(ctx, integrationOpenRequest("codex-process-session"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close(context.Background())
+	admission, stream, err := session.Submit(ctx, adapter.SubmitRequest{Request: protocol.MessageSubmitRequest{
+		SessionID: "codex-process-session", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("Reply with the fixture response.")}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := adaptertest.Drain(t, stream, 30*time.Second)
+	adaptertest.AssertRunEvents(t, admission, CapabilityRevision, events)
+	if events[len(events)-1].Type != protocol.TypeRunCompleted {
+		t.Fatalf("terminal=%s", events[len(events)-1].Type)
+	}
+	requests := mock.RequestsFor(providertest.OpenAIResponses)
+	if len(requests) != 1 || requests[0].Path != providertest.ResponsesPath || requests[0].Model != "mock-model" {
+		t.Fatalf("Responses requests=%d: %+v", len(requests), requests)
+	}
+	if requests[0].Header.Get("Authorization") != "Bearer fixture-codex-key" {
+		t.Fatal("unexpected mock authorization")
+	}
+}
+
+func pinnedCodexAgainst(t *testing.T, binary string, mock *providertest.Server) *Adapter {
+	t.Helper()
 	codexHome := t.TempDir()
 	workspace := t.TempDir()
 	config := fmt.Sprintf(`model = "mock-model"
@@ -65,31 +97,62 @@ stream_max_retries = 0
 	if err != nil {
 		t.Fatal(err)
 	}
+	return implementation
+}
+
+func TestPinnedCodexProcessTakesALiveReasoningLevel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping pinned Codex process integration in short mode")
+	}
+	if os.Getenv("OAP_CODEX_INTEGRATION") != "1" {
+		t.Skip("set OAP_CODEX_INTEGRATION=1, absolute OAP_CODEX_BIN, and OAP_CODEX_COMMIT to run; optionally set OAP_CODEX_SHA256 (64 hex characters) for exact-artifact evidence")
+	}
+	if os.Getenv("OAP_CODEX_COMMIT") != CodexCommit {
+		t.Fatalf("OAP_CODEX_COMMIT must equal pinned commit %s", CodexCommit)
+	}
+	binary := adaptertest.VerifiedBinary(t, "OAP_CODEX_BIN", "OAP_CODEX_SHA256", "the codex app-server built from the pinned commit")
+	mock := providertest.New(t, providertest.Config{OpenAIKey: "fixture-codex-key"})
+	mock.Enqueue(providertest.OpenAIResponses, providertest.Success)
+	mock.Enqueue(providertest.OpenAIResponses, providertest.Success)
+	implementation := pinnedCodexAgainst(t, binary, mock)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	session, err := implementation.Open(ctx, integrationOpenRequest("codex-process-session"))
+	session, err := implementation.Open(ctx, integrationOpenRequest("codex-live-session"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer session.Close(context.Background())
-	admission, stream, err := session.Submit(ctx, adapter.SubmitRequest{Request: protocol.MessageSubmitRequest{
-		SessionID: "codex-process-session", Delivery: protocol.DeliveryAuto,
-		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("Reply with the fixture response.")}},
-	}})
-	if err != nil {
+	if _, _, err := session.(adapter.SettingsUpdater).UpdateSettings(ctx, protocol.SessionSettingsUpdateRequest{SessionID: "codex-live-session", ReasoningLevel: protocol.ReasoningHigh}); err != nil {
 		t.Fatal(err)
 	}
-	events := adaptertest.Drain(t, stream, 30*time.Second)
-	adaptertest.AssertRunEvents(t, admission, CapabilityRevision, events)
-	if events[len(events)-1].Type != protocol.TypeRunCompleted {
-		t.Fatalf("terminal=%s", events[len(events)-1].Type)
+	for range 2 {
+		_, stream, err := session.Submit(ctx, adapter.SubmitRequest{Request: protocol.MessageSubmitRequest{
+			SessionID: "codex-live-session", Delivery: protocol.DeliveryAuto,
+			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("Reply with the fixture response.")}},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if events := adaptertest.Drain(t, stream, 30*time.Second); events[len(events)-1].Type != protocol.TypeRunCompleted {
+			t.Fatalf("terminal=%s", events[len(events)-1].Type)
+		}
 	}
 	requests := mock.RequestsFor(providertest.OpenAIResponses)
-	if len(requests) != 1 || requests[0].Path != providertest.ResponsesPath || requests[0].Model != "mock-model" {
-		t.Fatalf("Responses requests=%d: %+v", len(requests), requests)
+	if len(requests) != 2 {
+		t.Fatalf("Responses requests=%d, want two", len(requests))
 	}
-	if requests[0].Header.Get("Authorization") != "Bearer fixture-codex-key" {
-		t.Fatal("unexpected mock authorization")
+	for index, request := range requests {
+		var body struct {
+			Reasoning struct {
+				Effort string `json:"effort"`
+			} `json:"reasoning"`
+		}
+		if err := json.Unmarshal(request.Body, &body); err != nil {
+			t.Fatal(err)
+		}
+		if body.Reasoning.Effort != "high" {
+			t.Fatalf("request %d asked for effort %q, want high on the updated turn and the one after", index, body.Reasoning.Effort)
+		}
 	}
 }
 

@@ -8,7 +8,7 @@ const model_ref = @import("model_ref");
 
 pub const ENDPOINT_ID = "oapx.agent-control";
 pub const ENDPOINT_NAME = "OAPX";
-pub const CAPABILITY_REVISION = "oapx-oap-core-v2";
+pub const CAPABILITY_REVISION = "oapx-oap-core-v3";
 pub const DELIVERY_RESOLUTION_IDLE = "session_idle";
 
 pub const AdvertisedFeature = struct {
@@ -16,6 +16,7 @@ pub const AdvertisedFeature = struct {
     level: oap_types.SupportLevel,
     scope: ?[]const u8 = null,
     reason: ?[]const u8 = null,
+    modes: []const []const u8 = &.{},
 };
 
 pub const advertised_features = [_]AdvertisedFeature{
@@ -42,7 +43,22 @@ pub const advertised_features = [_]AdvertisedFeature{
         .reason = "outbound reasoning is preserved, but inbound reasoning parts are not accepted",
     },
     .{ .key = "run.model_selection", .level = .native, .scope = "run" },
+    .{
+        .key = "session.reasoning",
+        .level = .native,
+        .reason = "the agent loop's thinking level, carried by each run's message, so a run keeps the level it started with; minimal, which the loop would run as low, is refused",
+        .modes = &.{ "session_open", "session_live" },
+    },
 };
+
+const reasoning_levels = [_][]const u8{ "off", "low", "medium", "high", "xhigh", "max" };
+
+fn acceptedLevel(asked: []const u8) ?[]const u8 {
+    for (reasoning_levels) |level| {
+        if (std.mem.eql(u8, level, asked)) return level;
+    }
+    return null;
+}
 
 pub const advertised_degradation = [_]oap_types.Degradation{
     .{
@@ -74,6 +90,7 @@ pub const PendingSubmission = struct {
     model_id: []const u8,
     messages: []oap_types.Message,
     instructions: ?[]const u8,
+    thinking_level: ?[]const u8 = null,
 
     pub fn deinit(self: *PendingSubmission, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
@@ -126,6 +143,7 @@ const SessionEntry = struct {
     current_model_id: ?[]const u8,
     updated_at_ms: i64,
     run: ?RunState,
+    reasoning_level: ?[]const u8 = null,
 
     fn deinit(self: *SessionEntry, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
@@ -468,6 +486,7 @@ pub const Server = struct {
             .session_state_request => |payload| try self.handleSessionState(env, payload),
             .models_request => |payload| try self.handleModels(env, payload),
             .session_model_switch_request => |payload| try self.handleModelSwitch(env, payload),
+            .session_settings_update_request => |payload| try self.handleSettingsUpdate(env, payload),
             .message_submit_request => |payload| try self.handleSubmit(env, payload),
             .run_cancel_request => |payload| try self.handleCancel(env, payload),
             else => try self.pushError(
@@ -575,6 +594,17 @@ pub const Server = struct {
         });
     }
 
+    fn refuseSetting(self: *Self, env: oap_types.Envelope, feature: []const u8, reason: []const u8, field: []const u8) !void {
+        try self.pushError(
+            env.id,
+            env.session_id,
+            null,
+            oap_types.EmittedErrorCode.unsupported_feature.text(),
+            if (std.mem.eql(u8, reason, "unadvertised")) "this endpoint does not take that setting" else "the agent loop cannot run at that setting",
+            &.{ .{ .key = "feature", .value = feature }, .{ .key = "reason", .value = reason }, .{ .key = "field", .value = field } },
+        );
+    }
+
     fn handleSessionOpen(self: *Self, env: oap_types.Envelope, payload: oap_types.SessionOpenRequest) !void {
         if (payload.reopen) {
             try self.pushError(
@@ -589,6 +619,11 @@ pub const Server = struct {
                 },
             );
             return;
+        }
+        if (payload.compaction_policy_json != null) return self.refuseSetting(env, "session.compaction.policy", "unadvertised", "compaction_policy");
+        var level: ?[]const u8 = null;
+        if (payload.reasoning_level) |asked| {
+            level = acceptedLevel(asked) orelse return self.refuseSetting(env, "session.reasoning", "unsatisfiable", "reasoning_level");
         }
         if (payload.session_id) |requested| {
             if (env.session_id) |scoped| {
@@ -605,12 +640,14 @@ pub const Server = struct {
                 }
             }
             if (self.sessions.getPtr(requested)) |existing| {
+                if (level != null) existing.reasoning_level = level;
                 try self.emitSessionState(env.id, existing, .open);
                 return;
             }
         }
 
         const entry = try self.openSession(payload.session_id);
+        entry.reasoning_level = level;
         try self.emitSessionState(env.id, entry, .open);
     }
 
@@ -761,6 +798,57 @@ pub const Server = struct {
         });
     }
 
+    fn handleSettingsUpdate(self: *Self, env: oap_types.Envelope, payload: oap_types.SessionSettingsUpdateRequest) !void {
+        if (try self.refuseScopeDisagreement(env, payload.session_id, null)) return;
+        if (payload.compaction_policy_json != null) return self.refuseSetting(env, "session.compaction.policy", "unadvertised", "compaction_policy");
+        const asked = payload.reasoning_level orelse {
+            try self.pushError(env.id, env.session_id, null, oap_types.EmittedErrorCode.invalid_request.text(), "a settings update names no setting", &.{});
+            return;
+        };
+        const level = acceptedLevel(asked) orelse return self.refuseSetting(env, "session.reasoning", "unsatisfiable", "reasoning_level");
+        const entry = self.sessions.getPtr(payload.session_id) orelse {
+            try self.pushError(env.id, env.session_id, null, oap_types.EmittedErrorCode.session_not_found.text(), "session is not open on this endpoint", &.{});
+            return;
+        };
+        if (entry.status == .closed) {
+            try self.pushError(env.id, env.session_id, null, oap_types.EmittedErrorCode.session_not_found.text(), "the session is closed", &.{});
+            return;
+        }
+        const previous = entry.reasoning_level;
+        const updated_at_ms = compat.time.nowMillis();
+        {
+            const id = try self.newUlidString();
+            errdefer self.allocator.free(id);
+            const reply = try self.allocator.dupe(u8, env.id);
+            errdefer self.allocator.free(reply);
+            const scope_id = try self.allocator.dupe(u8, entry.session_id);
+            errdefer self.allocator.free(scope_id);
+            const revision = try self.allocator.dupe(u8, self.descriptor.capability_revision);
+            errdefer self.allocator.free(revision);
+            const response_session = try self.allocator.dupe(u8, entry.session_id);
+            errdefer self.allocator.free(response_session);
+            const response_level = try self.allocator.dupe(u8, level);
+            errdefer self.allocator.free(response_level);
+            const response_previous = if (previous) |value| try self.allocator.dupe(u8, value) else null;
+            errdefer if (response_previous) |value| self.allocator.free(value);
+            try self.pushEnvelope(.{
+                .id = id,
+                .in_reply_to = reply,
+                .session_id = scope_id,
+                .capability_revision = revision,
+                .timestamp_ms = updated_at_ms,
+                .payload = .{ .session_settings_update_response = .{
+                    .session_id = response_session,
+                    .reasoning_level = response_level,
+                    .previous_reasoning_level = response_previous,
+                } },
+            });
+        }
+        entry.reasoning_level = level;
+        entry.updated_at_ms = updated_at_ms;
+        try self.publishSessionState(entry);
+    }
+
     fn handleModelSwitch(self: *Self, env: oap_types.Envelope, payload: oap_types.SessionModelSwitchRequest) !void {
         if (try self.refuseScopeDisagreement(env, payload.session_id, null)) return;
         const entry = self.sessions.getPtr(payload.session_id) orelse {
@@ -859,6 +947,8 @@ pub const Server = struct {
         else
             null;
         errdefer if (current_model_id) |value| self.allocator.free(value);
+        const reasoning_level = if (entry.reasoning_level) |value| try self.allocator.dupe(u8, value) else null;
+        errdefer if (reasoning_level) |value| self.allocator.free(value);
 
         const state = oap_types.SessionState{
             .session_id = payload_session,
@@ -866,6 +956,7 @@ pub const Server = struct {
             .active_run_id = active_run_id,
             .current_model_id = current_model_id,
             .updated_at_ms = entry.updated_at_ms,
+            .reasoning_level = reasoning_level,
         };
 
         try self.pushEnvelope(.{
@@ -903,6 +994,8 @@ pub const Server = struct {
         else
             null;
         errdefer if (current_model_id) |value| self.allocator.free(value);
+        const reasoning_level = if (entry.reasoning_level) |value| try self.allocator.dupe(u8, value) else null;
+        errdefer if (reasoning_level) |value| self.allocator.free(value);
 
         try self.pushEnvelope(.{
             .id = id,
@@ -915,6 +1008,7 @@ pub const Server = struct {
                 .active_run_id = active_run_id,
                 .current_model_id = current_model_id,
                 .updated_at_ms = entry.updated_at_ms,
+                .reasoning_level = reasoning_level,
             } },
         });
 
@@ -1046,6 +1140,7 @@ pub const Server = struct {
         errdefer run.deinit(self.allocator);
 
         var pending = try self.buildPendingSubmission(entry.session_id, &run, payload);
+        pending.thinking_level = entry.reasoning_level;
         errdefer pending.deinit(self.allocator);
 
         try self.pending_submissions.ensureUnusedCapacity(self.allocator, 1);
@@ -1727,7 +1822,18 @@ pub const Server = struct {
             const scope = if (source.scope) |value| try self.allocator.dupe(u8, value) else null;
             errdefer if (scope) |value| self.allocator.free(value);
             const reason = if (source.reason) |value| try self.allocator.dupe(u8, value) else null;
-            features[index] = .{ .key = key, .level = source.level, .scope = scope, .reason = reason };
+            errdefer if (reason) |value| self.allocator.free(value);
+            const modes = try self.allocator.alloc([]const u8, source.modes.len);
+            var copied: usize = 0;
+            errdefer {
+                for (modes[0..copied]) |mode| self.allocator.free(mode);
+                self.allocator.free(modes);
+            }
+            for (source.modes) |mode| {
+                modes[copied] = try self.allocator.dupe(u8, mode);
+                copied += 1;
+            }
+            features[index] = .{ .key = key, .level = source.level, .scope = scope, .reason = reason, .modes = modes };
             filled = index + 1;
         }
 
@@ -3336,4 +3442,38 @@ test "a declared envelope carrying no id is fatal because nothing could address 
         server.handleLine("{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\"}"),
     );
     try std.testing.expect(server.popOutbound() == null);
+}
+
+test "an open and a live update set the session's reasoning level, report it, and refuse what the loop cannot run" {
+    const allocator = std.testing.allocator;
+    var server = try Server.init(allocator, .{ .default_model_id = "anthropic/anthropic-messages@first" });
+    defer server.deinit();
+    try server.handleEnvelope(.{ .id = "open-1", .payload = .{ .session_open_request = .{ .session_id = "s", .reasoning_level = "high" } } });
+    var opened = try nextEnvelope(&server, allocator);
+    defer opened.deinit(allocator);
+    try std.testing.expectEqualStrings("high", opened.payload.session_open_response.reasoning_level.?);
+
+    try server.handleEnvelope(.{ .id = "update-1", .session_id = "s", .payload = .{ .session_settings_update_request = .{ .session_id = "s", .reasoning_level = "off" } } });
+    var answered = try nextEnvelope(&server, allocator);
+    defer answered.deinit(allocator);
+    try std.testing.expectEqualStrings("off", answered.payload.session_settings_update_response.reasoning_level.?);
+    try std.testing.expectEqualStrings("high", answered.payload.session_settings_update_response.previous_reasoning_level.?);
+    var published = try nextEnvelope(&server, allocator);
+    defer published.deinit(allocator);
+    try std.testing.expectEqualStrings("off", published.payload.session_state_updated.reasoning_level.?);
+
+    for ([_]oap_types.SessionSettingsUpdateRequest{
+        .{ .session_id = "s", .reasoning_level = "minimal" },
+        .{ .session_id = "s", .compaction_policy_json = "{\"kind\":\"off\"}" },
+    }) |request| {
+        try server.handleEnvelope(.{ .id = "update-2", .session_id = "s", .payload = .{ .session_settings_update_request = request } });
+        var refused = try nextEnvelope(&server, allocator);
+        defer refused.deinit(allocator);
+        try std.testing.expectEqualStrings("unsupported_feature", refused.payload.error_response.code);
+    }
+    try server.handleEnvelope(.{ .id = "open-2", .payload = .{ .session_open_request = .{ .session_id = "t", .reasoning_level = "minimal" } } });
+    var refused_open = try nextEnvelope(&server, allocator);
+    defer refused_open.deinit(allocator);
+    try std.testing.expectEqualStrings("unsupported_feature", refused_open.payload.error_response.code);
+    try std.testing.expect(server.sessions.getPtr("t") == null);
 }

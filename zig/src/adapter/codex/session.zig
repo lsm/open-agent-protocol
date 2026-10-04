@@ -59,6 +59,7 @@ pub const InputMessage = struct {
 pub const Submission = struct {
     messages: []const InputMessage,
     model_id: ?[]const u8 = null,
+    effort: []const u8 = "",
 };
 
 pub const Admission = struct {
@@ -262,7 +263,7 @@ pub const Reducer = struct {
         return self.arena.allocator();
     }
 
-    fn now(self: *Reducer) i64 {
+    pub fn now(self: *Reducer) i64 {
         if (self.options.now_ms) |wall| return wall();
         self.clock += 1;
         return self.clock;
@@ -352,7 +353,7 @@ pub const Reducer = struct {
         self.state.status = "queued";
         self.state.active_run_id = run_id;
         self.state.updated_at_ms = self.now();
-        const params = try native.turnStartParams(self.allocator(), self.thread_id, texts, model);
+        const params = try native.turnStartParams(self.allocator(), self.thread_id, texts, model, submission.effort);
         try self.call(.{ .turn_start = index }, native.method_turn_start, params);
     }
 
@@ -1235,7 +1236,7 @@ pub const features = [_]Feature{
     .{ .name = "session.message.submit", .level = "native" },
     .{ .name = "session.open", .level = "native" },
     .{ .name = "session.open.reopen", .level = "native", .reason = "thread/resume reloads the thread the session's binding names and reports the model it resumed under" },
-    .{ .name = "session.reasoning", .level = "native", .reason = "thread/start's config sets model_reasoning_effort; off is Codex's none", .modes = &.{"session_open"} },
+    .{ .name = "session.reasoning", .level = "native", .reason = "thread/start's config sets model_reasoning_effort, and a live change rides the next turn/start's effort, which Codex keeps for the turns after it; off is Codex's none", .modes = &.{ "session_open", "session_live" } },
     .{ .name = "session.state", .level = "native" },
     .{ .name = "user_input", .level = "degraded", .reason = "Codex option questions normalize to OAP single-choice input" },
 };
