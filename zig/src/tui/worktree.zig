@@ -235,19 +235,31 @@ pub fn readSidecar(allocator: std.mem.Allocator, sessions_base: []const u8, sess
 }
 
 pub const ManagementKind = enum { reattach, remove, remove_force };
+pub const DirtyReport = struct {
+    summary: []u8,
+    modified: usize,
+    untracked: usize,
+
+    pub fn deinit(self: *DirtyReport, allocator: std.mem.Allocator) void {
+        allocator.free(self.summary);
+        self.* = undefined;
+    }
+};
 
 pub const ManagementOutcome = union(enum) {
     reattached: ?[]u8,
     removed: ?[]u8,
     missing_branch: void,
-    dirty: void,
+    dirty: DirtyReport,
+    unverified: []u8,
     failed: []u8,
 
     pub fn deinit(self: *ManagementOutcome, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .reattached, .removed => |message| if (message) |value| allocator.free(value),
-            .failed => |message| allocator.free(message),
-            .missing_branch, .dirty => {},
+            .failed, .unverified => |message| allocator.free(message),
+            .dirty => |*report| report.deinit(allocator),
+            .missing_branch => {},
         }
         self.* = undefined;
     }
@@ -325,8 +337,12 @@ fn managementOperation(allocator: std.mem.Allocator, runner: Runner, info: *cons
     if (!pathExists(info.repo_root)) return .{ .removed = null };
     if (!pathExists(info.path)) return .{ .removed = try removeOrphaned(allocator, runner, info, kind == .remove_force) };
     if (kind == .remove_force) return .{ .removed = try removeForce(allocator, runner, info) };
-    const dirty = hasUncommitted(allocator, runner, info.path) catch return .{ .dirty = {} };
-    if (dirty) return .{ .dirty = {} };
+    const probe = probeStatus(allocator, runner, info.path) catch |err| return .{ .failed = allocator.dupe(u8, @errorName(err)) catch @constCast("") };
+    switch (probe) {
+        .clean => {},
+        .dirty => return .{ .dirty = probe.dirty },
+        .failed => return .{ .unverified = probe.failed },
+    }
     return .{ .removed = try remove(allocator, runner, info) };
 }
 
@@ -419,20 +435,68 @@ fn gitTrimmed(allocator: std.mem.Allocator, runner: Runner, cwd: []const u8, arg
     return try allocator.dupe(u8, std.mem.trim(u8, result.stdout, " \t\r\n"));
 }
 
-pub fn hasUncommitted(allocator: std.mem.Allocator, runner: Runner, repo_root: []const u8) !bool {
-    return (try countUncommitted(allocator, runner, repo_root)) > 0;
-}
+pub const StatusProbe = union(enum) {
+    clean: void,
+    dirty: DirtyReport,
+    failed: []u8,
 
-fn countUncommitted(allocator: std.mem.Allocator, runner: Runner, repo_root: []const u8) !usize {
+    pub fn deinit(self: *StatusProbe, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .clean => {},
+            .dirty => |*report| report.deinit(allocator),
+            .failed => |message| allocator.free(message),
+        }
+        self.* = undefined;
+    }
+};
+
+pub fn countUncommitted(allocator: std.mem.Allocator, runner: Runner, repo_root: []const u8) !usize {
+    var probe = try probeStatus(allocator, runner, repo_root);
+    defer probe.deinit(allocator);
+    return switch (probe) {
+        .dirty => |report| report.modified + report.untracked,
+        else => 0,
+    };
+}
+pub fn probeStatus(allocator: std.mem.Allocator, runner: Runner, repo_root: []const u8) !StatusProbe {
     var result = try runner.run(allocator, &.{ "git", "-C", repo_root, "status", "--porcelain" }, repo_root);
     defer result.deinit(allocator);
-    if (!result.ok) return 0;
-    var count: usize = 0;
+    if (!result.ok) return .{ .failed = try failureMessage(allocator, "git status", &result) };
+
+    var modified: usize = 0;
+    var untracked: usize = 0;
+    var sample: std.ArrayList([]const u8) = .empty;
+    defer sample.deinit(allocator);
     var lines = std.mem.splitScalar(u8, result.stdout, '\n');
     while (lines.next()) |line| {
-        if (std.mem.trim(u8, line, " \t\r").len > 0) count += 1;
+        const entry = std.mem.trim(u8, line, " \t\r");
+        if (entry.len == 0) continue;
+        if (std.mem.startsWith(u8, entry, "??")) {
+            untracked += 1;
+        } else {
+            modified += 1;
+        }
+        if (sample.items.len < 5) try sample.append(allocator, entry);
     }
-    return count;
+
+    const total = modified + untracked;
+    if (total == 0) return .clean;
+
+    const headline = try std.fmt.allocPrint(allocator, "{d} modified, {d} untracked", .{ modified, untracked });
+    defer allocator.free(headline);
+    var detail: std.ArrayList(u8) = .empty;
+    errdefer detail.deinit(allocator);
+    try detail.appendSlice(allocator, headline);
+    for (sample.items) |entry| {
+        try detail.appendSlice(allocator, "\n  ");
+        try detail.appendSlice(allocator, entry);
+    }
+    if (total > sample.items.len) {
+        const rest = try std.fmt.allocPrint(allocator, "\n  ...and {d} more", .{total - sample.items.len});
+        defer allocator.free(rest);
+        try detail.appendSlice(allocator, rest);
+    }
+    return .{ .dirty = .{ .summary = try detail.toOwnedSlice(allocator), .modified = modified, .untracked = untracked } };
 }
 
 fn failureMessage(allocator: std.mem.Allocator, op: []const u8, result: *const GitResult) ![]u8 {
@@ -490,6 +554,8 @@ const FakeGit = struct {
     uncommitted_lines: usize = 0,
     is_repo: bool = true,
     fail_worktree_add: bool = false,
+    fail_status: bool = false,
+    untracked_status: bool = false,
     branch_exists: bool = true,
     calls: std.ArrayList([]const u8) = .empty,
 
@@ -502,13 +568,13 @@ const FakeGit = struct {
         const is_add = std.mem.indexOf(u8, joined, "worktree add") != null;
         const is_branch_lookup = std.mem.indexOf(u8, joined, "rev-parse --verify") != null;
         const is_status = std.mem.indexOf(u8, joined, "status") != null;
-        const ok = if (is_toplevel) self.is_repo else if (is_add) !self.fail_worktree_add else if (is_branch_lookup) self.branch_exists else true;
+        const ok = if (is_toplevel) self.is_repo else if (is_add) !self.fail_worktree_add else if (is_status) !self.fail_status else if (is_branch_lookup) self.branch_exists else true;
         const stdout: []const u8 = if (std.mem.indexOf(u8, joined, "--show-toplevel") != null)
             self.repo_root
         else if (std.mem.indexOf(u8, joined, "--show-prefix") != null)
             self.prefix
         else if (is_status)
-            if (self.uncommitted_lines > 0) " M changed.zig\n" else ""
+            if (self.untracked_status) "?? scratch.md\n" else if (self.uncommitted_lines > 0) " M changed.zig\n" else ""
         else
             "";
         const out_owned = try allocator.dupe(u8, stdout);
@@ -677,6 +743,79 @@ test "management job reports missing branch without blocking caller" {
     var outcome = maybe.?;
     defer outcome.deinit(std.testing.allocator);
     try std.testing.expect(outcome == .missing_branch);
+}
+
+test "a dirty worktree reports what is uncommitted" {
+    var git: FakeGit = .{ .uncommitted_lines = 1 };
+    defer git.deinit(std.testing.allocator);
+    var probe = try probeStatus(std.testing.allocator, git.runner(), "/repo");
+    defer probe.deinit(std.testing.allocator);
+    try std.testing.expect(probe == .dirty);
+    const report = probe.dirty;
+    try std.testing.expectEqual(@as(usize, 1), report.modified);
+    try std.testing.expectEqual(@as(usize, 0), report.untracked);
+    try std.testing.expect(std.mem.indexOf(u8, report.summary, "1 modified, 0 untracked") != null);
+    try std.testing.expect(std.mem.indexOf(u8, report.summary, "changed.zig") != null);
+}
+
+test "an untracked-only worktree is counted as untracked, not modified" {
+    var git: FakeGit = .{ .untracked_status = true };
+    defer git.deinit(std.testing.allocator);
+    var probe = try probeStatus(std.testing.allocator, git.runner(), "/repo");
+    defer probe.deinit(std.testing.allocator);
+    try std.testing.expect(probe == .dirty);
+    const report = probe.dirty;
+    try std.testing.expectEqual(@as(usize, 0), report.modified);
+    try std.testing.expectEqual(@as(usize, 1), report.untracked);
+    try std.testing.expect(std.mem.indexOf(u8, report.summary, "0 modified, 1 untracked") != null);
+    try std.testing.expect(std.mem.indexOf(u8, report.summary, "scratch.md") != null);
+}
+
+test "a clean worktree probes clean" {
+    var git: FakeGit = .{};
+    defer git.deinit(std.testing.allocator);
+    var probe = try probeStatus(std.testing.allocator, git.runner(), "/repo");
+    defer probe.deinit(std.testing.allocator);
+    try std.testing.expect(probe == .clean);
+}
+
+test "a failed git status is never reported as clean" {
+    var git: FakeGit = .{ .fail_status = true };
+    defer git.deinit(std.testing.allocator);
+    var probe = try probeStatus(std.testing.allocator, git.runner(), "/repo");
+    defer probe.deinit(std.testing.allocator);
+    try std.testing.expect(probe == .failed);
+    try std.testing.expect(std.mem.indexOf(u8, probe.failed, "git status") != null);
+}
+
+test "countUncommitted reports zero when git status fails" {
+    var git: FakeGit = .{ .fail_status = true };
+    defer git.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), try countUncommitted(std.testing.allocator, git.runner(), "/repo"));
+    var probe = try probeStatus(std.testing.allocator, git.runner(), "/repo");
+    defer probe.deinit(std.testing.allocator);
+    try std.testing.expect(probe == .failed);
+}
+
+test "management job reports an unverifiable worktree separately from a dirty one" {
+    var git: FakeGit = .{ .fail_status = true };
+    defer git.deinit(std.testing.allocator);
+    const info = WorktreeInfo{ .path = @constCast("/tmp"), .branch = @constCast("tui/test"), .repo_root = @constCast("/tmp"), .prefix = "" };
+    const job = try ManagementJob.start(std.testing.allocator, git.runner(), &info, .remove);
+    defer job.deinit();
+    var maybe: ?ManagementOutcome = null;
+    while (maybe == null) {
+        maybe = job.poll();
+        if (maybe == null) std.atomic.spinLoopHint();
+    }
+    var outcome = maybe.?;
+    defer outcome.deinit(std.testing.allocator);
+    try std.testing.expect(outcome == .unverified);
+    var removed = false;
+    for (git.calls.items) |call| {
+        if (std.mem.indexOf(u8, call, "worktree remove") != null) removed = true;
+    }
+    try std.testing.expect(!removed);
 }
 
 test "management job refuses to delete a dirty worktree" {
