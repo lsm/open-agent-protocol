@@ -3,6 +3,7 @@ package pi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -293,6 +294,83 @@ func TestPiProcessCompactsOnRequestAndOnCancel(t *testing.T) {
 				t.Fatalf("Responses requests=%d, want the turn and the summary", len(requests))
 			}
 		})
+	}
+}
+
+func TestPiProcessChangesItsLevelAndCompactionBetweenRuns(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping opt-in Pi process integration in short mode")
+	}
+	if os.Getenv("OAP_PI_INTEGRATION") != "1" {
+		t.Skipf("set OAP_PI_INTEGRATION=1 and absolute OAP_PI_BIN pointing to Pi %s to run; optionally set OAP_PI_SHA256 for exact-artifact evidence", PinnedVersion)
+	}
+	binary := verifiedPiBinary(t)
+	mock := providertest.New(t, providertest.Config{OpenAIKey: piMockSecret})
+	mock.Enqueue(providertest.OpenAIResponses, providertest.Success)
+	root := t.TempDir()
+	agentDir := filepath.Join(root, "agent")
+	if err := os.MkdirAll(agentDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	models, err := json.Marshal(map[string]any{"providers": map[string]any{"oap-loopback": map[string]any{
+		"baseUrl": mock.OpenAIBaseURL(), "api": "openai-responses", "apiKey": "$OAP_PI_MOCK_KEY",
+		"models": []map[string]any{{"id": "fixture-model", "name": "OAP loopback fixture", "reasoning": true}},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, "models.json"), models, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	implementation := newPinnedPi(t, binary, root, piEnvironment(t, root, piMockSecret), []string{"--provider", "oap-loopback", "--model", "fixture-model"})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	session, err := implementation.Open(ctx, base.OpenRequest{SessionID: "pi-live-session", Participant: protocol.Participant{ID: "integration-user"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close(context.Background())
+	updater := session.(base.SettingsUpdater)
+	response, state, err := updater.UpdateSettings(ctx, protocol.SessionSettingsUpdateRequest{SessionID: "pi-live-session", ReasoningLevel: protocol.ReasoningHigh, CompactionPolicy: &protocol.CompactionPolicy{Kind: protocol.CompactionOff}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.ReasoningLevel != protocol.ReasoningHigh || state.ReasoningLevel != protocol.ReasoningHigh || state.CompactionPolicy == nil || state.CompactionPolicy.Kind != protocol.CompactionOff {
+		t.Fatalf("response %+v and state %q %+v, want high and off", response, state.ReasoningLevel, state.CompactionPolicy)
+	}
+	var refusal *base.UnsupportedControlError
+	if _, _, err := updater.UpdateSettings(ctx, protocol.SessionSettingsUpdateRequest{SessionID: "pi-live-session", ReasoningLevel: protocol.ReasoningMax}); !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureSessionReasoning {
+		t.Fatalf("max answered %v, want a level Pi clamps refused", err)
+	}
+	polled, err := session.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if polled.ReasoningLevel != protocol.ReasoningHigh {
+		t.Fatalf("after the refusal Pi runs at %q, want high restored", polled.ReasoningLevel)
+	}
+	_, turn, err := session.Submit(ctx, base.SubmitRequest{Request: protocol.MessageSubmitRequest{
+		SessionID: "pi-live-session", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("Reply with the fixture response.")}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adaptertest.Drain(t, turn, 30*time.Second)
+	requests := mock.RequestsFor(providertest.OpenAIResponses)
+	if len(requests) != 1 {
+		t.Fatalf("Responses requests=%d, want one", len(requests))
+	}
+	var body struct {
+		Reasoning struct {
+			Effort string `json:"effort"`
+		} `json:"reasoning"`
+	}
+	if err := json.Unmarshal(requests[0].Body, &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Reasoning.Effort != "high" {
+		t.Fatalf("the next run asked for effort %q, want high", body.Reasoning.Effort)
 	}
 }
 

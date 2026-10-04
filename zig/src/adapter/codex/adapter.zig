@@ -96,6 +96,7 @@ pub const Session = struct {
     reducer: session.Reducer,
     ended: bool = false,
     reaped: bool = false,
+    pending_effort: []const u8 = "",
     compact_above: usize = default_compact_above,
     retained: usize = 0,
 
@@ -217,7 +218,26 @@ pub const Session = struct {
         .activity = activity,
         .close = close,
         .native_id = nativeId,
+        .update_settings = updateSettings,
     };
+
+    fn updateSettings(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.SessionSettingsUpdateRequest, refusal: *contract.Refusal) contract.Failure!contract.Updated {
+        const self = cast(ptr);
+        try contract.refuseUnadvertisedLiveSettings(descriptor, request, refusal);
+        if (self.reducer.closed or self.reducer.transport_closed) return error.SessionClosed;
+        if (!std.mem.eql(u8, request.session_id, self.id)) return error.RunNotFound;
+        if (self.reducer.active != null) return error.RunActive;
+        var response = oap_types.SessionSettingsUpdateResponse{ .session_id = self.id };
+        if (request.reasoning_level) |level| {
+            const effort = effortFor(level) orelse return refusal.unsupportedField(contract.feature_session_reasoning, contract.reason_unsatisfiable, "reasoning_level");
+            response.previous_reasoning_level = reportedLevel(self.reducer.options.settings.reasoning_effort);
+            self.reducer.options.settings.reasoning_effort = effort;
+            self.pending_effort = effort;
+            response.reasoning_level = reportedLevel(effort);
+        }
+        self.reducer.state.updated_at_ms = self.reducer.now();
+        return .{ .response = response, .state = try state(ptr, arena, refusal) };
+    }
 
     fn nativeId(ptr: *anyopaque) []const u8 {
         return cast(ptr).reducer.thread_id;
@@ -396,7 +416,7 @@ pub const Session = struct {
             input.* = .{ .id = id, .role = @tagName(message.role), .text = text };
         }
         const model_id: ?[]const u8 = if (request.model_id) |model| try self.owned().dupe(u8, model) else null;
-        self.reducer.submit(.{ .messages = inputs, .model_id = model_id }) catch |err| return switch (err) {
+        self.reducer.submit(.{ .messages = inputs, .model_id = model_id, .effort = self.pending_effort }) catch |err| return switch (err) {
             error.ModelNotFound => refusal.missingModel(request.model_id orelse ""),
             error.InvalidSubmission, error.UnsupportedInput => error.InvalidSubmission,
             error.SessionClosed, error.NotOpen => error.SessionClosed,
@@ -406,6 +426,7 @@ pub const Session = struct {
         try self.flush();
         switch (try self.awaitSettled(arena, native.method_turn_start, refusal)) {
             .admitted => |admission| {
+                self.pending_effort = "";
                 const message_ids = try arena.alloc([]const u8, admission.message_ids.len);
                 for (admission.message_ids, message_ids) |source, *slot| slot.* = try arena.dupe(u8, source);
                 const submission_id = try arena.dupe(u8, admission.submission_id);
@@ -1067,6 +1088,54 @@ test "a turn/start the child never answers is refused once the request bound pas
     } else return error.ChildNeverStopped;
     try testing.expectError(error.SessionClosed, probe.handle.?.state(probe.arena.allocator(), &refusal));
     try testing.expectError(error.SessionClosed, probe.submit("after", &refusal));
+}
+
+test "a live reasoning level rides the next turn/start's effort only, since Codex keeps it" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_text_turn ++
+        \\take; printf '{"id":3,"result":{"turn":{"id":"second-turn","status":"inProgress"}}}\n'
+        \\printf '{"method":"turn/started","params":{"threadId":"native-thread","turn":{"id":"second-turn","status":"inProgress"}}}\n'
+        \\printf '{"method":"turn/completed","params":{"threadId":"native-thread","turn":{"id":"second-turn","status":"completed"}}}\n'
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const opened = try probe.open(&refusal);
+    const updater = opened.vtable.update_settings.?;
+    const at_open = (try opened.state(probe.arena.allocator(), &refusal)).updated_at_ms orelse 0;
+    compat.time.sleepNs(3 * std.time.ns_per_ms);
+    const updated = try updater(opened.ptr, probe.arena.allocator(), &.{ .session_id = "s1", .reasoning_level = "off" }, &refusal);
+    try testing.expectEqualStrings("off", updated.response.reasoning_level.?);
+    try testing.expect(updated.response.previous_reasoning_level == null);
+    try testing.expectEqualStrings("off", updated.state.reasoning_level.?);
+    try testing.expect((updated.state.updated_at_ms orelse 0) > at_open);
+
+    _ = try probe.submit("one", &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    _ = try probe.pumpUntil("run.completed", &seen);
+    _ = try probe.submit("two", &refusal);
+    _ = try probe.pumpUntil("run.completed", &seen);
+    const written = try probe.waitWritten("\"id\":3");
+    try testing.expect(std.mem.indexOf(u8, written, "{\"id\":2,\"method\":\"turn/start\",\"params\":{\"threadId\":\"native-thread\",\"input\":[{\"type\":\"text\",\"text\":\"one\"}],\"model\":\"glm-test\",\"effort\":\"none\"}}") != null);
+    try testing.expect(std.mem.indexOf(u8, written, "{\"id\":3,\"method\":\"turn/start\",\"params\":{\"threadId\":\"native-thread\",\"input\":[{\"type\":\"text\",\"text\":\"two\"}],\"model\":\"glm-test\"}}") != null);
+    try testing.expectEqualStrings("off", (try opened.state(probe.arena.allocator(), &refusal)).reasoning_level.?);
+}
+
+test "a live update is refused for what Codex cannot take between runs" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_turn_admitted ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const opened = try probe.open(&refusal);
+    const updater = opened.vtable.update_settings.?;
+    try testing.expectError(error.UnsupportedFeature, updater(opened.ptr, probe.arena.allocator(), &.{ .session_id = "s1", .compaction_policy_json = "{\"kind\":\"tokens\",\"tokens\":1000}" }, &refusal));
+    try testing.expectEqualStrings(contract.feature_compaction_policy, refusal.feature);
+    try testing.expectEqualStrings(contract.reason_unadvertised, refusal.reason);
+    try testing.expectError(error.RunNotFound, updater(opened.ptr, probe.arena.allocator(), &.{ .session_id = "other", .reasoning_level = "high" }, &refusal));
+    _ = try probe.submit("busy", &refusal);
+    try testing.expectError(error.RunActive, updater(opened.ptr, probe.arena.allocator(), &.{ .session_id = "s1", .reasoning_level = "high" }, &refusal));
+    const live: *Session = @ptrCast(@alignCast(opened.ptr));
+    try testing.expectEqualStrings("", live.pending_effort);
 }
 
 test "a settled session's arena is compacted, keeping the thread, its state and what each settled run reported" {

@@ -273,6 +273,62 @@ func TestHermesProcessApprovalAgainstChatMock(t *testing.T) {
 	}
 }
 
+func TestHermesProcessTakesALiveReasoningLevel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping opt-in Hermes process integration in short mode")
+	}
+	if os.Getenv("OAP_HERMES_INTEGRATION") != "1" {
+		t.Skip("set OAP_HERMES_INTEGRATION=1 with absolute OAP_HERMES_BIN (python interpreter) and OAP_HERMES_ROOT (pinned hermes-agent checkout) to run; optionally set OAP_HERMES_SHA256 (64 hex characters) for exact-artifact evidence")
+	}
+	mock := providertest.New(t, providertest.Config{OpenAIKey: hermesMockSecret})
+	mock.Enqueue(providertest.OpenAIChatCompletion, providertest.Success)
+	mock.Enqueue(providertest.OpenAIChatCompletion, providertest.Success)
+	root := verifiedHermesRoot(t)
+	isolated := t.TempDir()
+	environment := hermesEnvironment(t, isolated, mock.OpenAIBaseURL())
+	writeHermesLoopbackConfig(t, isolated, mock.OpenAIBaseURL())
+	implementation := newPinnedHermes(t, root, environment, hermesLoopbackModel)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	session, err := implementation.Open(ctx, base.OpenRequest{SessionID: "hermes-live-session", Participant: protocol.Participant{ID: "integration-user"}, ReasoningLevel: protocol.ReasoningLow})
+	if err != nil {
+		t.Fatalf("open pinned gateway: %v", err)
+	}
+	defer session.Close(context.Background())
+	run := func() {
+		_, stream, err := session.Submit(ctx, base.SubmitRequest{Request: protocol.MessageSubmitRequest{
+			SessionID: "hermes-live-session", Delivery: protocol.DeliveryAuto,
+			Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("Reply with the fixture response.")}},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if events := adaptertest.Drain(t, stream, 45*time.Second); events[len(events)-1].Type != protocol.TypeRunCompleted {
+			t.Fatalf("terminal=%s", events[len(events)-1].Type)
+		}
+	}
+	run()
+	if _, _, err := session.(base.SettingsUpdater).UpdateSettings(ctx, protocol.SessionSettingsUpdateRequest{SessionID: "hermes-live-session", ReasoningLevel: protocol.ReasoningHigh}); err != nil {
+		t.Fatal(err)
+	}
+	run()
+	requests := mock.RequestsFor(providertest.OpenAIChatCompletion)
+	if len(requests) != 2 {
+		t.Fatalf("chat completions requests=%d, want one per run", len(requests))
+	}
+	for index, want := range []string{"low", "high"} {
+		var body struct {
+			ReasoningEffort string `json:"reasoning_effort"`
+		}
+		if err := json.Unmarshal(requests[index].Body, &body); err != nil {
+			t.Fatal(err)
+		}
+		if body.ReasoningEffort != want {
+			t.Fatalf("run %d asked for reasoning_effort %q, want %q", index+1, body.ReasoningEffort, want)
+		}
+	}
+}
+
 func writeHermesLoopbackConfig(t *testing.T, root, baseURL string) {
 	t.Helper()
 	directory := filepath.Join(root, "home", ".hermes")

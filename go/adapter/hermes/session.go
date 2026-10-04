@@ -873,6 +873,45 @@ func (s *Session) settleRun(run *runState, payload *native.MessageCompletePayloa
 	_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: message}}, true)
 }
 
+func (s *Session) UpdateSettings(ctx context.Context, req protocol.SessionSettingsUpdateRequest) (protocol.SessionSettingsUpdateResponse, protocol.SessionState, error) {
+	if err := ctx.Err(); err != nil {
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, err
+	}
+	if err := base.RefuseUnadvertisedLiveSettings(req, protocol.CapabilityDescriptor{Features: advertisedFeatures()}); err != nil {
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, err
+	}
+	s.promptMu.Lock()
+	defer s.promptMu.Unlock()
+	s.mu.Lock()
+	switch {
+	case s.closed || s.unusable:
+		s.mu.Unlock()
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, base.ErrSessionClosed
+	case req.SessionID != s.state.SessionID:
+		s.mu.Unlock()
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, base.ErrRunNotFound
+	case s.pending != nil || (s.active != nil && !s.active.terminal) || s.state.Status != protocol.SessionIdle:
+		s.mu.Unlock()
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, base.ErrRunActive
+	}
+	s.mu.Unlock()
+	if req.ReasoningLevel != "" {
+		if err := setReasoning(ctx, s.client, s.nativeID, req.ReasoningLevel); err != nil {
+			return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, err
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	response := protocol.SessionSettingsUpdateResponse{SessionID: s.state.SessionID}
+	if req.ReasoningLevel != "" {
+		response.PreviousReasoningLevel = s.state.ReasoningLevel
+		s.state.ReasoningLevel = req.ReasoningLevel
+		response.ReasoningLevel = req.ReasoningLevel
+	}
+	s.state.UpdatedAtMS = s.clock.Now().UnixMilli()
+	return response, s.state, nil
+}
+
 func (s *Session) State(ctx context.Context) (protocol.SessionState, error) {
 	if err := ctx.Err(); err != nil {
 		return protocol.SessionState{}, err

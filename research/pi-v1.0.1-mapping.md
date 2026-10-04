@@ -689,3 +689,32 @@ summary, and one cancelled while the summary request is held completes
 replay a prompt's frames only.
 
 `session.compact` goes `native`, so the revision moves to `pi-v1.0.1-oap-v3`.
+
+## Live session settings
+
+Decision 0045's `session.settings.update.request` maps onto the two commands
+the open already sends, and both trees serve it:
+
+- `reasoning_level`: `get_state` for the level in force, `set_thinking_level`,
+  then `get_state` to confirm. Pi clamps a level the model does not support to
+  the nearest it does and answers `success: true` either way, so only the
+  confirmation tells; a mismatch sends `set_thinking_level` with the level it
+  replaced and refuses the update `unsupported_feature` (unsatisfiable, field
+  `reasoning_level`). The response's previous level is the one `get_state`
+  reported.
+- `compaction_policy`: `set_auto_compaction {enabled}`, `auto` on and `off`
+  off, sent only after the level, so a refused level leaves the policy
+  untouched. `share` and `tokens` are refused before Pi is asked, as at open.
+- Refused: a busy session (`run_active`), a compaction run included, and
+  another session's id (`run_not_found`).
+
+`TestPiProcessChangesItsLevelAndCompactionBetweenRuns`
+(`OAP_PI_INTEGRATION=1`) drives the v1.0.1 binary (sha256
+`177717b5c28d7b0b62584982f4489c5e3ccd31d9731e1d8196bcfc44f85e86eb`) with a
+reasoning model on the Responses mock: `high` and `off` are confirmed, `max`
+is refused with Pi left at `high`, and the next run asks for effort `high`;
+it passed 3x. `oapx serve agent --backend pi` served the same update, the
+refusal and the run, and the trace validates.
+
+Both settings add `session_live`, so the revision moves to
+`pi-v1.0.1-oap-v4`.

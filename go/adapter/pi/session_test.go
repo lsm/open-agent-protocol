@@ -2313,3 +2313,94 @@ func TestACompactionRequestIsRefusedWhatPiCannotDo(t *testing.T) {
 		t.Fatalf("a busy session answered %v, want run_active", err)
 	}
 }
+
+func followLevels(client *fakeClient, refused native.ThinkingLevel) {
+	client.onCall = func(c native.Command) {
+		if c.Type == native.CommandSetThinkingLevel && c.Level != refused {
+			client.mu.Lock()
+			client.state.ThinkingLevel = c.Level
+			client.mu.Unlock()
+		}
+	}
+}
+
+func TestALiveUpdateSetsPisLevelAndCompactionBetweenRunsAndReportsThem(t *testing.T) {
+	client := newFakeClient()
+	followLevels(client, "")
+	s := openTest(t, client, 32)
+	client.mu.Lock()
+	client.calls = nil
+	client.mu.Unlock()
+	response, state, err := s.UpdateSettings(context.Background(), protocol.SessionSettingsUpdateRequest{SessionID: "session", ReasoningLevel: protocol.ReasoningHigh, CompactionPolicy: &protocol.CompactionPolicy{Kind: protocol.CompactionOff}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sentCommand(client, native.CommandSetThinkingLevel) || !sentCommand(client, native.CommandSetAutoCompaction) {
+		t.Fatalf("the update sent %+v, want set_thinking_level and set_auto_compaction", client.calls)
+	}
+	client.mu.Lock()
+	running := client.state.ThinkingLevel
+	var enabled *bool
+	for _, c := range client.calls {
+		if c.Type == native.CommandSetAutoCompaction {
+			enabled = c.Enabled
+		}
+	}
+	client.mu.Unlock()
+	if running != native.ThinkingHigh || enabled == nil || *enabled {
+		t.Fatalf("Pi runs at %s with auto compaction %v, want high and off", running, enabled)
+	}
+	if response.PreviousReasoningLevel != protocol.ReasoningMedium || response.ReasoningLevel != protocol.ReasoningHigh || response.CompactionPolicy == nil || response.CompactionPolicy.Kind != protocol.CompactionOff {
+		t.Fatalf("response %+v, want medium to high and an off policy", response)
+	}
+	if state.ReasoningLevel != protocol.ReasoningHigh || state.CompactionPolicy == nil || state.CompactionPolicy.Kind != protocol.CompactionOff {
+		t.Fatalf("state reports %q and %+v, want the updated settings", state.ReasoningLevel, state.CompactionPolicy)
+	}
+	polled, err := s.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if polled.ReasoningLevel != protocol.ReasoningHigh {
+		t.Fatalf("a later state reports %q, want the level Pi confirmed", polled.ReasoningLevel)
+	}
+}
+
+func TestALiveLevelPiDoesNotConfirmIsRefusedAndPiIsPutBack(t *testing.T) {
+	client := newFakeClient()
+	followLevels(client, native.ThinkingMax)
+	s := openTest(t, client, 32)
+	_, _, err := s.UpdateSettings(context.Background(), protocol.SessionSettingsUpdateRequest{SessionID: "session", ReasoningLevel: protocol.ReasoningMax, CompactionPolicy: &protocol.CompactionPolicy{Kind: protocol.CompactionOff}})
+	var refusal *base.UnsupportedControlError
+	if !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureSessionReasoning || refusal.Reason != base.ControlUnsatisfiable {
+		t.Fatalf("the update answered %v, want an unsatisfiable reasoning level", err)
+	}
+	client.mu.Lock()
+	running := client.state.ThinkingLevel
+	last := client.calls[len(client.calls)-1]
+	client.mu.Unlock()
+	if running != native.ThinkingMedium || last.Type != native.CommandSetThinkingLevel || last.Level != native.ThinkingMedium {
+		t.Fatalf("Pi runs at %s after %+v, want the medium level it replaced restored", running, last)
+	}
+	if sentCommand(client, native.CommandSetAutoCompaction) {
+		t.Fatal("a refused update still switched Pi's compaction")
+	}
+}
+
+func TestALiveUpdateIsRefusedWhatPiCannotDo(t *testing.T) {
+	client := newFakeClient()
+	s := openTest(t, client, 32)
+	var refusal *base.UnsupportedControlError
+	if _, _, err := s.UpdateSettings(context.Background(), protocol.SessionSettingsUpdateRequest{SessionID: "session", CompactionPolicy: &protocol.CompactionPolicy{Kind: protocol.CompactionTokens, Tokens: 1000}}); !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureCompactionPolicy || refusal.Reason != base.ControlUnsatisfiable {
+		t.Fatalf("a token threshold answered %v, want it unsatisfiable", err)
+	}
+	if _, _, err := s.UpdateSettings(context.Background(), protocol.SessionSettingsUpdateRequest{SessionID: "other", ReasoningLevel: protocol.ReasoningHigh}); !errors.Is(err, base.ErrRunNotFound) {
+		t.Fatalf("another session answered %v, want run_not_found", err)
+	}
+	submitTest(t, s)
+	if _, _, err := s.UpdateSettings(context.Background(), protocol.SessionSettingsUpdateRequest{SessionID: "session", ReasoningLevel: protocol.ReasoningHigh}); !errors.Is(err, base.ErrRunActive) {
+		t.Fatalf("a busy session answered %v, want run_active", err)
+	}
+	if sentCommand(client, native.CommandSetThinkingLevel) || sentCommand(client, native.CommandSetAutoCompaction) {
+		t.Fatal("a refused update reached Pi")
+	}
+}

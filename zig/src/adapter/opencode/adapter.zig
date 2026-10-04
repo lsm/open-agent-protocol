@@ -159,12 +159,11 @@ pub const Session = struct {
             self.subscription = null;
         }
         const started = monotonic();
-        while (!subscription.reader.head_done) {
+        while (!subscription.reader.head_done and monotonic() -| started < subscribe_establish_grace_ns) {
             if (!subscription.open) return refusal.fail(error.BackendFailed, "subscribe OpenCode session events: the server closed the stream before answering");
-            if (monotonic() -| started > config.request_timeout_ns) return refusal.fail(error.BackendFailed, "subscribe OpenCode session events: no answer in time");
             _ = subscription.poll(20) catch |err| return refusal.fail(error.BackendFailed, try describe(arena, "subscribe OpenCode session events", err));
         }
-        if (subscription.reader.status != 200) {
+        if (subscription.reader.head_done and subscription.reader.status != 200) {
             const message = try std.fmt.allocPrint(arena, "subscribe OpenCode session events: HTTP {d}", .{subscription.reader.status});
             return refusal.fail(error.BackendFailed, message);
         }
@@ -279,6 +278,9 @@ pub const Session = struct {
 
     fn feed(self: *Session) contract.Failure!void {
         const subscription = self.subscription orelse return;
+        if (subscription.reader.head_done and subscription.reader.status != 200) {
+            return self.end(try std.fmt.allocPrint(self.owned(), "subscribe OpenCode session events: HTTP {d}", .{subscription.reader.status}));
+        }
         const chunk = try subscription.reader.take(self.owned());
         if (chunk.len > 0) {
             const batch = try self.stream.feed(self.owned(), chunk);
@@ -494,6 +496,8 @@ pub const Session = struct {
     }
 };
 
+const subscribe_establish_grace_ns = 250 * std.time.ns_per_ms;
+
 fn describe(arena: std.mem.Allocator, what: []const u8, err: anyerror) contract.Failure![]const u8 {
     if (err == error.OutOfMemory) return error.OutOfMemory;
     return std.fmt.allocPrint(arena, "{s}: {s}", .{ what, @errorName(err) });
@@ -535,6 +539,8 @@ pub const FakeServer = struct {
     turns: []const []const []const u8 = &.{},
     after_interrupt: []const []const u8 = &.{},
     refuse_prompts: bool = false,
+    hold_event_head: bool = false,
+    refuse_events_late: bool = false,
     busy_polls: usize = 0,
     prompts: std.atomic.Value(usize) = .init(0),
     interrupts: std.atomic.Value(usize) = .init(0),
@@ -587,6 +593,7 @@ pub const FakeServer = struct {
             if (conn.open) conn.stream.close();
         };
         var sse: ?*Conn = null;
+        var head_pending = false;
         var seq: i64 = 0;
         while (!self.stop.load(.acquire)) {
             if (try compat.net.readableWithin(compat.net.serverHandle(&self.server), 2)) {
@@ -619,7 +626,8 @@ pub const FakeServer = struct {
                 const method = words.next().?;
                 const target = words.next().?;
                 if (std.mem.startsWith(u8, target, "/api/session/" ++ fake_session ++ "/event")) {
-                    try conn.stream.writeAll("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n");
+                    if (!self.hold_event_head) try conn.stream.writeAll("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n");
+                    head_pending = self.hold_event_head;
                     sse = conn;
                     continue;
                 }
@@ -637,6 +645,11 @@ pub const FakeServer = struct {
                     const text = parsed.object.get("prompt").?.object.get("text").?.string;
                     const receipt = try std.fmt.allocPrint(arena, "{{\"data\":{{\"admittedSeq\":{d},\"id\":\"{s}\",\"sessionID\":\"" ++ fake_session ++ "\",\"prompt\":{{\"text\":\"{s}\"}},\"delivery\":\"{s}\",\"timeCreated\":1,\"promotedSeq\":{d}}}}}", .{ turn + 1, message_id, text, delivery, seq + 1 });
                     try respond(conn, "200 OK", receipt);
+                    if (head_pending) {
+                        head_pending = false;
+                        const late = if (self.refuse_events_late) "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\n\r\n" else "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n";
+                        try sse.?.stream.writeAll(late);
+                    }
                     if (turn < self.turns.len) try emit(arena, sse, self.turns[turn], message_id, &seq);
                 } else if (std.mem.endsWith(u8, target, "/interrupt")) {
                     _ = self.interrupts.fetchAdd(1, .acq_rel);
@@ -799,6 +812,32 @@ test "a cancel interrupts the server and the run settles cancelled once it goes 
     try testing.expectEqual(oap_types.RunStatus.cancelling, cancelled.status);
     try testing.expectEqual(@as(usize, 1), probe.fake.interrupts.load(.acquire));
     _ = try probe.pumpUntil("run.cancelled", &seen);
+}
+
+test "an open does not wait for event-stream headers the server holds back until its first event" {
+    var probe: Probe = undefined;
+    try probe.init(&.{&text_turn}, &.{});
+    defer probe.deinit();
+    probe.fake.hold_event_head = true;
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    _ = try probe.submit(.auto, &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    _ = try probe.pumpUntil("run.completed", &seen);
+}
+
+test "an event stream that answers late with a failure status ends the session" {
+    var probe: Probe = undefined;
+    try probe.init(&.{&text_turn}, &.{});
+    defer probe.deinit();
+    probe.fake.hold_event_head = true;
+    probe.fake.refuse_events_late = true;
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    _ = try probe.submit(.auto, &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    const failed = try probe.pumpUntil("run.failed", &seen);
+    try testing.expect(std.mem.indexOf(u8, failed.line, "HTTP 500") != null);
 }
 
 test "a prompt the server refuses is admitted and then failed, closing the session as Go does" {

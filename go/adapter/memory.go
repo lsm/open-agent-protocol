@@ -88,7 +88,7 @@ var attachSupport = protocol.FeatureSupport{
 	Reason: "sources are described and published back; the reference adapter runs no client for them",
 }
 
-const CapabilityRevision = "reference-memory-v16"
+const CapabilityRevision = "reference-memory-v17"
 
 var errTerminalWon = fmt.Errorf("adapter: terminal event already emitted")
 
@@ -145,8 +145,8 @@ func (m *Memory) Probe(context.Context) (Descriptor, error) {
 		protocol.FeatureDeliveryQueue:    {Level: protocol.SupportEmulated, Reason: "a busy session reserves one second run and promotes it when the started run settles"},
 		protocol.FeatureDeliverySteer:    {Level: protocol.SupportEmulated, Reason: "guidance waits on the target run and is applied at its input gate, the scripted turn boundary"},
 		protocol.FeatureSessionCompact:   {Level: protocol.SupportEmulated, Reason: "a compaction run replaces the scripted history with a fixed summary that names the focus, and has no model to write it"},
-		protocol.FeatureRunCompaction:    {Level: protocol.SupportEmulated, Reason: "the reference adapter publishes the compactions it is asked for, and compacts on its own at the start of a run once its estimate of the history, a token per four bytes of text, reaches the session's threshold"},
-		protocol.FeatureCompactionPolicy: {Level: protocol.SupportEmulated, Modes: []string{protocol.ModeSessionOpen, protocol.ModeSessionLive}, Reason: "auto compacts at 80% of the reference model's window, share and tokens set the threshold, off never compacts on its own, and an update takes effect at the next run's start"},
+		protocol.FeatureRunCompaction:    {Level: protocol.SupportEmulated, Reason: "the reference adapter publishes the compactions it is asked for, and compacts on its own at the start of a run once its estimate of the history, a token per four bytes of text, reaches the session's threshold, or for overflow once the history no longer fits the reference model's 8192-token window, whatever the policy"},
+		protocol.FeatureCompactionPolicy: {Level: protocol.SupportEmulated, Modes: []string{protocol.ModeSessionOpen, protocol.ModeSessionLive}, Reason: "auto compacts at 80% of the reference model's window, share and tokens set the threshold, off never compacts on its own except for overflow past the reference window, and an update takes effect at the next run's start"},
 		"run.streaming":                  {Level: protocol.SupportNative},
 		"run.status":                     {Level: protocol.SupportNative},
 		"run.cancel":                     {Level: protocol.SupportEmulated, Reason: "run-target API is implemented over a one-active-run session"},
@@ -1003,10 +1003,16 @@ func (s *memorySession) emitInitial(run *memoryRun) error {
 	} else {
 		s.mu.Lock()
 		s.history += run.input
-		due := s.history >= s.threshold
+		reason := protocol.CompactionReason("")
+		switch {
+		case s.history >= referenceWindow:
+			reason = protocol.CompactionOverflow
+		case s.history >= s.threshold:
+			reason = protocol.CompactionThreshold
+		}
 		s.mu.Unlock()
-		if due {
-			if _, err := s.emitCompaction(run, protocol.CompactionThreshold); err != nil {
+		if reason != "" {
+			if _, err := s.emitCompaction(run, reason); err != nil {
 				return err
 			}
 		}

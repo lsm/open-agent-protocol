@@ -6,7 +6,7 @@
       "label": "v1.0.1",
       "status": "current",
       "endpoint_version": "v1.0.1",
-      "capability_revision": "pi-v1.0.1-oap-v3",
+      "capability_revision": "pi-v1.0.1-oap-v4",
       "admits": ["1.0.1"],
       "ledgers": ["research/pi-v1.0.1-mapping.md"],
       "corpus": "fixtures/adapters/pi-v1.0.1",

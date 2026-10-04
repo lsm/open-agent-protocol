@@ -81,7 +81,7 @@ test(
     const adapters = await client.adapters();
     assert.ok(adapters.some((adapter) => adapter.name === 'memory'));
     const caps = await client.capabilities('memory');
-    assert.equal(caps.revision, 'reference-memory-v16');
+    assert.equal(caps.revision, 'reference-memory-v17');
     assert.equal(caps.descriptor.endpoint.id, 'reference.memory');
 
     await assert.rejects(client.open('nope'), /unknown_adapter/);

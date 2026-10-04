@@ -210,11 +210,8 @@ func (p *sessionClient) Close() error {
 	return p.bridge.Close(ctx)
 }
 
-func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
-	if err := ctx.Err(); err != nil {
-		return base.Descriptor{}, err
-	}
-	features := map[string]protocol.FeatureSupport{
+func advertisedFeatures() map[string]protocol.FeatureSupport {
+	return map[string]protocol.FeatureSupport{
 		"protocol.initialize":            {Level: protocol.SupportNative, Reason: "gateway.ready frame with replay epoch before any input"},
 		"capabilities":                   {Level: protocol.SupportEmulated, Reason: "conservative descriptor for the pinned gateway"},
 		"session.open":                   {Level: protocol.SupportNative, Reason: "session.create mints the runtime session id"},
@@ -233,10 +230,16 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		"action.tools.execute":           {Level: protocol.SupportUnavailable, Reason: "the gateway executes tools internally"},
 		"action.permissions":             {Level: protocol.SupportDegraded, Reason: "approval gates surface as input interactions"},
 		"user_input":                     {Level: protocol.SupportNative, Reason: "approval/clarify/sudo/secret server requests, withdrawn by request.cancel"},
-		protocol.FeatureSessionReasoning: {Level: protocol.SupportNative, Modes: []string{protocol.ModeSessionOpen}, Reason: "config.set reasoning, scoped to the session, right after session.create; off is Hermes's none"},
+		protocol.FeatureSessionReasoning: {Level: protocol.SupportNative, Modes: []string{protocol.ModeSessionOpen, protocol.ModeSessionLive}, Reason: "config.set reasoning, scoped to the session, right after session.create and again between runs; off is Hermes's none"},
 		protocol.FeatureCompactionPolicy: {Level: protocol.SupportUnavailable, Reason: "compression is config.yaml under HERMES_HOME, which also holds the gateway's credentials, and no gateway method sets it"},
 	}
-	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: endpointID, Name: "Hermes Gateway Adapter", Version: PinnedVersion, Adapter: "hermes-tui-gateway"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportDegraded, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: true, CancellationTarget: "session", CancellationImplementation: "session.interrupt"}, nil
+}
+
+func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
+	if err := ctx.Err(); err != nil {
+		return base.Descriptor{}, err
+	}
+	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: endpointID, Name: "Hermes Gateway Adapter", Version: PinnedVersion, Adapter: "hermes-tui-gateway"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: advertisedFeatures()}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportDegraded, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: true, CancellationTarget: "session", CancellationImplementation: "session.interrupt"}, nil
 }
 
 func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session, error) {
@@ -268,14 +271,9 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		return nil, ErrNativeProtocol
 	}
 	if req.ReasoningLevel != "" {
-		effort := string(req.ReasoningLevel)
-		if req.ReasoningLevel == protocol.ReasoningOff {
-			effort = "none"
-		}
-		var set native.ConfigSetResult
-		if err := client.Call(ctx, native.MethodConfigSet, native.ConfigSetParams{SessionID: nativeID, Key: "reasoning", Value: effort}, &set); err != nil {
+		if err := setReasoning(ctx, client, nativeID, req.ReasoningLevel); err != nil {
 			_ = client.Close()
-			return nil, &base.UnsupportedControlError{Feature: protocol.FeatureSessionReasoning, Reason: base.ControlUnsatisfiable, Field: "reasoning_level", Detail: "Hermes refused the reasoning level: " + err.Error()}
+			return nil, err
 		}
 	}
 	id := req.SessionID
@@ -286,6 +284,18 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	s := &Session{client: client, inbound: client.Inbound(), clock: a.clock, ids: a.ids, journal: journal.New(a.config.JournalCapacity), nativeID: nativeID, participant: participant(req.Participant), state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, CurrentModelID: a.config.Model, UpdatedAtMS: now, ReasoningLevel: req.ReasoningLevel}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, interactions: map[protocol.InteractionID]*inputState{}, stop: make(chan struct{})}
 	go s.dispatch()
 	return s, nil
+}
+
+func setReasoning(ctx context.Context, client Client, nativeID string, level protocol.ReasoningLevel) error {
+	effort := string(level)
+	if level == protocol.ReasoningOff {
+		effort = "none"
+	}
+	var set native.ConfigSetResult
+	if err := client.Call(ctx, native.MethodConfigSet, native.ConfigSetParams{SessionID: nativeID, Key: "reasoning", Value: effort}, &set); err != nil {
+		return &base.UnsupportedControlError{Feature: protocol.FeatureSessionReasoning, Reason: base.ControlUnsatisfiable, Field: "reasoning_level", Detail: "Hermes refused the reasoning level: " + err.Error()}
+	}
+	return nil
 }
 
 func participant(p protocol.Participant) protocol.ParticipantID {

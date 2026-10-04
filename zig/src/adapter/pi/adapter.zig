@@ -32,12 +32,12 @@ const features = [_]contract.Feature{
     .{ .key = "session.message.submit", .level = .emulated, .reason = "successful prompt response proves admission only" },
     .{ .key = "session.open", .level = .emulated, .reason = "one ready Pi process is associated with one OAP session" },
     .{ .key = "session.state", .level = .emulated, .reason = "adapter projection reconciled with get_state" },
-    .{ .key = contract.feature_session_reasoning, .level = .native, .reason = "set_thinking_level after the process is ready, confirmed by get_state; a level Pi does not run the model at is refused", .modes = &.{contract.mode_session_open} },
-    .{ .key = contract.feature_compaction_policy, .level = .native, .reason = "set_auto_compaction switches Pi's own threshold on or off; its threshold is a settings-file reserve, so share and tokens are refused", .modes = &.{contract.mode_session_open} },
+    .{ .key = contract.feature_session_reasoning, .level = .native, .reason = "set_thinking_level once the process is ready and again between runs, confirmed by get_state; a level Pi does not run the model at is refused, and a live change restores the level it replaced", .modes = &.{ contract.mode_session_open, contract.mode_session_live } },
+    .{ .key = contract.feature_compaction_policy, .level = .native, .reason = "set_auto_compaction switches Pi's own threshold on or off, at open and between runs; its threshold is a settings-file reserve, so share and tokens are refused", .modes = &.{ contract.mode_session_open, contract.mode_session_live } },
 };
 
-fn compactionEnabled(arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!?bool {
-    const raw = request.compaction_policy_json orelse return null;
+fn compactionEnabled(arena: std.mem.Allocator, policy_json: ?[]const u8, refusal: *contract.Refusal) contract.Failure!?bool {
+    const raw = policy_json orelse return null;
     const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, raw, .{}) catch return refusal.unsupportedField(contract.feature_compaction_policy, contract.reason_unsatisfiable, "compaction_policy");
     const kind = textOf(parsed, "kind");
     if (std.mem.eql(u8, kind, "auto")) return true;
@@ -154,7 +154,7 @@ pub const Session = struct {
     reported_policy: ?[]const u8 = null,
 
     fn open(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
-        const compaction = try compactionEnabled(arena, request, refusal);
+        const compaction = try compactionEnabled(arena, request.compaction_policy_json, refusal);
         const self = try construct(owner, arena, request, refusal);
         errdefer self.destroy();
         const state_data = try self.command(arena, "get_state", null, &.{}, refusal);
@@ -240,7 +240,39 @@ pub const Session = struct {
         .readable = readable,
         .activity = activity,
         .close = close,
+        .update_settings = updateSettings,
     };
+
+    fn updateSettings(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.SessionSettingsUpdateRequest, refusal: *contract.Refusal) contract.Failure!contract.Updated {
+        const self = cast(ptr);
+        try contract.refuseUnadvertisedLiveSettings(descriptor, request, refusal);
+        const compaction = try compactionEnabled(arena, request.compaction_policy_json, refusal);
+        if (self.ended or self.unusable) return error.SessionClosed;
+        if (!std.mem.eql(u8, request.session_id, self.id)) return error.RunNotFound;
+        if (self.live() != null) return error.RunActive;
+        const kept = self.owned();
+        var response = oap_types.SessionSettingsUpdateResponse{ .session_id = self.id };
+        if (request.reasoning_level) |level| {
+            const before = try self.command(arena, "get_state", null, &.{}, refusal);
+            const previous = try arena.dupe(u8, textOf(before, "thinkingLevel"));
+            _ = try self.commandWith(arena, "set_thinking_level", null, &.{}, .{ .name = "level", .value = .{ .string = level } }, refusal);
+            const confirmed = try self.command(arena, "get_state", null, &.{}, refusal);
+            if (!std.mem.eql(u8, textOf(confirmed, "thinkingLevel"), level)) {
+                _ = try self.commandWith(arena, "set_thinking_level", null, &.{}, .{ .name = "level", .value = .{ .string = previous } }, refusal);
+                return refusal.unsupportedField(contract.feature_session_reasoning, contract.reason_unsatisfiable, "reasoning_level");
+            }
+            response.previous_reasoning_level = previous;
+            response.reasoning_level = level;
+        }
+        if (compaction) |enabled| {
+            _ = try self.commandWith(arena, "set_auto_compaction", null, &.{}, .{ .name = "enabled", .value = .{ .bool = enabled } }, refusal);
+            response.previous_compaction_policy_json = self.reported_policy;
+            self.reported_policy = try kept.dupe(u8, request.compaction_policy_json.?);
+            response.compaction_policy_json = self.reported_policy;
+        }
+        if (request.reasoning_level != null) self.reports_level = true;
+        return .{ .response = response, .state = try state(ptr, arena, refusal) };
+    }
 
     fn cast(ptr: *anyopaque) *Session {
         return @ptrCast(@alignCast(ptr));
@@ -1147,6 +1179,78 @@ test "a level Pi does not confirm is refused, and a threshold before Pi starts" 
     try testing.expectError(error.UnsupportedFeature, unstarted.adapter.adapter().open(unstarted.arena.allocator(), .{ .session_id = "s2", .participant = "user", .compaction_policy_json = "{\"kind\":\"tokens\",\"tokens\":1000}" }, &refusal));
     try testing.expectEqualStrings(contract.feature_compaction_policy, refusal.feature);
     try testing.expectError(error.FileNotFound, unstarted.fake.written(unstarted.arena.allocator()));
+}
+
+test "a live update sets Pi's thinking level and compaction between runs and reports what get_state confirms" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++
+        \\take; printf '{"type":"response","id":"req_2","command":"get_state","success":true,"data":{"thinkingLevel":"off","steeringMode":"all","followUpMode":"one-at-a-time","messageCount":0,"pendingMessageCount":0,"sessionId":"native-session","isStreaming":false}}\n'
+        \\take; printf '{"type":"response","id":"req_3","command":"set_thinking_level","success":true}\n'
+        \\take; printf '{"type":"response","id":"req_4","command":"get_state","success":true,"data":{"thinkingLevel":"high","steeringMode":"all","followUpMode":"one-at-a-time","messageCount":0,"pendingMessageCount":0,"sessionId":"native-session","isStreaming":false}}\n'
+        \\take; printf '{"type":"response","id":"req_5","command":"set_auto_compaction","success":true}\n'
+        \\take; printf '{"type":"response","id":"req_6","command":"get_state","success":true,"data":{"thinkingLevel":"high","steeringMode":"all","followUpMode":"one-at-a-time","messageCount":0,"pendingMessageCount":0,"sessionId":"native-session","isStreaming":false}}\n'
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const opened = try probe.open(&refusal);
+    const updater = opened.vtable.update_settings.?;
+    const updated = try updater(opened.ptr, probe.arena.allocator(), &.{ .session_id = "s1", .reasoning_level = "high", .compaction_policy_json = "{\"kind\":\"off\"}" }, &refusal);
+    try testing.expectEqualStrings("off", updated.response.previous_reasoning_level.?);
+    try testing.expectEqualStrings("high", updated.response.reasoning_level.?);
+    try testing.expectEqualStrings("{\"kind\":\"off\"}", updated.response.compaction_policy_json.?);
+    try testing.expectEqualStrings("high", updated.state.reasoning_level.?);
+    try testing.expectEqualStrings("{\"kind\":\"off\"}", updated.state.compaction_policy_json.?);
+    try testing.expectEqualStrings(
+        \\{"id":"req_1","type":"get_state"}
+        \\{"id":"req_2","type":"get_state"}
+        \\{"id":"req_3","type":"set_thinking_level","level":"high"}
+        \\{"id":"req_4","type":"get_state"}
+        \\{"id":"req_5","type":"set_auto_compaction","enabled":false}
+        \\{"id":"req_6","type":"get_state"}
+        \\
+    , try probe.fake.written(probe.arena.allocator()));
+}
+
+test "a live level Pi does not confirm is refused and Pi is put back on the level it replaced" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++
+        \\take; printf '{"type":"response","id":"req_2","command":"get_state","success":true,"data":{"thinkingLevel":"medium","steeringMode":"all","followUpMode":"one-at-a-time","messageCount":0,"pendingMessageCount":0,"sessionId":"native-session","isStreaming":false}}\n'
+        \\take; printf '{"type":"response","id":"req_3","command":"set_thinking_level","success":true}\n'
+        \\take; printf '{"type":"response","id":"req_4","command":"get_state","success":true,"data":{"thinkingLevel":"high","steeringMode":"all","followUpMode":"one-at-a-time","messageCount":0,"pendingMessageCount":0,"sessionId":"native-session","isStreaming":false}}\n'
+        \\take; printf '{"type":"response","id":"req_5","command":"set_thinking_level","success":true}\n'
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const opened = try probe.open(&refusal);
+    const updater = opened.vtable.update_settings.?;
+    try testing.expectError(error.UnsupportedFeature, updater(opened.ptr, probe.arena.allocator(), &.{ .session_id = "s1", .reasoning_level = "max", .compaction_policy_json = "{\"kind\":\"off\"}" }, &refusal));
+    try testing.expectEqualStrings(contract.feature_session_reasoning, refusal.feature);
+    try testing.expectEqualStrings(contract.reason_unsatisfiable, refusal.reason);
+    try testing.expectEqualStrings(
+        \\{"id":"req_1","type":"get_state"}
+        \\{"id":"req_2","type":"get_state"}
+        \\{"id":"req_3","type":"set_thinking_level","level":"max"}
+        \\{"id":"req_4","type":"get_state"}
+        \\{"id":"req_5","type":"set_thinking_level","level":"medium"}
+        \\
+    , try probe.fake.written(probe.arena.allocator()));
+}
+
+test "a live update is refused for what Pi cannot do, before anything is written" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const opened = try probe.open(&refusal);
+    const before = try probe.fake.written(probe.arena.allocator());
+    const updater = opened.vtable.update_settings.?;
+    try testing.expectError(error.UnsupportedFeature, updater(opened.ptr, probe.arena.allocator(), &.{ .session_id = "s1", .compaction_policy_json = "{\"kind\":\"tokens\",\"tokens\":1000}" }, &refusal));
+    try testing.expectEqualStrings(contract.feature_compaction_policy, refusal.feature);
+    try testing.expectEqualStrings("compaction_policy", refusal.field);
+    try testing.expectError(error.RunNotFound, updater(opened.ptr, probe.arena.allocator(), &.{ .session_id = "other", .reasoning_level = "high" }, &refusal));
+    try testing.expectEqualStrings(before, try probe.fake.written(probe.arena.allocator()));
 }
 
 test "an open asks get_state and takes the model it reports, and the prompt reaches Pi in Go's command form" {

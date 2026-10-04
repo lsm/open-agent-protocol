@@ -15,7 +15,7 @@
     "timestamp_ms": 4,
     "session_id": "session",
     "run_id": "run-2",
-    "capability_revision": "pi-v1.0.1-oap-v3"
+    "capability_revision": "pi-v1.0.1-oap-v4"
   },
   {
     "protocol": "open-agent-protocol",
@@ -36,7 +36,7 @@
     "timestamp_ms": 5,
     "session_id": "session",
     "run_id": "run-2",
-    "capability_revision": "pi-v1.0.1-oap-v3"
+    "capability_revision": "pi-v1.0.1-oap-v4"
   },
   {
     "protocol": "open-agent-protocol",
@@ -63,6 +63,6 @@
     "timestamp_ms": 6,
     "session_id": "session",
     "run_id": "run-2",
-    "capability_revision": "pi-v1.0.1-oap-v3"
+    "capability_revision": "pi-v1.0.1-oap-v4"
   }
 ]

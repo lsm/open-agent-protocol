@@ -1837,3 +1837,67 @@ func TestAnOpenSetsTheSessionsReasoningThroughConfigSetAndRefusesACompactionPoli
 		t.Fatalf("open answered %v, want the unavailable compaction policy refused", err)
 	}
 }
+
+func configSetCalls(f *fakeClient) []native.ConfigSetParams {
+	f.callsMu.Lock()
+	defer f.callsMu.Unlock()
+	var sent []native.ConfigSetParams
+	for _, call := range f.calls {
+		if params, ok := call.params.(native.ConfigSetParams); ok && call.method == native.MethodConfigSet {
+			sent = append(sent, params)
+		}
+	}
+	return sent
+}
+
+func TestALiveReasoningLevelIsSetThroughConfigSetBetweenRuns(t *testing.T) {
+	opened, f := openTest(t)
+	s := opened.(*Session)
+	f.queue(native.MethodConfigSet, reply{result: native.ConfigSetResult{Key: "reasoning", Value: "high"}})
+	response, state, err := s.UpdateSettings(context.Background(), protocol.SessionSettingsUpdateRequest{SessionID: s.state.SessionID, ReasoningLevel: protocol.ReasoningHigh})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sent := configSetCalls(f); len(sent) != 1 || sent[0] != (native.ConfigSetParams{SessionID: s.nativeID, Key: "reasoning", Value: "high"}) {
+		t.Fatalf("the update sent %+v, want config.set reasoning high on the session", sent)
+	}
+	if response.ReasoningLevel != protocol.ReasoningHigh || response.PreviousReasoningLevel != "" || state.ReasoningLevel != protocol.ReasoningHigh {
+		t.Fatalf("response %+v and state %q, want high in force", response, state.ReasoningLevel)
+	}
+	f.queue(native.MethodConfigSet, reply{result: native.ConfigSetResult{Key: "reasoning", Value: "none"}})
+	response, _, err = s.UpdateSettings(context.Background(), protocol.SessionSettingsUpdateRequest{SessionID: s.state.SessionID, ReasoningLevel: protocol.ReasoningOff})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sent := configSetCalls(f); len(sent) != 2 || sent[1].Value != "none" || response.PreviousReasoningLevel != protocol.ReasoningHigh {
+		t.Fatalf("off sent %+v and answered %+v, want Hermes's none replacing high", sent, response)
+	}
+}
+
+func TestALiveUpdateIsRefusedWhatHermesCannotTakeBetweenRuns(t *testing.T) {
+	opened, f := openTest(t)
+	s := opened.(*Session)
+	f.queue(native.MethodConfigSet, reply{err: errors.New("unknown reasoning value: max")})
+	var refusal *base.UnsupportedControlError
+	if _, _, err := s.UpdateSettings(context.Background(), protocol.SessionSettingsUpdateRequest{SessionID: s.state.SessionID, ReasoningLevel: protocol.ReasoningMax}); !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureSessionReasoning || refusal.Reason != base.ControlUnsatisfiable {
+		t.Fatalf("a level Hermes refuses answered %v, want it unsatisfiable", err)
+	}
+	if state, _ := s.State(context.Background()); state.ReasoningLevel != "" {
+		t.Fatalf("a refused level is reported as %q", state.ReasoningLevel)
+	}
+	if _, _, err := s.UpdateSettings(context.Background(), protocol.SessionSettingsUpdateRequest{SessionID: s.state.SessionID, CompactionPolicy: &protocol.CompactionPolicy{Kind: protocol.CompactionOff}}); !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureCompactionPolicy || refusal.Reason != base.ControlUnadvertised {
+		t.Fatalf("a live policy answered %v, want it unadvertised", err)
+	}
+	if _, _, err := s.UpdateSettings(context.Background(), protocol.SessionSettingsUpdateRequest{SessionID: "other", ReasoningLevel: protocol.ReasoningHigh}); !errors.Is(err, base.ErrRunNotFound) {
+		t.Fatalf("another session answered %v, want run_not_found", err)
+	}
+	if got := <-admit(t, s, f, true); got.err != nil {
+		t.Fatal(got.err)
+	}
+	if _, _, err := s.UpdateSettings(context.Background(), protocol.SessionSettingsUpdateRequest{SessionID: s.state.SessionID, ReasoningLevel: protocol.ReasoningHigh}); !errors.Is(err, base.ErrRunActive) {
+		t.Fatalf("a busy session answered %v, want run_active", err)
+	}
+	if sent := configSetCalls(f); len(sent) != 1 {
+		t.Fatalf("config.set reached Hermes %d times, want only the refused level", len(sent))
+	}
+}

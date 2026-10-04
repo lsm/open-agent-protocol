@@ -2607,15 +2607,15 @@ test "a subscribing open is gated on the revision the host asked for" {
     const matched = try hub.open(arena, "memory", .{
         .session_id = "matched",
         .subscribe = true,
-        .capability_revision = "reference-memory-v16",
+        .capability_revision = "reference-memory-v17",
     });
-    try testing.expectEqualStrings("reference-memory-v16", matched.revision);
+    try testing.expectEqualStrings("reference-memory-v17", matched.revision);
 
     const unstated = try hub.open(arena, "memory", .{
         .session_id = "unstated",
         .subscribe = true,
     });
-    try testing.expectEqualStrings("reference-memory-v16", unstated.revision);
+    try testing.expectEqualStrings("reference-memory-v17", unstated.revision);
 }
 
 test "the revision gate fires for a subscribing, reopening or attaching open, and for no other" {

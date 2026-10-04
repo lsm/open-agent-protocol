@@ -30,7 +30,7 @@ const features = [_]contract.Feature{
     .{ .key = "session.message.delivery.steer", .level = .unavailable, .reason = "native session.steer not exposed in v1" },
     .{ .key = "session.message.submit", .level = .degraded, .reason = "status-only result; ownership by construction via message.start" },
     .{ .key = "session.open", .level = .native, .reason = "session.create mints the runtime session id" },
-    .{ .key = contract.feature_session_reasoning, .level = .native, .reason = "config.set reasoning, scoped to the session, right after session.create; off is Hermes's none", .modes = &.{contract.mode_session_open} },
+    .{ .key = contract.feature_session_reasoning, .level = .native, .reason = "config.set reasoning, scoped to the session, right after session.create and again between runs; off is Hermes's none", .modes = &.{ contract.mode_session_open, contract.mode_session_live } },
     .{ .key = "session.state", .level = .degraded, .reason = "reducer-owned live projection corroborated by session.info" },
     .{ .key = "user_input", .level = .native, .reason = "approval/clarify/sudo/secret server requests, withdrawn by request.cancel" },
 };
@@ -110,17 +110,7 @@ pub const Session = struct {
         const created = try self.call(arena, "session.create", .{ .object = params }, refusal);
         const native_id = member(created, "session_id");
         if (native_id.len == 0 or member(created, "stored_session_id").len == 0) return refusal.fail(error.BackendFailed, "the hermes gateway answered session.create without a session_id and stored_session_id");
-        if (request.reasoning_level) |level| {
-            var set: std.json.ObjectMap = .empty;
-            try set.put(self.owned(), "session_id", .{ .string = native_id });
-            try set.put(self.owned(), "key", .{ .string = "reasoning" });
-            try set.put(self.owned(), "value", .{ .string = if (std.mem.eql(u8, level, "off")) "none" else level });
-            _ = self.call(arena, "config.set", .{ .object = set }, refusal) catch |err| {
-                if (err == error.OutOfMemory) return error.OutOfMemory;
-                return refusal.unsupportedField(contract.feature_session_reasoning, contract.reason_unsatisfiable, "reasoning_level");
-            };
-            self.reported_level = try self.owned().dupe(u8, level);
-        }
+        if (request.reasoning_level) |level| try self.setReasoning(arena, native_id, level, refusal);
         self.reducer = session.Reducer.init(self.reducer_arena, .{
             .session_id = self.id,
             .native_id = native_id,
@@ -190,7 +180,39 @@ pub const Session = struct {
         .readable = readable,
         .activity = activity,
         .close = close,
+        .update_settings = updateSettings,
     };
+
+    fn setReasoning(self: *Session, arena: std.mem.Allocator, native_id: []const u8, level: []const u8, refusal: *contract.Refusal) contract.Failure!void {
+        var set: std.json.ObjectMap = .empty;
+        try set.put(self.owned(), "session_id", .{ .string = native_id });
+        try set.put(self.owned(), "key", .{ .string = "reasoning" });
+        try set.put(self.owned(), "value", .{ .string = if (std.mem.eql(u8, level, "off")) "none" else level });
+        _ = self.call(arena, "config.set", .{ .object = set }, refusal) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            return refusal.unsupportedField(contract.feature_session_reasoning, contract.reason_unsatisfiable, "reasoning_level");
+        };
+        self.reported_level = try self.owned().dupe(u8, level);
+    }
+
+    fn updateSettings(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.SessionSettingsUpdateRequest, refusal: *contract.Refusal) contract.Failure!contract.Updated {
+        const self = cast(ptr);
+        try contract.refuseUnadvertisedLiveSettings(descriptor, request, refusal);
+        if (self.closed()) return error.SessionClosed;
+        if (!std.mem.eql(u8, request.session_id, self.id)) return error.RunNotFound;
+        const reducer = &self.reducer.?;
+        if (reducer.run) |run| {
+            if (!run.terminal) return error.RunActive;
+        }
+        var response = oap_types.SessionSettingsUpdateResponse{ .session_id = self.id };
+        if (request.reasoning_level) |level| {
+            const previous = self.reported_level;
+            try self.setReasoning(arena, reducer.options.native_id, level, refusal);
+            response.previous_reasoning_level = previous;
+            response.reasoning_level = self.reported_level;
+        }
+        return .{ .response = response, .state = try state(ptr, arena, refusal) };
+    }
 
     fn cast(ptr: *anyopaque) *Session {
         return @ptrCast(@alignCast(ptr));
@@ -861,6 +883,51 @@ test "an open sets the session's reasoning through config.set and reports it" {
     , try probe.fake.written(probe.arena.allocator()));
     const reported = try opened.state(probe.arena.allocator(), &refusal);
     try testing.expectEqualStrings("off", reported.reasoning_level.?);
+}
+
+test "a live reasoning level is set through config.set between runs, and a level Hermes refuses is unsatisfiable" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++
+        \\take; printf '{"id":2,"jsonrpc":"2.0","result":{"key":"reasoning","value":"high"}}\n'
+        \\printf '{"jsonrpc":"2.0","method":"event","params":{"type":"session.info","session_id":"sess0001","seq":1,"payload":{"model":"hermes-test","provider":"p","running":false,"title":"t","cwd":"/tmp","stored_session_id":"key0001"}}}\n'
+        \\take; printf '{"id":3,"jsonrpc":"2.0","error":{"code":4002,"message":"unknown reasoning value: ultra-max"}}\n'
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const opened = try probe.open(&refusal);
+    const updater = opened.vtable.update_settings.?;
+    const updated = try updater(opened.ptr, probe.arena.allocator(), &.{ .session_id = "s1", .reasoning_level = "high" }, &refusal);
+    try testing.expectEqualStrings("high", updated.response.reasoning_level.?);
+    try testing.expect(updated.response.previous_reasoning_level == null);
+    try testing.expectEqualStrings("high", updated.state.reasoning_level.?);
+    try testing.expectError(error.UnsupportedFeature, updater(opened.ptr, probe.arena.allocator(), &.{ .session_id = "s1", .reasoning_level = "max" }, &refusal));
+    try testing.expectEqualStrings(contract.feature_session_reasoning, refusal.feature);
+    try testing.expectEqualStrings(contract.reason_unsatisfiable, refusal.reason);
+    try testing.expectEqualStrings("high", (try opened.state(probe.arena.allocator(), &refusal)).reasoning_level.?);
+    try testing.expectEqualStrings(
+        \\{"id":1,"jsonrpc":"2.0","method":"session.create","params":{"model":"hermes-test"}}
+        \\{"id":2,"jsonrpc":"2.0","method":"config.set","params":{"session_id":"sess0001","key":"reasoning","value":"high"}}
+        \\{"id":3,"jsonrpc":"2.0","method":"config.set","params":{"session_id":"sess0001","key":"reasoning","value":"max"}}
+        \\
+    , try probe.fake.written(probe.arena.allocator()));
+}
+
+test "a live update is refused for what Hermes cannot take between runs" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_turn_admitted ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const opened = try probe.open(&refusal);
+    const updater = opened.vtable.update_settings.?;
+    try testing.expectError(error.UnsupportedFeature, updater(opened.ptr, probe.arena.allocator(), &.{ .session_id = "s1", .compaction_policy_json = "{\"kind\":\"off\"}" }, &refusal));
+    try testing.expectEqualStrings(contract.feature_compaction_policy, refusal.feature);
+    try testing.expectEqualStrings(contract.reason_unadvertised, refusal.reason);
+    try testing.expectError(error.RunNotFound, updater(opened.ptr, probe.arena.allocator(), &.{ .session_id = "other", .reasoning_level = "high" }, &refusal));
+    _ = try probe.submit("busy", &refusal);
+    try testing.expectError(error.RunActive, updater(opened.ptr, probe.arena.allocator(), &.{ .session_id = "s1", .reasoning_level = "high" }, &refusal));
+    const written = try probe.fake.written(probe.arena.allocator());
+    try testing.expect(std.mem.indexOf(u8, written, "config.set") == null);
 }
 
 test "an open writes session.create, and a turn is admitted on message.start and settles on message.complete" {
