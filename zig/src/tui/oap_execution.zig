@@ -583,7 +583,10 @@ pub const OapExecution = struct {
     fn setCompactionPolicy(ctx: *anyopaque, policy_json: []const u8) anyerror!void {
         const self = cast(ctx);
         if (!self.live_policy) return error.UnavailableOverOap;
-        if (std.mem.eql(u8, self.sent_policy, policy_json)) return;
+        self.lockInbound();
+        const already = std.mem.eql(u8, self.sent_policy, policy_json);
+        self.inbound_mutex.unlock();
+        if (already) return;
         if (self.turn_open.load(.acquire) or queuedCount(ctx) > 0) return error.RunInProgress;
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
@@ -594,8 +597,10 @@ pub const OapExecution = struct {
         const kept = try self.allocator.dupe(u8, policy_json);
         errdefer self.allocator.free(kept);
         _ = try self.enqueue(a, "session.settings.update.request", "settings", payload.value(), null);
+        self.lockInbound();
         self.allocator.free(self.sent_policy);
         self.sent_policy = kept;
+        self.inbound_mutex.unlock();
     }
 
     fn settleCompaction(self: *OapExecution, outcome: CompactionOutcome, message: []const u8) !void {
@@ -787,8 +792,10 @@ pub const OapExecution = struct {
             const reply_to = stringOf(root, "in_reply_to") orelse "";
             const message = if (payload) |body| errorMessage(body) else "the endpoint refused the request";
             if (std.mem.startsWith(u8, reply_to, "settings-")) {
+                self.lockInbound();
                 self.allocator.free(self.sent_policy);
                 self.sent_policy = &.{};
+                self.inbound_mutex.unlock();
             }
             if (std.mem.startsWith(u8, reply_to, "compact-")) {
                 try self.settleCompaction(.failed, message);
