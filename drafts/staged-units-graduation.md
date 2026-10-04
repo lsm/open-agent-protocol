@@ -5173,6 +5173,12 @@ recovery rather than choice. Below the window the session's threshold decides
 as before. Both move to `reference-memory-v17`, and the memory parity scenarios
 gain an overflow under `off`.
 
+OpenCode takes the reasoning level live. Both OpenCode adapters switch the
+session to the model it records with the new level as its variant
+(`POST /api/session/:id/model`), then read the session back and refuse a
+variant it does not record, at `session_live` under
+`opencode-v1.18.34-oap-v4`. Compaction stays `unavailable`.
+
 Step 3, native evidence:
 
 - step 3 is pi's, as the decision names. Its first half is

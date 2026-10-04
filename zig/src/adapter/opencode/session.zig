@@ -863,7 +863,7 @@ const features = [_]Feature{
     .{ .key = "session.message.delivery.steer", .level = "unavailable", .reason = "an explicit steer request is rejected as outside the v0.1 subset; the server's default delivery is exposed through an auto request" },
     .{ .key = "session.message.submit", .level = "native", .reason = "durable admission receipt with typed conflict rejection" },
     .{ .key = "session.open", .level = "native", .reason = "POST /api/session with server-assigned identity" },
-    .{ .key = "session.reasoning", .level = "native", .reason = "the created session's model carries the level as its variant, which the runner sends on every step; it needs a configured model, and a variant the response does not confirm is refused", .modes = &.{"session_open"} },
+    .{ .key = "session.reasoning", .level = "native", .reason = "the session's model carries the level as its variant, which the runner sends on every step: set at create and between runs by switching the session to the same model with the new variant; it needs a model, and a variant the session record does not confirm is refused", .modes = &.{ "session_open", "session_live" } },
     .{ .key = "session.state", .level = "emulated", .reason = "active set and adapter-owned projection" },
 };
 

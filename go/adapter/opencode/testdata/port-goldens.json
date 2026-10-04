@@ -1,5 +1,5 @@
 {
-  "capability_revision": "opencode-v1.18.34-oap-v3",
+  "capability_revision": "opencode-v1.18.34-oap-v4",
   "capabilities": {
     "endpoint": {
       "id": "opencode.server",
@@ -88,9 +88,10 @@
       },
       "session.reasoning": {
         "level": "native",
-        "reason": "the created session's model carries the level as its variant, which the runner sends on every step; it needs a configured model, and a variant the response does not confirm is refused",
+        "reason": "the session's model carries the level as its variant, which the runner sends on every step: set at create and between runs by switching the session to the same model with the new variant; it needs a model, and a variant the session record does not confirm is refused",
         "modes": [
-          "session_open"
+          "session_open",
+          "session_live"
         ]
       },
       "session.state": {

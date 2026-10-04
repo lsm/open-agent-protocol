@@ -182,6 +182,27 @@ func (c *Client) CreateSession(ctx context.Context, request CreateSessionRequest
 	return response.Data, nil
 }
 
+func (c *Client) Session(ctx context.Context, session native.SessionID) (native.SessionInfo, error) {
+	var response struct {
+		Data native.SessionInfo `json:"data"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/session/"+url.PathEscape(string(session)), nil, nil, &response); err != nil {
+		return native.SessionInfo{}, err
+	}
+	if err := response.Data.Validate(); err != nil {
+		return native.SessionInfo{}, err
+	}
+	if response.Data.ID != session {
+		return native.SessionInfo{}, fmt.Errorf("%w: session record for foreign session %s", ErrSubscription, response.Data.ID)
+	}
+	return response.Data, nil
+}
+
+func (c *Client) SwitchModel(ctx context.Context, session native.SessionID, model native.ModelRef) error {
+	path := "/api/session/" + url.PathEscape(string(session)) + "/model"
+	return c.do(ctx, http.MethodPost, path, nil, map[string]any{"model": model}, nil)
+}
+
 func (c *Client) Prompt(ctx context.Context, session native.SessionID, request native.PromptRequest) (native.Admitted, error) {
 	var response struct {
 		Data native.Admitted `json:"data"`

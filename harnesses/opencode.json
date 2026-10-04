@@ -6,7 +6,7 @@
       "label": "v1.18.34",
       "status": "current",
       "endpoint_version": "v1.18.34",
-      "capability_revision": "opencode-v1.18.34-oap-v3",
+      "capability_revision": "opencode-v1.18.34-oap-v4",
       "ledgers": ["research/opencode-v1.18.34-mapping.md", "research/opencode-v1.18.32-mapping.md", "research/opencode-v1.18.29-mapping.md"],
       "corpus": "fixtures/adapters/opencode-v1.18.34",
       "components": [

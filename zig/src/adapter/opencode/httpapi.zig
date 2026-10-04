@@ -283,6 +283,18 @@ pub fn interrupt(arena: std.mem.Allocator, endpoint: Endpoint, session: []const 
     return build(arena, endpoint, "POST", try sessionPath(arena, session, "/interrupt"), "", "application/json", "{}");
 }
 
+pub fn switchModel(arena: std.mem.Allocator, endpoint: Endpoint, session: []const u8, model: native.ModelRef) std.mem.Allocator.Error!Request {
+    var body = std.ArrayList(u8).empty;
+    try body.appendSlice(arena, "{\"model\":");
+    try native.appendModelRef(&body, arena, model);
+    try body.append(arena, '}');
+    return build(arena, endpoint, "POST", try sessionPath(arena, session, "/model"), "", "application/json", body.items);
+}
+
+pub fn getSession(arena: std.mem.Allocator, endpoint: Endpoint, session: []const u8) std.mem.Allocator.Error!Request {
+    return build(arena, endpoint, "GET", try sessionPath(arena, session, ""), "", "application/json", null);
+}
+
 pub fn active(arena: std.mem.Allocator, endpoint: Endpoint) std.mem.Allocator.Error!Request {
     return build(arena, endpoint, "GET", "/api/session/active", "", "application/json", null);
 }
@@ -359,6 +371,24 @@ pub fn promptResult(arena: std.mem.Allocator, response: Response, session: []con
 pub fn interruptResult(arena: std.mem.Allocator, response: Response, session: []const u8, limit: usize) std.mem.Allocator.Error!?Failure {
     if (response.status == 204) return null;
     return refusal(arena, response, try sessionPath(arena, session, "/interrupt"), limit);
+}
+
+pub fn switchModelResult(arena: std.mem.Allocator, response: Response, session: []const u8, limit: usize) std.mem.Allocator.Error!?Failure {
+    if (response.status == 204) return null;
+    return refusal(arena, response, try sessionPath(arena, session, "/model"), limit);
+}
+
+pub fn getSessionResult(arena: std.mem.Allocator, response: Response, session: []const u8, limit: usize) std.mem.Allocator.Error!Outcome(native.SessionInfo) {
+    const document = switch (try check(arena, response, try sessionPath(arena, session, ""), limit, &native.session_info_response)) {
+        .document => |value| value,
+        .failed => |failure| return .{ .failed = failure },
+    };
+    const info = native.sessionInfoOf(document);
+    if (!native.validSessionInfo(info)) return .{ .failed = .{ .message = native.invalid_wire ++ ": invalid session info" } };
+    if (!std.mem.eql(u8, info.id, session)) {
+        return .{ .failed = .{ .message = try std.fmt.allocPrint(arena, subscription_failed ++ ": session record for foreign session {s}", .{info.id}) } };
+    }
+    return .{ .ok = info };
 }
 
 pub fn activeResult(arena: std.mem.Allocator, response: Response, limit: usize) std.mem.Allocator.Error!Outcome([]const []const u8) {
