@@ -29,8 +29,9 @@ locally; clearing the queue or aborting cancels the reservations. A session atta
 hub refuses a follow-up locally, because the hub link withdraws any queued admission as
 `session_busy`. `/compact` sends `session.compact.request` and `/autocompact`
 sends its setting as the session's `compaction_policy` before each turn, when the
-endpoint advertises them; the hub has no route for either, so an attached session
-refuses them. Resume and steering refuse with `UnavailableOverOap` until their gaps
+endpoint advertises them; the TUI's attach link (`zig/src/tui/hub_link.zig`) routes
+neither, although the hub takes a compaction on its submit route, so an attached
+session refuses them. Resume and steering refuse with `UnavailableOverOap` until their gaps
 below close. `oapx tui --attach URL` runs the
 same execution over a running hub's HTTP wire (`zig/src/tui/hub_link.zig`): each envelope
 goes to its route, and each run is followed on its own SSE stream replayed from its first

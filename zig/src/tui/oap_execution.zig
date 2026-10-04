@@ -308,6 +308,7 @@ pub const OapExecution = struct {
     fn followUp(ctx: *anyopaque, text: []const u8) anyerror!void {
         const self = cast(ctx);
         if (self.hub != null) return error.UnavailableOverOap;
+        if (self.compacting) return error.CompactionInProgress;
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
         const a = scratch.allocator();
@@ -785,6 +786,10 @@ pub const OapExecution = struct {
         if (std.mem.eql(u8, kind, "error.response")) {
             const reply_to = stringOf(root, "in_reply_to") orelse "";
             const message = if (payload) |body| errorMessage(body) else "the endpoint refused the request";
+            if (std.mem.startsWith(u8, reply_to, "settings-")) {
+                self.allocator.free(self.sent_policy);
+                self.sent_policy = &.{};
+            }
             if (std.mem.startsWith(u8, reply_to, "compact-")) {
                 try self.settleCompaction(.failed, message);
             } else if (std.mem.startsWith(u8, reply_to, "submit-")) {
@@ -1020,6 +1025,8 @@ pub const OapExecution = struct {
     }
 
     fn endTurn(self: *OapExecution, reason: tui_session.TuiEndReason) void {
+        self.compacting = false;
+        self.compaction_settled = false;
         self.awaiting_promotion.store(false, .release);
         self.turn_open.store(false, .release);
         self.output_tokens = 0;
@@ -2089,5 +2096,28 @@ test "a compaction and a policy are refused before anything is sent when the ses
     try testing.expectError(error.UnavailableOverOap, runtime.compact(.{}));
     try testing.expectError(error.UnavailableOverOap, runtime.setCompactionPolicy("{\"kind\":\"off\"}"));
     try testing.expect(runtime.isIdle());
+    try testing.expectEqual(@as(usize, 0), execution.sent_policy.len);
+}
+
+test "a compaction in flight refuses a follow-up, a refused settings update forgets the policy, and a torn-down turn forgets the compaction" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+    try runtime.start();
+
+    execution.compacting = true;
+    try testing.expectError(error.CompactionInProgress, OapExecution.followUp(execution, "later"));
+    execution.endTurn(.@"error");
+    try testing.expect(!execution.compacting);
+    while (runtime.streamEvents().poll()) |event| {
+        var owned = event;
+        owned.deinit(testing.allocator);
+    }
+
+    try runtime.setCompactionPolicy("{\"kind\":\"share\",\"share_percent\":50}");
+    try testing.expect(execution.sent_policy.len > 0);
+    try execution.translateLine("{\"type\":\"error.response\",\"in_reply_to\":\"settings-9\",\"payload\":{\"error\":{\"code\":\"run_active\",\"message\":\"busy\"}}}");
     try testing.expectEqual(@as(usize, 0), execution.sent_policy.len);
 }
