@@ -5186,8 +5186,10 @@ reservation; continue is refused. `session.compaction.policy` is taken at open a
 percentage of the window, `tokens` a count, and `off` never. The loop checks
 the threshold between the turns of a run, so a `threshold` compaction is
 always inside a run, after a tool round; it never compacts for `overflow`.
-The default `oapx serve agent` endpoint still refuses both: it reaches the
-loop over the native agent wire, which has no compaction verb.
+`oapx tui` over OAP carries both: `/compact` sends `session.compact.request`
+and `/autocompact` sends its setting as the session's `compaction_policy` before
+each turn (#866). The default `oapx serve agent` endpoint refuses both: it keeps
+no history between runs, so there is nothing to compact.
 
 Pi follows. Both pi adapters serve the update with the commands they already
 send at open, `set_thinking_level` and `set_auto_compaction`, at

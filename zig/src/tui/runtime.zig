@@ -74,6 +74,9 @@ pub const RemoteExecution = struct {
         cancel: *const fn (ctx: *anyopaque) void,
         switch_model: *const fn (ctx: *anyopaque, model: ai_types.Model) anyerror!void,
         set_reasoning: *const fn (ctx: *anyopaque, level: ai_types.ThinkingLevel) anyerror!void,
+        compacts: *const fn (ctx: *anyopaque) bool,
+        compact: *const fn (ctx: *anyopaque, focus: []const u8) anyerror!void,
+        set_compaction_policy: *const fn (ctx: *anyopaque, policy_json: []const u8) anyerror!void,
         decide_approval: *const fn (ctx: *anyopaque, tool_call_id: []const u8, granted: bool) anyerror!void,
         follow_up: *const fn (ctx: *anyopaque, text: []const u8) anyerror!void,
         clear_queued: *const fn (ctx: *anyopaque) void,
@@ -1063,7 +1066,21 @@ pub const TuiRuntime = struct {
     }
 
     pub fn compact(self: *TuiRuntime, options: CompactOptions) !void {
-        if (self.remote != null) return error.UnavailableOverOap;
+        if (self.remote) |remote| {
+            if (!self.started) try self.start();
+            if (!remote.vtable.compacts(remote.ctx)) return error.UnavailableOverOap;
+            if (self.stream_active) return error.AgentAlreadyStreaming;
+            if (self.currentModel() == null) return error.NoModelConfigured;
+            self.resetEventStreamForTurn();
+            self.cancelled.store(false, .release);
+            self.completed = false;
+            self.push(.{ .compaction_start = .{} });
+            remote.vtable.compact(remote.ctx, options.focus) catch |err| {
+                self.finishCompaction(.{ .outcome = .failed, .message = OwnedSlice(u8).initBorrowed(@errorName(err)) });
+                return err;
+            };
+            return;
+        }
         if (!self.started) try self.start();
         const local = &(self.local_agent orelse return error.RuntimeNotStarted);
         if (self.currentModel() == null) return error.NoModelConfigured;
@@ -1099,6 +1116,12 @@ pub const TuiRuntime = struct {
     fn applySessionId(self: *TuiRuntime) !void {
         const local = &(self.local_agent orelse return);
         try local.setSessionId(if (self.session_id.len > 0) self.session_id else null);
+    }
+
+    pub fn setCompactionPolicy(self: *TuiRuntime, policy_json: []const u8) !void {
+        const remote = self.remote orelse return error.NotOverOap;
+        if (!self.started) try self.start();
+        try remote.vtable.set_compaction_policy(remote.ctx, policy_json);
     }
 
     pub fn armAutoCompact(self: *TuiRuntime, at: ?u64, transcripts: []const []const u8, writer: ?TranscriptWriter) !void {
@@ -1486,6 +1509,7 @@ pub const TuiRuntime = struct {
                 self.last_turn_stop_reason = payload.stop_reason;
                 self.pushTerminal(event);
             },
+            .compaction_end => |payload| if (payload.in_run) self.push(event) else self.finishCompaction(payload),
             else => self.push(event),
         }
     }

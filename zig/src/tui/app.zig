@@ -1219,6 +1219,15 @@ pub const App = struct {
 
     fn startCompaction(self: *App, focus: []const u8) !void {
         var session = &(self.session orelse return error.NoRuntimeConfigured);
+        if (self.runtime) |runtime| if (runtime.remote != null) {
+            self.state.stream_aborted = false;
+            session.compact(.{ .focus = focus }) catch |err| switch (err) {
+                error.UnavailableOverOap => try self.state.appendTranscript(.@"error", over_oap_compaction_refusal),
+                error.RunInProgress => try self.state.appendTranscript(.@"error", "A run is still open; compact once it ends."),
+                else => return err,
+            };
+            return;
+        };
         const history = session.history();
         if (history.len == 0 or agent.compaction.isCompacted(history)) {
             try self.state.appendTranscript(.system, "Nothing to compact yet.");
@@ -3484,6 +3493,12 @@ pub const App = struct {
 
     fn armAutoCompact(self: *App) void {
         const runtime = self.runtime orelse return;
+        if (runtime.remote != null) {
+            var buffer: [96]u8 = undefined;
+            const policy = tui_state.autoCompactPolicyJson(&buffer, self.state.autocompact) catch return;
+            runtime.setCompactionPolicy(policy) catch {};
+            return;
+        }
         runtime.armAutoCompact(self.autoCompactThreshold(), self.compaction_transcripts.items, .{ .ctx = self, .save_fn = saveRunTranscript }) catch {};
     }
 
@@ -5588,8 +5603,9 @@ fn preferredContextWindow(stored: ?u32, flag: ?u32) ?u32 {
     return flag orelse stored;
 }
 
-pub const over_oap_notice = "oapx tui: this session runs over OAP, through the in-process endpoint or the hub it is attached to. Resume, compaction, steering, queued follow-ups on an attached hub and the model's questions to you are not carried over OAP yet, an \"always\" answer to a tool approval applies to that call only, the context window, output limit and workspace are fixed when the session opens, and so is the thinking level unless the endpoint advertises changing it live; use oapx --tui for them.";
+pub const over_oap_notice = "oapx tui: this session runs over OAP, through the in-process endpoint or the hub it is attached to. Resume, steering, compaction on an attached hub, queued follow-ups on an attached hub and the model's questions to you are not carried over OAP yet, an \"always\" answer to a tool approval applies to that call only, the context window, output limit and workspace are fixed when the session opens, and so is the thinking level unless the endpoint advertises changing it live; use oapx --tui for them.";
 pub const over_oap_setting_refusal = tui_commands.over_oap_setting_refusal;
+pub const over_oap_compaction_refusal = "this session's endpoint does not take a compaction over OAP; use oapx --tui to compact.";
 
 pub fn run(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32) !void {
     return runWith(allocator, io, context_window, .local);

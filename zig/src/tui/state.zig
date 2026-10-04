@@ -20,6 +20,23 @@ pub fn autoCompactAt(setting: AutoCompactSetting, model: ai_types.Model) ?u64 {
     };
 }
 
+pub fn autoCompactPolicyJson(buffer: []u8, setting: AutoCompactSetting) ![]const u8 {
+    return switch (setting) {
+        .off => std.fmt.bufPrint(buffer, "{{\"kind\":\"off\"}}", .{}),
+        .auto => std.fmt.bufPrint(buffer, "{{\"kind\":\"auto\"}}", .{}),
+        .percent => |percent| std.fmt.bufPrint(buffer, "{{\"kind\":\"share\",\"share_percent\":{d}}}", .{percent}),
+        .tokens => |count| std.fmt.bufPrint(buffer, "{{\"kind\":\"tokens\",\"tokens\":{d}}}", .{count}),
+    };
+}
+
+test "autocompact settings become the compaction policies OAP names" {
+    var buffer: [96]u8 = undefined;
+    try std.testing.expectEqualStrings("{\"kind\":\"off\"}", try autoCompactPolicyJson(&buffer, .off));
+    try std.testing.expectEqualStrings("{\"kind\":\"auto\"}", try autoCompactPolicyJson(&buffer, .auto));
+    try std.testing.expectEqualStrings("{\"kind\":\"share\",\"share_percent\":70}", try autoCompactPolicyJson(&buffer, .{ .percent = 70 }));
+    try std.testing.expectEqualStrings("{\"kind\":\"tokens\",\"tokens\":4000}", try autoCompactPolicyJson(&buffer, .{ .tokens = 4000 }));
+}
+
 pub const AppMode = enum {
     normal,
     approval,
