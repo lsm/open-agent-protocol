@@ -169,3 +169,50 @@ any frame they carry except `system/init`'s values:
   that would now carry them, as the 2.1.282 move did not add its own.
 - Expectations change only the capability revision. Provenance in
   `manifest.json` and every `case.json` names the 2.1.288 artifacts above.
+
+## Live session settings at 2.1.288
+
+Recorded for Decision 0045's live half. The 2.1.282 ledger left open whether
+`apply_flag_settings` changes a running session; at this pin it is observed.
+
+**Live probe.** The 2.1.288 darwin-arm64 binary, sandboxed as in *Live
+verification* (no network, no keychain, a temporary `CLAUDE_CONFIG_DIR`, no
+model call), took `initialize`, then alternating `apply_flag_settings` and
+`get_settings`:
+
+| sent `settings` | `get_settings` `effective` | `applied.effort` |
+|---|---|---|
+| (none) | none of the three keys | `medium` |
+| `effortLevel: high, autoCompactEnabled: true, autoCompactWindow: 150000` | the same three | `high` |
+| `effortLevel: low, autoCompactEnabled: false` | `low`, `false`, window still `150000` | `low` |
+| all three `null` | none of the three keys | `medium` |
+
+So the request merges into the flag layer of a live session, a key it omits
+keeps its earlier value, `null` removes a key and returns it to the CLI's own
+default, and the effort the CLI will send (`applied.effort`) follows each
+change.
+
+**In the adapters.** Both trees advertise `session.reasoning` and
+`session.compaction.policy` with `session_live` beside `session_open` and
+serve `session.settings.update.request` through one `apply_flag_settings`
+carrying every named setting:
+
+- a level sets `effortLevel`; `off` and `minimal` are refused unsatisfiable;
+- `tokens` sets `autoCompactEnabled: true` and `autoCompactWindow`; `off`
+  sets `autoCompactEnabled: false` and clears the window; `auto` clears both,
+  because the window a previous update set would otherwise survive the merge;
+  `share` is refused unsatisfiable;
+- the update is refused `run_active` while a run is open. The CLI applies
+  flags to its next request, which inside a run would change the level of the
+  run already under way, and Decision 0045 keeps a running run at the level it
+  started with.
+
+`goap serve agent --backend claude` and `oapx serve agent --backend claude`,
+each with the sandboxed binary as their child, answered two updates (`high`
+with a 120000-token window, then `auto`) with the values asked for and the
+ones replaced, followed by `session.state.updated`; `oapx` also refused
+`minimal`, which the Go adapter's unit tests cover.
+Whether a live `autoCompactWindow` moves the next compaction is still not
+observed: that needs a model call.
+
+The descriptor changed, so the revision moves to `claude-code-2.1.288-oap-v2`.
