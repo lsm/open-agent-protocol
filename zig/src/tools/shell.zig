@@ -111,7 +111,7 @@ pub const execute_tool = agent.AgentTool{
     .label = "Shell",
     .name = "Shell",
     .description = "Run a shell command in the workspace and return stdout, stderr, exit status, duration, and byte counts. Large output is stored as a retrievable artifact.",
-    .short_description = "Run shell command; large output becomes artifact.",
+    .short_description = "Run shell command; past 20 KiB, shows head and tail and saves the rest.",
     .parameters_schema_json = schema_execute,
     .execute = execute, .operation = .shell,
 };
@@ -510,9 +510,8 @@ test "shell execute stores output over 32 KiB as an artifact, regardless of comp
     defer std.testing.allocator.free(large_args);
     var large = try execute("call-large", large_args, null, null, null, std.testing.allocator);
     defer large.deinit(std.testing.allocator);
-    try std.testing.expect(std.mem.indexOf(u8, large.content.slice()[0].text.text, "output stored as artifact") != null);
-    try std.testing.expect(std.mem.indexOf(u8, large.content.slice()[0].text.text, "mode \"preview\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, large.content.slice()[0].text.text, "full_for_context") != null);
+    try std.testing.expect(std.mem.indexOf(u8, large.content.slice()[0].text.text, "lines omitted") != null);
+    try std.testing.expect(std.mem.indexOf(u8, large.content.slice()[0].text.text, "read the rest with Shell") != null);
     try std.testing.expect(std.mem.indexOf(u8, large.getDetailsJson().?, "\"compressed\":true") != null);
     try std.testing.expectEqual(@as(usize, 1), large.artifacts.slice().len);
     const small_args = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"command\":\"echo ok\",\"compact_output\":true}}", .{cwd});

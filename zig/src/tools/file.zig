@@ -212,7 +212,7 @@ test "file read stores large output as artifact" {
 
     var result = try readExecute("call-large", args, null, null, null, std.testing.allocator);
     defer result.deinit(std.testing.allocator);
-    try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, "output stored as artifact") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, "lines omitted") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.getDetailsJson().?, "\"compressed\":true") != null);
     try std.testing.expectEqual(@as(usize, 1), result.artifacts.slice().len);
     try common.cleanupArtifacts();

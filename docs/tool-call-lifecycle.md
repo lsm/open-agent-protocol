@@ -152,12 +152,13 @@ receives a summary in its place. Three properties of that hand-off are contracts
   combined output — stdout, then `stderr:`, then stderr — the same shape the inline path
   returns, so a stderr-only result stores the `stderr:` section alone.
 - **The reported size describes the stored bytes.** `raw_bytes`, the artifact reference's
-  `byte_size`, the summary's `bytes:` line and its `lines:` line all count the stored
-  combined output, separator included, so what a later retrieval reads back is what the
-  result claimed to have stored.
-- **The summary preview is bounded on both streams.** stdout and stderr each contribute a
-  head and a tail of at most `snippet_bytes`, so an artifact-backed summary cannot grow
-  with the output that produced it.
+  `byte_size` and the marker's byte and line counts all count the stored combined output,
+  separator included, so what a later read returns is what the result claimed to have
+  stored.
+- **The summary is a head and a tail of the whole output.** The limit is 20 KiB. Past it,
+  the summary keeps the first and last 10 KiB, each cut back to a line boundary, around a
+  marker that counts what was omitted and names the saved file by its absolute path, so an
+  artifact-backed summary cannot grow with the output that produced it.
 
 Two boundaries are worth stating because they are not the helper's to decide:
 
@@ -166,11 +167,10 @@ Two boundaries are worth stating because they are not the helper's to decide:
   passes stderr separately only crosses the limit on its stdout. The shell caller
   packs both streams into `text` before calling, so for shell the limit already covers
   both; the other callers pass no stderr at all. Changing that split is a caller decision.
-- **How the stored bytes are read back.** A file-backed artifact is referenced by its
-  `.oapx/tool-artifacts/…` path, which is what `Output` takes, so the summary's
-  `Output` advice holds for those. A store-backed artifact is referenced by a
-  `makai-artifact://` URI that the tool's path-based reader refuses, and is read through
-  the artifact store instead. Both routes exist; the tool covers only the first.
+- **How the stored bytes are read back.** There is no retrieval tool. A file-backed
+  artifact is saved under `.oapx/tool-artifacts/` and the marker names its absolute path,
+  so the agent reads the rest with `Shell` (`grep`, `sed -n`). A store-backed artifact is
+  referenced by a `makai-artifact://` URI and is read through the artifact store instead.
 
 ## Slices
 
