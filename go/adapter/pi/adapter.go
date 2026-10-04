@@ -187,6 +187,7 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		"action.tools.execute":           {Level: protocol.SupportUnavailable, Reason: "Pi executes tools internally"},
 		"action.permissions":             {Level: protocol.SupportUnavailable, Reason: "extension dialogs are generic user input, not permissions"},
 		protocol.FeatureSessionReasoning: {Level: protocol.SupportNative, Modes: []string{protocol.ModeSessionOpen}, Reason: "set_thinking_level after the process is ready, confirmed by get_state; a level Pi does not run the model at is refused"},
+		protocol.FeatureSessionCompact:   {Level: protocol.SupportNative, Reason: "a compaction request on an idle session runs Pi's compact command, with focus as its custom instructions; Pi never continues the turn, so continue is refused"},
 		protocol.FeatureRunCompaction:    {Level: protocol.SupportNative, Reason: "Pi's compaction_start and compaction_end inside a prompt run, threshold and overflow alike, become the run's compaction events; it compacts before agent_settled, so the run is still open"},
 		protocol.FeatureCompactionPolicy: {Level: protocol.SupportNative, Modes: []string{protocol.ModeSessionOpen}, Reason: "set_auto_compaction switches Pi's own threshold on or off; its threshold is a settings-file reserve, so share and tokens are refused"},
 	}

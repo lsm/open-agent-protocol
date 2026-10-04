@@ -70,6 +70,9 @@ type runState struct {
 	steers         []*pendingSteer
 	admittedSteers []protocol.EnvelopeID
 	compaction     protocol.CompactionID
+	compacting     bool
+	adopted        bool
+	summary        *protocol.Message
 }
 
 type pendingSteer struct {
@@ -343,6 +346,108 @@ func (s *Session) Submit(ctx context.Context, submit base.SubmitRequest) (protoc
 	return response, stream, nil
 }
 
+func (s *Session) Compact(ctx context.Context, compact base.CompactRequest) (protocol.SessionCompactResponse, base.EventStream, error) {
+	req := compact.Request
+	if err := ctx.Err(); err != nil {
+		return protocol.SessionCompactResponse{}, nil, err
+	}
+	switch req.Delivery {
+	case "", protocol.DeliveryAuto:
+	default:
+		return protocol.SessionCompactResponse{}, nil, &base.UnsupportedControlError{Feature: protocol.DeliveryKey(req.Delivery), Reason: base.ControlUnadvertised, Detail: "Pi compacts an idle session only"}
+	}
+	if req.Continue {
+		return protocol.SessionCompactResponse{}, nil, &base.UnsupportedControlError{Feature: protocol.FeatureSessionCompact, Reason: base.ControlUnsatisfiable, Field: "continue", Detail: "Pi's compact command never continues the turn"}
+	}
+	s.commandMu.Lock()
+	s.reduceMu.Lock()
+	s.mu.Lock()
+	if s.closed || s.unusable {
+		s.mu.Unlock()
+		s.reduceMu.Unlock()
+		s.commandMu.Unlock()
+		return protocol.SessionCompactResponse{}, nil, base.ErrSessionClosed
+	}
+	if req.SessionID != s.state.SessionID {
+		s.mu.Unlock()
+		s.reduceMu.Unlock()
+		s.commandMu.Unlock()
+		return protocol.SessionCompactResponse{}, nil, base.ErrRunNotFound
+	}
+	if s.active != nil && !s.active.terminal {
+		s.mu.Unlock()
+		s.reduceMu.Unlock()
+		s.commandMu.Unlock()
+		return protocol.SessionCompactResponse{}, nil, base.ErrRunActive
+	}
+	run := &runState{id: protocol.RunID(s.ids.NewID("run")), status: protocol.RunRunning, next: 1, started: true, compacting: true, startResult: make(chan error, 1)}
+	run.submissionID = protocol.SubmissionID(s.ids.NewID("submission"))
+	stream := make(chan base.Result, streamCapacity+1)
+	run.subscribers = []chan base.Result{stream}
+	s.active, s.runs[run.id] = run, run
+	model := s.state.CurrentModelID
+	s.state.Status, s.state.ActiveRunID, s.state.UpdatedAtMS = protocol.SessionRunning, run.id, s.clock.Now().UnixMilli()
+	s.mu.Unlock()
+	if err := s.emit(run, protocol.TypeRunStarted, protocol.RunStartedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, ModelID: model, StartedAtMS: s.clock.Now().UnixMilli()}, false); err != nil {
+		s.reduceMu.Unlock()
+		s.commandMu.Unlock()
+		return protocol.SessionCompactResponse{}, nil, err
+	}
+	compaction := protocol.CompactionID(s.ids.NewID("compaction"))
+	s.mu.Lock()
+	run.compaction = compaction
+	s.mu.Unlock()
+	_ = s.emit(run, protocol.TypeRunCompactionStarted, protocol.RunCompactionStartedPayload{SessionID: s.state.SessionID, RunID: run.id, CompactionID: compaction, Reason: protocol.CompactionRequested}, false)
+	s.reduceMu.Unlock()
+	command := native.Command{Type: native.CommandCompact, CustomInstructions: req.Focus}
+	go func() {
+		var data json.RawMessage
+		err := s.client.Call(context.Background(), command, &data)
+		s.reduceMu.Lock()
+		defer s.reduceMu.Unlock()
+		s.settleCompaction(run, data, err)
+	}()
+	s.commandMu.Unlock()
+	requested := req.Delivery
+	if requested == "" {
+		requested = protocol.DeliveryAuto
+	}
+	return protocol.SessionCompactResponse{
+		SessionID: req.SessionID, Accepted: true, SubmissionID: run.submissionID,
+		RequestedDelivery: requested, EffectiveDelivery: protocol.DeliveryStart, DeliveryResolution: "session_idle",
+		Admission: protocol.AdmissionStarted, RunID: run.id, Status: protocol.RunRunning,
+	}, stream, nil
+}
+
+func (s *Session) settleCompaction(run *runState, data json.RawMessage, err error) {
+	s.mu.Lock()
+	terminal, cancelIntent := run.terminal, run.cancelIntent
+	s.mu.Unlock()
+	if terminal {
+		return
+	}
+	var remote *rpc.RemoteError
+	switch {
+	case err == nil:
+		summary := run.summary
+		if summary == nil {
+			var result compactionResult
+			if json.Unmarshal(data, &result) != nil || result.Summary == "" {
+				s.failRun(run, "pi_invalid_compaction", "Pi's compact response carried no summary")
+				return
+			}
+			summary = &protocol.Message{ID: protocol.MessageID(s.ids.NewID("message")), Role: protocol.RoleAssistant, Content: protocol.TextContent(result.Summary)}
+		}
+		_ = s.emit(run, protocol.TypeRunCompleted, protocol.RunCompletedPayload{SessionID: s.state.SessionID, RunID: run.id, FinalResponse: *summary, StopReason: "compacted"}, true)
+	case cancelIntent && errors.As(err, &remote):
+		_ = s.emit(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: run.id, Reason: "Pi cancelled the compaction after abort intent"}, true)
+	case errors.As(err, &remote):
+		_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: "pi_compaction_failed", Message: remote.Message}}, true)
+	default:
+		s.failRunSettled(run, "pi_process_exit", err.Error(), protocol.SettledByInferred)
+	}
+}
+
 func (s *Session) nativePrompt(req protocol.MessageSubmitRequest) (string, []native.ImageContent, []protocol.MessageID, error) {
 
 	if err := base.RefuseUnadvertisedControls(req); err != nil {
@@ -491,7 +596,7 @@ func (s *Session) steerTargetLocked(target protocol.RunID) (*runState, string) {
 			return nil, base.SteerReasonUnknownTarget
 		case run.terminal:
 			return run, base.SteerReasonTerminal
-		case run.status == protocol.RunCancelling:
+		case run.status == protocol.RunCancelling || run.compacting:
 			return run, base.SteerReasonNotSteerable
 		case !run.started:
 			return run, base.SteerReasonQueued
@@ -503,7 +608,7 @@ func (s *Session) steerTargetLocked(target protocol.RunID) (*runState, string) {
 	switch {
 	case run == nil || run.terminal || !run.started:
 		return nil, base.SteerReasonNoActiveRun
-	case run.status == protocol.RunCancelling:
+	case run.status == protocol.RunCancelling || run.compacting:
 		return run, base.SteerReasonNotSteerable
 	default:
 		return run, ""
@@ -928,6 +1033,11 @@ func (s *Session) startCompaction(run *runState, v compactionStart) {
 		return
 	}
 	s.mu.Lock()
+	if run.compacting && !run.adopted && run.compaction != "" && reason == protocol.CompactionRequested {
+		run.adopted = true
+		s.mu.Unlock()
+		return
+	}
 	open := run.compaction
 	id := protocol.CompactionID(s.ids.NewID("compaction"))
 	if open == "" {
@@ -962,6 +1072,9 @@ func (s *Session) endCompaction(run *runState, v compactionEnd) {
 			ended.Summary = &protocol.Message{ID: protocol.MessageID(s.ids.NewID("message")), Role: protocol.RoleAssistant, Content: protocol.TextContent(result.Summary)}
 		}
 		ended.HistoryTokens = result.EstimatedTokensAfter
+		if run.compacting {
+			run.summary = ended.Summary
+		}
 	default:
 		message := v.ErrorMessage
 		if message == "" {
