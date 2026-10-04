@@ -595,3 +595,28 @@ func TestMemoryRefusesALiveUpdateWholeAndKeepsItsPolicy(t *testing.T) {
 		t.Fatalf("policy after two refusals = %+v, want %+v", state.CompactionPolicy, kept)
 	}
 }
+
+func TestMemoryCompactsForOverflowOnceTheHistoryOutgrowsTheWindowWhateverThePolicy(t *testing.T) {
+	overflowing := strings.Repeat("abcd", 8200)
+	for _, policy := range []*protocol.CompactionPolicy{
+		{Kind: protocol.CompactionOff},
+		{Kind: protocol.CompactionTokens, Tokens: 100000},
+		{Kind: protocol.CompactionShare, SharePercent: 1},
+	} {
+		session, err := openWithPolicy(t, policy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		started := compactions(t, submitText(t, session, overflowing))
+		if len(started) != 1 || started[0].Reason != protocol.CompactionOverflow {
+			t.Fatalf("policy %+v compacted %+v, want one overflow compaction", policy, started)
+		}
+	}
+	session, err := openWithPolicy(t, &protocol.CompactionPolicy{Kind: protocol.CompactionOff})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started := compactions(t, submitText(t, session, strings.Repeat("abcd", 8000))); len(started) != 0 {
+		t.Fatalf("a history inside the window compacted under off: %+v", started)
+	}
+}

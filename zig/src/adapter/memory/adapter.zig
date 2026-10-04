@@ -6,7 +6,7 @@ const json_encode = @import("json_encode");
 const jsonschema = @import("jsonschema");
 
 pub const endpoint_id = "reference.memory";
-pub const capability_revision = "reference-memory-v16";
+pub const capability_revision = "reference-memory-v17";
 pub const model_primary = "reference-model-a";
 pub const model_secondary = "reference-model-b";
 pub const journal_capacity = 64;
@@ -49,7 +49,7 @@ const features = [_]contract.Feature{
     .{ .key = contract.feature_models_list, .level = .native, .reason = "the reference adapter serves its fixed catalog, which is exactly the set its model gate admits" },
     .{ .key = "protocol.initialize", .level = .native },
     .{ .key = "run.cancel", .level = .emulated, .reason = "run-target API is implemented over a one-active-run session" },
-    .{ .key = "run.compaction", .level = .emulated, .reason = "the reference adapter publishes the compactions it is asked for, and compacts on its own at the start of a run once its estimate of the history, a token per four bytes of text, reaches the session's threshold" },
+    .{ .key = "run.compaction", .level = .emulated, .reason = "the reference adapter publishes the compactions it is asked for, and compacts on its own at the start of a run once its estimate of the history, a token per four bytes of text, reaches the session's threshold, or for overflow once the history no longer fits the reference model's 8192-token window, whatever the policy" },
     .{ .key = "run.instructions", .level = .emulated, .reason = "instructions are prepended to the scripted text so their effect is observable" },
     .{ .key = "run.model_selection", .level = .emulated, .scope = "run", .reason = "the reference adapter runs no model; it echoes a selection from a fixed catalog for one run" },
     .{ .key = "run.reconciliation", .level = .native },
@@ -65,7 +65,7 @@ const features = [_]contract.Feature{
     },
     .{ .key = "run.tool_selection", .level = .emulated, .scope = "run", .reason = "the policy filters the scripted tool and is not retained past the run" },
     .{ .key = contract.feature_session_compact, .level = .emulated, .reason = "a compaction run replaces the scripted history with a fixed summary that names the focus, and has no model to write it" },
-    .{ .key = contract.feature_compaction_policy, .level = .emulated, .reason = "auto compacts at 80% of the reference model's window, share and tokens set the threshold, off never compacts on its own, and an update takes effect at the next run's start", .modes = &.{ contract.mode_session_open, contract.mode_session_live } },
+    .{ .key = contract.feature_compaction_policy, .level = .emulated, .reason = "auto compacts at 80% of the reference model's window, share and tokens set the threshold, off never compacts on its own except for overflow past the reference window, and an update takes effect at the next run's start", .modes = &.{ contract.mode_session_open, contract.mode_session_live } },
     .{ .key = "session.message.delivery.auto", .level = .native },
     .{ .key = "session.message.delivery.queue", .level = .emulated, .reason = "a busy session reserves one second run and promotes it when the started run settles" },
     .{ .key = "session.message.delivery.steer", .level = .emulated, .reason = "guidance waits on the target run and is applied at its input gate, the scripted turn boundary" },
@@ -871,7 +871,11 @@ pub const Session = struct {
             if (try self.emitCompaction(a, run, "requested")) return;
         } else {
             self.history += run.input;
-            if (self.history >= self.threshold) _ = try self.emitCompaction(a, run, "threshold");
+            if (self.history >= reference_window) {
+                _ = try self.emitCompaction(a, run, "overflow");
+            } else if (self.history >= self.threshold) {
+                _ = try self.emitCompaction(a, run, "threshold");
+            }
         }
 
         const lead = if (run.calls_tool) "I will use the scripted tool." else "I will answer without the scripted tool.";
@@ -2217,7 +2221,7 @@ test "an already_resolved refusal names its settlement only when there is one" {
 }
 
 test "the reference descriptor advertises steer advice at the emulated level" {
-    try testing.expectEqualStrings("reference-memory-v16", capability_revision);
+    try testing.expectEqualStrings("reference-memory-v17", capability_revision);
     try testing.expectEqual(oap_types.SupportLevel.emulated, descriptor.level("session.message.delivery.steer"));
 }
 
@@ -2479,6 +2483,25 @@ test "a run whose history reaches the threshold compacts first and carries on wi
     const ended = (try probe.eventOfType("run.compaction.ended")).object.get("payload").?.object;
     try testing.expectEqualStrings("completed", ended.get("outcome").?.string);
     try testing.expectEqual(@as(i64, 8), ended.get("history_tokens").?.integer);
+}
+
+test "a history past the reference window compacts for overflow whatever the policy" {
+    var overflowing: [4 * 8200]u8 = undefined;
+    for (&overflowing, 0..) |*byte, at| byte.* = "abcd"[at % 4];
+    for ([_][]const u8{ "{\"kind\":\"off\"}", "{\"kind\":\"tokens\",\"tokens\":100000}", "{\"kind\":\"share\",\"share_percent\":1}" }) |policy| {
+        var probe: Probe = undefined;
+        try probe.initPolicy(policy);
+        defer probe.deinit();
+        _ = try probe.submitText(&overflowing);
+        try testing.expectEqual(@as(usize, 1), try probe.compactionsSeen());
+        const started = try probe.eventOfType("run.compaction.started");
+        try testing.expectEqualStrings("overflow", started.object.get("payload").?.object.get("reason").?.string);
+    }
+    var probe: Probe = undefined;
+    try probe.initPolicy("{\"kind\":\"off\"}");
+    defer probe.deinit();
+    _ = try probe.submitText(overflowing[0 .. 4 * 8000]);
+    try testing.expectEqual(@as(usize, 0), try probe.compactionsSeen());
 }
 
 test "a run below its threshold is not compacted" {
