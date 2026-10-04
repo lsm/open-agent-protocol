@@ -5220,6 +5220,9 @@ turns after it, at `session_live` under `codex-appserver-0.160.0-oap-v2`. Its
 compaction limit is a `thread/start` config value with no per-turn
 counterpart, so `session.compaction.policy` stays `session_open` and a live
 policy is refused unadvertised.
+A reopen reports the level `thread/resume` answers the thread last ran under,
+`none` as `off`, unless the open named one; `ultra`, `persistent` and a
+model-defined effort have no OAP value and leave the level unreported.
 
 OpenCode takes the reasoning level live. Both OpenCode adapters switch the
 session to the model it records with the new level as its variant

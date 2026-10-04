@@ -53,6 +53,7 @@ type fakeClient struct {
 	err           error
 	turnStartErr  error
 	resumedModel  string
+	resumedEffort string
 	resumeErr     error
 
 	turnStart   native.TurnStartParams
@@ -86,6 +87,7 @@ func (client *fakeClient) Call(ctx context.Context, method string, params, resul
 		response := result.(*native.ThreadResumeResponse)
 		response.Thread.ID = client.threadID
 		response.Model = client.resumedModel
+		response.ReasoningEffort = client.resumedEffort
 	case native.MethodTurnStart:
 		if client.turnStartErr != nil {
 			return client.turnStartErr
@@ -1119,6 +1121,45 @@ func TestAReopenResumesTheBoundThreadAndReportsTheModelItResumedUnder(t *testing
 	}
 	if got := session.(adapter.NativeSession).NativeSessionID(); got != client.threadID {
 		t.Fatalf("native id = %q, want the resumed thread", got)
+	}
+}
+
+func TestAReopenReportsTheReasoningLevelTheThreadResumedUnder(t *testing.T) {
+	cases := map[string]struct {
+		effort    string
+		requested protocol.ReasoningLevel
+		want      protocol.ReasoningLevel
+	}{
+		"a shared level":               {effort: "high", want: protocol.ReasoningHigh},
+		"none is off":                  {effort: "none", want: protocol.ReasoningOff},
+		"a level OAP has no value for": {effort: "ultra", want: ""},
+		"no level reported":            {effort: "", want: ""},
+		"the requested level wins":     {effort: "high", requested: protocol.ReasoningLow, want: protocol.ReasoningLow},
+	}
+	for name, test := range cases {
+		t.Run(name, func(t *testing.T) {
+			client := newFakeClient()
+			client.resumedEffort = test.effort
+			implementation, err := New(Config{
+				Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return client, nil }),
+				Clock:   &fakeClock{}, IDs: &fakeIDs{}, Model: "glm-test", JournalCapacity: 32,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			session, err := implementation.Open(context.Background(), adapter.OpenRequest{SessionID: "session-1", Participant: protocol.Participant{ID: "user"}, Reopen: true, NativeSessionID: client.threadID, ReasoningLevel: test.requested})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = session.Close(context.Background()) })
+			state, err := session.State(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state.ReasoningLevel != test.want {
+				t.Fatalf("reasoning level = %q, want %q", state.ReasoningLevel, test.want)
+			}
+		})
 	}
 }
 

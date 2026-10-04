@@ -967,6 +967,35 @@ test "a reopen resumes the bound thread and reports the model it resumed under" 
     try testing.expectEqualStrings("gpt-resumed", reopened.current_model_id.?);
 }
 
+fn reopenedLevel(comptime effort: []const u8, requested: ?[]const u8) !?[]const u8 {
+    var probe: Probe = undefined;
+    try probe.init(fake_resume_prelude ++
+        \\take; printf '{"id":1,"result":{"thread":{"id":"native-thread"},"model":"gpt-resumed","modelProvider":"openai","cwd":"/work","approvalPolicy":"never","approvalsReviewer":"user","sandbox":{"type":"readOnly"},"reasoningEffort":"
+    ++ effort ++
+        \\"}}\n'
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const opened = try probe.openWith(.{ .session_id = "s1", .participant = "user", .reopen = true, .native_session_id = "native-thread", .reasoning_level = requested }, &refusal);
+    _ = try probe.waitWritten("\"method\":\"thread/resume\"");
+    const level = (try opened.state(probe.arena.allocator(), &refusal)).reasoning_level orelse return null;
+    return try testing.allocator.dupe(u8, level);
+}
+
+test "a reopen reports the reasoning level the thread resumed under" {
+    const shared = (try reopenedLevel("high", null)).?;
+    defer testing.allocator.free(shared);
+    try testing.expectEqualStrings("high", shared);
+    const off = (try reopenedLevel("none", null)).?;
+    defer testing.allocator.free(off);
+    try testing.expectEqualStrings("off", off);
+    try testing.expectEqual(@as(?[]const u8, null), try reopenedLevel("ultra", null));
+    const requested = (try reopenedLevel("high", "low")).?;
+    defer testing.allocator.free(requested);
+    try testing.expectEqualStrings("low", requested);
+}
+
 test "a reopen Codex cannot load is unsupported_feature" {
     var probe: Probe = undefined;
     try probe.init(fake_resume_prelude ++

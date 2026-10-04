@@ -363,6 +363,7 @@ pub const Reducer = struct {
         var kept = Reducer.init(arena, self.options);
         kept.options.model = try keep.dupe(u8, self.options.model);
         kept.options.resume_thread_id = try keep.dupe(u8, self.options.resume_thread_id);
+        kept.options.settings.reasoning_effort = try keep.dupe(u8, self.options.settings.reasoning_effort);
         kept.ids = self.ids;
         kept.clock = self.clock;
         kept.next_request = self.next_request;
@@ -543,6 +544,8 @@ pub const Reducer = struct {
                 }
                 const resumed_model = native.text(result, &.{"model"});
                 if (resumed_model.len > 0) self.options.model = try self.allocator().dupe(u8, resumed_model);
+                const resumed_effort = native.text(result, &.{"reasoningEffort"});
+                if (self.options.settings.reasoning_effort.len == 0 and resumed_effort.len > 0) self.options.settings.reasoning_effort = try self.allocator().dupe(u8, resumed_effort);
                 try self.opens(thread);
                 self.state.recovered = self.options.reopen;
             },
@@ -1918,11 +1921,11 @@ test "a compacted reducer still ignores a reused item id, fails its completion, 
     try testing.expectEqualStrings("invalid_native_action", errorCode(&kept));
 }
 
-test "a reopened reducer keeps the model it resumed under after compaction frees the arena it arrived in" {
+test "a reopened reducer keeps the model and reasoning effort it resumed under after compaction frees the arena it arrived in" {
     var source = std.heap.ArenaAllocator.init(testing.allocator);
     var reducer = Reducer.init(&source, .{ .resume_thread_id = "native-thread", .reopen = true });
     try reducer.open();
-    try answerCall(&reducer, "{\"thread\":{\"id\":\"native-thread\"},\"model\":\"gpt-resumed\"}");
+    try answerCall(&reducer, "{\"thread\":{\"id\":\"native-thread\"},\"model\":\"gpt-resumed\",\"reasoningEffort\":\"high\"}");
     reducer.envelopes.clearRetainingCapacity();
     reducer.writes.clearRetainingCapacity();
     var target = std.heap.ArenaAllocator.init(testing.allocator);
@@ -1932,6 +1935,7 @@ test "a reopened reducer keeps the model it resumed under after compaction frees
 
     try testing.expectEqualStrings("gpt-resumed", kept.options.model);
     try testing.expectEqualStrings("native-thread", kept.options.resume_thread_id);
+    try testing.expectEqualStrings("high", kept.options.settings.reasoning_effort);
     try kept.submit(.{ .messages = &.{.{ .text = "again" }} });
     try testing.expect(std.mem.indexOf(u8, lastWrite(&kept), "\"model\":\"gpt-resumed\"") != null);
 }

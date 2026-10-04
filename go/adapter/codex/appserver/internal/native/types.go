@@ -77,6 +77,7 @@ type ThreadResumeResponse struct {
 	ApprovalPolicy    json.RawMessage `json:"approvalPolicy,omitempty"`
 	ApprovalsReviewer json.RawMessage `json:"approvalsReviewer,omitempty"`
 	Sandbox           json.RawMessage `json:"sandbox,omitempty"`
+	ReasoningEffort   string          `json:"reasoningEffort,omitempty"`
 }
 
 type UserInput struct {

@@ -210,6 +210,7 @@ func (implementation *Adapter) Open(ctx context.Context, request adapter.OpenReq
 		}
 	}
 	model := implementation.config.Model
+	level := request.ReasoningLevel
 	var recovery *protocol.RecoveryMetadata
 	if threadID == "" {
 		params := native.ThreadStartParams{Model: implementation.config.Model, Cwd: implementation.config.WorkingDirectory, ApprovalPolicy: implementation.config.ApprovalPolicy, Sandbox: implementation.config.Sandbox, Config: settings}
@@ -240,6 +241,9 @@ func (implementation *Adapter) Open(ctx context.Context, request adapter.OpenReq
 		if response.Model != "" {
 			model = response.Model
 		}
+		if level == "" {
+			level = oapLevel(response.ReasoningEffort)
+		}
 		if request.Reopen {
 			recovery = &protocol.RecoveryMetadata{Recovered: true}
 		}
@@ -253,7 +257,7 @@ func (implementation *Adapter) Open(ctx context.Context, request adapter.OpenReq
 		client: client, clock: implementation.clock, ids: implementation.ids,
 		capacity: implementation.config.JournalCapacity, participant: request.Participant.ID,
 		threadID: threadID, model: model,
-		state: protocol.SessionState{SessionID: sessionID, Status: protocol.SessionIdle, CurrentModelID: model, UpdatedAtMS: now, Recovery: recovery, ReasoningLevel: request.ReasoningLevel, CompactionPolicy: request.CompactionPolicy},
+		state: protocol.SessionState{SessionID: sessionID, Status: protocol.SessionIdle, CurrentModelID: model, UpdatedAtMS: now, Recovery: recovery, ReasoningLevel: level, CompactionPolicy: request.CompactionPolicy},
 		runs:  make(map[protocol.RunID]*runState), turns: make(map[string]protocol.RunID),
 		items: make(map[string]itemBinding), interactions: make(map[protocol.InteractionID]*interactionBinding), stop: make(chan struct{}),
 	}
@@ -286,6 +290,16 @@ func codexEffort(level protocol.ReasoningLevel) string {
 		return "none"
 	}
 	return string(level)
+}
+
+func oapLevel(effort string) protocol.ReasoningLevel {
+	switch level := protocol.ReasoningLevel(effort); level {
+	case "none":
+		return protocol.ReasoningOff
+	case protocol.ReasoningMinimal, protocol.ReasoningLow, protocol.ReasoningMedium, protocol.ReasoningHigh, protocol.ReasoningXHigh, protocol.ReasoningMax:
+		return level
+	}
+	return ""
 }
 
 type systemClock struct{}
