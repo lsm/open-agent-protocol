@@ -87,6 +87,24 @@ revision strings.
 
 v1.18.32 is retired: its corpus directory is removed and its ledger remains.
 
+## Event stream establishment
+
+`GET /api/session/:sessionID/event` on the v1.18.34 darwin-arm64 binary (sha256
+`7b63b34fafabded7d9231f6a9032755d0cdeaf8b9d2b70df8e25535471469eea`) sends no
+status line or headers until the session's first event: `curl -i` against a
+fresh idle session read nothing in 40 seconds. (`after=-1` is refused 400,
+"Expected a value greater than or equal to 0", which is why both trees omit a
+negative cursor.) The Go client already tolerates this: `Subscribe` waits
+`subscribeEstablishGrace` (250 ms) for the response, then returns and lets it
+arrive later, failing the subscription if it is not a 200. The Zig port waited
+for the headers before answering `session.open`, so `oapx serve agent
+--backend opencode` never opened against a real server. It now waits the same
+250 ms, then opens, and ends the session if the status that eventually arrives
+is not 200. Against the binary, the port opens, and a submitted prompt streams
+its events once the held headers arrive and settles `run.completed`; the trace
+validates. That run used the server's own default model, since the driver
+configured none.
+
 ## Live session settings
 
 Decision 0045's `session.settings.update.request` is served for
@@ -116,8 +134,10 @@ binary with a provider whose model has `low` and `high` variants, opens at
 `low`, updates to `high`, and reads `high` back from the server's own record.
 It passed 3x. No run is driven: the provider package is fetched from npm on
 first use, and the gates do not reach the network. `oapx serve agent --backend
-opencode` was not exercised, because the Zig port does not complete an open
-against this server, with or without this change.
+opencode` against the same binary opens, and refuses the update unsatisfiable:
+the Zig port's config carries no model, and the server records none on a
+session created without one, so there is no model to carry the variant. The
+trace validates.
 
 `session.reasoning` adds `session_live`, so the revision moves to
 `opencode-v1.18.34-oap-v4`, and the port goldens were re-recorded with

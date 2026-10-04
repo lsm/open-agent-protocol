@@ -27,6 +27,7 @@ type session struct {
 	participant  protocol.ParticipantID
 	threadID     string
 	model        string
+	effort       string
 	state        protocol.SessionState
 	closed       bool
 	active       *runState
@@ -135,7 +136,7 @@ func (session *session) Submit(ctx context.Context, submit adapter.SubmitRequest
 	}
 	session.mu.Unlock()
 
-	params := native.TurnStartParams{ThreadID: session.threadID, Input: input, Model: model}
+	params := native.TurnStartParams{ThreadID: session.threadID, Input: input, Model: model, Effort: session.effort}
 	run := &runState{
 		id: protocol.RunID(session.ids.NewID("run")), status: protocol.RunQueued,
 		nextSequence: 1, messageID: protocol.MessageID(session.ids.NewID("message")),
@@ -181,6 +182,7 @@ func (session *session) Submit(ctx context.Context, submit adapter.SubmitRequest
 	}
 	run.turnID = nativeResponse.Turn.ID
 	session.mu.Lock()
+	session.effort = ""
 	session.runs[run.id] = run
 	session.turns[run.turnID] = run.id
 	session.mu.Unlock()
@@ -193,6 +195,36 @@ func (session *session) Submit(ctx context.Context, submit adapter.SubmitRequest
 
 		RunID: run.id, Status: protocol.RunRunning, ModelID: run.model, MessageIDs: messageIDs,
 	}, stream, nil
+}
+
+func (session *session) UpdateSettings(ctx context.Context, request protocol.SessionSettingsUpdateRequest) (protocol.SessionSettingsUpdateResponse, protocol.SessionState, error) {
+	if err := ctx.Err(); err != nil {
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, err
+	}
+	if err := adapter.RefuseUnadvertisedLiveSettings(request, protocol.CapabilityDescriptor{Features: advertisedFeatures()}); err != nil {
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, err
+	}
+	session.opMu.Lock()
+	defer session.opMu.Unlock()
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	switch {
+	case session.closed:
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, adapter.ErrSessionClosed
+	case request.SessionID != session.state.SessionID:
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, adapter.ErrRunNotFound
+	case session.active != nil && !session.active.terminal:
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, adapter.ErrRunActive
+	}
+	response := protocol.SessionSettingsUpdateResponse{SessionID: session.state.SessionID}
+	if request.ReasoningLevel != "" {
+		session.effort = codexEffort(request.ReasoningLevel)
+		response.PreviousReasoningLevel = session.state.ReasoningLevel
+		session.state.ReasoningLevel = request.ReasoningLevel
+		response.ReasoningLevel = request.ReasoningLevel
+	}
+	session.state.UpdatedAtMS = session.clock.Now().UnixMilli()
+	return response, session.state, nil
 }
 
 func (session *session) nativeInput(messages []protocol.Message) ([]native.UserInput, []protocol.MessageID, error) {
