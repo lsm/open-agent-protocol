@@ -218,6 +218,21 @@ pub const Session = struct {
         self.policy_json = try self.keep.allocator().dupe(u8, raw);
     }
 
+    fn rearm(self: *Session) contract.Failure!void {
+        const raw = self.policy_json orelse return;
+        var scratch = std.heap.ArenaAllocator.init(self.gpa);
+        defer scratch.deinit();
+        var ignored = contract.Refusal{};
+        const at = compactAt(scratch.allocator(), raw, self.runtime, &ignored) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return,
+        };
+        self.runtime.armAutoCompact(at, &.{}, null) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => {},
+        };
+    }
+
     fn compact(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.SessionCompactRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
         const self = cast(ptr);
         switch (request.delivery) {
@@ -526,10 +541,13 @@ pub const Session = struct {
                 error.NothingToCompact => return refusal.fail(error.InvalidSubmission, "the session has no history to compact"),
                 else => return refusal.fail(error.BackendFailed, @errorName(err)),
             };
-        } else self.runtime.submitTurn(run.input_text) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => return refusal.fail(error.BackendFailed, @errorName(err)),
-        };
+        } else {
+            try self.rearm();
+            self.runtime.submitTurn(run.input_text) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return refusal.fail(error.BackendFailed, @errorName(err)),
+            };
+        }
         self.gpa.free(run.input_text);
         run.input_text = "";
         self.run = run;
@@ -2601,4 +2619,20 @@ test "a compaction requested over the wire and a policy updated live leave a tra
     try wireUntilSettled(&wire, 2);
     try testing.expectEqualStrings("completed", wireLast(&wire, "run.compaction.ended").object.get("payload").?.object.get("outcome").?.string);
     try wire.validate();
+}
+
+test "a share policy is measured against the window of the model a run starts on" {
+    var script = Script{};
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const a = harness.arena.allocator();
+    var refusal = contract.Refusal{};
+    _ = try harness.session.vtable.update_settings.?(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .compaction_policy_json = "{\"kind\":\"share\",\"share_percent\":50}" }, &refusal);
+    const live: *Session = @ptrCast(@alignCast(harness.session.ptr));
+    try testing.expectEqual(@as(?u64, agent.compaction.shareAt(test_model.context_window, 50)), live.runtime.local_agent.?._auto_compact_at);
+    _ = try harness.session.vtable.switch_model.?(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .model_id = "scripted/openai-completions@other-model" }, &refusal);
+    _ = try harness.submit("after the switch");
+    try harness.untilTerminal();
+    try testing.expectEqual(@as(?u64, agent.compaction.shareAt(other_model.context_window, 50)), live.runtime.local_agent.?._auto_compact_at);
 }
