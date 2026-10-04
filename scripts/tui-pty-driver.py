@@ -1107,7 +1107,7 @@ def findUserEntryEcho(session, text):
 
 
 def scenario_steer_abort(args):
-    run = SweepRun(args, "steer-abort", 'hold|text:held-steer-sent|tool:shell_execute#{"description":"hold the turn open","workspace_root":"/tmp","command":"sleep 5"}|text:steer-consumed-done')
+    run = SweepRun(args, "steer-abort", 'hold|text:held-steer-sent|tool:Shell#{"description":"hold the turn open","workspace_root":"/tmp","command":"sleep 5"}|text:steer-consumed-done')
     try:
         run.session.wait_for(WELCOME_MARKER, args.startup_timeout, "welcome banner")
         run.settle()
@@ -1180,11 +1180,11 @@ def scenario_steer_abort(args):
     return run
 
 
-WORKSPACE_INFO_ARGS = '{"workspace_root":"/tmp"}'
+ALLOW_SHELL_ARGS = '{"description":"print a probe marker","workspace_root":"/tmp","command":"printf allow-probe-output"}'
 
 
 def scenario_approval_deny(args):
-    tool_step = 'tool:shell_execute#{"command":"true --pty-probe"}'
+    tool_step = 'tool:Shell#{"command":"true --pty-probe"}'
     run = SweepRun(args, "approval-deny", tool_step + "|" + tool_step + "|" + tool_step + "|text:deny-persist-complete")
     try:
         run.session.wait_for(WELCOME_MARKER, args.startup_timeout, "welcome banner")
@@ -1195,7 +1195,7 @@ def scenario_approval_deny(args):
         run.session.type_text("use the tool twice")
         run.session.send(KEY_ENTER, "Enter (submit)")
         run.session.wait_for(b"Approval required", 10.0, "approval view", since=submit_from)
-        run.session.wait_for(b"Tool: shell_execute", 5.0, "approval tool name", since=submit_from)
+        run.session.wait_for(b"Tool: Shell", 5.0, "approval tool name", since=submit_from)
         run.frame("approval-pending")
 
         deny_from = len(run.session.plain)
@@ -1214,7 +1214,7 @@ def scenario_approval_deny(args):
         final_at = run.session.plain.find(b"deny-persist-complete", always_from)
         if b"Approval required" in run.session.plain[always_from:final_at] or b"Approval required" in run.session.visible_text():
             raise ScenarioError("approval-deny: the third matching tool call prompted again although 'a' approved always")
-        run.note("'a' approves always for a persistable shell call: the third shell_execute runs with no new approval prompt and the turn completes")
+        run.note("'a' approves always for a persistable shell call: the third Shell call runs with no new approval prompt and the turn completes")
     except ScenarioError as err:
         run.error = str(err)
     finally:
@@ -1223,34 +1223,32 @@ def scenario_approval_deny(args):
 
 
 def scenario_approval_allow(args):
-    run = SweepRun(args, "approval-allow", 'tool:workspace_info#' + WORKSPACE_INFO_ARGS + "|text:allow-path-complete")
+    run = SweepRun(args, "approval-allow", 'tool:Shell#' + ALLOW_SHELL_ARGS + "|text:allow-path-complete")
     try:
         run.session.wait_for(WELCOME_MARKER, args.startup_timeout, "welcome banner")
         run.settle()
         run.command("/permissions ask", "permission mode set to ask")
 
         turn_from = len(run.session.plain)
-        run.session.type_text("run workspace info")
+        run.session.type_text("print the probe marker")
         run.session.send(KEY_ENTER, "Enter (submit)")
         run.session.wait_for(b"Approval required", 10.0, "approval view", since=turn_from)
-        run.session.wait_for(b"Tool: workspace_info", 5.0, "approval tool name", since=turn_from)
+        run.session.wait_for(b"Tool: Shell", 5.0, "approval tool name", since=turn_from)
         run.frame("approval-pending")
         run.key_wait(b"y", "approve once", "allow-path-complete")
         run.settle(0.5)
         run.frame("approved-once")
         shown = run.session.screen_text()
-        if b"Workspace Info" not in shown:
-            raise ScenarioError("approval-allow: the workspace_info summary row never rendered")
         summary_lines = shown.count(TOOL_OK_GLYPH)
         if summary_lines != 1:
             raise ScenarioError(f"approval-allow: expected exactly one finalized tool summary line on screen, saw {summary_lines}")
-        if b'   {"workspace_root"' in shown:
+        if b'   {"description"' in shown:
             raise ScenarioError("approval-allow: raw tool-args JSON echoed as a transcript row")
         if TOOL_FAILED_GLYPH in shown:
-            raise ScenarioError("approval-allow: the approved workspace_info call rendered as failed")
-        if b"project_root" not in shown:
-            raise ScenarioError("approval-allow: workspace_info result text missing from the transcript")
-        run.note("'y' approves once: workspace_info executes as one summary line plus its result block, and the turn completes")
+            raise ScenarioError("approval-allow: the approved Shell call rendered as failed")
+        if b"allow-probe-output" not in shown:
+            raise ScenarioError("approval-allow: the Shell result text missing from the transcript")
+        run.note("'y' approves once: the Shell call executes as one summary line plus its result block, and the turn completes")
     except ScenarioError as err:
         run.error = str(err)
     finally:

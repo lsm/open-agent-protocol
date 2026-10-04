@@ -285,8 +285,8 @@ pub fn toolKindForName(name: []const u8) ToolVisualKind {
     if (toolNameMatches(name, &.{ "sync", "pull", "push", "fetch", "download", "upload" })) return .sync;
     if (toolNameMatches(name, &.{ "auth", "login", "oauth", "token" })) return .auth;
     if (toolNameMatches(name, &.{ "shell", "bash", "exec", "execute", "command", "run" })) return .shell;
-    if (toolNameMatches(name, &.{ "write", "edit", "patch", "delete", "insert", "replace", "hashline_edit" })) return .write;
-    if (toolNameMatches(name, &.{ "read", "stat", "cat", "hashline_read", "view" })) return .read;
+    if (toolNameMatches(name, &.{ "write", "edit", "patch", "delete", "insert", "replace" })) return .write;
+    if (toolNameMatches(name, &.{ "read", "stat", "cat", "view" })) return .read;
     if (toolNameMatches(name, &.{ "search", "grep", "find", "rg", "list" })) return .search;
     return .other;
 }
@@ -314,12 +314,12 @@ pub fn toolBody(name: []const u8) zz.Style {
 
 fn toolNameMatches(name: []const u8, tokens: []const []const u8) bool {
     for (tokens) |token| {
-        if (std.mem.eql(u8, name, token)) return true;
+        if (std.ascii.eqlIgnoreCase(name, token)) return true;
     }
     var parts = std.mem.tokenizeAny(u8, name, "_-:./ ");
     while (parts.next()) |part| {
         for (tokens) |token| {
-            if (std.mem.eql(u8, part, token)) return true;
+            if (std.ascii.eqlIgnoreCase(part, token)) return true;
         }
     }
     return false;

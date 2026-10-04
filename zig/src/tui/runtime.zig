@@ -1526,7 +1526,7 @@ pub const TuiRuntime = struct {
         const moved_rule = if (@import("builtin").os.tag == .windows)
             "A `cd` inside a command does not persist on this platform: every call starts in the same directory."
         else
-            "A `cd` in a `shell_execute` call changes the working directory, and its result reports the directory as a `cwd:` line.";
+            "A `cd` in a `Shell` call changes the working directory, and its result reports the directory as a `cwd:` line.";
         return std.fmt.allocPrint(self.allocator,
             \\Default workspace root: {s}
             \\Pass the default workspace root as `workspace_root` to work in the session's current working directory, or name another directory inside the root to work there instead; an absolute path is used as written. {s}
@@ -1944,7 +1944,7 @@ fn executeTuiToolProtocol(
         runtime.tool_protocol_override_fn,
         allocator,
     );
-    if (std.mem.eql(u8, tool_name, "shell_execute")) {
+    if (std.mem.eql(u8, tool_name, "Shell")) {
         if (result.getDetailsJson()) |details| runtime.adoptReportedWorkingDirectory(args_json, details, &result);
     }
     return result;
@@ -2508,13 +2508,13 @@ test "a window the model in effect can take survives a switch to another that ca
 
 test "runtime registers default local tools and allows overrides" {
     var mock = MockProtocolCtx{};
-    const replacement = agent.AgentTool{ .label = "Wrapped Shell", .name = "shell_execute", .description = "Wrapped shell tool", .parameters_schema_json = "{}", .execute = demoTool };
+    const replacement = agent.AgentTool{ .label = "Wrapped Shell", .name = "Shell", .description = "Wrapped shell tool", .parameters_schema_json = "{}", .execute = demoTool };
     var runtime = try TuiRuntime.init(std.testing.allocator, .{ .protocol = makeProtocol(&mock), .tools = &.{replacement}, .run_async = false });
     defer runtime.deinit();
-    try std.testing.expect(runtime.tool_registry.resolve("shell_execute") != null);
-    try std.testing.expect(runtime.tool_registry.resolve("file_read") != null);
-    try std.testing.expectEqualStrings("Wrapped Shell", runtime.tool_registry.resolve("shell_execute").?.label);
-    try std.testing.expect(runtime.original_tools.len >= 9);
+    try std.testing.expect(runtime.tool_registry.resolve("Shell") != null);
+    try std.testing.expect(runtime.tool_registry.resolve("Read") != null);
+    try std.testing.expectEqualStrings("Wrapped Shell", runtime.tool_registry.resolve("Shell").?.label);
+    try std.testing.expect(runtime.original_tools.len >= 4);
 }
 
 test "runtime submit turn emits normalized events" {
@@ -3982,14 +3982,14 @@ test "the system prompt is fixed and adoption does not rewrite it" {
 test "a shell result moves the working directory and leaves the prompt alone" {
     const tools = [_]agent.AgentTool{.{
         .label = "Shell",
-        .name = "shell_execute",
+        .name = "Shell",
         .description = "Reports a new working directory",
         .parameters_schema_json = "{}",
         .execute = demoTool,
         .runtime_execute = cdReportingTool,
     }};
     const models = [_]ai_types.Model{test_model_a};
-    var mock = MockProtocolCtx{ .tool_first = true, .tool_name = "shell_execute" };
+    var mock = MockProtocolCtx{ .tool_first = true, .tool_name = "Shell" };
     var runtime = try TuiRuntime.init(std.testing.allocator, .{
         .protocol = makeProtocol(&mock),
         .models = &models,

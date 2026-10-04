@@ -30,7 +30,7 @@ pub fn render(allocator: std.mem.Allocator, state: *const tui_state.AppState, op
         defer allocator.free(value);
         try parts.append(allocator, try std.fmt.allocPrint(allocator, "{s}{s}", .{ label, value }));
     }
-    if (std.mem.eql(u8, state.approval.tool_name, "hashline_edit") and state.preview.content.len > 0) {
+    if (std.mem.eql(u8, state.approval.tool_name, "Edit") and state.preview.content.len > 0) {
         try parts.append(allocator, try tui_theme.panelTitle().render(allocator, "Preview:"));
         var rows: usize = 0;
         var lines = std.mem.splitScalar(u8, state.preview.content, '\n');
@@ -255,24 +255,24 @@ test "approval scope hint strips C1 control characters" {
     try std.testing.expect(std.mem.indexOf(u8, text, "clear.zig") != null);
 }
 
-test "approval renders hashline preview" {
+test "approval renders the edit preview" {
     var state = tui_state.AppState.init(std.testing.allocator);
     defer state.deinit();
-    try state.approval.setPending(std.testing.allocator, "call-2", "hashline_edit", "hashline_edit", "{\"path\":\"src/main.zig\"}");
-    try state.preview.set(std.testing.allocator, "hashline edit preview\nrange: 2:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n+ 2|new");
+    try state.approval.setPending(std.testing.allocator, "call-2", "Edit", "Edit", "{\"path\":\"src/main.zig\"}");
+    try state.preview.set(std.testing.allocator, "edit preview\nrange: 2:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n+ 2|new");
 
     const text = try render(std.testing.allocator, &state, .{ .width = 120 });
     defer std.testing.allocator.free(text);
 
     try std.testing.expect(std.mem.indexOf(u8, text, "Preview:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "hashline edit preview") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "edit preview") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "+ 2|new") != null);
 }
 
-test "approval hides stale preview for non hashline request" {
+test "approval hides a stale preview for a request other than Edit" {
     var state = tui_state.AppState.init(std.testing.allocator);
     defer state.deinit();
-    try state.preview.set(std.testing.allocator, "hashline edit preview\n+ 2|stale");
+    try state.preview.set(std.testing.allocator, "edit preview\n+ 2|stale");
     try state.approval.setPending(std.testing.allocator, "call-3", "edit_file", "edit_file", "{\"path\":\"README.md\"}");
 
     const text = try render(std.testing.allocator, &state, .{ .width = 120 });

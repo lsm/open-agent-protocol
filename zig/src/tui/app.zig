@@ -5770,9 +5770,9 @@ test "App init seeds registered tools from runtime" {
     var app = try App.init(std.testing.allocator, production.options());
     defer app.deinit();
 
-    try std.testing.expect(app.state.registered_tools.items.len >= 12);
+    try std.testing.expect(app.state.registered_tools.items.len >= 4);
     try std.testing.expectEqual(app.runtime.?.availableTools().len, app.state.registered_tools.items.len);
-    try std.testing.expectEqualStrings("shell_execute", app.state.registered_tools.items[0].name);
+    try std.testing.expectEqualStrings("Shell", app.state.registered_tools.items[0].name);
     try std.testing.expect(app.runtime.?.permission_engine.?.workspace_root.len > 0);
 }
 
