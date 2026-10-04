@@ -1322,6 +1322,7 @@ pub const App = struct {
             const pending_path = try self.allocator.dupe(u8, info.path);
             errdefer self.allocator.free(pending_path);
             try self.state.appendNotice("Checking and removing the session worktree…");
+            self.clearPendingDelete();
             self.worktree_management_job = job;
             self.pending_delete_id = pending_id;
             self.pending_delete_path = pending_path;
@@ -1366,11 +1367,30 @@ pub const App = struct {
         self.worktree_management_job = job;
     }
 
+    fn raiseForceDeletePrompt(self: *App, question: []const u8) !void {
+        const label = try std.fmt.allocPrint(self.allocator, "{s} for {s}?", .{ question, self.pendingDeleteLabel() });
+        defer self.allocator.free(label);
+        if (self.state.mode != .session_picker) {
+            try self.state.appendTranscript(.system, label);
+            try self.state.appendTranscript(.system, "Delete it again from the session picker to force remove its worktree.");
+            self.clearPendingDelete();
+            try self.deliverHeldWorktreeMessages();
+            return;
+        }
+        const line = try std.fmt.allocPrint(self.allocator, "{s} Press y to force, n or Esc to keep the worktree.", .{label});
+        defer self.allocator.free(line);
+        try self.state.appendTranscript(.system, line);
+        self.pinSessionPickerToPendingDelete();
+        self.state.confirm_session_force_delete = true;
+        try self.deliverHeldWorktreeMessages();
+    }
+
     fn pinSessionPickerToPendingDelete(self: *App) void {
         const id = self.pending_delete_id;
         for (self.state.sessions.items, 0..) |entry, index| {
             if (!std.mem.eql(u8, entry.id, id)) continue;
             self.state.session_index = index;
+            TuiModel.ensureSessionSelectionVisible(self);
             return;
         }
     }
@@ -2945,22 +2965,18 @@ pub const App = struct {
             const id = self.pending_delete_id;
             const path = self.pending_delete_path;
             switch (outcome) {
-                .dirty => {
-                    const detail = try std.fmt.allocPrint(self.allocator, "Cannot delete {s}: its worktree has uncommitted changes or Git could not verify it safely.", .{self.pendingDeleteLabel()});
+                .dirty => |report| {
+                    const detail = try std.fmt.allocPrint(self.allocator, "This session's worktree has uncommitted changes:\n{s}", .{report.summary});
                     defer self.allocator.free(detail);
                     try self.state.appendTranscript(.system, detail);
-                    const question = try std.fmt.allocPrint(self.allocator, "Force remove anyway and discard them for {s}? Press y to force, n or Esc to keep the worktree.", .{self.pendingDeleteLabel()});
-                    defer self.allocator.free(question);
-                    try self.state.appendTranscript(.system, question);
-                    if (self.state.mode != .session_picker) {
-                        try self.state.appendTranscript(.system, "Delete it again from the session picker to force remove its worktree.");
-                        self.clearPendingDelete();
-                        try self.deliverHeldWorktreeMessages();
-                        return;
-                    }
-                    self.pinSessionPickerToPendingDelete();
-                    self.state.confirm_session_force_delete = true;
-                    try self.deliverHeldWorktreeMessages();
+                    try self.raiseForceDeletePrompt("Force remove anyway and discard them?");
+                    return;
+                },
+                .unverified => |message| {
+                    const detail = try std.fmt.allocPrint(self.allocator, "Git could not verify this session's worktree ({s}).", .{message});
+                    defer self.allocator.free(detail);
+                    try self.state.appendTranscript(.system, detail);
+                    try self.raiseForceDeletePrompt("Force remove anyway, unverified?");
                     return;
                 },
                 else => {
