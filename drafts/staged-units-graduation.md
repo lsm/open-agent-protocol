@@ -5172,11 +5172,18 @@ ceiling is `high`, is refused unsatisfiable and Pi is put back on the level it
 replaced, before the policy is touched. An update is refused `run_active`
 while a run, a compaction run included, is open.
 
-Still open, each for a later slice:
+The sixth slice makes `overflow` executable. Neither reference adapter has a
+provider to refuse a history, so each stands in for one: at a run's start, a
+history estimate past the reference model's 8192-token window compacts with
+reason `overflow`, whatever the policy, and the run carries on with its turn.
+Decision 0045 allows this under `off`, because an overflow compaction is
+recovery rather than choice. Below the window the session's threshold decides
+as before. Both move to `reference-memory-v17`, and the memory parity scenarios
+gain an overflow under `off`.
 
-- `overflow` is exercised by fixtures only: the reference adapters have no
-  provider to refuse a history as too long;
-- step 3, native evidence, is pi's, as the decision names. Its first half is
+Step 3, native evidence:
+
+- step 3 is pi's, as the decision names. Its first half is
   in: both pi adapters publish the compactions Pi starts on its own as the
   run's `run.compaction` events at `native`, from frames recorded against the
   v1.0.1 binary, under `pi-v1.0.1-oap-v2`. Pi compacts between `agent_end`
