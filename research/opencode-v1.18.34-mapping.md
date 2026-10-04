@@ -104,3 +104,41 @@ is not 200. Against the binary, the port opens, and a submitted prompt streams
 its events once the held headers arrive and settles `run.completed`; the trace
 validates. That run used the server's own default model, since the driver
 configured none.
+
+## Live session settings
+
+Decision 0045's `session.settings.update.request` is served for
+`reasoning_level`, by both trees. `session.switchModel`
+(`POST /api/session/:sessionID/model {model: {id, providerID, variant}}`,
+`packages/protocol/src/groups/session.ts`) switches "the model used by
+subsequent provider turns"; `V2Session.switchModel`
+(`packages/core/src/session.ts`) publishes `session.next.model.switched`
+unless the model and variant are unchanged, and answers 204. The adapter
+switches the session to the model the session records, with the new level as
+its variant, then reads the session back (`GET /api/session/:sessionID`) and
+refuses the update `unsupported_feature` (unsatisfiable) when the record does
+not carry that model and variant, or when the session records no model.
+`session.next.model.switched` is already reduced as a no-op. An update is
+refused `run_active` while a run is open or reserved, because the runner reads
+the variant on every step.
+
+OpenCode records any variant name without checking it against the model's
+`variants` map: against the v1.18.34 darwin-arm64 binary (sha256
+`7b63b34fafabded7d9231f6a9032755d0cdeaf8b9d2b70df8e25535471469eea`), a switch
+to `bogus` was answered 204 and the session record then carried `bogus`. The
+level names the adapter takes are the ones it takes at open, so a level the
+model has no variant for is the same gap it is at open.
+
+`TestOpenCodeServerTakesALiveVariant` (`OAP_OPENCODE_INTEGRATION=1`) runs that
+binary with a provider whose model has `low` and `high` variants, opens at
+`low`, updates to `high`, and reads `high` back from the server's own record.
+It passed 3x. No run is driven: the provider package is fetched from npm on
+first use, and the gates do not reach the network. `oapx serve agent --backend
+opencode` against the same binary opens, and refuses the update unsatisfiable:
+the Zig port's config carries no model, and the server records none on a
+session created without one, so there is no model to carry the variant. The
+trace validates.
+
+`session.reasoning` adds `session_live`, so the revision moves to
+`opencode-v1.18.34-oap-v4`, and the port goldens were re-recorded with
+`OAP_UPDATE_OPENCODE_PORT_GOLDENS=1`.

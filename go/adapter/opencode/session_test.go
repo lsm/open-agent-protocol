@@ -97,8 +97,10 @@ type fakeClient struct {
 
 	idleGate <-chan struct{}
 
-	model   *native.ModelRef
-	created *native.ModelRef
+	model       *native.ModelRef
+	switches    []native.ModelRef
+	keepVariant bool
+	created     *native.ModelRef
 }
 
 func newFakeClient() *fakeClient {
@@ -115,6 +117,20 @@ func (f *fakeClient) CreateSession(_ context.Context, request httpapi.CreateSess
 		Updated  int64  `json:"updated"`
 		Archived *int64 `json:"archived,omitempty"`
 	}{Created: 1, Updated: 1}, Location: json.RawMessage(`{"directory":"/w"}`)}, nil
+}
+func (f *fakeClient) Session(_ context.Context, session native.SessionID) (native.SessionInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return native.SessionInfo{ID: session, ProjectID: "prj_fake", Model: f.model, Location: json.RawMessage(`{"directory":"/w"}`)}, nil
+}
+func (f *fakeClient) SwitchModel(_ context.Context, _ native.SessionID, model native.ModelRef) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.switches = append(f.switches, model)
+	if !f.keepVariant {
+		f.model = &model
+	}
+	return nil
 }
 func (f *fakeClient) Prompt(_ context.Context, session native.SessionID, request native.PromptRequest) (native.Admitted, error) {
 	f.mu.Lock()
@@ -1792,5 +1808,60 @@ func TestAnOpenCreatesTheSessionWithTheLevelAsItsModelsVariantAndRefusesOneNotRe
 	}
 	if _, err := bare.Open(context.Background(), base.OpenRequest{SessionID: "s4", Participant: protocol.Participant{ID: "user"}, CompactionPolicy: &protocol.CompactionPolicy{Kind: protocol.CompactionOff}}); !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureCompactionPolicy {
 		t.Fatalf("open with a compaction policy answered %v, want it refused as unadvertised", err)
+	}
+}
+
+func TestALiveLevelSwitchesTheSessionToItsModelWithTheNewVariant(t *testing.T) {
+	client := newFakeClient()
+	client.model = &native.ModelRef{ID: "model", ProviderID: "fixture", Variant: "low"}
+	session, _ := openTest(t, client, 32)
+	response, state, err := session.(base.SettingsUpdater).UpdateSettings(context.Background(), protocol.SessionSettingsUpdateRequest{SessionID: "session", ReasoningLevel: protocol.ReasoningHigh})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.mu.Lock()
+	switches := append([]native.ModelRef(nil), client.switches...)
+	client.mu.Unlock()
+	if len(switches) != 1 || switches[0].ID != "model" || switches[0].ProviderID != "fixture" || switches[0].Variant != "high" {
+		t.Fatalf("the update switched %+v, want the session's model with variant high", switches)
+	}
+	if response.ReasoningLevel != protocol.ReasoningHigh || state.ReasoningLevel != protocol.ReasoningHigh {
+		t.Fatalf("response %+v and state %q, want high in force", response, state.ReasoningLevel)
+	}
+}
+
+func TestALiveUpdateIsRefusedWhatOpenCodeCannotTakeBetweenRuns(t *testing.T) {
+	client := newFakeClient()
+	client.model = &native.ModelRef{ID: "model", ProviderID: "fixture", Variant: "low"}
+	client.keepVariant = true
+	session, _ := openTest(t, client, 32)
+	updater := session.(base.SettingsUpdater)
+	var refusal *base.UnsupportedControlError
+	if _, _, err := updater.UpdateSettings(context.Background(), protocol.SessionSettingsUpdateRequest{SessionID: "session", ReasoningLevel: protocol.ReasoningMax}); !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureSessionReasoning || refusal.Reason != base.ControlUnsatisfiable {
+		t.Fatalf("a variant OpenCode did not record answered %v, want it unsatisfiable", err)
+	}
+	if state, _ := session.State(context.Background()); state.ReasoningLevel != "" {
+		t.Fatalf("a refused level is reported as %q", state.ReasoningLevel)
+	}
+	if _, _, err := updater.UpdateSettings(context.Background(), protocol.SessionSettingsUpdateRequest{SessionID: "session", CompactionPolicy: &protocol.CompactionPolicy{Kind: protocol.CompactionOff}}); !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureCompactionPolicy || refusal.Reason != base.ControlUnadvertised {
+		t.Fatalf("a live policy answered %v, want it unadvertised", err)
+	}
+	if _, _, err := updater.UpdateSettings(context.Background(), protocol.SessionSettingsUpdateRequest{SessionID: "other", ReasoningLevel: protocol.ReasoningHigh}); !errors.Is(err, base.ErrRunNotFound) {
+		t.Fatalf("another session answered %v, want run_not_found", err)
+	}
+	submitTest(t, session)
+	if _, _, err := updater.UpdateSettings(context.Background(), protocol.SessionSettingsUpdateRequest{SessionID: "session", ReasoningLevel: protocol.ReasoningHigh}); !errors.Is(err, base.ErrRunActive) {
+		t.Fatalf("a busy session answered %v, want run_active", err)
+	}
+
+	modelless := newFakeClient()
+	bare, _ := openTest(t, modelless, 32)
+	if _, _, err := bare.(base.SettingsUpdater).UpdateSettings(context.Background(), protocol.SessionSettingsUpdateRequest{SessionID: "session", ReasoningLevel: protocol.ReasoningHigh}); !errors.As(err, &refusal) || refusal.Reason != base.ControlUnsatisfiable {
+		t.Fatalf("a session with no recorded model answered %v, want it unsatisfiable", err)
+	}
+	modelless.mu.Lock()
+	defer modelless.mu.Unlock()
+	if len(modelless.switches) != 0 {
+		t.Fatal("a session with no model still switched")
 	}
 }

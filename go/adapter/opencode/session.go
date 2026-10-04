@@ -47,6 +47,7 @@ type session struct {
 	pollMin      time.Duration
 	pollMax      time.Duration
 	nativeID     native.SessionID
+	model        *native.ModelRef
 	participant  protocol.ParticipantID
 	state        protocol.SessionState
 	closed       bool
@@ -323,6 +324,60 @@ func (s *session) refreshStateLocked() {
 		s.state.Status = protocol.SessionIdle
 		s.state.ActiveRunID = ""
 	}
+}
+
+func (s *session) UpdateSettings(ctx context.Context, req protocol.SessionSettingsUpdateRequest) (protocol.SessionSettingsUpdateResponse, protocol.SessionState, error) {
+	if err := ctx.Err(); err != nil {
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, err
+	}
+	if err := base.RefuseUnadvertisedLiveSettings(req, protocol.CapabilityDescriptor{Features: advertisedFeatures()}); err != nil {
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, err
+	}
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+	s.mu.Lock()
+	switch {
+	case s.closed || s.unusable:
+		s.mu.Unlock()
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, base.ErrSessionClosed
+	case req.SessionID != s.state.SessionID:
+		s.mu.Unlock()
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, base.ErrRunNotFound
+	case published(s.active) || published(s.reserved):
+		s.mu.Unlock()
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, base.ErrRunActive
+	}
+	current := s.model
+	s.mu.Unlock()
+	if req.ReasoningLevel != "" {
+		if current == nil {
+			return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, &base.UnsupportedControlError{Feature: protocol.FeatureSessionReasoning, Reason: base.ControlUnsatisfiable, Field: "reasoning_level", Detail: "a variant rides on a model, and OpenCode recorded none on this session"}
+		}
+		next := native.ModelRef{ID: current.ID, ProviderID: current.ProviderID, Variant: string(req.ReasoningLevel)}
+		if err := s.client.SwitchModel(ctx, s.nativeID, next); err != nil {
+			return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, fmt.Errorf("switch OpenCode session variant: %w", err)
+		}
+		info, err := s.client.Session(ctx, s.nativeID)
+		if err != nil {
+			return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, fmt.Errorf("read OpenCode session: %w", err)
+		}
+		if info.Model == nil || info.Model.ID != next.ID || info.Model.ProviderID != next.ProviderID || info.Model.Variant != next.Variant {
+			return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, &base.UnsupportedControlError{Feature: protocol.FeatureSessionReasoning, Reason: base.ControlUnsatisfiable, Field: "reasoning_level", Detail: "OpenCode did not record the variant on the session"}
+		}
+		s.mu.Lock()
+		s.model = info.Model
+		s.mu.Unlock()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	response := protocol.SessionSettingsUpdateResponse{SessionID: s.state.SessionID}
+	if req.ReasoningLevel != "" {
+		response.PreviousReasoningLevel = s.state.ReasoningLevel
+		s.state.ReasoningLevel = req.ReasoningLevel
+		response.ReasoningLevel = req.ReasoningLevel
+	}
+	s.state.UpdatedAtMS = s.clock.Now().UnixMilli()
+	return response, s.state, nil
 }
 
 func published(run *runState) bool { return run != nil && (!run.terminal || run.holding) }

@@ -47,6 +47,8 @@ type Subscription interface {
 
 type Client interface {
 	CreateSession(ctx context.Context, request httpapi.CreateSessionRequest) (native.SessionInfo, error)
+	Session(ctx context.Context, session native.SessionID) (native.SessionInfo, error)
+	SwitchModel(ctx context.Context, session native.SessionID, model native.ModelRef) error
 	Prompt(ctx context.Context, session native.SessionID, request native.PromptRequest) (native.Admitted, error)
 	Interrupt(ctx context.Context, session native.SessionID) error
 	Active(ctx context.Context) (map[native.SessionID]bool, error)
@@ -125,11 +127,8 @@ func New(config Config) (*Adapter, error) {
 	return &Adapter{config: config, clock: config.Clock, ids: config.IDs}, nil
 }
 
-func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
-	if err := ctx.Err(); err != nil {
-		return base.Descriptor{}, err
-	}
-	features := map[string]protocol.FeatureSupport{
+func advertisedFeatures() map[string]protocol.FeatureSupport {
+	return map[string]protocol.FeatureSupport{
 		"protocol.initialize":            {Level: protocol.SupportEmulated, Reason: "OpenCode has no initialize handshake; OpenAPI and catalogs describe the server"},
 		"capabilities":                   {Level: protocol.SupportEmulated, Reason: "descriptor synthesized from the pinned route inventory"},
 		"session.open":                   {Level: protocol.SupportNative, Reason: "POST /api/session with server-assigned identity"},
@@ -148,15 +147,21 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		"action.tools.execute":           {Level: protocol.SupportUnavailable, Reason: "tools execute server-side; no client-hosted execution surface"},
 		"action.permissions":             {Level: protocol.SupportUnavailable, Reason: "durable stream carries no permission events; the polling surface is unexercised"},
 
-		protocol.FeatureSessionReasoning: {Level: protocol.SupportNative, Modes: []string{protocol.ModeSessionOpen}, Reason: "the created session's model carries the level as its variant, which the runner sends on every step; it needs a configured model, and a variant the response does not confirm is refused"},
+		protocol.FeatureSessionReasoning: {Level: protocol.SupportNative, Modes: []string{protocol.ModeSessionOpen, protocol.ModeSessionLive}, Reason: "the session's model carries the level as its variant, which the runner sends on every step: set at create and between runs by switching the session to the same model with the new variant; it needs a model, and a variant the session record does not confirm is refused"},
 		protocol.FeatureCompactionPolicy: {Level: protocol.SupportUnavailable, Reason: "compaction is the server's config, fixed when its operator starts it; the adapter attaches to a running server"},
 
 		protocol.FeatureModelsList: {Level: protocol.SupportDegraded, Reason: "the models this session is observed to run, projected from the native session record and durable step events; the server's own model.list route has no pinned response shape at this revision"},
 	}
+}
+
+func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
+	if err := ctx.Err(); err != nil {
+		return base.Descriptor{}, err
+	}
 	endpoint := protocol.EndpointDescriptor{ID: endpointID, Name: "OpenCode Server Adapter", Version: PinnedTag, Adapter: "opencode-http-sse"}
 	return base.Descriptor{
 		Capabilities: protocol.CapabilityDescriptor{
-			Endpoint: endpoint, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features,
+			Endpoint: endpoint, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: advertisedFeatures(),
 
 			Limits: &protocol.CapabilityLimits{
 				MaxActiveRunsPerSession: protocol.Limit(maxActiveRuns),
@@ -242,6 +247,7 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		pollMin:      a.config.SettlePollMin,
 		pollMax:      a.config.SettlePollMax,
 		nativeID:     info.ID,
+		model:        info.Model,
 		participant:  req.Participant.ID,
 		state:        protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, CurrentModelID: model, UpdatedAtMS: now, ReasoningLevel: req.ReasoningLevel},
 		runs:         map[protocol.RunID]*runState{},

@@ -5204,6 +5204,12 @@ compaction limit is a `thread/start` config value with no per-turn
 counterpart, so `session.compaction.policy` stays `session_open` and a live
 policy is refused unadvertised.
 
+OpenCode takes the reasoning level live. Both OpenCode adapters switch the
+session to the model it records with the new level as its variant
+(`POST /api/session/:id/model`), then read the session back and refuse a
+variant it does not record, at `session_live` under
+`opencode-v1.18.34-oap-v4`. Compaction stays `unavailable`.
+
 Step 3, native evidence:
 
 - step 3 is pi's, as the decision names. Its first half is

@@ -32,7 +32,7 @@ const features = [_]contract.Feature{
     .{ .key = "session.message.delivery.steer", .level = .unavailable, .reason = "an explicit steer request is rejected as outside the v0.1 subset; the server's default delivery is exposed through an auto request" },
     .{ .key = "session.message.submit", .level = .native, .reason = "durable admission receipt with typed conflict rejection" },
     .{ .key = "session.open", .level = .native, .reason = "POST /api/session with server-assigned identity" },
-    .{ .key = contract.feature_session_reasoning, .level = .native, .reason = "the created session's model carries the level as its variant, which the runner sends on every step; it needs a configured model, and a variant the response does not confirm is refused", .modes = &.{contract.mode_session_open} },
+    .{ .key = contract.feature_session_reasoning, .level = .native, .reason = "the session's model carries the level as its variant, which the runner sends on every step: set at create and between runs by switching the session to the same model with the new variant; it needs a model, and a variant the session record does not confirm is refused", .modes = &.{ contract.mode_session_open, contract.mode_session_live } },
     .{ .key = "session.state", .level = .emulated, .reason = "active set and adapter-owned projection" },
 };
 
@@ -113,6 +113,8 @@ pub const Session = struct {
     ended: bool = false,
     next_poll_ns: u64 = 0,
     poll_delay_ns: u64 = 0,
+    model: ?native.ModelRef = null,
+    reported_level: ?[]const u8 = null,
 
     fn open(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
         if (request.reasoning_level != null) return refusal.unsupportedField(contract.feature_session_reasoning, contract.reason_unsatisfiable, "reasoning_level");
@@ -168,6 +170,7 @@ pub const Session = struct {
             return refusal.fail(error.BackendFailed, message);
         }
 
+        self.model = info.model;
         self.reducer = session.Reducer.init(reducer_arena, .{
             .session_id = id,
             .native_id = info.id,
@@ -203,7 +206,41 @@ pub const Session = struct {
         .activity = activity,
         .close = close,
         .models = models,
+        .update_settings = updateSettings,
     };
+
+    fn updateSettings(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.SessionSettingsUpdateRequest, refusal: *contract.Refusal) contract.Failure!contract.Updated {
+        const self = cast(ptr);
+        try contract.refuseUnadvertisedLiveSettings(descriptor, request, refusal);
+        if (self.reducer.unusable or self.ended) return error.SessionClosed;
+        if (!std.mem.eql(u8, request.session_id, self.id)) return error.RunNotFound;
+        for ([_]?*session.Run{ self.reducer.active, self.reducer.reserved }) |candidate| {
+            const run = candidate orelse continue;
+            if (!run.terminal or run.holding) return error.RunActive;
+        }
+        var response = oap_types.SessionSettingsUpdateResponse{ .session_id = self.id };
+        if (request.reasoning_level) |level| {
+            const current = self.model orelse return refusal.unsupportedField(contract.feature_session_reasoning, contract.reason_unsatisfiable, "reasoning_level");
+            const own = self.owned();
+            const next = native.ModelRef{ .id = current.id, .provider_id = current.provider_id, .variant = try own.dupe(u8, level) };
+            const native_id = self.reducer.options.native_id;
+            const limit = self.owner.config.frame_limit;
+            const switched = self.exchange(try httpapi.switchModel(arena, self.endpoint, native_id, next)) catch |err| return refusal.fail(error.BackendFailed, try describe(arena, "switch OpenCode session variant", err));
+            if (try httpapi.switchModelResult(arena, switched, native_id, limit)) |failure| return refusal.fail(error.BackendFailed, try std.fmt.allocPrint(arena, "switch OpenCode session variant: {s}", .{failure.message}));
+            const read = self.exchange(try httpapi.getSession(own, self.endpoint, native_id)) catch |err| return refusal.fail(error.BackendFailed, try describe(arena, "read OpenCode session", err));
+            const info = switch (try httpapi.getSessionResult(own, read, native_id, limit)) {
+                .ok => |value| value,
+                .failed => |failure| return refusal.fail(error.BackendFailed, try std.fmt.allocPrint(arena, "read OpenCode session: {s}", .{failure.message})),
+            };
+            const recorded = info.model orelse return refusal.unsupportedField(contract.feature_session_reasoning, contract.reason_unsatisfiable, "reasoning_level");
+            if (!std.mem.eql(u8, recorded.id, next.id) or !std.mem.eql(u8, recorded.provider_id, next.provider_id) or !std.mem.eql(u8, recorded.variant, next.variant)) return refusal.unsupportedField(contract.feature_session_reasoning, contract.reason_unsatisfiable, "reasoning_level");
+            self.model = recorded;
+            response.previous_reasoning_level = self.reported_level;
+            self.reported_level = next.variant;
+            response.reasoning_level = next.variant;
+        }
+        return .{ .response = response, .state = try state(ptr, arena, refusal) };
+    }
 
     fn readable(ptr: *anyopaque) ?std.Io.File.Handle {
         if (builtin.os.tag == .windows) return null;
@@ -352,6 +389,7 @@ pub const Session = struct {
             .transcript_cursor = transcript_cursor,
             .updated_at_ms = wallClock(),
             .as_of = if (settled.len > 0) .{ .settled = settled } else null,
+            .reasoning_level = if (self.reported_level) |level| try arena.dupe(u8, level) else null,
         };
     }
 
@@ -546,6 +584,10 @@ pub const FakeServer = struct {
     interrupts: std.atomic.Value(usize) = .init(0),
     actives: std.atomic.Value(usize) = .init(0),
     histories: std.atomic.Value(usize) = .init(0),
+    switches: std.atomic.Value(usize) = .init(0),
+    keep_variant: bool = false,
+    variant: [32]u8 = undefined,
+    variant_len: usize = 0,
     failure: ?anyerror = null,
 
     pub fn start(self: *FakeServer) !void {
@@ -651,6 +693,20 @@ pub const FakeServer = struct {
                         try sse.?.stream.writeAll(late);
                     }
                     if (turn < self.turns.len) try emit(arena, sse, self.turns[turn], message_id, &seq);
+                } else if (std.mem.eql(u8, method, "POST") and std.mem.endsWith(u8, target, "/model")) {
+                    _ = self.switches.fetchAdd(1, .acq_rel);
+                    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, arena, body, .{});
+                    const variant = parsed.object.get("model").?.object.get("variant").?.string;
+                    if (!self.keep_variant) {
+                        @memcpy(self.variant[0..variant.len], variant);
+                        self.variant_len = variant.len;
+                    }
+                    try conn.stream.writeAll("HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n");
+                    conn.open = false;
+                    conn.stream.close();
+                } else if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, target, "/api/session/" ++ fake_session)) {
+                    const record = try std.fmt.allocPrint(arena, "{{\"data\":{{\"id\":\"" ++ fake_session ++ "\",\"projectID\":\"prj_fake\",\"model\":{{\"id\":\"fixture\",\"providerID\":\"fixture\",\"variant\":\"{s}\"}},\"time\":{{\"created\":1,\"updated\":2}}}}}}", .{self.variant[0..self.variant_len]});
+                    try respond(conn, "200 OK", record);
                 } else if (std.mem.endsWith(u8, target, "/interrupt")) {
                     _ = self.interrupts.fetchAdd(1, .acq_rel);
                     try conn.stream.writeAll("HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n");
@@ -812,6 +868,45 @@ test "a cancel interrupts the server and the run settles cancelled once it goes 
     try testing.expectEqual(oap_types.RunStatus.cancelling, cancelled.status);
     try testing.expectEqual(@as(usize, 1), probe.fake.interrupts.load(.acquire));
     _ = try probe.pumpUntil("run.cancelled", &seen);
+}
+
+test "a live level switches the session to its model with the new variant and reports what the record confirms" {
+    var probe: Probe = undefined;
+    try probe.init(&.{}, &.{});
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const opened = try probe.open(&refusal);
+    const updater = opened.vtable.update_settings.?;
+    const updated = try updater(opened.ptr, probe.arena.allocator(), &.{ .session_id = "s1", .reasoning_level = "high" }, &refusal);
+    try testing.expectEqualStrings("high", updated.response.reasoning_level.?);
+    try testing.expect(updated.response.previous_reasoning_level == null);
+    try testing.expectEqualStrings("high", updated.state.reasoning_level.?);
+    try testing.expectEqual(@as(usize, 1), probe.fake.switches.load(.acquire));
+    try testing.expectEqualStrings("high", (try opened.state(probe.arena.allocator(), &refusal)).reasoning_level.?);
+}
+
+test "a live update is refused for what OpenCode cannot take between runs" {
+    var probe: Probe = undefined;
+    try probe.init(&.{&open_turn}, &.{});
+    defer probe.deinit();
+    probe.fake.keep_variant = true;
+    var refusal = contract.Refusal{};
+    const opened = try probe.open(&refusal);
+    const updater = opened.vtable.update_settings.?;
+    try testing.expectError(error.UnsupportedFeature, updater(opened.ptr, probe.arena.allocator(), &.{ .session_id = "s1", .reasoning_level = "max" }, &refusal));
+    try testing.expectEqualStrings(contract.feature_session_reasoning, refusal.feature);
+    try testing.expectEqualStrings(contract.reason_unsatisfiable, refusal.reason);
+    try testing.expect((try opened.state(probe.arena.allocator(), &refusal)).reasoning_level == null);
+    refusal = .{};
+    try testing.expectError(error.UnsupportedFeature, updater(opened.ptr, probe.arena.allocator(), &.{ .session_id = "s1", .compaction_policy_json = "{\"kind\":\"off\"}" }, &refusal));
+    try testing.expectEqualStrings(contract.feature_compaction_policy, refusal.feature);
+    try testing.expectEqualStrings(contract.reason_unadvertised, refusal.reason);
+    try testing.expectError(error.RunNotFound, updater(opened.ptr, probe.arena.allocator(), &.{ .session_id = "other", .reasoning_level = "high" }, &refusal));
+    _ = try probe.submit(.auto, &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    _ = try probe.pumpUntil("run.started", &seen);
+    try testing.expectError(error.RunActive, updater(opened.ptr, probe.arena.allocator(), &.{ .session_id = "s1", .reasoning_level = "high" }, &refusal));
+    try testing.expectEqual(@as(usize, 1), probe.fake.switches.load(.acquire));
 }
 
 test "an open does not wait for event-stream headers the server holds back until its first event" {
