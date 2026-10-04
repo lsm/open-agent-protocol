@@ -3927,9 +3927,9 @@ pub const App = struct {
     fn cycleThinkingLevel(self: *App) void {
         const previous = self.state.thinking_level;
         const level = self.state.cycleThinkingLevel();
-        if (self.runtime) |runtime| runtime.setThinkingLevel(level) catch {
+        if (self.runtime) |runtime| runtime.setThinkingLevel(level) catch |err| {
             self.state.thinking_level = previous;
-            self.state.appendTranscript(.@"error", over_oap_setting_refusal) catch {};
+            self.state.appendTranscript(.@"error", if (err == error.RunInProgress) tui_commands.between_runs_refusal else over_oap_setting_refusal) catch {};
             return;
         };
         self.persistThinkingLevel();

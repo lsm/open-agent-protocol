@@ -178,7 +178,7 @@ pub const OapExecution = struct {
             initialized
         else
             try self.exchange(a, "capabilities.request", empty.value(), false);
-        self.live_reasoning = advertisesLive(described, "session.reasoning");
+        self.live_reasoning = self.hub == null and advertisesLive(described, "session.reasoning");
 
         var settings_map = Map.init(a);
         try settings_map.put("thinking_level", .{ .string = @tagName(settings.thinking_level) });
@@ -526,6 +526,7 @@ pub const OapExecution = struct {
     fn setReasoning(ctx: *anyopaque, level: ai_types.ThinkingLevel) anyerror!void {
         const self = cast(ctx);
         if (!self.live_reasoning) return error.UnavailableOverOap;
+        if (self.turn_open.load(.acquire) or queuedCount(ctx) > 0) return error.RunInProgress;
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
         const a = scratch.allocator();
@@ -1827,4 +1828,20 @@ test "a reservation not yet admitted is never taken by the current run's own sta
     try execution.translateLine("{\"type\":\"run.started\",\"payload\":{\"session_id\":\"s\",\"run_id\":\"run-1\",\"status\":\"running\"}}");
     try testing.expectEqual(@as(usize, 0), captured.user_messages);
     try testing.expectEqual(@as(usize, 1), execution.queued_runs.items.len);
+}
+
+test "a thinking level change over OAP waits for the open turn to end instead of committing early" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+
+    try runtime.start();
+    execution.turn_open.store(true, .release);
+    try testing.expectError(error.RunInProgress, runtime.setThinkingLevel(.max));
+    try testing.expectEqual(ai_types.ThinkingLevel.low, runtime.thinkingLevel());
+    execution.turn_open.store(false, .release);
+    try runtime.setThinkingLevel(.max);
+    try testing.expectEqual(ai_types.ThinkingLevel.max, runtime.thinkingLevel());
 }

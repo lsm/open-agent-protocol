@@ -4,6 +4,7 @@ const agent = @import("agent");
 const tui_runtime = @import("tui_runtime");
 const tui_state = @import("tui_state");
 
+pub const between_runs_refusal = "the thinking level changes between runs over OAP; set it again once this run ends.";
 pub const over_oap_setting_refusal = "oapx tui fixes this setting when the session opens, and this session cannot change it mid-session over OAP. Use oapx --tui to change it.";
 
 pub const CommandKind = enum {
@@ -347,8 +348,8 @@ fn handleThink(ctx: CommandContext, command: Command) !CommandResult {
             .is_error = true,
         };
     };
-    if (ctx.runtime) |runtime| runtime.setThinkingLevel(level) catch {
-        return .{ .output = try ctx.allocator.dupe(u8, over_oap_setting_refusal), .is_error = true };
+    if (ctx.runtime) |runtime| runtime.setThinkingLevel(level) catch |err| {
+        return .{ .output = try ctx.allocator.dupe(u8, if (err == error.RunInProgress) between_runs_refusal else over_oap_setting_refusal), .is_error = true };
     };
     ctx.state.thinking_level = level;
     return .{ .output = try std.fmt.allocPrint(ctx.allocator, "thinking level set to {s}", .{@tagName(level)}) };

@@ -8,9 +8,12 @@ can actually answer. It is a map, not a plan — the step order lives in #375.
 takes an injected `RemoteExecution` (`zig/src/tui/oap_execution.zig`) that hosts
 `zig/src/adapter/endpoint.zig` with the `oapx` adapter in-process and turns its
 envelopes back into `TuiEvent`s. Runs, streaming, tools, cancel and model switch
-cross the boundary as OAP; the settings the protocol has no verb for (thinking
-level, context window, permission mode, workspace root) travel once, in the open
-request's `metadata.oapx`. Tool approvals cross too: in ask mode the adapter's
+cross the boundary as OAP; the settings the protocol has no verb for (context
+window, permission mode, workspace root) travel once, in the open request's
+`metadata.oapx`. The thinking level travels there too, and changes between runs
+through `session.settings.update.request` when the endpoint advertises
+`session.reasoning` with `session_live`; the hub has no route for that request
+yet, so over `--attach` it stays fixed. Tool approvals cross too: in ask mode the adapter's
 `action.permission.requested` becomes the TUI's approval prompt, and the answer goes
 back as `action.permission.resolve.request` with `approve` or `deny`, so an "always"
 answer covers that one call. The model's questions (`user.input.*`) stay off: the
