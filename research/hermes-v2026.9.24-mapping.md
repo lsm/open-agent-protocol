@@ -486,3 +486,27 @@ used, and `config.set` validates a level where `session.create` would drop an
 unknown one silently. `session.compaction.policy` is `unavailable`:
 compression lives in `config.yaml` under `HERMES_HOME` beside the gateway's
 credentials, and no gateway method sets it.
+
+## Live session settings
+
+Decision 0045's `session.settings.update.request` is served for
+`reasoning_level`, by both trees, with the open's own call: `config.set`
+`{session_id, key: "reasoning", value}` on the native session, `off` sent as
+`none`. `_set_reasoning` (`tui_gateway/methods_config_set.py`) stores the
+session's create-time override and replaces the running agent's
+`reasoning_config`, then emits `session.info`, which the adapter already
+reduces outside a run. Because it replaces the running agent's config, an
+update is refused `run_active` while a run is open, as for Claude Code. A
+value `parse_reasoning_effort` rejects answers error 4002, and the update is
+refused `unsupported_feature` (unsatisfiable, field `reasoning_level`), as at
+open. `compaction_policy` stays `unavailable` and is refused unadvertised.
+
+`TestHermesProcessTakesALiveReasoningLevel` (`OAP_HERMES_INTEGRATION=1`) runs
+the gateway from a checkout of `v2026.9.24` (commit `f97608f1`) with its locked
+dependencies, opens at `low`, runs a turn, updates to `high` and runs another:
+the two chat completions requests carry `reasoning_effort` `low` and `high`.
+It passed 3x. `oapx serve agent --backend hermes` served the same update and a
+run asking for `high`; the trace validates.
+
+`session.reasoning` adds `session_live`, so the revision moves to
+`hermes-v2026.9.24-oap-v3`.

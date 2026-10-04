@@ -5164,6 +5164,14 @@ probe of the 2.1.288 binary shows the flags merge, a `null` clears one, and the
 effort the CLI sends follows. An update is refused `run_active` while a run is
 open, because the CLI would apply it to the running run's next request.
 
+Pi follows. Both pi adapters serve the update with the commands they already
+send at open, `set_thinking_level` and `set_auto_compaction`, at
+`session_live` for both settings under `pi-v1.0.1-oap-v4`. A level is
+confirmed by `get_state`; a level Pi clamps, such as `max` on a model whose
+ceiling is `high`, is refused unsatisfiable and Pi is put back on the level it
+replaced, before the policy is touched. An update is refused `run_active`
+while a run, a compaction run included, is open.
+
 The sixth slice makes `overflow` executable. Neither reference adapter has a
 provider to refuse a history, so each stands in for one: at a run's start, a
 history estimate past the reference model's 8192-token window compacts with
@@ -5172,6 +5180,12 @@ Decision 0045 allows this under `off`, because an overflow compaction is
 recovery rather than choice. Below the window the session's threshold decides
 as before. Both move to `reference-memory-v17`, and the memory parity scenarios
 gain an overflow under `off`.
+
+Hermes takes the reasoning level live. Both Hermes adapters send the
+`config.set` with key `reasoning` they send at open again between runs, at
+`session_live` under `hermes-v2026.9.24-oap-v3`; the gateway swaps the agent's
+reasoning config, so the next run asks for the new effort. A level Hermes
+refuses is refused unsatisfiable. Compression stays `unavailable`.
 
 OpenCode takes the reasoning level live. Both OpenCode adapters switch the
 session to the model it records with the new level as its variant
