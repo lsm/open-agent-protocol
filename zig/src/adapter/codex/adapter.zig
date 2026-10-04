@@ -235,6 +235,7 @@ pub const Session = struct {
             self.pending_effort = effort;
             response.reasoning_level = reportedLevel(effort);
         }
+        self.reducer.state.updated_at_ms = self.reducer.now();
         return .{ .response = response, .state = try state(ptr, arena, refusal) };
     }
 
@@ -1101,10 +1102,13 @@ test "a live reasoning level rides the next turn/start's effort only, since Code
     var refusal = contract.Refusal{};
     const opened = try probe.open(&refusal);
     const updater = opened.vtable.update_settings.?;
+    const at_open = (try opened.state(probe.arena.allocator(), &refusal)).updated_at_ms orelse 0;
+    compat.time.sleepNs(3 * std.time.ns_per_ms);
     const updated = try updater(opened.ptr, probe.arena.allocator(), &.{ .session_id = "s1", .reasoning_level = "off" }, &refusal);
     try testing.expectEqualStrings("off", updated.response.reasoning_level.?);
     try testing.expect(updated.response.previous_reasoning_level == null);
     try testing.expectEqualStrings("off", updated.state.reasoning_level.?);
+    try testing.expect((updated.state.updated_at_ms orelse 0) > at_open);
 
     _ = try probe.submit("one", &refusal);
     var seen = std.ArrayList(contract.Event).empty;

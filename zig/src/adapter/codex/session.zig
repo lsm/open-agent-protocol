@@ -263,7 +263,7 @@ pub const Reducer = struct {
         return self.arena.allocator();
     }
 
-    fn now(self: *Reducer) i64 {
+    pub fn now(self: *Reducer) i64 {
         if (self.options.now_ms) |wall| return wall();
         self.clock += 1;
         return self.clock;
