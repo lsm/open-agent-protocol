@@ -5164,8 +5164,10 @@ Still open, each for a later slice:
   in: both pi adapters publish the compactions Pi starts on its own as the
   run's `run.compaction` events at `native`, from frames recorded against the
   v1.0.1 binary, under `pi-v1.0.1-oap-v2`. Pi compacts between `agent_end`
-  and `agent_settled`, so each one is inside the run. Serving
-  `session.compact` through Pi's `compact` command is the other half.
+  and `agent_settled`, so each one is inside the run. Both pi adapters also serve
+  `session.compact` through Pi's `compact` command, as a run of its own that
+  opens with its `requested` compaction, at `native` under
+  `pi-v1.0.1-oap-v3`, so step 3 is complete.
 
 ## T5b. Auth state
 

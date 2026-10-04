@@ -25,6 +25,7 @@ const features = [_]contract.Feature{
     .{ .key = "run.resume", .level = .degraded, .reason = "bounded process-memory replay" },
     .{ .key = "run.status", .level = .emulated },
     .{ .key = "run.streaming", .level = .native },
+    .{ .key = "session.compact", .level = .native, .reason = "a compaction request on an idle session runs Pi's compact command, with focus as its custom instructions; Pi never continues the turn, so continue is refused" },
     .{ .key = "session.message.delivery.auto", .level = .emulated, .reason = "idle auto is normalized to native prompt/start" },
     .{ .key = "session.message.delivery.queue", .level = .unavailable, .reason = "v0.1 admission cannot expose Pi queued prompt semantics safely" },
     .{ .key = "session.message.delivery.steer", .level = .emulated, .reason = "guidance rides Pi's native steer command and settles at the turn boundary Pi injects it" },
@@ -141,6 +142,7 @@ pub const Session = struct {
     next_request: usize = 0,
     awaited: []const u8 = "",
     reply: ?Reply = null,
+    compacting_id: []const u8 = "",
     asks: std.ArrayList(Ask) = .empty,
     unbound: std.ArrayList(Ask) = .empty,
     bound: usize = 0,
@@ -232,6 +234,7 @@ pub const Session = struct {
         .submit = submit,
         .resolve = resolve,
         .cancel = cancel,
+        .compact = compact,
         .pump = pump,
         .drain = drain,
         .readable = readable,
@@ -393,6 +396,10 @@ pub const Session = struct {
                     .message = textOf(received.value, "error"),
                 };
                 if (self.awaited.len > 0 and std.mem.eql(u8, id, self.awaited)) self.reply = reply;
+                if (self.compacting_id.len > 0 and std.mem.eql(u8, id, self.compacting_id)) {
+                    self.compacting_id = "";
+                    if (self.reducer) |reducer| session.settleCompaction(reducer, reply.success, reply.data, reply.message) catch |err| return lift(err);
+                }
             },
             .event => if (self.reducer) |reducer| {
                 session.apply(reducer, received.value) catch |err| return lift(err);
@@ -604,6 +611,10 @@ pub const Session = struct {
             refusal.* = .{ .reason = steer_reason_not_steerable, .message = "adapter: steer target cannot take guidance: the run is cancelling" };
             return error.InvalidSteerTarget;
         }
+        if (reducer.compacting) {
+            refusal.* = .{ .reason = steer_reason_not_steerable, .message = "adapter: steer target cannot take guidance: the run is a compaction" };
+            return error.InvalidSteerTarget;
+        }
         const content = try self.nativeContent(arena, request);
         _ = self.command(arena, "steer", content.text, content.images, refusal) catch |err| return err;
         if (reducer.terminal or reducer.cancel_intent) {
@@ -696,6 +707,68 @@ pub const Session = struct {
             .status = .running,
             .model_id = model_id,
             .message_ids = message_ids,
+        };
+    }
+
+    fn compact(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.SessionCompactRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+        _ = envelope_id;
+        const self = cast(ptr);
+        switch (request.delivery) {
+            .auto => {},
+            .queue, .steer, .btw => {
+                refusal.* = .{
+                    .feature = switch (request.delivery) {
+                        .queue => "session.message.delivery.queue",
+                        .steer => "session.message.delivery.steer",
+                        else => "session.message.delivery.btw",
+                    },
+                    .reason = contract.reason_unadvertised,
+                    .detail = "Pi compacts an idle session only",
+                };
+                return error.UnsupportedFeature;
+            },
+        }
+        if (request.continue_run) {
+            refusal.* = .{ .feature = "session.compact", .reason = contract.reason_unsatisfiable, .field = "continue", .detail = "Pi's compact command never continues the turn" };
+            return error.UnsupportedFeature;
+        }
+        if (request.session_id.len == 0) return error.InvalidSubmission;
+        if (self.ended or self.unusable) return error.SessionClosed;
+        if (!std.mem.eql(u8, request.session_id, self.id)) return error.RunNotFound;
+        if (self.live() != null) return error.RunActive;
+
+        const reducer = try self.owned().create(session.Reducer);
+        reducer.* = session.Reducer.init(self.owned());
+        reducer.session_id = self.id;
+        reducer.responder = self.participant;
+        reducer.revision = capability_revision;
+        reducer.model_id = self.current_model;
+        self.bound = 0;
+        self.unbound.clearRetainingCapacity();
+        reducer.counters.shared = &self.owner.ids;
+        reducer.counters.now_ms = wallClock;
+        reducer.run_id = try reducer.counters.nextID(self.owned(), "run");
+        reducer.submission_id = try reducer.counters.nextID(self.owned(), "submission");
+        self.settled_cursor = self.cursor();
+        self.reducer = reducer;
+        session.openCompaction(reducer) catch |err| return lift(err);
+
+        const focus: ?Field = if (request.focus) |text| .{ .name = "customInstructions", .value = .{ .string = try self.owned().dupe(u8, text) } } else null;
+        const built = self.commandFrame("compact", null, &.{}, focus) catch |err| return lift(err);
+        if (!try self.send(built.value)) return refusal.fail(error.BackendFailed, "the Pi agent exited before taking compact");
+        self.compacting_id = built.id;
+        const submission_id = try arena.dupe(u8, reducer.submission_id);
+        const run_id = try arena.dupe(u8, reducer.run_id);
+        return .{
+            .session_id = self.id,
+            .accepted = true,
+            .submission_id = submission_id,
+            .requested_delivery = .auto,
+            .effective_delivery = .start,
+            .delivery_resolution = "session_idle",
+            .admission = .started,
+            .run_id = run_id,
+            .status = .running,
         };
     }
 
@@ -1665,4 +1738,105 @@ test "a steer refuses a run control as unadvertised" {
     try testing.expectError(error.UnsupportedFeature, probe.handle.?.submit(probe.arena.allocator(), &request, "steer-request", &refusal));
     try testing.expectEqualStrings("run.model_selection", refusal.feature);
     try testing.expectEqualStrings(contract.reason_unadvertised, refusal.reason);
+}
+
+const fake_compaction_result = "{\"summary\":\"the summary\",\"firstKeptEntryId\":\"e1\",\"tokensBefore\":20,\"estimatedTokensAfter\":5,\"usage\":{},\"details\":{}}";
+
+fn compactRequest(focus: ?[]const u8) oap_types.SessionCompactRequest {
+    return .{ .session_id = "s1", .focus = focus };
+}
+
+test "a compaction request runs Pi's compact command as a run of its own, with the focus as its instructions" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++
+        "take; printf '%s\\n' '{\"type\":\"compaction_start\",\"reason\":\"manual\"}'\n" ++
+        "printf '%s\\n' '{\"type\":\"compaction_end\",\"reason\":\"manual\",\"result\":" ++ fake_compaction_result ++ ",\"aborted\":false,\"willRetry\":false}'\n" ++
+        "printf '%s\\n' '{\"type\":\"response\",\"id\":\"req_2\",\"command\":\"compact\",\"success\":true,\"data\":" ++ fake_compaction_result ++ "}'\n" ++
+        fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    const request = compactRequest("keep the plan");
+    const admitted = try probe.handle.?.vtable.compact.?(probe.handle.?.ptr, probe.arena.allocator(), &request, "compact", &refusal);
+    try testing.expectEqual(oap_types.Admission.started, admitted.admission);
+    var seen = std.ArrayList(contract.Event).empty;
+    const completed = try probe.pumpUntil("run.completed", &seen);
+    const kinds = [_][]const u8{ "run.started", "run.compaction.started", "run.compaction.ended", "run.completed" };
+    try testing.expectEqual(kinds.len, seen.items.len);
+    for (kinds, seen.items) |kind, event| {
+        const tagged = try std.fmt.allocPrint(probe.arena.allocator(), "\"type\":\"{s}\"", .{kind});
+        try testing.expect(std.mem.indexOf(u8, event.line, tagged) != null);
+    }
+    const started = try probe.payloadOf(seen.items[1]);
+    try testing.expectEqualStrings("requested", started.get("reason").?.string);
+    const ended = try probe.payloadOf(seen.items[2]);
+    const settled = try probe.payloadOf(completed);
+    try testing.expectEqualStrings("compacted", settled.get("stop_reason").?.string);
+    try testing.expectEqualStrings(ended.get("summary").?.object.get("id").?.string, settled.get("final_response").?.object.get("id").?.string);
+    const written = try probe.fake.written(probe.arena.allocator());
+    try testing.expect(std.mem.indexOf(u8, written, "{\"id\":\"req_2\",\"type\":\"compact\",\"customInstructions\":\"keep the plan\"}") != null);
+}
+
+test "a compaction Pi refuses fails the run with Pi's reason" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++
+        "take; printf '%s\\n' '{\"type\":\"compaction_start\",\"reason\":\"manual\"}'\n" ++
+        "printf '%s\\n' '{\"type\":\"compaction_end\",\"reason\":\"manual\",\"aborted\":false,\"willRetry\":false,\"errorMessage\":\"Compaction failed: Nothing to compact (session too small)\"}'\n" ++
+        "printf '%s\\n' '{\"type\":\"response\",\"id\":\"req_2\",\"command\":\"compact\",\"success\":false,\"error\":\"Nothing to compact (session too small)\"}'\n" ++
+        fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    const request = compactRequest(null);
+    _ = try probe.handle.?.vtable.compact.?(probe.handle.?.ptr, probe.arena.allocator(), &request, "compact", &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    const failed = try probe.pumpUntil("run.failed", &seen);
+    const payload = try probe.payloadOf(failed);
+    try testing.expectEqualStrings("pi_compaction_failed", payload.get("error").?.object.get("code").?.string);
+    try testing.expect(std.mem.indexOf(u8, payload.get("error").?.object.get("message").?.string, "Nothing to compact") != null);
+}
+
+test "a cancelled compaction aborts Pi and settles cancelled" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++
+        "take; printf '%s\\n' '{\"type\":\"compaction_start\",\"reason\":\"manual\"}'\n" ++
+        "take; printf '%s\\n' '{\"type\":\"compaction_end\",\"reason\":\"manual\",\"aborted\":true,\"willRetry\":false}'\n" ++
+        "printf '%s\\n' '{\"type\":\"response\",\"id\":\"req_2\",\"command\":\"compact\",\"success\":false,\"error\":\"Compaction cancelled\"}'\n" ++
+        "printf '%s\\n' '{\"type\":\"response\",\"id\":\"req_3\",\"command\":\"abort\",\"success\":true}'\n" ++
+        fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    const request = compactRequest(null);
+    const admitted = try probe.handle.?.vtable.compact.?(probe.handle.?.ptr, probe.arena.allocator(), &request, "compact", &refusal);
+    const cancelled = try probe.handle.?.cancel(probe.arena.allocator(), admitted.run_id.?, &refusal);
+    try testing.expectEqual(oap_types.RunStatus.cancelling, cancelled.status);
+    var seen = std.ArrayList(contract.Event).empty;
+    _ = try probe.pumpUntil("run.cancelled", &seen);
+    var outcome: []const u8 = "";
+    for (seen.items) |event| {
+        if (std.mem.indexOf(u8, event.line, "\"type\":\"run.compaction.ended\"") != null) outcome = (try probe.payloadOf(event)).get("outcome").?.string;
+    }
+    try testing.expectEqualStrings("cancelled", outcome);
+}
+
+test "a compaction request is refused for what Pi cannot do" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_prompt_accepted ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    var continuing = compactRequest(null);
+    continuing.continue_run = true;
+    try testing.expectError(error.UnsupportedFeature, probe.handle.?.vtable.compact.?(probe.handle.?.ptr, probe.arena.allocator(), &continuing, "", &refusal));
+    try testing.expectEqualStrings("session.compact", refusal.feature);
+    try testing.expectEqualStrings("continue", refusal.field);
+    var queued = compactRequest(null);
+    queued.delivery = .queue;
+    refusal = .{};
+    try testing.expectError(error.UnsupportedFeature, probe.handle.?.vtable.compact.?(probe.handle.?.ptr, probe.arena.allocator(), &queued, "", &refusal));
+    try testing.expectEqualStrings("session.message.delivery.queue", refusal.feature);
+    _ = try probe.submit("busy", &refusal);
+    const idle = compactRequest(null);
+    try testing.expectError(error.RunActive, probe.handle.?.vtable.compact.?(probe.handle.?.ptr, probe.arena.allocator(), &idle, "", &refusal));
 }
