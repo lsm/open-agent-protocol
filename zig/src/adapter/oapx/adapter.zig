@@ -344,7 +344,7 @@ pub const Session = struct {
         if (request.reasoning_level == null and request.compaction_policy_json == null) return error.InvalidSubmission;
         const level: ?ai_types.ThinkingLevel = if (request.reasoning_level) |asked| try thinkingLevel(asked, refusal) else null;
         if (request.compaction_policy_json) |raw| _ = try compactAt(arena, raw, self.runtime, refusal);
-        if (self.live() != null or self.queuedCount() > 0) return error.RunActive;
+        if (self.live() != null or self.queuedCount() > 0 or !self.runtime.isIdle()) return error.RunActive;
         var response = oap_types.SessionSettingsUpdateResponse{ .session_id = self.id };
         if (level) |chosen| {
             response.previous_reasoning_level = @tagName(self.runtime.thinkingLevel());
