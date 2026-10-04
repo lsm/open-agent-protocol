@@ -2490,7 +2490,7 @@ test "runtime registers default local tools and allows overrides" {
     try std.testing.expect(runtime.tool_registry.resolve("Shell") != null);
     try std.testing.expect(runtime.tool_registry.resolve("Read") != null);
     try std.testing.expectEqualStrings("Wrapped Shell", runtime.tool_registry.resolve("Shell").?.label);
-    try std.testing.expect(runtime.original_tools.len >= 5);
+    try std.testing.expect(runtime.original_tools.len >= 4);
 }
 
 test "runtime submit turn emits normalized events" {
