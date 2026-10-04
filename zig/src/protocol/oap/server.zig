@@ -2397,7 +2397,7 @@ test "a pinned stale revision is rejected on every other request" {
     try std.testing.expectEqual(@as(u32, 0), server.sessions.count());
 }
 
-test "session open allocates an idle session and reopening it is idempotent" {
+test "session open allocates an idle session and opening it again by id is idempotent" {
     const allocator = std.testing.allocator;
     var server = try Server.init(allocator, .{ .default_model_id = "anthropic/anthropic-messages@claude" });
     defer server.deinit();
