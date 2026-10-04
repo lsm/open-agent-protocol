@@ -10,9 +10,10 @@ publishes its own compactions as the run's `run.compaction` events (#851) and
 serves `session.compact` through its `compact` command, both at `native`, with
 the `cancelled` outcome exercised against the v1.0.1 binary (#853). The
 threshold policy this record defers is taken by Decision 0045. The
-hub-served `oapx` adapter compacts from the in-process runtime (#865); `oapx`'s
-default endpoint, which reaches its loop over the native agent wire, is handed
-to #866)
+hub-served `oapx` adapter compacts from the in-process runtime (#865), and
+`oapx tui` over OAP carries `/compact` to it (#866); `oapx serve agent` starts
+each run from its submitted messages alone, so it has no history to compact and
+refuses the unit)
 Date: 2026-10-01
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
