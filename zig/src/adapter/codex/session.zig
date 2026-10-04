@@ -543,6 +543,8 @@ pub const Reducer = struct {
                 }
                 const resumed_model = native.text(result, &.{"model"});
                 if (resumed_model.len > 0) self.options.model = try self.allocator().dupe(u8, resumed_model);
+                const resumed_effort = native.text(result, &.{"reasoningEffort"});
+                if (self.options.settings.reasoning_effort.len == 0 and resumed_effort.len > 0) self.options.settings.reasoning_effort = try self.allocator().dupe(u8, resumed_effort);
                 try self.opens(thread);
                 self.state.recovered = self.options.reopen;
             },
