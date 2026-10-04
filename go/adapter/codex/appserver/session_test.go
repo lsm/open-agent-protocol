@@ -1219,3 +1219,70 @@ func TestAnOpenAsksCodexForACompactionFormItLacksIsRefusedBeforeAThreadStarts(t 
 		})
 	}
 }
+
+func completeFakeTurn(t *testing.T, client *fakeClient, stream adapter.EventStream) {
+	t.Helper()
+	client.send(t, native.MethodTurnStarted, native.TurnStartedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnInProgress}})
+	client.send(t, native.MethodTurnCompleted, native.TurnCompletedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnCompleted}})
+	drainClosed(t, stream)
+}
+
+func TestALiveReasoningLevelRidesTheNextTurnStartOnly(t *testing.T) {
+	client, session, _ := openFake(t)
+	updater := session.(adapter.SettingsUpdater)
+	response, state, err := updater.UpdateSettings(context.Background(), protocol.SessionSettingsUpdateRequest{SessionID: "session-1", ReasoningLevel: protocol.ReasoningOff})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.ReasoningLevel != protocol.ReasoningOff || response.PreviousReasoningLevel != "" || state.ReasoningLevel != protocol.ReasoningOff {
+		t.Fatalf("response %+v and state %q, want off in force", response, state.ReasoningLevel)
+	}
+	_, stream := submitFake(t, session)
+	client.mu.Lock()
+	first := client.turnStart.Effort
+	client.mu.Unlock()
+	if first != "none" {
+		t.Fatalf("the next turn/start carried effort %q, want Codex's none", first)
+	}
+	completeFakeTurn(t, client, stream)
+	_, stream = submitFake(t, session)
+	client.mu.Lock()
+	second := client.turnStart.Effort
+	client.mu.Unlock()
+	if second != "" {
+		t.Fatalf("the turn after carried effort %q, want none sent because Codex keeps it", second)
+	}
+	completeFakeTurn(t, client, stream)
+	polled, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if polled.ReasoningLevel != protocol.ReasoningOff {
+		t.Fatalf("state reports %q, want off", polled.ReasoningLevel)
+	}
+}
+
+func TestALiveUpdateIsRefusedWhatCodexCannotTakeBetweenRuns(t *testing.T) {
+	client, session, _ := openFake(t)
+	updater := session.(adapter.SettingsUpdater)
+	var refusal *adapter.UnsupportedControlError
+	if _, _, err := updater.UpdateSettings(context.Background(), protocol.SessionSettingsUpdateRequest{SessionID: "session-1", CompactionPolicy: &protocol.CompactionPolicy{Kind: protocol.CompactionTokens, Tokens: 1000}}); !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureCompactionPolicy || refusal.Reason != adapter.ControlUnadvertised {
+		t.Fatalf("a live policy answered %v, want it unadvertised", err)
+	}
+	if _, _, err := updater.UpdateSettings(context.Background(), protocol.SessionSettingsUpdateRequest{SessionID: "other", ReasoningLevel: protocol.ReasoningHigh}); !errors.Is(err, adapter.ErrRunNotFound) {
+		t.Fatalf("another session answered %v, want run_not_found", err)
+	}
+	_, stream := submitFake(t, session)
+	if _, _, err := updater.UpdateSettings(context.Background(), protocol.SessionSettingsUpdateRequest{SessionID: "session-1", ReasoningLevel: protocol.ReasoningHigh}); !errors.Is(err, adapter.ErrRunActive) {
+		t.Fatalf("a busy session answered %v, want run_active", err)
+	}
+	completeFakeTurn(t, client, stream)
+	_, stream = submitFake(t, session)
+	client.mu.Lock()
+	effort := client.turnStart.Effort
+	client.mu.Unlock()
+	if effort != "" {
+		t.Fatalf("a refused update still reached turn/start as effort %q", effort)
+	}
+	completeFakeTurn(t, client, stream)
+}
