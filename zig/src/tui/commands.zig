@@ -4,6 +4,7 @@ const agent = @import("agent");
 const tui_runtime = @import("tui_runtime");
 const tui_state = @import("tui_state");
 
+pub const over_oap_autocompact_refusal = "this session's endpoint does not take a compaction policy over OAP, so /autocompact does not reach it. Use oapx --tui to change it.";
 pub const between_runs_refusal = "the thinking level changes between runs over OAP; set it again once this run ends.";
 pub const over_oap_setting_refusal = "oapx tui fixes this setting when the session opens, and this session cannot change it mid-session over OAP. Use oapx --tui to change it.";
 
@@ -528,6 +529,7 @@ fn verbosityReport(ctx: CommandContext) ![]u8 {
 
 fn handleAutoCompact(ctx: CommandContext, command: Command) !CommandResult {
     const arg = command.arg orelse return .{ .output = try autoCompactReport(ctx) };
+    const previous = ctx.state.autocompact;
     if (std.ascii.eqlIgnoreCase(arg, "off") or std.ascii.eqlIgnoreCase(arg, "none")) {
         ctx.state.autocompact = .off;
     } else if (std.ascii.eqlIgnoreCase(arg, "auto")) {
@@ -543,6 +545,18 @@ fn handleAutoCompact(ctx: CommandContext, command: Command) !CommandResult {
         };
         ctx.state.autocompact = .{ .percent = percent };
     }
+    if (ctx.runtime) |runtime| if (runtime.remote != null) {
+        var buffer: [96]u8 = undefined;
+        const policy = try tui_state.autoCompactPolicyJson(&buffer, ctx.state.autocompact);
+        runtime.setCompactionPolicy(policy) catch |err| switch (err) {
+            error.UnavailableOverOap => {
+                ctx.state.autocompact = previous;
+                return .{ .output = try ctx.allocator.dupe(u8, over_oap_autocompact_refusal), .is_error = true };
+            },
+            error.RunInProgress => {},
+            else => return err,
+        };
+    };
     return .{ .output = try autoCompactReport(ctx) };
 }
 

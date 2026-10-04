@@ -19,7 +19,7 @@ const Op = struct {
 const OPS = [_]Op{
     .{ .name = "start", .feature = "session.open", .expected = .native },
     .{ .name = "resume_session", .feature = "session.state", .expected = .degraded, .blocked_by = "sessions are not resumable; session_id is a correlation key" },
-    .{ .name = "compact", .feature = "", .expected = .unadvertised, .blocked_by = "no protocol verb; compaction stays on the direct path" },
+    .{ .name = "compact", .feature = "", .expected = .unadvertised, .blocked_by = "the endpoint starts each run from its submitted messages, so there is no history to compact" },
     .{ .name = "history", .feature = "", .expected = .unadvertised, .blocked_by = "no transcript replay is offered" },
     .{ .name = "cancel", .feature = "run.cancel", .expected = .degraded, .blocked_by = "cancellation is session scoped; the session closes with the run" },
     .{ .name = "submit_turn", .feature = "session.message.submit", .expected = .native },

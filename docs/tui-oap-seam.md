@@ -27,8 +27,12 @@ A follow-up queued during a turn is submitted with `delivery: "queue"`, and the 
 open until each reservation has been promoted and run, so it reads as one turn as it does
 locally; clearing the queue or aborting cancels the reservations. A session attached to a
 hub refuses a follow-up locally, because the hub link withdraws any queued admission as
-`session_busy`. Resume, compaction and steering
-refuse with `UnavailableOverOap` until their gaps below close. `oapx tui --attach URL` runs the
+`session_busy`. `/compact` sends `session.compact.request` and `/autocompact`
+sends its setting as the session's `compaction_policy` before each turn, when the
+endpoint advertises them; the TUI's attach link (`zig/src/tui/hub_link.zig`) routes
+neither, although the hub takes a compaction on its submit route, so an attached
+session refuses them. Resume and steering refuse with `UnavailableOverOap` until their gaps
+below close. `oapx tui --attach URL` runs the
 same execution over a running hub's HTTP wire (`zig/src/tui/hub_link.zig`): each envelope
 goes to its route, and each run is followed on its own SSE stream replayed from its first
 event, read by polling the socket on the execution's pump thread. A model switch, which
@@ -96,7 +100,7 @@ without going through the ops table.
 | `clear_queued_messages` | none | **gap** — G3 |
 | `steers_consumed` | none | **gap** — G3 |
 | `decide_tool_approval` | `action.permission.*`, `user.input.*` | **gap** — G4, shaped, undispatched |
-| `compact` | none | **gap** — G6 |
+| `compact` | `session.compact`, `run.compaction`, and `session.settings.update` for the threshold | closed in-process; refused over `--attach` |
 | `resume_session` | `session.state.request`, then submit | **gap** — G1 |
 | `replaceMessages` (direct) | `transcript.load` | **gap** — G1 |
 | `waitForIdle` (direct, 6 production call sites) | a terminal run event | **gap** — G7 |
@@ -205,9 +209,10 @@ instructions rather than replacing a history.
 **Decision: compaction stays on the direct path for now.** Filed as #613,
 proposing an optional compaction unit covering the verb, its correlated
 response and its events, plus the continue-after-compaction case. [Decision
-0044](../decisions/0044-compaction.md) is that proposal, and is accepted. #375's
-compaction step now waits on #866: `oapx serve agent` reaches the loop over the
-native agent wire, which has no compaction verb yet.
+0044](../decisions/0044-compaction.md) is that proposal, and is accepted. The
+in-process `oapx` adapter compacts on request and at the session's threshold, so
+`/compact` and `/autocompact` now cross the seam (#866). `oapx serve agent` keeps
+no history between runs, so it has nothing to compact and refuses both.
 
 ### G7 — the blocking idle wait
 

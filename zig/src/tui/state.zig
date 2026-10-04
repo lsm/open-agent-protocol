@@ -20,6 +20,23 @@ pub fn autoCompactAt(setting: AutoCompactSetting, model: ai_types.Model) ?u64 {
     };
 }
 
+pub fn autoCompactPolicyJson(buffer: []u8, setting: AutoCompactSetting) ![]const u8 {
+    return switch (setting) {
+        .off => std.fmt.bufPrint(buffer, "{{\"kind\":\"off\"}}", .{}),
+        .auto => std.fmt.bufPrint(buffer, "{{\"kind\":\"auto\"}}", .{}),
+        .percent => |percent| std.fmt.bufPrint(buffer, "{{\"kind\":\"share\",\"share_percent\":{d}}}", .{percent}),
+        .tokens => |count| std.fmt.bufPrint(buffer, "{{\"kind\":\"tokens\",\"tokens\":{d}}}", .{count}),
+    };
+}
+
+test "autocompact settings become the compaction policies OAP names" {
+    var buffer: [96]u8 = undefined;
+    try std.testing.expectEqualStrings("{\"kind\":\"off\"}", try autoCompactPolicyJson(&buffer, .off));
+    try std.testing.expectEqualStrings("{\"kind\":\"auto\"}", try autoCompactPolicyJson(&buffer, .auto));
+    try std.testing.expectEqualStrings("{\"kind\":\"share\",\"share_percent\":70}", try autoCompactPolicyJson(&buffer, .{ .percent = 70 }));
+    try std.testing.expectEqualStrings("{\"kind\":\"tokens\",\"tokens\":4000}", try autoCompactPolicyJson(&buffer, .{ .tokens = 4000 }));
+}
+
 pub const AppMode = enum {
     normal,
     approval,
@@ -1528,11 +1545,20 @@ pub const AppState = struct {
         var out: std.Io.Writer.Allocating = .init(allocator);
         defer out.deinit();
         const writer = &out.writer;
-        try writer.print("conversation compacted · {d} messages · ~", .{payload.messages_before});
-        try writeApproxTokens(writer, payload.tokens_before);
-        try writer.writeAll(" → ~");
-        try writeApproxTokens(writer, payload.tokens_after);
-        try writer.writeAll(" tokens");
+        if (payload.messages_before == 0 and payload.tokens_before == 0) {
+            try writer.writeAll("conversation compacted");
+            if (payload.tokens_after > 0) {
+                try writer.writeAll(" · ~");
+                try writeApproxTokens(writer, payload.tokens_after);
+                try writer.writeAll(" tokens");
+            }
+        } else {
+            try writer.print("conversation compacted · {d} messages · ~", .{payload.messages_before});
+            try writeApproxTokens(writer, payload.tokens_before);
+            try writer.writeAll(" → ~");
+            try writeApproxTokens(writer, payload.tokens_after);
+            try writer.writeAll(" tokens");
+        }
         if (payload.transcript.slice().len > 0) try writer.print("\ntranscript: {s}", .{payload.transcript.slice()});
         try writer.print("\n\n{s}", .{agent.compaction.summaryOf(payload.text.slice())});
         return out.toOwnedSlice();
@@ -4710,4 +4736,11 @@ test "the step clock times only a timed step, from its own start" {
     try std.testing.expectEqualStrings("", zen.activity());
     try std.testing.expect(zen.settled());
     try std.testing.expectEqual(@as(u64, 0), zen.stepMs(7, 140_000));
+}
+
+test "a compaction notice leaves out the counts a remote compaction does not report" {
+    const notice = try AppState.compactionNotice(std.testing.allocator, .{ .outcome = .completed, .text = ai_types.OwnedSlice(u8).initBorrowed("the session so far"), .tokens_after = 1200 });
+    defer std.testing.allocator.free(notice);
+    try std.testing.expect(std.mem.startsWith(u8, notice, "conversation compacted · ~1.2k tokens\n"));
+    try std.testing.expect(std.mem.indexOf(u8, notice, "messages") == null);
 }

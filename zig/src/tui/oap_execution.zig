@@ -5,6 +5,8 @@ const json_encode = @import("json_encode");
 const model_ref = @import("model_ref");
 const tui_runtime = @import("tui_runtime");
 const tui_session = @import("tui_session");
+const CompactionEnd = @TypeOf(@as(tui_session.TuiEvent, undefined).compaction_end);
+const CompactionOutcome = @FieldType(CompactionEnd, "outcome");
 const adapter_endpoint = @import("adapter_endpoint");
 const oapx_adapter = @import("oapx_adapter");
 const hub_link = @import("hub_link");
@@ -40,6 +42,11 @@ pub const OapExecution = struct {
     text: std.ArrayList(u8) = .empty,
     session_models: std.ArrayList([]u8) = .empty,
     live_reasoning: bool = false,
+    live_compaction: bool = false,
+    live_policy: bool = false,
+    compacting: bool = false,
+    compaction_settled: bool = false,
+    sent_policy: []u8 = &.{},
     pending_permission: ?PendingPermission = null,
     queued_runs: std.ArrayList(QueuedRun) = .empty,
     output_tokens: u64 = 0,
@@ -127,6 +134,7 @@ pub const OapExecution = struct {
         for (self.queued_runs.items) |*queued| queued.deinit(allocator);
         self.queued_runs.deinit(allocator);
         allocator.free(self.revision);
+        allocator.free(self.sent_policy);
         allocator.free(self.session_id);
         allocator.free(self.run_id);
         if (self.adapter) |adapter| allocator.destroy(adapter);
@@ -143,6 +151,9 @@ pub const OapExecution = struct {
         .cancel = cancel,
         .switch_model = switchModel,
         .set_reasoning = setReasoning,
+        .compacts = compacts,
+        .compact = compact,
+        .set_compaction_policy = setCompactionPolicy,
         .decide_approval = decideApproval,
         .follow_up = followUp,
         .clear_queued = clearQueued,
@@ -179,6 +190,8 @@ pub const OapExecution = struct {
         else
             try self.exchange(a, "capabilities.request", empty.value(), false);
         self.live_reasoning = self.hub == null and advertisesLive(described, "session.reasoning");
+        self.live_compaction = self.hub == null and advertises(described, "session.compact");
+        self.live_policy = self.hub == null and advertisesLive(described, "session.compaction.policy");
 
         var settings_map = Map.init(a);
         try settings_map.put("thinking_level", .{ .string = @tagName(settings.thinking_level) });
@@ -295,6 +308,7 @@ pub const OapExecution = struct {
     fn followUp(ctx: *anyopaque, text: []const u8) anyerror!void {
         const self = cast(ctx);
         if (self.hub != null) return error.UnavailableOverOap;
+        if (self.compacting) return error.CompactionInProgress;
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
         const a = scratch.allocator();
@@ -536,6 +550,69 @@ pub const OapExecution = struct {
         _ = try self.enqueue(a, "session.settings.update.request", "settings", payload.value(), null);
     }
 
+    fn compacts(ctx: *anyopaque) bool {
+        return cast(ctx).live_compaction;
+    }
+
+    fn compact(ctx: *anyopaque, focus: []const u8) anyerror!void {
+        const self = cast(ctx);
+        if (!self.live_compaction) return error.UnavailableOverOap;
+        if (self.turn_open.load(.acquire) or queuedCount(ctx) > 0) return error.RunInProgress;
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        var payload = Map.init(a);
+        try payload.put("session_id", .{ .string = self.session_id });
+        if (focus.len > 0) try payload.put("focus", .{ .string = focus });
+        self.lockInbound();
+        self.allocator.free(self.run_id);
+        self.run_id = &.{};
+        self.compacting = true;
+        self.compaction_settled = false;
+        self.cancel_pending.store(false, .release);
+        self.cancelling = false;
+        self.inbound_mutex.unlock();
+        self.turn_open.store(true, .release);
+        errdefer {
+            self.turn_open.store(false, .release);
+            self.compacting = false;
+        }
+        _ = try self.enqueue(a, "session.compact.request", "compact", payload.value(), null);
+    }
+
+    fn setCompactionPolicy(ctx: *anyopaque, policy_json: []const u8) anyerror!void {
+        const self = cast(ctx);
+        if (!self.live_policy) return error.UnavailableOverOap;
+        self.lockInbound();
+        const already = std.mem.eql(u8, self.sent_policy, policy_json);
+        self.inbound_mutex.unlock();
+        if (already) return;
+        if (self.turn_open.load(.acquire) or queuedCount(ctx) > 0) return error.RunInProgress;
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        var payload = Map.init(a);
+        try payload.put("session_id", .{ .string = self.session_id });
+        try payload.put("compaction_policy", try std.json.parseFromSliceLeaky(std.json.Value, a, policy_json, .{}));
+        const kept = try self.allocator.dupe(u8, policy_json);
+        errdefer self.allocator.free(kept);
+        _ = try self.enqueue(a, "session.settings.update.request", "settings", payload.value(), null);
+        self.lockInbound();
+        self.allocator.free(self.sent_policy);
+        self.sent_policy = kept;
+        self.inbound_mutex.unlock();
+    }
+
+    fn settleCompaction(self: *OapExecution, outcome: CompactionOutcome, message: []const u8) !void {
+        if (!self.compaction_settled) {
+            self.compaction_settled = true;
+            self.deliver(.{ .compaction_end = .{ .outcome = outcome, .message = try self.ownedText(message) } });
+        }
+        self.compacting = false;
+        self.awaiting_promotion.store(false, .release);
+        self.turn_open.store(false, .release);
+    }
+
     fn decideApproval(ctx: *anyopaque, tool_call_id: []const u8, granted: bool) anyerror!void {
         const self = cast(ctx);
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
@@ -714,7 +791,15 @@ pub const OapExecution = struct {
         if (std.mem.eql(u8, kind, "error.response")) {
             const reply_to = stringOf(root, "in_reply_to") orelse "";
             const message = if (payload) |body| errorMessage(body) else "the endpoint refused the request";
-            if (std.mem.startsWith(u8, reply_to, "submit-")) {
+            if (std.mem.startsWith(u8, reply_to, "settings-")) {
+                self.lockInbound();
+                self.allocator.free(self.sent_policy);
+                self.sent_policy = &.{};
+                self.inbound_mutex.unlock();
+            }
+            if (std.mem.startsWith(u8, reply_to, "compact-")) {
+                try self.settleCompaction(.failed, message);
+            } else if (std.mem.startsWith(u8, reply_to, "submit-")) {
                 self.deliver(.{ .@"error" = .{ .message = try self.ownedText(message) } });
                 self.closeTurn();
                 self.dropQueued();
@@ -733,6 +818,15 @@ pub const OapExecution = struct {
             const reply_to = stringOf(root, "in_reply_to") orelse "";
             if (!std.mem.startsWith(u8, reply_to, "queue-")) return;
             try self.admitQueued(reply_to, stringOf(body, "run_id") orelse "");
+            return;
+        }
+        if (self.compacting) {
+            if (try self.translateCompaction(kind, body)) return;
+        } else if (std.mem.eql(u8, kind, "run.compaction.started")) {
+            self.deliver(.{ .compaction_start = .{ .in_run = true } });
+            return;
+        } else if (std.mem.eql(u8, kind, "run.compaction.ended")) {
+            self.deliver(.{ .compaction_end = try self.compactionEnd(body, true) });
             return;
         }
         if (std.mem.eql(u8, kind, "run.started")) {
@@ -880,6 +974,51 @@ pub const OapExecution = struct {
         }
     }
 
+    fn translateCompaction(self: *OapExecution, kind: []const u8, body: std.json.ObjectMap) !bool {
+        if (std.mem.eql(u8, kind, "run.started")) {
+            const kept = try self.allocator.dupe(u8, stringOf(body, "run_id") orelse "");
+            self.lockInbound();
+            self.allocator.free(self.run_id);
+            self.run_id = kept;
+            self.inbound_mutex.unlock();
+            if (self.cancel_pending.swap(false, .acq_rel)) try self.sendCancel();
+            return true;
+        }
+        if (std.mem.eql(u8, kind, "run.compaction.started")) return true;
+        if (std.mem.eql(u8, kind, "run.compaction.ended")) {
+            if (!self.compaction_settled) {
+                self.compaction_settled = true;
+                self.deliver(.{ .compaction_end = try self.compactionEnd(body, false) });
+            }
+            return true;
+        }
+        if (std.mem.eql(u8, kind, "run.completed")) {
+            try self.settleCompaction(.completed, "");
+            return true;
+        }
+        if (std.mem.eql(u8, kind, "run.failed")) {
+            try self.settleCompaction(.failed, if (body.get("error")) |value| (if (value == .object) errorMessage(value.object) else "the compaction failed") else "the compaction failed");
+            return true;
+        }
+        if (std.mem.eql(u8, kind, "run.cancelled")) {
+            try self.settleCompaction(.cancelled, "");
+            return true;
+        }
+        return false;
+    }
+
+    fn compactionEnd(self: *OapExecution, body: std.json.ObjectMap, in_run: bool) !CompactionEnd {
+        const outcome_text = stringOf(body, "outcome") orelse "failed";
+        const outcome = std.meta.stringToEnum(CompactionOutcome, outcome_text) orelse .failed;
+        const summary = if (body.get("summary")) |value| (if (value == .object) stringOf(value.object, "content") orelse "" else "") else "";
+        const failure = if (body.get("error")) |value| (if (value == .object) errorMessage(value.object) else "") else "";
+        var text = try self.ownedText(summary);
+        errdefer text.deinit(self.allocator);
+        const message = try self.ownedText(failure);
+        const tokens_after: u64 = if (body.get("history_tokens")) |value| (if (value == .integer and value.integer > 0) @intCast(value.integer) else 0) else 0;
+        return .{ .in_run = in_run, .outcome = outcome, .text = text, .message = message, .tokens_after = tokens_after };
+    }
+
     fn settleReserved(self: *OapExecution, run_id: []const u8) void {
         if (run_id.len == 0) return;
         self.lockInbound();
@@ -893,6 +1032,8 @@ pub const OapExecution = struct {
     }
 
     fn endTurn(self: *OapExecution, reason: tui_session.TuiEndReason) void {
+        self.compacting = false;
+        self.compaction_settled = false;
         self.awaiting_promotion.store(false, .release);
         self.turn_open.store(false, .release);
         self.output_tokens = 0;
@@ -944,6 +1085,18 @@ fn strings(a: std.mem.Allocator, items: []const []const u8) !std.json.Value {
 
 fn modelRef(a: std.mem.Allocator, model: ai_types.Model) ![]u8 {
     return model_ref.formatModelRef(a, model.provider, model.api, model.id);
+}
+
+fn advertises(described: std.json.Value, key: []const u8) bool {
+    if (described != .object) return false;
+    const payload = described.object.get("payload") orelse return false;
+    if (payload != .object) return false;
+    const features = payload.object.get("features") orelse return false;
+    if (features != .object) return false;
+    const feature = features.object.get(key) orelse return false;
+    if (feature != .object) return false;
+    const level = stringOf(feature.object, "level") orelse return false;
+    return !std.mem.eql(u8, level, "unavailable");
 }
 
 fn advertisesLive(described: std.json.Value, key: []const u8) bool {
@@ -1418,7 +1571,6 @@ test "a runtime over OAP refuses what the protocol path cannot carry yet" {
     defer execution.destroy();
     defer runtime.deinit();
     try testing.expectError(error.UnavailableOverOap, runtime.steer("x"));
-    try testing.expectError(error.UnavailableOverOap, runtime.compact(.{}));
     try testing.expectError(error.UnavailableOverOap, runtime.resumeSession());
 }
 
@@ -1844,4 +1996,135 @@ test "a thinking level change over OAP waits for the open turn to end instead of
     execution.turn_open.store(false, .release);
     try runtime.setThinkingLevel(.max);
     try testing.expectEqual(ai_types.ThinkingLevel.max, runtime.thinkingLevel());
+}
+
+const Compactions = struct {
+    in_run_started: usize = 0,
+    in_run_completed: usize = 0,
+    started: usize = 0,
+    outcome: ?CompactionOutcome = null,
+    text: std.ArrayList(u8) = .empty,
+    agent_end: ?tui_session.TuiEndReason = null,
+
+    fn deinit(self: *Compactions) void {
+        self.text.deinit(testing.allocator);
+    }
+};
+
+fn drainCompactions(runtime: *tui_runtime.TuiRuntime, seen: *Compactions, until_requested: bool) !void {
+    var waits: usize = 0;
+    while (waits < 5000) : (waits += 1) {
+        while (runtime.streamEvents().poll()) |event| {
+            var owned_event = event;
+            defer owned_event.deinit(testing.allocator);
+            switch (owned_event) {
+                .compaction_start => |payload| if (payload.in_run) {
+                    seen.in_run_started += 1;
+                } else {
+                    seen.started += 1;
+                },
+                .compaction_end => |payload| if (payload.in_run) {
+                    if (payload.outcome == .completed) seen.in_run_completed += 1;
+                } else {
+                    seen.outcome = payload.outcome;
+                    try seen.text.appendSlice(testing.allocator, payload.text.slice());
+                    if (until_requested) return;
+                },
+                .agent_end => |payload| {
+                    seen.agent_end = payload.reason;
+                    if (!until_requested) return;
+                },
+                else => {},
+            }
+        }
+        std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
+    }
+    return error.TestTurnNeverEnded;
+}
+
+test "a compaction over OAP runs the endpoint's compaction and ends on its summary" {
+    var script = Script{ .reply = "the session so far" };
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+
+    try runtime.submitTurn("remember the parser");
+    var turn = Seen{};
+    defer turn.deinit();
+    try drainTurn(&runtime, &turn);
+
+    try runtime.compact(.{ .focus = "the parser" });
+    var seen = Compactions{};
+    defer seen.deinit();
+    try drainCompactions(&runtime, &seen, true);
+    try testing.expectEqual(@as(usize, 1), seen.started);
+    try testing.expectEqual(@as(?CompactionOutcome, .completed), seen.outcome);
+    try testing.expect(seen.text.items.len > 0);
+    try testing.expect(seen.agent_end == null);
+    try testing.expectEqual(@as(usize, 2), script.calls);
+
+    try runtime.submitTurn("and after");
+    var after = Seen{};
+    defer after.deinit();
+    try drainTurn(&runtime, &after);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), after.end);
+}
+
+test "an autocompact setting reaches the endpoint as its policy, and the next run compacts inside itself" {
+    var script = Script{ .tool_first = true };
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+
+    try runtime.setCompactionPolicy("{\"kind\":\"tokens\",\"tokens\":1}");
+    try testing.expectEqualStrings("{\"kind\":\"tokens\",\"tokens\":1}", execution.sent_policy);
+    try runtime.submitTurn("use the tool");
+    var seen = Compactions{};
+    defer seen.deinit();
+    try drainCompactions(&runtime, &seen, false);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.agent_end);
+    try testing.expectEqual(@as(usize, 1), seen.in_run_started);
+    try testing.expectEqual(@as(usize, 1), seen.in_run_completed);
+    try testing.expectEqual(@as(usize, 0), seen.started);
+}
+
+test "a compaction and a policy are refused before anything is sent when the session does not carry them" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+
+    try runtime.start();
+    execution.live_compaction = false;
+    execution.live_policy = false;
+    try testing.expectError(error.UnavailableOverOap, runtime.compact(.{}));
+    try testing.expectError(error.UnavailableOverOap, runtime.setCompactionPolicy("{\"kind\":\"off\"}"));
+    try testing.expect(runtime.isIdle());
+    try testing.expectEqual(@as(usize, 0), execution.sent_policy.len);
+}
+
+test "a compaction in flight refuses a follow-up, a refused settings update forgets the policy, and a torn-down turn forgets the compaction" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+    try runtime.start();
+
+    execution.compacting = true;
+    try testing.expectError(error.CompactionInProgress, OapExecution.followUp(execution, "later"));
+    execution.endTurn(.@"error");
+    try testing.expect(!execution.compacting);
+    while (runtime.streamEvents().poll()) |event| {
+        var owned = event;
+        owned.deinit(testing.allocator);
+    }
+
+    try runtime.setCompactionPolicy("{\"kind\":\"share\",\"share_percent\":50}");
+    try testing.expect(execution.sent_policy.len > 0);
+    try execution.translateLine("{\"type\":\"error.response\",\"in_reply_to\":\"settings-9\",\"payload\":{\"error\":{\"code\":\"run_active\",\"message\":\"busy\"}}}");
+    try testing.expectEqual(@as(usize, 0), execution.sent_policy.len);
 }
