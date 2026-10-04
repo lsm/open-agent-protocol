@@ -4591,7 +4591,9 @@ pub const TuiModel = struct {
                         } else if (app.state.mode == .normal and app.state.status.streaming and !isSlashDraft(app.state.composer.text())) {
                             const text = app.state.composer.text();
                             const queued = app.queueFollowUp(text) catch |err| blk: {
-                                if (err != error.PendingSessionReset) app.recordError(@errorName(err)) catch {};
+                                if (err == error.CompactionInProgress) {
+                                    app.state.appendTranscript(.@"error", "A compaction is running; queue it once it ends.") catch {};
+                                } else if (err != error.PendingSessionReset) app.recordError(@errorName(err)) catch {};
                                 break :blk false;
                             };
                             if (queued) {
