@@ -11,7 +11,7 @@ const permission = @import("permission");
 const interactions = @import("interactions.zig");
 
 pub const endpoint_id = "oapx.agent";
-pub const capability_revision = "oapx-agent-v3";
+pub const capability_revision = "oapx-agent-v4";
 
 pub const journal_capacity: usize = 1 << 16;
 pub const queue_capacity: usize = 8;
@@ -40,6 +40,7 @@ const features = [_]contract.Feature{
     .{ .key = contract.feature_tools_list, .level = .native },
     .{ .key = contract.feature_models_list, .level = .native, .reason = "the catalog is the one the terminal UI offers" },
     .{ .key = contract.feature_model_switch, .level = .native },
+    .{ .key = contract.feature_session_reasoning, .level = .native, .reason = "the agent loop's thinking level, at open and between runs; minimal, which the loop would run as low, is refused", .modes = &.{ contract.mode_session_open, contract.mode_session_live } },
 };
 
 pub const descriptor = contract.Descriptor{
@@ -152,6 +153,7 @@ pub const Session = struct {
         @memcpy(session_tools[0..owner.options.tools.len], owner.options.tools);
         if (offers_input) session_tools[owner.options.tools.len] = inputTool(self);
         var options = sessionOptions(owner.options, request.metadata);
+        if (request.reasoning_level) |level| options.thinking_level = try thinkingLevel(level, refusal);
         if (try requestedModel(gpa, owner.options.models, request.metadata, refusal)) |chosen| options.initial_model = chosen;
         const engine = try ownEngine(gpa, owner.options.permission_engine, options.workspace_root);
         errdefer if (engine) |held| {
@@ -193,7 +195,24 @@ pub const Session = struct {
         .models = models,
         .switch_model = switchModel,
         .replay = replay,
+        .update_settings = updateSettings,
     };
+
+    fn updateSettings(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.SessionSettingsUpdateRequest, refusal: *contract.Refusal) contract.Failure!contract.Updated {
+        const self = cast(ptr);
+        try contract.refuseUnadvertisedLiveSettings(descriptor, request, refusal);
+        if (!std.mem.eql(u8, request.session_id, self.id)) return error.RunNotFound;
+        const asked = request.reasoning_level orelse return error.InvalidSubmission;
+        const level = try thinkingLevel(asked, refusal);
+        if (self.live() != null or self.queuedCount() > 0) return error.RunActive;
+        const previous = @tagName(self.runtime.thinkingLevel());
+        self.runtime.setThinkingLevel(level) catch return refusal.fail(error.BackendFailed, "the agent loop's thinking level is fixed");
+        self.updated_at_ms = self.owner.now_ms();
+        return .{
+            .response = .{ .session_id = self.id, .reasoning_level = @tagName(level), .previous_reasoning_level = previous },
+            .state = try self.snapshot(arena),
+        };
+    }
 
     fn cast(ptr: *anyopaque) *Session {
         return @ptrCast(@alignCast(ptr));
@@ -304,6 +323,7 @@ pub const Session = struct {
             .active_runs = entries.items,
             .current_model_id = try self.currentModelRef(arena),
             .updated_at_ms = self.updated_at_ms,
+            .reasoning_level = @tagName(self.runtime.thinkingLevel()),
             .as_of = .{ .admitted_submit_requests = admitted.items, .settled = settled.items },
         };
         if (self.live()) |run| {
@@ -919,6 +939,12 @@ pub const Session = struct {
 };
 
 pub const settings_key = "oapx";
+
+fn thinkingLevel(text: []const u8, refusal: *contract.Refusal) contract.Failure!ai_types.ThinkingLevel {
+    const level = std.meta.stringToEnum(ai_types.ThinkingLevel, text) orelse return refusal.unsupportedField(contract.feature_session_reasoning, contract.reason_unsatisfiable, "reasoning_level");
+    if (level == .minimal) return refusal.unsupportedField(contract.feature_session_reasoning, contract.reason_unsatisfiable, "reasoning_level");
+    return level;
+}
 
 fn offersUserInput(metadata: ?std.json.Value) bool {
     const document = metadata orelse return true;
@@ -2202,4 +2228,51 @@ test "a session whose client declines user_input is not given the input tool" {
     var offered = try std.json.parseFromSlice(std.json.Value, testing.allocator, "{\"oapx\":{\"user_input\":true}}", .{});
     defer offered.deinit();
     try testing.expect(offersUserInput(offered.value));
+}
+
+test "an open's reasoning level sets the loop's thinking level, and minimal, which the loop would round, is refused" {
+    var script = Script{};
+    var owner = Adapter.init(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &scripted_models,
+        .initial_model_id = test_model.id,
+        .tools = &echo_tools,
+    });
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var refusal = contract.Refusal{};
+    const opened = try owner.adapter().open(arena.allocator(), .{ .participant = "user", .reasoning_level = "xhigh" }, &refusal);
+    defer opened.teardown();
+    const reported = try opened.state(arena.allocator(), &refusal);
+    try testing.expectEqualStrings("xhigh", reported.reasoning_level.?);
+    try testing.expectError(error.UnsupportedFeature, owner.adapter().open(arena.allocator(), .{ .participant = "user", .reasoning_level = "minimal" }, &refusal));
+    try testing.expectEqualStrings("reasoning_level", refusal.field);
+}
+
+test "a live update changes the loop's thinking level between runs and is refused during one" {
+    var script = Script{ .wait_for_cancel = true };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const a = harness.arena.allocator();
+    var refusal = contract.Refusal{};
+    const updater = harness.session.vtable.update_settings.?;
+
+    const updated = try updater(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .reasoning_level = "max" }, &refusal);
+    try testing.expectEqualStrings("max", updated.response.reasoning_level.?);
+    try testing.expectEqualStrings("low", updated.response.previous_reasoning_level.?);
+    try testing.expectEqualStrings("max", updated.state.reasoning_level.?);
+
+    try testing.expectError(error.UnsupportedFeature, updater(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .reasoning_level = "minimal" }, &refusal));
+    try testing.expectEqualStrings("reasoning_level", refusal.field);
+    refusal = .{};
+    try testing.expectError(error.UnsupportedFeature, updater(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .compaction_policy_json = "{\"kind\":\"off\"}" }, &refusal));
+    try testing.expectEqualStrings(contract.feature_compaction_policy, refusal.feature);
+
+    const admitted = try harness.submit("wait");
+    try testing.expectError(error.RunActive, updater(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .reasoning_level = "off" }, &refusal));
+    _ = try harness.session.cancel(a, admitted.run_id.?, &refusal);
+    try harness.untilTerminal();
+    const after = try harness.session.state(a, &refusal);
+    try testing.expectEqualStrings("max", after.reasoning_level.?);
 }
