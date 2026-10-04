@@ -5115,7 +5115,9 @@ the settlement event in the target run's sequence.
 
 ## T9. Compaction
 
-Unit name: `compaction`. Staged by [Decision 0044](../decisions/0044-compaction.md).
+**Status: [Decision 0044](../decisions/0044-compaction.md) is accepted (2026-10-04).**
+
+Unit name: `compaction`. Graduated by [Decision 0044](../decisions/0044-compaction.md).
 
 The first slice put the wire on the shared validator in both trees: the
 `session.compact` request pair and the `run.compaction` events, with submit's
