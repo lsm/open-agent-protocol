@@ -94,10 +94,11 @@ Cancellation settlement has its core ordering: an accepted
 unstarted queue reservation. The Zig adapter endpoint writes that acknowledgement
 before draining cancellation events. Its oapx adapter releases a cancelled
 reservation within the request, so a buffered next submit or model switch sees
-the freed capacity without an intervening pump. Go's `serve/serveendpoint` does not
-hold this yet: it writes the acknowledgement from the reader while the run's pump
-writes `run.cancelled`, so the two can arrive in either order there. That is a
-recorded divergence, tracked in #818, not a looser rule.
+the freed capacity without an intervening pump. Go's `serve/serveendpoint` holds
+the cancelled run's events from the moment it asks the adapter to cancel until
+its answer to the cancel is written, the way it holds a steered run behind its
+submit response
+(`TestAnAcceptedCancelResponseIsWrittenBeforeTheRunCancelledItConfirms`).
 
 ## Streaming is implicit
 
