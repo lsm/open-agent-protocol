@@ -5156,6 +5156,14 @@ next run's start; neither takes a reasoning level. Both move to
 `reference-memory-v16`, and the memory parity scenarios gain the update and
 its refusals.
 
+
+The first harness follows. Both Claude Code adapters serve the update through
+`apply_flag_settings`, the request the CLI already takes at open, at
+`session_live` for both settings under `claude-code-2.1.288-oap-v2`; a live
+probe of the 2.1.288 binary shows the flags merge, a `null` clears one, and the
+effort the CLI sends follows. An update is refused `run_active` while a run is
+open, because the CLI would apply it to the running run's next request.
+
 Still open, each for a later slice:
 
 - `overflow` is exercised by fixtures only: the reference adapters have no

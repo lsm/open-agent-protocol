@@ -2463,3 +2463,86 @@ func TestALevelOrCompactionFormClaudeLacksIsRefusedBeforeTheChildStarts(t *testi
 		t.Fatal("a refused setting started the child")
 	}
 }
+
+func TestALiveUpdateAppliesItsFlagsBetweenRunsAndClearsAnAutoPolicy(t *testing.T) {
+	peer := newWirePeer(t)
+	implementation, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return peer.client, nil }), Model: "claude-test", Clock: &testClock{}, IDs: &testIDs{}, JournalCapacity: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := implementation.Open(context.Background(), base.OpenRequest{SessionID: "session", Participant: protocol.Participant{ID: "user"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer opened.Close(context.Background())
+	updater := opened.(base.SettingsUpdater)
+	type result struct {
+		response protocol.SessionSettingsUpdateResponse
+		state    protocol.SessionState
+		err      error
+	}
+	update := func(req protocol.SessionSettingsUpdateRequest) (map[string]any, result) {
+		t.Helper()
+		done := make(chan result, 1)
+		go func() {
+			response, state, err := updater.UpdateSettings(context.Background(), req)
+			done <- result{response, state, err}
+		}()
+		message, raw := peer.written()
+		var frame struct {
+			Request struct {
+				Subtype  string         `json:"subtype"`
+				Settings map[string]any `json:"settings"`
+			} `json:"request"`
+		}
+		if err := json.Unmarshal(raw, &frame); err != nil || frame.Request.Subtype != "apply_flag_settings" {
+			t.Fatalf("update wrote %s, want apply_flag_settings", raw)
+		}
+		peer.answerControl(message.RequestID, `{}`)
+		return frame.Request.Settings, <-done
+	}
+	tokens := &protocol.CompactionPolicy{Kind: protocol.CompactionTokens, Tokens: 120000}
+	settings, got := update(protocol.SessionSettingsUpdateRequest{SessionID: "session", ReasoningLevel: protocol.ReasoningHigh, CompactionPolicy: tokens})
+	if got.err != nil || settings["effortLevel"] != "high" || settings["autoCompactEnabled"] != true || settings["autoCompactWindow"] != float64(120000) {
+		t.Fatalf("first update wrote %v and answered %v", settings, got.err)
+	}
+	if got.response.ReasoningLevel != protocol.ReasoningHigh || got.state.ReasoningLevel != protocol.ReasoningHigh || got.state.CompactionPolicy == nil || *got.state.CompactionPolicy != *tokens {
+		t.Fatalf("first update answered %+v with state %+v", got.response, got.state)
+	}
+	settings, got = update(protocol.SessionSettingsUpdateRequest{SessionID: "session", CompactionPolicy: &protocol.CompactionPolicy{Kind: protocol.CompactionAuto}})
+	cleared, enabledPresent := settings["autoCompactEnabled"]
+	window, windowPresent := settings["autoCompactWindow"]
+	if got.err != nil || !enabledPresent || cleared != nil || !windowPresent || window != nil {
+		t.Fatalf("an auto update wrote %v, want both compaction keys cleared to null", settings)
+	}
+	if got.response.PreviousCompactionPolicy == nil || *got.response.PreviousCompactionPolicy != *tokens || got.state.ReasoningLevel != protocol.ReasoningHigh {
+		t.Fatalf("auto update answered %+v with state %+v", got.response, got.state)
+	}
+}
+
+func TestALiveUpdateIsRefusedForWhatTheCLICannotTakeAndWhileARunIsOpen(t *testing.T) {
+	peer := newWirePeer(t)
+	implementation, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return peer.client, nil }), Model: "claude-test", Clock: &testClock{}, IDs: &testIDs{}, JournalCapacity: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := implementation.Open(context.Background(), base.OpenRequest{SessionID: "session", Participant: protocol.Participant{ID: "user"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer opened.Close(context.Background())
+	s := opened.(*Session)
+	var refusal *base.UnsupportedControlError
+	if _, _, err := s.UpdateSettings(context.Background(), protocol.SessionSettingsUpdateRequest{SessionID: s.state.SessionID, ReasoningLevel: protocol.ReasoningOff}); !errors.As(err, &refusal) || refusal.Field != "reasoning_level" {
+		t.Fatalf("off answered %v, want an unsatisfiable reasoning level", err)
+	}
+	if _, _, err := s.UpdateSettings(context.Background(), protocol.SessionSettingsUpdateRequest{SessionID: s.state.SessionID, CompactionPolicy: &protocol.CompactionPolicy{Kind: protocol.CompactionShare, SharePercent: 50}}); !errors.As(err, &refusal) || refusal.Field != "compaction_policy" {
+		t.Fatalf("share answered %v, want an unsatisfiable policy", err)
+	}
+	s.mu.Lock()
+	s.state.Status = protocol.SessionRunning
+	s.mu.Unlock()
+	if _, _, err := s.UpdateSettings(context.Background(), protocol.SessionSettingsUpdateRequest{SessionID: s.state.SessionID, ReasoningLevel: protocol.ReasoningLow}); !errors.Is(err, base.ErrRunActive) {
+		t.Fatalf("a busy session answered %v, want run_active", err)
+	}
+}

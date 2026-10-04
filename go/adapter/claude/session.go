@@ -1146,6 +1146,53 @@ func stopReason(frame *native.ResultFrame) string {
 	return "completed"
 }
 
+func (s *Session) UpdateSettings(ctx context.Context, req protocol.SessionSettingsUpdateRequest) (protocol.SessionSettingsUpdateResponse, protocol.SessionState, error) {
+	if err := ctx.Err(); err != nil {
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, err
+	}
+	if err := base.RefuseUnadvertisedLiveSettings(req, protocol.CapabilityDescriptor{Features: advertisedFeatures()}); err != nil {
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, err
+	}
+	flags, err := settingsFlags(req.ReasoningLevel, req.CompactionPolicy, true)
+	if err != nil {
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, err
+	}
+	s.promptMu.Lock()
+	defer s.promptMu.Unlock()
+	s.mu.Lock()
+	switch {
+	case s.closed || s.unusable:
+		s.mu.Unlock()
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, base.ErrSessionClosed
+	case req.SessionID != s.state.SessionID:
+		s.mu.Unlock()
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, base.ErrRunNotFound
+	case s.pending != nil || (s.active != nil && !s.active.terminal) || s.state.Status != protocol.SessionIdle:
+		s.mu.Unlock()
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, base.ErrRunActive
+	}
+	s.mu.Unlock()
+	if err := s.client.Call(ctx, native.ApplyFlagSettingsRequest{Subtype: native.ControlApplyFlags, Settings: flags}, &struct{}{}); err != nil {
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	response := protocol.SessionSettingsUpdateResponse{SessionID: s.state.SessionID}
+	if req.ReasoningLevel != "" {
+		response.PreviousReasoningLevel = s.state.ReasoningLevel
+		s.state.ReasoningLevel = req.ReasoningLevel
+		response.ReasoningLevel = req.ReasoningLevel
+	}
+	if req.CompactionPolicy != nil {
+		policy := *req.CompactionPolicy
+		response.PreviousCompactionPolicy = s.state.CompactionPolicy
+		s.state.CompactionPolicy = &policy
+		response.CompactionPolicy = &policy
+	}
+	s.state.UpdatedAtMS = s.clock.Now().UnixMilli()
+	return response, s.state, nil
+}
+
 func (s *Session) State(ctx context.Context) (protocol.SessionState, error) {
 	if err := ctx.Err(); err != nil {
 		return protocol.SessionState{}, err

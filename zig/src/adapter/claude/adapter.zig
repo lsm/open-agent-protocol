@@ -21,8 +21,8 @@ const features = [_]contract.Feature{
     .{ .key = "capabilities", .level = .emulated, .reason = "conservative descriptor; per-turn system/init refresh recorded as evidence" },
     .{ .key = "session.open", .level = .emulated, .reason = "process spawn + initialize; CLI session UUID observed on frames" },
     .{ .key = "session.state", .level = .degraded, .reason = "reducer-owned live projection" },
-    .{ .key = contract.feature_session_reasoning, .level = .native, .reason = "apply_flag_settings sets effortLevel after initialize; low through max, and the CLI has no off or minimal level, so those are refused", .modes = &.{contract.mode_session_open} },
-    .{ .key = contract.feature_compaction_policy, .level = .emulated, .reason = "apply_flag_settings sets autoCompactEnabled and autoCompactWindow; tokens is the window the CLI compacts within, and share is refused", .modes = &.{contract.mode_session_open} },
+    .{ .key = contract.feature_session_reasoning, .level = .native, .reason = "apply_flag_settings sets effortLevel after initialize and again between runs; low through max, and the CLI has no off or minimal level, so those are refused", .modes = &.{ contract.mode_session_open, contract.mode_session_live } },
+    .{ .key = contract.feature_compaction_policy, .level = .emulated, .reason = "apply_flag_settings sets autoCompactEnabled and autoCompactWindow, at open and between runs; tokens is the window the CLI compacts within, and share is refused", .modes = &.{ contract.mode_session_open, contract.mode_session_live } },
     .{ .key = "session.message.submit", .level = .degraded, .reason = "host-minted turn uuid correlated by the user_message_uuid echo" },
     .{ .key = "session.message.delivery.auto", .level = .degraded, .reason = "accepted only when the CLI session is idle" },
     .{ .key = "session.message.delivery.queue", .level = .unavailable, .reason = "queued continuation turns are not exposed in v1" },
@@ -55,8 +55,12 @@ pub const descriptor = contract.Descriptor{
 const claude_levels = [_][]const u8{ "low", "medium", "high", "xhigh", "max" };
 
 fn claudeFlags(arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure![]const u8 {
+    return settingsFlags(arena, request.reasoning_level, request.compaction_policy_json, false, refusal);
+}
+
+fn settingsFlags(arena: std.mem.Allocator, reasoning_level: ?[]const u8, compaction_policy_json: ?[]const u8, live: bool, refusal: *contract.Refusal) contract.Failure![]const u8 {
     var effort: []const u8 = "";
-    if (request.reasoning_level) |level| {
+    if (reasoning_level) |level| {
         for (claude_levels) |known| {
             if (std.mem.eql(u8, known, level)) effort = known;
         }
@@ -64,31 +68,43 @@ fn claudeFlags(arena: std.mem.Allocator, request: contract.OpenRequest, refusal:
     }
     var enabled: ?bool = null;
     var window: ?i64 = null;
-    if (request.compaction_policy_json) |raw| {
+    var clear_enabled = false;
+    var clear_window = false;
+    if (compaction_policy_json) |raw| {
         const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, raw, .{}) catch return refusal.unsupportedField(contract.feature_compaction_policy, contract.reason_unsatisfiable, "compaction_policy");
         const kind = if (parsed == .object) (if (parsed.object.get("kind")) |value| (if (value == .string) value.string else "") else "") else "";
         if (std.mem.eql(u8, kind, "off")) {
             enabled = false;
+            clear_window = live;
         } else if (std.mem.eql(u8, kind, "tokens")) {
             const tokens = parsed.object.get("tokens") orelse return refusal.unsupportedField(contract.feature_compaction_policy, contract.reason_unsatisfiable, "compaction_policy");
             if (tokens != .integer) return refusal.unsupportedField(contract.feature_compaction_policy, contract.reason_unsatisfiable, "compaction_policy");
             enabled = true;
             window = tokens.integer;
-        } else if (!std.mem.eql(u8, kind, "auto")) {
+        } else if (std.mem.eql(u8, kind, "auto")) {
+            clear_enabled = live;
+            clear_window = live;
+        } else {
             return refusal.unsupportedField(contract.feature_compaction_policy, contract.reason_unsatisfiable, "compaction_policy");
         }
     }
-    if (effort.len == 0 and enabled == null) return "";
+    if (effort.len == 0 and enabled == null and !clear_enabled and !clear_window) return "";
     var out: std.Io.Writer.Allocating = .init(arena);
     var json: std.json.Stringify = .{ .writer = &out.writer };
     json.beginObject() catch return error.OutOfMemory;
     if (enabled) |value| {
         json.objectField("autoCompactEnabled") catch return error.OutOfMemory;
         json.write(value) catch return error.OutOfMemory;
+    } else if (clear_enabled) {
+        json.objectField("autoCompactEnabled") catch return error.OutOfMemory;
+        json.write(null) catch return error.OutOfMemory;
     }
     if (window) |value| {
         json.objectField("autoCompactWindow") catch return error.OutOfMemory;
         json.write(value) catch return error.OutOfMemory;
+    } else if (clear_window) {
+        json.objectField("autoCompactWindow") catch return error.OutOfMemory;
+        json.write(null) catch return error.OutOfMemory;
     }
     if (effort.len != 0) {
         json.objectField("effortLevel") catch return error.OutOfMemory;
@@ -248,7 +264,32 @@ pub const Session = struct {
         .activity = activity,
         .close = close,
         .tools = tools,
+        .update_settings = updateSettings,
     };
+
+    fn updateSettings(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.SessionSettingsUpdateRequest, refusal: *contract.Refusal) contract.Failure!contract.Updated {
+        const self = cast(ptr);
+        try contract.refuseUnadvertisedLiveSettings(descriptor, request, refusal);
+        const flags = try settingsFlags(arena, request.reasoning_level, request.compaction_policy_json, true, refusal);
+        if (self.engine.reducer.unusable) return error.SessionClosed;
+        if (!std.mem.eql(u8, request.session_id, self.id)) return error.RunNotFound;
+        if (self.engine.reducer.run != null) return error.RunActive;
+        self.flags_json = flags;
+        try self.control(arena, .apply_flag_settings, self.owner.config.control_timeout_ns, refusal);
+        const kept = self.reducer_arena.allocator();
+        var response = oap_types.SessionSettingsUpdateResponse{ .session_id = self.id };
+        if (request.reasoning_level) |level| {
+            response.previous_reasoning_level = self.reported_level;
+            self.reported_level = try kept.dupe(u8, level);
+            response.reasoning_level = self.reported_level;
+        }
+        if (request.compaction_policy_json) |policy| {
+            response.previous_compaction_policy_json = self.reported_policy;
+            self.reported_policy = try kept.dupe(u8, policy);
+            response.compaction_policy_json = self.reported_policy;
+        }
+        return .{ .response = response, .state = try state(ptr, arena, refusal) };
+    }
 
     fn cast(ptr: *anyopaque) *Session {
         return @ptrCast(@alignCast(ptr));
@@ -1473,4 +1514,43 @@ test "a tool_choice that is not the typed policy is refused under run.tool_selec
     _ = try probe.open(&refusal);
     try testing.expectError(error.UnsupportedFeature, probe.submitChoosing("go", "{\"allowed\":[\"Bash\"],\"disallowed\":[]}", &refusal));
     try testing.expectEqualStrings("run.tool_selection", refusal.feature);
+}
+
+test "a live update applies its flags between runs and clears an auto policy back to the CLI's own" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++
+        \\take; printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}\n' "$(field request_id)"
+        \\take; printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{}}}\n' "$(field request_id)"
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const opened = try probe.open(&refusal);
+    const updater = opened.vtable.update_settings.?;
+    const first = try updater(opened.ptr, probe.arena.allocator(), &.{ .session_id = "s1", .reasoning_level = "high", .compaction_policy_json = "{\"kind\":\"tokens\",\"tokens\":120000}" }, &refusal);
+    try testing.expectEqualStrings("high", first.response.reasoning_level.?);
+    try testing.expectEqualStrings("high", first.state.reasoning_level.?);
+    try testing.expectEqualStrings("{\"kind\":\"tokens\",\"tokens\":120000}", first.state.compaction_policy_json.?);
+    const second = try updater(opened.ptr, probe.arena.allocator(), &.{ .session_id = "s1", .compaction_policy_json = "{\"kind\":\"auto\"}" }, &refusal);
+    try testing.expectEqualStrings("{\"kind\":\"tokens\",\"tokens\":120000}", second.response.previous_compaction_policy_json.?);
+    try testing.expectEqualStrings("high", second.state.reasoning_level.?);
+    const written = try probe.fake.written(probe.arena.allocator());
+    try testing.expect(std.mem.indexOf(u8, written, "{\"request\":{\"settings\":{\"autoCompactEnabled\":true,\"autoCompactWindow\":120000,\"effortLevel\":\"high\"},\"subtype\":\"apply_flag_settings\"}") != null);
+    try testing.expect(std.mem.indexOf(u8, written, "{\"request\":{\"settings\":{\"autoCompactEnabled\":null,\"autoCompactWindow\":null},\"subtype\":\"apply_flag_settings\"}") != null);
+}
+
+test "a live update is refused for what the CLI cannot take, before anything is written" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const opened = try probe.open(&refusal);
+    const before = try probe.fake.written(probe.arena.allocator());
+    const updater = opened.vtable.update_settings.?;
+    try testing.expectError(error.UnsupportedFeature, updater(opened.ptr, probe.arena.allocator(), &.{ .session_id = "s1", .reasoning_level = "off" }, &refusal));
+    try testing.expectEqualStrings("reasoning_level", refusal.field);
+    refusal = .{};
+    try testing.expectError(error.UnsupportedFeature, updater(opened.ptr, probe.arena.allocator(), &.{ .session_id = "s1", .compaction_policy_json = "{\"kind\":\"share\",\"share_percent\":50}" }, &refusal));
+    try testing.expectEqualStrings("compaction_policy", refusal.field);
+    try testing.expectEqualStrings(before, try probe.fake.written(probe.arena.allocator()));
 }
