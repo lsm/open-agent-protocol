@@ -73,6 +73,7 @@ pub const RemoteExecution = struct {
         submit: *const fn (ctx: *anyopaque, text: []const u8) anyerror!void,
         cancel: *const fn (ctx: *anyopaque) void,
         switch_model: *const fn (ctx: *anyopaque, model: ai_types.Model) anyerror!void,
+        set_reasoning: *const fn (ctx: *anyopaque, level: ai_types.ThinkingLevel) anyerror!void,
         decide_approval: *const fn (ctx: *anyopaque, tool_call_id: []const u8, granted: bool) anyerror!void,
         follow_up: *const fn (ctx: *anyopaque, text: []const u8) anyerror!void,
         clear_queued: *const fn (ctx: *anyopaque) void,
@@ -736,9 +737,9 @@ pub const TuiRuntime = struct {
         return self.thinking_level;
     }
 
-    pub fn setThinkingLevel(self: *TuiRuntime, level: ai_types.ThinkingLevel) error{UnavailableOverOap}!void {
-        if (self.settingsFixedOverOap()) return error.UnavailableOverOap;
+    pub fn setThinkingLevel(self: *TuiRuntime, level: ai_types.ThinkingLevel) !void {
         const normalized = normalizeTuiThinkingLevel(level);
+        if (self.settingsFixedOverOap()) try self.remote.?.vtable.set_reasoning(self.remote.?.ctx, normalized);
         self.thinking_level = normalized;
         if (self.local_agent) |*local| local.setThinkingLevel(normalized);
     }

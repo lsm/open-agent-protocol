@@ -4,7 +4,7 @@ const agent = @import("agent");
 const tui_runtime = @import("tui_runtime");
 const tui_state = @import("tui_state");
 
-pub const over_oap_setting_refusal = "oapx tui fixes this setting when the session opens; OAP has no verb to change it mid-session yet. Use oapx --tui to change it.";
+pub const over_oap_setting_refusal = "oapx tui fixes this setting when the session opens, and this session cannot change it mid-session over OAP. Use oapx --tui to change it.";
 
 pub const CommandKind = enum {
     help,
