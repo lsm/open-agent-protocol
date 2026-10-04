@@ -65,7 +65,7 @@ const features = [_]contract.Feature{
     },
     .{ .key = "run.tool_selection", .level = .emulated, .scope = "run", .reason = "the policy filters the scripted tool and is not retained past the run" },
     .{ .key = contract.feature_session_compact, .level = .emulated, .reason = "a compaction run replaces the scripted history with a fixed summary that names the focus, and has no model to write it" },
-    .{ .key = contract.feature_compaction_policy, .level = .emulated, .reason = "auto compacts at 80% of the reference model's window, share and tokens set the threshold, off never compacts on its own, and an update takes effect at the next run's start", .modes = &.{ contract.mode_session_open, contract.mode_session_live } },
+    .{ .key = contract.feature_compaction_policy, .level = .emulated, .reason = "auto compacts at 80% of the reference model's window, share and tokens set the threshold, off never compacts on its own except for overflow past the reference window, and an update takes effect at the next run's start", .modes = &.{ contract.mode_session_open, contract.mode_session_live } },
     .{ .key = "session.message.delivery.auto", .level = .native },
     .{ .key = "session.message.delivery.queue", .level = .emulated, .reason = "a busy session reserves one second run and promotes it when the started run settles" },
     .{ .key = "session.message.delivery.steer", .level = .emulated, .reason = "guidance waits on the target run and is applied at its input gate, the scripted turn boundary" },
