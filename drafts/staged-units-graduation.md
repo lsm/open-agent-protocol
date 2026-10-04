@@ -5164,6 +5164,14 @@ probe of the 2.1.288 binary shows the flags merge, a `null` clears one, and the
 effort the CLI sends follows. An update is refused `run_active` while a run is
 open, because the CLI would apply it to the running run's next request.
 
+Pi follows. Both pi adapters serve the update with the commands they already
+send at open, `set_thinking_level` and `set_auto_compaction`, at
+`session_live` for both settings under `pi-v1.0.1-oap-v4`. A level is
+confirmed by `get_state`; a level Pi clamps, such as `max` on a model whose
+ceiling is `high`, is refused unsatisfiable and Pi is put back on the level it
+replaced, before the policy is touched. An update is refused `run_active`
+while a run, a compaction run included, is open.
+
 Still open, each for a later slice:
 
 - `overflow` is exercised by fixtures only: the reference adapters have no

@@ -1651,6 +1651,82 @@ func (s *Session) State(ctx context.Context) (protocol.SessionState, error) {
 	return s.state, nil
 }
 
+func (s *Session) UpdateSettings(ctx context.Context, req protocol.SessionSettingsUpdateRequest) (protocol.SessionSettingsUpdateResponse, protocol.SessionState, error) {
+	if err := ctx.Err(); err != nil {
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, err
+	}
+	if err := base.RefuseUnadvertisedLiveSettings(req, protocol.CapabilityDescriptor{Features: advertisedFeatures()}); err != nil {
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, err
+	}
+	if err := refuseUnsatisfiablePolicy(req.CompactionPolicy); err != nil {
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, err
+	}
+	s.commandMu.Lock()
+	defer s.commandMu.Unlock()
+	s.mu.Lock()
+	switch {
+	case s.closed || s.unusable:
+		s.mu.Unlock()
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, base.ErrSessionClosed
+	case req.SessionID != s.state.SessionID:
+		s.mu.Unlock()
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, base.ErrRunNotFound
+	case s.active != nil && !s.active.terminal:
+		s.mu.Unlock()
+		return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, base.ErrRunActive
+	}
+	s.mu.Unlock()
+	response := protocol.SessionSettingsUpdateResponse{SessionID: req.SessionID}
+	if req.ReasoningLevel != "" {
+		previous, err := s.changeLevelLocked(ctx, req.ReasoningLevel)
+		if err != nil {
+			return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, err
+		}
+		response.PreviousReasoningLevel, response.ReasoningLevel = previous, req.ReasoningLevel
+	}
+	if policy := req.CompactionPolicy; policy != nil {
+		enabled := policy.Kind == protocol.CompactionAuto
+		if err := s.callStrictLocked(ctx, native.Command{Type: native.CommandSetAutoCompaction, Enabled: native.Bool(enabled)}, nil); err != nil {
+			return protocol.SessionSettingsUpdateResponse{}, protocol.SessionState{}, err
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if req.ReasoningLevel != "" {
+		s.reportsLevel = true
+		s.state.ReasoningLevel = req.ReasoningLevel
+	}
+	if req.CompactionPolicy != nil {
+		policy := *req.CompactionPolicy
+		response.PreviousCompactionPolicy = s.state.CompactionPolicy
+		s.state.CompactionPolicy = &policy
+		response.CompactionPolicy = &policy
+	}
+	s.state.UpdatedAtMS = s.clock.Now().UnixMilli()
+	return response, s.state, nil
+}
+
+func (s *Session) changeLevelLocked(ctx context.Context, level protocol.ReasoningLevel) (protocol.ReasoningLevel, error) {
+	var before native.SessionState
+	if err := s.callStrictLocked(ctx, native.Command{Type: native.CommandGetState}, &before); err != nil {
+		return "", err
+	}
+	if err := s.callStrictLocked(ctx, native.Command{Type: native.CommandSetThinkingLevel, Level: native.ThinkingLevel(level)}, nil); err != nil {
+		return "", err
+	}
+	var confirmed native.SessionState
+	if err := s.callStrictLocked(ctx, native.Command{Type: native.CommandGetState}, &confirmed); err != nil {
+		return "", err
+	}
+	if string(confirmed.ThinkingLevel) == string(level) {
+		return protocol.ReasoningLevel(before.ThinkingLevel), nil
+	}
+	if err := s.callStrictLocked(ctx, native.Command{Type: native.CommandSetThinkingLevel, Level: before.ThinkingLevel}, nil); err != nil {
+		return "", err
+	}
+	return "", &base.UnsupportedControlError{Feature: protocol.FeatureSessionReasoning, Reason: base.ControlUnsatisfiable, Field: "reasoning_level", Detail: fmt.Sprintf("Pi runs this model at %s, not %s", confirmed.ThinkingLevel, level)}
+}
+
 func (s *Session) pendingInteractions(run *runState) []protocol.InteractionID {
 	opened := make([]*inputState, 0, len(s.interactions))
 	for _, binding := range s.interactions {
