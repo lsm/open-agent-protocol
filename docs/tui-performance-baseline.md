@@ -65,7 +65,7 @@ ANSI-stripped screen checkpoints), and `notes.json` (observed findings):
   Ctrl+C (clears a pending draft first; on an empty idle composer it exits).
 - `steer-abort` — a `hold` fixture step keeps the stream open so Enter mid-turn
   steers (queue indicator) and `/abort` cancels; a follow-up tool step
-  (`shell_execute` running `sleep`) holds the next turn open long enough to
+  (`Shell` running `sleep`) holds the next turn open long enough to
   queue a second steer whose consumption the scenario observes end to end —
   the queue indicator clears when the runtime dequeues the steer, the turn
   completes, and the echoed steer row stays present. (Backpressure eviction of
