@@ -454,6 +454,12 @@ fn buildMessageJson(allocator: std.mem.Allocator, pending: oap_server.PendingSub
     try w.writeKey("tools");
     try w.beginArray();
     try w.endArray();
+    if (pending.thinking_level) |level| {
+        try w.writeKey("options");
+        try w.beginObject();
+        try w.writeStringField("thinking_level", level);
+        try w.endObject();
+    }
     try w.endObject();
 
     const out = try allocator.dupe(u8, buffer.items);
@@ -1180,4 +1186,35 @@ test "the provider failure conversation matches the trace validated by the oap r
         .{ .type_name = "run.failed", .sequence = 2, .correlated = false },
         .{ .type_name = "session.state.updated", .sequence = 2, .correlated = false },
     });
+}
+
+test "a session's reasoning level rides each run's native message, and an update reaches only the runs after it" {
+    const allocator = testing.allocator;
+    var server = try Server.init(allocator, .{ .default_model_id = "ollama/ollama@gemma" });
+    defer server.deinit();
+    var bridge = Bridge.init(allocator);
+    defer bridge.deinit();
+
+    try server.handleEnvelope(.{
+        .id = "open-1",
+        .payload = .{ .session_open_request = .{ .session_id = "s", .reasoning_level = "high" } },
+    });
+    drainOap(&server, allocator);
+
+    var parts = [_]oap_types.ContentPart{.{ .text = "hello" }};
+    var messages = [_]oap_types.Message{.{ .role = .user, .content = .{ .parts = &parts } }};
+    try server.handleEnvelope(.{ .id = "submit-1", .session_id = "s", .payload = .{ .message_submit_request = .{ .session_id = "s", .messages = &messages, .delivery = .auto } } });
+    drainOap(&server, allocator);
+    var first = server.popPendingSubmission().?;
+    defer first.deinit(allocator);
+    try server.handleEnvelope(.{ .id = "update-1", .session_id = "s", .payload = .{ .session_settings_update_request = .{ .session_id = "s", .reasoning_level = "max" } } });
+    drainOap(&server, allocator);
+
+    var lines = std.ArrayList([]const u8).empty;
+    defer freeLines(allocator, &lines);
+    try bridge.appendSubmissionLines(first, &lines);
+    var message = try agent_envelope.deserializeEnvelope(lines.items[lines.items.len - 1], allocator);
+    defer message.deinit(allocator);
+    try testing.expect(std.mem.indexOf(u8, message.payload.agent_message.message_json, "\"options\":{\"thinking_level\":\"high\"}") != null);
+    try testing.expectEqualStrings("max", server.sessions.getPtr("s").?.reasoning_level.?);
 }
