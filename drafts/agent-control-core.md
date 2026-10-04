@@ -507,7 +507,7 @@ in force for every member the request named (never a rounded one), and
 optionally `previous_reasoning_level` and `previous_compaction_policy`.
 `session.state.updated` reports the new settings before any run that starts
 after the response. The update follows the model switch's ordering: it does
-not retarget a running run. The staging is
+not retarget a running run. The decision is
 [Decision 0045](../decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md).
 
 An endpoint advertising optional `action.providers.attach` in `session_live`
@@ -676,7 +676,7 @@ Common optional core features:
 - `session.list`
 - `session.open.subscribe` (executable; [Decision 0009](../decisions/0009-compound-open.md))
 - `session.open.reopen` (staged; [Decision 0040](../decisions/0040-a-session-reopens-through-its-own-binding.md))
-- `session.reasoning` and `session.compaction.policy` (staged; [Decision 0045](../decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md))
+- `session.reasoning` and `session.compaction.policy` (executable; [Decision 0045](../decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md))
 - `transcript.load`
 - `transcript.delta`
 - `session.message.delivery.queue`

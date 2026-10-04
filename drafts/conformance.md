@@ -708,7 +708,7 @@ has no verb for, so that half is pinned by each tree's hub tests instead.
 
 ### `+session-settings`
 
-`+session-settings` is staged under
+`+session-settings` is executable under
 [Decision 0045](../decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md).
 An implementation conforms if it:
 
@@ -724,7 +724,7 @@ An implementation conforms if it:
 
 ### `+session-settings-live`
 
-`+session-settings-live` is staged under the same decision and adds the live
+`+session-settings-live` is executable under the same decision and adds the live
 half. An implementation conforms if it:
 
 - advertises both features with the `session_live` mode, and refuses a

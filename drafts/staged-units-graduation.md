@@ -5115,7 +5115,10 @@ the settlement event in the target run's sequence.
 
 ## T9. Compaction
 
-**Status: [Decision 0044](../decisions/0044-compaction.md) is accepted (2026-10-04).**
+**Status: [Decision 0044](../decisions/0044-compaction.md) is accepted (2026-10-04).
+[Decision 0045](../decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md),
+whose `session-settings` units carry the compaction policy, is accepted
+(2026-10-04).**
 
 Unit name: `compaction`. Graduated by [Decision 0044](../decisions/0044-compaction.md).
 

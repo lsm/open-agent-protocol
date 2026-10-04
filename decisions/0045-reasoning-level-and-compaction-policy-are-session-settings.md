@@ -1,6 +1,19 @@
 # Decision 0045: Reasoning Level and Compaction Policy Are Session Settings
 
-Status: proposed
+Status: accepted 2026-10-04 (both units graduated on the shared validator in
+both trees with their fixtures, the open-time settings (#830) and the live
+update (#849); both memory reference adapters take a compaction policy at open
+(#840) and live (#850); every pinned adapter applies or refuses both settings
+at open (#831). Of the two graduating implementations, Claude Code changes
+both settings live through `apply_flag_settings`, probed against the 2.1.288
+binary (#854), and `oapx` takes the reasoning level at open and live (#856),
+its hub-served adapter takes the compaction policy (#865), and `oapx tui` over
+OAP sends both (#864, #869). Live gates drive Pi (#857), Codex (#858), Hermes
+(#859) and OpenCode (#860) through an update against their real binaries, and
+a reopened Codex session reports the level its thread resumed under (#871).
+`oapx serve agent` refuses a compaction policy because it keeps no history
+between runs. A per-run override, budgets beside levels and further session
+defaults stay with later decisions)
 Date: 2026-10-02
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
