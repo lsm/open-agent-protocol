@@ -11,7 +11,7 @@ const permission = @import("permission");
 const interactions = @import("interactions.zig");
 
 pub const endpoint_id = "oapx.agent";
-pub const capability_revision = "oapx-agent-v4";
+pub const capability_revision = "oapx-agent-v5";
 
 pub const journal_capacity: usize = 1 << 16;
 pub const queue_capacity: usize = 8;
@@ -40,6 +40,9 @@ const features = [_]contract.Feature{
     .{ .key = contract.feature_tools_list, .level = .native },
     .{ .key = contract.feature_models_list, .level = .native, .reason = "the catalog is the one the terminal UI offers" },
     .{ .key = contract.feature_model_switch, .level = .native },
+    .{ .key = contract.feature_session_compact, .level = .native, .reason = "a compaction is a run of its own in which the loop summarizes the history with the session's model, the focus as its instructions, admitted under submit's rules; continue is refused" },
+    .{ .key = "run.compaction", .level = .native, .reason = "the loop compacts between turns once its estimate of the history reaches the session's threshold, and on request; it does not compact on a provider's overflow" },
+    .{ .key = contract.feature_compaction_policy, .level = .native, .reason = "auto is the loop's own threshold below the model's window, share a percentage of the window, tokens a count, and off never; it takes effect from the next run", .modes = &.{ contract.mode_session_open, contract.mode_session_live } },
     .{ .key = contract.feature_session_reasoning, .level = .native, .reason = "the agent loop's thinking level, at open and between runs; minimal, which the loop would run as low, is refused", .modes = &.{ contract.mode_session_open, contract.mode_session_live } },
 };
 
@@ -108,6 +111,9 @@ const Run = struct {
     error_text: std.ArrayList(u8) = .empty,
     output_tokens: u64 = 0,
     context_tokens: u64 = 0,
+    compaction: bool = false,
+    compact_focus: []const u8 = "",
+    compaction_id: []const u8 = "",
 };
 
 const PendingInteraction = struct {
@@ -140,6 +146,7 @@ pub const Session = struct {
     pending: ?PendingInteraction = null,
     outbox: std.ArrayList(Journaled) = .empty,
     journal: std.ArrayList(Journaled) = .empty,
+    policy_json: ?[]const u8 = null,
 
     fn create(owner: *Adapter, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
         const gpa = owner.allocator;
@@ -174,6 +181,7 @@ pub const Session = struct {
         const keep = self.keep.allocator();
         self.participant = try keep.dupe(u8, request.participant);
         self.id = if (request.session_id.len > 0) try keep.dupe(u8, request.session_id) else try owner.nextID(keep, "session");
+        if (request.compaction_policy_json) |raw| try self.applyPolicy(raw, refusal);
         return self;
     }
 
@@ -196,22 +204,160 @@ pub const Session = struct {
         .switch_model = switchModel,
         .replay = replay,
         .update_settings = updateSettings,
+        .compact = compact,
     };
+
+    fn applyPolicy(self: *Session, raw: []const u8, refusal: *contract.Refusal) contract.Failure!void {
+        var scratch = std.heap.ArenaAllocator.init(self.gpa);
+        defer scratch.deinit();
+        const at = try compactAt(scratch.allocator(), raw, self.runtime, refusal);
+        self.runtime.armAutoCompact(at, &.{}, null) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return refusal.fail(error.BackendFailed, @errorName(err)),
+        };
+        self.policy_json = try self.keep.allocator().dupe(u8, raw);
+    }
+
+    fn rearm(self: *Session) contract.Failure!void {
+        const raw = self.policy_json orelse return;
+        var scratch = std.heap.ArenaAllocator.init(self.gpa);
+        defer scratch.deinit();
+        var ignored = contract.Refusal{};
+        const at = compactAt(scratch.allocator(), raw, self.runtime, &ignored) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return,
+        };
+        self.runtime.armAutoCompact(at, &.{}, null) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => {},
+        };
+    }
+
+    fn compact(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.SessionCompactRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+        const self = cast(ptr);
+        switch (request.delivery) {
+            .auto, .queue => {},
+            .steer, .btw => {
+                refusal.* = .{ .feature = if (request.delivery == .steer) "session.message.delivery.steer" else "session.message.delivery.btw", .reason = contract.reason_unadvertised, .detail = "a compaction takes auto or queue delivery" };
+                return error.UnsupportedFeature;
+            },
+        }
+        if (request.continue_run) {
+            refusal.* = .{ .feature = contract.feature_session_compact, .reason = contract.reason_unsatisfiable, .field = "continue", .detail = "a compaction run ends with the compaction" };
+            return error.UnsupportedFeature;
+        }
+        if (request.session_id.len == 0) return error.InvalidSubmission;
+        if (!std.mem.eql(u8, request.session_id, self.id)) return error.RunNotFound;
+        const busy = self.live() != null or self.queuedCount() > 0 or !self.runtime.isIdle();
+        const reservation = busy or request.delivery == .queue;
+        if (reservation and self.queuedCount() >= queue_capacity) return error.RunActive;
+        const keep = self.keep.allocator();
+        const run_id = try self.owner.nextID(keep, "run");
+        const submit_id = try keep.dupe(u8, envelope_id);
+        const model_id = (try self.currentModelRef(keep)) orelse "";
+        const focus = if (request.focus) |text| try keep.dupe(u8, text) else "";
+        const run = try keep.create(Run);
+        run.* = .{ .id = run_id, .submit_id = submit_id, .model_id = model_id, .compaction = true, .compact_focus = focus, .status = if (reservation) .queued else .running };
+        try self.runs.ensureUnusedCapacity(self.gpa, 1);
+        if (!reservation) try self.startRun(run, refusal);
+        self.runs.appendAssumeCapacity(run);
+        self.updated_at_ms = self.owner.now_ms();
+        return .{
+            .session_id = self.id,
+            .accepted = true,
+            .submission_id = try self.owner.nextID(arena, "submission"),
+            .requested_delivery = request.delivery,
+            .effective_delivery = if (reservation) .queue else .start,
+            .delivery_resolution = if (busy) "session_busy" else "session_idle",
+            .admission = if (reservation) .queued else .started,
+            .run_id = run.id,
+            .status = run.status,
+        };
+    }
+
+    fn compactionStarted(self: *Session, a: std.mem.Allocator, run: *Run, reason: []const u8) contract.Failure!void {
+        run.compaction_id = try self.owner.nextID(self.keep.allocator(), "compaction");
+        var started = Payload.init(a);
+        try started.run(self, run);
+        try started.put("compaction_id", .{ .string = run.compaction_id });
+        try started.put("reason", .{ .string = reason });
+        try self.emit(run, "run.compaction.started", started.value(), false);
+    }
+
+    fn compactionEnded(self: *Session, a: std.mem.Allocator, run: *Run, payload: anytype) contract.Failure!?std.json.Value {
+        if (run.compaction_id.len == 0) return null;
+        var ended = Payload.init(a);
+        try ended.run(self, run);
+        try ended.put("compaction_id", .{ .string = run.compaction_id });
+        try ended.put("outcome", .{ .string = @tagName(payload.outcome) });
+        var summary: ?std.json.Value = null;
+        switch (payload.outcome) {
+            .completed => {
+                var message = Payload.init(a);
+                try message.put("id", .{ .string = try self.owner.nextID(a, "message") });
+                try message.put("role", .{ .string = "assistant" });
+                try message.put("content", .{ .string = payload.text.slice() });
+                summary = message.value();
+                try ended.put("summary", summary.?);
+                if (payload.tokens_after > 0) try ended.put("history_tokens", .{ .integer = @intCast(payload.tokens_after) });
+            },
+            .failed => {
+                var failure = Payload.init(a);
+                try failure.put("code", .{ .string = "compaction_failed" });
+                try failure.put("message", .{ .string = if (payload.message.slice().len > 0) payload.message.slice() else "the compaction failed" });
+                try failure.put("retriable", .{ .bool = true });
+                try ended.put("error", failure.value());
+            },
+            .cancelled => {},
+        }
+        try self.emit(run, "run.compaction.ended", ended.value(), false);
+        run.compaction_id = "";
+        return summary;
+    }
+
+    fn settleCompaction(self: *Session, a: std.mem.Allocator, run: *Run, payload: anytype) contract.Failure!void {
+        const summary = try self.compactionEnded(a, run, payload);
+        var settled = Payload.init(a);
+        try settled.run(self, run);
+        if (payload.outcome == .cancelled or run.status == .cancelling) {
+            try settled.put("reason", .{ .string = "cancel confirmed" });
+            return self.emit(run, "run.cancelled", settled.value(), true);
+        }
+        if (payload.outcome == .failed) {
+            var failure = Payload.init(a);
+            try failure.put("code", .{ .string = "compaction_failed" });
+            try failure.put("message", .{ .string = if (payload.message.slice().len > 0) payload.message.slice() else "the compaction failed" });
+            try failure.put("retriable", .{ .bool = true });
+            try settled.put("error", failure.value());
+            return self.emit(run, "run.failed", settled.value(), true);
+        }
+        try settled.put("final_response", summary.?);
+        try settled.put("stop_reason", .{ .string = "compacted" });
+        if (run.model_id.len > 0) try settled.put("model_id", .{ .string = run.model_id });
+        return self.emit(run, "run.completed", settled.value(), true);
+    }
 
     fn updateSettings(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.SessionSettingsUpdateRequest, refusal: *contract.Refusal) contract.Failure!contract.Updated {
         const self = cast(ptr);
         try contract.refuseUnadvertisedLiveSettings(descriptor, request, refusal);
         if (!std.mem.eql(u8, request.session_id, self.id)) return error.RunNotFound;
-        const asked = request.reasoning_level orelse return error.InvalidSubmission;
-        const level = try thinkingLevel(asked, refusal);
-        if (self.live() != null or self.queuedCount() > 0) return error.RunActive;
-        const previous = @tagName(self.runtime.thinkingLevel());
-        self.runtime.setThinkingLevel(level) catch return refusal.fail(error.BackendFailed, "the agent loop's thinking level is fixed");
+        if (request.reasoning_level == null and request.compaction_policy_json == null) return error.InvalidSubmission;
+        const level: ?ai_types.ThinkingLevel = if (request.reasoning_level) |asked| try thinkingLevel(asked, refusal) else null;
+        if (request.compaction_policy_json) |raw| _ = try compactAt(arena, raw, self.runtime, refusal);
+        if (self.live() != null or self.queuedCount() > 0 or !self.runtime.isIdle()) return error.RunActive;
+        var response = oap_types.SessionSettingsUpdateResponse{ .session_id = self.id };
+        if (level) |chosen| {
+            response.previous_reasoning_level = @tagName(self.runtime.thinkingLevel());
+            self.runtime.setThinkingLevel(chosen) catch return refusal.fail(error.BackendFailed, "the agent loop's thinking level is fixed");
+            response.reasoning_level = @tagName(chosen);
+        }
+        if (request.compaction_policy_json) |raw| {
+            response.previous_compaction_policy_json = self.policy_json;
+            try self.applyPolicy(raw, refusal);
+            response.compaction_policy_json = self.policy_json;
+        }
         self.updated_at_ms = self.owner.now_ms();
-        return .{
-            .response = .{ .session_id = self.id, .reasoning_level = @tagName(level), .previous_reasoning_level = previous },
-            .state = try self.snapshot(arena),
-        };
+        return .{ .response = response, .state = try self.snapshot(arena) };
     }
 
     fn cast(ptr: *anyopaque) *Session {
@@ -324,6 +470,7 @@ pub const Session = struct {
             .current_model_id = try self.currentModelRef(arena),
             .updated_at_ms = self.updated_at_ms,
             .reasoning_level = @tagName(self.runtime.thinkingLevel()),
+            .compaction_policy_json = self.policy_json,
             .as_of = .{ .admitted_submit_requests = admitted.items, .settled = settled.items },
         };
         if (self.live()) |run| {
@@ -388,16 +535,26 @@ pub const Session = struct {
             self.gpa.free(prepared.kept);
         }
         self.gate.cancelled.store(false, .release);
-        self.runtime.submitTurn(run.input_text) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => return refusal.fail(error.BackendFailed, @errorName(err)),
-        };
+        if (run.compaction) {
+            self.runtime.compact(.{ .focus = run.compact_focus }) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.NothingToCompact => return refusal.fail(error.InvalidSubmission, "the session has no history to compact"),
+                else => return refusal.fail(error.BackendFailed, @errorName(err)),
+            };
+        } else {
+            try self.rearm();
+            self.runtime.submitTurn(run.input_text) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return refusal.fail(error.BackendFailed, @errorName(err)),
+            };
+        }
         self.gpa.free(run.input_text);
         run.input_text = "";
         self.run = run;
         run.started = true;
         run.status = .running;
         self.publishEvent(run, prepared, "run.started", false);
+        if (run.compaction) try self.compactionStarted(a, run, "requested");
     }
 
     fn promote(self: *Session) contract.Failure!bool {
@@ -689,6 +846,10 @@ pub const Session = struct {
                 try run.error_text.appendSlice(self.gpa, payload.message.slice());
             },
             .agent_end => |payload| try self.settle(a, run, payload.reason),
+            .compaction_start => if (!run.compaction) try self.compactionStarted(a, run, "threshold"),
+            .compaction_end => |payload| if (run.compaction and !payload.in_run) try self.settleCompaction(a, run, payload) else {
+                _ = try self.compactionEnded(a, run, payload);
+            },
             else => {},
         }
     }
@@ -1121,6 +1282,30 @@ const Payload = struct {
         try self.put("run_id", .{ .string = owner.id });
     }
 };
+
+fn compactAt(arena: std.mem.Allocator, raw: []const u8, runtime: *tui_runtime.TuiRuntime, refusal: *contract.Refusal) contract.Failure!?u64 {
+    const unsatisfiable = contract.reason_unsatisfiable;
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, raw, .{}) catch return refusal.unsupportedField(contract.feature_compaction_policy, unsatisfiable, "compaction_policy");
+    if (parsed != .object) return refusal.unsupportedField(contract.feature_compaction_policy, unsatisfiable, "compaction_policy");
+    const kind = parsed.object.get("kind") orelse return refusal.unsupportedField(contract.feature_compaction_policy, unsatisfiable, "compaction_policy");
+    if (kind != .string) return refusal.unsupportedField(contract.feature_compaction_policy, unsatisfiable, "compaction_policy");
+    if (std.mem.eql(u8, kind.string, "off")) return null;
+    if (std.mem.eql(u8, kind.string, "tokens")) {
+        const tokens = parsed.object.get("tokens") orelse return refusal.unsupportedField(contract.feature_compaction_policy, unsatisfiable, "compaction_policy");
+        if (tokens != .integer or tokens.integer < 1) return refusal.unsupportedField(contract.feature_compaction_policy, unsatisfiable, "compaction_policy");
+        return @intCast(tokens.integer);
+    }
+    const window = runtime.contextWindow();
+    if (window == 0 or window > std.math.maxInt(u32)) return refusal.unsupportedField(contract.feature_compaction_policy, unsatisfiable, "compaction_policy");
+    const model = runtime.currentModel() orelse return refusal.unsupportedField(contract.feature_compaction_policy, unsatisfiable, "compaction_policy");
+    if (std.mem.eql(u8, kind.string, "auto")) return agent.compaction.autoCompactAt(@intCast(window), agent.compaction.maxOutputTokens(model));
+    if (std.mem.eql(u8, kind.string, "share")) {
+        const share = parsed.object.get("share_percent") orelse return refusal.unsupportedField(contract.feature_compaction_policy, unsatisfiable, "compaction_policy");
+        if (share != .integer or share.integer < 1 or share.integer > 100) return refusal.unsupportedField(contract.feature_compaction_policy, unsatisfiable, "compaction_policy");
+        return agent.compaction.shareAt(@intCast(window), @intCast(share.integer));
+    }
+    return refusal.unsupportedField(contract.feature_compaction_policy, unsatisfiable, "compaction_policy");
+}
 
 fn listsId(ids: []const []const u8, id: []const u8) bool {
     for (ids) |listed| {
@@ -2266,8 +2451,9 @@ test "a live update changes the loop's thinking level between runs and is refuse
     try testing.expectError(error.UnsupportedFeature, updater(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .reasoning_level = "minimal" }, &refusal));
     try testing.expectEqualStrings("reasoning_level", refusal.field);
     refusal = .{};
-    try testing.expectError(error.UnsupportedFeature, updater(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .compaction_policy_json = "{\"kind\":\"off\"}" }, &refusal));
+    try testing.expectError(error.UnsupportedFeature, updater(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .compaction_policy_json = "{\"kind\":\"share\",\"share_percent\":0}" }, &refusal));
     try testing.expectEqualStrings(contract.feature_compaction_policy, refusal.feature);
+    try testing.expectEqualStrings(contract.reason_unsatisfiable, refusal.reason);
 
     const admitted = try harness.submit("wait");
     try testing.expectError(error.RunActive, updater(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .reasoning_level = "off" }, &refusal));
@@ -2275,4 +2461,178 @@ test "a live update changes the loop's thinking level between runs and is refuse
     try harness.untilTerminal();
     const after = try harness.session.state(a, &refusal);
     try testing.expectEqualStrings("max", after.reasoning_level.?);
+}
+
+fn compactRequest(harness: *Harness, focus: ?[]const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+    return harness.session.vtable.compact.?(harness.session.ptr, harness.arena.allocator(), &.{ .session_id = harness.session.id(), .focus = focus }, "compact-envelope", refusal);
+}
+
+fn kinds(harness: *Harness, allocator: std.mem.Allocator) ![]const []const u8 {
+    const names = try allocator.alloc([]const u8, harness.seen.items.len);
+    for (harness.seen.items, names) |parsed, *name| name.* = parsed.value.object.get("type").?.string;
+    return names;
+}
+
+fn ofType(harness: *Harness, kind: []const u8) ?std.json.ObjectMap {
+    for (harness.seen.items) |parsed| {
+        if (std.mem.eql(u8, parsed.value.object.get("type").?.string, kind)) return parsed.value.object.get("payload").?.object;
+    }
+    return null;
+}
+
+test "a compaction on an idle session is a run of its own that settles compacted with the loop's summary" {
+    var script = Script{ .reply = "the session so far" };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    _ = try harness.submit("remember the parser");
+    try harness.untilTerminal();
+    harness.reset();
+
+    var refusal = contract.Refusal{};
+    const admitted = try compactRequest(&harness, "the parser", &refusal);
+    try testing.expectEqual(oap_types.Admission.started, admitted.admission);
+    try harness.untilTerminal();
+    const names = try kinds(&harness, harness.arena.allocator());
+    try testing.expectEqual(@as(usize, 4), names.len);
+    for ([_][]const u8{ "run.started", "run.compaction.started", "run.compaction.ended", "run.completed" }, names) |want, got| try testing.expectEqualStrings(want, got);
+    try testing.expectEqualStrings("requested", ofType(&harness, "run.compaction.started").?.get("reason").?.string);
+    const ended = ofType(&harness, "run.compaction.ended").?;
+    try testing.expectEqualStrings("completed", ended.get("outcome").?.string);
+    const completed = ofType(&harness, "run.completed").?;
+    try testing.expectEqualStrings("compacted", completed.get("stop_reason").?.string);
+    try testing.expectEqualStrings(ended.get("summary").?.object.get("content").?.string, completed.get("final_response").?.object.get("content").?.string);
+    try testing.expectEqual(@as(usize, 2), script.calls);
+}
+
+test "a compaction is refused for what the loop cannot do, and on a busy session it waits its turn" {
+    var script = Script{ .wait_for_cancel = true };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const a = harness.arena.allocator();
+    const compactor = harness.session.vtable.compact.?;
+    var refusal = contract.Refusal{};
+    try testing.expectError(error.InvalidSubmission, compactRequest(&harness, null, &refusal));
+    refusal = .{};
+    try testing.expectError(error.UnsupportedFeature, compactor(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .continue_run = true }, "c", &refusal));
+    try testing.expectEqualStrings("continue", refusal.field);
+    refusal = .{};
+    try testing.expectError(error.UnsupportedFeature, compactor(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .delivery = .steer }, "c", &refusal));
+    try testing.expectEqualStrings("session.message.delivery.steer", refusal.feature);
+    try testing.expectError(error.RunNotFound, compactor(harness.session.ptr, a, &.{ .session_id = "other" }, "c", &refusal));
+    const admitted = try harness.submit("wait");
+    const waiting = try compactRequest(&harness, null, &refusal);
+    try testing.expectEqual(oap_types.Admission.queued, waiting.admission);
+    try testing.expectEqualStrings("session_busy", waiting.delivery_resolution.?);
+    _ = try harness.session.cancel(a, waiting.run_id.?, &refusal);
+    _ = try harness.session.cancel(a, admitted.run_id.?, &refusal);
+    try harness.untilTerminal();
+    try testing.expectEqual(@as(usize, 0), harness.count("run.compaction.started"));
+}
+
+test "a compaction queued behind a run starts once the run settles and opens with its compaction" {
+    var script = Script{ .reply = "the session so far" };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    var refusal = contract.Refusal{};
+    _ = try harness.submit("remember the parser");
+    const queued = try harness.session.vtable.compact.?(harness.session.ptr, harness.arena.allocator(), &.{ .session_id = harness.session.id(), .delivery = .queue }, "compact-envelope", &refusal);
+    try testing.expectEqual(oap_types.Admission.queued, queued.admission);
+    var waits: usize = 0;
+    while (harness.count("run.completed") < 2 and waits < 5000) : (waits += 1) {
+        _ = try harness.session.pump(0);
+        try harness.collect();
+        std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
+    }
+    try testing.expectEqual(@as(usize, 2), harness.count("run.completed"));
+    var after_start = false;
+    for (harness.seen.items) |parsed| {
+        const event = parsed.value.object;
+        if (!std.mem.eql(u8, event.get("run_id").?.string, queued.run_id.?)) continue;
+        const kind = event.get("type").?.string;
+        if (std.mem.eql(u8, kind, "run.started")) {
+            after_start = true;
+            continue;
+        }
+        try testing.expect(after_start);
+        try testing.expectEqualStrings("run.compaction.started", kind);
+        break;
+    }
+}
+
+test "a token threshold set live compacts inside the next run between its turns" {
+    var script = Script{ .reply = "noted", .tool_first = true };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const a = harness.arena.allocator();
+    var refusal = contract.Refusal{};
+    const updated = try harness.session.vtable.update_settings.?(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .compaction_policy_json = "{\"kind\":\"tokens\",\"tokens\":1}" }, &refusal);
+    try testing.expectEqualStrings("{\"kind\":\"tokens\",\"tokens\":1}", updated.state.compaction_policy_json.?);
+    try testing.expect(updated.response.previous_compaction_policy_json == null);
+    _ = try harness.submit("use the tool");
+    try harness.untilTerminal();
+    const names = try kinds(&harness, a);
+    var completed_call: ?usize = null;
+    var started: ?usize = null;
+    for (names, 0..) |name, index| {
+        if (std.mem.eql(u8, name, "action.call.completed")) completed_call = index;
+        if (std.mem.eql(u8, name, "run.compaction.started")) started = index;
+    }
+    try testing.expect(started.? > completed_call.?);
+    try testing.expectEqualStrings("run.compaction.ended", names[started.? + 1]);
+    try testing.expectEqualStrings("threshold", ofType(&harness, "run.compaction.started").?.get("reason").?.string);
+    try testing.expectEqualStrings("completed", ofType(&harness, "run.compaction.ended").?.get("outcome").?.string);
+    try testing.expectEqualStrings("run.completed", names[names.len - 1]);
+    try testing.expectEqual(@as(usize, 3), script.calls);
+}
+
+test "an open takes a compaction policy and the state reports it, and off never compacts" {
+    var script = Script{};
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const a = harness.arena.allocator();
+    var refusal = contract.Refusal{};
+    const opened = try harness.owner.adapter().open(a, .{ .participant = "user", .compaction_policy_json = "{\"kind\":\"off\"}" }, &refusal);
+    defer opened.teardown();
+    try testing.expectEqualStrings("{\"kind\":\"off\"}", (try opened.state(a, &refusal)).compaction_policy_json.?);
+    try testing.expectError(error.UnsupportedFeature, harness.owner.adapter().open(a, .{ .participant = "user", .compaction_policy_json = "{\"kind\":\"tokens\",\"tokens\":0}" }, &refusal));
+    try testing.expectEqualStrings(contract.feature_compaction_policy, refusal.feature);
+}
+
+test "a compaction requested over the wire and a policy updated live leave a trace the validator accepts" {
+    var script = Script{ .reply = "the session so far" };
+    var wire: Wire = undefined;
+    wire.init(&script);
+    defer wire.deinit();
+    try wireOpen(&wire);
+    const a = wire.arena.allocator();
+    _ = try wireSubmit(&wire, "auto");
+    try wireUntilSettled(&wire, 1);
+    try wire.send("session.settings.update.request", wire_scope, try parseValue(a, "{\"session_id\":\"wire-session\",\"compaction_policy\":{\"kind\":\"share\",\"share_percent\":90}}"));
+    _ = try wire.wait("session.settings.update.response");
+    try wire.send("session.compact.request", wire_scope, try parseValue(a, "{\"session_id\":\"wire-session\",\"focus\":\"the parser\"}"));
+    _ = try wire.wait("session.compact.response");
+    try wireUntilSettled(&wire, 2);
+    try testing.expectEqualStrings("completed", wireLast(&wire, "run.compaction.ended").object.get("payload").?.object.get("outcome").?.string);
+    try wire.validate();
+}
+
+test "a share policy is measured against the window of the model a run starts on" {
+    var script = Script{};
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const a = harness.arena.allocator();
+    var refusal = contract.Refusal{};
+    _ = try harness.session.vtable.update_settings.?(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .compaction_policy_json = "{\"kind\":\"share\",\"share_percent\":50}" }, &refusal);
+    const live: *Session = @ptrCast(@alignCast(harness.session.ptr));
+    try testing.expectEqual(@as(?u64, agent.compaction.shareAt(test_model.context_window, 50)), live.runtime.local_agent.?._auto_compact_at);
+    _ = try harness.session.vtable.switch_model.?(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .model_id = "scripted/openai-completions@other-model" }, &refusal);
+    _ = try harness.submit("after the switch");
+    try harness.untilTerminal();
+    try testing.expectEqual(@as(?u64, agent.compaction.shareAt(other_model.context_window, 50)), live.runtime.local_agent.?._auto_compact_at);
 }

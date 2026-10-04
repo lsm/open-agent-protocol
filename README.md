@@ -81,8 +81,11 @@ positions, so clients can count follow-ups and cancel them before execution.
 Cancelling a reservation frees its slot within that request; the acknowledgement
 precedes its terminal event, and a buffered next request sees the released slot.
 The descriptor discloses both bounds. Replay retains up to 65536 events across
-the session's runs and reports gaps after eviction. Compaction
-(Decision 0044) is not carried yet.
+the session's runs and reports gaps after eviction. A compaction request
+(Decision 0044) is a run of its own, admitted like a submit, in which the loop
+summarizes the history with the session's model; the session's compaction
+policy sets the threshold at which the loop compacts between the turns of a
+run.
 `--backend memory` serves the in-memory reference script and answers exactly as
 `goap`'s does: CI runs `goap conformance` against it and a parity job that
 feeds both trees the same traffic and requires identical output. What that job
