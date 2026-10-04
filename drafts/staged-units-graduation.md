@@ -5174,6 +5174,18 @@ refused, and a compaction policy is refused unadvertised until the endpoint
 compacts. The hub-served `--backend oapx` adapter takes the same level at
 `oapx-agent-v4`, refusing an update while a run is open.
 
+The hub-served `--backend oapx` adapter then compacts, under `oapx-agent-v5`.
+`session.compact` on an idle session is a run of its own in which the loop
+summarizes the history with the session's model, the focus as its
+instructions, and settles `compacted` with the summary; continue and queued
+delivery are refused. `session.compaction.policy` is taken at open and live:
+`auto` is the loop's own threshold below the model's window, `share` a
+percentage of the window, `tokens` a count, and `off` never. The loop checks
+the threshold between the turns of a run, so a `threshold` compaction is
+always inside a run, after a tool round; it never compacts for `overflow`.
+The default `oapx serve agent` endpoint still refuses both: it reaches the
+loop over the native agent wire, which has no compaction verb.
+
 Pi follows. Both pi adapters serve the update with the commands they already
 send at open, `set_thinking_level` and `set_auto_compaction`, at
 `session_live` for both settings under `pi-v1.0.1-oap-v4`. A level is
