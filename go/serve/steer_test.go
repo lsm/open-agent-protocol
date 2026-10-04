@@ -148,8 +148,8 @@ func expectNoEnvelope(t *testing.T, sub *subscriber, what string) {
 	}
 }
 
-func testGate(run protocol.RunID, request protocol.EnvelopeID) *steerGate {
-	gate := &steerGate{request: request, drainedCh: make(chan struct{})}
+func testGate(run protocol.RunID, request protocol.EnvelopeID) *publicationGate {
+	gate := &publicationGate{request: request, drainedCh: make(chan struct{})}
 	gate.cover(run)
 	return gate
 }
@@ -465,7 +465,7 @@ func TestWhatADrainWithholdsAfterItsGateLiftsStillReachesSubscribers(t *testing.
 	entry.mu.Lock()
 	entry.gate = gate
 	entry.mu.Unlock()
-	entry.liftSteerGate(gate)
+	entry.liftGate(gate)
 
 	entry.drainInto(steerStubDelta(1))
 	if envelope := nextEnvelope(t, sub); envelope.Type != protocol.TypeContentDelta {
@@ -556,14 +556,14 @@ func TestACancelledSteerSubmitDoesNotWaitForTheOtherGate(t *testing.T) {
 	stub := &steerStubSession{stream: make(chan base.Result, 4), steerRun: "run-1"}
 	entry := newSession("stub", "stub", stub, nil)
 	startStubRun(t, entry)
-	if _, err := entry.armSteerGate(context.Background(), "run-1", "req-first"); err != nil {
+	if _, err := entry.armGate(context.Background(), "run-1", "req-first"); err != nil {
 		t.Fatal(err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancelled := make(chan error, 1)
 	go func() {
-		_, err := entry.armSteerGate(ctx, "run-1", "req-second")
+		_, err := entry.armGate(ctx, "run-1", "req-second")
 		cancelled <- err
 	}()
 	time.Sleep(50 * time.Millisecond)
@@ -646,9 +646,9 @@ func TestOnlyTheGatesRunReaderTakesItsDrain(t *testing.T) {
 }
 
 func TestAwaitingADrainEndsWhenTheGateIsDisowned(t *testing.T) {
-	disown := map[string]func(entry *Session, gate *steerGate){
-		"a concurrent close": func(entry *Session, _ *steerGate) { entry.markClosed() },
-		"the deadline":       func(entry *Session, gate *steerGate) { entry.liftSteerGate(gate) },
+	disown := map[string]func(entry *Session, gate *publicationGate){
+		"a concurrent close": func(entry *Session, _ *publicationGate) { entry.markClosed() },
+		"the deadline":       func(entry *Session, gate *publicationGate) { entry.liftGate(gate) },
 	}
 	for name, drop := range disown {
 		t.Run(name, func(t *testing.T) {

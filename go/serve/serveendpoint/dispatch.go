@@ -109,7 +109,7 @@ func (s *Server) serve(ctx context.Context, streams context.Context, e protocol.
 	case protocol.TypeSessionCompactRequest:
 		return s.compact(ctx, streams, e)
 	case protocol.TypeRunCancelRequest:
-		return plain(s.cancel(ctx, e))
+		return s.cancel(ctx, e)
 	case protocol.TypeActionPermissionResolveRequest, protocol.TypeUserInputResolveRequest, protocol.TypeActionCallResolveRequest:
 		return plain(s.resolve(ctx, e))
 	case protocol.TypeModelsRequest:
@@ -459,35 +459,36 @@ func (s *Server) reportLostStream(ctx context.Context, run protocol.RunID, deliv
 	}
 }
 
-func (s *Server) cancel(ctx context.Context, e protocol.Envelope) (protocol.Envelope, error) {
+func (s *Server) cancel(ctx context.Context, e protocol.Envelope) (protocol.Envelope, func(), error) {
 	entry, err := s.session(e)
 	if err != nil {
-		return protocol.Envelope{}, err
+		return protocol.Envelope{}, nil, err
 	}
 	var request protocol.RunCancelRequest
 	if err := e.DecodePayload(&request); err != nil {
-		return protocol.Envelope{}, &refusal{code: "invalid_payload", message: err.Error()}
+		return protocol.Envelope{}, nil, &refusal{code: "invalid_payload", message: err.Error()}
 	}
 
 	if request.SessionID != entry.ID() {
-		return protocol.Envelope{}, &refusal{
+		return protocol.Envelope{}, nil, &refusal{
 			code:    "scope_mismatch",
 			message: fmt.Sprintf("payload session_id %q does not match the addressed session %q", request.SessionID, entry.ID()),
 		}
 	}
-	ack, err := entry.Cancel(ctx, request.RunID)
+	published := func() { s.hub.Published(entry.ID(), e.ID) }
+	ack, err := entry.CancelAndHold(ctx, request.RunID, e.ID)
 	if err != nil {
-		return protocol.Envelope{}, err
+		return protocol.Envelope{}, published, err
 	}
 	answer, err := protocol.NewEnvelope(protocol.TypeRunCancelResponse, s.nextID("response"), ack)
 	if err != nil {
-		return protocol.Envelope{}, err
+		return protocol.Envelope{}, published, err
 	}
 	answer.InReplyTo = e.ID
 	answer.SessionID = entry.ID()
 	answer.RunID = request.RunID
 	answer.CapabilityRevision = e.CapabilityRevision
-	return answer, nil
+	return answer, published, nil
 }
 
 func (s *Server) resolve(ctx context.Context, e protocol.Envelope) (protocol.Envelope, error) {
