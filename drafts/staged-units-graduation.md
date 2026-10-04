@@ -5177,8 +5177,9 @@ compacts. The hub-served `--backend oapx` adapter takes the same level at
 The hub-served `--backend oapx` adapter then compacts, under `oapx-agent-v5`.
 `session.compact` on an idle session is a run of its own in which the loop
 summarizes the history with the session's model, the focus as its
-instructions, and settles `compacted` with the summary; continue and queued
-delivery are refused. `session.compaction.policy` is taken at open and live:
+instructions, and settles `compacted` with the summary. It is admitted under
+submit's rules, so on a busy session, or with `queue`, it waits its turn as a
+reservation; continue is refused. `session.compaction.policy` is taken at open and live:
 `auto` is the loop's own threshold below the model's window, `share` a
 percentage of the window, `tokens` a count, and `off` never. The loop checks
 the threshold between the turns of a run, so a `threshold` compaction is

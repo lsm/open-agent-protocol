@@ -40,7 +40,7 @@ const features = [_]contract.Feature{
     .{ .key = contract.feature_tools_list, .level = .native },
     .{ .key = contract.feature_models_list, .level = .native, .reason = "the catalog is the one the terminal UI offers" },
     .{ .key = contract.feature_model_switch, .level = .native },
-    .{ .key = contract.feature_session_compact, .level = .native, .reason = "a compaction on an idle session is a run of its own in which the loop summarizes the history with the session's model, the focus as its instructions; continue and queued delivery are refused" },
+    .{ .key = contract.feature_session_compact, .level = .native, .reason = "a compaction is a run of its own in which the loop summarizes the history with the session's model, the focus as its instructions, admitted under submit's rules; continue is refused" },
     .{ .key = "run.compaction", .level = .native, .reason = "the loop compacts between turns once its estimate of the history reaches the session's threshold, and on request; it does not compact on a provider's overflow" },
     .{ .key = contract.feature_compaction_policy, .level = .native, .reason = "auto is the loop's own threshold below the model's window, share a percentage of the window, tokens a count, and off never; it takes effect from the next run", .modes = &.{ contract.mode_session_open, contract.mode_session_live } },
     .{ .key = contract.feature_session_reasoning, .level = .native, .reason = "the agent loop's thinking level, at open and between runs; minimal, which the loop would run as low, is refused", .modes = &.{ contract.mode_session_open, contract.mode_session_live } },
@@ -220,13 +220,12 @@ pub const Session = struct {
 
     fn compact(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.SessionCompactRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
         const self = cast(ptr);
-        if (request.delivery != .auto) {
-            refusal.* = .{ .feature = switch (request.delivery) {
-                .queue => "session.message.delivery.queue",
-                .steer => "session.message.delivery.steer",
-                else => "session.message.delivery.btw",
-            }, .reason = contract.reason_unsatisfiable, .detail = "the loop compacts an idle session only" };
-            return error.UnsupportedFeature;
+        switch (request.delivery) {
+            .auto, .queue => {},
+            .steer, .btw => {
+                refusal.* = .{ .feature = if (request.delivery == .steer) "session.message.delivery.steer" else "session.message.delivery.btw", .reason = contract.reason_unadvertised, .detail = "a compaction takes auto or queue delivery" };
+                return error.UnsupportedFeature;
+            },
         }
         if (request.continue_run) {
             refusal.* = .{ .feature = contract.feature_session_compact, .reason = contract.reason_unsatisfiable, .field = "continue", .detail = "a compaction run ends with the compaction" };
@@ -234,28 +233,30 @@ pub const Session = struct {
         }
         if (request.session_id.len == 0) return error.InvalidSubmission;
         if (!std.mem.eql(u8, request.session_id, self.id)) return error.RunNotFound;
-        if (self.live() != null or self.queuedCount() > 0 or !self.runtime.isIdle()) return error.RunActive;
+        const busy = self.live() != null or self.queuedCount() > 0 or !self.runtime.isIdle();
+        const reservation = busy or request.delivery == .queue;
+        if (reservation and self.queuedCount() >= queue_capacity) return error.RunActive;
         const keep = self.keep.allocator();
         const run_id = try self.owner.nextID(keep, "run");
         const submit_id = try keep.dupe(u8, envelope_id);
         const model_id = (try self.currentModelRef(keep)) orelse "";
         const focus = if (request.focus) |text| try keep.dupe(u8, text) else "";
         const run = try keep.create(Run);
-        run.* = .{ .id = run_id, .submit_id = submit_id, .model_id = model_id, .compaction = true, .compact_focus = focus };
+        run.* = .{ .id = run_id, .submit_id = submit_id, .model_id = model_id, .compaction = true, .compact_focus = focus, .status = if (reservation) .queued else .running };
         try self.runs.ensureUnusedCapacity(self.gpa, 1);
-        try self.startRun(run, refusal);
+        if (!reservation) try self.startRun(run, refusal);
         self.runs.appendAssumeCapacity(run);
         self.updated_at_ms = self.owner.now_ms();
         return .{
             .session_id = self.id,
             .accepted = true,
             .submission_id = try self.owner.nextID(arena, "submission"),
-            .requested_delivery = .auto,
-            .effective_delivery = .start,
-            .delivery_resolution = "session_idle",
-            .admission = .started,
+            .requested_delivery = request.delivery,
+            .effective_delivery = if (reservation) .queue else .start,
+            .delivery_resolution = if (busy) "session_busy" else "session_idle",
+            .admission = if (reservation) .queued else .started,
             .run_id = run.id,
-            .status = .running,
+            .status = run.status,
         };
     }
 
@@ -2486,7 +2487,7 @@ test "a compaction on an idle session is a run of its own that settles compacted
     try testing.expectEqual(@as(usize, 2), script.calls);
 }
 
-test "a compaction is refused for what the loop cannot do" {
+test "a compaction is refused for what the loop cannot do, and on a busy session it waits its turn" {
     var script = Script{ .wait_for_cancel = true };
     var harness: Harness = undefined;
     try harness.init(&script);
@@ -2499,13 +2500,48 @@ test "a compaction is refused for what the loop cannot do" {
     try testing.expectError(error.UnsupportedFeature, compactor(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .continue_run = true }, "c", &refusal));
     try testing.expectEqualStrings("continue", refusal.field);
     refusal = .{};
-    try testing.expectError(error.UnsupportedFeature, compactor(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .delivery = .queue }, "c", &refusal));
-    try testing.expectEqualStrings("session.message.delivery.queue", refusal.feature);
+    try testing.expectError(error.UnsupportedFeature, compactor(harness.session.ptr, a, &.{ .session_id = harness.session.id(), .delivery = .steer }, "c", &refusal));
+    try testing.expectEqualStrings("session.message.delivery.steer", refusal.feature);
     try testing.expectError(error.RunNotFound, compactor(harness.session.ptr, a, &.{ .session_id = "other" }, "c", &refusal));
     const admitted = try harness.submit("wait");
-    try testing.expectError(error.RunActive, compactRequest(&harness, null, &refusal));
+    const waiting = try compactRequest(&harness, null, &refusal);
+    try testing.expectEqual(oap_types.Admission.queued, waiting.admission);
+    try testing.expectEqualStrings("session_busy", waiting.delivery_resolution.?);
+    _ = try harness.session.cancel(a, waiting.run_id.?, &refusal);
     _ = try harness.session.cancel(a, admitted.run_id.?, &refusal);
     try harness.untilTerminal();
+    try testing.expectEqual(@as(usize, 0), harness.count("run.compaction.started"));
+}
+
+test "a compaction queued behind a run starts once the run settles and opens with its compaction" {
+    var script = Script{ .reply = "the session so far" };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    var refusal = contract.Refusal{};
+    _ = try harness.submit("remember the parser");
+    const queued = try harness.session.vtable.compact.?(harness.session.ptr, harness.arena.allocator(), &.{ .session_id = harness.session.id(), .delivery = .queue }, "compact-envelope", &refusal);
+    try testing.expectEqual(oap_types.Admission.queued, queued.admission);
+    var waits: usize = 0;
+    while (harness.count("run.completed") < 2 and waits < 5000) : (waits += 1) {
+        _ = try harness.session.pump(0);
+        try harness.collect();
+        std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
+    }
+    try testing.expectEqual(@as(usize, 2), harness.count("run.completed"));
+    var after_start = false;
+    for (harness.seen.items) |parsed| {
+        const event = parsed.value.object;
+        if (!std.mem.eql(u8, event.get("run_id").?.string, queued.run_id.?)) continue;
+        const kind = event.get("type").?.string;
+        if (std.mem.eql(u8, kind, "run.started")) {
+            after_start = true;
+            continue;
+        }
+        try testing.expect(after_start);
+        try testing.expectEqualStrings("run.compaction.started", kind);
+        break;
+    }
 }
 
 test "a token threshold set live compacts inside the next run between its turns" {
