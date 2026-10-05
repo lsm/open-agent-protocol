@@ -113,6 +113,7 @@ pub const Store = struct {
     allocator: std.mem.Allocator,
     path: []u8,
     staging: []u8,
+    last_failure: ?anyerror = null,
 
     pub fn open(allocator: std.mem.Allocator, path: []const u8) !Store {
         if (path.len == 0) return error.BindingStoreNeedsAPath;
@@ -151,6 +152,14 @@ pub const Store = struct {
     }
 
     pub fn append(self: *Store, entry: Entry) !void {
+        self.write(entry) catch |err| {
+            self.last_failure = err;
+            return err;
+        };
+        self.last_failure = null;
+    }
+
+    fn write(self: *Store, entry: Entry) !void {
         const line = try encode(self.allocator, entry);
         defer self.allocator.free(line);
         try self.rewrite(line);

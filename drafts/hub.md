@@ -367,7 +367,10 @@ the flag (`goap hub` and `oapx hub`) and write the same line, a CRC-32 of the
 JSON entry and the entry, so either hub reads the other's file. `oapx` rewrites
 the file atomically on every append, so its own writes are never torn, and
 refuses a reopen when the file holds a record that does not check out rather
-than reading past it.
+than reading past it. `oapx` records the adapter's configured working directory but not
+the home or the tool source ids `goap` also writes, and a write it could not
+make is reported by the next reopen that finds no binding instead of passing
+as an unknown session.
 
 `--stdio` and `--addr` name two transports and are mutually exclusive, and the
 hub takes no positional argument. Both are usage errors, refused before
