@@ -342,7 +342,7 @@ pub const McpBridge = struct {
             else
                 try self.allocator.dupe(u8, "{\"type\":\"object\"}");
             defer self.allocator.free(schema);
-            const destructive = inferDestructive(mcp_name, desc, obj);
+            const destructive = declaredDestructive(obj);
             const def = McpToolDefinition{ .server_name = server_name, .name = mcp_name, .description = desc, .input_schema_json = schema, .is_destructive = destructive };
             var tool = try def.toAgentTool(self.allocator, null);
             errdefer deinitAgentToolFields(self.allocator, &tool);
@@ -513,16 +513,14 @@ fn takePendingLine(allocator: std.mem.Allocator, pending: *std.ArrayList(u8)) !?
     return line;
 }
 
-fn inferDestructive(name: []const u8, desc: []const u8, obj: std.json.ObjectMap) bool {
-    if (obj.get("destructiveHint")) |v| if (v == .bool and v.bool) return true;
-    if (hasToken(name, "write") or hasToken(name, "delete") or hasToken(name, "remove")) return true;
-    if (std.ascii.indexOfIgnoreCase(desc, "delete") != null) return true;
-    if (std.ascii.indexOfIgnoreCase(desc, "write") != null) return true;
+fn declaredDestructive(obj: std.json.ObjectMap) bool {
+    if (obj.get("annotations")) |annotations| {
+        if (annotations == .object) {
+            if (annotations.object.get("destructiveHint")) |hint| if (hint == .bool and hint.bool) return true;
+        }
+    }
+    if (obj.get("destructiveHint")) |hint| if (hint == .bool and hint.bool) return true;
     return false;
-}
-
-fn hasToken(value: []const u8, needle: []const u8) bool {
-    return std.ascii.indexOfIgnoreCase(value, needle) != null;
 }
 
 fn resultFromMcp(allocator: std.mem.Allocator, result: std.json.ObjectMap) !agent.AgentToolResult {
@@ -563,6 +561,21 @@ test "MCP tool definition maps to AgentTool" {
     try std.testing.expectEqualStrings("mcp_fs_read_file", tool.name);
     try std.testing.expect(std.mem.indexOf(u8, tool.label, "(mcp)") != null);
     try std.testing.expectEqualStrings("{\"type\":\"object\"}", tool.parameters_schema_json);
+}
+
+test "only a server's destructiveHint marks an MCP tool destructive; its name and description never do" {
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator,
+        \\[{"name":"delete-row","description":"Deletes and writes rows"},
+        \\ {"name":"lookup","annotations":{"destructiveHint":true}},
+        \\ {"name":"legacy","destructiveHint":true},
+        \\ {"name":"remove","annotations":{"destructiveHint":false}}]
+    , .{});
+    defer parsed.deinit();
+    const tools = parsed.value.array.items;
+    try std.testing.expect(!declaredDestructive(tools[0].object));
+    try std.testing.expect(declaredDestructive(tools[1].object));
+    try std.testing.expect(declaredDestructive(tools[2].object));
+    try std.testing.expect(!declaredDestructive(tools[3].object));
 }
 
 test "an MCP tool's permission tier comes from what its server declares, never from its name" {
