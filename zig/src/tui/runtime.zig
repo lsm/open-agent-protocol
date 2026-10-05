@@ -282,6 +282,7 @@ pub const TuiRuntime = struct {
     title_mutex: std.atomic.Mutex = .unlocked,
     title_result: ?[]u8 = null,
     remote: ?RemoteExecution = null,
+    remote_steers_started: u64 = 0,
     remote_mutex: std.atomic.Mutex = .unlocked,
 
     pub fn init(allocator: std.mem.Allocator, options: TuiRuntimeOptions) !TuiRuntime {
@@ -999,7 +1000,11 @@ pub const TuiRuntime = struct {
     pub fn steer(self: *TuiRuntime, text: []const u8) !void {
         if (self.remote) |remote| {
             if (!self.started) return error.RuntimeNotStarted;
-            if (!self.stream_active) return self.submitTurn(text);
+            if (!self.stream_active) {
+                try self.submitTurn(text);
+                self.remote_steers_started += 1;
+                return;
+            }
             return remote.vtable.steer(remote.ctx, text);
         }
         if (!self.started) return error.RuntimeNotStarted;
@@ -1060,7 +1065,7 @@ pub const TuiRuntime = struct {
     }
 
     pub fn steersConsumedCount(self: *TuiRuntime) u64 {
-        if (self.remote) |remote| return remote.vtable.steers_settled(remote.ctx);
+        if (self.remote) |remote| return remote.vtable.steers_settled(remote.ctx) + self.remote_steers_started;
         const local = &(self.local_agent orelse return 0);
         return local.steeringConsumedCount();
     }

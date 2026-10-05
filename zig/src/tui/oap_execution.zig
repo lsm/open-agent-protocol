@@ -377,6 +377,16 @@ pub const OapExecution = struct {
             self.allocator.free(kept_text);
             return err;
         };
+        const target = self.currentRunId(a) catch |err| {
+            self.allocator.free(kept_text);
+            self.allocator.free(kept_id);
+            return err;
+        };
+        if (target.len > 0) payload.object.put(a, "target_run_id", .{ .string = target }) catch |err| {
+            self.allocator.free(kept_text);
+            self.allocator.free(kept_id);
+            return err;
+        };
         self.lockInbound();
         if (!self.turn_open.load(.acquire) or self.cancelling) {
             self.inbound_mutex.unlock();
@@ -384,7 +394,6 @@ pub const OapExecution = struct {
             self.allocator.free(kept_id);
             return error.AgentAlreadyStreaming;
         }
-        if (self.run_id.len > 0) try payload.object.put(a, "target_run_id", .{ .string = try a.dupe(u8, self.run_id) });
         self.steers.append(self.allocator, .{ .text = kept_text, .request_id = kept_id }) catch |err| {
             self.inbound_mutex.unlock();
             self.allocator.free(kept_text);
@@ -399,6 +408,12 @@ pub const OapExecution = struct {
             dropped.deinit(self.allocator);
             return err;
         };
+    }
+
+    fn currentRunId(self: *OapExecution, a: std.mem.Allocator) ![]const u8 {
+        self.lockInbound();
+        defer self.inbound_mutex.unlock();
+        return a.dupe(u8, self.run_id);
     }
 
     fn steersPending(ctx: *anyopaque) usize {
@@ -2281,7 +2296,7 @@ test "a steer sent during a turn over OAP joins it at the next turn boundary and
     try testing.expectEqual(@as(u64, 1), runtime.steersConsumedCount());
 }
 
-test "a steer sent while no turn runs over OAP starts one" {
+test "a steer sent while no turn runs over OAP starts one and counts as settled" {
     var script = Script{};
     var execution: *OapExecution = undefined;
     var runtime = try remoteRuntime(&script, &execution, .low);
@@ -2295,6 +2310,7 @@ test "a steer sent while no turn runs over OAP starts one" {
     try drainTurn(&runtime, &seen);
     try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
     try testing.expectEqual(@as(usize, 1), script.calls);
+    try testing.expectEqual(@as(u64, 1), runtime.steersConsumedCount());
 }
 
 test "a steer still waiting when the turn is cancelled over OAP settles without a warning" {
