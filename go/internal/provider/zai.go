@@ -56,7 +56,7 @@ var zaiChinaCodingPlan = []Preset{
 		BaseURL: "https://open.bigmodel.cn/api/coding/paas/v4", Path: "/chat/completions", Model: "glm-5.3-flash",
 		EvidenceClass: CompatibilityCandidate,
 		SourceURL:     "https://docs.bigmodel.cn/cn/coding-plan/quick-start.md",
-		Qualification: "The Chat Completions base and model availability are documented separately; this exact pair requires observation.",
+		Qualification: "The Chat Completions base and model availability are documented separately. Observed 2026-10-04 with the owner's key, identically on this base and on https://api.z.ai/api/coding/paas/v4: the base lists this model; reasoning is on by default and returns as message.reasoning_content; thinking {type: enabled|disabled} is accepted (disabled stops reasoning on glm-5.3, while glm-4.5-air still reasons briefly); enable_thinking is refused with code 1210; reasoning_effort is accepted; an assistant turn replayed with its reasoning_content is accepted, which is what the vendor's Thinking Mode guide asks of the Coding Plan's preserved thinking (https://docs.z.ai/guides/capabilities/thinking-mode).",
 	},
 }
 
