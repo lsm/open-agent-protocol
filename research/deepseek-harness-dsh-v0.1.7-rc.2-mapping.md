@@ -358,6 +358,12 @@ harness's back.** Reaching it would take a new SDK request first and an
 adapter change second, and until the first exists, #448's DeepSeek step has
 nothing to bind to.
 
+**What both trees do now (#448).** They advertise `session.open.reopen` as
+`unavailable` with that reason and refuse a reopen in `Open` as
+`unsupported_feature` (`unadvertised`) before a runtime starts, so a direct
+caller gets the same answer the hub's election gate already gave. The revision
+moves to `deepseek-harness-dsh-v0.1.7-rc.2-oap-v3`.
+
 ## Reasoning level and compaction at dsh-v0.1.7-rc.2
 
 Recorded for [Decision 0045](../decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md).

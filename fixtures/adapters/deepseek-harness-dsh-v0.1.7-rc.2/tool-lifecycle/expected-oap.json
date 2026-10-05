@@ -16,7 +16,7 @@
     "timestamp_ms": 3,
     "session_id": "session",
     "run_id": "run-c",
-    "capability_revision": "deepseek-harness-dsh-v0.1.7-rc.2-oap-v2"
+    "capability_revision": "deepseek-harness-dsh-v0.1.7-rc.2-oap-v3"
   },
   {
     "protocol": "open-agent-protocol",
@@ -40,7 +40,7 @@
     "session_id": "session",
     "run_id": "run-c",
     "tool_call_id": "tool-call-e",
-    "capability_revision": "deepseek-harness-dsh-v0.1.7-rc.2-oap-v2"
+    "capability_revision": "deepseek-harness-dsh-v0.1.7-rc.2-oap-v3"
   },
   {
     "protocol": "open-agent-protocol",
@@ -62,7 +62,7 @@
     "session_id": "session",
     "run_id": "run-c",
     "tool_call_id": "tool-call-e",
-    "capability_revision": "deepseek-harness-dsh-v0.1.7-rc.2-oap-v2"
+    "capability_revision": "deepseek-harness-dsh-v0.1.7-rc.2-oap-v3"
   },
   {
     "protocol": "open-agent-protocol",
@@ -90,7 +90,7 @@
     "session_id": "session",
     "run_id": "run-c",
     "tool_call_id": "tool-call-e",
-    "capability_revision": "deepseek-harness-dsh-v0.1.7-rc.2-oap-v2"
+    "capability_revision": "deepseek-harness-dsh-v0.1.7-rc.2-oap-v3"
   },
   {
     "protocol": "open-agent-protocol",
@@ -111,7 +111,7 @@
     "timestamp_ms": 7,
     "session_id": "session",
     "run_id": "run-c",
-    "capability_revision": "deepseek-harness-dsh-v0.1.7-rc.2-oap-v2"
+    "capability_revision": "deepseek-harness-dsh-v0.1.7-rc.2-oap-v3"
   },
   {
     "protocol": "open-agent-protocol",
@@ -138,7 +138,7 @@
     "timestamp_ms": 8,
     "session_id": "session",
     "run_id": "run-c",
-    "capability_revision": "deepseek-harness-dsh-v0.1.7-rc.2-oap-v2"
+    "capability_revision": "deepseek-harness-dsh-v0.1.7-rc.2-oap-v3"
   },
   {
     "protocol": "open-agent-protocol",
@@ -157,7 +157,7 @@
     "timestamp_ms": 10,
     "session_id": "session",
     "run_id": "run-m",
-    "capability_revision": "deepseek-harness-dsh-v0.1.7-rc.2-oap-v2"
+    "capability_revision": "deepseek-harness-dsh-v0.1.7-rc.2-oap-v3"
   },
   {
     "protocol": "open-agent-protocol",
@@ -181,7 +181,7 @@
     "session_id": "session",
     "run_id": "run-m",
     "tool_call_id": "tool-call-o",
-    "capability_revision": "deepseek-harness-dsh-v0.1.7-rc.2-oap-v2"
+    "capability_revision": "deepseek-harness-dsh-v0.1.7-rc.2-oap-v3"
   },
   {
     "protocol": "open-agent-protocol",
@@ -203,7 +203,7 @@
     "session_id": "session",
     "run_id": "run-m",
     "tool_call_id": "tool-call-o",
-    "capability_revision": "deepseek-harness-dsh-v0.1.7-rc.2-oap-v2"
+    "capability_revision": "deepseek-harness-dsh-v0.1.7-rc.2-oap-v3"
   },
   {
     "protocol": "open-agent-protocol",
@@ -229,7 +229,7 @@
     "session_id": "session",
     "run_id": "run-m",
     "tool_call_id": "tool-call-o",
-    "capability_revision": "deepseek-harness-dsh-v0.1.7-rc.2-oap-v2"
+    "capability_revision": "deepseek-harness-dsh-v0.1.7-rc.2-oap-v3"
   },
   {
     "protocol": "open-agent-protocol",
@@ -250,7 +250,7 @@
     "timestamp_ms": 14,
     "session_id": "session",
     "run_id": "run-m",
-    "capability_revision": "deepseek-harness-dsh-v0.1.7-rc.2-oap-v2"
+    "capability_revision": "deepseek-harness-dsh-v0.1.7-rc.2-oap-v3"
   },
   {
     "protocol": "open-agent-protocol",
@@ -277,6 +277,6 @@
     "timestamp_ms": 15,
     "session_id": "session",
     "run_id": "run-m",
-    "capability_revision": "deepseek-harness-dsh-v0.1.7-rc.2-oap-v2"
+    "capability_revision": "deepseek-harness-dsh-v0.1.7-rc.2-oap-v3"
   }
 ]

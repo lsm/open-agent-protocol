@@ -169,6 +169,7 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		"protocol.initialize":            {Level: protocol.SupportEmulated, Reason: "adapter-owned one-shot initialization freeze"},
 		"capabilities":                   {Level: protocol.SupportEmulated, Reason: "conservative descriptor for pinned SDK wire"},
 		"session.open":                   {Level: protocol.SupportEmulated, Reason: "one process and native session per OAP session"},
+		protocol.FeatureOpenReopen:       {Level: protocol.SupportUnavailable, Reason: "the harness stores sessions, but the pinned SDK wire has no request to load one, so a reopen is declined rather than read behind the harness"},
 		"session.state":                  {Level: protocol.SupportDegraded, Reason: "reducer-owned live projection; no native query"},
 		protocol.FeatureSessionReasoning: {Level: protocol.SupportNative, Modes: []string{protocol.ModeSessionOpen}, Reason: "initialize carries reasoningEffort for the runtime this session starts; the DeepSeek route takes off, low, high and max"},
 		protocol.FeatureCompactionPolicy: {Level: protocol.SupportEmulated, Modes: []string{protocol.ModeSessionOpen}, Reason: "a --patch layer on this session's runtime sets compaction-basic's thresholdRatio for share, or disables it for off; its headroom still caps the threshold, and tokens is refused"},
@@ -191,6 +192,9 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if req.Reopen {
+		return nil, &base.UnsupportedControlError{Feature: protocol.FeatureOpenReopen, Reason: base.ControlUnadvertised, Detail: "the pinned SDK wire has no request to load a stored session"}
 	}
 
 	if err := base.RefuseUnadvertisedToolSources(req); err != nil {
