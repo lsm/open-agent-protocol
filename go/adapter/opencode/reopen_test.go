@@ -111,3 +111,19 @@ func TestReopenRefusesASessionItCannotAttach(t *testing.T) {
 		})
 	}
 }
+
+func TestReopenTakesAReasoningLevelOnTheModelTheSessionRecords(t *testing.T) {
+	client := newFakeClient()
+	client.model = &native.ModelRef{ID: "fixture", ProviderID: "fixture"}
+	session, err := reopenAdapter(t, client).Open(context.Background(), base.OpenRequest{SessionID: "after", Reopen: true, NativeSessionID: "ses_fake00000000000000", ReasoningLevel: protocol.ReasoningHigh})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close(context.Background())
+	client.mu.Lock()
+	switches := append([]native.ModelRef(nil), client.switches...)
+	client.mu.Unlock()
+	if len(switches) != 1 || switches[0].ID != "fixture" || switches[0].Variant != "high" {
+		t.Fatalf("switches = %+v, want the recorded model at high", switches)
+	}
+}

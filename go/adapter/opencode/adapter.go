@@ -198,7 +198,7 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		return nil, err
 	}
 	createModel := a.config.Model
-	if req.ReasoningLevel != "" {
+	if req.ReasoningLevel != "" && !req.Reopen {
 		if a.config.Model == nil {
 			return nil, &base.UnsupportedControlError{Feature: protocol.FeatureSessionReasoning, Reason: base.ControlUnsatisfiable, Field: "reasoning_level", Detail: "a variant rides on a model, and this adapter has none configured"}
 		}
