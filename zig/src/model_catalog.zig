@@ -5134,6 +5134,43 @@ fn overriddenCatalogLoadProbe(allocator: std.mem.Allocator) !void {
     try std.testing.expectEqualStrings("https://proxy.example/api", models[0].base_url);
 }
 
+fn listedCodexModels(allocator: std.mem.Allocator) ![]ai_types.Model {
+    var empty: std.json.ObjectMap = .empty;
+    const listed = try allocator.alloc(ai_types.Model, 2);
+    var filled: usize = 0;
+    errdefer {
+        for (listed[0..filled]) |*model| model.deinit(allocator);
+        allocator.free(listed);
+    }
+    for (listed, [_][]const u8{ "gpt-codex", "gpt-dropped" }) |*slot, slug| {
+        slot.* = try codexModelFromObject(allocator, &empty, slug, catalog_context_window, catalog_max_output_tokens, .{ .account_id = "acct-1" });
+        filled += 1;
+    }
+    return listed;
+}
+
+fn vendorOverrideProbe(allocator: std.mem.Allocator) !void {
+    const headers = [_]ai_types.HeaderPair{ .{ .name = "X-Tenant", .value = "acme" }, .{ .name = "ChatGPT-Account-ID", .value = "spoofed" } };
+    const named = [_]custom_providers.ModelSpec{ .{ .id = "claude-proxy-1", .name = "Proxy Claude", .context_window = 64_000 }, .{ .id = "claude-proxy-2", .name = "claude-proxy-2" } };
+    const anthropic_overrides = [_]custom_providers.Override{.{ .id = "anthropic", .base_url = "https://proxy.example/anthropic", .headers = &headers, .models = &named }};
+    var materialized = try emptyModels(allocator);
+    defer deinitModels(allocator, materialized);
+    try applyVendorOverride(allocator, &materialized, anthropic_provider_id, &anthropic_overrides);
+
+    var codex = try listedCodexModels(allocator);
+    defer deinitModels(allocator, codex);
+    const kept = [_]custom_providers.ModelSpec{.{ .id = "gpt-codex", .name = "Codex", .max_tokens = 9_000 }};
+    const codex_overrides = [_]custom_providers.Override{.{ .id = "openai-codex", .base_url = "https://proxy.example/codex", .headers = &headers, .models = &kept }};
+    try applyVendorOverride(allocator, &codex, openai_codex_provider_id, &codex_overrides);
+}
+
+test "a vendor override frees every allocation when one fails midway" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
+    try vendorOverrideProbe(std.testing.allocator);
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, vendorOverrideProbe, .{});
+}
+
 test "an overridden catalog row frees every allocation when one fails midway" {
     try overriddenCatalogLoadProbe(std.testing.allocator);
     try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, overriddenCatalogLoadProbe, .{});
