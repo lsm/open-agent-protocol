@@ -2978,14 +2978,14 @@ pub const App = struct {
                     const detail = try std.fmt.allocPrint(self.allocator, "This session's worktree has uncommitted changes:\n{s}", .{report.summary});
                     defer self.allocator.free(detail);
                     try self.state.appendTranscript(.system, detail);
-                    try self.raiseForceDeletePrompt("Force remove anyway and discard them?");
+                    try self.raiseForceDeletePrompt("Force remove anyway and discard them");
                     return;
                 },
                 .unverified => |message| {
                     const detail = try std.fmt.allocPrint(self.allocator, "Git could not verify this session's worktree ({s}).", .{message});
                     defer self.allocator.free(detail);
                     try self.state.appendTranscript(.system, detail);
-                    try self.raiseForceDeletePrompt("Force remove anyway, unverified?");
+                    try self.raiseForceDeletePrompt("Force remove anyway, unverified");
                     return;
                 },
                 else => {
