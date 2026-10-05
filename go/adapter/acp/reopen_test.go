@@ -171,7 +171,7 @@ func TestACPCreateReportsTheNativeBindingAndUnknownSettingsStayUnspecified(t *te
 }
 
 func TestACPReloadRequiresAnObjectResponseAndPreservesTheBoundID(t *testing.T) {
-	for _, invalid := range []string{"null", "[]", "true", "\"session\""} {
+	for _, invalid := range []string{"null", "[]", "true", "\"session\"", `{"configOptions":true}`, `{"configOptions":[{"currentValue":7}]}`} {
 		var result native.SessionNewResult
 		if json.Unmarshal([]byte(invalid), &result) == nil {
 			t.Fatalf("invalid load response accepted: %s", invalid)

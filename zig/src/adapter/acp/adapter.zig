@@ -32,6 +32,22 @@ fn reopenMethod(capabilities: std.json.Value) ?[]const u8 {
     return if (resumption == .object) "session/resume" else null;
 }
 
+fn validConfigOptions(offered: ?std.json.Value) bool {
+    const options = offered orelse return true;
+    if (options == .null) return true;
+    if (options != .array) return false;
+    for (options.array.items) |option| {
+        if (option == .null) continue;
+        if (option != .object) return false;
+        for ([_][]const u8{ "id", "name", "category", "type", "currentValue" }) |key| {
+            if (memberOf(option, key)) |value| {
+                if (value != .string and value != .null) return false;
+            }
+        }
+    }
+    return true;
+}
+
 fn resumedLevel(value: []const u8) ?[]const u8 {
     for ([_][]const u8{ "off", "low", "medium", "high", "xhigh", "max" }) |level| {
         if (std.ascii.eqlIgnoreCase(value, level)) return level;
@@ -338,6 +354,7 @@ pub const Session = struct {
                 return refusal.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
             };
             if (result != .object) return refusal.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
+            if (!validConfigOptions(memberOf(result, "configOptions"))) return refusal.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
             if (memberOf(result, "sessionId")) |returned| {
                 if (returned != .string or !std.mem.eql(u8, returned.string, request.native_session_id)) return refusal.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
             }
@@ -1703,4 +1720,26 @@ test "the captured native ACP load reopens through the adapter and returns its r
     var events = std.ArrayList(contract.Event).empty;
     try opened.drain(probe.arena.allocator(), &events);
     try testing.expectEqual(@as(usize, 0), events.items.len);
+}
+
+test "a malformed or contradictory native load reply cannot report recovered state" {
+    for ([_][]const u8{ "null", "{\"sessionId\":\"wrong\"}", "{\"configOptions\":true}", "{\"configOptions\":[{\"currentValue\":7}]}" }) |result| {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        const script = try std.fmt.allocPrint(arena.allocator(),
+            \\#!/bin/sh
+            \\exec 3>>"$(dirname "$0")/stdin.log"
+            \\take() {{ IFS= read -r line || exit 0; printf '%s\n' "$line" >&3; }}
+            \\take; printf '{{"id":1,"jsonrpc":"2.0","result":{{"agentCapabilities":{{"loadSession":true}},"protocolVersion":1}}}}\n'
+            \\take; printf '{{"id":2,"jsonrpc":"2.0","result":{s}}}\n'
+            \\
+        , .{result});
+        var probe: Probe = undefined;
+        try probe.init(try std.mem.concat(arena.allocator(), u8, &.{ script, fake_idle }));
+        defer probe.deinit();
+        var refusal = contract.Refusal{};
+        try testing.expectError(error.UnsupportedFeature, probe.adapter.adapter().open(probe.arena.allocator(), .{ .participant = "user", .reopen = true, .native_session_id = "bound-native" }, &refusal));
+        try testing.expectEqualStrings(contract.feature_open_reopen, refusal.feature);
+        try testing.expectEqualStrings(contract.reason_unsatisfiable, refusal.reason);
+    }
 }
