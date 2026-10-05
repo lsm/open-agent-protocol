@@ -5,6 +5,7 @@ const config = @import("config");
 const contract = @import("contract");
 const memory = @import("memory");
 const compat = @import("compat");
+pub const binding = @import("binding.zig");
 
 pub const default_stream_queue = 64;
 pub const default_journal_capacity = 256;
@@ -44,6 +45,7 @@ pub const Options = struct {
     hold_ns: u64 = default_hold_ns,
     shutdown_ns: u64 = default_shutdown_ns,
     tool_sources: []const contract.ConfiguredSource = &.{},
+    bindings: ?*binding.Store = null,
 };
 
 pub const Ending = enum {
@@ -119,11 +121,17 @@ const Bound = struct {
     session_id: []const u8,
     adapter_name: []const u8,
     native_id: []const u8,
+    version: []const u8 = "",
+    model: []const u8 = "",
+    directory: []const u8 = "",
 
     fn deinit(self: *Bound, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
         allocator.free(self.adapter_name);
         allocator.free(self.native_id);
+        allocator.free(self.version);
+        allocator.free(self.model);
+        allocator.free(self.directory);
         self.* = undefined;
     }
 };
@@ -316,6 +324,7 @@ const Registered = struct {
     name: []u8,
     adapter: contract.Adapter,
     revision: []const u8 = "",
+    directory: []u8 = &.{},
 };
 
 const Held = struct {
@@ -362,6 +371,7 @@ pub const Hub = struct {
     subscriptions: std.ArrayList(*Subscription) = .empty,
     holds: std.ArrayList(Held) = .empty,
     bound: std.ArrayList(Bound) = .empty,
+    bindings: ?*binding.Store = null,
 
     pub fn init(allocator: std.mem.Allocator, now: *const fn () u64, options: Options) Hub {
         return .{
@@ -373,6 +383,7 @@ pub const Hub = struct {
             .hold_ns = options.hold_ns,
             .shutdown_ns = options.shutdown_ns,
             .tool_sources = options.tool_sources,
+            .bindings = options.bindings,
         };
     }
 
@@ -389,6 +400,7 @@ pub const Hub = struct {
         self.entries.deinit(self.allocator);
         for (self.adapters.items) |*registered| {
             self.allocator.free(registered.name);
+            if (registered.directory.len > 0) self.allocator.free(registered.directory);
             registered.* = undefined;
         }
         self.adapters.deinit(self.allocator);
@@ -421,6 +433,9 @@ pub const Hub = struct {
             }
             const adapter = try builder.make(builder.context, arena, entry);
             try self.register(entry.name, adapter);
+            if (entry.working_directory) |directory| {
+                if (directory.len > 0) self.find(entry.name).?.directory = try self.allocator.dupe(u8, directory);
+            }
         }
     }
 
@@ -513,9 +528,21 @@ pub const Hub = struct {
         try contract.refuseUnadvertisedOpenElections(descriptor, &request.payload(), &refused.reason);
         var native_session_id: []const u8 = "";
         if (request.reopen) {
-            const record = self.findBound(request.session_id) orelse return error.UnknownSession;
-            if (!std.mem.eql(u8, record.adapter_name, adapter_name)) return error.UnknownSession;
-            native_session_id = try arena.dupe(u8, record.native_id);
+            if (self.findBound(request.session_id)) |record| {
+                if (!std.mem.eql(u8, record.adapter_name, adapter_name)) return error.UnknownSession;
+                native_session_id = try arena.dupe(u8, record.native_id);
+            } else {
+                const store = self.bindings orelse return error.UnknownSession;
+                const stored = store.latest(arena, request.session_id) catch |err| {
+                    if (err == error.OutOfMemory) return error.OutOfMemory;
+                    return refused.reason.fail(error.BackendFailed, "the binding store holds a record that was not written whole");
+                } orelse {
+                    if (store.last_failure) |failure| return refused.reason.fail(error.BackendFailed, try std.fmt.allocPrint(arena, "no binding is recorded for this session, and the binding store last failed to record one: {s}", .{@errorName(failure)}));
+                    return error.UnknownSession;
+                };
+                if (!std.mem.eql(u8, stored.record.adapter, adapter_name)) return error.UnknownSession;
+                native_session_id = stored.record.native_session_id;
+            }
         }
         var session = registered.adapter.open(arena, request.contractRequest(native_session_id), &refused.reason) catch |err| {
             if (request.reopen and err == error.UnknownSession) return refused.reason.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
@@ -525,16 +552,18 @@ pub const Hub = struct {
         errdefer if (!adopted) session.teardown();
         if (self.findSession(session.id()) != null) return error.SessionExists;
         const opened_state = try session.state(arena, &refused.reason);
-        var record = try self.boundFor(adapter_name, session);
+        var record = try self.boundFor(adapter_name, session, descriptor.endpoint.version orelse "", opened_state.current_model_id orelse "");
         var kept = false;
         errdefer if (!kept) record.deinit(self.allocator);
         const entry = try self.adopt(adapter_name, session, @intCast(self.clock() / std.time.ns_per_ms));
         adopted = true;
         self.keepBound(record);
         kept = true;
+        self.recordBinding(if (request.reopen) .reopened else .opened, entry.session_id, opened_state.updated_at_ms orelse @intCast(self.clock() / std.time.ns_per_ms));
         var opened = Opened{ .session_id = entry.session_id, .state = opened_state, .revision = registered.revision };
         if (request.subscribe) {
             opened.subscription = self.subscribe(arena, opened.session_id, .{}) catch |err| {
+                self.recordBinding(.closed, entry.session_id, @intCast(self.clock() / std.time.ns_per_ms));
                 self.removeSession(entry);
                 return err;
             };
@@ -1215,14 +1244,34 @@ pub const Hub = struct {
         return null;
     }
 
-    fn boundFor(self: *Hub, adapter_name: []const u8, session: contract.Session) !Bound {
+    fn boundFor(self: *Hub, adapter_name: []const u8, session: contract.Session, version: []const u8, model: []const u8) !Bound {
         try self.bound.ensureUnusedCapacity(self.allocator, 1);
         const session_id = try self.allocator.dupe(u8, session.id());
         errdefer self.allocator.free(session_id);
         const owned_adapter = try self.allocator.dupe(u8, adapter_name);
         errdefer self.allocator.free(owned_adapter);
         const native_id = try self.allocator.dupe(u8, session.nativeId());
-        return .{ .session_id = session_id, .adapter_name = owned_adapter, .native_id = native_id };
+        errdefer self.allocator.free(native_id);
+        const owned_version = try self.allocator.dupe(u8, version);
+        errdefer self.allocator.free(owned_version);
+        const owned_model = try self.allocator.dupe(u8, model);
+        errdefer self.allocator.free(owned_model);
+        const directory = if (self.find(adapter_name)) |registered| registered.directory else "";
+        const owned_directory = try self.allocator.dupe(u8, directory);
+        return .{ .session_id = session_id, .adapter_name = owned_adapter, .native_id = native_id, .version = owned_version, .model = owned_model, .directory = owned_directory };
+    }
+
+    fn recordBinding(self: *Hub, action: binding.Action, session_id: []const u8, time_ms: i64) void {
+        const store = self.bindings orelse return;
+        const bound = self.findBound(session_id) orelse return;
+        store.append(.{ .action = action, .time_ms = time_ms, .record = .{
+            .session_id = bound.session_id,
+            .adapter = bound.adapter_name,
+            .harness_version = bound.version,
+            .native_session_id = bound.native_id,
+            .directory = bound.directory,
+            .model = bound.model,
+        } }) catch {};
     }
 
     fn keepBound(self: *Hub, record: Bound) void {
@@ -1269,6 +1318,7 @@ pub const Hub = struct {
     }
 
     fn releaseSession(self: *Hub, entry: *Entry) void {
+        self.recordBinding(.closed, entry.session_id, @intCast(self.clock() / std.time.ns_per_ms));
         self.endSubscriptions(entry, .session_closed);
         var index: usize = 0;
         while (index < self.holds.items.len) {
@@ -3748,6 +3798,76 @@ test "a reopen hands the adapter the native id its open recorded, and only under
     try testing.expectEqualStrings("native-thread", native.handed);
 }
 
+test "a binding recorded before a hub restart is read after it, and a torn store is not read" {
+    var inner = memory.Adapter.init(testing.allocator);
+    defer inner.deinit();
+    var native = NativeMemory{ .inner = &inner };
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cwd = try std.process.currentPathAlloc(testing.io, testing.allocator);
+    defer testing.allocator.free(cwd);
+    const path = try std.fs.path.join(testing.allocator, &.{ cwd, ".zig-cache", "tmp", tmp.sub_path[0..], "bindings.jsonl" });
+    defer testing.allocator.free(path);
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    {
+        var store = try binding.Store.open(testing.allocator, path);
+        defer store.deinit();
+        var hub = Hub.init(testing.allocator, testClock, .{ .bindings = &store });
+        defer hub.deinit();
+        try hub.register("native", native.adapter());
+        _ = try hub.open(arena, "native", .{ .session_id = "kept" });
+        try hub.close(arena, "kept");
+    }
+    var store = try binding.Store.open(testing.allocator, path);
+    defer store.deinit();
+    var restarted = Hub.init(testing.allocator, testClock, .{ .bindings = &store });
+    defer restarted.deinit();
+    try restarted.register("native", native.adapter());
+    try restarted.register("memory", inner.adapter());
+    try testing.expectError(error.UnknownSession, restarted.open(arena, "memory", .{ .session_id = "kept", .reopen = true }));
+    native.handed = "";
+    const reopened = try restarted.open(arena, "native", .{ .session_id = "kept", .reopen = true });
+    try testing.expectEqualStrings("native-thread", native.handed);
+    try testing.expect(reopened.state.recovered);
+    try testing.expectEqual(binding.Action.reopened, (try store.latest(arena, "kept")).?.action);
+    try restarted.close(arena, "kept");
+
+    const written = try compat.fs.readFileAlloc(arena, compat.fs.getCwd(), path, binding.max_store_bytes);
+    try compat.fs.writeFile(compat.fs.getCwd(), path, try std.mem.concat(arena, u8, &.{ written, "00000000 {}\n" }));
+    var torn = Hub.init(testing.allocator, testClock, .{ .bindings = &store });
+    defer torn.deinit();
+    try torn.register("native", native.adapter());
+    var refused: OpenRefusal = .{};
+    try testing.expectError(error.BackendFailed, torn.openReporting(arena, "native", .{ .session_id = "kept", .reopen = true }, &refused));
+    try testing.expect(std.mem.indexOf(u8, refused.reason.message, "not written whole") != null);
+}
+
+test "a binding the store failed to write is reported at reopen rather than read as an unknown session" {
+    var inner = memory.Adapter.init(testing.allocator);
+    defer inner.deinit();
+    var native = NativeMemory{ .inner = &inner };
+    var store = binding.Store{ .allocator = testing.allocator, .path = @constCast("/nonexistent-oap-binding-dir/bindings.jsonl"), .staging = @constCast("/nonexistent-oap-binding-dir/bindings.jsonl.writing") };
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    {
+        var hub = Hub.init(testing.allocator, testClock, .{ .bindings = &store });
+        defer hub.deinit();
+        try hub.register("native", native.adapter());
+        _ = try hub.open(arena, "native", .{ .session_id = "kept" });
+        try hub.close(arena, "kept");
+    }
+    try testing.expect(store.last_failure != null);
+    var restarted = Hub.init(testing.allocator, testClock, .{ .bindings = &store });
+    defer restarted.deinit();
+    try restarted.register("native", native.adapter());
+    var refused: OpenRefusal = .{};
+    try testing.expectError(error.BackendFailed, restarted.openReporting(arena, "native", .{ .session_id = "kept", .reopen = true }, &refused));
+    try testing.expect(std.mem.indexOf(u8, refused.reason.message, "last failed to record") != null);
+}
+
 test "a reopen the hub holds a record for but the adapter has lost is unsupported_feature, not unknown_session" {
     var inner = memory.Adapter.init(testing.allocator);
     defer inner.deinit();
@@ -3770,3 +3890,7 @@ test "a reopen the hub holds a record for but the adapter has lost is unsupporte
     try testing.expectEqualStrings(contract.feature_open_reopen, refused.reason.feature);
 }
 
+
+test {
+    _ = binding;
+}

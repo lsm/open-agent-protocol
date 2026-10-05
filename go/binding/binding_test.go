@@ -429,3 +429,18 @@ func TestAHostThatEmptiesTheStoreDoesNotLeaveTheCachePointingIntoNothing(t *test
 		t.Fatalf("the store holds %d records after a host emptied it, want the two appended since: %+v", len(history), history)
 	}
 }
+
+func TestTheLineIsTheOneTheZigStoreWrites(t *testing.T) {
+	const zig = "c66c4573 {\"action\":\"opened\",\"time_ms\":7,\"record\":{\"session_id\":\"s\",\"adapter\":\"codex\",\"native_session_id\":\"thread-1\"}}\n"
+	line, err := encode(Entry{Action: ActionOpened, TimeMS: 7, Record: Record{SessionID: "s", Adapter: "codex", NativeSessionID: "thread-1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(line) != zig {
+		t.Fatalf("Go writes %q, the Zig store writes %q", line, zig)
+	}
+	entry, err := decode(zig)
+	if err != nil || entry.Record.NativeSessionID != "thread-1" {
+		t.Fatalf("decode = %+v, %v", entry, err)
+	}
+}

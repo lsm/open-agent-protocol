@@ -1621,10 +1621,17 @@ fn runHub(
     var over_stdio = false;
     var config: ?[]const u8 = null;
     var addr: ?[]const u8 = null;
+    var bindings_path: ?[]const u8 = null;
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
         const argument = args[index];
-        if (std.mem.eql(u8, argument, "--stdio")) {
+        if (std.mem.eql(u8, argument, "--bindings")) {
+            index += 1;
+            if (index >= args.len) return error.InvalidHubOption;
+            bindings_path = args[index];
+        } else if (std.mem.startsWith(u8, argument, "--bindings=")) {
+            bindings_path = argument["--bindings=".len..];
+        } else if (std.mem.eql(u8, argument, "--stdio")) {
             over_stdio = true;
         } else if (std.mem.eql(u8, argument, "--config")) {
             index += 1;
@@ -1669,7 +1676,16 @@ fn runHub(
     const tool_sources = try hubConfiguredSources(arena, file.tool_sources);
     var registry = HubRegistry{ .allocator = allocator, .environ = &environ, .surface = surface };
     defer registry.deinit();
-    var core = hub.Hub.init(allocator, wallClockNanoseconds, .{ .tool_sources = tool_sources });
+    var bindings: ?hub.binding.Store = null;
+    defer if (bindings) |*store| store.deinit();
+    if (bindings_path) |path| {
+        bindings = hub.binding.Store.open(allocator, path) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            try surface.refuse("cannot open --bindings {s}: {s}", .{ path, @errorName(err) });
+            return error.BackendRefused;
+        };
+    }
+    var core = hub.Hub.init(allocator, wallClockNanoseconds, .{ .tool_sources = tool_sources, .bindings = if (bindings) |*store| store else null });
     defer core.deinit();
     if (config == null) {
         const memory = try arena.create(memory_adapter.Adapter);
@@ -2350,7 +2366,7 @@ fn printUsage(file: std.Io.File) !void {
         \\  oapx serve provider [--stdio] [--specimens]
         \\  oapx serve provider --http 127.0.0.1:<port>
         \\  oapx serve agent,provider --stdio [--model <model-ref>]
-        \\  oapx hub --stdio [--config <path>]
+        \\  oapx hub --stdio [--config <path>] [--bindings <path>]
         \\  oapx validate [--format human|json] [--mode strict|tolerant] [--pack DIR]... <trace.json>...
         \\  oapx conformance --command CMD [--session <id>] [--timeout-ms <n>]
         \\                        [--exit-grace-ms <n>] [--env NAME]... [--format text|json]
