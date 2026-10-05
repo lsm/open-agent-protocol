@@ -53,7 +53,7 @@ pub const HubLink = struct {
         if (std.mem.eql(u8, kind, "capabilities.request")) return self.call(a, .GET, try self.path(a, "/adapters/", self.adapter, "/capabilities"), null, id);
         if (std.mem.eql(u8, kind, "session.open.request")) return self.call(a, .POST, try self.path(a, "/adapters/", self.adapter, "/sessions"), line, id);
         if (std.mem.eql(u8, kind, "models.request")) return self.call(a, .GET, try self.path(a, "/sessions/", self.session_id, "/models"), null, id);
-        if (std.mem.eql(u8, kind, "session.message.submit.request")) return self.call(a, .POST, try self.path(a, "/sessions/", self.session_id, "/submit"), line, id);
+        if (std.mem.eql(u8, kind, "session.message.submit.request") or std.mem.eql(u8, kind, "session.compact.request")) return self.call(a, .POST, try self.path(a, "/sessions/", self.session_id, "/submit"), line, id);
         if (std.mem.eql(u8, kind, "run.cancel.request")) return self.call(a, .POST, try self.path(a, "/sessions/", self.session_id, "/cancel"), line, id);
         if (std.mem.eql(u8, kind, "action.permission.resolve.request")) return self.call(a, .POST, try self.path(a, "/sessions/", self.session_id, "/resolve"), line, id);
         try self.refuse(a, id, "unsupported_feature", try std.fmt.allocPrint(a, "the hub has no route for {s}", .{kind}));
@@ -130,7 +130,7 @@ pub const HubLink = struct {
             self.session_id = kept;
             return;
         }
-        if (std.mem.eql(u8, kind, "session.message.submit.response")) {
+        if (std.mem.eql(u8, kind, "session.message.submit.response") or std.mem.eql(u8, kind, "session.compact.response")) {
             const run_id = textOf(body, "run_id") orelse return;
             if (!std.mem.eql(u8, textOf(body, "admission") orelse "", "started")) return;
             try self.follow(a, run_id);
@@ -138,7 +138,8 @@ pub const HubLink = struct {
     }
 
     fn queuedBehind(self: *HubLink, a: std.mem.Allocator, answer: std.json.ObjectMap, id: []const u8) !bool {
-        if (!std.mem.eql(u8, textOf(answer, "type") orelse "", "session.message.submit.response")) return false;
+        const replied = textOf(answer, "type") orelse "";
+        if (!std.mem.eql(u8, replied, "session.message.submit.response") and !std.mem.eql(u8, replied, "session.compact.response")) return false;
         const body = if (answer.get("payload")) |value| (if (value == .object) value.object else return false) else return false;
         if (!std.mem.eql(u8, textOf(body, "admission") orelse "", "queued")) return false;
         if (textOf(body, "run_id")) |run_id| {
@@ -387,4 +388,100 @@ test "an events stream the hub refuses still ends the turn with a lost stream" {
     const lost = link.popOutbound() orelse return error.TestTurnLeftOpen;
     defer testing.allocator.free(lost);
     try testing.expectEqualStrings(lost_stream, lost);
+}
+
+const FakeHub = struct {
+    listener: compat.net.Server,
+    targets: [2][128]u8 = undefined,
+    lengths: [2]usize = .{ 0, 0 },
+    answer: []const u8,
+
+    fn serve(self: *FakeHub) void {
+        for (0..2) |index| {
+            var served = compat.net.accept(&self.listener) catch return;
+            var buffer: [8192]u8 = undefined;
+            var filled: usize = 0;
+            while (std.mem.indexOf(u8, buffer[0..filled], "\r\n\r\n") == null) {
+                const count = served.stream.readSome(buffer[filled..]) catch return;
+                if (count == 0) break;
+                filled += count;
+            }
+            if (std.mem.indexOf(u8, buffer[0..filled], "Content-Length: ")) |at| {
+                const head_end = std.mem.indexOf(u8, buffer[0..filled], "\r\n\r\n").? + 4;
+                const length_end = std.mem.indexOfScalarPos(u8, buffer[0..filled], at, '\r').?;
+                const length = std.fmt.parseInt(usize, buffer[at + "Content-Length: ".len .. length_end], 10) catch 0;
+                while (filled < head_end + length) {
+                    const count = served.stream.readSome(buffer[filled..]) catch return;
+                    if (count == 0) break;
+                    filled += count;
+                }
+            }
+            const line_end = std.mem.indexOf(u8, buffer[0..filled], "\r\n") orelse return;
+            const request_line = buffer[0..line_end];
+            @memcpy(self.targets[index][0..request_line.len], request_line);
+            self.lengths[index] = request_line.len;
+            if (index == 0) {
+                var head: [128]u8 = undefined;
+                served.stream.writeAll(std.fmt.bufPrint(&head, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n", .{self.answer.len}) catch return) catch return;
+                served.stream.writeAll(self.answer) catch return;
+            } else {
+                served.stream.writeAll("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n") catch return;
+            }
+            served.stream.close();
+        }
+    }
+
+    fn target(self: *const FakeHub, index: usize) []const u8 {
+        return self.targets[index][0..self.lengths[index]];
+    }
+};
+
+test "a compaction goes to the hub's submit route and the run it starts is followed" {
+    if (comptime !pollable) return error.SkipZigTest;
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var fake = FakeHub{
+        .listener = try compat.net.tcpListen(try compat.net.resolveAddress(a, "127.0.0.1", 0), .{ .reuse_address = true }),
+        .answer = "{" ++ envelope_head ++ ",\"type\":\"session.compact.response\",\"id\":\"hub-2\",\"payload\":{\"session_id\":\"s1\",\"accepted\":true,\"admission\":\"started\",\"run_id\":\"run-9\",\"status\":\"running\"}}",
+    };
+    defer compat.net.closeServer(&fake.listener);
+    const base = try std.fmt.allocPrint(a, "http://127.0.0.1:{d}", .{compat.net.listenAddress(&fake.listener).getPort()});
+    const thread = try std.Thread.spawn(.{}, FakeHub.serve, .{&fake});
+    const link = try HubLink.create(testing.allocator, base, "memory");
+    defer link.destroy();
+    link.session_id = try testing.allocator.dupe(u8, "s1");
+    try link.handleLine("{" ++ envelope_head ++ ",\"type\":\"session.compact.request\",\"id\":\"compact-1\",\"session_id\":\"s1\",\"payload\":{\"session_id\":\"s1\"}}");
+    thread.join();
+    try testing.expectEqualStrings("POST /sessions/s1/submit HTTP/1.1", fake.target(0));
+    try testing.expectEqualStrings("GET /sessions/s1/events?after=0&run_id=run-9 HTTP/1.1", fake.target(1));
+    const answer = link.popOutbound() orelse return error.TestNoAnswer;
+    defer testing.allocator.free(answer);
+    try testing.expect(std.mem.indexOf(u8, answer, "\"in_reply_to\":\"compact-1\"") != null);
+    try testing.expect(std.mem.indexOf(u8, answer, "session.compact.response") != null);
+}
+
+test "a compaction the hub queues behind a run is withdrawn and refused, not left waiting" {
+    if (comptime !pollable) return error.SkipZigTest;
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var fake = FakeHub{
+        .listener = try compat.net.tcpListen(try compat.net.resolveAddress(a, "127.0.0.1", 0), .{ .reuse_address = true }),
+        .answer = "{" ++ envelope_head ++ ",\"type\":\"session.compact.response\",\"id\":\"hub-2\",\"payload\":{\"session_id\":\"s1\",\"accepted\":true,\"admission\":\"queued\",\"run_id\":\"run-9\",\"status\":\"queued\"}}",
+    };
+    defer compat.net.closeServer(&fake.listener);
+    const base = try std.fmt.allocPrint(a, "http://127.0.0.1:{d}", .{compat.net.listenAddress(&fake.listener).getPort()});
+    const thread = try std.Thread.spawn(.{}, FakeHub.serve, .{&fake});
+    const link = try HubLink.create(testing.allocator, base, "memory");
+    defer link.destroy();
+    link.session_id = try testing.allocator.dupe(u8, "s1");
+    try link.handleLine("{" ++ envelope_head ++ ",\"type\":\"session.compact.request\",\"id\":\"compact-1\",\"session_id\":\"s1\",\"payload\":{\"session_id\":\"s1\"}}");
+    thread.join();
+    try testing.expectEqualStrings("POST /sessions/s1/cancel HTTP/1.1", fake.target(1));
+    try testing.expect(link.stream == null);
+    const answer = link.popOutbound() orelse return error.TestNoAnswer;
+    defer testing.allocator.free(answer);
+    try testing.expect(std.mem.indexOf(u8, answer, "session_busy") != null);
+    try testing.expect(std.mem.indexOf(u8, answer, "\"in_reply_to\":\"compact-1\"") != null);
 }
