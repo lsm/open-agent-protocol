@@ -98,6 +98,7 @@ fn freeToolCallIds(allocator: std.mem.Allocator, map: *std.StringHashMap(void)) 
 }
 
 fn allowsAnonymous(model: ai_types.Model) bool {
+    if (model.credential_withheld) return true;
     if (!model.allows_anonymous) return false;
     const vendors = [_][]const u8{ "openai", "deepseek", "openai-codex", "azure" };
     for (vendors) |vendor| {

@@ -707,7 +707,9 @@ fn streamWithOverride(
     }
     const configured = configuredEndpointOf(lookup);
     if (auth_resolver.storedCredentialWithheld(server.allocator, lookup, model.provider, model.base_url)) {
-        return streamWithEnvironmentKey(server, provider, model.provider, model, context, options);
+        var withheld = model;
+        withheld.credential_withheld = true;
+        return streamWithEnvironmentKey(server, provider, model.provider, withheld, context, options);
     }
 
     if (provider.auth_provider_id) |auth_provider_id| {
@@ -879,6 +881,15 @@ fn modelWithProtocolDefaults(
         }
     }
 
+    if (client_supplied_base and model.carries_version == null) {
+        switch (lookup) {
+            .endpoint => |found| if (sameBase(model.base_url, found.base_url)) {
+                effective.carries_version = found.carries_version;
+            },
+            else => {},
+        }
+    }
+
     if (model.max_tokens == 0) {
         effective.max_tokens = staticCatalogMaxTokens(model) orelse
             provider_base_url.defaultMaxTokensForRef(model.provider, model.api);
@@ -893,6 +904,10 @@ fn modelWithProtocolDefaults(
     }
 
     return .{ .model = effective, .defaulted_base_url = defaulted_base, .override = lookup };
+}
+
+fn sameBase(left: []const u8, right: []const u8) bool {
+    return std.mem.eql(u8, std.mem.trimEnd(u8, left, "/"), std.mem.trimEnd(u8, right, "/"));
 }
 
 fn isKimiPair(provider_id: []const u8, api: []const u8) bool {
@@ -1530,6 +1545,7 @@ const AuthTestState = struct {
     use_api_key_storage: bool = false,
     last_api_key: [64]u8 = undefined,
     last_api_key_len: usize = 0,
+    last_withheld: bool = false,
 };
 
 var auth_test_state: ?*AuthTestState = null;
@@ -1600,10 +1616,10 @@ fn authTestStream(
     options: ?ai_types.StreamOptions,
     allocator: std.mem.Allocator,
 ) !*event_stream.AssistantMessageEventStream {
-    _ = model;
     _ = context;
     const state = auth_test_state.?;
     state.stream_calls += 1;
+    state.last_withheld = model.credential_withheld;
     if (options) |opts| {
         if (opts.getApiKey()) |key| {
             const len = @min(key.len, state.last_api_key.len);
@@ -2597,7 +2613,9 @@ test "an overridden endpoint gets no stored credential unless the override forwa
 
     auth_resolver.test_override_config = "{\"overrides\":[{\"id\":\"deepseek\",\"base_url\":\"https://proxy.example/api\"}]}";
     try std.testing.expectEqualStrings("", try streamedKey(&server, &registry, &state, "https://proxy.example/api"));
+    try std.testing.expect(state.last_withheld);
     try std.testing.expectEqualStrings("stored-key", try streamedKey(&server, &registry, &state, catalogued));
+    try std.testing.expect(!state.last_withheld);
     try compat.setTestEnv(std.testing.allocator, "DEEPSEEK_API_KEY", "environment-key");
     try std.testing.expectEqualStrings("environment-key", try streamedKey(&server, &registry, &state, "https://proxy.example/api"));
     try provider_catalog.blankEnvironment(std.testing.allocator);
@@ -2635,6 +2653,31 @@ test "a base-less request follows an override only on rows the catalog loader se
     var vendor = try modelWithProtocolDefaults(&server, vendor_model);
     defer vendor.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings(provider_catalog.baseUrl("anthropic", "anthropic-messages", null).?, vendor.model.base_url);
+}
+
+test "a request already carrying the override's base keeps the override's version fact" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
+    defer auth_resolver.test_override_config = null;
+    var registry = api_registry.ApiRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+    var server = ProtocolServer.init(std.testing.allocator, &registry, .{});
+    defer server.deinit();
+    auth_resolver.test_override_config = "{\"overrides\":[{\"id\":\"deepseek\",\"base_url\":\"https://gw.internal\",\"carries_version\":true}]}";
+
+    var bridged = testModel();
+    bridged.provider = "deepseek";
+    bridged.api = "openai-completions";
+    bridged.base_url = "https://gw.internal/";
+    var carried = try modelWithProtocolDefaults(&server, bridged);
+    defer carried.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(?bool, true), carried.model.carries_version);
+
+    var elsewhere = bridged;
+    elsewhere.base_url = "https://other.internal";
+    var other = try modelWithProtocolDefaults(&server, elsewhere);
+    defer other.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(?bool, null), other.model.carries_version);
 }
 
 test "a custom provider id never resolves to a stored OAuth token" {

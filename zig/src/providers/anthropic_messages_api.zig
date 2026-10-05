@@ -49,6 +49,7 @@ fn anthropicIsAuthFailure(err_msg: []const u8) bool {
 }
 
 fn allowsAnonymous(model: ai_types.Model) bool {
+    if (model.credential_withheld) return true;
     if (!model.allows_anonymous) return false;
     return !std.mem.eql(u8, model.provider, "anthropic") and !std.mem.eql(u8, model.provider, "deepseek");
 }

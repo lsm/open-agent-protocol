@@ -535,6 +535,7 @@ pub const Model = struct {
     headers: ?[]const HeaderPair = null,
     compat: ?OpenAICompatOptions = null,
     allows_anonymous: bool = false,
+    credential_withheld: bool = false,
     carries_version: ?bool = null,
     is_owned: bool = false,
 
@@ -1271,6 +1272,7 @@ pub fn cloneModel(allocator: std.mem.Allocator, model: Model) !Model {
         .headers = headers,
         .compat = model.compat,
         .allows_anonymous = model.allows_anonymous,
+        .credential_withheld = model.credential_withheld,
         .carries_version = model.carries_version,
         .is_owned = true,
     };

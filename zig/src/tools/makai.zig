@@ -7657,6 +7657,7 @@ fn buildOapInferenceModel(
     input[0] = try allocator.dupe(u8, "text");
     errdefer allocator.free(input[0]);
     const headers = if (from_file and file.?.headers.len > 0) try dupeHeaderPairs(allocator, file.?.headers) else null;
+    const withheld = auth_resolver.storedCredentialWithheld(allocator, lookup, builtin.id, base_url);
 
     return ai_types.Model{
         .id = id,
@@ -7670,6 +7671,7 @@ fn buildOapInferenceModel(
         .context_window = builtin.context_window,
         .max_tokens = builtin.max_output_tokens,
         .allows_anonymous = builtin.allows_anonymous,
+        .credential_withheld = withheld,
         .carries_version = carries_version,
         .headers = headers,
         .is_owned = true,
@@ -10261,6 +10263,7 @@ test "a served model on an overridden row carries the override's base, headers a
     try std.testing.expectEqual(@as(?bool, true), model.carries_version);
     try std.testing.expectEqualStrings("X-Tenant", model.headers.?[0].name);
     try std.testing.expect(auth_resolver.storedCredentialWithheld(allocator, lookup, builtin.id, model.base_url));
+    try std.testing.expect(model.credential_withheld);
 
     var forwarding = lookup;
     forwarding.endpoint.forwards_credential = true;
