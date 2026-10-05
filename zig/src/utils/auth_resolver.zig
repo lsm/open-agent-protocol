@@ -72,6 +72,7 @@ pub fn overrideLookup(allocator: std.mem.Allocator, provider_id: []const u8) std
 }
 
 pub fn overrideLookupIn(allocator: std.mem.Allocator, overrides: []const custom_providers.Override, provider_id: []const u8) std.mem.Allocator.Error!OverrideLookup {
+    if (!provider_catalog.servedByCatalogLoader(provider_id)) return .none;
     const override = custom_providers.overrideFor(overrides, provider_id) orelse return .none;
     const base = override.base_url orelse return .none;
     return .{ .endpoint = .{ .base_url = try allocator.dupe(u8, base), .forwards_credential = override.forwards_credential, .carries_version = override.carries_version } };

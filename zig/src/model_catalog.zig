@@ -641,22 +641,7 @@ fn catalogStoredRegion(id: []const u8, storage: ?*oauth_storage.AuthStorage) ?[]
     return provider_catalog.regionFromValue(id, provider_data["region:".len..]);
 }
 
-const catalog_loader_rows = [_][]const u8{
-    "deepseek",
-    "openrouter",
-    "opencode-zen",
-    "opencode-go",
-    "vercel",
-    "zenmux",
-    "deepinfra",
-    "zai-coding-plan",
-    "alibaba-coding-plan",
-    "minimax-coding-plan",
-    "tencent-coding-plan",
-    "volcengine-coding-plan",
-    "openai",
-    "kimi",
-};
+const catalog_loader_rows = provider_catalog.catalog_loader_rows;
 
 pub fn supportsCatalogModelDiscovery(id: []const u8) bool {
     return isCatalogLoaderRow(id) or std.mem.eql(u8, id, "anthropic") or std.mem.eql(u8, id, "openai-codex") or std.mem.eql(u8, id, "github-copilot");
@@ -667,10 +652,7 @@ const proxy_models_url = "https://proxy.example/api/v1/models";
 const xiaomi_catalog_models_url = "https://token-plan-cn.xiaomimimo.com/v1/models";
 
 fn isCatalogLoaderRow(id: []const u8) bool {
-    for (catalog_loader_rows) |row| {
-        if (std.mem.eql(u8, row, id)) return true;
-    }
-    return false;
+    return provider_catalog.servedByCatalogLoader(id);
 }
 
 fn orderedCatalogLoaderIds(allocator: std.mem.Allocator, out: *std.ArrayList([]const u8)) !void {
@@ -781,7 +763,7 @@ fn appendCatalogTargetModels(
     var found = try provider_credential.lookup(allocator, environment, storage, target.id);
     defer if (found) |*credential| credential.deinit(allocator);
     if (target.withholds_stored) {
-        if (found) |*credential| if (credential.source == .stored) {
+        if (found) |*credential| if (credential.source != .environment) {
             credential.deinit(allocator);
             found = null;
         };
