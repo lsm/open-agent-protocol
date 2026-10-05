@@ -128,3 +128,19 @@ policy, and ran both turns at `high`; the trace validates.
 `session.reasoning` adds `session_live`, so the revision moves to
 `codex-appserver-0.160.0-oap-v2`. The writes conversation was re-recorded with
 `OAP_UPDATE_CODEX_CONVERSATION=1`; only its descriptor and revision changed.
+
+## Reopen keeps the host's permissions (#446)
+
+Owner decision, 2026-10-05: on `thread/resume` both trees send the configured
+`sandbox` (`SandboxMode`, kebab-case), `approvalPolicy` and `cwd`, and refuse a
+reopen as `unsupported_feature` (`session.open.reopen`, `unsatisfiable`) when
+`ThreadResumeResponse` does not answer them back — its `sandbox` is a tagged
+`SandboxPolicy` (`{"type":"workspaceWrite",…}`, read from
+`codex-rs/app-server-protocol/src/protocol/v2/permissions.rs` at
+`rust-v0.160.0`), so `read-only`, `workspace-write` and `danger-full-access`
+are compared as `readOnly`, `workspaceWrite` and `dangerFullAccess`. A
+member the host did not configure is not sent and not checked. The model and
+reasoning level stay what the thread last ran with and are reported. A resume
+the adapter configuration names outside a reopen fails the open on the same
+mismatch. This is read from the source at the pin, not observed on a running
+app-server.

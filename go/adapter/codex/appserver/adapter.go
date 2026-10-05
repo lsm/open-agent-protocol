@@ -226,7 +226,8 @@ func (implementation *Adapter) Open(ctx context.Context, request adapter.OpenReq
 		}
 	} else {
 		var response native.ThreadResumeResponse
-		if err := client.Call(ctx, native.MethodThreadResume, native.ThreadResumeParams{ThreadID: threadID, Config: settings}, &response); err != nil {
+		resume := native.ThreadResumeParams{ThreadID: threadID, Cwd: implementation.config.WorkingDirectory, ApprovalPolicy: implementation.config.ApprovalPolicy, Sandbox: implementation.config.Sandbox, Config: settings}
+		if err := client.Call(ctx, native.MethodThreadResume, resume, &response); err != nil {
 			_ = client.Close()
 			var remote *rpc.RemoteError
 			if request.Reopen && errors.As(err, &remote) {
@@ -237,6 +238,13 @@ func (implementation *Adapter) Open(ctx context.Context, request adapter.OpenReq
 		if response.Thread.ID == "" || response.Thread.ID != threadID {
 			_ = client.Close()
 			return nil, fmt.Errorf("%w: thread/resume returned unexpected thread id %q", ErrNativeProtocol, response.Thread.ID)
+		}
+		if err := confirmsHostPermissions(resume, response); err != nil {
+			_ = client.Close()
+			if request.Reopen {
+				return nil, &adapter.UnsupportedControlError{Feature: protocol.FeatureOpenReopen, Reason: adapter.ControlUnsatisfiable, Detail: err.Error()}
+			}
+			return nil, fmt.Errorf("resume Codex thread: %w", err)
 		}
 		if response.Model != "" {
 			model = response.Model

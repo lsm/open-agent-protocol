@@ -42,19 +42,23 @@ func (ids *fakeIDs) NewID(kind string) string {
 }
 
 type fakeClient struct {
-	mu            sync.Mutex
-	threadID      string
-	turnID        string
-	calls         []string
-	interruptGate chan struct{}
-	inbound       chan rpc.InboundMessage
-	done          chan struct{}
-	closeOnce     sync.Once
-	err           error
-	turnStartErr  error
-	resumedModel  string
-	resumedEffort string
-	resumeErr     error
+	mu              sync.Mutex
+	threadID        string
+	turnID          string
+	calls           []string
+	interruptGate   chan struct{}
+	inbound         chan rpc.InboundMessage
+	done            chan struct{}
+	closeOnce       sync.Once
+	err             error
+	turnStartErr    error
+	resumedModel    string
+	resumedEffort   string
+	resumeErr       error
+	resumedSandbox  json.RawMessage
+	resumedApproval json.RawMessage
+	resumedCwd      string
+	resume          native.ThreadResumeParams
 
 	turnStart   native.TurnStartParams
 	threadStart native.ThreadStartParams
@@ -84,10 +88,18 @@ func (client *fakeClient) Call(ctx context.Context, method string, params, resul
 		if sent, ok := params.(native.ThreadResumeParams); ok && sent.ThreadID != client.threadID {
 			return &rpc.RemoteError{ID: rpc.IntegerID(1), Object: rpc.ErrorObject{Code: -32602, Message: "no rollout found for thread id " + sent.ThreadID}}
 		}
+		if sent, ok := params.(native.ThreadResumeParams); ok {
+			client.mu.Lock()
+			client.resume = sent
+			client.mu.Unlock()
+		}
 		response := result.(*native.ThreadResumeResponse)
 		response.Thread.ID = client.threadID
 		response.Model = client.resumedModel
 		response.ReasoningEffort = client.resumedEffort
+		response.Sandbox = client.resumedSandbox
+		response.ApprovalPolicy = client.resumedApproval
+		response.Cwd = client.resumedCwd
 	case native.MethodTurnStart:
 		if client.turnStartErr != nil {
 			return client.turnStartErr
