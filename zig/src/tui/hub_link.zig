@@ -138,7 +138,8 @@ pub const HubLink = struct {
     }
 
     fn queuedBehind(self: *HubLink, a: std.mem.Allocator, answer: std.json.ObjectMap, id: []const u8) !bool {
-        if (!std.mem.eql(u8, textOf(answer, "type") orelse "", "session.message.submit.response")) return false;
+        const replied = textOf(answer, "type") orelse "";
+        if (!std.mem.eql(u8, replied, "session.message.submit.response") and !std.mem.eql(u8, replied, "session.compact.response")) return false;
         const body = if (answer.get("payload")) |value| (if (value == .object) value.object else return false) else return false;
         if (!std.mem.eql(u8, textOf(body, "admission") orelse "", "queued")) return false;
         if (textOf(body, "run_id")) |run_id| {
@@ -458,4 +459,29 @@ test "a compaction goes to the hub's submit route and the run it starts is follo
     defer testing.allocator.free(answer);
     try testing.expect(std.mem.indexOf(u8, answer, "\"in_reply_to\":\"compact-1\"") != null);
     try testing.expect(std.mem.indexOf(u8, answer, "session.compact.response") != null);
+}
+
+test "a compaction the hub queues behind a run is withdrawn and refused, not left waiting" {
+    if (comptime !pollable) return error.SkipZigTest;
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var fake = FakeHub{
+        .listener = try compat.net.tcpListen(try compat.net.resolveAddress(a, "127.0.0.1", 0), .{ .reuse_address = true }),
+        .answer = "{" ++ envelope_head ++ ",\"type\":\"session.compact.response\",\"id\":\"hub-2\",\"payload\":{\"session_id\":\"s1\",\"accepted\":true,\"admission\":\"queued\",\"run_id\":\"run-9\",\"status\":\"queued\"}}",
+    };
+    defer compat.net.closeServer(&fake.listener);
+    const base = try std.fmt.allocPrint(a, "http://127.0.0.1:{d}", .{compat.net.listenAddress(&fake.listener).getPort()});
+    const thread = try std.Thread.spawn(.{}, FakeHub.serve, .{&fake});
+    const link = try HubLink.create(testing.allocator, base, "memory");
+    defer link.destroy();
+    link.session_id = try testing.allocator.dupe(u8, "s1");
+    try link.handleLine("{" ++ envelope_head ++ ",\"type\":\"session.compact.request\",\"id\":\"compact-1\",\"session_id\":\"s1\",\"payload\":{\"session_id\":\"s1\"}}");
+    thread.join();
+    try testing.expectEqualStrings("POST /sessions/s1/cancel HTTP/1.1", fake.target(1));
+    try testing.expect(link.stream == null);
+    const answer = link.popOutbound() orelse return error.TestNoAnswer;
+    defer testing.allocator.free(answer);
+    try testing.expect(std.mem.indexOf(u8, answer, "session_busy") != null);
+    try testing.expect(std.mem.indexOf(u8, answer, "\"in_reply_to\":\"compact-1\"") != null);
 }
