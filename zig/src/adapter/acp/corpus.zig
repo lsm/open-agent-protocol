@@ -24,6 +24,7 @@ const Driver = struct {
     pub const corpus_relative = harness_pins.acp_corpus;
     pub const blank_expectation = corpus.BlankExpectation.empty_array_only;
     pub const Reducer = session.Reducer;
+    pub const excluded_cases = [_][]const u8{"session-reopen"};
 
     pub const Case = struct {
         id: []const u8,

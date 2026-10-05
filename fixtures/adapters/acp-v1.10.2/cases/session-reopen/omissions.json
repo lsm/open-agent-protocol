@@ -1,0 +1,17 @@
+[
+  {
+    "index": 4,
+    "method": "session/update",
+    "reason": "The native load reconstructs earlier conversation history; a reopened OAP session has no earlier run journal to replay."
+  },
+  {
+    "index": 5,
+    "method": "session/update",
+    "reason": "The native load reconstructs earlier conversation history; a reopened OAP session has no earlier run journal to replay."
+  },
+  {
+    "index": 6,
+    "method": "session/update",
+    "reason": "The native load reconstructs earlier conversation history; a reopened OAP session has no earlier run journal to replay."
+  }
+]

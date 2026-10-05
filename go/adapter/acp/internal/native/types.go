@@ -1,9 +1,14 @@
 package native
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"errors"
+)
 
 const (
 	MethodSessionNew               = "session/new"
+	MethodSessionLoad              = "session/load"
+	MethodSessionResume            = "session/resume"
 	MethodSessionSetConfigOption   = "session/set_config_option"
 	MethodSessionPrompt            = "session/prompt"
 	MethodSessionCancel            = "session/cancel"
@@ -15,6 +20,12 @@ type SessionNewParams struct {
 	Cwd        string      `json:"cwd"`
 	MCPServers []MCPServer `json:"mcpServers"`
 }
+type SessionReopenParams struct {
+	SessionID  string      `json:"sessionId"`
+	Cwd        string      `json:"cwd"`
+	MCPServers []MCPServer `json:"mcpServers"`
+}
+
 type MCPServer struct {
 	Name    string        `json:"name"`
 	Command string        `json:"command"`
@@ -28,6 +39,18 @@ type EnvVariable struct {
 type SessionNewResult struct {
 	SessionID     string         `json:"sessionId"`
 	ConfigOptions []ConfigOption `json:"configOptions,omitempty"`
+}
+
+func (r *SessionNewResult) UnmarshalJSON(data []byte) error {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil {
+		return err
+	}
+	if object == nil {
+		return errors.New("ACP session response is not an object")
+	}
+	type fields SessionNewResult
+	return json.Unmarshal(data, (*fields)(r))
 }
 
 const CategoryThoughtLevel = "thought_level"

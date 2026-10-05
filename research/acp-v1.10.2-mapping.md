@@ -83,3 +83,63 @@ unit tests.
 
 The Zig adapter was not driven against the live agent; its evidence is the
 corpus replay and reducer tests.
+
+## Bound session reload through OAP
+
+Both adapter trees now select `session/load` when `initialize` advertises
+`agentCapabilities.loadSession: true`, falling back to `session/resume` only
+when `sessionCapabilities.resume` is an object. An agent offering neither is
+refused without sending either method. Both methods carry the binding's
+`sessionId`, the configured absolute `cwd` and the MCP server array. A native
+load failure, missing binding identity, malformed reply or contradictory
+returned identity is `unsupported_feature` naming `session.open.reopen` with
+reason `unsatisfiable`. Cancellation of the caller stays cancellation.
+
+The capability revision is `acp-v1.10.2-schema-v1.24.1-oap-v5`, and
+`session.open.reopen` is `native` with the agent gates disclosed. Both adapters
+expose the created native id before the first turn so their hubs can record
+it. A successful reload answers an idle state with `recovery.recovered: true`;
+its `configOptions` supplies the selected model and reasoning level when it
+names a concrete choice. The reserved `default` and `current` model choices
+are not invented model ids, and unrecognised reasoning choices remain
+unspecified. Recovery discloses that settings the agent did not report belong
+to the loader. A requested reasoning level is applied and confirmed through
+`session/set_config_option` before the reopened state reports it.
+
+A load's `session/update` transcript is drained before the reply and produces
+no new OAP run or journal entry. `run.resume` still means the adapter's bounded
+OAP event journal; it cannot replay a pre-close run. This is native conversation
+reload, not continuity of the old event stream.
+
+### Native exchange and tests
+
+The `bound-session-reopen` ledger fixture is
+`fixtures/adapters/acp-v1.10.2/cases/session-reopen`. It records a literal
+initialize/load exchange, including three native history notifications before
+the reply, captured from the official darwin/arm64 `docker-agent` v1.145.0
+release artifact, SHA-256
+`177afacc99d7c3d52a3dd08f188970c1e5bfa9025fdd1b519715caa5af49979f`.
+The native UUID, request ids and configuration identifiers are retained. The
+captured model choice is `default`, so its state leaves the model unspecified
+rather than treating that choice as the concrete route. Go and Zig drive this
+case through their adapter open paths and compare the recovered state; the
+Zig event-reducer corpus explicitly delegates this lifecycle case to the
+adapter test.
+
+`TestACPProcessReopensItsBoundConversation` is opt-in through
+`OAP_ACP_INTEGRATION=1` and `adaptertest.VerifiedBinary`. Its isolated home and
+loopback Chat Completions mock show that a new native process reloads the bound
+session and the next provider request contains the earlier conversation. The
+same gate verifies a native not-found becomes the typed refusal. No ambient
+credentials are used and no artifact is downloaded by the gate. This run
+establishes the load path against cagent; the resume fallback and absent or
+malformed advertisements are unit evidence, as are concrete model and reasoning
+projection, 320 drained history updates and settings retained through Zig's
+arena compaction.
+
+`TestACPHubReopensFromItsRecordedNativeBindingAfterRestart` exercises the actual
+Go hub read path with a file store, a recreated registry and an owned fixture
+agent. It verifies the native id was recorded at open and that a reopened
+session uses that binding and returns the agent's settings. The ordered-RPC
+setting regression also ensures a requested thought level can be confirmed
+after load, before the session dispatcher begins consuming the live stream.

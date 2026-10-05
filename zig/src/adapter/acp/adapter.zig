@@ -20,6 +20,51 @@ fn fieldText(value: std.json.Value, key: []const u8) []const u8 {
     return if (found == .string) found.string else "";
 }
 
+const reopen_support_reason = "session/load when loadSession is advertised, otherwise session/resume when advertised; agents offering neither refuse the binding";
+const reopen_reason = "ACP restored the bound conversation; configOptions reports the agent's current settings, and omitted settings remain the loader's configuration";
+
+fn reopenMethod(capabilities: std.json.Value) ?[]const u8 {
+    if (memberOf(capabilities, "loadSession")) |value| {
+        if (value == .bool and value.bool) return "session/load";
+    }
+    const session_capabilities = memberOf(capabilities, "sessionCapabilities") orelse return null;
+    const resumption = memberOf(session_capabilities, "resume") orelse return null;
+    return if (resumption == .object) "session/resume" else null;
+}
+
+fn validConfigOptions(offered: ?std.json.Value) bool {
+    const options = offered orelse return true;
+    if (options == .null) return true;
+    if (options != .array) return false;
+    for (options.array.items) |option| {
+        if (option == .null) continue;
+        if (option != .object) return false;
+        for ([_][]const u8{ "id", "name", "category", "type", "currentValue" }) |key| {
+            if (memberOf(option, key)) |value| {
+                if (value != .string and value != .null) return false;
+            }
+        }
+    }
+    return true;
+}
+
+fn resumedLevel(value: []const u8) ?[]const u8 {
+    for ([_][]const u8{ "off", "low", "medium", "high", "xhigh", "max" }) |level| {
+        if (std.ascii.eqlIgnoreCase(value, level)) return level;
+    }
+    return null;
+}
+
+fn levelByValue(listed: ?std.json.Value, value: []const u8) ?[]const u8 {
+    const values = listed orelse return null;
+    if (values != .array) return null;
+    for (values.array.items) |entry| {
+        if (std.mem.eql(u8, fieldText(entry, "value"), value)) return resumedLevel(fieldText(entry, "name"));
+        if (levelByValue(memberOf(entry, "options"), value)) |level| return level;
+    }
+    return null;
+}
+
 fn matchingValue(listed: ?std.json.Value, level: []const u8) ?[]const u8 {
     const values = listed orelse return null;
     if (values != .array) return null;
@@ -35,6 +80,7 @@ const features = [_]contract.Feature{
     .{ .key = "protocol.initialize", .level = .emulated, .reason = "ACP initialize is normalized into the OAP adapter boundary" },
     .{ .key = "capabilities", .level = .emulated, .reason = "effective support is synthesized conservatively from stable ACP v1 and adapter policy" },
     .{ .key = "session.open", .level = .native },
+    .{ .key = contract.feature_open_reopen, .level = .native, .reason = reopen_support_reason },
     .{ .key = "session.state", .level = .emulated, .reason = "adapter-owned projection" },
     .{ .key = contract.feature_session_reasoning, .level = .emulated, .reason = "session/set_config_option on the agent's thought_level option, matched by value or name and confirmed in the returned option list; an agent that offers none refuses every level", .modes = &.{contract.mode_session_open} },
     .{ .key = contract.feature_compaction_policy, .level = .unavailable, .reason = "ACP has no compaction setting; an agent's own threshold is its configuration" },
@@ -107,10 +153,12 @@ pub const Adapter = struct {
 
 const Kept = struct {
     native_id: []const u8,
+    reported_level: ?[]const u8,
+    reported_model: ?[]const u8,
     sources: []oap_types.ToolSourceDescriptor,
     statuses: std.StringHashMapUnmanaged([]const u8),
 
-    fn copy(keep: std.mem.Allocator, native_id: []const u8, sources: []const oap_types.ToolSourceDescriptor, statuses: std.StringHashMapUnmanaged([]const u8)) !Kept {
+    fn copy(keep: std.mem.Allocator, native_id: []const u8, sources: []const oap_types.ToolSourceDescriptor, statuses: std.StringHashMapUnmanaged([]const u8), reported_model: ?[]const u8, reported_level: ?[]const u8) !Kept {
         const kept_native_id = try keep.dupe(u8, native_id);
         const kept_sources = try keep.alloc(oap_types.ToolSourceDescriptor, sources.len);
         for (sources, kept_sources) |source, *slot| slot.* = try ownedSource(keep, source);
@@ -122,14 +170,16 @@ const Kept = struct {
             const status = try keep.dupe(u8, entry.value_ptr.*);
             kept_statuses.putAssumeCapacity(run_id, status);
         }
-        return .{ .native_id = kept_native_id, .sources = kept_sources, .statuses = kept_statuses };
+        const kept_model = if (reported_model) |model| try keep.dupe(u8, model) else null;
+        const kept_level = if (reported_level) |level| try keep.dupe(u8, level) else null;
+        return .{ .native_id = kept_native_id, .sources = kept_sources, .statuses = kept_statuses, .reported_model = kept_model, .reported_level = kept_level };
     }
 };
 
 fn keptProbe(allocator: std.mem.Allocator, sources: []const oap_types.ToolSourceDescriptor, statuses: std.StringHashMapUnmanaged([]const u8)) !void {
     var fresh = std.heap.ArenaAllocator.init(allocator);
     defer fresh.deinit();
-    _ = try Kept.copy(fresh.allocator(), "native-session", sources, statuses);
+    _ = try Kept.copy(fresh.allocator(), "native-session", sources, statuses, "resumed-model", "high");
 }
 
 const Attached = struct {
@@ -260,6 +310,8 @@ pub const Session = struct {
     owner: *Adapter,
     gpa: std.mem.Allocator,
     reported_level: ?[]const u8 = null,
+    reported_model: ?[]const u8 = null,
+    recovered: bool = false,
     id: []u8,
     participant: []u8,
     reducer_arena: *std.heap.ArenaAllocator,
@@ -280,6 +332,7 @@ pub const Session = struct {
     retained: usize = 0,
 
     fn open(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
+        if (request.reopen and request.native_session_id.len == 0) return refusal.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
         const attached = try attach(owner, arena, request.tool_sources_json, refusal);
         const self = try construct(owner, arena, request, refusal);
         errdefer self.destroy();
@@ -291,10 +344,31 @@ pub const Session = struct {
         const versioned = if (version) |value| value == .integer and value.integer == acp_protocol_version else false;
         const capable = if (capabilities) |value| value != .null else false;
         if (!versioned or !capable) return refusal.fail(error.BackendFailed, "the ACP agent answered initialize with another protocol version or no agentCapabilities");
-        const created = try self.call(arena, "session/new", try self.sessionNewParams(attached.servers), refusal);
-        const native_session = memberOf(created, "sessionId") orelse std.json.Value.null;
-        if (native_session != .string or native_session.string.len == 0) return refusal.fail(error.BackendFailed, "the ACP agent answered session/new with no session id");
-        self.native_id = native_session.string;
+        const created = if (request.reopen) resumed: {
+            const method = reopenMethod(capabilities.?) orelse return refusal.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
+            const params = try self.sessionNewParams(attached.servers);
+            var fields = params.object;
+            try self.put(&fields, "sessionId", .{ .string = request.native_session_id });
+            const result = self.call(arena, method, .{ .object = fields }, refusal) catch |err| {
+                if (err == error.OutOfMemory) return error.OutOfMemory;
+                return refusal.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
+            };
+            if (result != .object) return refusal.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
+            if (!validConfigOptions(memberOf(result, "configOptions"))) return refusal.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
+            if (memberOf(result, "sessionId")) |returned| {
+                if (returned != .string or !std.mem.eql(u8, returned.string, request.native_session_id)) return refusal.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
+            }
+            self.native_id = try self.owned().dupe(u8, request.native_session_id);
+            self.recovered = true;
+            try self.resumedSettings(memberOf(result, "configOptions"));
+            break :resumed result;
+        } else fresh: {
+            const result = try self.call(arena, "session/new", try self.sessionNewParams(attached.servers), refusal);
+            const native_session = memberOf(result, "sessionId") orelse std.json.Value.null;
+            if (native_session != .string or native_session.string.len == 0) return refusal.fail(error.BackendFailed, "the ACP agent answered session/new with no session id");
+            self.native_id = native_session.string;
+            break :fresh result;
+        };
         self.reducer = session.Reducer.init(self.reducer_arena, .{
             .session_id = self.id,
             .native_id = self.native_id,
@@ -310,6 +384,21 @@ pub const Session = struct {
             self.reported_level = try self.owned().dupe(u8, level);
         }
         return self;
+    }
+
+    fn resumedSettings(self: *Session, offered: ?std.json.Value) contract.Failure!void {
+        const options = offered orelse return;
+        if (options != .array) return;
+        for (options.array.items) |option| {
+            const value = fieldText(option, "currentValue");
+            const category = fieldText(option, "category");
+            if (std.mem.eql(u8, category, "model") and value.len > 0 and !std.mem.eql(u8, value, "default") and !std.mem.eql(u8, value, "current")) {
+                self.reported_model = try self.owned().dupe(u8, value);
+            }
+            if (!std.mem.eql(u8, category, "thought_level")) continue;
+            const level = resumedLevel(value) orelse levelByValue(memberOf(option, "options"), value) orelse continue;
+            self.reported_level = try self.owned().dupe(u8, level);
+        }
     }
 
     fn setThoughtLevel(self: *Session, arena: std.mem.Allocator, offered: ?std.json.Value, level: []const u8, refusal: *contract.Refusal) contract.Failure!void {
@@ -389,6 +478,7 @@ pub const Session = struct {
 
     const vtable = contract.Session.VTable{
         .id = idOf,
+        .native_id = nativeId,
         .state = state,
         .submit = submit,
         .resolve = resolve,
@@ -399,6 +489,10 @@ pub const Session = struct {
         .activity = activity,
         .close = close,
     };
+
+    fn nativeId(ptr: *anyopaque) []const u8 {
+        return cast(ptr).native_id;
+    }
 
     fn cast(ptr: *anyopaque) *Session {
         return @ptrCast(@alignCast(ptr));
@@ -433,7 +527,7 @@ pub const Session = struct {
 
         var fresh = std.heap.ArenaAllocator.init(self.gpa);
         errdefer fresh.deinit();
-        const kept = try Kept.copy(fresh.allocator(), self.native_id, self.sources, self.statuses);
+        const kept = try Kept.copy(fresh.allocator(), self.native_id, self.sources, self.statuses, self.reported_model, self.reported_level);
 
         var options = self.reducer.options;
         options.native_id = kept.native_id;
@@ -444,6 +538,8 @@ pub const Session = struct {
         reducer.arena = self.reducer_arena;
         self.reducer = reducer;
         self.native_id = kept.native_id;
+        self.reported_level = kept.reported_level;
+        self.reported_model = kept.reported_model;
         self.sources = kept.sources;
         self.statuses = kept.statuses;
         self.asks = .empty;
@@ -719,11 +815,16 @@ pub const Session = struct {
         const sources = try arena.dupe(oap_types.ToolSourceDescriptor, self.sources);
         const transcript_cursor: ?[]const u8 = if (self.reducer.last_sequence > 0) try std.fmt.allocPrint(arena, "{d}", .{self.reducer.last_sequence}) else null;
         const reasoning_level: ?[]const u8 = if (self.reported_level) |level| try arena.dupe(u8, level) else null;
+        const recovery_reason: ?[]const u8 = if (self.recovered) try arena.dupe(u8, reopen_reason) else null;
+        const current_model_id: ?[]const u8 = if (self.reported_model) |model| try arena.dupe(u8, model) else null;
         return .{
             .session_id = self.id,
             .status = if (live) .running else .idle,
             .active_run_id = active_run_id,
             .updated_at_ms = wallClock(),
+            .recovered = self.recovered,
+            .recovery_reason = recovery_reason,
+            .current_model_id = current_model_id,
             .sources = sources,
             .transcript_cursor = transcript_cursor,
             .reasoning_level = reasoning_level,
@@ -1399,7 +1500,7 @@ test "the state a compaction keeps is copied without leaking when any allocation
     var statuses: std.StringHashMapUnmanaged([]const u8) = .empty;
     try statuses.put(a, "run-2", "completed");
     try statuses.put(a, "run-5", "cancelled");
-    try testing.checkAllAllocationFailures(testing.allocator, keptProbe, .{ &sources, statuses });
+    try testing.checkAllAllocationFailures(std.heap.smp_allocator, keptProbe, .{ &sources, statuses });
 }
 
 test "a tool id an earlier run used is still refused after the session compacts" {
@@ -1460,4 +1561,185 @@ test "a permission answer the agent cannot read fails the run acp_permission_res
     }
     try testing.expectEqualStrings("acp_permission_response_failed", (try probe.payloadOf(failed.?)).get("error").?.object.get("code").?.string);
     try testing.expectError(error.SessionClosed, probe.handle.?.state(scratch, &refusal));
+}
+
+test "a bound reload gates load before resume and drains history without new OAP events" {
+    for ([_]struct { capabilities: []const u8, method: []const u8 }{
+        .{ .capabilities = "{\"loadSession\":true,\"sessionCapabilities\":{\"resume\":{}}}", .method = "session/load" },
+        .{ .capabilities = "{\"loadSession\":false,\"sessionCapabilities\":{\"resume\":{}}}", .method = "session/resume" },
+    }) |scenario| {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        const script = try std.fmt.allocPrint(arena.allocator(),
+            \\#!/bin/sh
+            \\exec 3>>"$(dirname "$0")/stdin.log"
+            \\take() {{ IFS= read -r line || exit 0; printf '%s\n' "$line" >&3; }}
+            \\take; printf '{{"id":1,"jsonrpc":"2.0","result":{{"agentCapabilities":{s},"protocolVersion":1}}}}\n'
+            \\take
+            \\i=0
+            \\while [ "$i" -lt 320 ]; do
+            \\ printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"bound-native","update":{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"old history"}}}}}}}}\n'
+            \\ i=$((i+1))
+            \\done
+            \\printf '{{"id":2,"jsonrpc":"2.0","result":{{"configOptions":[{{"id":"model","category":"model","currentValue":"resumed-model"}},{{"id":"effort","category":"thought_level","currentValue":"deep","options":[{{"value":"deep","name":"High"}}]}}]}}}}\n'
+            \\
+        , .{scenario.capabilities});
+        var probe: Probe = undefined;
+        try probe.init(try std.mem.concat(arena.allocator(), u8, &.{ script, fake_idle }));
+        defer probe.deinit();
+        var refusal = contract.Refusal{};
+        const opened = try probe.adapter.adapter().open(probe.arena.allocator(), .{ .session_id = "s1", .participant = "user", .reopen = true, .native_session_id = "bound-native" }, &refusal);
+        probe.handle = opened;
+        const state = try opened.state(probe.arena.allocator(), &refusal);
+        try testing.expect(state.recovered);
+        try testing.expectEqualStrings(reopen_reason, state.recovery_reason.?);
+        try testing.expectEqualStrings("resumed-model", state.current_model_id.?);
+        try testing.expectEqualStrings("high", state.reasoning_level.?);
+        try testing.expect(state.active_run_id == null);
+        try testing.expectEqualStrings("bound-native", opened.nativeId());
+        var events = std.ArrayList(contract.Event).empty;
+        try opened.drain(probe.arena.allocator(), &events);
+        try testing.expectEqual(@as(usize, 0), events.items.len);
+        const written = try probe.fake.written(probe.arena.allocator());
+        try testing.expect(std.mem.indexOf(u8, written, scenario.method) != null);
+        try testing.expect(std.mem.indexOf(u8, written, "session/new") == null);
+        try testing.expect(std.mem.indexOf(u8, written, "bound-native") != null);
+        Session.cast(opened.ptr).compact_above = 0;
+        _ = try Session.cast(opened.ptr).compact();
+        const compacted = try opened.state(probe.arena.allocator(), &refusal);
+        try testing.expectEqualStrings("resumed-model", compacted.current_model_id.?);
+        try testing.expectEqualStrings("high", compacted.reasoning_level.?);
+        try testing.expectEqualStrings("bound-native", opened.nativeId());
+    }
+}
+
+test "a bound reload the ACP agent cannot honour is an unsatisfiable typed refusal" {
+    for ([_][]const u8{ "{}", "{\"loadSession\":false}", "{\"sessionCapabilities\":{\"resume\":null}}", "{\"sessionCapabilities\":{\"resume\":true}}", "{\"loadSession\":\"true\"}" }) |capabilities| {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        const script = try std.fmt.allocPrint(arena.allocator(),
+            \\#!/bin/sh
+            \\exec 3>>"$(dirname "$0")/stdin.log"
+            \\IFS= read -r line; printf '%s\n' "$line" >&3
+            \\printf '{{"id":1,"jsonrpc":"2.0","result":{{"agentCapabilities":{s},"protocolVersion":1}}}}\n'
+            \\
+        , .{capabilities});
+        var probe: Probe = undefined;
+        try probe.init(try std.mem.concat(arena.allocator(), u8, &.{ script, fake_idle }));
+        defer probe.deinit();
+        var refusal = contract.Refusal{};
+        try testing.expectError(error.UnsupportedFeature, probe.adapter.adapter().open(probe.arena.allocator(), .{ .session_id = "s1", .participant = "user", .reopen = true, .native_session_id = "bound-native" }, &refusal));
+        try testing.expectEqualStrings(contract.feature_open_reopen, refusal.feature);
+        try testing.expectEqualStrings(contract.reason_unsatisfiable, refusal.reason);
+        const written = try probe.fake.written(probe.arena.allocator());
+        try testing.expect(std.mem.indexOf(u8, written, "session/load") == null);
+        try testing.expect(std.mem.indexOf(u8, written, "session/resume") == null);
+        try testing.expect(std.mem.indexOf(u8, written, "session/new") == null);
+    }
+    var probe: Probe = undefined;
+    try probe.init(
+        \\#!/bin/sh
+        \\exec 3>>"$(dirname "$0")/stdin.log"
+        \\take() { IFS= read -r line || exit 0; printf '%s\n' "$line" >&3; }
+        \\take; printf '{"id":1,"jsonrpc":"2.0","result":{"agentCapabilities":{"loadSession":true},"protocolVersion":1}}\n'
+        \\take; printf '{"id":2,"jsonrpc":"2.0","error":{"code":-32602,"message":"session not found"}}\n'
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    try testing.expectError(error.UnsupportedFeature, probe.adapter.adapter().open(probe.arena.allocator(), .{ .participant = "user", .reopen = true, .native_session_id = "bound-native" }, &refusal));
+    try testing.expectEqualStrings(contract.feature_open_reopen, refusal.feature);
+    try testing.expectEqualStrings(contract.reason_unsatisfiable, refusal.reason);
+}
+
+test "a fresh ACP session exposes its native binding at open" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const opened = try probe.open(&refusal);
+    try testing.expectEqualStrings("native-session", opened.nativeId());
+}
+
+test "the captured native ACP load reopens through the adapter and returns its recorded state" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const base = try std.fs.path.join(scratch, &.{ harness_pins.acp_corpus, "cases", "session-reopen" });
+    const path = try std.fs.path.join(scratch, &.{ base, "native.jsonl" });
+    const text = try std.Io.Dir.cwd().readFileAlloc(testing.io, path, scratch, .limited(1024 * 1024));
+    var script = std.ArrayList(u8).empty;
+    try script.appendSlice(scratch,
+        \\#!/bin/sh
+        \\exec 3>>"$(dirname "$0")/stdin.log"
+        \\take() { IFS= read -r line || exit 0; printf '%s\n' "$line" >&3; }
+        \\
+    );
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    var native_session_id: []const u8 = "";
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        const frame = try std.json.parseFromSliceLeaky(std.json.Value, scratch, line, .{});
+        const raw = frame.object.get("raw").?;
+        const encoded = try json_encode.valueAlloc(scratch, raw);
+        _ = try rpc.parseMessage(scratch, encoded);
+        if (std.mem.eql(u8, fieldText(frame, "direction"), "client_request")) {
+            try script.appendSlice(scratch, "take\n");
+            if (std.mem.eql(u8, fieldText(raw, "method"), "session/load")) native_session_id = fieldText(memberOf(raw, "params").?, "sessionId");
+        } else {
+            try script.appendSlice(scratch, "printf '%s\\n' '");
+            var pieces = std.mem.splitScalar(u8, encoded, '\'');
+            var first = true;
+            while (pieces.next()) |piece| {
+                if (!first) try script.appendSlice(scratch, "'\"'\"'");
+                first = false;
+                try script.appendSlice(scratch, piece);
+            }
+            try script.appendSlice(scratch, "'\n");
+        }
+    }
+    try script.appendSlice(scratch, fake_idle);
+    var probe: Probe = undefined;
+    try probe.init(script.items);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const opened = try probe.adapter.adapter().open(probe.arena.allocator(), .{ .session_id = "session", .participant = "user", .reopen = true, .native_session_id = native_session_id }, &refusal);
+    probe.handle = opened;
+    const expected_path = try std.fs.path.join(scratch, &.{ base, "expected-oap.json" });
+    const expected_text = try std.Io.Dir.cwd().readFileAlloc(testing.io, expected_path, scratch, .limited(1024 * 1024));
+    const expected = try std.json.parseFromSliceLeaky(std.json.Value, scratch, expected_text, .{});
+    const state = try opened.state(probe.arena.allocator(), &refusal);
+    try testing.expectEqualStrings(fieldText(expected, "session_id"), state.session_id);
+    try testing.expectEqual(oap_types.SessionStatus.idle, state.status);
+    try testing.expect(state.recovered);
+    try testing.expectEqualStrings(fieldText(memberOf(expected, "recovery").?, "reason"), state.recovery_reason.?);
+    try testing.expect(state.current_model_id == null);
+    try testing.expect(state.reasoning_level == null);
+    try testing.expect(state.active_run_id == null);
+    try testing.expectEqualStrings(native_session_id, opened.nativeId());
+    var events = std.ArrayList(contract.Event).empty;
+    try opened.drain(probe.arena.allocator(), &events);
+    try testing.expectEqual(@as(usize, 0), events.items.len);
+}
+
+test "a malformed or contradictory native load reply cannot report recovered state" {
+    for ([_][]const u8{ "null", "{\"sessionId\":\"wrong\"}", "{\"configOptions\":true}", "{\"configOptions\":[{\"currentValue\":7}]}" }) |result| {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        const script = try std.fmt.allocPrint(arena.allocator(),
+            \\#!/bin/sh
+            \\exec 3>>"$(dirname "$0")/stdin.log"
+            \\take() {{ IFS= read -r line || exit 0; printf '%s\n' "$line" >&3; }}
+            \\take; printf '{{"id":1,"jsonrpc":"2.0","result":{{"agentCapabilities":{{"loadSession":true}},"protocolVersion":1}}}}\n'
+            \\take; printf '{{"id":2,"jsonrpc":"2.0","result":{s}}}\n'
+            \\
+        , .{result});
+        var probe: Probe = undefined;
+        try probe.init(try std.mem.concat(arena.allocator(), u8, &.{ script, fake_idle }));
+        defer probe.deinit();
+        var refusal = contract.Refusal{};
+        try testing.expectError(error.UnsupportedFeature, probe.adapter.adapter().open(probe.arena.allocator(), .{ .participant = "user", .reopen = true, .native_session_id = "bound-native" }, &refusal));
+        try testing.expectEqualStrings(contract.feature_open_reopen, refusal.feature);
+        try testing.expectEqualStrings(contract.reason_unsatisfiable, refusal.reason);
+    }
 }

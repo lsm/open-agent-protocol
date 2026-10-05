@@ -6,7 +6,7 @@
       "label": "v1.10.2",
       "status": "current",
       "endpoint_version": "1.10.2",
-      "capability_revision": "acp-v1.10.2-schema-v1.24.1-oap-v4",
+      "capability_revision": "acp-v1.10.2-schema-v1.24.1-oap-v5",
       "ledgers": ["research/acp-v1.10.2-mapping.md", "research/acp-v1.9.1-mapping.md", "research/acp-v1.7.0-mapping.md"],
       "corpus": "fixtures/adapters/acp-v1.10.2",
       "corpus_from": "v1.7.0",
