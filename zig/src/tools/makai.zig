@@ -7296,7 +7296,12 @@ fn failOapInference(
 fn resolveOapStoredCredential(
     allocator: std.mem.Allocator,
     provider_id: []const u8,
+    base_url: []const u8,
+    lookup: auth_resolver.OverrideLookup,
 ) ?auth_resolver.ResolvedKey {
+    if (auth_resolver.storedCredentialWithheld(allocator, lookup, provider_id, base_url)) {
+        return auth_resolver.resolveApiKeyOfKind(allocator, null, provider_id, null, .api_key_only) catch null;
+    }
     var storage = oauth_storage.AuthStorage.loadDefaultStoredOnly(allocator) catch return null;
     defer storage.deinit();
     const resolved = auth_resolver.resolveApiKey(allocator, &storage, provider_id, null) catch return null;
@@ -7424,7 +7429,9 @@ fn startOapInference(
         return;
     };
 
-    var model = try buildOapInferenceModel(allocator, builtin, model_id);
+    var lookup = try auth_resolver.overrideLookup(allocator, builtin.id);
+    defer lookup.deinit(allocator);
+    var model = try buildOapInferenceModel(allocator, builtin, model_id, lookup);
     errdefer model.deinit(allocator);
     var context = try buildOapInferenceContext(allocator, inference.messages, .{
         .provider = model.provider,
@@ -7448,7 +7455,7 @@ fn startOapInference(
         if (grantedValueFor(granted, reference)) |value| options.api_key = @TypeOf(options.api_key).initBorrowed(value);
     };
     if (options.getApiKey() == null or options.getApiKey().?.len == 0) {
-        resolved_credential = resolveOapStoredCredential(allocator, builtin.id);
+        resolved_credential = resolveOapStoredCredential(allocator, builtin.id, model.base_url, lookup);
         if (resolved_credential) |key| options.api_key = @TypeOf(options.api_key).initBorrowed(key.api_key);
     }
     options.cancel_token = .{ .cancelled = cancelled };
@@ -7626,6 +7633,7 @@ fn buildOapInferenceModel(
     allocator: std.mem.Allocator,
     builtin: oap_provider_catalog.BuiltInProvider,
     model_id: []const u8,
+    lookup: auth_resolver.OverrideLookup,
 ) !ai_types.Model {
     const id = try allocator.dupe(u8, model_id);
     errdefer allocator.free(id);
@@ -7635,8 +7643,6 @@ fn buildOapInferenceModel(
     errdefer allocator.free(api);
     const provider = try allocator.dupe(u8, builtin.id);
     errdefer allocator.free(provider);
-    var lookup = try auth_resolver.overrideLookup(allocator, builtin.id);
-    defer lookup.deinit(allocator);
     const file = switch (lookup) {
         .endpoint => |found| found,
         else => null,
@@ -7644,10 +7650,13 @@ fn buildOapInferenceModel(
     const base_url = provider_base_url.defaultBaseUrlForRefWithFile(allocator, builtin.id, builtin.api, null, if (file) |found| found.base_url else "") catch
         try allocator.dupe(u8, builtin.endpoint);
     errdefer allocator.free(base_url);
-    const carries_version: ?bool = if (file) |found| (if (std.mem.eql(u8, base_url, found.base_url)) found.carries_version else null) else null;
+    const from_file = if (file) |found| std.mem.eql(u8, base_url, found.base_url) else false;
+    const carries_version: ?bool = if (from_file) file.?.carries_version else null;
     const input = try allocator.alloc([]const u8, 1);
     errdefer allocator.free(input);
     input[0] = try allocator.dupe(u8, "text");
+    errdefer allocator.free(input[0]);
+    const headers = if (from_file and file.?.headers.len > 0) try dupeHeaderPairs(allocator, file.?.headers) else null;
 
     return ai_types.Model{
         .id = id,
@@ -7662,8 +7671,28 @@ fn buildOapInferenceModel(
         .max_tokens = builtin.max_output_tokens,
         .allows_anonymous = builtin.allows_anonymous,
         .carries_version = carries_version,
+        .headers = headers,
         .is_owned = true,
     };
+}
+
+fn dupeHeaderPairs(allocator: std.mem.Allocator, given: []const ai_types.HeaderPair) ![]ai_types.HeaderPair {
+    const copied = try allocator.alloc(ai_types.HeaderPair, given.len);
+    var filled: usize = 0;
+    errdefer {
+        for (copied[0..filled]) |header| {
+            allocator.free(header.name);
+            allocator.free(header.value);
+        }
+        allocator.free(copied);
+    }
+    for (given, copied) |header, *slot| {
+        const name = try allocator.dupe(u8, header.name);
+        errdefer allocator.free(name);
+        slot.* = .{ .name = name, .value = try allocator.dupe(u8, header.value) };
+        filled += 1;
+    }
+    return copied;
 }
 
 fn oapRoleIsSystem(role: oap_types.Role) bool {
@@ -10213,9 +10242,29 @@ test "reasoning options reach the stream options and the model declares reasonin
     const builtin = builtInForProvider("anthropic").?;
     try std.testing.expect(builtin.supports_reasoning);
 
-    var model = try buildOapInferenceModel(allocator, builtin, "claude-sonnet-4-5");
+    var model = try buildOapInferenceModel(allocator, builtin, "claude-sonnet-4-5", .none);
     defer model.deinit(allocator);
     try std.testing.expect(model.reasoning);
+}
+
+test "a served model on an overridden row carries the override's base, headers and version, and withholds the stored key" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+    const builtin = builtInForProvider("openai").?;
+    var headers = [_]ai_types.HeaderPair{.{ .name = @constCast("X-Tenant"), .value = @constCast("acme") }};
+    const lookup = auth_resolver.OverrideLookup{ .endpoint = .{ .base_url = @constCast("https://proxy.example/v1"), .forwards_credential = false, .carries_version = true, .headers = &headers } };
+
+    var model = try buildOapInferenceModel(allocator, builtin, "gpt-4o", lookup);
+    defer model.deinit(allocator);
+    try std.testing.expectEqualStrings("https://proxy.example/v1", model.base_url);
+    try std.testing.expectEqual(@as(?bool, true), model.carries_version);
+    try std.testing.expectEqualStrings("X-Tenant", model.headers.?[0].name);
+    try std.testing.expect(auth_resolver.storedCredentialWithheld(allocator, lookup, builtin.id, model.base_url));
+
+    var forwarding = lookup;
+    forwarding.endpoint.forwards_credential = true;
+    try std.testing.expect(!auth_resolver.storedCredentialWithheld(allocator, forwarding, builtin.id, model.base_url));
 }
 
 test "describe names a draft revision that identifies a state rather than a stream" {

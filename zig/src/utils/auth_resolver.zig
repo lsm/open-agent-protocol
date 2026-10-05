@@ -4,6 +4,8 @@ const compat = @import("compat");
 const storage_mod = @import("oauth/storage");
 const custom_providers = @import("custom_providers");
 const provider_catalog = @import("provider_catalog");
+const provider_base_url = @import("provider_base_url");
+const ai_types = @import("ai_types");
 
 pub const AuthStorage = storage_mod.AuthStorage;
 pub const ProviderAuth = storage_mod.ProviderAuth;
@@ -39,12 +41,31 @@ pub const OverrideEndpoint = struct {
     base_url: []u8,
     forwards_credential: bool,
     carries_version: ?bool = null,
+    headers: []ai_types.HeaderPair = &.{},
 
     pub fn deinit(self: *OverrideEndpoint, allocator: std.mem.Allocator) void {
         allocator.free(self.base_url);
+        for (self.headers) |header| {
+            allocator.free(header.name);
+            allocator.free(header.value);
+        }
+        allocator.free(self.headers);
         self.* = undefined;
     }
 };
+
+pub fn storedCredentialWithheld(allocator: std.mem.Allocator, lookup: OverrideLookup, provider_id: []const u8, base_url: []const u8) bool {
+    if (std.mem.trim(u8, base_url, " \t\r\n").len == 0) return false;
+    if (!provider_catalog.servedByCatalogLoader(provider_id)) return false;
+    return switch (lookup) {
+        .none => false,
+        .endpoint => |found| !found.forwards_credential and
+            provider_base_url.sameOrigin(base_url, found.base_url) and
+            !provider_base_url.knownOrigin(allocator, provider_id, base_url),
+        .unreadable => provider_catalog.oauthOrigin(provider_id) == null and
+            !provider_base_url.knownOrigin(allocator, provider_id, base_url),
+    };
+}
 
 pub const OverrideLookup = union(enum) {
     none,
@@ -75,7 +96,24 @@ pub fn overrideLookupIn(allocator: std.mem.Allocator, overrides: []const custom_
     if (!provider_catalog.servedByCatalogLoader(provider_id)) return .none;
     const override = custom_providers.overrideFor(overrides, provider_id) orelse return .none;
     const base = override.base_url orelse return .none;
-    return .{ .endpoint = .{ .base_url = try allocator.dupe(u8, base), .forwards_credential = override.forwards_credential, .carries_version = override.carries_version } };
+    const base_url = try allocator.dupe(u8, base);
+    errdefer allocator.free(base_url);
+    const headers = try allocator.alloc(ai_types.HeaderPair, override.headers.len);
+    var filled: usize = 0;
+    errdefer {
+        for (headers[0..filled]) |header| {
+            allocator.free(header.name);
+            allocator.free(header.value);
+        }
+        allocator.free(headers);
+    }
+    for (override.headers, headers) |header, *slot| {
+        const name = try allocator.dupe(u8, header.name);
+        errdefer allocator.free(name);
+        slot.* = .{ .name = name, .value = try allocator.dupe(u8, header.value) };
+        filled += 1;
+    }
+    return .{ .endpoint = .{ .base_url = base_url, .forwards_credential = override.forwards_credential, .carries_version = override.carries_version, .headers = headers } };
 }
 
 fn loadOverrideConfig(allocator: std.mem.Allocator) !custom_providers.Config {

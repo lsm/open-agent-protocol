@@ -662,19 +662,6 @@ fn refreshWithLock(
     }
 }
 
-fn storedCredentialWithheld(allocator: std.mem.Allocator, lookup: auth_resolver.OverrideLookup, provider_id: []const u8, base_url: []const u8) bool {
-    if (std.mem.trim(u8, base_url, " \t\r\n").len == 0) return false;
-    if (!provider_catalog.servedByCatalogLoader(provider_id)) return false;
-    return switch (lookup) {
-        .none => false,
-        .endpoint => |found| !found.forwards_credential and
-            provider_base_url.sameOrigin(base_url, found.base_url) and
-            !provider_base_url.knownOrigin(allocator, provider_id, base_url),
-        .unreadable => provider_catalog.oauthOrigin(provider_id) == null and
-            !provider_base_url.knownOrigin(allocator, provider_id, base_url),
-    };
-}
-
 fn streamWithEnvironmentKey(
     server: *ProtocolServer,
     provider: api_registry.ApiProvider,
@@ -719,7 +706,7 @@ fn streamWithOverride(
         if (opts.getApiKey() != null) return provider.stream(model, context, options, server.allocator);
     }
     const configured = configuredEndpointOf(lookup);
-    if (storedCredentialWithheld(server.allocator, lookup, model.provider, model.base_url)) {
+    if (auth_resolver.storedCredentialWithheld(server.allocator, lookup, model.provider, model.base_url)) {
         return streamWithEnvironmentKey(server, provider, model.provider, model, context, options);
     }
 
