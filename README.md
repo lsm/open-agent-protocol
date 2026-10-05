@@ -901,6 +901,13 @@ Ordinary tests use fake credentials and loopback provider servers. Credentialed
 provider evidence is separately and explicitly gated as documented in the matrix;
 credential presence alone never enables network traffic.
 
+Both Pi adapter trees reopen the recorded UUID and session file through
+`switch_session`. A missing, empty or mismatched file is refused before the
+native loader can create a new conversation. Recovered state reports the
+current model, thinking level and compaction switch; OAP runs and cursors do
+not survive. The loopback gate also verifies conversation history survives a
+new process, and `OAP_PI_CAPTURE_DIR` optionally records its native exchange.
+
 Pi real-process checks are also explicitly opt-in and skipped by ordinary CI.
 Provide an absolute Pi v1.0.1 executable in `OAP_PI_BIN`, then set
 `OAP_PI_SMOKE=1` for the credential-free readiness check or

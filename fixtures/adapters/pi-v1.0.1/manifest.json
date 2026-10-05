@@ -118,6 +118,13 @@
       "ledger_fixtures": [
         "system-message"
       ]
+    },
+    {
+      "id": "session-reopen",
+      "path": "session-reopen",
+      "ledger_fixtures": [
+        "bound-session-reopen"
+      ]
     }
   ]
 }

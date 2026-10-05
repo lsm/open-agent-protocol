@@ -718,3 +718,63 @@ refusal and the run, and the trace validates.
 
 Both settings add `session_live`, so the revision moves to
 `pi-v1.0.1-oap-v4`.
+
+
+## Bound session reload (Decision 0039, #448)
+
+Both trees now advertise `session.open.reopen: native` at
+`pi-v1.0.1-oap-v5`. The adapter's private binding value encodes the native
+`sessionId` and absolute `sessionFile` reported by `get_state`, retaining
+both the conversation identity and the file address. The getter reports it
+before the first turn, even though Pi has not yet persisted that file. This
+is an adapter-private address inside the host's binding record, not an OAP
+identity or a transcript.
+
+A reopen checks that the file exists, is regular, has a bounded readable
+JSON header with `type: session`, and names the recorded `id`, before any
+native write. Missing, empty, malformed or mismatched headers answer
+`unsupported_feature` naming `session.open.reopen` with `reason:
+unsatisfiable`. This check is necessary because the pinned
+`SessionManager.open` initializes missing and empty files as new sessions.
+The adapter then sends `switch_session { sessionPath }`, requires
+`cancelled: false`, and confirms the original `sessionId` and `sessionFile`
+in an idle `get_state`. A native failure, cancelled switch, malformed reply
+or different conversation is the same typed refusal and closes the child.
+
+Recovered `session.state` declares `recovery.recovered: true` and reports
+the current model, `thinkingLevel`, and `autoCompactionEnabled` as OAP
+settings. Open-time settings still apply after reload, and the reported state
+reflects them. No native historical messages become OAP runs or events;
+old OAP run IDs and cursors remain unavailable after the process restart.
+This supersedes the carried-forward reload limitation without changing the
+native spellings recorded in the older corpus cases.
+
+`bound-session-reopen` is the new executable ledger fixture in
+`fixtures/adapters/pi-v1.0.1/session-reopen`: a literal eight-frame exchange
+captured from the official Darwin arm64 binary, including the fresh process
+handshake, `switch_session`, and two `get_state` replies. It preserves the
+native UUID `01a10a68-4c43-72a1-8906-0fd26fe847f1`, file paths, request IDs,
+and returned model configuration. Go and Zig replay the production native
+loader and state projection with those exact identifiers; filesystem
+preflight is tested separately with owned files rather than recreating a
+captured developer path.
+
+Evidence:
+
+- The v1.0.1 archive SHA-256 is
+  `de35e0025b136eb37693054ca658c010b6327a12aaff438ae87c4d1c94f99e6c`;
+  the executed `pi` SHA-256 is
+  `177717b5c28d7b0b62584982f4489c5e3ccd31d9731e1d8196bcfc44f85e86eb`.
+- `TestPiProcessReopensItsFileWithTheConversation` runs only through
+  `adaptertest.VerifiedBinary`, with an isolated home and loopback Responses
+  mock. It proves a new process restores prior user/assistant context, high
+  reasoning and compaction off, and that a removed bound file is refused
+  without recreating it. It never downloads a binary or runs in ordinary CI.
+- Unit tests in both trees check invalid bindings before process creation,
+  cancelled or unconfirmed switches, restored settings, independent OAP
+  identity and empty run journals. Zig checks every allocation failure while
+  reading the binding header.
+- `TestPiHubReopensItsRecordedFileBindingAfterRestart` recreates the registry,
+  hub and file store, then loads the recorded UUID and file through an owned
+  fixture child. It proves the host records the address at open and reads it
+  across restart; the real-process gate proves native conversation reload.
