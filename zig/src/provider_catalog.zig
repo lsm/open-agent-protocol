@@ -34,6 +34,10 @@ pub const catalog_loader_rows = [_][]const u8{
     "kimi",
 };
 
+pub fn acceptsOverride(id: []const u8) bool {
+    return servedByCatalogLoader(id) or std.mem.eql(u8, id, "anthropic") or std.mem.eql(u8, id, "openai-codex");
+}
+
 pub fn servedByCatalogLoader(id: []const u8) bool {
     for (catalog_loader_rows) |row| {
         if (std.mem.eql(u8, row, id)) return true;

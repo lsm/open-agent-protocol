@@ -826,10 +826,13 @@ const EffectiveModel = struct {
     model: ai_types.Model,
     defaulted_base_url: ?[]const u8 = null,
     override: auth_resolver.OverrideLookup = .none,
+    merged_headers: ?[]ai_types.HeaderPair = null,
 
     fn deinit(self: *EffectiveModel, allocator: std.mem.Allocator) void {
         if (self.defaulted_base_url) |base| allocator.free(base);
         self.defaulted_base_url = null;
+        if (self.merged_headers) |headers| allocator.free(headers);
+        self.merged_headers = null;
         self.override.deinit(allocator);
     }
 };
@@ -857,6 +860,8 @@ fn modelWithProtocolDefaults(
     errdefer if (defaulted_base) |base| allocator.free(base);
     var lookup = try auth_resolver.overrideLookup(allocator, model.provider);
     errdefer lookup.deinit(allocator);
+    var merged: ?[]ai_types.HeaderPair = null;
+    errdefer if (merged) |headers| allocator.free(headers);
 
     if (!client_supplied_base and model.provider.len > 0 and model.api.len > 0) {
         const resolved_kimi_region: ?[]const u8 = if (isKimiPair(model.provider, model.api))
@@ -880,13 +885,17 @@ fn modelWithProtocolDefaults(
             if (file) |found| {
                 if (auth_resolver.overrideApplies(allocator, found, model.provider, resolved)) {
                     if (found.base_url.len > 0) effective.carries_version = found.carries_version;
-                    if (model.headers == null and found.headers.len > 0) effective.headers = found.headers;
+                    merged = try withOverrideHeaders(allocator, model.headers, found.headers);
+                    if (merged) |headers| effective.headers = headers;
                 }
             }
         } else {
             allocator.free(resolved);
             if (file) |found| {
-                if (found.base_url.len == 0 and model.headers == null and found.headers.len > 0) effective.headers = found.headers;
+                if (found.base_url.len == 0) {
+                    merged = try withOverrideHeaders(allocator, model.headers, found.headers);
+                    if (merged) |headers| effective.headers = headers;
+                }
             }
         }
     }
@@ -895,7 +904,8 @@ fn modelWithProtocolDefaults(
         switch (lookup) {
             .endpoint => |found| if (auth_resolver.overrideApplies(allocator, found, model.provider, model.base_url)) {
                 if (model.carries_version == null and found.base_url.len > 0) effective.carries_version = found.carries_version;
-                if (model.headers == null and found.headers.len > 0) effective.headers = found.headers;
+                merged = try withOverrideHeaders(allocator, model.headers, found.headers);
+                if (merged) |headers| effective.headers = headers;
             },
             else => {},
         }
@@ -914,7 +924,32 @@ fn modelWithProtocolDefaults(
         effective.compat = try provider_base_url.transparentProxyCompat(allocator, model.provider);
     }
 
-    return .{ .model = effective, .defaulted_base_url = defaulted_base, .override = lookup };
+    return .{ .model = effective, .defaulted_base_url = defaulted_base, .override = lookup, .merged_headers = merged };
+}
+
+fn withOverrideHeaders(allocator: std.mem.Allocator, current: ?[]const ai_types.HeaderPair, extra: []const ai_types.HeaderPair) !?[]ai_types.HeaderPair {
+    const existing = current orelse &.{};
+    var missing: usize = 0;
+    for (extra) |header| {
+        if (!namesHeader(existing, header.name)) missing += 1;
+    }
+    if (missing == 0) return null;
+    const merged = try allocator.alloc(ai_types.HeaderPair, existing.len + missing);
+    @memcpy(merged[0..existing.len], existing);
+    var next = existing.len;
+    for (extra) |header| {
+        if (namesHeader(existing, header.name)) continue;
+        merged[next] = header;
+        next += 1;
+    }
+    return merged;
+}
+
+fn namesHeader(headers: []const ai_types.HeaderPair, name: []const u8) bool {
+    for (headers) |header| {
+        if (std.ascii.eqlIgnoreCase(header.name, name)) return true;
+    }
+    return false;
 }
 
 fn isKimiPair(provider_id: []const u8, api: []const u8) bool {
@@ -2055,6 +2090,65 @@ test "a custom provider on a vendor OAuth api streams with its own key" {
     try std.testing.expectEqual(@as(usize, 0), state.refresh_count);
 }
 
+test "an Anthropic override moves the row's requests and keeps its stored login home unless it forwards it" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
+    defer auth_resolver.test_override_config = null;
+    var state = AuthTestState{ .expires = compat.time.nowMillis() + 3_600_000 };
+    auth_test_state = &state;
+    defer auth_test_state = null;
+
+    var registry = api_registry.ApiRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+    try registry.registerApiProvider(.{
+        .api = "vendor-api",
+        .stream = authTestStream,
+        .stream_simple = mockStreamSimple,
+        .auth_provider_id = "anthropic",
+        .auth_refresh_fn = authTestRefresh,
+        .auth_get_api_key_fn = authTestGetApiKey,
+    }, null);
+    var storage = oauth_storage.AuthStorage{
+        .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(std.testing.allocator),
+        .allocator = std.testing.allocator,
+        .save_fn = authTestSaveStorage,
+    };
+    defer storage.deinit();
+    try storage.providers.put(try std.testing.allocator.dupe(u8, "anthropic"), .{ .oauth = .{
+        .refresh = try std.testing.allocator.dupe(u8, "vendor-refresh"),
+        .access = try std.testing.allocator.dupe(u8, "vendor-access"),
+        .expires = compat.time.nowMillis() + 3_600_000,
+    } });
+    var server = ProtocolServer.init(std.testing.allocator, &registry, .{ .auth_storage = &storage });
+    defer server.deinit();
+
+    auth_resolver.test_override_config = "{\"overrides\":[{\"id\":\"anthropic\",\"base_url\":\"https://proxy.example/anthropic\",\"headers\":{\"X-Tenant\":\"acme\"}}]}";
+    var request = testModel();
+    request.provider = "anthropic";
+    request.api = "anthropic-messages";
+    request.base_url = "";
+    var routed = try modelWithProtocolDefaults(&server, request);
+    defer routed.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("https://proxy.example/anthropic", routed.model.base_url);
+    try std.testing.expectEqualStrings("X-Tenant", routed.model.headers.?[0].name);
+
+    var model = testModel();
+    model.api = "vendor-api";
+    model.provider = "anthropic";
+    model.base_url = "https://proxy.example/anthropic";
+    state.last_api_key_len = 0;
+    const withheld = try streamWithRefresh(&server, registry.getApiProvider("vendor-api").?, model, testContext(), null);
+    withheld.deinit();
+    std.testing.allocator.destroy(withheld);
+    try std.testing.expectEqual(@as(usize, 0), state.last_api_key_len);
+
+    auth_resolver.test_override_config = "{\"overrides\":[{\"id\":\"anthropic\",\"base_url\":\"https://proxy.example/anthropic\",\"forwards_credential\":true}]}";
+    const forwarded = try streamWithRefresh(&server, registry.getApiProvider("vendor-api").?, model, testContext(), null);
+    forwarded.deinit();
+    std.testing.allocator.destroy(forwarded);
+    try std.testing.expect(state.last_api_key_len > 0);
+}
+
 test "a stored vendor API key reaches only an origin the vendor serves or the user named" {
     try provider_catalog.blankEnvironment(std.testing.allocator);
     defer compat.clearTestEnv();
@@ -2720,7 +2814,7 @@ test "an overridden endpoint gets no stored credential unless the override forwa
     try std.testing.expectEqualStrings("stored-key", try streamedKey(&server, &registry, &state, catalogued));
 }
 
-test "a base-less request follows an override only on rows the catalog loader serves" {
+test "a base-less request follows an override only on rows that accept one" {
     try provider_catalog.blankEnvironment(std.testing.allocator);
     defer compat.clearTestEnv();
     defer auth_resolver.test_override_config = null;
@@ -2728,7 +2822,7 @@ test "a base-less request follows an override only on rows the catalog loader se
     defer registry.deinit();
     var server = ProtocolServer.init(std.testing.allocator, &registry, .{});
     defer server.deinit();
-    auth_resolver.test_override_config = "{\"overrides\":[{\"id\":\"deepseek\",\"base_url\":\"https://proxy.example/deepseek\"},{\"id\":\"anthropic\",\"base_url\":\"https://proxy.example/anthropic\"}]}";
+    auth_resolver.test_override_config = "{\"overrides\":[{\"id\":\"deepseek\",\"base_url\":\"https://proxy.example/deepseek\"},{\"id\":\"anthropic\",\"base_url\":\"https://proxy.example/anthropic\"},{\"id\":\"xiaomi-token-plan-cn\",\"base_url\":\"https://proxy.example/xiaomi\"}]}";
 
     var routed_model = testModel();
     routed_model.provider = "deepseek";
@@ -2744,7 +2838,15 @@ test "a base-less request follows an override only on rows the catalog loader se
     vendor_model.base_url = "";
     var vendor = try modelWithProtocolDefaults(&server, vendor_model);
     defer vendor.deinit(std.testing.allocator);
-    try std.testing.expectEqualStrings(provider_catalog.baseUrl("anthropic", "anthropic-messages", null).?, vendor.model.base_url);
+    try std.testing.expectEqualStrings("https://proxy.example/anthropic", vendor.model.base_url);
+
+    var unaccepted_model = testModel();
+    unaccepted_model.provider = "xiaomi-token-plan-cn";
+    unaccepted_model.api = "openai-completions";
+    unaccepted_model.base_url = "";
+    var unaccepted = try modelWithProtocolDefaults(&server, unaccepted_model);
+    defer unaccepted.deinit(std.testing.allocator);
+    try std.testing.expect(!std.mem.eql(u8, unaccepted.model.base_url, "https://proxy.example/xiaomi"));
 }
 
 test "an override's headers ride every request it applies to, including one that keeps the row's endpoint, and no other" {
@@ -2786,6 +2888,15 @@ test "an override's headers ride every request it applies to, including one that
     var kept_stray = try modelWithProtocolDefaults(&server, elsewhere);
     defer kept_stray.deinit(std.testing.allocator);
     try std.testing.expect(kept_stray.model.headers == null);
+
+    var session_headers = [_]ai_types.HeaderPair{.{ .name = @constCast("ChatGPT-Account-ID"), .value = @constCast("acct-1") }};
+    var carrying = request;
+    carrying.headers = &session_headers;
+    var joined = try modelWithProtocolDefaults(&server, carrying);
+    defer joined.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 2), joined.model.headers.?.len);
+    try std.testing.expectEqualStrings("acct-1", joined.model.headers.?[0].value);
+    try std.testing.expectEqualStrings("X-Tenant", joined.model.headers.?[1].name);
 
     auth_resolver.test_override_config = "{\"overrides\":[{\"id\":\"openrouter\",\"headers\":{\"X-Tenant\":\"acme\"}}]}";
     var unresolved = request;
