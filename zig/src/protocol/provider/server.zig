@@ -844,15 +844,25 @@ fn modelWithProtocolDefaults(
             try resolvedKimiRegion(server)
         else
             null;
-        const resolved = try provider_base_url.defaultBaseUrlForRefWithRegion(
+        var lookup = try auth_resolver.overrideLookup(allocator, model.provider);
+        defer lookup.deinit(allocator);
+        const file = switch (lookup) {
+            .endpoint => |found| found,
+            else => null,
+        };
+        const resolved = try provider_base_url.defaultBaseUrlForRefWithFile(
             allocator,
             model.provider,
             model.api,
             resolved_kimi_region,
+            if (file) |found| found.base_url else "",
         );
         if (resolved.len > 0) {
             defaulted_base = resolved;
             effective.base_url = resolved;
+            if (file) |found| {
+                if (std.mem.eql(u8, resolved, found.base_url)) effective.carries_version = found.carries_version;
+            }
         } else {
             allocator.free(resolved);
         }

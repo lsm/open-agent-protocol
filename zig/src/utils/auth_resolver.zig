@@ -38,6 +38,7 @@ pub fn resolveApiKey(
 pub const OverrideEndpoint = struct {
     base_url: []u8,
     forwards_credential: bool,
+    carries_version: ?bool = null,
 
     pub fn deinit(self: *OverrideEndpoint, allocator: std.mem.Allocator) void {
         allocator.free(self.base_url);
@@ -73,7 +74,7 @@ pub fn overrideLookup(allocator: std.mem.Allocator, provider_id: []const u8) std
 pub fn overrideLookupIn(allocator: std.mem.Allocator, overrides: []const custom_providers.Override, provider_id: []const u8) std.mem.Allocator.Error!OverrideLookup {
     const override = custom_providers.overrideFor(overrides, provider_id) orelse return .none;
     const base = override.base_url orelse return .none;
-    return .{ .endpoint = .{ .base_url = try allocator.dupe(u8, base), .forwards_credential = override.forwards_credential } };
+    return .{ .endpoint = .{ .base_url = try allocator.dupe(u8, base), .forwards_credential = override.forwards_credential, .carries_version = override.carries_version } };
 }
 
 fn loadOverrideConfig(allocator: std.mem.Allocator) !custom_providers.Config {
