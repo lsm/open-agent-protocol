@@ -822,10 +822,13 @@ const EffectiveModel = struct {
     model: ai_types.Model,
     defaulted_base_url: ?[]const u8 = null,
     override: auth_resolver.OverrideLookup = .none,
+    merged_headers: ?[]ai_types.HeaderPair = null,
 
     fn deinit(self: *EffectiveModel, allocator: std.mem.Allocator) void {
         if (self.defaulted_base_url) |base| allocator.free(base);
         self.defaulted_base_url = null;
+        if (self.merged_headers) |headers| allocator.free(headers);
+        self.merged_headers = null;
         self.override.deinit(allocator);
     }
 };
@@ -853,6 +856,8 @@ fn modelWithProtocolDefaults(
     errdefer if (defaulted_base) |base| allocator.free(base);
     var lookup = try auth_resolver.overrideLookup(allocator, model.provider);
     errdefer lookup.deinit(allocator);
+    var merged: ?[]ai_types.HeaderPair = null;
+    errdefer if (merged) |headers| allocator.free(headers);
 
     if (!client_supplied_base and model.provider.len > 0 and model.api.len > 0) {
         const resolved_kimi_region: ?[]const u8 = if (isKimiPair(model.provider, model.api))
@@ -876,13 +881,17 @@ fn modelWithProtocolDefaults(
             if (file) |found| {
                 if (auth_resolver.overrideApplies(allocator, found, model.provider, resolved)) {
                     if (found.base_url.len > 0) effective.carries_version = found.carries_version;
-                    if (model.headers == null and found.headers.len > 0) effective.headers = found.headers;
+                    merged = try withOverrideHeaders(allocator, model.headers, found.headers);
+                    if (merged) |headers| effective.headers = headers;
                 }
             }
         } else {
             allocator.free(resolved);
             if (file) |found| {
-                if (found.base_url.len == 0 and model.headers == null and found.headers.len > 0) effective.headers = found.headers;
+                if (found.base_url.len == 0) {
+                    merged = try withOverrideHeaders(allocator, model.headers, found.headers);
+                    if (merged) |headers| effective.headers = headers;
+                }
             }
         }
     }
@@ -891,7 +900,8 @@ fn modelWithProtocolDefaults(
         switch (lookup) {
             .endpoint => |found| if (auth_resolver.overrideApplies(allocator, found, model.provider, model.base_url)) {
                 if (model.carries_version == null and found.base_url.len > 0) effective.carries_version = found.carries_version;
-                if (model.headers == null and found.headers.len > 0) effective.headers = found.headers;
+                merged = try withOverrideHeaders(allocator, model.headers, found.headers);
+                if (merged) |headers| effective.headers = headers;
             },
             else => {},
         }
@@ -910,7 +920,32 @@ fn modelWithProtocolDefaults(
         effective.compat = try provider_base_url.transparentProxyCompat(allocator, model.provider);
     }
 
-    return .{ .model = effective, .defaulted_base_url = defaulted_base, .override = lookup };
+    return .{ .model = effective, .defaulted_base_url = defaulted_base, .override = lookup, .merged_headers = merged };
+}
+
+fn withOverrideHeaders(allocator: std.mem.Allocator, current: ?[]const ai_types.HeaderPair, extra: []const ai_types.HeaderPair) !?[]ai_types.HeaderPair {
+    const existing = current orelse &.{};
+    var missing: usize = 0;
+    for (extra) |header| {
+        if (!namesHeader(existing, header.name)) missing += 1;
+    }
+    if (missing == 0) return null;
+    const merged = try allocator.alloc(ai_types.HeaderPair, existing.len + missing);
+    @memcpy(merged[0..existing.len], existing);
+    var next = existing.len;
+    for (extra) |header| {
+        if (namesHeader(existing, header.name)) continue;
+        merged[next] = header;
+        next += 1;
+    }
+    return merged;
+}
+
+fn namesHeader(headers: []const ai_types.HeaderPair, name: []const u8) bool {
+    for (headers) |header| {
+        if (std.ascii.eqlIgnoreCase(header.name, name)) return true;
+    }
+    return false;
 }
 
 fn isKimiPair(provider_id: []const u8, api: []const u8) bool {
@@ -2760,6 +2795,15 @@ test "an override's headers ride every request it applies to, including one that
     var kept_stray = try modelWithProtocolDefaults(&server, elsewhere);
     defer kept_stray.deinit(std.testing.allocator);
     try std.testing.expect(kept_stray.model.headers == null);
+
+    var session_headers = [_]ai_types.HeaderPair{.{ .name = @constCast("ChatGPT-Account-ID"), .value = @constCast("acct-1") }};
+    var carrying = request;
+    carrying.headers = &session_headers;
+    var joined = try modelWithProtocolDefaults(&server, carrying);
+    defer joined.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 2), joined.model.headers.?.len);
+    try std.testing.expectEqualStrings("acct-1", joined.model.headers.?[0].value);
+    try std.testing.expectEqualStrings("X-Tenant", joined.model.headers.?[1].name);
 
     auth_resolver.test_override_config = "{\"overrides\":[{\"id\":\"openrouter\",\"headers\":{\"X-Tenant\":\"acme\"}}]}";
     var unresolved = request;

@@ -170,10 +170,6 @@ fn loadProductionModelsWithMode(allocator: std.mem.Allocator, mode: CatalogLoadM
     var override_config = try loadOverrideFile(allocator);
     defer override_config.deinit(allocator);
     const overrides = activeOverrides(&override_config);
-    if (anthropic_models.len == 0 and custom_providers.overrideFor(overrides, anthropic_provider_id) != null) {
-        allocator.free(anthropic_models);
-        anthropic_models = try anthropicStaticModels(allocator);
-    }
     try applyVendorOverride(allocator, &anthropic_models, anthropic_provider_id, overrides);
     try applyVendorOverride(allocator, &codex_models, openai_codex_provider_id, overrides);
 
@@ -869,6 +865,11 @@ fn activeOverrides(config: *const custom_providers.Config) []const custom_provid
 
 fn applyVendorOverride(allocator: std.mem.Allocator, models: *[]ai_types.Model, id: []const u8, overrides: []const custom_providers.Override) !void {
     const file = custom_providers.overrideFor(overrides, id) orelse return;
+    if (models.len == 0) {
+        const offered = try vendorFallbackModels(allocator, id, file.models);
+        allocator.free(models.*);
+        models.* = offered;
+    }
     const all_models = models.*;
     var kept: usize = 0;
     var index: usize = 0;
@@ -880,11 +881,13 @@ fn applyVendorOverride(allocator: std.mem.Allocator, models: *[]ai_types.Model, 
     }
     while (index < all_models.len) {
         var model = all_models[index];
-        if (file.models.len > 0 and allowlistSpec(file.models, model.id) == null) {
+        const spec = allowlistSpec(file.models, model.id);
+        if (file.models.len > 0 and spec == null) {
             model.deinit(allocator);
             index += 1;
             continue;
         }
+        if (spec) |named| try shapeModelBySpec(allocator, &all_models[index], named);
         try stampOverride(allocator, &all_models[index], id, file);
         all_models[kept] = all_models[index];
         kept += 1;
@@ -908,7 +911,75 @@ fn stampOverride(allocator: std.mem.Allocator, model: *ai_types.Model, id: []con
         model.base_url = base;
         model.carries_version = file.carries_version;
     }
-    if (model.headers == null) model.headers = try dupeHeaders(allocator, file.headers);
+    try mergeOverrideHeaders(allocator, model, file.headers);
+}
+
+fn mergeOverrideHeaders(allocator: std.mem.Allocator, model: *ai_types.Model, extra: []const ai_types.HeaderPair) !void {
+    const existing = model.headers orelse &.{};
+    var missing: usize = 0;
+    for (extra) |header| {
+        if (!headerNamed(existing, header.name)) missing += 1;
+    }
+    if (missing == 0) return;
+    const merged = try allocator.alloc(ai_types.HeaderPair, existing.len + missing);
+    var filled: usize = existing.len;
+    errdefer {
+        for (merged[existing.len..filled]) |header| {
+            allocator.free(header.name);
+            allocator.free(header.value);
+        }
+        allocator.free(merged);
+    }
+    @memcpy(merged[0..existing.len], existing);
+    for (extra) |header| {
+        if (headerNamed(existing, header.name)) continue;
+        const name = try allocator.dupe(u8, header.name);
+        errdefer allocator.free(name);
+        merged[filled] = .{ .name = name, .value = try allocator.dupe(u8, header.value) };
+        filled += 1;
+    }
+    if (model.headers) |old| allocator.free(old);
+    model.headers = merged;
+}
+
+fn headerNamed(headers: []const ai_types.HeaderPair, name: []const u8) bool {
+    for (headers) |header| {
+        if (std.ascii.eqlIgnoreCase(header.name, name)) return true;
+    }
+    return false;
+}
+
+fn shapeModelBySpec(allocator: std.mem.Allocator, model: *ai_types.Model, spec: custom_providers.ModelSpec) !void {
+    if (!std.mem.eql(u8, spec.name, spec.id) and !std.mem.eql(u8, spec.name, model.name)) {
+        const name = try allocator.dupe(u8, spec.name);
+        allocator.free(model.name);
+        model.name = name;
+    }
+    if (spec.context_window) |window| model.context_window = window;
+    if (spec.max_tokens) |tokens| model.max_tokens = tokens;
+}
+
+fn vendorFallbackModels(allocator: std.mem.Allocator, id: []const u8, specs: []const custom_providers.ModelSpec) ![]ai_types.Model {
+    if (specs.len == 0) {
+        if (std.mem.eql(u8, id, anthropic_provider_id)) return anthropicStaticModels(allocator);
+        return emptyModels(allocator);
+    }
+    var built = std.ArrayList(ai_types.Model).empty;
+    errdefer {
+        for (built.items) |*model| model.deinit(allocator);
+        built.deinit(allocator);
+    }
+    for (specs) |spec| {
+        var model = if (std.mem.eql(u8, id, anthropic_provider_id))
+            try anthropicModel(allocator, spec.id, spec.name)
+        else blk: {
+            var empty: std.json.ObjectMap = .empty;
+            break :blk try codexModelFromObject(allocator, &empty, spec.id, catalog_context_window, catalog_max_output_tokens, .{});
+        };
+        errdefer model.deinit(allocator);
+        try built.append(allocator, model);
+    }
+    return built.toOwnedSlice(allocator);
 }
 
 fn allowlistSpec(allowlist: []const custom_providers.ModelSpec, id: []const u8) ?custom_providers.ModelSpec {
@@ -2692,6 +2763,47 @@ test "an Anthropic override moves the row's models to its base with its headers,
     try std.testing.expectEqual(@as(usize, 1), outranked.len);
     try std.testing.expect(outranked[0].headers == null);
     try std.testing.expect(!std.mem.eql(u8, outranked[0].base_url, "https://proxy.example/anthropic"));
+}
+
+test "a vendor override's models stand in when nothing was listed, shaped by their own figures" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
+    const named = [_]custom_providers.ModelSpec{.{ .id = "claude-proxy-1", .name = "Proxy Claude", .context_window = 64_000, .max_tokens = 4_000 }};
+    const overrides = [_]custom_providers.Override{
+        .{ .id = "anthropic", .base_url = "https://proxy.example/anthropic", .models = &named },
+        .{ .id = "openai-codex", .base_url = "https://proxy.example/codex", .models = &[_]custom_providers.ModelSpec{.{ .id = "codex-proxy-1", .name = "codex-proxy-1" }} },
+    };
+    test_catalog_overrides = &overrides;
+    defer test_catalog_overrides = null;
+
+    const models = try loadProductionModels(std.testing.allocator);
+    defer deinitModels(std.testing.allocator, models);
+    try std.testing.expectEqual(@as(usize, 2), models.len);
+    try std.testing.expectEqualStrings("codex-proxy-1", models[0].id);
+    try std.testing.expectEqualStrings("https://proxy.example/codex", models[0].base_url);
+    try std.testing.expectEqualStrings("claude-proxy-1", models[1].id);
+    try std.testing.expectEqualStrings("Proxy Claude", models[1].name);
+    try std.testing.expectEqual(@as(u32, 64_000), models[1].context_window);
+    try std.testing.expectEqual(@as(u32, 4_000), models[1].max_tokens);
+    try std.testing.expectEqualStrings("https://proxy.example/anthropic", models[1].base_url);
+}
+
+test "a vendor override's headers join the headers a login put on its models" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
+    const allocator = std.testing.allocator;
+    var empty: std.json.ObjectMap = .empty;
+    const listed = try allocator.alloc(ai_types.Model, 1);
+    listed[0] = try codexModelFromObject(allocator, &empty, "gpt-codex", catalog_context_window, catalog_max_output_tokens, .{ .account_id = "acct-1", .client_version = "1.2.3" });
+    var models = listed;
+    defer deinitModels(allocator, models);
+    const headers = [_]ai_types.HeaderPair{ .{ .name = "X-Tenant", .value = "acme" }, .{ .name = "chatgpt-account-id", .value = "spoofed" } };
+    const overrides = [_]custom_providers.Override{.{ .id = "openai-codex", .headers = &headers }};
+    try applyVendorOverride(allocator, &models, openai_codex_provider_id, &overrides);
+    const merged = models[0].headers.?;
+    try std.testing.expectEqual(@as(usize, 3), merged.len);
+    try std.testing.expectEqualStrings("acct-1", merged[1].value);
+    try std.testing.expectEqualStrings("X-Tenant", merged[2].name);
 }
 
 test "refreshProductionModels keeps Anthropic models when Codex refresh fails" {
