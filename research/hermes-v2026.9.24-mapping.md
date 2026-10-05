@@ -444,6 +444,33 @@ ledger matters to #448: the reload already exists on the wire, and the adapter
 is one `session.resume` away from it. Nothing above was observed on a running
 gateway; it is all read from the source at the pin.
 
+**What the adapter does now (#448, capability revision v4).** Both trees bind a
+session to the `stored_session_id` `session.create` reports, and a reopen
+starts a fresh gateway and calls `session.resume` with it. The reload was then
+observed on the pinned gateway against a loopback provider, by
+`TestHermesProcessReopensItsStoredSessionWithTheConversation`: the default cold
+path answers `status: "idle"`, the stored messages, and `info.model` as the
+model the session last ran under, and the next turn's provider request carries
+the conversation from before the restart. A `4007` refuses the reopen.
+
+**A reload can restart work, so that reload is refused.** `_resume_cold` and
+`_resume_eager` call `_maybe_schedule_auto_continue`
+(`tui_gateway/session_auto_continue.py`), which reads the crash marker
+`tui_gateway/turn_marker.py` keeps at `HERMES_HOME/desktop/interrupted_turns.json`
+and, when the marker is fresh (fifteen minutes by default) and under its
+attempt limit, schedules a continuation turn on a background thread and adds
+`auto_continue: {attempt, interrupted_at}` to the reply. Decision 0039 says a
+reopen restores without restarting work, so a reply carrying `auto_continue`
+refuses the reopen as `unsupported_feature` (`session.open.reopen`,
+`unsatisfiable`) and the adapter ends that gateway process, which takes the
+scheduled turn with it: the continuation first waits for an agent build, and
+the gate observed no provider request after the refusal. `session.interrupt`
+is not sent: the gateway did not answer it within ten seconds on a session
+still building its agent. A reply still `running`, or with a status other
+than `idle`, is refused the same way. The marker survives the refusal, so a
+reopen succeeds once Hermes retires it as stale. Both exchanges are in the
+corpus as `session-reopen` and `session-reopen-auto-continue`.
+
 ## Reasoning level and compaction at v2026.9.24
 
 Recorded for [Decision 0045](../decisions/0045-reasoning-level-and-compaction-policy-are-session-settings.md).

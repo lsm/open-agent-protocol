@@ -12,6 +12,9 @@ const rpc = @import("rpc");
 pub const endpoint_id = session.endpoint_id;
 pub const capability_revision = harness_pins.hermes_capability_revision;
 
+const reopen_support_reason = "session.resume reloads the bound stored session; one Hermes would auto-continue after a crash is refused and its process ended, taking the scheduled turn with it";
+const reopen_recovery_reason = "Hermes restored the bound conversation and reports the model it last ran under; OAP runs and cursors remain process-local";
+
 const features = [_]contract.Feature{
     .{ .key = "action.permissions", .level = .degraded, .reason = "approval gates surface as input interactions" },
     .{ .key = "action.tools", .level = .degraded, .reason = "tool.start/complete only; started synthesized; failures ride in result without a pinned discriminator" },
@@ -30,6 +33,7 @@ const features = [_]contract.Feature{
     .{ .key = "session.message.delivery.steer", .level = .unavailable, .reason = "native session.steer not exposed in v1" },
     .{ .key = "session.message.submit", .level = .degraded, .reason = "status-only result; ownership by construction via message.start" },
     .{ .key = "session.open", .level = .native, .reason = "session.create mints the runtime session id" },
+    .{ .key = contract.feature_open_reopen, .level = .native, .reason = reopen_support_reason },
     .{ .key = contract.feature_session_reasoning, .level = .native, .reason = "config.set reasoning, scoped to the session, right after session.create and again between runs; off is Hermes's none", .modes = &.{ contract.mode_session_open, contract.mode_session_live } },
     .{ .key = "session.state", .level = .degraded, .reason = "reducer-owned live projection corroborated by session.info" },
     .{ .key = "user_input", .level = .native, .reason = "approval/clarify/sudo/secret server requests, withdrawn by request.cancel" },
@@ -100,21 +104,22 @@ pub const Session = struct {
     calls: i64 = 0,
     ended: bool = false,
     reaped: bool = false,
+    stored: []const u8 = "",
+    model: []const u8 = "",
+    recovered: bool = false,
 
     fn open(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
+        if (request.reopen and std.mem.trim(u8, request.native_session_id, " \t\r\n").len == 0) return refusal.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
         const self = try construct(owner, arena, request, refusal);
         errdefer self.destroy();
         try self.handshake(arena, refusal);
-        var params: std.json.ObjectMap = .empty;
-        if (owner.config.model.len > 0) try params.put(self.owned(), "model", .{ .string = owner.config.model });
-        const created = try self.call(arena, "session.create", .{ .object = params }, refusal);
-        const native_id = member(created, "session_id");
-        if (native_id.len == 0 or member(created, "stored_session_id").len == 0) return refusal.fail(error.BackendFailed, "the hermes gateway answered session.create without a session_id and stored_session_id");
+        self.model = owner.config.model;
+        const native_id = if (request.reopen) try self.reopenNative(arena, request.native_session_id, refusal) else try self.createNative(arena, refusal);
         if (request.reasoning_level) |level| try self.setReasoning(arena, native_id, level, refusal);
         self.reducer = session.Reducer.init(self.reducer_arena, .{
             .session_id = self.id,
             .native_id = native_id,
-            .model = owner.config.model,
+            .model = self.model,
             .responder = self.participant,
             .revision = capability_revision,
             .counter = &owner.ids,
@@ -122,6 +127,34 @@ pub const Session = struct {
         });
         self.reducer.?.open();
         return self;
+    }
+
+    fn createNative(self: *Session, arena: std.mem.Allocator, refusal: *contract.Refusal) contract.Failure![]const u8 {
+        var params: std.json.ObjectMap = .empty;
+        if (self.owner.config.model.len > 0) try params.put(self.owned(), "model", .{ .string = self.owner.config.model });
+        const created = try self.call(arena, "session.create", .{ .object = params }, refusal);
+        const native_id = member(created, "session_id");
+        const stored = member(created, "stored_session_id");
+        if (native_id.len == 0 or stored.len == 0) return refusal.fail(error.BackendFailed, "the hermes gateway answered session.create without a session_id and stored_session_id");
+        self.stored = try self.owned().dupe(u8, stored);
+        return native_id;
+    }
+
+    fn reopenNative(self: *Session, arena: std.mem.Allocator, stored: []const u8, refusal: *contract.Refusal) contract.Failure![]const u8 {
+        var params: std.json.ObjectMap = .empty;
+        try params.put(self.owned(), "session_id", .{ .string = stored });
+        const resumed = self.call(arena, "session.resume", .{ .object = params }, refusal) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            return refusal.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
+        };
+        const native_id = member(resumed, "session_id");
+        if (native_id.len == 0 or pendingAutoContinue(resumed) or runningOrBusy(resumed)) return refusal.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
+        self.stored = try self.owned().dupe(u8, stored);
+        const info = if (resumed == .object) resumed.object.get("info") orelse std.json.Value.null else std.json.Value.null;
+        const model = member(info, "model");
+        if (model.len > 0) self.model = try self.owned().dupe(u8, model);
+        self.recovered = true;
+        return native_id;
     }
 
     fn construct(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
@@ -171,6 +204,7 @@ pub const Session = struct {
 
     const vtable = contract.Session.VTable{
         .id = idOf,
+        .native_id = nativeId,
         .state = state,
         .submit = submit,
         .resolve = resolve,
@@ -412,13 +446,17 @@ pub const Session = struct {
         return cast(ptr).id;
     }
 
+    fn nativeId(ptr: *anyopaque) []const u8 {
+        return cast(ptr).stored;
+    }
+
     fn state(ptr: *anyopaque, arena: std.mem.Allocator, refusal: *contract.Refusal) contract.Failure!oap_types.SessionState {
         _ = refusal;
         const self = cast(ptr);
         if (self.closed()) return error.SessionClosed;
         const reducer = self.live();
         const active_run_id: ?[]const u8 = if (reducer) |running| try arena.dupe(u8, running.run.?.id) else null;
-        const model = self.owner.config.model;
+        const model = self.model;
         const current_model_id: ?[]const u8 = if (model.len > 0) try arena.dupe(u8, model) else null;
         const transcript_cursor: ?[]const u8 = if (self.reducer) |present| (if (present.cursor > 0) try std.fmt.allocPrint(arena, "{d}", .{present.cursor}) else null) else null;
         const reasoning_level: ?[]const u8 = if (self.reported_level) |level| try arena.dupe(u8, level) else null;
@@ -430,6 +468,8 @@ pub const Session = struct {
             .transcript_cursor = transcript_cursor,
             .updated_at_ms = wallClock(),
             .reasoning_level = reasoning_level,
+            .recovered = self.recovered,
+            .recovery_reason = if (self.recovered) reopen_recovery_reason else null,
         };
     }
 
@@ -638,6 +678,22 @@ fn ready(received: Session.Received) bool {
     if (epoch.len != 32) return false;
     for (epoch) |char| if (!std.ascii.isHex(char)) return false;
     return true;
+}
+
+fn pendingAutoContinue(resumed: std.json.Value) bool {
+    if (resumed != .object) return false;
+    const marker = resumed.object.get("auto_continue") orelse return false;
+    return marker != .null;
+}
+
+fn runningOrBusy(resumed: std.json.Value) bool {
+    if (resumed != .object) return true;
+    if (resumed.object.get("running")) |running| {
+        if (running != .bool) return true;
+        if (running.bool) return true;
+    }
+    const status = member(resumed, "status");
+    return status.len > 0 and !std.mem.eql(u8, status, "idle");
 }
 
 fn member(value: std.json.Value, key: []const u8) []const u8 {
@@ -1113,4 +1169,130 @@ test "a gateway that dies mid-run fails the run with its exit and closes the ses
     try testing.expectEqualStrings("child exited with status 5", failure.get("message").?.string);
     try testing.expectError(error.SessionClosed, probe.handle.?.state(probe.arena.allocator(), &refusal));
     try testing.expectError(error.SessionClosed, probe.submit("after", &refusal));
+}
+
+const reopen_ready =
+    \\#!/bin/sh
+    \\exec 3>>"$(dirname "$0")/stdin.log"
+    \\take() { IFS= read -r line || exit 0; printf '%s\n' "$line" >&3; }
+    \\printf '{"jsonrpc":"2.0","method":"event","params":{"type":"gateway.ready","payload":{"skin":{},"change_events":true,"replay_epoch":"e3b0c44298fc1c149afbf4c8996fb924"}}}\n'
+    \\
+;
+
+fn reopenScript(allocator: std.mem.Allocator, answer: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "{s}take; printf '%s\\n' '{{\"id\":1,\"jsonrpc\":\"2.0\",{s}}}'\nwhile IFS= read -r line; do printf '%s\\n' \"$line\" >&3; done\n", .{ reopen_ready, answer });
+}
+
+test "a reopen resumes the bound stored session and reports the model it ran under" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const held = arena.allocator();
+    const script = try reopenScript(held, "\"result\":{\"session_id\":\"rt000002\",\"resumed\":\"stored-1\",\"message_count\":2,\"messages\":[],\"info\":{\"model\":\"resumed-model\"},\"inflight\":null,\"running\":false,\"status\":\"idle\"}");
+    var fake = try FakeGateway.init(testing.allocator, script);
+    defer fake.deinit(testing.allocator);
+    var adapter = Adapter.init(testing.allocator, fake.config());
+    var refusal = contract.Refusal{};
+    const opened = try adapter.adapter().open(held, .{ .session_id = "oap-session", .participant = "user", .reopen = true, .native_session_id = "stored-1" }, &refusal);
+    defer opened.teardown();
+    const state_value = try opened.state(held, &refusal);
+    try testing.expect(state_value.recovered);
+    try testing.expectEqualStrings(reopen_recovery_reason, state_value.recovery_reason.?);
+    try testing.expectEqualStrings("resumed-model", state_value.current_model_id.?);
+    try testing.expectEqualStrings("stored-1", opened.nativeId());
+    const written = try fake.written(held);
+    try testing.expectEqualStrings("{\"id\":1,\"jsonrpc\":\"2.0\",\"method\":\"session.resume\",\"params\":{\"session_id\":\"stored-1\"}}\n", written);
+}
+
+test "a fresh open binds the stored session id session.create reports" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var fake = try FakeGateway.init(testing.allocator, fake_prelude ++ "while IFS= read -r line; do :; done\n");
+    defer fake.deinit(testing.allocator);
+    var adapter = Adapter.init(testing.allocator, fake.config());
+    var refusal = contract.Refusal{};
+    const opened = try adapter.adapter().open(arena.allocator(), .{ .session_id = "fresh", .participant = "user" }, &refusal);
+    defer opened.teardown();
+    try testing.expectEqualStrings("key0001", opened.nativeId());
+}
+
+test "a reopen refuses what it cannot restore without restarting work" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const held = arena.allocator();
+    const answers = [_][]const u8{
+        "\"error\":{\"code\":4007,\"message\":\"session not found\"}",
+        "\"result\":{\"session_id\":\"rt\",\"resumed\":\"stored-1\",\"running\":true,\"status\":\"streaming\"}",
+        "\"result\":{\"session_id\":\"rt\",\"resumed\":\"stored-1\",\"running\":false,\"status\":\"idle\",\"auto_continue\":{\"attempt\":1,\"interrupted_at\":1.5}}",
+        "\"result\":{\"resumed\":\"stored-1\",\"running\":false,\"status\":\"idle\"}",
+    };
+    for (answers) |answer| {
+        var fake = try FakeGateway.init(testing.allocator, try reopenScript(held, answer));
+        defer fake.deinit(testing.allocator);
+        var adapter = Adapter.init(testing.allocator, fake.config());
+        var refusal = contract.Refusal{};
+        try testing.expectError(error.UnsupportedFeature, adapter.adapter().open(held, .{ .session_id = "s1", .participant = "user", .reopen = true, .native_session_id = "stored-1" }, &refusal));
+        try testing.expectEqualStrings(contract.feature_open_reopen, refusal.feature);
+        try testing.expectEqualStrings(contract.reason_unsatisfiable, refusal.reason);
+        const written = try fake.written(held);
+        try testing.expect(std.mem.indexOf(u8, written, "prompt.submit") == null);
+    }
+    var fake = try FakeGateway.init(testing.allocator, reopen_ready);
+    defer fake.deinit(testing.allocator);
+    var adapter = Adapter.init(testing.allocator, fake.config());
+    var refusal = contract.Refusal{};
+    try testing.expectError(error.UnsupportedFeature, adapter.adapter().open(held, .{ .session_id = "s1", .participant = "user", .reopen = true, .native_session_id = " " }, &refusal));
+    try testing.expectError(error.FileNotFound, fake.tmp.dir.openFile(testing.io, "stdin.log", .{}));
+}
+
+test "Hermes replays the captured reload exchanges through its native loader" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const held = arena.allocator();
+    const root = harness_pins.hermes_corpus;
+    for ([_][]const u8{ "session-reopen", "session-reopen-auto-continue" }) |case_id| {
+        const path = try std.fs.path.join(held, &.{ root, case_id, "native.jsonl" });
+        const input = try compat.fs.readFileAlloc(held, compat.fs.getCwd(), path, 256 * 1024);
+        var script: std.ArrayList(u8) = .empty;
+        try script.appendSlice(held, "#!/bin/sh\nexec 3>>\"$(dirname \"$0\")/stdin.log\"\ntake() { IFS= read -r line || exit 0; printf '%s\\n' \"$line\" >&3; }\n");
+        var expected_write: []const u8 = "";
+        var lines = std.mem.tokenizeScalar(u8, input, '\n');
+        while (lines.next()) |line| {
+            const frame = try std.json.parseFromSliceLeaky(std.json.Value, held, line, .{});
+            const raw = frame.object.get("raw").?.string;
+            if (std.mem.eql(u8, member(frame, "direction"), "host-to-gateway")) {
+                expected_write = raw;
+                try script.appendSlice(held, "take\n");
+            } else {
+                const quoted = try std.mem.replaceOwned(u8, held, raw, "'", "'\\''");
+                try script.appendSlice(held, try std.fmt.allocPrint(held, "printf '%s\\n' '{s}'\n", .{quoted}));
+            }
+        }
+        try script.appendSlice(held, "while IFS= read -r line; do printf '%s\\n' \"$line\" >&3; done\n");
+        var fake = try FakeGateway.init(testing.allocator, script.items);
+        defer fake.deinit(testing.allocator);
+        var config = fake.config();
+        config.model = "";
+        var adapter = Adapter.init(testing.allocator, config);
+        const request = try std.json.parseFromSliceLeaky(std.json.Value, held, expected_write, .{});
+        const stored = member(request.object.get("params").?, "session_id");
+        var refusal = contract.Refusal{};
+        const expected_path = try std.fs.path.join(held, &.{ root, case_id, "expected-oap.json" });
+        const expected = try std.json.parseFromSliceLeaky(std.json.Value, held, try compat.fs.readFileAlloc(held, compat.fs.getCwd(), expected_path, 4096), .{});
+        if (std.mem.eql(u8, case_id, "session-reopen")) {
+            const opened = try adapter.adapter().open(held, .{ .session_id = "session", .participant = "user", .reopen = true, .native_session_id = stored }, &refusal);
+            defer opened.teardown();
+            const state_value = try opened.state(held, &refusal);
+            try testing.expectEqualStrings(member(expected, "current_model_id"), state_value.current_model_id.?);
+            try testing.expectEqualStrings(member(expected.object.get("recovery").?, "reason"), state_value.recovery_reason.?);
+            try testing.expect(state_value.recovered and state_value.active_run_id == null);
+        } else {
+            try testing.expectError(error.UnsupportedFeature, adapter.adapter().open(held, .{ .session_id = "session", .participant = "user", .reopen = true, .native_session_id = stored }, &refusal));
+            try testing.expectEqualStrings(member(expected, "feature"), refusal.feature);
+            try testing.expectEqualStrings(member(expected, "reason"), refusal.reason);
+        }
+        const written = try std.json.parseFromSliceLeaky(std.json.Value, held, std.mem.trimEnd(u8, try fake.written(held), "\n"), .{});
+        try testing.expectEqualStrings(member(request, "method"), member(written, "method"));
+        try testing.expectEqualStrings(stored, member(written.object.get("params").?, "session_id"));
+        try testing.expectEqual(@as(usize, 1), written.object.get("params").?.object.count());
+    }
 }
