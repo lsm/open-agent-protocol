@@ -7650,8 +7650,8 @@ fn buildOapInferenceModel(
     const base_url = provider_base_url.defaultBaseUrlForRefWithFile(allocator, builtin.id, builtin.api, null, if (file) |found| found.base_url else "") catch
         try allocator.dupe(u8, builtin.endpoint);
     errdefer allocator.free(base_url);
-    const from_file = if (file) |found| std.mem.eql(u8, base_url, found.base_url) else false;
-    const carries_version: ?bool = if (from_file) file.?.carries_version else null;
+    const from_file = if (file) |found| auth_resolver.overrideApplies(allocator, found, builtin.id, base_url) else false;
+    const carries_version: ?bool = if (from_file and file.?.base_url.len > 0) file.?.carries_version else null;
     const input = try allocator.alloc([]const u8, 1);
     errdefer allocator.free(input);
     input[0] = try allocator.dupe(u8, "text");

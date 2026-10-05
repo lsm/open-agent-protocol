@@ -67,6 +67,11 @@ pub fn storedCredentialWithheld(allocator: std.mem.Allocator, lookup: OverrideLo
     };
 }
 
+pub fn overrideApplies(allocator: std.mem.Allocator, found: OverrideEndpoint, provider_id: []const u8, base_url: []const u8) bool {
+    if (found.base_url.len > 0) return std.mem.eql(u8, std.mem.trimEnd(u8, base_url, "/"), std.mem.trimEnd(u8, found.base_url, "/"));
+    return provider_base_url.knownOrigin(allocator, provider_id, base_url);
+}
+
 pub const OverrideLookup = union(enum) {
     none,
     unreadable,
@@ -95,7 +100,7 @@ pub fn overrideLookup(allocator: std.mem.Allocator, provider_id: []const u8) std
 pub fn overrideLookupIn(allocator: std.mem.Allocator, overrides: []const custom_providers.Override, provider_id: []const u8) std.mem.Allocator.Error!OverrideLookup {
     if (!provider_catalog.servedByCatalogLoader(provider_id)) return .none;
     const override = custom_providers.overrideFor(overrides, provider_id) orelse return .none;
-    const base = override.base_url orelse return .none;
+    const base = override.base_url orelse "";
     const base_url = try allocator.dupe(u8, base);
     errdefer allocator.free(base_url);
     const headers = try allocator.alloc(ai_types.HeaderPair, override.headers.len);

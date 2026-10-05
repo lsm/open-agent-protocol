@@ -587,13 +587,22 @@ fn catalogEndpointFromEnvironment(
         catalog = moved;
         base_url = try resolvedBaseForTarget(allocator, id, catalog.wire, region, file_base);
     }
-    const from_file = file_base.len > 0 and std.mem.eql(u8, base_url, file_base);
-    var endpoint = try catalogEndpointWithBase(allocator, catalog, base_url, if (from_file) file.?.carries_version else null);
+    const from_file = fileApplies(catalog, base_url, file);
+    const redirected = from_file and file_base.len > 0 and base_url.len > 0;
+    var endpoint = try catalogEndpointWithBase(allocator, catalog, base_url, if (redirected) file.?.carries_version else null);
     if (from_file) {
         endpoint.headers = file.?.headers;
-        endpoint.withholds_stored = !file.?.forwards_credential;
+        endpoint.withholds_stored = redirected and !file.?.forwards_credential;
     }
     return endpoint;
+}
+
+fn fileApplies(catalog: CatalogEndpoint, base_url: []const u8, file: ?custom_providers.Override) bool {
+    const given = file orelse return false;
+    const file_base = given.base_url orelse "";
+    if (file_base.len == 0) return true;
+    if (base_url.len > 0) return std.mem.eql(u8, base_url, file_base);
+    return std.mem.eql(u8, std.mem.trimEnd(u8, catalog.base_url, "/"), std.mem.trimEnd(u8, file_base, "/"));
 }
 
 fn overriddenTarget(id: []const u8, region: ?[]const u8, catalog: CatalogEndpoint, base_url: []const u8) ?CatalogEndpoint {
@@ -731,9 +740,10 @@ fn loadRowsWithProvenance(
                 merged.file_carries_version = file.?.carries_version;
             }
             var made = (try catalogEndpointWithOverrides(allocator, id, merged)) orelse break :testEndpoint null;
-            if (file_base.len > 0 and std.mem.eql(u8, made.base_url, file_base)) {
+            const canonical = made.owned_base_url == null;
+            if (fileApplies(made, if (canonical) "" else made.base_url, file)) {
                 made.headers = file.?.headers;
-                made.withholds_stored = !file.?.forwards_credential;
+                made.withholds_stored = file_base.len > 0 and !canonical and !file.?.forwards_credential;
             }
             break :testEndpoint made;
         } else try catalogEndpointFromEnvironment(allocator, storage, id, file);
@@ -3869,6 +3879,39 @@ test "an override that states its version lists from that version once, and one 
     var routed = (try catalogEndpointWithOverrides(std.testing.allocator, "openrouter", .{ .file = "https://proxy.example/openrouter" })).?;
     defer routed.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("https://proxy.example/openrouter/v1/models", routed.models_url);
+}
+
+test "an override that keeps the row's endpoint lists with its headers and still sends the stored credential" {
+    var storage = oauth_storage.AuthStorage{
+        .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(std.testing.allocator),
+        .allocator = std.testing.allocator,
+    };
+    defer storage.deinit();
+    try storage.providers.put(try std.testing.allocator.dupe(u8, "deepseek"), .{ .api_key = try std.testing.allocator.dupe(u8, "stored-key") });
+    test_catalog_discovery = &[_]CatalogDiscovery{
+        .{ .id = "deepseek", .models_url = provider_catalog.modelsUrl("deepseek", null).?, .model_ids = &.{"deepseek-chat"} },
+    };
+    defer {
+        test_catalog_discovery = null;
+        test_catalog_overrides = null;
+    }
+    const plain = try loadCatalogModelsWithRows(std.testing.allocator, &.{"deepseek"}, &storage, .allow_cache);
+    defer deinitModels(std.testing.allocator, plain);
+    try std.testing.expectEqual(@as(usize, 1), plain.len);
+    try std.testing.expect(plain[0].headers == null);
+
+    const headers = [_]ai_types.HeaderPair{.{ .name = "X-Tenant", .value = "acme" }};
+    for ([_]?[]const u8{ null, plain[0].base_url }) |base| {
+        const overrides = [_]custom_providers.Override{.{ .id = "deepseek", .base_url = base, .headers = &headers }};
+        test_catalog_overrides = &overrides;
+        test_last_discovery_token_len = 0;
+        const listed = try loadCatalogModelsWithRows(std.testing.allocator, &.{"deepseek"}, &storage, .allow_cache);
+        defer deinitModels(std.testing.allocator, listed);
+        try std.testing.expectEqual(@as(usize, 1), listed.len);
+        try std.testing.expectEqualStrings(plain[0].base_url, listed[0].base_url);
+        try std.testing.expectEqualStrings("X-Tenant", listed[0].headers.?[0].name);
+        try std.testing.expectEqualStrings("stored-key", test_last_discovery_token[0..test_last_discovery_token_len]);
+    }
 }
 
 test "listing an overridden row sends no stored credential unless the override forwards it" {

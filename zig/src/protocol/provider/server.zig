@@ -874,17 +874,21 @@ fn modelWithProtocolDefaults(
             defaulted_base = resolved;
             effective.base_url = resolved;
             if (file) |found| {
-                if (std.mem.eql(u8, resolved, found.base_url)) effective.carries_version = found.carries_version;
+                if (auth_resolver.overrideApplies(allocator, found, model.provider, resolved)) {
+                    if (found.base_url.len > 0) effective.carries_version = found.carries_version;
+                    if (model.headers == null and found.headers.len > 0) effective.headers = found.headers;
+                }
             }
         } else {
             allocator.free(resolved);
         }
     }
 
-    if (client_supplied_base and model.carries_version == null) {
+    if (client_supplied_base) {
         switch (lookup) {
-            .endpoint => |found| if (sameBase(model.base_url, found.base_url)) {
-                effective.carries_version = found.carries_version;
+            .endpoint => |found| if (auth_resolver.overrideApplies(allocator, found, model.provider, model.base_url)) {
+                if (model.carries_version == null and found.base_url.len > 0) effective.carries_version = found.carries_version;
+                if (model.headers == null and found.headers.len > 0) effective.headers = found.headers;
             },
             else => {},
         }
@@ -904,10 +908,6 @@ fn modelWithProtocolDefaults(
     }
 
     return .{ .model = effective, .defaulted_base_url = defaulted_base, .override = lookup };
-}
-
-fn sameBase(left: []const u8, right: []const u8) bool {
-    return std.mem.eql(u8, std.mem.trimEnd(u8, left, "/"), std.mem.trimEnd(u8, right, "/"));
 }
 
 fn isKimiPair(provider_id: []const u8, api: []const u8) bool {
@@ -2653,6 +2653,47 @@ test "a base-less request follows an override only on rows the catalog loader se
     var vendor = try modelWithProtocolDefaults(&server, vendor_model);
     defer vendor.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings(provider_catalog.baseUrl("anthropic", "anthropic-messages", null).?, vendor.model.base_url);
+}
+
+test "an override's headers ride every request it applies to, including one that keeps the row's endpoint, and no other" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
+    defer auth_resolver.test_override_config = null;
+    var registry = api_registry.ApiRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+    var server = ProtocolServer.init(std.testing.allocator, &registry, .{});
+    defer server.deinit();
+
+    var request = testModel();
+    request.provider = "deepseek";
+    request.api = "openai-completions";
+    request.base_url = "";
+    var elsewhere = request;
+    elsewhere.base_url = "https://other.example";
+
+    auth_resolver.test_override_config = "{\"overrides\":[{\"id\":\"deepseek\",\"base_url\":\"https://proxy.example/deepseek\",\"headers\":{\"X-Tenant\":\"acme\"}}]}";
+    var routed = try modelWithProtocolDefaults(&server, request);
+    defer routed.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("https://proxy.example/deepseek", routed.model.base_url);
+    try std.testing.expectEqualStrings("X-Tenant", routed.model.headers.?[0].name);
+    var bridged_request = request;
+    bridged_request.base_url = "https://proxy.example/deepseek";
+    var bridged = try modelWithProtocolDefaults(&server, bridged_request);
+    defer bridged.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("acme", bridged.model.headers.?[0].value);
+    var stray = try modelWithProtocolDefaults(&server, elsewhere);
+    defer stray.deinit(std.testing.allocator);
+    try std.testing.expect(stray.model.headers == null);
+
+    auth_resolver.test_override_config = "{\"overrides\":[{\"id\":\"deepseek\",\"headers\":{\"X-Tenant\":\"acme\"}}]}";
+    var kept = try modelWithProtocolDefaults(&server, request);
+    defer kept.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings(provider_catalog.baseUrl("deepseek", "openai-completions", null).?, kept.model.base_url);
+    try std.testing.expectEqualStrings("X-Tenant", kept.model.headers.?[0].name);
+    try std.testing.expectEqual(@as(?bool, null), kept.model.carries_version);
+    var kept_stray = try modelWithProtocolDefaults(&server, elsewhere);
+    defer kept_stray.deinit(std.testing.allocator);
+    try std.testing.expect(kept_stray.model.headers == null);
 }
 
 test "a request already carrying the override's base keeps the override's version fact" {

@@ -189,7 +189,7 @@ An override may name only these members:
 | Member | Meaning |
 | --- | --- |
 | `id` | Required. The catalogued row to override. An id the catalog does not record is `UnknownProviderId`. |
-| `base_url` | Where the row's requests should go. A trailing `/v1` is stripped unless `carries_version` says otherwise, exactly as for a custom entry. |
+| `base_url` | Where the row's requests should go. A trailing `/v1` is stripped unless `carries_version` says otherwise, exactly as for a custom entry. Without it the row keeps its own endpoint, and the override's `headers` ride the row's requests there. |
 | `carries_version` | `true` when this base already carries the API version. The same fact a custom entry states, and for the same reason: only the endpoint's owner knows where its version sits. |
 | `forwards_credential` | `true` to send the row's stored key or OAuth token to this endpoint. Absent or `false`, it is withheld. |
 | `headers` | Extra request headers for this row. |
