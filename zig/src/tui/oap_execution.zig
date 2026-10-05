@@ -44,6 +44,9 @@ pub const OapExecution = struct {
     live_reasoning: bool = false,
     live_compaction: bool = false,
     live_policy: bool = false,
+    live_steer: bool = false,
+    steers: std.ArrayList(PendingSteer) = .empty,
+    steers_settled: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     compacting: bool = false,
     compaction_settled: bool = false,
     sent_policy: []u8 = &.{},
@@ -64,6 +67,18 @@ pub const OapExecution = struct {
             allocator.free(self.text);
             allocator.free(self.submit_id);
             allocator.free(self.run_id);
+            self.* = undefined;
+        }
+    };
+
+    const PendingSteer = struct {
+        text: []u8,
+        request_id: []u8,
+        admitted: bool = false,
+
+        fn deinit(self: *PendingSteer, allocator: std.mem.Allocator) void {
+            allocator.free(self.text);
+            allocator.free(self.request_id);
             self.* = undefined;
         }
     };
@@ -133,6 +148,8 @@ pub const OapExecution = struct {
         self.forgetPermission();
         for (self.queued_runs.items) |*queued| queued.deinit(allocator);
         self.queued_runs.deinit(allocator);
+        for (self.steers.items) |*pending| pending.deinit(allocator);
+        self.steers.deinit(allocator);
         allocator.free(self.revision);
         allocator.free(self.sent_policy);
         allocator.free(self.session_id);
@@ -156,8 +173,11 @@ pub const OapExecution = struct {
         .set_compaction_policy = setCompactionPolicy,
         .decide_approval = decideApproval,
         .follow_up = followUp,
+        .steer = steer,
         .clear_queued = clearQueued,
         .queued = queuedCount,
+        .steers_pending = steersPending,
+        .steers_settled = steersSettled,
         .stop = stop,
     };
 
@@ -192,6 +212,7 @@ pub const OapExecution = struct {
         self.live_reasoning = self.hub == null and advertisesLive(described, "session.reasoning");
         self.live_compaction = self.hub == null and advertises(described, "session.compact");
         self.live_policy = self.hub == null and advertisesLive(described, "session.compaction.policy");
+        self.live_steer = self.hub == null and advertises(described, "session.message.delivery.steer");
 
         var settings_map = Map.init(a);
         try settings_map.put("thinking_level", .{ .string = @tagName(settings.thinking_level) });
@@ -340,6 +361,81 @@ pub const OapExecution = struct {
             dropped.deinit(self.allocator);
             return err;
         };
+    }
+
+    fn steer(ctx: *anyopaque, text: []const u8) anyerror!void {
+        const self = cast(ctx);
+        if (!self.live_steer) return error.UnavailableOverOap;
+        if (self.compacting) return error.CompactionInProgress;
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        var payload = try self.submission(a, text, "steer");
+        const id = try self.reserveId(a, "steer");
+        const kept_text = try self.allocator.dupe(u8, text);
+        const kept_id = self.allocator.dupe(u8, id) catch |err| {
+            self.allocator.free(kept_text);
+            return err;
+        };
+        const target = self.currentRunId(a) catch |err| {
+            self.allocator.free(kept_text);
+            self.allocator.free(kept_id);
+            return err;
+        };
+        if (target.len > 0) payload.object.put(a, "target_run_id", .{ .string = target }) catch |err| {
+            self.allocator.free(kept_text);
+            self.allocator.free(kept_id);
+            return err;
+        };
+        self.lockInbound();
+        if (!self.turn_open.load(.acquire) or self.cancelling) {
+            self.inbound_mutex.unlock();
+            self.allocator.free(kept_text);
+            self.allocator.free(kept_id);
+            return error.AgentAlreadyStreaming;
+        }
+        self.steers.append(self.allocator, .{ .text = kept_text, .request_id = kept_id }) catch |err| {
+            self.inbound_mutex.unlock();
+            self.allocator.free(kept_text);
+            self.allocator.free(kept_id);
+            return err;
+        };
+        self.inbound_mutex.unlock();
+        self.enqueueWithId(a, "session.message.submit.request", id, payload, null) catch |err| {
+            self.lockInbound();
+            var dropped = self.steers.pop().?;
+            self.inbound_mutex.unlock();
+            dropped.deinit(self.allocator);
+            return err;
+        };
+    }
+
+    fn currentRunId(self: *OapExecution, a: std.mem.Allocator) ![]const u8 {
+        self.lockInbound();
+        defer self.inbound_mutex.unlock();
+        return a.dupe(u8, self.run_id);
+    }
+
+    fn steersPending(ctx: *anyopaque) usize {
+        const self = cast(ctx);
+        self.lockInbound();
+        defer self.inbound_mutex.unlock();
+        return self.steers.items.len;
+    }
+
+    fn steersSettled(ctx: *anyopaque) u64 {
+        return cast(ctx).steers_settled.load(.acquire);
+    }
+
+    fn takeSteer(self: *OapExecution, request_id: []const u8) ?PendingSteer {
+        self.lockInbound();
+        defer self.inbound_mutex.unlock();
+        for (self.steers.items, 0..) |pending, index| {
+            if (!std.mem.eql(u8, pending.request_id, request_id)) continue;
+            _ = self.steers_settled.fetchAdd(1, .acq_rel);
+            return self.steers.orderedRemove(index);
+        }
+        return null;
     }
 
     fn clearQueued(ctx: *anyopaque) void {
@@ -804,6 +900,13 @@ pub const OapExecution = struct {
                 self.closeTurn();
                 self.dropQueued();
                 self.endTurn(.@"error");
+            } else if (std.mem.startsWith(u8, reply_to, "steer-")) {
+                if (self.takeSteer(reply_to)) |taken| {
+                    var pending = taken;
+                    pending.deinit(self.allocator);
+                }
+                const note = try std.fmt.allocPrint(self.allocator, "the steer was not applied: {s}", .{message});
+                self.deliver(.{ .system_warning = .{ .message = OwnedSlice(u8).initOwned(note) } });
             } else if (std.mem.startsWith(u8, reply_to, "queue-")) {
                 self.refuseQueued(reply_to);
                 self.deliver(.{ .system_warning = .{ .message = try self.ownedText(message) } });
@@ -816,6 +919,14 @@ pub const OapExecution = struct {
         const body = payload orelse return;
         if (std.mem.eql(u8, kind, "session.message.submit.response")) {
             const reply_to = stringOf(root, "in_reply_to") orelse "";
+            if (std.mem.startsWith(u8, reply_to, "steer-")) {
+                self.lockInbound();
+                defer self.inbound_mutex.unlock();
+                for (self.steers.items) |*pending| {
+                    if (std.mem.eql(u8, pending.request_id, reply_to)) pending.admitted = true;
+                }
+                return;
+            }
             if (!std.mem.startsWith(u8, reply_to, "queue-")) return;
             try self.admitQueued(reply_to, stringOf(body, "run_id") orelse "");
             return;
@@ -876,6 +987,20 @@ pub const OapExecution = struct {
                 self.openAssistant();
                 self.deliver(.{ .thinking_delta = .{ .content_index = 0, .delta = try self.ownedText(text) } });
             }
+            return;
+        }
+        if (std.mem.eql(u8, kind, "run.steer.applied") or std.mem.eql(u8, kind, "run.steer.dropped")) {
+            var pending = self.takeSteer(stringOf(body, "request_id") orelse "") orelse return;
+            defer pending.deinit(self.allocator);
+            if (std.mem.eql(u8, kind, "run.steer.dropped")) {
+                if (self.cancelling) return;
+                const reason = if (body.get("reason")) |value| (if (value == .object) errorMessage(value.object) else "the run ended first") else "the run ended first";
+                const note = try std.fmt.allocPrint(self.allocator, "the steer was not applied: {s}", .{reason});
+                self.deliver(.{ .system_warning = .{ .message = OwnedSlice(u8).initOwned(note) } });
+                return;
+            }
+            try self.closeAssistant(.stop);
+            self.deliver(.{ .message_end = .{ .role = .user, .text = try self.ownedText(pending.text), .steering = true } });
             return;
         }
         if (std.mem.eql(u8, kind, "action.call.requested")) {
@@ -1032,6 +1157,11 @@ pub const OapExecution = struct {
     }
 
     fn endTurn(self: *OapExecution, reason: tui_session.TuiEndReason) void {
+        self.lockInbound();
+        for (self.steers.items) |*pending| pending.deinit(self.allocator);
+        _ = self.steers_settled.fetchAdd(self.steers.items.len, .acq_rel);
+        self.steers.clearRetainingCapacity();
+        self.inbound_mutex.unlock();
         self.compacting = false;
         self.compaction_settled = false;
         self.awaiting_promotion.store(false, .release);
@@ -1489,6 +1619,17 @@ fn waitForReservation(execution: *OapExecution) void {
     }
 }
 
+fn waitForSteer(execution: *OapExecution) void {
+    var waits: usize = 0;
+    while (waits < 2000) : (waits += 1) {
+        execution.lockInbound();
+        const admitted = execution.steers.items.len > 0 and execution.steers.items[0].admitted;
+        execution.inbound_mutex.unlock();
+        if (admitted) return;
+        std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
+    }
+}
+
 test "a follow-up queued during a turn over OAP runs after it inside the same turn" {
     var script = Script{ .hold_first = true };
     var execution: *OapExecution = undefined;
@@ -1570,7 +1711,6 @@ test "a runtime over OAP refuses what the protocol path cannot carry yet" {
     var runtime = try remoteRuntime(&script, &execution, .low);
     defer execution.destroy();
     defer runtime.deinit();
-    try testing.expectError(error.UnavailableOverOap, runtime.steer("x"));
     try testing.expectError(error.UnavailableOverOap, runtime.resumeSession());
 }
 
@@ -2127,4 +2267,71 @@ test "a compaction in flight refuses a follow-up, a refused settings update forg
     try testing.expect(execution.sent_policy.len > 0);
     try execution.translateLine("{\"type\":\"error.response\",\"in_reply_to\":\"settings-9\",\"payload\":{\"error\":{\"code\":\"run_active\",\"message\":\"busy\"}}}");
     try testing.expectEqual(@as(usize, 0), execution.sent_policy.len);
+}
+
+test "a steer sent during a turn over OAP joins it at the next turn boundary and is shown once applied" {
+    var script = Script{ .hold_first = true };
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+
+    try runtime.submitTurn("first");
+    waitForRun(execution);
+    try runtime.steer("change course");
+    try testing.expectEqual(@as(usize, 1), runtime.queuedCounts().steering);
+    try testing.expectEqual(@as(u64, 0), runtime.steersConsumedCount());
+    waitForSteer(execution);
+    script.released.store(true, .release);
+
+    var seen = Seen{};
+    defer seen.deinit();
+    try drainTurn(&runtime, &seen);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+    try testing.expectEqual(@as(usize, 1), seen.agent_starts);
+    try testing.expectEqual(@as(usize, 2), script.calls);
+    try testing.expectEqualStrings("change course", seen.user_text.items);
+    try testing.expectEqual(@as(usize, 0), seen.warnings);
+    try testing.expectEqual(@as(usize, 0), runtime.queuedCounts().steering);
+    try testing.expectEqual(@as(u64, 1), runtime.steersConsumedCount());
+}
+
+test "a steer sent while no turn runs over OAP starts one and counts as settled" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+
+    try runtime.start();
+    try runtime.steer("now");
+    var seen = Seen{};
+    defer seen.deinit();
+    try drainTurn(&runtime, &seen);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+    try testing.expectEqual(@as(usize, 1), script.calls);
+    try testing.expectEqual(@as(u64, 1), runtime.steersConsumedCount());
+}
+
+test "a steer still waiting when the turn is cancelled over OAP settles without a warning" {
+    var script = Script{ .wait_for_cancel = true };
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+
+    try runtime.submitTurn("first");
+    waitForRun(execution);
+    try runtime.steer("change course");
+    waitForSteer(execution);
+    runtime.cancel();
+
+    var seen = Seen{};
+    defer seen.deinit();
+    try drainTurn(&runtime, &seen);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .cancelled), seen.end);
+    try testing.expectEqual(@as(usize, 0), seen.warnings);
+    try testing.expectEqualStrings("", seen.user_text.items);
+    try testing.expectEqual(@as(usize, 0), runtime.queuedCounts().steering);
+    try testing.expectEqual(@as(u64, 1), runtime.steersConsumedCount());
 }
