@@ -1117,7 +1117,6 @@ fn fetchCatalogModelsCatalog(allocator: std.mem.Allocator, target: CatalogEndpoi
     var headers: std.ArrayList(std.http.Header) = .empty;
     defer headers.deinit(allocator);
     try headers.append(allocator, .{ .name = "accept", .value = "application/json" });
-    for (target.headers) |header| try headers.append(allocator, .{ .name = header.name, .value = header.value });
     var owned_bearer: ?[]u8 = null;
     defer if (owned_bearer) |value| secureFree(allocator, value);
     if (token.len > 0) {
@@ -1130,6 +1129,7 @@ fn fetchCatalogModelsCatalog(allocator: std.mem.Allocator, target: CatalogEndpoi
             try headers.append(allocator, .{ .name = "authorization", .value = bearer });
         }
     }
+    try appendOverrideHeaders(allocator, &headers, target.headers);
 
     var fetched = compat.http.fetch(allocator, target.models_url, .{
         .method = .GET,
@@ -1143,6 +1143,13 @@ fn fetchCatalogModelsCatalog(allocator: std.mem.Allocator, target: CatalogEndpoi
     if (isRefusalStatus(fetched.status)) return error.ModelCatalogRefused;
     if (fetched.status != 200) return error.ModelCatalogFetchFailed;
     return fetched.body;
+}
+
+fn appendOverrideHeaders(allocator: std.mem.Allocator, headers: *std.ArrayList(std.http.Header), extra: []const ai_types.HeaderPair) !void {
+    for (extra) |header| {
+        if (compat.http.headerPresent(headers.items, header.name)) continue;
+        try headers.append(allocator, .{ .name = header.name, .value = header.value });
+    }
 }
 
 fn customCatalogName(allocator: std.mem.Allocator, provider_id: []const u8) ![]u8 {
@@ -5053,4 +5060,18 @@ test "a listing's text-only modality list is a text-only claim models.dev cannot
     fillFromModelsDev("opencode-go", &models[0], listed);
     try std.testing.expectEqual(@as(?bool, false), models[0].image_input);
     try std.testing.expectEqual(@as(?u32, 1_000_000), models[0].context_window);
+}
+
+test "an override's header never duplicates one the listing request already carries" {
+    var headers: std.ArrayList(std.http.Header) = .empty;
+    defer headers.deinit(std.testing.allocator);
+    try headers.append(std.testing.allocator, .{ .name = "authorization", .value = "Bearer from-the-credential" });
+    const extra = [_]ai_types.HeaderPair{
+        .{ .name = "Authorization", .value = "Bearer from-the-override" },
+        .{ .name = "X-Tenant", .value = "acme" },
+    };
+    try appendOverrideHeaders(std.testing.allocator, &headers, &extra);
+    try std.testing.expectEqual(@as(usize, 2), headers.items.len);
+    try std.testing.expectEqualStrings("Bearer from-the-credential", headers.items[0].value);
+    try std.testing.expectEqualStrings("X-Tenant", headers.items[1].name);
 }

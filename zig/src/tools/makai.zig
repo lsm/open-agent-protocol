@@ -7635,9 +7635,16 @@ fn buildOapInferenceModel(
     errdefer allocator.free(api);
     const provider = try allocator.dupe(u8, builtin.id);
     errdefer allocator.free(provider);
-    const base_url = provider_base_url.defaultBaseUrlForRef(allocator, builtin.id, builtin.api) catch
+    var lookup = try auth_resolver.overrideLookup(allocator, builtin.id);
+    defer lookup.deinit(allocator);
+    const file = switch (lookup) {
+        .endpoint => |found| found,
+        else => null,
+    };
+    const base_url = provider_base_url.defaultBaseUrlForRefWithFile(allocator, builtin.id, builtin.api, null, if (file) |found| found.base_url else "") catch
         try allocator.dupe(u8, builtin.endpoint);
     errdefer allocator.free(base_url);
+    const carries_version: ?bool = if (file) |found| (if (std.mem.eql(u8, base_url, found.base_url)) found.carries_version else null) else null;
     const input = try allocator.alloc([]const u8, 1);
     errdefer allocator.free(input);
     input[0] = try allocator.dupe(u8, "text");
@@ -7654,6 +7661,7 @@ fn buildOapInferenceModel(
         .context_window = builtin.context_window,
         .max_tokens = builtin.max_output_tokens,
         .allows_anonymous = builtin.allows_anonymous,
+        .carries_version = carries_version,
         .is_owned = true,
     };
 }
