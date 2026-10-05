@@ -79,8 +79,11 @@ pub const RemoteExecution = struct {
         set_compaction_policy: *const fn (ctx: *anyopaque, policy_json: []const u8) anyerror!void,
         decide_approval: *const fn (ctx: *anyopaque, tool_call_id: []const u8, granted: bool) anyerror!void,
         follow_up: *const fn (ctx: *anyopaque, text: []const u8) anyerror!void,
+        steer: *const fn (ctx: *anyopaque, text: []const u8) anyerror!void,
         clear_queued: *const fn (ctx: *anyopaque) void,
         queued: *const fn (ctx: *anyopaque) usize,
+        steers_pending: *const fn (ctx: *anyopaque) usize,
+        steers_settled: *const fn (ctx: *anyopaque) u64,
         stop: *const fn (ctx: *anyopaque) void,
     };
 };
@@ -994,7 +997,11 @@ pub const TuiRuntime = struct {
     }
 
     pub fn steer(self: *TuiRuntime, text: []const u8) !void {
-        if (self.remote != null) return error.UnavailableOverOap;
+        if (self.remote) |remote| {
+            if (!self.started) return error.RuntimeNotStarted;
+            if (!self.stream_active) return self.submitTurn(text);
+            return remote.vtable.steer(remote.ctx, text);
+        }
         if (!self.started) return error.RuntimeNotStarted;
         const local = &(self.local_agent orelse return error.RuntimeNotStarted);
         var msg = try self.makeUserMessage(text);
@@ -1003,6 +1010,18 @@ pub const TuiRuntime = struct {
         try local.steer(msg);
         queued = true;
         try self.resumeQueuedMessagesIfIdle();
+    }
+
+    pub fn queueSteer(self: *TuiRuntime, text: []const u8) !void {
+        const local = &(self.local_agent orelse return error.RuntimeNotStarted);
+        var msg = try self.makeUserMessage(text);
+        errdefer msg.deinit(self.allocator);
+        try local.steer(msg);
+    }
+
+    pub fn clearSteers(self: *TuiRuntime) void {
+        const local = &(self.local_agent orelse return);
+        local.clearSteeringQueue();
     }
 
     pub fn followUp(self: *TuiRuntime, text: []const u8) !void {
@@ -1035,12 +1054,13 @@ pub const TuiRuntime = struct {
     }
 
     pub fn queuedCounts(self: *TuiRuntime) QueuedCounts {
-        if (self.remote) |remote| return .{ .follow_up = remote.vtable.queued(remote.ctx) };
+        if (self.remote) |remote| return .{ .steering = remote.vtable.steers_pending(remote.ctx), .follow_up = remote.vtable.queued(remote.ctx) };
         const local = &(self.local_agent orelse return .{});
         return local.queuedCounts();
     }
 
     pub fn steersConsumedCount(self: *TuiRuntime) u64 {
+        if (self.remote) |remote| return remote.vtable.steers_settled(remote.ctx);
         const local = &(self.local_agent orelse return 0);
         return local.steeringConsumedCount();
     }

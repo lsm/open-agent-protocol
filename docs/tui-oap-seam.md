@@ -95,8 +95,8 @@ without going through the ops table.
 | `can_steer` | `capabilities` gating | covered |
 | `history` | `session.state.request` | covered, degraded — G1 |
 | `stream_events` | `content.delta`, `run.status.updated`, terminal run events | covered |
-| `steer` | `session.message.submit` (delivery `steer`) | **gap** — G2, unadvertised |
-| `follow_up` | `session.message.submit` (delivery `queue`) | **gap** — G2, unadvertised |
+| `steer` | `session.message.submit` (delivery `steer`), settled by `run.steer.applied` or `run.steer.dropped` | covered by the in-process `oapx` adapter — G2 |
+| `follow_up` | `session.message.submit` (delivery `queue`) | covered by the in-process `oapx` adapter — G2 |
 | `clear_queued_messages` | none | **gap** — G3 |
 | `steers_consumed` | none | **gap** — G3 |
 | `decide_tool_approval` | `action.permission.*`, `user.input.*` | **gap** — G4, shaped, undispatched |
@@ -132,9 +132,18 @@ primary mid-run controls, and queued messages are also what
 `/compact` and `/autocompact` rely on to resume. The protocol has
 `session.message.delivery.steer` and `session.message.delivery.queue` as common
 optional core features, so this is an endpoint gap rather than a protocol one.
-`handleSubmit` currently resolves `auto` only. Filed as #615.
+Filed as #615.
 
-This is agent-side work and it gates two of the TUI's most-used features.
+**Status: both are carried by the in-process `oapx` adapter that `oapx tui`
+runs over OAP; `server.zig`'s `handleSubmit` still resolves `auto` only.** A
+queued follow-up is a reservation the adapter promotes when the turn ends
+(#823). A steer is admitted `steered` against the running run and joins the
+loop at its next boundary, after a tool result or at the end of a turn; the
+adapter publishes `run.steer.applied` when the loop takes it, and the TUI
+shows the message then. A steer still waiting when the run ends is published
+`run.steer.dropped` before the terminal. The TUI warns that it was not applied,
+except on a cancel, where the composer gets the text back. Neither travels over
+a hub attachment, which refuses both.
 
 ### G3 — three queue counters have no envelope
 

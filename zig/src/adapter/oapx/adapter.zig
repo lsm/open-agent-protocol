@@ -11,7 +11,7 @@ const permission = @import("permission");
 const interactions = @import("interactions.zig");
 
 pub const endpoint_id = "oapx.agent";
-pub const capability_revision = "oapx-agent-v6";
+pub const capability_revision = "oapx-agent-v7";
 
 pub const journal_capacity: usize = 1 << 16;
 pub const queue_capacity: usize = 8;
@@ -28,6 +28,7 @@ const features = [_]contract.Feature{
     .{ .key = contract.feature_submit, .level = .native },
     .{ .key = "session.message.delivery.auto", .level = .native },
     .{ .key = "session.message.delivery.queue", .level = .native },
+    .{ .key = "session.message.delivery.steer", .level = .native, .reason = "guidance joins the running loop after its current tool result or turn; guidance still waiting when the run ends is dropped" },
     .{ .key = "action.permissions", .level = .native, .scope = "call", .reason = "ask mode waits for the declared responder; bypass mode skips prompts" },
     .{ .key = "user_input", .level = .native, .reason = "request_user_input asks text or choice questions and validates answers before returning them to the tool" },
     .{ .key = "run.streaming", .level = .native },
@@ -114,6 +115,15 @@ const Run = struct {
     compaction: bool = false,
     compact_focus: []const u8 = "",
     compaction_id: []const u8 = "",
+    steers: std.ArrayList(PendingSteer) = .empty,
+    admitted_steers: std.ArrayList([]const u8) = .empty,
+    after_tool: bool = false,
+};
+
+const PendingSteer = struct {
+    submission_id: []const u8,
+    request_id: []const u8,
+    message_ids: []const []const u8,
 };
 
 const PendingInteraction = struct {
@@ -453,14 +463,20 @@ pub const Session = struct {
             }
             if (!run.started) position += 1;
             const pending: []const []const u8 = if (run.started and self.pending != null) try arena.dupe([]const u8, &.{self.pending.?.id}) else &.{};
+            const anchors = try arena.alloc([]const u8, 1 + run.admitted_steers.items.len);
+            anchors[0] = run.submit_id;
+            @memcpy(anchors[1..], run.admitted_steers.items);
+            const steers = try arena.alloc(oap_types.PendingSteer, run.steers.items.len);
+            for (run.steers.items, steers) |pending_steer, *slot| slot.* = .{ .submission_id = pending_steer.submission_id, .request_id = pending_steer.request_id, .message_ids = pending_steer.message_ids };
             try entries.append(arena, .{
                 .run_id = run.id,
                 .status = run.status,
                 .relationship = "primary",
                 .queue_position = if (run.started) null else position,
                 .as_of_sequence = run.next_sequence - 1,
-                .admitted_submit_requests = try arena.dupe([]const u8, &.{run.submit_id}),
+                .admitted_submit_requests = anchors,
                 .pending_interactions = pending,
+                .pending_steers = steers,
             });
         }
         var result = oap_types.SessionState{
@@ -485,6 +501,7 @@ pub const Session = struct {
         try contract.refuseUnadvertisedControls(descriptor, request, refusal);
         if (request.session_id.len == 0 or request.messages.len == 0) return error.InvalidSubmission;
         if (!std.mem.eql(u8, request.session_id, self.id)) return error.RunNotFound;
+        if (request.delivery == .steer) return self.steer(arena, request, envelope_id, refusal);
         const busy = self.live() != null or self.queuedCount() > 0;
         const reservation = busy or request.delivery == .queue;
         if (reservation and self.queuedCount() >= queue_capacity) return error.RunActive;
@@ -518,6 +535,99 @@ pub const Session = struct {
         self.runs.appendAssumeCapacity(run);
         self.updated_at_ms = self.owner.now_ms();
         return response;
+    }
+
+    fn steer(self: *Session, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, envelope_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+        const named = request.target_run_id orelse "";
+        const reason = self.steerRefusal(named);
+        if (reason.len > 0) {
+            refusal.* = .{
+                .reason = reason,
+                .message = try std.fmt.allocPrint(arena, "adapter: steer target cannot take guidance: run \"{s}\" is {s}", .{ named, reason }),
+            };
+            return error.InvalidSteerTarget;
+        }
+        const run = self.live().?;
+        const text = try userText(arena, request.messages);
+        if (text.len == 0) return refusal.fail(error.InvalidSubmission, "the submission carries no user text");
+        const keep = self.keep.allocator();
+        const message_ids = try arena.alloc([]const u8, request.messages.len);
+        const kept_ids = try keep.alloc([]const u8, request.messages.len);
+        for (request.messages, message_ids, kept_ids) |message, *slot, *kept| {
+            slot.* = if (message.id) |carried| carried else try self.owner.nextID(arena, "message");
+            kept.* = try keep.dupe(u8, slot.*);
+        }
+        const submission_id = try self.owner.nextID(arena, "submission");
+        const pending = PendingSteer{
+            .submission_id = try keep.dupe(u8, submission_id),
+            .request_id = try keep.dupe(u8, envelope_id),
+            .message_ids = kept_ids,
+        };
+        try run.steers.ensureUnusedCapacity(keep, 1);
+        try run.admitted_steers.ensureUnusedCapacity(keep, 1);
+        self.runtime.queueSteer(text) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return refusal.fail(error.BackendFailed, @errorName(err)),
+        };
+        run.steers.appendAssumeCapacity(pending);
+        run.admitted_steers.appendAssumeCapacity(pending.request_id);
+        self.updated_at_ms = self.owner.now_ms();
+        return .{
+            .session_id = self.id,
+            .accepted = true,
+            .submission_id = submission_id,
+            .requested_delivery = .steer,
+            .effective_delivery = .steer,
+            .admission = .steered,
+            .run_id = run.id,
+            .status = .running,
+            .message_ids = message_ids,
+            .target_sequence = run.next_sequence - 1,
+        };
+    }
+
+    fn steerRefusal(self: *Session, named: []const u8) []const u8 {
+        const live_run = self.live();
+        if (named.len > 0) {
+            const run = self.findRun(named) orelse return "unknown_target";
+            if (run.terminal) return "terminal";
+            if (!run.started) return "queued";
+            if (live_run != run or run.status == .cancelling or run.compaction) return "not_steerable";
+            return "";
+        }
+        const run = live_run orelse return "no_active_run";
+        if (run.status == .cancelling or run.compaction) return "not_steerable";
+        return "";
+    }
+
+    fn applySteer(self: *Session, a: std.mem.Allocator, run: *Run) contract.Failure!void {
+        if (run.steers.items.len == 0) return;
+        const pending = run.steers.orderedRemove(0);
+        var applied = Payload.init(a);
+        try applied.run(self, run);
+        try applied.put("submission_id", .{ .string = pending.submission_id });
+        try applied.put("request_id", .{ .string = pending.request_id });
+        var ids = std.json.Array.init(a);
+        for (pending.message_ids) |id| try ids.append(.{ .string = id });
+        try applied.put("message_ids", .{ .array = ids });
+        try applied.put("boundary", .{ .string = if (run.after_tool) "tool_result" else "turn" });
+        try self.emit(run, "run.steer.applied", applied.value(), false);
+    }
+
+    fn dropSteers(self: *Session, a: std.mem.Allocator, run: *Run) contract.Failure!void {
+        self.runtime.clearSteers();
+        for (run.steers.items) |pending| {
+            var dropped = Payload.init(a);
+            try dropped.run(self, run);
+            try dropped.put("submission_id", .{ .string = pending.submission_id });
+            try dropped.put("request_id", .{ .string = pending.request_id });
+            var reason = Payload.init(a);
+            try reason.put("code", .{ .string = "run_terminated" });
+            try reason.put("message", .{ .string = "the run ended before the guidance was applied" });
+            try dropped.put("reason", reason.value());
+            try self.emit(run, "run.steer.dropped", dropped.value(), false);
+        }
+        run.steers.clearRetainingCapacity();
     }
 
     fn startRun(self: *Session, run: *Run, refusal: *contract.Refusal) contract.Failure!void {
@@ -809,6 +919,7 @@ pub const Session = struct {
                 if (payload.role != .assistant) return;
                 run.message_id = try self.owner.nextID(self.keep.allocator(), "message");
                 run.text.clearRetainingCapacity();
+                run.after_tool = false;
             },
             .text_delta => |payload| {
                 try run.text.appendSlice(self.gpa, payload.delta.slice());
@@ -824,6 +935,7 @@ pub const Session = struct {
                 try self.emit(run, "action.call.started", started.value(), false);
             },
             .tool_execution_end => |payload| {
+                run.after_tool = true;
                 var ended = try self.callPayload(a, run, payload.tool_call_id.slice(), payload.tool_name.slice());
                 if (payload.is_error) {
                     var failure = Payload.init(a);
@@ -839,6 +951,7 @@ pub const Session = struct {
             .turn_end => |payload| run.stop_reason = stopReasonText(payload.stop_reason),
             .message_end => |payload| {
                 if (payload.role == .assistant) run.output_tokens += payload.output_tokens;
+                if (payload.role == .user and payload.steering) try self.applySteer(a, run);
             },
             .context_usage => |payload| run.context_tokens = payload.estimated_tokens,
             .@"error" => |payload| {
@@ -887,6 +1000,7 @@ pub const Session = struct {
             try self.emit(run, if (pending.kind == .permission) "action.permission.resolved" else "user.input.resolved", resolved.value(), false);
             self.pending = null;
         }
+        try self.dropSteers(a, run);
         var payload = Payload.init(a);
         try payload.run(self, run);
         if (run.output_tokens > 0) {
@@ -1352,7 +1466,10 @@ const Script = struct {
     tool_arguments: []const u8 = "{\"say\":\"hi\"}",
     wait_for_cancel: bool = false,
     received_answers: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    saw_steer: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 };
+
+var held_tool = std.atomic.Value(bool).init(false);
 
 fn scriptedMessage(allocator: std.mem.Allocator, model: ai_types.Model, content: []const ai_types.AssistantContent, reason: ai_types.StopReason) !ai_types.AssistantMessage {
     const blocks = try allocator.alloc(ai_types.AssistantContent, content.len);
@@ -1386,6 +1503,7 @@ fn scriptedStream(ctx: ?*anyopaque, model: ai_types.Model, context: ai_types.Con
     const script: *Script = @ptrCast(@alignCast(ctx.?));
     script.calls += 1;
     for (context.messages) |message| {
+        if (message == .user and message.user.content == .text and std.mem.indexOf(u8, message.user.content.text, "change course") != null) script.saw_steer.store(true, .release);
         if (message != .tool_result) continue;
         for (message.tool_result.content) |part| {
             if (part == .text and std.mem.indexOf(u8, part.text.text, "careful") != null and std.mem.indexOf(u8, part.text.text, "safe") != null) script.received_answers.store(true, .release);
@@ -1424,6 +1542,10 @@ fn echoTool(tool_call_id: []const u8, args_json: []const u8, cancel_token: ?ai_t
     _ = cancel_token;
     _ = on_update_ctx;
     _ = on_update;
+    var waits: usize = 0;
+    while (held_tool.load(.acquire) and waits < 5000) : (waits += 1) {
+        std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
+    }
     const content = try allocator.alloc(ai_types.UserContentPart, 1);
     content[0] = .{ .text = .{ .text = try allocator.dupe(u8, "echoed") } };
     return .{ .content = @FieldType(agent.AgentToolResult, "content").initOwned(content) };
@@ -1472,6 +1594,12 @@ const Harness = struct {
         var parts = [_]oap_types.ContentPart{.{ .text = text }};
         var messages = [_]oap_types.Message{.{ .role = .user, .content = .{ .parts = &parts } }};
         return self.session.submit(self.arena.allocator(), &.{ .session_id = self.session.id(), .messages = &messages, .delivery = .auto }, "submit-envelope", &refusal);
+    }
+
+    fn steer(self: *Harness, text: []const u8, target: ?[]const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+        var parts = [_]oap_types.ContentPart{.{ .text = text }};
+        var messages = [_]oap_types.Message{.{ .role = .user, .content = .{ .parts = &parts } }};
+        return self.session.submit(self.arena.allocator(), &.{ .session_id = self.session.id(), .messages = &messages, .delivery = .steer, .target_run_id = target }, "steer-envelope", refusal);
     }
 
     fn collect(self: *Harness) !void {
@@ -2283,7 +2411,7 @@ test "buffered reservation cancellation frees a full queue slot before the next 
     _ = try wireSubmit(&wire, "auto");
     try testing.expectEqualStrings("run_active", wireLast(&wire, "error.response").object.get("payload").?.object.get("error").?.object.get("code").?.string);
     _ = try wireSubmit(&wire, "steer");
-    try testing.expectEqualStrings("unsupported_feature", wireLast(&wire, "error.response").object.get("payload").?.object.get("error").?.object.get("code").?.string);
+    try testing.expectEqualStrings("steered", wireLast(&wire, "session.message.submit.response").object.get("payload").?.object.get("admission").?.string);
     try wireCancel(&wire, reserved[2]);
     try wireState(&wire, queue_capacity - 1, true);
     _ = try wireSubmit(&wire, "queue");
@@ -2635,4 +2763,83 @@ test "a share policy is measured against the window of the model a run starts on
     _ = try harness.submit("after the switch");
     try harness.untilTerminal();
     try testing.expectEqual(@as(?u64, agent.compaction.shareAt(other_model.context_window, 50)), live.runtime.local_agent.?._auto_compact_at);
+}
+
+test "a steer joins the running loop after its tool result and is applied before the guided turn" {
+    var script = Script{ .tool_first = true, .reply = "changed course" };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    held_tool.store(true, .release);
+    defer held_tool.store(false, .release);
+    const started = try harness.submit("start");
+    var refusal = contract.Refusal{};
+    const steered = try harness.steer("change course", started.run_id, &refusal);
+    held_tool.store(false, .release);
+    try testing.expectEqual(oap_types.Admission.steered, steered.admission);
+    try testing.expectEqual(oap_types.EffectiveDelivery.steer, steered.effective_delivery);
+    try testing.expectEqualStrings(started.run_id.?, steered.run_id.?);
+    try harness.untilTerminal();
+
+    const names = try kinds(&harness, harness.arena.allocator());
+    var applied_at: ?usize = null;
+    var completed_call_at: ?usize = null;
+    var guided_delta_at: ?usize = null;
+    for (names, 0..) |name, index| {
+        if (std.mem.eql(u8, name, "run.steer.applied")) applied_at = index;
+        if (std.mem.eql(u8, name, "action.call.completed")) completed_call_at = index;
+        if (std.mem.eql(u8, name, "content.delta") and guided_delta_at == null and applied_at != null) guided_delta_at = index;
+    }
+    try testing.expect(completed_call_at.? < applied_at.?);
+    try testing.expect(applied_at.? < guided_delta_at.?);
+    const applied = ofType(&harness, "run.steer.applied").?;
+    try testing.expectEqualStrings("steer-envelope", applied.get("request_id").?.string);
+    try testing.expectEqualStrings(steered.submission_id, applied.get("submission_id").?.string);
+    try testing.expectEqualStrings("tool_result", applied.get("boundary").?.string);
+    try testing.expect(script.saw_steer.load(.acquire));
+    try testing.expectEqualStrings("run.completed", harness.terminal().?.object.get("type").?.string);
+    try testing.expectEqual(@as(usize, 0), harness.count("run.steer.dropped"));
+}
+
+test "a steer still waiting when its run is cancelled is dropped before the terminal" {
+    var script = Script{ .wait_for_cancel = true };
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    const started = try harness.submit("start");
+    var refusal = contract.Refusal{};
+    _ = try harness.steer("change course", null, &refusal);
+    _ = try harness.session.cancel(harness.arena.allocator(), started.run_id.?, &refusal);
+    try harness.untilTerminal();
+
+    const names = try kinds(&harness, harness.arena.allocator());
+    var dropped_at: ?usize = null;
+    var cancelled_at: ?usize = null;
+    for (names, 0..) |name, index| {
+        if (std.mem.eql(u8, name, "run.steer.dropped")) dropped_at = index;
+        if (std.mem.eql(u8, name, "run.cancelled")) cancelled_at = index;
+    }
+    try testing.expect(dropped_at.? < cancelled_at.?);
+    const dropped = ofType(&harness, "run.steer.dropped").?;
+    try testing.expectEqualStrings("steer-envelope", dropped.get("request_id").?.string);
+    try testing.expectEqualStrings("run_terminated", dropped.get("reason").?.object.get("code").?.string);
+    try testing.expectEqual(@as(usize, 0), harness.count("run.steer.applied"));
+}
+
+test "a steer with no running loop to take it names why" {
+    var script = Script{};
+    var harness: Harness = undefined;
+    try harness.init(&script);
+    defer harness.deinit();
+    var refusal = contract.Refusal{};
+    try testing.expectError(error.InvalidSteerTarget, harness.steer("change course", null, &refusal));
+    try testing.expectEqualStrings("no_active_run", refusal.reason);
+    refusal = .{};
+    try testing.expectError(error.InvalidSteerTarget, harness.steer("change course", "run-unknown", &refusal));
+    try testing.expectEqualStrings("unknown_target", refusal.reason);
+    const finished = try harness.submit("start");
+    try harness.untilTerminal();
+    refusal = .{};
+    try testing.expectError(error.InvalidSteerTarget, harness.steer("change course", finished.run_id, &refusal));
+    try testing.expectEqualStrings("terminal", refusal.reason);
 }
