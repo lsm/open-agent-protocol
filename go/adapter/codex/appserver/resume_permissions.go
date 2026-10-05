@@ -16,10 +16,14 @@ var sandboxPolicyTypes = map[string]string{
 
 func confirmsHostPermissions(sent native.ThreadResumeParams, answered native.ThreadResumeResponse) error {
 	if sent.Sandbox != "" {
+		wanted, mapped := sandboxPolicyTypes[sent.Sandbox]
+		if !mapped {
+			return fmt.Errorf("the configured sandbox %s has no thread/resume policy the adapter can confirm", sent.Sandbox)
+		}
 		var policy struct {
 			Type string `json:"type"`
 		}
-		if err := json.Unmarshal(answered.Sandbox, &policy); err != nil || policy.Type != sandboxPolicyTypes[sent.Sandbox] {
+		if err := json.Unmarshal(answered.Sandbox, &policy); err != nil || policy.Type != wanted {
 			return fmt.Errorf("Codex resumed the thread under sandbox %s, not the configured %s", string(answered.Sandbox), sent.Sandbox)
 		}
 	}

@@ -350,7 +350,8 @@ pub fn sandboxPolicyType(mode: []const u8) []const u8 {
 pub fn unconfirmedHostPermission(host: ThreadStart, resumed: std.json.Value) ?[]const u8 {
     if (host.sandbox.len > 0) {
         const wanted = sandboxPolicyType(host.sandbox);
-        if (wanted.len == 0 or !std.mem.eql(u8, text(resumed, &.{ "sandbox", "type" }), wanted)) return "Codex resumed the thread under a sandbox other than the configured one";
+        if (wanted.len == 0) return "the configured sandbox has no thread/resume policy the adapter can confirm";
+        if (!std.mem.eql(u8, text(resumed, &.{ "sandbox", "type" }), wanted)) return "Codex resumed the thread under a sandbox other than the configured one";
     }
     if (host.approval_policy.len > 0 and !std.mem.eql(u8, text(resumed, &.{"approvalPolicy"}), host.approval_policy)) return "Codex resumed the thread under an approval policy other than the configured one";
     if (host.cwd.len > 0 and !std.mem.eql(u8, std.mem.trimEnd(u8, text(resumed, &.{"cwd"}), "/"), std.mem.trimEnd(u8, host.cwd, "/"))) return "Codex resumed the thread in a directory other than the configured one";
@@ -499,4 +500,11 @@ test "parameters are written in Go's struct order and omit what Go omits" {
         try encode(a, try userInputResponse(a, &answers)),
     );
     try testing.expectEqualStrings("{\"clientInfo\":{\"name\":\"n\",\"version\":\"v\"}}", try encode(a, try initializeParams(a, "n", "v")));
+}
+
+test "a configured sandbox the adapter cannot map is refused as the adapter's, not blamed on Codex" {
+    const resumed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"sandbox\":{\"type\":\"workspaceWrite\"}}", .{});
+    defer resumed.deinit();
+    try std.testing.expectEqualStrings("the configured sandbox has no thread/resume policy the adapter can confirm", unconfirmedHostPermission(.{ .sandbox = "seatbelt" }, resumed.value).?);
+    try std.testing.expectEqualStrings("Codex resumed the thread under a sandbox other than the configured one", unconfirmedHostPermission(.{ .sandbox = "read-only" }, resumed.value).?);
 }

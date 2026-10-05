@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/lsm/open-agent-protocol/go/adapter"
+	"github.com/lsm/open-agent-protocol/go/adapter/codex/appserver/internal/native"
 	"github.com/lsm/open-agent-protocol/go/protocol"
 )
 
@@ -75,5 +76,12 @@ func TestAReopenCodexAnswersWithWiderPermissionsIsRefused(t *testing.T) {
 				t.Fatalf("refusal = %v", err)
 			}
 		})
+	}
+}
+
+func TestAConfiguredSandboxTheAdapterCannotMapIsRefusedAsTheAdapters(t *testing.T) {
+	err := confirmsHostPermissions(native.ThreadResumeParams{Sandbox: "seatbelt"}, native.ThreadResumeResponse{Sandbox: json.RawMessage(`{"type":"workspaceWrite"}`)})
+	if err == nil || !strings.Contains(err.Error(), "configured sandbox seatbelt has no thread/resume policy") || strings.Contains(err.Error(), "Codex resumed") {
+		t.Fatalf("error = %v", err)
 	}
 }
