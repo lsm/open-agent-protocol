@@ -477,6 +477,7 @@ const CatalogEndpoint = struct {
     carries_version: ?bool = null,
     headers: []const ai_types.HeaderPair = &.{},
     withholds_stored: bool = false,
+    allowlist: []const custom_providers.ModelSpec = &.{},
     owned_base_url: ?[]u8 = null,
     owned_models_url: ?[]u8 = null,
 
@@ -592,6 +593,7 @@ fn catalogEndpointFromEnvironment(
     var endpoint = try catalogEndpointWithBase(allocator, catalog, base_url, if (redirected) file.?.carries_version else null);
     if (from_file) {
         endpoint.headers = file.?.headers;
+        endpoint.allowlist = file.?.models;
         endpoint.withholds_stored = redirected and !file.?.forwards_credential;
     }
     return endpoint;
@@ -743,6 +745,7 @@ fn loadRowsWithProvenance(
             const canonical = made.owned_base_url == null;
             if (fileApplies(made, if (canonical) "" else made.base_url, file)) {
                 made.headers = file.?.headers;
+                made.allowlist = file.?.models;
                 made.withholds_stored = file_base.len > 0 and !canonical and !file.?.forwards_credential;
             }
             break :testEndpoint made;
@@ -801,7 +804,12 @@ fn appendCatalogTargetModels(
                 }
             }
             for (models) |model| {
-                var built = try catalogModel(allocator, target, model);
+                var shaped = model;
+                if (target.allowlist.len > 0) {
+                    const spec = allowlistSpec(target.allowlist, model.id) orelse continue;
+                    shapeBySpec(&shaped, spec);
+                }
+                var built = try catalogModel(allocator, target, shaped);
                 var built_owned = true;
                 errdefer if (built_owned) built.deinit(allocator);
                 try out.append(allocator, built);
@@ -812,6 +820,20 @@ fn appendCatalogTargetModels(
         }
     }
 
+    if (target.allowlist.len > 0) {
+        for (target.allowlist) |spec| {
+            var shaped = DiscoveredModel{ .id = spec.id };
+            shapeBySpec(&shaped, spec);
+            var built = try catalogModel(allocator, target, shaped);
+            var built_owned = true;
+            errdefer if (built_owned) built.deinit(allocator);
+            try out.append(allocator, built);
+            built_owned = false;
+            if (provenance) |tags| try tags.append(allocator, .declared);
+        }
+        return;
+    }
+
     for (provider_catalog.modelsFor(target.id)) |declared| {
         var built = try catalogModel(allocator, target, .{ .id = declared.id });
         var built_owned = true;
@@ -820,6 +842,19 @@ fn appendCatalogTargetModels(
         built_owned = false;
         if (provenance) |tags| try tags.append(allocator, .declared);
     }
+}
+
+fn allowlistSpec(allowlist: []const custom_providers.ModelSpec, id: []const u8) ?custom_providers.ModelSpec {
+    for (allowlist) |spec| {
+        if (std.mem.eql(u8, spec.id, id)) return spec;
+    }
+    return null;
+}
+
+fn shapeBySpec(model: *DiscoveredModel, spec: custom_providers.ModelSpec) void {
+    if (!std.mem.eql(u8, spec.name, spec.id)) model.name = spec.name;
+    if (spec.context_window) |window| model.context_window = window;
+    if (spec.max_tokens) |tokens| model.max_tokens = tokens;
 }
 
 fn catalogModel(allocator: std.mem.Allocator, target: CatalogEndpoint, model: DiscoveredModel) !ai_types.Model {
@@ -3912,6 +3947,40 @@ test "an override that keeps the row's endpoint lists with its headers and still
         try std.testing.expectEqualStrings("X-Tenant", listed[0].headers.?[0].name);
         try std.testing.expectEqualStrings("stored-key", test_last_discovery_token[0..test_last_discovery_token_len]);
     }
+}
+
+test "an override's models filter what the row discovers, shape what they name, and stand in when discovery returns nothing" {
+    test_catalog_discovery = &[_]CatalogDiscovery{
+        .{ .id = "deepseek", .models_url = proxy_models_url, .model_ids = &.{ "deepseek-chat", "deepseek-reasoner" } },
+    };
+    defer {
+        test_catalog_discovery = null;
+        test_catalog_overrides = null;
+    }
+    const named = [_]custom_providers.ModelSpec{.{ .id = "deepseek-reasoner", .name = "Reasoner", .context_window = 64_000, .max_tokens = 4_000 }};
+    const narrowed = [_]custom_providers.Override{.{ .id = "deepseek", .base_url = "https://proxy.example/api", .models = &named }};
+    test_catalog_overrides = &narrowed;
+    const filtered = try loadCatalogModelsWithRows(std.testing.allocator, &.{"deepseek"}, null, .allow_cache);
+    defer deinitModels(std.testing.allocator, filtered);
+    try std.testing.expectEqual(@as(usize, 1), filtered.len);
+    try std.testing.expectEqualStrings("deepseek-reasoner", filtered[0].id);
+    try std.testing.expectEqualStrings("Reasoner", filtered[0].name);
+    try std.testing.expectEqual(@as(u32, 64_000), filtered[0].context_window);
+    try std.testing.expectEqual(@as(u32, 4_000), filtered[0].max_tokens);
+
+    const absent = [_]custom_providers.ModelSpec{.{ .id = "not-served", .name = "not-served" }};
+    const emptied = [_]custom_providers.Override{.{ .id = "deepseek", .base_url = "https://proxy.example/api", .models = &absent }};
+    test_catalog_overrides = &emptied;
+    const nothing = try loadCatalogModelsWithRows(std.testing.allocator, &.{"deepseek"}, null, .allow_cache);
+    defer deinitModels(std.testing.allocator, nothing);
+    try std.testing.expectEqual(@as(usize, 0), nothing.len);
+
+    test_catalog_discovery = &[_]CatalogDiscovery{};
+    const fallback = try loadCatalogModelsWithRows(std.testing.allocator, &.{"deepseek"}, null, .allow_cache);
+    defer deinitModels(std.testing.allocator, fallback);
+    try std.testing.expectEqual(@as(usize, 1), fallback.len);
+    try std.testing.expectEqualStrings("not-served", fallback[0].id);
+    try std.testing.expectEqualStrings("https://proxy.example/api", fallback[0].base_url);
 }
 
 test "listing an overridden row sends no stored credential unless the override forwards it" {
