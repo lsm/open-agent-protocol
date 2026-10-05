@@ -151,9 +151,11 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		return base.Descriptor{}, err
 	}
 	features := map[string]protocol.FeatureSupport{
-		"protocol.initialize": {Level: protocol.SupportEmulated, Reason: "ACP initialize is normalized into the OAP adapter boundary"},
-		"capabilities":        {Level: protocol.SupportEmulated, Reason: "effective support is synthesized conservatively from stable ACP v1 and adapter policy"},
-		"session.open":        {Level: protocol.SupportNative}, "session.state": {Level: protocol.SupportEmulated, Reason: "adapter-owned projection"},
+		"protocol.initialize":            {Level: protocol.SupportEmulated, Reason: "ACP initialize is normalized into the OAP adapter boundary"},
+		"capabilities":                   {Level: protocol.SupportEmulated, Reason: "effective support is synthesized conservatively from stable ACP v1 and adapter policy"},
+		"session.open":                   {Level: protocol.SupportNative},
+		protocol.FeatureOpenReopen:       {Level: protocol.SupportNative, Reason: reopenSupportReason},
+		"session.state":                  {Level: protocol.SupportEmulated, Reason: "adapter-owned projection"},
 		protocol.FeatureSessionReasoning: {Level: protocol.SupportEmulated, Modes: []string{protocol.ModeSessionOpen}, Reason: "session/set_config_option on the agent's thought_level option, matched by value or name and confirmed in the returned option list; an agent that offers none refuses every level"},
 		protocol.FeatureCompactionPolicy: {Level: protocol.SupportUnavailable, Reason: "ACP has no compaction setting; an agent's own threshold is its configuration"},
 		"session.message.submit":         {Level: protocol.SupportEmulated, Reason: "admission is synthesized after the prompt request is written"},
@@ -180,6 +182,9 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		return nil, base.ErrInvalidParticipant
 	}
 
+	if req.Reopen && req.NativeSessionID == "" {
+		return nil, reopenRefusal("the binding names no ACP session")
+	}
 	attached, err := a.attachToolSources(req)
 	if err != nil {
 		return nil, err
@@ -203,7 +208,25 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	mcpServers := append([]native.MCPServer{}, a.config.MCPServers...)
 	mcpServers = append(mcpServers, attached...)
 	var opened native.SessionNewResult
-	if err := client.Call(ctx, native.MethodSessionNew, native.SessionNewParams{Cwd: a.config.WorkingDirectory, MCPServers: mcpServers}, &opened); err != nil {
+	if req.Reopen {
+		method := reopenMethod(initialized.AgentCapabilities)
+		if method == "" {
+			_ = client.Close()
+			return nil, reopenRefusal("the ACP agent advertises neither loadSession nor sessionCapabilities.resume")
+		}
+		opened.SessionID = req.NativeSessionID
+		if err := callReopen(ctx, client, method, native.SessionReopenParams{SessionID: req.NativeSessionID, Cwd: a.config.WorkingDirectory, MCPServers: mcpServers}, &opened); err != nil {
+			_ = client.Close()
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, reopenRefusal("the ACP agent could not load the bound session: " + err.Error())
+		}
+		if opened.SessionID != req.NativeSessionID {
+			_ = client.Close()
+			return nil, reopenRefusal("the ACP agent returned a different session id")
+		}
+	} else if err := client.Call(ctx, native.MethodSessionNew, native.SessionNewParams{Cwd: a.config.WorkingDirectory, MCPServers: mcpServers}, &opened); err != nil {
 		_ = client.Close()
 		return nil, fmt.Errorf("create ACP session: %w", err)
 	}
@@ -212,7 +235,11 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		return nil, fmt.Errorf("%w: session/new returned no session id", ErrNativeProtocol)
 	}
 	if req.ReasoningLevel != "" {
-		if err := setThoughtLevel(ctx, client, opened, req.ReasoningLevel); err != nil {
+		setter := client
+		if req.Reopen {
+			setter = openingClient{client}
+		}
+		if err := setThoughtLevel(ctx, setter, opened, req.ReasoningLevel); err != nil {
 			_ = client.Close()
 			return nil, err
 		}
@@ -223,6 +250,13 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	}
 	now := a.clock.Now().UnixMilli()
 	s := &session{client: client, inbound: client.Inbound(), clock: a.clock, ids: a.ids, capacity: a.config.JournalCapacity, nativeID: opened.SessionID, participant: req.Participant.ID, state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, UpdatedAtMS: now, Sources: a.sessionSources(req.ToolSources), ReasoningLevel: req.ReasoningLevel}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, interactions: map[protocol.InteractionID]*permissionState{}, stop: make(chan struct{})}
+	if req.Reopen {
+		s.state.Recovery = &protocol.RecoveryMetadata{Recovered: true, Reason: reopenReason}
+		s.state.CurrentModelID, s.state.ReasoningLevel = resumedSettings(opened.ConfigOptions)
+		if req.ReasoningLevel != "" {
+			s.state.ReasoningLevel = req.ReasoningLevel
+		}
+	}
 	go s.dispatch()
 	return s, nil
 }

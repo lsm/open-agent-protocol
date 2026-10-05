@@ -1,0 +1,48 @@
+[
+  {
+    "index": 1,
+    "method": "initialize",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "session.open.request"
+  },
+  {
+    "index": 2,
+    "method": "response:result",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "session.open.request"
+  },
+  {
+    "index": 3,
+    "method": "session/load",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "session.open.request"
+  },
+  {
+    "index": 4,
+    "method": "session/update",
+    "classification": "observed-only",
+    "fidelity": "native"
+  },
+  {
+    "index": 5,
+    "method": "session/update",
+    "classification": "observed-only",
+    "fidelity": "native"
+  },
+  {
+    "index": 6,
+    "method": "session/update",
+    "classification": "observed-only",
+    "fidelity": "native"
+  },
+  {
+    "index": 7,
+    "method": "response:result",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "session.open.response"
+  }
+]

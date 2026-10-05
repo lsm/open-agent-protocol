@@ -36,7 +36,7 @@ var acpEvidenceFixtures = map[string]bool{
 	"cancel-confirmed": true, "completion-wins-race": true, "tool-lifecycle-permission": true,
 	"refusal": true, "prompt-error": true, "process-exit": true,
 	"malformed-update": true, "update-after-terminal": true, "replay-degradation": true,
-	"session-new-tool-sources": true,
+	"session-new-tool-sources": true, "bound-session-reopen": true,
 }
 
 type acpCorpusManifest struct {
@@ -204,6 +204,10 @@ func runACPCorpusCase(t *testing.T, root string, entry acpCorpusManifestCase) {
 	mappings := acpLoadJSON[[]acpCorpusMapping](t, paths.mapping)
 	omissions := acpLoadJSON[[]acpCorpusOmission](t, paths.omissions)
 	assertACPClassifications(t, frames, messages, mappings, omissions)
+	if entry.ID == "session-reopen" {
+		runACPReopenCorpus(t, frames, messages, definition, paths.expected)
+		return
+	}
 
 	capacity := definition.Journal
 	if capacity == 0 {

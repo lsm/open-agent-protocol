@@ -956,6 +956,12 @@ directory outside the repository, records the corpus probes' raw stream-json
 in both directions into that directory; it is how
 `fixtures/adapters/claude-code-2.1.288` was recorded.
 
+Both ACP adapter trees reopen the binding's native session through the agent's
+advertised load or resume operation. Native load history stays outside the new
+OAP journal, and recovery reports the returned settings. The opt-in ACP gate
+also verifies conversation history survives close and reopen, as recorded in the
+[current mapping ledger](research/acp-v1.10.2-mapping.md).
+
 ACP real-process checks follow the same opt-in gate, driven against an
 independent open-source ACP agent rather than a Devin product. Provide an
 absolute `docker-agent` binary built from the pinned docker/cagent release
