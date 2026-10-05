@@ -15,7 +15,7 @@
     "timestamp_ms": 4,
     "session_id": "session",
     "run_id": "run-2",
-    "capability_revision": "pi-v1.0.1-oap-v4"
+    "capability_revision": "pi-v1.0.1-oap-v5"
   },
   {
     "protocol": "open-agent-protocol",
@@ -39,7 +39,7 @@
     "session_id": "session",
     "run_id": "run-2",
     "tool_call_id": "tool-call-6",
-    "capability_revision": "pi-v1.0.1-oap-v4"
+    "capability_revision": "pi-v1.0.1-oap-v5"
   },
   {
     "protocol": "open-agent-protocol",
@@ -61,7 +61,7 @@
     "session_id": "session",
     "run_id": "run-2",
     "tool_call_id": "tool-call-6",
-    "capability_revision": "pi-v1.0.1-oap-v4"
+    "capability_revision": "pi-v1.0.1-oap-v5"
   },
   {
     "protocol": "open-agent-protocol",
@@ -85,7 +85,7 @@
     "session_id": "session",
     "run_id": "run-2",
     "tool_call_id": "tool-call-9",
-    "capability_revision": "pi-v1.0.1-oap-v4"
+    "capability_revision": "pi-v1.0.1-oap-v5"
   },
   {
     "protocol": "open-agent-protocol",
@@ -107,7 +107,7 @@
     "session_id": "session",
     "run_id": "run-2",
     "tool_call_id": "tool-call-9",
-    "capability_revision": "pi-v1.0.1-oap-v4"
+    "capability_revision": "pi-v1.0.1-oap-v5"
   },
   {
     "protocol": "open-agent-protocol",
@@ -132,7 +132,7 @@
     "session_id": "session",
     "run_id": "run-2",
     "tool_call_id": "tool-call-6",
-    "capability_revision": "pi-v1.0.1-oap-v4"
+    "capability_revision": "pi-v1.0.1-oap-v5"
   },
   {
     "protocol": "open-agent-protocol",
@@ -157,7 +157,7 @@
     "session_id": "session",
     "run_id": "run-2",
     "tool_call_id": "tool-call-9",
-    "capability_revision": "pi-v1.0.1-oap-v4"
+    "capability_revision": "pi-v1.0.1-oap-v5"
   },
   {
     "protocol": "open-agent-protocol",
@@ -183,7 +183,7 @@
     "session_id": "session",
     "run_id": "run-2",
     "tool_call_id": "tool-call-6",
-    "capability_revision": "pi-v1.0.1-oap-v4"
+    "capability_revision": "pi-v1.0.1-oap-v5"
   },
   {
     "protocol": "open-agent-protocol",
@@ -210,6 +210,6 @@
     "timestamp_ms": 12,
     "session_id": "session",
     "run_id": "run-2",
-    "capability_revision": "pi-v1.0.1-oap-v4"
+    "capability_revision": "pi-v1.0.1-oap-v5"
   }
 ]

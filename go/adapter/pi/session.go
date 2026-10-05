@@ -37,6 +37,7 @@ type Session struct {
 	participant        protocol.ParticipantID
 	state              protocol.SessionState
 	nativeState        native.SessionState
+	nativeBinding      string
 	closed             bool
 	unusable           bool
 	active             *runState

@@ -12,6 +12,40 @@ const rpc = @import("rpc.zig");
 pub const endpoint_id = session.endpoint_id;
 pub const capability_revision = harness_pins.pi_capability_revision;
 
+const reopen_support_reason = "switch_session loads the bound session file; an absent, empty or mismatched file is refused";
+const reopen_recovery_reason = "Pi restored the bound conversation and reports the current model, thinking level and compaction switch; OAP runs and cursors remain process-local";
+
+const Binding = struct {
+    sessionId: []const u8,
+    sessionFile: []const u8,
+};
+
+fn readBinding(arena: std.mem.Allocator, raw: []const u8) !Binding {
+    const binding = try std.json.parseFromSliceLeaky(Binding, arena, raw, .{});
+    if (binding.sessionId.len == 0 or !std.fs.path.isAbsolute(binding.sessionFile)) return error.InvalidBinding;
+    if (compat.fs.fileKind(compat.fs.getCwd(), binding.sessionFile) != .file) return error.InvalidBinding;
+    var file = try compat.fs.openFile(compat.fs.getCwd(), binding.sessionFile, .{});
+    defer file.close(compat.fs.defaultIo());
+    if ((try file.stat(compat.fs.defaultIo())).kind != .file) return error.InvalidBinding;
+    var header: std.ArrayList(u8) = .empty;
+    var buffer: [4096]u8 = undefined;
+    while (true) {
+        const count = file.readStreaming(compat.fs.defaultIo(), &.{&buffer}) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => return err,
+        };
+        if (count == 0) break;
+        const end = std.mem.indexOfScalar(u8, buffer[0..count], '\n');
+        const limit = end orelse count;
+        if (header.items.len + limit > 64 * 1024) return error.InvalidBinding;
+        try header.appendSlice(arena, buffer[0..limit]);
+        if (end != null) break;
+    }
+    const value = try std.json.parseFromSliceLeaky(std.json.Value, arena, header.items, .{});
+    if (!std.mem.eql(u8, textOf(value, "type"), "session") or !std.mem.eql(u8, textOf(value, "id"), binding.sessionId)) return error.InvalidBinding;
+    return binding;
+}
+
 const features = [_]contract.Feature{
     .{ .key = "action.permissions", .level = .unavailable, .reason = "extension dialogs are generic user input, not permissions" },
     .{ .key = "action.tools", .level = .degraded, .reason = "observed tool lifecycle only; no portable catalog" },
@@ -31,6 +65,7 @@ const features = [_]contract.Feature{
     .{ .key = "session.message.delivery.steer", .level = .emulated, .reason = "guidance rides Pi's native steer command and settles at the turn boundary Pi injects it" },
     .{ .key = "session.message.submit", .level = .emulated, .reason = "successful prompt response proves admission only" },
     .{ .key = "session.open", .level = .emulated, .reason = "one ready Pi process is associated with one OAP session" },
+    .{ .key = contract.feature_open_reopen, .level = .native, .reason = reopen_support_reason },
     .{ .key = "session.state", .level = .emulated, .reason = "adapter projection reconciled with get_state" },
     .{ .key = contract.feature_session_reasoning, .level = .native, .reason = "set_thinking_level once the process is ready and again between runs, confirmed by get_state; a level Pi does not run the model at is refused, and a live change restores the level it replaced", .modes = &.{ contract.mode_session_open, contract.mode_session_live } },
     .{ .key = contract.feature_compaction_policy, .level = .native, .reason = "set_auto_compaction switches Pi's own threshold on or off, at open and between runs; its threshold is a settings-file reserve, so share and tokens are refused", .modes = &.{ contract.mode_session_open, contract.mode_session_live } },
@@ -139,6 +174,8 @@ pub const Session = struct {
     settled_cursor: u64 = 0,
     current_model: []const u8 = "",
     native_session: []const u8 = "",
+    native_binding: []const u8 = "",
+    recovered: bool = false,
     next_request: usize = 0,
     awaited: []const u8 = "",
     reply: ?Reply = null,
@@ -155,15 +192,15 @@ pub const Session = struct {
 
     fn open(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
         const compaction = try compactionEnabled(arena, request.compaction_policy_json, refusal);
+        const binding: ?Binding = if (request.reopen) readBinding(arena, request.native_session_id) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            return refusal.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
+        } else null;
         const self = try construct(owner, arena, request, refusal);
         errdefer self.destroy();
-        const state_data = try self.command(arena, "get_state", null, &.{}, refusal);
-        const native_session = memberOf(state_data, "sessionId") orelse std.json.Value.null;
-        if (invalidState(state_data)) |reason| return refusal.fail(error.BackendFailed, reason);
-        const streaming = memberOf(state_data, "isStreaming") orelse std.json.Value.null;
-        if (streaming == .bool and streaming.bool) return refusal.fail(error.BackendFailed, "the Pi agent was already streaming when the session opened");
-        self.current_model = modelOf(self.owned(), memberOf(state_data, "model")) catch |err| return lift(err);
-        self.native_session = try self.owned().dupe(u8, native_session.string);
+        var state_data = try self.command(arena, "get_state", null, &.{}, refusal);
+        if (binding) |bound| state_data = try self.reopenNative(arena, bound, refusal);
+        try self.initializeState(state_data, refusal);
         if (compaction) |enabled| {
             _ = try self.commandWith(arena, "set_auto_compaction", null, &.{}, .{ .name = "enabled", .value = .{ .bool = enabled } }, refusal);
             self.reported_policy = try self.owned().dupe(u8, request.compaction_policy_json.?);
@@ -176,6 +213,39 @@ pub const Session = struct {
             self.reports_level = true;
         }
         return self;
+    }
+
+    fn reopenNative(self: *Session, arena: std.mem.Allocator, bound: Binding, refusal: *contract.Refusal) contract.Failure!std.json.Value {
+        const switched = self.commandWith(arena, "switch_session", null, &.{}, .{ .name = "sessionPath", .value = .{ .string = bound.sessionFile } }, refusal) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            return refusal.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
+        };
+        const cancelled = memberOf(switched, "cancelled") orelse std.json.Value.null;
+        if (cancelled != .bool or cancelled.bool) return refusal.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
+        const state_data = self.command(arena, "get_state", null, &.{}, refusal) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            return refusal.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
+        };
+        const streaming = memberOf(state_data, "isStreaming") orelse std.json.Value.null;
+        const compacting = memberOf(state_data, "isCompacting") orelse std.json.Value.null;
+        if (invalidState(state_data) != null or !std.mem.eql(u8, textOf(state_data, "sessionId"), bound.sessionId) or !std.mem.eql(u8, textOf(state_data, "sessionFile"), bound.sessionFile) or streaming != .bool or streaming.bool or compacting != .bool or compacting.bool) return refusal.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
+        self.recovered = true;
+        self.reports_level = true;
+        const auto = memberOf(state_data, "autoCompactionEnabled") orelse std.json.Value.null;
+        if (auto != .bool) return refusal.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
+        self.reported_policy = if (auto.bool) "{\"kind\":\"auto\"}" else "{\"kind\":\"off\"}";
+        return state_data;
+    }
+
+    fn initializeState(self: *Session, state_data: std.json.Value, refusal: *contract.Refusal) contract.Failure!void {
+        const native_session = memberOf(state_data, "sessionId") orelse std.json.Value.null;
+        if (invalidState(state_data)) |reason| return refusal.fail(error.BackendFailed, reason);
+        const streaming = memberOf(state_data, "isStreaming") orelse std.json.Value.null;
+        if (streaming == .bool and streaming.bool) return refusal.fail(error.BackendFailed, "the Pi agent was already streaming when the session opened");
+        self.current_model = modelOf(self.owned(), memberOf(state_data, "model")) catch |err| return lift(err);
+        self.native_session = try self.owned().dupe(u8, native_session.string);
+        const file_path = textOf(state_data, "sessionFile");
+        if (std.fs.path.isAbsolute(file_path)) self.native_binding = try std.json.Stringify.valueAlloc(self.owned(), Binding{ .sessionId = self.native_session, .sessionFile = file_path }, .{});
     }
 
     fn construct(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
@@ -230,6 +300,7 @@ pub const Session = struct {
 
     const vtable = contract.Session.VTable{
         .id = idOf,
+        .native_id = nativeId,
         .state = state,
         .submit = submit,
         .resolve = resolve,
@@ -521,6 +592,10 @@ pub const Session = struct {
         try self.statuses.put(self.owned(), reducer.run_id, status);
     }
 
+    fn nativeId(ptr: *anyopaque) []const u8 {
+        return cast(ptr).native_binding;
+    }
+
     fn idOf(ptr: *anyopaque) []const u8 {
         return cast(ptr).id;
     }
@@ -553,6 +628,8 @@ pub const Session = struct {
             .updated_at_ms = wallClock(),
             .reasoning_level = reasoning_level,
             .compaction_policy_json = compaction_policy_json,
+            .recovered = self.recovered,
+            .recovery_reason = if (self.recovered) reopen_recovery_reason else null,
         };
     }
 
@@ -1943,4 +2020,188 @@ test "a compaction request is refused for what Pi cannot do" {
     _ = try probe.submit("busy", &refusal);
     const idle = compactRequest(null);
     try testing.expectError(error.RunActive, probe.handle.?.vtable.compact.?(probe.handle.?.ptr, probe.arena.allocator(), &idle, "", &refusal));
+}
+
+fn boundPiFixture(arena: std.mem.Allocator, fake: *const FakePi) !Binding {
+    const path = try std.fs.path.join(arena, &.{ std.fs.path.dirname(fake.path).?, "session.jsonl" });
+    try fake.tmp.dir.writeFile(testing.io, .{ .sub_path = "session.jsonl", .data = "{\"type\":\"session\",\"id\":\"bound-session\",\"version\":3,\"cwd\":\"/workspace\"}\n" });
+    return .{ .sessionId = "bound-session", .sessionFile = path };
+}
+
+fn restoredPiState(arena: std.mem.Allocator, path: []const u8, id: []const u8) ![]const u8 {
+    return std.json.Stringify.valueAlloc(arena, .{
+        .sessionId = id,
+        .sessionFile = path,
+        .thinkingLevel = "high",
+        .steeringMode = "all",
+        .followUpMode = "one-at-a-time",
+        .messageCount = @as(usize, 3),
+        .pendingMessageCount = @as(usize, 0),
+        .isStreaming = false,
+        .isCompacting = false,
+        .autoCompactionEnabled = true,
+        .model = .{ .id = "restored", .provider = "fixture" },
+    }, .{});
+}
+
+test "Pi reopens its recorded file and reports the restored settings without OAP runs" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const held = arena.allocator();
+    var fake = try FakePi.init(testing.allocator, fake_prelude ++ fake_idle);
+    defer fake.deinit(testing.allocator);
+    const binding = try boundPiFixture(held, &fake);
+    const state_data = try restoredPiState(held, binding.sessionFile, binding.sessionId);
+    const script = try std.fmt.allocPrint(held, "{s}" ++
+        "take; printf '%s\\n' '{{\"type\":\"response\",\"id\":\"req_2\",\"command\":\"switch_session\",\"success\":true,\"data\":{{\"cancelled\":false}}}}'\n" ++
+        "take; printf '%s\\n' '{{\"type\":\"response\",\"id\":\"req_3\",\"command\":\"get_state\",\"success\":true,\"data\":{s}}}'\n" ++
+        "take; printf '%s\\n' '{{\"type\":\"response\",\"id\":\"req_4\",\"command\":\"get_state\",\"success\":true,\"data\":{s}}}'\n" ++ fake_idle, .{ fake_prelude, state_data, state_data });
+    try fake.tmp.dir.writeFile(testing.io, .{ .sub_path = "pi", .data = script, .flags = .{ .permissions = .executable_file } });
+    var adapter = Adapter.init(testing.allocator, fake.config());
+    var refusal = contract.Refusal{};
+    const encoded = try std.json.Stringify.valueAlloc(held, binding, .{});
+    const opened = try adapter.adapter().open(held, .{ .session_id = "oap-session", .participant = "user", .reopen = true, .native_session_id = encoded }, &refusal);
+    defer opened.teardown();
+    const state_value = try opened.state(held, &refusal);
+    try testing.expectEqualStrings("oap-session", state_value.session_id);
+    try testing.expectEqual(oap_types.SessionStatus.idle, state_value.status);
+    try testing.expect(state_value.recovered);
+    try testing.expectEqualStrings(reopen_recovery_reason, state_value.recovery_reason.?);
+    try testing.expectEqualStrings("fixture/restored", state_value.current_model_id.?);
+    try testing.expectEqualStrings("high", state_value.reasoning_level.?);
+    try testing.expectEqualStrings("{\"kind\":\"auto\"}", state_value.compaction_policy_json.?);
+    try testing.expect(state_value.active_run_id == null and state_value.transcript_cursor == null);
+    try testing.expectEqualStrings(encoded, opened.nativeId());
+    var events: std.ArrayList(contract.Event) = .empty;
+    try opened.drain(held, &events);
+    try testing.expectEqual(@as(usize, 0), events.items.len);
+    const written = try fake.written(held);
+    try testing.expect(std.mem.indexOf(u8, written, "\"type\":\"switch_session\"") != null);
+    try testing.expect(std.mem.indexOf(u8, written, binding.sessionFile) != null);
+    try testing.expect(std.mem.indexOf(u8, written, "\"type\":\"prompt\"") == null);
+}
+
+test "Pi refuses invalid files before starting its native process" {
+    const samples = [_][]const u8{ "", "{", "{\"type\":\"message\",\"id\":\"bound-session\"}", "{\"type\":\"session\",\"id\":\"someone-else\"}", "{\"type\":\"session\",\"id\":\"bound-session\",\"id\":\"bound-session\"}" };
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const held = arena.allocator();
+    var fake = try FakePi.init(testing.allocator, fake_prelude ++ fake_idle);
+    defer fake.deinit(testing.allocator);
+    const binding = try boundPiFixture(held, &fake);
+    var adapter = Adapter.init(testing.allocator, fake.config());
+    const encoded = try std.json.Stringify.valueAlloc(held, binding, .{});
+    for (samples) |sample| {
+        try fake.tmp.dir.writeFile(testing.io, .{ .sub_path = "session.jsonl", .data = sample });
+        var refusal = contract.Refusal{};
+        try testing.expectError(error.UnsupportedFeature, adapter.adapter().open(held, .{ .session_id = "s1", .participant = "user", .reopen = true, .native_session_id = encoded }, &refusal));
+        try testing.expectEqualStrings(contract.feature_open_reopen, refusal.feature);
+        try testing.expectEqualStrings(contract.reason_unsatisfiable, refusal.reason);
+        try testing.expectError(error.FileNotFound, fake.tmp.dir.openFile(testing.io, "stdin.log", .{}));
+    }
+    try fake.tmp.dir.deleteFile(testing.io, "session.jsonl");
+    var refusal = contract.Refusal{};
+    try testing.expectError(error.UnsupportedFeature, adapter.adapter().open(held, .{ .session_id = "s1", .participant = "user", .reopen = true, .native_session_id = encoded }, &refusal));
+    for ([_][]const u8{ "", "{", "{}", "{\"sessionId\":\"bound-session\",\"sessionFile\":\"relative.jsonl\"}" }) |raw| {
+        refusal = .{};
+        try testing.expectError(error.UnsupportedFeature, adapter.adapter().open(held, .{ .session_id = "s1", .participant = "user", .reopen = true, .native_session_id = raw }, &refusal));
+    }
+}
+
+test "Pi refuses a cancelled or unconfirmed native file switch" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const held = arena.allocator();
+    for ([_][]const u8{ "null", "{}", "{\"cancelled\":true}", "{\"cancelled\":\"false\"}" }) |reply| {
+        const script = try std.fmt.allocPrint(held, "{s}take; printf '%s\\n' '{{\"type\":\"response\",\"id\":\"req_2\",\"command\":\"switch_session\",\"success\":true,\"data\":{s}}}'\n{s}", .{ fake_prelude, reply, fake_idle });
+        var fake = try FakePi.init(testing.allocator, script);
+        defer fake.deinit(testing.allocator);
+        const binding = try boundPiFixture(held, &fake);
+        var adapter = Adapter.init(testing.allocator, fake.config());
+        var refusal = contract.Refusal{};
+        const encoded = try std.json.Stringify.valueAlloc(held, binding, .{});
+        try testing.expectError(error.UnsupportedFeature, adapter.adapter().open(held, .{ .session_id = "s1", .participant = "user", .reopen = true, .native_session_id = encoded }, &refusal));
+        try testing.expectEqualStrings(contract.feature_open_reopen, refusal.feature);
+        try testing.expectEqualStrings(contract.reason_unsatisfiable, refusal.reason);
+    }
+}
+
+fn bindingAllocationProbe(allocator: std.mem.Allocator, raw: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    _ = try readBinding(arena.allocator(), raw);
+}
+
+test "Pi binding header allocations release on every failure" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var fake = try FakePi.init(testing.allocator, fake_prelude ++ fake_idle);
+    defer fake.deinit(testing.allocator);
+    const binding = try boundPiFixture(arena.allocator(), &fake);
+    const encoded = try std.json.Stringify.valueAlloc(arena.allocator(), binding, .{});
+    try testing.checkAllAllocationFailures(testing.allocator, bindingAllocationProbe, .{encoded});
+}
+
+test "Pi replays the captured reload exchange through its native loader" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const held = arena.allocator();
+    const root = harness_pins.pi_corpus;
+    const path = try std.fs.path.join(held, &.{ root, "session-reopen", "native.jsonl" });
+    const input = try compat.fs.readFileAlloc(held, compat.fs.getCwd(), path, 128 * 1024);
+    var script: std.ArrayList(u8) = .empty;
+    try script.appendSlice(held, "#!/bin/sh\nexec 3>>\"$(dirname \"$0\")/stdin.log\"\ntake() { IFS= read -r line || exit 0; printf '%s\\n' \"$line\" >&3; }\n");
+    var commands: std.ArrayList(std.json.Value) = .empty;
+    var bound: ?Binding = null;
+    var lines = std.mem.tokenizeScalar(u8, input, '\n');
+    while (lines.next()) |line| {
+        const frame = try std.json.parseFromSliceLeaky(std.json.Value, held, line, .{});
+        const raw = memberOf(frame, "raw").?;
+        if (std.mem.eql(u8, textOf(frame, "direction"), "host-to-pi")) {
+            try commands.append(held, raw);
+            try script.appendSlice(held, "take\n");
+        } else {
+            const literal = try json_encode.valueAlloc(held, raw);
+            try script.appendSlice(held, try std.fmt.allocPrint(held, "printf '%s\\n' '{s}'\n", .{literal}));
+            const data = memberOf(raw, "data") orelse std.json.Value.null;
+            if (std.mem.eql(u8, textOf(raw, "id"), "req_3")) bound = .{ .sessionId = textOf(data, "sessionId"), .sessionFile = textOf(data, "sessionFile") };
+        }
+    }
+    try script.appendSlice(held, fake_idle);
+    var fake = try FakePi.init(testing.allocator, script.items);
+    defer fake.deinit(testing.allocator);
+    var adapter = Adapter.init(testing.allocator, fake.config());
+    var refusal = contract.Refusal{};
+    const opened = try Session.construct(&adapter, held, .{ .session_id = "session", .participant = "user" }, &refusal);
+    defer opened.destroy();
+    _ = try opened.command(held, "get_state", null, &.{}, &refusal);
+    const loaded = try opened.reopenNative(held, bound.?, &refusal);
+    try opened.initializeState(loaded, &refusal);
+    const state_value = try opened.handle().state(held, &refusal);
+    const expected_path = try std.fs.path.join(held, &.{ root, "session-reopen", "expected-oap.json" });
+    const expected = try std.json.parseFromSliceLeaky(std.json.Value, held, try compat.fs.readFileAlloc(held, compat.fs.getCwd(), expected_path, 4096), .{});
+    try testing.expect(state_value.recovered);
+    try testing.expectEqualStrings(textOf(expected, "session_id"), state_value.session_id);
+    try testing.expectEqualStrings(textOf(expected, "current_model_id"), state_value.current_model_id.?);
+    try testing.expectEqualStrings(textOf(expected, "reasoning_level"), state_value.reasoning_level.?);
+    try testing.expectEqualStrings(textOf(memberOf(expected, "recovery").?, "reason"), state_value.recovery_reason.?);
+    const policy = try std.json.parseFromSliceLeaky(std.json.Value, held, state_value.compaction_policy_json.?, .{});
+    try testing.expectEqualStrings(textOf(memberOf(expected, "compaction_policy").?, "kind"), textOf(policy, "kind"));
+    try testing.expectEqual(@as(usize, 1), policy.object.count());
+    try testing.expect(state_value.status == .idle and state_value.active_run_id == null and state_value.transcript_cursor == null);
+    const recorded = try std.json.parseFromSliceLeaky(Binding, held, opened.native_binding, .{});
+    try testing.expectEqualStrings(bound.?.sessionId, recorded.sessionId);
+    try testing.expectEqualStrings(bound.?.sessionFile, recorded.sessionFile);
+    var seen: std.ArrayList(contract.Event) = .empty;
+    try opened.handle().drain(held, &seen);
+    try testing.expectEqual(@as(usize, 0), seen.items.len);
+    const written = try fake.written(held);
+    var sent = std.mem.tokenizeScalar(u8, written, '\n');
+    for (commands.items) |command| {
+        const actual = try std.json.parseFromSliceLeaky(std.json.Value, held, sent.next().?, .{});
+        try testing.expectEqual(command.object.count(), actual.object.count());
+        var members = command.object.iterator();
+        while (members.next()) |member| try testing.expectEqualStrings(member.value_ptr.string, textOf(actual, member.key_ptr.*));
+    }
+    try testing.expect(sent.next() == null);
 }

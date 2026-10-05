@@ -176,6 +176,7 @@ func advertisedFeatures() map[string]protocol.FeatureSupport {
 	return map[string]protocol.FeatureSupport{
 		"protocol.initialize":            {Level: protocol.SupportEmulated, Reason: "Pi has no negotiation; readiness is a get_state handshake"},
 		"capabilities":                   {Level: protocol.SupportEmulated, Reason: "conservative descriptor synthesized for the pinned RPC vocabulary"},
+		protocol.FeatureOpenReopen:       {Level: protocol.SupportNative, Reason: reopenSupportReason},
 		"session.open":                   {Level: protocol.SupportEmulated, Reason: "one ready Pi process is associated with one OAP session"},
 		"session.state":                  {Level: protocol.SupportEmulated, Reason: "adapter projection reconciled with get_state"},
 		"session.message.submit":         {Level: protocol.SupportEmulated, Reason: "successful prompt response proves admission only"},
@@ -223,6 +224,14 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	if err := refuseUnsatisfiablePolicy(req.CompactionPolicy); err != nil {
 		return nil, err
 	}
+	var binding sessionBinding
+	if req.Reopen {
+		var err error
+		binding, err = readBinding(req.NativeSessionID)
+		if err != nil {
+			return nil, reopenRefusal(err)
+		}
+	}
 	client, initial, err := a.config.Factory.Start(ctx)
 	if err != nil {
 		return nil, err
@@ -235,6 +244,16 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		_ = client.Close()
 		return nil, fmt.Errorf("%w: initial state is already streaming", ErrNativeProtocol)
 	}
+	if req.Reopen {
+		initial, err = reopenSession(ctx, client, binding)
+		if err != nil {
+			_ = client.Close()
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, reopenRefusal(err)
+		}
+	}
 	id := req.SessionID
 	if id == "" {
 		id = protocol.SessionID(a.ids.NewID("session"))
@@ -243,6 +262,10 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	s := &Session{client: client, inbound: client.Inbound(), clock: a.clock, ids: a.ids, capacity: a.config.JournalCapacity, nativeID: initial.SessionID, participant: req.Participant.ID, state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, CurrentModelID: nativeModelID(initial.Model), UpdatedAtMS: now}, nativeState: initial, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, interactions: map[protocol.InteractionID]*inputState{}, stop: make(chan struct{})}
 	if initial.IsStreaming {
 		s.state.Status = protocol.SessionRunning
+	}
+	s.nativeBinding = encodeBinding(initial)
+	if req.Reopen {
+		s.restoreState(initial)
 	}
 	go s.dispatch()
 	if err := s.applySettings(ctx, req); err != nil {

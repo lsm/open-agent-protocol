@@ -1,0 +1,13 @@
+{
+  "session_id": "session",
+  "status": "idle",
+  "current_model_id": "oap-loopback/fixture-model",
+  "reasoning_level": "high",
+  "compaction_policy": {
+    "kind": "off"
+  },
+  "recovery": {
+    "recovered": true,
+    "reason": "Pi restored the bound conversation and reports the current model, thinking level and compaction switch; OAP runs and cursors remain process-local"
+  }
+}

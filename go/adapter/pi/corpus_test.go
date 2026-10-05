@@ -43,7 +43,7 @@ var piLedgerFixtures = map[string]bool{
 	"compaction": true, "threshold-compaction": true, "threshold-compaction-failed": true, "extension-dialog": true, "reconcile-state": true,
 	"entries-since": true, "switch-session": true, "process-exit": true,
 	"malformed-command": true, "fork-tree": true, "no-implied-replay": true,
-	"system-message": true,
+	"system-message": true, "bound-session-reopen": true,
 }
 
 type piCorpusManifest struct {
@@ -70,6 +70,7 @@ type piCorpusManifestCase struct {
 	LedgerFixtures []string `json:"ledger_fixtures"`
 }
 type piCorpusCase struct {
+	Reopen           bool               `json:"reopen,omitempty"`
 	Version          int                `json:"version"`
 	ID               string             `json:"id"`
 	Native           string             `json:"native"`
@@ -164,6 +165,10 @@ func runPiCorpusCase(t *testing.T, root string, entry piCorpusManifestCase) {
 	assertPiClassifications(t, frames, decoded, mappings, omissions)
 	assertPiCaseActions(t, definition, frames)
 	assertPiLedgerEvidence(t, entry.LedgerFixtures, frames, decoded)
+	if definition.Reopen {
+		runPiReopenCorpus(t, frames, filepath.Join(dir, definition.ExpectedOAP))
+		return
+	}
 	if definition.CodecOnly {
 		assertPiExpected(t, filepath.Join(dir, definition.ExpectedOAP), nil)
 		if definition.Noncanonical == "" {
@@ -433,7 +438,7 @@ func assertPiLedgerEvidence(t *testing.T, labels []string, frames []piCorpusFram
 			ok = hasPiCommand(frames, native.CommandGetState) && hasPiResponse(decoded, native.CommandGetState)
 		case "entries-since":
 			ok = hasPiCommand(frames, native.CommandGetEntries) && hasPiResponse(decoded, native.CommandGetEntries)
-		case "switch-session":
+		case "switch-session", "bound-session-reopen":
 			ok = hasPiCommand(frames, native.CommandSwitchSession) && hasPiResponse(decoded, native.CommandSwitchSession)
 		case "fork-tree":
 			ok = hasPiCommand(frames, native.CommandFork) && hasPiResponse(decoded, native.CommandFork)
