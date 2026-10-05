@@ -1385,6 +1385,7 @@ fn deserializeSessionState(obj: std.json.ObjectMap, allocator: std.mem.Allocator
         allocator.free(state.sources);
         if (state.reasoning_level) |owned| allocator.free(owned);
         if (state.compaction_policy_json) |owned| allocator.free(owned);
+        if (state.recovery_reason) |owned| allocator.free(owned);
     }
     state.reasoning_level = try optionalOwnedString(obj, "reasoning_level", allocator);
     state.compaction_policy_json = try optionalObjectJson(obj, "compaction_policy", allocator);
@@ -3484,4 +3485,19 @@ test "a reopened state retains the recovery explanation over the wire" {
     const state = decoded.payload.session_open_response;
     try std.testing.expect(state.recovered);
     try std.testing.expectEqualStrings("configuration belongs to the loader", state.recovery_reason.?);
+}
+
+const recovery_capture_frame = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"" ++ oap_types.PROFILE ++ "\",\"id\":\"reopened\",\"type\":\"session.open.response\",\"payload\":{\"session_id\":\"s\",\"status\":\"idle\",\"recovery\":{\"recovered\":true,\"reason\":\"loader configuration\"},\"as_of\":";
+
+test "a malformed capture releases the decoded recovery reason" {
+    try std.testing.expectError(DecodeError.InvalidField, deserializeEnvelope(recovery_capture_frame ++ "{\"settled\":\"invalid\"}}}", std.testing.allocator));
+}
+
+fn decodeRecoveryCapture(allocator: std.mem.Allocator) !void {
+    var decoded = try deserializeEnvelope(recovery_capture_frame ++ "{\"settled\":[{\"run_id\":\"old\",\"sequence\":3}]}}}", allocator);
+    defer decoded.deinit(allocator);
+}
+
+test "recovery reason ownership survives every allocation failure while decoding a capture" {
+    try std.testing.checkAllAllocationFailures(std.heap.smp_allocator, decodeRecoveryCapture, .{});
 }
