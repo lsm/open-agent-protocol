@@ -281,7 +281,10 @@ fn gather(
         if (descriptor != .object) return error.InvalidPackDescriptor;
         const pack_id = stringField(descriptor, "id") orelse return error.InvalidPackDescriptor;
         const version = stringField(descriptor, "version") orelse return error.InvalidPackDescriptor;
-        const canonical = std.Io.Dir.cwd().realPathFileAlloc(io, dir, allocator) catch dir;
+        const canonical = std.Io.Dir.cwd().realPathFileAlloc(io, dir, allocator) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => dir,
+        };
         if (named.contains(canonical)) continue;
         try named.put(canonical, {});
         try ids.append(allocator, pack_id);
@@ -315,7 +318,10 @@ fn gather(
             var pack_documents: std.ArrayList(Document) = .empty;
             if (declared_schemas) |held| {
                 const schemas = held.array;
-                const pack_root = std.Io.Dir.cwd().realPathFileAlloc(io, dir, allocator) catch return error.InvalidPackDescriptor;
+                const pack_root = std.Io.Dir.cwd().realPathFileAlloc(io, dir, allocator) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return error.InvalidPackDescriptor,
+                };
                 const entries = schemas.items;
                 const names = try allocator.alloc([]const u8, entries.len);
                 const paths = try allocator.alloc([]const u8, entries.len);
@@ -325,7 +331,10 @@ fn gather(
                     if (file.len == 0 or std.Io.Dir.path.isAbsolute(file)) return error.InvalidPackDescriptor;
                     const relative = try lexicalRelative(allocator, file);
                     const schema_path = try std.fs.path.join(allocator, &.{ dir, relative });
-                    const resolved = std.Io.Dir.cwd().realPathFileAlloc(io, schema_path, allocator) catch return error.InvalidPackDescriptor;
+                    const resolved = std.Io.Dir.cwd().realPathFileAlloc(io, schema_path, allocator) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => return error.InvalidPackDescriptor,
+                    };
                     if (!beneath(pack_root, resolved)) return error.InvalidPackDescriptor;
                     names[index] = relative;
                     paths[index] = resolved;
