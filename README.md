@@ -97,6 +97,12 @@ is recorded in its ledger: [claude](research/claude-code-agent-sdk-2.1.288-mappi
 from `PATH` with only `HOME` and `PATH`; an ACP agent has no default and needs
 a `--config` entry naming its `executable`.
 
+Claude's `session.open.reopen` reloads the bound CLI UUID through `--resume`,
+then reads `get_settings` for the actual model, effort and compaction policy.
+Recovery discloses that configuration belongs to the new process; only the
+conversation is restored. Missing native sessions return a typed
+`unsupported_feature` refusal; earlier OAP run events remain unavailable.
+
 Implementing OAP natively? [**STABILITY.md**](STABILITY.md) describes the
 v0.1 pre-release contract: what will freeze at the first tag, what may still
 be added, how conformance is defined and answered, how long a deprecation runs,

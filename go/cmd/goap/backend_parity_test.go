@@ -303,7 +303,7 @@ func settledExchange(t *testing.T, cmd *exec.Cmd, lines []string) []string {
 	_ = cmd.Process.Kill()
 	_ = cmd.Wait()
 	normalized := make([]string, 0, len(out))
-	for _, line := range out {
+	for _, line := range normalizeSelectedNativeBindings(t, out) {
 		normalized = append(normalized, normalizedLine(t, requestEntropy.ReplaceAllString(line, "${1}_@ENTROPY@")))
 	}
 	return normalized
@@ -575,4 +575,71 @@ func lineDifference(want, got []string) ([]string, []string) {
 		}
 	}
 	return missing, extra
+}
+
+var selectedNativeUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+func normalizeSelectedNativeBindings(t *testing.T, lines []string) []string {
+	t.Helper()
+	frames := make([]map[string]any, 0, len(lines))
+	aliases := map[string]string{}
+	for _, line := range lines {
+		var frame map[string]any
+		if err := json.Unmarshal([]byte(line), &frame); err != nil {
+			t.Fatal(err)
+		}
+		frames = append(frames, frame)
+		if frame["type"] != "session.open.response" {
+			continue
+		}
+		payload, _ := frame["payload"].(map[string]any)
+		if payload["status"] != "idle" {
+			continue
+		}
+		recovery, _ := payload["recovery"].(map[string]any)
+		if recovery["recovered"] == true {
+			continue
+		}
+		metadata, _ := payload["metadata"].(map[string]any)
+		id, _ := metadata["claude_native_session_id"].(string)
+		if selectedNativeUUID.MatchString(id) && aliases[id] == "" {
+			aliases[id] = fmt.Sprintf("@selected-claude-session-%d@", len(aliases)+1)
+		}
+	}
+	normalized := make([]string, 0, len(frames))
+	for _, frame := range frames {
+		payload, _ := frame["payload"].(map[string]any)
+		metadata, _ := payload["metadata"].(map[string]any)
+		id, _ := metadata["claude_native_session_id"].(string)
+		if alias := aliases[id]; alias != "" {
+			metadata["claude_native_session_id"] = alias
+		}
+		encoded, err := json.Marshal(frame)
+		if err != nil {
+			t.Fatal(err)
+		}
+		normalized = append(normalized, string(encoded))
+	}
+	return normalized
+}
+
+func TestNativeBindingEntropyNormalizationStillDetectsAChangedSession(t *testing.T) {
+	trace := func(opened, later string) []string {
+		return []string{
+			`{"type":"session.open.response","payload":{"status":"idle","metadata":{"claude_native_session_id":"` + opened + `"}}}`,
+			`{"type":"session.state.response","payload":{"status":"idle","metadata":{"claude_native_session_id":"` + later + `"}}}`,
+		}
+	}
+	a := "9d992266-63b1-4a69-8000-3aaf8b854e5c"
+	b := "24c7cf93-b337-48d5-8c34-d428857d43cc"
+	c := "f312402f-b05e-4cbf-95e4-09fd6a950e6a"
+	first := normalizeSelectedNativeBindings(t, trace(a, a))
+	second := normalizeSelectedNativeBindings(t, trace(b, b))
+	if missing, extra := lineDifference(first, second); len(missing)+len(extra) != 0 {
+		t.Fatal("independent native UUID entropy must compare equally")
+	}
+	changed := normalizeSelectedNativeBindings(t, trace(b, c))
+	if missing, extra := lineDifference(first, changed); len(missing)+len(extra) == 0 {
+		t.Fatal("a native session changed after open without a parity difference")
+	}
 }

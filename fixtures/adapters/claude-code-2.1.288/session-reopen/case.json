@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "id": "session-reopen",
+  "native": "native.jsonl",
+  "expected_oap": "expected-oap.json",
+  "mapping": "mapping.json",
+  "omissions": "omissions.json",
+  "provenance": {
+    "repository": "https://github.com/anthropics/claude-agent-sdk-typescript",
+    "tag": "2.1.288",
+    "sources": {
+      "cli_version": "2.1.288",
+      "npm_tarball_sha256": "13ad0dd7d50855682082e8d0c4d4d45822170cbb5bebde5f4d024611a0c94842",
+      "cli_wrapper_cjs_sha256": "61ad63033d9c8155d5e60a29f45dc4665afa07631c0b108e62cc83bf45ba490e",
+      "linux_x64_tarball_sha256": "b54d6a2c6bdd78f2c83139d1223598641686aab9e562c47cf537dd200653fa90",
+      "linux_x64_binary_sha256": "0298068b686e7fdbaf9402a7a587bb7f49c0b0e084de09f69145a0719207640c",
+      "linux_x64_binary_bytes": 245734584,
+      "darwin_arm64_tarball_sha256": "7cb1cbd826e6aa5ffc347e15193776c59373f840f40ec0fe3acfdcae342864da",
+      "darwin_arm64_binary_sha256": "bbe93063f7a0879a1021b2891e5c9354e5b3b98433e32efe6750f7710afed750",
+      "darwin_arm64_binary_bytes": 229255312,
+      "build_commit": "17fe1eb736e5b1433d6ca86a1db334cec8520450",
+      "build_date": "2026-10-02T17:00:28Z",
+      "ts_sdk_version": "0.3.288",
+      "ts_sdk_tarball_sha256": "eb97c0f5a7d96189bceaf1986c2751a024b7e13844ba843531cc55bb0b4fac54",
+      "ts_sdk_dts_sha256": "52d1c2c93ecb35a301044319f60e10d365f8e1ea0f1812054e1d4b4b2f183fb7",
+      "ts_sdk_repository": "https://github.com/anthropics/claude-agent-sdk-typescript",
+      "py_sdk_version": "0.2.163",
+      "py_sdk_commit": "1ef6d8c71bb0e44a6b33fe61497864f21e17fdb7",
+      "py_sdk_tree": "c621a9b571c58e64f6f17baddcae4c26e4ae2f57",
+      "py_sdk_pyproject_blob": "676ce6a0dc44f37ab9dbf08b76bac8ad983f7ac3",
+      "py_sdk_repository": "https://github.com/anthropics/claude-agent-sdk-python",
+      "py_client_py_blob": "a9c11f0cd93cb7420510e58c12dec5fda6af7bbd",
+      "py_types_py_blob": "882cc8040c9549a12cd21cc4195455056703a07a",
+      "py_query_py_blob": "6019124aadd73b10d0822120a4b6392c70cea450",
+      "py_parser_py_blob": "931cc2a632f296aab43f3f98209020138431ce7d",
+      "py_transport_py_blob": "d356e17b0d089dd22e3de00bbe7179049a8e79cb",
+      "py_resume_py_blob": "a50e578fdaea7b10de83697fe355145b7351cecc",
+      "py_store_py_blob": "bb6a2155b08ad546227eba9f2349d95bffd910fa",
+      "py_store_validation_py_blob": "16addd216281eecaadaedbe7ed361ad8205d0433"
+    }
+  },
+  "advertised_capabilities": {
+    "session.open.reopen": "native"
+  },
+  "identity_map": {
+    "native_session_id": "e4d5e97a-f365-40a4-bd91-85965f399c25"
+  }
+}

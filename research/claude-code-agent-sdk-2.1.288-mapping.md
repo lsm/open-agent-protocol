@@ -216,3 +216,56 @@ Whether a live `autoCompactWindow` moves the next compaction is still not
 observed: that needs a model call.
 
 The descriptor changed, so the revision moves to `claude-code-2.1.288-oap-v2`.
+
+
+## Binding-based reopen (#448)
+
+Both adapters select the binding's CLI UUID through `--resume <uuid>` on a
+new process, retain the OAP session id and answer an idle state with
+`recovery.recovered: true`. The readiness `initialize` exchange completes
+after the conversation is loaded. `get_settings` then reports `applied.model`
+and `applied.effort`, plus the effective `autoCompactEnabled` and
+`autoCompactWindow`; these become the state document's model, reasoning level
+and compaction policy. A null or unrecognised effort is left unspecified.
+Recovery's reason explicitly says these settings belong to the loader:
+Claude restores messages, not the former process's configuration.
+
+`TestClaudeProcessReopensItsBoundConversation` live-verified the catalog's
+Darwin ARM64 artifact (SHA256
+`bbe93063f7a0879a1021b2891e5c9354e5b3b98433e32efe6750f7710afed750`)
+through `adaptertest.VerifiedBinary`, with an isolated home/config directory,
+a fixture API key and a loopback Messages mock. After a completed turn and
+stdin-EOF close, the bound UUID reopened without a user turn. The next native
+Messages request included both the old and new user messages. An absent UUID
+printed `No conversation found with session ID: <uuid>` to stderr and exited
+before answering initialize. Both trees translate that inability to load into
+`unsupported_feature`, naming `session.open.reopen` with reason
+`unsatisfiable`; an empty or invalid binding is refused before spawning.
+No transcript file is read by the adapter and no earlier OAP event is replayed.
+
+The new `session-reopen` corpus case records the native initialize and
+get_settings exchanges captured by that gate; its native member names and
+values are retained, including the bound UUID and per-process request ids.
+Its expected state reports loader configuration rather than the stored
+session's. The Go adapter replays the exchange and the Zig adapter consumes
+its settings response through a fake child. The decoder corpus excludes this
+case because a binding-based reopen is an adapter lifecycle operation; the
+adapter test executes it instead. The capability is native, as conversation
+reload is native; loader configuration is disclosed in recovery. The revision
+advances to `claude-code-2.1.288-oap-v3`.
+
+A caller-supplied Go `ClientFactory` has no way to receive the bound UUID, so
+that injection path refuses reopen as unsatisfiable; process-backed hosts and
+`ProcessFactory` receive the binding in argv. A configured resume, continue,
+fork or session-id selector is likewise refused rather than overriding the
+binding. The opt-in native gate stays out of CI and downloads nothing.
+
+
+The normal process-backed create selects a secure random UUID with
+`--session-id`, and both adapters expose it through the native-session getter
+before a turn exists. This lets a hub record the binding at open, rather than
+waiting for the first `system/init`; the real process gate checks the CLI keeps
+that UUID on its first turn. An untouched session may have no transcript file
+yet, so closing it before any turn does not make a native reload possible.
+Legacy configured session selectors remain caller-owned on create, and their
+UUID is only known once observed; they cannot override a binding-based reopen.

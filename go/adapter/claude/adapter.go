@@ -148,6 +148,7 @@ type Adapter struct {
 	ids    base.IDGenerator
 
 	initializeAtOpen bool
+	processConfig    *rpc.ProcessConfig
 }
 
 func New(config Config) (*Adapter, error) {
@@ -173,6 +174,7 @@ func New(config Config) (*Adapter, error) {
 		})
 	}
 	initializeAtOpen := false
+	var processConfig *rpc.ProcessConfig
 	if config.Factory == nil {
 
 		env := config.Environment
@@ -198,6 +200,7 @@ func New(config Config) (*Adapter, error) {
 		argv = append(argv, config.Args...)
 		pc := rpc.ProcessConfig{Path: config.Executable, Args: argv, Dir: config.WorkingDirectory, Env: env, FrameLimit: config.FrameLimit, QueueCapacity: config.QueueCapacity, ExitTimeout: config.ExitTimeout}
 		initializeAtOpen = true
+		processConfig = &pc
 		config.Factory = ClientFactoryFunc(func(ctx context.Context) (Client, error) {
 			p, err := config.ProcessFactory.Start(ctx, pc)
 			if err != nil {
@@ -206,7 +209,7 @@ func New(config Config) (*Adapter, error) {
 			return &sessionClient{Client: p.ClientHandle(), bridge: p}, nil
 		})
 	}
-	return &Adapter{config: config, clock: config.Clock, ids: config.IDs, initializeAtOpen: initializeAtOpen}, nil
+	return &Adapter{config: config, clock: config.Clock, ids: config.IDs, initializeAtOpen: initializeAtOpen, processConfig: processConfig}, nil
 }
 
 type rpcProcess struct{ *rpc.Process }
@@ -236,6 +239,7 @@ func advertisedFeatures() map[string]protocol.FeatureSupport {
 		"protocol.initialize":            {Level: protocol.SupportEmulated, Reason: "initialize control exchange at open; no capability negotiation"},
 		"capabilities":                   {Level: protocol.SupportEmulated, Reason: "conservative descriptor; per-turn system/init refresh recorded as evidence"},
 		"session.open":                   {Level: protocol.SupportEmulated, Reason: "process spawn + initialize; CLI session UUID observed on frames"},
+		protocol.FeatureOpenReopen:       {Level: protocol.SupportNative, Reason: "--resume reloads the bound conversation; get_settings reports the loader model and effort, not persisted configuration"},
 		"session.state":                  {Level: protocol.SupportDegraded, Reason: "reducer-owned live projection"},
 		protocol.FeatureSessionReasoning: {Level: protocol.SupportNative, Modes: []string{protocol.ModeSessionOpen, protocol.ModeSessionLive}, Reason: "apply_flag_settings sets effortLevel after initialize and again between runs; low through max, and the CLI has no off or minimal level, so those are refused"},
 		protocol.FeatureCompactionPolicy: {Level: protocol.SupportEmulated, Modes: []string{protocol.ModeSessionOpen, protocol.ModeSessionLive}, Reason: "apply_flag_settings sets autoCompactEnabled and autoCompactWindow, at open and between runs; tokens is the window the CLI compacts within, and share is refused"},
@@ -246,7 +250,7 @@ func advertisedFeatures() map[string]protocol.FeatureSupport {
 		"run.streaming":                  {Level: protocol.SupportNative, Reason: "stream_event deltas with --include-partial-messages always on"},
 		"run.status":                     {Level: protocol.SupportEmulated},
 		"run.cancel":                     {Level: protocol.SupportDegraded, Reason: "interrupt intent; settlement only via terminal_reason aborted_*"},
-		"run.resume":                     {Level: protocol.SupportDegraded, Reason: "native conversation resume is not exercised; OAP resume replays the adapter journal"},
+		"run.resume":                     {Level: protocol.SupportDegraded, Reason: "OAP run resume replays the adapter journal; conversation reload uses session.open.reopen"},
 		"run.replay":                     {Level: protocol.SupportDegraded, Reason: "bounded adapter journal; gaps are explicit and transcript persistence is not event replay"},
 		"run.reconciliation":             {Level: protocol.SupportDegraded, Reason: "system/init and session state frames corroborate"},
 		"action.tools":                   {Level: protocol.SupportDegraded, Reason: "tool_use/tool_result projection; started synthesized; tool_progress observed-only"},
@@ -289,7 +293,7 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	if err != nil {
 		return nil, err
 	}
-	client, err := a.config.Factory.Start(ctx)
+	client, nativeSessionID, err := a.start(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -299,6 +303,11 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	}
 	now := a.clock.Now().UnixMilli()
 	s := &Session{client: client, clock: a.clock, ids: a.ids, journal: journal.New(a.config.JournalCapacity), expandPrompts: a.config.ExpandPrompts, participant: participant(req.Participant), state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, CurrentModelID: a.config.Model, UpdatedAtMS: now, ReasoningLevel: req.ReasoningLevel, CompactionPolicy: req.CompactionPolicy}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, interactions: map[protocol.InteractionID]*gateState{}, policyDenied: map[string]bool{}, children: map[string]*childState{}, stop: make(chan struct{})}
+	if nativeSessionID != "" {
+		s.nativeSessionID = nativeSessionID
+		encoded, _ := json.Marshal(nativeSessionID)
+		s.state.Metadata = map[string]json.RawMessage{"claude_native_session_id": encoded}
+	}
 	go s.dispatch()
 	if a.initializeAtOpen {
 
@@ -306,6 +315,9 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		defer cancel()
 		if err := client.Call(initCtx, native.InitializeRequest{Subtype: native.ControlInitialize, Hooks: native.ToolSelectionHooks()}, &struct{}{}); err != nil {
 			_ = s.Close(context.Background())
+			if req.Reopen && ctx.Err() == nil {
+				return nil, reopenRefusal("Claude Code could not load the bound conversation: " + err.Error())
+			}
 			return nil, fmt.Errorf("claude adapter: initialize exchange failed: %w", err)
 		}
 	}
@@ -315,6 +327,12 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		if err := client.Call(flagCtx, native.ApplyFlagSettingsRequest{Subtype: native.ControlApplyFlags, Settings: flags}, &struct{}{}); err != nil {
 			_ = s.Close(context.Background())
 			return nil, fmt.Errorf("claude adapter: apply_flag_settings failed: %w", err)
+		}
+	}
+	if req.Reopen {
+		if err := s.reopened(ctx, req.NativeSessionID); err != nil {
+			_ = s.Close(context.Background())
+			return nil, err
 		}
 	}
 	return s, nil
