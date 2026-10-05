@@ -165,7 +165,9 @@ and `models` is recorded but not yet applied as an allowlist.
 **An overridden row says where it goes.** `auth.providers.response` names the
 host in `override_host` while an override is in effect, so `listProviders()` in
 both SDKs and the TUI's `/login` list (`deepseek via proxy.internal`) show it.
-A row whose environment base outranks the override carries no mark.
+When an environment base outranks an override's `base_url`, the row carries no
+mark. An override without `base_url` still applies its headers wherever the row
+resolves, the environment's base included, so its mark names that host.
 
 **A redirected row's stored credential does not follow it.** A key or OAuth token
 saved with `/login` reaches an override's endpoint only when the override says
