@@ -425,7 +425,7 @@ pub const AuthProtocolServer = struct {
 
             const kinds = try self.allocator.dupe(auth_types.AuthKind, definition.auth_kinds);
             errdefer self.allocator.free(kinds);
-            const host = auth_resolver.overrideHost(self.allocator, overrides.overrides, definition.id) catch |err| switch (err) {
+            const host = auth_resolver.overrideHost(self.allocator, overrides.overrides, definition.id, if (storage) |*auth_storage| auth_storage else null) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => null,
             };

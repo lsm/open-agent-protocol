@@ -932,11 +932,7 @@ fn resolvedKimiRegion(server: *ProtocolServer) !?[]const u8 {
             break :blk @as(?*oauth_storage.AuthStorage, &loaded_storage.?);
         } orelse return null;
 
-    const auth = storage.resolvedCredential("kimi") orelse return null;
-    if (auth != .oauth) return null;
-    const provider_data = auth.oauth.provider_data orelse return null;
-    if (!std.mem.startsWith(u8, provider_data, "region:")) return null;
-    return provider_catalog.regionFromValue("kimi", provider_data["region:".len..]);
+    return auth_resolver.storedKimiRegion(storage);
 }
 
 fn handleStreamRequest(server: *ProtocolServer, request: protocol_types.StreamRequest, stream_id: protocol_types.Ulid, in_reply_to: protocol_types.Ulid, received_seq: u64) !protocol_types.Envelope {

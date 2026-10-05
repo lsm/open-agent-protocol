@@ -1733,15 +1733,15 @@ pub const App = struct {
             }
             self.login_status[i] = loginStatusFor(storage, provider.id, env_present);
         }
-        self.refreshLoginOverrides() catch self.forgetLoginOverrides();
+        self.refreshLoginOverrides(storage) catch self.forgetLoginOverrides();
     }
 
-    fn refreshLoginOverrides(self: *App) !void {
+    fn refreshLoginOverrides(self: *App, storage: ?*const oauth_storage.AuthStorage) !void {
         self.forgetLoginOverrides();
         var config = try auth_resolver.loadOverrides(self.allocator);
         defer config.deinit(self.allocator);
         for (provider_catalog.all, 0..) |provider, i| {
-            const host = try auth_resolver.overrideHost(self.allocator, config.overrides, provider.id) orelse continue;
+            const host = try auth_resolver.overrideHost(self.allocator, config.overrides, provider.id, storage) orelse continue;
             defer self.allocator.free(host);
             self.login_override_details[i] = try std.fmt.allocPrint(self.allocator, "{s} via {s}", .{ provider.id, host });
         }
