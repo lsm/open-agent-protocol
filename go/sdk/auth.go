@@ -19,6 +19,8 @@ type ProviderAuthInfo struct {
 	Status AuthStatus
 
 	LastError string
+
+	OverrideHost string
 }
 
 type AuthEventType string
@@ -291,11 +293,12 @@ func parseAuthEvent(f *frame, providerID, flowID string) (AuthEvent, error) {
 }
 
 type wireProviderAuthInfo struct {
-	ID         string                    `json:"id"`
-	Name       string                    `json:"name"`
-	AuthKinds  []protocol.CredentialKind `json:"auth_kinds"`
-	AuthStatus string                    `json:"auth_status"`
-	LastError  string                    `json:"last_error"`
+	ID           string                    `json:"id"`
+	Name         string                    `json:"name"`
+	AuthKinds    []protocol.CredentialKind `json:"auth_kinds"`
+	AuthStatus   string                    `json:"auth_status"`
+	LastError    string                    `json:"last_error"`
+	OverrideHost string                    `json:"override_host"`
 }
 
 func knownCredentialKinds(kinds []protocol.CredentialKind) []protocol.CredentialKind {
@@ -328,7 +331,7 @@ func parseProviders(f *frame, streamID string) ([]ProviderAuthInfo, error) {
 			status = AuthUnknown
 		}
 		providers = append(providers, ProviderAuthInfo{
-			ID: raw.ID, Name: raw.Name, AuthKinds: knownCredentialKinds(raw.AuthKinds), Status: status, LastError: raw.LastError,
+			ID: raw.ID, Name: raw.Name, AuthKinds: knownCredentialKinds(raw.AuthKinds), Status: status, LastError: raw.LastError, OverrideHost: raw.OverrideHost,
 		})
 	}
 	return providers, nil

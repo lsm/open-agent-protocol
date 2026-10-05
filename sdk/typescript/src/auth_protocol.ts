@@ -51,6 +51,7 @@ export interface ProviderAuthInfo {
   auth_kinds: AuthKind[];
   auth_status: AuthStatus;
   last_error?: string;
+  override_host?: string;
 }
 
 export type MakaiAuthEvent =
@@ -545,6 +546,10 @@ function parseProvider(entry: unknown, index: number): ProviderAuthInfo {
   const lastError = data["last_error"];
   if (typeof lastError === "string" && lastError.length > 0) {
     provider.last_error = lastError;
+  }
+  const overrideHost = data["override_host"];
+  if (typeof overrideHost === "string" && overrideHost.length > 0) {
+    provider.override_host = overrideHost;
   }
   return provider;
 }

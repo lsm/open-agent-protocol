@@ -9641,6 +9641,23 @@
       ]
     },
     {
+      "id": "auth-provider-empty-override-host",
+      "path": "schema-invalid/auth-provider-empty-override-host.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "core",
+        "auth"
+      ],
+      "provenance": [
+        "decisions/0043-auth-providers-carry-how-they-accept-a-credential.md"
+      ]
+    },
+    {
       "id": "auth-event-before-start",
       "path": "semantic-invalid/auth-event-before-start.json",
       "kind": "semantic-invalid",

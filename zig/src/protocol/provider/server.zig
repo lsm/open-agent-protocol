@@ -881,6 +881,9 @@ fn modelWithProtocolDefaults(
             }
         } else {
             allocator.free(resolved);
+            if (file) |found| {
+                if (found.base_url.len == 0 and model.headers == null and found.headers.len > 0) effective.headers = found.headers;
+            }
         }
     }
 
@@ -2694,6 +2697,13 @@ test "an override's headers ride every request it applies to, including one that
     var kept_stray = try modelWithProtocolDefaults(&server, elsewhere);
     defer kept_stray.deinit(std.testing.allocator);
     try std.testing.expect(kept_stray.model.headers == null);
+
+    auth_resolver.test_override_config = "{\"overrides\":[{\"id\":\"openrouter\",\"headers\":{\"X-Tenant\":\"acme\"}}]}";
+    var unresolved = request;
+    unresolved.provider = "openrouter";
+    var catalogued = try modelWithProtocolDefaults(&server, unresolved);
+    defer catalogued.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("X-Tenant", catalogued.model.headers.?[0].name);
 }
 
 test "a request already carrying the override's base keeps the override's version fact" {

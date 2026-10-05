@@ -93,6 +93,9 @@ fn serializePayload(writer: *json_writer.JsonWriter, payload: auth_types.Payload
                 if (provider.last_error.slice().len > 0) {
                     try writer.writeStringField("last_error", provider.last_error.slice());
                 }
+                if (provider.override_host.slice().len > 0) {
+                    try writer.writeStringField("override_host", provider.override_host.slice());
+                }
                 try writer.endObject();
             }
             try writer.endArray();
@@ -313,6 +316,11 @@ fn deserializePayload(type_str: []const u8, payload: std.json.ObjectMap, allocat
             if (try fields.optionalString(provider_obj, "last_error")) |value| {
                 last_error = OwnedSlice(u8).initOwned(try allocator.dupe(u8, value));
             }
+            errdefer last_error.deinit(allocator);
+            var override_host = OwnedSlice(u8).initBorrowed("");
+            if (try fields.optionalString(provider_obj, "override_host")) |value| {
+                override_host = OwnedSlice(u8).initOwned(try allocator.dupe(u8, value));
+            }
 
             providers[i] = .{
                 .id = id,
@@ -320,6 +328,7 @@ fn deserializePayload(type_str: []const u8, payload: std.json.ObjectMap, allocat
                 .auth_kinds = auth_kinds,
                 .auth_status = auth_status,
                 .last_error = last_error,
+                .override_host = override_host,
             };
             initialized = i + 1;
         }

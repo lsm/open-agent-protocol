@@ -924,7 +924,7 @@ func (s *AuthService) oapListProviders(ctx context.Context) ([]ProviderAuthInfo,
 				raw = append(raw, protocol.CredentialKind(name))
 			}
 		}
-		result = append(result, ProviderAuthInfo{ID: p.str("id"), Name: p.str("name"), AuthKinds: knownCredentialKinds(raw), Status: AuthStatus(p.str("auth_status")), LastError: p.str("last_error")})
+		result = append(result, ProviderAuthInfo{ID: p.str("id"), Name: p.str("name"), AuthKinds: knownCredentialKinds(raw), Status: AuthStatus(p.str("auth_status")), LastError: p.str("last_error"), OverrideHost: p.str("override_host")})
 	}
 	return result, nil
 }

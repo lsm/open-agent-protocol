@@ -141,7 +141,7 @@ func runOAPHost() {
 		case "auth.providers.request":
 			fakeEmit(oapFakeReply(request, "auth.providers.response", map[string]any{"providers": []map[string]any{
 				{"id": "fixture", "name": "Fixture", "auth_kinds": []string{"api_key", "oauth"}, "auth_status": "login_required"},
-				{"id": "weird", "name": "Weird", "auth_kinds": []string{"api_key", "passkey"}, "auth_status": "login_required"},
+				{"id": "weird", "name": "Weird", "auth_kinds": []string{"api_key", "passkey"}, "auth_status": "login_required", "override_host": "proxy.example"},
 				{"id": "old", "name": "Old", "auth_status": "login_required"},
 			}}))
 		case "auth.login.start.request":

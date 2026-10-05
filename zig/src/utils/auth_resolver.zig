@@ -121,6 +121,36 @@ pub fn overrideLookupIn(allocator: std.mem.Allocator, overrides: []const custom_
     return .{ .endpoint = .{ .base_url = base_url, .forwards_credential = override.forwards_credential, .carries_version = override.carries_version, .headers = headers } };
 }
 
+pub fn overrideHost(allocator: std.mem.Allocator, overrides: []const custom_providers.Override, provider_id: []const u8) !?[]u8 {
+    var lookup = try overrideLookupIn(allocator, overrides, provider_id);
+    defer lookup.deinit(allocator);
+    const found = switch (lookup) {
+        .endpoint => |endpoint| endpoint,
+        else => return null,
+    };
+    const row = provider_catalog.provider(provider_id) orelse return null;
+    const wire = provider_catalog.firstImplementedWire(row) orelse return null;
+    const resolved = try provider_base_url.defaultBaseUrlForRefWithFile(allocator, provider_id, wire.id, null, found.base_url);
+    defer allocator.free(resolved);
+    const effective = if (resolved.len > 0) resolved else provider_catalog.baseUrl(provider_id, wire.id, null) orelse return null;
+    if (!overrideApplies(allocator, found, provider_id, effective)) return null;
+    const uri = std.Uri.parse(effective) catch return null;
+    const host = uri.host orelse return null;
+    const text = switch (host) {
+        .raw => |raw| raw,
+        .percent_encoded => |encoded| encoded,
+    };
+    if (text.len == 0) return null;
+    return try allocator.dupe(u8, text);
+}
+
+pub fn loadOverrides(allocator: std.mem.Allocator) std.mem.Allocator.Error!custom_providers.Config {
+    return loadOverrideConfig(allocator) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return .{},
+    };
+}
+
 fn loadOverrideConfig(allocator: std.mem.Allocator) !custom_providers.Config {
     if (builtin.is_test) {
         const json = test_override_config orelse return .{};

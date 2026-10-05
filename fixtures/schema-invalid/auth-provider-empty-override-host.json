@@ -1,0 +1,23 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "auth.providers.request",
+    "id": "providers-req",
+    "payload": {}
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "auth.providers.response",
+    "id": "providers-resp",
+    "in_reply_to": "providers-req",
+    "payload": {
+      "providers": [
+        { "id": "example", "name": "Example", "auth_kinds": ["api_key"], "auth_status": "login_required", "override_host": "" }
+      ]
+    }
+  }
+]

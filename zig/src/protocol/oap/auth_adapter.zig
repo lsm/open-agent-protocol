@@ -389,6 +389,7 @@ pub const Adapter = struct {
             try writer.endArray();
             try writer.writeStringField("auth_status", @tagName(provider.auth_status));
             if (provider.last_error.slice().len > 0) try writer.writeStringField("last_error", provider.last_error.slice());
+            if (provider.override_host.slice().len > 0) try writer.writeStringField("override_host", provider.override_host.slice());
             try writer.endObject();
         }
         try writer.endArray();

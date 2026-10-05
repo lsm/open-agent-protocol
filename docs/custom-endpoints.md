@@ -162,6 +162,11 @@ every request. This applies to the rows the catalog loader serves; the Anthropic
 Codex and Copilot rows keep their own loaders and do not read an override yet,
 and `models` is recorded but not yet applied as an allowlist.
 
+**An overridden row says where it goes.** `auth.providers.response` names the
+host in `override_host` while an override is in effect, so `listProviders()` in
+both SDKs and the TUI's `/login` list (`deepseek via proxy.internal`) show it.
+A row whose environment base outranks the override carries no mark.
+
 **A redirected row's stored credential does not follow it.** A key or OAuth token
 saved with `/login` reaches an override's endpoint only when the override says
 `"forwards_credential": true`. Without it, a request to that endpoint carries a

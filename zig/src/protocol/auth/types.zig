@@ -32,11 +32,13 @@ pub const AuthProviderInfo = struct {
     auth_kinds: []const AuthKind = &.{},
     auth_status: AuthStatus,
     last_error: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+    override_host: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
 
     pub fn deinit(self: *AuthProviderInfo, allocator: std.mem.Allocator) void {
         self.id.deinit(allocator);
         self.name.deinit(allocator);
         self.last_error.deinit(allocator);
+        self.override_host.deinit(allocator);
         allocator.free(self.auth_kinds);
         self.* = undefined;
     }
