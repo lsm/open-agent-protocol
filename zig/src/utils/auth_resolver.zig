@@ -56,7 +56,7 @@ pub const OverrideEndpoint = struct {
 
 pub fn storedCredentialWithheld(allocator: std.mem.Allocator, lookup: OverrideLookup, provider_id: []const u8, base_url: []const u8) bool {
     if (std.mem.trim(u8, base_url, " \t\r\n").len == 0) return false;
-    if (!provider_catalog.servedByCatalogLoader(provider_id)) return false;
+    if (!provider_catalog.acceptsOverride(provider_id)) return false;
     return switch (lookup) {
         .none => false,
         .endpoint => |found| !found.forwards_credential and
@@ -98,7 +98,7 @@ pub fn overrideLookup(allocator: std.mem.Allocator, provider_id: []const u8) std
 }
 
 pub fn overrideLookupIn(allocator: std.mem.Allocator, overrides: []const custom_providers.Override, provider_id: []const u8) std.mem.Allocator.Error!OverrideLookup {
-    if (!provider_catalog.servedByCatalogLoader(provider_id)) return .none;
+    if (!provider_catalog.acceptsOverride(provider_id)) return .none;
     const override = custom_providers.overrideFor(overrides, provider_id) orelse return .none;
     const base = override.base_url orelse "";
     const base_url = try allocator.dupe(u8, base);

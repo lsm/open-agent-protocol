@@ -36,6 +36,7 @@ pub const OverrideError = error{
     DuplicateOverride,
     ForbiddenOverrideMember,
     WrongTypedOverrideMember,
+    UnsupportedOverrideRow,
 };
 
 pub const override_allowed_members = [_][]const u8{
@@ -437,6 +438,7 @@ fn parseOverride(allocator: std.mem.Allocator, obj: *const std.json.ObjectMap) !
 
     const raw_id = try typedString(obj, "id") orelse return OverrideError.MissingProviderId;
     if (provider_catalog.provider(raw_id) == null) return OverrideError.UnknownProviderId;
+    if (std.mem.eql(u8, raw_id, "github-copilot")) return OverrideError.UnsupportedOverrideRow;
 
     const base_url = if (try typedString(obj, "base_url")) |raw| url: {
         const stated = try typedBool(obj, "carries_version");
@@ -1060,6 +1062,9 @@ test "an override must name a catalogued row and may not name one twice" {
         .{ .data =
         \\{"overrides":[{"id":"deepseek","base_url":"not a url"}]}
         , .want = OverrideError.InvalidBaseUrl },
+        .{ .data =
+        \\{"overrides":[{"id":"github-copilot","base_url":"https://x.test"}]}
+        , .want = OverrideError.UnsupportedOverrideRow },
         .{ .data =
         \\{"overrides":["deepseek"]}
         , .want = OverrideError.InvalidConfig },

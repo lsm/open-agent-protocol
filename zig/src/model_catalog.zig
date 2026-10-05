@@ -167,6 +167,16 @@ fn loadProductionModelsWithMode(allocator: std.mem.Allocator, mode: CatalogLoadM
     var anthropic_models = try loadAnthropicModels(allocator, storage, mode);
     defer deinitModels(allocator, anthropic_models);
 
+    var override_config = try loadOverrideFile(allocator);
+    defer override_config.deinit(allocator);
+    const overrides = activeOverrides(&override_config);
+    if (anthropic_models.len == 0 and custom_providers.overrideFor(overrides, anthropic_provider_id) != null) {
+        allocator.free(anthropic_models);
+        anthropic_models = try anthropicStaticModels(allocator);
+    }
+    try applyVendorOverride(allocator, &anthropic_models, anthropic_provider_id, overrides);
+    try applyVendorOverride(allocator, &codex_models, openai_codex_provider_id, overrides);
+
     var copilot_models = try loadGitHubCopilotModels(allocator, storage);
     defer deinitModels(allocator, copilot_models);
 
@@ -842,6 +852,63 @@ fn appendCatalogTargetModels(
         built_owned = false;
         if (provenance) |tags| try tags.append(allocator, .declared);
     }
+}
+
+fn loadOverrideFile(allocator: std.mem.Allocator) !custom_providers.Config {
+    if (builtin.is_test) return .{};
+    return custom_providers.loadConfig(allocator, custom_providers.max_config_bytes) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => .{},
+    };
+}
+
+fn activeOverrides(config: *const custom_providers.Config) []const custom_providers.Override {
+    if (builtin.is_test) return test_catalog_overrides orelse &.{};
+    return config.overrides;
+}
+
+fn applyVendorOverride(allocator: std.mem.Allocator, models: *[]ai_types.Model, id: []const u8, overrides: []const custom_providers.Override) !void {
+    const file = custom_providers.overrideFor(overrides, id) orelse return;
+    const all_models = models.*;
+    var kept: usize = 0;
+    var index: usize = 0;
+    errdefer {
+        for (all_models[0..kept]) |*done| done.deinit(allocator);
+        for (all_models[index..]) |*rest| rest.deinit(allocator);
+        allocator.free(all_models);
+        models.* = &.{};
+    }
+    while (index < all_models.len) {
+        var model = all_models[index];
+        if (file.models.len > 0 and allowlistSpec(file.models, model.id) == null) {
+            model.deinit(allocator);
+            index += 1;
+            continue;
+        }
+        try stampOverride(allocator, &all_models[index], id, file);
+        all_models[kept] = all_models[index];
+        kept += 1;
+        index += 1;
+    }
+    if (kept == all_models.len) return;
+    const narrowed = try allocator.alloc(ai_types.Model, kept);
+    @memcpy(narrowed, all_models[0..kept]);
+    allocator.free(all_models);
+    models.* = narrowed;
+}
+
+fn stampOverride(allocator: std.mem.Allocator, model: *ai_types.Model, id: []const u8, file: custom_providers.Override) !void {
+    const file_base = file.base_url orelse "";
+    if (file_base.len > 0) {
+        const resolved = try provider_base_url.defaultBaseUrlForRefWithFile(allocator, id, model.api, null, file_base);
+        defer allocator.free(resolved);
+        if (!std.mem.eql(u8, resolved, file_base)) return;
+        const base = try allocator.dupe(u8, file_base);
+        allocator.free(model.base_url);
+        model.base_url = base;
+        model.carries_version = file.carries_version;
+    }
+    if (model.headers == null) model.headers = try dupeHeaders(allocator, file.headers);
 }
 
 fn allowlistSpec(allowlist: []const custom_providers.ModelSpec, id: []const u8) ?custom_providers.ModelSpec {
@@ -2588,6 +2655,43 @@ test "loadProductionModels includes the Anthropic static list when forced" {
     try std.testing.expectEqual(anthropic_static_models.len, models.len);
     for (models) |model| try std.testing.expectEqualStrings(anthropic_provider_id, model.provider);
     try std.testing.expectEqualStrings("claude-fable-5-1", models[0].id);
+}
+
+test "an Anthropic override moves the row's models to its base with its headers, narrowed by its models, even with no login" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
+    const headers = [_]ai_types.HeaderPair{.{ .name = "X-Tenant", .value = "acme" }};
+    const narrowing = [_]custom_providers.ModelSpec{.{ .id = "claude-fable-5-1", .name = "claude-fable-5-1" }};
+    const overrides = [_]custom_providers.Override{.{ .id = "anthropic", .base_url = "https://proxy.example/anthropic", .headers = &headers, .models = &narrowing }};
+    test_catalog_overrides = &overrides;
+    defer test_catalog_overrides = null;
+
+    const models = try loadProductionModels(std.testing.allocator);
+    defer deinitModels(std.testing.allocator, models);
+    try std.testing.expectEqual(@as(usize, 1), models.len);
+    try std.testing.expectEqualStrings("claude-fable-5-1", models[0].id);
+    try std.testing.expectEqualStrings("https://proxy.example/anthropic", models[0].base_url);
+    try std.testing.expectEqualStrings("X-Tenant", models[0].headers.?[0].name);
+
+    const kept_endpoint = [_]custom_providers.Override{.{ .id = "anthropic", .headers = &headers }};
+    test_catalog_overrides = &kept_endpoint;
+    const kept = try loadProductionModels(std.testing.allocator);
+    defer deinitModels(std.testing.allocator, kept);
+    try std.testing.expectEqual(anthropic_static_models.len, kept.len);
+    for (kept) |model| {
+        try std.testing.expect(!std.mem.eql(u8, model.base_url, "https://proxy.example/anthropic"));
+        try std.testing.expectEqualStrings("acme", model.headers.?[0].value);
+    }
+
+    try compat.setTestEnv(std.testing.allocator, "ANTHROPIC_BASE_URL", "https://env.example");
+    test_catalog_overrides = &overrides;
+    test_force_anthropic_models = true;
+    defer test_force_anthropic_models = false;
+    const outranked = try loadProductionModels(std.testing.allocator);
+    defer deinitModels(std.testing.allocator, outranked);
+    try std.testing.expectEqual(@as(usize, 1), outranked.len);
+    try std.testing.expect(outranked[0].headers == null);
+    try std.testing.expect(!std.mem.eql(u8, outranked[0].base_url, "https://proxy.example/anthropic"));
 }
 
 test "refreshProductionModels keeps Anthropic models when Codex refresh fails" {

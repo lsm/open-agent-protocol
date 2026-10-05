@@ -158,8 +158,12 @@ first (`OAPX_BASE_URL`, then the row's own `base_url_env`), then the override,
 then the catalog, so a variable set for one run still beats the file. The row's
 models are listed from the override's base, its requests go there, its
 `carries_version` decides where the wire's path joins, and its `headers` ride
-every request. This applies to the rows the catalog loader serves; the Anthropic,
-Codex and Copilot rows keep their own loaders and do not read an override yet.
+every request. This applies to the rows the catalog loader serves and to the
+Anthropic and Codex rows, which keep their own loaders: their models are listed as
+before (Anthropic falls back to its built-in list when no login can list them) and
+then carry the override's base and headers. GitHub Copilot cannot be overridden,
+because the base URL it uses is issued inside its token; an override naming
+`github-copilot` is refused at load as `UnsupportedOverrideRow`.
 An override's `models` narrow the row exactly as a custom entry's do: discovery is filtered
 by the list, and the list is what the row offers when discovery returns nothing,
 with each entry's `name`, `context_window` and `max_tokens` taking precedence
@@ -199,7 +203,7 @@ An override may name only these members:
 
 | Member | Meaning |
 | --- | --- |
-| `id` | Required. The catalogued row to override. An id the catalog does not record is `UnknownProviderId`. |
+| `id` | Required. The catalogued row to override. An id the catalog does not record is `UnknownProviderId`, and `github-copilot` is `UnsupportedOverrideRow`. |
 | `base_url` | Where the row's requests should go. A trailing `/v1` is stripped unless `carries_version` says otherwise, exactly as for a custom entry. Without it the row keeps its own endpoint, and the override's `headers` ride the row's requests there. |
 | `carries_version` | `true` when this base already carries the API version. The same fact a custom entry states, and for the same reason: only the endpoint's owner knows where its version sits. |
 | `forwards_credential` | `true` to send the row's stored key or OAuth token to this endpoint. Absent or `false`, it is withheld. |
