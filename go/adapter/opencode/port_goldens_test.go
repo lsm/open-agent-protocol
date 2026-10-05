@@ -68,6 +68,8 @@ func (r *requestRecorder) ServeHTTP(w http.ResponseWriter, request *http.Request
 	switch {
 	case path == "/base/api/session" && request.Method == http.MethodPost:
 		_, _ = w.Write([]byte(`{"data":{"id":"ses_fake00000000000000","projectID":"prj_fake","cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1,"updated":1},"title":"","location":{"directory":"/w"}}}`))
+	case path == "/base/api/session/ses_fake00000000000000" && request.Method == http.MethodGet:
+		_, _ = w.Write([]byte(`{"data":{"id":"ses_fake00000000000000","projectID":"prj_fake","cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1,"updated":1},"title":"","location":{"directory":"/w"}}}`))
 	case path == "/base/api/session/active":
 		_, _ = w.Write([]byte(`{"data":{}}`))
 	case bytes.HasSuffix([]byte(path), []byte("/prompt")):
@@ -127,6 +129,14 @@ func TestPortGoldensAreWhatTheGoAdapterSendsAndAdvertises(t *testing.T) {
 			return err
 		}},
 		{"interrupt", func() error { return authed.Interrupt(ctx, session) }},
+		{"session-record", func() error {
+			_, err := authed.Session(ctx, session)
+			return err
+		}},
+		{"history-from-start", func() error {
+			_, err := authed.History(ctx, session, 0, historyPageLimit)
+			return err
+		}},
 		{"active", func() error {
 			_, err := authed.Active(ctx)
 			return err

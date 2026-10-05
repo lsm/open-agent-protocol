@@ -15,7 +15,7 @@
     "timestamp_ms": 4,
     "session_id": "session",
     "run_id": "run-1",
-    "capability_revision": "opencode-v1.18.34-oap-v4"
+    "capability_revision": "opencode-v1.18.34-oap-v5"
   },
   {
     "protocol": "open-agent-protocol",
@@ -42,7 +42,7 @@
     "timestamp_ms": 5,
     "session_id": "session",
     "run_id": "run-1",
-    "capability_revision": "opencode-v1.18.34-oap-v4",
+    "capability_revision": "opencode-v1.18.34-oap-v5",
     "extensions": {
       "io.github.anomalyco.opencode.cost": {
         "total_cost_usd": 0

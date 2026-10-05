@@ -132,6 +132,7 @@ func advertisedFeatures() map[string]protocol.FeatureSupport {
 		"protocol.initialize":            {Level: protocol.SupportEmulated, Reason: "OpenCode has no initialize handshake; OpenAPI and catalogs describe the server"},
 		"capabilities":                   {Level: protocol.SupportEmulated, Reason: "descriptor synthesized from the pinned route inventory"},
 		"session.open":                   {Level: protocol.SupportNative, Reason: "POST /api/session with server-assigned identity"},
+		protocol.FeatureOpenReopen:       {Level: protocol.SupportNative, Reason: reopenSupportReason},
 		"session.state":                  {Level: protocol.SupportEmulated, Reason: "active set and adapter-owned projection"},
 		"session.message.submit":         {Level: protocol.SupportNative, Reason: "durable admission receipt with typed conflict rejection"},
 		"session.message.delivery.auto":  {Level: protocol.SupportEmulated, Reason: "no native auto; maps to steer which starts immediately when idle"},
@@ -209,18 +210,28 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	if err != nil {
 		return nil, err
 	}
-	info, err := client.CreateSession(ctx, httpapi.CreateSessionRequest{Agent: a.config.Agent, Model: createModel})
-	if err != nil {
+	var info native.SessionInfo
+	var after int64 = -1
+	if req.Reopen {
+		info, after, err = reloadBinding(ctx, client, req.NativeSessionID)
+		if err != nil {
+			_ = client.Close()
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, reopenRefusal(err)
+		}
+	} else if info, err = client.CreateSession(ctx, httpapi.CreateSessionRequest{Agent: a.config.Agent, Model: createModel}); err != nil {
 		_ = client.Close()
 		return nil, fmt.Errorf("create OpenCode session: %w", err)
 	}
-	if req.ReasoningLevel != "" && (info.Model == nil || info.Model.Variant != string(req.ReasoningLevel)) {
+	if !req.Reopen && req.ReasoningLevel != "" && (info.Model == nil || info.Model.Variant != string(req.ReasoningLevel)) {
 		_ = client.Close()
 		return nil, &base.UnsupportedControlError{Feature: protocol.FeatureSessionReasoning, Reason: base.ControlUnsatisfiable, Field: "reasoning_level", Detail: "OpenCode did not record the variant on the session it created"}
 	}
 
 	subCtx, subCancel := context.WithCancel(context.Background())
-	subscription, err := client.Subscribe(subCtx, info.ID, -1)
+	subscription, err := client.Subscribe(subCtx, info.ID, after)
 	if err != nil {
 		subCancel()
 		_ = client.Close()
@@ -258,8 +269,17 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		subCancel:    subCancel,
 	}
 
+	if req.Reopen {
+		s.restoreState(after)
+	}
 	s.observeModel(model)
 	go s.dispatch()
+	if req.Reopen && req.ReasoningLevel != "" {
+		if _, _, err := s.UpdateSettings(ctx, protocol.SessionSettingsUpdateRequest{SessionID: id, ReasoningLevel: req.ReasoningLevel}); err != nil {
+			_ = s.Close(context.Background())
+			return nil, err
+		}
+	}
 	return s, nil
 }
 

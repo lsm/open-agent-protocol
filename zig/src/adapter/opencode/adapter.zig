@@ -13,6 +13,10 @@ const client = @import("client");
 pub const endpoint_id = session.endpoint_id;
 pub const capability_revision = harness_pins.opencode_capability_revision;
 
+const reopen_support_reason = "GET /api/session/:id attaches to the bound server session and its events resume after the last stored sequence; an unknown or running session is refused";
+const reopen_recovery_reason = "OpenCode attached to the bound server session and reports the model it records; OAP runs and cursors remain process-local";
+const history_page_limit: usize = 100;
+
 const features = [_]contract.Feature{
     .{ .key = "action.permissions", .level = .unavailable, .reason = "durable stream carries no permission events; the polling surface is unexercised" },
     .{ .key = "action.tools", .level = .native, .reason = "tool.called/progress/success/failed lifecycle observed natively" },
@@ -32,6 +36,7 @@ const features = [_]contract.Feature{
     .{ .key = "session.message.delivery.steer", .level = .unavailable, .reason = "an explicit steer request is rejected as outside the v0.1 subset; the server's default delivery is exposed through an auto request" },
     .{ .key = "session.message.submit", .level = .native, .reason = "durable admission receipt with typed conflict rejection" },
     .{ .key = "session.open", .level = .native, .reason = "POST /api/session with server-assigned identity" },
+    .{ .key = contract.feature_open_reopen, .level = .native, .reason = reopen_support_reason },
     .{ .key = contract.feature_session_reasoning, .level = .native, .reason = "the session's model carries the level as its variant, which the runner sends on every step: set at create and between runs by switching the session to the same model with the new variant; it needs a model, and a variant the session record does not confirm is refused", .modes = &.{ contract.mode_session_open, contract.mode_session_live } },
     .{ .key = "session.state", .level = .emulated, .reason = "active set and adapter-owned projection" },
 };
@@ -115,9 +120,12 @@ pub const Session = struct {
     poll_delay_ns: u64 = 0,
     model: ?native.ModelRef = null,
     reported_level: ?[]const u8 = null,
+    native_id: []const u8 = "",
+    recovered: bool = false,
 
     fn open(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
         if (request.reasoning_level != null) return refusal.unsupportedField(contract.feature_session_reasoning, contract.reason_unsatisfiable, "reasoning_level");
+        if (request.reopen and std.mem.trim(u8, request.native_session_id, " \t\r\n").len == 0) return refusal.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
         if (request.compaction_policy_json != null) return refusal.unsupportedField(contract.feature_compaction_policy, contract.reason_unadvertised, "compaction_policy");
         const gpa = owner.allocator;
         const config = owner.config;
@@ -146,14 +154,26 @@ pub const Session = struct {
         errdefer self.stream.deinit();
 
         const own = self.owned();
-        const created_request = try httpapi.createSession(own, self.endpoint, .{ .agent = config.agent });
-        const created_response = self.exchange(created_request) catch |err| return refusal.fail(error.BackendFailed, try describe(arena, "create OpenCode session", err));
-        const info = switch (try httpapi.createSessionResult(own, created_response, config.frame_limit)) {
-            .ok => |value| value,
-            .failed => |failure| return refusal.fail(error.BackendFailed, try std.fmt.allocPrint(arena, "create OpenCode session: {s}", .{failure.message})),
+        var after: i64 = -1;
+        const info = if (request.reopen) attached: {
+            const bound = self.attach(request.native_session_id) catch |err| {
+                if (err == error.OutOfMemory) return error.OutOfMemory;
+                return refusal.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
+            };
+            after = bound.last_seq;
+            self.recovered = true;
+            break :attached bound.info;
+        } else created: {
+            const created_request = try httpapi.createSession(own, self.endpoint, .{ .agent = config.agent });
+            const created_response = self.exchange(created_request) catch |err| return refusal.fail(error.BackendFailed, try describe(arena, "create OpenCode session", err));
+            break :created switch (try httpapi.createSessionResult(own, created_response, config.frame_limit)) {
+                .ok => |value| value,
+                .failed => |failure| return refusal.fail(error.BackendFailed, try std.fmt.allocPrint(arena, "create OpenCode session: {s}", .{failure.message})),
+            };
         };
+        self.native_id = info.id;
 
-        const subscribe_request = try httpapi.subscribe(own, self.endpoint, info.id, -1);
+        const subscribe_request = try httpapi.subscribe(own, self.endpoint, info.id, after);
         const subscription = client.Connection.start(gpa, target, try client.encode(own, target, subscribe_request), config.frame_limit) catch |err| return refusal.fail(error.BackendFailed, try describe(arena, "subscribe OpenCode session events", err));
         self.subscription = subscription;
         errdefer {
@@ -181,8 +201,42 @@ pub const Session = struct {
             .now_ms = wallClock,
         }, .{ .context = self, .prompt = prompt, .interrupt = interrupt, .active = active, .history = history });
         self.reducer.open() catch |err| return lift(err);
+        if (after > 0) self.reducer.last_seq = after;
         try self.feed();
         return self;
+    }
+
+    const Attached = struct { info: native.SessionInfo, last_seq: i64 };
+
+    fn attach(self: *Session, bound: []const u8) !Attached {
+        const own = self.owned();
+        const limit = self.owner.config.frame_limit;
+        const info = switch (try httpapi.getSessionResult(own, try self.exchange(try httpapi.getSession(own, self.endpoint, bound)), bound, limit)) {
+            .ok => |value| value,
+            .failed => return error.SessionUnattachable,
+        };
+        const running = switch (try httpapi.activeResult(own, try self.exchange(try httpapi.active(own, self.endpoint)), limit)) {
+            .ok => |value| value,
+            .failed => return error.SessionUnattachable,
+        };
+        for (running) |id| {
+            if (std.mem.eql(u8, id, bound)) return error.SessionUnattachable;
+        }
+        var last: i64 = 0;
+        while (true) {
+            const page = switch (try httpapi.historyResult(own, try self.exchange(try httpapi.history(own, self.endpoint, bound, last, history_page_limit)), bound, limit)) {
+                .ok => |value| value,
+                .failed => return error.SessionUnattachable,
+            };
+            var advanced = false;
+            for (page.events) |event| {
+                if (event.durable.seq > last) {
+                    last = event.durable.seq;
+                    advanced = true;
+                }
+            }
+            if (!page.has_more or !advanced) return .{ .info = info, .last_seq = last };
+        }
     }
 
     fn mint(owner: *Adapter, allocator: std.mem.Allocator) ![]u8 {
@@ -196,6 +250,7 @@ pub const Session = struct {
 
     const vtable = contract.Session.VTable{
         .id = idOf,
+        .native_id = nativeId,
         .state = state,
         .submit = submit,
         .resolve = resolve,
@@ -354,6 +409,10 @@ pub const Session = struct {
         return cast(ptr).id;
     }
 
+    fn nativeId(ptr: *anyopaque) []const u8 {
+        return cast(ptr).native_id;
+    }
+
     fn state(ptr: *anyopaque, arena: std.mem.Allocator, refusal: *contract.Refusal) contract.Failure!oap_types.SessionState {
         _ = refusal;
         const self = cast(ptr);
@@ -390,6 +449,8 @@ pub const Session = struct {
             .updated_at_ms = wallClock(),
             .as_of = if (settled.len > 0) .{ .settled = settled } else null,
             .reasoning_level = if (self.reported_level) |level| try arena.dupe(u8, level) else null,
+            .recovered = self.recovered,
+            .recovery_reason = if (self.recovered) reopen_recovery_reason else null,
         };
     }
 
@@ -589,6 +650,10 @@ pub const FakeServer = struct {
     variant: [32]u8 = undefined,
     variant_len: usize = 0,
     failure: ?anyerror = null,
+    history_body: []const u8 = "{\"data\":[],\"hasMore\":false}",
+    missing_record: bool = false,
+    event_target: [256]u8 = undefined,
+    event_target_len: usize = 0,
 
     pub fn start(self: *FakeServer) !void {
         if (builtin.os.tag == .windows) return error.SkipZigTest;
@@ -668,6 +733,8 @@ pub const FakeServer = struct {
                 const method = words.next().?;
                 const target = words.next().?;
                 if (std.mem.startsWith(u8, target, "/api/session/" ++ fake_session ++ "/event")) {
+                    @memcpy(self.event_target[0..target.len], target);
+                    self.event_target_len = target.len;
                     if (!self.hold_event_head) try conn.stream.writeAll("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n");
                     head_pending = self.hold_event_head;
                     sse = conn;
@@ -704,6 +771,8 @@ pub const FakeServer = struct {
                     try conn.stream.writeAll("HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n");
                     conn.open = false;
                     conn.stream.close();
+                } else if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, target, "/api/session/" ++ fake_session) and self.missing_record) {
+                    try respond(conn, "404 Not Found", "{\"_tag\":\"SessionNotFoundError\",\"sessionID\":\"" ++ fake_session ++ "\",\"message\":\"Session not found\"}");
                 } else if (std.mem.eql(u8, method, "GET") and std.mem.eql(u8, target, "/api/session/" ++ fake_session)) {
                     const record = try std.fmt.allocPrint(arena, "{{\"data\":{{\"id\":\"" ++ fake_session ++ "\",\"projectID\":\"prj_fake\",\"model\":{{\"id\":\"fixture\",\"providerID\":\"fixture\",\"variant\":\"{s}\"}},\"time\":{{\"created\":1,\"updated\":2}}}}}}", .{self.variant[0..self.variant_len]});
                     try respond(conn, "200 OK", record);
@@ -722,7 +791,7 @@ pub const FakeServer = struct {
                     }
                 } else if (std.mem.indexOf(u8, target, "/history") != null) {
                     _ = self.histories.fetchAdd(1, .acq_rel);
-                    try respond(conn, "200 OK", "{\"data\":[],\"hasMore\":false}");
+                    try respond(conn, "200 OK", self.history_body);
                 } else {
                     try respond(conn, "404 Not Found", "{}");
                 }
@@ -1002,4 +1071,55 @@ test "a submission carrying a degraded-feature consent list is admitted, as Go's
     const request = oap_types.MessageSubmitRequest{ .session_id = "s1", .messages = messages, .delivery = .auto, .allow_degraded_features = &.{"run.streaming"} };
     const admitted = try probe.handle.?.submit(probe.arena.allocator(), &request, "", &refusal);
     try testing.expect(admitted.accepted);
+}
+
+fn openReopen(probe: *Probe, binding: []const u8, refusal: *contract.Refusal) !contract.Session {
+    const opened = try probe.adapter.adapter().vtable.open(&probe.adapter, probe.arena.allocator(), .{ .session_id = "s1", .participant = "user", .reopen = true, .native_session_id = binding }, refusal);
+    probe.handle = opened;
+    return opened;
+}
+
+test "a reopen attaches to the bound server session and resumes its events after the last stored one" {
+    var probe: Probe = undefined;
+    try probe.init(&.{}, &.{});
+    defer probe.deinit();
+    probe.fake.history_body = "{\"data\":[" ++
+        "{\"id\":\"evt_1\",\"type\":\"session.next.prompted\",\"durable\":{\"aggregateID\":\"" ++ fake_session ++ "\",\"seq\":1,\"version\":1},\"data\":{\"timestamp\":1,\"sessionID\":\"" ++ fake_session ++ "\",\"messageID\":\"msg_old\",\"prompt\":{\"text\":\"hello\"},\"delivery\":\"steer\"}}," ++
+        "{\"id\":\"evt_2\",\"type\":\"session.next.step.started\",\"durable\":{\"aggregateID\":\"" ++ fake_session ++ "\",\"seq\":2,\"version\":1},\"data\":{\"timestamp\":2,\"sessionID\":\"" ++ fake_session ++ "\",\"assistantMessageID\":\"msg_a1\",\"agent\":\"build\",\"model\":{\"id\":\"fixture\",\"providerID\":\"fixture\"}}}" ++
+        "],\"hasMore\":false}";
+    var refusal = contract.Refusal{};
+    const opened = try openReopen(&probe, fake_session, &refusal);
+    const state_value = try opened.state(probe.arena.allocator(), &refusal);
+    try testing.expect(state_value.recovered);
+    try testing.expectEqualStrings(reopen_recovery_reason, state_value.recovery_reason.?);
+    try testing.expectEqualStrings("2", state_value.transcript_cursor.?);
+    try testing.expect(state_value.status == .idle and state_value.active_run_id == null);
+    try testing.expectEqualStrings(fake_session, opened.nativeId());
+    try testing.expect(std.mem.endsWith(u8, probe.fake.event_target[0..probe.fake.event_target_len], "/event?after=2"));
+    try testing.expectEqual(@as(usize, 0), probe.fake.prompts.load(.acquire));
+}
+
+test "a fresh open binds the session the server created and reads its events from the start" {
+    var probe: Probe = undefined;
+    try probe.init(&.{}, &.{});
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const opened = try probe.open(&refusal);
+    try testing.expectEqualStrings(fake_session, opened.nativeId());
+    try testing.expect(std.mem.endsWith(u8, probe.fake.event_target[0..probe.fake.event_target_len], "/event"));
+}
+
+test "a reopen refuses a session it cannot attach" {
+    for ([_]enum { blank, missing, running }{ .blank, .missing, .running }) |case| {
+        var probe: Probe = undefined;
+        try probe.init(&.{}, &.{});
+        defer probe.deinit();
+        probe.fake.missing_record = case == .missing;
+        probe.fake.busy_polls = if (case == .running) 1 else 0;
+        var refusal = contract.Refusal{};
+        try testing.expectError(error.UnsupportedFeature, openReopen(&probe, if (case == .blank) " " else fake_session, &refusal));
+        try testing.expectEqualStrings(contract.feature_open_reopen, refusal.feature);
+        try testing.expectEqualStrings(contract.reason_unsatisfiable, refusal.reason);
+        try testing.expectEqual(@as(usize, 0), probe.fake.event_target_len);
+    }
 }
