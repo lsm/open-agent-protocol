@@ -12,6 +12,7 @@ const (
 	NotifyEvent = "event"
 
 	MethodSessionCreate     = "session.create"
+	MethodSessionResume     = "session.resume"
 	MethodConfigSet         = "config.set"
 	MethodSessionClose      = "session.close"
 	MethodSessionSteer      = "session.steer"
@@ -279,6 +280,24 @@ type SessionCreateResult struct {
 	MessageCount    int64           `json:"message_count"`
 	Messages        json.RawMessage `json:"messages"`
 	Info            json.RawMessage `json:"info"`
+}
+
+type SessionResumeParams struct {
+	SessionID string `json:"session_id"`
+}
+
+type SessionResumeResult struct {
+	SessionID    string          `json:"session_id"`
+	Resumed      string          `json:"resumed"`
+	MessageCount int64           `json:"message_count"`
+	Info         json.RawMessage `json:"info"`
+	Running      bool            `json:"running"`
+	Status       string          `json:"status"`
+	AutoContinue json.RawMessage `json:"auto_continue"`
+}
+
+type SessionCloseParams struct {
+	SessionID string `json:"session_id"`
 }
 
 type PromptSubmitParams struct {

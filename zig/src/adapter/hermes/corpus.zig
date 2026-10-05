@@ -48,6 +48,7 @@ const Driver = struct {
     pub const blank_expectation = corpus.BlankExpectation.empty_array_only;
     pub const Reducer = session.Reducer;
     pub const Case = CorpusCase;
+    pub const excluded_cases = [_][]const u8{ "session-reopen", "session-reopen-auto-continue" };
 
     pub fn open(arena: *std.heap.ArenaAllocator, case: CorpusCase) Reducer {
         _ = case;

@@ -181,7 +181,9 @@ resolves, the environment's base included, so its mark names that host.
 saved with `/login` reaches an override's endpoint only when the override says
 `"forwards_credential": true`. Without it, a request to that endpoint carries a
 key from the row's environment variable when one is set, and otherwise only the
-override's own `headers` — which is where a proxy's key belongs. A file that
+override's own `headers` — which is where a proxy's key belongs. The Anthropic, Codex and Copilot rows hold a
+saved API key to the same origins as their OAuth tokens: their own, the
+environment's, or an override's that forwards it. A file that
 cannot be read or parsed fails closed: a stored credential then reaches only an
 origin the row is known to use, its catalogued endpoints or a base named in the
 environment.

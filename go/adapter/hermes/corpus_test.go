@@ -76,6 +76,8 @@ var hmLedgerFixtures = map[string]bool{
 	"stdin-eof-exit": true, "process-exit": true, "pre-ready-observation": true, "no-turn-lifecycle-events": true,
 
 	"global-events-unsequenced": true, "session-reclaimed": true,
+
+	"bound-session-reopen": true, "reopen-auto-continue-refused": true,
 }
 
 type hmCorpusSources struct {
@@ -118,6 +120,7 @@ type hmCorpusCase struct {
 	ServerMode   string             `json:"server_mode,omitempty"`
 	OpenError    bool               `json:"open_error,omitempty"`
 	JournalCap   int                `json:"journal_capacity,omitempty"`
+	Reopen       bool               `json:"reopen,omitempty"`
 }
 type hmCorpusProvenance struct {
 	Repository string          `json:"repository"`
@@ -226,6 +229,10 @@ func runHermesCorpusCase(t *testing.T, root string, entry hmCorpusManifestCase) 
 	omissions := hmLoadJSON[[]hmCorpusOmission](t, filepath.Join(dir, definition.Omissions))
 	assertHermesClassifications(t, frames, decoded, mappings, omissions)
 	assertHermesCaseActions(t, definition, frames)
+	if definition.Reopen {
+		runHermesReopenCorpus(t, filepath.Join(dir, definition.ExpectedOAP), entry.LedgerFixtures, frames, decoded)
+		return
+	}
 	var execution hmExecution
 	if definition.ServerMode != "" {
 		execution = runHermesProcessCase(t, dir, definition, frames, decoded)

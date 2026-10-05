@@ -187,6 +187,20 @@
       "ledger_fixtures": [
         "background-reentry"
       ]
+    },
+    {
+      "id": "session-reopen",
+      "path": "session-reopen",
+      "ledger_fixtures": [
+        "bound-session-reopen"
+      ]
+    },
+    {
+      "id": "session-reopen-auto-continue",
+      "path": "session-reopen-auto-continue",
+      "ledger_fixtures": [
+        "reopen-auto-continue-refused"
+      ]
     }
   ]
 }

@@ -1,0 +1,9 @@
+{
+  "session_id": "session",
+  "status": "idle",
+  "current_model_id": "gpt-5.6-sol",
+  "recovery": {
+    "recovered": true,
+    "reason": "Hermes restored the bound conversation and reports the model it last ran under; OAP runs and cursors remain process-local"
+  }
+}
