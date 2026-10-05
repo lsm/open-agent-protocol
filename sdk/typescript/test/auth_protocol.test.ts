@@ -119,6 +119,7 @@ test("client.auth.listProviders parses providers payload", async () => {
     assert.equal(providers[2]?.auth_status, "failed");
     assert.deepEqual(providers[2]?.auth_kinds, ["api_key"]);
     assert.equal(providers[2]?.last_error, "previous attempt rejected");
+    assert.equal(providers[2]?.override_host, "proxy.example");
   } finally {
     await client.close();
   }

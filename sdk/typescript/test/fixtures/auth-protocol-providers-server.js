@@ -66,6 +66,7 @@ rl.on("line", (line) => {
               auth_kinds: ["api_key", "passkey"],
               auth_status: "failed",
               last_error: "previous attempt rejected",
+              override_host: "proxy.example",
             },
           ],
         },

@@ -168,6 +168,7 @@ export interface ProviderAuthInfo {
   name: string;
   auth_status: AuthStatus;
   last_error?: string;
+  override_host?: string; // set when providers.json overrides this provider's endpoint
 }
 
 export type MakaiAuthEvent =

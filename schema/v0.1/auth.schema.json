@@ -17,7 +17,11 @@
           "items": { "$ref": "common.schema.json#/$defs/authKind" }
         },
         "auth_status": { "$ref": "common.schema.json#/$defs/authStatus" },
-        "last_error": { "type": "string" }
+        "last_error": { "type": "string" },
+        "override_host": {
+          "description": "The host this provider's requests go to when the runtime's configuration overrides its endpoint or adds request headers to it. Absent otherwise.",
+          "$ref": "common.schema.json#/$defs/nonEmptyString"
+        }
       },
       "additionalProperties": false
     },

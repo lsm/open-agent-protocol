@@ -16,6 +16,7 @@ const tui_state = @import("tui_state");
 const tui_commands = @import("tui_commands");
 const tui_login = @import("tui_login");
 const custom_providers = @import("custom_providers");
+const auth_resolver = @import("auth_resolver");
 const model_catalog = @import("model_catalog");
 const tui_config = @import("tui_config");
 const tui_theme = @import("tui_theme");
@@ -696,6 +697,26 @@ test "Context requestClearScreen discards history queued before the request" {
     try std.testing.expectEqualStrings("transcript cleared\n", above);
 }
 
+test "the login list names the host an override sends a row to" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
+    auth_resolver.test_override_config = "{\"overrides\":[{\"id\":\"deepseek\",\"base_url\":\"https://proxy.example/deepseek\"}]}";
+    defer auth_resolver.test_override_config = null;
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.state.picker_kind = .login;
+    app.refreshLoginStatus();
+
+    const overridden = app.pickerItem(App.loginProviderIndex("deepseek").?, null);
+    try std.testing.expectEqualStrings("deepseek via proxy.example", overridden.detail.?);
+    const plain = app.pickerItem(App.loginProviderIndex("openrouter").?, null);
+    try std.testing.expectEqualStrings("openrouter", plain.detail.?);
+
+    auth_resolver.test_override_config = null;
+    app.refreshLoginStatus();
+    try std.testing.expectEqualStrings("deepseek", app.pickerItem(App.loginProviderIndex("deepseek").?, null).detail.?);
+}
+
 test "TuiModel login picker shows which providers are logged in" {
     var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator), .render_mode = .inline_history };
     defer model.deinit();
@@ -1024,6 +1045,7 @@ pub const App = struct {
     inline_history_flushed: usize = 0,
     inline_flushed_rows: usize = 0,
     login_status: [provider_catalog.all.len]LoginStatus = [_]LoginStatus{.none} ** provider_catalog.all.len,
+    login_override_details: [provider_catalog.all.len]?[]u8 = [_]?[]u8{null} ** provider_catalog.all.len,
     pending_session_reset: bool = false,
     deferred_commands: std.ArrayList([]u8) = .empty,
     pending_compaction: ?[]u8 = null,
@@ -1109,6 +1131,7 @@ pub const App = struct {
     }
 
     pub fn deinit(self: *App) void {
+        self.forgetLoginOverrides();
         for (self.deferred_commands.items) |text| self.allocator.free(text);
         self.deferred_commands.deinit(self.allocator);
         if (self.pending_compaction) |focus| self.allocator.free(focus);
@@ -1712,6 +1735,25 @@ pub const App = struct {
             }
             self.login_status[i] = loginStatusFor(storage, provider.id, env_present);
         }
+        self.refreshLoginOverrides(storage) catch self.forgetLoginOverrides();
+    }
+
+    fn refreshLoginOverrides(self: *App, storage: ?*const oauth_storage.AuthStorage) !void {
+        self.forgetLoginOverrides();
+        var config = try auth_resolver.loadOverrides(self.allocator);
+        defer config.deinit(self.allocator);
+        for (provider_catalog.all, 0..) |provider, i| {
+            const host = try auth_resolver.overrideHost(self.allocator, config.overrides, provider.id, storage) orelse continue;
+            defer self.allocator.free(host);
+            self.login_override_details[i] = try std.fmt.allocPrint(self.allocator, "{s} via {s}", .{ provider.id, host });
+        }
+    }
+
+    fn forgetLoginOverrides(self: *App) void {
+        for (&self.login_override_details) |*detail| {
+            if (detail.*) |text| self.allocator.free(text);
+            detail.* = null;
+        }
     }
 
     const permission_modes = [_]tui_runtime.PermissionMode{ .bypass, .ask };
@@ -1793,7 +1835,7 @@ pub const App = struct {
             } else .{ .label = "" },
             .login => if (loginProviderAt(index)) |row| .{
                 .label = loginProviderLabel(row),
-                .detail = if (loginDiscoveryAvailable(row.id)) row.id else "models unavailable",
+                .detail = if (!loginDiscoveryAvailable(row.id)) "models unavailable" else self.login_override_details[loginProviderCatalogIndex(row.id).?] orelse row.id,
                 .badge = if (loginDiscoveryAvailable(row.id)) loginBadge(self.login_status[loginProviderCatalogIndex(row.id).?]) else "unavailable",
             } else .{ .label = "" },
             .permission => .{ .label = @tagName(permission_modes[index]), .detail = TuiModel.permissionModeDetail(permission_modes[index]) },

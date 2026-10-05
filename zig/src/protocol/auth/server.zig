@@ -1,6 +1,8 @@
 const std = @import("std");
 const compat = @import("compat");
 const auth_providers = @import("auth/providers");
+const auth_resolver = @import("auth_resolver");
+const provider_catalog = @import("provider_catalog");
 const auth_types = @import("auth_types");
 const anthropic_oauth = @import("oauth/anthropic");
 const github_oauth = @import("oauth/github_copilot");
@@ -397,8 +399,9 @@ pub const AuthProtocolServer = struct {
     fn buildProvidersResponse(self: *Self) !auth_types.AuthProvidersResponse {
         const served = auth_providers.servedDefinitions();
         const providers = try self.allocator.alloc(auth_types.AuthProviderInfo, served.len);
+        var built: usize = 0;
         errdefer {
-            for (providers) |*provider| provider.deinit(self.allocator);
+            for (providers[0..built]) |*provider| provider.deinit(self.allocator);
             self.allocator.free(providers);
         }
 
@@ -406,6 +409,8 @@ pub const AuthProtocolServer = struct {
         defer if (storage) |*auth_storage| auth_storage.deinit();
 
         const now_ms = compat.time.nowMillis();
+        var overrides = try auth_resolver.loadOverrides(self.allocator);
+        defer overrides.deinit(self.allocator);
 
         for (served, 0..) |definition, index| {
             var status: auth_types.AuthStatus = .login_required;
@@ -422,12 +427,22 @@ pub const AuthProtocolServer = struct {
 
             const kinds = try self.allocator.dupe(auth_types.AuthKind, definition.auth_kinds);
             errdefer self.allocator.free(kinds);
+            const host = auth_resolver.overrideHost(self.allocator, overrides.overrides, definition.id, if (storage) |*auth_storage| auth_storage else null) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => null,
+            };
+            errdefer if (host) |value| self.allocator.free(value);
+            const id = try self.allocator.dupe(u8, definition.id);
+            errdefer self.allocator.free(id);
+            const name = try self.allocator.dupe(u8, definition.name);
             providers[index] = .{
-                .id = OwnedSlice(u8).initOwned(try self.allocator.dupe(u8, definition.id)),
-                .name = OwnedSlice(u8).initOwned(try self.allocator.dupe(u8, definition.name)),
+                .id = OwnedSlice(u8).initOwned(id),
+                .name = OwnedSlice(u8).initOwned(name),
                 .auth_kinds = kinds,
                 .auth_status = status,
+                .override_host = if (host) |value| OwnedSlice(u8).initOwned(value) else OwnedSlice(u8).initBorrowed(""),
             };
+            built = index + 1;
         }
 
         return .{
@@ -960,6 +975,38 @@ test "the providers response carries each row's own credential kinds, in the cat
     const ollama = auth_providers.findProvider("ollama") orelse return error.TestExpectedProvider;
     try std.testing.expect(ollama.auth_kinds.len > 0);
     try std.testing.expect(ollama.auth_kinds[0] == .none);
+}
+
+test "the providers response names the host an override sends a row to, and nothing for a row without one" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+    auth_resolver.test_override_config = "{\"overrides\":[{\"id\":\"deepseek\",\"base_url\":\"https://proxy.example/deepseek\"},{\"id\":\"openrouter\",\"headers\":{\"X-Tenant\":\"acme\"}}]}";
+    defer auth_resolver.test_override_config = null;
+    var server = AuthProtocolServer.init(allocator, .{
+        .persist_credentials = false,
+        .enable_real_oauth = false,
+    });
+    defer server.deinit();
+
+    const response = try server.buildProvidersResponse();
+    var owned = response;
+    defer owned.providers.deinit(allocator);
+    var seen: usize = 0;
+    for (owned.providers.slice()) |info| {
+        if (std.mem.eql(u8, info.id.slice(), "deepseek")) {
+            try std.testing.expectEqualStrings("proxy.example", info.override_host.slice());
+            seen += 1;
+        } else if (std.mem.eql(u8, info.id.slice(), "openrouter")) {
+            try std.testing.expect(info.override_host.slice().len > 0);
+            try std.testing.expect(!std.mem.eql(u8, info.override_host.slice(), "proxy.example"));
+            seen += 1;
+        } else if (std.mem.eql(u8, info.id.slice(), "openai")) {
+            try std.testing.expectEqual(@as(usize, 0), info.override_host.slice().len);
+            seen += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 3), seen);
 }
 
 test "AuthProtocolServer type is available" {

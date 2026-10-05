@@ -121,6 +121,47 @@ pub fn overrideLookupIn(allocator: std.mem.Allocator, overrides: []const custom_
     return .{ .endpoint = .{ .base_url = base_url, .forwards_credential = override.forwards_credential, .carries_version = override.carries_version, .headers = headers } };
 }
 
+pub fn storedKimiRegion(storage: ?*const AuthStorage) ?[]const u8 {
+    const stored = storage orelse return null;
+    const auth = stored.resolvedCredential("kimi") orelse return null;
+    if (auth != .oauth) return null;
+    const provider_data = auth.oauth.provider_data orelse return null;
+    if (!std.mem.startsWith(u8, provider_data, "region:")) return null;
+    return provider_catalog.regionFromValue("kimi", provider_data["region:".len..]);
+}
+
+pub fn overrideHost(allocator: std.mem.Allocator, overrides: []const custom_providers.Override, provider_id: []const u8, storage: ?*const AuthStorage) !?[]u8 {
+    var lookup = try overrideLookupIn(allocator, overrides, provider_id);
+    defer lookup.deinit(allocator);
+    const found = switch (lookup) {
+        .endpoint => |endpoint| endpoint,
+        else => return null,
+    };
+    if (found.base_url.len == 0 and found.headers.len == 0) return null;
+    const row = provider_catalog.provider(provider_id) orelse return null;
+    const wire = provider_catalog.firstImplementedWire(row) orelse return null;
+    const region = if (std.mem.eql(u8, provider_id, "kimi")) storedKimiRegion(storage) else null;
+    const resolved = try provider_base_url.defaultBaseUrlForRefWithFile(allocator, provider_id, wire.id, region, found.base_url);
+    defer allocator.free(resolved);
+    const effective = if (resolved.len > 0) resolved else provider_catalog.baseUrl(provider_id, wire.id, region) orelse return null;
+    if (!overrideApplies(allocator, found, provider_id, effective)) return null;
+    const uri = std.Uri.parse(effective) catch return null;
+    const host = uri.host orelse return null;
+    const text = switch (host) {
+        .raw => |raw| raw,
+        .percent_encoded => |encoded| encoded,
+    };
+    if (text.len == 0) return null;
+    return try allocator.dupe(u8, text);
+}
+
+pub fn loadOverrides(allocator: std.mem.Allocator) std.mem.Allocator.Error!custom_providers.Config {
+    return loadOverrideConfig(allocator) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return .{},
+    };
+}
+
 fn loadOverrideConfig(allocator: std.mem.Allocator) !custom_providers.Config {
     if (builtin.is_test) {
         const json = test_override_config orelse return .{};
@@ -451,4 +492,41 @@ test "a granted credential outranks a configured one on the resolution path" {
     var restored = try resolveApiKeyOfKind(allocator, &storage, "tenant", null, .any);
     defer restored.deinit(allocator);
     try std.testing.expectEqualStrings("sk-configured", restored.api_key);
+}
+
+test "an override's host follows the region the stored kimi login resolves to" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+    var storage = AuthStorage{
+        .providers = std.StringHashMap(ProviderAuth).init(allocator),
+        .allocator = allocator,
+    };
+    defer storage.deinit();
+    try storage.providers.put(try allocator.dupe(u8, "kimi"), .{ .oauth = .{
+        .refresh = try allocator.dupe(u8, "refresh"),
+        .access = try allocator.dupe(u8, "access"),
+        .expires = 0,
+        .provider_data = try allocator.dupe(u8, "region:global"),
+    } });
+    const headers = [_]ai_types.HeaderPair{.{ .name = "X-Tenant", .value = "acme" }};
+    const overrides = [_]custom_providers.Override{.{ .id = "kimi", .headers = &headers }};
+
+    const global = (try overrideHost(allocator, &overrides, "kimi", &storage)).?;
+    defer allocator.free(global);
+    const global_uri = try std.Uri.parse(provider_catalog.baseUrl("kimi", "openai-completions", "global").?);
+    try std.testing.expectEqualStrings(global_uri.host.?.percent_encoded, global);
+
+    const unset = (try overrideHost(allocator, &overrides, "kimi", null)).?;
+    defer allocator.free(unset);
+    try std.testing.expect(!std.mem.eql(u8, global, unset));
+}
+
+test "an override that moves no request and adds no header leaves the row unmarked" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+    const narrowing = [_]custom_providers.ModelSpec{.{ .id = "deepseek-chat", .name = "deepseek-chat" }};
+    const inert = [_]custom_providers.Override{.{ .id = "deepseek", .forwards_credential = true, .models = &narrowing }};
+    try std.testing.expect((try overrideHost(allocator, &inert, "deepseek", null)) == null);
 }

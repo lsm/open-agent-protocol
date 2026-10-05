@@ -881,6 +881,9 @@ fn modelWithProtocolDefaults(
             }
         } else {
             allocator.free(resolved);
+            if (file) |found| {
+                if (found.base_url.len == 0 and model.headers == null and found.headers.len > 0) effective.headers = found.headers;
+            }
         }
     }
 
@@ -929,11 +932,7 @@ fn resolvedKimiRegion(server: *ProtocolServer) !?[]const u8 {
             break :blk @as(?*oauth_storage.AuthStorage, &loaded_storage.?);
         } orelse return null;
 
-    const auth = storage.resolvedCredential("kimi") orelse return null;
-    if (auth != .oauth) return null;
-    const provider_data = auth.oauth.provider_data orelse return null;
-    if (!std.mem.startsWith(u8, provider_data, "region:")) return null;
-    return provider_catalog.regionFromValue("kimi", provider_data["region:".len..]);
+    return auth_resolver.storedKimiRegion(storage);
 }
 
 fn handleStreamRequest(server: *ProtocolServer, request: protocol_types.StreamRequest, stream_id: protocol_types.Ulid, in_reply_to: protocol_types.Ulid, received_seq: u64) !protocol_types.Envelope {
@@ -2694,6 +2693,13 @@ test "an override's headers ride every request it applies to, including one that
     var kept_stray = try modelWithProtocolDefaults(&server, elsewhere);
     defer kept_stray.deinit(std.testing.allocator);
     try std.testing.expect(kept_stray.model.headers == null);
+
+    auth_resolver.test_override_config = "{\"overrides\":[{\"id\":\"openrouter\",\"headers\":{\"X-Tenant\":\"acme\"}}]}";
+    var unresolved = request;
+    unresolved.provider = "openrouter";
+    var catalogued = try modelWithProtocolDefaults(&server, unresolved);
+    defer catalogued.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("X-Tenant", catalogued.model.headers.?[0].name);
 }
 
 test "a request already carrying the override's base keeps the override's version fact" {

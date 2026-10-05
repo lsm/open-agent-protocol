@@ -16,7 +16,7 @@
     "in_reply_to": "providers-req",
     "payload": {
       "providers": [
-        { "id": "example", "name": "Example", "auth_kinds": ["api_key"], "auth_status": "login_required" }
+        { "id": "example", "name": "Example", "auth_kinds": ["api_key"], "auth_status": "login_required", "override_host": "proxy.example" }
       ]
     }
   },

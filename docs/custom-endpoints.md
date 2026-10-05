@@ -165,6 +165,14 @@ by the list, and the list is what the row offers when discovery returns nothing,
 with each entry's `name`, `context_window` and `max_tokens` taking precedence
 over what discovery reported.
 
+**An overridden row says where it goes.** `auth.providers.response` names the
+host in `override_host` while an override that moves its requests or adds
+headers to them is in effect, so `listProviders()` in
+both SDKs and the TUI's `/login` list (`deepseek via proxy.internal`) show it.
+When an environment base outranks an override's `base_url`, the row carries no
+mark. An override without `base_url` still applies its headers wherever the row
+resolves, the environment's base included, so its mark names that host.
+
 **A redirected row's stored credential does not follow it.** A key or OAuth token
 saved with `/login` reaches an override's endpoint only when the override says
 `"forwards_credential": true`. Without it, a request to that endpoint carries a

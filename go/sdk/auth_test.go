@@ -48,7 +48,7 @@ func TestAuthListProviders(t *testing.T) {
 
 func TestAuthListProvidersNormalizesUnknownStatus(t *testing.T) {
 	client := newTestClient(t, scenarioProtocol,
-		envAuthProviders+`={"providers":[{"id":"p","name":"P","auth_status":"quantum","last_error":"boom"}]}`)
+		envAuthProviders+`={"providers":[{"id":"p","name":"P","auth_status":"quantum","last_error":"boom","override_host":"proxy.example"}]}`)
 
 	providers, err := client.Auth.ListProviders(testContext(t))
 	if err != nil {
@@ -59,6 +59,9 @@ func TestAuthListProvidersNormalizesUnknownStatus(t *testing.T) {
 	}
 	if providers[0].LastError != "boom" {
 		t.Errorf("LastError = %q", providers[0].LastError)
+	}
+	if providers[0].OverrideHost != "proxy.example" {
+		t.Errorf("OverrideHost = %q", providers[0].OverrideHost)
 	}
 }
 
@@ -82,6 +85,9 @@ func TestAuthListProvidersOnTheOAPWireCarriesTheKinds(t *testing.T) {
 	}
 	if len(providers[2].AuthKinds) != 0 {
 		t.Errorf("old kinds = %v, want empty for a runtime predating the field", providers[2].AuthKinds)
+	}
+	if providers[1].OverrideHost != "proxy.example" || providers[0].OverrideHost != "" {
+		t.Errorf("override hosts = %q, %q, want \"\" and proxy.example", providers[0].OverrideHost, providers[1].OverrideHost)
 	}
 }
 

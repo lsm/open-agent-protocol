@@ -1709,6 +1709,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "auth_types", .module = protocol_auth_types_mod },
+            .{ .name = "provider_catalog", .module = provider_catalog_mod },
+            .{ .name = "auth_resolver", .module = auth_resolver_mod },
             .{ .name = "auth/providers", .module = auth_provider_defs_mod },
             .{ .name = "oauth/anthropic", .module = oauth_anthropic_mod },
             .{ .name = "oauth/github_copilot", .module = github_copilot_mod },
@@ -2190,6 +2192,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "tui_state", .module = tui_state_mod },
             .{ .name = "tui_commands", .module = tui_commands_mod },
             .{ .name = "tui_login", .module = tui_login_mod },
+            .{ .name = "auth_resolver", .module = auth_resolver_mod },
             .{ .name = "custom_providers", .module = custom_providers_mod },
             .{ .name = "model_catalog", .module = model_catalog_mod },
             .{ .name = "tui_config", .module = tui_config_mod },

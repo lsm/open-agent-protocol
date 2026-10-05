@@ -505,6 +505,7 @@ class OapAuthApi implements MakaiAuthApi {
           : [],
         auth_status: raw.auth_status as ProviderAuthInfo["auth_status"],
         ...(typeof raw.last_error === "string" ? { last_error: raw.last_error } : {}),
+        ...(str(raw.override_host) ? { override_host: str(raw.override_host) } : {}),
       };
     });
   }
