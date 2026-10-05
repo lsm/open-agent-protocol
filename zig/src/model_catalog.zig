@@ -440,6 +440,9 @@ const CatalogDiscovery = struct {
 var test_catalog_discovery: ?[]const CatalogDiscovery = null;
 var test_catalog_environment: ?[]const provider_credential.EnvironmentValue = null;
 var test_catalog_base_urls: ?provider_base_url.BaseUrlOverrides = null;
+var test_catalog_overrides: ?[]const custom_providers.Override = null;
+var test_last_discovery_token: [64]u8 = undefined;
+var test_last_discovery_token_len: usize = 0;
 var test_catalog_refusal_markers: bool = false;
 var test_refusal_marker_age_ms: ?i64 = null;
 var test_models_dev: ?[]const u8 = null;
@@ -471,6 +474,9 @@ const CatalogEndpoint = struct {
     base_url: []const u8,
     models_url: []const u8,
     region: ?[]const u8 = null,
+    carries_version: ?bool = null,
+    headers: []const ai_types.HeaderPair = &.{},
+    withholds_stored: bool = false,
     owned_base_url: ?[]u8 = null,
     owned_models_url: ?[]u8 = null,
 
@@ -509,6 +515,7 @@ fn catalogEndpointWithBase(
     allocator: std.mem.Allocator,
     catalog: CatalogEndpoint,
     base_url: []const u8,
+    stated_version: ?bool,
 ) !CatalogEndpoint {
     if (base_url.len == 0) {
         return .{
@@ -521,19 +528,23 @@ fn catalogEndpointWithBase(
     }
     const models_path = provider_catalog.modelsEndpoint(catalog.id) orelse unreachable;
     errdefer allocator.free(base_url);
-    const models_url = try provider_catalog.listingUrlOwned(
-        allocator,
-        base_url,
-        models_path,
-        provider_catalog.endpointCarriesVersion(catalog.id, catalog.base_url),
-        true,
-    );
+    const models_url = if (stated_version orelse false)
+        try provider_catalog.joinUrlOwned(allocator, base_url, .{ .id = "models", .suffix = models_path }, true)
+    else
+        try provider_catalog.listingUrlOwned(
+            allocator,
+            base_url,
+            models_path,
+            provider_catalog.endpointCarriesVersion(catalog.id, catalog.base_url),
+            true,
+        );
     return .{
         .id = catalog.id,
         .wire = catalog.wire,
         .base_url = base_url,
         .models_url = models_url,
         .region = catalog.region,
+        .carries_version = stated_version,
         .owned_base_url = @constCast(base_url),
         .owned_models_url = @constCast(models_url),
     };
@@ -557,23 +568,41 @@ fn catalogEndpointWithOverrides(
         catalog = moved;
         base_url = try provider_base_url.baseUrlWithOverrides(allocator, id, catalog.wire, merged);
     }
-    return try catalogEndpointWithBase(allocator, catalog, base_url);
+    const from_file = merged.fileSupplies() and std.mem.eql(u8, base_url, merged.file);
+    return try catalogEndpointWithBase(allocator, catalog, base_url, if (from_file) merged.file_carries_version else null);
 }
 
 fn catalogEndpointFromEnvironment(
     allocator: std.mem.Allocator,
     storage: ?*oauth_storage.AuthStorage,
     id: []const u8,
+    file: ?custom_providers.Override,
 ) !?CatalogEndpoint {
     const region = try catalogRegion(allocator, storage, id);
     var catalog = catalogTargetInRegion(id, region) orelse return null;
-    var base_url = try resolvedBaseForTarget(allocator, id, catalog.wire, region);
+    const file_base = if (file) |given| given.base_url orelse "" else "";
+    var base_url = try resolvedBaseForTarget(allocator, id, catalog.wire, region, file_base);
     if (overriddenTarget(id, region, catalog, base_url)) |moved| {
         allocator.free(base_url);
         catalog = moved;
-        base_url = try resolvedBaseForTarget(allocator, id, catalog.wire, region);
+        base_url = try resolvedBaseForTarget(allocator, id, catalog.wire, region, file_base);
     }
-    return try catalogEndpointWithBase(allocator, catalog, base_url);
+    const from_file = fileApplies(catalog, base_url, file);
+    const redirected = from_file and file_base.len > 0 and base_url.len > 0;
+    var endpoint = try catalogEndpointWithBase(allocator, catalog, base_url, if (redirected) file.?.carries_version else null);
+    if (from_file) {
+        endpoint.headers = file.?.headers;
+        endpoint.withholds_stored = redirected and !file.?.forwards_credential;
+    }
+    return endpoint;
+}
+
+fn fileApplies(catalog: CatalogEndpoint, base_url: []const u8, file: ?custom_providers.Override) bool {
+    const given = file orelse return false;
+    const file_base = given.base_url orelse "";
+    if (file_base.len == 0) return true;
+    if (base_url.len > 0) return std.mem.eql(u8, base_url, file_base);
+    return std.mem.eql(u8, std.mem.trimEnd(u8, catalog.base_url, "/"), std.mem.trimEnd(u8, file_base, "/"));
 }
 
 fn overriddenTarget(id: []const u8, region: ?[]const u8, catalog: CatalogEndpoint, base_url: []const u8) ?CatalogEndpoint {
@@ -589,8 +618,8 @@ fn canonicalForWire(id: []const u8, wire: []const u8, region: ?[]const u8, base_
     return std.mem.eql(u8, base_url, catalogued);
 }
 
-fn resolvedBaseForTarget(allocator: std.mem.Allocator, id: []const u8, wire: []const u8, region: ?[]const u8) ![]const u8 {
-    const base = try provider_base_url.defaultBaseUrlForRefWithRegion(allocator, id, wire, region);
+fn resolvedBaseForTarget(allocator: std.mem.Allocator, id: []const u8, wire: []const u8, region: ?[]const u8, file: []const u8) ![]const u8 {
+    const base = try provider_base_url.defaultBaseUrlForRefWithFile(allocator, id, wire, region, file);
     if (base.len == 0) return base;
     const catalogued = provider_catalog.baseUrl(id, wire, region) orelse return base;
     if (!std.mem.eql(u8, base, catalogued)) return base;
@@ -621,22 +650,7 @@ fn catalogStoredRegion(id: []const u8, storage: ?*oauth_storage.AuthStorage) ?[]
     return provider_catalog.regionFromValue(id, provider_data["region:".len..]);
 }
 
-const catalog_loader_rows = [_][]const u8{
-    "deepseek",
-    "openrouter",
-    "opencode-zen",
-    "opencode-go",
-    "vercel",
-    "zenmux",
-    "deepinfra",
-    "zai-coding-plan",
-    "alibaba-coding-plan",
-    "minimax-coding-plan",
-    "tencent-coding-plan",
-    "volcengine-coding-plan",
-    "openai",
-    "kimi",
-};
+const catalog_loader_rows = provider_catalog.catalog_loader_rows;
 
 pub fn supportsCatalogModelDiscovery(id: []const u8) bool {
     return isCatalogLoaderRow(id) or std.mem.eql(u8, id, "anthropic") or std.mem.eql(u8, id, "openai-codex") or std.mem.eql(u8, id, "github-copilot");
@@ -647,10 +661,7 @@ const proxy_models_url = "https://proxy.example/api/v1/models";
 const xiaomi_catalog_models_url = "https://token-plan-cn.xiaomimimo.com/v1/models";
 
 fn isCatalogLoaderRow(id: []const u8) bool {
-    for (catalog_loader_rows) |row| {
-        if (std.mem.eql(u8, row, id)) return true;
-    }
-    return false;
+    return provider_catalog.servedByCatalogLoader(id);
 }
 
 fn orderedCatalogLoaderIds(allocator: std.mem.Allocator, out: *std.ArrayList([]const u8)) !void {
@@ -713,11 +724,29 @@ fn loadRowsWithProvenance(
     }
     var models_dev: ModelsDev = .{ .mode = mode };
     defer models_dev.deinit();
+    var config: custom_providers.Config = if (builtin.is_test) .{} else custom_providers.loadConfig(allocator, custom_providers.max_config_bytes) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => .{},
+    };
+    defer if (!builtin.is_test) config.deinit(allocator);
+    const overrides: []const custom_providers.Override = if (builtin.is_test) test_catalog_overrides orelse &.{} else config.overrides;
     for (ids) |id| {
-        const endpoint = if (builtin.is_test)
-            try catalogEndpointWithOverrides(allocator, id, test_catalog_base_urls orelse .{})
-        else
-            try catalogEndpointFromEnvironment(allocator, storage, id);
+        const file = custom_providers.overrideFor(overrides, id);
+        const endpoint = if (builtin.is_test) testEndpoint: {
+            var merged = test_catalog_base_urls orelse provider_base_url.BaseUrlOverrides{};
+            const file_base = if (file) |given| given.base_url orelse "" else "";
+            if (file_base.len > 0) {
+                merged.file = file_base;
+                merged.file_carries_version = file.?.carries_version;
+            }
+            var made = (try catalogEndpointWithOverrides(allocator, id, merged)) orelse break :testEndpoint null;
+            const canonical = made.owned_base_url == null;
+            if (fileApplies(made, if (canonical) "" else made.base_url, file)) {
+                made.headers = file.?.headers;
+                made.withholds_stored = file_base.len > 0 and !canonical and !file.?.forwards_credential;
+            }
+            break :testEndpoint made;
+        } else try catalogEndpointFromEnvironment(allocator, storage, id, file);
         var held = endpoint orelse continue;
         defer held.deinit(allocator);
         try appendCatalogTargetModels(allocator, &models, held, storage, mode, provenance, &models_dev);
@@ -741,11 +770,22 @@ fn appendCatalogTargetModels(
     const environment = try catalogEnvironment(allocator, target.id);
     defer freeEnvironment(allocator, environment);
 
-    var credential = (try provider_credential.lookup(allocator, environment, storage, target.id)) orelse return;
-    defer credential.deinit(allocator);
+    var found = try provider_credential.lookup(allocator, environment, storage, target.id);
+    defer if (found) |*credential| credential.deinit(allocator);
+    if (target.withholds_stored) {
+        if (found) |*credential| if (credential.source != .environment) {
+            credential.deinit(allocator);
+            found = null;
+        };
+    } else if (found == null) return;
 
-    const honour_marker = credential.source == .stored;
-    const discovered = discoverCatalogModels(allocator, target, credential.key, mode, honour_marker) catch |err| switch (err) {
+    const token = if (found) |credential| credential.key else "";
+    const honour_marker = if (found) |credential| credential.source == .stored else false;
+    if (builtin.is_test) {
+        test_last_discovery_token_len = @min(token.len, test_last_discovery_token.len);
+        @memcpy(test_last_discovery_token[0..test_last_discovery_token_len], token[0..test_last_discovery_token_len]);
+    }
+    const discovered = discoverCatalogModels(allocator, target, token, mode, honour_marker) catch |err| switch (err) {
         error.ModelCatalogRefused, error.ModelCatalogRemembered => return,
         else => return err,
     };
@@ -804,6 +844,7 @@ fn catalogModel(allocator: std.mem.Allocator, target: CatalogEndpoint, model: Di
         input[1] = try allocator.dupe(u8, "image");
         filled = 2;
     }
+    const headers = try dupeHeaders(allocator, target.headers);
 
     return .{
         .id = id,
@@ -816,8 +857,30 @@ fn catalogModel(allocator: std.mem.Allocator, target: CatalogEndpoint, model: Di
         .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
         .context_window = contextWindowFor(target.id, model),
         .max_tokens = maxTokensFor(target.id, model),
+        .headers = headers,
+        .carries_version = target.carries_version,
         .is_owned = true,
     };
+}
+
+fn dupeHeaders(allocator: std.mem.Allocator, given: []const ai_types.HeaderPair) !?[]ai_types.HeaderPair {
+    if (given.len == 0) return null;
+    const copied = try allocator.alloc(ai_types.HeaderPair, given.len);
+    var filled: usize = 0;
+    errdefer {
+        for (copied[0..filled]) |header| {
+            allocator.free(header.name);
+            allocator.free(header.value);
+        }
+        allocator.free(copied);
+    }
+    for (given, copied) |header, *slot| {
+        const name = try allocator.dupe(u8, header.name);
+        errdefer allocator.free(name);
+        slot.* = .{ .name = name, .value = try allocator.dupe(u8, header.value) };
+        filled += 1;
+    }
+    return copied;
 }
 
 fn catalogModelWire(target: CatalogEndpoint, model_id: []const u8) ?provider_catalog.Wire {
@@ -1066,14 +1129,17 @@ fn fetchCatalogModelsCatalog(allocator: std.mem.Allocator, target: CatalogEndpoi
     try headers.append(allocator, .{ .name = "accept", .value = "application/json" });
     var owned_bearer: ?[]u8 = null;
     defer if (owned_bearer) |value| secureFree(allocator, value);
-    if (std.mem.eql(u8, target.wire, "anthropic-messages")) {
-        try headers.append(allocator, .{ .name = "x-api-key", .value = token });
-        try headers.append(allocator, .{ .name = "anthropic-version", .value = "2023-06-01" });
-    } else {
-        const bearer = try std.fmt.allocPrint(allocator, "Bearer {s}", .{token});
-        owned_bearer = bearer;
-        try headers.append(allocator, .{ .name = "authorization", .value = bearer });
+    if (token.len > 0) {
+        if (std.mem.eql(u8, target.wire, "anthropic-messages")) {
+            try headers.append(allocator, .{ .name = "x-api-key", .value = token });
+            try headers.append(allocator, .{ .name = "anthropic-version", .value = "2023-06-01" });
+        } else {
+            const bearer = try std.fmt.allocPrint(allocator, "Bearer {s}", .{token});
+            owned_bearer = bearer;
+            try headers.append(allocator, .{ .name = "authorization", .value = bearer });
+        }
     }
+    try appendOverrideHeaders(allocator, &headers, target.headers);
 
     var fetched = compat.http.fetch(allocator, target.models_url, .{
         .method = .GET,
@@ -1087,6 +1153,13 @@ fn fetchCatalogModelsCatalog(allocator: std.mem.Allocator, target: CatalogEndpoi
     if (isRefusalStatus(fetched.status)) return error.ModelCatalogRefused;
     if (fetched.status != 200) return error.ModelCatalogFetchFailed;
     return fetched.body;
+}
+
+fn appendOverrideHeaders(allocator: std.mem.Allocator, headers: *std.ArrayList(std.http.Header), extra: []const ai_types.HeaderPair) !void {
+    for (extra) |header| {
+        if (compat.http.headerPresent(headers.items, header.name)) continue;
+        try headers.append(allocator, .{ .name = header.name, .value = header.value });
+    }
 }
 
 fn customCatalogName(allocator: std.mem.Allocator, provider_id: []const u8) ![]u8 {
@@ -3382,7 +3455,7 @@ test "a Kimi listing and the requests that follow use the same credential and th
         const region = try catalogRegion(allocator, &storage, kimi_provider_id);
         try std.testing.expectEqualStrings(case.want_region, region.?);
 
-        var listed_base = (try catalogEndpointFromEnvironment(allocator, &storage, kimi_provider_id)).?;
+        var listed_base = (try catalogEndpointFromEnvironment(allocator, &storage, kimi_provider_id, null)).?;
         defer listed_base.deinit(allocator);
         try std.testing.expectEqualStrings(case.want_region, listed_base.region.?);
 
@@ -3443,7 +3516,7 @@ test "the region resolution a user chose at login reaches discovery and the mode
     const target = catalogTargetInRegion("kimi", region) orelse return error.TestExpectedTarget;
     try std.testing.expectEqualStrings("https://api.moonshot.ai", target.base_url);
 
-    const maybe_endpoint = try catalogEndpointFromEnvironment(allocator, &storage, "kimi");
+    const maybe_endpoint = try catalogEndpointFromEnvironment(allocator, &storage, "kimi", null);
     var held_endpoint = maybe_endpoint;
     defer if (held_endpoint) |*held| held.deinit(allocator);
     const endpoint = held_endpoint;
@@ -3619,7 +3692,7 @@ test "a carries-version row's listing and its request agree under an override" {
         try std.testing.expect(provider_catalog.endpointCarriesVersion(id, target.base_url));
 
         const proxy = try std.testing.allocator.dupe(u8, "https://proxy.example");
-        var endpoint = try catalogEndpointWithBase(std.testing.allocator, target, proxy);
+        var endpoint = try catalogEndpointWithBase(std.testing.allocator, target, proxy, null);
         defer endpoint.deinit(std.testing.allocator);
         try std.testing.expectEqualStrings("https://proxy.example", endpoint.base_url);
 
@@ -3760,6 +3833,114 @@ test "a row's discovery is read from its overridden models url, not the catalog'
     try std.testing.expectEqual(@as(usize, 1), models.len);
     try std.testing.expectEqualStrings("deepseek-chat", models[0].id);
     try std.testing.expectEqualStrings("https://proxy.example/api", models[0].base_url);
+}
+
+test "a providers.json override moves a row to its base, with its stated version and headers, below the environment" {
+    test_catalog_discovery = &[_]CatalogDiscovery{
+        .{ .id = "deepseek", .models_url = proxy_models_url, .model_ids = &.{"deepseek-chat"} },
+    };
+    test_catalog_environment = &[_]provider_credential.EnvironmentValue{
+        .{ .name = "DEEPSEEK_API_KEY", .value = "row-key" },
+    };
+    const headers = [_]ai_types.HeaderPair{.{ .name = "X-Tenant", .value = "acme" }};
+    const overrides = [_]custom_providers.Override{.{ .id = "deepseek", .base_url = "https://proxy.example/api", .carries_version = false, .headers = &headers }};
+    test_catalog_overrides = &overrides;
+    defer {
+        test_catalog_discovery = null;
+        test_catalog_environment = null;
+        test_catalog_overrides = null;
+        test_catalog_base_urls = null;
+    }
+
+    const models = try loadCatalogModelsWithRows(std.testing.allocator, &.{"deepseek"}, null, .allow_cache);
+    defer deinitModels(std.testing.allocator, models);
+    try std.testing.expectEqual(@as(usize, 1), models.len);
+    try std.testing.expectEqualStrings("https://proxy.example/api", models[0].base_url);
+    try std.testing.expectEqual(@as(?bool, false), models[0].carries_version);
+    try std.testing.expectEqualStrings("X-Tenant", models[0].headers.?[0].name);
+    try std.testing.expectEqualStrings("acme", models[0].headers.?[0].value);
+
+    test_catalog_base_urls = .{ .row = "https://env.example/api" };
+    test_catalog_discovery = &[_]CatalogDiscovery{
+        .{ .id = "deepseek", .models_url = "https://env.example/api/v1/models", .model_ids = &.{"deepseek-chat"} },
+    };
+    const below = try loadCatalogModelsWithRows(std.testing.allocator, &.{"deepseek"}, null, .allow_cache);
+    defer deinitModels(std.testing.allocator, below);
+    try std.testing.expectEqual(@as(usize, 1), below.len);
+    try std.testing.expectEqualStrings("https://env.example/api", below[0].base_url);
+    try std.testing.expect(below[0].headers == null);
+}
+
+test "an override that states its version lists from that version once, and one that does not gets the route's" {
+    var kept = (try catalogEndpointWithOverrides(std.testing.allocator, "deepseek", .{ .file = "https://proxy.example/deepseek/v1", .file_carries_version = true })).?;
+    defer kept.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("https://proxy.example/deepseek/v1/models", kept.models_url);
+
+    var routed = (try catalogEndpointWithOverrides(std.testing.allocator, "openrouter", .{ .file = "https://proxy.example/openrouter" })).?;
+    defer routed.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("https://proxy.example/openrouter/v1/models", routed.models_url);
+}
+
+test "an override that keeps the row's endpoint lists with its headers and still sends the stored credential" {
+    var storage = oauth_storage.AuthStorage{
+        .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(std.testing.allocator),
+        .allocator = std.testing.allocator,
+    };
+    defer storage.deinit();
+    try storage.providers.put(try std.testing.allocator.dupe(u8, "deepseek"), .{ .api_key = try std.testing.allocator.dupe(u8, "stored-key") });
+    test_catalog_discovery = &[_]CatalogDiscovery{
+        .{ .id = "deepseek", .models_url = provider_catalog.modelsUrl("deepseek", null).?, .model_ids = &.{"deepseek-chat"} },
+    };
+    defer {
+        test_catalog_discovery = null;
+        test_catalog_overrides = null;
+    }
+    const plain = try loadCatalogModelsWithRows(std.testing.allocator, &.{"deepseek"}, &storage, .allow_cache);
+    defer deinitModels(std.testing.allocator, plain);
+    try std.testing.expectEqual(@as(usize, 1), plain.len);
+    try std.testing.expect(plain[0].headers == null);
+
+    const headers = [_]ai_types.HeaderPair{.{ .name = "X-Tenant", .value = "acme" }};
+    for ([_]?[]const u8{ null, plain[0].base_url }) |base| {
+        const overrides = [_]custom_providers.Override{.{ .id = "deepseek", .base_url = base, .headers = &headers }};
+        test_catalog_overrides = &overrides;
+        test_last_discovery_token_len = 0;
+        const listed = try loadCatalogModelsWithRows(std.testing.allocator, &.{"deepseek"}, &storage, .allow_cache);
+        defer deinitModels(std.testing.allocator, listed);
+        try std.testing.expectEqual(@as(usize, 1), listed.len);
+        try std.testing.expectEqualStrings(plain[0].base_url, listed[0].base_url);
+        try std.testing.expectEqualStrings("X-Tenant", listed[0].headers.?[0].name);
+        try std.testing.expectEqualStrings("stored-key", test_last_discovery_token[0..test_last_discovery_token_len]);
+    }
+}
+
+test "listing an overridden row sends no stored credential unless the override forwards it" {
+    test_catalog_discovery = &[_]CatalogDiscovery{
+        .{ .id = "deepseek", .models_url = proxy_models_url, .model_ids = &.{"deepseek-chat"} },
+    };
+    var storage = oauth_storage.AuthStorage{
+        .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(std.testing.allocator),
+        .allocator = std.testing.allocator,
+    };
+    defer storage.deinit();
+    try storage.providers.put(try std.testing.allocator.dupe(u8, "deepseek"), .{ .api_key = try std.testing.allocator.dupe(u8, "stored-key") });
+    const withheld = [_]custom_providers.Override{.{ .id = "deepseek", .base_url = "https://proxy.example/api" }};
+    test_catalog_overrides = &withheld;
+    defer {
+        test_catalog_discovery = null;
+        test_catalog_overrides = null;
+    }
+
+    const listed = try loadCatalogModelsWithRows(std.testing.allocator, &.{"deepseek"}, &storage, .allow_cache);
+    defer deinitModels(std.testing.allocator, listed);
+    try std.testing.expectEqual(@as(usize, 1), listed.len);
+    try std.testing.expectEqual(@as(usize, 0), test_last_discovery_token_len);
+
+    const forwarded = [_]custom_providers.Override{.{ .id = "deepseek", .base_url = "https://proxy.example/api", .forwards_credential = true }};
+    test_catalog_overrides = &forwarded;
+    const sent = try loadCatalogModelsWithRows(std.testing.allocator, &.{"deepseek"}, &storage, .allow_cache);
+    defer deinitModels(std.testing.allocator, sent);
+    try std.testing.expectEqualStrings("stored-key", test_last_discovery_token[0..test_last_discovery_token_len]);
 }
 
 test "a row whose override leaves the catalog models url reads that url's listing" {
@@ -4922,4 +5103,18 @@ test "a listing's text-only modality list is a text-only claim models.dev cannot
     fillFromModelsDev("opencode-go", &models[0], listed);
     try std.testing.expectEqual(@as(?bool, false), models[0].image_input);
     try std.testing.expectEqual(@as(?u32, 1_000_000), models[0].context_window);
+}
+
+test "an override's header never duplicates one the listing request already carries" {
+    var headers: std.ArrayList(std.http.Header) = .empty;
+    defer headers.deinit(std.testing.allocator);
+    try headers.append(std.testing.allocator, .{ .name = "authorization", .value = "Bearer from-the-credential" });
+    const extra = [_]ai_types.HeaderPair{
+        .{ .name = "Authorization", .value = "Bearer from-the-override" },
+        .{ .name = "X-Tenant", .value = "acme" },
+    };
+    try appendOverrideHeaders(std.testing.allocator, &headers, &extra);
+    try std.testing.expectEqual(@as(usize, 2), headers.items.len);
+    try std.testing.expectEqualStrings("Bearer from-the-credential", headers.items[0].value);
+    try std.testing.expectEqualStrings("X-Tenant", headers.items[1].name);
 }

@@ -153,12 +153,23 @@ from here. An `overrides` entry is the other half of the file: it names a
 **catalogued** id and says where that row's requests should go, keeping the
 row's own id and wire.
 
-**The entries are read and validated today, and nothing redirects yet.** The
-members below are recorded and the refusals are enforced at load, so a file that
-misuses one fails on startup and says which error. The `base_url` is not yet
-consulted when a row's requests are made; that lands with the precedence and
-credential rules in a later release. Until then, an override narrows nothing and
-redirects nothing.
+**An override's `base_url` redirects the row.** The order is the environment
+first (`OAPX_BASE_URL`, then the row's own `base_url_env`), then the override,
+then the catalog, so a variable set for one run still beats the file. The row's
+models are listed from the override's base, its requests go there, its
+`carries_version` decides where the wire's path joins, and its `headers` ride
+every request. This applies to the rows the catalog loader serves; the Anthropic,
+Codex and Copilot rows keep their own loaders and do not read an override yet,
+and `models` is recorded but not yet applied as an allowlist.
+
+**A redirected row's stored credential does not follow it.** A key or OAuth token
+saved with `/login` reaches an override's endpoint only when the override says
+`"forwards_credential": true`. Without it, a request to that endpoint carries a
+key from the row's environment variable when one is set, and otherwise only the
+override's own `headers` — which is where a proxy's key belongs. A file that
+cannot be read or parsed fails closed: a stored credential then reaches only an
+origin the row is known to use, its catalogued endpoints or a base named in the
+environment.
 
 ```json
 {
@@ -178,8 +189,9 @@ An override may name only these members:
 | Member | Meaning |
 | --- | --- |
 | `id` | Required. The catalogued row to override. An id the catalog does not record is `UnknownProviderId`. |
-| `base_url` | Where the row's requests should go. A trailing `/v1` is stripped unless `carries_version` says otherwise, exactly as for a custom entry. |
+| `base_url` | Where the row's requests should go. A trailing `/v1` is stripped unless `carries_version` says otherwise, exactly as for a custom entry. Without it the row keeps its own endpoint, and the override's `headers` ride the row's requests there. |
 | `carries_version` | `true` when this base already carries the API version. The same fact a custom entry states, and for the same reason: only the endpoint's owner knows where its version sits. |
+| `forwards_credential` | `true` to send the row's stored key or OAuth token to this endpoint. Absent or `false`, it is withheld. |
 | `headers` | Extra request headers for this row. |
 | `models` | Allowlist over what discovery returns, as for a custom entry. |
 

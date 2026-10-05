@@ -13,6 +13,16 @@ pub fn defaultBaseUrlForRefWithRegion(
     api: []const u8,
     stored_kimi_region: ?[]const u8,
 ) ![]const u8 {
+    return defaultBaseUrlForRefWithFile(allocator, provider_id, api, stored_kimi_region, "");
+}
+
+pub fn defaultBaseUrlForRefWithFile(
+    allocator: std.mem.Allocator,
+    provider_id: []const u8,
+    api: []const u8,
+    stored_kimi_region: ?[]const u8,
+    file: []const u8,
+) ![]const u8 {
     const global = try envOwnedOrNull(allocator, provider_catalog.global_base_url_env);
     defer if (global) |g| allocator.free(g);
 
@@ -25,6 +35,7 @@ pub fn defaultBaseUrlForRefWithRegion(
         .global = global orelse "",
         .kimi_region = kimi_region,
         .row = row_env orelse "",
+        .file = file,
     });
 }
 
@@ -37,7 +48,13 @@ fn rowBaseUrlEnvOwned(allocator: std.mem.Allocator, provider_id: []const u8) !?[
 pub const BaseUrlOverrides = struct {
     global: []const u8 = "",
     row: []const u8 = "",
+    file: []const u8 = "",
+    file_carries_version: ?bool = null,
     kimi_region: []const u8 = "china",
+
+    pub fn fileSupplies(self: BaseUrlOverrides) bool {
+        return self.global.len == 0 and self.row.len == 0 and self.file.len > 0;
+    }
 };
 
 const anthropic_messages_base_url = provider_catalog.baseUrlOrCompileError("anthropic", "anthropic-messages", null);
@@ -97,6 +114,8 @@ pub fn baseUrlWithOverrides(allocator: std.mem.Allocator, provider_id: []const u
         const row = if (usesVersionedRoute(provider_id, api)) normalizeVersionedBaseUrl(ov.row) else std.mem.trimEnd(u8, ov.row, "/");
         return try allocator.dupe(u8, row);
     }
+
+    if (ov.file.len > 0) return try allocator.dupe(u8, ov.file);
 
     const by_provider: ?[]const u8 = if (std.mem.eql(u8, provider_id, "anthropic") and std.mem.eql(u8, api, "anthropic-messages"))
         anthropic_messages_base_url
@@ -186,6 +205,27 @@ fn originsMatch(requested: Origin, candidate_url: []const u8) bool {
     return std.ascii.eqlIgnoreCase(requested.scheme, candidate.scheme) and
         std.ascii.eqlIgnoreCase(requested.host, candidate.host) and
         requested.port == candidate.port;
+}
+
+pub fn sameOrigin(left: []const u8, right: []const u8) bool {
+    const parsed = parseOrigin(left) orelse return false;
+    return originsMatch(parsed, right);
+}
+
+pub fn knownOrigin(allocator: std.mem.Allocator, provider_id: []const u8, base_url: []const u8) bool {
+    const requested = parseOrigin(base_url) orelse return false;
+    if (provider_catalog.provider(provider_id)) |row| {
+        for (row.endpoints) |endpoint| {
+            if (originsMatch(requested, endpoint.base_url)) return true;
+        }
+    }
+    const global = envOwnedOrNull(allocator, provider_catalog.global_base_url_env) catch null;
+    defer if (global) |value| allocator.free(value);
+    if (global) |value| if (originsMatch(requested, value)) return true;
+    const row_env = rowBaseUrlEnvOwned(allocator, provider_id) catch null;
+    defer if (row_env) |value| allocator.free(value);
+    if (row_env) |value| if (originsMatch(requested, value)) return true;
+    return false;
 }
 
 fn hostUnderDomain(host: []const u8, domain: []const u8) bool {

@@ -17,6 +17,30 @@ pub const all = data.providers;
 
 pub const pinned = data.pinned;
 
+pub const catalog_loader_rows = [_][]const u8{
+    "deepseek",
+    "openrouter",
+    "opencode-zen",
+    "opencode-go",
+    "vercel",
+    "zenmux",
+    "deepinfra",
+    "zai-coding-plan",
+    "alibaba-coding-plan",
+    "minimax-coding-plan",
+    "tencent-coding-plan",
+    "volcengine-coding-plan",
+    "openai",
+    "kimi",
+};
+
+pub fn servedByCatalogLoader(id: []const u8) bool {
+    for (catalog_loader_rows) |row| {
+        if (std.mem.eql(u8, row, id)) return true;
+    }
+    return false;
+}
+
 pub fn offering(id: []const u8) ?Offering {
     const row = provider(id) orelse return null;
     return row.offering;

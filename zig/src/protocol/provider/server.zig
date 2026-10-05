@@ -563,11 +563,19 @@ fn isVendorOAuthProviderId(provider_id: []const u8) bool {
         std.mem.eql(u8, provider_id, "openai-codex");
 }
 
+fn configuredEndpointOf(lookup: auth_resolver.OverrideLookup) provider_base_url.ConfiguredEndpoint {
+    return switch (lookup) {
+        .endpoint => |found| .{ .base_url = found.base_url, .forwards_stored_credential = found.forwards_credential },
+        else => .{},
+    };
+}
+
 fn storedOAuthOriginAllowed(
     allocator: std.mem.Allocator,
     storage: ?*oauth_storage.AuthStorage,
     provider_id: []const u8,
     model: ai_types.Model,
+    configured: provider_base_url.ConfiguredEndpoint,
 ) bool {
     const auth_storage = storage orelse return true;
     const auth = auth_storage.resolvedCredential(provider_id) orelse return true;
@@ -579,7 +587,7 @@ fn storedOAuthOriginAllowed(
             model.base_url,
             credentials.refresh,
             credentials.provider_data,
-            .{},
+            configured,
         ),
     };
 }
@@ -592,6 +600,7 @@ fn streamWithResolvedKey(
     context: ai_types.Context,
     options: ?ai_types.StreamOptions,
     kind: auth_resolver.CredentialKind,
+    configured: provider_base_url.ConfiguredEndpoint,
 ) !*event_stream.AssistantMessageEventStream {
     var loaded_storage: ?oauth_storage.AuthStorage = null;
     defer if (loaded_storage) |*storage| storage.deinit();
@@ -604,7 +613,7 @@ fn streamWithResolvedKey(
         break :blk @as(?*oauth_storage.AuthStorage, &loaded_storage.?);
     };
 
-    if (kind == .any and !storedOAuthOriginAllowed(server.allocator, storage, provider_id, model)) {
+    if (kind == .any and !storedOAuthOriginAllowed(server.allocator, storage, provider_id, model, configured)) {
         return error.AuthRequired;
     }
 
@@ -653,6 +662,26 @@ fn refreshWithLock(
     }
 }
 
+fn streamWithEnvironmentKey(
+    server: *ProtocolServer,
+    provider: api_registry.ApiProvider,
+    provider_id: []const u8,
+    model: ai_types.Model,
+    context: ai_types.Context,
+    options: ?ai_types.StreamOptions,
+) !*event_stream.AssistantMessageEventStream {
+    const resolved = auth_resolver.resolveApiKeyOfKind(server.allocator, null, provider_id, null, .api_key_only) catch |err| switch (err) {
+        error.AuthRequired => return provider.stream(model, context, options, server.allocator),
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    var resolved_options = try injectApiKey(server.allocator, options, resolved.api_key);
+    defer {
+        server.allocator.free(resolved.api_key);
+        deinitInjectedApiKey(server.allocator, &resolved_options);
+    }
+    return provider.stream(model, context, resolved_options, server.allocator);
+}
+
 fn streamWithRefresh(
     server: *ProtocolServer,
     provider: api_registry.ApiProvider,
@@ -660,14 +689,33 @@ fn streamWithRefresh(
     context: ai_types.Context,
     options: ?ai_types.StreamOptions,
 ) !*event_stream.AssistantMessageEventStream {
+    var lookup = try auth_resolver.overrideLookup(server.allocator, model.provider);
+    defer lookup.deinit(server.allocator);
+    return streamWithOverride(server, provider, model, context, options, lookup);
+}
+
+fn streamWithOverride(
+    server: *ProtocolServer,
+    provider: api_registry.ApiProvider,
+    model: ai_types.Model,
+    context: ai_types.Context,
+    options: ?ai_types.StreamOptions,
+    lookup: auth_resolver.OverrideLookup,
+) !*event_stream.AssistantMessageEventStream {
     if (options) |opts| {
         if (opts.getApiKey() != null) return provider.stream(model, context, options, server.allocator);
+    }
+    const configured = configuredEndpointOf(lookup);
+    if (auth_resolver.storedCredentialWithheld(server.allocator, lookup, model.provider, model.base_url)) {
+        var withheld = model;
+        withheld.credential_withheld = true;
+        return streamWithEnvironmentKey(server, provider, model.provider, withheld, context, options);
     }
 
     if (provider.auth_provider_id) |auth_provider_id| {
         if (isVendorOAuthProviderId(auth_provider_id) and !std.mem.eql(u8, model.provider, auth_provider_id)) {
             if (isVendorOAuthProviderId(model.provider)) return error.AuthRequired;
-            return streamWithResolvedKey(server, provider, model.provider, model, context, options, .api_key_only);
+            return streamWithResolvedKey(server, provider, model.provider, model, context, options, .api_key_only, configured);
         }
     }
     const provider_id = provider.auth_provider_id orelse model.provider;
@@ -682,6 +730,7 @@ fn streamWithRefresh(
             context,
             options,
             if (claims_vendor_without_vendor_api) .api_key_only else .any,
+            configured,
         );
 
     var loaded_storage: ?oauth_storage.AuthStorage = null;
@@ -694,7 +743,7 @@ fn streamWithRefresh(
                 break :blk null;
             break :blk @as(?*oauth_storage.AuthStorage, &loaded_storage.?);
         } orelse
-            return streamWithResolvedKey(server, provider, provider_id, model, context, options, .any);
+            return streamWithResolvedKey(server, provider, provider_id, model, context, options, .any, configured);
 
     if (!storage.hasRefreshableCredentials(provider_id)) {
         const stored_key = storage.getApiKey(provider_id, null) catch |err| switch (err) {
@@ -707,10 +756,10 @@ fn streamWithRefresh(
             defer deinitInjectedApiKey(server.allocator, &resolved_options);
             return provider.stream(model, context, resolved_options, server.allocator);
         }
-        return streamWithResolvedKey(server, provider, provider_id, model, context, options, .any);
+        return streamWithResolvedKey(server, provider, provider_id, model, context, options, .any, configured);
     }
 
-    if (!storedOAuthOriginAllowed(server.allocator, storage, provider_id, model)) return error.AuthRequired;
+    if (!storedOAuthOriginAllowed(server.allocator, storage, provider_id, model, configured)) return error.AuthRequired;
 
     if (storage.credentialsExpired(provider_id)) {
         refreshWithLock(server, provider_id, storage, oauth_provider) catch |err| switch (err) {
@@ -772,10 +821,12 @@ fn streamWithRefresh(
 const EffectiveModel = struct {
     model: ai_types.Model,
     defaulted_base_url: ?[]const u8 = null,
+    override: auth_resolver.OverrideLookup = .none,
 
     fn deinit(self: *EffectiveModel, allocator: std.mem.Allocator) void {
         if (self.defaulted_base_url) |base| allocator.free(base);
         self.defaulted_base_url = null;
+        self.override.deinit(allocator);
     }
 };
 
@@ -800,23 +851,46 @@ fn modelWithProtocolDefaults(
     var effective = model;
     var defaulted_base: ?[]const u8 = null;
     errdefer if (defaulted_base) |base| allocator.free(base);
+    var lookup = try auth_resolver.overrideLookup(allocator, model.provider);
+    errdefer lookup.deinit(allocator);
 
     if (!client_supplied_base and model.provider.len > 0 and model.api.len > 0) {
         const resolved_kimi_region: ?[]const u8 = if (isKimiPair(model.provider, model.api))
             try resolvedKimiRegion(server)
         else
             null;
-        const resolved = try provider_base_url.defaultBaseUrlForRefWithRegion(
+        const file = switch (lookup) {
+            .endpoint => |found| found,
+            else => null,
+        };
+        const resolved = try provider_base_url.defaultBaseUrlForRefWithFile(
             allocator,
             model.provider,
             model.api,
             resolved_kimi_region,
+            if (file) |found| found.base_url else "",
         );
         if (resolved.len > 0) {
             defaulted_base = resolved;
             effective.base_url = resolved;
+            if (file) |found| {
+                if (auth_resolver.overrideApplies(allocator, found, model.provider, resolved)) {
+                    if (found.base_url.len > 0) effective.carries_version = found.carries_version;
+                    if (model.headers == null and found.headers.len > 0) effective.headers = found.headers;
+                }
+            }
         } else {
             allocator.free(resolved);
+        }
+    }
+
+    if (client_supplied_base) {
+        switch (lookup) {
+            .endpoint => |found| if (auth_resolver.overrideApplies(allocator, found, model.provider, model.base_url)) {
+                if (model.carries_version == null and found.base_url.len > 0) effective.carries_version = found.carries_version;
+                if (model.headers == null and found.headers.len > 0) effective.headers = found.headers;
+            },
+            else => {},
         }
     }
 
@@ -833,7 +907,7 @@ fn modelWithProtocolDefaults(
         effective.compat = try provider_base_url.transparentProxyCompat(allocator, model.provider);
     }
 
-    return .{ .model = effective, .defaulted_base_url = defaulted_base };
+    return .{ .model = effective, .defaulted_base_url = defaulted_base, .override = lookup };
 }
 
 fn isKimiPair(provider_id: []const u8, api: []const u8) bool {
@@ -904,7 +978,7 @@ fn handleStreamRequest(server: *ProtocolServer, request: protocol_types.StreamRe
     defer effective_model.deinit(server.allocator);
 
     server.provider_thread_abandoned = false;
-    const stream = streamWithRefresh(server, provider, effective_model.model, request.context, options_with_cancel) catch |err| {
+    const stream = streamWithOverride(server, provider, effective_model.model, request.context, options_with_cancel, effective_model.override) catch |err| {
         if (!server.provider_thread_abandoned) server.allocator.destroy(cancelled);
         return try envelope.createNack(
             nackTemplate(stream_id, in_reply_to),
@@ -1044,7 +1118,7 @@ fn handleCompleteRequest(server: *ProtocolServer, request: protocol_types.Comple
     const options_with_cancel = injectCompleteOptions(request.options, .{ .cancelled = cancelled });
 
     server.provider_thread_abandoned = false;
-    const stream = streamWithRefresh(server, provider, effective_model.model, request.context, options_with_cancel) catch |err| {
+    const stream = streamWithOverride(server, provider, effective_model.model, request.context, options_with_cancel, effective_model.override) catch |err| {
         if (server.provider_thread_abandoned) cancel_flag_owned = false;
         return try envelope.createNack(
             nackTemplate(stream_id, in_reply_to),
@@ -1471,6 +1545,7 @@ const AuthTestState = struct {
     use_api_key_storage: bool = false,
     last_api_key: [64]u8 = undefined,
     last_api_key_len: usize = 0,
+    last_withheld: bool = false,
 };
 
 var auth_test_state: ?*AuthTestState = null;
@@ -1541,10 +1616,10 @@ fn authTestStream(
     options: ?ai_types.StreamOptions,
     allocator: std.mem.Allocator,
 ) !*event_stream.AssistantMessageEventStream {
-    _ = model;
     _ = context;
     const state = auth_test_state.?;
     state.stream_calls += 1;
+    state.last_withheld = model.credential_withheld;
     if (options) |opts| {
         if (opts.getApiKey()) |key| {
             const len = @min(key.len, state.last_api_key.len);
@@ -2500,6 +2575,150 @@ test "an api without an auth provider id never resolves a vendor OAuth token" {
         std.testing.allocator.destroy(stream);
     }
     try std.testing.expectEqualStrings("gateway-key", state.last_api_key[0..state.last_api_key_len]);
+}
+
+fn streamedKey(server: *ProtocolServer, registry: *api_registry.ApiRegistry, state: *AuthTestState, base_url: []const u8) ![]const u8 {
+    state.last_api_key_len = 0;
+    var model = testModel();
+    model.api = "keyless-api";
+    model.provider = "deepseek";
+    model.base_url = base_url;
+    const stream = try streamWithRefresh(server, registry.getApiProvider("keyless-api").?, model, testContext(), null);
+    stream.deinit();
+    std.testing.allocator.destroy(stream);
+    return state.last_api_key[0..state.last_api_key_len];
+}
+
+test "an overridden endpoint gets no stored credential unless the override forwards it, and an environment key still goes" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
+    var state = AuthTestState{ .expires = compat.time.nowMillis() + 60_000 };
+    auth_test_state = &state;
+    defer auth_test_state = null;
+    defer auth_resolver.test_override_config = null;
+
+    var registry = api_registry.ApiRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+    try registry.registerApiProvider(.{ .api = "keyless-api", .stream = authTestStream, .stream_simple = mockStreamSimple }, null);
+    var storage = oauth_storage.AuthStorage{
+        .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(std.testing.allocator),
+        .allocator = std.testing.allocator,
+        .save_fn = authTestSaveStorage,
+    };
+    defer storage.deinit();
+    try storage.providers.put(try std.testing.allocator.dupe(u8, "deepseek"), .{ .api_key = try std.testing.allocator.dupe(u8, "stored-key") });
+    var server = ProtocolServer.init(std.testing.allocator, &registry, .{ .auth_storage = &storage });
+    defer server.deinit();
+    const catalogued = provider_catalog.baseUrl("deepseek", "openai-completions", null).?;
+
+    auth_resolver.test_override_config = "{\"overrides\":[{\"id\":\"deepseek\",\"base_url\":\"https://proxy.example/api\"}]}";
+    try std.testing.expectEqualStrings("", try streamedKey(&server, &registry, &state, "https://proxy.example/api"));
+    try std.testing.expect(state.last_withheld);
+    try std.testing.expectEqualStrings("stored-key", try streamedKey(&server, &registry, &state, catalogued));
+    try std.testing.expect(!state.last_withheld);
+    try compat.setTestEnv(std.testing.allocator, "DEEPSEEK_API_KEY", "environment-key");
+    try std.testing.expectEqualStrings("environment-key", try streamedKey(&server, &registry, &state, "https://proxy.example/api"));
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+
+    auth_resolver.test_override_config = "{\"overrides\":[{\"id\":\"deepseek\",\"base_url\":\"https://proxy.example/api\",\"forwards_credential\":true}]}";
+    try std.testing.expectEqualStrings("stored-key", try streamedKey(&server, &registry, &state, "https://proxy.example/api"));
+
+    auth_resolver.test_override_config = "{\"overrides\":[{\"id\":\"deepseek\",\"bogus\":1}]}";
+    try std.testing.expectEqualStrings("", try streamedKey(&server, &registry, &state, "https://proxy.example/api"));
+    try std.testing.expectEqualStrings("stored-key", try streamedKey(&server, &registry, &state, catalogued));
+}
+
+test "a base-less request follows an override only on rows the catalog loader serves" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
+    defer auth_resolver.test_override_config = null;
+    var registry = api_registry.ApiRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+    var server = ProtocolServer.init(std.testing.allocator, &registry, .{});
+    defer server.deinit();
+    auth_resolver.test_override_config = "{\"overrides\":[{\"id\":\"deepseek\",\"base_url\":\"https://proxy.example/deepseek\"},{\"id\":\"anthropic\",\"base_url\":\"https://proxy.example/anthropic\"}]}";
+
+    var routed_model = testModel();
+    routed_model.provider = "deepseek";
+    routed_model.api = "openai-completions";
+    routed_model.base_url = "";
+    var routed = try modelWithProtocolDefaults(&server, routed_model);
+    defer routed.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("https://proxy.example/deepseek", routed.model.base_url);
+
+    var vendor_model = testModel();
+    vendor_model.provider = "anthropic";
+    vendor_model.api = "anthropic-messages";
+    vendor_model.base_url = "";
+    var vendor = try modelWithProtocolDefaults(&server, vendor_model);
+    defer vendor.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings(provider_catalog.baseUrl("anthropic", "anthropic-messages", null).?, vendor.model.base_url);
+}
+
+test "an override's headers ride every request it applies to, including one that keeps the row's endpoint, and no other" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
+    defer auth_resolver.test_override_config = null;
+    var registry = api_registry.ApiRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+    var server = ProtocolServer.init(std.testing.allocator, &registry, .{});
+    defer server.deinit();
+
+    var request = testModel();
+    request.provider = "deepseek";
+    request.api = "openai-completions";
+    request.base_url = "";
+    var elsewhere = request;
+    elsewhere.base_url = "https://other.example";
+
+    auth_resolver.test_override_config = "{\"overrides\":[{\"id\":\"deepseek\",\"base_url\":\"https://proxy.example/deepseek\",\"headers\":{\"X-Tenant\":\"acme\"}}]}";
+    var routed = try modelWithProtocolDefaults(&server, request);
+    defer routed.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("https://proxy.example/deepseek", routed.model.base_url);
+    try std.testing.expectEqualStrings("X-Tenant", routed.model.headers.?[0].name);
+    var bridged_request = request;
+    bridged_request.base_url = "https://proxy.example/deepseek";
+    var bridged = try modelWithProtocolDefaults(&server, bridged_request);
+    defer bridged.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("acme", bridged.model.headers.?[0].value);
+    var stray = try modelWithProtocolDefaults(&server, elsewhere);
+    defer stray.deinit(std.testing.allocator);
+    try std.testing.expect(stray.model.headers == null);
+
+    auth_resolver.test_override_config = "{\"overrides\":[{\"id\":\"deepseek\",\"headers\":{\"X-Tenant\":\"acme\"}}]}";
+    var kept = try modelWithProtocolDefaults(&server, request);
+    defer kept.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings(provider_catalog.baseUrl("deepseek", "openai-completions", null).?, kept.model.base_url);
+    try std.testing.expectEqualStrings("X-Tenant", kept.model.headers.?[0].name);
+    try std.testing.expectEqual(@as(?bool, null), kept.model.carries_version);
+    var kept_stray = try modelWithProtocolDefaults(&server, elsewhere);
+    defer kept_stray.deinit(std.testing.allocator);
+    try std.testing.expect(kept_stray.model.headers == null);
+}
+
+test "a request already carrying the override's base keeps the override's version fact" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
+    defer auth_resolver.test_override_config = null;
+    var registry = api_registry.ApiRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+    var server = ProtocolServer.init(std.testing.allocator, &registry, .{});
+    defer server.deinit();
+    auth_resolver.test_override_config = "{\"overrides\":[{\"id\":\"deepseek\",\"base_url\":\"https://gw.internal\",\"carries_version\":true}]}";
+
+    var bridged = testModel();
+    bridged.provider = "deepseek";
+    bridged.api = "openai-completions";
+    bridged.base_url = "https://gw.internal/";
+    var carried = try modelWithProtocolDefaults(&server, bridged);
+    defer carried.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(?bool, true), carried.model.carries_version);
+
+    var elsewhere = bridged;
+    elsewhere.base_url = "https://other.internal";
+    var other = try modelWithProtocolDefaults(&server, elsewhere);
+    defer other.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(?bool, null), other.model.carries_version);
 }
 
 test "a custom provider id never resolves to a stored OAuth token" {

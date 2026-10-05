@@ -82,6 +82,7 @@ fn isTransparentOpenAIProxy(model: ai_types.Model) bool {
 }
 
 fn allowsAnonymous(model: ai_types.Model) bool {
+    if (model.credential_withheld) return true;
     if (!model.allows_anonymous) return false;
     const vendors = [_][]const u8{ "openai", "deepseek", "kimi", "github-copilot" };
     for (vendors) |vendor| {
@@ -2090,6 +2091,8 @@ test "anonymous streaming is opt-in and never applies to an openai vendor id" {
         var vendor = opted;
         vendor.provider = vendor_id;
         try std.testing.expect(!allowsAnonymous(vendor));
+        vendor.credential_withheld = true;
+        try std.testing.expect(allowsAnonymous(vendor));
     }
 }
 

@@ -4,6 +4,8 @@ const compat = @import("compat");
 const storage_mod = @import("oauth/storage");
 const custom_providers = @import("custom_providers");
 const provider_catalog = @import("provider_catalog");
+const provider_base_url = @import("provider_base_url");
+const ai_types = @import("ai_types");
 
 pub const AuthStorage = storage_mod.AuthStorage;
 pub const ProviderAuth = storage_mod.ProviderAuth;
@@ -33,6 +35,98 @@ pub fn resolveApiKey(
     provided_api_key: ?[]const u8,
 ) AuthResolveError!ResolvedKey {
     return resolveApiKeyOfKind(allocator, auth_storage, provider_id, provided_api_key, .any);
+}
+
+pub const OverrideEndpoint = struct {
+    base_url: []u8,
+    forwards_credential: bool,
+    carries_version: ?bool = null,
+    headers: []ai_types.HeaderPair = &.{},
+
+    pub fn deinit(self: *OverrideEndpoint, allocator: std.mem.Allocator) void {
+        allocator.free(self.base_url);
+        for (self.headers) |header| {
+            allocator.free(header.name);
+            allocator.free(header.value);
+        }
+        allocator.free(self.headers);
+        self.* = undefined;
+    }
+};
+
+pub fn storedCredentialWithheld(allocator: std.mem.Allocator, lookup: OverrideLookup, provider_id: []const u8, base_url: []const u8) bool {
+    if (std.mem.trim(u8, base_url, " \t\r\n").len == 0) return false;
+    if (!provider_catalog.servedByCatalogLoader(provider_id)) return false;
+    return switch (lookup) {
+        .none => false,
+        .endpoint => |found| !found.forwards_credential and
+            provider_base_url.sameOrigin(base_url, found.base_url) and
+            !provider_base_url.knownOrigin(allocator, provider_id, base_url),
+        .unreadable => provider_catalog.oauthOrigin(provider_id) == null and
+            !provider_base_url.knownOrigin(allocator, provider_id, base_url),
+    };
+}
+
+pub fn overrideApplies(allocator: std.mem.Allocator, found: OverrideEndpoint, provider_id: []const u8, base_url: []const u8) bool {
+    if (found.base_url.len > 0) return std.mem.eql(u8, std.mem.trimEnd(u8, base_url, "/"), std.mem.trimEnd(u8, found.base_url, "/"));
+    return provider_base_url.knownOrigin(allocator, provider_id, base_url);
+}
+
+pub const OverrideLookup = union(enum) {
+    none,
+    unreadable,
+    endpoint: OverrideEndpoint,
+
+    pub fn deinit(self: *OverrideLookup, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .endpoint => |*found| found.deinit(allocator),
+            else => {},
+        }
+        self.* = undefined;
+    }
+};
+
+pub var test_override_config: ?[]const u8 = null;
+
+pub fn overrideLookup(allocator: std.mem.Allocator, provider_id: []const u8) std.mem.Allocator.Error!OverrideLookup {
+    var config = loadOverrideConfig(allocator) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return .unreadable,
+    };
+    defer config.deinit(allocator);
+    return overrideLookupIn(allocator, config.overrides, provider_id);
+}
+
+pub fn overrideLookupIn(allocator: std.mem.Allocator, overrides: []const custom_providers.Override, provider_id: []const u8) std.mem.Allocator.Error!OverrideLookup {
+    if (!provider_catalog.servedByCatalogLoader(provider_id)) return .none;
+    const override = custom_providers.overrideFor(overrides, provider_id) orelse return .none;
+    const base = override.base_url orelse "";
+    const base_url = try allocator.dupe(u8, base);
+    errdefer allocator.free(base_url);
+    const headers = try allocator.alloc(ai_types.HeaderPair, override.headers.len);
+    var filled: usize = 0;
+    errdefer {
+        for (headers[0..filled]) |header| {
+            allocator.free(header.name);
+            allocator.free(header.value);
+        }
+        allocator.free(headers);
+    }
+    for (override.headers, headers) |header, *slot| {
+        const name = try allocator.dupe(u8, header.name);
+        errdefer allocator.free(name);
+        slot.* = .{ .name = name, .value = try allocator.dupe(u8, header.value) };
+        filled += 1;
+    }
+    return .{ .endpoint = .{ .base_url = base_url, .forwards_credential = override.forwards_credential, .carries_version = override.carries_version, .headers = headers } };
+}
+
+fn loadOverrideConfig(allocator: std.mem.Allocator) !custom_providers.Config {
+    if (builtin.is_test) {
+        const json = test_override_config orelse return .{};
+        return custom_providers.parseConfig(allocator, json);
+    }
+    return custom_providers.loadConfigStrict(allocator, custom_providers.max_config_bytes);
 }
 
 fn rowEnvironmentKey(allocator: std.mem.Allocator, provider_id: []const u8) ?[]u8 {

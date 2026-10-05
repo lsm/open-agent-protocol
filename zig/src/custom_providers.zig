@@ -41,6 +41,7 @@ pub const OverrideError = error{
 pub const override_allowed_members = [_][]const u8{
     "base_url",
     "carries_version",
+    "forwards_credential",
     "headers",
     "id",
     "models",
@@ -61,6 +62,7 @@ pub const Override = struct {
     id: []const u8,
     base_url: ?[]const u8 = null,
     carries_version: ?bool = null,
+    forwards_credential: bool = false,
     headers: []const ai_types.HeaderPair = &.{},
     models: []const ModelSpec = &.{},
 
@@ -475,6 +477,7 @@ fn parseOverride(allocator: std.mem.Allocator, obj: *const std.json.ObjectMap) !
         .id = id,
         .base_url = base_url,
         .carries_version = try typedBool(obj, "carries_version"),
+        .forwards_credential = (try typedBool(obj, "forwards_credential")) orelse false,
         .headers = headers,
         .models = models,
     };
@@ -987,6 +990,24 @@ test "an override may move a catalogued row's endpoint and states the fields it 
     try testing.expectEqualStrings("acme", override.headers[0].value);
     try testing.expectEqual(@as(usize, 1), override.models.len);
     try testing.expectEqualStrings("deepseek-chat", override.models[0].id);
+}
+
+test "an override forwards no row credential unless it says so, and the flag must be a boolean" {
+    var silent = try parseConfig(testing.allocator,
+        \\{"overrides":[{"id":"deepseek","base_url":"https://proxy.example/api"}]}
+    );
+    defer silent.deinit(testing.allocator);
+    try testing.expect(!silent.overrides[0].forwards_credential);
+
+    var stated = try parseConfig(testing.allocator,
+        \\{"overrides":[{"id":"deepseek","base_url":"https://proxy.example/api","forwards_credential":true}]}
+    );
+    defer stated.deinit(testing.allocator);
+    try testing.expect(stated.overrides[0].forwards_credential);
+
+    try testing.expectError(OverrideError.WrongTypedOverrideMember, parseConfig(testing.allocator,
+        \\{"overrides":[{"id":"deepseek","base_url":"https://proxy.example/api","forwards_credential":"yes"}]}
+    ));
 }
 
 test "an override may not change the id or the wire of the row it overrides" {
