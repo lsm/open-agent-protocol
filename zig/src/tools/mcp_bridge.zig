@@ -67,6 +67,7 @@ pub const McpToolDefinition = struct {
             .runtime_execute = executeWithContext,
             .approval_ctx = if (self.is_destructive) ctx else null,
             .approval_fn = null,
+            .operation = if (self.is_destructive) .destructive else .external,
         };
     }
 };
@@ -562,6 +563,17 @@ test "MCP tool definition maps to AgentTool" {
     try std.testing.expectEqualStrings("mcp_fs_read_file", tool.name);
     try std.testing.expect(std.mem.indexOf(u8, tool.label, "(mcp)") != null);
     try std.testing.expectEqualStrings("{\"type\":\"object\"}", tool.parameters_schema_json);
+}
+
+test "an MCP tool's permission tier comes from what its server declares, never from its name" {
+    const reader = McpToolDefinition{ .server_name = "fs", .name = "read-file", .description = "Read file", .input_schema_json = "{\"type\":\"object\"}" };
+    var named_like_a_read = try reader.toAgentTool(std.testing.allocator, null);
+    defer deinitAgentToolFields(std.testing.allocator, &named_like_a_read);
+    try std.testing.expectEqual(@as(@TypeOf(named_like_a_read.operation), .external), named_like_a_read.operation);
+    const remover = McpToolDefinition{ .server_name = "fs", .name = "list-files", .description = "Remove files", .input_schema_json = "{\"type\":\"object\"}", .is_destructive = true };
+    var declared_destructive = try remover.toAgentTool(std.testing.allocator, null);
+    defer deinitAgentToolFields(std.testing.allocator, &declared_destructive);
+    try std.testing.expectEqual(@as(@TypeOf(declared_destructive.operation), .destructive), declared_destructive.operation);
 }
 
 test "MCP config parser accepts object form" {

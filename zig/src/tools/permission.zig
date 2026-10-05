@@ -19,6 +19,8 @@ pub const Operation = enum(u8) {
     read,
     write,
     shell,
+    external,
+    destructive,
 };
 
 pub const ToolCall = struct {
@@ -188,6 +190,7 @@ pub const PermissionEngine = struct {
 
     pub fn evaluateCall(self: *Self, call: ToolCall) PermissionDecision {
         if (self.bypass_all) return .allow;
+        if (call.operation == .destructive) return .deny;
         if (self.findPersisted(call)) |decision| return decision;
         return self.defaultDecision(call);
     }
@@ -329,7 +332,8 @@ pub const PermissionEngine = struct {
                 if (isSafeShell(command)) return .allow;
                 return .prompt;
             },
-            .unknown => return .prompt,
+            .unknown, .external => return .prompt,
+            .destructive => return .deny,
         }
     }
 
@@ -489,7 +493,7 @@ pub fn canPersistDecision(call: ToolCall) bool {
     return switch (call.operation) {
         .read, .write => call.path != null,
         .shell => call.command != null,
-        .unknown => false,
+        .unknown, .external, .destructive => false,
     };
 }
 
@@ -655,6 +659,23 @@ test "operation inference uses token boundaries" {
 
     try std.testing.expectEqual(PermissionDecision.prompt, engine.evaluate("thread_run", "{\"path\":\"/workspace/src/main.zig\"}"));
     try std.testing.expectEqual(PermissionDecision.allow, engine.evaluate("file_read", "{\"path\":\"/workspace/src/main.zig\"}"));
+}
+
+test "an external tool prompts whatever its name says, and a destructive one is denied even after an always" {
+    const persistence_path = "zig-cache/test-permissions-external.json";
+    compat.fs.getCwd().deleteFile(std.testing.io, persistence_path) catch {};
+    defer compat.fs.getCwd().deleteFile(std.testing.io, persistence_path) catch {};
+    var engine = try PermissionEngine.init(std.testing.allocator, .{
+        .workspace_root = "/workspace",
+        .persistence_path = persistence_path,
+    });
+    defer engine.deinit();
+
+    try std.testing.expectEqual(PermissionDecision.allow, engine.evaluate("mcp_fs_read_file", "{\"path\":\"/workspace/a\"}"));
+    try std.testing.expectEqual(PermissionDecision.prompt, engine.evaluateTool(.external, "mcp_fs_read_file", "{\"path\":\"/workspace/a\"}"));
+    try std.testing.expectEqual(PermissionDecision.deny, engine.evaluateTool(.destructive, "mcp_fs_read_file", "{\"path\":\"/workspace/a\"}"));
+    try engine.persistDecision(.{ .tool_name = "mcp_fs_drop", .args_json = "{}", .operation = .destructive }, .allow);
+    try std.testing.expectEqual(PermissionDecision.deny, engine.evaluateTool(.destructive, "mcp_fs_drop", "{}"));
 }
 
 const ApprovalRecorder = struct {
