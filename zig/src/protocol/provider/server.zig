@@ -613,8 +613,9 @@ fn streamWithResolvedKey(
         break :blk @as(?*oauth_storage.AuthStorage, &loaded_storage.?);
     };
 
-    if (kind == .any and !storedCredentialOriginAllowed(server.allocator, storage, provider_id, model, configured)) {
-        return error.AuthRequired;
+    if (!storedCredentialOriginAllowed(server.allocator, storage, provider_id, model, configured)) {
+        if (kind == .any) return error.AuthRequired;
+        return streamWithEnvironmentKey(server, provider, provider_id, model, context, options);
     }
 
     const resolved = auth_resolver.resolveApiKeyOfKind(server.allocator, storage, provider_id, null, kind) catch |err| switch (err) {
@@ -2091,6 +2092,46 @@ test "a stored vendor API key reaches only an origin the vendor serves or the us
         state.last_api_key_len = 0;
         model.base_url = case.base;
         const stream = try streamWithRefresh(&server, registry.getApiProvider("vendor-api").?, model, testContext(), null);
+        stream.deinit();
+        std.testing.allocator.destroy(stream);
+        if (case.sent) {
+            try std.testing.expectEqualStrings("vendor-key", state.last_api_key[0..state.last_api_key_len]);
+        } else {
+            try std.testing.expectEqual(@as(usize, 0), state.last_api_key_len);
+        }
+    }
+}
+
+test "a stored vendor API key on a foreign wire reaches only an origin the vendor serves" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
+    var state = AuthTestState{ .expires = compat.time.nowMillis() + 60_000 };
+    auth_test_state = &state;
+    defer auth_test_state = null;
+
+    var registry = api_registry.ApiRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+    try registry.registerApiProvider(.{ .api = "keyless-api", .stream = authTestStream, .stream_simple = mockStreamSimple }, null);
+    var storage = oauth_storage.AuthStorage{
+        .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(std.testing.allocator),
+        .allocator = std.testing.allocator,
+        .save_fn = authTestSaveStorage,
+    };
+    defer storage.deinit();
+    try storage.providers.put(try std.testing.allocator.dupe(u8, "anthropic"), .{ .api_key = try std.testing.allocator.dupe(u8, "vendor-key") });
+    var server = ProtocolServer.init(std.testing.allocator, &registry, .{ .auth_storage = &storage });
+    defer server.deinit();
+
+    var model = testModel();
+    model.api = "keyless-api";
+    model.provider = "anthropic";
+    for ([_]struct { base: []const u8, sent: bool }{
+        .{ .base = "https://attacker.test", .sent = false },
+        .{ .base = provider_catalog.baseUrl("anthropic", "anthropic-messages", null).?, .sent = true },
+    }) |case| {
+        state.last_api_key_len = 0;
+        model.base_url = case.base;
+        const stream = try streamWithRefresh(&server, registry.getApiProvider("keyless-api").?, model, testContext(), null);
         stream.deinit();
         std.testing.allocator.destroy(stream);
         if (case.sent) {
