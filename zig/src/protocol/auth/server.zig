@@ -2,6 +2,7 @@ const std = @import("std");
 const compat = @import("compat");
 const auth_providers = @import("auth/providers");
 const auth_resolver = @import("auth_resolver");
+const provider_catalog = @import("provider_catalog");
 const auth_types = @import("auth_types");
 const anthropic_oauth = @import("oauth/anthropic");
 const github_oauth = @import("oauth/github_copilot");
@@ -398,8 +399,9 @@ pub const AuthProtocolServer = struct {
     fn buildProvidersResponse(self: *Self) !auth_types.AuthProvidersResponse {
         const served = auth_providers.servedDefinitions();
         const providers = try self.allocator.alloc(auth_types.AuthProviderInfo, served.len);
+        var built: usize = 0;
         errdefer {
-            for (providers) |*provider| provider.deinit(self.allocator);
+            for (providers[0..built]) |*provider| provider.deinit(self.allocator);
             self.allocator.free(providers);
         }
 
@@ -430,13 +432,17 @@ pub const AuthProtocolServer = struct {
                 else => null,
             };
             errdefer if (host) |value| self.allocator.free(value);
+            const id = try self.allocator.dupe(u8, definition.id);
+            errdefer self.allocator.free(id);
+            const name = try self.allocator.dupe(u8, definition.name);
             providers[index] = .{
-                .id = OwnedSlice(u8).initOwned(try self.allocator.dupe(u8, definition.id)),
-                .name = OwnedSlice(u8).initOwned(try self.allocator.dupe(u8, definition.name)),
+                .id = OwnedSlice(u8).initOwned(id),
+                .name = OwnedSlice(u8).initOwned(name),
                 .auth_kinds = kinds,
                 .auth_status = status,
                 .override_host = if (host) |value| OwnedSlice(u8).initOwned(value) else OwnedSlice(u8).initBorrowed(""),
             };
+            built = index + 1;
         }
 
         return .{
@@ -973,6 +979,8 @@ test "the providers response carries each row's own credential kinds, in the cat
 
 test "the providers response names the host an override sends a row to, and nothing for a row without one" {
     const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
     auth_resolver.test_override_config = "{\"overrides\":[{\"id\":\"deepseek\",\"base_url\":\"https://proxy.example/deepseek\"},{\"id\":\"openrouter\",\"headers\":{\"X-Tenant\":\"acme\"}}]}";
     defer auth_resolver.test_override_config = null;
     var server = AuthProtocolServer.init(allocator, .{

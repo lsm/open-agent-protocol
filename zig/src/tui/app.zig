@@ -698,6 +698,8 @@ test "Context requestClearScreen discards history queued before the request" {
 }
 
 test "the login list names the host an override sends a row to" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
     auth_resolver.test_override_config = "{\"overrides\":[{\"id\":\"deepseek\",\"base_url\":\"https://proxy.example/deepseek\"}]}";
     defer auth_resolver.test_override_config = null;
     var app = App.initWithoutRuntime(std.testing.allocator);
