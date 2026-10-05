@@ -653,6 +653,41 @@ fn refreshWithLock(
     }
 }
 
+fn storedCredentialWithheld(allocator: std.mem.Allocator, provider_id: []const u8, base_url: []const u8) !bool {
+    if (std.mem.trim(u8, base_url, " \t\r\n").len == 0) return false;
+    if (provider_catalog.provider(provider_id) == null) return false;
+    var lookup = try auth_resolver.overrideLookup(allocator, provider_id);
+    defer lookup.deinit(allocator);
+    return switch (lookup) {
+        .none => false,
+        .endpoint => |found| !found.forwards_credential and
+            provider_base_url.sameOrigin(base_url, found.base_url) and
+            !provider_base_url.knownOrigin(allocator, provider_id, base_url),
+        .unreadable => provider_catalog.oauthOrigin(provider_id) == null and
+            !provider_base_url.knownOrigin(allocator, provider_id, base_url),
+    };
+}
+
+fn streamWithEnvironmentKey(
+    server: *ProtocolServer,
+    provider: api_registry.ApiProvider,
+    provider_id: []const u8,
+    model: ai_types.Model,
+    context: ai_types.Context,
+    options: ?ai_types.StreamOptions,
+) !*event_stream.AssistantMessageEventStream {
+    const resolved = auth_resolver.resolveApiKeyOfKind(server.allocator, null, provider_id, null, .api_key_only) catch |err| switch (err) {
+        error.AuthRequired => return provider.stream(model, context, options, server.allocator),
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    var resolved_options = try injectApiKey(server.allocator, options, resolved.api_key);
+    defer {
+        server.allocator.free(resolved.api_key);
+        deinitInjectedApiKey(server.allocator, &resolved_options);
+    }
+    return provider.stream(model, context, resolved_options, server.allocator);
+}
+
 fn streamWithRefresh(
     server: *ProtocolServer,
     provider: api_registry.ApiProvider,
@@ -662,6 +697,9 @@ fn streamWithRefresh(
 ) !*event_stream.AssistantMessageEventStream {
     if (options) |opts| {
         if (opts.getApiKey() != null) return provider.stream(model, context, options, server.allocator);
+    }
+    if (try storedCredentialWithheld(server.allocator, model.provider, model.base_url)) {
+        return streamWithEnvironmentKey(server, provider, model.provider, model, context, options);
     }
 
     if (provider.auth_provider_id) |auth_provider_id| {
@@ -2500,6 +2538,55 @@ test "an api without an auth provider id never resolves a vendor OAuth token" {
         std.testing.allocator.destroy(stream);
     }
     try std.testing.expectEqualStrings("gateway-key", state.last_api_key[0..state.last_api_key_len]);
+}
+
+fn streamedKey(server: *ProtocolServer, registry: *api_registry.ApiRegistry, state: *AuthTestState, base_url: []const u8) ![]const u8 {
+    state.last_api_key_len = 0;
+    var model = testModel();
+    model.api = "keyless-api";
+    model.provider = "deepseek";
+    model.base_url = base_url;
+    const stream = try streamWithRefresh(server, registry.getApiProvider("keyless-api").?, model, testContext(), null);
+    stream.deinit();
+    std.testing.allocator.destroy(stream);
+    return state.last_api_key[0..state.last_api_key_len];
+}
+
+test "an overridden endpoint gets no stored credential unless the override forwards it, and an environment key still goes" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
+    var state = AuthTestState{ .expires = compat.time.nowMillis() + 60_000 };
+    auth_test_state = &state;
+    defer auth_test_state = null;
+    defer auth_resolver.test_override_config = null;
+
+    var registry = api_registry.ApiRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+    try registry.registerApiProvider(.{ .api = "keyless-api", .stream = authTestStream, .stream_simple = mockStreamSimple }, null);
+    var storage = oauth_storage.AuthStorage{
+        .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(std.testing.allocator),
+        .allocator = std.testing.allocator,
+        .save_fn = authTestSaveStorage,
+    };
+    defer storage.deinit();
+    try storage.providers.put(try std.testing.allocator.dupe(u8, "deepseek"), .{ .api_key = try std.testing.allocator.dupe(u8, "stored-key") });
+    var server = ProtocolServer.init(std.testing.allocator, &registry, .{ .auth_storage = &storage });
+    defer server.deinit();
+    const catalogued = provider_catalog.baseUrl("deepseek", "openai-completions", null).?;
+
+    auth_resolver.test_override_config = "{\"overrides\":[{\"id\":\"deepseek\",\"base_url\":\"https://proxy.example/api\"}]}";
+    try std.testing.expectEqualStrings("", try streamedKey(&server, &registry, &state, "https://proxy.example/api"));
+    try std.testing.expectEqualStrings("stored-key", try streamedKey(&server, &registry, &state, catalogued));
+    try compat.setTestEnv(std.testing.allocator, "DEEPSEEK_API_KEY", "environment-key");
+    try std.testing.expectEqualStrings("environment-key", try streamedKey(&server, &registry, &state, "https://proxy.example/api"));
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+
+    auth_resolver.test_override_config = "{\"overrides\":[{\"id\":\"deepseek\",\"base_url\":\"https://proxy.example/api\",\"forwards_credential\":true}]}";
+    try std.testing.expectEqualStrings("stored-key", try streamedKey(&server, &registry, &state, "https://proxy.example/api"));
+
+    auth_resolver.test_override_config = "{\"overrides\":[{\"id\":\"deepseek\",\"bogus\":1}]}";
+    try std.testing.expectEqualStrings("", try streamedKey(&server, &registry, &state, "https://proxy.example/api"));
+    try std.testing.expectEqualStrings("stored-key", try streamedKey(&server, &registry, &state, catalogued));
 }
 
 test "a custom provider id never resolves to a stored OAuth token" {

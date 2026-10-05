@@ -35,6 +35,55 @@ pub fn resolveApiKey(
     return resolveApiKeyOfKind(allocator, auth_storage, provider_id, provided_api_key, .any);
 }
 
+pub const OverrideEndpoint = struct {
+    base_url: []u8,
+    forwards_credential: bool,
+
+    pub fn deinit(self: *OverrideEndpoint, allocator: std.mem.Allocator) void {
+        allocator.free(self.base_url);
+        self.* = undefined;
+    }
+};
+
+pub const OverrideLookup = union(enum) {
+    none,
+    unreadable,
+    endpoint: OverrideEndpoint,
+
+    pub fn deinit(self: *OverrideLookup, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .endpoint => |*found| found.deinit(allocator),
+            else => {},
+        }
+        self.* = undefined;
+    }
+};
+
+pub var test_override_config: ?[]const u8 = null;
+
+pub fn overrideLookup(allocator: std.mem.Allocator, provider_id: []const u8) std.mem.Allocator.Error!OverrideLookup {
+    var config = loadOverrideConfig(allocator) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return .unreadable,
+    };
+    defer config.deinit(allocator);
+    return overrideLookupIn(allocator, config.overrides, provider_id);
+}
+
+pub fn overrideLookupIn(allocator: std.mem.Allocator, overrides: []const custom_providers.Override, provider_id: []const u8) std.mem.Allocator.Error!OverrideLookup {
+    const override = custom_providers.overrideFor(overrides, provider_id) orelse return .none;
+    const base = override.base_url orelse return .none;
+    return .{ .endpoint = .{ .base_url = try allocator.dupe(u8, base), .forwards_credential = override.forwards_credential } };
+}
+
+fn loadOverrideConfig(allocator: std.mem.Allocator) !custom_providers.Config {
+    if (builtin.is_test) {
+        const json = test_override_config orelse return .{};
+        return custom_providers.parseConfig(allocator, json);
+    }
+    return custom_providers.loadConfigStrict(allocator, custom_providers.max_config_bytes);
+}
+
 fn rowEnvironmentKey(allocator: std.mem.Allocator, provider_id: []const u8) ?[]u8 {
     const key = provider_catalog.apiKeyFromEnv(allocator, provider_id) orelse return null;
     if (key.len == 0) {
