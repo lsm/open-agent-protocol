@@ -4335,3 +4335,9 @@ test "the producer does not publish done while its own cleanup is unfinished" {
     const result = stream.getResult() orelse return error.TestUnexpectedResult;
     try std.testing.expect(result.content.len > 0);
 }
+
+test "the catalogued Z.AI coding plan row detects as Z.AI, so its thinking format cannot drift back to openai" {
+    const base = provider_catalog.defaultBaseUrl("zai-coding-plan").?;
+    try std.testing.expect(provider_caps.isZai(base));
+    try std.testing.expectEqual(.zai, provider_caps.detectCapabilities(base).thinking_format);
+}

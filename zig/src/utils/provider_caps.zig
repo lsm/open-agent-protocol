@@ -100,7 +100,9 @@ pub fn isGoogle(base_url: ?[]const u8) bool {
 }
 
 pub fn isZai(base_url: ?[]const u8) bool {
-    return isHostOrSubdomainOf(base_url, "zukijourney.com");
+    return isHostOrSubdomainOf(base_url, "zukijourney.com") or
+        isHostOrSubdomainOf(base_url, "z.ai") or
+        isHostOrSubdomainOf(base_url, "bigmodel.cn");
 }
 
 pub fn isOpenRouter(base_url: ?[]const u8) bool {
@@ -494,8 +496,10 @@ test "the catalogued google row still detects as google with its caps" {
     try std.testing.expect(caps.function_calling);
 }
 
-test "a zai host is zukijourney.com or a subdomain of it" {
+test "a zai host is z.ai, bigmodel.cn or zukijourney.com, or a subdomain of one" {
     const hosts = [_][]const u8{
+        "https://api.z.ai/api/coding/paas/v4",
+        "https://open.bigmodel.cn/api/coding/paas/v4",
         "https://api.zukijourney.com",
         "https://api.zukijourney.com/api/paas/v4",
         "https://zukijourney.com",
@@ -507,6 +511,10 @@ test "a zai host is zukijourney.com or a subdomain of it" {
 
     const not_hosts = [_][]const u8{
         "https://myzukijourney.com",
+        "https://notz.ai",
+        "https://z.ai.evil.example",
+        "https://evil.example/?next=api.z.ai",
+        "https://mybigmodel.cn",
         "https://zukijourney.com.evil.example",
         "https://evil.example/?next=api.zukijourney.com",
         "https://evil.example/v1/zai",
@@ -521,10 +529,12 @@ test "a zai host is zukijourney.com or a subdomain of it" {
     try std.testing.expect(!isZai(null));
 }
 
-test "the zai-coding-plan row is not detected as zai, and that is recorded rather than fixed here" {
-    const url = "https://api.z.ai/api/coding/paas/v4";
-    try std.testing.expect(!isZai(url));
-    try std.testing.expectEqual(.openai, detectCapabilities(url).thinking_format);
+test "the Z.AI coding plan's bases take the zai thinking format and replay reasoning as reasoning_content" {
+    for ([_][]const u8{ "https://api.z.ai/api/coding/paas/v4", "https://open.bigmodel.cn/api/coding/paas/v4" }) |url| {
+        const caps = detectCapabilities(url);
+        try std.testing.expectEqual(.zai, caps.thinking_format);
+        try std.testing.expect(!caps.requires_thinking_as_text);
+    }
 }
 
 test "a qwen host is dashscope.aliyuncs.com or a subdomain of it" {

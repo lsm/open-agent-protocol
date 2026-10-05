@@ -381,7 +381,7 @@ code paths; add a transcript row instead.
   region) on the
   same 24-hour window and stale-copy fallback as Anthropic's, and falls back to the
   static `kimi-k2.7-code` when both fetch and cache are unusable. Kimi is a plan row, so
-  a 401 or 403 is a refusal rather than an outage: the row is dropped for that listing
+  a 401, 402 or 403 is a refusal rather than an outage: the row is dropped for that listing
   and the fallbacks above are not consulted, because a plan row that refuses is one the
   subscription does not open. The refusal is remembered as a marker, and only for a
   stored login — a key from `KIMI_API_KEY` is never covered by one, never earns one, and
@@ -392,7 +392,7 @@ code paths; add a transcript row instead.
   rather than only off its cached listing — no cached models and none of the row's declared
   ones, however old the marker is and whatever the probe returns. A probe that refuses writes
   the marker again, and a probe that answers clears it, which is also what the refresh after
-  a `/login` does; the two together are why one bad 401 or 403 from a WAF challenge costs a
+  a `/login` does; the two together are why one bad 401, 402 or 403 from a WAF challenge costs a
   day rather than the session, and why it is not permanent. The bound is the cache's lifetime on
   purpose: a marker outliving the copy it outranks would be a verdict with nothing behind
   it, and a marker perishing with that copy would be one that could not be renewed. The
