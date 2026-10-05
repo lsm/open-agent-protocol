@@ -1057,7 +1057,7 @@ fn refusalMarkersEnabled() bool {
 }
 
 fn isRefusalStatus(status: u16) bool {
-    return status == 401 or status == 403;
+    return status == 401 or status == 402 or status == 403;
 }
 
 fn fetchCatalogModelsCatalog(allocator: std.mem.Allocator, target: CatalogEndpoint, token: []const u8) ![]u8 {
@@ -3414,11 +3414,11 @@ test "a Kimi listing and the requests that follow use the same credential and th
     }
 }
 
-test "only a 401 or a 403 says the key was refused, and an outage does not" {
-    const refusals = [_]u16{ 401, 403 };
+test "only a 401, a 402 or a 403 says the key was refused, and an outage does not" {
+    const refusals = [_]u16{ 401, 402, 403 };
     for (refusals) |status| try std.testing.expect(isRefusalStatus(status));
 
-    const others = [_]u16{ 200, 204, 400, 402, 404, 408, 409, 422, 429, 500, 502, 503, 504 };
+    const others = [_]u16{ 200, 204, 400, 404, 408, 409, 422, 429, 500, 502, 503, 504 };
     for (others) |status| try std.testing.expect(!isRefusalStatus(status));
 }
 
