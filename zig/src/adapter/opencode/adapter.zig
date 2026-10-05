@@ -124,7 +124,7 @@ pub const Session = struct {
     recovered: bool = false,
 
     fn open(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
-        if (request.reasoning_level != null) return refusal.unsupportedField(contract.feature_session_reasoning, contract.reason_unsatisfiable, "reasoning_level");
+        if (request.reasoning_level != null and !request.reopen) return refusal.unsupportedField(contract.feature_session_reasoning, contract.reason_unsatisfiable, "reasoning_level");
         if (request.reopen and std.mem.trim(u8, request.native_session_id, " \t\r\n").len == 0) return refusal.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
         if (request.compaction_policy_json != null) return refusal.unsupportedField(contract.feature_compaction_policy, contract.reason_unadvertised, "compaction_policy");
         const gpa = owner.allocator;
@@ -203,6 +203,7 @@ pub const Session = struct {
         self.reducer.open() catch |err| return lift(err);
         if (after > 0) self.reducer.last_seq = after;
         try self.feed();
+        if (request.reasoning_level) |level| try self.switchLevel(arena, level, refusal);
         return self;
     }
 
@@ -264,6 +265,25 @@ pub const Session = struct {
         .update_settings = updateSettings,
     };
 
+    fn switchLevel(self: *Session, arena: std.mem.Allocator, level: []const u8, refusal: *contract.Refusal) contract.Failure!void {
+        const current = self.model orelse return refusal.unsupportedField(contract.feature_session_reasoning, contract.reason_unsatisfiable, "reasoning_level");
+        const own = self.owned();
+        const next = native.ModelRef{ .id = current.id, .provider_id = current.provider_id, .variant = try own.dupe(u8, level) };
+        const native_id = self.reducer.options.native_id;
+        const limit = self.owner.config.frame_limit;
+        const switched = self.exchange(try httpapi.switchModel(arena, self.endpoint, native_id, next)) catch |err| return refusal.fail(error.BackendFailed, try describe(arena, "switch OpenCode session variant", err));
+        if (try httpapi.switchModelResult(arena, switched, native_id, limit)) |failure| return refusal.fail(error.BackendFailed, try std.fmt.allocPrint(arena, "switch OpenCode session variant: {s}", .{failure.message}));
+        const read = self.exchange(try httpapi.getSession(own, self.endpoint, native_id)) catch |err| return refusal.fail(error.BackendFailed, try describe(arena, "read OpenCode session", err));
+        const info = switch (try httpapi.getSessionResult(own, read, native_id, limit)) {
+            .ok => |value| value,
+            .failed => |failure| return refusal.fail(error.BackendFailed, try std.fmt.allocPrint(arena, "read OpenCode session: {s}", .{failure.message})),
+        };
+        const recorded = info.model orelse return refusal.unsupportedField(contract.feature_session_reasoning, contract.reason_unsatisfiable, "reasoning_level");
+        if (!std.mem.eql(u8, recorded.id, next.id) or !std.mem.eql(u8, recorded.provider_id, next.provider_id) or !std.mem.eql(u8, recorded.variant, next.variant)) return refusal.unsupportedField(contract.feature_session_reasoning, contract.reason_unsatisfiable, "reasoning_level");
+        self.model = recorded;
+        self.reported_level = next.variant;
+    }
+
     fn updateSettings(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.SessionSettingsUpdateRequest, refusal: *contract.Refusal) contract.Failure!contract.Updated {
         const self = cast(ptr);
         try contract.refuseUnadvertisedLiveSettings(descriptor, request, refusal);
@@ -275,24 +295,10 @@ pub const Session = struct {
         }
         var response = oap_types.SessionSettingsUpdateResponse{ .session_id = self.id };
         if (request.reasoning_level) |level| {
-            const current = self.model orelse return refusal.unsupportedField(contract.feature_session_reasoning, contract.reason_unsatisfiable, "reasoning_level");
-            const own = self.owned();
-            const next = native.ModelRef{ .id = current.id, .provider_id = current.provider_id, .variant = try own.dupe(u8, level) };
-            const native_id = self.reducer.options.native_id;
-            const limit = self.owner.config.frame_limit;
-            const switched = self.exchange(try httpapi.switchModel(arena, self.endpoint, native_id, next)) catch |err| return refusal.fail(error.BackendFailed, try describe(arena, "switch OpenCode session variant", err));
-            if (try httpapi.switchModelResult(arena, switched, native_id, limit)) |failure| return refusal.fail(error.BackendFailed, try std.fmt.allocPrint(arena, "switch OpenCode session variant: {s}", .{failure.message}));
-            const read = self.exchange(try httpapi.getSession(own, self.endpoint, native_id)) catch |err| return refusal.fail(error.BackendFailed, try describe(arena, "read OpenCode session", err));
-            const info = switch (try httpapi.getSessionResult(own, read, native_id, limit)) {
-                .ok => |value| value,
-                .failed => |failure| return refusal.fail(error.BackendFailed, try std.fmt.allocPrint(arena, "read OpenCode session: {s}", .{failure.message})),
-            };
-            const recorded = info.model orelse return refusal.unsupportedField(contract.feature_session_reasoning, contract.reason_unsatisfiable, "reasoning_level");
-            if (!std.mem.eql(u8, recorded.id, next.id) or !std.mem.eql(u8, recorded.provider_id, next.provider_id) or !std.mem.eql(u8, recorded.variant, next.variant)) return refusal.unsupportedField(contract.feature_session_reasoning, contract.reason_unsatisfiable, "reasoning_level");
-            self.model = recorded;
-            response.previous_reasoning_level = self.reported_level;
-            self.reported_level = next.variant;
-            response.reasoning_level = next.variant;
+            const previous = self.reported_level;
+            try self.switchLevel(arena, level, refusal);
+            response.previous_reasoning_level = previous;
+            response.reasoning_level = self.reported_level;
         }
         return .{ .response = response, .state = try state(ptr, arena, refusal) };
     }
@@ -1097,6 +1103,36 @@ test "a reopen attaches to the bound server session and resumes its events after
     try testing.expectEqualStrings(fake_session, opened.nativeId());
     try testing.expect(std.mem.endsWith(u8, probe.fake.event_target[0..probe.fake.event_target_len], "/event?after=2"));
     try testing.expectEqual(@as(usize, 0), probe.fake.prompts.load(.acquire));
+}
+
+test "a reopen carrying a level switches the recorded model's variant once attached" {
+    var probe: Probe = undefined;
+    try probe.init(&.{}, &.{});
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const opened = try probe.adapter.adapter().vtable.open(&probe.adapter, probe.arena.allocator(), .{ .session_id = "s1", .participant = "user", .reopen = true, .native_session_id = fake_session, .reasoning_level = "high" }, &refusal);
+    probe.handle = opened;
+    try testing.expectEqual(@as(usize, 1), probe.fake.switches.load(.acquire));
+    try testing.expectEqualStrings("high", (try opened.state(probe.arena.allocator(), &refusal)).reasoning_level.?);
+}
+
+test "a reopen refuses a level the session record does not confirm" {
+    var probe: Probe = undefined;
+    try probe.init(&.{}, &.{});
+    defer probe.deinit();
+    probe.fake.keep_variant = true;
+    var refusal = contract.Refusal{};
+    try testing.expectError(error.UnsupportedFeature, probe.adapter.adapter().vtable.open(&probe.adapter, probe.arena.allocator(), .{ .session_id = "s1", .participant = "user", .reopen = true, .native_session_id = fake_session, .reasoning_level = "max" }, &refusal));
+    try testing.expectEqualStrings(contract.feature_session_reasoning, refusal.feature);
+}
+
+test "a fresh open still refuses a level" {
+    var probe: Probe = undefined;
+    try probe.init(&.{}, &.{});
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    try testing.expectError(error.UnsupportedFeature, probe.adapter.adapter().vtable.open(&probe.adapter, probe.arena.allocator(), .{ .session_id = "s1", .participant = "user", .reasoning_level = "high" }, &refusal));
+    try testing.expectEqual(@as(usize, 0), probe.fake.switches.load(.acquire));
 }
 
 test "a fresh open binds the session the server created and reads its events from the start" {

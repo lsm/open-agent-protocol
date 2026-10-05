@@ -167,7 +167,9 @@ a one-off probe run alongside it:
 Both trees advertise `session.open.reopen` as native, report `recovery.recovered`
 with the model the record holds, and refuse an unknown or running session as
 `unsupported_feature`/`unsatisfiable`. Nothing on the server restarts work on
-attach. A turn against an unreachable provider never settles at this pin (the
+attach. A reopen carrying `reasoning_level` switches the recorded
+model to that variant after attaching and confirms it from the record, in both
+trees, because a reopened session has the model a fresh Zig open lacks. A turn against an unreachable provider never settles at this pin (the
 runner keeps retrying until the server stops), so the gate checks the stored
 events rather than a completed turn. The revision moves to
 `opencode-v1.18.34-oap-v5`, and the port goldens add the record read and the
