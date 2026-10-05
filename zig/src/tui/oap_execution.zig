@@ -48,7 +48,7 @@ pub const OapExecution = struct {
     steers: std.ArrayList(PendingSteer) = .empty,
     steers_settled: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     compacting: bool = false,
-    compaction_settled: bool = false,
+    compaction_result: ?CompactionEnd = null,
     sent_policy: []u8 = &.{},
     pending_permission: ?PendingPermission = null,
     queued_runs: std.ArrayList(QueuedRun) = .empty,
@@ -146,6 +146,7 @@ pub const OapExecution = struct {
         self.forgetSessionModels();
         self.session_models.deinit(allocator);
         self.forgetPermission();
+        self.dropCompactionResult();
         for (self.queued_runs.items) |*queued| queued.deinit(allocator);
         self.queued_runs.deinit(allocator);
         for (self.steers.items) |*pending| pending.deinit(allocator);
@@ -664,7 +665,7 @@ pub const OapExecution = struct {
         self.allocator.free(self.run_id);
         self.run_id = &.{};
         self.compacting = true;
-        self.compaction_settled = false;
+        self.dropCompactionResult();
         self.cancel_pending.store(false, .release);
         self.cancelling = false;
         self.inbound_mutex.unlock();
@@ -700,13 +701,19 @@ pub const OapExecution = struct {
     }
 
     fn settleCompaction(self: *OapExecution, outcome: CompactionOutcome, message: []const u8) !void {
-        if (!self.compaction_settled) {
-            self.compaction_settled = true;
-            self.deliver(.{ .compaction_end = .{ .outcome = outcome, .message = try self.ownedText(message) } });
-        }
+        const ended = self.compaction_result orelse CompactionEnd{ .outcome = outcome, .message = try self.ownedText(message) };
+        self.compaction_result = null;
         self.compacting = false;
         self.awaiting_promotion.store(false, .release);
         self.turn_open.store(false, .release);
+        self.deliver(.{ .compaction_end = ended });
+    }
+
+    fn dropCompactionResult(self: *OapExecution) void {
+        const held = self.compaction_result orelse return;
+        self.compaction_result = null;
+        var event: TuiEvent = .{ .compaction_end = held };
+        event.deinit(self.allocator);
     }
 
     fn decideApproval(ctx: *anyopaque, tool_call_id: []const u8, granted: bool) anyerror!void {
@@ -1111,10 +1118,7 @@ pub const OapExecution = struct {
         }
         if (std.mem.eql(u8, kind, "run.compaction.started")) return true;
         if (std.mem.eql(u8, kind, "run.compaction.ended")) {
-            if (!self.compaction_settled) {
-                self.compaction_settled = true;
-                self.deliver(.{ .compaction_end = try self.compactionEnd(body, false) });
-            }
+            if (self.compaction_result == null) self.compaction_result = try self.compactionEnd(body, false);
             return true;
         }
         if (std.mem.eql(u8, kind, "run.completed")) {
@@ -1163,7 +1167,7 @@ pub const OapExecution = struct {
         self.steers.clearRetainingCapacity();
         self.inbound_mutex.unlock();
         self.compacting = false;
-        self.compaction_settled = false;
+        self.dropCompactionResult();
         self.awaiting_promotion.store(false, .release);
         self.turn_open.store(false, .release);
         self.output_tokens = 0;
@@ -2198,6 +2202,8 @@ test "a compaction over OAP runs the endpoint's compaction and ends on its summa
     var seen = Compactions{};
     defer seen.deinit();
     try drainCompactions(&runtime, &seen, true);
+    try testing.expect(!execution.turn_open.load(.acquire));
+    try testing.expect(!execution.compacting);
     try testing.expectEqual(@as(usize, 1), seen.started);
     try testing.expectEqual(@as(?CompactionOutcome, .completed), seen.outcome);
     try testing.expect(seen.text.items.len > 0);
