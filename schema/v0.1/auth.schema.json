@@ -19,7 +19,7 @@
         "auth_status": { "$ref": "common.schema.json#/$defs/authStatus" },
         "last_error": { "type": "string" },
         "override_host": {
-          "description": "The host this provider's requests go to when the runtime's configuration overrides its catalogued endpoint. Absent when no override is in effect.",
+          "description": "The host this provider's requests go to when the runtime's configuration overrides its endpoint or adds request headers to it. Absent otherwise.",
           "$ref": "common.schema.json#/$defs/nonEmptyString"
         }
       },

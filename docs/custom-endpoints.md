@@ -163,7 +163,8 @@ Codex and Copilot rows keep their own loaders and do not read an override yet,
 and `models` is recorded but not yet applied as an allowlist.
 
 **An overridden row says where it goes.** `auth.providers.response` names the
-host in `override_host` while an override is in effect, so `listProviders()` in
+host in `override_host` while an override that moves its requests or adds
+headers to them is in effect, so `listProviders()` in
 both SDKs and the TUI's `/login` list (`deepseek via proxy.internal`) show it.
 When an environment base outranks an override's `base_url`, the row carries no
 mark. An override without `base_url` still applies its headers wherever the row

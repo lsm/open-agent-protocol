@@ -137,6 +137,7 @@ pub fn overrideHost(allocator: std.mem.Allocator, overrides: []const custom_prov
         .endpoint => |endpoint| endpoint,
         else => return null,
     };
+    if (found.base_url.len == 0 and found.headers.len == 0) return null;
     const row = provider_catalog.provider(provider_id) orelse return null;
     const wire = provider_catalog.firstImplementedWire(row) orelse return null;
     const region = if (std.mem.eql(u8, provider_id, "kimi")) storedKimiRegion(storage) else null;
@@ -519,4 +520,13 @@ test "an override's host follows the region the stored kimi login resolves to" {
     const unset = (try overrideHost(allocator, &overrides, "kimi", null)).?;
     defer allocator.free(unset);
     try std.testing.expect(!std.mem.eql(u8, global, unset));
+}
+
+test "an override that moves no request and adds no header leaves the row unmarked" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+    const narrowing = [_]custom_providers.ModelSpec{.{ .id = "deepseek-chat", .name = "deepseek-chat" }};
+    const inert = [_]custom_providers.Override{.{ .id = "deepseek", .forwards_credential = true, .models = &narrowing }};
+    try std.testing.expect((try overrideHost(allocator, &inert, "deepseek", null)) == null);
 }
