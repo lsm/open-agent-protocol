@@ -570,7 +570,7 @@ fn configuredEndpointOf(lookup: auth_resolver.OverrideLookup) provider_base_url.
     };
 }
 
-fn storedOAuthOriginAllowed(
+fn storedCredentialOriginAllowed(
     allocator: std.mem.Allocator,
     storage: ?*oauth_storage.AuthStorage,
     provider_id: []const u8,
@@ -580,7 +580,7 @@ fn storedOAuthOriginAllowed(
     const auth_storage = storage orelse return true;
     const auth = auth_storage.resolvedCredential(provider_id) orelse return true;
     return switch (auth) {
-        .api_key => true,
+        .api_key => provider_base_url.oauthOriginAllowed(allocator, provider_id, model.base_url, "", null, configured),
         .oauth => |credentials| provider_base_url.oauthOriginAllowed(
             allocator,
             provider_id,
@@ -613,7 +613,7 @@ fn streamWithResolvedKey(
         break :blk @as(?*oauth_storage.AuthStorage, &loaded_storage.?);
     };
 
-    if (kind == .any and !storedOAuthOriginAllowed(server.allocator, storage, provider_id, model, configured)) {
+    if (kind == .any and !storedCredentialOriginAllowed(server.allocator, storage, provider_id, model, configured)) {
         return error.AuthRequired;
     }
 
@@ -746,6 +746,9 @@ fn streamWithOverride(
             return streamWithResolvedKey(server, provider, provider_id, model, context, options, .any, configured);
 
     if (!storage.hasRefreshableCredentials(provider_id)) {
+        if (!storedCredentialOriginAllowed(server.allocator, storage, provider_id, model, configured)) {
+            return streamWithEnvironmentKey(server, provider, provider_id, model, context, options);
+        }
         const stored_key = storage.getApiKey(provider_id, null) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return err,
@@ -759,7 +762,7 @@ fn streamWithOverride(
         return streamWithResolvedKey(server, provider, provider_id, model, context, options, .any, configured);
     }
 
-    if (!storedOAuthOriginAllowed(server.allocator, storage, provider_id, model, configured)) return error.AuthRequired;
+    if (!storedCredentialOriginAllowed(server.allocator, storage, provider_id, model, configured)) return error.AuthRequired;
 
     if (storage.credentialsExpired(provider_id)) {
         refreshWithLock(server, provider_id, storage, oauth_provider) catch |err| switch (err) {
@@ -2051,6 +2054,53 @@ test "a custom provider on a vendor OAuth api streams with its own key" {
     try std.testing.expectEqual(@as(usize, 0), state.refresh_count);
 }
 
+test "a stored vendor API key reaches only an origin the vendor serves or the user named" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
+    var state = AuthTestState{ .expires = compat.time.nowMillis() + 60_000 };
+    auth_test_state = &state;
+    defer auth_test_state = null;
+
+    var registry = api_registry.ApiRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+    try registry.registerApiProvider(.{
+        .api = "vendor-api",
+        .stream = authTestStream,
+        .stream_simple = mockStreamSimple,
+        .auth_provider_id = "anthropic",
+        .auth_refresh_fn = authTestRefresh,
+        .auth_get_api_key_fn = authTestGetApiKey,
+    }, null);
+    var storage = oauth_storage.AuthStorage{
+        .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(std.testing.allocator),
+        .allocator = std.testing.allocator,
+        .save_fn = authTestSaveStorage,
+    };
+    defer storage.deinit();
+    try storage.providers.put(try std.testing.allocator.dupe(u8, "anthropic"), .{ .api_key = try std.testing.allocator.dupe(u8, "vendor-key") });
+    var server = ProtocolServer.init(std.testing.allocator, &registry, .{ .auth_storage = &storage });
+    defer server.deinit();
+
+    var model = testModel();
+    model.api = "vendor-api";
+    model.provider = "anthropic";
+    for ([_]struct { base: []const u8, sent: bool }{
+        .{ .base = "https://attacker.test", .sent = false },
+        .{ .base = provider_catalog.baseUrl("anthropic", "anthropic-messages", null).?, .sent = true },
+    }) |case| {
+        state.last_api_key_len = 0;
+        model.base_url = case.base;
+        const stream = try streamWithRefresh(&server, registry.getApiProvider("vendor-api").?, model, testContext(), null);
+        stream.deinit();
+        std.testing.allocator.destroy(stream);
+        if (case.sent) {
+            try std.testing.expectEqualStrings("vendor-key", state.last_api_key[0..state.last_api_key_len]);
+        } else {
+            try std.testing.expectEqual(@as(usize, 0), state.last_api_key_len);
+        }
+    }
+}
+
 test "a mismatched vendor provider id never reaches its stored OAuth token" {
     var state = AuthTestState{ .expires = compat.time.nowMillis() + 60_000 };
     auth_test_state = &state;
@@ -2495,7 +2545,7 @@ test "a request for a row with a login is signed with the stored key, not the en
     var model = testModel();
     model.api = "vendor-api";
     model.provider = "anthropic";
-    model.base_url = "https://attacker.test";
+    model.base_url = provider_catalog.baseUrl("anthropic", "anthropic-messages", null).?;
 
     const stream = try streamWithRefresh(&server, registry.getApiProvider("vendor-api").?, model, testContext(), null);
     defer {
