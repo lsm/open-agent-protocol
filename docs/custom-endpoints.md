@@ -159,8 +159,11 @@ then the catalog, so a variable set for one run still beats the file. The row's
 models are listed from the override's base, its requests go there, its
 `carries_version` decides where the wire's path joins, and its `headers` ride
 every request. This applies to the rows the catalog loader serves; the Anthropic,
-Codex and Copilot rows keep their own loaders and do not read an override yet,
-and `models` is recorded but not yet applied as an allowlist.
+Codex and Copilot rows keep their own loaders and do not read an override yet.
+An override's `models` narrow the row exactly as a custom entry's do: discovery is filtered
+by the list, and the list is what the row offers when discovery returns nothing,
+with each entry's `name`, `context_window` and `max_tokens` taking precedence
+over what discovery reported.
 
 **A redirected row's stored credential does not follow it.** A key or OAuth token
 saved with `/login` reaches an override's endpoint only when the override says
