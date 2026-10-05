@@ -330,11 +330,32 @@ pub fn threadStartParams(arena: std.mem.Allocator, start: ThreadStart) !std.json
     return .{ .object = params };
 }
 
-pub fn threadResumeParams(arena: std.mem.Allocator, thread_id: []const u8, settings: Settings) !std.json.Value {
+pub fn threadResumeParams(arena: std.mem.Allocator, thread_id: []const u8, host: ThreadStart) !std.json.Value {
     var params = object();
     try putText(arena, &params, "threadId", thread_id);
-    try settings.put(arena, &params);
+    try putNonEmpty(arena, &params, "cwd", host.cwd);
+    try putNonEmpty(arena, &params, "approvalPolicy", host.approval_policy);
+    try putNonEmpty(arena, &params, "sandbox", host.sandbox);
+    try host.settings.put(arena, &params);
     return .{ .object = params };
+}
+
+pub fn sandboxPolicyType(mode: []const u8) []const u8 {
+    if (std.mem.eql(u8, mode, "read-only")) return "readOnly";
+    if (std.mem.eql(u8, mode, "workspace-write")) return "workspaceWrite";
+    if (std.mem.eql(u8, mode, "danger-full-access")) return "dangerFullAccess";
+    return "";
+}
+
+pub fn unconfirmedHostPermission(host: ThreadStart, resumed: std.json.Value) ?[]const u8 {
+    if (host.sandbox.len > 0) {
+        const wanted = sandboxPolicyType(host.sandbox);
+        if (wanted.len == 0) return "the configured sandbox has no thread/resume policy the adapter can confirm";
+        if (!std.mem.eql(u8, text(resumed, &.{ "sandbox", "type" }), wanted)) return "Codex resumed the thread under a sandbox other than the configured one";
+    }
+    if (host.approval_policy.len > 0 and !std.mem.eql(u8, text(resumed, &.{"approvalPolicy"}), host.approval_policy)) return "Codex resumed the thread under an approval policy other than the configured one";
+    if (host.cwd.len > 0 and !std.mem.eql(u8, std.mem.trimEnd(u8, text(resumed, &.{"cwd"}), "/"), std.mem.trimEnd(u8, host.cwd, "/"))) return "Codex resumed the thread in a directory other than the configured one";
+    return null;
 }
 
 pub fn turnStartParams(arena: std.mem.Allocator, thread_id: []const u8, texts: []const []const u8, model: []const u8, effort: []const u8) !std.json.Value {
@@ -479,4 +500,11 @@ test "parameters are written in Go's struct order and omit what Go omits" {
         try encode(a, try userInputResponse(a, &answers)),
     );
     try testing.expectEqualStrings("{\"clientInfo\":{\"name\":\"n\",\"version\":\"v\"}}", try encode(a, try initializeParams(a, "n", "v")));
+}
+
+test "a configured sandbox the adapter cannot map is refused as the adapter's, not blamed on Codex" {
+    const resumed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"sandbox\":{\"type\":\"workspaceWrite\"}}", .{});
+    defer resumed.deinit();
+    try std.testing.expectEqualStrings("the configured sandbox has no thread/resume policy the adapter can confirm", unconfirmedHostPermission(.{ .sandbox = "seatbelt" }, resumed.value).?);
+    try std.testing.expectEqualStrings("Codex resumed the thread under a sandbox other than the configured one", unconfirmedHostPermission(.{ .sandbox = "read-only" }, resumed.value).?);
 }

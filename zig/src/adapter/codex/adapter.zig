@@ -954,14 +954,14 @@ const fake_resume_prelude =
 test "a reopen resumes the bound thread and reports the model it resumed under" {
     var probe: Probe = undefined;
     try probe.init(fake_resume_prelude ++
-        \\take; printf '{"id":1,"result":{"thread":{"id":"native-thread"},"model":"gpt-resumed","modelProvider":"openai","cwd":"/work","approvalPolicy":"never","approvalsReviewer":"user","sandbox":{"type":"readOnly"}}}\n'
+        \\take; printf '{"id":1,"result":{"thread":{"id":"native-thread"},"model":"gpt-resumed","modelProvider":"openai","cwd":"/work","approvalPolicy":"on-request","approvalsReviewer":"user","sandbox":{"type":"workspaceWrite"}}}\n'
         \\
     ++ fake_idle);
     defer probe.deinit();
     var refusal = contract.Refusal{};
     const opened = try probe.openWith(.{ .session_id = "s1", .participant = "user", .reopen = true, .native_session_id = "native-thread" }, &refusal);
     try testing.expectEqualStrings("native-thread", opened.nativeId());
-    _ = try probe.waitWritten("{\"id\":1,\"method\":\"thread/resume\",\"params\":{\"threadId\":\"native-thread\"}}");
+    _ = try probe.waitWritten("{\"id\":1,\"method\":\"thread/resume\",\"params\":{\"threadId\":\"native-thread\",\"approvalPolicy\":\"on-request\",\"sandbox\":\"workspace-write\"}}");
     const reopened = try opened.state(probe.arena.allocator(), &refusal);
     try testing.expect(reopened.recovered);
     try testing.expectEqualStrings("gpt-resumed", reopened.current_model_id.?);
@@ -970,7 +970,7 @@ test "a reopen resumes the bound thread and reports the model it resumed under" 
 fn reopenedLevel(comptime effort: []const u8, requested: ?[]const u8) !?[]const u8 {
     var probe: Probe = undefined;
     try probe.init(fake_resume_prelude ++
-        \\take; printf '{"id":1,"result":{"thread":{"id":"native-thread"},"model":"gpt-resumed","modelProvider":"openai","cwd":"/work","approvalPolicy":"never","approvalsReviewer":"user","sandbox":{"type":"readOnly"},"reasoningEffort":"
+        \\take; printf '{"id":1,"result":{"thread":{"id":"native-thread"},"model":"gpt-resumed","modelProvider":"openai","cwd":"/work","approvalPolicy":"on-request","approvalsReviewer":"user","sandbox":{"type":"workspaceWrite"},"reasoningEffort":"
     ++ effort ++
         \\"}}\n'
         \\
@@ -994,6 +994,24 @@ test "a reopen reports the reasoning level the thread resumed under" {
     const requested = (try reopenedLevel("high", "low")).?;
     defer testing.allocator.free(requested);
     try testing.expectEqualStrings("low", requested);
+}
+
+test "a reopen Codex resumes under wider permissions than the host configured is refused" {
+    const answers = [_][]const u8{
+        "{\"id\":1,\"result\":{\"thread\":{\"id\":\"native-thread\"},\"model\":\"m\",\"modelProvider\":\"openai\",\"cwd\":\"/work\",\"approvalPolicy\":\"on-request\",\"approvalsReviewer\":\"user\",\"sandbox\":{\"type\":\"dangerFullAccess\"}}}",
+        "{\"id\":1,\"result\":{\"thread\":{\"id\":\"native-thread\"},\"model\":\"m\",\"modelProvider\":\"openai\",\"cwd\":\"/work\",\"approvalPolicy\":\"never\",\"approvalsReviewer\":\"user\",\"sandbox\":{\"type\":\"workspaceWrite\"}}}",
+    };
+    for (answers) |answer| {
+        var probe: Probe = undefined;
+        const script = try std.fmt.allocPrint(testing.allocator, "{s}take; printf '%s\\n' '{s}'\n{s}", .{ fake_resume_prelude, answer, fake_idle });
+        defer testing.allocator.free(script);
+        try probe.init(script);
+        defer probe.deinit();
+        var refusal = contract.Refusal{};
+        try testing.expectError(error.UnsupportedFeature, probe.openWith(.{ .session_id = "s1", .participant = "user", .reopen = true, .native_session_id = "native-thread" }, &refusal));
+        try testing.expectEqualStrings(contract.feature_open_reopen, refusal.feature);
+        try testing.expectEqualStrings(contract.reason_unsatisfiable, refusal.reason);
+    }
 }
 
 test "a reopen Codex cannot load is unsupported_feature" {

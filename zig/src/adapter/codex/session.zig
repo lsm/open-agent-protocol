@@ -308,6 +308,15 @@ pub const Reducer = struct {
         try self.writes.append(self.allocator(), frame);
     }
 
+    fn hostPermissions(self: *const Reducer) native.ThreadStart {
+        return .{
+            .cwd = self.options.working_directory,
+            .approval_policy = self.options.approval_policy,
+            .sandbox = self.options.sandbox,
+            .settings = self.options.settings,
+        };
+    }
+
     pub fn open(self: *Reducer) !void {
         if (self.options.participant.len == 0) return Error.InvalidParticipant;
         if (self.opening or self.opened) return Error.AlreadyOpened;
@@ -323,7 +332,7 @@ pub const Reducer = struct {
             try self.call(.thread_start, native.method_thread_start, params);
             return;
         }
-        const params = try native.threadResumeParams(self.allocator(), self.options.resume_thread_id, self.options.settings);
+        const params = try native.threadResumeParams(self.allocator(), self.options.resume_thread_id, self.hostPermissions());
         try self.call(.thread_resume, native.method_thread_resume, params);
     }
 
@@ -542,6 +551,7 @@ pub const Reducer = struct {
                 if (thread.len == 0 or !std.mem.eql(u8, thread, self.options.resume_thread_id)) {
                     return self.callFailed(what, .{ .method = callMethod(what), .message = "thread/resume returned an unexpected thread id" });
                 }
+                if (native.unconfirmedHostPermission(self.hostPermissions(), result)) |message| return self.callFailed(what, .{ .method = callMethod(what), .message = message });
                 const resumed_model = native.text(result, &.{"model"});
                 if (resumed_model.len > 0) self.options.model = try self.allocator().dupe(u8, resumed_model);
                 const resumed_effort = native.text(result, &.{"reasoningEffort"});
