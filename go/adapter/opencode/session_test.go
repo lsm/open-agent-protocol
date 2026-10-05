@@ -101,6 +101,10 @@ type fakeClient struct {
 	switches    []native.ModelRef
 	keepVariant bool
 	created     *native.ModelRef
+
+	sessionErr      error
+	subscribedAfter int64
+	creates         int
 }
 
 func newFakeClient() *fakeClient {
@@ -109,6 +113,9 @@ func newFakeClient() *fakeClient {
 }
 
 func (f *fakeClient) CreateSession(_ context.Context, request httpapi.CreateSessionRequest) (native.SessionInfo, error) {
+	f.mu.Lock()
+	f.creates++
+	f.mu.Unlock()
 	f.mu.Lock()
 	f.created = request.Model
 	f.mu.Unlock()
@@ -121,6 +128,9 @@ func (f *fakeClient) CreateSession(_ context.Context, request httpapi.CreateSess
 func (f *fakeClient) Session(_ context.Context, session native.SessionID) (native.SessionInfo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.sessionErr != nil {
+		return native.SessionInfo{}, f.sessionErr
+	}
 	return native.SessionInfo{ID: session, ProjectID: "prj_fake", Model: f.model, Location: json.RawMessage(`{"directory":"/w"}`)}, nil
 }
 func (f *fakeClient) SwitchModel(_ context.Context, _ native.SessionID, model native.ModelRef) error {
@@ -207,9 +217,10 @@ func (f *fakeClient) History(_ context.Context, _ native.SessionID, after int64,
 	}
 	return page, nil
 }
-func (f *fakeClient) Subscribe(ctx context.Context, _ native.SessionID, _ int64) (Subscription, error) {
+func (f *fakeClient) Subscribe(ctx context.Context, _ native.SessionID, after int64) (Subscription, error) {
 	f.mu.Lock()
 	f.subscribeCtx = ctx
+	f.subscribedAfter = after
 	f.mu.Unlock()
 	return f.subscription, nil
 }

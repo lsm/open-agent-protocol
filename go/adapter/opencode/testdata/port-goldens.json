@@ -1,5 +1,5 @@
 {
-  "capability_revision": "opencode-v1.18.34-oap-v4",
+  "capability_revision": "opencode-v1.18.34-oap-v5",
   "capabilities": {
     "endpoint": {
       "id": "opencode.server",
@@ -86,6 +86,10 @@
         "level": "native",
         "reason": "POST /api/session with server-assigned identity"
       },
+      "session.open.reopen": {
+        "level": "native",
+        "reason": "GET /api/session/:id attaches to the bound server session and its events resume after the last stored sequence; an unknown or running session is refused"
+      },
       "session.reasoning": {
         "level": "native",
         "reason": "the session's model carries the level as its variant, which the runner sends on every step: set at create and between runs by switching the session to the same model with the new variant; it needs a model, and a variant the session record does not confirm is refused",
@@ -159,6 +163,24 @@
         "Content-Type": "application/json"
       },
       "body": "{}"
+    },
+    {
+      "name": "session-record",
+      "method": "GET",
+      "target": "/base/api/session/ses_fake00000000000000",
+      "headers": {
+        "Accept": "application/json",
+        "Authorization": "Basic b3BlbmNvZGU6c2VjcmV0"
+      }
+    },
+    {
+      "name": "history-from-start",
+      "method": "GET",
+      "target": "/base/api/session/ses_fake00000000000000/history?after=0\u0026limit=100",
+      "headers": {
+        "Accept": "application/json",
+        "Authorization": "Basic b3BlbmNvZGU6c2VjcmV0"
+      }
     },
     {
       "name": "active",

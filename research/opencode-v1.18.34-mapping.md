@@ -142,3 +142,35 @@ trace validates.
 `session.reasoning` adds `session_live`, so the revision moves to
 `opencode-v1.18.34-oap-v4`, and the port goldens were re-recorded with
 `OAP_UPDATE_OPENCODE_PORT_GOLDENS=1`.
+
+## Session reopen at v1.18.34 (#448)
+
+Observed on the pinned darwin-arm64 binary (sha256
+`7b63b34fafabded7d9231f6a9032755d0cdeaf8b9d2b70df8e25535471469eea`) with an
+isolated `HOME`, by `TestOpenCodeServerReopensItsBoundSessionAfterARestart` and
+a one-off probe run alongside it:
+
+- `GET /api/session/<id>` answers the stored record (`model {id, providerID,
+  variant}`, `location`, `time`) from a **restarted** server on the same store,
+  so the binding is the server session id and nothing else is needed to find it.
+- An unknown id answers `404` with
+  `{"_tag":"SessionNotFoundError","sessionID":…,"message":"Session not found: …"}`.
+- `GET /api/session/<id>/event` without `after` **replays every durable event
+  from `seq` 1** (`session.next.prompt.admitted`, then `session.next.prompted`,
+  …) before streaming new ones. A reopen therefore pages
+  `GET /api/session/<id>/history?after=N&limit=100` (the server refuses a limit
+  above 100 with `InvalidRequestError`) to the last durable `seq` and
+  subscribes with `after=` it, which is also the transcript cursor it reports.
+- `GET /api/session/active` answers `{"data":{}}` after a restart; a session it
+  lists as running is refused rather than attached mid-run.
+
+Both trees advertise `session.open.reopen` as native, report `recovery.recovered`
+with the model the record holds, and refuse an unknown or running session as
+`unsupported_feature`/`unsatisfiable`. Nothing on the server restarts work on
+attach. A reopen carrying `reasoning_level` switches the recorded
+model to that variant after attaching and confirms it from the record, in both
+trees, because a reopened session has the model a fresh Zig open lacks. A turn against an unreachable provider never settles at this pin (the
+runner keeps retrying until the server stops), so the gate checks the stored
+events rather than a completed turn. The revision moves to
+`opencode-v1.18.34-oap-v5`, and the port goldens add the record read and the
+first history page.

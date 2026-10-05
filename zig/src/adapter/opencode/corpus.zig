@@ -524,11 +524,13 @@ test "every request the port encodes is the request the Go adapter sends" {
         .delivery = "queue",
     }));
     try expectRequest(try goldens.request("interrupt"), try httpapi.interrupt(scratch, authed, native_session));
+    try expectRequest(try goldens.request("session-record"), try httpapi.getSession(scratch, authed, native_session));
+    try expectRequest(try goldens.request("history-from-start"), try httpapi.history(scratch, authed, native_session, 0, 100));
     try expectRequest(try goldens.request("active"), try httpapi.active(scratch, authed));
     try expectRequest(try goldens.request("history"), try httpapi.history(scratch, authed, native_session, 3, 100));
     try expectRequest(try goldens.request("subscribe"), try httpapi.subscribe(scratch, authed, native_session, -1));
     try expectRequest(try goldens.request("subscribe-after"), try httpapi.subscribe(scratch, authed, native_session, 5));
-    try testing.expectEqual(@as(usize, 9), goldens.requests.items.len);
+    try testing.expectEqual(@as(usize, 11), goldens.requests.items.len);
 }
 
 test "the port advertises the descriptor and revision the Go adapter advertises" {
