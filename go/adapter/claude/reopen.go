@@ -2,6 +2,7 @@ package claude
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -34,31 +35,64 @@ func validSessionUUID(id string) bool {
 	return true
 }
 
-func (a *Adapter) start(ctx context.Context, req base.OpenRequest) (Client, error) {
-	if !req.Reopen {
-		return a.config.Factory.Start(ctx)
-	}
-	if !validSessionUUID(req.NativeSessionID) {
-		return nil, reopenRefusal("the binding must name a Claude Code session UUID")
-	}
-	if a.processConfig == nil {
-		return nil, reopenRefusal("the supplied client factory cannot select a bound CLI conversation")
-	}
-	for _, arg := range a.config.Args {
+func hasSessionSelector(args []string) bool {
+	for _, arg := range args {
 		key, _, _ := strings.Cut(arg, "=")
 		switch key {
 		case "--", "--resume", "-r", "--continue", "-c", "--fork-session", "--session-id":
-			return nil, reopenRefusal("configured session selection conflicts with the binding")
+			return true
 		}
 	}
+	return false
+}
+
+func nativeSessionUUID() string {
+	var bytes [16]byte
+	_, _ = rand.Read(bytes[:])
+	bytes[6] = (bytes[6] & 0x0f) | 0x40
+	bytes[8] = (bytes[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", bytes[:4], bytes[4:6], bytes[6:8], bytes[8:10], bytes[10:])
+}
+
+func (a *Adapter) start(ctx context.Context, req base.OpenRequest) (Client, string, error) {
+	if req.Reopen && !validSessionUUID(req.NativeSessionID) {
+		return nil, "", reopenRefusal("the binding must name a Claude Code session UUID")
+	}
+	if a.processConfig == nil {
+		if req.Reopen {
+			return nil, "", reopenRefusal("the supplied client factory cannot select a bound CLI conversation")
+		}
+		client, err := a.config.Factory.Start(ctx)
+		return client, "", err
+	}
+	selected := hasSessionSelector(a.config.Args)
+	if req.Reopen && selected {
+		return nil, "", reopenRefusal("configured session selection conflicts with the binding")
+	}
 	pc := *a.processConfig
-	pc.Args = append(append([]string{}, pc.Args...), "--resume", req.NativeSessionID)
+	id := ""
+	if req.Reopen {
+		id = req.NativeSessionID
+		pc.Args = append(append([]string{}, pc.Args...), "--resume", id)
+	} else if !selected {
+		id = nativeSessionUUID()
+		boundary := len(pc.Args) - len(a.config.Args)
+		pc.Args = append(append(append([]string{}, pc.Args[:boundary]...), "--session-id", id), a.config.Args...)
+	}
 	process, err := a.config.ProcessFactory.Start(ctx, pc)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return &sessionClient{Client: process.ClientHandle(), bridge: process}, nil
+	return &sessionClient{Client: process.ClientHandle(), bridge: process}, id, nil
 }
+
+func (s *Session) NativeSessionID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.nativeSessionID
+}
+
+var _ base.NativeSession = (*Session)(nil)
 
 func (s *Session) reopened(ctx context.Context, id string) error {
 	var settings struct {

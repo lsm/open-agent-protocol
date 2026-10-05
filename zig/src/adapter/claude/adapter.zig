@@ -203,12 +203,7 @@ pub const Session = struct {
     fn open(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
         if (request.reopen) {
             if (!validSessionUUID(request.native_session_id)) return refusal.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
-            for (owner.config.backend.args) |arg| {
-                const key = arg[0 .. std.mem.indexOfScalar(u8, arg, '=') orelse arg.len];
-                for ([_][]const u8{ "--", "--resume", "-r", "--continue", "-c", "--fork-session", "--session-id" }) |selector| {
-                    if (std.mem.eql(u8, key, selector)) return refusal.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
-                }
-            }
+            if (hasSessionSelector(owner.config.backend.args)) return refusal.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
         }
         const flags = try claudeFlags(arena, request, refusal);
         const self = try construct(owner, arena, request, refusal);
@@ -231,7 +226,6 @@ pub const Session = struct {
         if (request.reopen) {
             try self.control(arena, .get_settings, owner.config.initialize_timeout_ns, refusal);
             if (self.engine.reducer.native_session_id.len > 0 and !std.mem.eql(u8, self.engine.reducer.native_session_id, request.native_session_id)) return refusal.fail(error.BackendFailed, "Claude Code resumed another session");
-            self.engine.reducer.native_session_id = try kept.dupe(u8, request.native_session_id);
             self.recovered = true;
         }
         return self;
@@ -251,7 +245,17 @@ pub const Session = struct {
         errdefer reducer_arena.deinit();
         var config = owner.config.backend;
         config.resume_session_id = if (request.reopen) request.native_session_id else "";
-        const engine = backend.Backend.open(reducer_arena, config, .{
+        config.native_session_id = "";
+        if (!request.reopen and !hasSessionSelector(config.args)) {
+            var bytes: [16]u8 = undefined;
+            compat.random.fillSecureBytes(&bytes);
+            bytes[6] = (bytes[6] & 0x0f) | 0x40;
+            bytes[8] = (bytes[8] & 0x3f) | 0x80;
+            const hex = std.fmt.bytesToHex(bytes, .lower);
+            config.native_session_id = try std.fmt.allocPrint(reducer_arena.allocator(), "{s}-{s}-{s}-{s}-{s}", .{ hex[0..8], hex[8..12], hex[12..16], hex[16..20], hex[20..32] });
+        }
+        const native_id = if (request.reopen) try reducer_arena.allocator().dupe(u8, request.native_session_id) else config.native_session_id;
+        var engine = backend.Backend.open(reducer_arena, config, .{
             .session_id = id,
             .model = owner.config.backend.model,
             .responder = participant,
@@ -264,6 +268,7 @@ pub const Session = struct {
             const message = try std.fmt.allocPrint(arena, "the claude child could not start: {s}", .{@errorName(err)});
             return refusal.fail(error.BackendFailed, message);
         };
+        engine.reducer.native_session_id = native_id;
         self.* = .{
             .owner = owner,
             .gpa = gpa,
@@ -281,6 +286,7 @@ pub const Session = struct {
 
     const vtable = contract.Session.VTable{
         .id = idOf,
+        .native_id = nativeId,
         .state = state,
         .submit = submit,
         .resolve = resolve,
@@ -556,6 +562,10 @@ pub const Session = struct {
             if (window == .integer and window.integer > 0) policy = try std.json.Stringify.valueAlloc(kept, .{ .kind = "tokens", .tokens = window.integer }, .{});
         }
         self.reported_policy = try kept.dupe(u8, policy);
+    }
+
+    fn nativeId(ptr: *anyopaque) []const u8 {
+        return cast(ptr).engine.reducer.native_session_id;
     }
 
     fn idOf(ptr: *anyopaque) []const u8 {
@@ -1388,7 +1398,8 @@ test "state reports the live run, the model and native session the latest init n
     try testing.expectEqual(oap_types.SessionStatus.idle, idle.status);
     try testing.expect(idle.active_run_id == null);
     try testing.expect(idle.current_model_id == null);
-    try testing.expect(idle.metadata_json == null);
+    try testing.expect(validSessionUUID(probe.handle.?.nativeId()));
+    try testing.expect(std.mem.indexOf(u8, idle.metadata_json.?, probe.handle.?.nativeId()) != null);
     try testing.expect(idle.transcript_cursor == null);
 
     const admission = try probe.submit("fix it", &refusal);
@@ -1656,6 +1667,7 @@ test "a reopen resumes the bound conversation and reads its loader settings from
     probe.handle = opened;
     const state = try opened.state(probe.arena.allocator(), &refusal);
     try testing.expect(state.recovered);
+    try testing.expectEqualStrings(id, opened.nativeId());
     try testing.expectEqualStrings(reopen_reason, state.recovery_reason.?);
     try testing.expectEqualStrings("claude-sonnet-4-5", state.current_model_id.?);
     try testing.expectEqualStrings("{\"kind\":\"auto\"}", state.compaction_policy_json.?);
@@ -1707,4 +1719,26 @@ test "resumed settings replace configured effort and report compaction off and t
             try testing.expectEqualStrings("{\"kind\":\"tokens\",\"tokens\":120000}", state.compaction_policy_json.?);
         }
     }
+}
+
+fn hasSessionSelector(args: []const []const u8) bool {
+    for (args) |arg| {
+        const key = arg[0 .. std.mem.indexOfScalar(u8, arg, '=') orelse arg.len];
+        for ([_][]const u8{ "--", "--resume", "-r", "--continue", "-c", "--fork-session", "--session-id" }) |selector| {
+            if (std.mem.eql(u8, key, selector)) return true;
+        }
+    }
+    return false;
+}
+
+test "a create exposes its native binding before the first turn" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_idle);
+    defer probe.deinit();
+    var refusal: contract.Refusal = .{};
+    const opened = try probe.open(&refusal);
+    try testing.expect(validSessionUUID(opened.nativeId()));
+    const state = try opened.state(probe.arena.allocator(), &refusal);
+    try testing.expect(std.mem.indexOf(u8, state.metadata_json.?, opened.nativeId()) != null);
+    try testing.expect(!state.recovered);
 }

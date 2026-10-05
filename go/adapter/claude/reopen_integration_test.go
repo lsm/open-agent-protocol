@@ -40,6 +40,10 @@ func TestClaudeProcessReopensItsBoundConversation(t *testing.T) {
 		}
 		adaptertest.Drain(t, stream, 20*time.Second)
 	}
+	bound := s.(base.NativeSession).NativeSessionID()
+	if !validSessionUUID(bound) {
+		t.Fatalf("open supplied no native binding: %q", bound)
+	}
 	submit(s, "fixture conversation before detach")
 	state, err := s.State(ctx)
 	if err != nil {
@@ -48,6 +52,9 @@ func TestClaudeProcessReopensItsBoundConversation(t *testing.T) {
 	var id string
 	if err := json.Unmarshal(state.Metadata["claude_native_session_id"], &id); err != nil {
 		t.Fatal(err)
+	}
+	if id != bound {
+		t.Fatalf("the CLI changed its selected native session: %s -> %s", bound, id)
 	}
 	if err := s.Close(ctx); err != nil {
 		t.Fatal(err)

@@ -23,6 +23,7 @@ pub const Config = struct {
     working_directory: ?[]const u8 = null,
     model: []const u8 = "",
     resume_session_id: []const u8 = "",
+    native_session_id: []const u8 = "",
     tools: ?ToolPosture = null,
     expand_prompts: bool = false,
     frame_limit: usize = process.default_frame_limit,
@@ -64,6 +65,7 @@ pub fn spawnFor(arena: std.mem.Allocator, config: Config) !process.Spawn {
             try argv.appendSlice(arena, rules);
         },
     }
+    if (config.native_session_id.len > 0) try argv.appendSlice(arena, &.{ "--session-id", config.native_session_id });
     try argv.appendSlice(arena, config.args);
     if (config.resume_session_id.len > 0) try argv.appendSlice(arena, &.{ "--resume", config.resume_session_id });
 

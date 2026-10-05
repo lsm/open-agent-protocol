@@ -89,6 +89,9 @@ func runClaudeReopenCorpus(t *testing.T, dir string, definition ccCorpusCase) {
 		t.Fatal("reopen returned no session")
 	}
 	defer s.Close(ctx)
+	if got := s.(base.NativeSession).NativeSessionID(); got != id {
+		t.Fatalf("native binding=%q", got)
+	}
 	if len(argv) < 2 || !slices.Equal(argv[len(argv)-2:], []string{"--resume", id}) {
 		t.Fatalf("resume argv=%v", argv)
 	}
@@ -179,5 +182,13 @@ func TestClaudeRecoveredSettingsUseEffectiveValues(t *testing.T) {
 		if s.state.CurrentModelID != "applied" || s.state.ReasoningLevel != fixture.level || s.state.CompactionPolicy.Kind != fixture.kind || s.state.CompactionPolicy.Tokens != fixture.tokens {
 			t.Fatalf("state=%+v", s.state)
 		}
+	}
+}
+
+func TestClaudeCreateSelectsANativeUUIDAtSpawn(t *testing.T) {
+	args := spawnArgv(t, Config{Tools: UnrestrictedTools()})
+	index := slices.Index(args, "--session-id")
+	if index < 0 || index+1 >= len(args) || !validSessionUUID(args[index+1]) {
+		t.Fatalf("no native session selected: %v", args)
 	}
 }

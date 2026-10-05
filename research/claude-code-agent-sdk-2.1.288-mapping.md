@@ -259,3 +259,13 @@ that injection path refuses reopen as unsatisfiable; process-backed hosts and
 `ProcessFactory` receive the binding in argv. A configured resume, continue,
 fork or session-id selector is likewise refused rather than overriding the
 binding. The opt-in native gate stays out of CI and downloads nothing.
+
+
+The normal process-backed create selects a secure random UUID with
+`--session-id`, and both adapters expose it through the native-session getter
+before a turn exists. This lets a hub record the binding at open, rather than
+waiting for the first `system/init`; the real process gate checks the CLI keeps
+that UUID on its first turn. An untouched session may have no transcript file
+yet, so closing it before any turn does not make a native reload possible.
+Legacy configured session selectors remain caller-owned on create, and their
+UUID is only known once observed; they cannot override a binding-based reopen.

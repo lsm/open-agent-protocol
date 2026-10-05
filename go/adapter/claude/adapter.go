@@ -293,7 +293,7 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	if err != nil {
 		return nil, err
 	}
-	client, err := a.start(ctx, req)
+	client, nativeSessionID, err := a.start(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -303,6 +303,11 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 	}
 	now := a.clock.Now().UnixMilli()
 	s := &Session{client: client, clock: a.clock, ids: a.ids, journal: journal.New(a.config.JournalCapacity), expandPrompts: a.config.ExpandPrompts, participant: participant(req.Participant), state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, CurrentModelID: a.config.Model, UpdatedAtMS: now, ReasoningLevel: req.ReasoningLevel, CompactionPolicy: req.CompactionPolicy}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, interactions: map[protocol.InteractionID]*gateState{}, policyDenied: map[string]bool{}, children: map[string]*childState{}, stop: make(chan struct{})}
+	if nativeSessionID != "" {
+		s.nativeSessionID = nativeSessionID
+		encoded, _ := json.Marshal(nativeSessionID)
+		s.state.Metadata = map[string]json.RawMessage{"claude_native_session_id": encoded}
+	}
 	go s.dispatch()
 	if a.initializeAtOpen {
 
