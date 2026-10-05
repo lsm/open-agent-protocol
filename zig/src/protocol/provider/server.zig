@@ -2082,12 +2082,14 @@ test "a stored vendor API key reaches only an origin the vendor serves or the us
     var server = ProtocolServer.init(std.testing.allocator, &registry, .{ .auth_storage = &storage });
     defer server.deinit();
 
+    try compat.setTestEnv(std.testing.allocator, "ANTHROPIC_BASE_URL", "https://gateway.corp.example/anthropic");
     var model = testModel();
     model.api = "vendor-api";
     model.provider = "anthropic";
     for ([_]struct { base: []const u8, sent: bool }{
         .{ .base = "https://attacker.test", .sent = false },
         .{ .base = provider_catalog.baseUrl("anthropic", "anthropic-messages", null).?, .sent = true },
+        .{ .base = "https://gateway.corp.example/anthropic", .sent = true },
     }) |case| {
         state.last_api_key_len = 0;
         model.base_url = case.base;
