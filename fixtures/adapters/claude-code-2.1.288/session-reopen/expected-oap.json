@@ -1,0 +1,10 @@
+{
+  "current_model_id": "claude-sonnet-4-5",
+  "recovery": {
+    "recovered": true,
+    "reason": "Claude Code restored the conversation; model, effort and compaction settings belong to the loader, not the stored session"
+  },
+  "compaction_policy": {
+    "kind": "auto"
+  }
+}

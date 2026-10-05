@@ -933,12 +933,14 @@ pub const SessionState = struct {
     metadata_json: ?[]const u8 = null,
     sources: []ToolSourceDescriptor = &.{},
     recovered: bool = false,
+    recovery_reason: ?[]const u8 = null,
     as_of: ?SessionCapture = null,
     reasoning_level: ?[]const u8 = null,
     compaction_policy_json: ?[]const u8 = null,
 
     pub fn deinit(self: *SessionState, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
+        if (self.recovery_reason) |value| allocator.free(value);
         if (self.reasoning_level) |value| allocator.free(value);
         if (self.compaction_policy_json) |value| allocator.free(value);
         if (self.active_run_id) |value| allocator.free(value);

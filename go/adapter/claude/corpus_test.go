@@ -88,7 +88,7 @@ var ccLedgerFixtures = map[string]bool{
 	"keep-alive-ignored": true, "unknown-frame-ignored": true,
 	"no-implied-replay": true, "resume-fork": true,
 
-	"tools-catalog-sources": true,
+	"tools-catalog-sources": true, "bound-session-reopen": true,
 }
 
 type ccCorpusSources struct {
@@ -236,6 +236,10 @@ func runClaudeCorpusCase(t *testing.T, root string, entry ccCorpusManifestCase, 
 	p := definition.Provenance
 	if definition.Version != 1 || definition.ID != entry.ID || p.Repository != ccTSRepository || p.Tag != pin.sources.CLIVersion || p.Sources != pin.sources || len(definition.Capabilities) == 0 || len(definition.IdentityMap) == 0 {
 		t.Fatalf("invalid case metadata: %+v", definition)
+	}
+	if entry.ID == "session-reopen" {
+		runClaudeReopenCorpus(t, dir, definition)
+		return
 	}
 	frames, decoded := ccLoadFrames(t, filepath.Join(dir, definition.Native))
 	mappings := ccLoadOptional[[]ccCorpusMapping](t, filepath.Join(dir, definition.Mapping))

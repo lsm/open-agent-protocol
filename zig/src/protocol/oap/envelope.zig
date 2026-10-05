@@ -189,6 +189,7 @@ fn serializeSessionState(w: *json_writer.JsonWriter, state: oap_types.SessionSta
         try w.writeKey("recovery");
         try w.beginObject();
         try w.writeBoolField("recovered", true);
+        if (state.recovery_reason) |reason| try w.writeStringField("reason", reason);
         try w.endObject();
     }
     if (state.as_of) |capture| {
@@ -1213,7 +1214,6 @@ fn deserializeQuestions(obj: std.json.ObjectMap, allocator: std.mem.Allocator) !
     return questions;
 }
 
-
 fn deserializePermissionEvent(obj: std.json.ObjectMap, allocator: std.mem.Allocator) !oap_types.PermissionEvent {
     const interaction_id = try requiredOwnedString(obj, "interaction_id", allocator);
     errdefer allocator.free(interaction_id);
@@ -1395,6 +1395,7 @@ fn deserializeSessionState(obj: std.json.ObjectMap, allocator: std.mem.Allocator
     if (obj.get("recovery")) |value| {
         if (value != .object) return DecodeError.InvalidField;
         state.recovered = (try optionalBool(value.object, "recovered")) orelse false;
+        state.recovery_reason = try optionalOwnedString(value.object, "reason", allocator);
     }
     if (obj.get("as_of")) |value| state.as_of = try deserializeSessionCapture(value, allocator);
     return state;
@@ -3469,4 +3470,18 @@ test "a requested event does not grow an outcome or a status its schema forbids"
     defer allocator.free(settled_written);
     try std.testing.expect(std.mem.indexOf(u8, settled_written, "\"outcome\":\"rejected\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, settled_written, "\"granted\":false") != null);
+}
+
+test "a reopened state retains the recovery explanation over the wire" {
+    const allocator = std.testing.allocator;
+    var decoded = try roundTrip(.{ .id = "reopened", .payload = .{ .session_open_response = .{
+        .session_id = "s",
+        .status = .idle,
+        .recovered = true,
+        .recovery_reason = "configuration belongs to the loader",
+    } } }, allocator);
+    defer decoded.deinit(allocator);
+    const state = decoded.payload.session_open_response;
+    try std.testing.expect(state.recovered);
+    try std.testing.expectEqualStrings("configuration belongs to the loader", state.recovery_reason.?);
 }

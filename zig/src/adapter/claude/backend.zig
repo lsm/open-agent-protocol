@@ -22,6 +22,7 @@ pub const Config = struct {
     environment: []const []const u8 = &.{},
     working_directory: ?[]const u8 = null,
     model: []const u8 = "",
+    resume_session_id: []const u8 = "",
     tools: ?ToolPosture = null,
     expand_prompts: bool = false,
     frame_limit: usize = process.default_frame_limit,
@@ -64,6 +65,7 @@ pub fn spawnFor(arena: std.mem.Allocator, config: Config) !process.Spawn {
         },
     }
     try argv.appendSlice(arena, config.args);
+    if (config.resume_session_id.len > 0) try argv.appendSlice(arena, &.{ "--resume", config.resume_session_id });
 
     return .{
         .executable = config.executable,
@@ -817,4 +819,12 @@ test "compaction releases a settled run's frames once the session is idle and ke
     const kinds = backend.reducer.envelopes.items;
     try std.testing.expectEqualStrings("run.completed", kinds[kinds.len - 1].object.get("type").?.string);
     try std.testing.expectEqualStrings("two", kinds[kinds.len - 1].object.get("payload").?.object.get("final_response").?.object.get("content").?.string);
+}
+
+test "the binding selects the native session in the child argv" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const spawn = try spawnFor(arena.allocator(), .{ .executable = "/fixture/claude", .tools = .unrestricted, .resume_session_id = "9d992266-63b1-4a69-8000-3aaf8b854e5c" });
+    try std.testing.expectEqualStrings("--resume", spawn.args[spawn.args.len - 2]);
+    try std.testing.expectEqualStrings("9d992266-63b1-4a69-8000-3aaf8b854e5c", spawn.args[spawn.args.len - 1]);
 }

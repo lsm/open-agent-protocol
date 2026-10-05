@@ -20,6 +20,7 @@ const features = [_]contract.Feature{
     .{ .key = "protocol.initialize", .level = .emulated, .reason = "initialize control exchange at open; no capability negotiation" },
     .{ .key = "capabilities", .level = .emulated, .reason = "conservative descriptor; per-turn system/init refresh recorded as evidence" },
     .{ .key = "session.open", .level = .emulated, .reason = "process spawn + initialize; CLI session UUID observed on frames" },
+    .{ .key = contract.feature_open_reopen, .level = .native, .reason = "--resume reloads the bound conversation; get_settings reports the loader model and effort, not persisted configuration" },
     .{ .key = "session.state", .level = .degraded, .reason = "reducer-owned live projection" },
     .{ .key = contract.feature_session_reasoning, .level = .native, .reason = "apply_flag_settings sets effortLevel after initialize and again between runs; low through max, and the CLI has no off or minimal level, so those are refused", .modes = &.{ contract.mode_session_open, contract.mode_session_live } },
     .{ .key = contract.feature_compaction_policy, .level = .emulated, .reason = "apply_flag_settings sets autoCompactEnabled and autoCompactWindow, at open and between runs; tokens is the window the CLI compacts within, and share is refused", .modes = &.{ contract.mode_session_open, contract.mode_session_live } },
@@ -30,7 +31,7 @@ const features = [_]contract.Feature{
     .{ .key = "run.streaming", .level = .native, .reason = "stream_event deltas with --include-partial-messages always on" },
     .{ .key = "run.status", .level = .emulated },
     .{ .key = "run.cancel", .level = .degraded, .reason = "interrupt intent; settlement only via terminal_reason aborted_*" },
-    .{ .key = "run.resume", .level = .degraded, .reason = "native conversation resume is not exercised; OAP resume replays the adapter journal" },
+    .{ .key = "run.resume", .level = .degraded, .reason = "OAP run resume replays the adapter journal; conversation reload uses session.open.reopen" },
     .{ .key = "run.replay", .level = .degraded, .reason = "bounded adapter journal; gaps are explicit and transcript persistence is not event replay" },
     .{ .key = "run.reconciliation", .level = .degraded, .reason = "system/init and session state frames corroborate" },
     .{ .key = "run.tool_selection", .level = .emulated, .scope = "run", .reason = "enforced per call: a PreToolUse hook, and the can_use_tool gate behind it, refuse an excluded tool before it runs and the call settles refused_by_policy; not retained past the run" },
@@ -177,11 +178,12 @@ const Ask = struct {
 
 const Call = struct {
     request_id: []u8,
+    kind: ControlKind = .initialize,
     answered: bool = false,
     failure: ?[]u8 = null,
 };
 
-const ControlKind = enum { initialize, apply_flag_settings, interrupt };
+const ControlKind = enum { initialize, apply_flag_settings, get_settings, interrupt };
 
 pub const Session = struct {
     owner: *Adapter,
@@ -196,12 +198,29 @@ pub const Session = struct {
     flags_json: []const u8 = "",
     reported_level: ?[]const u8 = null,
     reported_policy: ?[]const u8 = null,
+    recovered: bool = false,
 
     fn open(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
+        if (request.reopen) {
+            if (!validSessionUUID(request.native_session_id)) return refusal.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
+            for (owner.config.backend.args) |arg| {
+                const key = arg[0 .. std.mem.indexOfScalar(u8, arg, '=') orelse arg.len];
+                for ([_][]const u8{ "--", "--resume", "-r", "--continue", "-c", "--fork-session", "--session-id" }) |selector| {
+                    if (std.mem.eql(u8, key, selector)) return refusal.unsupported(contract.feature_open_reopen, contract.reason_unsatisfiable);
+                }
+            }
+        }
         const flags = try claudeFlags(arena, request, refusal);
         const self = try construct(owner, arena, request, refusal);
         errdefer self.destroy();
-        try self.control(arena, .initialize, owner.config.initialize_timeout_ns, refusal);
+        self.control(arena, .initialize, owner.config.initialize_timeout_ns, refusal) catch |err| {
+            if (request.reopen and err == error.BackendFailed) {
+                refusal.feature = contract.feature_open_reopen;
+                refusal.reason = contract.reason_unsatisfiable;
+                return error.UnsupportedFeature;
+            }
+            return err;
+        };
         if (flags.len != 0) {
             self.flags_json = flags;
             try self.control(arena, .apply_flag_settings, owner.config.initialize_timeout_ns, refusal);
@@ -209,6 +228,12 @@ pub const Session = struct {
         const kept = self.reducer_arena.allocator();
         if (request.reasoning_level) |level| self.reported_level = try kept.dupe(u8, level);
         if (request.compaction_policy_json) |policy| self.reported_policy = try kept.dupe(u8, policy);
+        if (request.reopen) {
+            try self.control(arena, .get_settings, owner.config.initialize_timeout_ns, refusal);
+            if (self.engine.reducer.native_session_id.len > 0 and !std.mem.eql(u8, self.engine.reducer.native_session_id, request.native_session_id)) return refusal.fail(error.BackendFailed, "Claude Code resumed another session");
+            self.engine.reducer.native_session_id = try kept.dupe(u8, request.native_session_id);
+            self.recovered = true;
+        }
         return self;
     }
 
@@ -224,7 +249,9 @@ pub const Session = struct {
         errdefer gpa.destroy(reducer_arena);
         reducer_arena.* = std.heap.ArenaAllocator.init(gpa);
         errdefer reducer_arena.deinit();
-        const engine = backend.Backend.open(reducer_arena, owner.config.backend, .{
+        var config = owner.config.backend;
+        config.resume_session_id = if (request.reopen) request.native_session_id else "";
+        const engine = backend.Backend.open(reducer_arena, config, .{
             .session_id = id,
             .model = owner.config.backend.model,
             .responder = participant,
@@ -338,6 +365,7 @@ pub const Session = struct {
                 const call = if (self.call) |*pending| pending else return;
                 if (!std.mem.eql(u8, call.request_id, response.request_id) or call.answered) return;
                 if (!response.success) call.failure = try self.gpa.dupe(u8, response.err);
+                if (response.success and call.kind == .get_settings) try self.reportSettings(response.response orelse return error.BackendFailed);
                 call.answered = true;
             },
             .control_cancel => {
@@ -472,11 +500,12 @@ pub const Session = struct {
         var entropy: [4]u8 = undefined;
         compat.random.fillSecureBytes(&entropy);
         const request_id = try std.fmt.allocPrint(self.gpa, "req_{d}_{x}", .{ self.requests, entropy });
-        self.call = .{ .request_id = request_id };
+        self.call = .{ .request_id = request_id, .kind = kind };
         defer self.clearCall();
         const frame = switch (kind) {
             .initialize => try backend.initializeRequest(arena, request_id),
             .apply_flag_settings => try backend.applyFlagsRequest(arena, request_id, self.flags_json),
+            .get_settings => try std.json.Stringify.valueAlloc(arena, .{ .type = "control_request", .request_id = request_id, .request = .{ .subtype = "get_settings" } }, .{}),
             .interrupt => try backend.interruptRequest(arena, request_id),
         };
         self.engine.writeControl(frame) catch |err| {
@@ -502,6 +531,33 @@ pub const Session = struct {
         }
     }
 
+    fn reportSettings(self: *Session, value: std.json.Value) !void {
+        if (value != .object) return error.BackendFailed;
+        const applied = value.object.get("applied") orelse return error.BackendFailed;
+        const effective = value.object.get("effective") orelse return error.BackendFailed;
+        if (applied != .object or effective != .object) return error.BackendFailed;
+        const model = applied.object.get("model") orelse return error.BackendFailed;
+        if (model != .string or model.string.len == 0) return error.BackendFailed;
+        const kept = self.reducer_arena.allocator();
+        self.engine.reducer.current_model = try kept.dupe(u8, model.string);
+        self.reported_level = null;
+        if (applied.object.get("effort")) |effort| {
+            if (effort == .string) {
+                for ([_][]const u8{ "low", "medium", "high", "xhigh", "max" }) |level| {
+                    if (std.mem.eql(u8, level, effort.string)) self.reported_level = try kept.dupe(u8, level);
+                }
+            }
+        }
+        var policy: []const u8 = "{\"kind\":\"auto\"}";
+        const enabled = effective.object.get("autoCompactEnabled");
+        if (enabled != null and enabled.? == .bool and !enabled.?.bool) {
+            policy = "{\"kind\":\"off\"}";
+        } else if (effective.object.get("autoCompactWindow")) |window| {
+            if (window == .integer and window.integer > 0) policy = try std.json.Stringify.valueAlloc(kept, .{ .kind = "tokens", .tokens = window.integer }, .{});
+        }
+        self.reported_policy = try kept.dupe(u8, policy);
+    }
+
     fn idOf(ptr: *anyopaque) []const u8 {
         return cast(ptr).id;
     }
@@ -523,6 +579,8 @@ pub const Session = struct {
             .status = if (active) .running else .idle,
             .active_run_id = active_run_id,
             .current_model_id = current_model_id,
+            .recovered = self.recovered,
+            .recovery_reason = if (self.recovered) try arena.dupe(u8, reopen_reason) else null,
             .updated_at_ms = wallClock(),
             .transcript_cursor = transcript_cursor,
             .metadata_json = metadata_json,
@@ -1553,4 +1611,100 @@ test "a live update is refused for what the CLI cannot take, before anything is 
     try testing.expectError(error.UnsupportedFeature, updater(opened.ptr, probe.arena.allocator(), &.{ .session_id = "s1", .compaction_policy_json = "{\"kind\":\"share\",\"share_percent\":50}" }, &refusal));
     try testing.expectEqualStrings("compaction_policy", refusal.field);
     try testing.expectEqualStrings(before, try probe.fake.written(probe.arena.allocator()));
+}
+
+const reopen_reason = "Claude Code restored the conversation; model, effort and compaction settings belong to the loader, not the stored session";
+
+fn validSessionUUID(id: []const u8) bool {
+    if (id.len != 36) return false;
+    for (id, 0..) |char, index| {
+        if (index == 8 or index == 13 or index == 18 or index == 23) {
+            if (char != '-') return false;
+        } else if (!std.ascii.isHex(char)) return false;
+    }
+    return true;
+}
+
+test "a reopen resumes the bound conversation and reads its loader settings from the native corpus" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const kept = arena.allocator();
+    const path = try std.fs.path.join(kept, &.{ harness_pins.claude_code_corpus, "session-reopen", "native.jsonl" });
+    const text = try std.Io.Dir.cwd().readFileAlloc(testing.io, path, kept, .limited(1024 * 1024));
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    var settings: ?std.json.Value = null;
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        const frame = try std.json.parseFromSliceLeaky(std.json.Value, kept, line, .{});
+        const raw = frame.object.get("raw").?.object;
+        if (!std.mem.eql(u8, raw.get("type").?.string, "control_response")) continue;
+        const response = raw.get("response").?.object.get("response").?;
+        if (response.object.get("applied") != null) settings = response;
+    }
+    const encoded = try std.json.Stringify.valueAlloc(kept, settings.?, .{});
+    const body = try std.fmt.allocPrint(kept,
+        \\take; printf '{{"type":"control_response","response":{{"subtype":"success","request_id":"%s","response":{s}}}}}\n' "$(field request_id)"
+        \\
+    , .{encoded});
+    const script = try std.mem.concat(kept, u8, &.{ fake_prelude, body, fake_idle });
+    var probe: Probe = undefined;
+    try probe.init(script);
+    defer probe.deinit();
+    var refusal: contract.Refusal = .{};
+    const id = "9d992266-63b1-4a69-8000-3aaf8b854e5c";
+    const opened = try probe.adapter.adapter().open(probe.arena.allocator(), .{ .session_id = "s1", .participant = "user", .reopen = true, .native_session_id = id }, &refusal);
+    probe.handle = opened;
+    const state = try opened.state(probe.arena.allocator(), &refusal);
+    try testing.expect(state.recovered);
+    try testing.expectEqualStrings(reopen_reason, state.recovery_reason.?);
+    try testing.expectEqualStrings("claude-sonnet-4-5", state.current_model_id.?);
+    try testing.expectEqualStrings("{\"kind\":\"auto\"}", state.compaction_policy_json.?);
+    try testing.expectEqual(oap_types.SessionStatus.idle, state.status);
+    try testing.expectEqual(@as(?[]const u8, null), state.active_run_id);
+    try testing.expectEqual(@as(usize, 0), state.active_runs.len);
+    try testing.expect(std.mem.indexOf(u8, state.metadata_json.?, id) != null);
+    const written = try probe.fake.written(probe.arena.allocator());
+    try testing.expect(std.mem.indexOf(u8, written, "get_settings") != null);
+    try testing.expect(std.mem.indexOf(u8, written, "\"type\":\"user\"") == null);
+}
+
+test "a reopen the child cannot load is an unsatisfiable typed refusal" {
+    var probe: Probe = undefined;
+    try probe.init("#!/bin/sh\nread -r line; exit 3\n");
+    defer probe.deinit();
+    var refusal: contract.Refusal = .{};
+    try testing.expectError(error.UnsupportedFeature, probe.adapter.adapter().open(probe.arena.allocator(), .{ .participant = "user", .reopen = true, .native_session_id = "9d992266-63b1-4a69-8000-3aaf8b854e5c" }, &refusal));
+    try testing.expectEqualStrings(contract.feature_open_reopen, refusal.feature);
+    try testing.expectEqualStrings(contract.reason_unsatisfiable, refusal.reason);
+    var unbound: contract.Refusal = .{};
+    try testing.expectError(error.UnsupportedFeature, probe.adapter.adapter().open(probe.arena.allocator(), .{ .participant = "user", .reopen = true }, &unbound));
+    try testing.expectEqualStrings(contract.feature_open_reopen, unbound.feature);
+    try testing.expectEqualStrings(contract.reason_unsatisfiable, unbound.reason);
+}
+
+test "resumed settings replace configured effort and report compaction off and token windows" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_idle);
+    defer probe.deinit();
+    var refusal: contract.Refusal = .{};
+    const opened = try probe.open(&refusal);
+    const target = Session.cast(opened.ptr);
+    const values = [_][]const u8{
+        \\{"applied":{"model":"applied","effort":"high"},"effective":{"autoCompactEnabled":false}}
+        ,
+        \\{"applied":{"model":"applied","effort":null},"effective":{"autoCompactEnabled":true,"autoCompactWindow":120000}}
+    };
+    for (values, 0..) |json, index| {
+        const value = try std.json.parseFromSliceLeaky(std.json.Value, probe.arena.allocator(), json, .{});
+        try target.reportSettings(value);
+        const state = try opened.state(probe.arena.allocator(), &refusal);
+        try testing.expectEqualStrings("applied", state.current_model_id.?);
+        if (index == 0) {
+            try testing.expectEqualStrings("high", state.reasoning_level.?);
+            try testing.expectEqualStrings("{\"kind\":\"off\"}", state.compaction_policy_json.?);
+        } else {
+            try testing.expectEqual(@as(?[]const u8, null), state.reasoning_level);
+            try testing.expectEqualStrings("{\"kind\":\"tokens\",\"tokens\":120000}", state.compaction_policy_json.?);
+        }
+    }
 }
