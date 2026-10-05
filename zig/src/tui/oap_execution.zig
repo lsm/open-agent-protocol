@@ -211,9 +211,9 @@ pub const OapExecution = struct {
         else
             try self.exchange(a, "capabilities.request", empty.value(), false);
         self.live_reasoning = self.hub == null and advertisesLive(described, "session.reasoning");
-        self.live_compaction = self.hub == null and advertises(described, "session.compact");
+        self.live_compaction = advertises(described, "session.compact");
         self.live_policy = self.hub == null and advertisesLive(described, "session.compaction.policy");
-        self.live_steer = self.hub == null and advertises(described, "session.message.delivery.steer");
+        self.live_steer = advertises(described, "session.message.delivery.steer");
 
         var settings_map = Map.init(a);
         try settings_map.put("thinking_level", .{ .string = @tagName(settings.thinking_level) });

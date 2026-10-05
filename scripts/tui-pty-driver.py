@@ -1609,7 +1609,12 @@ def scenario_hub_attach(args):
         run.session.send(b"\x1b", "Esc (abort)")
         run.session.wait_for(b"aborted", 10.0, "the abort", since=aborted_from)
         run.frame("aborted-over-the-hub")
-        run.note("oapx tui --attach drives a memory session on a running oapx hub: the run streams, its approval prompt resolves over the hub's resolve route, and Esc cancels the run")
+        compacted_from = len(run.session.plain)
+        run.session.type_text("/compact")
+        run.session.send(KEY_ENTER, "Enter (/compact)")
+        run.session.wait_for(b"conversation compacted", 10.0, "the hub run's compaction", since=compacted_from)
+        run.frame("compacted-over-the-hub")
+        run.note("oapx tui --attach drives a memory session on a running oapx hub: the run streams, its approval prompt resolves over the hub's resolve route, Esc cancels the run, and /compact runs the endpoint's compaction over the hub's submit route")
     except ScenarioError as err:
         if run is None:
             raise

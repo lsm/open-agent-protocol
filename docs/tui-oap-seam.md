@@ -29,10 +29,10 @@ locally; clearing the queue or aborting cancels the reservations. A session atta
 hub refuses a follow-up locally, because the hub link withdraws any queued admission as
 `session_busy`. `/compact` sends `session.compact.request` and `/autocompact`
 sends its setting as the session's `compaction_policy` before each turn, when the
-endpoint advertises them; the TUI's attach link (`zig/src/tui/hub_link.zig`) routes
-neither, although the hub takes a compaction on its submit route, so an attached
-session refuses them. Resume and steering refuse with `UnavailableOverOap` until their gaps
-below close. `oapx tui --attach URL` runs the
+endpoint advertises them; the TUI's attach link (`zig/src/tui/hub_link.zig`) sends
+the compaction to the hub's submit route and follows the run it starts, and the
+policy is still refused on an attached session, because the hub has no settings
+route. Resume refuses with `UnavailableOverOap` until its gap below closes. `oapx tui --attach URL` runs the
 same execution over a running hub's HTTP wire (`zig/src/tui/hub_link.zig`): each envelope
 goes to its route, and each run is followed on its own SSE stream replayed from its first
 event, read by polling the socket on the execution's pump thread. A model switch, which
@@ -100,7 +100,7 @@ without going through the ops table.
 | `clear_queued_messages` | none | **gap** — G3 |
 | `steers_consumed` | none | **gap** — G3 |
 | `decide_tool_approval` | `action.permission.*`, `user.input.*` | **gap** — G4, shaped, undispatched |
-| `compact` | `session.compact`, `run.compaction`, and `session.settings.update` for the threshold | closed in-process; refused over `--attach` |
+| `compact` | `session.compact`, `run.compaction`, and `session.settings.update` for the threshold | closed in-process; `/compact` over `--attach` too, the threshold refused there |
 | `resume_session` | `session.state.request`, then submit | **gap** — G1 |
 | `replaceMessages` (direct) | `transcript.load` | **gap** — G1 |
 | `waitForIdle` (direct, 6 production call sites) | a terminal run event | **gap** — G7 |
@@ -142,8 +142,9 @@ loop at its next boundary, after a tool result or at the end of a turn; the
 adapter publishes `run.steer.applied` when the loop takes it, and the TUI
 shows the message then. A steer still waiting when the run ends is published
 `run.steer.dropped` before the terminal. The TUI warns that it was not applied,
-except on a cancel, where the composer gets the text back. Neither travels over
-a hub attachment, which refuses both.
+except on a cancel, where the composer gets the text back. Over a hub
+attachment the steer rides the hub's submit route against the run the link
+follows, and its settlement arrives on that run's stream.
 
 ### G3 — three queue counters have no envelope
 
