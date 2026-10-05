@@ -32,6 +32,7 @@ const features = [_]contract.Feature{
     .{ .key = "session.message.delivery.steer", .level = .unavailable, .reason = "selected SDK wire has no steer request" },
     .{ .key = "session.message.submit", .level = .degraded, .reason = "receipt plus entered direct-user message proves start" },
     .{ .key = "session.open", .level = .emulated, .reason = "one process and native session per OAP session" },
+    .{ .key = contract.feature_open_reopen, .level = .unavailable, .reason = "the harness stores sessions, but the pinned SDK wire has no request to load one, so a reopen is declined rather than read behind the harness" },
     .{ .key = contract.feature_session_reasoning, .level = .native, .reason = "initialize carries reasoningEffort for the runtime this session starts; the DeepSeek route takes off, low, high and max", .modes = &.{contract.mode_session_open} },
     .{ .key = "session.state", .level = .degraded, .reason = "reducer-owned live projection; no native query" },
 };
@@ -140,6 +141,7 @@ pub const Session = struct {
     reaped: bool = false,
 
     fn open(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
+        if (request.reopen) return refusal.unsupported(contract.feature_open_reopen, contract.reason_unadvertised);
         const config = owner.config;
         if (config.provider.len == 0 or config.model.len == 0 or !std.fs.path.isAbsolute(config.working_directory)) {
             return refusal.fail(error.BackendFailed, "the deepseek harness needs an absolute working directory, a provider and a model");
@@ -775,6 +777,17 @@ test "a level or compaction form the DeepSeek route lacks is refused before the 
     var refusal = contract.Refusal{};
     try testing.expectError(error.UnsupportedFeature, probe.adapter.adapter().open(probe.arena.allocator(), .{ .session_id = "s1", .participant = "user", .reasoning_level = "medium" }, &refusal));
     try testing.expectError(error.UnsupportedFeature, probe.adapter.adapter().open(probe.arena.allocator(), .{ .session_id = "s1", .participant = "user", .compaction_policy_json = "{\"kind\":\"tokens\",\"tokens\":1000}" }, &refusal));
+    try testing.expectError(error.FileNotFound, probe.fake.written(probe.arena.allocator()));
+}
+
+test "a reopen is declined before the runtime starts, since the SDK wire cannot load a stored session" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    try testing.expectError(error.UnsupportedFeature, probe.adapter.adapter().open(probe.arena.allocator(), .{ .session_id = "s1", .participant = "user", .reopen = true, .native_session_id = "stored" }, &refusal));
+    try testing.expectEqualStrings(contract.feature_open_reopen, refusal.feature);
+    try testing.expectEqualStrings(contract.reason_unadvertised, refusal.reason);
     try testing.expectError(error.FileNotFound, probe.fake.written(probe.arena.allocator()));
 }
 

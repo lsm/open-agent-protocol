@@ -106,3 +106,26 @@ func TestASuppliedFactoryRefusesTheSettingTheOpenCarriedAndRunsAnAutoPolicy(t *t
 		t.Fatalf("an auto policy answered %v (factory started %d times), want it to need no configuration", err, started)
 	}
 }
+
+func TestReopenIsDeclinedBeforeTheRuntimeStarts(t *testing.T) {
+	started := 0
+	implementation, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, string, error) {
+		started++
+		return nil, "", errors.New("a declined reopen must not start a runtime")
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := implementation.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if support := descriptor.Capabilities.Features[protocol.FeatureOpenReopen]; support.Level != protocol.SupportUnavailable {
+		t.Fatalf("reopen advertised as %q, want unavailable", support.Level)
+	}
+	_, err = implementation.Open(context.Background(), base.OpenRequest{SessionID: "s", Reopen: true, NativeSessionID: "stored"})
+	var refusal *base.UnsupportedControlError
+	if !errors.As(err, &refusal) || refusal.Feature != protocol.FeatureOpenReopen || refusal.Reason != base.ControlUnadvertised || started != 0 {
+		t.Fatalf("refusal = %v, runtimes started = %d", err, started)
+	}
+}
