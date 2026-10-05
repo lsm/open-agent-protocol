@@ -16,7 +16,7 @@
     "timestamp_ms": 3,
     "session_id": "session",
     "run_id": "run-b",
-    "capability_revision": "hermes-v2026.9.24-oap-v3"
+    "capability_revision": "hermes-v2026.9.24-oap-v4"
   },
   {
     "protocol": "open-agent-protocol",
@@ -44,7 +44,7 @@
     "session_id": "session",
     "run_id": "run-b",
     "tool_call_id": "tool-call-d",
-    "capability_revision": "hermes-v2026.9.24-oap-v3"
+    "capability_revision": "hermes-v2026.9.24-oap-v4"
   },
   {
     "protocol": "open-agent-protocol",
@@ -66,7 +66,7 @@
     "session_id": "session",
     "run_id": "run-b",
     "tool_call_id": "tool-call-d",
-    "capability_revision": "hermes-v2026.9.24-oap-v3"
+    "capability_revision": "hermes-v2026.9.24-oap-v4"
   },
   {
     "protocol": "open-agent-protocol",
@@ -106,7 +106,7 @@
     "session_id": "session",
     "run_id": "run-b",
     "turn_id": "interaction-g",
-    "capability_revision": "hermes-v2026.9.24-oap-v3"
+    "capability_revision": "hermes-v2026.9.24-oap-v4"
   },
   {
     "protocol": "open-agent-protocol",
@@ -125,7 +125,7 @@
     "timestamp_ms": 8,
     "session_id": "session",
     "run_id": "run-b",
-    "capability_revision": "hermes-v2026.9.24-oap-v3"
+    "capability_revision": "hermes-v2026.9.24-oap-v4"
   },
   {
     "protocol": "open-agent-protocol",
@@ -147,7 +147,7 @@
     "session_id": "session",
     "run_id": "run-b",
     "turn_id": "interaction-g",
-    "capability_revision": "hermes-v2026.9.24-oap-v3"
+    "capability_revision": "hermes-v2026.9.24-oap-v4"
   },
   {
     "protocol": "open-agent-protocol",
@@ -165,7 +165,7 @@
     "timestamp_ms": 11,
     "session_id": "session",
     "run_id": "run-b",
-    "capability_revision": "hermes-v2026.9.24-oap-v3"
+    "capability_revision": "hermes-v2026.9.24-oap-v4"
   },
   {
     "protocol": "open-agent-protocol",
@@ -195,7 +195,7 @@
     "session_id": "session",
     "run_id": "run-b",
     "tool_call_id": "tool-call-d",
-    "capability_revision": "hermes-v2026.9.24-oap-v3"
+    "capability_revision": "hermes-v2026.9.24-oap-v4"
   },
   {
     "protocol": "open-agent-protocol",
@@ -215,6 +215,6 @@
     "timestamp_ms": 13,
     "session_id": "session",
     "run_id": "run-b",
-    "capability_revision": "hermes-v2026.9.24-oap-v3"
+    "capability_revision": "hermes-v2026.9.24-oap-v4"
   }
 ]

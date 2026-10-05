@@ -31,6 +31,8 @@ type ProcessConfig struct {
 	WriteQueueCapacity int
 	StderrLimit        int
 	ExitTimeout        time.Duration
+	TraceToGateway     io.Writer
+	TraceFromGateway   io.Writer
 }
 
 type Process struct {
@@ -86,7 +88,15 @@ func Start(ctx context.Context, config ProcessConfig) (*Process, error) {
 	if process.timeout <= 0 {
 		process.timeout = 10 * time.Second
 	}
-	process.Client = NewClient(stdout, stdin, ClientOptions{FrameLimit: config.FrameLimit, QueueCapacity: config.QueueCapacity, WriteQueueCapacity: config.WriteQueueCapacity, CloseReadWriter: pipes})
+	var reader io.Reader = stdout
+	if config.TraceFromGateway != nil {
+		reader = io.TeeReader(stdout, config.TraceFromGateway)
+	}
+	var writer io.Writer = stdin
+	if config.TraceToGateway != nil {
+		writer = io.MultiWriter(stdin, config.TraceToGateway)
+	}
+	process.Client = NewClient(reader, writer, ClientOptions{FrameLimit: config.FrameLimit, QueueCapacity: config.QueueCapacity, WriteQueueCapacity: config.WriteQueueCapacity, CloseReadWriter: pipes})
 	go process.wait()
 
 	inbound := process.Client.Inbound()

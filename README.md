@@ -944,6 +944,14 @@ stdin EOF, matching the pinned gateway, which has no shutdown RPC. Set
 `OAP_HERMES_SHA256` to the expected 64-character interpreter digest when exact
 artifact provenance is required.
 
+Both Hermes adapter trees reopen the stored session they bound through
+`session.resume`. A reload Hermes would auto-continue after a crash is refused,
+as is one still running, and an unknown stored session answers `4007` and is
+refused. Recovered state reports the model the session last ran under; OAP runs
+and cursors do not survive. The integration gate also verifies the conversation
+survives a new gateway process, and `OAP_HERMES_CAPTURE_DIR` optionally records
+both native reload exchanges.
+
 Claude Code real-process checks follow the same opt-in gate. Provide an
 absolute path to the pinned claude 2.1.288 binary in `OAP_CLAUDE_BIN`, then
 set `OAP_CLAUDE_SMOKE=1` for the credential-free spawn/initialize/EOF-teardown

@@ -110,35 +110,61 @@ func New(config Config) (*Adapter, error) {
 		})
 	}
 	if config.Factory == nil {
-
 		env := config.Environment
 		if env != nil {
 			env = append([]string{}, env...)
 		}
 		pc := rpc.ProcessConfig{Path: config.Executable, Args: append([]string(nil), config.Args...), Dir: config.WorkingDirectory, Env: env, FrameLimit: config.FrameLimit, QueueCapacity: config.QueueCapacity, WriteQueueCapacity: config.WriteQueueCapacity, ExitTimeout: config.ExitTimeout}
-		config.Factory = ClientFactoryFunc(func(ctx context.Context) (Client, string, error) {
-			p, err := config.ProcessFactory.Start(ctx, pc)
-			if err != nil {
-				return nil, "", err
-			}
-			client := p.ClientHandle()
-
-			relay := make(chan rpc.InboundMessage, relayCapacity)
-			go relayInbound(client, relay)
-
-			var created native.SessionCreateResult
-			if err := client.Call(ctx, native.MethodSessionCreate, native.SessionCreateParams{Model: config.Model}, &created); err != nil {
-				_ = p.Close(context.Background())
-				return nil, "", err
-			}
-			if created.SessionID == "" || created.StoredSessionID == "" {
-				_ = p.Close(context.Background())
-				return nil, "", ErrNativeProtocol
-			}
-			return &sessionClient{Client: client, bridge: p, session: created, inbound: relay}, created.SessionID, nil
-		})
+		config.Factory = processClientFactory{processes: config.ProcessFactory, config: pc, model: config.Model}
 	}
 	return &Adapter{config: config, clock: config.Clock, ids: config.IDs}, nil
+}
+
+type processClientFactory struct {
+	processes ProcessFactory
+	config    rpc.ProcessConfig
+	model     string
+}
+
+func (f processClientFactory) launch(ctx context.Context) (ProcessBridge, Client, chan rpc.InboundMessage, error) {
+	p, err := f.processes.Start(ctx, f.config)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	client := p.ClientHandle()
+	relay := make(chan rpc.InboundMessage, relayCapacity)
+	go relayInbound(client, relay)
+	return p, client, relay, nil
+}
+
+func (f processClientFactory) Start(ctx context.Context) (Client, string, error) {
+	p, client, relay, err := f.launch(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	var created native.SessionCreateResult
+	if err := client.Call(ctx, native.MethodSessionCreate, native.SessionCreateParams{Model: f.model}, &created); err != nil {
+		_ = p.Close(context.Background())
+		return nil, "", err
+	}
+	if created.SessionID == "" || created.StoredSessionID == "" {
+		_ = p.Close(context.Background())
+		return nil, "", ErrNativeProtocol
+	}
+	return &sessionClient{Client: client, bridge: p, stored: created.StoredSessionID, inbound: relay}, created.SessionID, nil
+}
+
+func (f processClientFactory) Reopen(ctx context.Context, stored string) (Client, native.SessionResumeResult, error) {
+	p, client, relay, err := f.launch(ctx)
+	if err != nil {
+		return nil, native.SessionResumeResult{}, err
+	}
+	resumed, err := resumeStored(ctx, client, stored)
+	if err != nil {
+		_ = p.Close(context.Background())
+		return nil, resumed, err
+	}
+	return &sessionClient{Client: client, bridge: p, stored: stored, inbound: relay}, resumed, nil
 }
 
 func relayInbound(client Client, relay chan rpc.InboundMessage) {
@@ -191,9 +217,11 @@ func (p *rpcProcess) ClientHandle() Client { return p.Client }
 type sessionClient struct {
 	Client
 	bridge  ProcessBridge
-	session native.SessionCreateResult
+	stored  string
 	inbound chan rpc.InboundMessage
 }
+
+func (p *sessionClient) storedSessionID() string { return p.stored }
 
 func (p *sessionClient) Inbound() <-chan rpc.InboundMessage { return p.inbound }
 
@@ -215,6 +243,7 @@ func advertisedFeatures() map[string]protocol.FeatureSupport {
 		"protocol.initialize":            {Level: protocol.SupportNative, Reason: "gateway.ready frame with replay epoch before any input"},
 		"capabilities":                   {Level: protocol.SupportEmulated, Reason: "conservative descriptor for the pinned gateway"},
 		"session.open":                   {Level: protocol.SupportNative, Reason: "session.create mints the runtime session id"},
+		protocol.FeatureOpenReopen:       {Level: protocol.SupportNative, Reason: reopenSupportReason},
 		"session.state":                  {Level: protocol.SupportDegraded, Reason: "reducer-owned live projection corroborated by session.info"},
 		"session.message.submit":         {Level: protocol.SupportDegraded, Reason: "status-only result; ownership by construction via message.start"},
 		"session.message.delivery.auto":  {Level: protocol.SupportDegraded, Reason: "accepted only for known idle sessions"},
@@ -262,9 +291,21 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		return nil, err
 	}
 
-	client, nativeID, err := a.config.Factory.Start(ctx)
-	if err != nil {
-		return nil, err
+	var client Client
+	var nativeID string
+	var resumed *native.SessionResumeResult
+	if req.Reopen {
+		reopened, result, err := reopenBinding(ctx, a.config.Factory, req.NativeSessionID)
+		if err != nil {
+			return nil, err
+		}
+		client, nativeID, resumed = reopened, result.SessionID, &result
+	} else {
+		started, startedID, err := a.config.Factory.Start(ctx)
+		if err != nil {
+			return nil, err
+		}
+		client, nativeID = started, startedID
 	}
 	if nativeID == "" {
 		_ = client.Close()
@@ -281,7 +322,10 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		id = protocol.SessionID(a.ids.NewID("session"))
 	}
 	now := a.clock.Now().UnixMilli()
-	s := &Session{client: client, inbound: client.Inbound(), clock: a.clock, ids: a.ids, journal: journal.New(a.config.JournalCapacity), nativeID: nativeID, participant: participant(req.Participant), state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, CurrentModelID: a.config.Model, UpdatedAtMS: now, ReasoningLevel: req.ReasoningLevel}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, interactions: map[protocol.InteractionID]*inputState{}, stop: make(chan struct{})}
+	s := &Session{client: client, inbound: client.Inbound(), clock: a.clock, ids: a.ids, journal: journal.New(a.config.JournalCapacity), nativeID: nativeID, storedID: storedSessionID(client), participant: participant(req.Participant), state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, CurrentModelID: a.config.Model, UpdatedAtMS: now, ReasoningLevel: req.ReasoningLevel}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, interactions: map[protocol.InteractionID]*inputState{}, stop: make(chan struct{})}
+	if resumed != nil {
+		s.restoreState(*resumed)
+	}
 	go s.dispatch()
 	return s, nil
 }

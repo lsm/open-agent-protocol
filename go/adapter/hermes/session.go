@@ -29,6 +29,7 @@ type Session struct {
 	clock        base.Clock
 	ids          base.IDGenerator
 	nativeID     string
+	storedID     string
 	participant  protocol.ParticipantID
 	state        protocol.SessionState
 	closed       bool

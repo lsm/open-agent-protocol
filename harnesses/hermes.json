@@ -6,7 +6,7 @@
       "label": "v2026.9.24",
       "status": "current",
       "endpoint_version": "v2026.9.24",
-      "capability_revision": "hermes-v2026.9.24-oap-v3",
+      "capability_revision": "hermes-v2026.9.24-oap-v4",
       "ledgers": ["research/hermes-v2026.9.24-mapping.md", "research/hermes-thinking-delta-note.md"],
       "corpus": "fixtures/adapters/hermes-v2026.9.24",
       "components": [

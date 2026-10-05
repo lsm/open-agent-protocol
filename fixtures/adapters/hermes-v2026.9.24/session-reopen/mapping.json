@@ -1,0 +1,5 @@
+[
+  {"index":1,"type":"event/gateway.ready","direction":"gateway-to-host","classification":"mapped","fidelity":"native","oap":"protocol.initialize (handshake)"},
+  {"index":2,"type":"request:session.resume","direction":"host-to-gateway","classification":"mapped","fidelity":"native","oap":"session.open.reopen"},
+  {"index":3,"type":"response:session.resume","direction":"gateway-to-host","classification":"mapped","fidelity":"native","oap":"recovered session.state"}
+]
