@@ -27,6 +27,7 @@ pub const ToolCall = struct {
     operation: Operation = .unknown,
     path: ?[]const u8 = null,
     command: ?[]const u8 = null,
+    workspace_root: ?[]const u8 = null,
 };
 
 pub const ToolCallC = extern struct {
@@ -188,6 +189,11 @@ pub const PermissionEngine = struct {
 
     pub fn evaluateCall(self: *Self, call: ToolCall) PermissionDecision {
         if (self.bypass_all) return .allow;
+        if (call.operation == .read or call.operation == .write) {
+            if (call.workspace_root) |root| {
+                if (self.workspace_root.len > 0 and !self.isInsideWorkspace(root)) return .deny;
+            }
+        }
         if (self.findPersisted(call)) |decision| return decision;
         return self.defaultDecision(call);
     }
@@ -390,13 +396,15 @@ pub fn parseToolCallOf(allocator: std.mem.Allocator, declared: Operation, tool_n
     errdefer if (path) |owned| allocator.free(owned);
     var command: ?[]u8 = null;
     errdefer if (command) |owned| allocator.free(owned);
+    var workspace_root: ?[]u8 = null;
+    errdefer if (workspace_root) |owned| allocator.free(owned);
 
     if (parsed.value == .object) {
         const obj = parsed.value.object;
         if (firstStringField(obj, &.{ "path", "file_path", "target_path", "cwd" })) |value| {
             if (!std.fs.path.isAbsolute(value)) {
-                if (firstStringField(obj, &.{"workspace_root"})) |workspace_root| {
-                    path = try std.fs.path.join(allocator, &.{ workspace_root, value });
+                if (firstStringField(obj, &.{"workspace_root"})) |named_root| {
+                    path = try std.fs.path.join(allocator, &.{ named_root, value });
                 } else {
                     path = try allocator.dupe(u8, value);
                 }
@@ -407,6 +415,9 @@ pub fn parseToolCallOf(allocator: std.mem.Allocator, declared: Operation, tool_n
         if (firstStringField(obj, &.{ "command", "cmd", "script" })) |value| {
             command = try allocator.dupe(u8, value);
         }
+        if (firstStringField(obj, &.{"workspace_root"})) |value| {
+            workspace_root = try allocator.dupe(u8, value);
+        }
     }
 
     return .{
@@ -415,12 +426,14 @@ pub fn parseToolCallOf(allocator: std.mem.Allocator, declared: Operation, tool_n
         .operation = operation,
         .path = path,
         .command = command,
+        .workspace_root = workspace_root,
     };
 }
 
 pub fn deinitParsedToolCall(allocator: std.mem.Allocator, call: ToolCall) void {
     if (call.path) |path| allocator.free(@constCast(path));
     if (call.command) |command| allocator.free(@constCast(command));
+    if (call.workspace_root) |root| allocator.free(@constCast(root));
 }
 
 fn inferOperation(tool_name: []const u8) Operation {
@@ -655,6 +668,25 @@ test "operation inference uses token boundaries" {
 
     try std.testing.expectEqual(PermissionDecision.prompt, engine.evaluate("thread_run", "{\"path\":\"/workspace/src/main.zig\"}"));
     try std.testing.expectEqual(PermissionDecision.allow, engine.evaluate("file_read", "{\"path\":\"/workspace/src/main.zig\"}"));
+}
+
+test "a read or write naming a workspace_root outside the session's root is denied before any remembered answer, and shell is untouched" {
+    const persistence_path = "zig-cache/test-permissions-workspace-root.json";
+    compat.fs.getCwd().deleteFile(std.testing.io, persistence_path) catch {};
+    defer compat.fs.getCwd().deleteFile(std.testing.io, persistence_path) catch {};
+    var engine = try PermissionEngine.init(std.testing.allocator, .{
+        .workspace_root = "/workspace",
+        .persistence_path = persistence_path,
+    });
+    defer engine.deinit();
+
+    try std.testing.expectEqual(PermissionDecision.allow, engine.evaluateTool(.read, "Read", "{\"workspace_root\":\"/workspace/sub\",\"path\":\"a.txt\"}"));
+    try std.testing.expectEqual(PermissionDecision.deny, engine.evaluateTool(.read, "Read", "{\"workspace_root\":\"/etc\",\"path\":\"/workspace/a.txt\"}"));
+    try std.testing.expectEqual(PermissionDecision.deny, engine.evaluateTool(.read, "Read", "{\"workspace_root\":\"/workspace/../etc\",\"path\":\"/workspace/a.txt\"}"));
+    try engine.persistDecision(.{ .tool_name = "Write", .args_json = "{}", .operation = .write, .path = "/workspace/a.txt" }, .allow);
+    try std.testing.expectEqual(PermissionDecision.allow, engine.evaluateTool(.write, "Write", "{\"workspace_root\":\"/workspace\",\"path\":\"/workspace/a.txt\"}"));
+    try std.testing.expectEqual(PermissionDecision.deny, engine.evaluateTool(.write, "Write", "{\"workspace_root\":\"/tmp\",\"path\":\"/workspace/a.txt\"}"));
+    try std.testing.expectEqual(PermissionDecision.prompt, engine.evaluateTool(.shell, "Shell", "{\"workspace_root\":\"/tmp\",\"command\":\"ls -la\"}"));
 }
 
 const ApprovalRecorder = struct {
