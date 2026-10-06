@@ -1,6 +1,6 @@
 # Decision 0030: Remote Model Providers over HTTP
 
-Status: accepted 2026-10-06 (its surface is on main)
+Status: proposed
 Date: 2026-09-23
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.model-provider-core`

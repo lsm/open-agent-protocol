@@ -48,12 +48,12 @@ one side of this line or the other. None is left unstated:
 | `+tools`, `+permissions`, `+user-input` | yes | Their requirements are part of the executable core frozen by Decision 0001, and `fixtures/manifest.json` carries fixtures under each name. |
 | `+extensions` | yes | [Decision 0004](decisions/0004-extension-packs.md), accepted. |
 | `+run-controls` | yes | [Decision 0005](decisions/0005-run-controls.md), accepted. |
-| `+models` | yes | [Decision 0006](decisions/0006-models-catalog.md), accepted. [Decision 0014](decisions/0014-provider-descriptors.md) proposes one optional additive member and is `proposed`; the unit is covered either way. |
+| `+models` | yes | [Decision 0006](decisions/0006-models-catalog.md), accepted. [Decision 0014](decisions/0014-provider-descriptors.md), accepted, adds one optional additive member. |
 | `+queue` | yes | [Decision 0007](decisions/0007-queue-delivery.md), accepted. |
 | `+tool-sources` | yes | [Decision 0008](decisions/0008-tool-sources.md), accepted. |
 | `+compound-open` | yes | [Decision 0009](decisions/0009-compound-open.md), accepted. |
 | `+control-tools` | yes | [Decision 0011](decisions/0011-control-layer-provided-tools.md), accepted. It was assessed and held earlier the same day for want of a reference execution and a pinned corpus case; both now exist, and the record says so. |
-| `+persistence` | **no** | Its envelope types exist in no schema file and no Go type; the conformance draft described a unit that had never been built. [Decision 0012](decisions/0012-persistence-is-not-in-v0.1-core.md) proposes retiring it and staging the one capability with native evidence as `transcript-load`, and is `proposed` — so the unit is uncovered today on the same basis as every other ungraduated unit, and the retirement binds when that record is accepted. [Decision 0039](decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md), which is accepted, stages `session-reattach` and `session-list` beside it, and each is uncovered until it graduates. |
+| `+persistence` | **no** | Its envelope types exist in no schema file and no Go type; the conformance draft described a unit that had never been built. [Decision 0012](decisions/0012-persistence-is-not-in-v0.1-core.md), accepted, retires it and stages the one capability with native evidence as `transcript-load`, so the retirement binds and `transcript-load` is uncovered until it graduates. [Decision 0039](decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md), which is accepted, stages `session-reattach` and `session-list` beside it, and each is uncovered until it graduates. |
 | `+steer`, `+btw` | **no** | Staged, not graduated. No decision has taken either through the gate. |
 
 A unit joins the covered set when its graduating decision becomes `accepted`,
@@ -69,8 +69,8 @@ A rule is binding when the decision record carrying it is `accepted`.
 [Decision 0003](decisions/0003-staged-unit-graduation.md) defines what
 `accepted` means and what evidence it requires: the rule is executable on
 `main`, nothing inside the record is still pending, nothing proposed
-contradicts it, and it is merged. Decisions 0001 through 0011 are accepted.
-Decision 0012 is `proposed`.
+contradicts it, and it is merged. Each record states its own status, and the
+[README's index](README.md) lists them.
 
 A `proposed` record binds nothing. If you are reading one, you are reading a
 position this project may still change.
@@ -279,14 +279,14 @@ Stated plainly, so the covered surface stays meaningful:
 
 - **Units not marked covered above.** A unit whose graduating decision is not
   `accepted` may change in any way, including disappearing — which is what
-  Decision 0012 proposes for `+persistence`. That covers the staged units in
+  Decision 0012 did to `+persistence`. That covers the staged units in
   [the graduation plan](drafts/staged-units-graduation.md), and is the reason
   the table above states every unit rather than only the covered ones.
 - **Durable session listing and transcript loading.** v0.1 core has no
   vocabulary for either. [Decision 0012](decisions/0012-persistence-is-not-in-v0.1-core.md)
-  proposes retiring the unit that described them and staging transcript load
-  on its own, on Pi's native evidence; session listing and live transcript
-  deltas are staged for nothing, having none. An endpoint that has these today
+  retired the unit that described them and staged transcript load on its own,
+  on Pi's native evidence; session listing is staged by Decision 0039 and
+  decided by Decision 0046, and live transcript deltas are staged for nothing. An endpoint that has these today
   names them in an extension pack.
 - **Anything outside the agent-control boundary.** Direct model inference is
   the separate `model-provider-core` profile, not an agent-control envelope.

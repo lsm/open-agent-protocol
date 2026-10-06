@@ -17,7 +17,7 @@ additions when they are parts of one shape.
   agent loop / control layer
         |                                  \
         |  model-provider-core              |  tool execution
-        |  (decision 0016, accepted)        |  (sources, 0008; control-owned, 0011)
+        |  (decision 0016, proposed)        |  (sources, 0008; control-owned, 0011)
         v                                   v
   OAP model provider                   tool executor
   (vendor APIs behind it)              process, local, remote,
@@ -175,8 +175,8 @@ individually hides it:
 
 1. **A protocol for the boundary.** Agent control has one. Tools have MCP and
    the source kinds. Providers have 0016 and
-   [its draft](model-provider-core.md), accepted and served by
-   `oapx serve provider`.
+   [its draft](model-provider-core.md), served by `oapx serve provider` and still
+   proposed, because 0016 waits on an implementation outside this repository.
 2. **Discovery** — what is available here. `action.tools.list`; `models.list`
    plus 0014's provider descriptors.
 3. **Provision and selection by the client** — attach a source, supply a tool,
