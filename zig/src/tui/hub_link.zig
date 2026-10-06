@@ -55,6 +55,7 @@ pub const HubLink = struct {
         if (std.mem.eql(u8, kind, "models.request")) return self.call(a, .GET, try self.path(a, "/sessions/", self.session_id, "/models"), null, id);
         if (std.mem.eql(u8, kind, "session.message.submit.request") or std.mem.eql(u8, kind, "session.compact.request")) return self.call(a, .POST, try self.path(a, "/sessions/", self.session_id, "/submit"), line, id);
         if (std.mem.eql(u8, kind, "run.cancel.request")) return self.call(a, .POST, try self.path(a, "/sessions/", self.session_id, "/cancel"), line, id);
+        if (std.mem.eql(u8, kind, "session.settings.update.request")) return self.call(a, .POST, try self.path(a, "/sessions/", self.session_id, "/settings"), line, id);
         if (std.mem.eql(u8, kind, "action.permission.resolve.request")) return self.call(a, .POST, try self.path(a, "/sessions/", self.session_id, "/resolve"), line, id);
         try self.refuse(a, id, "unsupported_feature", try std.fmt.allocPrint(a, "the hub has no route for {s}", .{kind}));
     }
@@ -360,7 +361,6 @@ test "a bracketed IPv6 hub address is dialled without its brackets" {
     try testing.expectError(error.HubUrlNeedsPort, dialTarget("[::1]"));
 }
 
-
 test "an events stream the hub refuses still ends the turn with a lost stream" {
     if (comptime !pollable) return error.SkipZigTest;
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
@@ -395,9 +395,10 @@ const FakeHub = struct {
     targets: [2][128]u8 = undefined,
     lengths: [2]usize = .{ 0, 0 },
     answer: []const u8,
+    connections: usize = 2,
 
     fn serve(self: *FakeHub) void {
-        for (0..2) |index| {
+        for (0..self.connections) |index| {
             var served = compat.net.accept(&self.listener) catch return;
             var buffer: [8192]u8 = undefined;
             var filled: usize = 0;
@@ -484,4 +485,30 @@ test "a compaction the hub queues behind a run is withdrawn and refused, not lef
     defer testing.allocator.free(answer);
     try testing.expect(std.mem.indexOf(u8, answer, "session_busy") != null);
     try testing.expect(std.mem.indexOf(u8, answer, "\"in_reply_to\":\"compact-1\"") != null);
+}
+
+test "a settings update goes to the hub's settings route and its answer is correlated to the request" {
+    if (comptime !pollable) return error.SkipZigTest;
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var fake = FakeHub{
+        .listener = try compat.net.tcpListen(try compat.net.resolveAddress(a, "127.0.0.1", 0), .{ .reuse_address = true }),
+        .answer = "{" ++ envelope_head ++ ",\"type\":\"session.settings.update.response\",\"id\":\"hub-3\",\"session_id\":\"s1\",\"payload\":{\"session_id\":\"s1\",\"compaction_policy\":{\"kind\":\"off\"}}}",
+        .connections = 1,
+    };
+    defer compat.net.closeServer(&fake.listener);
+    const base = try std.fmt.allocPrint(a, "http://127.0.0.1:{d}", .{compat.net.listenAddress(&fake.listener).getPort()});
+    const thread = try std.Thread.spawn(.{}, FakeHub.serve, .{&fake});
+    const link = try HubLink.create(testing.allocator, base, "memory");
+    defer link.destroy();
+    link.session_id = try testing.allocator.dupe(u8, "s1");
+    try link.handleLine("{" ++ envelope_head ++ ",\"type\":\"session.settings.update.request\",\"id\":\"settings-1\",\"session_id\":\"s1\",\"payload\":{\"session_id\":\"s1\",\"compaction_policy\":{\"kind\":\"off\"}}}");
+    thread.join();
+    try testing.expectEqualStrings("POST /sessions/s1/settings HTTP/1.1", fake.target(0));
+    const answer = link.popOutbound() orelse return error.TestNoAnswer;
+    defer testing.allocator.free(answer);
+    try testing.expect(std.mem.indexOf(u8, answer, "\"in_reply_to\":\"settings-1\"") != null);
+    try testing.expect(std.mem.indexOf(u8, answer, "session.settings.update.response") != null);
+    try testing.expect(link.stream == null);
 }

@@ -154,7 +154,7 @@ A strict stack; lower layers never import higher ones.
 | `cmd/goap` | Dispatcher; `serve.go` wires signals, loopback allowlist, bounded shutdown |
 
 `serve agent` (alias `endpoint`) and `conformance` are the endpoint-role pair, a
-different layer from `hub --stdio`. `hub --stdio` exposes the **hub** — twelve ops, an adapter
+different layer from `hub --stdio`. `hub --stdio` exposes the **hub** — thirteen ops, an adapter
 dimension, cursor replay, multiplexed subscriptions — each line wrapping an
 envelope in a transport object. `serve agent` exposes **one agent loop** carrying
 raw OAP envelopes, one per line, per `drafts/endpoint-stdio.md`.

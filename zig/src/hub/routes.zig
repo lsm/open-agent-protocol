@@ -11,6 +11,7 @@ pub const Verb = enum {
     submit,
     resolve,
     cancel,
+    settings,
     close,
     events,
 };
@@ -26,6 +27,7 @@ pub const Route = union(Verb) {
     submit: []const u8,
     resolve: []const u8,
     cancel: []const u8,
+    settings: []const u8,
     close: []const u8,
     events: []const u8,
 
@@ -68,6 +70,7 @@ pub const table = [_]Entry{
     .{ .method = "POST", .pattern = "/sessions/{id}/submit", .verb = .submit },
     .{ .method = "POST", .pattern = "/sessions/{id}/resolve", .verb = .resolve },
     .{ .method = "POST", .pattern = "/sessions/{id}/cancel", .verb = .cancel },
+    .{ .method = "POST", .pattern = "/sessions/{id}/settings", .verb = .settings },
     .{ .method = "POST", .pattern = "/sessions/{id}/close", .verb = .close },
     .{ .method = "GET", .pattern = "/sessions/{id}/events", .verb = .events },
 };
@@ -151,6 +154,7 @@ fn build(verb: Verb, parameter: ?[]const u8) Route {
         .submit => .{ .submit = parameter.? },
         .resolve => .{ .resolve = parameter.? },
         .cancel => .{ .cancel = parameter.? },
+        .settings => .{ .settings = parameter.? },
         .close => .{ .close = parameter.? },
         .events => .{ .events = parameter.? },
     };
@@ -180,8 +184,8 @@ fn matched(arena: std.mem.Allocator, method: []const u8, path: []const u8) !Matc
     return route(arena, method, path);
 }
 
-test "the table is the draft's twelve routes, one line each" {
-    try testing.expectEqual(@as(usize, 12), table.len);
+test "the table is the draft's thirteen routes, one line each" {
+    try testing.expectEqual(@as(usize, 13), table.len);
     const paths = [_][]const u8{
         "/adapters",
         "/adapters/{name}/capabilities",
@@ -193,6 +197,7 @@ test "the table is the draft's twelve routes, one line each" {
         "/sessions/{id}/submit",
         "/sessions/{id}/resolve",
         "/sessions/{id}/cancel",
+        "/sessions/{id}/settings",
         "/sessions/{id}/close",
         "/sessions/{id}/events",
     };
@@ -220,10 +225,11 @@ test "every route in the table resolves to its own verb and carries the name the
         .{ .method = "POST", .path = "/sessions/s-1/submit", .want = .submit, .parameter = "s-1" },
         .{ .method = "POST", .path = "/sessions/s-1/resolve", .want = .resolve, .parameter = "s-1" },
         .{ .method = "POST", .path = "/sessions/s-1/cancel", .want = .cancel, .parameter = "s-1" },
+        .{ .method = "POST", .path = "/sessions/s-1/settings", .want = .settings, .parameter = "s-1" },
         .{ .method = "POST", .path = "/sessions/s-1/close", .want = .close, .parameter = "s-1" },
         .{ .method = "GET", .path = "/sessions/s-1/events", .want = .events, .parameter = "s-1" },
     };
-    try testing.expectEqual(@as(usize, 12), cases.len);
+    try testing.expectEqual(@as(usize, 13), cases.len);
     for (cases) |case| {
         var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena_state.deinit();

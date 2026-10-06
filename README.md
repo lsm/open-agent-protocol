@@ -816,7 +816,7 @@ is the other direction: one agent loop that speaks OAP itself.
 
 `drafts/endpoint-stdio.md` is the binding — OAP envelopes, one per line, over
 stdin and stdout. It is deliberately narrower than `goap hub --stdio`, which
-exposes a hub; an implementer should not have to build a registry, twelve ops
+exposes a hub; an implementer should not have to build a registry, thirteen ops
 and multiplexed subscriptions to be conformant.
 
 ```sh

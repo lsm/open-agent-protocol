@@ -77,6 +77,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /sessions/{id}/submit", s.handleSubmit)
 	mux.HandleFunc("POST /sessions/{id}/resolve", s.handleResolve)
 	mux.HandleFunc("POST /sessions/{id}/cancel", s.handleCancel)
+	mux.HandleFunc("POST /sessions/{id}/settings", s.handleSettings)
 	mux.HandleFunc("POST /sessions/{id}/close", s.handleClose)
 	var handler http.Handler = mux
 	if len(s.allowHosts) > 0 {
@@ -554,6 +555,36 @@ func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 	response.InReplyTo = envelope.ID
 	response.SessionID = ack.SessionID
 	response.RunID = ack.RunID
+	response.CapabilityRevision = envelope.CapabilityRevision
+	writeEnvelope(w, http.StatusOK, response)
+}
+
+func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
+	envelope, ok := s.readRequest(w, r, protocol.TypeSessionSettingsUpdateRequest)
+	if !ok {
+		return
+	}
+	var request protocol.SessionSettingsUpdateRequest
+	if err := envelope.DecodePayload(&request); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid_payload", err.Error(), envelope)
+		return
+	}
+	entry, ok := s.lookupSession(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	updated, _, err := entry.UpdateSettings(r.Context(), request)
+	if err != nil {
+		s.writeControlError(w, err, http.StatusInternalServerError, "internal", envelope)
+		return
+	}
+	response, err := protocol.NewEnvelope(protocol.TypeSessionSettingsUpdateResponse, s.nextID("response"), updated)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "internal", err.Error(), envelope)
+		return
+	}
+	response.InReplyTo = envelope.ID
+	response.SessionID = updated.SessionID
 	response.CapabilityRevision = envelope.CapabilityRevision
 	writeEnvelope(w, http.StatusOK, response)
 }

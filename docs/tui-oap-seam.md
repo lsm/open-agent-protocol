@@ -12,8 +12,8 @@ cross the boundary as OAP; the settings the protocol has no verb for (context
 window, permission mode, workspace root) travel once, in the open request's
 `metadata.oapx`. The thinking level travels there too, and changes between runs
 through `session.settings.update.request` when the endpoint advertises
-`session.reasoning` with `session_live`; the hub has no route for that request
-yet, so over `--attach` it stays fixed. Tool approvals cross too: in ask mode the adapter's
+`session.reasoning` with `session_live`, over `--attach` through the hub's settings
+route. Tool approvals cross too: in ask mode the adapter's
 `action.permission.requested` becomes the TUI's approval prompt, and the answer goes
 back as `action.permission.resolve.request` with `approve` or `deny`, so an "always"
 answer covers that one call. The model's questions (`user.input.*`) stay off: the
@@ -31,7 +31,7 @@ hub refuses a follow-up locally, because the hub link withdraws any queued admis
 sends its setting as the session's `compaction_policy` before each turn, when the
 endpoint advertises them; the TUI's attach link (`zig/src/tui/hub_link.zig`) sends
 the compaction to the hub's submit route and follows the run it starts, and the
-policy is still refused on an attached session, because the hub has no settings
+policy to its settings
 route. Resume refuses with `UnavailableOverOap` until its gap below closes. `oapx tui --attach URL` runs the
 same execution over a running hub's HTTP wire (`zig/src/tui/hub_link.zig`): each envelope
 goes to its route, and each run is followed on its own SSE stream replayed from its first
@@ -100,7 +100,7 @@ without going through the ops table.
 | `clear_queued_messages` | none | **gap** — G3 |
 | `steers_consumed` | none | **gap** — G3 |
 | `decide_tool_approval` | `action.permission.*`, `user.input.*` | **gap** — G4, shaped, undispatched |
-| `compact` | `session.compact`, `run.compaction`, and `session.settings.update` for the threshold | closed in-process; `/compact` over `--attach` too, the threshold refused there |
+| `compact` | `session.compact`, `run.compaction`, and `session.settings.update` for the threshold | closed in-process and over `--attach` |
 | `resume_session` | `session.state.request`, then submit | **gap** — G1 |
 | `replaceMessages` (direct) | `transcript.load` | **gap** — G1 |
 | `waitForIdle` (direct, 6 production call sites) | a terminal run event | **gap** — G7 |

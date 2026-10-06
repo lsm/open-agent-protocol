@@ -668,6 +668,24 @@ pub const Hub = struct {
         };
     }
 
+    pub fn updateSettings(self: *Hub, arena: std.mem.Allocator, session_id: []const u8, request: *const oap_types.SessionSettingsUpdateRequest, refusal: *contract.Refusal) Failure!oap_types.SessionSettingsUpdateResponse {
+        const entry = self.findSession(session_id) orelse return error.UnknownSession;
+        if (!std.mem.eql(u8, request.session_id, session_id)) return error.ScopeMismatch;
+        if (request.reasoning_level == null and request.compaction_policy_json == null) return error.InvalidSubmission;
+        const updater = entry.session.vtable.update_settings orelse {
+            if (request.reasoning_level != null) return refusal.unsupportedField(contract.feature_session_reasoning, contract.reason_unadvertised, "reasoning_level");
+            return refusal.unsupportedField(contract.feature_compaction_policy, contract.reason_unadvertised, "compaction_policy");
+        };
+        const updated = updater(entry.session.ptr, arena, request, refusal) catch |err| switch (err) {
+            error.SessionClosed => {
+                self.releaseSession(entry);
+                return error.UnknownSession;
+            },
+            else => |failure| return failure,
+        };
+        return updated.response;
+    }
+
     pub fn state(self: *Hub, arena: std.mem.Allocator, session_id: []const u8) Failure!oap_types.SessionState {
         const entry = self.findSession(session_id) orelse return error.UnknownSession;
         var refusal = contract.Refusal{};
@@ -3890,6 +3908,24 @@ test "a reopen the hub holds a record for but the adapter has lost is unsupporte
     try testing.expectEqualStrings(contract.feature_open_reopen, refused.reason.feature);
 }
 
+test "a settings update reaches the session's adapter, and one naming nothing or another session is refused before it" {
+    var inner = memory.Adapter.init(testing.allocator);
+    defer inner.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var hub = Hub.init(testing.allocator, testClock, .{});
+    defer hub.deinit();
+    try hub.register("memory", inner.adapter());
+    _ = try hub.open(arena, "memory", .{ .session_id = "set" });
+    var refusal = contract.Refusal{};
+    try testing.expectError(error.InvalidSubmission, hub.updateSettings(arena, "set", &.{ .session_id = "set" }, &refusal));
+    try testing.expectError(error.ScopeMismatch, hub.updateSettings(arena, "set", &.{ .session_id = "other", .compaction_policy_json = "{\"kind\":\"off\"}" }, &refusal));
+    try testing.expectError(error.UnknownSession, hub.updateSettings(arena, "absent", &.{ .session_id = "absent", .compaction_policy_json = "{\"kind\":\"off\"}" }, &refusal));
+    const updated = try hub.updateSettings(arena, "set", &.{ .session_id = "set", .compaction_policy_json = "{\"kind\":\"off\"}" }, &refusal);
+    try testing.expect(std.mem.indexOf(u8, updated.compaction_policy_json.?, "off") != null);
+    try hub.close(arena, "set");
+}
 
 test {
     _ = binding;

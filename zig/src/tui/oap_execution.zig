@@ -210,9 +210,9 @@ pub const OapExecution = struct {
             initialized
         else
             try self.exchange(a, "capabilities.request", empty.value(), false);
-        self.live_reasoning = self.hub == null and advertisesLive(described, "session.reasoning");
+        self.live_reasoning = advertisesLive(described, "session.reasoning");
         self.live_compaction = advertises(described, "session.compact");
-        self.live_policy = self.hub == null and advertisesLive(described, "session.compaction.policy");
+        self.live_policy = advertisesLive(described, "session.compaction.policy");
         self.live_steer = advertises(described, "session.message.delivery.steer");
 
         var settings_map = Map.init(a);
