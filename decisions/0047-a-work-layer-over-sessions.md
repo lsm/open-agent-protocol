@@ -25,7 +25,7 @@ The core already does most of what the five verbs need:
 
 | Verb | What the core has |
 | --- | --- |
-| `start` | open, then submit. A message carried on the open is still refused in Zig (hub draft, D11). |
+| `start` | open, then submit. When this record was proposed, the Zig hub refused a message carried on the open (hub draft, D11); #914 closed that. |
 | `send` | submit, steer ([0013](0013-steer.md)) and queue ([0007](0007-queue-delivery.md)) |
 | `stop` | cancel, on every adapter but DeepSeek's, whose wire has no cancel request |
 | `status` | `session.state` and the event stream, with no summary a caller can read in one call |

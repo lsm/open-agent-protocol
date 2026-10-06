@@ -32,8 +32,10 @@ answer (stdio op `work.capabilities`), per adapter:
 | `work.status` | session state, plus the latest run's terminal envelope | never |
 | `work.stop` | `run.cancel` | the adapter does not advertise `run.cancel` (DeepSeek) |
 
-A verb an adapter does not advertise is refused `unsupported_feature` naming
-the key, as the core refuses an unadvertised feature.
+A verb an adapter cannot serve is refused `unsupported_feature` naming the
+core feature it rests on, as the core's own refusal does: `work.stop` over
+DeepSeek names `run.cancel`, as decision 0047 says. The `work.*` key only says,
+in the capabilities answer, that the verb is missing before it is called.
 
 ## A work reference
 
@@ -62,8 +64,9 @@ and a journal. Two other kinds of entry appear in `work.find` and carry **no
 
 - **Unheld:** a session with a binding (0046) that `serve` does not hold, such
   as one closed or left behind by a restart. It carries `"held": false` and the
-  binding's `state` (`live` or `closed`), nothing projected. It is listed only
-  when `include_closed` is set.
+  binding's `state` (`live` or `closed`), nothing projected. A `live` one,
+  such as a session left behind by a restart, is listed by default; a `closed`
+  one only when `include_closed` is set.
 - **Native:** a harness session no binding names (0047 decision 2). It carries
   `native_id` and whatever the harness's own list says, nothing projected.
 
@@ -89,7 +92,9 @@ Request `{"ref": <reference>}`. Answer:
 }
 ```
 
-`last_reply` is the latest `run.completed`'s `final_response` content,
+`title` is the title `work.start` was given, which `serve` keeps for as long
+as it holds the session; a session opened any other way has none, and the
+member is absent. `last_reply` is the latest `run.completed`'s `final_response` content,
 truncated to 4 KiB. `pending` is present only when `status` is `needs_you`.
 
 ### `work.find`
