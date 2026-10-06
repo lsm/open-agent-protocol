@@ -9,8 +9,10 @@ takes an injected `RemoteExecution` (`zig/src/tui/oap_execution.zig`) that hosts
 `zig/src/adapter/endpoint.zig` with the `oapx` adapter in-process and turns its
 envelopes back into `TuiEvent`s. Runs, streaming, tools, cancel and model switch
 cross the boundary as OAP; the settings the protocol has no verb for (context
-window, permission mode, workspace root) travel once, in the open request's
-`metadata.oapx`. The thinking level travels there too, and changes between runs
+window, output, permission mode, workspace root) travel in the open request's
+`metadata.oapx`, and change mid-session on a `session.settings.update.request`
+that carries them under `extensions.oapx` beside the current thinking level,
+when the endpoint advertises `session.reasoning` with `session_live`. The thinking level travels there too, and changes between runs
 through `session.settings.update.request` when the endpoint advertises
 `session.reasoning` with `session_live`, over `--attach` through the hub's settings
 route. Tool approvals cross too: in ask mode the adapter's
