@@ -35,6 +35,8 @@ pub const OapExecution = struct {
     ids: u64 = 0,
     inbound: std.ArrayList([]u8) = .empty,
     inbound_mutex: std.atomic.Mutex = .unlocked,
+    records: std.ArrayList(TuiEvent) = .empty,
+    records_mutex: std.atomic.Mutex = .unlocked,
     thread: ?std.Thread = null,
     stopping: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     turn_open: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -110,7 +112,29 @@ pub const OapExecution = struct {
         adapter.* = oapx_adapter.Adapter.init(allocator, options);
         const self = try allocator.create(OapExecution);
         self.* = .{ .allocator = allocator, .adapter = adapter, .endpoint = adapter_endpoint.Endpoint.init(allocator, adapter.adapter(), .{ .frame_limit = in_process_frame_limit }) };
+        adapter.recorder = .{ .ctx = self, .record = record };
         return self;
+    }
+
+    fn record(ctx: *anyopaque, session_id: []const u8, event: *const TuiEvent) void {
+        const self = cast(ctx);
+        if (!std.mem.eql(u8, session_id, self.session_id)) return;
+        var cloned = event.clone(self.allocator) catch return;
+        while (!self.records_mutex.tryLock()) std.atomic.spinLoopHint();
+        defer self.records_mutex.unlock();
+        self.records.append(self.allocator, cloned) catch cloned.deinit(self.allocator);
+    }
+
+    fn takeRecord(ctx: *anyopaque) ?TuiEvent {
+        const self = cast(ctx);
+        while (!self.records_mutex.tryLock()) std.atomic.spinLoopHint();
+        defer self.records_mutex.unlock();
+        if (self.records.items.len == 0) return null;
+        return self.records.orderedRemove(0);
+    }
+
+    fn recordsSession(ctx: *anyopaque) bool {
+        return cast(ctx).adapter != null;
     }
 
     pub fn setTranscripts(self: *OapExecution, store: oapx_adapter.TranscriptStore) void {
@@ -150,6 +174,8 @@ pub const OapExecution = struct {
         }
         for (self.inbound.items) |line| allocator.free(line);
         self.inbound.deinit(allocator);
+        for (self.records.items) |*held| held.deinit(allocator);
+        self.records.deinit(allocator);
         self.text.deinit(allocator);
         self.forgetSessionModels();
         self.session_models.deinit(allocator);
@@ -179,6 +205,8 @@ pub const OapExecution = struct {
         .switch_model = switchModel,
         .set_reasoning = setReasoning,
         .compacts = compacts,
+        .take_record = takeRecord,
+        .records_session = recordsSession,
         .compactable = compactable,
         .compact = compact,
         .set_compaction_policy = setCompactionPolicy,
@@ -1933,6 +1961,64 @@ fn askedTurn(decision: tui_runtime.ToolApprovalDecision) !struct { end: ?tui_ses
         std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
     }
     return error.TestTurnNeverEnded;
+}
+
+test "an in-process session hands the loop's own records over, tool calls and results included, which the OAP events cannot rebuild" {
+    var script = Script{ .tool_first = true };
+    const models = [_]ai_types.Model{scripted_model};
+    const execution = try OapExecution.create(testing.allocator, .{
+        .protocol = .{ .stream_fn = scriptedStream, .ctx = &script },
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+        .tools = &echo_tools,
+    });
+    defer execution.destroy();
+    var runtime = try tui_runtime.TuiRuntime.init(testing.allocator, .{
+        .models = &models,
+        .initial_model_id = scripted_model.id,
+        .remote = execution.remote(),
+    });
+    defer runtime.deinit();
+    try testing.expect(runtime.recordsFromEndpoint());
+
+    try runtime.submitTurn("use the tool");
+    var seen = Seen{};
+    defer seen.deinit();
+    try drainTurn(&runtime, &seen);
+    try testing.expectEqual(@as(?tui_session.TuiEndReason, .completed), seen.end);
+
+    var tool_calls: usize = 0;
+    var tool_results: usize = 0;
+    var ends: usize = 0;
+    while (runtime.takeEndpointRecord()) |record| {
+        var owned = record;
+        defer owned.deinit(testing.allocator);
+        switch (owned) {
+            .message_end => |payload| {
+                if (payload.role == .assistant and std.mem.indexOf(u8, payload.tool_calls_json.slice(), "call-1") != null) tool_calls += 1;
+                if (payload.role == .tool_result and std.mem.eql(u8, payload.tool_call_id.slice(), "call-1")) tool_results += 1;
+            },
+            .agent_end => ends += 1,
+            else => {},
+        }
+    }
+    try testing.expectEqual(@as(usize, 1), tool_calls);
+    try testing.expectEqual(@as(usize, 1), tool_results);
+    try testing.expectEqual(@as(usize, 1), ends);
+}
+
+test "a session with no in-process endpoint has no records to hand over" {
+    var script = Script{};
+    var execution: *OapExecution = undefined;
+    var runtime = try remoteRuntime(&script, &execution, .low);
+    defer execution.destroy();
+    defer runtime.deinit();
+    try testing.expect(runtime.recordsFromEndpoint());
+    const adapter = execution.adapter.?;
+    execution.adapter = null;
+    defer execution.adapter = adapter;
+    try testing.expect(!runtime.recordsFromEndpoint());
+    try testing.expect(runtime.takeEndpointRecord() == null);
 }
 
 test "in ask mode over OAP the model's tool call waits for the user's approval and then runs" {

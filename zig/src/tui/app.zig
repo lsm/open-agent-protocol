@@ -1131,6 +1131,7 @@ pub const App = struct {
     }
 
     pub fn deinit(self: *App) void {
+        self.saveEndpointRecords();
         self.forgetLoginOverrides();
         for (self.deferred_commands.items) |text| self.allocator.free(text);
         self.deferred_commands.deinit(self.allocator);
@@ -2623,6 +2624,20 @@ pub const App = struct {
     }
 
     fn saveEvent(self: *App, event: tui_runtime.TuiEvent) void {
+        if (self.runtime) |runtime| if (runtime.recordsFromEndpoint()) return;
+        self.persistEvent(event);
+    }
+
+    fn saveEndpointRecords(self: *App) void {
+        const runtime = self.runtime orelse return;
+        while (runtime.takeEndpointRecord()) |record| {
+            var owned = record;
+            defer owned.deinit(self.allocator);
+            self.persistEvent(owned);
+        }
+    }
+
+    fn persistEvent(self: *App, event: tui_runtime.TuiEvent) void {
         const store = self.store orelse return;
         if (event == .message_end and event.message_end.role == .assistant) self.flushPendingThinking(store);
         switch (event) {
@@ -3166,6 +3181,7 @@ pub const App = struct {
             self.saveEvent(ev);
             try self.applyRuntimeEvent(ev);
         }
+        self.saveEndpointRecords();
         self.refreshQueuedCounts();
         self.state.reconcileSteers(session.steersConsumedCount());
         self.syncBackpressureState();
@@ -7544,6 +7560,51 @@ test "App titles a new session with its first message's first line" {
     defer index.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("fix the resume freeze", index.title);
     try std.testing.expect(!index.title_generated);
+}
+
+test "App over the in-process endpoint saves each message once, from the loop's own records" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "sessions" });
+    defer std.testing.allocator.free(base);
+    var provider = fixture_provider.MockProvider.init(.{ .steps = &.{.{ .text = "the endpoint's reply" }} });
+    const models = [_]ai_types.Model{defaultModel()};
+    const execution = try tui_oap_execution.OapExecution.create(std.testing.allocator, .{ .protocol = provider.protocolClient(), .models = &models });
+    defer execution.destroy();
+    var app = try sessionTestApp(base, "endpoint-records");
+    defer app.deinit();
+    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    runtime.* = tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .models = &models, .remote = execution.remote() }) catch |err| {
+        std.testing.allocator.destroy(runtime);
+        return err;
+    };
+    app.runtime = runtime;
+
+    try runtime.submitTurn("ask the endpoint");
+    var ended = false;
+    var waits: usize = 0;
+    while (!ended and waits < 5000) : (waits += 1) {
+        while (runtime.streamEvents().poll()) |event| {
+            var owned = event;
+            defer owned.deinit(std.testing.allocator);
+            if (owned == .agent_end) ended = true;
+            app.saveEvent(owned);
+        }
+        if (!ended) std.testing.io.sleep(.fromNanoseconds(std.time.ns_per_ms), .boot) catch {};
+    }
+    try std.testing.expect(ended);
+    app.saveEndpointRecords();
+
+    var lines = try sessionFileLines(base, "endpoint-records.jsonl");
+    defer freeSessionFileLines(&lines);
+    var users: usize = 0;
+    var replies: usize = 0;
+    for (lines.items[1..]) |line| {
+        if (std.mem.indexOf(u8, line, "\"role\":\"user\"") != null and std.mem.indexOf(u8, line, "ask the endpoint") != null) users += 1;
+        if (std.mem.indexOf(u8, line, "\"role\":\"assistant\"") != null and std.mem.indexOf(u8, line, "the endpoint's reply") != null) replies += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), users);
+    try std.testing.expectEqual(@as(usize, 1), replies);
 }
 
 test "App indexes the title the model generates after the first reply" {
