@@ -358,8 +358,12 @@ one.
 `--session-history <path>` names the session history: a file the hub appends
 one binding record to per open, reopen and close. `oapx hub` keeps it at
 `~/.oapx/sessions.jsonl` when the flag is absent, beside the rest of its state,
-and an empty `--session-history=` turns it off. `goap hub` has no default, so
-without the flag it records nothing and reports no binding. It is the host's file and the host's decision
+and an empty `--session-history=` turns it off. `oapx hub` holds an exclusive
+lock on `<path>.lock` while it runs, so a second hub pointed at the same history
+is refused and told to name its own, rather than both rewriting the file and
+dropping each other's records — Zig: `a second store on one session history is
+refused while the first holds it, and taken once it closes`. `goap hub` has no
+default, so without the flag it records nothing and reports no binding. It is the host's file and the host's decision
 where it lives, and `Decision 0040` is what a record must say — which harness
 ran which session, under which pin, in which home and directory, with which
 model, reasoning level and compaction policy — and what it must never hold. A reopen reads it: when the hub holds no

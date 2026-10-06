@@ -1678,11 +1678,18 @@ fn runHub(
     defer registry.deinit();
     var bindings: ?hub.binding.Store = null;
     defer if (bindings) |*store| store.deinit();
-    const history = history_path orelse if (environ.get("HOME")) |home| try std.fs.path.join(arena, &.{ home, ".oapx", "sessions.jsonl" }) else "";
+    const history = history_path orelse if (compat.getEnvVarOwned(arena, "HOME")) |home| try std.fs.path.join(arena, &.{ home, ".oapx", "sessions.jsonl" }) else |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => "",
+    };
     if (history.len > 0) {
         bindings = hub.binding.Store.open(allocator, history) catch |err| {
             if (err == error.OutOfMemory) return error.OutOfMemory;
-            try surface.refuse("cannot open --session-history {s}: {s}", .{ history, @errorName(err) });
+            if (err == error.SessionHistoryInUse) {
+                try surface.refuse("another oapx hub is using the session history {s}; pass --session-history <path> to give this one its own", .{history});
+            } else {
+                try surface.refuse("cannot open --session-history {s}: {s}", .{ history, @errorName(err) });
+            }
             return error.BackendRefused;
         };
     }
@@ -7047,9 +7054,7 @@ test "the built-in fallback rows publish no lifecycle, because none states one" 
         }
     }
 
-    const request = try std.fmt.allocPrint(allocator,
-        "{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"{s}\",\"type\":\"provider.models.list.request\",\"id\":\"q1\",\"payload\":{{}}}}",
-        .{oap_provider_types.PROFILE});
+    const request = try std.fmt.allocPrint(allocator, "{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"{s}\",\"type\":\"provider.models.list.request\",\"id\":\"q1\",\"payload\":{{}}}}", .{oap_provider_types.PROFILE});
     defer allocator.free(request);
     try server.handleLine(request);
 
