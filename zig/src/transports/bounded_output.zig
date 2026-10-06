@@ -76,7 +76,7 @@ pub const Output = struct {
         while (at < bytes.len) {
             var fds = [_]std.posix.pollfd{.{ .fd = self.file.handle, .events = std.posix.POLL.OUT, .revents = 0 }};
             const ready = try std.posix.poll(&fds, 50);
-            if (ready == 0 or fds[0].revents & std.posix.POLL.OUT == 0) {
+            if (ready == 0 or fds[0].revents & (std.posix.POLL.OUT | std.posix.POLL.NVAL) == 0) {
                 if (fds[0].revents & (std.posix.POLL.ERR | std.posix.POLL.HUP) != 0) return error.BrokenPipe;
                 if (clock() -| progressed > self.stall_ns) return error.OutputStalled;
                 continue;
@@ -171,6 +171,16 @@ test "an output nobody reads fails with OutputStalled once the bound passes" {
     const began = clock();
     try std.testing.expectError(error.OutputStalled, output.writeAll(&filler));
     try std.testing.expect(clock() - began >= 200 * std.time.ns_per_ms);
+}
+
+test "an output to a device poll cannot watch, such as /dev/null on macOS, is written, not stalled" {
+    if (comptime is_windows) return error.SkipZigTest;
+    var device = try std.Io.Dir.cwd().openFile(std.testing.io, "/dev/null", .{ .mode = .write_only });
+    defer device.close(std.testing.io);
+    var output = Output.init(device, 200 * std.time.ns_per_ms);
+    try output.start();
+    defer output.deinit();
+    try output.writeAll("line\n");
 }
 
 test "an output whose reader closed fails with BrokenPipe" {
